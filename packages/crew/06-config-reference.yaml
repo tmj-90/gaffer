@@ -1,0 +1,200 @@
+# Crew configuration reference
+# This is an illustrative schema-like config. It is not intended to be parsed as-is without validation.
+
+factory:
+  name: example-factory
+  mode: local_strict # local_loose | local_strict | shared_team
+  timezone: Europe/London
+
+dispatch:
+  mode: local # local | shared
+  local:
+    sqlite_path: ./.dispatch/dispatch.sqlite
+  shared:
+    base_url: null
+    auth_profile: null
+  default_policy_pack: team_light
+
+memory:
+  enabled: true
+  mode: local # local | shared
+  required_before:
+    tags:
+      - auth
+      - payments
+      - migrations
+      - public_api
+      - security
+  suggestion_policy:
+    after_ticket_done: true
+    auto_approve: false
+
+repos:
+  - id: auth-service
+    name: auth-service
+    path: ./repos/auth-service
+    remote_url: git@github.com:example/auth-service.git
+    default_branch: main
+    protected_branches:
+      - main
+      - release/*
+    stack: python
+    package_manager: poetry
+    test_command: poetry run pytest
+    lint_command: poetry run ruff check .
+    coverage_command: poetry run pytest --cov=auth_service
+    build_command: null
+    mutation_mode: branch_only
+    risk_level: high
+    owners:
+      - security
+      - platform
+    lore_tags:
+      - auth
+      - python
+      - security
+    skills:
+      - run-python-tests
+      - add-fastapi-endpoint
+
+  - id: web-app
+    name: web-app
+    path: ./repos/web-app
+    remote_url: git@github.com:example/web-app.git
+    default_branch: main
+    protected_branches:
+      - main
+      - release/*
+    stack: typescript-react
+    package_manager: pnpm
+    test_command: pnpm test
+    lint_command: pnpm lint
+    coverage_command: pnpm test -- --coverage
+    build_command: pnpm build
+    mutation_mode: branch_only
+    risk_level: medium
+    owners:
+      - frontend
+    lore_tags:
+      - frontend
+      - react
+      - auth
+    skills:
+      - run-node-tests
+      - add-react-form
+
+agents:
+  - id: claude-auth-01
+    display_name: Claude Auth Implementer
+    runtime: claude-code
+    model: claude-sonnet
+    host: local
+    capabilities:
+      - backend
+      - auth
+      - tests
+    max_risk: medium
+    allowed_repos:
+      - auth-service
+      - web-app
+    status: active
+
+  - id: claude-review-01
+    display_name: Claude Reviewer
+    runtime: claude-code
+    model: claude-sonnet
+    host: local
+    capabilities:
+      - review
+      - security_review
+      - design_review
+      - tests
+    max_risk: high
+    allowed_repos:
+      - auth-service
+      - web-app
+    status: active
+
+safety:
+  policy_file: ./safety_policy.yaml
+  default_idle_loop_mode: create_draft_tickets
+  require_clean_worktree_before_start: true
+  redact_secrets_in_context: true
+  model_may_read_secret_files: false
+
+loops:
+  implementation:
+    enabled: true
+    trigger: manual_or_queue
+    max_concurrent_agents: 1
+    requires_claim: true
+    submit_for_review: true
+
+  idle_coverage:
+    enabled: true
+    trigger: when_queue_empty
+    mode: create_draft_tickets
+    repos:
+      - auth-service
+      - web-app
+    minimum_gap_threshold: 10
+
+  idle_lore_gap:
+    enabled: false
+    trigger: manual
+    mode: create_memory_suggestions
+
+  # Closed self-improving loop: idle ticks auto-promote their own low-risk
+  # improvement drafts to 'ready'. OFF BY DEFAULT, strict opt-in, capped.
+  self_improve:
+    enabled: false
+    repos: [] # empty = NO repos eligible (strict opt-in)
+    max_risk: low # only repos at/below this risk may be promoted
+    max_ready_per_run: 1 # hard cap on auto-promotions per idle tick
+
+  design_drift:
+    enabled: false
+    trigger: manual
+    mode: create_decision_requests
+
+hooks:
+  before_claim:
+    - id: enforce_business_hours_for_shared
+      type: builtin
+      enabled: false
+
+  after_claim:
+    - id: create_ticket_branch
+      type: builtin
+      enabled: true
+
+  after_tests:
+    - id: attach_test_evidence
+      type: builtin
+      enabled: true
+
+  before_submit_review:
+    - id: require_diff_summary
+      type: builtin
+      enabled: true
+
+  after_ticket_done:
+    - id: propose_lore_update
+      type: builtin
+      enabled: true
+
+skills:
+  directories:
+    - ./skills
+  builtins:
+    - run-tests
+    - run-lint
+    - run-coverage
+    - create-branch
+    - record-evidence
+    - submit-review
+
+logging:
+  level: info
+  event_log_path: ./.crew/events.jsonl
+  redact: true

@@ -1,0 +1,23 @@
+# runner is scripts + config; no build artifacts to track.
+.DS_Store
+*.log
+
+# secrets / local data — never commit
+.env
+.env.*
+
+# local databases — lore/dispatch live under $GAFFER_DATA, never in-tree.
+# (The ${MEMORY_DB} pattern catches stray literal-named files created when
+# the env var was unset — those are accidental, the real store is in .gaffer/.)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+${MEMORY_DB}*
+.gaffer/
+
+# transient ping helpers the scripts write next to a server's dir
+.preflight-ping.mjs
+.demo-ping.mjs
+
+# crew writes its event log next to the runner's cwd during local onboard runs
+.crew/

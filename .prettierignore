@@ -1,0 +1,23 @@
+# Build output & deps
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+coverage/
+**/coverage/
+*.tsbuildinfo
+
+# Lockfile (machine-generated)
+pnpm-lock.yaml
+
+# Markdown — avoid reflowing prose / docs
+*.md
+**/*.md
+
+# Runner skill manifests (authored prose, not code)
+runner/skills/**/SKILL.md
+
+# Local factory state
+.gaffer/
+.crew/

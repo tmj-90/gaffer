@@ -1,0 +1,12 @@
+{
+  // Type-checks the test suite alongside src (the build tsconfig excludes test).
+  // Used by `typecheck:test`; never emits.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["src", "test"],
+  "exclude": ["dist", "node_modules"]
+}

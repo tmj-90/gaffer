@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 540" fill="none">
+  <title>Gaffer logo</title>
+  <defs>
+    <g id="gaffer-icon">
+      <path d="M164 350 C164 278 223 219 295 219 H583 C600 219 614 233 614 250 V345 C614 362 600 376 583 376 C566 376 552 362 552 345 V281 H297 C258 281 227 312 227 351 V769 C227 808 258 839 297 839 H583 V569 H350 C333 569 319 555 319 538 V475 C319 458 333 444 350 444 H615 C632 444 646 458 646 475 V808 C646 871 595 922 532 922 H297 C189 922 102 835 102 727 V481 C102 432 126 388 164 350Z" fill="#062B73"/>
+      <path d="M164 235 L278 314 L278 234 L392 314 L392 234 L506 314 L506 234 L615 311 L615 376 L164 376 Z" fill="#062B73"/>
+      <rect x="494" y="117" width="77" height="137" rx="10" fill="#168D9E"/>
+      <rect x="509" y="67" width="11" height="59" rx="5.5" fill="#062B73"/>
+      <path d="M520 67 H663 L633 101 L663 134 H520 Z" fill="#F4B21E"/>
+      <rect x="319" y="569" width="296" height="208" rx="24" fill="#FFFFFF"/>
+      <rect x="320" y="444" width="263" height="63" rx="18" fill="#062B73"/>
+      <rect x="320" y="622" width="175" height="31" rx="15.5" fill="#168D9E"/>
+      <rect x="320" y="710" width="175" height="31" rx="15.5" fill="#168D9E"/>
+      <rect x="320" y="798" width="175" height="31" rx="15.5" transform="translate(0,-88)" fill="#168D9E"/>
+      <circle cx="559" cy="680" r="79" fill="#F4B21E"/>
+      <path d="M522 682 L549 709 L598 649" stroke="#FFFFFF" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </defs>
+  <g transform="translate(20,16) scale(0.50)">
+    <use href="#gaffer-icon"/>
+  </g>
+  <text x="410" y="365" font-family="Inter, Arial, Helvetica, sans-serif" font-size="240" font-weight="700" letter-spacing="-6" fill="#062B73">Gaffer</text>
+</svg>

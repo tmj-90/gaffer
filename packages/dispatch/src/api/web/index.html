@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0a0c0f" />
+    <title>Gaffer — mission control</title>
+    <link rel="icon" type="image/svg+xml" href="/gaffer-favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;550;600;650;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- Dispatch shield mark — reused by app bar, login gate and nav via <use href="#wg-shield">. -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <symbol id="wg-shield" viewBox="0 0 256 280">
+        <defs>
+          <linearGradient
+            id="wgShieldGrad"
+            x1="36"
+            y1="18"
+            x2="220"
+            y2="272"
+            gradientUnits="userSpaceOnUse"
+          >
+            <stop offset="0" stop-color="#0B2A5B" />
+            <stop offset="1" stop-color="#15C7D7" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M128 18 C95 35 66 40 36 50 L36 127 C36 188 73 236 128 272 C183 236 220 188 220 127 L220 50 C190 40 161 35 128 18 Z"
+          fill="url(#wgShieldGrad)"
+        />
+        <path
+          d="M128 38 C100 52 77 57 56 64 L56 126 C56 176 85 214 128 241 C171 214 200 176 200 126 L200 64 C179 57 156 52 128 38 Z"
+          fill="#0B2A5B"
+        />
+        <path
+          d="M128 38 C100 52 77 57 56 64 L56 126 C56 176 85 214 128 241 C171 214 200 176 200 126 L200 64 C179 57 156 52 128 38 Z"
+          stroke="#FFFFFF"
+          stroke-opacity="0.08"
+          stroke-width="2"
+        />
+        <path
+          d="M74 96 H164 C168 96 171 99 171 103 V167 C171 171 168 174 164 174 H74 V148 C85 146 93 137 93 125 C93 113 85 104 74 102 Z"
+          fill="#FFFFFF"
+        />
+        <rect x="95" y="111" width="22" height="22" rx="4" fill="#15C7D7" />
+        <path
+          d="M100 122 L106 128 L113 116"
+          stroke="white"
+          stroke-width="4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <rect x="95" y="140" width="22" height="22" rx="4" fill="#15C7D7" />
+        <path
+          d="M100 151 L106 157 L113 145"
+          stroke="white"
+          stroke-width="4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <line
+          x1="130"
+          y1="121"
+          x2="157"
+          y2="121"
+          stroke="#0A3570"
+          stroke-width="6"
+          stroke-linecap="round"
+        />
+        <line
+          x1="130"
+          y1="151"
+          x2="157"
+          y2="151"
+          stroke="#0A3570"
+          stroke-width="6"
+          stroke-linecap="round"
+        />
+        <line
+          x1="187"
+          y1="105"
+          x2="187"
+          y2="170"
+          stroke="#15C7D7"
+          stroke-width="6"
+          stroke-linecap="round"
+        />
+        <circle cx="187" cy="105" r="12" fill="#15C7D7" />
+        <circle cx="187" cy="137" r="12" fill="#F4B234" />
+        <circle cx="187" cy="170" r="12" fill="#15C7D7" />
+        <circle cx="187" cy="105" r="5" fill="white" opacity="0.9" />
+        <circle cx="187" cy="137" r="5" fill="white" opacity="0.9" />
+        <circle cx="187" cy="170" r="5" fill="white" opacity="0.9" />
+      </symbol>
+    </svg>
+
+    <div id="toast" class="toast" role="alert" aria-live="assertive" hidden></div>
+
+    <div class="shell">
+      <!-- App bar + nav are populated by app.js so the login gate can suppress them. -->
+      <header id="appbar" class="appbar" hidden></header>
+
+      <main id="app" class="app" aria-live="polite">
+        <p class="loading">Loading…</p>
+      </main>
+
+      <footer class="footer">
+        <span>Read the timeline. Trust the evidence. — Dispatch control surface</span>
+      </footer>
+
+      <!-- Mobile bottom tab bar, populated by app.js. -->
+      <nav id="bottomnav" class="bottomnav" aria-label="Primary" hidden></nav>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd template — runs the factory loop on a schedule (macOS). DISABLED by
+  default: this file is not installed until you RENDER it (substitute the two
+  placeholders below), copy it to ~/Library/LaunchAgents, and `launchctl load`
+  it. Review factory.config.sh (especially DRY_RUN) first.
+
+  Placeholders:
+    __GAFFER_REPO__   absolute path to the Gaffer monorepo checkout root
+    __GAFFER_DATA__   absolute path to the factory state dir (default: <repo>/.gaffer)
+
+  Render + install (run from the repo root):
+    OUT=~/Library/LaunchAgents/com.gaffer.factory.plist
+    sed -e "s#__GAFFER_REPO__#$(pwd)#g" -e "s#__GAFFER_DATA__#$(pwd)/.gaffer#g" \
+      runner/launchd/com.gaffer.factory.plist.template > "$OUT"
+    launchctl load "$OUT"
+  Stop:
+    launchctl unload ~/Library/LaunchAgents/com.gaffer.factory.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.gaffer.factory</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__GAFFER_REPO__/runner/loop.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Keep DRY_RUN=1 until you've watched a few real ticks by hand. -->
+    <key>DRY_RUN</key>
+    <string>1</string>
+    <key>MAX_TICKS</key>
+    <string>5</string>
+    <!-- Per-day hard stop across runs (overnight cost guard). 0 disables. -->
+    <key>MAX_TICKS_PER_DAY</key>
+    <string>50</string>
+  </dict>
+
+  <!-- Run every 15 minutes. Each run drains ready work then stops (EMPTY_POLL_LIMIT). -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>__GAFFER_DATA__/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__GAFFER_DATA__/launchd.err.log</string>
+</dict>
+</plist>

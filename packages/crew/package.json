@@ -1,0 +1,71 @@
+{
+  "name": "crew",
+  "version": "0.1.0",
+  "description": "Local-first software factory runtime — orchestrates Dispatch (work) and Memory (memory) with safety guards, context packets and loops.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "ai-agents",
+    "software-factory",
+    "autonomous-agents",
+    "agent-runtime",
+    "developer-tools"
+  ],
+  "license": "Apache-2.0",
+  "author": "tmj-90",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tmj-90/gaffer",
+    "directory": "packages/crew"
+  },
+  "homepage": "https://github.com/tmj-90/gaffer/tree/main/packages/crew#readme",
+  "bugs": "https://github.com/tmj-90/gaffer/issues",
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "crew": "./dist/cli/index.js",
+    "crew-mcp": "./dist/mcp/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli/index.js dist/mcp/bin.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "cli": "tsx src/cli/index.ts",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "commander": "^12.1.0",
+    "dispatch": "workspace:*",
+    "yaml": "^2.5.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@vitest/coverage-v8": "^2.1.9",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# gaffer — friendly front door to the factory.
+#
+#   gaffer setup                      nothing → running: build + init + open the UI
+#   gaffer onboard <path> [--standalone]   scan + register a repo (standalone scope; map to a wider scope in the Factory Map UI)
+#   gaffer dashboard [--restart|--lan] start the web dashboard (--lan = token-protected, on your LAN)
+#   gaffer status                     what's registered + what's running
+#   gaffer demo                       run the Factory Map showcase (DRY_RUN)
+#   gaffer help
+#
+# Everything uses the factory's own config/state under $GAFFER_DATA — no flags to remember.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=factory.config.sh
+source "$HERE/factory.config.sh"
+
+c_grn='\033[1;32m'; c_cya='\033[1;36m'; c_yel='\033[1;33m'; c_dim='\033[2m'; c_off='\033[0m'
+c_red='\033[1;31m'
+say() { printf "${c_cya}gaffer${c_off} %s\n" "$*"; }
+ok()  { printf "  ${c_grn}✓${c_off} %s\n" "$*"; }
+warn(){ printf "  ${c_yel}!${c_off} %s\n" "$*"; }
+err() { printf "  ${c_red}✗${c_off} %s\n" "$*" >&2; }
+
+DASH_PORT="${DISPATCH_API_PORT:-8787}"
+# JSON-encode one string for embedding in a JSON array literal (escape \ and ").
+# Dispatch's parseCommand reads these defaults as a JSON string[] (verbatim argv),
+# so a $RUNNER_DIR containing spaces stays a SINGLE argv element instead of being
+# whitespace-split. No shell, no eval — pure string escaping of an operator value.
+json_str() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"; }
+# Build a ["bin","<runner>/bin/<script>"] JSON argv from RUNNER_DIR, space-safe.
+dispatch_cmd() { printf '[%s,%s]' "$(json_str "$1")" "$(json_str "$RUNNER_DIR/bin/$2")"; }
+
+# The dashboard's "Suggest work" button (POST /product-owner/runs) spawns this
+# command, detached, with DISPATCH_PRODUCT_OWNER_REPO in its env naming the repo to
+# suggest work for. It runs the product-owner skill headlessly and files draft
+# tickets. JSON argv so the absolute path survives spaces in the checkout dir.
+PRODUCT_OWNER_CMD="${DISPATCH_PRODUCT_OWNER_CMD:-$(dispatch_cmd node product-owner-run.mjs)}"
+# Merge command the dashboard invokes when a ticket is APPROVED: attempts the
+# conflict-safe merge; a conflict spawns the resolver agent + re-approval (never a
+# force-merge). JSON argv so the absolute path survives spaces in the checkout dir.
+MERGE_CMD="${DISPATCH_MERGE_CMD:-$(dispatch_cmd node merge-ticket.mjs)}"
+# The dashboard's "Poll for work" button (POST /poll-work) spawns this: clears the
+# skip files + runs a single live tick to deliver the next ready ticket on demand.
+TICK_CMD="${DISPATCH_TICK_CMD:-$(dispatch_cmd bash poll-once.sh)}"
+# The dashboard Memory view's "Onboard a repo" button (POST /repos/onboard) spawns
+# this, detached, with DISPATCH_ONBOARD_REPO in its env naming the repo (name/id or
+# path) to onboard. It runs crew's real `repo onboard` so the repo is scanned,
+# registered, and its Memory digest + feature inventory land in the memory store
+# the Memory views read. JSON argv so the absolute path survives spaces in the dir.
+ONBOARD_CMD="${DISPATCH_ONBOARD_CMD:-$(dispatch_cmd node onboard-run.mjs)}"
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+
+onboard)
+  path="${1:-}"; [ -n "$path" ] && shift || true
+  if [ -z "$path" ]; then echo "usage: gaffer onboard <path> [--standalone]   (standalone scope; map to a wider scope in the Factory Map UI)"; exit 1; fi
+  abs="$(cd "$path" 2>/dev/null && pwd -P)" || { echo "  no such directory: $path"; exit 1; }
+  git -C "$abs" rev-parse --git-dir >/dev/null 2>&1 || warn "not a git repo (the factory branches per ticket — you'll want one)"
+  # Route through onboard-run.mjs — the SAME path the dashboard's "Onboard a repo"
+  # button uses: scan + register + the claude -p analysis (real digest + features +
+  # cited lore drafts) into the memory store. Standalone single-repo scope by default;
+  # map it to a wider scope from the Factory Map afterwards.
+  say "onboarding $abs … (scan + register + claude -p analysis → memory)"
+  GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" \
+    MEMORY_DB="$MEMORY_DB" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" \
+    GAFFER_PLAN_MODEL="${GAFFER_PLAN_MODEL:-}" GAFFER_TICK_TIMEOUT="${GAFFER_TICK_TIMEOUT:-}" GAFFER_MAX_TURNS="${GAFFER_MAX_TURNS:-}" \
+    DISPATCH_ONBOARD_REPO="$abs" node "$RUNNER_DIR/bin/onboard-run.mjs" --repo "$abs" 2>&1 \
+    | grep -vE '^\{.*\}$' | sed 's/^/  /'
+  # Surface a real onboard failure loudly — ${PIPESTATUS[0]} is the node exit, not sed's.
+  orc=${PIPESTATUS[0]}
+  if [ "$orc" -ne 0 ]; then err "onboard failed (exit $orc) — see the output above; nothing was written to memory"; exit "$orc"; fi
+  gaffer_dashboard_pid >/dev/null 2>&1 && warn "dashboard is running — \`gaffer dashboard --restart\` to see the new repo"
+  printf "  ${c_dim}next: map it to a scope in the Factory Map tab, or create a ticket against it.${c_off}\n"
+  ;;
+
+dashboard)
+  want_lan=0; want_restart=0
+  for a in "$@"; do case "$a" in --lan) want_lan=1;; --restart) want_restart=1;; esac; done
+  # Precise running-detection: a recorded+validated PID (alive AND its command is
+  # the dispatch api bin), not a broad `pgrep -f` that can match another checkout.
+  pid="$(gaffer_dashboard_pid 2>/dev/null || true)"
+  # --restart or --lan both need a fresh bind (lan changes host + auth).
+  if [ -n "$pid" ] && { [ "$want_restart" = 1 ] || [ "$want_lan" = 1 ]; }; then
+    kill "$pid" 2>/dev/null && say "restarting dashboard"
+    rm -f "$(gaffer_dashboard_pidfile)" 2>/dev/null || true; pid=""
+  fi
+  if [ -n "$pid" ]; then ok "dashboard already up → http://127.0.0.1:$DASH_PORT (pid $pid)"; exit 0; fi
+
+  if [ "$want_lan" = 1 ]; then
+    # LAN bind, made safe by a bearer token (generated once, stored 0600).
+    TOKFILE="$GAFFER_DATA/dashboard-token"
+    [ -s "$TOKFILE" ] || { umask 077; (openssl rand -hex 16 2>/dev/null || head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n') > "$TOKFILE"; }
+    TOK="$(tr -d ' \n' < "$TOKFILE")"
+    # LAN IP for the "open this URL" hint. macOS: ipconfig getifaddr; Linux: hostname -I
+    # (first addr) or `ip route` src. Falls back to the bind address if none resolves.
+    LAN="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null \
+      || { hostname -I 2>/dev/null | awk '{print $1}'; } \
+      || { ip -4 route get 1 2>/dev/null | awk '{print $7; exit}'; } )"
+    [ -n "$LAN" ] || LAN="0.0.0.0"
+    nohup env -u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_API_TOKEN="$TOK" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host 0.0.0.0 >"$GAFFER_DATA/dashboard.log" 2>&1 &
+    gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
+    if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/healthz" >/dev/null 2>&1; then
+      ok "dashboard up on your LAN (token-protected)"
+      printf "    open:   ${c_cya}http://%s:%s${c_off}\n    token:  ${c_cya}%s${c_off}  (paste at the login prompt)\n" "$LAN" "$DASH_PORT" "$TOK"
+    else warn "dashboard failed to start — see $GAFFER_DATA/dashboard.log"; fi
+    exit 0
+  fi
+
+  nohup env -u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" >"$GAFFER_DATA/dashboard.log" 2>&1 &
+  gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
+  if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/api/dashboard" >/dev/null 2>&1; then
+    ok "dashboard up → http://127.0.0.1:$DASH_PORT"
+  else warn "dashboard failed to start — see $GAFFER_DATA/dashboard.log"; fi
+  ;;
+
+status)
+  # Single-pane roll-up: all three doctors + work counts + recent ticks, and a
+  # notification when a human is needed. Lives in status.sh to keep it testable.
+  bash "$HERE/status.sh" "$@"
+  ;;
+
+setup)
+  # nothing → running: build everything, init state (with the right config), open the UI.
+  bash "$HERE/setup.sh" "$@" || { echo "setup failed"; exit 1; }
+  "$HERE/gaffer" dashboard
+  printf "\n${c_grn}Ready.${c_off} Onboard a repo:  ${c_cya}gaffer onboard /path/to/your/repo${c_off}\n"
+  ;;
+
+demo) DRY_RUN="${DRY_RUN:-1}" bash "$HERE/demo.sh" ;;
+
+help|*)
+  sed -n '2,11p' "$HERE/gaffer" | sed 's/^# \{0,1\}//'
+  ;;
+esac

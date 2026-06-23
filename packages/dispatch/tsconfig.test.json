@@ -1,0 +1,23 @@
+{
+  // Type-checks the test suite alongside src (the build tsconfig excludes test).
+  // Used by `typecheck:test`; never emits.
+  //
+  // The test config intentionally matches the TEST RUNTIME, not the build:
+  //   - lib adds "DOM": vitest runs the web-view suite under jsdom, so tests
+  //     legitimately reference `document`, `location`, `HTMLFormElement`, etc.
+  //   - exactOptionalPropertyTypes is relaxed: the fetch test-helpers pass
+  //     `body: undefined` to RequestInit (a no-op at runtime) which this very
+  //     strict flag rejects. Keeping it on src but off for tests avoids
+  //     mechanical churn without weakening production guarantees.
+  // All other strict flags (noUncheckedIndexedAccess, strict, etc.) stay ON.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "lib": ["ES2022", "DOM"],
+    "exactOptionalPropertyTypes": false,
+    "types": ["node"]
+  },
+  "include": ["src", "test"],
+  "exclude": ["dist", "node_modules"]
+}

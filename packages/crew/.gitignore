@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.crew/
+.dispatch/
+coverage/
+.DS_Store
+*.log
+
+# secrets / local data — never commit
+.env
+.env.*
+audit.jsonl
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db

@@ -1,0 +1,34 @@
+# Security model
+
+Gaffer runs **shell-capable autonomous agents** on your machine, against your repos, with your API keys. That is powerful and inherently risky. This document is honest about both what protects you and where the limits are — read it before pointing Gaffer at anything you don't fully trust.
+
+## Threat model in one line
+
+You are trusting an LLM agent with a shell. The agent's *inputs* (ticket text, repo contents, ingested issues) may be attacker-influenced; the agent itself may be prompt-injected. Gaffer's job is to **contain what the agent can do** and **keep a human in the loop on anything that ships**.
+
+## What protects you (defense in depth)
+
+- **Deterministic PreToolUse safety hook** (`runner/safety-hook.mjs`): scopes all writes to the active worktree (`GAFFER_WRITE_ROOTS`), denies reads of secret files by *path* (not a reader-binary denylist), denies the control-plane CLI and raw DB access to the agent, blocks force-push / history-execution git config / scheduled-execution primitives, and resolves wrapped/assignment-prefixed commands so `env tee`, `VAR=1 mv`, `sh -c '…'` can't smuggle a verb past it. It **fails closed**: when it can't prove a target is in-scope, it blocks.
+- **Throwaway git worktrees**: each ticket runs in a disposable worktree; the real checkout is never touched. Teardown runs on the explicit success/error paths **and** from an `EXIT`/`INT`/`TERM` trap, so a crash or signal mid-delivery cannot orphan a worktree or a half-finished `gaffer/ticket-*` branch — the trap is guarded so a legitimately-delivered branch is preserved for review/merge.
+- **Server-side human review gate**: the merge gate is enforced in the control plane, not by convention. **By default** an `agent`-type actor cannot approve a review or grant itself repo access, and the "done" gate verifies the **real `git diff`** — not an agent-authored evidence string. An agent-supplied `pr_url` is treated as an evidence/navigation link **only**; it never substitutes for the server-recomputed `git diff`, so a bogus URL cannot satisfy the gate. The opt-in autonomy flags (`DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `MEMORY_AUTO_APPROVE`) deliberately relax this — they are **off by default**, and enabling one removes the corresponding human gate. Treat them as a conscious trust decision, not a convenience toggle.
+- **Prompt-injection handling**: the untrusted free-text ticket fields the agent reads through `get_ticket` — **title, description, acceptance-criterion text, and review feedback** — are wrapped server-side in `<untrusted-*>` quarantine envelopes carrying a standing "this is data, not instructions" notice; the runner prompts and skills carry the same framing, and event/comment payloads are redacted out of the agent's context entirely rather than enveloped. The live agent's environment is built from an **allowlist** (`env -i` + only what `claude` and its MCP tools need): every ambient credential is stripped — `GITHUB_TOKEN`, `AWS_*` access keys / secret / session token, `DISPATCH_API_TOKEN`, and any `*_TOKEN` / `*_SECRET` / `*_KEY` / `*_PASSWORD` (except `ANTHROPIC_API_KEY`, which `claude` needs for auth). This applies to **both** the shell `claude -p` launches (delivery, bootstrap, agent-review, clarify) and the `.mjs` runners (decompose, product-owner, onboard).
+- **Resource caps**: per-tick wall-clock timeouts, agent turn caps, and dependency installs forced to `--ignore-scripts` (no `postinstall` code execution).
+- **Optional OS sandbox** (`runner/lib/sandbox.sh`): a kernel-level write boundary via a provider seam.
+
+## Honest residual limits (the ceiling)
+
+- **The safety hook is a regex/string analyzer on bash.** It is hardened and fails closed, but a string bouncer fundamentally cannot win against a determined agent that constructs paths dynamically, decodes arguments at runtime, or writes via a child process's syscalls. The deterministic boundary shrinks the residual to dynamic *reads* and fully-dynamic non-secret *paths* — it does not eliminate it.
+- **The only working OS sandbox provider today is `sandbox-exec`** — macOS-only, Apple-deprecated, and write-only (no per-subprocess network isolation). Container/VM providers exist as a seam but are stubs. **On any non-macOS host, the deterministic boundary is the regex hook alone.**
+- **No network egress isolation** when the agent process is wrapped as a whole. An agent that can run code can reach the network.
+- **The opt-in autonomy flags remove protections by design.** `DISPATCH_ALLOW_AGENT_APPROVE` / `MERGE_ON_AGENT_REVIEW` let the agent ship without a human; `MEMORY_AUTO_APPROVE` lets agent-authored memory go live immediately, which re-opens cross-ticket memory poisoning. Only enable these with **trusted input**.
+
+## Running it safely
+
+- Keep the human review gate **on** for anything that matters.
+- Do **not** point Gaffer at untrusted issues/repos (or enable the autonomy flags) without a real sandbox provider and a machine whose blast radius you accept.
+- Treat the host like one running an autonomous process with shell access: isolated user, no ambient cloud credentials, scoped repo access. The agent's environment is allowlist-scrubbed before each launch, but that is defence in depth — keeping host credentials out of the runner's own environment remains the right posture.
+- Prefer running against repos you own, on a machine you control. That is the supported, local-first posture.
+
+## Reporting
+
+This is run-at-your-own-risk software (see [`LICENSE`](LICENSE) — Apache-2.0, no warranty). If you find a vulnerability, please open a security advisory / private issue on the project rather than a public issue, with a reproduction and the host/OS context.

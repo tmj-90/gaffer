@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Defence in depth — this workflow never needs to write to the repo, push
+# tags, create releases, or publish to npm. Explicitly drop the default
+# token to read-only so even an accidentally-added publish step would fail.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: typecheck • test • build (Node ${{ matrix.node }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Verify native binding
+        # `pnpm.onlyBuiltDependencies` in package.json tells pnpm v10+
+        # it's safe to run better-sqlite3's install script during the
+        # frozen install above. Belt-and-braces: assert the binary
+        # actually landed before tests try to load it.
+        run: |
+          set -e
+          node -e "require('better-sqlite3')(':memory:').close()"
+          echo "better-sqlite3 native binding: OK"
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      - run: pnpm build
+
+      - name: npm pack (dry run, smoke)
+        run: npm pack --dry-run

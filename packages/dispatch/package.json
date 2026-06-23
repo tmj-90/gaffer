@@ -1,0 +1,75 @@
+{
+  "name": "dispatch",
+  "version": "0.1.0",
+  "description": "Agent-ready backlog control plane — tickets, claims, evidence, events.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "ai-agents",
+    "software-factory",
+    "autonomous-agents",
+    "backlog",
+    "ticket-management",
+    "developer-tools"
+  ],
+  "license": "Apache-2.0",
+  "author": "tmj-90",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tmj-90/gaffer",
+    "directory": "packages/dispatch"
+  },
+  "homepage": "https://github.com/tmj-90/gaffer/tree/main/packages/dispatch#readme",
+  "bugs": "https://github.com/tmj-90/gaffer/issues",
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "dispatch": "./dist/cli/index.js",
+    "dispatch-mcp": "./dist/mcp/bin.js",
+    "dispatch-api": "./dist/api/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run copy:web && chmod +x dist/cli/index.js dist/mcp/bin.js dist/api/bin.js",
+    "copy:web": "node -e \"const{cpSync,mkdirSync}=require('fs');mkdirSync('dist/api/web',{recursive:true});cpSync('src/api/web','dist/api/web',{recursive:true})\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "cli": "tsx src/cli/index.ts",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "better-sqlite3": "^11.3.0",
+    "commander": "^12.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.5.0",
+    "@vitest/coverage-v8": "^2.1.9",
+    "jsdom": "^29.1.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

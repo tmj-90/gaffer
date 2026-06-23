@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Build artefacts from `npm pack` — never commit; rebuild on demand.
+*.tgz
+
+# Local lore database — never commit anyone's actual notes.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Tooling
+.vscode/
+.idea/
+coverage/
+.nyc_output/
+
+# Product-owner working artefacts — local only, never commit.
+.product-owner/

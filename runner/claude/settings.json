@@ -1,0 +1,24 @@
+{
+  "_comment": "Claude Code settings for the gaffer factory delivery agent. SECURITY: the PreToolUse hook (safety-hook.mjs) is the real boundary — it deterministically blocks force-push, protected-branch pushes, dependency installs, secret-file reads/writes, and out-of-repo writes BEFORE they run. The permissions.allow list below is intentionally broad so the headless agent isn't stuck on prompts; the hook (not the allow-list) is what keeps it safe. Review/tighten allow for your environment before an unattended run. NOTE: permission/tool-pattern syntax can vary by Claude Code version — verify with `claude --help` and a single supervised run first.",
+  "enableAllProjectMcpServers": true,
+  "permissions": {
+    "allow": ["Edit", "Write", "Read", "Bash", "Glob", "Grep", "mcp__dispatch", "mcp__memory"],
+    "deny": ["Read(./.env)", "Read(./.env.*)", "WebFetch", "WebSearch"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "node ${RUNNER_DIR}/safety-hook.mjs" }]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [{ "type": "command", "command": "node ${RUNNER_DIR}/safety-hook.mjs" }]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [{ "type": "command", "command": "node ${RUNNER_DIR}/safety-hook.mjs" }]
+      }
+    ]
+  }
+}

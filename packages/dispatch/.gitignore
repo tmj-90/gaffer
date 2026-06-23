@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.sqlite
+*.sqlite-journal
+*.db
+.dispatch/
+coverage/
+.DS_Store
+*.log
+
+# secrets / local data — never commit
+.env
+.env.*
+audit.jsonl
+*.sqlite-wal
+*.sqlite-shm
+
+# stray SQLite file if a literal ":memory:" path ever reaches the driver
+:memory:

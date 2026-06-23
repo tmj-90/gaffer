@@ -1,0 +1,30 @@
+# Dependencies (pnpm workspace — hoisted root + per-package)
+node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Factory state + local databases (never in-tree)
+.gaffer/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+mcp-runtime.json
+
+# Secrets / local env
+.env
+.env.*
+
+# OS / editor noise
+.DS_Store
+*.log
+
+# Generated per-worktree Claude config / runtime state (never committed)
+.claude/
+CLAUDE.factory.md
+.mcp.runtime.json
+mcp-runtime.json
+.crew/

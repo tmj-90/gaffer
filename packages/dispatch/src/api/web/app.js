@@ -346,16 +346,18 @@ function pipelineDots(status) {
 // --- View scaffolding -------------------------------------------------------
 
 function viewHead(title, countText, actions) {
+  // Instrument header: a mono kicker line over a confident display title, all
+  // riding on a hairline baseline — like the label plate on a console section.
   return el("div", { class: "view-head" }, [
-    el("div", {}, [
-      el("h1", {}, [title, countText ? el("span", { class: "count" }, countText) : null]),
+    el("div", { class: "view-head-main" }, [
+      el("div", { class: "view-kicker" }, [
+        el("span", { class: "view-kicker-tick" }),
+        el("span", {}, countText ? String(countText).toUpperCase() : "GAFFER FACTORY"),
+      ]),
+      el("h1", {}, title),
     ]),
     actions ? el("div", { class: "view-head-actions" }, [].concat(actions)) : null,
   ]);
-}
-
-function sectionTitle(text, trailing) {
-  return el("div", { class: "section-title" }, [text, trailing || null]);
 }
 
 function emptyState(title, sub, iconName = "check") {
@@ -500,22 +502,63 @@ function navigate(hash) {
   location.hash = hash;
 }
 
+// Navigation order — used to decide which way the "camera" steps so a forward
+// move (Overview → Settings) and a back move read differently. This is what
+// makes navigating feel like walking through a plan rather than a page reload.
+const NAV_ORDER = ["overview", "work", "review", "epics", "factory", "memory", "settings"];
+let lastAreaIndex = 0;
+
 let activeArea = "overview";
 async function router() {
   const { view, param } = parseHash();
   // Unknown views fall through to Overview; aliases are resolved in parseHash.
   const render = VIEWS[view] || renderOverview;
   activeArea = AREA_FOR_VIEW[view] || (VIEWS[view] ? view : "overview");
+
+  // Decide the step direction (forward = deeper into the plan, back = out).
+  const idx = NAV_ORDER.indexOf(activeArea);
+  const dir = idx === -1 || idx === lastAreaIndex ? "none" : idx > lastAreaIndex ? "fwd" : "back";
+  if (idx !== -1) lastAreaIndex = idx;
+  document.documentElement.dataset.step = dir;
+
   app.dataset.area = activeArea; // lets CSS give width-hungry views (work/map/epics) the full screen
   syncNav();
   app.classList.remove("login-shell");
-  clear(app);
-  app.appendChild(skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"));
-  await guard(async () => {
-    const content = await render(param);
+
+  // The actual DOM swap: skeleton in, awaited content in. Wrapped in a View
+  // Transition so the browser tweens the old frame to the new one — the nav
+  // marker glides between rail items and the content does a depth "camera step".
+  const swap = async () => {
     clear(app);
-    app.appendChild(content);
-    app.scrollTop = 0;
+    app.appendChild(
+      skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"),
+    );
+    await guard(async () => {
+      const content = await render(param);
+      clear(app);
+      app.appendChild(content);
+      app.scrollTop = 0;
+      stagger(content);
+    });
+  };
+
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (document.startViewTransition && !reduce) {
+    // Snapshot synchronously, then run the marker-glide; the awaited content
+    // resolves inside the transition's update callback.
+    document.startViewTransition(swap);
+  } else {
+    await swap();
+  }
+}
+
+/** Stagger the entrance of a freshly-mounted view's top-level blocks so the
+ *  screen assembles itself, top-down, like instruments coming online. */
+function stagger(root) {
+  const blocks = root.querySelectorAll(":scope > *");
+  blocks.forEach((b, i) => {
+    b.style.setProperty("--stagger", `${Math.min(i, 9) * 52}ms`);
+    b.classList.add("rise-in");
   });
 }
 
@@ -526,7 +569,18 @@ function buildChrome() {
   clear(appbar);
   const brand = el("a", { class: "brand", href: "#/overview", "aria-label": "Gaffer — Overview" }, [
     el("img", { class: "brand-icon", src: "/gaffer-icon.svg", alt: "" }),
-    el("span", { class: "brand-name" }, "Gaffer"),
+    el("span", { class: "brand-text" }, [
+      el("span", { class: "brand-name" }, "Gaffer"),
+      el("span", { class: "brand-sub" }, "CONTROL ROOM"),
+    ]),
+  ]);
+
+  // LIVE lamp — a breathing amber status light. The single most "alive" pixel
+  // in the room; it tells you the factory is on watch.
+  const live = el("div", { class: "rail-status", title: "Factory online" }, [
+    el("span", { class: "live-lamp" }),
+    el("span", { class: "rail-status-text" }, "LIVE"),
+    el("span", { class: "rail-status-meta mono" }, "on watch"),
   ]);
   const rail = el(
     "nav",
@@ -570,7 +624,7 @@ function buildChrome() {
     [icon("plus"), el("span", { class: "cmdk-label" }, "New")],
   );
 
-  appbar.append(brand, rail, el("div", { class: "appbar-spacer" }), cmdk, newBtn);
+  appbar.append(brand, live, rail, el("div", { class: "appbar-spacer" }), cmdk, newBtn);
   // Logout affordance — only when authenticating with a token.
   if (authToken()) {
     appbar.appendChild(
@@ -858,61 +912,58 @@ async function renderOverview() {
   const wrap = el("div", { class: "view" });
   wrap.appendChild(viewHead("Overview", "live control room"));
 
-  // --- Mission-control stat band (leads the view) ---------------------------
-  // The lead band gives the operator the state of the factory at a glance,
-  // before any list. Done leads (featured, wider span); the rest are equal.
-  wrap.appendChild(
-    sectionTitle("Throughput", el("span", { class: "count-pill tabnum" }, `${totalTickets} total`)),
-  );
-  wrap.appendChild(
-    el("div", { class: "bento" }, [
-      statCard("Done", byStatus.done || 0, {
-        tone: "ok",
-        sub: "shipped",
-        href: "#/work?status=done",
-        featured: true,
-        span: 2,
-        trend: summary.deliveredToday
-          ? { dir: "up", text: `+${summary.deliveredToday} today` }
-          : null,
-      }),
-      statCard("Ready", byStatus.ready || 0, {
-        tone: "accent",
-        sub: "claimable now",
-        href: "#/work?status=ready",
-      }),
-      statCard("Active claims", summary.activeClaims || 0, {
-        tone: "accent",
-        sub: "agents working",
-        href: "#/work",
-      }),
-    ]),
-  );
-  wrap.appendChild(
-    el("div", { class: "bento" }, [
-      statCard("In review", inReview, {
-        tone: inReview ? "warn" : "",
-        sub: "awaiting sign-off",
-        href: "#/review",
-      }),
-      statCard("Blocked", blocked, {
-        tone: blocked ? "danger" : "",
-        sub: "need attention",
-        href: "#/work?status=blocked",
-      }),
-      statCard("Open decisions", openDecisions, {
-        tone: openDecisions ? "warn" : "",
-        sub: "awaiting a human",
-        href: "#/overview",
-        scrollTo: "decisions",
-      }),
-      statCard("Stale claims", staleClaims, {
-        tone: staleClaims ? "danger" : "",
-        sub: "leases past expiry",
-        href: "#/work",
-      }),
-    ]),
-  );
+  // --- Throughput: one instrument cluster (a cockpit gauge row) -------------
+  // Not eight floating cards — a single machined panel whose cells share a
+  // bezel and are split by hairlines, each a live readout with a fill gauge.
+  const inProgress = byStatus.in_progress || byStatus.claimed || summary.activeClaims || 0;
+  const gauges = [
+    {
+      label: "Done",
+      value: byStatus.done || 0,
+      tone: "ok",
+      sub: "shipped",
+      href: "#/work?status=done",
+      lead: true,
+      delta: summary.deliveredToday ? `+${summary.deliveredToday}` : null,
+    },
+    {
+      label: "Ready",
+      value: byStatus.ready || 0,
+      tone: "accent",
+      sub: "claimable",
+      href: "#/work?status=ready",
+    },
+    {
+      label: "In progress",
+      value: inProgress,
+      tone: inProgress ? "accent" : "",
+      sub: "building",
+      href: "#/work",
+    },
+    {
+      label: "In review",
+      value: inReview,
+      tone: inReview ? "warn" : "",
+      sub: "sign-off",
+      href: "#/review",
+    },
+    {
+      label: "Blocked",
+      value: blocked,
+      tone: blocked ? "danger" : "",
+      sub: "stuck",
+      href: "#/work?status=blocked",
+    },
+    {
+      label: "Decisions",
+      value: openDecisions,
+      tone: openDecisions ? "warn" : "",
+      sub: "awaiting you",
+      href: "#/overview",
+      scrollTo: "decisions",
+    },
+  ];
+  wrap.appendChild(gaugeCluster("Throughput", `${totalTickets} in flight`, gauges, totalTickets));
 
   // --- "Needs you now" focal block ------------------------------------------
   const needs = [];
@@ -1126,45 +1177,49 @@ async function renderOverview() {
   return wrap;
 }
 
-/** A clickable bento stat card with a big tabular numeral. */
-function statCard(
-  label,
-  value,
-  { tone = "", sub, href, featured = false, span, trend, scrollTo } = {},
-) {
-  const subNode =
-    sub || trend
-      ? el("div", { class: "stat-sub" }, [
-          sub || null,
-          trend ? el("span", { class: `stat-trend ${trend.dir || "flat"}` }, trend.text) : null,
-        ])
-      : null;
-  const children = [
-    el("div", { class: "stat-label" }, label),
-    el("div", { class: "stat-value tabnum" }, String(value)),
-    subNode,
-  ];
-  let cls = "stat-card";
-  if (tone) cls += ` tone-${tone}`;
-  if (featured) cls += " featured";
-  if (span === 2) cls += " span-2";
-  const attrs = { class: cls };
-  if (scrollTo) {
-    attrs.href = href || "#/overview";
-    attrs.onclick = (e) => {
-      const t = document.getElementById(scrollTo);
-      if (t) {
-        e.preventDefault();
-        t.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-    };
-    return el("a", attrs, children);
-  }
-  if (href) {
-    attrs.href = href;
-    return el("a", attrs, children);
-  }
-  return el("div", attrs, children);
+/**
+ * The throughput instrument cluster — one panel, N readout cells split by
+ * hairlines. Each cell shows a label, a phosphor value (+ optional delta), a
+ * fill gauge (the cell's share of total work), and a sub-label. The whole thing
+ * reads as a single cockpit gauge, not a row of cards.
+ */
+function gaugeCluster(title, totalText, gauges, total) {
+  const cells = gauges.map((g) => {
+    const pct = total > 0 ? Math.max(g.value > 0 ? 6 : 0, Math.round((g.value / total) * 100)) : 0;
+    const children = [
+      el("span", { class: "gauge-top" }, [
+        el("span", { class: "gauge-label" }, g.label),
+        g.delta ? el("span", { class: "gauge-delta" }, g.delta) : null,
+      ]),
+      el("span", { class: "gauge-value tabnum" }, String(g.value)),
+      el("span", { class: "gauge-track" }, el("i", { style: `width:${pct}%` })),
+      el("span", { class: "gauge-sub" }, g.sub),
+    ];
+    let cls = "gauge";
+    if (g.tone) cls += ` tone-${g.tone}`;
+    if (g.lead) cls += " is-lead";
+    const attrs = { class: cls };
+    if (g.scrollTo) {
+      attrs.href = g.href || "#/overview";
+      attrs.onclick = (e) => {
+        const t = document.getElementById(g.scrollTo);
+        if (t) {
+          e.preventDefault();
+          t.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      };
+    } else if (g.href) {
+      attrs.href = g.href;
+    }
+    return el(g.href || g.scrollTo ? "a" : "div", attrs, children);
+  });
+  return el("section", { class: "cluster" }, [
+    el("div", { class: "cluster-head" }, [
+      el("span", { class: "cluster-title" }, title),
+      el("span", { class: "cluster-total tabnum" }, totalText),
+    ]),
+    el("div", { class: "cluster-body" }, cells),
+  ]);
 }
 
 /** Per-repo pressure: amber=active, cyan=ready, blue=review, red=blocked. */

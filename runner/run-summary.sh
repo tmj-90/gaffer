@@ -113,6 +113,7 @@ line "failed-safe:" "$(count_status blocked) blocked"
 line "parked:"      "$(count_status refining) refining"
 line "re-queued:"   "$(count_status ready) ready"
 line "in-review:"   "$(count_status in_review) awaiting review"
+line "in-testing:"  "$(count_status in_testing) awaiting independent tests"
 
 printf "\n  ${c_dim}parked (refining) + reasons${c_off}\n"
 _pr="$(parked_reasons)"; [ -n "$_pr" ] && printf '%s\n' "$_pr" || printf "    ${c_dim}(none)${c_off}\n"

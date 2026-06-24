@@ -47,6 +47,14 @@ export {
   type SubmitForReviewInput,
 } from "./services/claimService.js";
 export { AgentRepository } from "./repositories/agentRepository.js";
+export {
+  RunRepository,
+  defaultPidLiveness,
+  type PidLivenessProbe,
+  type RunStartInput,
+  type RunEndInput,
+  type RunListOptions,
+} from "./repositories/runRepository.js";
 export { ClaimRepository, type ActiveClaimView } from "./repositories/claimRepository.js";
 export { TicketRepository, type TicketListFilter } from "./repositories/ticketRepository.js";
 export { DispatchError } from "./util/errors.js";

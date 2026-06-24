@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -396,4 +396,36 @@ CREATE TABLE IF NOT EXISTS ticket_dependencies (
 );
 CREATE INDEX IF NOT EXISTS idx_ticket_dependencies_depends_on
   ON ticket_dependencies(depends_on_ticket_id);
+
+-- ============================================================================
+-- Run-activity registry (RUN-ACTIVITY). Additive, schema_version 10.
+--
+-- A control plane for the detached children the API spawns (the "Suggest work"
+-- / onboard / poll-work / merge buttons). Before this, those runs were spawned
+-- with stdio ignore and never tracked, so a run that filed nothing left no
+-- trace. One row per spawned run: recorded running on spawn, flipped to
+-- succeeded/failed when the child exits, or swept to unknown on API startup
+-- if its pid is no longer alive (the API restarted mid-run). log_path points
+-- at the per-run capture file (GAFFER_DATA/runs/<id>.log) so a 0-ticket or
+-- errored run is diagnosable. Standalone (no FKs to tickets/repos — a run may
+-- target a repo by name that isn't registered, and must outlive ticket churn),
+-- so it is created idempotently by CREATE TABLE IF NOT EXISTS with no ALTER.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS runs (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK (kind IN (
+    'product_owner','onboard','poll_work','merge','other'
+  )),
+  repo       TEXT,
+  pid        INTEGER,
+  status     TEXT NOT NULL CHECK (status IN ('running','succeeded','failed','unknown')),
+  started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ended_at   TEXT,
+  exit_code  INTEGER,
+  log_path   TEXT,
+  detail     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_runs_status_started ON runs(status, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC);
 `;

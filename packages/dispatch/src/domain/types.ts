@@ -688,3 +688,46 @@ export interface TicketDependencyView {
   status: TicketStatus;
   satisfied: boolean;
 }
+
+// ============================================================================
+// RUN-ACTIVITY (schema_version 10): a control-plane registry of API-spawned
+// detached runs (the "Suggest work" / onboard / poll-work / merge buttons).
+// Each row tracks one detached child so the dashboard can show what's in flight
+// and surface the per-run log a run that filed nothing would otherwise discard.
+// ============================================================================
+
+/** The kind of background run a {@link Run} row tracks. */
+export const RUN_KINDS = ["product_owner", "onboard", "poll_work", "merge", "other"] as const;
+export type RunKind = (typeof RUN_KINDS)[number];
+
+/**
+ * The lifecycle status of a {@link Run}:
+ *  - `running`   — the child is live (recorded on spawn);
+ *  - `succeeded` — the child exited 0;
+ *  - `failed`    — the child exited non-zero (or its exit code was unknown);
+ *  - `unknown`   — the run was `running` but its pid is no longer alive when the
+ *    API swept stale rows on startup (the API restarted mid-run, so the exit
+ *    listener never fired and we can't know the outcome).
+ */
+export const RUN_STATUSES = ["running", "succeeded", "failed", "unknown"] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+/** A tracked background run (control-plane registry row). */
+export interface Run {
+  id: string;
+  kind: RunKind;
+  /** The repo the run targets, when known (null for poll-work / merge). */
+  repo: string | null;
+  /** OS process id of the spawned child, or null if the platform withheld one. */
+  pid: number | null;
+  status: RunStatus;
+  started_at: string;
+  /** When the child exited (or was swept stale). Null while still running. */
+  ended_at: string | null;
+  /** The child's exit code once it ended, when known. */
+  exit_code: number | null;
+  /** Absolute path to the per-run log file (captured stdout+stderr). */
+  log_path: string | null;
+  /** Optional free-text detail (e.g. a spawn-failure reason). */
+  detail: string | null;
+}

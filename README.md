@@ -7,6 +7,11 @@
 
 It isn't a chat assistant that writes code. It's a *factory*: a control plane, a runtime, durable memory, and an orchestrator that works tickets through **plan → implement → test → review** and delivers each as a git branch or PR with evidence — then loops on rejection until it's right. Vague or blocked tickets park for a human rather than being forced through.
 
+<p align="center">
+  <img src="docs/img/overview.png" alt="The Gaffer control room — live Overview" width="900">
+  <br><sub><em>The control room: throughput, what needs you now, and per-repo pressure at a glance. (Demo data.)</em></sub>
+</p>
+
 ---
 
 ## Why Gaffer
@@ -19,8 +24,8 @@ Most coding agents are stateless renters: every run starts cold, the "memory" is
 
 ## Architecture
 
-![Gaffer control room](docs/img/overview.png)
-*The Gaffer control room — dispatch queue, live tick log, and review gate.*
+![The Gaffer work board](docs/img/board.png)
+*The work board — tickets across draft → ready → in-progress → review, each with a risk badge and acceptance-criteria progress. (Demo data.)*
 
 Four components, one workspace:
 
@@ -46,6 +51,9 @@ Four components, one workspace:
 Gaffer doesn't re-learn a repo from cold on every run. Memory keeps a living **Repo Digest** (a TLDR of overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, seeded at onboarding and refreshed deterministically as tickets merge — alongside the gated **lore** knowledge base (conventions, decisions, gotchas, cross-repo boundaries). Onboarding runs a skill-driven `claude -p` pass that produces a real digest, a feature inventory, and cited lore drafts grounded in the actual code.
 
 The digest is **a map, not the territory** — a fast orientation that the factory verifies against the real code for high-stakes work, never a substitute for it.
+
+![Gaffer repo memory](docs/img/memory.png)
+*Repo memory for an onboarded project — the generated digest, the feature ledger (shipped / building / backlog), and gated lore. (Demo data.)*
 
 ## Install
 

@@ -32,6 +32,14 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
+
+// node:sqlite (DatabaseSync) is a built-in only from Node 22.5+; skip cleanly on older Node.
+try {
+  require("node:sqlite");
+} catch {
+  console.log("  SKIP: node:sqlite unavailable (needs Node >= 22.5)");
+  process.exit(0);
+}
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
 const HELPER = resolve(RUNNER_DIR, "bin", "merge-ticket.mjs");

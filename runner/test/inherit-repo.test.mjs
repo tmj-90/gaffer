@@ -28,6 +28,18 @@ const { readGraph, resolveInheritance, transitiveBootstraps, buildClaudeArgv } =
   HELPER
 );
 
+// `node:sqlite` (DatabaseSync) is a built-in only from Node 22.5+. This test builds a
+// throwaway dispatch DB with it; on older Node (e.g. the Node 20 CI leg) skip cleanly
+// rather than crash with ERR_UNKNOWN_BUILTIN_MODULE.
+try {
+  require("node:sqlite");
+} catch {
+  console.log(
+    "  SKIP: node:sqlite unavailable (needs Node >= 22.5) — inherit-repo planner test skipped on this Node",
+  );
+  process.exit(0);
+}
+
 let passed = 0;
 const failures = [];
 function ok(label) {

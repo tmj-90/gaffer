@@ -46,7 +46,7 @@ const EVIDENCE = [
   },
 ];
 
-function stubFetch(): void {
+function stubFetch(evidence: unknown[] = EVIDENCE): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
@@ -72,7 +72,7 @@ function stubFetch(): void {
           scopes: [],
           blocking_decisions: [],
           dependencies: [],
-          evidence: EVIDENCE,
+          evidence,
           events: [],
         };
       else body = { tickets: [TICKET] };
@@ -139,5 +139,29 @@ describe("BBT-001 web: the Independent testing card", () => {
       | undefined;
     expect(toggle).toBeDefined();
     expect(toggle!.checked).toBe(true);
+  });
+
+  it("excludes ordinary implementation test_output from Tester results", async () => {
+    // A plain implementation/AC test_output row (NO tester verdict payload) must not
+    // be mislabelled as a tester result; only the BBT verdict row shows.
+    stubFetch([
+      {
+        id: "ev-impl",
+        evidence_type: "test_output",
+        summary: "unit suite green during implementation",
+        payload_json: null,
+        created_by: "agent-runner",
+        created_at: "2026-01-02T00:00:00Z",
+      },
+      ...EVIDENCE,
+    ]);
+    await bootDetail();
+
+    const text = document.body.textContent ?? "";
+    // The real tester verdict still renders…
+    expect(text).toContain("12 black-box tests pass against the contract");
+    expect(text).toContain("by agent");
+    // …but the ordinary implementation evidence does NOT appear under the testing card.
+    expect(text).not.toContain("unit suite green during implementation");
   });
 });

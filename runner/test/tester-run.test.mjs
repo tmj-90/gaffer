@@ -18,6 +18,7 @@
 //   AC6  --verdict pass invokes the stub verdict cmd with (ticket, pass, summary)
 //   AC7  --verdict fail invokes the stub verdict cmd with (ticket, fail, summary)
 //   AC8  a missing --ticket is REFUSED (exit 1, error JSON)
+//   AC9  a JSON-argv verdict command survives a path containing spaces
 //
 // Zero deps (node:sqlite ships with Node 22+). Run: node test/tester-run.test.mjs
 // =====================================================================
@@ -243,6 +244,30 @@ console.log("== AC8: a missing --ticket is REFUSED ==");
   if (code !== 0 && out && out.phase === "error" && /ticket/i.test(out.error)) {
     ok("missing --ticket → exit 1 + error JSON");
   } else fail(`missing-ticket refusal wrong (code=${code}, out=${JSON.stringify(out)})`);
+}
+
+console.log("== AC9: a JSON-argv verdict command survives a path with spaces ==");
+{
+  // A stub whose path CONTAINS A SPACE — a whitespace-split override would break it;
+  // a JSON argv array keeps it one token.
+  const SPACED = resolve(WORKDIR, "stub verdict.mjs");
+  writeFileSync(
+    SPACED,
+    "#!/usr/bin/env node\n" +
+      "import { appendFileSync } from 'node:fs';\n" +
+      `appendFileSync(${JSON.stringify(STUB_LOG)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n` +
+      "process.exit(0);\n",
+  );
+  chmodSync(SPACED, 0o755);
+  if (existsSync(STUB_LOG)) rmSync(STUB_LOG);
+  const { code, out } = runCli(["--ticket", "1", "--verdict", "pass", "--summary", "ok"], {
+    DISPATCH_TESTER_VERDICT_CMD: JSON.stringify([process.execPath, SPACED]),
+  });
+  const logged = existsSync(STUB_LOG) ? readFileSync(STUB_LOG, "utf8").trim() : "";
+  if (code === 0 && out && out.phase === "verdict" && logged.includes('"pass"')) {
+    ok("JSON-argv verdict cmd with a spaced path invoked correctly");
+  } else
+    fail(`spaced-path verdict wrong (code=${code}, out=${JSON.stringify(out)}, log=${logged})`);
 }
 
 rmSync(WORKDIR, { recursive: true, force: true });

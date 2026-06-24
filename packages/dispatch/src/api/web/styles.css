@@ -673,18 +673,41 @@ code,
    default cross-fade with a directional depth move, and let the nav marker
    (view-transition-name: navmarker) glide between rail items on its own track.
    =========================================================================== */
+/* The rail is the room — it must NOT travel during a route change. Giving it
+   its own transition group with no animation pins it in place; only the content
+   area (root) performs the camera step, so the view flies past a fixed console. */
+@media (min-width: 980px) {
+  .appbar {
+    view-transition-name: rail;
+  }
+}
+::view-transition-group(rail) {
+  animation: none;
+}
+::view-transition-image-pair(rail) {
+  animation: none;
+}
+::view-transition-old(rail),
+::view-transition-new(rail) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
 ::view-transition-group(navmarker) {
   animation-duration: var(--step-dur);
   animation-timing-function: var(--ease-spring);
 }
 
-/* The content swap: old frame recedes (back into the plan), new frame steps
-   forward to meet you. Direction flips on back-navigation. */
+/* The content swap: the old frame banks away and recedes; the new frame sweeps
+   in from the far side and settles. Bold enough to feel like travel. Direction
+   flips on back-navigation. */
 ::view-transition-old(root) {
   animation: cam-out-fwd var(--step-dur) var(--ease-io) both;
+  transform-origin: 60% 50%;
 }
 ::view-transition-new(root) {
   animation: cam-in-fwd var(--step-dur) var(--ease-io) both;
+  transform-origin: 40% 50%;
 }
 :root[data-step="back"]::view-transition-old(root) {
   animation: cam-out-back var(--step-dur) var(--ease-io) both;
@@ -696,29 +719,43 @@ code,
 @keyframes cam-out-fwd {
   to {
     opacity: 0;
-    transform: translateX(-2%) scale(0.985);
-    filter: blur(3px);
+    transform: translateX(-7%) scale(0.94);
+    filter: blur(6px);
   }
 }
 @keyframes cam-in-fwd {
-  from {
+  0% {
     opacity: 0;
-    transform: translateX(3%) scale(1.012);
-    filter: blur(4px);
+    transform: translateX(9%) scale(1.04);
+    filter: blur(10px);
+  }
+  60% {
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    transform: none;
   }
 }
 @keyframes cam-out-back {
   to {
     opacity: 0;
-    transform: translateX(2%) scale(1.012);
-    filter: blur(3px);
+    transform: translateX(7%) scale(0.94);
+    filter: blur(6px);
   }
 }
 @keyframes cam-in-back {
-  from {
+  0% {
     opacity: 0;
-    transform: translateX(-3%) scale(0.985);
-    filter: blur(4px);
+    transform: translateX(-9%) scale(1.04);
+    filter: blur(10px);
+  }
+  60% {
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    transform: none;
   }
 }
 
@@ -738,10 +775,158 @@ code,
   }
 }
 
+/* ===========================================================================
+   POWER-ON — the room boots once on first load
+   =========================================================================== */
+:root.booting body::after {
+  animation: boot-grid 1.5s var(--ease) both;
+}
+@keyframes boot-grid {
+  0% {
+    opacity: 0;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 0.9;
+    transform: none;
+  }
+}
+@media (min-width: 980px) {
+  /* the rail racks down: brand, lamp, then each nav node in sequence */
+  :root.booting .brand {
+    animation: rack-in 0.5s var(--ease) both;
+    animation-delay: 0.05s;
+  }
+  :root.booting .rail-status {
+    animation: rack-in 0.5s var(--ease) both;
+    animation-delay: 0.18s;
+  }
+  :root.booting .nav-link {
+    animation: rack-in 0.46s var(--ease) both;
+  }
+  :root.booting .nav-link:nth-child(1) {
+    animation-delay: 0.3s;
+  }
+  :root.booting .nav-link:nth-child(2) {
+    animation-delay: 0.37s;
+  }
+  :root.booting .nav-link:nth-child(3) {
+    animation-delay: 0.44s;
+  }
+  :root.booting .nav-link:nth-child(4) {
+    animation-delay: 0.51s;
+  }
+  :root.booting .nav-link:nth-child(5) {
+    animation-delay: 0.58s;
+  }
+  :root.booting .nav-link:nth-child(6) {
+    animation-delay: 0.65s;
+  }
+  :root.booting .nav-link:nth-child(7) {
+    animation-delay: 0.72s;
+  }
+  :root.booting .cmdk-trigger,
+  :root.booting .appbar > .btn {
+    animation: rack-in 0.5s var(--ease) both;
+    animation-delay: 0.8s;
+  }
+}
+@keyframes rack-in {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* the lamp ignites with a hard flash, then settles into its breathing loop */
+:root.booting .live-lamp {
+  animation:
+    lamp-ignite 0.5s var(--ease) 0.5s both,
+    lamp-breathe 2.6s var(--ease-io) 1s infinite;
+}
+@keyframes lamp-ignite {
+  0% {
+    background: var(--text-ghost);
+    box-shadow: none;
+  }
+  40% {
+    background: var(--amber-bright);
+    box-shadow: 0 0 22px 6px var(--amber-glow);
+  }
+  100% {
+    background: var(--amber);
+  }
+}
+
+/* ===========================================================================
+   PHOSPHOR / CRT TEXTURE — a filmic vignette + a whisper of scanlines so the
+   surface feels like a screen you're looking *into*, not a flat web page.
+   =========================================================================== */
+html::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.14) 0 1px, transparent 1px 3px),
+    radial-gradient(135% 115% at 50% 38%, transparent 58%, rgba(2, 4, 6, 0.5) 100%);
+  opacity: 0.5;
+  mix-blend-mode: multiply;
+}
+
+/* ===========================================================================
+   THE CHARGED RAIL — nav nodes that light up like console keys
+   =========================================================================== */
+@media (min-width: 980px) {
+  /* a faint spine the nav nodes sit on, like a bus line down the console */
+  .nav-rail {
+    position: relative;
+  }
+  .nav-rail::before {
+    content: "";
+    position: absolute;
+    top: 10px;
+    bottom: 10px;
+    left: 7px;
+    width: 1px;
+    background: linear-gradient(180deg, transparent, var(--line) 12%, var(--line) 88%, transparent);
+    opacity: 0.7;
+  }
+  .nav-link {
+    transition:
+      color var(--med) var(--ease),
+      transform var(--med) var(--ease-spring),
+      background var(--med) var(--ease);
+  }
+  .nav-link:hover {
+    transform: translateX(3px);
+  }
+}
+.nav-link .nav-ico {
+  transition:
+    opacity var(--med) var(--ease),
+    transform var(--med) var(--ease-spring),
+    color var(--med) var(--ease),
+    filter var(--med) var(--ease);
+}
+.nav-link.active .nav-ico {
+  filter: drop-shadow(0 0 7px var(--accent-glow));
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rise-in,
   .live-lamp,
-  .live-lamp::after {
+  .live-lamp::after,
+  :root.booting .brand,
+  :root.booting .rail-status,
+  :root.booting .nav-link,
+  :root.booting .cmdk-trigger,
+  :root.booting .appbar > .btn,
+  :root.booting body::after {
     animation: none !important;
   }
   ::view-transition-group(*),
@@ -1551,6 +1736,336 @@ code,
 .gauge.tone-danger .gauge-value {
   color: var(--danger);
   text-shadow: 0 0 22px rgba(255, 93, 110, 0.4);
+}
+
+/* ===========================================================================
+   THE PRODUCTION LINE — the factory floor, seen from above
+   Stations (silos) along a conveyor; pucks travel the live conduits; the gate
+   glows amber; the constraint flags itself. The hero of the Overview.
+   =========================================================================== */
+.factory {
+  position: relative;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--elev-1);
+  overflow: hidden;
+}
+.factory-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: 13px var(--s-5);
+  border-bottom: 1px solid var(--line);
+}
+.factory-flow {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+.factory-track {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding: var(--s-6) var(--s-5) var(--s-5);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.factory-track::-webkit-scrollbar {
+  display: none;
+}
+
+/* --- a station: a silo of pressure + a label plate --------------------- */
+.station {
+  --st: var(--text-faint);
+  flex: 0 0 auto;
+  width: 92px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-decoration: none;
+  color: inherit;
+  position: relative;
+  z-index: 2;
+  transition: transform var(--med) var(--ease-spring);
+}
+.station:hover {
+  transform: translateY(-3px);
+}
+.station.tone-accent {
+  --st: var(--accent);
+}
+.station.tone-amber {
+  --st: var(--amber);
+}
+.station.tone-violet {
+  --st: var(--violet);
+}
+.station.tone-ok {
+  --st: var(--ok);
+}
+.station.tone-idle {
+  --st: var(--text-faint);
+}
+
+.station-cap {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.station-tag {
+  font-family: var(--mono);
+  font-size: 0.54rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amber);
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--amber-line);
+  background: var(--amber-soft);
+  white-space: nowrap;
+}
+.station-tag.warn {
+  color: var(--danger);
+  border-color: rgba(255, 93, 110, 0.4);
+  background: var(--danger-soft);
+}
+
+.station-silo {
+  position: relative;
+  width: 52px;
+  height: 118px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background:
+    repeating-linear-gradient(0deg, transparent 0 22px, var(--line-hair) 22px 23px),
+    var(--bg-2);
+  overflow: hidden;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+.silo-fill {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 0;
+  background: linear-gradient(180deg, var(--st), color-mix(in oklch, var(--st), #000 45%));
+  box-shadow:
+    0 0 16px -2px var(--st),
+    inset 0 1px 0 color-mix(in oklch, var(--st), #fff 35%);
+  transition: height var(--slow) var(--ease);
+}
+/* a brighter meniscus line at the top of the fill */
+.silo-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: color-mix(in oklch, var(--st), #fff 50%);
+  box-shadow: 0 0 10px 0 var(--st);
+}
+.silo-val {
+  position: absolute;
+  inset: 8px 0 auto 0;
+  text-align: center;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
+  z-index: 2;
+}
+.station.is-empty .silo-val {
+  color: var(--text-ghost);
+}
+
+.station-foot {
+  margin-top: 11px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+}
+.station-label {
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.station.tone-amber.is-gate .station-label {
+  color: var(--amber);
+}
+.station-sub {
+  font-family: var(--mono);
+  font-size: 0.56rem;
+  letter-spacing: 0.04em;
+  color: var(--text-ghost);
+}
+
+/* the gate station — the human checkpoint, framed and breathing */
+.station.is-gate .station-silo {
+  border-color: var(--amber-line);
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 0 1px var(--amber-line),
+    0 0 26px -6px var(--amber-glow);
+}
+.station.is-gate .station-silo::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 7px;
+  border: 1px solid var(--amber);
+  opacity: 0;
+  animation: gate-pulse 2.8s var(--ease-io) infinite;
+  pointer-events: none;
+}
+@keyframes gate-pulse {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.06);
+  }
+}
+.station.is-bottleneck .silo-fill {
+  animation: bottleneck-throb 1.8s var(--ease-io) infinite;
+}
+@keyframes bottleneck-throb {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.35);
+  }
+}
+
+/* --- the conduit: a conveyor carrying work-units between stations ------- */
+.conduit {
+  --st: var(--text-faint);
+  flex: 1 1 auto;
+  min-width: 32px;
+  height: 140px; /* cap(22) + silo(118) → baseline lands at the silo base */
+  position: relative;
+  align-self: flex-start;
+}
+.conduit.tone-accent {
+  --st: var(--accent);
+}
+.conduit.tone-amber {
+  --st: var(--amber);
+}
+.conduit.tone-violet {
+  --st: var(--violet);
+}
+.conduit.tone-ok {
+  --st: var(--ok);
+}
+.conduit.tone-idle {
+  --st: var(--text-faint);
+}
+/* the rail line at the silo base */
+.conduit::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  bottom: 14px;
+  height: 2px;
+  background: repeating-linear-gradient(90deg, var(--line) 0 6px, transparent 6px 12px);
+  opacity: 0.7;
+}
+.conduit.is-flowing::before {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--st), transparent 70%),
+    color-mix(in oklch, var(--st), transparent 30%)
+  );
+  opacity: 0.5;
+}
+/* pucks: work-units sliding downstream, continuously */
+.puck {
+  position: absolute;
+  bottom: 11px;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--st);
+  box-shadow: 0 0 10px 1px var(--st);
+  animation: puck-travel 2.4s linear infinite;
+  animation-delay: calc(var(--k) * 0.8s);
+  opacity: 0;
+}
+@keyframes puck-travel {
+  0% {
+    left: -4px;
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  12% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  88% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    left: calc(100% + 4px);
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+/* --- the constraint / all-clear callout -------------------------------- */
+.factory-note {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 11px var(--s-5);
+  border-top: 1px solid var(--line);
+  font-size: var(--step--1);
+  color: var(--text-dim);
+}
+.factory-note strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.factory-note .fn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.factory-note.warn .fn-dot {
+  background: var(--amber);
+  box-shadow: 0 0 10px -1px var(--amber);
+}
+.factory-note.warn strong {
+  color: var(--amber);
+}
+.factory-note.ok .fn-dot {
+  background: var(--ok);
+  box-shadow: 0 0 10px -1px var(--ok);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .puck,
+  .station.is-gate .station-silo::before,
+  .station.is-bottleneck .silo-fill {
+    animation: none !important;
+  }
+  .puck {
+    display: none;
+  }
 }
 
 /* Tiny trend chip used only when the data honestly supports it. */

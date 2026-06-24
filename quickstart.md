@@ -7,7 +7,7 @@ below is the real, verified path — run them in order.
 
 ## Prerequisites
 
-- **Node 20 or 22** and **[pnpm](https://pnpm.io)** (`pnpm@10.33.0`, pinned via `packageManager`)
+- **Node 22 or 24** and **[pnpm](https://pnpm.io)** (`pnpm@10.33.0`, pinned via `packageManager`)
 - **Git** (the factory branches per ticket, so your target repos should be git repos)
 - The **`claude` CLI**, authenticated with Anthropic — the factory spawns `claude -p` agents for planning, delivery, and repo analysis; required for live runs
 - **`python3`** — used by runner helpers for JSON parsing and the portable timeout shim

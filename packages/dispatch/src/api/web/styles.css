@@ -4906,3 +4906,91 @@ body {
     font-size: 1.16rem;
   }
 }
+
+/* ── Shared target picker (repos + scopes) ──────────────────────────────────
+   Used by the plan-build "Extend existing" picker and the idle-loops panel. */
+.target-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.target-picker-reposlot:empty {
+  display: none;
+}
+.target-picker-sublabel {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+.target-picker-multi {
+  gap: 4px;
+}
+.target-picker-grouplabel {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-faint);
+  font-weight: 650;
+  margin-top: 4px;
+}
+.target-picker-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 6px 0;
+}
+.target-picker-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--step--1, 0.86rem);
+  color: var(--text);
+  cursor: pointer;
+}
+.target-picker-check input {
+  width: auto;
+  min-height: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.target-picker-empty {
+  font-size: 0.86rem;
+  padding: 4px 0;
+}
+
+/* ── Idle loops panel ───────────────────────────────────────────────────── */
+.idle-loops-note {
+  margin: 4px 0 12px;
+}
+.idle-loops-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.idle-loop-row {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 14px 16px;
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.idle-loop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.idle-loop-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.idle-loop-label > span {
+  font-weight: 600;
+}

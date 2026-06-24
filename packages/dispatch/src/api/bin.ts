@@ -50,6 +50,14 @@ program
     const dbPath = resolveDbPath(opts.db);
     const port = resolvePort(opts.port);
     const wg = Dispatch.open(dbPath);
+    // RUN-ACTIVITY: reconcile orphaned runs left `running` by a previous API
+    // process that died mid-run (its child's exit listener died with it). Any
+    // such row whose pid is no longer alive is flipped to `unknown` so the
+    // dashboard never shows a wedged "running" run after a restart.
+    const swept = wg.sweepStaleRuns();
+    if (swept.length > 0) {
+      process.stdout.write(`dispatch-api: reconciled ${swept.length} orphaned run(s)\n`);
+    }
     // Pass the bind host so the server emits HSTS only for a non-loopback bind.
     const server = createApiServer(wg, undefined, undefined, undefined, undefined, opts.host);
 

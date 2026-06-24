@@ -324,13 +324,17 @@ function handleError(res: ServerResponse, err: unknown): void {
  */
 export function createApiHandler(
   wg: Dispatch,
-  runner: ProductOwnerRunner = createProductOwnerRunner(),
+  // RUN-ACTIVITY: the default runners are wired with `wg` as the run tracker, so
+  // each detached spawn records a `runs` row and captures its output to a per-run
+  // log (earlier params are in scope for later default expressions). A caller that
+  // passes its own runner opts out of tracking unless it wires a tracker itself.
+  runner: ProductOwnerRunner = createProductOwnerRunner(process.env, wg),
   planBuildRunner: PlanBuildRunner = createPlanBuildRunner(),
-  mergeRunner: MergeRunner = createMergeRunner(),
-  pollWorkRunner: PollWorkRunner = createPollWorkRunner(),
+  mergeRunner: MergeRunner = createMergeRunner(process.env, undefined, wg),
+  pollWorkRunner: PollWorkRunner = createPollWorkRunner(process.env, wg),
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
-  onboardRunner: OnboardRunner = createOnboardRunner(),
+  onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
 ): (req: IncomingMessage, res: ServerResponse) => void {
   // Resolve the HSTS posture ONCE from the bind host (not per request), so a
   // spoofed Host header can't toggle Strict-Transport-Security on/off.
@@ -363,13 +367,14 @@ export function createApiHandler(
 /** Construct an http.Server wrapping the Dispatch facade. */
 export function createApiServer(
   wg: Dispatch,
-  runner: ProductOwnerRunner = createProductOwnerRunner(),
+  // RUN-ACTIVITY: default runners track via `wg` (see createApiHandler).
+  runner: ProductOwnerRunner = createProductOwnerRunner(process.env, wg),
   planBuildRunner: PlanBuildRunner = createPlanBuildRunner(),
-  mergeRunner: MergeRunner = createMergeRunner(),
-  pollWorkRunner: PollWorkRunner = createPollWorkRunner(),
+  mergeRunner: MergeRunner = createMergeRunner(process.env, undefined, wg),
+  pollWorkRunner: PollWorkRunner = createPollWorkRunner(process.env, wg),
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
-  onboardRunner: OnboardRunner = createOnboardRunner(),
+  onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
 ): Server {
   return createServer(
     createApiHandler(

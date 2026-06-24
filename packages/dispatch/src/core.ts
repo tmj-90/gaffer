@@ -2993,20 +2993,29 @@ export class Dispatch {
 
   // --- Run-activity registry (RUN-ACTIVITY) ---------------------------------
 
+  /** Mint a fresh run id (so a caller can name a per-run log file up front). */
+  newRunId(): string {
+    return newId();
+  }
+
   /**
    * Record the start of a background run (a detached API-spawned child). Returns
-   * the generated run id so the caller can later {@link markRunEnd} it (and the
-   * dashboard can poll its status). The row is created `running`; `pid`/`log_path`
-   * are stored as given (null when the platform withheld a pid or no log was
-   * opened). The repo (the run's target, when known) is recorded for the panel.
+   * the run id so the caller can later {@link markRunEnd} it (and the dashboard
+   * can poll its status). The row is created `running`; `pid`/`log_path` are
+   * stored as given (null when the platform withheld a pid or no log was opened).
+   * The repo (the run's target, when known) is recorded for the panel.
+   *
+   * `id` may be supplied by the caller (so a per-run log file can be named by the
+   * id BEFORE the row is written); when omitted a fresh id is minted.
    */
   recordRunStart(input: {
+    id?: string;
     kind: RunKind;
     repo?: string | null;
     pid?: number | null;
     log_path?: string | null;
   }): { id: string } {
-    const id = newId();
+    const id = input.id ?? newId();
     this.runs.insertStart({
       id,
       kind: input.kind,

@@ -235,6 +235,16 @@ gaffer_agent_env() {
 # Absolute path so the detached child resolves it.
 : "${DISPATCH_ONBOARD_CMD:=node $RUNNER_DIR/bin/onboard-run.mjs}"
 
+# BBT-001: the independent black-box tester runner. When GAFFER_TESTING is on and a
+# ticket is approved+testable, the dispatch state machine routes it in_review ->
+# in_testing; this command is the seam that assembles a CONTRACT-ONLY context (AC +
+# test_contract — never the diff) and would spawn the tester agent, recording the
+# pass/fail verdict back through dispatch. Mirrors DISPATCH_MERGE_CMD /
+# DISPATCH_ONBOARD_CMD: a fixed operator command, no shell, absolute path so the
+# detached child resolves it. The live `claude -p` tester is the documented
+# follow-up; the seam + context assembly + verdict→transition wiring are real today.
+: "${DISPATCH_TESTER_CMD:=node $RUNNER_DIR/bin/tester-run.mjs}"
+
 # Factory identity + bookkeeping
 : "${GAFFER_AGENT_NAME:=gaffer-factory}"
 : "${GAFFER_AGENT_ID_FILE:=$GAFFER_DATA/agent_id}"

@@ -87,6 +87,18 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Auto-approve memory drafts",
     help: "Accept memory draft records without a human review step.",
   },
+  {
+    key: "GAFFER_TESTING",
+    type: "boolean",
+    group: "autonomy",
+    label: "Independent black-box testing",
+    help:
+      "When on, an approved testable ticket routes through the independent testing " +
+      "lane (in_review → in_testing) instead of straight to merge. The lane, the " +
+      "contract, and the runner seam are live; the seam hands an independent tester " +
+      "the contract + AC (never the diff). The live tester invocation is a documented " +
+      "follow-up. Off → review approval goes straight to merge.",
+  },
 
   // --- Idle loops: the between-work background loops + their mode ---
   {

@@ -285,6 +285,7 @@ const STATUS_LABELS = {
   in_progress: "In progress",
   blocked: "Blocked",
   in_review: "In review",
+  in_testing: "In testing",
   ready_for_merge: "Approved · merging",
   done: "Done",
   failed: "Failed",
@@ -317,6 +318,9 @@ const STAGE_FOR_STATUS = {
   in_progress: 2,
   blocked: 2,
   in_review: 3,
+  // BBT-001: the independent-testing lane shares the "review" lifecycle stage —
+  // it's post-delivery, pre-merge, just like in_review/ready_for_merge.
+  in_testing: 3,
   ready_for_merge: 3,
   done: 4,
   failed: 4,
@@ -1298,6 +1302,7 @@ const TICKET_STATUSES = [
   "in_progress",
   "blocked",
   "in_review",
+  "in_testing",
   "ready_for_merge",
   "done",
   "failed",
@@ -1310,6 +1315,7 @@ const BOARD_COLUMN_LABELS = {
   in_progress: "In progress",
   blocked: "Blocked",
   in_review: "In review",
+  in_testing: "In testing",
   ready_for_merge: "Approved · merging",
   done: "Done",
 };
@@ -1680,6 +1686,10 @@ const TICKET_ACTION_KEYS = {
   blocked: ["wont_do"],
   // Review surface: approve takes the ticket to `ready_for_merge` (merging).
   in_review: ["approve", "rework", "wont_do"],
+  // BBT-001: independent testing lane. The tester agent owns the verdict
+  // (pass → ready_for_merge, fail → refining); a human has no board button here,
+  // mirroring the live/claimed states.
+  in_testing: [],
   // Approved-and-merging: the merge runner is working. A human can mark it merged
   // (admin override) or send it back for rework — but NOT "mark ready".
   ready_for_merge: ["mark_merged", "rework"],
@@ -2451,13 +2461,165 @@ async function renderTicket(id) {
       : el("p", { class: "dim" }, "No events recorded."),
   ]);
 
+  // BBT-001: the independent black-box testing card — the testability toggle, the
+  // test_contract (surfaces / deps / env / run / harness), and the tester's verdict
+  // evidence. Rendered on every ticket so a PO can mark it testable + fill the
+  // contract ahead of time; the contract surfaces/render the same way in_testing.
+  const testingCard = renderTestingCard(t, view.evidence || []);
+
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, sideRepos, diffCard, acCard, timeline]),
+      el("div", {}, [head, sideRepos, diffCard, acCard, testingCard, timeline]),
       el("div", {}, [sideFields, sideBlockers]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * BBT-001 testing card: the `can_be_tested` toggle, the test_contract (the
+ * handover the independent tester reads to stand the system up — never the diff),
+ * and the tester's recorded test_output evidence. The toggle POSTs /testable; the
+ * contract is read-only here (filled by the implementer/reviewer via CLI/MCP).
+ */
+function renderTestingCard(t, evidence) {
+  const contract = parseTicketTestContract(t.test_contract);
+  const testable = t.can_be_tested === 1;
+
+  const toggle = el("input", { type: "checkbox", role: "switch", "aria-label": "Testable" });
+  toggle.checked = testable;
+  toggle.addEventListener("change", () =>
+    guard(async () => {
+      await api("POST", `/tickets/${t.id}/testable`, { can_be_tested: toggle.checked });
+      toast(toggle.checked ? "Marked testable" : "Marked not testable", { ok: true });
+      router();
+    }),
+  );
+
+  const contractRows = contract
+    ? el("dl", { class: "kv" }, [
+        el("dt", {}, "Changed surfaces"),
+        el("dd", {}, contract.changed_surfaces.length ? contract.changed_surfaces.join(", ") : "—"),
+        el("dt", {}, "Runtime deps"),
+        el("dd", {}, contract.runtime_deps.length ? contract.runtime_deps.join(", ") : "—"),
+        el("dt", {}, "Env vars"),
+        el("dd", {}, contract.env_vars.length ? contract.env_vars.join(", ") : "—"),
+        el("dt", {}, "Run command"),
+        el("dd", {}, contract.run_command || "—"),
+        el("dt", {}, "Harness"),
+        el(
+          "dd",
+          {},
+          contract.harness_ready ? "ready (black-box mode)" : "not ready (harness mode)",
+        ),
+      ])
+    : el(
+        "p",
+        { class: "dim" },
+        "No test contract recorded. Add one with `wg ticket test-contract` or the Dispatch MCP.",
+      );
+
+  // The tester's verdict evidence: ONLY test_output rows whose payload carries a BBT
+  // tester verdict (pass/fail). Plain implementation / AC test_output must NOT show
+  // under "Tester results" — that would mislabel ordinary evidence as tester output.
+  const testerEvidence = (evidence || []).filter(
+    (e) => e.evidence_type === "test_output" && parseTesterVerdict(e.payload_json) !== null,
+  );
+  const evidenceList = testerEvidence.length
+    ? el(
+        "ul",
+        { class: "clean" },
+        testerEvidence.map((e) => {
+          const prov = parseTesterProvenance(e.payload_json);
+          return el("li", {}, [
+            el("div", {}, [
+              e.summary,
+              // BBT-001 provenance badge: who produced this verdict (derived from the
+              // recording actor's type), so a reviewer sees "by <agent|human|system>".
+              prov
+                ? el("span", { class: "badge no-dot", style: "margin-left:8px" }, `by ${prov}`)
+                : null,
+            ]),
+            el("div", { class: "ac-meta" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
+          ]);
+        }),
+      )
+    : el("p", { class: "dim" }, "No tester results recorded yet.");
+
+  return el("div", { class: "card" }, [
+    el("h2", {}, "Independent testing"),
+    el("div", { class: "setting-row" }, [
+      el("div", { class: "setting-meta" }, [
+        el("div", { class: "setting-label" }, [
+          el("span", {}, "Eligible for black-box testing"),
+          t.status === "in_testing" ? el("span", { class: "badge no-dot" }, "in testing") : null,
+        ]),
+        el(
+          "p",
+          { class: "setting-help dim" },
+          "When on (and GAFFER_TESTING is enabled), review approval routes this ticket through an independent tester before merge.",
+        ),
+      ]),
+      el("label", { class: "switch" }, [
+        toggle,
+        el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
+      ]),
+    ]),
+    el("h3", { style: "margin-top:14px" }, "Test contract"),
+    contractRows,
+    el("h3", { style: "margin-top:14px" }, "Tester results"),
+    evidenceList,
+  ]);
+}
+
+/**
+ * BBT-001: pull the tester-verdict provenance ("agent" | "human" | "system") out of
+ * a test_output evidence row's payload_json, tolerant of legacy rows with no payload.
+ */
+function parseTesterProvenance(raw) {
+  if (!raw) return null;
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const p = o && typeof o === "object" ? o.provenance : null;
+    return p === "agent" || p === "human" || p === "system" ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The BBT tester verdict ("pass" | "fail") from a test_output row's payload_json, or
+ * null when the row is not a tester verdict. This is the marker that distinguishes a
+ * tester result from ordinary implementation/AC test_output evidence.
+ */
+function parseTesterVerdict(raw) {
+  if (!raw) return null;
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const v = o && typeof o === "object" ? o.verdict : null;
+    return v === "pass" || v === "fail" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse the raw test_contract JSON column for the detail card (tolerant). */
+function parseTicketTestContract(raw) {
+  if (!raw) return null;
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!o || typeof o !== "object") return null;
+    const list = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+    return {
+      changed_surfaces: list(o.changed_surfaces),
+      runtime_deps: list(o.runtime_deps),
+      env_vars: list(o.env_vars),
+      run_command: typeof o.run_command === "string" ? o.run_command : "",
+      harness_ready: o.harness_ready === true,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function renderAddAcForm(ticketId) {

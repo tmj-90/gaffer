@@ -255,6 +255,24 @@ export const recordRepoDeliveryInput = z.object({
 });
 export type RecordRepoDeliveryInput = z.infer<typeof recordRepoDeliveryInput>;
 
+// --- Black-box testing handover (BBT-001) ----------------------------------
+
+/**
+ * Record (replace) a ticket's test_contract — the testing handover the
+ * independent tester reads to stand the system up and probe the changed boundary
+ * surfaces WITHOUT the implementation diff. Every list defaults to empty and
+ * `harness_ready` defaults to false, so a minimal contract (just a run_command) is
+ * valid; the lists are bounded to keep a single contract small.
+ */
+export const setTestContractInput = z.object({
+  changed_surfaces: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  runtime_deps: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  env_vars: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  run_command: z.string().trim().max(2_000).default(""),
+  harness_ready: z.boolean().default(false),
+});
+export type SetTestContractInput = z.infer<typeof setTestContractInput>;
+
 // --- Scope→repo suggestions (FG-005) ---------------------------------------
 
 /**

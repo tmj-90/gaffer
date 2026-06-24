@@ -49,8 +49,11 @@ import {
   setRepoHiddenBody,
   setPrimaryScopeBody,
   setRequiredCapabilitiesBody,
+  setTestableBody,
+  setTestContractBody,
   setTicketRepoAccessBody,
   suggestReposBody,
+  testerVerdictBody,
   ticketListQuery,
   updateScopeNodeBody,
   updateScopeRepoBody,
@@ -416,6 +419,10 @@ const TICKET_SUB = {
   REPO_SUGGESTIONS: "repo-suggestions",
   CLAIMABILITY: "claimability",
   DEPENDENCIES: "dependencies",
+  // BBT-001: independent black-box testing handover + tester verdict.
+  TESTABLE: "testable",
+  TEST_CONTRACT: "test-contract",
+  TESTER: "tester",
 } as const;
 
 async function route(
@@ -874,6 +881,37 @@ async function routeTickets(
   // the system actor); a user/board-drag can never reach this.
   if (segments.length === 3 && sub === TICKET_SUB.MARK_MERGED && method === "POST") {
     const result = wg.markMerged(id, { type: "system", id: "dispatch-api" });
+    sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
+    return;
+  }
+
+  // BBT-001: /tickets/:id/testable — set the independent-testing eligibility flag.
+  if (segments.length === 3 && sub === TICKET_SUB.TESTABLE && method === "POST") {
+    const body = setTestableBody.parse(await readJsonBody(req));
+    const result = wg.setTestable(id, body.can_be_tested, API_ACTOR);
+    sendJson(res, 200, result);
+    return;
+  }
+
+  // BBT-001: /tickets/:id/test-contract — record the testing handover artifact.
+  if (segments.length === 3 && sub === TICKET_SUB.TEST_CONTRACT && method === "POST") {
+    const body = setTestContractBody.parse(await readJsonBody(req));
+    const contract = wg.setTestContract(id, body, API_ACTOR);
+    sendJson(res, 200, { test_contract: contract });
+    return;
+  }
+
+  // BBT-001: /tickets/:id/tester — record a tester verdict (pass → ready_for_merge,
+  // fail → refining). The REST surface acts as the system actor here, recording the
+  // tester's reported result; the actual merge stays the guarded mark-merged path.
+  if (segments.length === 3 && sub === TICKET_SUB.TESTER && method === "POST") {
+    const body = testerVerdictBody.parse(await readJsonBody(req));
+    const testerActor = { type: "system" as const, id: "dispatch-api" };
+    const verdictInput = { summary: body.summary, ...(body.uri ? { uri: body.uri } : {}) };
+    const result =
+      body.verdict === "pass"
+        ? wg.testerPass(id, verdictInput, testerActor)
+        : wg.testerFail(id, verdictInput, testerActor);
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }

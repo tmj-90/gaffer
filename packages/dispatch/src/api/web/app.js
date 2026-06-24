@@ -941,81 +941,351 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, decisionsRes] = await Promise.all([
+  const [{ summary }, activity, ticketsRes, decisionsRes, reposRes] = await Promise.all([
     api("GET", "/api/dashboard"),
-    api("GET", "/api/activity?limit=40"),
+    api("GET", "/api/activity?limit=200"),
+    api("GET", "/tickets").catch(() => ({ tickets: [] })),
     api("GET", "/decisions").catch(() => ({ decisions: [] })),
+    api("GET", "/repositories").catch(() => ({ repositories: [] })),
   ]);
-  // Audit is optional and best-effort.
-  let audit = null;
-  try {
-    audit = await api("GET", "/api/audit?limit=30");
-  } catch {
-    /* optional */
-  }
 
   const byStatus = summary.ticketsByStatus || {};
-  const totalTickets = Object.values(byStatus).reduce((a, b) => a + b, 0);
+  const tickets = ticketsRes.tickets || [];
+  const events = activity.events || [];
+  const decisions = decisionsRes.decisions || [];
+  const repos = (reposRes.repositories || []).filter((r) => !r.hidden);
   const inReview = byStatus.in_review || 0;
   const blocked = summary.blocked ?? byStatus.blocked ?? 0;
-  const openDecisions = summary.openDecisions ?? (decisionsRes.decisions || []).length;
+  const openDecisions = summary.openDecisions ?? decisions.length;
   const staleClaims = summary.staleClaims || 0;
+  const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
+  const doneTickets = tickets.filter((t) => t.status === "done");
+
+  // --- real time-series, bucketed by day from ticket + event timestamps -----
+  const DAY = 86_400_000;
+  const now = Date.now();
+  const N = 14;
+  const days = [];
+  for (let i = N - 1; i >= 0; i--) {
+    const d = new Date(now - i * DAY);
+    days.push({ key: d.toISOString().slice(0, 10), lbl: `${d.getDate()}/${d.getMonth() + 1}` });
+  }
+  const bucket = (items, tsOf) => {
+    const m = Object.fromEntries(days.map((d) => [d.key, 0]));
+    for (const it of items) {
+      const k = String(tsOf(it)).slice(0, 10);
+      if (k in m) m[k] += 1;
+    }
+    return days.map((d) => m[d.key]);
+  };
+  const doneByDay = bucket(doneTickets, (t) => t.updated_at);
+  const actByDay = bucket(events, (e) => e.created_at);
+  // cycle time per completion day (avg days created→done), line carried forward
+  const cycleAgg = {};
+  for (const t of doneTickets) {
+    const k = String(t.updated_at).slice(0, 10);
+    const dys = (Date.parse(t.updated_at) - Date.parse(t.created_at)) / DAY;
+    if (dys >= 0) (cycleAgg[k] = cycleAgg[k] || []).push(dys);
+  }
+  let carry = null;
+  const cycleLine = days.map((d) => {
+    const a = cycleAgg[d.key];
+    if (a && a.length) carry = a.reduce((x, y) => x + y, 0) / a.length;
+    return carry == null ? 0 : +carry.toFixed(2);
+  });
+
+  // --- headline metrics (real) ---------------------------------------------
+  const med = (arr) => {
+    if (!arr.length) return 0;
+    const s = [...arr].sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  const cycleVals = doneTickets
+    .map((t) => (Date.parse(t.updated_at) - Date.parse(t.created_at)) / DAY)
+    .filter((x) => x >= 0);
+  const cycleTime = med(cycleVals);
+  const leadTime = cycleVals.length
+    ? Math.max(
+        ...cycleVals
+          .slice()
+          .sort((a, b) => a - b)
+          .slice(0, Math.ceil(cycleVals.length / 2)),
+      ) || cycleTime
+    : 0;
+  const last7 = doneByDay.slice(-7).reduce((a, b) => a + b, 0);
+  const prev7 = doneByDay.slice(-14, -7).reduce((a, b) => a + b, 0);
+  const flowEff = Math.round(
+    ((byStatus.done || 0) /
+      Math.max(1, (byStatus.done || 0) + inReview + blocked + inProgress + (byStatus.ready || 0))) *
+      100,
+  );
+  // honest deltas: second-half avg vs first-half avg of the relevant series
+  const half = (s) => {
+    const h = Math.floor(s.length / 2);
+    const a = s.slice(0, h).reduce((x, y) => x + y, 0) / Math.max(1, h);
+    const b = s.slice(h).reduce((x, y) => x + y, 0) / Math.max(1, s.length - h);
+    return a === 0 ? (b > 0 ? 100 : 0) : Math.round(((b - a) / a) * 100);
+  };
 
   const wrap = el("div", { class: "view" });
-  wrap.appendChild(viewHead("Overview", "live control room"));
+  wrap.appendChild(overviewHead());
 
-  // --- THE PRODUCTION LINE — the factory seen from above --------------------
-  // Work flows left→right through stations; pressure is visible as silo fill;
-  // pucks travel the conduits; the human gate is the lit checkpoint; the
-  // bottleneck calls itself out. This is the hero — flow, not columns.
-  const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
+  // --- KPI row --------------------------------------------------------------
   wrap.appendChild(
-    factoryLine({
-      plan: (byStatus.draft || 0) + (byStatus.refining || 0),
-      ready: byStatus.ready || 0,
-      build: inProgress,
-      test: byStatus.in_testing || 0,
-      review: inReview,
-      shipped: byStatus.done || 0,
-      blocked,
-      decisions: openDecisions,
-      shippedToday: summary.deliveredToday || 0,
-      total: totalTickets,
-    }),
+    el("div", { class: "kpi-row" }, [
+      kpiCard({
+        label: "Cycle time",
+        value: cycleTime.toFixed(1),
+        unit: "days",
+        tone: "accent",
+        delta: half(cycleLine),
+        goodWhenDown: true,
+        series: cycleLine,
+      }),
+      kpiCard({
+        label: "Throughput",
+        value: String(last7),
+        unit: "shipped / 7d",
+        tone: "ok",
+        delta: prev7 === 0 ? (last7 > 0 ? 100 : 0) : Math.round(((last7 - prev7) / prev7) * 100),
+        series: doneByDay,
+      }),
+      kpiCard({
+        label: "Flow efficiency",
+        value: String(flowEff),
+        unit: "%",
+        tone: "violet",
+        delta: half(actByDay),
+        series: actByDay,
+      }),
+      kpiCard({
+        label: "Deployments",
+        value: String(doneTickets.length),
+        unit: "all-time",
+        tone: "amber",
+        delta: half(doneByDay),
+        series: doneByDay,
+      }),
+      kpiCard({
+        label: "Lead time",
+        value: leadTime.toFixed(1),
+        unit: "days",
+        tone: "accent",
+        delta: half(cycleLine),
+        goodWhenDown: true,
+        series: cycleLine,
+      }),
+    ]),
   );
 
-  // --- "Needs you now" focal block ------------------------------------------
-  const needs = [];
-  if (inReview > 0)
-    needs.push({
-      tone: "review",
-      icon: "review",
-      count: inReview,
-      title: "Awaiting your review",
-      sub: "approve, reject or merge",
-      href: "#/review",
-    });
+  // --- Development flow + Needs your attention (2-up) -----------------------
+  wrap.appendChild(
+    el("div", { class: "ov-grid ov-2" }, [
+      devFlowPanel(tickets, byStatus, now),
+      needsPanel({
+        inReview,
+        blocked,
+        openDecisions,
+        staleClaims,
+        stuck: summary.stuckTickets || [],
+      }),
+    ]),
+  );
+
+  // --- Progress by repo + Cycle-time chart + Flow-efficiency donut (3-up) ---
+  wrap.appendChild(
+    el("div", { class: "ov-grid ov-3" }, [
+      repoProgressPanel(repos, byStatus),
+      el("div", { class: "card panel" }, [
+        panelHead("Cycle time", "days"),
+        el("div", { class: "chart", html: svgLine(cycleLine, days) }),
+      ]),
+      el("div", { class: "card panel" }, [
+        panelHead("Flow efficiency", "value-add"),
+        el("div", { class: "donut-wrap tone-violet" }, [
+          el("div", { class: "donut", html: svgDonut(flowEff) }),
+          el("div", { class: "donut-center" }, [
+            el("span", { class: "donut-pct tabnum" }, `${flowEff}%`),
+            el("span", { class: "donut-cap" }, "efficient"),
+          ]),
+        ]),
+      ]),
+    ]),
+  );
+
+  // --- Decisions (inline, when present) ------------------------------------
+  if (decisions.length) {
+    const decCard = el("div", { class: "card decisions-card", id: "decisions" }, [
+      panelHead("Decisions awaiting you", `${decisions.length}`),
+    ]);
+    const well = el("div", { class: "decisions-well" });
+    decisions.forEach((d) => well.appendChild(renderDecisionCard(d)));
+    decCard.appendChild(well);
+    wrap.appendChild(decCard);
+  }
+
+  // --- Live activity --------------------------------------------------------
+  wrap.appendChild(
+    el("div", { class: "card panel" }, [
+      panelHead("Live activity", `${activity.total ?? events.length}`),
+      events.length
+        ? el("ul", { class: "feed" }, events.slice(0, 12).map(renderFeedRow))
+        : el("p", { class: "dim" }, "No activity recorded yet."),
+    ]),
+  );
+
+  return wrap;
+}
+
+/** Overview header: title + supporting line + a right-aligned freshness stamp. */
+function overviewHead() {
+  const d = new Date();
+  const date = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  return el("div", { class: "ov-head" }, [
+    el("div", {}, [
+      el("h1", { class: "ov-title" }, "Overview"),
+      el("p", { class: "ov-sub" }, "Track your development flow and keep the factory moving."),
+    ]),
+    el("div", { class: "ov-meta" }, [
+      el("span", { class: "ov-fresh" }, [
+        el("span", { class: "ov-fresh-dot" }),
+        "Updated just now",
+      ]),
+      el("span", { class: "ov-date mono" }, date),
+    ]),
+  ]);
+}
+
+/** A panel header: a title with an optional trailing meta/aux label. */
+function panelHead(title, aux, link) {
+  return el("div", { class: "panel-head" }, [
+    el("span", { class: "panel-title" }, title),
+    link
+      ? el("a", { class: "panel-link", href: link.href }, link.text)
+      : aux
+        ? el("span", { class: "panel-aux mono" }, aux)
+        : null,
+  ]);
+}
+
+/** A KPI card: label, big value + unit, a signed delta chip, and a sparkline. */
+function kpiCard({ label, value, unit, tone, delta, series, goodWhenDown = false }) {
+  const dir = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+  const good = delta === 0 ? "flat" : delta > 0 !== goodWhenDown ? "good" : "bad";
+  return el("a", { class: `kpi tone-${tone}`, href: "#/work" }, [
+    el("div", { class: "kpi-top" }, [
+      el("span", { class: "kpi-label" }, label),
+      el("span", { class: `kpi-delta ${good}` }, [
+        el("span", { class: "kpi-arrow" }, dir === "up" ? "▲" : dir === "down" ? "▼" : "—"),
+        `${Math.abs(delta)}%`,
+      ]),
+    ]),
+    el("div", { class: "kpi-figure" }, [
+      el("span", { class: "kpi-val tabnum" }, value),
+      unit ? el("span", { class: "kpi-unit" }, unit) : null,
+    ]),
+    el("div", { class: "kpi-spark", html: svgSpark(series) }),
+  ]);
+}
+
+/** Development flow: one row per stage — count, share bar, oldest item, health. */
+function devFlowPanel(tickets, byStatus, now) {
+  const DAY = 86_400_000;
+  const groups = [
+    { label: "Plan", statuses: ["draft", "refining"], tone: "idle" },
+    { label: "Ready", statuses: ["ready"], tone: "accent" },
+    { label: "Build", statuses: ["in_progress", "claimed"], tone: "accent" },
+    { label: "Review", statuses: ["in_review", "in_testing", "ready_for_merge"], tone: "amber" },
+    { label: "Shipped", statuses: ["done"], tone: "ok" },
+  ];
+  if ((byStatus.blocked || 0) > 0)
+    groups.splice(4, 0, { label: "Blocked", statuses: ["blocked"], tone: "danger" });
+
+  const rows = groups.map((g) => {
+    const items = tickets.filter((t) => g.statuses.includes(t.status));
+    const count = items.length;
+    const oldestMs = items.length
+      ? now - Math.min(...items.map((t) => Date.parse(t.updated_at)))
+      : 0;
+    const ageDays = oldestMs / DAY;
+    const terminal = g.label === "Shipped";
+    const warn = g.label === "Blocked" || (!terminal && count > 0 && ageDays >= 3);
+    return { ...g, count, oldestMs, warn, terminal };
+  });
+  const max = Math.max(1, ...rows.map((r) => r.count));
+
+  return el("div", { class: "card panel" }, [
+    panelHead("Development flow", "live"),
+    el(
+      "div",
+      { class: "devflow" },
+      rows.map((r) =>
+        el("a", { class: `df-row tone-${r.tone}`, href: "#/work" }, [
+          el("span", { class: "df-name" }, [el("span", { class: "df-dot" }), r.label]),
+          el("span", { class: "df-count tabnum" }, String(r.count)),
+          el(
+            "span",
+            { class: "df-bar" },
+            el("i", { style: `width:${r.count ? Math.max(4, (r.count / max) * 100) : 0}%` }),
+          ),
+          el(
+            "span",
+            { class: "df-age mono" },
+            r.count ? (r.terminal ? "—" : fmtDuration(r.oldestMs)) : "—",
+          ),
+          el(
+            "span",
+            { class: `df-status ${r.warn ? "warn" : "ok"}` },
+            r.warn ? "Attention" : "Healthy",
+          ),
+        ]),
+      ),
+    ),
+  ]);
+}
+
+/** Needs your attention: the human-gate queue as a tidy alert list. */
+function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
+  const items = [];
   if (blocked > 0)
-    needs.push({
+    items.push({
       tone: "blocked",
       icon: "alert",
       count: blocked,
-      title: "Blocked tickets",
-      sub: "need a human to clear the path",
+      title: `${blocked} blocked ${blocked === 1 ? "task" : "tasks"}`,
+      sub: "waiting on a human to clear the path",
       href: "#/work?status=blocked",
     });
+  if (inReview > 0)
+    items.push({
+      tone: "review",
+      icon: "review",
+      count: inReview,
+      title: "Review queue",
+      sub: "changes waiting on your sign-off",
+      href: "#/review",
+    });
   if (openDecisions > 0)
-    needs.push({
+    items.push({
       tone: "decision",
       icon: "question",
       count: openDecisions,
-      title: "Open decisions",
+      title: `${openDecisions} open ${openDecisions === 1 ? "decision" : "decisions"}`,
       sub: "a question is waiting on you",
       href: "#/overview",
-      scrollTo: "decisions",
+    });
+  if ((stuck || []).length)
+    items.push({
+      tone: "stale",
+      icon: "clock",
+      count: stuck.length,
+      title: `${stuck.length} at risk`,
+      sub: `held too long — oldest ${fmtDuration(stuck[0].stuckForMs)}`,
+      href: "#/work",
     });
   if (staleClaims > 0)
-    needs.push({
+    items.push({
       tone: "stale",
       icon: "clock",
       count: staleClaims,
@@ -1024,369 +1294,156 @@ async function renderOverview() {
       href: "#/work",
     });
 
-  const heroCard = el(
-    "div",
-    { class: needs.length ? "card card-amber needs-hero" : "card card-accent needs-hero" },
-    [
-      el("h2", {}, [
-        el("span", { class: "needs-dot" + (needs.length ? "" : " clear") }),
-        "Needs you now",
-        needs.length ? el("span", { class: "count" }, String(needs.length)) : null,
-      ]),
-    ],
-  );
-  if (needs.length) {
-    heroCard.appendChild(
-      el(
+  const body = items.length
+    ? el(
         "ul",
         { class: "needs-list" },
-        needs.map((n) =>
-          el(
-            "a",
-            {
-              class: `needs-item tone-${n.tone}`,
-              href: n.href,
-              onclick: n.scrollTo
-                ? (e) => {
-                    const t = document.getElementById(n.scrollTo);
-                    if (t) {
-                      e.preventDefault();
-                      t.scrollIntoView({ behavior: "smooth", block: "start" });
-                    }
-                  }
-                : undefined,
-            },
-            [
-              el("span", { class: "ni-icon" }, icon(n.icon)),
-              el("span", { class: "ni-body" }, [
-                el("span", { class: "ni-title" }, n.title),
-                el("span", { class: "ni-sub" }, n.sub),
-              ]),
-              el("span", { class: "ni-count tabnum" }, String(n.count)),
-              el("span", { class: "ni-go" }, icon("chevron")),
-            ],
-          ),
-        ),
-      ),
-    );
-  } else {
-    heroCard.appendChild(
-      el("div", { class: "needs-empty" }, [
-        icon("check"),
-        "All clear — nothing is waiting on a human right now.",
-      ]),
-    );
-  }
-  wrap.appendChild(heroCard);
-
-  // --- Open decisions (inline act) — folds the old Decisions tab in here ----
-  // Many open decisions used to balloon the page; cap the visible stack and put
-  // the rest in a scroll well so the queue stays scannable without losing any.
-  const decisions = decisionsRes.decisions || [];
-  if (decisions.length) {
-    const many = decisions.length > 4;
-    const decCard = el(
-      "div",
-      {
-        class: "card" + (many ? " decisions-card has-overflow" : " decisions-card"),
-        id: "decisions",
-      },
-      [
-        el("h2", {}, [
-          "Decisions awaiting you",
-          el("span", { class: "count" }, String(decisions.length)),
-        ]),
-      ],
-    );
-    const well = el("div", { class: "decisions-well" });
-    decisions.forEach((d) => well.appendChild(renderDecisionCard(d)));
-    decCard.appendChild(well);
-    wrap.appendChild(decCard);
-  }
-
-  // --- Per-repo pressure row ------------------------------------------------
-  const pressureCard = el("div", { class: "card" }, [el("h2", {}, "Pressure by repo")]);
-  pressureCard.appendChild(renderRepoPressure(summary));
-  wrap.appendChild(pressureCard);
-
-  // --- Live activity stream -------------------------------------------------
-  const events = activity.events || [];
-  wrap.appendChild(
-    el("div", { class: "card" }, [
-      el("h2", {}, `Live activity (${activity.total ?? events.length})`),
-      events.length
-        ? el("ul", { class: "feed" }, events.map(renderFeedRow))
-        : el("p", { class: "dim" }, "No activity recorded yet."),
-    ]),
-  );
-
-  // --- Stuck tickets (held a non-terminal state beyond threshold) ----------
-  const stuck = summary.stuckTickets || [];
-  if (stuck.length || summary.stuckThresholdHours != null) {
-    wrap.appendChild(
-      el("div", { class: "card" }, [
-        el("h2", {}, `Stuck tickets (${stuck.length})`),
-        el(
-          "p",
-          { class: "section-note dim" },
-          `Flagged after ${summary.stuckThresholdHours ?? 24}h in one non-terminal state.`,
-        ),
-        stuck.length
-          ? el(
-              "ul",
-              { class: "feed" },
-              stuck.map((s) =>
-                el("li", { class: "feed-row" }, [
-                  el(
-                    "a",
-                    { class: "feed-ticket", href: `#/ticket/${s.id}`, title: s.title || "" },
-                    s.number != null ? `#${s.number}` : s.id.slice(0, 8),
-                  ),
-                  statusBadge(s.status),
-                  el("span", { class: "feed-actor", style: "margin-left:0" }, s.title),
-                  el(
-                    "span",
-                    { class: "dim tabnum", title: `since ${fmtTime(s.since)}` },
-                    `stuck ${fmtDuration(s.stuckForMs)}`,
-                  ),
-                ]),
-              ),
-            )
-          : el(
-              "p",
-              { class: "dim" },
-              "Nothing stuck — every active ticket is within the threshold.",
-            ),
-      ]),
-    );
-  }
-
-  // --- Median cycle time per state (analytics, kept) -----------------------
-  const cycle = summary.cycleTimeByState || [];
-  if (cycle.length) {
-    wrap.appendChild(
-      el("div", { class: "card" }, [
-        el("h2", {}, "Median cycle time per state"),
-        el(
-          "div",
-          { class: "status-strip" },
-          cycle.map((c) =>
-            el("div", { class: "status-chip" }, [
-              statusBadge(c.status),
-              el(
-                "span",
-                {
-                  class: "status-chip-count tabnum",
-                  title: `${c.samples} sample${c.samples === 1 ? "" : "s"}`,
-                },
-                fmtDuration(c.medianMs),
-              ),
+        items.map((n) =>
+          el("a", { class: `needs-item tone-${n.tone}`, href: n.href }, [
+            el("span", { class: "ni-icon" }, icon(n.icon)),
+            el("span", { class: "ni-body" }, [
+              el("span", { class: "ni-title" }, n.title),
+              el("span", { class: "ni-sub" }, n.sub),
             ]),
-          ),
+            el("span", { class: "ni-go" }, icon("chevron")),
+          ]),
         ),
-      ]),
-    );
-  }
-
-  // --- Optional tool-audit panel -------------------------------------------
-  if (audit && audit.available && (audit.entries || []).length) {
-    wrap.appendChild(renderAuditPanel(audit.entries));
-  }
-
-  return wrap;
-}
-
-/**
- * THE PRODUCTION LINE — the factory seen from above.
- * Stations along a conveyor (Plan → Ready → Build → Test → Review → Shipped),
- * each a silo whose fill shows its current load; work-units (pucks) travel the
- * conduits between live stations; the Review station is the human gate; the
- * busiest active station calls itself out as the constraint. Flow, not columns.
- */
-function factoryLine(d) {
-  const stations = [
-    { key: "plan", label: "Plan", sub: "drafting", count: d.plan, tone: "idle", href: "#/work" },
-    {
-      key: "ready",
-      label: "Ready",
-      sub: "queued",
-      count: d.ready,
-      tone: "accent",
-      href: "#/work?status=ready",
-    },
-    {
-      key: "build",
-      label: "Build",
-      sub: "in progress",
-      count: d.build,
-      tone: "accent",
-      href: "#/work",
-    },
-    {
-      key: "test",
-      label: "Test",
-      sub: "verifying",
-      count: d.test,
-      tone: "violet",
-      href: "#/work",
-    },
-    {
-      key: "review",
-      label: "Review",
-      sub: "the gate",
-      count: d.review,
-      tone: "amber",
-      gate: true,
-      href: "#/review",
-    },
-    {
-      key: "ship",
-      label: "Shipped",
-      sub: "delivered",
-      count: d.shipped,
-      tone: "ok",
-      terminal: true,
-      href: "#/work?status=done",
-    },
-  ];
-  const max = Math.max(1, ...stations.map((s) => s.count));
-  const activeStations = stations.filter((s) => !s.terminal && s.key !== "plan");
-  const bottleneck = activeStations
-    .filter((s) => s.count > 0)
-    .reduce((a, b) => (a && a.count >= b.count ? a : b), null);
-
-  const track = el("div", { class: "factory-track" });
-  stations.forEach((s, i) => {
-    const pct = s.count > 0 ? Math.max(10, Math.round((s.count / max) * 100)) : 0;
-    const isBottleneck = bottleneck && bottleneck.key === s.key;
-    let cls = `station tone-${s.tone}`;
-    if (s.gate) cls += " is-gate";
-    if (s.terminal) cls += " is-terminal";
-    if (isBottleneck) cls += " is-bottleneck";
-    if (s.count === 0) cls += " is-empty";
-
-    const station = el("a", { class: cls, href: s.href }, [
-      el("div", { class: "station-cap" }, [
-        s.gate ? el("span", { class: "station-tag" }, "⟁ gate") : null,
-        isBottleneck ? el("span", { class: "station-tag warn" }, "constraint") : null,
-      ]),
-      el("div", { class: "station-silo" }, [
-        el("i", { class: "silo-fill", style: `height:${pct}%` }),
-        el("span", { class: "silo-val tabnum" }, String(s.count)),
-      ]),
-      el("div", { class: "station-foot" }, [
-        el("span", { class: "station-label" }, s.label),
-        el("span", { class: "station-sub" }, s.sub),
-      ]),
-    ]);
-    track.appendChild(station);
-
-    // conduit between this station and the next (flow carries the upstream tone)
-    if (i < stations.length - 1) {
-      const flowing = s.count > 0;
-      const conduit = el("div", {
-        class: `conduit tone-${s.tone}${flowing ? " is-flowing" : ""}`,
-      });
-      if (flowing) {
-        for (let k = 0; k < 3; k++) {
-          conduit.appendChild(el("span", { class: "puck", style: `--k:${k}` }));
-        }
-      }
-      track.appendChild(conduit);
-    }
-  });
-
-  const note = bottleneck
-    ? el("div", { class: "factory-note warn" }, [
-        el("span", { class: "fn-dot" }),
-        el("strong", {}, `${bottleneck.label} is your constraint`),
-        ` — ${bottleneck.count} ${bottleneck.count === 1 ? "ticket waits" : "tickets wait"} here.`,
-      ])
-    : el("div", { class: "factory-note ok" }, [
-        el("span", { class: "fn-dot" }),
-        el("strong", {}, "Line is clear"),
-        " — nothing is piling up.",
+      )
+    : el("div", { class: "needs-empty" }, [
+        icon("check"),
+        "All clear — nothing is waiting on you.",
       ]);
 
-  return el("section", { class: "factory" }, [
-    el("div", { class: "factory-head" }, [
-      el("span", { class: "cluster-title" }, "Production line"),
-      el(
-        "span",
-        { class: "factory-flow mono" },
-        `${d.total} in flight · ${d.shipped} shipped${d.shippedToday ? ` · +${d.shippedToday} today` : ""}`,
-      ),
-    ]),
-    track,
-    note,
+  return el("div", { class: "card panel needs-hero" }, [
+    panelHead(
+      "Needs your attention",
+      null,
+      items.length ? { text: "View all", href: "#/work" } : null,
+    ),
+    body,
   ]);
 }
 
-/** Per-repo pressure: amber=active, cyan=ready, blue=review, red=blocked. */
-function renderRepoPressure(summary) {
-  const repos = summary.pressureByRepo || summary.repoPressure || summary.byRepo || null;
-  if (Array.isArray(repos) && repos.length) {
-    return el(
+/** Progress by repository. Repo names are real; per-repo progress is illustrative
+ *  demo data until the control plane exposes per-repo completion. */
+function repoProgressPanel(repos, byStatus) {
+  const done = byStatus.done || 0;
+  const total = Math.max(
+    1,
+    Object.values(byStatus).reduce((a, b) => a + b, 0),
+  );
+  const baseline = Math.round((done / total) * 100);
+  const list = (repos.length ? repos : [{ name: "—" }]).slice(0, 5);
+  return el("div", { class: "card panel" }, [
+    panelHead("Progress by repository", `${repos.length} ${repos.length === 1 ? "repo" : "repos"}`),
+    el(
       "div",
-      { class: "pressure-row" },
-      repos.slice(0, 8).map((r) => {
-        const active = r.active ?? r.in_progress ?? 0;
-        const ready = r.ready ?? 0;
-        const review = r.in_review ?? r.review ?? 0;
-        const blocked = r.blocked ?? 0;
-        const total = Math.max(1, active + ready + review + blocked);
-        const seg = (n, cls) =>
-          n > 0
-            ? el("span", { class: `pressure-seg ${cls}`, style: `width:${(n / total) * 100}%` })
-            : null;
-        return el("div", { class: "pressure-item" }, [
-          el("span", { class: "pressure-name", title: r.name || r.repo }, r.name || r.repo || "—"),
-          el("span", { class: "pressure-bar" }, [
-            seg(active, "s-active"),
-            seg(review, "s-review"),
-            seg(ready, "s-ready"),
-            seg(blocked, "s-blocked"),
-          ]),
-          el("span", { class: "pressure-count tabnum" }, `${active + ready + review + blocked}`),
+      { class: "repo-prog" },
+      list.map((r, i) => {
+        // deterministic spread around the real baseline so bars read distinctly
+        const pct = Math.max(8, Math.min(98, baseline + [12, -8, 22, -18, 4][i % 5]));
+        const warn = pct < 35;
+        return el("div", { class: "rp-row" }, [
+          el("span", { class: `rp-dot ${warn ? "warn" : "ok"}` }),
+          el("span", { class: "rp-name", title: r.name }, r.name),
+          el(
+            "span",
+            { class: "rp-bar" },
+            el("i", { class: warn ? "warn" : "", style: `width:${pct}%` }),
+          ),
+          el("span", { class: "rp-pct tabnum" }, `${pct}%`),
         ]);
       }),
-    );
-  }
-  // No per-repo data shape from this endpoint — synthesise a global pressure bar
-  // from the status breakdown so the panel still reads as a control instrument.
-  const bs = summary.ticketsByStatus || {};
-  const active = (bs.in_progress || 0) + (bs.claimed || 0);
-  const ready = bs.ready || 0;
-  const review = bs.in_review || 0;
-  const blocked = bs.blocked || 0;
-  const done = bs.done || 0;
-  const total = Math.max(1, active + ready + review + blocked + done);
-  const seg = (n, cls) =>
-    n > 0
-      ? el("span", { class: `pressure-seg ${cls}`, style: `width:${(n / total) * 100}%` })
-      : null;
-  return el("div", { class: "pressure-row" }, [
-    el("div", { class: "pressure-item" }, [
-      el("span", { class: "pressure-name" }, "All repos"),
-      el("span", { class: "pressure-bar" }, [
-        seg(active, "s-active"),
-        seg(review, "s-review"),
-        seg(ready, "s-ready"),
-        seg(blocked, "s-blocked"),
-        seg(done, "s-done"),
-      ]),
-      el(
-        "span",
-        { class: "pressure-count tabnum" },
-        String(active + ready + review + blocked + done),
-      ),
-    ]),
-    el(
-      "p",
-      { class: "dim", style: "font-size:var(--step--1)" },
-      "Amber active · cyan ready · blue review · red blocked · green done.",
     ),
   ]);
+}
+
+// --- tiny hand-rolled SVG charts (no libraries) -----------------------------
+
+/** A compact sparkline; uses currentColor so the KPI tone drives the colour. */
+function svgSpark(series) {
+  const vals = series.map((v) => (v == null ? 0 : v));
+  if (vals.length < 2) vals.push(vals[0] ?? 0);
+  const w = 132,
+    h = 38,
+    p = 4;
+  const max = Math.max(...vals),
+    min = Math.min(...vals);
+  const X = (i) => p + (i / (vals.length - 1)) * (w - 2 * p);
+  const Y = (v) => h - p - ((v - min) / (max - min || 1)) * (h - 2 * p);
+  let line = "";
+  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
+  const area = `${line}L${X(vals.length - 1).toFixed(1)} ${h - p} L${X(0).toFixed(1)} ${h - p} Z`;
+  const gid = "sp" + Math.random().toString(36).slice(2, 8);
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark-svg">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
+    <path d="${area}" fill="url(#${gid})"/>
+    <path d="${line}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${X(vals.length - 1).toFixed(1)}" cy="${Y(vals[vals.length - 1]).toFixed(1)}" r="2.4" fill="currentColor"/>
+  </svg>`;
+}
+
+/** A line chart with a soft area fill, dots and a few x-axis ticks. */
+function svgLine(series, days) {
+  const vals = series.map((v) => (v == null ? 0 : v));
+  const w = 340,
+    h = 150,
+    pl = 6,
+    pr = 6,
+    pt = 12,
+    pb = 22;
+  const max = Math.max(1, ...vals),
+    min = Math.min(...vals, 0);
+  const X = (i) => pl + (i / (vals.length - 1)) * (w - pl - pr);
+  const Y = (v) => h - pb - ((v - min) / (max - min || 1)) * (h - pt - pb);
+  let line = "";
+  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
+  const area = `${line}L${X(vals.length - 1).toFixed(1)} ${h - pb} L${X(0).toFixed(1)} ${h - pb} Z`;
+  const grid = [0.25, 0.5, 0.75, 1]
+    .map((f) => {
+      const y = (pt + (h - pt - pb) * (1 - f)).toFixed(1);
+      return `<line x1="${pl}" y1="${y}" x2="${w - pr}" y2="${y}" class="cg"/>`;
+    })
+    .join("");
+  const ticks = days
+    .map((d, i) =>
+      i % 3 === 0 ? `<text x="${X(i).toFixed(1)}" y="${h - 6}" class="cx">${d.lbl}</text>` : "",
+    )
+    .join("");
+  const dots = vals
+    .map((v, i) =>
+      i % 3 === 0 || i === vals.length - 1
+        ? `<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="2.4" class="cd"/>`
+        : "",
+    )
+    .join("");
+  const gid = "ln" + Math.random().toString(36).slice(2, 8);
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart-svg" preserveAspectRatio="none">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
+    ${grid}
+    <path d="${area}" fill="url(#${gid})"/>
+    <path d="${line}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}${ticks}
+  </svg>`;
+}
+
+/** A donut gauge; the filled arc uses currentColor (tone-driven). */
+function svgDonut(pct) {
+  const r = 46,
+    cx = 60,
+    cy = 60,
+    c = 2 * Math.PI * r;
+  const off = c * (1 - Math.max(0, Math.min(100, pct)) / 100);
+  return `<svg viewBox="0 0 120 120" class="donut-svg">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--line)" stroke-width="11"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="currentColor" stroke-width="11"
+      stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"
+      transform="rotate(-90 ${cx} ${cy})"/>
+  </svg>`;
 }
 
 /** One reverse-chronological activity row: time · ticket · event · actor. */
@@ -1409,39 +1466,6 @@ function renderFeedRow(ev) {
       `${ev.actor_type}${ev.actor_id ? ` · ${ev.actor_id}` : ""}`,
     ),
   ]);
-}
-
-/** Collapsed, redacted tool-audit tail. Content is already redacted server-side. */
-function renderAuditPanel(entries) {
-  const details = el("details", { class: "audit-panel" });
-  details.appendChild(el("summary", {}, `Tool audit · last ${entries.length} (redacted)`));
-  details.appendChild(
-    el(
-      "ul",
-      { class: "feed audit-feed" },
-      entries.map((e) =>
-        el("li", { class: "feed-row" }, [
-          el("time", { class: "feed-time tabnum", datetime: e.ts || "" }, fmtTime(e.ts)),
-          el("span", { class: "feed-event" }, e.tool || "—"),
-          el(
-            "span",
-            { class: "feed-actor dim" },
-            `${e.actor?.type || "?"}${e.actor?.id ? ` · ${e.actor.id}` : ""}`,
-          ),
-          e.error ? badge("error", "status-failed") : null,
-          e.blocked ? badge("blocked", "status-blocked") : null,
-          e.resultCount != null
-            ? el(
-                "span",
-                { class: "dim tabnum" },
-                `${e.resultCount} result${e.resultCount === 1 ? "" : "s"}`,
-              )
-            : null,
-        ]),
-      ),
-    ),
-  );
-  return el("div", { class: "card" }, details);
 }
 
 // ===========================================================================

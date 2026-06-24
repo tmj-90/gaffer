@@ -127,6 +127,23 @@ const SANITISERS: Record<ToolName, Sanitiser> = {
       ticket: asString(a.ticket),
       depends_on: asString(a.depends_on),
     }),
+  // BBT-001: record only the shape (counts/flags), never free-text surface names.
+  set_ticket_testable: (a) =>
+    compact({
+      ticket_id: asString(a.ticket_id),
+      can_be_tested: a.can_be_tested,
+    }),
+  set_test_contract: (a) =>
+    compact({
+      ticket_id: asString(a.ticket_id),
+      changed_surface_count: Array.isArray(a.changed_surfaces)
+        ? a.changed_surfaces.length
+        : undefined,
+      runtime_dep_count: Array.isArray(a.runtime_deps) ? a.runtime_deps.length : undefined,
+      env_var_count: Array.isArray(a.env_vars) ? a.env_vars.length : undefined,
+      run_command_chars: chars(a.run_command),
+      harness_ready: a.harness_ready,
+    }),
   create_epic: (a) => {
     // Record only the shape of the plan (name + counts) — never the ticket
     // titles, descriptions or AC text (free-text bodies stay out of the audit).

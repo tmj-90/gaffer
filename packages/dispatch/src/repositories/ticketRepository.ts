@@ -19,11 +19,13 @@ export class TicketRepository {
         `INSERT INTO tickets
           (id, number, title, description, status, priority, risk_level, policy_pack,
            source, created_by, reviewer, branch_name, pr_url, attempt_count, row_version,
-           scheduled_after, due_at, bootstrap, last_review_feedback, created_at, updated_at)
+           scheduled_after, due_at, bootstrap, last_review_feedback, can_be_tested,
+           test_contract, created_at, updated_at)
          VALUES
           (@id, @number, @title, @description, @status, @priority, @risk_level, @policy_pack,
            @source, @created_by, @reviewer, @branch_name, @pr_url, @attempt_count, @row_version,
-           @scheduled_after, @due_at, @bootstrap, @last_review_feedback, @created_at, @updated_at)`,
+           @scheduled_after, @due_at, @bootstrap, @last_review_feedback, @can_be_tested,
+           @test_contract, @created_at, @updated_at)`,
       )
       .run(ticket);
   }
@@ -92,6 +94,28 @@ export class TicketRepository {
     this.db
       .prepare(`UPDATE tickets SET last_review_feedback = @value WHERE id = @id`)
       .run({ id, value });
+  }
+
+  /**
+   * BBT-001: set the ticket's `can_be_tested` flag (0/1). A plain write — no
+   * row_version bump — since it is independent of the status machine (it only
+   * GATES future transitions); callers run it inside their own transaction.
+   */
+  setCanBeTested(id: string, value: boolean, nowIso: string): void {
+    this.db
+      .prepare(`UPDATE tickets SET can_be_tested = @value, updated_at = @now WHERE id = @id`)
+      .run({ id, value: value ? 1 : 0, now: nowIso });
+  }
+
+  /**
+   * BBT-001: set (or, with `null`, clear) the ticket's `test_contract` JSON. A
+   * plain write — no row_version bump — for the same reason as
+   * {@link setCanBeTested}: the contract is handover metadata, not a status change.
+   */
+  setTestContract(id: string, value: string | null, nowIso: string): void {
+    this.db
+      .prepare(`UPDATE tickets SET test_contract = @value, updated_at = @now WHERE id = @id`)
+      .run({ id, value, now: nowIso });
   }
 
   list(status?: TicketStatus): Ticket[] {

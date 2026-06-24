@@ -2068,6 +2068,433 @@ html::after {
   }
 }
 
+/* ===========================================================================
+   OVERVIEW — the analytics homepage (KPIs · flow · charts)
+   A calm, data-rich surface: flat cards, sparklines, a line chart and a donut.
+   =========================================================================== */
+.ov-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+}
+.ov-title {
+  font-family: var(--display);
+  font-size: var(--display-title);
+  font-weight: 600;
+  letter-spacing: var(--track-tight);
+  color: var(--text);
+}
+.ov-sub {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: var(--step-0);
+}
+.ov-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+}
+.ov-fresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--step--1);
+  color: var(--text-dim);
+}
+.ov-fresh-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 10px -1px var(--ok);
+  animation: lamp-breathe 2.8s var(--ease-io) infinite;
+}
+.ov-date {
+  font-size: var(--step--1);
+  color: var(--text-faint);
+}
+
+/* shared panel header */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  margin-bottom: var(--s-4);
+}
+.panel-title {
+  font-size: var(--step-0);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: var(--track-tight);
+}
+.panel-aux {
+  font-size: 0.62rem;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.panel-link {
+  font-size: var(--step--1);
+  color: var(--accent);
+}
+.panel-link:hover {
+  color: var(--accent-bright);
+}
+
+/* --- KPI row --- */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--s-3);
+}
+@media (min-width: 680px) {
+  .kpi-row {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+@media (min-width: 1080px) {
+  .kpi-row {
+    grid-template-columns: repeat(5, 1fr);
+  }
+}
+.kpi {
+  --st: var(--accent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border-radius: var(--r);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--elev-1);
+  color: var(--st);
+  text-decoration: none;
+  overflow: hidden;
+  transition:
+    border-color var(--med) var(--ease),
+    transform var(--med) var(--ease);
+}
+.kpi:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in oklch, var(--st), transparent 55%);
+}
+.kpi.tone-accent {
+  --st: var(--accent);
+}
+.kpi.tone-ok {
+  --st: var(--ok);
+}
+.kpi.tone-violet {
+  --st: var(--violet);
+}
+.kpi.tone-amber {
+  --st: var(--amber);
+}
+.kpi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.kpi-label {
+  font-size: 0.64rem;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  font-weight: 600;
+}
+.kpi-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: var(--r-pill);
+}
+.kpi-delta.good {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+.kpi-delta.bad {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.kpi-delta.flat {
+  color: var(--text-faint);
+  background: var(--surface-3);
+}
+.kpi-arrow {
+  font-size: 0.56rem;
+}
+.kpi-figure {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--text);
+}
+.kpi-val {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(1.7rem, 1.2rem + 1vw, 2.1rem);
+  font-weight: 700;
+  letter-spacing: var(--track-tight);
+  line-height: 1;
+}
+.kpi-unit {
+  font-size: 0.64rem;
+  color: var(--text-faint);
+}
+.kpi-spark {
+  height: 38px;
+  color: var(--st);
+  margin: 2px -4px -4px;
+}
+.spark-svg {
+  width: 100%;
+  height: 38px;
+  display: block;
+}
+
+/* --- overview grids --- */
+.ov-grid {
+  display: grid;
+  gap: var(--s-4);
+}
+@media (min-width: 920px) {
+  .ov-2 {
+    grid-template-columns: 1.45fr 1fr;
+    align-items: start;
+  }
+  .ov-3 {
+    grid-template-columns: 1.2fr 1.2fr 1fr;
+    align-items: start;
+  }
+}
+
+/* --- development flow table --- */
+.devflow {
+  display: flex;
+  flex-direction: column;
+}
+.df-row {
+  --st: var(--text-faint);
+  display: grid;
+  grid-template-columns: 96px 30px 1fr 58px 88px;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 11px 0;
+  border-top: 1px solid var(--line-hair);
+  text-decoration: none;
+  color: inherit;
+}
+.df-row:first-child {
+  border-top: none;
+}
+.df-row.tone-accent {
+  --st: var(--accent);
+}
+.df-row.tone-amber {
+  --st: var(--amber);
+}
+.df-row.tone-ok {
+  --st: var(--ok);
+}
+.df-row.tone-danger {
+  --st: var(--danger);
+}
+.df-row.tone-idle {
+  --st: var(--text-faint);
+}
+.df-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.df-row:hover .df-name {
+  color: var(--text);
+}
+.df-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  transform: rotate(45deg);
+  background: var(--st);
+  box-shadow: 0 0 8px -1px var(--st);
+  flex: 0 0 auto;
+}
+.df-count {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--text);
+  text-align: right;
+}
+.df-bar {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+.df-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--st);
+  box-shadow: 0 0 10px -1px var(--st);
+  transition: width var(--slow) var(--ease);
+}
+.df-age {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  color: var(--text-faint);
+  text-align: right;
+}
+.df-status {
+  justify-self: end;
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+}
+.df-status.ok {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+.df-status.warn {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+/* --- progress by repository --- */
+.repo-prog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+.rp-row {
+  display: grid;
+  grid-template-columns: 9px 1fr 96px 40px;
+  align-items: center;
+  gap: var(--s-3);
+}
+.rp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.rp-dot.ok {
+  background: var(--ok);
+  box-shadow: 0 0 8px -1px var(--ok);
+}
+.rp-dot.warn {
+  background: var(--amber);
+  box-shadow: 0 0 8px -1px var(--amber);
+}
+.rp-name {
+  font-size: var(--step--1);
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rp-bar {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+.rp-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  box-shadow: 0 0 10px -1px var(--accent);
+  transition: width var(--slow) var(--ease);
+}
+.rp-bar i.warn {
+  background: var(--amber);
+  box-shadow: 0 0 10px -1px var(--amber);
+}
+.rp-pct {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  text-align: right;
+}
+
+/* --- line chart --- */
+.chart {
+  color: var(--accent);
+  margin-top: 2px;
+}
+.chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.chart-svg .cg {
+  stroke: var(--line-hair);
+  stroke-width: 1;
+}
+.chart-svg .cx {
+  fill: var(--text-faint);
+  font-size: 8px;
+  font-family: var(--mono);
+  text-anchor: middle;
+}
+.chart-svg .cd {
+  fill: currentColor;
+}
+
+/* --- flow-efficiency donut --- */
+.donut-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: var(--s-3) 0 var(--s-2);
+  color: var(--violet);
+}
+.donut-svg {
+  width: 156px;
+  height: 156px;
+  display: block;
+}
+.donut {
+  line-height: 0;
+}
+.donut-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.donut-pct {
+  font-family: var(--mono);
+  font-size: 1.7rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.donut-cap {
+  font-size: 0.58rem;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
 /* Tiny trend chip used only when the data honestly supports it. */
 .stat-trend {
   display: inline-flex;

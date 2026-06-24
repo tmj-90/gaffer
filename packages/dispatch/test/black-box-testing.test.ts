@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { Dispatch, isTestingEnabled } from "../src/core.js";
+import { Dispatch, isTestingEnabled, testerProvenance } from "../src/core.js";
 import {
   parseTestContract,
   validateTestContract,
@@ -132,6 +132,15 @@ describe("BBT-001 the Test Contract artifact", () => {
       run_command: "go test ./...",
       harness_ready: false,
     });
+  });
+});
+
+describe("BBT-001 tester verdict provenance", () => {
+  it("derives provenance from the recording actor type", () => {
+    expect(testerProvenance({ type: "agent", id: "t1" })).toBe("agent");
+    expect(testerProvenance({ type: "human", id: "tom" })).toBe("human");
+    expect(testerProvenance({ type: "admin", id: "root" })).toBe("human");
+    expect(testerProvenance({ type: "system" })).toBe("system");
   });
 });
 
@@ -300,6 +309,11 @@ describe("BBT-001 tester verdict", () => {
       .evidence.filter((e) => e.evidence_type === "test_output")
       .at(-1);
     expect(ev?.summary).toContain("black-box tests pass");
+    // Provenance: a tester AGENT recorded the pass.
+    expect(JSON.parse(ev?.payload_json ?? "{}")).toMatchObject({
+      verdict: "pass",
+      provenance: "agent",
+    });
     // The merge then completes normally.
     expect(wg.markMerged(ticketId, systemActor).ticket.status).toBe("done");
   });
@@ -327,6 +341,10 @@ describe("BBT-001 tester verdict", () => {
       .evidence.filter((e) => e.evidence_type === "test_output")
       .at(-1);
     expect(ev?.summary).toContain("returns 500");
+    expect(JSON.parse(ev?.payload_json ?? "{}")).toMatchObject({
+      verdict: "fail",
+      provenance: "agent",
+    });
     const feedback = wg.view(ticketId).ticket.last_review_feedback;
     expect(feedback).toContain("tester_failed");
     // ACs are reset to not-satisfied (reuses the reject path).

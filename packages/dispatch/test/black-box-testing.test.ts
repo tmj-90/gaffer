@@ -167,6 +167,32 @@ describe("BBT-001 contract leak validator", () => {
     expect(() => validateTestContract(withSurface("GET /tickets/:id/testable"))).not.toThrow();
     // A file-interface surface (the surface IS a file path) is allowed.
     expect(() => validateTestContract(withSurface("reads runner/factory.config.sh"))).not.toThrow();
+    // Config / data files are not code — a file-interface surface stays allowed.
+    expect(() =>
+      validateTestContract(withSurface("the .gaffer/settings.json schema")),
+    ).not.toThrow();
+    expect(() => validateTestContract(withSurface("crew.yaml loops section"))).not.toThrow();
+  });
+
+  it("rejects an internal source-file path in a surface (the reviewer's exact leak)", () => {
+    // A source file + an internal function name is NOT a surface — it's an
+    // implementation pointer even though the tester never saw the diff.
+    expect(() =>
+      validateTestContract(
+        withSurface("packages/dispatch/src/services/transitionService.ts testerPass branch"),
+      ),
+    ).toThrow(/source-file path/i);
+    // Common source extensions across stacks.
+    expect(() => validateTestContract(withSurface("see src/app/page.tsx"))).toThrow(
+      /source-file path/i,
+    );
+    expect(() => validateTestContract(withSurface("api/handlers/orders.py"))).toThrow(
+      /source-file path/i,
+    );
+    // A run_command may still invoke a script file — that is not a leak.
+    expect(() =>
+      validateTestContract({ ...clean, run_command: "node bin/seed.mjs && pytest tests/" }),
+    ).not.toThrow();
   });
 
   it("rejects a gaffer/… branch name", () => {

@@ -18,7 +18,7 @@ runner/       bash orchestrator, skill library, safety hook
 
 ## Getting started
 
-Requires Node 20 or 22 and [pnpm](https://pnpm.io) (`pnpm@10.33.0`, pinned via
+Requires Node 22 or 24 and [pnpm](https://pnpm.io) (`pnpm@10.33.0`, pinned via
 `packageManager`).
 
 ```bash

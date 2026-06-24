@@ -5618,7 +5618,7 @@ async function renderEpics(param) {
         membersByEpic.get(epic.id) || [],
         depsById,
         depViewById,
-        focusId === epic.id,
+        focusId === epic.id || epics.length === 1,
       ),
     );
   }
@@ -5667,89 +5667,129 @@ function renderEpicCard(epic, members, depsById, depViewById, expanded) {
       el("p", { class: "dim", style: "padding:8px 2px" }, "This epic has no tickets."),
     );
   } else {
-    for (const p of phases) {
-      body.appendChild(renderEpicPhase(p, byPhase.get(p), depViewById));
-    }
+    body.appendChild(phaseProgress(byPhase, phases));
+    body.appendChild(renderEpicDag(byPhase, phases, depViewById));
   }
   details.appendChild(body);
   return details;
 }
 
-/** A phase column: a labelled lane of ticket cards, with the hard-gate note. */
-function renderEpicPhase(phase, tickets, depViewById) {
-  // Phases are 0-indexed internally (dependency depth) but shown 1-indexed so the
-  // labels read Phase 1…Phase N and match the "{N} phases" count in the summary.
-  const label = phase + 1;
-  const lane = el("section", { class: "epic-phase", "aria-label": `Phase ${label}` });
-  lane.appendChild(
-    el("div", { class: "epic-phase-head" }, [
-      el("span", { class: "epic-phase-num tabnum" }, `Phase ${label}`),
-      el("span", { class: "epic-phase-count dim tabnum" }, String(tickets.length)),
-      phase > 0
-        ? el("span", { class: "epic-phase-gate dim" }, [
-            icon("clock"),
-            `gated on phase ${label - 1}`,
-          ])
-        : null,
-    ]),
-  );
-  const cards = tickets
-    .slice()
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0))
-    .map((t) => renderEpicTicket(t, depViewById.get(t.id) || []));
-  lane.appendChild(el("div", { class: "epic-phase-body" }, cards));
-  return lane;
-}
-
-/** A ticket card inside an epic phase — status, bootstrap, and its blockers. */
-function renderEpicTicket(t, deps) {
-  const blockers = deps.filter((d) => !d.satisfied);
-  const go = () => navigate(`#/ticket/${t.id}`);
+/** Phase progress strip — one segment per phase, filled by its done-ratio, so
+ *  you can see the gate front advancing through the plan at a glance. */
+function phaseProgress(byPhase, phases) {
+  const active = new Set(["in_progress", "claimed", "in_review", "in_testing", "ready_for_merge"]);
   return el(
-    "a",
-    {
-      class: "epic-ticket",
-      href: `#/ticket/${t.id}`,
-      onkeydown: (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          go();
-        }
-      },
-    },
-    [
-      el("div", { class: "epic-ticket-top" }, [
-        el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
-        t.bootstrap ? badge("bootstrap", "no-dot") : null,
-        pipelineDots(t.status),
-      ]),
-      el("div", { class: "epic-ticket-title" }, t.title),
-      el("div", { class: "epic-ticket-chips" }, [
-        statusBadge(t.status),
-        typeof t.priority === "number"
-          ? el("span", { class: "dim tabnum", title: "priority" }, `P${t.priority}`)
-          : null,
-      ]),
-      deps.length
-        ? el("div", { class: `epic-deps${blockers.length ? " blocked" : ""}` }, [
-            icon("link", "dep-ico"),
-            blockers.length
-              ? el("span", {}, ["blocked by ", ...joinDepRefs(blockers)])
-              : el("span", { class: "dim" }, ["after ", ...joinDepRefs(deps)]),
-          ])
-        : null,
-    ],
+    "div",
+    { class: "phase-strip" },
+    phases.map((p) => {
+      const tix = byPhase.get(p) || [];
+      const done = tix.filter((t) => t.status === "done").length;
+      const pct = tix.length ? Math.round((done / tix.length) * 100) : 0;
+      const state =
+        tix.length && done === tix.length
+          ? "done"
+          : tix.some((t) => active.has(t.status))
+            ? "active"
+            : "idle";
+      return el("div", { class: `phase-seg is-${state}` }, [
+        el("div", { class: "ps-top" }, [
+          el("span", { class: "ps-label" }, `Phase ${p + 1}`),
+          el("span", { class: "ps-frac mono" }, `${done}/${tix.length}`),
+        ]),
+        el("div", { class: "ps-bar" }, el("i", { style: `width:${pct}%` })),
+      ]);
+    }),
   );
 }
 
-/** Render dependency refs as "#3, #5" text nodes. */
-function joinDepRefs(deps) {
-  const out = [];
-  deps.forEach((d, i) => {
-    if (i > 0) out.push(", ");
-    out.push(el("span", { class: "dep-ref" }, d.number != null ? `#${d.number}` : "ticket"));
+/** The dependency DAG — phases laid out as columns (topological layers), tickets
+ *  as nodes, and dependsOn edges drawn between them. Satisfied edges are solid
+ *  cyan; unmet edges are dashed amber (the live gate front). */
+function renderEpicDag(byPhase, phases, depViewById) {
+  const NODE_W = 208,
+    NODE_H = 84,
+    COLG = 70,
+    ROWG = 18,
+    PADX = 12,
+    PADT = 42,
+    PADB = 14;
+  const cols = phases.map((p) =>
+    (byPhase.get(p) || []).slice().sort((a, b) => (a.number || 0) - (b.number || 0)),
+  );
+  const pos = new Map();
+  cols.forEach((tix, ci) => {
+    const x = PADX + ci * (NODE_W + COLG);
+    tix.forEach((t, ri) => pos.set(t.id, { x, y: PADT + ri * (NODE_H + ROWG), t }));
   });
-  return out;
+  const maxRows = Math.max(1, ...cols.map((c) => c.length));
+  const width = PADX * 2 + phases.length * NODE_W + Math.max(0, phases.length - 1) * COLG;
+  const height = PADT + maxRows * (NODE_H + ROWG) - ROWG + PADB;
+
+  // edges (drawn behind the nodes)
+  let paths = "";
+  for (const [id, { x, y }] of pos) {
+    for (const d of depViewById.get(id) || []) {
+      const from = pos.get(d.depends_on_ticket_id);
+      if (!from) continue;
+      const x1 = from.x + NODE_W,
+        y1 = from.y + NODE_H / 2,
+        x2 = x,
+        y2 = y + NODE_H / 2;
+      const mx = (x1 + x2) / 2;
+      paths += `<path class="edge ${d.satisfied ? "sat" : "pend"}" d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"/>`;
+    }
+  }
+  const svg = el("div", {
+    class: "dag-edges",
+    html: `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none">${paths}</svg>`,
+  });
+
+  const labels = phases.map((p, ci) =>
+    el(
+      "div",
+      { class: "dag-collabel", style: `left:${PADX + ci * (NODE_W + COLG)}px;width:${NODE_W}px` },
+      [
+        el("span", { class: "dcl-num" }, `Phase ${p + 1}`),
+        ci > 0 ? el("span", { class: "dcl-gate" }, "gated") : null,
+      ],
+    ),
+  );
+
+  const nodes = [];
+  for (const [id, { x, y, t }] of pos) {
+    const blockers = (depViewById.get(id) || []).filter((d) => !d.satisfied);
+    nodes.push(
+      el(
+        "a",
+        {
+          class: `dag-node status-${t.status}`,
+          href: `#/ticket/${t.id}`,
+          style: `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`,
+        },
+        [
+          el("div", { class: "dn-top" }, [
+            el("span", { class: "dn-num mono" }, t.number != null ? `#${t.number}` : "—"),
+            statusBadge(t.status),
+          ]),
+          el("div", { class: "dn-title" }, t.title),
+          blockers.length
+            ? el("div", { class: "dn-block" }, [
+                icon("clock", "dn-block-ico"),
+                `waiting on ${blockers.map((b) => (b.number != null ? "#" + b.number : "?")).join(", ")}`,
+              ])
+            : null,
+        ],
+      ),
+    );
+  }
+
+  return el("div", { class: "dag-scroll" }, [
+    el("div", { class: "dag", style: `width:${width}px;height:${height}px` }, [
+      svg,
+      ...labels,
+      ...nodes,
+    ]),
+  ]);
 }
 
 // ===========================================================================

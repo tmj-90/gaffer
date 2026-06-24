@@ -181,6 +181,11 @@ export function assembleContext(dbPath, number) {
 
     const testContract = parseContract(ticket.testContract);
     const harnessReady = testContract ? testContract.harness_ready === true : false;
+    // SAFETY: run_command (inside testContract) is CONTRACT TEXT ONLY. This seam
+    // assembles it into the context but NEVER executes it. When a live tester is
+    // implemented it must NOT spawn this contract-authored string directly — it has
+    // to go through the safety hook + the worktree write-root/read-root boundary and
+    // be a JSON argv (not a shell string) or a human-approved harness file.
 
     return {
       ticketId: String(ticket.id),

@@ -48,6 +48,20 @@ const ALLOWED: ReadonlySet<string> = new Set([
   "in_review->ready_for_merge",
   "in_review->ready",
   "in_review->refining",
+  // BBT-001 independent testing lane. Review approval routes here instead of
+  // straight to `ready_for_merge` when the global GAFFER_TESTING toggle is on AND
+  // the ticket is `can_be_tested` (decided in approveReview). From `in_testing`:
+  // the tester PASSED -> `ready_for_merge` (proceed to merge); the tester FAILED ->
+  // `refining` (reuses the reject path, the failing test as evidence). Both are
+  // guarded by the `testerVerdict` flag so only the tester paths can route here.
+  "in_review->in_testing",
+  "in_testing->ready_for_merge",
+  "in_testing->refining",
+  // Park a testing ticket whose retry budget is exhausted, mirroring the review
+  // park; guarded by the `park` flag.
+  "in_testing->blocked",
+  // Abandon a testing ticket in one step (won't-do); guarded by the `wontDo` flag.
+  "in_testing->cancelled",
   // MERGE-COMPLETE: the runner finished the git merge and marks the ticket merged.
   // GUARDED by `markMerged` (system/admin only, same pattern as won't-do) so a
   // user or a board-drag can never fake "merged".
@@ -162,6 +176,17 @@ export interface TransitionInput {
    * though it's in the ALLOWED set, so a stray board-drag can't park a ticket.
    */
   park?: boolean;
+  /**
+   * BBT-001 opt-in flag the independent-testing paths MUST set. Routing INTO the
+   * testing lane (`in_review -> in_testing`) and OUT of it on a tester verdict
+   * (`in_testing -> ready_for_merge` on pass, `in_testing -> refining` on fail) is
+   * only reachable through {@link Dispatch.routeToTesting} /
+   * {@link Dispatch.testerPass} / {@link Dispatch.rejectReview}. Without this flag
+   * those transitions are rejected as ILLEGAL_TRANSITION even though they are in the
+   * ALLOWED set, so a stray board-drag can never push a ticket into or out of
+   * testing. Same guarded-flag pattern as {@link wontDo} / {@link markMerged}.
+   */
+  testerVerdict?: boolean;
 }
 
 export interface TransitionResult {
@@ -271,10 +296,32 @@ export class TransitionService {
       // through the reject path once a delivery has exhausted its retry budget.
       // Reject it on any route that did not opt in via the `park` flag so a stray
       // board-drag onto a "Blocked" column can never park a ticket.
-      if ((key === "in_review->blocked" || key === "ready_for_merge->blocked") && !input.park) {
+      if (
+        (key === "in_review->blocked" ||
+          key === "ready_for_merge->blocked" ||
+          key === "in_testing->blocked") &&
+        !input.park
+      ) {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
           "A ticket can only be parked to blocked via the retry-cap reject path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
+      // BBT-001: the independent-testing routes (into the lane on approval, and out
+      // of it on a tester verdict) are reachable ONLY through the dedicated facade
+      // paths that set `testerVerdict`. Reject them on any other route — a stray
+      // board-drag can never move a ticket into or out of `in_testing`.
+      if (
+        (key === "in_review->in_testing" ||
+          key === "in_testing->ready_for_merge" ||
+          key === "in_testing->refining") &&
+        !input.testerVerdict
+      ) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A ticket can only move into or out of testing via the testing-lane paths.",
           { from: ticket.status, to: input.toStatus },
         );
       }

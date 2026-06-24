@@ -17,6 +17,20 @@ function cliActor(): Actor {
   return { type: "human", id: process.env.USER ?? "cli" };
 }
 
+/** Resolve a `--as <type>` flag to an Actor (BBT-001 tester verdict commands). */
+function testerActor(as: string): Actor {
+  switch (as) {
+    case "human":
+      return { type: "human", id: process.env.USER ?? "cli" };
+    case "admin":
+      return { type: "admin", id: process.env.USER ?? "cli" };
+    case "system":
+      return { type: "system" };
+    default:
+      return { type: "agent", id: "tester" };
+  }
+}
+
 function open(opts: { db?: string }): Dispatch {
   return Dispatch.open(resolveDbPath(opts.db));
 }
@@ -199,6 +213,78 @@ ticket
       opts.as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
     const res = wg.markMerged(ref, actor);
     printJson({ ok: true, ticket: res.ticket, eventId: res.eventId });
+    wg.db.close();
+  });
+
+ticket
+  .command("set-testable <ref>")
+  .description(
+    "BBT-001: mark a ticket eligible for the independent black-box testing lane " +
+      "(--off to clear). Gates entry to in_testing on review approval when GAFFER_TESTING is on.",
+  )
+  .option("--off", "clear the flag (mark NOT testable)", false)
+  .option("--admin", "act as an admin actor", false)
+  .action((ref, opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const actor: Actor = opts.admin ? { type: "admin", id: process.env.USER ?? "cli" } : cliActor();
+    const res = wg.setTestable(ref, !opts.off, actor);
+    printJson({ ok: true, ...res });
+    wg.db.close();
+  });
+
+ticket
+  .command("test-contract <ref>")
+  .description(
+    "BBT-001: record (replace) a ticket's test_contract — the testing handover the " +
+      "independent tester reads to stand the system up (never the diff).",
+  )
+  .option("--surface <surface...>", "changed boundary surface(s): API/endpoint/CLI/page", [])
+  .option("--dep <dep...>", "runtime dependency to stand up (e.g. 'Postgres 16')", [])
+  .option("--env <var...>", "environment variable the tester sets", [])
+  .option("--run <command>", "how to bring the system up / invoke the surface", "")
+  .option("--harness-ready", "a black-box harness already exists for this surface", false)
+  .action((ref, opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const contract = wg.setTestContract(
+      ref,
+      {
+        changed_surfaces: opts.surface,
+        runtime_deps: opts.dep,
+        env_vars: opts.env,
+        run_command: opts.run,
+        harness_ready: opts.harnessReady,
+      },
+      cliActor(),
+    );
+    printJson({ ok: true, test_contract: contract });
+    wg.db.close();
+  });
+
+ticket
+  .command("tester-pass <ref>")
+  .description("BBT-001: record an independent tester PASS (in_testing -> ready_for_merge)")
+  .requiredOption("--summary <text>", "passing test-result summary (recorded as evidence)")
+  .option("--uri <uri>", "evidence uri")
+  .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
+  .action((ref, opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const actor = testerActor(opts.as);
+    const res = wg.testerPass(ref, { summary: opts.summary, uri: opts.uri }, actor);
+    printJson({ ok: true, status: res.ticket.status, event: res.eventId });
+    wg.db.close();
+  });
+
+ticket
+  .command("tester-fail <ref>")
+  .description("BBT-001: record an independent tester FAIL (in_testing -> refining, with evidence)")
+  .requiredOption("--summary <text>", "failing-test summary (recorded as evidence + reject reason)")
+  .option("--uri <uri>", "evidence uri")
+  .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
+  .action((ref, opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const actor = testerActor(opts.as);
+    const res = wg.testerFail(ref, { summary: opts.summary, uri: opts.uri }, actor);
+    printJson({ ok: true, status: res.ticket.status, event: res.eventId });
     wg.db.close();
   });
 

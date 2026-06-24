@@ -131,6 +131,32 @@ export const wontDoBody = z.object({
 export type WontDoBody = z.infer<typeof wontDoBody>;
 
 /**
+ * BBT-001 bodies. POST /tickets/:id/testable sets the testing-lane eligibility
+ * flag; POST /tickets/:id/test-contract records the testing handover; POST
+ * /tickets/:id/tester records a tester verdict (pass/fail) from the dashboard.
+ */
+export const setTestableBody = z.object({
+  can_be_tested: z.boolean(),
+});
+export type SetTestableBody = z.infer<typeof setTestableBody>;
+
+export const setTestContractBody = z.object({
+  changed_surfaces: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  runtime_deps: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  env_vars: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  run_command: z.string().trim().max(2_000).default(""),
+  harness_ready: z.boolean().default(false),
+});
+export type SetTestContractBody = z.infer<typeof setTestContractBody>;
+
+export const testerVerdictBody = z.object({
+  verdict: z.enum(["pass", "fail"]),
+  summary: z.string().trim().min(1).max(20_000),
+  uri: z.string().trim().min(1).max(2_000).optional(),
+});
+export type TesterVerdictBody = z.infer<typeof testerVerdictBody>;
+
+/**
  * Body for POST /tickets/:id/reopen — pull a won't-do (cancelled) ticket back into
  * the pipeline. Defaults to `refining` (triage first); `draft` for a clean restart.
  */

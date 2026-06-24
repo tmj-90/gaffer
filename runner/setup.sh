@@ -40,5 +40,6 @@ echo "  $HERE/gaffer onboard /path/to/your/repo   # add a repo (registers + scan
 echo "  $HERE/gaffer dashboard                    # open the web UI (http://127.0.0.1:8787)"
 echo "  $HERE/gaffer demo                         # watch the whole loop (dry-run)"
 echo "  $HERE/gaffer status                       # what's registered + running"
+echo "  $HERE/gaffer skills install --user        # (optional) add the 31 skills to your own Claude Code"
 echo
 echo "  go live when ready:  DRY_RUN=0 bash $HERE/loop.sh   (review preflight.sh first)"

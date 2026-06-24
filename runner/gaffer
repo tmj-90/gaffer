@@ -6,6 +6,7 @@
 #   gaffer dashboard [--restart|--lan] start the web dashboard (--lan = token-protected, on your LAN)
 #   gaffer status                     what's registered + what's running
 #   gaffer demo                       run the Factory Map showcase (DRY_RUN)
+#   gaffer skills [install]           list the skill library / install it into your Claude Code
 #   gaffer help
 #
 # Everything uses the factory's own config/state under $GAFFER_DATA — no flags to remember.
@@ -129,7 +130,39 @@ setup)
 
 demo) DRY_RUN="${DRY_RUN:-1}" bash "$HERE/demo.sh" ;;
 
+skills)
+  # The factory ALREADY loads every bundled skill for each ticket (tick.sh symlinks
+  # $SKILLS_DIR into the agent's worktree). This command exposes the same library to
+  # YOUR own Claude Code so you can use the skills interactively.
+  sub="${1:-list}"; [ $# -gt 0 ] && shift || true
+  case "$sub" in
+    list)
+      say "bundled skills ($(ls -d "$SKILLS_DIR"/*/ 2>/dev/null | wc -l | tr -d ' ')) — $SKILLS_DIR"
+      for d in "$SKILLS_DIR"/*/; do [ -d "$d" ] && printf "  • %s\n" "$(basename "$d")"; done
+      printf "  ${c_dim}the factory auto-loads all of these every ticket. \`gaffer skills install\` adds them to your own Claude Code.${c_off}\n"
+      ;;
+    install)
+      scope="project"; force=0
+      for a in "$@"; do case "$a" in --user) scope="user";; --project) scope="project";; --force) force=1;; esac; done
+      [ "$scope" = user ] && dest="$HOME/.claude/skills" || dest="$PWD/.claude/skills"
+      mkdir -p "$dest"
+      n=0; skipped=0
+      for d in "$SKILLS_DIR"/*/; do
+        [ -d "$d" ] || continue; name="$(basename "$d")"; link="$dest/$name"
+        if [ -e "$link" ] || [ -L "$link" ]; then
+          if [ "$force" = 1 ]; then rm -rf "$link"; else skipped=$((skipped+1)); continue; fi
+        fi
+        ln -sfn "$SKILLS_DIR/$name" "$link" && n=$((n+1))
+      done
+      ok "installed $n skill(s) → $dest"
+      [ "$skipped" -gt 0 ] && warn "$skipped already present — re-run with --force to overwrite"
+      printf "  ${c_dim}symlinks track $SKILLS_DIR (repo updates flow through). Remove: rm \"$dest\"/<name>${c_off}\n"
+      ;;
+    *) echo "usage: gaffer skills [list | install [--user|--project] [--force]]";;
+  esac
+  ;;
+
 help|*)
-  sed -n '2,11p' "$HERE/gaffer" | sed 's/^# \{0,1\}//'
+  sed -n '2,12p' "$HERE/gaffer" | sed 's/^# \{0,1\}//'
   ;;
 esac

@@ -2461,13 +2461,122 @@ async function renderTicket(id) {
       : el("p", { class: "dim" }, "No events recorded."),
   ]);
 
+  // BBT-001: the independent black-box testing card — the testability toggle, the
+  // test_contract (surfaces / deps / env / run / harness), and the tester's verdict
+  // evidence. Rendered on every ticket so a PO can mark it testable + fill the
+  // contract ahead of time; the contract surfaces/render the same way in_testing.
+  const testingCard = renderTestingCard(t, view.evidence || []);
+
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, sideRepos, diffCard, acCard, timeline]),
+      el("div", {}, [head, sideRepos, diffCard, acCard, testingCard, timeline]),
       el("div", {}, [sideFields, sideBlockers]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * BBT-001 testing card: the `can_be_tested` toggle, the test_contract (the
+ * handover the independent tester reads to stand the system up — never the diff),
+ * and the tester's recorded test_output evidence. The toggle POSTs /testable; the
+ * contract is read-only here (filled by the implementer/reviewer via CLI/MCP).
+ */
+function renderTestingCard(t, evidence) {
+  const contract = parseTicketTestContract(t.test_contract);
+  const testable = t.can_be_tested === 1;
+
+  const toggle = el("input", { type: "checkbox", role: "switch", "aria-label": "Testable" });
+  toggle.checked = testable;
+  toggle.addEventListener("change", () =>
+    guard(async () => {
+      await api("POST", `/tickets/${t.id}/testable`, { can_be_tested: toggle.checked });
+      toast(toggle.checked ? "Marked testable" : "Marked not testable", { ok: true });
+      router();
+    }),
+  );
+
+  const contractRows = contract
+    ? el("dl", { class: "kv" }, [
+        el("dt", {}, "Changed surfaces"),
+        el("dd", {}, contract.changed_surfaces.length ? contract.changed_surfaces.join(", ") : "—"),
+        el("dt", {}, "Runtime deps"),
+        el("dd", {}, contract.runtime_deps.length ? contract.runtime_deps.join(", ") : "—"),
+        el("dt", {}, "Env vars"),
+        el("dd", {}, contract.env_vars.length ? contract.env_vars.join(", ") : "—"),
+        el("dt", {}, "Run command"),
+        el("dd", {}, contract.run_command || "—"),
+        el("dt", {}, "Harness"),
+        el(
+          "dd",
+          {},
+          contract.harness_ready ? "ready (black-box mode)" : "not ready (harness mode)",
+        ),
+      ])
+    : el(
+        "p",
+        { class: "dim" },
+        "No test contract recorded. Add one with `wg ticket test-contract` or the Dispatch MCP.",
+      );
+
+  // The tester's verdict evidence: test_output rows recorded during the testing lane.
+  const testerEvidence = (evidence || []).filter((e) => e.evidence_type === "test_output");
+  const evidenceList = testerEvidence.length
+    ? el(
+        "ul",
+        { class: "clean" },
+        testerEvidence.map((e) =>
+          el("li", {}, [
+            el("div", {}, e.summary),
+            el("div", { class: "ac-meta" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
+          ]),
+        ),
+      )
+    : el("p", { class: "dim" }, "No tester results recorded yet.");
+
+  return el("div", { class: "card" }, [
+    el("h2", {}, "Independent testing"),
+    el("div", { class: "setting-row" }, [
+      el("div", { class: "setting-meta" }, [
+        el("div", { class: "setting-label" }, [
+          el("span", {}, "Eligible for black-box testing"),
+          t.status === "in_testing" ? el("span", { class: "badge no-dot" }, "in testing") : null,
+        ]),
+        el(
+          "p",
+          { class: "setting-help dim" },
+          "When on (and GAFFER_TESTING is enabled), review approval routes this ticket through an independent tester before merge.",
+        ),
+      ]),
+      el("label", { class: "switch" }, [
+        toggle,
+        el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
+      ]),
+    ]),
+    el("h3", { style: "margin-top:14px" }, "Test contract"),
+    contractRows,
+    el("h3", { style: "margin-top:14px" }, "Tester results"),
+    evidenceList,
+  ]);
+}
+
+/** Parse the raw test_contract JSON column for the detail card (tolerant). */
+function parseTicketTestContract(raw) {
+  if (!raw) return null;
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!o || typeof o !== "object") return null;
+    const list = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+    return {
+      changed_surfaces: list(o.changed_surfaces),
+      runtime_deps: list(o.runtime_deps),
+      env_vars: list(o.env_vars),
+      run_command: typeof o.run_command === "string" ? o.run_command : "",
+      harness_ready: o.harness_ready === true,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function renderAddAcForm(ticketId) {

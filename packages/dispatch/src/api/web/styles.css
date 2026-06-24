@@ -5517,6 +5517,128 @@ body {
   height: 12px;
 }
 
+/* ===========================================================================
+   SCOPE GRAPH — the Factory Map as a real node graph (not a list)
+   =========================================================================== */
+.graph-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: var(--s-2);
+}
+.graph {
+  position: relative;
+}
+.graph-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+.graph-edges svg {
+  display: block;
+}
+.gedge {
+  fill: none;
+  stroke-width: 1.5;
+}
+.gedge.contains {
+  stroke: var(--accent);
+  opacity: 0.5;
+}
+.gedge.dep {
+  stroke: var(--violet);
+  opacity: 0.6;
+  stroke-dasharray: 5 5;
+}
+.graph-collabel {
+  position: absolute;
+  top: 8px;
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  z-index: 1;
+}
+.scope-gnode {
+  --st: var(--text-faint);
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 13px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--st);
+  background: var(--surface-2);
+  box-shadow: var(--elev-1);
+  text-decoration: none;
+  color: inherit;
+  overflow: hidden;
+  transition:
+    transform var(--med) var(--ease),
+    border-color var(--med) var(--ease),
+    opacity var(--med) var(--ease);
+}
+.scope-gnode:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent-line);
+}
+.scope-gnode.is-dim {
+  opacity: 0.25;
+}
+.scope-gnode.type-product {
+  --st: var(--accent);
+}
+.scope-gnode.type-service {
+  --st: var(--amber);
+}
+.scope-gnode.type-epic {
+  --st: var(--violet);
+}
+.scope-gnode.type-external_dependency {
+  --st: var(--text-faint);
+}
+.sg-name {
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sg-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.graph-legend {
+  display: flex;
+  gap: var(--s-4);
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line-hair);
+}
+.gl-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.66rem;
+  color: var(--text-faint);
+}
+.gl-line {
+  width: 20px;
+  height: 0;
+  border-top: 2px solid var(--accent);
+}
+.gl-line.dep {
+  border-top: 2px dashed var(--violet);
+}
+
 .epic-phase {
   flex: 0 0 clamp(220px, 78vw, 280px);
   display: flex;

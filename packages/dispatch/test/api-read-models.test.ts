@@ -88,6 +88,7 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
       "in_progress",
       "blocked",
       "in_review",
+      "in_testing",
       "ready_for_merge",
       "done",
     ]);

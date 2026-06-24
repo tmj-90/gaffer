@@ -3,7 +3,7 @@ import { z } from "zod";
 import { audit } from "../audit/audit.js";
 import { resultIdsFor, sanitiseRequest } from "../audit/redact.js";
 import type { Dispatch } from "../core.js";
-import { DECISION_SEVERITIES, parseReviewFeedback } from "../domain/types.js";
+import { DECISION_SEVERITIES, parseReviewFeedback, parseTestContract } from "../domain/types.js";
 import type { Actor } from "../domain/types.js";
 import { DispatchError } from "../util/errors.js";
 
@@ -178,6 +178,20 @@ export const toolSchemas = {
   add_dependency: {
     ticket: z.string().min(1),
     depends_on: z.string().min(1),
+  },
+  // BBT-001: set a ticket's testing-lane eligibility (the PO/reviewer/clarify path).
+  set_ticket_testable: {
+    ticket_id: z.string().min(1),
+    can_be_tested: z.boolean(),
+  },
+  // BBT-001: record the testing handover artifact (the implementer/reviewer fills it).
+  set_test_contract: {
+    ticket_id: z.string().min(1),
+    changed_surfaces: z.array(z.string()).optional(),
+    runtime_deps: z.array(z.string()).optional(),
+    env_vars: z.array(z.string()).optional(),
+    run_command: z.string().optional(),
+    harness_ready: z.boolean().optional(),
   },
   create_epic: {
     epic: z.object({
@@ -405,6 +419,11 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
                     ...reviewFeedback,
                     reason: quarantine("review-feedback", reviewFeedback.reason),
                   },
+            // BBT-001: expose the parsed test_contract as a structured object (or
+            // null) instead of the raw JSON column, so a tester reads the
+            // operational handover (surfaces / deps / env / run / harness) directly.
+            // The contract is the OPERATIONAL contract — NOT the implementation diff.
+            test_contract: parseTestContract(view.ticket.test_contract),
           },
           acceptance_criteria: view.acceptanceCriteria.map((ac) => ({
             ...ac,
@@ -492,6 +511,34 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
         const a = z.object(toolSchemas.create_epic).parse(args);
         const res = wg.createEpic(a, actor);
         return { epic_node_id: res.epicNodeId, ticket_numbers: res.ticketNumbers };
+      }),
+
+    set_ticket_testable: (args: Args): ToolResult =>
+      guard(() => {
+        const a = z.object(toolSchemas.set_ticket_testable).parse(args);
+        const res = wg.setTestable(a.ticket_id, a.can_be_tested, actor);
+        return {
+          ticket_id: res.ticketId,
+          can_be_tested: res.canBeTested,
+          event_id: res.eventId,
+        };
+      }),
+
+    set_test_contract: (args: Args): ToolResult =>
+      guard(() => {
+        const a = z.object(toolSchemas.set_test_contract).parse(args);
+        const contract = wg.setTestContract(
+          a.ticket_id,
+          {
+            changed_surfaces: a.changed_surfaces,
+            runtime_deps: a.runtime_deps,
+            env_vars: a.env_vars,
+            run_command: a.run_command,
+            harness_ready: a.harness_ready,
+          },
+          actor,
+        );
+        return { ticket_id: a.ticket_id, test_contract: contract };
       }),
 
     list_pending_decisions: (_args: Args): ToolResult =>

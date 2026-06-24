@@ -285,6 +285,7 @@ const STATUS_LABELS = {
   in_progress: "In progress",
   blocked: "Blocked",
   in_review: "In review",
+  in_testing: "In testing",
   ready_for_merge: "Approved · merging",
   done: "Done",
   failed: "Failed",
@@ -317,6 +318,9 @@ const STAGE_FOR_STATUS = {
   in_progress: 2,
   blocked: 2,
   in_review: 3,
+  // BBT-001: the independent-testing lane shares the "review" lifecycle stage —
+  // it's post-delivery, pre-merge, just like in_review/ready_for_merge.
+  in_testing: 3,
   ready_for_merge: 3,
   done: 4,
   failed: 4,
@@ -1298,6 +1302,7 @@ const TICKET_STATUSES = [
   "in_progress",
   "blocked",
   "in_review",
+  "in_testing",
   "ready_for_merge",
   "done",
   "failed",
@@ -1310,6 +1315,7 @@ const BOARD_COLUMN_LABELS = {
   in_progress: "In progress",
   blocked: "Blocked",
   in_review: "In review",
+  in_testing: "In testing",
   ready_for_merge: "Approved · merging",
   done: "Done",
 };
@@ -1680,6 +1686,10 @@ const TICKET_ACTION_KEYS = {
   blocked: ["wont_do"],
   // Review surface: approve takes the ticket to `ready_for_merge` (merging).
   in_review: ["approve", "rework", "wont_do"],
+  // BBT-001: independent testing lane. The tester agent owns the verdict
+  // (pass → ready_for_merge, fail → refining); a human has no board button here,
+  // mirroring the live/claimed states.
+  in_testing: [],
   // Approved-and-merging: the merge runner is working. A human can mark it merged
   // (admin override) or send it back for rework — but NOT "mark ready".
   ready_for_merge: ["mark_merged", "rework"],

@@ -191,6 +191,23 @@ const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "phases (data model before features, bootstrap before everything). A " +
     "self-dependency, a duplicate edge, or one that would form a cycle is " +
     "rejected — the dependency graph stays a DAG.",
+  set_ticket_testable:
+    "**Mark a ticket eligible (or not) for the independent black-box testing lane.** " +
+    "Pass `ticket_id` and `can_be_tested`. Set it when an OBSERVABLE BOUNDARY may " +
+    "have changed — an API, endpoint, CLI verb or page — including for a refactor or " +
+    "internal-util change that can shift a surface's underlying behaviour (so it is " +
+    "NOT 'is this an API ticket'). When on AND the GAFFER_TESTING toggle is enabled, " +
+    "review approval routes the ticket through an INDEPENDENT tester before merge. " +
+    "Marking it testable only ADDS scrutiny — it never bypasses a gate.",
+  set_test_contract:
+    "**Record the testing HANDOVER the independent tester reads to stand the system " +
+    "up and probe the changed surfaces — never the implementation diff.** Pass " +
+    "`ticket_id` plus `changed_surfaces[]` (the boundary contracts whose behaviour " +
+    "may have moved), `runtime_deps[]` (infra to stand up, e.g. 'Postgres 16 (was " +
+    "MySQL)'), `env_vars[]`, `run_command` (how to bring the system up / invoke the " +
+    "surface), and `harness_ready` (whether a black-box harness already exists). The " +
+    "tester gets THIS operational contract + the acceptance criteria — and probes " +
+    "from the outside; it must never be handed the diff.",
   create_epic:
     "**Create a whole dependency-ordered plan in one atomic call: an `epic` scope " +
     "node that groups N draft tickets, with their acceptance criteria, per-ticket " +

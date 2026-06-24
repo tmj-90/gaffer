@@ -13,6 +13,7 @@ import {
   recordRepoDeliveryInput,
   registerRepoInput,
   setRequiredCapabilitiesInput,
+  setTestContractInput,
   setTicketRepoAccessInput,
   suggestReposInput,
   updateScopeNodeInput,
@@ -23,6 +24,7 @@ import {
   TICKET_STATUSES,
   isActiveTicketRepoRelation,
   parseReviewFeedback,
+  parseTestContract,
   type AcceptanceCriterion,
   type Actor,
   type Agent,
@@ -36,6 +38,7 @@ import {
   type ScopeEdge,
   type ScopeNode,
   type ScopeRepo,
+  type TestContract,
   type Ticket,
   type TicketDependency,
   type TicketDependencyView,
@@ -114,6 +117,19 @@ export function resolveMaxAttempts(env: NodeJS.ProcessEnv = process.env): number
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_ATTEMPTS;
 }
 
+/**
+ * BBT-001 global toggle: is the independent black-box testing lane ON? Read from
+ * `GAFFER_TESTING` (same env-driven path as the other autonomy/idle flags), OFF by
+ * default so the lane is fully opt-in. Truthy values are "1"/"true"/"yes"/"on"
+ * (case-insensitive); anything else (incl. unset) is OFF. When off, review approval
+ * keeps today's behaviour (`in_review -> ready_for_merge`) and the lane is skipped
+ * entirely.
+ */
+export function isTestingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.GAFFER_TESTING ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 export interface TicketView {
   ticket: Ticket;
   acceptanceCriteria: AcceptanceCriterion[];
@@ -181,6 +197,8 @@ export const BOARD_COLUMNS = [
   "in_progress",
   "blocked",
   "in_review",
+  // BBT-001: the independent black-box testing lane, between review and merge.
+  "in_testing",
   "ready_for_merge",
   "done",
 ] as const;
@@ -404,15 +422,24 @@ export class Dispatch {
    */
   readonly maxAttempts: number;
 
+  /**
+   * BBT-001: per-instance override for the `GAFFER_TESTING` toggle. `undefined`
+   * (the default) means "read the env via {@link isTestingEnabled}"; a boolean
+   * pins it for tests so the testing lane can be exercised without touching the
+   * process env.
+   */
+  private readonly testingEnabledOverride: boolean | undefined;
+
   constructor(
     db: Db,
     readonly clock: Clock = systemClock,
     gitRunner?: GitRunner,
-    options: { maxAttempts?: number } = {},
+    options: { maxAttempts?: number; testingEnabled?: boolean } = {},
   ) {
     this.db = db;
     this.gitRunner = gitRunner;
     this.maxAttempts = options.maxAttempts ?? resolveMaxAttempts();
+    this.testingEnabledOverride = options.testingEnabled;
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
     this.repos = new RepoRepository(db);
@@ -442,7 +469,7 @@ export class Dispatch {
     path: string,
     clock: Clock = systemClock,
     gitRunner?: GitRunner,
-    options: { maxAttempts?: number } = {},
+    options: { maxAttempts?: number; testingEnabled?: boolean } = {},
   ): Dispatch {
     return new Dispatch(openDatabase(path), clock, gitRunner, options);
   }
@@ -493,6 +520,8 @@ export class Dispatch {
         due_at: null,
         bootstrap: input.bootstrap ? 1 : 0,
         last_review_feedback: null,
+        can_be_tested: 0,
+        test_contract: null,
         created_at: now,
         updated_at: now,
       };
@@ -1873,6 +1902,30 @@ export class Dispatch {
       );
     }
     const ticket = this.resolveTicket(ticketRef);
+    // BBT-001: when the independent-testing lane is ON (GAFFER_TESTING) AND this
+    // ticket is eligible (`can_be_tested`), review approval routes through the
+    // INDEPENDENT tester (`in_review -> in_testing`) instead of straight to merge.
+    // Otherwise — toggle off OR not testable — keep today's behaviour exactly
+    // (`in_review -> ready_for_merge`). The done-gate policy still fires later, when
+    // the lane exits to `ready_for_merge` (tester pass) or directly here.
+    if (this.testingEnabled() && ticket.can_be_tested === 1) {
+      const result = this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "in_testing",
+        reason: "review_approved_to_testing",
+        expectedFromStatus: "in_review",
+        testerVerdict: true,
+      });
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.routed_to_testing",
+        payload: { from: "in_review" },
+      });
+      return result;
+    }
     return this.transitions.transition({
       ticketId: ticket.id,
       actor,
@@ -1880,6 +1933,242 @@ export class Dispatch {
       reason: "review_approved",
       expectedFromStatus: "in_review",
     });
+  }
+
+  /**
+   * BBT-001 toggle accessor — overridable per-instance for tests. Defaults to the
+   * `GAFFER_TESTING` env read via {@link isTestingEnabled}.
+   */
+  private testingEnabled(): boolean {
+    return this.testingEnabledOverride ?? isTestingEnabled();
+  }
+
+  /**
+   * The independent black-box tester PASSED: the tests it wrote from the
+   * test_contract + acceptance criteria all pass, so the delivery may proceed to
+   * merge (`in_testing -> ready_for_merge`). The done-gate policy fires on THIS
+   * transition (AC satisfied, PR/diff present) exactly as it would have on a direct
+   * approval, so testing never weakens the merge gate.
+   *
+   * A `tester`-role agent (or any non-merging actor) records this; like the
+   * reviewer it CANNOT approve or merge — it can only report the test verdict. The
+   * actual merge stays the guarded `mark-merged` system path. `summary` is recorded
+   * as a `test_output` evidence row so the passing result is visible in review.
+   */
+  testerPass(
+    ticketRef: string,
+    input: { summary: string; uri?: string },
+    actor: Actor,
+  ): TransitionResult {
+    // No actor-type gate beyond the structural one: a tester (agent), or a
+    // human/admin/system recording on its behalf, may report the verdict — but the
+    // ACTUAL merge stays the guarded system/admin-only `mark-merged` path, so a
+    // tester can never approve+merge its own verdict. That structural gate is the
+    // boundary, mirroring how an agent reviewer cannot approve.
+    const summary = input.summary.trim();
+    if (summary.length === 0) {
+      throw new DispatchError("VALIDATION_ERROR", "A test-result summary is required.");
+    }
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      if (ticket.status !== "in_testing") {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "Only a ticket in testing can be passed by the tester.",
+          { from: ticket.status, to: "ready_for_merge" },
+        );
+      }
+      // Record the passing test result as evidence so it is visible in review.
+      const evidenceId = newId();
+      const now = this.clock.now();
+      this.evidence.insert({
+        id: evidenceId,
+        ticket_id: ticket.id,
+        ac_id: null,
+        repo_id: null,
+        decision_id: null,
+        evidence_type: "test_output",
+        summary,
+        uri: input.uri ?? null,
+        payload_json: null,
+        created_by: actor.id ?? actor.type,
+        created_at: now,
+      });
+      const result = this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "ready_for_merge",
+        reason: "tester_passed",
+        expectedFromStatus: "in_testing",
+        testerVerdict: true,
+      });
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.tester_passed",
+        payload: { evidence_id: evidenceId },
+      });
+      return result;
+    });
+  }
+
+  /**
+   * The independent black-box tester FAILED: a test it wrote from the contract +
+   * acceptance criteria does NOT pass — the implementation satisfies its own tests
+   * but not the AC. The ticket goes back to `refining` with the failing test as
+   * rejection evidence, REUSING the reject path (AC reset, attempt bump + retry-cap
+   * park, review feedback) so a tester failure is handled exactly like a review
+   * rejection. The `summary` (the failing test / why) becomes the rejection reason
+   * and is recorded as a `test_output` evidence row.
+   */
+  testerFail(
+    ticketRef: string,
+    input: { summary: string; uri?: string },
+    actor: Actor,
+  ): TransitionResult {
+    const summary = input.summary.trim();
+    if (summary.length === 0) {
+      throw new DispatchError("VALIDATION_ERROR", "A failing-test summary is required.");
+    }
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      if (ticket.status !== "in_testing") {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "Only a ticket in testing can be failed by the tester.",
+          { from: ticket.status, to: "refining" },
+        );
+      }
+      // Record the failing test as evidence BEFORE the AC reset / transition.
+      const evidenceId = newId();
+      const now = this.clock.now();
+      this.evidence.insert({
+        id: evidenceId,
+        ticket_id: ticket.id,
+        ac_id: null,
+        repo_id: null,
+        decision_id: null,
+        evidence_type: "test_output",
+        summary,
+        uri: input.uri ?? null,
+        payload_json: null,
+        created_by: actor.id ?? actor.type,
+        created_at: now,
+      });
+
+      // Reuse the reject machinery: attempt bump + retry-cap park, AC reset, review
+      // feedback. A cap-reached failure parks to `blocked` instead of re-queuing.
+      const nextAttempt = ticket.attempt_count + 1;
+      const capReached = nextAttempt >= this.maxAttempts;
+      const target: TicketStatus = capReached ? "blocked" : "refining";
+      const reason = `tester_failed:${summary}`;
+      const result = this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: target,
+        reason: capReached ? `retry_cap_reached:${reason}` : reason,
+        expectedFromStatus: "in_testing",
+        patch: { attempt_count: nextAttempt },
+        ...(capReached ? { park: true } : { testerVerdict: true }),
+      });
+      if (capReached) {
+        writeEvent(this.db, {
+          entity_type: "ticket",
+          entity_id: ticket.id,
+          actor,
+          event_type: "ticket.parked_retry_cap",
+          payload: { attempt_count: nextAttempt, max_attempts: this.maxAttempts, reason },
+        });
+      }
+      this.resetAcceptanceCriteria(ticket.id, actor);
+      const feedback: ReviewFeedback = {
+        reason,
+        reviewer: actor.id ?? null,
+        at: now,
+      };
+      this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.tester_failed",
+        payload: { evidence_id: evidenceId },
+      });
+      return result;
+    });
+  }
+
+  // --- Black-box testing handover (BBT-001) --------------------------------
+
+  /**
+   * Set (or clear) a ticket's `can_be_tested` eligibility flag — the gate that lets
+   * review approval route through the independent testing lane. Set by the PO /
+   * clarify / reviewer once an observable boundary may have changed. Human/admin
+   * only (it is a control decision, like setting the repo access boundary).
+   */
+  setTestable(
+    ticketRef: string,
+    canBeTested: boolean,
+    actor: Actor,
+  ): { ticketId: string; canBeTested: boolean; eventId: string } {
+    // No actor-type gate: marking a ticket testable only ADDS scrutiny (it routes a
+    // future approval through the independent tester) — it can never bypass a gate
+    // or grant access, so it is fail-safe for any actor (PO / clarify / reviewer,
+    // human or agent) to set. Contrast setTicketRepoAccess, which GRANTS write and
+    // so is human/admin-only.
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      const now = this.clock.now();
+      this.tickets.setCanBeTested(ticket.id, canBeTested, now);
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.testable_set",
+        payload: { can_be_tested: canBeTested },
+      });
+      return { ticketId: ticket.id, canBeTested, eventId };
+    });
+  }
+
+  /**
+   * Record (replace) a ticket's test_contract — the testing handover artifact the
+   * tester reads to stand the system up and probe the changed boundaries WITHOUT
+   * the diff. Validated by {@link setTestContractInput} (a zod schema). Stored as
+   * JSON on the ticket. Returns the parsed contract.
+   */
+  setTestContract(ticketRef: string, raw: unknown, actor: Actor): TestContract {
+    const input = setTestContractInput.parse(raw);
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      const contract: TestContract = {
+        changed_surfaces: input.changed_surfaces,
+        runtime_deps: input.runtime_deps,
+        env_vars: input.env_vars,
+        run_command: input.run_command,
+        harness_ready: input.harness_ready,
+      };
+      const now = this.clock.now();
+      this.tickets.setTestContract(ticket.id, JSON.stringify(contract), now);
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.test_contract_set",
+        payload: {
+          changed_surfaces: contract.changed_surfaces.length,
+          harness_ready: contract.harness_ready,
+        },
+      });
+      return contract;
+    });
+  }
+
+  /** Read a ticket's parsed test_contract, or null when none is recorded. */
+  getTestContract(ticketRef: string): TestContract | null {
+    const ticket = this.resolveTicket(ticketRef);
+    return parseTestContract(ticket.test_contract);
   }
 
   /**
@@ -2882,6 +3171,8 @@ function columnFor(status: TicketStatus): BoardColumn | null {
       return "blocked";
     case "in_review":
       return "in_review";
+    case "in_testing":
+      return "in_testing";
     case "ready_for_merge":
       return "ready_for_merge";
     case "done":

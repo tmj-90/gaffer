@@ -4415,7 +4415,7 @@ async function renderFactory() {
     ]),
   );
 
-  wrap.appendChild(renderScopeTree(nodes, edges));
+  wrap.appendChild(renderScopeGraph(nodes, edges));
   wrap.appendChild(renderUnmappedSection(unmapped));
   wrap.appendChild(renderFactoryFooter());
   applyFactoryFilter(wrap, factoryState.query.trim().toLowerCase());
@@ -4439,67 +4439,113 @@ function renderFactoryFooter() {
   ]);
 }
 
-function renderScopeTree(nodes, edges) {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const childrenOf = new Map();
-  const hasParent = new Set();
-  for (const e of edges) {
-    if (e.relation !== "contains") continue;
-    if (!byId.has(e.from_node_id) || !byId.has(e.to_node_id)) continue;
-    if (!childrenOf.has(e.from_node_id)) childrenOf.set(e.from_node_id, []);
-    childrenOf.get(e.from_node_id).push(e.to_node_id);
-    hasParent.add(e.to_node_id);
-  }
-  const roots = nodes.filter((n) => !hasParent.has(n.id));
-  const card = el("div", { class: "card" }, [el("h2", {}, "Scope graph")]);
+function renderScopeGraph(nodes, edges) {
+  const card = el("div", { class: "card panel" }, [
+    panelHead("Scope graph", "contains \u00b7 depends on"),
+  ]);
   if (nodes.length === 0) {
     card.appendChild(
       el("p", { class: "dim" }, "No scope nodes yet. Create one to start mapping your factory."),
     );
     return card;
   }
-  const visited = new Set();
-  const buildNode = (node) => {
-    if (visited.has(node.id)) return null;
-    visited.add(node.id);
-    const tags = parseTags(node.tags_json);
-    const row = el("div", { class: "tree-node", dataset: { kind: "node", nodeId: node.id } }, [
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  // containment depth → graph columns (a node sits one column right of its parent)
+  const parents = new Map();
+  for (const e of edges) {
+    if (e.relation !== "contains") continue;
+    if (byId.has(e.from_node_id) && byId.has(e.to_node_id))
+      parents.set(e.to_node_id, e.from_node_id);
+  }
+  const depthOf = (id, seen = new Set()) => {
+    const p = parents.get(id);
+    if (!p || seen.has(id)) return 0;
+    seen.add(id);
+    return 1 + depthOf(p, seen);
+  };
+  const NODE_W = 188,
+    NODE_H = 66,
+    COLG = 76,
+    ROWG = 20,
+    PADX = 12,
+    PADT = 38,
+    PADB = 14;
+  const cols = [];
+  for (const n of nodes) {
+    const d = depthOf(n.id);
+    (cols[d] = cols[d] || []).push(n);
+  }
+  const pos = new Map();
+  cols.forEach((list, ci) => {
+    (list || []).sort((a, b) => a.name.localeCompare(b.name));
+    (list || []).forEach((n, ri) =>
+      pos.set(n.id, { x: PADX + ci * (NODE_W + COLG), y: PADT + ri * (NODE_H + ROWG), n }),
+    );
+  });
+  const maxRows = Math.max(1, ...cols.map((c) => (c ? c.length : 0)));
+  const width = PADX * 2 + cols.length * NODE_W + Math.max(0, cols.length - 1) * COLG;
+  const height = PADT + maxRows * (NODE_H + ROWG) - ROWG + PADB;
+
+  let paths = "";
+  for (const e of edges) {
+    const a = pos.get(e.from_node_id),
+      b = pos.get(e.to_node_id);
+    if (!a || !b) continue;
+    const fwd = b.x >= a.x;
+    const x1 = fwd ? a.x + NODE_W : a.x,
+      y1 = a.y + NODE_H / 2;
+    const x2 = fwd ? b.x : b.x + NODE_W,
+      y2 = b.y + NODE_H / 2;
+    const mx = (x1 + x2) / 2;
+    const cls = e.relation === "contains" ? "contains" : "dep";
+    paths += `<path class="gedge ${cls}" d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"/>`;
+  }
+  const svg = el("div", {
+    class: "graph-edges",
+    html: `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none">${paths}</svg>`,
+  });
+  const colLabels = cols.map((_, ci) =>
+    el(
+      "div",
+      { class: "graph-collabel", style: `left:${PADX + ci * (NODE_W + COLG)}px;width:${NODE_W}px` },
+      ci === 0 ? "Roots" : `Depth ${ci}`,
+    ),
+  );
+  const gnodes = [];
+  for (const [id, { x, y, n }] of pos) {
+    gnodes.push(
       el(
         "a",
         {
-          class: "tree-link",
-          href: `#/node/${node.id}`,
-          onkeydown: (ev) => {
-            if (ev.key === "Enter" || ev.key === " ") {
-              ev.preventDefault();
-              navigate(`#/node/${node.id}`);
-            }
-          },
+          class: `scope-gnode type-${n.type}`,
+          href: `#/node/${id}`,
+          dataset: { name: (n.name || "").toLowerCase() },
+          style: `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`,
         },
         [
-          el("span", { class: "tree-name" }, node.name),
-          badge(typeLabel(node.type), `type-${node.type}`),
-          riskBadge(node.risk_level),
-          node.owner ? el("span", { class: "dim tree-owner" }, `@${node.owner}`) : null,
-          ...tags.slice(0, 4).map((t) => el("span", { class: "tag-chip" }, t)),
+          el("span", { class: "sg-name" }, n.name),
+          el("span", { class: "sg-meta" }, [
+            badge(typeLabel(n.type), `type-${n.type}`),
+            n.risk_level ? riskBadge(n.risk_level) : null,
+          ]),
         ],
       ),
-    ]);
-    const kids = (childrenOf.get(node.id) || []).map((id) => byId.get(id)).filter(Boolean);
-    const branch = el("div", { class: "tree-branch", dataset: { kind: "branch" } }, [row]);
-    if (kids.length)
-      branch.appendChild(
-        el("div", { class: "tree-children" }, kids.map((k) => buildNode(k)).filter(Boolean)),
-      );
-    return branch;
-  };
-  const tree = el("div", { class: "tree" }, roots.map((r) => buildNode(r)).filter(Boolean));
-  const leftover = nodes.filter((n) => !visited.has(n.id));
-  for (const n of leftover) {
-    const branch = buildNode(n);
-    if (branch) tree.appendChild(branch);
+    );
   }
-  card.appendChild(tree);
+  const legend = el("div", { class: "graph-legend" }, [
+    el("span", { class: "gl-item" }, [el("span", { class: "gl-line contains" }), "contains"]),
+    el("span", { class: "gl-item" }, [el("span", { class: "gl-line dep" }), "depends on"]),
+  ]);
+  card.appendChild(
+    el("div", { class: "graph-scroll" }, [
+      el("div", { class: "graph", style: `width:${width}px;height:${height}px` }, [
+        svg,
+        ...colLabels,
+        ...gnodes,
+      ]),
+    ]),
+  );
+  card.appendChild(legend);
   return card;
 }
 
@@ -4696,6 +4742,11 @@ function applyFactoryFilter(wrap, q) {
   wrap.querySelectorAll(".repo-row").forEach((row) => {
     const text = row.textContent.toLowerCase();
     row.hidden = !!q && !text.includes(q);
+  });
+  // dim scope-graph nodes that don't match (keeps the graph layout stable)
+  wrap.querySelectorAll(".scope-gnode").forEach((node) => {
+    const text = (node.dataset.name || node.textContent || "").toLowerCase();
+    node.classList.toggle("is-dim", !!q && !text.includes(q));
   });
 }
 

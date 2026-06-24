@@ -268,6 +268,21 @@ const LEAK_RULES: readonly LeakRule[] = [
     test: /\bi\s+changed\b|\bchanged\s+\S+\s+to\s+\S+/i,
     fields: ["changed_surfaces", "run_command"],
   },
+  {
+    // An internal SOURCE-file path (a token ending in a code extension). A changed
+    // surface is an OBSERVABLE contract — an endpoint, CLI verb, page, or behaviour —
+    // never a source file: `packages/dispatch/src/services/transitionService.ts` is an
+    // implementation pointer, not a surface. Scoped to `changed_surfaces` ONLY —
+    // `run_command` legitimately invokes script files (`node bin/x.mjs`, `pytest …`).
+    // Data/config files (.json/.yaml/.toml/.env/.csv) are NOT code and remain allowed
+    // as a genuine file-interface surface. (Bare implementation class/function names
+    // are deliberately NOT pattern-matched — too false-positive-prone; the contract
+    // discipline in SKILL.md + human review carry that, while this catches the path
+    // that gives the symbol away.)
+    marker: "internal source-file path",
+    test: /[\w./-]*\.(ts|tsx|js|mjs|cjs|jsx|py|go|rs|java|rb|php|cs|cpp|kt|swift|scala|vue|svelte)\b/i,
+    fields: ["changed_surfaces"],
+  },
 ] as const;
 
 /**

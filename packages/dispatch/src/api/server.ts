@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import { readAuditTail } from "../audit/auditTail.js";
 import { isAuthorized } from "./auth.js";
+import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
 import { createMergeRunner, type MergeRunner } from "./mergeRunner.js";
 import { createOnboardRunner, type OnboardRunner } from "./onboard.js";
@@ -41,6 +42,7 @@ import {
   reopenForReviewBody,
   reopenWontDoBody,
   resolveDecisionBody,
+  idleLoopsBody,
   onboardRepoBody,
   runProductOwnerBody,
   settingsBody,
@@ -648,6 +650,28 @@ async function route(
           rejected: result.rejected,
           ignored: result.ignored,
         });
+        return;
+      }
+      return methodNotAllowed(res);
+    }
+    // GET/PUT /api/idle-loops — dashboard control for the crew idle scan loops.
+    // GET reads the `loops.idle_<key>.{enabled,repos}` slice of crew.yaml (a
+    // missing file is a clean "not configured" shape, never a 500). PUT validates
+    // the requested keys + repo NAMES (cross-checked against the registered repos)
+    // and writes the slice back, preserving the rest of the YAML. Privileged: same
+    // bearer gate as the rest of the control plane (checked above). The crew runner
+    // re-reads crew.yaml each tick, so changes apply on its NEXT tick.
+    if (segments.length === 2 && segments[0] === "api" && segments[1] === "idle-loops") {
+      const crewPath = resolveCrewConfigPath();
+      if (method === "GET") {
+        sendJson(res, 200, { idle_loops: readIdleLoops(crewPath) });
+        return;
+      }
+      if (method === "PUT") {
+        const body = idleLoopsBody.parse(await readJsonBody(req));
+        const repoNames = wg.listRepositories(true).map((r) => r.name);
+        const view = writeIdleLoops(crewPath, body.loops, repoNames);
+        sendJson(res, 200, { idle_loops: view });
         return;
       }
       return methodNotAllowed(res);

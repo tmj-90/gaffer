@@ -25,6 +25,7 @@ import {
   isActiveTicketRepoRelation,
   parseReviewFeedback,
   parseTestContract,
+  validateTestContract,
   type AcceptanceCriterion,
   type Actor,
   type Agent,
@@ -2104,8 +2105,13 @@ export class Dispatch {
   /**
    * Set (or clear) a ticket's `can_be_tested` eligibility flag — the gate that lets
    * review approval route through the independent testing lane. Set by the PO /
-   * clarify / reviewer once an observable boundary may have changed. Human/admin
-   * only (it is a control decision, like setting the repo access boundary).
+   * clarify / reviewer once an observable boundary may have changed.
+   *
+   * NO actor gate, by design and fail-safe: marking a ticket testable only ADDS a
+   * scrutiny step (it routes a future review approval through the independent tester
+   * BEFORE merge) — it can never bypass a gate or grant any access. The worst an
+   * agent can do by setting it is cause MORE testing, never less. Contrast
+   * {@link setTicketRepoAccess}, which GRANTS write access and so is human/admin-only.
    */
   setTestable(
     ticketRef: string,
@@ -2140,15 +2146,21 @@ export class Dispatch {
    */
   setTestContract(ticketRef: string, raw: unknown, actor: Actor): TestContract {
     const input = setTestContractInput.parse(raw);
+    // Single choke point for the CLI, MCP, and REST write paths: reject a contract
+    // that leaks an implementation pointer (branch name, PR/commit URL, bare commit
+    // hash, a `diff`/`branch_name` leakage token, or "changed X to Y" narration)
+    // BEFORE it is persisted. The lane's invariant is "the tester never sees the
+    // diff"; this guards the prose path the runner can't (the runner already omits
+    // the diff — but a sloppy contract could smuggle breadcrumbs in its text).
+    const contract = validateTestContract({
+      changed_surfaces: input.changed_surfaces,
+      runtime_deps: input.runtime_deps,
+      env_vars: input.env_vars,
+      run_command: input.run_command,
+      harness_ready: input.harness_ready,
+    });
     return inTransaction(this.db, () => {
       const ticket = this.resolveTicket(ticketRef);
-      const contract: TestContract = {
-        changed_surfaces: input.changed_surfaces,
-        runtime_deps: input.runtime_deps,
-        env_vars: input.env_vars,
-        run_command: input.run_command,
-        harness_ready: input.harness_ready,
-      };
       const now = this.clock.now();
       this.tickets.setTestContract(ticket.id, JSON.stringify(contract), now);
       writeEvent(this.db, {

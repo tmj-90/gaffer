@@ -1,5 +1,7 @@
 /** Domain enums + row shapes. Unions mirror the schema CHECK constraints. */
 
+import { DispatchError } from "../util/errors.js";
+
 export const TICKET_STATUSES = [
   "draft",
   "refining",
@@ -162,7 +164,17 @@ export interface TestContract {
   runtime_deps: string[];
   /** Environment variables the tester sets to run the system. */
   env_vars: string[];
-  /** How to bring the system up / invoke the changed surface. */
+  /**
+   * How to bring the system up / invoke the changed surface.
+   *
+   * SAFETY: this is CONTRACT TEXT ONLY — Gaffer never executes it today. It is a
+   * free-form, contract-authored string surfaced to the (human or model) tester as
+   * context for how to stand the system up. When live execution is eventually
+   * implemented it MUST NOT be spawned as a contract-authored shell string: it has
+   * to go through the safety hook and the worktree write-root/read-root boundary,
+   * and be either a JSON argv vector (not a shell string) or a human-approved
+   * harness file. Treat any code that `spawn`s this string directly as a bug.
+   */
   run_command: string;
   /**
    * Whether a black-box harness already exists for this surface. Drives the two
@@ -198,6 +210,105 @@ export function parseTestContract(raw: string | null): TestContract | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * One implementation-pointer leak rule: a label, a matcher, and the fields it
+ * guards. The whole point of the test contract is that the tester gets the
+ * OPERATIONAL boundary — what changed, how to run it — and NEVER an implementation
+ * breadcrumb (a branch name, a PR/commit pointer, a "I changed X to Y" narration).
+ * A sloppily-authored contract can leak the diff in prose even though the runner
+ * never hands over the actual diff; these rules reject that at the write path.
+ */
+interface LeakRule {
+  readonly marker: string;
+  readonly test: RegExp;
+  /** Which {@link TestContract} list/field this rule scrutinises. */
+  readonly fields: ReadonlyArray<"changed_surfaces" | "run_command" | "runtime_deps">;
+}
+
+/**
+ * The leak rules. Strict implementation-pointer checks run over `changed_surfaces`
+ * + `run_command` (and the branch/PR/URL ones also over `runtime_deps`). The bare
+ * commit-hash check is DELIBERATELY scoped away from `env_vars` (whose values can
+ * legitimately be hex) and `runtime_deps`, so it can't false-positive on a real
+ * value — it only guards the surface description + run command.
+ */
+const LEAK_RULES: readonly LeakRule[] = [
+  {
+    // A `gaffer/…`-style delivery branch, or any `…/ticket-<n>…` branch pattern.
+    marker: "branch name (gaffer/… or …/ticket-<n>…)",
+    test: /(^|[\s"'(/])gaffer\/[\w./-]+|ticket-\d+/i,
+    fields: ["changed_surfaces", "run_command", "runtime_deps"],
+  },
+  {
+    // A PR URL or any URL pointing at a diff/commit/pull view.
+    marker: "PR / diff / commit URL",
+    test: /https?:\/\/\S*\/(pull|commit|commits|compare)\/\S+|https?:\/\/\S*\.diff/i,
+    fields: ["changed_surfaces", "run_command", "runtime_deps"],
+  },
+  {
+    // A bare commit-hash token. Scoped to surface + run command only — env_vars and
+    // runtime_deps can legitimately carry hex, so they are NOT checked here.
+    marker: "bare commit hash",
+    test: /\b[0-9a-f]{7,40}\b/i,
+    fields: ["changed_surfaces", "run_command"],
+  },
+  {
+    // Leakage tokens used as implementation pointers: `diff`, `pr_url`,
+    // `branch_name`, or `commit ` (word-boundaried, case-insensitive).
+    marker: "leakage token (diff / pr_url / branch_name / commit)",
+    test: /\b(diff|pr_url|branch_name|commit)\b/i,
+    fields: ["changed_surfaces", "run_command"],
+  },
+  {
+    // "I changed …" / "changed X to Y" narration — describing the EDIT, not the
+    // observable surface. The tester gets the contract, never the change story.
+    marker: '"I changed …" / "changed X to Y" phrasing',
+    test: /\bi\s+changed\b|\bchanged\s+\S+\s+to\s+\S+/i,
+    fields: ["changed_surfaces", "run_command"],
+  },
+] as const;
+
+/**
+ * Validate a {@link TestContract} for implementation-pointer leaks before it is
+ * persisted. The invariant the whole testing lane rests on is "the tester never
+ * sees the diff" — but a contract author can still smuggle implementation
+ * breadcrumbs into the prose (a branch name, a PR URL, a commit hash, a "changed X
+ * to Y" narration). This is the choke-point guard that the CLI, MCP, and REST write
+ * paths all funnel through (via {@link Wiglet.setTestContract}).
+ *
+ * Throws a {@link DispatchError} (`TEST_CONTRACT_LEAK`) naming the offending field +
+ * marker on the first leak; returns the contract unchanged when clean.
+ */
+export function validateTestContract(contract: TestContract): TestContract {
+  const valueFor = (field: LeakRule["fields"][number]): string[] => {
+    switch (field) {
+      case "changed_surfaces":
+        return contract.changed_surfaces;
+      case "runtime_deps":
+        return contract.runtime_deps;
+      case "run_command":
+        return [contract.run_command];
+    }
+  };
+  for (const rule of LEAK_RULES) {
+    for (const field of rule.fields) {
+      for (const entry of valueFor(field)) {
+        if (typeof entry === "string" && rule.test.test(entry)) {
+          throw new DispatchError(
+            "TEST_CONTRACT_LEAK",
+            `test_contract.${field} leaks an implementation pointer (${rule.marker}). ` +
+              "The tester gets the operational contract + how to run it — never the diff, " +
+              "a branch/PR/commit, or implementation class/function names. Offending entry: " +
+              JSON.stringify(entry),
+            { field, marker: rule.marker, entry },
+          );
+        }
+      }
+    }
+  }
+  return contract;
 }
 
 /**

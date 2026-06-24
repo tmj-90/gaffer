@@ -126,7 +126,7 @@ The digest is **a map, not the territory** — a fast orientation that the facto
 ## Install
 
 **Prerequisites:**
-- **Node 20 or 22** and **pnpm** (`pnpm@10.33.0`, pinned via `packageManager`)
+- **Node 22 or 24** and **pnpm** (`pnpm@10.33.0`, pinned via `packageManager`)
 - **Git** (the factory branches per ticket)
 - **`claude` CLI**, authenticated with Anthropic — required for live agent runs; the factory spawns `claude -p` for planning, delivery, and repo analysis
 - **`python3`** — used by runner helpers for JSON parsing and the portable timeout shim

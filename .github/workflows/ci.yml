@@ -60,14 +60,17 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      # Build first: cross-package imports (e.g. crew's tests import the `dispatch`
+      # workspace package) resolve against each package's built dist/*.d.ts, so the
+      # typecheck steps must run after the build.
+      - name: Build
+        run: pnpm -r build
+
       - name: Typecheck
         run: pnpm -r typecheck
 
       - name: Typecheck (tests)
         run: pnpm -r typecheck:test
-
-      - name: Build
-        run: pnpm -r build
 
       - name: Test (packages)
         run: pnpm -r test

@@ -131,6 +131,24 @@ export function isTestingEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+/**
+ * BBT-001: derive the PROVENANCE of a tester verdict from the recording actor's
+ * type, so the dashboard can attribute a pass/fail ("by agent | human | system")
+ * instead of surfacing an unattributed verdict. `admin` collapses to `human` (a
+ * person), `agent` is the factory tester, `system` is an automated/seam recording.
+ */
+export function testerProvenance(actor: Actor): "agent" | "human" | "system" {
+  switch (actor.type) {
+    case "agent":
+      return "agent";
+    case "system":
+      return "system";
+    case "human":
+    case "admin":
+      return "human";
+  }
+}
+
 export interface TicketView {
   ticket: Ticket;
   acceptanceCriteria: AcceptanceCriterion[];
@@ -1991,7 +2009,10 @@ export class Dispatch {
         evidence_type: "test_output",
         summary,
         uri: input.uri ?? null,
-        payload_json: null,
+        // Provenance: capture WHO produced the verdict (derived from the actor type)
+        // so a later reviewer sees "tests passed — by <agent|human|system|stub>" on
+        // the dashboard instead of an unattributed pass.
+        payload_json: JSON.stringify({ verdict: "pass", provenance: testerProvenance(actor) }),
         created_by: actor.id ?? actor.type,
         created_at: now,
       });
@@ -2053,7 +2074,8 @@ export class Dispatch {
         evidence_type: "test_output",
         summary,
         uri: input.uri ?? null,
-        payload_json: null,
+        // Provenance: see testerPass — record who produced the FAIL verdict.
+        payload_json: JSON.stringify({ verdict: "fail", provenance: testerProvenance(actor) }),
         created_by: actor.id ?? actor.type,
         created_at: now,
       });

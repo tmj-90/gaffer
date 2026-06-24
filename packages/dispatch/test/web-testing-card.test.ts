@@ -40,6 +40,7 @@ const EVIDENCE = [
     id: "ev1",
     evidence_type: "test_output",
     summary: "12 black-box tests pass against the contract",
+    payload_json: JSON.stringify({ verdict: "pass", provenance: "agent" }),
     created_by: "tester-1",
     created_at: "2026-01-02T00:00:00Z",
   },
@@ -127,6 +128,8 @@ describe("BBT-001 web: the Independent testing card", () => {
     expect(text).toContain("harness mode");
     // The tester's test_output evidence renders.
     expect(text).toContain("12 black-box tests pass against the contract");
+    // The provenance badge attributes the verdict ("by agent").
+    expect(text).toContain("by agent");
 
     // The testable toggle is rendered and reflects can_be_tested = 1.
     const toggle = Array.from(

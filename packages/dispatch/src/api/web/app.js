@@ -2525,12 +2525,20 @@ function renderTestingCard(t, evidence) {
     ? el(
         "ul",
         { class: "clean" },
-        testerEvidence.map((e) =>
-          el("li", {}, [
-            el("div", {}, e.summary),
+        testerEvidence.map((e) => {
+          const prov = parseTesterProvenance(e.payload_json);
+          return el("li", {}, [
+            el("div", {}, [
+              e.summary,
+              // BBT-001 provenance badge: who produced this verdict (derived from the
+              // recording actor's type), so a reviewer sees "by <agent|human|system>".
+              prov
+                ? el("span", { class: "badge no-dot", style: "margin-left:8px" }, `by ${prov}`)
+                : null,
+            ]),
             el("div", { class: "ac-meta" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
-          ]),
-        ),
+          ]);
+        }),
       )
     : el("p", { class: "dim" }, "No tester results recorded yet.");
 
@@ -2558,6 +2566,21 @@ function renderTestingCard(t, evidence) {
     el("h3", { style: "margin-top:14px" }, "Tester results"),
     evidenceList,
   ]);
+}
+
+/**
+ * BBT-001: pull the tester-verdict provenance ("agent" | "human" | "system") out of
+ * a test_output evidence row's payload_json, tolerant of legacy rows with no payload.
+ */
+function parseTesterProvenance(raw) {
+  if (!raw) return null;
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const p = o && typeof o === "object" ? o.provenance : null;
+    return p === "agent" || p === "human" || p === "system" ? p : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Parse the raw test_contract JSON column for the detail card (tolerant). */

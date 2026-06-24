@@ -5327,12 +5327,196 @@ body {
 
 .epic-body {
   display: flex;
-  gap: 14px;
-  padding: 16px 18px;
+  flex-direction: column;
+  gap: var(--s-5);
+  padding: var(--s-5) var(--s-5) var(--s-4);
+}
+
+/* --- phase progress strip --- */
+.phase-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: var(--s-3);
+}
+.phase-seg {
+  --ps: var(--text-faint);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.phase-seg.is-done {
+  --ps: var(--ok);
+}
+.phase-seg.is-active {
+  --ps: var(--accent);
+}
+.ps-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.ps-label {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.ps-frac {
+  font-size: 0.66rem;
+  color: var(--text-faint);
+}
+.ps-bar {
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+.ps-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ps);
+  box-shadow: 0 0 10px -1px var(--ps);
+  transition: width var(--slow) var(--ease);
+}
+
+/* --- the dependency DAG --- */
+.dag-scroll {
   overflow-x: auto;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
+  padding-bottom: var(--s-2);
 }
+.dag {
+  position: relative;
+}
+.dag-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+.dag-edges svg {
+  display: block;
+}
+.edge {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+}
+.edge.sat {
+  stroke: var(--accent);
+  opacity: 0.55;
+}
+.edge.pend {
+  stroke: var(--amber);
+  opacity: 0.6;
+  stroke-dasharray: 5 5;
+}
+.dag-collabel {
+  position: absolute;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 1;
+}
+.dcl-num {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.dcl-gate {
+  font-family: var(--mono);
+  font-size: 0.52rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+}
+.dag-node {
+  --st: var(--text-faint);
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--st);
+  background: var(--surface-2);
+  box-shadow: var(--elev-1);
+  text-decoration: none;
+  color: inherit;
+  overflow: hidden;
+  transition:
+    transform var(--med) var(--ease),
+    border-color var(--med) var(--ease);
+}
+.dag-node:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent-line);
+}
+.dag-node.status-done {
+  --st: var(--ok);
+}
+.dag-node.status-ready {
+  --st: var(--accent);
+}
+.dag-node.status-in_progress,
+.dag-node.status-claimed {
+  --st: var(--accent);
+}
+.dag-node.status-in_review,
+.dag-node.status-in_testing,
+.dag-node.status-ready_for_merge {
+  --st: var(--amber);
+}
+.dag-node.status-blocked,
+.dag-node.status-failed {
+  --st: var(--danger);
+}
+.dn-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.dn-num {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+.dn-title {
+  font-size: var(--step--1);
+  color: var(--text);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.dn-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.6rem;
+  color: var(--amber);
+  margin-top: auto;
+}
+.dn-block-ico {
+  width: 12px;
+  height: 12px;
+}
+
 .epic-phase {
   flex: 0 0 clamp(220px, 78vw, 280px);
   display: flex;

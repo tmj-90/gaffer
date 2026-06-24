@@ -22,10 +22,81 @@ Most coding agents are stateless renters: every run starts cold, the "memory" is
 - **It runs on your machine.** Local-first: the control plane, databases, repo state, worktrees, and evidence all live on your box — no per-seat cloud, fully auditable. Live agent runs use your configured Claude Code CLI, so prompts and selected repo context are sent to that model provider. Treat any connected model as part of your trust boundary.
 - **You hold the gate.** By default a human approves every merge and the agent *structurally cannot* ship its own work. Opt-in flags unlock full hands-off autonomy when you actually want it.
 
-## Architecture
+## What it does
 
-![The Gaffer work board](docs/img/board.png)
-*The work board — tickets across draft → ready → in-progress → review, each with a risk badge and acceptance-criteria progress. (Demo data.)*
+> The screenshots below are a neutral **demo dataset** — a fake "TaskFlow" task-management product (an API and a web client). Not anyone's real repos.
+
+### Plan → a dependency-ordered epic of tickets
+
+This is the headline. You give Gaffer a one-line brief — *"add recurring tasks"*, *"build an app that summarises PDFs"* — and it **decomposes it into a phased, dependency-ordered epic of tickets**, each ready to be worked through plan → implement → test → review.
+
+It is not a single prompt that dumps a wall of code. The planner has a conversation: it asks a few **clarifying questions**, then proposes a plan where every ticket carries its own description, acceptance criteria, target repo, and an explicit **`dependsOn`** edge — so the work is *gated phase by phase* (the API can't start until the data model lands; docs come last). Nothing is created until you confirm; confirmed tickets land as **draft** for you to ready. If you'd rather skip the questions, **"Build the tickets"** forces the best plan from what it has so far — you're never stuck clarifying.
+
+It works in two directions:
+
+- **Greenfield** — no target repo: the plan opens with a single bootstrap ticket (`git init` + scaffold) that every other ticket depends on, so a one-liner becomes a brand-new, properly-structured repo.
+- **Brownfield** — an existing repo or scope: zero bootstrap, every ticket stamped onto the target repo, so the plan *extends* what's already there instead of rebuilding it.
+
+<p align="center">
+  <img src="docs/img/plan-build.png" alt="The Plan-a-build chat decomposing a brief into a dependency-ordered epic" width="900">
+  <br><sub><em>Plan a build — a one-line brief mid-decompose into the proposed <strong>Recurring tasks</strong> epic: each ticket has its own acceptance criteria and an explicit <code>depends&nbsp;on&nbsp;#1</code> edge. Proposes only; nothing runs until you confirm. (Demo data.)</em></sub>
+</p>
+
+Once confirmed, the epic is a first-class object: phases, member tickets, and the dependency graph the board enforces.
+
+<p align="center">
+  <img src="docs/img/epics.png" alt="The Epics view showing a phased, dependency-ordered epic" width="900">
+  <br><sub><em>The same epic as a phased plan: Phase 1 (data model) → Phase 2 (API, gated on phase 1) → Phase 3 (worker + UI) → Phase 4 (docs). A phase can't start until the one before it is done. (Demo data.)</em></sub>
+</p>
+
+### The work board
+
+Every ticket moves through **draft → ready → in-progress → review** lanes, each tagged with a risk badge, a priority, acceptance-criteria progress, and the agent that claimed it. Vague tickets sit in draft until a human shapes them; blocked tickets surface rather than being forced through.
+
+<p align="center">
+  <img src="docs/img/board.png" alt="The Gaffer work board" width="900">
+  <br><sub><em>The work board — tickets across the lanes with risk badges and acceptance-criteria progress; one ticket claimed and in progress, one delivered and awaiting review. (Demo data.)</em></sub>
+</p>
+
+### The human review gate
+
+When an agent delivers, the ticket lands in **Review** — and this is a *structural* barrier, not a courtesy. The agent **cannot approve or merge its own work**. The diff you sign off on is the **real `git diff`, computed server-side** against the delivery branch — never the agent's word for what it changed — and the Approve button stays disabled until that diff actually loads. Approve sends it to merge; reject loops it back for rework with your reason attached.
+
+<p align="center">
+  <img src="docs/img/review.png" alt="The Review gate with a server-computed diff and approve/reject" width="900">
+  <br><sub><em>The review gate: an in-review ticket with its evidence, satisfied acceptance criteria, and the server-verified diff — Approve / send-back are yours alone. (Demo data.)</em></sub>
+</p>
+
+### The Factory Map
+
+Repos rarely live alone. The **Factory Map** groups them into **scope nodes** (products, systems, capabilities) so the factory understands *which repos make up a product* and *what access it has to each* — `write`, `read`, `test`, or `none`. A ticket scoped to a product can reach exactly the repos that product owns, at exactly the access it's granted.
+
+<p align="center">
+  <img src="docs/img/factory-map.png" alt="A Factory Map scope node with its mapped repos and per-repo access" width="900">
+  <br><sub><em>The TaskFlow scope node and its two mapped repos, each with its relation and default access. Per-repo access is a boundary the runner enforces. (Demo data.)</em></sub>
+</p>
+
+### Durable repo memory
+
+Gaffer doesn't re-learn a repo from cold on every run. **Memory** keeps a living **Repo Digest** (overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, plus a gated **lore** knowledge base — the team's recorded conventions, decisions, and cross-repo boundaries. It's the Repo Understanding engine, and it's read-only in the product: lore is curated through the memory CLI's review gate, not silently rewritten by agents.
+
+<p align="center">
+  <img src="docs/img/memory.png" alt="A repo's digest and feature ledger in the Memory view" width="900">
+  <br><sub><em>The Repo Digest for an onboarded repo — overview, structure, conventions and stack, with a freshness stamp and the honest "verify against code for high-stakes work" caveat. (Demo data.)</em></sub>
+</p>
+
+### Control you opt into
+
+The factory is **supervised by default**: a human readies tickets, a human approves merges, memory drafts wait for review. **Settings** is where you loosen that — every autonomy flag is **off until you turn it on** (let an agent approve reviews, auto-merge on agent review, auto-approve memory). The same panel controls the idle loops that mine backlog work between tickets and the planning-debate depth.
+
+<p align="center">
+  <img src="docs/img/settings.png" alt="The Settings panel with autonomy flags, idle loops and planning debate" width="900">
+  <br><sub><em>Settings — autonomy flags (all opt-in, shown off), idle loops, and planning debate. Nothing here is on by default. (Demo data.)</em></sub>
+</p>
+
+For a longer walkthrough of each surface, see [`docs/FEATURES.md`](docs/FEATURES.md).
+
+## Architecture
 
 Four components, one workspace:
 
@@ -50,10 +121,7 @@ Four components, one workspace:
 
 Gaffer doesn't re-learn a repo from cold on every run. Memory keeps a living **Repo Digest** (a TLDR of overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, seeded at onboarding and refreshed deterministically as tickets merge — alongside the gated **lore** knowledge base (conventions, decisions, gotchas, cross-repo boundaries). Onboarding runs a skill-driven `claude -p` pass that produces a real digest, a feature inventory, and cited lore drafts grounded in the actual code.
 
-The digest is **a map, not the territory** — a fast orientation that the factory verifies against the real code for high-stakes work, never a substitute for it.
-
-![Gaffer repo memory](docs/img/memory.png)
-*Repo memory for an onboarded project — the generated digest, the feature ledger (shipped / building / backlog), and gated lore. (Demo data.)*
+The digest is **a map, not the territory** — a fast orientation that the factory verifies against the real code for high-stakes work, never a substitute for it. (See it in the [Durable repo memory](#durable-repo-memory) screenshot above.)
 
 ## Install
 

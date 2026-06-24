@@ -463,6 +463,30 @@ export const settingsBody = z.object({
 });
 export type SettingsBody = z.infer<typeof settingsBody>;
 
+/**
+ * Body for PUT /api/idle-loops — the editable slice of each idle scan loop. Each
+ * entry names a known idle loop (`key`), its enabled flag, and the repo NAMES it
+ * is scoped to (an empty list = all repos). The module owns the real validation
+ * (key allow-list + repo-name existence); here we only shape the JSON: a bounded
+ * list of `{ key, enabled, repos }`, with repo names bounded so a single PUT
+ * can't hand the write path an unbounded array.
+ */
+export const idleLoopsBody = z.object({
+  loops: z
+    .array(
+      z.object({
+        key: z.string().min(1).max(64),
+        enabled: z.boolean(),
+        repos: z.array(z.string().min(1).max(256)).max(200).default([]),
+      }),
+    )
+    // At most the known idle-loop count plus a little slack; the module rejects
+    // unknown/duplicate keys, this just bounds the array the loop iterates.
+    .max(32)
+    .default([]),
+});
+export type IdleLoopsBody = z.infer<typeof idleLoopsBody>;
+
 export const activityQuery = z.object({
   limit: z.coerce
     .number()

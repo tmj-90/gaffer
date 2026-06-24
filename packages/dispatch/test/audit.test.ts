@@ -119,6 +119,15 @@ describe("audit redaction (pure)", () => {
       evidence_ref: "ev-1",
     },
     add_dependency: { ticket: "t", depends_on: "t2" },
+    set_ticket_testable: { ticket_id: "t", can_be_tested: true },
+    set_test_contract: {
+      ticket_id: "t",
+      changed_surfaces: ["POST /api/widgets"],
+      runtime_deps: ["Postgres 16"],
+      env_vars: ["DATABASE_URL"],
+      run_command: SECRET_BODY,
+      harness_ready: false,
+    },
     create_epic: {
       // Epic/ticket titles, descriptions and AC text ARE free-text bodies the
       // redactor must drop (only name + counts survive).

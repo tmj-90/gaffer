@@ -217,16 +217,33 @@ export function assembleContext(dbPath, number) {
 /**
  * Record a tester verdict back through dispatch. Uses DISPATCH_TESTER_VERDICT_CMD
  * (parsed into argv, no shell) when configured — the stub seam tests drive — invoked
- * as `<cmd...> <ticket> <verdict> <summary>`. Otherwise it shells to the bundled
- * `wg` CLI: `wg ticket tester-pass|tester-fail <ticket> --summary <text> --as agent`.
- * Returns { ok, code } and never throws on a spawn failure.
+ * as `<cmd...> <ticket> <verdict> <summary>`. The override is read as a JSON argv
+ * array (preferred — space-safe, matching the other DISPATCH_*_CMD seams) and falls
+ * back to whitespace-splitting a plain string for back-compat. Otherwise it shells to
+ * the bundled `wg` CLI: `wg ticket tester-pass|tester-fail <ticket> --summary <text>
+ * --as agent`. Returns { ok, code } and never throws on a spawn failure.
  */
 export function recordVerdict(ticketNumber, verdict, summary, env = process.env) {
   const action = verdict === "pass" ? "tester-pass" : "tester-fail";
   const override = (env.DISPATCH_TESTER_VERDICT_CMD ?? "").trim();
   let argv;
   if (override) {
-    const tokens = override.split(/\s+/).filter((t) => t.length > 0);
+    // JSON argv (e.g. ["node","/path with spaces/x.mjs"]) keeps a path with spaces a
+    // single token; a plain string falls back to whitespace-splitting.
+    let tokens;
+    try {
+      const parsed = JSON.parse(override);
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every((t) => typeof t === "string")
+      ) {
+        tokens = parsed;
+      }
+    } catch {
+      // not JSON — treat as a plain whitespace-separated command below
+    }
+    tokens ??= override.split(/\s+/).filter((t) => t.length > 0);
     const [bin, ...rest] = tokens;
     argv = [bin, [...rest, String(ticketNumber), verdict, summary]];
   } else {

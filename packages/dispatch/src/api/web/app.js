@@ -2519,8 +2519,12 @@ function renderTestingCard(t, evidence) {
         "No test contract recorded. Add one with `wg ticket test-contract` or the Dispatch MCP.",
       );
 
-  // The tester's verdict evidence: test_output rows recorded during the testing lane.
-  const testerEvidence = (evidence || []).filter((e) => e.evidence_type === "test_output");
+  // The tester's verdict evidence: ONLY test_output rows whose payload carries a BBT
+  // tester verdict (pass/fail). Plain implementation / AC test_output must NOT show
+  // under "Tester results" — that would mislabel ordinary evidence as tester output.
+  const testerEvidence = (evidence || []).filter(
+    (e) => e.evidence_type === "test_output" && parseTesterVerdict(e.payload_json) !== null,
+  );
   const evidenceList = testerEvidence.length
     ? el(
         "ul",
@@ -2578,6 +2582,22 @@ function parseTesterProvenance(raw) {
     const o = typeof raw === "string" ? JSON.parse(raw) : raw;
     const p = o && typeof o === "object" ? o.provenance : null;
     return p === "agent" || p === "human" || p === "system" ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The BBT tester verdict ("pass" | "fail") from a test_output row's payload_json, or
+ * null when the row is not a tester verdict. This is the marker that distinguishes a
+ * tester result from ordinary implementation/AC test_output evidence.
+ */
+function parseTesterVerdict(raw) {
+  if (!raw) return null;
+  try {
+    const o = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const v = o && typeof o === "object" ? o.verdict : null;
+    return v === "pass" || v === "fail" ? v : null;
   } catch {
     return null;
   }

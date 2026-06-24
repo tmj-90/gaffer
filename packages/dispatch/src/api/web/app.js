@@ -539,6 +539,7 @@ async function router() {
       app.appendChild(content);
       app.scrollTop = 0;
       stagger(content);
+      animateReadouts(content);
     });
   };
 
@@ -557,8 +558,59 @@ async function router() {
 function stagger(root) {
   const blocks = root.querySelectorAll(":scope > *");
   blocks.forEach((b, i) => {
-    b.style.setProperty("--stagger", `${Math.min(i, 9) * 52}ms`);
+    b.style.setProperty("--stagger", `${Math.min(i, 9) * 60}ms`);
     b.classList.add("rise-in");
+  });
+}
+
+/** The instruments "come up": telemetry numbers spin from 0 to their value and
+ *  fill gauges sweep out. Honest — the target is the real number; we only
+ *  animate the approach. Skipped under reduced-motion. */
+function animateReadouts(root) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+  // Silos fill up from empty, left to right — the line charging.
+  root.querySelectorAll(".silo-fill").forEach((bar, i) => {
+    const target = bar.style.height || "0%";
+    bar.style.height = "0%";
+    setTimeout(
+      () => requestAnimationFrame(() => (bar.style.height = target)),
+      200 + Math.min(i, 9) * 90,
+    );
+  });
+
+  // Fill gauges (other views): start collapsed, then transition to width.
+  root.querySelectorAll(".gauge-track i").forEach((bar, i) => {
+    const target = bar.style.width || "0%";
+    bar.style.width = "0%";
+    setTimeout(
+      () => requestAnimationFrame(() => (bar.style.width = target)),
+      220 + Math.min(i, 9) * 60,
+    );
+  });
+
+  // Count-up on big numeric readouts (silo values + any gauge values).
+  root.querySelectorAll(".silo-val, .gauge-value").forEach((node, i) => {
+    const target = parseInt(node.textContent, 10);
+    if (!Number.isFinite(target) || target === 0) return;
+    const dur = 620;
+    const start = performance.now() + 180 + Math.min(i, 9) * 60;
+    node.textContent = "0";
+    const tick = (now) => {
+      const t = (now - start) / dur;
+      if (t < 0) {
+        requestAnimationFrame(tick);
+        return;
+      }
+      if (t >= 1) {
+        node.textContent = String(target);
+        return;
+      }
+      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
+      node.textContent = String(Math.round(eased * target));
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   });
 }
 
@@ -912,58 +964,25 @@ async function renderOverview() {
   const wrap = el("div", { class: "view" });
   wrap.appendChild(viewHead("Overview", "live control room"));
 
-  // --- Throughput: one instrument cluster (a cockpit gauge row) -------------
-  // Not eight floating cards — a single machined panel whose cells share a
-  // bezel and are split by hairlines, each a live readout with a fill gauge.
-  const inProgress = byStatus.in_progress || byStatus.claimed || summary.activeClaims || 0;
-  const gauges = [
-    {
-      label: "Done",
-      value: byStatus.done || 0,
-      tone: "ok",
-      sub: "shipped",
-      href: "#/work?status=done",
-      lead: true,
-      delta: summary.deliveredToday ? `+${summary.deliveredToday}` : null,
-    },
-    {
-      label: "Ready",
-      value: byStatus.ready || 0,
-      tone: "accent",
-      sub: "claimable",
-      href: "#/work?status=ready",
-    },
-    {
-      label: "In progress",
-      value: inProgress,
-      tone: inProgress ? "accent" : "",
-      sub: "building",
-      href: "#/work",
-    },
-    {
-      label: "In review",
-      value: inReview,
-      tone: inReview ? "warn" : "",
-      sub: "sign-off",
-      href: "#/review",
-    },
-    {
-      label: "Blocked",
-      value: blocked,
-      tone: blocked ? "danger" : "",
-      sub: "stuck",
-      href: "#/work?status=blocked",
-    },
-    {
-      label: "Decisions",
-      value: openDecisions,
-      tone: openDecisions ? "warn" : "",
-      sub: "awaiting you",
-      href: "#/overview",
-      scrollTo: "decisions",
-    },
-  ];
-  wrap.appendChild(gaugeCluster("Throughput", `${totalTickets} in flight`, gauges, totalTickets));
+  // --- THE PRODUCTION LINE — the factory seen from above --------------------
+  // Work flows left→right through stations; pressure is visible as silo fill;
+  // pucks travel the conduits; the human gate is the lit checkpoint; the
+  // bottleneck calls itself out. This is the hero — flow, not columns.
+  const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
+  wrap.appendChild(
+    factoryLine({
+      plan: (byStatus.draft || 0) + (byStatus.refining || 0),
+      ready: byStatus.ready || 0,
+      build: inProgress,
+      test: byStatus.in_testing || 0,
+      review: inReview,
+      shipped: byStatus.done || 0,
+      blocked,
+      decisions: openDecisions,
+      shippedToday: summary.deliveredToday || 0,
+      total: totalTickets,
+    }),
+  );
 
   // --- "Needs you now" focal block ------------------------------------------
   const needs = [];
@@ -1178,47 +1197,128 @@ async function renderOverview() {
 }
 
 /**
- * The throughput instrument cluster — one panel, N readout cells split by
- * hairlines. Each cell shows a label, a phosphor value (+ optional delta), a
- * fill gauge (the cell's share of total work), and a sub-label. The whole thing
- * reads as a single cockpit gauge, not a row of cards.
+ * THE PRODUCTION LINE — the factory seen from above.
+ * Stations along a conveyor (Plan → Ready → Build → Test → Review → Shipped),
+ * each a silo whose fill shows its current load; work-units (pucks) travel the
+ * conduits between live stations; the Review station is the human gate; the
+ * busiest active station calls itself out as the constraint. Flow, not columns.
  */
-function gaugeCluster(title, totalText, gauges, total) {
-  const cells = gauges.map((g) => {
-    const pct = total > 0 ? Math.max(g.value > 0 ? 6 : 0, Math.round((g.value / total) * 100)) : 0;
-    const children = [
-      el("span", { class: "gauge-top" }, [
-        el("span", { class: "gauge-label" }, g.label),
-        g.delta ? el("span", { class: "gauge-delta" }, g.delta) : null,
+function factoryLine(d) {
+  const stations = [
+    { key: "plan", label: "Plan", sub: "drafting", count: d.plan, tone: "idle", href: "#/work" },
+    {
+      key: "ready",
+      label: "Ready",
+      sub: "queued",
+      count: d.ready,
+      tone: "accent",
+      href: "#/work?status=ready",
+    },
+    {
+      key: "build",
+      label: "Build",
+      sub: "in progress",
+      count: d.build,
+      tone: "accent",
+      href: "#/work",
+    },
+    {
+      key: "test",
+      label: "Test",
+      sub: "verifying",
+      count: d.test,
+      tone: "violet",
+      href: "#/work",
+    },
+    {
+      key: "review",
+      label: "Review",
+      sub: "the gate",
+      count: d.review,
+      tone: "amber",
+      gate: true,
+      href: "#/review",
+    },
+    {
+      key: "ship",
+      label: "Shipped",
+      sub: "delivered",
+      count: d.shipped,
+      tone: "ok",
+      terminal: true,
+      href: "#/work?status=done",
+    },
+  ];
+  const max = Math.max(1, ...stations.map((s) => s.count));
+  const activeStations = stations.filter((s) => !s.terminal && s.key !== "plan");
+  const bottleneck = activeStations
+    .filter((s) => s.count > 0)
+    .reduce((a, b) => (a && a.count >= b.count ? a : b), null);
+
+  const track = el("div", { class: "factory-track" });
+  stations.forEach((s, i) => {
+    const pct = s.count > 0 ? Math.max(10, Math.round((s.count / max) * 100)) : 0;
+    const isBottleneck = bottleneck && bottleneck.key === s.key;
+    let cls = `station tone-${s.tone}`;
+    if (s.gate) cls += " is-gate";
+    if (s.terminal) cls += " is-terminal";
+    if (isBottleneck) cls += " is-bottleneck";
+    if (s.count === 0) cls += " is-empty";
+
+    const station = el("a", { class: cls, href: s.href }, [
+      el("div", { class: "station-cap" }, [
+        s.gate ? el("span", { class: "station-tag" }, "⟁ gate") : null,
+        isBottleneck ? el("span", { class: "station-tag warn" }, "constraint") : null,
       ]),
-      el("span", { class: "gauge-value tabnum" }, String(g.value)),
-      el("span", { class: "gauge-track" }, el("i", { style: `width:${pct}%` })),
-      el("span", { class: "gauge-sub" }, g.sub),
-    ];
-    let cls = "gauge";
-    if (g.tone) cls += ` tone-${g.tone}`;
-    if (g.lead) cls += " is-lead";
-    const attrs = { class: cls };
-    if (g.scrollTo) {
-      attrs.href = g.href || "#/overview";
-      attrs.onclick = (e) => {
-        const t = document.getElementById(g.scrollTo);
-        if (t) {
-          e.preventDefault();
-          t.scrollIntoView({ behavior: "smooth", block: "start" });
+      el("div", { class: "station-silo" }, [
+        el("i", { class: "silo-fill", style: `height:${pct}%` }),
+        el("span", { class: "silo-val tabnum" }, String(s.count)),
+      ]),
+      el("div", { class: "station-foot" }, [
+        el("span", { class: "station-label" }, s.label),
+        el("span", { class: "station-sub" }, s.sub),
+      ]),
+    ]);
+    track.appendChild(station);
+
+    // conduit between this station and the next (flow carries the upstream tone)
+    if (i < stations.length - 1) {
+      const flowing = s.count > 0;
+      const conduit = el("div", {
+        class: `conduit tone-${s.tone}${flowing ? " is-flowing" : ""}`,
+      });
+      if (flowing) {
+        for (let k = 0; k < 3; k++) {
+          conduit.appendChild(el("span", { class: "puck", style: `--k:${k}` }));
         }
-      };
-    } else if (g.href) {
-      attrs.href = g.href;
+      }
+      track.appendChild(conduit);
     }
-    return el(g.href || g.scrollTo ? "a" : "div", attrs, children);
   });
-  return el("section", { class: "cluster" }, [
-    el("div", { class: "cluster-head" }, [
-      el("span", { class: "cluster-title" }, title),
-      el("span", { class: "cluster-total tabnum" }, totalText),
+
+  const note = bottleneck
+    ? el("div", { class: "factory-note warn" }, [
+        el("span", { class: "fn-dot" }),
+        el("strong", {}, `${bottleneck.label} is your constraint`),
+        ` — ${bottleneck.count} ${bottleneck.count === 1 ? "ticket waits" : "tickets wait"} here.`,
+      ])
+    : el("div", { class: "factory-note ok" }, [
+        el("span", { class: "fn-dot" }),
+        el("strong", {}, "Line is clear"),
+        " — nothing is piling up.",
+      ]);
+
+  return el("section", { class: "factory" }, [
+    el("div", { class: "factory-head" }, [
+      el("span", { class: "cluster-title" }, "Production line"),
+      el(
+        "span",
+        { class: "factory-flow mono" },
+        `${d.total} in flight · ${d.shipped} shipped${d.shippedToday ? ` · +${d.shippedToday} today` : ""}`,
+      ),
     ]),
-    el("div", { class: "cluster-body" }, cells),
+    track,
+    note,
   ]);
 }
 
@@ -6858,6 +6958,14 @@ function renderLoreList(res, repo) {
 }
 
 // --- Wiring -----------------------------------------------------------------
+
+// Power-on: the room boots once. The grid draws in, the rail items rack down
+// one by one, the LIVE lamp ignites, then the first view comes up. CSS owns the
+// choreography via the `.booting` flag; we just raise and lower it.
+if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  document.documentElement.classList.add("booting");
+  setTimeout(() => document.documentElement.classList.remove("booting"), 1600);
+}
 
 buildChrome();
 window.addEventListener("hashchange", router);

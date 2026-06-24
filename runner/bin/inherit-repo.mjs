@@ -121,7 +121,17 @@ function pushTo(map, key, value) {
 export function readGraph(dbPath) {
   if (!existsSync(dbPath)) throw new Error(`dispatch db not found: ${dbPath}`);
   let DatabaseSync;
-  ({ DatabaseSync } = require("node:sqlite"));
+  // node:sqlite (DatabaseSync) is a built-in only from Node 22.5+. On older Node the
+  // repo-inheritance auto-wiring is skipped (the caller invokes this best-effort, so a
+  // clear message beats a raw ERR_UNKNOWN_BUILTIN_MODULE stack). Siblings merge-ticket /
+  // onboard-run / product-owner-run degrade the same way.
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    throw new Error(
+      "node:sqlite unavailable (needs Node >= 22.5) — repo inheritance auto-wiring skipped on this runtime",
+    );
+  }
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const tickets = new Map();

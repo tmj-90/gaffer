@@ -59,7 +59,7 @@ function prefersReducedMotion() {
   return (
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
-    prefersReducedMotion()
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
   );
 }
 
@@ -1782,6 +1782,7 @@ async function renderWork() {
       suggestWorkButton(repos, nodes),
     ]),
   );
+  if (workState.mode === "board") wrap.appendChild(workFlowHeader(columns, closed.length));
   wrap.appendChild(renderWorkFilters(repos));
 
   if (workState.mode === "list") {
@@ -1794,6 +1795,47 @@ async function renderWork() {
   wrap.appendChild(await renderClaimsPanel());
 
   return wrap;
+}
+
+/** A flow-summary header above the board: per-stage WIP counts and a single
+ *  distribution bar so the shape of the board reads before you scan the lanes. */
+function workFlowHeader(columns, shippedCount) {
+  const by = {};
+  for (const c of columns) by[c.column] = (c.cards || []).length;
+  const cells = [
+    { label: "Draft", v: by.draft || 0, tone: "idle" },
+    { label: "Ready", v: by.ready || 0, tone: "accent" },
+    { label: "In progress", v: by.in_progress || 0, tone: "accent" },
+    { label: "In review", v: by.in_review || 0, tone: "amber" },
+    { label: "Blocked", v: by.blocked || 0, tone: "danger" },
+    { label: "Shipped", v: shippedCount, tone: "ok" },
+  ];
+  const flowTotal = Math.max(
+    1,
+    cells.reduce((n, c) => n + c.v, 0),
+  );
+  const seg = cells
+    .filter((c) => c.v > 0)
+    .map((c) =>
+      el("span", {
+        class: `wf-seg tone-${c.tone}`,
+        style: `width:${(c.v / flowTotal) * 100}%`,
+        title: `${c.label}: ${c.v}`,
+      }),
+    );
+  return el("div", { class: "card panel work-flow" }, [
+    el(
+      "div",
+      { class: "wf-cells" },
+      cells.map((c) =>
+        el("div", { class: `wf-cell tone-${c.tone}` }, [
+          el("span", { class: "wf-val tabnum" }, String(c.v)),
+          el("span", { class: "wf-label" }, c.label),
+        ]),
+      ),
+    ),
+    el("div", { class: "wf-bar" }, seg),
+  ]);
 }
 
 function renderWorkFilters(repos) {
@@ -3351,6 +3393,9 @@ async function renderSettings() {
     return wrap;
   }
 
+  // Autonomy dial — the headline: how many human gates are open right now.
+  wrap.appendChild(autonomyDial(all));
+
   // edit registry: key → { def, read() } for non-locked inputs, so Save collects
   // only the values the operator can actually change.
   const editors = new Map();
@@ -3405,6 +3450,50 @@ async function renderSettings() {
   }
 
   return wrap;
+}
+
+/** The autonomy dial — a gauge of how much the factory may do without you.
+ *  Reads the boolean autonomy settings: each one ON is one human gate opened. */
+function autonomyDial(all) {
+  const isOn = (v) => v === true || v === "true" || v === "1" || v === "on";
+  const bools = all.filter((s) => s.group === "autonomy" && s.type === "boolean");
+  const total = Math.max(1, bools.length);
+  const on = bools.filter((s) => isOn(s.value)).length;
+  const pct = Math.round((on / total) * 100);
+  const level = on === 0 ? "Supervised" : on >= total ? "Hands-off" : "Assisted";
+  const tone = on === 0 ? "ok" : on >= total ? "danger" : "amber";
+  const blurb =
+    on === 0
+      ? "A human approves every merge. The factory structurally cannot ship its own work."
+      : on >= total
+        ? "Every gate is open — the factory can plan, build, review and ship without you."
+        : `${on} of ${total} gates are open. The factory acts on its own for the toggles marked below.`;
+  return el("div", { class: `card panel autonomy-dial tone-${tone}` }, [
+    el("div", { class: "ad-gauge" }, [
+      el("div", { class: "ad-donut", html: svgDonut(pct) }),
+      el("div", { class: "ad-center" }, [
+        el("span", { class: "ad-frac tabnum" }, `${on}/${total}`),
+        el("span", { class: "ad-cap" }, "gates open"),
+      ]),
+    ]),
+    el("div", { class: "ad-body" }, [
+      el("div", { class: "ad-level-row" }, [
+        el("span", { class: "ad-level" }, level),
+        el("span", { class: "ad-badge" }, on === 0 ? "fully gated" : `${on} open`),
+      ]),
+      el("p", { class: "ad-note" }, blurb),
+      el(
+        "div",
+        { class: "ad-gates" },
+        bools.map((s) =>
+          el("span", { class: `ad-gate ${isOn(s.value) ? "on" : "off"}` }, [
+            el("span", { class: "ad-gate-dot" }),
+            s.label || s.key,
+          ]),
+        ),
+      ),
+    ]),
+  ]);
 }
 
 /** The known idle scan loops, in display order, with copy for the panel. */
@@ -4185,17 +4274,42 @@ async function renderReview() {
     return wrap;
   }
 
+  // Gate console header — frames the human gate and the decision controls.
+  const riskCount = (lvl) => tickets.filter((t) => t.risk_level === lvl).length;
   wrap.appendChild(
-    el("p", { class: "dim", style: "font-size:var(--step--1)" }, [
-      "Keyboard: ",
-      el("span", { class: "kbd" }, "j"),
-      " / ",
-      el("span", { class: "kbd" }, "k"),
-      " move · ",
-      el("span", { class: "kbd" }, "a"),
-      " approve · ",
-      el("span", { class: "kbd" }, "r"),
-      " rework.",
+    el("div", { class: "card panel gate-console" }, [
+      el("div", { class: "gate-main" }, [
+        el("span", { class: "gate-lamp" }),
+        el("div", {}, [
+          el("div", { class: "gate-title" }, "You hold the gate"),
+          el(
+            "div",
+            { class: "gate-sub" },
+            `${tickets.length} ${tickets.length === 1 ? "change is" : "changes are"} waiting on your sign-off. Nothing merges until you approve it.`,
+          ),
+        ]),
+      ]),
+      el("div", { class: "gate-aside" }, [
+        el("div", { class: "gate-risk" }, [
+          riskCount("critical")
+            ? el("span", { class: "gr critical" }, `${riskCount("critical")} critical`)
+            : null,
+          riskCount("high") ? el("span", { class: "gr high" }, `${riskCount("high")} high`) : null,
+          riskCount("medium")
+            ? el("span", { class: "gr medium" }, `${riskCount("medium")} medium`)
+            : null,
+          riskCount("low") ? el("span", { class: "gr low" }, `${riskCount("low")} low`) : null,
+        ]),
+        el("div", { class: "gate-keys" }, [
+          el("span", { class: "kbd" }, "j"),
+          el("span", { class: "kbd" }, "k"),
+          el("span", { class: "gate-keys-label" }, "move"),
+          el("span", { class: "kbd" }, "a"),
+          el("span", { class: "gate-keys-label" }, "approve"),
+          el("span", { class: "kbd" }, "r"),
+          el("span", { class: "gate-keys-label" }, "rework"),
+        ]),
+      ]),
     ]),
   );
 

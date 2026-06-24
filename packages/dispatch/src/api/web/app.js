@@ -2922,8 +2922,19 @@ const SETTINGS_GROUPS = [
 ];
 
 async function renderSettings() {
-  const { settings } = await api("GET", "/api/settings");
+  // Load the env-override settings plus the crew idle-loop config + the repos and
+  // scope nodes the idle-loop target picker needs. Best-effort on the extras: a
+  // failure there must not blank the whole Settings page.
+  const [{ settings }, idleLoopsRes, reposRes, nodesRes] = await Promise.all([
+    api("GET", "/api/settings"),
+    api("GET", "/api/idle-loops").catch(() => null),
+    api("GET", "/repositories").catch(() => ({ repositories: [] })),
+    api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
+  ]);
   const all = Array.isArray(settings) ? settings : [];
+  const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
+  const repos = reposRes.repositories || [];
+  const nodes = nodesRes.nodes || [];
 
   const wrap = el("div", { class: "view settings-view" });
   wrap.appendChild(viewHead("Settings", all.length ? `${all.length}` : null));
@@ -2992,7 +3003,141 @@ async function renderSettings() {
   });
 
   wrap.appendChild(form);
+
+  // Crew idle-loop scan loops — enable + repo/scope scoping. These live in
+  // crew.yaml (not settings.json), so they save through their own endpoint.
+  if (idleLoops) {
+    wrap.appendChild(renderIdleLoopsPanel(idleLoops, repos, nodes));
+  }
+
   return wrap;
+}
+
+/** The known idle scan loops, in display order, with copy for the panel. */
+const IDLE_LOOP_LABELS = {
+  idle_coverage: "Coverage",
+  idle_test_quality: "Test quality",
+  idle_documentation: "Documentation",
+  idle_dependencies: "Dependencies",
+  idle_security_hotspot: "Security hotspots",
+  idle_feature_backlog: "Feature backlog",
+};
+
+/**
+ * Idle-loops control panel. For each scan loop: an enable toggle + a multi-select
+ * target picker (repos + scopes). On save, node selections are resolved to repo
+ * NAMES so the crew loop backend stays repo-name-based, and the whole set is PUT
+ * to /api/idle-loops. An empty selection means "all repos" (schema semantics).
+ */
+function renderIdleLoopsPanel(view, repos, nodes) {
+  const card = el("div", { class: "card settings-group idle-loops-group" });
+  card.appendChild(el("h2", {}, "Idle loops"));
+  card.appendChild(
+    el(
+      "p",
+      { class: "section-note dim" },
+      "Background scan loops that run when the queue is empty — enable each and scope it to repos or scopes. Empty selection = all repos.",
+    ),
+  );
+  card.appendChild(
+    el("div", { class: "settings-note idle-loops-note" }, [
+      icon("clock", "settings-note-ico"),
+      el("span", {}, "Changes apply on the next tick — no live restart."),
+    ]),
+  );
+
+  if (!view.configured) {
+    card.appendChild(
+      emptyState(
+        "Crew config not found",
+        "No crew.yaml is configured for this factory yet, so the scan loops can't be edited here.",
+        "alert",
+      ),
+    );
+    return card;
+  }
+
+  // Per-loop editor registry: key → { read() } collecting enabled + targets.
+  const editors = new Map();
+  const rows = el("div", { class: "idle-loops-rows" });
+
+  for (const loop of view.loops || []) {
+    const label = IDLE_LOOP_LABELS[loop.key] || loop.label || loop.key;
+
+    // Seed the picker's selection from the saved repo NAMES (each becomes a repo
+    // target). Node selections aren't persisted server-side — they're resolved to
+    // repo names on save — so the round-trip shows them as their repos.
+    const initial = (loop.repos || []).map((name) => ({ kind: "repo", id: name, name }));
+    const picker = targetPicker({
+      repos,
+      nodes,
+      value: initial,
+      multiple: true,
+      onChange: () => {},
+    });
+
+    const toggle = el("input", {
+      type: "checkbox",
+      role: "switch",
+      "aria-label": `Enable ${label}`,
+    });
+    toggle.checked = loop.enabled === true;
+
+    editors.set(loop.key, {
+      key: loop.key,
+      enabled: () => toggle.checked,
+      targets: () => (typeof picker.getTargets === "function" ? picker.getTargets() : []),
+    });
+
+    const head = el("div", { class: "idle-loop-head" }, [
+      el("div", { class: "idle-loop-label" }, [
+        el("span", {}, label),
+        el("code", { class: "mono setting-key" }, loop.key),
+      ]),
+      el("label", { class: "switch" }, [
+        toggle,
+        el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
+      ]),
+    ]);
+
+    rows.appendChild(
+      el("div", { class: "idle-loop-row" }, [
+        head,
+        el("div", { class: "idle-loop-targets field" }, [
+          el("label", {}, "Scope to repos / scopes"),
+          picker,
+        ]),
+      ]),
+    );
+  }
+  card.appendChild(rows);
+
+  const saveBtn = el("button", { class: "btn primary", type: "button" }, [
+    icon("check"),
+    el("span", {}, "Save idle loops"),
+  ]);
+  card.appendChild(el("div", { class: "btn-row settings-actions" }, [saveBtn]));
+
+  saveBtn.addEventListener("click", () => {
+    runAsyncAction(saveBtn, "Saving…", async () => {
+      // Resolve every loop's selection to repo NAMES (nodes expand to their repos),
+      // de-duplicating so a repo named twice (directly + via a scope) collapses.
+      const loops = [];
+      for (const ed of editors.values()) {
+        const names = new Set();
+        for (const target of ed.targets()) {
+          const resolved = await resolveTargetRepos(target);
+          for (const name of resolved) names.add(name);
+        }
+        loops.push({ key: ed.key, enabled: ed.enabled(), repos: [...names] });
+      }
+      await api("PUT", "/api/idle-loops", { loops });
+      toast(`Saved ${loops.length} idle loop${loops.length === 1 ? "" : "s"}.`, { ok: true });
+      router();
+    });
+  });
+
+  return card;
 }
 
 /**
@@ -5382,16 +5527,22 @@ function openPlanBuild() {
     mode: "new",
     target: null,
     nodes: [],
+    repos: [],
   };
   renderPlanBuildLog();
   scrim.classList.add("open");
   document.addEventListener("keydown", planBuildKeydown);
   setTimeout(() => input.focus(), 50);
-  // Best-effort: populate the "Extend existing" picker. The panel works without it.
+  // Best-effort: populate the "Extend existing" picker with both repos and scope
+  // nodes (the shared targetPicker offers both). The panel works without them.
   guard(async () => {
-    const nodes = (await api("GET", "/scope/nodes")).nodes || [];
+    const [nodesRes, reposRes] = await Promise.all([
+      api("GET", "/scope/nodes"),
+      api("GET", "/repositories"),
+    ]);
     if (planBuildState) {
-      planBuildState.nodes = nodes;
+      planBuildState.nodes = nodesRes.nodes || [];
+      planBuildState.repos = reposRes.repositories || [];
       // Only repaint while still on the empty intro (no turns sent yet).
       if (planBuildState.history.length === 0) renderPlanBuildLog();
     }
@@ -5514,9 +5665,260 @@ function updatePlanBuildActions() {
   forceBtn.classList.toggle("pb-force-strong", turns >= PLAN_BUILD_FORCE_EMPHASIS_TURNS);
 }
 
+// ── Shared target selector ──────────────────────────────────────────────────
+// One control for "pick a repo OR a scope node, and assign it as a target".
+// A target is { kind: "repo" | "node", id, name }. A node resolves to its linked
+// repo NAME(s) via resolveTargetRepos() so every consumer (plan-build extend,
+// idle-loop scoping) ends up repo-name-based — the loop/decompose backends never
+// learn about nodes. Two variants: single-select (a <select> with Repos/Scopes
+// optgroups, plus a repo disambiguator when a multi-repo node is chosen) and
+// multi-select (grouped checkboxes). Self-contained + styled to match the
+// existing form controls.
+
+/** Cache of node id → repo NAMES, so a node only fetches its repos once per session. */
+const nodeReposCache = new Map();
+
 /**
- * Start toggle: "New app" vs "Extend existing". In extend mode a scope-node /
- * epic picker appears; the chosen node becomes the `context` the decomposer uses
+ * Resolve a node's linked repo NAMES. Uses the already-loaded `scopeRepos` map
+ * (node id → repo objects) when present, else fetches `GET /scope/repos?node=<id>`
+ * once and caches it. A repo target resolves to its own single name. Best-effort:
+ * returns [] on any error so a save never hard-fails on a transient fetch.
+ */
+async function resolveTargetRepos(target, scopeRepos) {
+  if (!target) return [];
+  if (target.kind === "repo") return target.name ? [target.name] : [];
+  const id = target.id;
+  if (scopeRepos && Array.isArray(scopeRepos[id])) {
+    return scopeRepos[id].map((r) => r.name).filter(Boolean);
+  }
+  if (nodeReposCache.has(id)) return nodeReposCache.get(id);
+  try {
+    const { repos } = await api("GET", `/scope/repos?node=${encodeURIComponent(id)}`);
+    const names = (Array.isArray(repos) ? repos : []).map((r) => r.name).filter(Boolean);
+    nodeReposCache.set(id, names);
+    return names;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Single-select target picker. Renders a labelled <select> grouping repos
+ * ("Repos") and scope nodes ("Scopes"). On choosing a repo the value becomes
+ * { kind:"repo", id, name }; on a node it becomes { kind:"node", id, name } and,
+ * when the node links more than one repo, a second <select> appears so the user
+ * disambiguates which repo to target (a node with exactly one repo auto-resolves).
+ * Calls `onChange(target)` with the current selection (or null when cleared).
+ */
+function targetPickerSingle({ repos, nodes, value, allowRepo = true, allowNode = true, onChange }) {
+  const wrap = el("div", { class: "target-picker" });
+  const repoList = allowRepo ? repos || [] : [];
+  const nodeList = allowNode ? nodes || [] : [];
+
+  // Slot for the per-node repo disambiguator (filled when a multi-repo node is chosen).
+  const repoSlot = el("div", { class: "target-picker-reposlot" });
+
+  const optionValue = (kind, id) => `${kind}:${id}`;
+  const selected =
+    value && value.kind
+      ? optionValue(value.kind, value.kind === "repo" ? value.name : value.id)
+      : "";
+
+  const sel = el(
+    "select",
+    { class: "target-picker-select", "aria-label": "Target repo or scope" },
+    [
+      el("option", { value: "" }, "Select a target…"),
+      repoList.length
+        ? el(
+            "optgroup",
+            { label: "Repos" },
+            repoList.map((r) =>
+              el(
+                "option",
+                {
+                  value: optionValue("repo", r.name),
+                  selected: selected === optionValue("repo", r.name) ? "" : undefined,
+                },
+                r.name,
+              ),
+            ),
+          )
+        : null,
+      nodeList.length
+        ? el(
+            "optgroup",
+            { label: "Scopes" },
+            nodeList.map((n) =>
+              el(
+                "option",
+                {
+                  value: optionValue("node", n.id),
+                  selected: selected === optionValue("node", n.id) ? "" : undefined,
+                },
+                `${n.name} (${typeLabel(n.type)})`,
+              ),
+            ),
+          )
+        : null,
+    ],
+  );
+
+  // Build the per-node repo disambiguator into the slot from a list of repo names.
+  // Idempotent: clears the slot first, so it survives consumer re-renders that
+  // remount the whole picker with the same node `value`.
+  function renderRepoSlot(target, names) {
+    clear(repoSlot);
+    if (names.length <= 1) {
+      // 0 → greenfield-style (no repo); 1 → use it directly. No disambiguation.
+      target.repo = names[0] || null;
+      return;
+    }
+    const repoSel = el(
+      "select",
+      { class: "target-picker-select", "aria-label": "Which repo in this scope" },
+      [
+        el("option", { value: "" }, "Pick a repo in this scope…"),
+        ...names.map((name) =>
+          el("option", { value: name, selected: target.repo === name ? "" : undefined }, name),
+        ),
+      ],
+    );
+    repoSel.addEventListener("change", () => {
+      target.repo = repoSel.value || null;
+      onChange(target);
+    });
+    repoSlot.appendChild(el("label", { class: "target-picker-sublabel" }, "Repo in scope"));
+    repoSlot.appendChild(repoSel);
+  }
+
+  // For a node target: render the disambiguator. Uses the repo-name cache when
+  // present (so a remount paints synchronously); otherwise fetches, then repaints
+  // just the slot — without notifying the consumer (no re-render churn).
+  function hydrateRepoSlot(target) {
+    clear(repoSlot);
+    if (!target || target.kind !== "node") return;
+    if (nodeReposCache.has(target.id)) {
+      renderRepoSlot(target, nodeReposCache.get(target.id));
+      return;
+    }
+    // The slot belongs to this picker instance; paint into it when the resolve
+    // lands. A remount supersedes us with its own slot, so this is always safe.
+    resolveTargetRepos(target).then((names) => renderRepoSlot(target, names));
+  }
+
+  sel.addEventListener("change", () => {
+    clear(repoSlot);
+    const raw = sel.value;
+    if (!raw) {
+      onChange(null);
+      return;
+    }
+    const sep = raw.indexOf(":");
+    const kind = raw.slice(0, sep);
+    const key = raw.slice(sep + 1);
+    if (kind === "repo") {
+      onChange({ kind: "repo", id: key, name: key, repo: key });
+      return;
+    }
+    const node = nodeList.find((n) => n.id === key);
+    const target = node
+      ? { kind: "node", id: node.id, name: node.name, type: node.type, repo: null }
+      : null;
+    if (!target) {
+      onChange(null);
+      return;
+    }
+    // Notify first (the consumer may re-render and remount this picker — the new
+    // mount's hydrateRepoSlot then paints the disambiguator), then paint here too
+    // for consumers that don't re-render. A detached paint is harmless.
+    onChange(target);
+    hydrateRepoSlot(target);
+  });
+
+  wrap.appendChild(sel);
+  wrap.appendChild(repoSlot);
+  // Restore the disambiguator when remounted with a node already selected (the
+  // consumer re-renders the picker on every change, so this keeps it in sync).
+  if (value && value.kind === "node") hydrateRepoSlot(value);
+  return wrap;
+}
+
+/**
+ * Multi-select target picker. Renders grouped checkboxes (Repos / Scopes) and
+ * keeps a live Set of selected targets. `getTargets()` returns the current
+ * selection as `{ kind, id, name }[]`; consumers resolve nodes to repo NAMES via
+ * resolveTargetRepos() on save. An empty selection means "all" — the caller owns
+ * that copy. Used for the idle loops (repos + nodes, node expands to repo names).
+ */
+function targetPickerMulti({ repos, nodes, value, onChange }) {
+  const wrap = el("div", { class: "target-picker target-picker-multi" });
+  const repoList = repos || [];
+  const nodeList = nodes || [];
+
+  // Selection keyed by "kind:id" so repos and nodes can't collide.
+  const selected = new Map();
+  for (const t of value || []) selected.set(`${t.kind}:${t.id}`, t);
+
+  const emit = () => onChange(getTargets());
+  function getTargets() {
+    return [...selected.values()];
+  }
+
+  function checkboxRow(target, label) {
+    const key = `${target.kind}:${target.id}`;
+    const input = el("input", { type: "checkbox", "aria-label": label });
+    input.checked = selected.has(key);
+    input.addEventListener("change", () => {
+      if (input.checked) selected.set(key, target);
+      else selected.delete(key);
+      emit();
+    });
+    return el("label", { class: "target-picker-check" }, [input, el("span", {}, label)]);
+  }
+
+  if (repoList.length) {
+    wrap.appendChild(el("div", { class: "target-picker-grouplabel" }, "Repos"));
+    const group = el("div", { class: "target-picker-group" });
+    for (const r of repoList) {
+      group.appendChild(checkboxRow({ kind: "repo", id: r.name, name: r.name }, r.name));
+    }
+    wrap.appendChild(group);
+  }
+  if (nodeList.length) {
+    wrap.appendChild(el("div", { class: "target-picker-grouplabel" }, "Scopes"));
+    const group = el("div", { class: "target-picker-group" });
+    for (const n of nodeList) {
+      group.appendChild(
+        checkboxRow(
+          { kind: "node", id: n.id, name: n.name, type: n.type },
+          `${n.name} (${typeLabel(n.type)})`,
+        ),
+      );
+    }
+    wrap.appendChild(group);
+  }
+  if (!repoList.length && !nodeList.length) {
+    wrap.appendChild(el("div", { class: "target-picker-empty dim" }, "No repos or scopes yet."));
+  }
+
+  // Expose the live reader so the caller can collect on save.
+  wrap.getTargets = getTargets;
+  return wrap;
+}
+
+/**
+ * Shared entry point. `multiple` chooses the variant; both share the repos/nodes
+ * inputs and the { kind, id, name } target shape. Kept as one function so the two
+ * consumers (plan-build extend, idle loops) reach for the same abstraction.
+ */
+function targetPicker(opts) {
+  return opts.multiple ? targetPickerMulti(opts) : targetPickerSingle(opts);
+}
+
+/**
+ * Start toggle: "New app" vs "Extend existing". In extend mode a repo/scope
+ * picker appears; the chosen target becomes the `context` the decomposer uses
  * to propose EXTENDING tickets rather than rebuilding. The toggle only shows on
  * the empty intro (before any turn) — once the conversation starts the target is
  * locked so history stays coherent.
@@ -5571,57 +5973,28 @@ function renderPlanBuildModeToggle() {
   ];
 
   if (planBuildState.mode === "extend") {
-    const sel = el("select", { "aria-label": "Scope node or epic to extend" }, [
-      el("option", { value: "" }, nodes.length ? "Select what to extend…" : "No scope nodes yet"),
-      ...nodes.map((n) =>
-        el(
-          "option",
-          {
-            value: n.id,
-            selected: planBuildState.target && planBuildState.target.id === n.id ? "" : undefined,
-          },
-          `${n.name} (${typeLabel(n.type)})`,
-        ),
-      ),
-    ]);
-    sel.addEventListener("change", () => {
-      const node = nodes.find((n) => n.id === sel.value) || null;
-      planBuildState.target = node
-        ? { id: node.id, name: node.name, type: node.type, repo: null }
-        : null;
-      renderPlanBuildLog();
-      planBuildEls.input.focus();
-      // Brownfield: resolve the chosen node's target repo NAME so the extend
-      // context carries `repo` (reaching the existing-repo decompose path). The
-      // node's repos aren't on the list payload, so fetch them; best-effort, the
-      // panel still works (greenfield-style) if it can't be resolved.
-      if (node) resolveExtendRepo(node.id);
+    const repos = planBuildState.repos || [];
+    // Shared selector: offers BOTH repos and scope nodes. Choosing a repo sets the
+    // target directly (the first-turn context carries that `repo`, no guessing);
+    // choosing a multi-repo node expands to a repo disambiguator; a single-repo
+    // node resolves to its one repo. The picker keeps target.repo current.
+    const picker = targetPicker({
+      repos,
+      nodes,
+      value: planBuildState.target,
+      multiple: false,
+      onChange: (target) => {
+        planBuildState.target = target;
+        renderPlanBuildLog();
+        planBuildEls.input.focus();
+      },
     });
-    children.push(el("div", { class: "field pb-extend-field" }, [el("label", {}, "Extend"), sel]));
+    children.push(
+      el("div", { class: "field pb-extend-field" }, [el("label", {}, "Extend"), picker]),
+    );
   }
 
   return el("div", { class: "pb-mode" }, children);
-}
-
-/**
- * Resolve the target repo NAME for an extend target node. Picks a write repo if
- * one is linked, else the first linked repo. Best-effort: on any error or when
- * the node has no repos the target keeps `repo: null` and the build proceeds
- * greenfield-style (no brownfield path). The result is stored on the locked
- * target so the first turn's context can carry `repo`.
- */
-async function resolveExtendRepo(nodeId) {
-  try {
-    const { repos } = await api("GET", `/scope/nodes/${nodeId}`);
-    const list = Array.isArray(repos) ? repos : [];
-    const pick = list.find((r) => r.default_access === "write") || list[0] || null;
-    // Guard against a race: only apply when this node is still the chosen target.
-    if (planBuildState && planBuildState.target && planBuildState.target.id === nodeId) {
-      planBuildState.target.repo = pick ? pick.name : null;
-    }
-  } catch {
-    // Leave repo null — the panel still works, just without the brownfield hint.
-  }
 }
 
 /** Render the proposed epic + tickets for review, with the confirm button. */
@@ -5735,17 +6108,23 @@ async function submitPlanBuildTurn(opts = {}) {
   }
 
   // Build the extend-existing context once (locked for the whole conversation).
+  // The target is either a direct repo ({kind:"repo"}) — its name flows straight
+  // through as `repo` — or a scope node ({kind:"node"}) — its id/name/type plus
+  // the resolved/disambiguated repo NAME (when one was chosen).
+  const target = planBuildState.target;
   const context =
-    planBuildState.mode === "extend" && planBuildState.target
-      ? {
-          mode: "extend",
-          scopeNodeId: planBuildState.target.id,
-          scopeNodeName: planBuildState.target.name,
-          scopeNodeType: planBuildState.target.type,
-          // Brownfield: forward the resolved target repo NAME so decompose takes
-          // the existing-repo path. Only included when resolved (else greenfield).
-          ...(planBuildState.target.repo ? { repo: planBuildState.target.repo } : {}),
-        }
+    planBuildState.mode === "extend" && target
+      ? target.kind === "repo"
+        ? { mode: "extend", repo: target.name }
+        : {
+            mode: "extend",
+            scopeNodeId: target.id,
+            scopeNodeName: target.name,
+            scopeNodeType: target.type,
+            // Brownfield: forward the resolved/disambiguated target repo NAME so
+            // decompose takes the existing-repo path. Only included when resolved.
+            ...(target.repo ? { repo: target.repo } : {}),
+          }
       : undefined;
 
   planBuildState.busy = true;

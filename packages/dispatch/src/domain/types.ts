@@ -1,5 +1,7 @@
 /** Domain enums + row shapes. Unions mirror the schema CHECK constraints. */
 
+import { DispatchError } from "../util/errors.js";
+
 export const TICKET_STATUSES = [
   "draft",
   "refining",
@@ -8,6 +10,16 @@ export const TICKET_STATUSES = [
   "in_progress",
   "blocked",
   "in_review",
+  // Independent black-box testing lane (BBT-001). When the global GAFFER_TESTING
+  // toggle is on AND the ticket is `can_be_tested`, review approval routes here
+  // (`in_review -> in_testing`) instead of straight to `ready_for_merge`: an
+  // INDEPENDENT tester agent writes automated tests from the test_contract +
+  // acceptance criteria ONLY — never the implementation diff — and submits the
+  // results as evidence. Tests pass -> `ready_for_merge`; tests fail -> back to
+  // `refining` (reusing the reject path). When the toggle is off or the ticket is
+  // not testable, review approval keeps today's behaviour (straight to
+  // `ready_for_merge`), so this lane is fully opt-in and skippable.
+  "in_testing",
   // Approved-and-merging: the human has approved the review, the merge runner is
   // doing the git merge. The ticket sits here until the runner confirms the merge
   // landed (`ready_for_merge -> done` via the guarded mark-merged path), so `done`
@@ -110,8 +122,208 @@ export interface Ticket {
    * Parse with {@link parseReviewFeedback} before surfacing it.
    */
   last_review_feedback: string | null;
+  /**
+   * BBT-001: 1 ⇒ this ticket is eligible for the independent black-box testing
+   * lane — set by the PO / clarify / reviewer once an observable boundary may have
+   * changed. Gates entry to `in_testing`: review approval only routes through the
+   * tester when this is 1 AND the global GAFFER_TESTING toggle is on. Persisted as
+   * INTEGER (0/1) to match the SQLite boolean convention. Default 0.
+   */
+  can_be_tested: number;
+  /**
+   * BBT-001: the testing HANDOVER artifact — a JSON-encoded {@link TestContract}
+   * (or `null` when none has been recorded). It declares the OPERATIONAL contract
+   * the tester needs to stand the system up and probe it (changed boundary
+   * surfaces, runtime deps, env vars, run command, harness readiness) WITHOUT ever
+   * seeing the implementation diff. Parse with {@link parseTestContract} before
+   * surfacing it.
+   */
+  test_contract: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * The independent black-box testing handover (BBT-001). This is the centerpiece:
+ * the implementer/reviewer fills it so a SEPARATE tester agent can stand the
+ * system up and probe the changed boundaries from the OUTSIDE, judging behaviour
+ * against the acceptance criteria — without ever reading the implementation diff.
+ *
+ * Eligibility is "did any observable boundary change", not "is this an API
+ * ticket": a refactor or internal-util change still belongs here because it can
+ * shift an API's underlying logic, so {@link changed_surfaces} captures the
+ * boundary contracts whose BEHAVIOUR may have moved.
+ */
+export interface TestContract {
+  /**
+   * The boundary contracts whose BEHAVIOUR may have changed — APIs / endpoints /
+   * CLI verbs / pages. What the tester probes from the outside.
+   */
+  changed_surfaces: string[];
+  /** Infrastructure the tester must stand up (e.g. "Postgres 16 (was MySQL)"), services. */
+  runtime_deps: string[];
+  /** Environment variables the tester sets to run the system. */
+  env_vars: string[];
+  /**
+   * How to bring the system up / invoke the changed surface.
+   *
+   * SAFETY: this is CONTRACT TEXT ONLY — Gaffer never executes it today. It is a
+   * free-form, contract-authored string surfaced to the (human or model) tester as
+   * context for how to stand the system up. When live execution is eventually
+   * implemented it MUST NOT be spawned as a contract-authored shell string: it has
+   * to go through the safety hook and the worktree write-root/read-root boundary,
+   * and be either a JSON argv vector (not a shell string) or a human-approved
+   * harness file. Treat any code that `spawn`s this string directly as a bug.
+   */
+  run_command: string;
+  /**
+   * Whether a black-box harness already exists for this surface. Drives the two
+   * tester modes: `false` ⇒ HARNESS mode (the tester may use startup/impl detail
+   * to STAND UP the rig once, then flips this true); `true` ⇒ BLACK-BOX mode (the
+   * tester gets the contract ONLY and extends tests against the existing harness).
+   */
+  harness_ready: boolean;
+}
+
+/**
+ * Parse the `tickets.test_contract` JSON column into a {@link TestContract}.
+ * Returns `null` for an absent or malformed value, and coerces each field to its
+ * expected shape (string arrays for the lists, a string for the command, a boolean
+ * for the flag) so a corrupt or partial row can never throw on a read path. A
+ * missing field falls back to its empty/false default rather than rejecting the
+ * whole record.
+ */
+export function parseTestContract(raw: string | null): TestContract | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<TestContract>;
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const stringList = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+    return {
+      changed_surfaces: stringList(parsed.changed_surfaces),
+      runtime_deps: stringList(parsed.runtime_deps),
+      env_vars: stringList(parsed.env_vars),
+      run_command: typeof parsed.run_command === "string" ? parsed.run_command : "",
+      harness_ready: parsed.harness_ready === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One implementation-pointer leak rule: a label, a matcher, and the fields it
+ * guards. The whole point of the test contract is that the tester gets the
+ * OPERATIONAL boundary — what changed, how to run it — and NEVER an implementation
+ * breadcrumb (a branch name, a PR/commit pointer, a "I changed X to Y" narration).
+ * A sloppily-authored contract can leak the diff in prose even though the runner
+ * never hands over the actual diff; these rules reject that at the write path.
+ */
+interface LeakRule {
+  readonly marker: string;
+  readonly test: RegExp;
+  /** Which {@link TestContract} list/field this rule scrutinises. */
+  readonly fields: ReadonlyArray<"changed_surfaces" | "run_command" | "runtime_deps">;
+}
+
+/**
+ * The leak rules. Strict implementation-pointer checks run over `changed_surfaces`
+ * + `run_command` (and the branch/PR/URL ones also over `runtime_deps`). The bare
+ * commit-hash check is DELIBERATELY scoped away from `env_vars` (whose values can
+ * legitimately be hex) and `runtime_deps`, so it can't false-positive on a real
+ * value — it only guards the surface description + run command.
+ */
+const LEAK_RULES: readonly LeakRule[] = [
+  {
+    // A `gaffer/…`-style delivery branch, or any `…/ticket-<n>…` branch pattern.
+    marker: "branch name (gaffer/… or …/ticket-<n>…)",
+    test: /(^|[\s"'(/])gaffer\/[\w./-]+|ticket-\d+/i,
+    fields: ["changed_surfaces", "run_command", "runtime_deps"],
+  },
+  {
+    // A PR URL or any URL pointing at a diff/commit/pull view.
+    marker: "PR / diff / commit URL",
+    test: /https?:\/\/\S*\/(pull|commit|commits|compare)\/\S+|https?:\/\/\S*\.diff/i,
+    fields: ["changed_surfaces", "run_command", "runtime_deps"],
+  },
+  {
+    // A bare commit-hash token. Scoped to surface + run command only — env_vars and
+    // runtime_deps can legitimately carry hex, so they are NOT checked here.
+    marker: "bare commit hash",
+    test: /\b[0-9a-f]{7,40}\b/i,
+    fields: ["changed_surfaces", "run_command"],
+  },
+  {
+    // Leakage tokens used as implementation pointers: `diff`, `pr_url`,
+    // `branch_name`, or `commit ` (word-boundaried, case-insensitive).
+    marker: "leakage token (diff / pr_url / branch_name / commit)",
+    test: /\b(diff|pr_url|branch_name|commit)\b/i,
+    fields: ["changed_surfaces", "run_command"],
+  },
+  {
+    // "I changed …" / "changed X to Y" narration — describing the EDIT, not the
+    // observable surface. The tester gets the contract, never the change story.
+    marker: '"I changed …" / "changed X to Y" phrasing',
+    test: /\bi\s+changed\b|\bchanged\s+\S+\s+to\s+\S+/i,
+    fields: ["changed_surfaces", "run_command"],
+  },
+  {
+    // An internal SOURCE-file path (a token ending in a code extension). A changed
+    // surface is an OBSERVABLE contract — an endpoint, CLI verb, page, or behaviour —
+    // never a source file: `packages/dispatch/src/services/transitionService.ts` is an
+    // implementation pointer, not a surface. Scoped to `changed_surfaces` ONLY —
+    // `run_command` legitimately invokes script files (`node bin/x.mjs`, `pytest …`).
+    // Data/config files (.json/.yaml/.toml/.env/.csv) are NOT code and remain allowed
+    // as a genuine file-interface surface. (Bare implementation class/function names
+    // are deliberately NOT pattern-matched — too false-positive-prone; the contract
+    // discipline in SKILL.md + human review carry that, while this catches the path
+    // that gives the symbol away.)
+    marker: "internal source-file path",
+    test: /[\w./-]*\.(ts|tsx|js|mjs|cjs|jsx|py|go|rs|java|rb|php|cs|cpp|kt|swift|scala|vue|svelte)\b/i,
+    fields: ["changed_surfaces"],
+  },
+] as const;
+
+/**
+ * Validate a {@link TestContract} for implementation-pointer leaks before it is
+ * persisted. The invariant the whole testing lane rests on is "the tester never
+ * sees the diff" — but a contract author can still smuggle implementation
+ * breadcrumbs into the prose (a branch name, a PR URL, a commit hash, a "changed X
+ * to Y" narration). This is the choke-point guard that the CLI, MCP, and REST write
+ * paths all funnel through (via {@link Wiglet.setTestContract}).
+ *
+ * Throws a {@link DispatchError} (`TEST_CONTRACT_LEAK`) naming the offending field +
+ * marker on the first leak; returns the contract unchanged when clean.
+ */
+export function validateTestContract(contract: TestContract): TestContract {
+  const valueFor = (field: LeakRule["fields"][number]): string[] => {
+    switch (field) {
+      case "changed_surfaces":
+        return contract.changed_surfaces;
+      case "runtime_deps":
+        return contract.runtime_deps;
+      case "run_command":
+        return [contract.run_command];
+    }
+  };
+  for (const rule of LEAK_RULES) {
+    for (const field of rule.fields) {
+      for (const entry of valueFor(field)) {
+        if (typeof entry === "string" && rule.test.test(entry)) {
+          throw new DispatchError(
+            "TEST_CONTRACT_LEAK",
+            `test_contract.${field} leaks an implementation pointer (${rule.marker}). ` +
+              "The tester gets the operational contract + how to run it — never the diff, " +
+              "a branch/PR/commit, or implementation class/function names. Offending entry: " +
+              JSON.stringify(entry),
+            { field, marker: rule.marker, entry },
+          );
+        }
+      }
+    }
+  }
+  return contract;
 }
 
 /**

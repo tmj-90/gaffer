@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   description   TEXT NOT NULL DEFAULT '',
   status        TEXT NOT NULL CHECK (status IN (
     'draft','refining','ready','claimed','in_progress',
-    'blocked','in_review','ready_for_merge','done','failed','cancelled'
+    'blocked','in_review','in_testing','ready_for_merge','done','failed','cancelled'
   )),
   priority      INTEGER NOT NULL DEFAULT 0,
   risk_level    TEXT NOT NULL DEFAULT 'medium' CHECK (risk_level IN ('low','medium','high','critical')),
@@ -50,6 +50,15 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- no outstanding rejection. Added by an idempotent ALTER in connection.ts for an
   -- existing DB; the default below (NULL) mirrors the migration backfill.
   last_review_feedback TEXT,
+  -- BBT-001 (schema_version 9): the independent black-box testing lane.
+  -- can_be_tested (0/1; 1 => eligible for the testing lane) gates entry to
+  -- in_testing; test_contract is a JSON {changed_surfaces[], runtime_deps[],
+  -- env_vars[], run_command, harness_ready} handover the tester reads to stand the
+  -- system up — never the diff. Both are added by an idempotent ALTER in
+  -- connection.ts for an existing DB; the defaults below (0 / NULL) mirror the
+  -- migration backfill — pre-v9 tickets are not testable and carry no contract.
+  can_be_tested INTEGER NOT NULL DEFAULT 0,
+  test_contract TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

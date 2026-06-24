@@ -400,6 +400,60 @@ code,
   color: var(--accent);
 }
 
+/* sharpened nav: a crisp left rule on the active item, a flexible label, and a
+   live count chip pushed to the right edge */
+.nav-label {
+  flex: 1 1 auto;
+  text-align: left;
+}
+.nav-rule {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 17px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  box-shadow: 0 0 10px -1px var(--accent-glow);
+  transform: translateY(-50%) scaleY(0);
+  transform-origin: center;
+  opacity: 0;
+  transition:
+    transform var(--med) var(--ease-spring),
+    opacity var(--med) var(--ease);
+}
+.nav-link.active .nav-rule {
+  transform: translateY(-50%) scaleY(1);
+  opacity: 1;
+}
+.nav-count {
+  flex: 0 0 auto;
+  min-width: 20px;
+  text-align: center;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.64rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: var(--r-pill);
+  color: var(--text-dim);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+}
+.nav-count.urgent {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--amber-line);
+}
+.nav-link.active .nav-count {
+  color: var(--text);
+  background: var(--surface-4);
+}
+.nav-link.active .nav-count.urgent {
+  color: var(--amber-bright);
+}
+
 .appbar-spacer {
   flex: 1 1 auto;
 }
@@ -2402,11 +2456,22 @@ html::after {
   box-shadow: 0 0 8px -1px var(--amber);
 }
 .rp-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.rp-repo {
   font-size: var(--step--1);
-  color: var(--text-dim);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.rp-note {
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  color: var(--text-faint);
 }
 .rp-bar {
   height: 6px;

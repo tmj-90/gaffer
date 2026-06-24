@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { Dispatch, isTestingEnabled } from "../src/core.js";
-import { parseTestContract, type Actor } from "../src/domain/types.js";
+import {
+  parseTestContract,
+  validateTestContract,
+  type Actor,
+  type TestContract,
+} from "../src/domain/types.js";
 import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
 import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
@@ -127,6 +132,119 @@ describe("BBT-001 the Test Contract artifact", () => {
       run_command: "go test ./...",
       harness_ready: false,
     });
+  });
+});
+
+describe("BBT-001 contract leak validator", () => {
+  const clean: TestContract = {
+    changed_surfaces: ["POST /tickets", "gaffer skills install"],
+    runtime_deps: ["Postgres 16"],
+    env_vars: ["DATABASE_URL", "DEADBEEFCAFE0000"], // legit hex value — must NOT trip
+    run_command: "docker compose up && curl localhost:3000/tickets",
+    harness_ready: true,
+  };
+
+  function withSurface(surface: string): TestContract {
+    return { ...clean, changed_surfaces: [...clean.changed_surfaces, surface] };
+  }
+
+  it("passes a clean contract unchanged", () => {
+    expect(validateTestContract(clean)).toEqual(clean);
+  });
+
+  it("passes legit CLI / file-interface / endpoint surfaces", () => {
+    expect(() => validateTestContract(withSurface("gaffer skills install"))).not.toThrow();
+    expect(() => validateTestContract(withSurface("POST /tickets"))).not.toThrow();
+    expect(() => validateTestContract(withSurface("GET /tickets/:id/testable"))).not.toThrow();
+    // A file-interface surface (the surface IS a file path) is allowed.
+    expect(() => validateTestContract(withSurface("reads runner/factory.config.sh"))).not.toThrow();
+  });
+
+  it("rejects a gaffer/… branch name", () => {
+    expect(() => validateTestContract(withSurface("delivered on gaffer/ticket-12-foo"))).toThrow(
+      /branch name/i,
+    );
+  });
+
+  it("rejects a …/ticket-<n> branch pattern", () => {
+    expect(() => validateTestContract(withSurface("see branch wip/ticket-42"))).toThrow(
+      /branch name/i,
+    );
+  });
+
+  it("rejects a PR / diff / commit URL", () => {
+    expect(() => validateTestContract(withSurface("https://github.com/acme/repo/pull/5"))).toThrow(
+      /URL/i,
+    );
+    expect(() =>
+      validateTestContract(withSurface("https://github.com/acme/repo/commit/abcd")),
+    ).toThrow(/URL/i);
+  });
+
+  it("rejects a bare commit hash in a surface", () => {
+    expect(() => validateTestContract(withSurface("at rev 1a2b3c4d5e"))).toThrow(/commit hash/i);
+  });
+
+  it("does NOT run the commit-hash check over env_vars (legit hex passes)", () => {
+    // clean.env_vars carries a hex value; it must not be treated as a commit hash.
+    expect(() => validateTestContract(clean)).not.toThrow();
+  });
+
+  it("rejects leakage tokens (diff / pr_url / branch_name / commit)", () => {
+    expect(() => validateTestContract(withSurface("see the diff for details"))).toThrow(
+      /leakage token/i,
+    );
+    expect(() => validateTestContract(withSurface("set via branch_name"))).toThrow(
+      /leakage token/i,
+    );
+    expect(() =>
+      validateTestContract({ ...clean, run_command: "git show commit then run" }),
+    ).toThrow(/leakage token/i);
+  });
+
+  it('rejects "I changed …" / "changed X to Y" narration', () => {
+    expect(() => validateTestContract(withSurface("I changed the handler"))).toThrow(/changed/i);
+    expect(() => validateTestContract(withSurface("changed MySQL to Postgres"))).toThrow(
+      /changed/i,
+    );
+  });
+
+  it("names the offending field + marker in the error", () => {
+    try {
+      validateTestContract(withSurface("on gaffer/ticket-9-x"));
+      throw new Error("expected a leak rejection");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DispatchError);
+      const e = err as DispatchError;
+      expect(e.code).toBe("TEST_CONTRACT_LEAK");
+      expect(e.message).toContain("changed_surfaces");
+      expect(e.message).toMatch(/branch name/i);
+    }
+  });
+
+  it("rejects a leak in run_command", () => {
+    expect(() =>
+      validateTestContract({ ...clean, run_command: "git checkout gaffer/ticket-3 && run" }),
+    ).toThrow(/run_command/);
+  });
+
+  it("is enforced at the setTestContract write path (the CLI/MCP/REST choke point)", () => {
+    const wg = freshWg();
+    const t = wg.createTicket({ title: "x", policy_pack: "solo_loose" }, human);
+    expect(() =>
+      wg.setTestContract(
+        t.id,
+        { changed_surfaces: ["delivered on gaffer/ticket-7-x"], run_command: "go test" },
+        human,
+      ),
+    ).toThrow(/branch name/i);
+    // A clean contract still writes fine through the same path.
+    const ok = wg.setTestContract(
+      t.id,
+      { changed_surfaces: ["POST /tickets"], run_command: "go test ./..." },
+      human,
+    );
+    expect(ok.changed_surfaces).toEqual(["POST /tickets"]);
   });
 });
 

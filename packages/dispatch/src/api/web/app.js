@@ -54,6 +54,15 @@ const app = document.getElementById("app");
 const appbar = document.getElementById("appbar");
 const bottomnav = document.getElementById("bottomnav");
 
+/** Reduced-motion check that is safe when matchMedia is absent (tests/SSR). */
+function prefersReducedMotion() {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    prefersReducedMotion()
+  );
+}
+
 /** Create an element with attributes + children. Strings become text nodes. */
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -523,6 +532,7 @@ async function router() {
 
   app.dataset.area = activeArea; // lets CSS give width-hungry views (work/map/epics) the full screen
   syncNav();
+  updateNavBadges();
   app.classList.remove("login-shell");
 
   // The actual DOM swap: skeleton in, awaited content in. Wrapped in a View
@@ -543,7 +553,7 @@ async function router() {
     });
   };
 
-  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const reduce = prefersReducedMotion();
   if (document.startViewTransition && !reduce) {
     // Snapshot synchronously, then run the marker-glide; the awaited content
     // resolves inside the transition's update callback.
@@ -567,7 +577,7 @@ function stagger(root) {
  *  fill gauges sweep out. Honest — the target is the real number; we only
  *  animate the approach. Skipped under reduced-motion. */
 function animateReadouts(root) {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (prefersReducedMotion()) return;
 
   // Silos fill up from empty, left to right — the line charging.
   root.querySelectorAll(".silo-fill").forEach((bar, i) => {
@@ -646,7 +656,12 @@ function buildChrome() {
           dataset: { area: n.id },
           onclick: () => navigate(`#/${n.id}`),
         },
-        [icon(n.icon, "nav-ico"), n.label],
+        [
+          el("span", { class: "nav-rule" }),
+          icon(n.icon, "nav-ico"),
+          el("span", { class: "nav-label" }, n.label),
+          el("span", { class: "nav-count", dataset: { count: n.id }, hidden: true }),
+        ],
       ),
     ),
   );
@@ -720,6 +735,42 @@ function syncNav() {
   document.querySelectorAll("[data-area]").forEach((n) => {
     n.classList.toggle("active", n.dataset.area === activeArea);
   });
+}
+
+/** Live, data-driven nav badges: Work shows open (in-flight) tickets, Review
+ *  shows the gate queue. Best-effort; the rail works fine without them. */
+let navBadgeBusy = false;
+async function updateNavBadges() {
+  if (navBadgeBusy) return;
+  navBadgeBusy = true;
+  try {
+    const { summary } = await api("GET", "/api/dashboard");
+    const s = summary.ticketsByStatus || {};
+    const open =
+      (s.ready || 0) +
+      (s.in_progress || 0) +
+      (s.claimed || 0) +
+      (s.in_review || 0) +
+      (s.in_testing || 0) +
+      (s.ready_for_merge || 0) +
+      (s.blocked || 0);
+    const counts = { work: open, review: summary.openDecisions != null ? s.in_review || 0 : 0 };
+    counts.review = s.in_review || 0;
+    document.querySelectorAll(".nav-count[data-count]").forEach((el) => {
+      const v = counts[el.dataset.count];
+      if (v > 0) {
+        el.textContent = String(v);
+        el.hidden = false;
+        el.classList.toggle("urgent", el.dataset.count === "review");
+      } else {
+        el.hidden = true;
+      }
+    });
+  } catch {
+    /* best-effort */
+  } finally {
+    navBadgeBusy = false;
+  }
 }
 
 // --- Command palette (⌘K) ---------------------------------------------------
@@ -941,19 +992,17 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, ticketsRes, decisionsRes, reposRes] = await Promise.all([
+  const [{ summary }, activity, ticketsRes, decisionsRes] = await Promise.all([
     api("GET", "/api/dashboard"),
     api("GET", "/api/activity?limit=200"),
     api("GET", "/tickets").catch(() => ({ tickets: [] })),
     api("GET", "/decisions").catch(() => ({ decisions: [] })),
-    api("GET", "/repositories").catch(() => ({ repositories: [] })),
   ]);
 
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
   const events = activity.events || [];
   const decisions = decisionsRes.decisions || [];
-  const repos = (reposRes.repositories || []).filter((r) => !r.hidden);
   const inReview = byStatus.in_review || 0;
   const blocked = summary.blocked ?? byStatus.blocked ?? 0;
   const openDecisions = summary.openDecisions ?? decisions.length;
@@ -1096,7 +1145,7 @@ async function renderOverview() {
   // --- Progress by repo + Cycle-time chart + Flow-efficiency donut (3-up) ---
   wrap.appendChild(
     el("div", { class: "ov-grid ov-3" }, [
-      repoProgressPanel(repos, byStatus),
+      repoProgressPanel(summary.repoProgress || []),
       el("div", { class: "card panel" }, [
         panelHead("Cycle time", "days"),
         el("div", { class: "chart", html: svgLine(cycleLine, days) }),
@@ -1326,35 +1375,39 @@ function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
 
 /** Progress by repository. Repo names are real; per-repo progress is illustrative
  *  demo data until the control plane exposes per-repo completion. */
-function repoProgressPanel(repos, byStatus) {
-  const done = byStatus.done || 0;
-  const total = Math.max(
-    1,
-    Object.values(byStatus).reduce((a, b) => a + b, 0),
-  );
-  const baseline = Math.round((done / total) * 100);
-  const list = (repos.length ? repos : [{ name: "—" }]).slice(0, 5);
+/** Progress by repository — real per-repo completion from the control plane
+ *  (DashboardSummary.repoProgress): a done-share bar + in-flight/blocked hint. */
+function repoProgressPanel(rows) {
+  const list = rows.slice(0, 6);
   return el("div", { class: "card panel" }, [
-    panelHead("Progress by repository", `${repos.length} ${repos.length === 1 ? "repo" : "repos"}`),
-    el(
-      "div",
-      { class: "repo-prog" },
-      list.map((r, i) => {
-        // deterministic spread around the real baseline so bars read distinctly
-        const pct = Math.max(8, Math.min(98, baseline + [12, -8, 22, -18, 4][i % 5]));
-        const warn = pct < 35;
-        return el("div", { class: "rp-row" }, [
-          el("span", { class: `rp-dot ${warn ? "warn" : "ok"}` }),
-          el("span", { class: "rp-name", title: r.name }, r.name),
-          el(
-            "span",
-            { class: "rp-bar" },
-            el("i", { class: warn ? "warn" : "", style: `width:${pct}%` }),
-          ),
-          el("span", { class: "rp-pct tabnum" }, `${pct}%`),
-        ]);
-      }),
-    ),
+    panelHead("Progress by repository", `${rows.length} ${rows.length === 1 ? "repo" : "repos"}`),
+    list.length
+      ? el(
+          "div",
+          { class: "repo-prog" },
+          list.map((r) => {
+            const warn = r.blocked > 0 || r.pct < 35;
+            const note = r.blocked
+              ? `${r.blocked} blocked`
+              : r.inFlight
+                ? `${r.inFlight} in flight`
+                : `${r.done}/${r.total} done`;
+            return el("div", { class: "rp-row", title: `${r.done}/${r.total} tickets done` }, [
+              el("span", { class: `rp-dot ${warn ? "warn" : "ok"}` }),
+              el("span", { class: "rp-name" }, [
+                el("span", { class: "rp-repo" }, r.repo),
+                el("span", { class: "rp-note" }, note),
+              ]),
+              el(
+                "span",
+                { class: "rp-bar" },
+                el("i", { class: warn ? "warn" : "", style: `width:${Math.max(3, r.pct)}%` }),
+              ),
+              el("span", { class: "rp-pct tabnum" }, `${r.pct}%`),
+            ]);
+          }),
+        )
+      : el("p", { class: "dim" }, "No repositories linked to tickets yet."),
   ]);
 }
 
@@ -7077,7 +7130,7 @@ function renderLoreList(res, repo) {
 // Power-on: the room boots once. The grid draws in, the rail items rack down
 // one by one, the LIVE lamp ignites, then the first view comes up. CSS owns the
 // choreography via the `.booting` flag; we just raise and lower it.
-if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+if (!prefersReducedMotion()) {
   document.documentElement.classList.add("booting");
   setTimeout(() => document.documentElement.classList.remove("booting"), 1600);
 }

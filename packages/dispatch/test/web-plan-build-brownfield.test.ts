@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 //
-// DOM test for the brownfield wiring in the SPA "Plan a build" panel:
-// when the user picks "Extend existing" and selects a scope node, the panel
-// resolves that node's target repo NAME (via GET /scope/nodes/:id) and includes
-// `context.repo` in the POST /plan-build payload so the existing-repo
-// (brownfield) decompose path is reachable from the UI.
+// DOM test for the brownfield wiring in the SPA "Plan a build" panel. The
+// "Extend existing" picker is the shared target selector: it offers BOTH repos
+// and scope nodes. Choosing a repo directly carries that repo NAME straight into
+// the POST /plan-build context. Choosing a multi-repo scope node expands to a
+// repo disambiguator; the chosen repo NAME flows into context.repo so the
+// existing-repo (brownfield) decompose path is reachable from the UI.
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -14,11 +15,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 const NODES = [{ id: "node-1", name: "Checkout", type: "product" }];
-// The node's repos: a write target should be preferred for the brownfield repo.
-const NODE_REPOS = [
-  { name: "checkout-web", default_access: "read" },
-  { name: "checkout-api", default_access: "write" },
+const REPOS = [
+  { id: "r1", name: "checkout-web" },
+  { id: "r2", name: "checkout-api" },
 ];
+// The node links two repos, so the picker asks which one to target.
+const NODE_REPOS = [{ name: "checkout-web" }, { name: "checkout-api" }];
 
 let lastPlanPost: unknown = null;
 
@@ -39,9 +41,10 @@ function stubFetch(): void {
         lastPlanPost = JSON.parse(String(init?.body ?? "{}"));
         return json({ phase: "clarify", questions: ["Anything else?"] });
       }
-      // GET /scope/nodes/:id → repos for the chosen extend node.
-      if (/\/scope\/nodes\/[^/]+$/.test(url)) return json({ node: NODES[0], repos: NODE_REPOS });
+      // GET /scope/repos?node=:id → the node's linked repos for the picker.
+      if (url.includes("/scope/repos")) return json({ repos: NODE_REPOS });
       if (url.includes("/scope/nodes")) return json({ nodes: NODES });
+      if (url.includes("/repositories")) return json({ repositories: REPOS });
       if (url.includes("/tickets")) return json({ tickets: [] });
       return json({});
     }),
@@ -61,7 +64,38 @@ function mountShell(): void {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-describe("web: Plan-a-build brownfield (extend passes target repo)", () => {
+async function openExtend(): Promise<HTMLSelectElement> {
+  await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
+  await tick();
+
+  const trigger = Array.from(document.querySelectorAll("button")).find((b) =>
+    b.textContent?.includes("Plan a build"),
+  )!;
+  trigger.click();
+  await tick(); // lets the nodes + repos fetch settle so the picker has options
+  await tick();
+
+  const extendRadio = document.querySelector(
+    'input[name="pb-mode"][value="extend"]',
+  ) as HTMLInputElement;
+  extendRadio.checked = true;
+  extendRadio.dispatchEvent(new Event("change"));
+  await tick();
+  await tick();
+
+  return document.querySelector(".pb-extend-field .target-picker-select") as HTMLSelectElement;
+}
+
+async function sendBrief(): Promise<void> {
+  const input = document.querySelector(".pb-input") as HTMLTextAreaElement;
+  input.value = "add a coupon field";
+  const form = document.querySelector(".pb-composer") as HTMLFormElement;
+  form.requestSubmit();
+  await tick();
+  await tick();
+}
+
+describe("web: Plan-a-build brownfield (extend targets a repo)", () => {
   beforeEach(() => {
     stubFetch();
     mountShell();
@@ -72,47 +106,44 @@ describe("web: Plan-a-build brownfield (extend passes target repo)", () => {
     document.body.innerHTML = "";
   });
 
-  it("includes context.repo (a write target) when extending a scope node", async () => {
-    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
-    await tick();
-
-    // Open the Plan-a-build panel.
-    const trigger = Array.from(document.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Plan a build"),
-    )!;
-    trigger.click();
-    await tick(); // lets the nodes fetch settle so the extend picker has options
-
-    // Switch to "Extend existing".
-    const extendRadio = document.querySelector(
-      'input[name="pb-mode"][value="extend"]',
-    ) as HTMLInputElement;
-    expect(extendRadio).not.toBeNull();
-    extendRadio.checked = true;
-    extendRadio.dispatchEvent(new Event("change"));
-    await tick();
-
-    // Choose the scope node → triggers the GET /scope/nodes/:id repo resolution.
-    const sel = document.querySelector(
-      'select[aria-label="Scope node or epic to extend"]',
-    ) as HTMLSelectElement;
+  it("carries context.repo when a repo is chosen directly", async () => {
+    const sel = await openExtend();
     expect(sel).not.toBeNull();
-    sel.value = "node-1";
+    // The picker offers repos directly under the "Repos" optgroup.
+    sel.value = "repo:checkout-api";
     sel.dispatchEvent(new Event("change"));
-    await tick(); // resolveExtendRepo()
-
-    // Type a brief and send the first turn.
-    const input = document.querySelector(".pb-input") as HTMLTextAreaElement;
-    input.value = "add a coupon field";
-    const form = document.querySelector(".pb-composer") as HTMLFormElement;
-    form.requestSubmit();
-    await tick();
     await tick();
 
-    expect(lastPlanPost).not.toBeNull();
+    await sendBrief();
+
     const body = lastPlanPost as { context?: { mode: string; repo?: string } };
     expect(body.context?.mode).toBe("extend");
-    // The write repo (checkout-api) is preferred as the brownfield target.
+    expect(body.context?.repo).toBe("checkout-api");
+  });
+
+  it("asks which repo to target for a multi-repo node, then carries that repo", async () => {
+    const sel = await openExtend();
+    sel.value = "node:node-1";
+    sel.dispatchEvent(new Event("change"));
+    await tick();
+    await tick(); // resolve the node's repos → disambiguator appears
+
+    // A second select appears because the node links two repos.
+    const repoSel = document.querySelector(
+      ".target-picker-reposlot select",
+    ) as HTMLSelectElement | null;
+    expect(repoSel).not.toBeNull();
+    repoSel!.value = "checkout-api";
+    repoSel!.dispatchEvent(new Event("change"));
+    await tick();
+
+    await sendBrief();
+
+    const body = lastPlanPost as {
+      context?: { mode: string; scopeNodeId?: string; repo?: string };
+    };
+    expect(body.context?.mode).toBe("extend");
+    expect(body.context?.scopeNodeId).toBe("node-1");
     expect(body.context?.repo).toBe("checkout-api");
   });
 });

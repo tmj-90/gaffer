@@ -6950,3 +6950,287 @@ body {
 .idle-loop-label > span {
   font-weight: 600;
 }
+
+/* ===========================================================================
+   WORK — flow-summary header above the board
+   =========================================================================== */
+.work-flow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+.wf-cells {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s-3);
+}
+@media (min-width: 760px) {
+  .wf-cells {
+    grid-template-columns: repeat(6, 1fr);
+  }
+}
+.wf-cell {
+  --st: var(--text-faint);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 11px;
+  border-left: 2px solid var(--st);
+}
+.wf-cell.tone-accent {
+  --st: var(--accent);
+}
+.wf-cell.tone-amber {
+  --st: var(--amber);
+}
+.wf-cell.tone-danger {
+  --st: var(--danger);
+}
+.wf-cell.tone-ok {
+  --st: var(--ok);
+}
+.wf-val {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+}
+.wf-label {
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.wf-bar {
+  display: flex;
+  height: 7px;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+  gap: 1px;
+}
+.wf-seg {
+  height: 100%;
+}
+.wf-seg.tone-idle {
+  background: var(--surface-4);
+}
+.wf-seg.tone-accent {
+  background: var(--accent);
+}
+.wf-seg.tone-amber {
+  background: var(--amber);
+}
+.wf-seg.tone-danger {
+  background: var(--danger);
+}
+.wf-seg.tone-ok {
+  background: var(--ok);
+}
+
+/* ===========================================================================
+   SETTINGS — the autonomy dial
+   =========================================================================== */
+.autonomy-dial {
+  --tone: var(--ok);
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  flex-wrap: wrap;
+}
+.autonomy-dial.tone-amber {
+  --tone: var(--amber);
+}
+.autonomy-dial.tone-danger {
+  --tone: var(--danger);
+}
+.ad-gauge {
+  position: relative;
+  flex: 0 0 auto;
+  width: 132px;
+  height: 132px;
+  color: var(--tone);
+  display: grid;
+  place-items: center;
+}
+.ad-donut {
+  line-height: 0;
+}
+.ad-donut svg {
+  width: 132px;
+  height: 132px;
+}
+.ad-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.ad-frac {
+  font-family: var(--mono);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.ad-cap {
+  font-size: 0.56rem;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ad-body {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.ad-level-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.ad-level {
+  font-family: var(--display);
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.ad-badge {
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--tone);
+  border: 1px solid color-mix(in oklch, var(--tone), transparent 55%);
+  background: color-mix(in oklch, var(--tone), transparent 86%);
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+}
+.ad-note {
+  margin: 8px 0 14px;
+  color: var(--text-dim);
+  font-size: var(--step--1);
+  max-width: 56ch;
+}
+.ad-gates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.ad-gate {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  padding: 5px 11px 5px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.ad-gate.on {
+  color: var(--text);
+  border-color: var(--amber-line);
+}
+.ad-gate-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--surface-4);
+}
+.ad-gate.on .ad-gate-dot {
+  background: var(--amber);
+  box-shadow: 0 0 8px -1px var(--amber);
+}
+
+/* ===========================================================================
+   REVIEW — the gate console header
+   =========================================================================== */
+.gate-console {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-5);
+  flex-wrap: wrap;
+  border-color: var(--amber-line);
+  background:
+    linear-gradient(180deg, rgba(255, 181, 61, 0.05), transparent 60%), var(--surface);
+}
+.gate-main {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-width: 0;
+}
+.gate-lamp {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 0 var(--amber-glow);
+  animation: lamp-breathe 2.6s var(--ease-io) infinite;
+}
+.gate-title {
+  font-family: var(--display);
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.gate-sub {
+  margin-top: 3px;
+  font-size: var(--step--1);
+  color: var(--text-dim);
+  max-width: 60ch;
+}
+.gate-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--s-3);
+}
+.gate-risk {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.gr {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+}
+.gr.critical,
+.gr.high {
+  color: var(--danger);
+  border-color: rgba(255, 93, 110, 0.4);
+  background: var(--danger-soft);
+}
+.gr.medium {
+  color: var(--amber);
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+}
+.gr.low {
+  color: var(--ok);
+  border-color: rgba(58, 210, 159, 0.4);
+  background: var(--ok-soft);
+}
+.gate-keys {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.gate-keys-label {
+  font-size: 0.62rem;
+  color: var(--text-faint);
+  margin-right: 6px;
+}

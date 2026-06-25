@@ -9,7 +9,7 @@ It isn't a chat assistant that writes code. It's a *factory*: a control plane, a
 
 <p align="center">
   <img src="docs/img/overview.png" alt="The Gaffer control room — live Overview" width="900">
-  <br><sub><em>The control room: throughput, what needs you now, and per-repo pressure at a glance. (Demo data.)</em></sub>
+  <br><sub><em>The control room: cycle time, throughput and flow efficiency up top, the development-flow table, what needs you now, and real per-repo progress — with live charts. (Demo data.)</em></sub>
 </p>
 
 ---
@@ -38,15 +38,15 @@ It works in two directions:
 - **Brownfield** — an existing repo or scope: zero bootstrap, every ticket stamped onto the target repo, so the plan *extends* what's already there instead of rebuilding it.
 
 <p align="center">
-  <img src="docs/img/plan-build.png" alt="The Plan-a-build chat decomposing a brief into a dependency-ordered epic" width="900">
-  <br><sub><em>Plan a build — a one-line brief mid-decompose into the proposed <strong>Recurring tasks</strong> epic: each ticket has its own acceptance criteria and an explicit <code>depends&nbsp;on&nbsp;#1</code> edge. Proposes only; nothing runs until you confirm. (Demo data.)</em></sub>
+  <img src="docs/img/plan-build.png" alt="The Plan-a-build chat that decomposes a one-line brief into a dependency-ordered epic" width="900">
+  <br><sub><em>Plan a build — the decompose sheet: greenfield or extend-existing, a one-line brief in, a phased, dependency-ordered epic out. Proposes only; nothing runs until you confirm, and confirmed tickets land as draft. (Demo data.)</em></sub>
 </p>
 
 Once confirmed, the epic is a first-class object: phases, member tickets, and the dependency graph the board enforces.
 
 <p align="center">
   <img src="docs/img/epics.png" alt="The Epics view showing a phased, dependency-ordered epic" width="900">
-  <br><sub><em>The same epic as a phased plan: Phase 1 (data model) → Phase 2 (API, gated on phase 1) → Phase 3 (worker + UI) → Phase 4 (docs). A phase can't start until the one before it is done. (Demo data.)</em></sub>
+  <br><sub><em>The same epic as a <strong>dependency graph</strong>: phases are columns (data model → API → worker + UI → docs), tickets are nodes, and <code>dependsOn</code> edges are drawn between them — solid where satisfied, dashed‑amber where still blocking. A phase‑progress strip shows the gate front advancing. (Demo data.)</em></sub>
 </p>
 
 ### The work board
@@ -55,7 +55,7 @@ Every ticket moves through **draft → ready → in-progress → review** lanes,
 
 <p align="center">
   <img src="docs/img/board.png" alt="The Gaffer work board" width="900">
-  <br><sub><em>The work board — tickets across the lanes with risk badges and acceptance-criteria progress; one ticket claimed and in progress, one delivered and awaiting review. (Demo data.)</em></sub>
+  <br><sub><em>The work board — a flow-summary header (per-stage WIP + distribution) over lanes of tickets with risk badges and acceptance-criteria progress; one ticket claimed and in progress, one delivered and awaiting review. (Demo data.)</em></sub>
 </p>
 
 ### The human review gate
@@ -72,8 +72,8 @@ When an agent delivers, the ticket lands in **Review** — and this is a *struct
 Repos rarely live alone. The **Factory Map** groups them into **scope nodes** (products, systems, capabilities) so the factory understands *which repos make up a product* and *what access it has to each* — `write`, `read`, `test`, or `none`. A ticket scoped to a product can reach exactly the repos that product owns, at exactly the access it's granted.
 
 <p align="center">
-  <img src="docs/img/factory-map.png" alt="A Factory Map scope node with its mapped repos and per-repo access" width="900">
-  <br><sub><em>The TaskFlow scope node and its two mapped repos, each with its relation and default access. Per-repo access is a boundary the runner enforces. (Demo data.)</em></sub>
+  <img src="docs/img/factory-map.png" alt="The Factory Map as a node graph of scope nodes and their relations" width="900">
+  <br><sub><em>The scope graph: products, services, epics and external deps as nodes, laid out by containment, with <code>contains</code> (solid) and <code>depends&nbsp;on</code> (dashed) edges. Per-repo access is a boundary the runner enforces. (Demo data.)</em></sub>
 </p>
 
 ### Durable repo memory
@@ -90,8 +90,8 @@ Gaffer doesn't re-learn a repo from cold on every run. **Memory** keeps a living
 The factory is **supervised by default**: a human readies tickets, a human approves merges, memory drafts wait for review. **Settings** is where you loosen that — every autonomy flag is **off until you turn it on** (let an agent approve reviews, auto-merge on agent review, auto-approve memory). The same panel controls the idle loops that mine backlog work between tickets and the planning-debate depth.
 
 <p align="center">
-  <img src="docs/img/settings.png" alt="The Settings panel with autonomy flags, idle loops and planning debate" width="900">
-  <br><sub><em>Settings — autonomy flags (all opt-in, shown off), idle loops, and planning debate. Nothing here is on by default. (Demo data.)</em></sub>
+  <img src="docs/img/settings.png" alt="The Settings panel with the autonomy dial and opt-in flags" width="900">
+  <br><sub><em>Settings — the <strong>autonomy dial</strong> (how many human gates are open: 0/4 = fully supervised) over the opt-in flags, idle loops, and planning debate. Nothing here is on by default. (Demo data.)</em></sub>
 </p>
 
 For a longer walkthrough of each surface, see [`docs/FEATURES.md`](docs/FEATURES.md).

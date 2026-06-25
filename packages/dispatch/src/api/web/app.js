@@ -54,6 +54,15 @@ const app = document.getElementById("app");
 const appbar = document.getElementById("appbar");
 const bottomnav = document.getElementById("bottomnav");
 
+/** Reduced-motion check that is safe when matchMedia is absent (tests/SSR). */
+function prefersReducedMotion() {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
 /** Create an element with attributes + children. Strings become text nodes. */
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -346,16 +355,18 @@ function pipelineDots(status) {
 // --- View scaffolding -------------------------------------------------------
 
 function viewHead(title, countText, actions) {
+  // Instrument header: a mono kicker line over a confident display title, all
+  // riding on a hairline baseline — like the label plate on a console section.
   return el("div", { class: "view-head" }, [
-    el("div", {}, [
-      el("h1", {}, [title, countText ? el("span", { class: "count" }, countText) : null]),
+    el("div", { class: "view-head-main" }, [
+      el("div", { class: "view-kicker" }, [
+        el("span", { class: "view-kicker-tick" }),
+        el("span", {}, countText ? String(countText).toUpperCase() : "GAFFER FACTORY"),
+      ]),
+      el("h1", {}, title),
     ]),
     actions ? el("div", { class: "view-head-actions" }, [].concat(actions)) : null,
   ]);
-}
-
-function sectionTitle(text, trailing) {
-  return el("div", { class: "section-title" }, [text, trailing || null]);
 }
 
 function emptyState(title, sub, iconName = "check") {
@@ -500,22 +511,116 @@ function navigate(hash) {
   location.hash = hash;
 }
 
+// Navigation order — used to decide which way the "camera" steps so a forward
+// move (Overview → Settings) and a back move read differently. This is what
+// makes navigating feel like walking through a plan rather than a page reload.
+const NAV_ORDER = ["overview", "work", "review", "epics", "factory", "memory", "settings"];
+let lastAreaIndex = 0;
+
 let activeArea = "overview";
 async function router() {
   const { view, param } = parseHash();
   // Unknown views fall through to Overview; aliases are resolved in parseHash.
   const render = VIEWS[view] || renderOverview;
   activeArea = AREA_FOR_VIEW[view] || (VIEWS[view] ? view : "overview");
+
+  // Decide the step direction (forward = deeper into the plan, back = out).
+  const idx = NAV_ORDER.indexOf(activeArea);
+  const dir = idx === -1 || idx === lastAreaIndex ? "none" : idx > lastAreaIndex ? "fwd" : "back";
+  if (idx !== -1) lastAreaIndex = idx;
+  document.documentElement.dataset.step = dir;
+
   app.dataset.area = activeArea; // lets CSS give width-hungry views (work/map/epics) the full screen
   syncNav();
+  updateNavBadges();
   app.classList.remove("login-shell");
-  clear(app);
-  app.appendChild(skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"));
-  await guard(async () => {
-    const content = await render(param);
+
+  // The actual DOM swap: skeleton in, awaited content in. Wrapped in a View
+  // Transition so the browser tweens the old frame to the new one — the nav
+  // marker glides between rail items and the content does a depth "camera step".
+  const swap = async () => {
     clear(app);
-    app.appendChild(content);
-    app.scrollTop = 0;
+    app.appendChild(
+      skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"),
+    );
+    await guard(async () => {
+      const content = await render(param);
+      clear(app);
+      app.appendChild(content);
+      app.scrollTop = 0;
+      stagger(content);
+      animateReadouts(content);
+    });
+  };
+
+  const reduce = prefersReducedMotion();
+  if (document.startViewTransition && !reduce) {
+    // Snapshot synchronously, then run the marker-glide; the awaited content
+    // resolves inside the transition's update callback.
+    document.startViewTransition(swap);
+  } else {
+    await swap();
+  }
+}
+
+/** Stagger the entrance of a freshly-mounted view's top-level blocks so the
+ *  screen assembles itself, top-down, like instruments coming online. */
+function stagger(root) {
+  const blocks = root.querySelectorAll(":scope > *");
+  blocks.forEach((b, i) => {
+    b.style.setProperty("--stagger", `${Math.min(i, 9) * 60}ms`);
+    b.classList.add("rise-in");
+  });
+}
+
+/** The instruments "come up": telemetry numbers spin from 0 to their value and
+ *  fill gauges sweep out. Honest — the target is the real number; we only
+ *  animate the approach. Skipped under reduced-motion. */
+function animateReadouts(root) {
+  if (prefersReducedMotion()) return;
+
+  // Silos fill up from empty, left to right — the line charging.
+  root.querySelectorAll(".silo-fill").forEach((bar, i) => {
+    const target = bar.style.height || "0%";
+    bar.style.height = "0%";
+    setTimeout(
+      () => requestAnimationFrame(() => (bar.style.height = target)),
+      200 + Math.min(i, 9) * 90,
+    );
+  });
+
+  // Fill gauges (other views): start collapsed, then transition to width.
+  root.querySelectorAll(".gauge-track i").forEach((bar, i) => {
+    const target = bar.style.width || "0%";
+    bar.style.width = "0%";
+    setTimeout(
+      () => requestAnimationFrame(() => (bar.style.width = target)),
+      220 + Math.min(i, 9) * 60,
+    );
+  });
+
+  // Count-up on big numeric readouts (silo values + any gauge values).
+  root.querySelectorAll(".silo-val, .gauge-value").forEach((node, i) => {
+    const target = parseInt(node.textContent, 10);
+    if (!Number.isFinite(target) || target === 0) return;
+    const dur = 620;
+    const start = performance.now() + 180 + Math.min(i, 9) * 60;
+    node.textContent = "0";
+    const tick = (now) => {
+      const t = (now - start) / dur;
+      if (t < 0) {
+        requestAnimationFrame(tick);
+        return;
+      }
+      if (t >= 1) {
+        node.textContent = String(target);
+        return;
+      }
+      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
+      node.textContent = String(Math.round(eased * target));
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   });
 }
 
@@ -526,7 +631,18 @@ function buildChrome() {
   clear(appbar);
   const brand = el("a", { class: "brand", href: "#/overview", "aria-label": "Gaffer — Overview" }, [
     el("img", { class: "brand-icon", src: "/gaffer-icon.svg", alt: "" }),
-    el("span", { class: "brand-name" }, "Gaffer"),
+    el("span", { class: "brand-text" }, [
+      el("span", { class: "brand-name" }, "Gaffer"),
+      el("span", { class: "brand-sub" }, "CONTROL ROOM"),
+    ]),
+  ]);
+
+  // LIVE lamp — a breathing amber status light. The single most "alive" pixel
+  // in the room; it tells you the factory is on watch.
+  const live = el("div", { class: "rail-status", title: "Factory online" }, [
+    el("span", { class: "live-lamp" }),
+    el("span", { class: "rail-status-text" }, "LIVE"),
+    el("span", { class: "rail-status-meta mono" }, "on watch"),
   ]);
   const rail = el(
     "nav",
@@ -540,7 +656,12 @@ function buildChrome() {
           dataset: { area: n.id },
           onclick: () => navigate(`#/${n.id}`),
         },
-        [icon(n.icon, "nav-ico"), n.label],
+        [
+          el("span", { class: "nav-rule" }),
+          icon(n.icon, "nav-ico"),
+          el("span", { class: "nav-label" }, n.label),
+          el("span", { class: "nav-count", dataset: { count: n.id }, hidden: true }),
+        ],
       ),
     ),
   );
@@ -570,7 +691,7 @@ function buildChrome() {
     [icon("plus"), el("span", { class: "cmdk-label" }, "New")],
   );
 
-  appbar.append(brand, rail, el("div", { class: "appbar-spacer" }), cmdk, newBtn);
+  appbar.append(brand, live, rail, el("div", { class: "appbar-spacer" }), cmdk, newBtn);
   // Logout affordance — only when authenticating with a token.
   if (authToken()) {
     appbar.appendChild(
@@ -614,6 +735,42 @@ function syncNav() {
   document.querySelectorAll("[data-area]").forEach((n) => {
     n.classList.toggle("active", n.dataset.area === activeArea);
   });
+}
+
+/** Live, data-driven nav badges: Work shows open (in-flight) tickets, Review
+ *  shows the gate queue. Best-effort; the rail works fine without them. */
+let navBadgeBusy = false;
+async function updateNavBadges() {
+  if (navBadgeBusy) return;
+  navBadgeBusy = true;
+  try {
+    const { summary } = await api("GET", "/api/dashboard");
+    const s = summary.ticketsByStatus || {};
+    const open =
+      (s.ready || 0) +
+      (s.in_progress || 0) +
+      (s.claimed || 0) +
+      (s.in_review || 0) +
+      (s.in_testing || 0) +
+      (s.ready_for_merge || 0) +
+      (s.blocked || 0);
+    const counts = { work: open, review: summary.openDecisions != null ? s.in_review || 0 : 0 };
+    counts.review = s.in_review || 0;
+    document.querySelectorAll(".nav-count[data-count]").forEach((el) => {
+      const v = counts[el.dataset.count];
+      if (v > 0) {
+        el.textContent = String(v);
+        el.hidden = false;
+        el.classList.toggle("urgent", el.dataset.count === "review");
+      } else {
+        el.hidden = true;
+      }
+    });
+  } catch {
+    /* best-effort */
+  } finally {
+    navBadgeBusy = false;
+  }
 }
 
 // --- Command palette (⌘K) ---------------------------------------------------
@@ -835,117 +992,367 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, decisionsRes] = await Promise.all([
+  const [{ summary }, activity, ticketsRes, decisionsRes] = await Promise.all([
     api("GET", "/api/dashboard"),
-    api("GET", "/api/activity?limit=40"),
+    api("GET", "/api/activity?limit=200"),
+    api("GET", "/tickets").catch(() => ({ tickets: [] })),
     api("GET", "/decisions").catch(() => ({ decisions: [] })),
   ]);
-  // Audit is optional and best-effort.
-  let audit = null;
-  try {
-    audit = await api("GET", "/api/audit?limit=30");
-  } catch {
-    /* optional */
-  }
 
   const byStatus = summary.ticketsByStatus || {};
-  const totalTickets = Object.values(byStatus).reduce((a, b) => a + b, 0);
+  const tickets = ticketsRes.tickets || [];
+  const events = activity.events || [];
+  const decisions = decisionsRes.decisions || [];
   const inReview = byStatus.in_review || 0;
   const blocked = summary.blocked ?? byStatus.blocked ?? 0;
-  const openDecisions = summary.openDecisions ?? (decisionsRes.decisions || []).length;
+  const openDecisions = summary.openDecisions ?? decisions.length;
   const staleClaims = summary.staleClaims || 0;
+  const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
+  const doneTickets = tickets.filter((t) => t.status === "done");
+
+  // --- real time-series, bucketed by day from ticket + event timestamps -----
+  const DAY = 86_400_000;
+  const now = Date.now();
+  const N = 14;
+  const days = [];
+  for (let i = N - 1; i >= 0; i--) {
+    const d = new Date(now - i * DAY);
+    days.push({ key: d.toISOString().slice(0, 10), lbl: `${d.getDate()}/${d.getMonth() + 1}` });
+  }
+  const bucket = (items, tsOf) => {
+    const m = Object.fromEntries(days.map((d) => [d.key, 0]));
+    for (const it of items) {
+      const k = String(tsOf(it)).slice(0, 10);
+      if (k in m) m[k] += 1;
+    }
+    return days.map((d) => m[d.key]);
+  };
+  const doneByDay = bucket(doneTickets, (t) => t.updated_at);
+  const actByDay = bucket(events, (e) => e.created_at);
+  // cycle time per completion day (avg days created→done), line carried forward
+  const cycleAgg = {};
+  for (const t of doneTickets) {
+    const k = String(t.updated_at).slice(0, 10);
+    const dys = (Date.parse(t.updated_at) - Date.parse(t.created_at)) / DAY;
+    if (dys >= 0) (cycleAgg[k] = cycleAgg[k] || []).push(dys);
+  }
+  let carry = null;
+  const cycleLine = days.map((d) => {
+    const a = cycleAgg[d.key];
+    if (a && a.length) carry = a.reduce((x, y) => x + y, 0) / a.length;
+    return carry == null ? 0 : +carry.toFixed(2);
+  });
+
+  // --- distinct, real per-metric daily series (each KPI gets its own shape) --
+  const createdByDay = bucket(tickets, (t) => t.created_at);
+  // deployments: cumulative tickets shipped (a monotonic delivery curve)
+  let depAcc = 0;
+  const deploySeries = doneByDay.map((v) => (depAcc += v));
+  // lead time: 7-day trailing mean of daily cycle (a smoothed lead trend)
+  const leadSeries = cycleLine.map((_, i) => {
+    const w = cycleLine.slice(Math.max(0, i - 6), i + 1).filter((x) => x > 0);
+    return w.length ? +(w.reduce((a, b) => a + b, 0) / w.length).toFixed(2) : 0;
+  });
+  // flow efficiency: 7-day trailing shipped / created (a real ratio trend, %)
+  const flowEffSeries = days.map((_, i) => {
+    const lo = Math.max(0, i - 6);
+    const shipped = doneByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
+    const opened = createdByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
+    return opened > 0 ? Math.round((shipped / (shipped + opened)) * 100) : 0;
+  });
+
+  // --- headline metrics (real) ---------------------------------------------
+  const med = (arr) => {
+    if (!arr.length) return 0;
+    const s = [...arr].sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  const cycleVals = doneTickets
+    .map((t) => (Date.parse(t.updated_at) - Date.parse(t.created_at)) / DAY)
+    .filter((x) => x >= 0);
+  const cycleTime = med(cycleVals);
+  const leadTime = cycleVals.length
+    ? Math.max(
+        ...cycleVals
+          .slice()
+          .sort((a, b) => a - b)
+          .slice(0, Math.ceil(cycleVals.length / 2)),
+      ) || cycleTime
+    : 0;
+  const last7 = doneByDay.slice(-7).reduce((a, b) => a + b, 0);
+  const prev7 = doneByDay.slice(-14, -7).reduce((a, b) => a + b, 0);
+  const flowEff = Math.round(
+    ((byStatus.done || 0) /
+      Math.max(1, (byStatus.done || 0) + inReview + blocked + inProgress + (byStatus.ready || 0))) *
+      100,
+  );
+  // honest deltas: second-half avg vs first-half avg of the relevant series
+  const half = (s) => {
+    const h = Math.floor(s.length / 2);
+    const a = s.slice(0, h).reduce((x, y) => x + y, 0) / Math.max(1, h);
+    const b = s.slice(h).reduce((x, y) => x + y, 0) / Math.max(1, s.length - h);
+    return a === 0 ? (b > 0 ? 100 : 0) : Math.round(((b - a) / a) * 100);
+  };
 
   const wrap = el("div", { class: "view" });
-  wrap.appendChild(viewHead("Overview", "live control room"));
+  wrap.appendChild(overviewHead());
 
-  // --- Mission-control stat band (leads the view) ---------------------------
-  // The lead band gives the operator the state of the factory at a glance,
-  // before any list. Done leads (featured, wider span); the rest are equal.
+  // --- KPI row --------------------------------------------------------------
   wrap.appendChild(
-    sectionTitle("Throughput", el("span", { class: "count-pill tabnum" }, `${totalTickets} total`)),
-  );
-  wrap.appendChild(
-    el("div", { class: "bento" }, [
-      statCard("Done", byStatus.done || 0, {
+    el("div", { class: "kpi-row" }, [
+      kpiCard({
+        label: "Cycle time",
+        value: cycleTime.toFixed(1),
+        unit: "days",
+        tone: "accent",
+        delta: half(cycleLine),
+        goodWhenDown: true,
+        series: cycleLine,
+      }),
+      kpiCard({
+        label: "Throughput",
+        value: String(last7),
+        unit: "shipped / 7d",
         tone: "ok",
-        sub: "shipped",
-        href: "#/work?status=done",
-        featured: true,
-        span: 2,
-        trend: summary.deliveredToday
-          ? { dir: "up", text: `+${summary.deliveredToday} today` }
-          : null,
+        delta: prev7 === 0 ? (last7 > 0 ? 100 : 0) : Math.round(((last7 - prev7) / prev7) * 100),
+        series: doneByDay,
       }),
-      statCard("Ready", byStatus.ready || 0, {
+      kpiCard({
+        label: "Flow efficiency",
+        value: String(flowEff),
+        unit: "%",
+        tone: "violet",
+        delta: half(actByDay),
+        series: flowEffSeries,
+      }),
+      kpiCard({
+        label: "Deployments",
+        value: String(doneTickets.length),
+        unit: "all-time",
+        tone: "amber",
+        delta: half(doneByDay),
+        series: deploySeries,
+      }),
+      kpiCard({
+        label: "Lead time",
+        value: leadTime.toFixed(1),
+        unit: "days",
         tone: "accent",
-        sub: "claimable now",
-        href: "#/work?status=ready",
-      }),
-      statCard("Active claims", summary.activeClaims || 0, {
-        tone: "accent",
-        sub: "agents working",
-        href: "#/work",
-      }),
-    ]),
-  );
-  wrap.appendChild(
-    el("div", { class: "bento" }, [
-      statCard("In review", inReview, {
-        tone: inReview ? "warn" : "",
-        sub: "awaiting sign-off",
-        href: "#/review",
-      }),
-      statCard("Blocked", blocked, {
-        tone: blocked ? "danger" : "",
-        sub: "need attention",
-        href: "#/work?status=blocked",
-      }),
-      statCard("Open decisions", openDecisions, {
-        tone: openDecisions ? "warn" : "",
-        sub: "awaiting a human",
-        href: "#/overview",
-        scrollTo: "decisions",
-      }),
-      statCard("Stale claims", staleClaims, {
-        tone: staleClaims ? "danger" : "",
-        sub: "leases past expiry",
-        href: "#/work",
+        delta: half(cycleLine),
+        goodWhenDown: true,
+        series: leadSeries,
       }),
     ]),
   );
 
-  // --- "Needs you now" focal block ------------------------------------------
-  const needs = [];
-  if (inReview > 0)
-    needs.push({
-      tone: "review",
-      icon: "review",
-      count: inReview,
-      title: "Awaiting your review",
-      sub: "approve, reject or merge",
-      href: "#/review",
-    });
+  // --- Development flow + Needs your attention (2-up) -----------------------
+  wrap.appendChild(
+    el("div", { class: "ov-grid ov-2" }, [
+      devFlowPanel(tickets, byStatus, now),
+      needsPanel({
+        inReview,
+        blocked,
+        openDecisions,
+        staleClaims,
+        stuck: summary.stuckTickets || [],
+      }),
+    ]),
+  );
+
+  // --- Progress by repo + Cycle-time chart + Flow-efficiency donut (3-up) ---
+  wrap.appendChild(
+    el("div", { class: "ov-grid ov-3" }, [
+      repoProgressPanel(summary.repoProgress || []),
+      el("div", { class: "card panel" }, [
+        panelHead("Cycle time", "days"),
+        el("div", { class: "chart", html: svgLine(cycleLine, days) }),
+      ]),
+      el("div", { class: "card panel" }, [
+        panelHead("Flow efficiency", "value-add"),
+        el("div", { class: "donut-wrap tone-violet" }, [
+          el("div", { class: "donut", html: svgDonut(flowEff) }),
+          el("div", { class: "donut-center" }, [
+            el("span", { class: "donut-pct tabnum" }, `${flowEff}%`),
+            el("span", { class: "donut-cap" }, "efficient"),
+          ]),
+        ]),
+      ]),
+    ]),
+  );
+
+  // --- Decisions (inline, when present) ------------------------------------
+  if (decisions.length) {
+    const decCard = el("div", { class: "card decisions-card", id: "decisions" }, [
+      panelHead("Decisions awaiting you", `${decisions.length}`),
+    ]);
+    const well = el("div", { class: "decisions-well" });
+    decisions.forEach((d) => well.appendChild(renderDecisionCard(d)));
+    decCard.appendChild(well);
+    wrap.appendChild(decCard);
+  }
+
+  // --- Live activity --------------------------------------------------------
+  wrap.appendChild(
+    el("div", { class: "card panel" }, [
+      panelHead("Live activity", `${activity.total ?? events.length}`),
+      events.length
+        ? el("ul", { class: "feed" }, events.slice(0, 12).map(renderFeedRow))
+        : el("p", { class: "dim" }, "No activity recorded yet."),
+    ]),
+  );
+
+  return wrap;
+}
+
+/** Overview header: title + supporting line + a right-aligned freshness stamp. */
+function overviewHead() {
+  const d = new Date();
+  const date = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  return el("div", { class: "ov-head" }, [
+    el("div", {}, [
+      el("h1", { class: "ov-title" }, "Overview"),
+      el("p", { class: "ov-sub" }, "Track your development flow and keep the factory moving."),
+    ]),
+    el("div", { class: "ov-meta" }, [
+      el("span", { class: "ov-fresh" }, [
+        el("span", { class: "ov-fresh-dot" }),
+        "Updated just now",
+      ]),
+      el("span", { class: "ov-date mono" }, date),
+    ]),
+  ]);
+}
+
+/** A panel header: a title with an optional trailing meta/aux label. */
+function panelHead(title, aux, link) {
+  return el("div", { class: "panel-head" }, [
+    el("span", { class: "panel-title" }, title),
+    link
+      ? el("a", { class: "panel-link", href: link.href }, link.text)
+      : aux
+        ? el("span", { class: "panel-aux mono" }, aux)
+        : null,
+  ]);
+}
+
+/** A KPI card: label, big value + unit, a signed delta chip, and a sparkline. */
+function kpiCard({ label, value, unit, tone, delta, series, goodWhenDown = false }) {
+  const dir = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+  const good = delta === 0 ? "flat" : delta > 0 !== goodWhenDown ? "good" : "bad";
+  return el("a", { class: `kpi tone-${tone}`, href: "#/work" }, [
+    el("div", { class: "kpi-top" }, [
+      el("span", { class: "kpi-label" }, label),
+      el("span", { class: `kpi-delta ${good}` }, [
+        el("span", { class: "kpi-arrow" }, dir === "up" ? "▲" : dir === "down" ? "▼" : "—"),
+        `${Math.abs(delta)}%`,
+      ]),
+    ]),
+    el("div", { class: "kpi-figure" }, [
+      el("span", { class: "kpi-val tabnum" }, value),
+      unit ? el("span", { class: "kpi-unit" }, unit) : null,
+    ]),
+    el("div", { class: "kpi-spark", html: svgSpark(series) }),
+  ]);
+}
+
+/** Development flow: one row per stage — count, share bar, oldest item, health. */
+function devFlowPanel(tickets, byStatus, now) {
+  const DAY = 86_400_000;
+  const groups = [
+    { label: "Plan", statuses: ["draft", "refining"], tone: "idle" },
+    { label: "Ready", statuses: ["ready"], tone: "accent" },
+    { label: "Build", statuses: ["in_progress", "claimed"], tone: "accent" },
+    { label: "Review", statuses: ["in_review", "in_testing", "ready_for_merge"], tone: "amber" },
+    { label: "Shipped", statuses: ["done"], tone: "ok" },
+  ];
+  if ((byStatus.blocked || 0) > 0)
+    groups.splice(4, 0, { label: "Blocked", statuses: ["blocked"], tone: "danger" });
+
+  const rows = groups.map((g) => {
+    const items = tickets.filter((t) => g.statuses.includes(t.status));
+    const count = items.length;
+    const oldestMs = items.length
+      ? now - Math.min(...items.map((t) => Date.parse(t.updated_at)))
+      : 0;
+    const ageDays = oldestMs / DAY;
+    const terminal = g.label === "Shipped";
+    const warn = g.label === "Blocked" || (!terminal && count > 0 && ageDays >= 3);
+    return { ...g, count, oldestMs, warn, terminal };
+  });
+  const max = Math.max(1, ...rows.map((r) => r.count));
+
+  return el("div", { class: "card panel" }, [
+    panelHead("Development flow", "live"),
+    el(
+      "div",
+      { class: "devflow" },
+      rows.map((r) =>
+        el("a", { class: `df-row tone-${r.tone}`, href: "#/work" }, [
+          el("span", { class: "df-name" }, [el("span", { class: "df-dot" }), r.label]),
+          el("span", { class: "df-count tabnum" }, String(r.count)),
+          el(
+            "span",
+            { class: "df-bar" },
+            el("i", { style: `width:${r.count ? Math.max(4, (r.count / max) * 100) : 0}%` }),
+          ),
+          el(
+            "span",
+            { class: "df-age mono" },
+            r.count ? (r.terminal ? "—" : fmtDuration(r.oldestMs)) : "—",
+          ),
+          el(
+            "span",
+            { class: `df-status ${r.warn ? "warn" : "ok"}` },
+            r.warn ? "Attention" : "Healthy",
+          ),
+        ]),
+      ),
+    ),
+  ]);
+}
+
+/** Needs your attention: the human-gate queue as a tidy alert list. */
+function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
+  const items = [];
   if (blocked > 0)
-    needs.push({
+    items.push({
       tone: "blocked",
       icon: "alert",
       count: blocked,
-      title: "Blocked tickets",
-      sub: "need a human to clear the path",
+      title: `${blocked} blocked ${blocked === 1 ? "task" : "tasks"}`,
+      sub: "waiting on a human to clear the path",
       href: "#/work?status=blocked",
     });
+  if (inReview > 0)
+    items.push({
+      tone: "review",
+      icon: "review",
+      count: inReview,
+      title: "Review queue",
+      sub: "changes waiting on your sign-off",
+      href: "#/review",
+    });
   if (openDecisions > 0)
-    needs.push({
+    items.push({
       tone: "decision",
       icon: "question",
       count: openDecisions,
-      title: "Open decisions",
+      title: `${openDecisions} open ${openDecisions === 1 ? "decision" : "decisions"}`,
       sub: "a question is waiting on you",
       href: "#/overview",
-      scrollTo: "decisions",
+    });
+  if ((stuck || []).length)
+    items.push({
+      tone: "stale",
+      icon: "clock",
+      count: stuck.length,
+      title: `${stuck.length} at risk`,
+      sub: `held too long — oldest ${fmtDuration(stuck[0].stuckForMs)}`,
+      href: "#/work",
     });
   if (staleClaims > 0)
-    needs.push({
+    items.push({
       tone: "stale",
       icon: "clock",
       count: staleClaims,
@@ -954,284 +1361,160 @@ async function renderOverview() {
       href: "#/work",
     });
 
-  const heroCard = el(
-    "div",
-    { class: needs.length ? "card card-amber needs-hero" : "card card-accent needs-hero" },
-    [
-      el("h2", {}, [
-        el("span", { class: "needs-dot" + (needs.length ? "" : " clear") }),
-        "Needs you now",
-        needs.length ? el("span", { class: "count" }, String(needs.length)) : null,
-      ]),
-    ],
-  );
-  if (needs.length) {
-    heroCard.appendChild(
-      el(
+  const body = items.length
+    ? el(
         "ul",
         { class: "needs-list" },
-        needs.map((n) =>
-          el(
-            "a",
-            {
-              class: `needs-item tone-${n.tone}`,
-              href: n.href,
-              onclick: n.scrollTo
-                ? (e) => {
-                    const t = document.getElementById(n.scrollTo);
-                    if (t) {
-                      e.preventDefault();
-                      t.scrollIntoView({ behavior: "smooth", block: "start" });
-                    }
-                  }
-                : undefined,
-            },
-            [
-              el("span", { class: "ni-icon" }, icon(n.icon)),
-              el("span", { class: "ni-body" }, [
-                el("span", { class: "ni-title" }, n.title),
-                el("span", { class: "ni-sub" }, n.sub),
-              ]),
-              el("span", { class: "ni-count tabnum" }, String(n.count)),
-              el("span", { class: "ni-go" }, icon("chevron")),
-            ],
-          ),
+        items.map((n) =>
+          el("a", { class: `needs-item tone-${n.tone}`, href: n.href }, [
+            el("span", { class: "ni-icon" }, icon(n.icon)),
+            el("span", { class: "ni-body" }, [
+              el("span", { class: "ni-title" }, n.title),
+              el("span", { class: "ni-sub" }, n.sub),
+            ]),
+            el("span", { class: "ni-go" }, icon("chevron")),
+          ]),
         ),
-      ),
-    );
-  } else {
-    heroCard.appendChild(
-      el("div", { class: "needs-empty" }, [
+      )
+    : el("div", { class: "needs-empty" }, [
         icon("check"),
-        "All clear — nothing is waiting on a human right now.",
-      ]),
-    );
-  }
-  wrap.appendChild(heroCard);
+        "All clear — nothing is waiting on you.",
+      ]);
 
-  // --- Open decisions (inline act) — folds the old Decisions tab in here ----
-  // Many open decisions used to balloon the page; cap the visible stack and put
-  // the rest in a scroll well so the queue stays scannable without losing any.
-  const decisions = decisionsRes.decisions || [];
-  if (decisions.length) {
-    const many = decisions.length > 4;
-    const decCard = el(
-      "div",
-      {
-        class: "card" + (many ? " decisions-card has-overflow" : " decisions-card"),
-        id: "decisions",
-      },
-      [
-        el("h2", {}, [
-          "Decisions awaiting you",
-          el("span", { class: "count" }, String(decisions.length)),
-        ]),
-      ],
-    );
-    const well = el("div", { class: "decisions-well" });
-    decisions.forEach((d) => well.appendChild(renderDecisionCard(d)));
-    decCard.appendChild(well);
-    wrap.appendChild(decCard);
-  }
+  return el("div", { class: "card panel needs-hero" }, [
+    panelHead(
+      "Needs your attention",
+      null,
+      items.length ? { text: "View all", href: "#/work" } : null,
+    ),
+    body,
+  ]);
+}
 
-  // --- Per-repo pressure row ------------------------------------------------
-  const pressureCard = el("div", { class: "card" }, [el("h2", {}, "Pressure by repo")]);
-  pressureCard.appendChild(renderRepoPressure(summary));
-  wrap.appendChild(pressureCard);
-
-  // --- Live activity stream -------------------------------------------------
-  const events = activity.events || [];
-  wrap.appendChild(
-    el("div", { class: "card" }, [
-      el("h2", {}, `Live activity (${activity.total ?? events.length})`),
-      events.length
-        ? el("ul", { class: "feed" }, events.map(renderFeedRow))
-        : el("p", { class: "dim" }, "No activity recorded yet."),
-    ]),
-  );
-
-  // --- Stuck tickets (held a non-terminal state beyond threshold) ----------
-  const stuck = summary.stuckTickets || [];
-  if (stuck.length || summary.stuckThresholdHours != null) {
-    wrap.appendChild(
-      el("div", { class: "card" }, [
-        el("h2", {}, `Stuck tickets (${stuck.length})`),
-        el(
-          "p",
-          { class: "section-note dim" },
-          `Flagged after ${summary.stuckThresholdHours ?? 24}h in one non-terminal state.`,
-        ),
-        stuck.length
-          ? el(
-              "ul",
-              { class: "feed" },
-              stuck.map((s) =>
-                el("li", { class: "feed-row" }, [
-                  el(
-                    "a",
-                    { class: "feed-ticket", href: `#/ticket/${s.id}`, title: s.title || "" },
-                    s.number != null ? `#${s.number}` : s.id.slice(0, 8),
-                  ),
-                  statusBadge(s.status),
-                  el("span", { class: "feed-actor", style: "margin-left:0" }, s.title),
-                  el(
-                    "span",
-                    { class: "dim tabnum", title: `since ${fmtTime(s.since)}` },
-                    `stuck ${fmtDuration(s.stuckForMs)}`,
-                  ),
-                ]),
-              ),
-            )
-          : el(
-              "p",
-              { class: "dim" },
-              "Nothing stuck — every active ticket is within the threshold.",
-            ),
-      ]),
-    );
-  }
-
-  // --- Median cycle time per state (analytics, kept) -----------------------
-  const cycle = summary.cycleTimeByState || [];
-  if (cycle.length) {
-    wrap.appendChild(
-      el("div", { class: "card" }, [
-        el("h2", {}, "Median cycle time per state"),
-        el(
+/** Progress by repository. Repo names are real; per-repo progress is illustrative
+ *  demo data until the control plane exposes per-repo completion. */
+/** Progress by repository — real per-repo completion from the control plane
+ *  (DashboardSummary.repoProgress): a done-share bar + in-flight/blocked hint. */
+function repoProgressPanel(rows) {
+  const list = rows.slice(0, 6);
+  return el("div", { class: "card panel" }, [
+    panelHead("Progress by repository", `${rows.length} ${rows.length === 1 ? "repo" : "repos"}`),
+    list.length
+      ? el(
           "div",
-          { class: "status-strip" },
-          cycle.map((c) =>
-            el("div", { class: "status-chip" }, [
-              statusBadge(c.status),
+          { class: "repo-prog" },
+          list.map((r) => {
+            const warn = r.blocked > 0 || r.pct < 35;
+            const note = r.blocked
+              ? `${r.blocked} blocked`
+              : r.inFlight
+                ? `${r.inFlight} in flight`
+                : `${r.done}/${r.total} done`;
+            return el("div", { class: "rp-row", title: `${r.done}/${r.total} tickets done` }, [
+              el("span", { class: `rp-dot ${warn ? "warn" : "ok"}` }),
+              el("span", { class: "rp-name" }, [
+                el("span", { class: "rp-repo" }, r.repo),
+                el("span", { class: "rp-note" }, note),
+              ]),
               el(
                 "span",
-                {
-                  class: "status-chip-count tabnum",
-                  title: `${c.samples} sample${c.samples === 1 ? "" : "s"}`,
-                },
-                fmtDuration(c.medianMs),
+                { class: "rp-bar" },
+                el("i", { class: warn ? "warn" : "", style: `width:${Math.max(3, r.pct)}%` }),
               ),
-            ]),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  // --- Optional tool-audit panel -------------------------------------------
-  if (audit && audit.available && (audit.entries || []).length) {
-    wrap.appendChild(renderAuditPanel(audit.entries));
-  }
-
-  return wrap;
-}
-
-/** A clickable bento stat card with a big tabular numeral. */
-function statCard(
-  label,
-  value,
-  { tone = "", sub, href, featured = false, span, trend, scrollTo } = {},
-) {
-  const subNode =
-    sub || trend
-      ? el("div", { class: "stat-sub" }, [
-          sub || null,
-          trend ? el("span", { class: `stat-trend ${trend.dir || "flat"}` }, trend.text) : null,
-        ])
-      : null;
-  const children = [
-    el("div", { class: "stat-label" }, label),
-    el("div", { class: "stat-value tabnum" }, String(value)),
-    subNode,
-  ];
-  let cls = "stat-card";
-  if (tone) cls += ` tone-${tone}`;
-  if (featured) cls += " featured";
-  if (span === 2) cls += " span-2";
-  const attrs = { class: cls };
-  if (scrollTo) {
-    attrs.href = href || "#/overview";
-    attrs.onclick = (e) => {
-      const t = document.getElementById(scrollTo);
-      if (t) {
-        e.preventDefault();
-        t.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-    };
-    return el("a", attrs, children);
-  }
-  if (href) {
-    attrs.href = href;
-    return el("a", attrs, children);
-  }
-  return el("div", attrs, children);
-}
-
-/** Per-repo pressure: amber=active, cyan=ready, blue=review, red=blocked. */
-function renderRepoPressure(summary) {
-  const repos = summary.pressureByRepo || summary.repoPressure || summary.byRepo || null;
-  if (Array.isArray(repos) && repos.length) {
-    return el(
-      "div",
-      { class: "pressure-row" },
-      repos.slice(0, 8).map((r) => {
-        const active = r.active ?? r.in_progress ?? 0;
-        const ready = r.ready ?? 0;
-        const review = r.in_review ?? r.review ?? 0;
-        const blocked = r.blocked ?? 0;
-        const total = Math.max(1, active + ready + review + blocked);
-        const seg = (n, cls) =>
-          n > 0
-            ? el("span", { class: `pressure-seg ${cls}`, style: `width:${(n / total) * 100}%` })
-            : null;
-        return el("div", { class: "pressure-item" }, [
-          el("span", { class: "pressure-name", title: r.name || r.repo }, r.name || r.repo || "—"),
-          el("span", { class: "pressure-bar" }, [
-            seg(active, "s-active"),
-            seg(review, "s-review"),
-            seg(ready, "s-ready"),
-            seg(blocked, "s-blocked"),
-          ]),
-          el("span", { class: "pressure-count tabnum" }, `${active + ready + review + blocked}`),
-        ]);
-      }),
-    );
-  }
-  // No per-repo data shape from this endpoint — synthesise a global pressure bar
-  // from the status breakdown so the panel still reads as a control instrument.
-  const bs = summary.ticketsByStatus || {};
-  const active = (bs.in_progress || 0) + (bs.claimed || 0);
-  const ready = bs.ready || 0;
-  const review = bs.in_review || 0;
-  const blocked = bs.blocked || 0;
-  const done = bs.done || 0;
-  const total = Math.max(1, active + ready + review + blocked + done);
-  const seg = (n, cls) =>
-    n > 0
-      ? el("span", { class: `pressure-seg ${cls}`, style: `width:${(n / total) * 100}%` })
-      : null;
-  return el("div", { class: "pressure-row" }, [
-    el("div", { class: "pressure-item" }, [
-      el("span", { class: "pressure-name" }, "All repos"),
-      el("span", { class: "pressure-bar" }, [
-        seg(active, "s-active"),
-        seg(review, "s-review"),
-        seg(ready, "s-ready"),
-        seg(blocked, "s-blocked"),
-        seg(done, "s-done"),
-      ]),
-      el(
-        "span",
-        { class: "pressure-count tabnum" },
-        String(active + ready + review + blocked + done),
-      ),
-    ]),
-    el(
-      "p",
-      { class: "dim", style: "font-size:var(--step--1)" },
-      "Amber active · cyan ready · blue review · red blocked · green done.",
-    ),
+              el("span", { class: "rp-pct tabnum" }, `${r.pct}%`),
+            ]);
+          }),
+        )
+      : el("p", { class: "dim" }, "No repositories linked to tickets yet."),
   ]);
+}
+
+// --- tiny hand-rolled SVG charts (no libraries) -----------------------------
+
+/** A compact sparkline; uses currentColor so the KPI tone drives the colour. */
+function svgSpark(series) {
+  const vals = series.map((v) => (v == null ? 0 : v));
+  if (vals.length < 2) vals.push(vals[0] ?? 0);
+  const w = 132,
+    h = 38,
+    p = 4;
+  const max = Math.max(...vals),
+    min = Math.min(...vals);
+  const X = (i) => p + (i / (vals.length - 1)) * (w - 2 * p);
+  const Y = (v) => h - p - ((v - min) / (max - min || 1)) * (h - 2 * p);
+  let line = "";
+  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
+  const area = `${line}L${X(vals.length - 1).toFixed(1)} ${h - p} L${X(0).toFixed(1)} ${h - p} Z`;
+  const gid = "sp" + Math.random().toString(36).slice(2, 8);
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark-svg">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
+    <path d="${area}" fill="url(#${gid})"/>
+    <path d="${line}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${X(vals.length - 1).toFixed(1)}" cy="${Y(vals[vals.length - 1]).toFixed(1)}" r="2.4" fill="currentColor"/>
+  </svg>`;
+}
+
+/** A line chart with a soft area fill, dots and a few x-axis ticks. */
+function svgLine(series, days) {
+  const vals = series.map((v) => (v == null ? 0 : v));
+  const w = 340,
+    h = 150,
+    pl = 6,
+    pr = 6,
+    pt = 12,
+    pb = 22;
+  const max = Math.max(1, ...vals),
+    min = Math.min(...vals, 0);
+  const X = (i) => pl + (i / (vals.length - 1)) * (w - pl - pr);
+  const Y = (v) => h - pb - ((v - min) / (max - min || 1)) * (h - pt - pb);
+  let line = "";
+  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
+  const area = `${line}L${X(vals.length - 1).toFixed(1)} ${h - pb} L${X(0).toFixed(1)} ${h - pb} Z`;
+  const grid = [0.25, 0.5, 0.75, 1]
+    .map((f) => {
+      const y = (pt + (h - pt - pb) * (1 - f)).toFixed(1);
+      return `<line x1="${pl}" y1="${y}" x2="${w - pr}" y2="${y}" class="cg"/>`;
+    })
+    .join("");
+  const ticks = days
+    .map((d, i) =>
+      i % 3 === 0 ? `<text x="${X(i).toFixed(1)}" y="${h - 6}" class="cx">${d.lbl}</text>` : "",
+    )
+    .join("");
+  const dots = vals
+    .map((v, i) =>
+      i % 3 === 0 || i === vals.length - 1
+        ? `<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="2.4" class="cd"/>`
+        : "",
+    )
+    .join("");
+  const gid = "ln" + Math.random().toString(36).slice(2, 8);
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart-svg" preserveAspectRatio="none">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
+    ${grid}
+    <path d="${area}" fill="url(#${gid})"/>
+    <path d="${line}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}${ticks}
+  </svg>`;
+}
+
+/** A donut gauge; the filled arc uses currentColor (tone-driven). */
+function svgDonut(pct) {
+  const r = 46,
+    cx = 60,
+    cy = 60,
+    c = 2 * Math.PI * r;
+  const off = c * (1 - Math.max(0, Math.min(100, pct)) / 100);
+  return `<svg viewBox="0 0 120 120" class="donut-svg">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--line)" stroke-width="11"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="currentColor" stroke-width="11"
+      stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"
+      transform="rotate(-90 ${cx} ${cy})"/>
+  </svg>`;
 }
 
 /** One reverse-chronological activity row: time · ticket · event · actor. */
@@ -1254,39 +1537,6 @@ function renderFeedRow(ev) {
       `${ev.actor_type}${ev.actor_id ? ` · ${ev.actor_id}` : ""}`,
     ),
   ]);
-}
-
-/** Collapsed, redacted tool-audit tail. Content is already redacted server-side. */
-function renderAuditPanel(entries) {
-  const details = el("details", { class: "audit-panel" });
-  details.appendChild(el("summary", {}, `Tool audit · last ${entries.length} (redacted)`));
-  details.appendChild(
-    el(
-      "ul",
-      { class: "feed audit-feed" },
-      entries.map((e) =>
-        el("li", { class: "feed-row" }, [
-          el("time", { class: "feed-time tabnum", datetime: e.ts || "" }, fmtTime(e.ts)),
-          el("span", { class: "feed-event" }, e.tool || "—"),
-          el(
-            "span",
-            { class: "feed-actor dim" },
-            `${e.actor?.type || "?"}${e.actor?.id ? ` · ${e.actor.id}` : ""}`,
-          ),
-          e.error ? badge("error", "status-failed") : null,
-          e.blocked ? badge("blocked", "status-blocked") : null,
-          e.resultCount != null
-            ? el(
-                "span",
-                { class: "dim tabnum" },
-                `${e.resultCount} result${e.resultCount === 1 ? "" : "s"}`,
-              )
-            : null,
-        ]),
-      ),
-    ),
-  );
-  return el("div", { class: "card" }, details);
 }
 
 // ===========================================================================
@@ -1550,6 +1800,7 @@ async function renderWork() {
       suggestWorkButton(repos, nodes),
     ]),
   );
+  if (workState.mode === "board") wrap.appendChild(workFlowHeader(columns, closed.length));
   wrap.appendChild(renderWorkFilters(repos));
 
   if (workState.mode === "list") {
@@ -1562,6 +1813,47 @@ async function renderWork() {
   wrap.appendChild(await renderClaimsPanel());
 
   return wrap;
+}
+
+/** A flow-summary header above the board: per-stage WIP counts and a single
+ *  distribution bar so the shape of the board reads before you scan the lanes. */
+function workFlowHeader(columns, shippedCount) {
+  const by = {};
+  for (const c of columns) by[c.column] = (c.cards || []).length;
+  const cells = [
+    { label: "Draft", v: by.draft || 0, tone: "idle" },
+    { label: "Ready", v: by.ready || 0, tone: "accent" },
+    { label: "In progress", v: by.in_progress || 0, tone: "accent" },
+    { label: "In review", v: by.in_review || 0, tone: "amber" },
+    { label: "Blocked", v: by.blocked || 0, tone: "danger" },
+    { label: "Shipped", v: shippedCount, tone: "ok" },
+  ];
+  const flowTotal = Math.max(
+    1,
+    cells.reduce((n, c) => n + c.v, 0),
+  );
+  const seg = cells
+    .filter((c) => c.v > 0)
+    .map((c) =>
+      el("span", {
+        class: `wf-seg tone-${c.tone}`,
+        style: `width:${(c.v / flowTotal) * 100}%`,
+        title: `${c.label}: ${c.v}`,
+      }),
+    );
+  return el("div", { class: "card panel work-flow" }, [
+    el(
+      "div",
+      { class: "wf-cells" },
+      cells.map((c) =>
+        el("div", { class: `wf-cell tone-${c.tone}` }, [
+          el("span", { class: "wf-val tabnum" }, String(c.v)),
+          el("span", { class: "wf-label" }, c.label),
+        ]),
+      ),
+    ),
+    el("div", { class: "wf-bar" }, seg),
+  ]);
 }
 
 function renderWorkFilters(repos) {
@@ -3119,6 +3411,9 @@ async function renderSettings() {
     return wrap;
   }
 
+  // Autonomy dial — the headline: how many human gates are open right now.
+  wrap.appendChild(autonomyDial(all));
+
   // edit registry: key → { def, read() } for non-locked inputs, so Save collects
   // only the values the operator can actually change.
   const editors = new Map();
@@ -3173,6 +3468,50 @@ async function renderSettings() {
   }
 
   return wrap;
+}
+
+/** The autonomy dial — a gauge of how much the factory may do without you.
+ *  Reads the boolean autonomy settings: each one ON is one human gate opened. */
+function autonomyDial(all) {
+  const isOn = (v) => v === true || v === "true" || v === "1" || v === "on";
+  const bools = all.filter((s) => s.group === "autonomy" && s.type === "boolean");
+  const total = Math.max(1, bools.length);
+  const on = bools.filter((s) => isOn(s.value)).length;
+  const pct = Math.round((on / total) * 100);
+  const level = on === 0 ? "Supervised" : on >= total ? "Hands-off" : "Assisted";
+  const tone = on === 0 ? "ok" : on >= total ? "danger" : "amber";
+  const blurb =
+    on === 0
+      ? "A human approves every merge. The factory structurally cannot ship its own work."
+      : on >= total
+        ? "Every gate is open — the factory can plan, build, review and ship without you."
+        : `${on} of ${total} gates are open. The factory acts on its own for the toggles marked below.`;
+  return el("div", { class: `card panel autonomy-dial tone-${tone}` }, [
+    el("div", { class: "ad-gauge" }, [
+      el("div", { class: "ad-donut", html: svgDonut(pct) }),
+      el("div", { class: "ad-center" }, [
+        el("span", { class: "ad-frac tabnum" }, `${on}/${total}`),
+        el("span", { class: "ad-cap" }, "gates open"),
+      ]),
+    ]),
+    el("div", { class: "ad-body" }, [
+      el("div", { class: "ad-level-row" }, [
+        el("span", { class: "ad-level" }, level),
+        el("span", { class: "ad-badge" }, on === 0 ? "fully gated" : `${on} open`),
+      ]),
+      el("p", { class: "ad-note" }, blurb),
+      el(
+        "div",
+        { class: "ad-gates" },
+        bools.map((s) =>
+          el("span", { class: `ad-gate ${isOn(s.value) ? "on" : "off"}` }, [
+            el("span", { class: "ad-gate-dot" }),
+            s.label || s.key,
+          ]),
+        ),
+      ),
+    ]),
+  ]);
 }
 
 /** The known idle scan loops, in display order, with copy for the panel. */
@@ -3953,17 +4292,42 @@ async function renderReview() {
     return wrap;
   }
 
+  // Gate console header — frames the human gate and the decision controls.
+  const riskCount = (lvl) => tickets.filter((t) => t.risk_level === lvl).length;
   wrap.appendChild(
-    el("p", { class: "dim", style: "font-size:var(--step--1)" }, [
-      "Keyboard: ",
-      el("span", { class: "kbd" }, "j"),
-      " / ",
-      el("span", { class: "kbd" }, "k"),
-      " move · ",
-      el("span", { class: "kbd" }, "a"),
-      " approve · ",
-      el("span", { class: "kbd" }, "r"),
-      " rework.",
+    el("div", { class: "card panel gate-console" }, [
+      el("div", { class: "gate-main" }, [
+        el("span", { class: "gate-lamp" }),
+        el("div", {}, [
+          el("div", { class: "gate-title" }, "You hold the gate"),
+          el(
+            "div",
+            { class: "gate-sub" },
+            `${tickets.length} ${tickets.length === 1 ? "change is" : "changes are"} waiting on your sign-off. Nothing merges until you approve it.`,
+          ),
+        ]),
+      ]),
+      el("div", { class: "gate-aside" }, [
+        el("div", { class: "gate-risk" }, [
+          riskCount("critical")
+            ? el("span", { class: "gr critical" }, `${riskCount("critical")} critical`)
+            : null,
+          riskCount("high") ? el("span", { class: "gr high" }, `${riskCount("high")} high`) : null,
+          riskCount("medium")
+            ? el("span", { class: "gr medium" }, `${riskCount("medium")} medium`)
+            : null,
+          riskCount("low") ? el("span", { class: "gr low" }, `${riskCount("low")} low`) : null,
+        ]),
+        el("div", { class: "gate-keys" }, [
+          el("span", { class: "kbd" }, "j"),
+          el("span", { class: "kbd" }, "k"),
+          el("span", { class: "gate-keys-label" }, "move"),
+          el("span", { class: "kbd" }, "a"),
+          el("span", { class: "gate-keys-label" }, "approve"),
+          el("span", { class: "kbd" }, "r"),
+          el("span", { class: "gate-keys-label" }, "rework"),
+        ]),
+      ]),
     ]),
   );
 
@@ -4236,7 +4600,7 @@ async function renderFactory() {
     ]),
   );
 
-  wrap.appendChild(renderScopeTree(nodes, edges));
+  wrap.appendChild(renderScopeGraph(nodes, edges));
   wrap.appendChild(renderUnmappedSection(unmapped));
   wrap.appendChild(renderFactoryFooter());
   applyFactoryFilter(wrap, factoryState.query.trim().toLowerCase());
@@ -4260,67 +4624,113 @@ function renderFactoryFooter() {
   ]);
 }
 
-function renderScopeTree(nodes, edges) {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const childrenOf = new Map();
-  const hasParent = new Set();
-  for (const e of edges) {
-    if (e.relation !== "contains") continue;
-    if (!byId.has(e.from_node_id) || !byId.has(e.to_node_id)) continue;
-    if (!childrenOf.has(e.from_node_id)) childrenOf.set(e.from_node_id, []);
-    childrenOf.get(e.from_node_id).push(e.to_node_id);
-    hasParent.add(e.to_node_id);
-  }
-  const roots = nodes.filter((n) => !hasParent.has(n.id));
-  const card = el("div", { class: "card" }, [el("h2", {}, "Scope graph")]);
+function renderScopeGraph(nodes, edges) {
+  const card = el("div", { class: "card panel" }, [
+    panelHead("Scope graph", "contains \u00b7 depends on"),
+  ]);
   if (nodes.length === 0) {
     card.appendChild(
       el("p", { class: "dim" }, "No scope nodes yet. Create one to start mapping your factory."),
     );
     return card;
   }
-  const visited = new Set();
-  const buildNode = (node) => {
-    if (visited.has(node.id)) return null;
-    visited.add(node.id);
-    const tags = parseTags(node.tags_json);
-    const row = el("div", { class: "tree-node", dataset: { kind: "node", nodeId: node.id } }, [
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  // containment depth → graph columns (a node sits one column right of its parent)
+  const parents = new Map();
+  for (const e of edges) {
+    if (e.relation !== "contains") continue;
+    if (byId.has(e.from_node_id) && byId.has(e.to_node_id))
+      parents.set(e.to_node_id, e.from_node_id);
+  }
+  const depthOf = (id, seen = new Set()) => {
+    const p = parents.get(id);
+    if (!p || seen.has(id)) return 0;
+    seen.add(id);
+    return 1 + depthOf(p, seen);
+  };
+  const NODE_W = 188,
+    NODE_H = 66,
+    COLG = 76,
+    ROWG = 20,
+    PADX = 12,
+    PADT = 38,
+    PADB = 14;
+  const cols = [];
+  for (const n of nodes) {
+    const d = depthOf(n.id);
+    (cols[d] = cols[d] || []).push(n);
+  }
+  const pos = new Map();
+  cols.forEach((list, ci) => {
+    (list || []).sort((a, b) => a.name.localeCompare(b.name));
+    (list || []).forEach((n, ri) =>
+      pos.set(n.id, { x: PADX + ci * (NODE_W + COLG), y: PADT + ri * (NODE_H + ROWG), n }),
+    );
+  });
+  const maxRows = Math.max(1, ...cols.map((c) => (c ? c.length : 0)));
+  const width = PADX * 2 + cols.length * NODE_W + Math.max(0, cols.length - 1) * COLG;
+  const height = PADT + maxRows * (NODE_H + ROWG) - ROWG + PADB;
+
+  let paths = "";
+  for (const e of edges) {
+    const a = pos.get(e.from_node_id),
+      b = pos.get(e.to_node_id);
+    if (!a || !b) continue;
+    const fwd = b.x >= a.x;
+    const x1 = fwd ? a.x + NODE_W : a.x,
+      y1 = a.y + NODE_H / 2;
+    const x2 = fwd ? b.x : b.x + NODE_W,
+      y2 = b.y + NODE_H / 2;
+    const mx = (x1 + x2) / 2;
+    const cls = e.relation === "contains" ? "contains" : "dep";
+    paths += `<path class="gedge ${cls}" d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"/>`;
+  }
+  const svg = el("div", {
+    class: "graph-edges",
+    html: `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none">${paths}</svg>`,
+  });
+  const colLabels = cols.map((_, ci) =>
+    el(
+      "div",
+      { class: "graph-collabel", style: `left:${PADX + ci * (NODE_W + COLG)}px;width:${NODE_W}px` },
+      ci === 0 ? "Roots" : `Depth ${ci}`,
+    ),
+  );
+  const gnodes = [];
+  for (const [id, { x, y, n }] of pos) {
+    gnodes.push(
       el(
         "a",
         {
-          class: "tree-link",
-          href: `#/node/${node.id}`,
-          onkeydown: (ev) => {
-            if (ev.key === "Enter" || ev.key === " ") {
-              ev.preventDefault();
-              navigate(`#/node/${node.id}`);
-            }
-          },
+          class: `scope-gnode type-${n.type}`,
+          href: `#/node/${id}`,
+          dataset: { name: (n.name || "").toLowerCase() },
+          style: `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`,
         },
         [
-          el("span", { class: "tree-name" }, node.name),
-          badge(typeLabel(node.type), `type-${node.type}`),
-          riskBadge(node.risk_level),
-          node.owner ? el("span", { class: "dim tree-owner" }, `@${node.owner}`) : null,
-          ...tags.slice(0, 4).map((t) => el("span", { class: "tag-chip" }, t)),
+          el("span", { class: "sg-name" }, n.name),
+          el("span", { class: "sg-meta" }, [
+            badge(typeLabel(n.type), `type-${n.type}`),
+            n.risk_level ? riskBadge(n.risk_level) : null,
+          ]),
         ],
       ),
-    ]);
-    const kids = (childrenOf.get(node.id) || []).map((id) => byId.get(id)).filter(Boolean);
-    const branch = el("div", { class: "tree-branch", dataset: { kind: "branch" } }, [row]);
-    if (kids.length)
-      branch.appendChild(
-        el("div", { class: "tree-children" }, kids.map((k) => buildNode(k)).filter(Boolean)),
-      );
-    return branch;
-  };
-  const tree = el("div", { class: "tree" }, roots.map((r) => buildNode(r)).filter(Boolean));
-  const leftover = nodes.filter((n) => !visited.has(n.id));
-  for (const n of leftover) {
-    const branch = buildNode(n);
-    if (branch) tree.appendChild(branch);
+    );
   }
-  card.appendChild(tree);
+  const legend = el("div", { class: "graph-legend" }, [
+    el("span", { class: "gl-item" }, [el("span", { class: "gl-line contains" }), "contains"]),
+    el("span", { class: "gl-item" }, [el("span", { class: "gl-line dep" }), "depends on"]),
+  ]);
+  card.appendChild(
+    el("div", { class: "graph-scroll" }, [
+      el("div", { class: "graph", style: `width:${width}px;height:${height}px` }, [
+        svg,
+        ...colLabels,
+        ...gnodes,
+      ]),
+    ]),
+  );
+  card.appendChild(legend);
   return card;
 }
 
@@ -4517,6 +4927,11 @@ function applyFactoryFilter(wrap, q) {
   wrap.querySelectorAll(".repo-row").forEach((row) => {
     const text = row.textContent.toLowerCase();
     row.hidden = !!q && !text.includes(q);
+  });
+  // dim scope-graph nodes that don't match (keeps the graph layout stable)
+  wrap.querySelectorAll(".scope-gnode").forEach((node) => {
+    const text = (node.dataset.name || node.textContent || "").toLowerCase();
+    node.classList.toggle("is-dim", !!q && !text.includes(q));
   });
 }
 
@@ -5439,7 +5854,7 @@ async function renderEpics(param) {
         membersByEpic.get(epic.id) || [],
         depsById,
         depViewById,
-        focusId === epic.id,
+        focusId === epic.id || epics.length === 1,
       ),
     );
   }
@@ -5488,89 +5903,129 @@ function renderEpicCard(epic, members, depsById, depViewById, expanded) {
       el("p", { class: "dim", style: "padding:8px 2px" }, "This epic has no tickets."),
     );
   } else {
-    for (const p of phases) {
-      body.appendChild(renderEpicPhase(p, byPhase.get(p), depViewById));
-    }
+    body.appendChild(phaseProgress(byPhase, phases));
+    body.appendChild(renderEpicDag(byPhase, phases, depViewById));
   }
   details.appendChild(body);
   return details;
 }
 
-/** A phase column: a labelled lane of ticket cards, with the hard-gate note. */
-function renderEpicPhase(phase, tickets, depViewById) {
-  // Phases are 0-indexed internally (dependency depth) but shown 1-indexed so the
-  // labels read Phase 1…Phase N and match the "{N} phases" count in the summary.
-  const label = phase + 1;
-  const lane = el("section", { class: "epic-phase", "aria-label": `Phase ${label}` });
-  lane.appendChild(
-    el("div", { class: "epic-phase-head" }, [
-      el("span", { class: "epic-phase-num tabnum" }, `Phase ${label}`),
-      el("span", { class: "epic-phase-count dim tabnum" }, String(tickets.length)),
-      phase > 0
-        ? el("span", { class: "epic-phase-gate dim" }, [
-            icon("clock"),
-            `gated on phase ${label - 1}`,
-          ])
-        : null,
-    ]),
-  );
-  const cards = tickets
-    .slice()
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0))
-    .map((t) => renderEpicTicket(t, depViewById.get(t.id) || []));
-  lane.appendChild(el("div", { class: "epic-phase-body" }, cards));
-  return lane;
-}
-
-/** A ticket card inside an epic phase — status, bootstrap, and its blockers. */
-function renderEpicTicket(t, deps) {
-  const blockers = deps.filter((d) => !d.satisfied);
-  const go = () => navigate(`#/ticket/${t.id}`);
+/** Phase progress strip — one segment per phase, filled by its done-ratio, so
+ *  you can see the gate front advancing through the plan at a glance. */
+function phaseProgress(byPhase, phases) {
+  const active = new Set(["in_progress", "claimed", "in_review", "in_testing", "ready_for_merge"]);
   return el(
-    "a",
-    {
-      class: "epic-ticket",
-      href: `#/ticket/${t.id}`,
-      onkeydown: (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          go();
-        }
-      },
-    },
-    [
-      el("div", { class: "epic-ticket-top" }, [
-        el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
-        t.bootstrap ? badge("bootstrap", "no-dot") : null,
-        pipelineDots(t.status),
-      ]),
-      el("div", { class: "epic-ticket-title" }, t.title),
-      el("div", { class: "epic-ticket-chips" }, [
-        statusBadge(t.status),
-        typeof t.priority === "number"
-          ? el("span", { class: "dim tabnum", title: "priority" }, `P${t.priority}`)
-          : null,
-      ]),
-      deps.length
-        ? el("div", { class: `epic-deps${blockers.length ? " blocked" : ""}` }, [
-            icon("link", "dep-ico"),
-            blockers.length
-              ? el("span", {}, ["blocked by ", ...joinDepRefs(blockers)])
-              : el("span", { class: "dim" }, ["after ", ...joinDepRefs(deps)]),
-          ])
-        : null,
-    ],
+    "div",
+    { class: "phase-strip" },
+    phases.map((p) => {
+      const tix = byPhase.get(p) || [];
+      const done = tix.filter((t) => t.status === "done").length;
+      const pct = tix.length ? Math.round((done / tix.length) * 100) : 0;
+      const state =
+        tix.length && done === tix.length
+          ? "done"
+          : tix.some((t) => active.has(t.status))
+            ? "active"
+            : "idle";
+      return el("div", { class: `phase-seg is-${state}` }, [
+        el("div", { class: "ps-top" }, [
+          el("span", { class: "ps-label" }, `Phase ${p + 1}`),
+          el("span", { class: "ps-frac mono" }, `${done}/${tix.length}`),
+        ]),
+        el("div", { class: "ps-bar" }, el("i", { style: `width:${pct}%` })),
+      ]);
+    }),
   );
 }
 
-/** Render dependency refs as "#3, #5" text nodes. */
-function joinDepRefs(deps) {
-  const out = [];
-  deps.forEach((d, i) => {
-    if (i > 0) out.push(", ");
-    out.push(el("span", { class: "dep-ref" }, d.number != null ? `#${d.number}` : "ticket"));
+/** The dependency DAG — phases laid out as columns (topological layers), tickets
+ *  as nodes, and dependsOn edges drawn between them. Satisfied edges are solid
+ *  cyan; unmet edges are dashed amber (the live gate front). */
+function renderEpicDag(byPhase, phases, depViewById) {
+  const NODE_W = 208,
+    NODE_H = 84,
+    COLG = 70,
+    ROWG = 18,
+    PADX = 12,
+    PADT = 42,
+    PADB = 14;
+  const cols = phases.map((p) =>
+    (byPhase.get(p) || []).slice().sort((a, b) => (a.number || 0) - (b.number || 0)),
+  );
+  const pos = new Map();
+  cols.forEach((tix, ci) => {
+    const x = PADX + ci * (NODE_W + COLG);
+    tix.forEach((t, ri) => pos.set(t.id, { x, y: PADT + ri * (NODE_H + ROWG), t }));
   });
-  return out;
+  const maxRows = Math.max(1, ...cols.map((c) => c.length));
+  const width = PADX * 2 + phases.length * NODE_W + Math.max(0, phases.length - 1) * COLG;
+  const height = PADT + maxRows * (NODE_H + ROWG) - ROWG + PADB;
+
+  // edges (drawn behind the nodes)
+  let paths = "";
+  for (const [id, { x, y }] of pos) {
+    for (const d of depViewById.get(id) || []) {
+      const from = pos.get(d.depends_on_ticket_id);
+      if (!from) continue;
+      const x1 = from.x + NODE_W,
+        y1 = from.y + NODE_H / 2,
+        x2 = x,
+        y2 = y + NODE_H / 2;
+      const mx = (x1 + x2) / 2;
+      paths += `<path class="edge ${d.satisfied ? "sat" : "pend"}" d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"/>`;
+    }
+  }
+  const svg = el("div", {
+    class: "dag-edges",
+    html: `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none">${paths}</svg>`,
+  });
+
+  const labels = phases.map((p, ci) =>
+    el(
+      "div",
+      { class: "dag-collabel", style: `left:${PADX + ci * (NODE_W + COLG)}px;width:${NODE_W}px` },
+      [
+        el("span", { class: "dcl-num" }, `Phase ${p + 1}`),
+        ci > 0 ? el("span", { class: "dcl-gate" }, "gated") : null,
+      ],
+    ),
+  );
+
+  const nodes = [];
+  for (const [id, { x, y, t }] of pos) {
+    const blockers = (depViewById.get(id) || []).filter((d) => !d.satisfied);
+    nodes.push(
+      el(
+        "a",
+        {
+          class: `dag-node status-${t.status}`,
+          href: `#/ticket/${t.id}`,
+          style: `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`,
+        },
+        [
+          el("div", { class: "dn-top" }, [
+            el("span", { class: "dn-num mono" }, t.number != null ? `#${t.number}` : "—"),
+            statusBadge(t.status),
+          ]),
+          el("div", { class: "dn-title" }, t.title),
+          blockers.length
+            ? el("div", { class: "dn-block" }, [
+                icon("clock", "dn-block-ico"),
+                `waiting on ${blockers.map((b) => (b.number != null ? "#" + b.number : "?")).join(", ")}`,
+              ])
+            : null,
+        ],
+      ),
+    );
+  }
+
+  return el("div", { class: "dag-scroll" }, [
+    el("div", { class: "dag", style: `width:${width}px;height:${height}px` }, [
+      svg,
+      ...labels,
+      ...nodes,
+    ]),
+  ]);
 }
 
 // ===========================================================================
@@ -6803,6 +7258,14 @@ function renderLoreList(res, repo) {
 }
 
 // --- Wiring -----------------------------------------------------------------
+
+// Power-on: the room boots once. The grid draws in, the rail items rack down
+// one by one, the LIVE lamp ignites, then the first view comes up. CSS owns the
+// choreography via the `.booting` flag; we just raise and lower it.
+if (!prefersReducedMotion()) {
+  document.documentElement.classList.add("booting");
+  setTimeout(() => document.documentElement.classList.remove("booting"), 1600);
+}
 
 buildChrome();
 window.addEventListener("hashchange", router);

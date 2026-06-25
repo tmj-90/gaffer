@@ -307,6 +307,22 @@ export interface StuckTicket {
   since: string;
 }
 
+/** Per-repository delivery progress for the Overview "Progress by repository". */
+export interface RepoProgress {
+  /** Repository name. */
+  repo: string;
+  /** Tickets linked to this repo (any status). */
+  total: number;
+  /** Of those, how many are `done`. */
+  done: number;
+  /** Of those, how many are actively in flight (claimed → ready_for_merge). */
+  inFlight: number;
+  /** Of those, how many are blocked. */
+  blocked: number;
+  /** done / total as a 0–100 integer percentage. */
+  pct: number;
+}
+
 /** Dashboard summary tiles — counts plus cycle-time/stuck analytics. */
 export interface DashboardSummary {
   /** Ticket counts keyed by status (every status present, zero-filled). */
@@ -327,6 +343,8 @@ export interface DashboardSummary {
   stuckTickets: StuckTicket[];
   /** The age (hours) past which a non-terminal ticket is flagged as stuck. */
   stuckThresholdHours: number;
+  /** Per-repository delivery progress (mapped repos with ≥1 linked ticket). */
+  repoProgress: RepoProgress[];
 }
 
 /** Input for resolving a decision via the human surface. */
@@ -3114,7 +3132,47 @@ export class Dispatch {
       cycleTimeByState: cycleTimeByState(transitions),
       stuckTickets: this.stuckTickets(transitions, now),
       stuckThresholdHours: STUCK_THRESHOLD_HOURS,
+      repoProgress: this.repoProgress(),
     };
+  }
+
+  /**
+   * Per-repository delivery progress, computed from the ticket↔repo links: for
+   * each non-hidden repo with at least one linked ticket, how many are done,
+   * in flight or blocked, and the done-share. Drives the Overview repo panel.
+   */
+  private repoProgress(): RepoProgress[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.name AS repo,
+                COUNT(*) AS total,
+                SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) AS done,
+                SUM(CASE WHEN t.status IN
+                  ('claimed','in_progress','in_review','in_testing','ready_for_merge')
+                  THEN 1 ELSE 0 END) AS inflight,
+                SUM(CASE WHEN t.status = 'blocked' THEN 1 ELSE 0 END) AS blocked
+         FROM repositories r
+         JOIN ticket_repos tr ON tr.repo_id = r.id
+         JOIN tickets t ON t.id = tr.ticket_id
+         WHERE r.hidden = 0
+         GROUP BY r.id, r.name
+         ORDER BY total DESC, r.name ASC`,
+      )
+      .all() as Array<{
+      repo: string;
+      total: number;
+      done: number;
+      inflight: number;
+      blocked: number;
+    }>;
+    return rows.map((r) => ({
+      repo: r.repo,
+      total: r.total,
+      done: r.done,
+      inFlight: r.inflight,
+      blocked: r.blocked,
+      pct: r.total > 0 ? Math.round((r.done / r.total) * 100) : 0,
+    }));
   }
 
   /**

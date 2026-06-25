@@ -1043,6 +1043,24 @@ async function renderOverview() {
     return carry == null ? 0 : +carry.toFixed(2);
   });
 
+  // --- distinct, real per-metric daily series (each KPI gets its own shape) --
+  const createdByDay = bucket(tickets, (t) => t.created_at);
+  // deployments: cumulative tickets shipped (a monotonic delivery curve)
+  let depAcc = 0;
+  const deploySeries = doneByDay.map((v) => (depAcc += v));
+  // lead time: 7-day trailing mean of daily cycle (a smoothed lead trend)
+  const leadSeries = cycleLine.map((_, i) => {
+    const w = cycleLine.slice(Math.max(0, i - 6), i + 1).filter((x) => x > 0);
+    return w.length ? +(w.reduce((a, b) => a + b, 0) / w.length).toFixed(2) : 0;
+  });
+  // flow efficiency: 7-day trailing shipped / created (a real ratio trend, %)
+  const flowEffSeries = days.map((_, i) => {
+    const lo = Math.max(0, i - 6);
+    const shipped = doneByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
+    const opened = createdByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
+    return opened > 0 ? Math.round((shipped / (shipped + opened)) * 100) : 0;
+  });
+
   // --- headline metrics (real) ---------------------------------------------
   const med = (arr) => {
     if (!arr.length) return 0;
@@ -1106,7 +1124,7 @@ async function renderOverview() {
         unit: "%",
         tone: "violet",
         delta: half(actByDay),
-        series: actByDay,
+        series: flowEffSeries,
       }),
       kpiCard({
         label: "Deployments",
@@ -1114,7 +1132,7 @@ async function renderOverview() {
         unit: "all-time",
         tone: "amber",
         delta: half(doneByDay),
-        series: doneByDay,
+        series: deploySeries,
       }),
       kpiCard({
         label: "Lead time",
@@ -1123,7 +1141,7 @@ async function renderOverview() {
         tone: "accent",
         delta: half(cycleLine),
         goodWhenDown: true,
-        series: cycleLine,
+        series: leadSeries,
       }),
     ]),
   );

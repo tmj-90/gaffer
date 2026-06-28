@@ -114,13 +114,35 @@ export function loadSkills(skillsDir = DEFAULT_SKILLS_DIR) {
 
 /**
  * A skill matches when its stack is unconstrained or intersects the wanted
- * stack(s), AND its area is unconstrained or equals the wanted area. An empty
- * query dimension imposes no constraint.
+ * stack(s), AND its area constraint is satisfied.
+ *
+ * `area` is an OPT-IN constraint. The two modes are:
+ *
+ *   - Explicit area query (`area` non-empty): every skill that carries an
+ *     `area:` must match it (and area-less skills still pass). This is the
+ *     narrow "give me the X pack" path — e.g. `area: security` excludes
+ *     `typescript-conventions` (area: language) even on a node stack.
+ *   - Stack-only query (`area` empty, how tick.sh calls this): an AREA-ONLY
+ *     skill (`stack:[]` + non-empty `area:`) is NOT auto-included — it would
+ *     otherwise leak marketing/product/meta packs onto every backend ticket.
+ *     A STACK-TAGGED skill still routes by its stack regardless of its area
+ *     label, so `frontend-design`/`landing-page-generator` still fire for a
+ *     matching web/react stack. Fully-unconstrained skills (`stack:[] area:''`)
+ *     still match everything (workflow/quality helpers).
  */
 export function skillMatches(skill, { stacks = [], area = "" } = {}) {
+  const hasStackTag = skill.stack.length > 0;
   const stackOk =
-    skill.stack.length === 0 || stacks.length === 0 || skill.stack.some((s) => stacks.includes(s));
-  const areaOk = !skill.area || !area || skill.area === area;
+    !hasStackTag || stacks.length === 0 || skill.stack.some((s) => stacks.includes(s));
+  let areaOk;
+  if (area) {
+    // Explicit area: area-tagged skills must match it exactly; area-less pass.
+    areaOk = !skill.area || skill.area === area;
+  } else {
+    // Stack-only query: an area-only skill is opt-in (excluded); a stack-tagged
+    // skill routes by stack (its area label does not block it).
+    areaOk = !skill.area || hasStackTag;
+  }
   return stackOk && areaOk;
 }
 

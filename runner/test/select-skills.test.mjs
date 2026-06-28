@@ -54,10 +54,18 @@ check("parseFrontmatter falls back to dir name when name absent", () => {
 });
 
 // --- skillMatches semantics (mirror Crew registry) --------------------
-check("empty skill stack matches any query stack", () => {
+check("empty skill stack matches any query stack (fully-unconstrained skill)", () => {
+  // An empty stack is "no stack constraint"; with no area tag the skill is
+  // fully cross-cutting and matches any stack-only query.
   assert(
-    skillMatches({ stack: [], area: "backend" }, { stacks: ["python"] }),
-    "empty stack = no constraint",
+    skillMatches({ stack: [], area: "" }, { stacks: ["python"] }),
+    "empty stack + empty area = no constraint (matches any stack)",
+  );
+  // But an empty-stack skill that DOES carry an area is now opt-in (FIX-2): it
+  // no longer auto-fires on a stack-only query.
+  assert(
+    !skillMatches({ stack: [], area: "backend" }, { stacks: ["python"] }),
+    "area-tagged skill is opt-in: no longer matches a stack-only query",
   );
 });
 check("empty query stack matches any skill stack", () => {
@@ -82,9 +90,28 @@ check("area must equal when both constrain", () => {
     !skillMatches({ stack: [], area: "security" }, { area: "frontend" }),
     "different area excluded",
   );
+});
+
+check("FIX-2: an area-only skill is opt-in — excluded on a stack-only query", () => {
+  // No area in the query → an area-only skill (stack:[] + area) does NOT match;
+  // it is opt-in and only fires when its area is explicitly named.
   assert(
-    skillMatches({ stack: [], area: "security" }, { area: "" }),
-    "empty query area = no constraint",
+    !skillMatches({ stack: [], area: "security" }, { area: "" }),
+    "area-only skill must NOT auto-fire when no area is queried",
+  );
+  assert(
+    !skillMatches({ stack: [], area: "marketing" }, { stacks: ["node"] }),
+    "area-only marketing skill must NOT fire on a stack-only query",
+  );
+  // A fully-unconstrained skill (stack:[] area:'') still matches everything.
+  assert(
+    skillMatches({ stack: [], area: "" }, { stacks: ["node"] }),
+    "fully-unconstrained skill still matches any stack",
+  );
+  // A stack-tagged skill with an area still routes by stack on a stack-only query.
+  assert(
+    skillMatches({ stack: ["react"], area: "frontend" }, { stacks: ["react"] }),
+    "stack-tagged skill routes by stack regardless of its area label",
   );
 });
 
@@ -122,15 +149,28 @@ check("each domain pack has its expected skills", () => {
   );
 });
 
-check("minimalism skill is cross-cutting (selectable for any stack) and area-tagged", () => {
+check("minimalism is an always-on QUALITY LENS (area: quality), injected by tick.sh", () => {
   const min = all.find((s) => s.name === "minimalism");
   assert(min, "minimalism skill should load from the library");
-  eq(min.stack, [], "minimalism is stack-agnostic (empty stack = selectable for any stack)");
-  assert(min.area, "minimalism must carry an area tag like every other skill");
+  eq(min.stack, [], "minimalism is stack-agnostic (empty stack)");
+  eq(min.area, "quality", "minimalism is an area: quality lens");
+  // FIX-2: as an area-tagged skill it is now opt-in for select-skills — it does
+  // NOT auto-fire on a stack-only query. Cross-cutting delivery is instead
+  // guaranteed by tick.sh's LENSES path (every `area: quality` skill is injected
+  // as MANDATORY regardless of stack). It still resolves on an explicit query.
   for (const stack of ["node", "python", "go"]) {
     const names = selectSkills({ stacks: [stack] }).map((s) => s.name);
-    assert(names.includes("minimalism"), `minimalism should be selectable for the ${stack} stack`);
+    assert(
+      !names.includes("minimalism"),
+      `minimalism is opt-in now and must not auto-fire on the ${stack} stack-only query`,
+    );
   }
+  assert(
+    selectSkills({ area: "quality" })
+      .map((s) => s.name)
+      .includes("minimalism"),
+    "minimalism still resolves under an explicit area: quality query",
+  );
 });
 
 check("minimalism skill preserves safety guards and documents YAGNI + intensity levels", () => {
@@ -154,8 +194,19 @@ check("AC1: selection by stack picks the right skills", () => {
   assert(tsNames.includes("typescript-conventions"), "typescript stack should select the TS pack");
   const pyNames = selectSkills({ stacks: ["python"] }).map((s) => s.name);
   assert(!pyNames.includes("typescript-conventions"), "python stack must not select the TS pack");
-  // stack-agnostic skills remain selectable for any stack
-  assert(pyNames.includes("run-tests"), "stack-agnostic skill should select for any stack");
+  // FIX-2: area-tagged helpers (e.g. run-tests, area: testing) are now opt-in
+  // and no longer auto-fire on a stack-only query; they resolve under an
+  // explicit area query instead.
+  assert(
+    !pyNames.includes("run-tests"),
+    "area-tagged run-tests is opt-in: must not auto-fire on a stack-only query",
+  );
+  assert(
+    selectSkills({ area: "testing" })
+      .map((s) => s.name)
+      .includes("run-tests"),
+    "run-tests still resolves under an explicit area: testing query",
+  );
 });
 
 check("AC1: node stack (this repo) selects the typescript pack", () => {
@@ -359,14 +410,19 @@ check("data area packs exist", () => {
   );
 });
 
-check("caveman is meta area and stack-agnostic (selects for any stack)", () => {
+check("FIX-3: caveman (area: meta) is manual-only — does NOT auto-fire on any stack", () => {
   const caveman = all.find((s) => s.name === "caveman");
   assert(caveman, "caveman skill should load from the library");
   assert(caveman.area === "meta", "caveman must have area: meta");
   eq(caveman.stack, [], "caveman is stack-agnostic");
+  // caveman is a user-comms mode, not a delivery lens. After FIX-2's area-gating
+  // it must not be auto-injected on a stack-only selection (every ticket).
   for (const stack of ["node", "python", "go", "java"]) {
     const names = selectSkills({ stacks: [stack] }).map((s) => s.name);
-    assert(names.includes("caveman"), `caveman should be selectable for the ${stack} stack`);
+    assert(
+      !names.includes("caveman"),
+      `caveman must NOT auto-fire on the ${stack} stack-only query`,
+    );
   }
 });
 
@@ -392,6 +448,64 @@ check("landing-page-generator routes for react stack (marketing area, web stack)
   assert(
     !java.includes("landing-page-generator"),
     "java stack must not pull landing-page-generator",
+  );
+});
+
+// --- FIX-2: area packs must NOT auto-fire on a stack-only selection ---------
+
+check("FIX-2: a stack-only node selection excludes area-only packs (no over-fire)", () => {
+  const names = selectSkills({ stacks: ["node"] }).map((s) => s.name);
+  // Area-only packs (stack:[] + non-empty area) must NOT auto-inject on a
+  // stack-only query — previously they leaked onto every backend ticket.
+  for (const leaked of [
+    "aeo",
+    "seo-audit",
+    "copywriting",
+    "landing-page-generator",
+    "prd",
+    "rice",
+    "caveman",
+    "page-cro",
+    "schema-markup",
+    "user-story",
+    "product-discovery",
+    "slides-deck",
+    "observability-designer",
+    "slo-architect",
+  ]) {
+    assert(!names.includes(leaked), `stack-only node selection must NOT include '${leaked}'`);
+  }
+  // Stack-tagged language/quality packs still route by stack.
+  assert(names.includes("typescript-conventions"), "node stack still gets typescript-conventions");
+});
+
+check("FIX-2: java / go stacks still get their conventions; no area leak", () => {
+  const java = selectSkills({ stacks: ["java"] }).map((s) => s.name);
+  assert(java.includes("java-conventions"), "java stack still gets java-conventions");
+  assert(!java.includes("aeo"), "java stack must not leak the marketing aeo pack");
+  assert(!java.includes("prd"), "java stack must not leak the product prd pack");
+
+  const go = selectSkills({ stacks: ["go"] }).map((s) => s.name);
+  assert(go.includes("go-conventions"), "go stack still gets go-conventions");
+  assert(!go.includes("copywriting"), "go stack must not leak the marketing copywriting pack");
+});
+
+check("FIX-2: a frontend (react) stack still gets frontend-design by stack", () => {
+  // frontend-design is stack-tagged (stack:[typescript,javascript,react]); it
+  // must still fire for a web/react stack purely on the stack match.
+  const react = selectSkills({ stacks: ["typescript-react"] }).map((s) => s.name);
+  assert(react.includes("frontend-design"), "react stack still gets frontend-design");
+  // ...but the area-only marketing/product packs still must not leak in.
+  assert(!react.includes("prd"), "react stack must not leak the product prd pack");
+  assert(!react.includes("aeo"), "react stack must not leak the marketing aeo pack");
+});
+
+check("FIX-2: explicit area query still composes (security area excludes language pack)", () => {
+  const sel = selectSkills({ stacks: ["node"], area: "security" }).map((s) => s.name);
+  assert(sel.includes("security-authz"), "explicit security area still selects the security pack");
+  assert(
+    !sel.includes("typescript-conventions"),
+    "explicit security area still excludes the language pack",
   );
 });
 

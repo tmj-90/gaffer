@@ -1,14 +1,7 @@
 import { type Db, inTransaction, openDatabase } from "./db/connection.js";
-import {
-  claimTicketInput,
-  createEpicInput,
-  registerRepoInput,
-  setTicketRepoAccessInput,
-  suggestReposInput,
-} from "./domain/schemas.js";
+import { claimTicketInput, createEpicInput } from "./domain/schemas.js";
 import {
   TICKET_STATUSES,
-  isActiveTicketRepoRelation,
   parseReviewFeedback,
   type AcceptanceCriterion,
   type Actor,
@@ -90,10 +83,11 @@ import {
   type RepoDeliveryResult,
 } from "./services/ticketService.js";
 import {
-  SuggestionService,
-  type RepoSuggestion,
-  type SuggestByFields,
-} from "./services/suggestionService.js";
+  RepoService,
+  type TicketRepoAccessResult,
+  type WorkPacketRepos,
+} from "./services/repoService.js";
+import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
 import { TransitionService, type TransitionResult } from "./services/transitionService.js";
 import { buildNotifierFromEnv } from "./notify/config.js";
 import type { NotifyEvent, NotifyKind, Notifier } from "./notify/types.js";
@@ -177,34 +171,15 @@ export interface TicketView {
  * separately so a UI/agent can see what still needs confirming. An agent may
  * only write where a repo appears in `writeRepos`.
  */
-export interface WorkPacketRepos {
-  writeRepos: TicketRepoLink[];
-  readOnlyRepos: TicketRepoLink[];
-  testRepos: TicketRepoLink[];
-  deniedRepos: TicketRepoLink[];
-  /** Active links pending human confirmation (relation='suggested'). */
-  suggestedRepos: TicketRepoLink[];
-  /** Retained-for-audit rejected links (relation='rejected'). */
-  rejectedRepos: TicketRepoLink[];
-}
+export type { WorkPacketRepos } from "./services/repoService.js";
 
 /**
  * Whether a ticket currently passes its policy pack's readiness gate (WG-004).
- * `ready` is the boolean verdict; `blockers` are the policy failure codes/messages
- * the PO must clear first (empty when ready); `warnings` are non-blocking hints.
- * Derived from the same TransitionService.preview the real mark-ready uses, so the
- * answer can never drift from the actual gate.
  */
 export type { ClaimabilityResult } from "./services/ticketService.js";
 
 /** Result of setting a ticket↔repo access boundary. */
-export interface TicketRepoAccessResult {
-  ticketId: string;
-  repoId: string;
-  access: string;
-  relation: string;
-  eventId: string;
-}
+export type { TicketRepoAccessResult } from "./services/repoService.js";
 
 /** Column keys for the kanban board (claimed+in_progress collapse to one). */
 export const BOARD_COLUMNS = [
@@ -403,6 +378,7 @@ export class Dispatch {
   readonly scope: ScopeService;
   readonly decisionSvc: DecisionService;
   readonly ticketSvc: TicketService;
+  readonly repoSvc: RepoService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -499,6 +475,16 @@ export class Dispatch {
       ticketDependencies: this.ticketDependencies,
       transitions: this.transitions,
       claims: this.claims,
+    });
+    this.repoSvc = new RepoService({
+      db,
+      clock: this.clock,
+      repos: this.repos,
+      tickets: this.tickets,
+      scopeRepos: this.scopeRepos,
+      ticketScopes: this.ticketScopes,
+      suggestions: this.suggestions,
+      scope: this.scope,
     });
   }
 
@@ -641,7 +627,7 @@ export class Dispatch {
           // Internal seed of the epic ticket's repo link — uses the unguarded core
           // so an agent-driven epic-create (the factory flow) still links its repo.
           // The PUBLIC setTicketRepoAccess stays human/admin-only (P0 authz).
-          this.applyTicketRepoAccess(
+          this.repoSvc.applyTicketRepoAccess(
             {
               ticket_id: ticket.id,
               repo_id: spec.repo,
@@ -719,87 +705,16 @@ export class Dispatch {
   // --- Repositories --------------------------------------------------------
 
   registerRepository(raw: unknown, actor: Actor): Repository {
-    const input = registerRepoInput.parse(raw);
-    const now = this.clock.now();
-    if (this.repos.findByName(input.name)) {
-      throw new DispatchError("DUPLICATE", `Repository '${input.name}' already exists.`);
-    }
-    const repo: Repository = {
-      id: newId(),
-      name: input.name,
-      local_path: input.local_path ?? null,
-      remote_url: input.remote_url ?? null,
-      default_branch: input.default_branch,
-      stack: input.stack ?? null,
-      risk_level: input.risk_level,
-      test_command: input.test_command ?? null,
-      lint_command: input.lint_command ?? null,
-      coverage_command: input.coverage_command ?? null,
-      hidden: 0,
-      created_at: now,
-      updated_at: now,
-    };
-    this.repos.insert(repo);
-    writeEvent(this.db, {
-      entity_type: "repository",
-      entity_id: repo.id,
-      actor,
-      event_type: "repository.registered",
-      payload: { name: repo.name },
-    });
-    return repo;
+    return this.repoSvc.registerRepository(raw, actor);
   }
 
-  /**
-   * WG-006: hide or un-hide a repo (by id or name). A hidden repo stays
-   * registered and keeps all its links/scope mappings, but is excluded by default
-   * from the dashboard surfaces (repo list, Factory Map unmapped repos, repo
-   * pickers) — it reappears once un-hidden via the "Hidden repos" page or CLI.
-   * Validates the repo exists; idempotent (setting the flag to its current value
-   * is a no-op write that still returns the repo and emits no spurious error).
-   */
+  /** WG-006: hide or un-hide a repo (by id or name). */
   setRepoHidden(repoRef: string, hidden: boolean, actor: Actor): Repository {
-    return inTransaction(this.db, () => {
-      const repo = this.repos.findById(repoRef) ?? this.repos.findByName(repoRef);
-      if (!repo) throw notFound("repository", repoRef);
-      const already = repo.hidden === 1;
-      if (already === hidden) {
-        // Idempotent: nothing to change. Return the repo unchanged, no event.
-        return repo;
-      }
-      const now = this.clock.now();
-      this.repos.setHidden(repo.id, hidden, now);
-      writeEvent(this.db, {
-        entity_type: "repository",
-        entity_id: repo.id,
-        actor,
-        event_type: hidden ? "repository.hidden" : "repository.unhidden",
-        payload: { name: repo.name },
-      });
-      return { ...repo, hidden: hidden ? 1 : 0, updated_at: now };
-    });
+    return this.repoSvc.setRepoHidden(repoRef, hidden, actor);
   }
 
   linkRepository(ticketId: string, repoName: string, role: string, actor: Actor): void {
-    return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(ticketId);
-      if (!ticket) throw notFound("ticket", ticketId);
-      const repo = this.repos.findByName(repoName) ?? this.repos.findById(repoName);
-      if (!repo) throw notFound("repository", repoName);
-      this.repos.linkTicket(ticket.id, repo.id, role, this.clock.now());
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: "ticket.repo_linked",
-        payload: { repo_id: repo.id, role },
-      });
-      // WG-001: if the repo is unmapped (no scope_repos rows), record an
-      // implicit_repo scope so the ticket's product/system scope is never empty
-      // just because the work targets a standalone single-repo. Mapped repos
-      // surface their scope via the graph and don't need this.
-      this.scope.recordImplicitRepoScopes(ticket.id, repo.id, actor);
-    });
+    return this.repoSvc.linkRepository(ticketId, repoName, role, actor);
   }
 
   // --- Ticket scope links (WG-001) -----------------------------------------
@@ -834,251 +749,25 @@ export class Dispatch {
 
   // --- Ticket↔repo access boundaries (WG-002) ------------------------------
 
-  /**
-   * Set (upsert) the explicit access boundary for a ticket↔repo link. Creates the
-   * link if absent. The `implicit_single_repo` relation is reserved for the
-   * mono_fallback path; callers must use {@link applyMonoFallback} for it.
-   */
   setTicketRepoAccess(raw: unknown, actor: Actor): TicketRepoAccessResult {
-    // P0 authz: setting a repo access boundary on the PUBLIC surface GRANTS write
-    // access on a ticket — a privilege escalation if an agent could grant itself
-    // write. Only a human/admin may set the boundary directly (the dashboard's
-    // API_ACTOR is human, the operator CLI runs as human; only an `agent`-type
-    // actor is refused). The trusted INTERNAL caller (createEpic, which seeds the
-    // initial repo link during agent-driven epic creation) goes through the
-    // unguarded {@link applyTicketRepoAccess} instead, so that legitimate factory
-    // flow is unaffected.
-    if (actor.type !== "human" && actor.type !== "admin") {
-      throw new DispatchError(
-        "ACTOR_NOT_PERMITTED",
-        "Only a human or admin may set a ticket's repo access boundary.",
-        { actor_type: actor.type },
-      );
-    }
-    return this.applyTicketRepoAccess(raw, actor);
+    return this.repoSvc.setTicketRepoAccess(raw, actor);
   }
 
-  /**
-   * Unguarded core of {@link setTicketRepoAccess}. Trusted internal callers (epic
-   * creation) use this to seed a repo link; the public method adds the human/admin
-   * actor-type guard before delegating here.
-   */
-  private applyTicketRepoAccess(raw: unknown, actor: Actor): TicketRepoAccessResult {
-    const input = setTicketRepoAccessInput.parse(raw);
-    if (input.relation === "implicit_single_repo") {
-      throw new DispatchError(
-        "VALIDATION_ERROR",
-        "The 'implicit_single_repo' relation is set via mono_fallback, not manually.",
-        { relation: input.relation },
-      );
-    }
-    return inTransaction(this.db, () => {
-      const ticket = this.resolveTicket(input.ticket_id);
-      const repo = this.repos.findById(input.repo_id) ?? this.repos.findByName(input.repo_id);
-      if (!repo) throw notFound("repository", input.repo_id);
-      const now = this.clock.now();
-      this.repos.upsertAccess(
-        {
-          ticketId: ticket.id,
-          repoId: repo.id,
-          access: input.access,
-          relation: input.relation,
-          source: input.source,
-          confidence: input.confidence ?? null,
-          reasons: input.reasons ? JSON.stringify(input.reasons) : null,
-        },
-        now,
-      );
-      const eventId = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: "ticket.repo_access_set",
-        payload: {
-          repo_id: repo.id,
-          access: input.access,
-          relation: input.relation,
-          source: input.source,
-        },
-      });
-      return {
-        ticketId: ticket.id,
-        repoId: repo.id,
-        access: input.access,
-        relation: input.relation,
-        eventId,
-      };
-    });
-  }
-
-  /**
-   * The ticket's execution boundary, partitioned by access (WG-002). Only ACTIVE
-   * relations (confirmed / implicit_single_repo) contribute to the write/read/test/
-   * denied buckets; `suggested` and `rejected` links are surfaced separately and
-   * never count as a write target. This is the accessor the runner/agent reads to
-   * learn where it may write.
-   */
   workPacketRepos(ticketRef: string): WorkPacketRepos {
-    const ticket = this.resolveTicket(ticketRef);
-    const links = this.repos.accessLinksForTicket(ticket.id);
-    const out: WorkPacketRepos = {
-      writeRepos: [],
-      readOnlyRepos: [],
-      testRepos: [],
-      deniedRepos: [],
-      suggestedRepos: [],
-      rejectedRepos: [],
-    };
-    for (const link of links) {
-      if (link.relation === "rejected") {
-        out.rejectedRepos.push(link);
-        continue;
-      }
-      if (link.relation === "suggested") {
-        out.suggestedRepos.push(link);
-        continue;
-      }
-      if (!isActiveTicketRepoRelation(link.relation)) {
-        // context_only or any non-active relation: treat as read-only context.
-        out.readOnlyRepos.push(link);
-        continue;
-      }
-      switch (link.access) {
-        case "write":
-          out.writeRepos.push(link);
-          break;
-        case "read":
-          out.readOnlyRepos.push(link);
-          break;
-        case "test":
-          out.testRepos.push(link);
-          break;
-        case "none":
-          out.deniedRepos.push(link);
-          break;
-      }
-    }
-    return out;
+    return this.repoSvc.workPacketRepos(ticketRef);
   }
 
-  /**
-   * Mono-fallback (WG-002): when a ticket's ONLY repo is unmapped (no scope-graph
-   * mapping), promote that single repo to a confirmed write boundary with
-   * source='mono_fallback' and relation='implicit_single_repo'. No-op (returns
-   * `applied:false`) when the ticket has zero or multiple repos, or its single
-   * repo is mapped into the graph. Idempotent.
-   */
   applyMonoFallback(
     ticketRef: string,
     actor: Actor,
   ): { applied: boolean; ticketId: string; repoId?: string; reason?: string } {
-    return inTransaction(this.db, () => {
-      const ticket = this.resolveTicket(ticketRef);
-      const links = this.repos.accessLinksForTicket(ticket.id);
-      if (links.length !== 1) {
-        return {
-          applied: false,
-          ticketId: ticket.id,
-          reason: `mono_fallback requires exactly one repo (found ${links.length}).`,
-        };
-      }
-      const only = links[0]!;
-      if (this.scopeRepos.scopesForRepo(only.id).length > 0) {
-        return {
-          applied: false,
-          ticketId: ticket.id,
-          reason: "the single repo is mapped into the scope graph; mono_fallback does not apply.",
-        };
-      }
-      const now = this.clock.now();
-      this.repos.upsertAccess(
-        {
-          ticketId: ticket.id,
-          repoId: only.id,
-          access: "write",
-          relation: "implicit_single_repo",
-          source: "mono_fallback",
-          confidence: null,
-          reasons: JSON.stringify(["single unmapped repo promoted to write via mono_fallback"]),
-        },
-        now,
-      );
-      const eventId = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: "ticket.repo_access_set",
-        payload: {
-          repo_id: only.id,
-          access: "write",
-          relation: "implicit_single_repo",
-          source: "mono_fallback",
-        },
-      });
-      return { applied: true, ticketId: ticket.id, repoId: only.id, eventId } as {
-        applied: boolean;
-        ticketId: string;
-        repoId?: string;
-      };
-    });
+    return this.repoSvc.applyMonoFallback(ticketRef, actor);
   }
 
   // --- Scope→repo suggestions (FG-005) -------------------------------------
 
-  /**
-   * Suggest likely repos for a ticket or a pre-create draft (FG-005). Advisory:
-   * the result carries access/confidence/reasons but NEVER writes ticket_repos —
-   * the caller confirms via setTicketRepoAccess (or applyMonoFallback for the
-   * single-unmapped-repo `monoFallback` suggestion).
-   *
-   * Two input shapes:
-   *  - `{ ticketId }` — resolves the ticket, derives its scope-node ids from the
-   *    confirmed/primary/secondary/implicit_repo scope links, uses its
-   *    title/description, and treats its existing ticket_repos as the selected
-   *    repos (so a lone unmapped repo yields the mono-fallback suggestion).
-   *  - `{ title?, description?, scopeNodeIds?, repoIds? }` — a pre-create draft.
-   */
-  suggestReposForTicket(raw: unknown, _actor: Actor): RepoSuggestion[] {
-    const input = suggestReposInput.parse(raw);
-
-    // Ticket form: a body carrying a ticket_id (id or number) is resolved into
-    // the by-fields form. We accept it through the same schema so the REST/MCP
-    // surface can pass `{ ticketId }`-style requests too.
-    const ticketRef =
-      (raw as { ticketId?: unknown; ticket_id?: unknown })?.ticketId ??
-      (raw as { ticket_id?: unknown })?.ticket_id;
-    if (typeof ticketRef === "string" && ticketRef.length > 0) {
-      return this.suggestForExistingTicket(ticketRef);
-    }
-
-    const fields: SuggestByFields = {
-      title: input.title,
-      description: input.description,
-      scopeNodeIds: input.scopeNodeIds,
-    };
-    return this.suggestions.suggest(fields, input.repoIds ?? []);
-  }
-
-  /** Derive the suggestion inputs from a live ticket and run the engine. */
-  private suggestForExistingTicket(ticketRef: string): RepoSuggestion[] {
-    const ticket = this.resolveTicket(ticketRef);
-    // Scope nodes the ticket is actually anchored to. We exclude 'rejected' and
-    // the synthetic 'implicit_repo' external_dependency nodes from the graph walk
-    // (the latter has no scope_repos), but keep primary/secondary/suggested.
-    const scopeNodeIds = this.ticketScopes
-      .listForTicket(ticket.id)
-      .filter((s) => s.relation !== "rejected" && s.relation !== "implicit_repo")
-      .map((s) => s.id);
-    // Repos already on the ticket — used for the mono-fallback detection.
-    const selectedRepoIds = this.repos.listForTicket(ticket.id).map((r) => r.id);
-    return this.suggestions.suggest(
-      {
-        title: ticket.title,
-        description: ticket.description,
-        scopeNodeIds,
-      },
-      selectedRepoIds,
-    );
+  suggestReposForTicket(raw: unknown, actor: Actor): RepoSuggestion[] {
+    return this.repoSvc.suggestReposForTicket(raw, actor);
   }
 
   /**

@@ -85,10 +85,50 @@ GAFFER_IMPL_MODEL_FLAG=""; [ -n "${GAFFER_IMPL_MODEL:-}" ] && GAFFER_IMPL_MODEL_
 # opus/sonnet DEFAULTS are the routing baseline, not an override, so they don't
 # suppress risk/attempt-aware routing (see GAFFER_*_MODEL_EXPLICIT above).
 : "${GAFFER_MODEL_REGISTRY:=$RUNNER_DIR/model-registry.json}"
-# Budget seam (H1 not built yet): GAFFER_BUDGET_REMAINING defaults to unlimited, so
-# the budget-aware downgrade never fires until H1 supplies a real feed AND an
-# operator sets GAFFER_BUDGET_LOW_THRESHOLD (>0). Both are documented follow-ups.
-: "${GAFFER_BUDGET_REMAINING:=}"
+# H1 cost/budget visibility knobs.
+# GAFFER_BUDGET_USD — operator spending ceiling in USD for the factory's total
+#   spend (summed from the usage-ledger). Unset or 0 = unlimited (the default).
+#   Example: GAFFER_BUDGET_USD=5.00 (stop routing to expensive models at $5).
+: "${GAFFER_BUDGET_USD:=}"
+export GAFFER_BUDGET_USD
+
+# GAFFER_BUDGET_REMAINING — live USD headroom. Recomputed here from the ledger
+# so the I1 router (gaffer_route_model) and Guard C (ask-on-cap) can read a
+# real figure instead of "unlimited". Empty = unlimited (GAFFER_BUDGET_USD unset
+# or ledger unreadable). Updated every time factory.config.sh is sourced (once
+# per tick at source-time in tick.sh / loop.sh).
+if [ -n "${GAFFER_BUDGET_USD:-}" ] && command -v node >/dev/null 2>&1 \
+   && [ -n "${GAFFER_USAGE_LEDGER:-}${GAFFER_DATA:-}" ]; then
+  _gaffer_budget_remaining="$(node - <<'__BUDGET_JS__' 2>/dev/null || true
+const fs = require('fs');
+const path = require('path');
+const ledger = process.env.GAFFER_USAGE_LEDGER ||
+  (process.env.GAFFER_DATA ? path.join(process.env.GAFFER_DATA, 'usage-ledger.jsonl') : '');
+if (!ledger) { process.stdout.write(''); process.exit(0); }
+let spend = 0;
+try {
+  const lines = fs.readFileSync(ledger, 'utf8').split('\n');
+  for (const ln of lines) {
+    const t = ln.trim(); if (!t) continue;
+    try {
+      const r = JSON.parse(t);
+      const c = r.total_cost_usd;
+      if (typeof c === 'number' && Number.isFinite(c) && c >= 0) spend += c;
+    } catch { /* skip malformed */ }
+  }
+} catch { /* missing ledger = 0 spend */ }
+const budget = parseFloat(process.env.GAFFER_BUDGET_USD || '0');
+if (budget <= 0) { process.stdout.write(''); process.exit(0); }
+const remaining = Math.max(0, budget - spend);
+process.stdout.write(remaining.toFixed(6));
+__BUDGET_JS__
+)"
+  : "${GAFFER_BUDGET_REMAINING:=$_gaffer_budget_remaining}"
+  unset _gaffer_budget_remaining
+else
+  # No budget configured or node unavailable → unlimited (the pre-H1 default).
+  : "${GAFFER_BUDGET_REMAINING:=}"
+fi
 : "${GAFFER_BUDGET_LOW_THRESHOLD:=0}"
 export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD
 

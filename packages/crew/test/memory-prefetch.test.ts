@@ -233,7 +233,10 @@ describe("idle lore_gap loop", () => {
       config,
       repoRegistry: RepoRegistry.fromConfig(config, "/"),
       dispatch: wg,
-      runner: { run: () => ({ stdout: "", stderr: "", exitCode: 0 }) },
+      runner: {
+        run: () => ({ stdout: "", stderr: "", exitCode: 0 }),
+        runArgs: () => ({ stdout: "", stderr: "", exitCode: 0 }),
+      },
       events: new EventLog(new TestClock()),
       clock: new TestClock(),
       memory,

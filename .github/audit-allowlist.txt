@@ -1,0 +1,24 @@
+# Accepted dependency advisories — audit allowlist
+#
+# Format: one GHSA advisory ID per line. Blank lines and lines starting with `#`
+# are ignored. Each entry MUST carry a comment explaining WHY it is accepted and,
+# where known, the condition that would let us drop it (a fixed version).
+#
+# This file is the ONLY escape hatch for the CI audit gate
+# (.github/scripts/audit-gate.sh). Any HIGH or CRITICAL advisory NOT listed here
+# fails the build. Keep this list as short as honesty allows — every entry is a
+# documented, deliberate acceptance, not a mute button.
+#
+# Review this list whenever dependencies are bumped; drop entries the moment the
+# advisory's patched version is reachable.
+
+# --- vitest / vite (dev-only test runner; not shipped in any published package) ---
+# Both advisories below come from the pinned `vitest@^2.1.0` dev dependency in
+# packages/{crew,dispatch,memory}. They are exploitable only against the Vitest
+# UI dev server / Vite dev server — neither of which we run in CI or ship to
+# users (vitest + vite are devDependencies; published `dist/` carries no vite).
+# The real fix is bumping vitest to >=3.2.6, a major upgrade across all three
+# suites that is out of scope for this hardening pass and tracked separately.
+# Drop both entries once vitest is on >=3.2.6 (which pulls vite >=6.4.3).
+GHSA-5xrq-8626-4rwp  # critical · vitest <3.2.6 · Vitest UI server arbitrary file read/exec
+GHSA-fx2h-pf6j-xcff  # high · vite <=6.4.2 · server.fs.deny bypass on Windows alternate paths

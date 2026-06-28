@@ -32,7 +32,12 @@ import { DispatchError } from "../util/errors.js";
  */
 
 /** A logical grouping for the settings panel's sections. */
-export type SettingGroup = "autonomy" | "idle-loops" | "budget" | "planning-debate";
+export type SettingGroup =
+  | "autonomy"
+  | "idle-loops"
+  | "budget"
+  | "planning-debate"
+  | "notifications";
 
 /** The value type a setting carries, so the UI renders the right control. */
 export type SettingType = "boolean" | "int" | "csv" | "string";
@@ -174,6 +179,54 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "planning-debate",
     label: "Debate min estimate",
     help: "Only debate plans whose estimate is at least this.",
+  },
+
+  // --- Notifications (H2): opt-in pings when the factory needs a human ---
+  // The factory runs unattended; these surface the human-gate transitions
+  // (review needed · ticket blocked/parked · decision pending) outside the
+  // dashboard. All default off → a no-op notifier with zero overhead. The
+  // dispatch facade reads these via src/notify/config.ts (NOTIFY_ENV).
+  {
+    key: "GAFFER_NOTIFY_WEBHOOK_URL",
+    type: "string",
+    group: "notifications",
+    label: "Webhook URL",
+    help: "POST each human-gate event as JSON to this URL (the generic integration).",
+  },
+  {
+    key: "GAFFER_NOTIFY_SLACK_URL",
+    type: "string",
+    group: "notifications",
+    label: "Slack webhook URL",
+    help: "Slack incoming-webhook URL — gates arrive as a Slack message.",
+  },
+  {
+    key: "GAFFER_NOTIFY_DESKTOP",
+    type: "boolean",
+    group: "notifications",
+    label: "Desktop notifications",
+    help: "Fire a native desktop banner (macOS/Linux) on each human gate.",
+  },
+  {
+    key: "GAFFER_NOTIFY_EVENTS",
+    type: "csv",
+    group: "notifications",
+    label: "Notify on events",
+    help:
+      "Comma-separated allow-list of gate kinds to notify on " +
+      "(review_needed · ticket_blocked · ticket_parked · decision_pending). " +
+      "Empty = all gates.",
+  },
+  {
+    key: "GAFFER_NOTIFY_REDACT",
+    type: "boolean",
+    group: "notifications",
+    label: "Redact webhook payload",
+    help:
+      "Send a minimal outbound body (kind · ticket number · status · dashboard URL) " +
+      "and drop the free-text ticket title/detail. Use when the webhook/Slack " +
+      "endpoint is outside your trust boundary — ticket text can be " +
+      "prompt-injection-influenced.",
   },
 ] as const;
 

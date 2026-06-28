@@ -14,10 +14,10 @@ export default defineConfig({
       reportsDirectory: "coverage",
       include: ["src/**/*.ts"],
       exclude: ["src/**/*.d.ts", "src/api/web/**"],
-      // TODO: ratchet these up once a real baseline is measured. Left
-      // unset (informational only) so `test:coverage` reports without
-      // failing CI on day one.
-      // thresholds: { lines: 70, functions: 70, branches: 70, statements: 70 },
+      // Coverage FLOOR (CI gate). Measured baseline clears these comfortably
+      // (lines ~82 / branches ~85 / functions ~95 / statements ~82), so the floor
+      // catches regressions without blocking today's suite. Ratchet up over time.
+      thresholds: { lines: 70, functions: 70, branches: 60, statements: 70 },
     },
   },
 });

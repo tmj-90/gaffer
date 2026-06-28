@@ -190,7 +190,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Container sandbox is a stub — worktree isolation plus `sandbox-exec` (macOS only, Apple-deprecated) is the current boundary; no per-subprocess network isolation
 - No REST RBAC (the API token is shared; no per-user or per-scope permissions)
 - Safety hook is tested on macOS; non-macOS behaviour is best-effort and untested
-- No third-party skill *marketplace* yet. The 66 bundled skills load automatically — the factory injects the whole library into every ticket's agent, and `gaffer skills install` adds them to your own Claude Code. Authoring a new skill is still just dropping a `SKILL.md` into `runner/skills/`.
+- No third-party skill *marketplace* yet. The 66 bundled skills are all mounted into the repo, but the factory injects only a **stack/area-relevant subset** per ticket — `tick.sh` calls `select-skills` to pick the skills matching the repo's stack (and any derived area), plus the always-on quality lenses. `gaffer skills install` adds the whole library to your own Claude Code. Authoring a new skill is still just dropping a `SKILL.md` into `runner/skills/`.
 
 ## Credits / Inspired by
 

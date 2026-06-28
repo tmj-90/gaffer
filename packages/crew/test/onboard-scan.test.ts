@@ -79,6 +79,47 @@ describe("scanRepoForOnboarding (manifest detection, no git)", () => {
     expect(scan.fingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("detects an Expo mobile stack so the mobile skill pack routes", () => {
+    writeFile(
+      dir,
+      "package.json",
+      JSON.stringify({
+        scripts: { start: "expo start" },
+        dependencies: { expo: "^51.0.0", react: "18.2.0", "react-native": "0.74.0" },
+      }),
+    );
+
+    const scan = scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false }));
+    // The compound label expands (split on "-") to include "expo" + "native", the
+    // tokens the mobile-ui pack is tagged with, while still carrying "react"/"typescript".
+    expect(scan.stack).toBe("typescript-react-native-expo");
+  });
+
+  it("detects a bare React Native stack (no Expo) as a mobile stack", () => {
+    writeFile(
+      dir,
+      "package.json",
+      JSON.stringify({
+        scripts: { test: "jest" },
+        dependencies: { react: "18.2.0", "react-native": "0.74.0" },
+      }),
+    );
+
+    const scan = scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false }));
+    expect(scan.stack).toBe("typescript-react-native");
+  });
+
+  it("keeps a plain React web app as typescript-react (not a mobile stack)", () => {
+    writeFile(
+      dir,
+      "package.json",
+      JSON.stringify({ scripts: { build: "vite build" }, dependencies: { react: "18.2.0" } }),
+    );
+
+    const scan = scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false }));
+    expect(scan.stack).toBe("typescript-react");
+  });
+
   it("folds Makefile targets into commands a stackless repo would otherwise lack", () => {
     // No recognised manifest → detectStack returns null and no commands; the
     // Makefile targets become the test/lint/build commands.

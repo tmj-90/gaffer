@@ -16,6 +16,16 @@ Run it two ways: as a **delivery skill** when a ticket asks for brand work (bran
 implement, evidence, submit like any other ticket), or as a **lore seed** when you want the
 brand to govern future work — `suggest_lore` it so every later ticket inherits it.
 
+This skill owns the *identity* (direction, palette, type pairing, voice). The **structural**
+layer it feeds into — the three-tier token architecture and component state specs — lives in
+the `design-system` pack; the *visual execution* of surfaces lives in `frontend-design`. Keep
+`SKILL.md` lean and load the craft depth on demand:
+
+| Topic | Reference |
+|-------|-----------|
+| Colour system (tiers, 60/30/10, `oklch` tokens, contrast) + typography (pairing, fluid scale) | `references/color-and-typography.md` |
+| Voice (spectrums, traits, do/don't), messaging hierarchy, consistency/approval checklist | `references/voice-and-messaging.md` |
+
 ## Steps
 
 1. **Consult and detect, in parallel.** Call `search_lore` (Memory MCP) for any existing
@@ -34,11 +44,14 @@ brand to govern future work — `suggest_lore` it so every later ticket inherits
    "clean minimal", never default to dark mode reflexively. Then define all of:
    - **Palette** as `oklch` design tokens — surface, text, accent, plus semantic roles
      (success/warning/danger) and at least one depth/surface tier. Color used semantically,
-     not one decorative accent on gray-on-white.
+     not one decorative accent on gray-on-white. (Tiers, 60/30/10, contrast →
+     `references/color-and-typography.md`.)
    - **Type pairing** — a deliberate display + text pairing with a stated rationale and a
-     fluid scale (`clamp()` tokens), not a default system stack used by accident.
+     fluid scale (`clamp()` tokens), not a default system stack used by accident. (Scale +
+     loading → `references/color-and-typography.md`.)
    - **Voice & positioning** — who it's for, the one-line promise, and 3–5 voice
-     attributes with a do/don't example each.
+     attributes with a do/don't example each. (Spectrums, traits, messaging hierarchy →
+     `references/voice-and-messaging.md`.)
    - **Anti-template checklist** — list which of the required qualities the brand delivers.
 4. **Write the artifacts.** Output a `BRAND.md` (direction + rationale, palette, type,
    voice, checklist) and, when the work is visual, a `tokens.css` sketch of the custom

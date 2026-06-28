@@ -19,8 +19,25 @@ gaffer_day_count() {
   echo 0
 }
 
-# Increment and persist today's tick count.
+# Increment and persist today's tick count. The read-modify-write below is NOT
+# atomic on its own, so under GAFFER_CONCURRENCY>1 two workers bumping at once
+# could both read the same count and clobber each other — LOSING a tick from the
+# denial-of-wallet ledger (the cap could then never advance). We serialise the
+# whole RMW under a dedicated lock when gaffer_with_lock is available (it is, via
+# factory.config.sh). At concurrency 1 there is no contention so the lock is taken
+# and released with no wait — behaviour is byte-identical to before.
 gaffer_bump_day_count() {
+  if declare -F gaffer_with_lock >/dev/null 2>&1; then
+    gaffer_with_lock "${GAFFER_DATA:-$(dirname "$DAILY_COUNTER_FILE")}/.daycount.lock" \
+      _gaffer_bump_day_count_unlocked
+  else
+    _gaffer_bump_day_count_unlocked
+  fi
+}
+
+# The raw read-modify-write, run while holding .daycount.lock (or directly when no
+# lock primitive is defined, e.g. a unit test sourcing budget.sh standalone).
+_gaffer_bump_day_count_unlocked() {
   local today c
   today="$(date +%Y-%m-%d)"
   c=$(( $(gaffer_day_count) + 1 ))

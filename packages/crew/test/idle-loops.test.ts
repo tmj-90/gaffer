@@ -363,6 +363,25 @@ describe("security-hotspot three-lens + adversarial verify (A4)", () => {
     ).toBe(true);
   });
 
+  it("FIX-5: does NOT refute a real eval co-located with a benign .exec on one line", () => {
+    // The `.exec(` refuter must be scoped to the matched construct: a line that
+    // ALSO contains a real `eval(`/`new Function(`/`execSync(` is a genuine
+    // code-execution sink and must still file, not be masked by the `.exec(`.
+    const cases = [
+      `db.exec(query); eval(userInput);`,
+      `const m = /x/.exec(s); const f = new Function(body);`,
+      `cache.exec(); execSync(userCmd);`,
+    ];
+    for (const line of cases) {
+      expect(
+        scanSecurityHotspots(line, "a.ts").some((f) => f.kind === "unsafe_api"),
+        `expected a finding for: ${line}`,
+      ).toBe(true);
+    }
+    // ...but a benign `.exec(` alone is still refuted (no regression).
+    expect(scanSecurityHotspots(`const m = /foo/.exec(input);`, "a.ts")).toHaveLength(0);
+  });
+
   it("the verify gate refutes a test-only disabled control", () => {
     expect(
       scanSecurityHotspots(

@@ -152,6 +152,12 @@ loops:
     mode: create_draft_tickets
     repos: []
     min_delivered_tickets: null
+  idle_type_quality:
+    enabled: false # type-debt scan (as casts / non-null ! / @ts-* / skipLibCheck); opt in per factory
+    trigger: when_queue_empty
+    mode: create_draft_tickets
+    repos: []
+    min_delivered_tickets: null
   idle_lore_gap:
     enabled: false # requires a real Memory; emits suggestions, never edits code
     trigger: when_queue_empty

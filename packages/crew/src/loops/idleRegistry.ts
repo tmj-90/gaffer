@@ -5,6 +5,7 @@ import { runIdleLoreGapLoop, type IdleLoreGapDeps } from "./idleLoreGap.js";
 import { runIdleFeatureBacklogLoop, type IdleFeatureBacklogDeps } from "./idleFeatureBacklog.js";
 import { runIdleSecurityHotspotLoop } from "./idleSecurityHotspot.js";
 import { runIdleTestQualityLoop } from "./idleTestQuality.js";
+import { runIdleTypeQualityLoop } from "./idleTypeQuality.js";
 import { SelfImproveGate } from "./selfImprove.js";
 import type { IdleScanOutcome } from "./idleScans.js";
 
@@ -29,6 +30,7 @@ export interface IdleLoopDefinition {
 export type IdleLoopId =
   | "coverage"
   | "test_quality"
+  | "type_quality"
   | "documentation"
   | "dependency_hygiene"
   | "security_hotspot"
@@ -75,6 +77,11 @@ export const IDLE_LOOPS: readonly IdleLoopDefinition[] = [
     id: "test_quality",
     enabled: (d) => d.config.loops.idle_test_quality.enabled,
     run: (d) => normalizeScan(runIdleTestQualityLoop(d)),
+  },
+  {
+    id: "type_quality",
+    enabled: (d) => d.config.loops.idle_type_quality.enabled,
+    run: (d) => normalizeScan(runIdleTypeQualityLoop(d)),
   },
   {
     id: "documentation",

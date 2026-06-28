@@ -72,10 +72,10 @@ export function countLoc(source: string): number {
 }
 
 /**
- * Parse a commit count from a `git log --pretty=%H -- <file> | wc -l` result.
- * `wc -l` yields a bare number; if the pipe is absent (or a test stubs raw
- * hashes) we fall back to counting non-blank lines. Returns 0 on any failure so
- * a churn lookup never throws.
+ * Parse a commit count from a `git log --pretty=%H -- <file>` result: one commit
+ * hash per line, so the count is the number of non-blank lines. A bare integer is
+ * also accepted (a legacy `| wc -l` shape or a test stub). Returns 0 on empty
+ * output so a churn lookup never throws.
  */
 export function parseCommitCount(stdout: string): number {
   const trimmed = stdout.trim();
@@ -85,13 +85,15 @@ export function parseCommitCount(stdout: string): number {
 }
 
 /**
- * Run `git log` (via the injected command runner — never raw child_process) to
- * count the commits that have touched `file`. The runner is the SAME injectable
- * `deps.runner` the coverage loop uses, so tests drive it through
- * `FakeCommandRunner` instead of spawning git.
+ * Run `git log` to count the commits that have touched `file`. Uses the injected
+ * runner's `runArgs` (no shell, explicit argv) — NOT a `run("git log … ${file}")`
+ * string — because `file` is an on-disk filename and therefore attacker-
+ * influenceable: a file named `$(touch PWNED).ts` interpolated into a shell
+ * string would execute. The `| wc -l` pipe is dropped; we count the returned
+ * commit-hash lines in JS instead.
  */
 function commitCount(deps: IdleLoopDeps, root: string, file: string): number {
-  const result = deps.runner.run(`git log --pretty=%H -- ${file} | wc -l`, root);
+  const result = deps.runner.runArgs("git", ["log", "--pretty=%H", "--", file], root);
   return parseCommitCount(result.stdout);
 }
 

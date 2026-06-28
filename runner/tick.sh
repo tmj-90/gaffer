@@ -860,6 +860,16 @@ EOF
       # lives only in the main checkout, and installs are hook-blocked. Symlink the real
       # repo's node_modules in so `pnpm test`/`build` resolve. No-op for non-JS repos.
       [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
+      # Workspaces (pnpm/yarn/npm monorepos) keep test/build binaries in PER-PACKAGE
+      # node_modules/.bin, not the root — so also symlink each sub-package's node_modules,
+      # or `vitest`/`tsc` are unresolvable in the worktree and the DoD gate fails to RUN
+      # (every workspace delivery would die with "vitest: command not found" → rc=1).
+      while IFS= read -r _nm; do
+        _rel="${_nm#"$rpath"/}"
+        [ "$_rel" = "node_modules" ] && continue
+        [ -e "$rwt/$_rel" ] && continue
+        mkdir -p "$(dirname "$rwt/$_rel")" 2>/dev/null && ln -sfn "$_nm" "$rwt/$_rel"
+      done < <(find "$rpath" -maxdepth 3 -name node_modules -type d 2>/dev/null)
     else
       log "FAIL: could not add worktree $rwt on $WORK_BRANCH (base $rbase) for write repo ${rname:-repo} ($rpath) for #$NUM"
       WT_FAILED=1
@@ -1009,6 +1019,16 @@ EOF
         git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1 || true
       fi
       [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
+      # Workspaces (pnpm/yarn/npm monorepos) keep test/build binaries in PER-PACKAGE
+      # node_modules/.bin, not the root — so also symlink each sub-package's node_modules,
+      # or `vitest`/`tsc` are unresolvable in the worktree and the DoD gate fails to RUN
+      # (every workspace delivery would die with "vitest: command not found" → rc=1).
+      while IFS= read -r _nm; do
+        _rel="${_nm#"$rpath"/}"
+        [ "$_rel" = "node_modules" ] && continue
+        [ -e "$rwt/$_rel" ] && continue
+        mkdir -p "$(dirname "$rwt/$_rel")" 2>/dev/null && ln -sfn "$_nm" "$rwt/$_rel"
+      done < <(find "$rpath" -maxdepth 3 -name node_modules -type d 2>/dev/null)
     done <<< "$WT_ROWS"
   fi
   # USAGE LEDGER: switch to --output-format json and CAPTURE stdout (the JSON

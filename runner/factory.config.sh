@@ -148,6 +148,87 @@ gaffer_timeout_preflight() {
   return 127
 }
 
+# --- Portable file lock (A-1 parallel execution) -----------------------------
+# Serialise a critical section across concurrent worker.sh processes. Mirrors the
+# gaffer_timeout shim's discipline: prefer the best primitive, fall back portably,
+# NEVER skip the lock silently. macOS ships NO `flock`, so the universal fallback
+# is an atomic `mkdir` spinlock — `mkdir` is an atomic create-or-fail syscall on
+# every POSIX filesystem, so exactly one racer creates the lock dir and the rest
+# spin until it's released. A stale lock (a worker killed mid-section) is reaped
+# by age so the factory can never wedge on a dead holder's lock.
+#
+# Usage: gaffer_with_lock <lockfile> <command> [args...]
+#   The command runs while the caller holds an EXCLUSIVE lock keyed on <lockfile>.
+#   Returns the command's own exit status (so callers see real failures), or 1 if
+#   the lock could not be acquired within the bound.
+: "${GAFFER_LOCK_TIMEOUT:=30}"     # max seconds to wait for a contended lock
+: "${GAFFER_LOCK_STALE:=120}"      # mkdir-lock older than this is treated as stale
+
+# True iff flock(1) is present AND bash supports dynamic fds ({fd}>>, bash >=4.1).
+# Both are required for the flock path; otherwise the portable mkdir path is used.
+_gaffer_can_flock() {
+  command -v flock >/dev/null 2>&1 || return 1
+  local maj="${BASH_VERSINFO[0]:-0}" min="${BASH_VERSINFO[1]:-0}"
+  [ "$maj" -gt 4 ] 2>/dev/null && return 0
+  [ "$maj" -eq 4 ] 2>/dev/null && [ "$min" -ge 1 ] 2>/dev/null && return 0
+  return 1
+}
+gaffer_with_lock() {
+  local lockfile="$1"; shift
+  [ -n "$lockfile" ] || { "$@"; return $?; }
+  # Prefer flock(1) ONLY when both flock and bash's dynamic-fd syntax ({fd}>>) are
+  # available — i.e. flock present AND bash >= 4.1. macOS ships bash 3.2 with no
+  # flock, so it always takes the portable mkdir path below; a Linux/CI box has
+  # flock + bash 4+. This guard keeps the {fd}>> form from ever being parsed on an
+  # interpreter that can't handle it.
+  if _gaffer_can_flock; then
+    # flock(1) (Linux/CI): hold an exclusive lock on a dedicated fd, run the
+    # command, release on close. -w bounds the wait so a wedged holder can't hang
+    # the worker forever. Exit 1 specifically signals "couldn't acquire".
+    local fd
+    exec {fd}>>"$lockfile" 2>/dev/null || { "$@"; return $?; }
+    if flock -w "$GAFFER_LOCK_TIMEOUT" "$fd"; then
+      "$@"; local rc=$?
+      flock -u "$fd"; eval "exec $fd>&-"
+      return $rc
+    fi
+    eval "exec $fd>&-"
+    echo "gaffer_with_lock: could not acquire $lockfile within ${GAFFER_LOCK_TIMEOUT}s" >&2
+    return 1
+  fi
+  # Portable fallback: atomic mkdir spinlock (the macOS path — no flock there).
+  local lockdir="${lockfile}.d"
+  local waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    # Reap a stale lock left by a killed holder (older than GAFFER_LOCK_STALE).
+    local age
+    age="$(_gaffer_lock_age "$lockdir")"
+    if [ "${age:-0}" -ge "$GAFFER_LOCK_STALE" ] 2>/dev/null; then
+      rm -rf "$lockdir" 2>/dev/null || true
+      continue
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+    if [ "$waited" -ge "$((GAFFER_LOCK_TIMEOUT * 10))" ]; then
+      echo "gaffer_with_lock: could not acquire $lockdir within ${GAFFER_LOCK_TIMEOUT}s" >&2
+      return 1
+    fi
+  done
+  # Hold the lock for the duration of the command; always release, even on failure.
+  "$@"; local rc=$?
+  rmdir "$lockdir" 2>/dev/null || rm -rf "$lockdir" 2>/dev/null || true
+  return $rc
+}
+
+# Seconds since a lock dir was created (its mtime). Portable across GNU/BSD stat.
+_gaffer_lock_age() {
+  local d="$1" mtime now
+  mtime="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo "")"
+  [ -n "$mtime" ] || { echo 0; return 0; }
+  now="$(date +%s)"
+  echo $((now - mtime))
+}
+
 # --- Agent child-env scrub (C1/M2) -------------------------------------------
 # The live `claude -p` launches (delivery, bootstrap, agent-review, clarify) run
 # in a subshell that, by default, INHERITS the full parent environment. That env
@@ -330,6 +411,30 @@ gaffer_is_self_target() {
 : "${MAX_TICKS_PER_DAY:=50}"
 : "${DAILY_COUNTER_FILE:=$GAFFER_DATA/.daily-ticks}"
 
+# --- Parallel ticket execution (A-1) -----------------------------------------
+# How many worker processes deliver tickets at once. The DEFAULT of 1 is a hard
+# requirement: at 1 the loop runs the exact single-tick path it always has —
+# byte-identical behaviour, fully backward-compatible — and ONLY branches into a
+# worker pool when an operator opts into N>1. Parallelism is safe because each
+# ticket is claimed atomically (a partial unique index → exactly one winner under
+# a race), dependency-gated transactionally, and delivered in its own
+# deterministic per-ticket worktree on its own branch; the genuinely shared
+# mutable state (day-cap counter, usage ledger, skip-file, log) is serialised with
+# gaffer_with_lock (below).
+: "${GAFFER_CONCURRENCY:=1}"
+# Per-repo concurrency cap: never have more than this many tickets in flight for a
+# single repo at once (avoids a merge stampede / cross-ticket churn on one repo).
+# Enforced via the existing backpressure system (lib/backpressure.sh counts active
+# in-flight tickets per repo). MAX_CONCURRENT_TICKETS_PER_REPO is also the
+# backpressure "claims" cap, so the two stay consistent by construction.
+: "${MAX_CONCURRENT_TICKETS_PER_REPO:=1}"
+# Upper bound on how many ready candidates a single tick scans before giving up
+# and yielding no_work. Bounds the per-tick candidate walk (each candidate costs a
+# `ticket show` + pressure probe) so a large ready queue can't make every tick do
+# O(queue) work. 0 = unlimited (scan the whole ready list, the pre-A-1 behaviour).
+: "${MAX_CANDIDATES:=25}"
+export GAFFER_CONCURRENCY MAX_CONCURRENT_TICKETS_PER_REPO MAX_CANDIDATES
+
 # --- Honest USAGE LEDGER (per agent invocation) ------------------------------
 # Every headless `claude -p` call is switched to `--output-format json` and its
 # real usage (tokens verbatim, dollars RELAYED from Claude Code's own
@@ -350,11 +455,24 @@ export GAFFER_USAGE_LEDGER
 # human-readable log) and appends one ledger record. Fully swallowed: a missing
 # module / node error must never affect the tick (we still emit nothing and
 # return 0). Stdout of this function is the agent's text only.
+#
+# A-1 (parallel execution): the ledger is a SHARED append-only JSONL file. Under
+# GAFFER_CONCURRENCY>1 several workers record usage concurrently; a record can
+# exceed the OS atomic-append size (PIPE_BUF), so two appends could interleave and
+# corrupt a line. We serialise the whole record call under .ledger.lock when
+# gaffer_with_lock is defined (always, via this file). gaffer_with_lock runs the
+# command in-process with inherited stdout, so the agent's `.result` passthrough is
+# preserved. At concurrency 1 the lock is uncontended → behaviour is unchanged.
 gaffer_usage_record() {
   local kind="$1" ticket="${2:-}" rc="${3:-0}" jsonfile="$4"
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs"
   [ -f "$mod" ] || return 0
-  node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+  if declare -F gaffer_with_lock >/dev/null 2>&1; then
+    gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+  else
+    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+  fi
 }
 
 # Who reviews in_review tickets before they can be approved to done:
@@ -543,6 +661,11 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # Per-repo backpressure (defines gaffer_repo_pressure / gaffer_repo_in_backpressure).
 # shellcheck source=lib/backpressure.sh
 [ -f "$RUNNER_DIR/lib/backpressure.sh" ] && source "$RUNNER_DIR/lib/backpressure.sh"
+
+# Orphaned-worktree recovery (defines gaffer_cleanup_orphaned_worktrees) — sweeps
+# stale per-ticket worktrees left by killed workers (A-1 parallel execution).
+# shellcheck source=lib/orphan-recovery.sh
+[ -f "$RUNNER_DIR/lib/orphan-recovery.sh" ] && source "$RUNNER_DIR/lib/orphan-recovery.sh"
 
 # Dashboard process tracking (defines gaffer_dashboard_pid / _pidfile / _write_pid):
 # precise running-detection via a recorded+validated PID instead of a broad pgrep.

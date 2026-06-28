@@ -10,7 +10,38 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/factory.config.sh"
 mkdir -p "$GAFFER_DATA"
 
-log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" | tee -a "$GAFFER_LOG" >&2; }
+# A-1 (parallel execution): the factory log, the per-run skip-file, and the
+# usage ledger are SHARED mutable state. Under GAFFER_CONCURRENCY>1 multiple
+# worker.sh processes run tick.sh at once and would interleave their appends. We
+# serialise each append under a dedicated portable lock (gaffer_with_lock, from
+# factory.config.sh — flock where present, atomic mkdir spinlock on macOS). At
+# concurrency 1 there is exactly one writer so every lock is uncontended: it is
+# acquired and released with no wait, leaving behaviour byte-identical to before.
+#
+# _gaffer_locked <lockname> -- <cmd...> runs <cmd> while holding $GAFFER_DATA/<lockname>.
+# If gaffer_with_lock isn't defined (it always is via factory.config.sh; this is
+# pure defence), the command runs unlocked exactly as it did before.
+_gaffer_locked() {
+  local lockname="$1"; shift
+  if declare -F gaffer_with_lock >/dev/null 2>&1; then
+    gaffer_with_lock "$GAFFER_DATA/$lockname" "$@"
+  else
+    "$@"
+  fi
+}
+_gaffer_log_line() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" | tee -a "$GAFFER_LOG" >&2; }
+log() { _gaffer_locked .log.lock _gaffer_log_line "$*"; }
+# Append a ticket number to the per-run skip-file under .skip.lock so concurrent
+# workers never lose or corrupt an entry (the skip-file stops one bad ticket
+# starving the queue; a lost entry would let it be re-claimed forever).
+gaffer_skip_ticket() { _gaffer_locked .skip.lock _gaffer_skip_ticket_unlocked "$1"; }
+_gaffer_skip_ticket_unlocked() { echo "$1" >> "$SKIP_FILE"; }
+# Generic locked single-line append: _gaffer_append_line <file> <line>. Used for
+# the per-run reviewed/clarified marker files (same .skip.lock domain — they're
+# all per-run bookkeeping appends).
+_gaffer_append_line() { echo "$2" >> "$1"; }
+# Locked backpressure-report append: _gaffer_bp_record <file> <repo> <triple> <reason>.
+_gaffer_bp_record() { printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$1"; }
 result() { echo "TICK_RESULT=$1"; }
 # gaffer_quarantine + QUARANTINE_NOTICE are provided by lib/quarantine.sh (sourced
 # via factory.config.sh) — they wrap UNTRUSTED ticket-derived fields (title,
@@ -53,11 +84,27 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # per-run file (cleared by loop.sh) for the run-summary report. With every ready
   # repo backpressured, the tick yields no_work and the loop prioritises
   # review/merge/cleanup elsewhere instead of claiming more.
+  #
+  # A-1: under GAFFER_CONCURRENCY>1 this is best-effort, last-writer-wins
+  # telemetry (each tick records ITS snapshot of backpressured repos). The append
+  # below is taken under .bp.lock so a concurrent worker never tears a half-written
+  # line; the per-tick truncate is a single atomic syscall. At concurrency 1 there
+  # is one writer so this is byte-identical to before.
   BP_FILE="$GAFFER_DATA/.backpressure-repos"; : > "$BP_FILE"
   NUM=""; SHOW=""; REPO_PATH=""; STACK=""; TITLE=""
   CANDIDATES="$(echo "$READY_JSON" | python3 -c "import sys,json; skip=set(open('$SKIP_FILE').read().split()); print('\n'.join(str(t['number']) for t in json.load(sys.stdin) if str(t['number']) not in skip))")"
+  # A-1: bound the candidate scan. Each candidate costs a `ticket show` + pressure
+  # probe; with a per-repo cap (MAX_CONCURRENT_TICKETS_PER_REPO) in force, a tick
+  # may legitimately skip several capped repos before finding a free one, so the
+  # walk must be allowed to continue PAST a skip — but never past MAX_CANDIDATES.
+  _cand_seen=0
   while IFS= read -r _cand; do
     [ -n "$_cand" ] || continue
+    _cand_seen=$((_cand_seen + 1))
+    if [ "${MAX_CANDIDATES:-0}" -gt 0 ] 2>/dev/null && [ "$_cand_seen" -gt "$MAX_CANDIDATES" ]; then
+      log "candidate scan hit MAX_CANDIDATES=$MAX_CANDIDATES without a claimable ticket — yielding"
+      break
+    fi
     _cshow="$(wg ticket show "$_cand" 2>/dev/null)"
     _crepo="$(echo "$_cshow" | jget "(d['repositories'][0]['local_path'] if d['repositories'] else '') or ''" 2>/dev/null)"
     _cdef="$(echo "$_cshow" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'" 2>/dev/null)"
@@ -68,7 +115,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       gaffer_sweep_abandoned_branches "$_crepo" "${_cdef:-main}" >/dev/null 2>&1 || true
       read -r _pb _pr _pc <<< "$(gaffer_repo_pressure "$_crepo" "${_cdef:-main}" "$_cname")"
       if gaffer_repo_in_backpressure "${_pb:-0}" "${_pr:-0}" "${_pc:-0}"; then
-        printf '%s\t%s\t%s\n' "${_cname:-$_crepo}" "$_pb/$_pr/$_pc" "$GAFFER_BACKPRESSURE_REASON" >> "$BP_FILE"
+        _gaffer_locked .bp.lock _gaffer_bp_record "$BP_FILE" "${_cname:-$_crepo}" "$_pb/$_pr/$_pc" "$GAFFER_BACKPRESSURE_REASON"
         log "BACKPRESSURE: skipping ready #$_cand — repo '${_cname:-$_crepo}' at/over cap ($GAFFER_BACKPRESSURE_REASON)"
         continue
       fi
@@ -102,12 +149,12 @@ if [ "$READY_COUNT" -gt 0 ]; then
     B_NAME="$(gaffer_bootstrap_repo_name "$SHOW")"
     if [ -z "$B_NAME" ]; then
       log "BOOTSTRAP: #$NUM is marked bootstrap but no target repo name could be derived — leaving for a human"
-      echo "$NUM" >> "$SKIP_FILE"; result error; exit 0
+      gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
     B_DIR="$(gaffer_bootstrap_repo_dir "$B_NAME")" || B_DIR=""
     if [ -z "$B_DIR" ]; then
       log "BOOTSTRAP: #$NUM target repo name '$B_NAME' is unsafe (path traversal) — refusing"
-      echo "$NUM" >> "$SKIP_FILE"; result error; exit 0
+      gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
     # SELF-OPERATION BAN (greenfield): a bootstrap target that would land IN a
     # Gaffer component must be refused too — same override, same set-aside.
@@ -118,7 +165,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # Same set-aside as the delivery path: un-ready (ready -> draft) so the loop
       # won't re-select it; the bootstrap ticket isn't claimed at this point either.
       wg ticket move "$NUM" draft >/dev/null 2>&1 || true
-      echo "$NUM" >> "$SKIP_FILE"
+      gaffer_skip_ticket "$NUM"
       log "SELF-OP: set aside bootstrap #$NUM for a human (un-readied ready→draft + skipped this run)"
       result no_work; exit 0
     fi
@@ -126,7 +173,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       log "BOOTSTRAP: #$NUM refused — $B_REFUSE"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "BOOTSTRAP REFUSED: $B_REFUSE" >/dev/null 2>&1 || true
-      echo "$NUM" >> "$SKIP_FILE"; result error; exit 0
+      gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
     log "ready=$READY_COUNT → BOOTSTRAP #$NUM ('$TITLE') → create new repo '$B_NAME' at $B_DIR [stack=$STACK]"
 
@@ -148,7 +195,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Create + init the new repo dir. A failure here leaves no half-made repo.
     if ! gaffer_bootstrap_init "$B_DIR"; then
       log "BOOTSTRAP: #$NUM could not mkdir/git-init $B_DIR — failing"
-      echo "$NUM" >> "$SKIP_FILE"; result error; exit 0
+      gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
 
     # Install the project-local config (skills, settings+hook, CLAUDE brief, MCP)
@@ -216,7 +263,7 @@ EOF
     rm -f "$B_USAGE_JSON"
     log "bootstrap delivery for #$NUM finished (rc=$brc)"
     if [ "$brc" -ne 0 ]; then
-      echo "$NUM" >> "$SKIP_FILE"
+      gaffer_skip_ticket "$NUM"
       log "BOOTSTRAP FAILED for #$NUM (rc=$brc) — leaving $B_DIR for inspection; not onboarding"
       result error; exit 0
     fi
@@ -228,7 +275,7 @@ EOF
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED: bootstrap produced no initial commit — needs clarification" >/dev/null 2>&1 || true
       wg block "$NUM" --reason "bootstrap produced no initial commit" >/dev/null 2>&1 || true
-      echo "$NUM" >> "$SKIP_FILE"; result error; exit 0
+      gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
 
     # ── Hygiene gate (HARD FAIL) — same assertions as normal delivery, run on the
@@ -245,7 +292,7 @@ EOF
         wg attach-evidence "$NUM" --type manual_note \
           --summary "PARKED: bootstrap hygiene violation (not onboarded):"$'\n'"$B_HYGIENE" >/dev/null 2>&1 || true
         wg block "$NUM" --reason "bootstrap hygiene: $(printf '%s' "$B_HYGIENE" | tr '\n' ' ')" >/dev/null 2>&1 || true
-        echo "$NUM" >> "$SKIP_FILE"
+        gaffer_skip_ticket "$NUM"
         log "BOOTSTRAP FAILED for #$NUM — hygiene violation; not onboarding"
         result error; exit 0
       else
@@ -278,7 +325,7 @@ print(hits[0] if hits else '')
         wg attach-evidence "$NUM" --type manual_note \
           --summary "PARKED: bootstrap minimalism — missing smallest-change note (${_BMZ_FILES} files / ${_BMZ_LINES} lines)" >/dev/null 2>&1 || true
         wg block "$NUM" --reason "bootstrap minimalism: missing smallest-change note" >/dev/null 2>&1 || true
-        echo "$NUM" >> "$SKIP_FILE"; result error; exit 0
+        gaffer_skip_ticket "$NUM"; result error; exit 0
       else
         log "MINIMALISM_ENFORCE=0 — #$NUM bootstrap missing smallest-change note, flagging not failing"
         wg attach-evidence "$NUM" --type manual_note \
@@ -454,7 +501,7 @@ print("\n".join(write_rows))
       # forever" mechanism the board already provides. SKIP_FILE is belt-and-braces
       # within the current run (loop.sh clears it per run).
       wg ticket move "$NUM" draft >/dev/null 2>&1 || true
-      echo "$NUM" >> "$SKIP_FILE"
+      gaffer_skip_ticket "$NUM"
       log "SELF-OP: set aside #$NUM for a human (un-readied ready→draft + skipped this run; not delivered, not re-claimed)"
       result no_work; exit 0
     fi
@@ -706,7 +753,7 @@ EOF
   if [ "$WT_FAILED" = "1" ]; then
     # Roll back anything partially created so a failed setup leaves no residue.
     gaffer_cleanup_worktrees drop-branch
-    echo "$NUM" >> "$SKIP_FILE"
+    gaffer_skip_ticket "$NUM"
     log "delivery FAILED for #$NUM — a write repo could not be worktree'd; not running the agent"
     result error; exit 0
   fi
@@ -814,7 +861,7 @@ EOF
   # the real repo 100% clean (no orphan worktree, no half-finished branch).
   if [ "$rc" -ne 0 ]; then
     gaffer_cleanup_worktrees drop-branch
-    echo "$NUM" >> "$SKIP_FILE"
+    gaffer_skip_ticket "$NUM"
     log "delivery FAILED for #$NUM (rc=$rc) — removed worktrees + branch $WORK_BRANCH; skipping it for the rest of this run"
     result error; exit 0
   fi
@@ -834,13 +881,13 @@ EOF
     case "$HEAD_BRANCH" in
       "$rbase"|"")
         gaffer_cleanup_worktrees drop-branch
-        echo "$NUM" >> "$SKIP_FILE"
+        gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD is '$HEAD_BRANCH' (expected a gaffer/ branch, not the default '$rbase'); removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;
       gaffer/*) : ;;  # on the runner-owned branch as expected
       *)
         gaffer_cleanup_worktrees drop-branch
-        echo "$NUM" >> "$SKIP_FILE"
+        gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD '$HEAD_BRANCH' is not a gaffer/ branch; removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;
     esac
@@ -897,7 +944,7 @@ EOF
         && log "EMPTY: blocked #$NUM (status '$_CUR_STATUS')" || true
     fi
     gaffer_cleanup_worktrees drop-branch
-    echo "$NUM" >> "$SKIP_FILE"
+    gaffer_skip_ticket "$NUM"
     log "delivery PARKED for #$NUM — empty; removed worktrees + branch $WORK_BRANCH"
     result error; exit 0
   fi
@@ -939,7 +986,7 @@ EOF
           || log "HYGIENE: could not park #$NUM (non-fatal); status was '$_CUR_STATUS'"
       fi
       gaffer_cleanup_worktrees drop-branch
-      echo "$NUM" >> "$SKIP_FILE"
+      gaffer_skip_ticket "$NUM"
       log "delivery FAILED for #$NUM — hygiene violation; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
       result error; exit 0
     else
@@ -999,7 +1046,7 @@ print(hits[0] if hits else '')
               && log "MINIMALISM: blocked #$NUM (status '$_CUR_STATUS')" || true
           fi
           gaffer_cleanup_worktrees drop-branch
-          echo "$NUM" >> "$SKIP_FILE"
+          gaffer_skip_ticket "$NUM"
           log "delivery FAILED for #$NUM — missing smallest-change note; parked, removed worktrees + branch"
           result error; exit 0
         else
@@ -1113,7 +1160,7 @@ print(hits[0] if hits else '')
     if [ "${HYGIENE_ENFORCE:-1}" = "1" ]; then
       wg attach-evidence "$NUM" --type manual_note \
         --summary "POST-TEARDOWN LEAK: real repo not clean after delivery:"$'\n'"$REPO_DIRTY" >/dev/null 2>&1 || true
-      echo "$NUM" >> "$SKIP_FILE"
+      gaffer_skip_ticket "$NUM"
       log "delivery FLAGGED for #$NUM — teardown left unmanaged artifacts in a real repo (see note)"
       result error; exit 0
     else
@@ -1193,7 +1240,7 @@ EOF
       # reviewer records a verdict via MCP evidence, it does not approve). Mark it
       # reviewed-this-run so we don't re-review it in a loop, then leave it for a
       # human to cross the final gate.
-      [ "$NEWSTATUS" = "in_review" ] && echo "$RNUM" >> "$REVIEWED_FILE"
+      [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
       log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS) — ADVISORY verdict recorded; awaiting HUMAN approval"
       # A MERGE REQUIRES A HUMAN APPROVAL. An agent review NEVER auto-merges by
       # default: the branch is left in_review for a human to approve (the dashboard
@@ -1277,7 +1324,7 @@ EOF
       crc=$?
       gaffer_usage_record clarify "$CNUM" "$crc" "$C_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       rm -f "$C_USAGE_JSON"
-      echo "$CNUM" >> "$CLARIFIED_FILE"
+      _gaffer_locked .skip.lock _gaffer_append_line "$CLARIFIED_FILE" "$CNUM"
       log "clarify pass for draft #$CNUM finished (rc=$crc)"
       result clarified; exit 0
     fi

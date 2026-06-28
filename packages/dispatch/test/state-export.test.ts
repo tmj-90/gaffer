@@ -262,4 +262,44 @@ describe("dispatch state export", () => {
       src.view(seed.reviewedTicketId).ticket.title,
     );
   });
+
+  it("EXPORT_TABLES covers every durable table in a freshly-migrated DB (drift guard)", () => {
+    // FIX-7: EXPORT_TABLES is hand-maintained. A future migration that adds a
+    // durable table must consciously be included in the export (or excluded here).
+    // Introspect the LIVE schema and assert EXPORT_TABLES ∪ the explicitly-excluded
+    // internal tables exactly equals the live set — so silent drift fails the test.
+    const db = openDatabase(":memory:");
+    const liveTables = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .all() as Array<{ name: string }>
+    ).map((r) => r.name);
+
+    // Tables deliberately NOT round-tripped by the bundle, named explicitly so a
+    // reviewer must justify every exclusion:
+    //   - schema_meta: pure metadata, captured by the bundle's top-level
+    //     schema_version and re-stamped by migrate() on import.
+    const INTENTIONALLY_EXCLUDED = ["schema_meta"];
+
+    const covered = new Set<string>([...EXPORT_TABLES, ...INTENTIONALLY_EXCLUDED]);
+
+    // Every live table is either exported or explicitly excluded.
+    const uncovered = liveTables.filter((t) => !covered.has(t));
+    expect(
+      uncovered,
+      `Durable table(s) ${JSON.stringify(uncovered)} are neither in EXPORT_TABLES nor ` +
+        "explicitly excluded. A migration added a table — include it in EXPORT_TABLES " +
+        "(stateExport.ts) or add it to INTENTIONALLY_EXCLUDED with a reason.",
+    ).toEqual([]);
+
+    // And nothing we claim to cover has vanished from the schema (stale entry).
+    const live = new Set(liveTables);
+    const stale = [...covered].filter((t) => !live.has(t));
+    expect(
+      stale,
+      `EXPORT_TABLES/excluded references table(s) that no longer exist: ${stale}`,
+    ).toEqual([]);
+  });
 });

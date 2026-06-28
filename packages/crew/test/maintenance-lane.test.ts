@@ -1,11 +1,19 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import {
   chooseMaintenanceLane,
+  commitMaintenanceChoice,
   emptyCursor,
   loadCursor,
   saveCursor,
@@ -218,5 +226,67 @@ describe("maintenance-lane cursor persistence", () => {
     const corruptPath = join(mkdtempSync(join(tmpdir(), "maint-corrupt-")), "c.json");
     writeFileSync(corruptPath, "{ not json", "utf8");
     expect(loadCursor(corruptPath)).toEqual(emptyCursor());
+  });
+
+  it("saveCursor is atomic — no .tmp file is left behind and the target is whole", () => {
+    const path = tmpCursorPath();
+    saveCursor(path, { tick: 3, lastRunTick: { coverage: 2 }, lastChosen: "coverage" });
+    // The write went via a temp file that is renamed over the target; afterwards
+    // no temp artefact remains in the directory.
+    const leftovers = readdirSync(dirname(path)).filter((f) => f.includes(".tmp."));
+    expect(leftovers).toEqual([]);
+    // The target is complete, valid JSON (never a torn half-write).
+    const onDisk = JSON.parse(readFileSync(path, "utf8")) as MaintenanceCursor;
+    expect(onDisk).toEqual({ tick: 3, lastRunTick: { coverage: 2 }, lastChosen: "coverage" });
+  });
+});
+
+describe("maintenance-lane commit (FIX-4) — atomic select+save under a lock", () => {
+  function tmpCursorPath(): string {
+    return join(mkdtempSync(join(tmpdir(), "maint-commit-")), "cursor.json");
+  }
+
+  it("persists the chosen lane and advances the cursor (compare-and-swap)", () => {
+    const path = tmpCursorPath();
+    const config = withLanes(baseConfig(), ["security_hotspot", "documentation"]);
+
+    const first = commitMaintenanceChoice(config, path);
+    expect(first.lane).toBe("security_hotspot");
+    // The returned nextCursor is already on disk — a fresh load continues it.
+    const reloaded = loadCursor(path);
+    expect(reloaded.tick).toBe(1);
+    expect(reloaded.lastChosen).toBe("security_hotspot");
+
+    // A second commit re-reads the persisted cursor and rotates to the next lane.
+    const second = commitMaintenanceChoice(config, path);
+    expect(second.lane).toBe("documentation");
+    expect(loadCursor(path).tick).toBe(2);
+  });
+
+  it("does not double-pick a lane across sequential commits (no concurrent skew)", () => {
+    const path = tmpCursorPath();
+    const config = withLanes(baseConfig(), [...MAINTENANCE_LANES]);
+    const picks: string[] = [];
+    for (let i = 0; i < MAINTENANCE_LANES.length; i++) {
+      picks.push(commitMaintenanceChoice(config, path).lane!);
+    }
+    // Each commit reads the latest committed cursor, so the first full sweep
+    // visits every enabled lane exactly once — no lane is selected twice.
+    expect(new Set(picks).size).toBe(MAINTENANCE_LANES.length);
+  });
+
+  it("recovers when a STALE lock is left behind (crashed holder)", () => {
+    const path = tmpCursorPath();
+    const config = withLanes(baseConfig(), ["security_hotspot"]);
+    // Simulate a crashed worker: a lock file with an old mtime.
+    const lockPath = `${path}.lock`;
+    writeFileSync(lockPath, "99999\n");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lockPath, old, old);
+
+    // The stale lock is reclaimed; the commit still succeeds and releases it.
+    const choice = commitMaintenanceChoice(config, path);
+    expect(choice.lane).toBe("security_hotspot");
+    expect(existsSync(lockPath)).toBe(false);
   });
 });

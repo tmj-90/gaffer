@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 import { z } from "zod";
@@ -230,8 +240,118 @@ function sanitizeCursor(cursor: MaintenanceCursor): MaintenanceCursor {
   return { ...cursor, lastRunTick: cleaned };
 }
 
-/** Persist the rotation cursor to `path`, creating the parent dir as needed. */
+/**
+ * Persist the rotation cursor to `path`, creating the parent dir as needed.
+ *
+ * The write is ATOMIC: the JSON is written to a unique temp file in the same
+ * directory and then `rename`d over the target. `rename` within a directory is
+ * atomic on POSIX and Windows, so a concurrent reader sees either the whole old
+ * file or the whole new one — never a torn half-write (which the FIX-1
+ * sanitiser then has to clean up). The temp file is uniquely named per-process
+ * so two writers never clobber each other's temp.
+ */
 export function saveCursor(path: string, cursor: MaintenanceCursor): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(cursor, null, 2)}\n`, "utf8");
+  const tmp = `${path}.tmp.${process.pid}.${Math.random().toString(36).slice(2)}`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(cursor, null, 2)}\n`, "utf8");
+    renameSync(tmp, path);
+  } catch (err) {
+    // Best-effort cleanup of the temp file; rethrow the original failure.
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // Cleanup is best-effort: the temp file is uniquely named so a leftover is
+      // harmless and the original error below is what matters.
+    }
+    throw err;
+  }
+}
+
+/** How many times a contended commit re-reads + retries before giving up. */
+const COMMIT_MAX_ATTEMPTS = 8;
+/** How long an O_EXCL lock may be held before a stale holder is reclaimed (ms). */
+const COMMIT_LOCK_STALE_MS = 5_000;
+
+/**
+ * Atomically select-and-persist the next maintenance lane under a portable lock,
+ * closing the read-modify-write race (FIX-4).
+ *
+ * Without this, two idle workers (`GAFFER_MAINTENANCE=1` + `GAFFER_CONCURRENCY>1`)
+ * can each `loadCursor` the SAME cursor, both run {@link chooseMaintenanceLane},
+ * and pick the SAME lane — wasting a worker and skewing the rotation. Here the
+ * select + save happen under an O_EXCL lock file (the portable primitive: an
+ * exclusive create succeeds for exactly one process), and the load is re-read
+ * INSIDE the lock so the choice is always made against the latest committed
+ * cursor (compare-and-swap by construction). A stale lock (holder crashed) older
+ * than {@link COMMIT_LOCK_STALE_MS} is reclaimed so a dead worker can't wedge the
+ * lane forever.
+ *
+ * Returns the same {@link MaintenanceChoice} as {@link chooseMaintenanceLane}; the
+ * returned `nextCursor` is already persisted to `path`.
+ */
+export function commitMaintenanceChoice(config: CrewConfig, path: string): MaintenanceChoice {
+  mkdirSync(dirname(path), { recursive: true });
+  const lockPath = `${path}.lock`;
+
+  for (let attempt = 0; attempt < COMMIT_MAX_ATTEMPTS; attempt += 1) {
+    if (!acquireLock(lockPath)) {
+      reclaimStaleLock(lockPath);
+      continue; // contended — re-read on the next attempt under a fresh lock.
+    }
+    try {
+      // Re-read INSIDE the lock: this is the compare-and-swap. Any commit by
+      // another worker since our caller last looked is now visible, so two
+      // workers can never select against the same stale cursor.
+      const cursor = loadCursor(path);
+      const choice = chooseMaintenanceLane(config, cursor);
+      saveCursor(path, choice.nextCursor);
+      return choice;
+    } finally {
+      releaseLock(lockPath);
+    }
+  }
+
+  // Extreme contention: fall back to a single unlocked select+save. This is the
+  // pre-FIX-4 behaviour (still correct for a single worker) rather than throwing
+  // on a quiet idle tick.
+  const cursor = loadCursor(path);
+  const choice = chooseMaintenanceLane(config, cursor);
+  saveCursor(path, choice.nextCursor);
+  return choice;
+}
+
+/** Try to take the exclusive lock. O_EXCL create succeeds for one process only. */
+function acquireLock(lockPath: string): boolean {
+  try {
+    // "wx" = O_CREAT | O_EXCL | O_WRONLY: fails if the file already exists.
+    const fd = openSync(lockPath, "wx");
+    try {
+      writeFileSync(fd, `${process.pid}\n`);
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Release the lock; ignore a missing file (already released / reclaimed). */
+function releaseLock(lockPath: string): void {
+  try {
+    rmSync(lockPath, { force: true });
+  } catch {
+    // Best-effort: a missing lock is the desired end state.
+  }
+}
+
+/** Reclaim a lock whose holder appears to have crashed (older than the TTL). */
+function reclaimStaleLock(lockPath: string): void {
+  try {
+    const age = Date.now() - statSync(lockPath).mtimeMs;
+    if (age > COMMIT_LOCK_STALE_MS) rmSync(lockPath, { force: true });
+  } catch {
+    // The lock vanished between contention and this check — nothing to reclaim.
+  }
 }

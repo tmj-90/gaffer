@@ -8,12 +8,7 @@ import { runIdleTechDebtLoop } from "./idleTechDebt.js";
 import { runIdleTestQualityLoop } from "./idleTestQuality.js";
 import { runIdleTypeQualityLoop } from "./idleTypeQuality.js";
 import { SelfImproveGate } from "./selfImprove.js";
-import {
-  chooseMaintenanceLane,
-  loadCursor,
-  saveCursor,
-  type MaintenanceCursor,
-} from "./maintenanceLane.js";
+import { commitMaintenanceChoice, type MaintenanceCursor } from "./maintenanceLane.js";
 import type { IdleScanOutcome } from "./idleScans.js";
 
 /** A normalised outcome the registry reports for every idle loop. */
@@ -229,9 +224,9 @@ export interface MaintenanceLaneReport {
  */
 export function runMaintenanceLane(deps: IdleLoopDeps, cursorPath: string): MaintenanceLaneReport {
   deps.events.record("maintenance_lane_started", {});
-  const cursor = loadCursor(cursorPath);
-  const choice = chooseMaintenanceLane(deps.config, cursor);
-  saveCursor(cursorPath, choice.nextCursor);
+  // FIX-4: select + persist atomically under a portable lock so two concurrent
+  // idle workers can't pick the same lane from the same stale cursor.
+  const choice = commitMaintenanceChoice(deps.config, cursorPath);
 
   if (choice.lane === null) {
     deps.events.record("maintenance_lane_finished", { chosen: null, reason: choice.reason });

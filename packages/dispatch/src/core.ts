@@ -1,8 +1,6 @@
 import { type Db, inTransaction, openDatabase } from "./db/connection.js";
 import { claimTicketInput } from "./domain/schemas.js";
 import {
-  TICKET_STATUSES,
-  parseReviewFeedback,
   type AcceptanceCriterion,
   type Actor,
   type Agent,
@@ -11,7 +9,6 @@ import {
   type Evidence,
   type Repository,
   type ReviewFeedback,
-  type RiskLevel,
   type ScopeEdge,
   type ScopeNode,
   type ScopeRepo,
@@ -35,7 +32,6 @@ import {
   EventRepository,
   type ActivityEvent,
   type ActivityQuery,
-  type TransitionRow,
 } from "./repositories/eventRepository.js";
 import { EvidenceRepository } from "./repositories/evidenceRepository.js";
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
@@ -88,6 +84,14 @@ import {
   type WorkPacketRepos,
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
+import {
+  BoardService,
+  resolveMoveTarget,
+  type BoardView,
+  type DashboardSummary,
+} from "./services/boardService.js";
+export { BOARD_COLUMNS } from "./services/boardService.js";
+export type { BoardColumn } from "./services/boardService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
 import { TransitionService, type TransitionResult } from "./services/transitionService.js";
 import { buildNotifierFromEnv } from "./notify/config.js";
@@ -182,143 +186,17 @@ export type { ClaimabilityResult } from "./services/ticketService.js";
 /** Result of setting a ticket↔repo access boundary. */
 export type { TicketRepoAccessResult } from "./services/repoService.js";
 
-/** Column keys for the kanban board (claimed+in_progress collapse to one). */
-export const BOARD_COLUMNS = [
-  "draft",
-  "ready",
-  "in_progress",
-  "blocked",
-  "in_review",
-  // BBT-001: the independent black-box testing lane, between review and merge.
-  "in_testing",
-  "ready_for_merge",
-  "done",
-] as const;
-export type BoardColumn = (typeof BOARD_COLUMNS)[number];
-
-/** Claim summary surfaced on a board card. Never carries a token. */
-export interface BoardCardClaim {
-  agentId: string;
-  agentDisplayName: string | null;
-  expiresAt: string;
-  /** True when the claim's lease has passed its expiry (stale/recoverable). */
-  stale: boolean;
-}
-
-/** A single kanban card: the ticket plus the at-a-glance rollups. */
-export interface BoardCard {
-  id: string;
-  number: number | null;
-  title: string;
-  status: TicketStatus;
-  priority: number;
-  risk_level: RiskLevel;
-  updated_at: string;
-  /** Total acceptance criteria. */
-  acTotal: number;
-  /** Acceptance criteria in a satisfied state. */
-  acSatisfied: number;
-  /** Acceptance criteria that require evidence AND are satisfied. */
-  acEvidenced: number;
-  /** Acceptance criteria that require evidence (the denominator for evidenced). */
-  acEvidenceRequired: number;
-  /** Count of open blocking decisions. */
-  blockingCount: number;
-  /** Active claim holder, when the ticket is claimed/in_progress. */
-  claim: BoardCardClaim | null;
-  /**
-   * Latest review-rejection feedback (WG-049), so a human triaging the board sees
-   * WHY a ticket in `refining`/rework was sent back. `null` when there is none.
-   */
-  lastReviewFeedback: ReviewFeedback | null;
-}
-
-/** A board column: the column key and its ordered cards. */
-export interface BoardColumnView {
-  column: BoardColumn;
-  cards: BoardCard[];
-}
-
-/**
- * The full kanban board: ordered live columns, a closed (failed) area, and a
- * terminal won't-do bucket (cancelled tickets — work that will NOT be built,
- * distinct from rework). Won't-do tickets are reopenable, so they get their own
- * visible bucket rather than being hidden in the closed area.
- */
-export interface BoardView {
-  columns: BoardColumnView[];
-  closed: BoardCard[];
-  wontDo: BoardCard[];
-  /**
-   * Approved-and-merging tickets (`ready_for_merge`): approved by a human, the
-   * merge runner is doing the git merge. Surfaced as a dedicated array (mirroring
-   * the `ready_for_merge` column in `columns`) so a caller can render the
-   * "Approved · merging" column without re-scanning the column list.
-   */
-  readyForMerge: BoardCard[];
-}
-
-/** Median time (ms) tickets spent in a state, over completed intervals. */
-export interface CycleTimeStat {
-  /** The state held between two transitions. */
-  status: TicketStatus;
-  /** Median duration in the state, in milliseconds. */
-  medianMs: number;
-  /** Number of completed intervals the median is computed over. */
-  samples: number;
-}
-
-/** A ticket flagged as stuck: sitting in a non-terminal state too long. */
-export interface StuckTicket {
-  id: string;
-  number: number | null;
-  title: string;
-  status: TicketStatus;
-  /** How long the ticket has held its current state, in milliseconds. */
-  stuckForMs: number;
-  /** When the ticket entered its current state (ISO instant). */
-  since: string;
-}
-
-/** Per-repository delivery progress for the Overview "Progress by repository". */
-export interface RepoProgress {
-  /** Repository name. */
-  repo: string;
-  /** Tickets linked to this repo (any status). */
-  total: number;
-  /** Of those, how many are `done`. */
-  done: number;
-  /** Of those, how many are actively in flight (claimed → ready_for_merge). */
-  inFlight: number;
-  /** Of those, how many are blocked. */
-  blocked: number;
-  /** done / total as a 0–100 integer percentage. */
-  pct: number;
-}
-
-/** Dashboard summary tiles — counts plus cycle-time/stuck analytics. */
-export interface DashboardSummary {
-  /** Ticket counts keyed by status (every status present, zero-filled). */
-  ticketsByStatus: Record<TicketStatus, number>;
-  /** Tickets delivered (→in_review/done) since the start of today (UTC). */
-  deliveredToday: number;
-  /** Tickets currently blocked. */
-  blocked: number;
-  /** Open (unresolved) decisions awaiting a human. */
-  openDecisions: number;
-  /** Active claims right now. */
-  activeClaims: number;
-  /** Active claims whose lease has passed expiry (stale). */
-  staleClaims: number;
-  /** Median cycle time per state, in TICKET_STATUSES order (states with data). */
-  cycleTimeByState: CycleTimeStat[];
-  /** Tickets stuck in a non-terminal state beyond the threshold, longest first. */
-  stuckTickets: StuckTicket[];
-  /** The age (hours) past which a non-terminal ticket is flagged as stuck. */
-  stuckThresholdHours: number;
-  /** Per-repository delivery progress (mapped repos with ≥1 linked ticket). */
-  repoProgress: RepoProgress[];
-}
+export type {
+  BoardCard,
+  BoardCardClaim,
+  BoardColumnView,
+  BoardView,
+  CycleTimeStat,
+  StuckTicket,
+  RepoProgress,
+  DashboardSummary,
+} from "./services/boardService.js";
+// NOTE: BOARD_COLUMNS and BoardColumn are exported via top-of-file export statements.
 
 /** Input for resolving a decision via the human surface. */
 export type { ResolveDecisionInput } from "./services/decisionService.js";
@@ -374,6 +252,7 @@ export class Dispatch {
   readonly ticketSvc: TicketService;
   readonly repoSvc: RepoService;
   readonly epicsSvc: EpicsService;
+  readonly boardSvc: BoardService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -488,6 +367,15 @@ export class Dispatch {
       scope: this.scope,
       tickets: this.ticketSvc,
       repos: this.repoSvc,
+    });
+    this.boardSvc = new BoardService({
+      db,
+      clock: this.clock,
+      tickets: this.tickets,
+      acs: this.acs,
+      decisions: this.decisions,
+      claimsRepo: this.claimsRepo,
+      events: this.events,
     });
   }
 
@@ -1781,307 +1669,17 @@ export class Dispatch {
   // --- Board + dashboard reads (read-only showcase surfaces) ----------------
 
   /**
-   * Kanban board: every ticket grouped into a fixed set of columns
-   * (claimed+in_progress collapse into "in_progress"), each card enriched with
-   * AC progress, blocking-decision count and active-claim/lease state.
-   * cancelled/failed tickets are returned separately as a "closed" area so the
-   * live columns stay focused. Read-only — no mutation.
+   * Kanban board: tickets grouped into columns, AC progress enriched. Read-only.
    */
   board(): BoardView {
-    const now = this.clock.now();
-    const tickets = this.tickets.listFiltered({});
-
-    // Index active claims by ticket so each card resolves its holder in O(1).
-    const claimsByTicket = new Map<string, ActiveClaimView>();
-    for (const claim of this.claimsRepo.listActive()) {
-      claimsByTicket.set(claim.ticket_id, claim);
-    }
-
-    const empty = (): BoardColumnView[] =>
-      BOARD_COLUMNS.map((column) => ({ column, cards: [] as BoardCard[] }));
-    const columns = empty();
-    const byColumn = new Map<BoardColumn, BoardCard[]>(columns.map((c) => [c.column, c.cards]));
-    const closed: BoardCard[] = [];
-    const wontDo: BoardCard[] = [];
-
-    for (const ticket of tickets) {
-      const card = this.toBoardCard(ticket, claimsByTicket.get(ticket.id), now);
-      // `cancelled` is the terminal won't-do bucket (reopenable); `failed` stays in
-      // the closed area; everything else maps to a live column.
-      if (ticket.status === "cancelled") {
-        wontDo.push(card);
-        continue;
-      }
-      const column = columnFor(ticket.status);
-      if (column === null) {
-        closed.push(card);
-        continue;
-      }
-      byColumn.get(column)!.push(card);
-    }
-
-    // The `ready_for_merge` column's cards, surfaced as a dedicated array too.
-    const readyForMerge = byColumn.get("ready_for_merge") ?? [];
-
-    return { columns, closed, wontDo, readyForMerge };
+    return this.boardSvc.board();
   }
 
-  /** Build a single board card, computing AC progress + claim/lease state. */
-  private toBoardCard(
-    ticket: Ticket,
-    claim: ActiveClaimView | undefined,
-    nowIso: string,
-  ): BoardCard {
-    const acs = this.acs.listForTicket(ticket.id);
-    const acSatisfied = acs.filter((a) => a.status === "satisfied").length;
-    const evidenceRequired = acs.filter((a) => a.evidence_required === 1);
-    const acEvidenced = evidenceRequired.filter((a) => a.status === "satisfied").length;
-    const blockingCount = this.decisions.blockingForTicket(ticket.id).length;
-
-    const claimCard: BoardCardClaim | null = claim
-      ? {
-          agentId: claim.agent_id,
-          agentDisplayName: claim.agent_display_name,
-          expiresAt: claim.expires_at,
-          stale: claim.expires_at < nowIso,
-        }
-      : null;
-
-    return {
-      id: ticket.id,
-      number: ticket.number,
-      title: ticket.title,
-      status: ticket.status,
-      priority: ticket.priority,
-      risk_level: ticket.risk_level,
-      updated_at: ticket.updated_at,
-      acTotal: acs.length,
-      acSatisfied,
-      acEvidenced,
-      acEvidenceRequired: evidenceRequired.length,
-      blockingCount,
-      claim: claimCard,
-      lastReviewFeedback: parseReviewFeedback(ticket.last_review_feedback),
-    };
-  }
-
-  /**
-   * Cross-ticket activity feed: newest-first page of work_events across all
-   * entities, enriched with the ticket number/title where applicable. Carries
-   * metadata only — never payload bodies (see EventRepository). Returns the page
-   * plus the total for simple pagination.
-   */
   activity(query: ActivityQuery): { events: ActivityEvent[]; total: number } {
-    return {
-      events: this.events.listActivity(query),
-      total: this.events.countActivity(),
-    };
+    return this.boardSvc.activity(query);
   }
 
-  /** Dashboard summary tiles — counts only, safe to render wholesale. */
   dashboard(): DashboardSummary {
-    const now = this.clock.now();
-    const startOfToday = startOfUtcDay(now);
-
-    const ticketsByStatus = Object.fromEntries(TICKET_STATUSES.map((s) => [s, 0])) as Record<
-      TicketStatus,
-      number
-    >;
-    for (const { status, count } of this.events.ticketCountsByStatus()) {
-      if (isTicketStatus(status)) ticketsByStatus[status] = count;
-    }
-
-    const activeClaims = this.claimsRepo.listActive();
-    const staleClaims = activeClaims.filter((c) => c.expires_at < now).length;
-
-    const transitions = this.events.stateTransitions();
-
-    return {
-      ticketsByStatus,
-      deliveredToday: this.events.deliveredSince(startOfToday),
-      blocked: ticketsByStatus.blocked,
-      openDecisions: this.decisions.listPending().length,
-      activeClaims: activeClaims.length,
-      staleClaims,
-      cycleTimeByState: cycleTimeByState(transitions),
-      stuckTickets: this.stuckTickets(transitions, now),
-      stuckThresholdHours: STUCK_THRESHOLD_HOURS,
-      repoProgress: this.repoProgress(),
-    };
+    return this.boardSvc.dashboard();
   }
-
-  /**
-   * Per-repository delivery progress, computed from the ticket↔repo links: for
-   * each non-hidden repo with at least one linked ticket, how many are done,
-   * in flight or blocked, and the done-share. Drives the Overview repo panel.
-   */
-  private repoProgress(): RepoProgress[] {
-    const rows = this.db
-      .prepare(
-        `SELECT r.name AS repo,
-                COUNT(*) AS total,
-                SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) AS done,
-                SUM(CASE WHEN t.status IN
-                  ('claimed','in_progress','in_review','in_testing','ready_for_merge')
-                  THEN 1 ELSE 0 END) AS inflight,
-                SUM(CASE WHEN t.status = 'blocked' THEN 1 ELSE 0 END) AS blocked
-         FROM repositories r
-         JOIN ticket_repos tr ON tr.repo_id = r.id
-         JOIN tickets t ON t.id = tr.ticket_id
-         WHERE r.hidden = 0
-         GROUP BY r.id, r.name
-         ORDER BY total DESC, r.name ASC`,
-      )
-      .all() as Array<{
-      repo: string;
-      total: number;
-      done: number;
-      inflight: number;
-      blocked: number;
-    }>;
-    return rows.map((r) => ({
-      repo: r.repo,
-      total: r.total,
-      done: r.done,
-      inFlight: r.inflight,
-      blocked: r.blocked,
-      pct: r.total > 0 ? Math.round((r.done / r.total) * 100) : 0,
-    }));
-  }
-
-  /**
-   * Tickets sitting in a non-terminal state longer than {@link STUCK_THRESHOLD_HOURS}.
-   * A ticket entered its current state at its most recent transition (or, if it
-   * never transitioned, at creation); the gap to `now` is how long it has held it.
-   * Terminal states (done/failed/cancelled) are never stuck. Longest-stuck first.
-   */
-  private stuckTickets(transitions: TransitionRow[], nowIso: string): StuckTicket[] {
-    // Last transition per ticket = when it entered its current state (rows are
-    // ordered oldest-first, so the last write for a ticket wins).
-    const enteredAt = new Map<string, string>();
-    for (const tr of transitions) enteredAt.set(tr.ticket_id, tr.created_at);
-
-    const nowMs = Date.parse(nowIso);
-    const thresholdMs = STUCK_THRESHOLD_HOURS * 3_600_000;
-    const stuck: StuckTicket[] = [];
-    for (const t of this.tickets.listFiltered({})) {
-      if (TERMINAL_STATUSES.has(t.status)) continue;
-      const since = enteredAt.get(t.id) ?? t.created_at;
-      const stuckForMs = nowMs - Date.parse(since);
-      if (stuckForMs <= thresholdMs) continue;
-      stuck.push({
-        id: t.id,
-        number: t.number,
-        title: t.title,
-        status: t.status,
-        stuckForMs,
-        since,
-      });
-    }
-    return stuck.sort((a, b) => b.stuckForMs - a.stuckForMs);
-  }
-}
-
-/** Hours a ticket may hold a non-terminal state before it is flagged as stuck. */
-const STUCK_THRESHOLD_HOURS = 24;
-
-/** Statuses that close a ticket — work in them is done, never "stuck". */
-const TERMINAL_STATUSES: ReadonlySet<TicketStatus> = new Set(["done", "failed", "cancelled"]);
-
-/**
- * Median time spent in each state, computed from consecutive transition pairs:
- * the gap between a ticket entering a state and leaving it is one completed
- * interval. Returns one stat per state that has ≥1 completed interval, ordered
- * by TICKET_STATUSES so the dashboard renders states in lifecycle order.
- */
-function cycleTimeByState(transitions: TransitionRow[]): CycleTimeStat[] {
-  const durations = new Map<TicketStatus, number[]>();
-  let prev: TransitionRow | undefined;
-  for (const tr of transitions) {
-    if (prev && prev.ticket_id === tr.ticket_id && isTicketStatus(prev.to_status ?? "")) {
-      const state = prev.to_status as TicketStatus;
-      const ms = Date.parse(tr.created_at) - Date.parse(prev.created_at);
-      if (ms >= 0) {
-        const ds = durations.get(state) ?? [];
-        ds.push(ms);
-        durations.set(state, ds);
-      }
-    }
-    prev = tr;
-  }
-  return TICKET_STATUSES.filter((s) => durations.has(s)).map((status) => {
-    const ds = durations.get(status)!;
-    return { status, medianMs: median(ds), samples: ds.length };
-  });
-}
-
-/** Median of a non-empty number array (mean of the two middles when even). */
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
-}
-
-/** Map a ticket status to its board column, or null for the closed area. */
-function columnFor(status: TicketStatus): BoardColumn | null {
-  switch (status) {
-    case "draft":
-    case "refining":
-      return "draft";
-    case "ready":
-      return "ready";
-    case "claimed":
-    case "in_progress":
-      return "in_progress";
-    case "blocked":
-      return "blocked";
-    case "in_review":
-      return "in_review";
-    case "in_testing":
-      return "in_testing";
-    case "ready_for_merge":
-      return "ready_for_merge";
-    case "done":
-      return "done";
-    case "cancelled":
-    case "failed":
-      return null;
-  }
-}
-
-function isTicketStatus(value: string): value is TicketStatus {
-  return (TICKET_STATUSES as readonly string[]).includes(value);
-}
-
-function isBoardColumn(value: string): value is BoardColumn {
-  return (BOARD_COLUMNS as readonly string[]).includes(value);
-}
-
-/**
- * Resolve a board-move target into the canonical {@link TicketStatus} to
- * transition to. Accepts either a real status or a {@link BoardColumn} key. The
- * board's "in_progress" column collapses claimed+in_progress, so dropping into
- * it targets `in_progress` (a status only legally reached from `claimed` — so a
- * board drop can never invent a claim; the transition is simply rejected).
- * Throws VALIDATION_ERROR for anything that is neither a status nor a column.
- */
-function resolveMoveTarget(target: string): TicketStatus {
-  if (isTicketStatus(target)) return target;
-  if (isBoardColumn(target)) {
-    // Every BoardColumn key except (none) is itself a valid TicketStatus, so the
-    // status check above already handled them; this branch is defensive.
-    return target as TicketStatus;
-  }
-  throw new DispatchError(
-    "VALIDATION_ERROR",
-    `'${target}' is not a valid status or board column.`,
-    { target },
-  );
-}
-
-/** Start-of-day (UTC) ISO instant for the day containing `nowIso`. */
-function startOfUtcDay(nowIso: string): string {
-  const d = new Date(nowIso);
-  const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
-  return start.toISOString();
 }

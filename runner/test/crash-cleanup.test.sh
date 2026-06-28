@@ -154,15 +154,20 @@ case "$MODE" in
     # tear the worktree but KEEP the review-visible branch.
     GAFFER_KEEP_DELIVERY_BRANCH=1
     exit 1 ;;
-  signal-wait)
-    # FIX-SIGNAL harness: announce readiness, wait at a blocking point, then (if
-    # execution wrongly RESUMED past the signal) drop an after-signal marker. The
-    # parent sends INT/TERM during the wait; a correct handler exits 130/143 and
-    # the after-signal marker is NEVER written.
-    [ -n "$MARKER_DIR" ] || { echo "signal-wait needs MARKER_DIR" >&2; exit 2; }
-    touch "$MARKER_DIR/started"
-    sleep 5
-    touch "$MARKER_DIR/after-signal"   # must NEVER be reached after a signal
+  signal-self-term|signal-self-int)
+    # FIX-SIGNAL harness: deliver the signal to OURSELVES in the foreground, then
+    # try to write an after-signal marker on the NEXT line. A correct split trap
+    # runs (tears down) and exits 143/130 BEFORE that line, so the marker is never
+    # written; a buggy cleanup-only trap RETURNS and execution resumes, writing it
+    # (caught by the parent). No job control / background / process groups — those
+    # diverge on a tty-less CI runner; a synchronous self-signal is deterministic
+    # and identical on Linux and macOS.
+    [ -n "$MARKER_DIR" ] || { echo "self-signal needs MARKER_DIR" >&2; exit 2; }
+    case "$MODE" in
+      signal-self-term) kill -TERM $$ ;;
+      signal-self-int)  kill -INT  $$ ;;
+    esac
+    touch "$MARKER_DIR/after-signal"   # must NEVER be reached after the signal
     exit 0 ;;
 esac
 RUNNER
@@ -177,31 +182,17 @@ bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" crash >/dev/null 2>&1 || true
 [ -e "$WT" ] && fail "crash left the worktree behind" || ok "crash removed the orphan worktree"
 branch_exists && fail "crash left the gaffer/ branch behind" || ok "crash removed the orphan branch"
 
-# FIX-SIGNAL harness note: each signal-wait runner is launched with job control
-# ENABLED (`set -m`) so the backgrounded non-interactive bash gets its OWN process
-# group with DEFAULT signal dispositions. A plain `&` async child hard-ignores
-# SIGINT (POSIX), making INT untrappable — a test artifact, not the production
-# reality. `set -m` mirrors tick.sh's REAL foreground execution under
-# loop.sh/worker.sh, where INT/TERM ARE trappable. The `&` + `$!` capture must
-# stay in THIS shell (not a function subshell) so `wait` can reap the child.
-wait_for_started() {  # $1=MK
-  local _i
-  for _i in $(seq 1 200); do [ -e "$1/started" ] && return 0; sleep 0.05; done
-  return 1
-}
-
 echo "== 2. SIGTERM BEFORE completion drops worktree + branch AND exits 143 =="
-# FIX-SIGNAL: a real TERM during a blocking wait must (a) tear down the orphan
-# worktree + branch and (b) EXIT 143 — never resume past the signal.
+# FIX-SIGNAL: a real TERM must (a) tear down the orphan worktree + branch and
+# (b) EXIT 143 — never resume past the signal. The child signals ITSELF in the
+# foreground: deterministic and identical on Linux + macOS (no set -m / `&` /
+# process groups, which diverge on a tty-less CI runner). 143 = 128 + SIGTERM,
+# so the code matches whether the split trap's explicit `exit 143` or a default
+# termination produced it; the load-bearing assertion is no after-signal marker.
 make_runner
 WT="$WORK/wt-term"; MK="$WORK/mk-term"; mkdir -p "$MK"
-set -m
-bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" signal-wait "$MK" >/dev/null 2>&1 &
-rpid=$!
-set +m
-wait_for_started "$MK" || fail "TERM harness never reached its wait point"
-kill -TERM "$rpid" 2>/dev/null || true
-wait "$rpid"; term_rc=$?
+bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" signal-self-term "$MK" >/dev/null 2>&1
+term_rc=$?
 [ "$term_rc" -eq 143 ] && ok "SIGTERM exits 143 (terminated, not swallowed)" || fail "SIGTERM did not exit 143 (got $term_rc) — termination was swallowed"
 [ -e "$MK/after-signal" ] && fail "execution RESUMED past the TERM signal (after-signal marker written)" || ok "execution did NOT continue past the TERM signal"
 [ -e "$WT" ] && fail "SIGTERM left the worktree behind" || ok "SIGTERM removed the orphan worktree"
@@ -210,13 +201,8 @@ branch_exists && fail "SIGTERM left the gaffer/ branch behind" || ok "SIGTERM re
 echo "== 2b. SIGINT BEFORE completion drops worktree + branch AND exits 130 =="
 make_runner
 WT="$WORK/wt-int"; MK="$WORK/mk-int"; mkdir -p "$MK"
-set -m
-bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" signal-wait "$MK" >/dev/null 2>&1 &
-rpid=$!
-set +m
-wait_for_started "$MK" || fail "INT harness never reached its wait point"
-kill -INT "$rpid" 2>/dev/null || true
-wait "$rpid"; int_rc=$?
+bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" signal-self-int "$MK" >/dev/null 2>&1
+int_rc=$?
 [ "$int_rc" -eq 130 ] && ok "SIGINT exits 130 (terminated, not swallowed)" || fail "SIGINT did not exit 130 (got $int_rc) — termination was swallowed"
 [ -e "$MK/after-signal" ] && fail "execution RESUMED past the INT signal (after-signal marker written)" || ok "execution did NOT continue past the INT signal"
 [ -e "$WT" ] && fail "SIGINT left the worktree behind" || ok "SIGINT removed the orphan worktree"

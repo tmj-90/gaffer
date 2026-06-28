@@ -111,11 +111,23 @@ echo "== AC7: a cap of 0 disables that dimension =="
   || ok "MAX_OPEN_AGENT_BRANCHES_PER_REPO=0 → 99 branches no longer triggers"
 
 echo "== AC8: cap config keys present + commented =="
-for k in MAX_OPEN_AGENT_BRANCHES_PER_REPO:=3 MAX_OPEN_AGENT_PRS_PER_REPO:=3 MAX_CONCURRENT_TICKETS_PER_REPO:=2; do
+# The branch/PR caps default next to each other in the backpressure block.
+for k in MAX_OPEN_AGENT_BRANCHES_PER_REPO:=3 MAX_OPEN_AGENT_PRS_PER_REPO:=3; do
   grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/factory.config.sh" \
     && ok "$k default present in factory.config.sh" \
     || fail "$k default missing from factory.config.sh"
 done
+# The per-repo concurrency cap is the third dimension. It is defaulted ONCE (in the
+# GAFFER_CONCURRENCY block, default 1) — NOT re-defaulted in the backpressure block,
+# where a second `:=` would be a dead no-op (FIX-4). Assert exactly one default and
+# that it is :=1.
+conc_defaults="$(grep -Ec '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=' "$RUNNER_DIR/factory.config.sh")"
+[ "$conc_defaults" = "1" ] \
+  && ok "MAX_CONCURRENT_TICKETS_PER_REPO defaulted exactly once (no dead duplicate)" \
+  || fail "MAX_CONCURRENT_TICKETS_PER_REPO defaulted $conc_defaults time(s) — expected exactly 1"
+grep -Eq '^: "\$\{MAX_CONCURRENT_TICKETS_PER_REPO:=1\}"' "$RUNNER_DIR/factory.config.sh" \
+  && ok "MAX_CONCURRENT_TICKETS_PER_REPO default is 1" \
+  || fail "MAX_CONCURRENT_TICKETS_PER_REPO default is not 1"
 
 # PROOF: the tick wires this into the ready-selection skip.
 grep -q 'gaffer_repo_in_backpressure' "$RUNNER_DIR/tick.sh" \

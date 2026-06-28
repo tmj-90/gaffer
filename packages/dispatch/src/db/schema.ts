@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -428,4 +428,31 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_status_started ON runs(status, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC);
+
+-- ============================================================================
+-- Plan sessions (H9 — durable async plan-build chat). Additive, schema_version 11.
+--
+-- Each row is one "Plan a build" conversation. The messages array (JSON) stores
+-- role+content+ts turns so the panel can restore exactly where it left off on
+-- reload or navigation-away. plan_json is populated once the decompose helper
+-- returns a plan phase. When the user starts fresh the current session is
+-- archived (status → 'abandoned') and a new row is inserted.
+--
+-- Standalone (no FKs to tickets/repos — a session outlives its epic) so it is
+-- created idempotently by CREATE TABLE IF NOT EXISTS with no ALTER needed.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS plan_sessions (
+  id            TEXT PRIMARY KEY,
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','confirmed','abandoned')),
+  brief         TEXT,
+  messages_json TEXT NOT NULL DEFAULT '[]',
+  plan_json     TEXT,
+  target_repo   TEXT,
+  target_scope  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_plan_sessions_status_created
+  ON plan_sessions(status, created_at DESC);
 `;

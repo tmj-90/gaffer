@@ -286,7 +286,14 @@ describe("dispatch state export", () => {
     //     have no FK to the board — they are meaningless (and a `running` row with
     //     a foreign pid is actively misleading) on another machine. The bundle is
     //     the portable BOARD; run history is intentionally not carried.
-    const INTENTIONALLY_EXCLUDED = ["schema_meta", "runs"];
+    const INTENTIONALLY_EXCLUDED = [
+      "schema_meta",
+      "runs",
+      // plan_sessions: machine-local UI ephemera (in-flight plan-build conversations).
+      // Sessions are tied to a browser session on this machine; they contain no work-item
+      // data that needs to round-trip. An imported board should start a fresh conversation.
+      "plan_sessions",
+    ];
 
     const covered = new Set<string>([...EXPORT_TABLES, ...INTENTIONALLY_EXCLUDED]);
 

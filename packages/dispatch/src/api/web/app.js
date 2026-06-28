@@ -6562,6 +6562,19 @@ function renderEpicDag(byPhase, phases, depViewById) {
 // any point, and the decomposer's own advisory turn ceiling force-plans rather than
 // rejecting — see PLAN_BUILD_FORCE_EMPHASIS_TURNS for when the escape is emphasised.
 
+// H9 — DURABLE SESSIONS: the panel persists its conversation to the server via
+// /plan-sessions so a reload or navigation-away restores the exact history +
+// proposed plan. Each turn calls POST /plan-sessions/:id/turns to append both
+// the user message and the assistant reply. On first open the panel fetches
+// GET /plan-sessions/active to restore any in-progress session. "Start new plan"
+// archives the current session (POST /plan-sessions/:id/archive, status:abandoned)
+// and creates a fresh one. Confirming a plan archives with status:confirmed.
+//
+// GRACEFUL DEGRADATION: every session API call is best-effort. If the endpoint
+// is unreachable (older server, network blip) the panel continues with in-memory
+// state exactly as before H9 — `planBuildState.sessionId` stays null and no
+// persistence calls are attempted for that session.
+
 let planBuildEls = null;
 let planBuildState = null;
 
@@ -6607,11 +6620,23 @@ function ensurePlanBuild() {
             el("div", { class: "pb-sub dim" }, "Brief → phased epic of draft tickets"),
           ]),
         ]),
-        el(
-          "button",
-          { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closePlanBuild },
-          el("span", { html: "✕" }),
-        ),
+        el("div", { class: "pb-head-actions" }, [
+          el(
+            "button",
+            {
+              class: "btn pb-new-plan",
+              type: "button",
+              "aria-label": "Start a new plan (archives current conversation)",
+              onclick: startNewPlanBuild,
+            },
+            "New plan",
+          ),
+          el(
+            "button",
+            { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closePlanBuild },
+            el("span", { html: "✕" }),
+          ),
+        ]),
       ]),
       el("div", { class: "pb-guardrail" }, [
         icon("alert", "pb-guard-ico"),
@@ -6649,12 +6674,109 @@ function ensurePlanBuild() {
   return planBuildEls;
 }
 
+// ---------------------------------------------------------------------------
+//  Session helpers — best-effort; never throw to the caller.
+// ---------------------------------------------------------------------------
+
+/**
+ * Restore the in-progress session state from a server session row.
+ * Parses messages_json and populates planBuildState.history + plan.
+ * The server stores assistant turns as JSON-stringified decompose envelopes;
+ * user turns store the raw text in `content`.
+ */
+function restorePlanBuildSession(session) {
+  if (!planBuildState || !session) return;
+  planBuildState.sessionId = session.id;
+  planBuildState.brief = session.brief || null;
+
+  let messages;
+  try {
+    messages = JSON.parse(session.messages_json || "[]");
+  } catch {
+    messages = [];
+  }
+
+  const history = [];
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      // First user message is the brief; subsequent ones are answers.
+      const isFirst = history.filter((t) => t.role === "user").length === 0;
+      history.push(
+        isFirst ? { role: "user", brief: msg.content } : { role: "user", answer: msg.content },
+      );
+    } else if (msg.role === "assistant") {
+      try {
+        const envelope = JSON.parse(msg.content);
+        if (envelope && envelope.phase === "clarify") {
+          history.push({ role: "assistant", questions: envelope.questions || [] });
+        }
+        // plan turns are restored via plan_json below, not via history
+      } catch {
+        // Malformed assistant message — skip.
+      }
+    }
+  }
+  planBuildState.history = history;
+
+  if (session.plan_json) {
+    try {
+      planBuildState.plan = JSON.parse(session.plan_json);
+    } catch {
+      planBuildState.plan = null;
+    }
+  }
+}
+
+/**
+ * Create a new server-side session. Best-effort: if the API is unreachable,
+ * sessionId stays null and the panel works in pure in-memory mode.
+ */
+async function createPlanBuildSession() {
+  try {
+    const res = await api("POST", "/plan-sessions");
+    if (res && res.session && res.session.id) {
+      planBuildState.sessionId = res.session.id;
+    }
+  } catch {
+    // Degrade gracefully — session persistence unavailable.
+  }
+}
+
+/**
+ * Append a message to the current session. Called after each user turn and
+ * after each assistant reply. Best-effort — never interrupts the chat.
+ */
+async function persistPlanBuildTurn(role, content, opts) {
+  const id = planBuildState && planBuildState.sessionId;
+  if (!id) return;
+  try {
+    await api("POST", `/plan-sessions/${id}/turns`, { role, content, ...opts });
+  } catch {
+    // Session persistence unavailable — continue in-memory.
+  }
+}
+
+/**
+ * Archive the current session (if any). Called on "Start new plan" (abandoned)
+ * and on confirmPlanBuild (confirmed). Best-effort.
+ */
+async function archivePlanBuildSession(status) {
+  const id = planBuildState && planBuildState.sessionId;
+  if (!id) return;
+  try {
+    await api("POST", `/plan-sessions/${id}/archive`, { status });
+  } catch {
+    // Ignore — the session may not exist on an older server.
+  }
+}
+
 function openPlanBuild() {
   const { scrim, input } = ensurePlanBuild();
   // `mode` is the start toggle: "new" (greenfield app) vs "extend" (add tickets
   // to an existing scope node / epic). `target` holds the chosen extend node and
   // becomes the `context` sent to the decomposer on the first turn. `nodes` is
   // loaded lazily for the extend picker; an empty list just hides the option.
+  // `sessionId` is the server-side session id (null when persistence unavailable).
   planBuildState = {
     history: [],
     plan: null,
@@ -6664,25 +6786,59 @@ function openPlanBuild() {
     target: null,
     nodes: [],
     repos: [],
+    sessionId: null,
   };
   renderPlanBuildLog();
   scrim.classList.add("open");
   document.addEventListener("keydown", planBuildKeydown);
   setTimeout(() => input.focus(), 50);
-  // Best-effort: populate the "Extend existing" picker with both repos and scope
-  // nodes (the shared targetPicker offers both). The panel works without them.
+  // Best-effort: restore the in-progress session from the server, and populate
+  // the "Extend existing" picker. Both are non-blocking; the panel works without them.
   guard(async () => {
-    const [nodesRes, reposRes] = await Promise.all([
+    const [sessionRes, nodesRes, reposRes] = await Promise.all([
+      api("GET", "/plan-sessions/active").catch(() => null),
       api("GET", "/scope/nodes"),
       api("GET", "/repositories"),
     ]);
-    if (planBuildState) {
-      planBuildState.nodes = nodesRes.nodes || [];
-      planBuildState.repos = reposRes.repositories || [];
-      // Only repaint while still on the empty intro (no turns sent yet).
-      if (planBuildState.history.length === 0) renderPlanBuildLog();
+    if (!planBuildState) return; // panel was closed during the fetch
+    // Restore server session (if one exists and the panel hasn't been interacted with).
+    if (sessionRes && sessionRes.session && planBuildState.history.length === 0) {
+      restorePlanBuildSession(sessionRes.session);
+    } else if (!sessionRes || !sessionRes.session) {
+      // No active session on the server — create one (best-effort).
+      await createPlanBuildSession();
     }
+    planBuildState.nodes = nodesRes.nodes || [];
+    planBuildState.repos = reposRes.repositories || [];
+    // Only repaint while still on the empty intro (no turns sent yet) OR if we
+    // just restored a session with history.
+    renderPlanBuildLog();
   });
+}
+
+/**
+ * Archive the current session as 'abandoned' and open a fresh one.
+ * The "New plan" button in the panel header calls this.
+ */
+async function startNewPlanBuild() {
+  if (!planBuildState || planBuildState.busy) return;
+  await archivePlanBuildSession("abandoned");
+  // Reset in-memory state.
+  planBuildState = {
+    history: [],
+    plan: null,
+    busy: false,
+    brief: null,
+    mode: "new",
+    target: null,
+    nodes: planBuildState ? planBuildState.nodes : [],
+    repos: planBuildState ? planBuildState.repos : [],
+    sessionId: null,
+  };
+  renderPlanBuildLog();
+  // Create a fresh server-side session.
+  await createPlanBuildSession();
+  if (planBuildEls) planBuildEls.input.focus();
 }
 function closePlanBuild() {
   if (!planBuildEls) return;
@@ -7239,6 +7395,8 @@ async function submitPlanBuildTurn(opts = {}) {
     planBuildState.history.push(
       isFirst ? { role: "user", brief: text } : { role: "user", answer: text },
     );
+    // Persist the user turn server-side (best-effort; never awaited before the render).
+    persistPlanBuildTurn("user", text, isFirst ? { brief: text } : {}).catch(() => {});
     input.value = "";
     input.style.height = "auto";
   }
@@ -7290,10 +7448,18 @@ async function submitPlanBuildTurn(opts = {}) {
     planBuildState.busy = false;
     if (res.phase === "clarify") {
       planBuildState.history.push({ role: "assistant", questions: res.questions || [] });
+      // Persist the assistant clarify turn server-side (best-effort).
+      persistPlanBuildTurn("assistant", JSON.stringify(res)).catch(() => {});
     } else if (res.phase === "plan") {
       planBuildState.plan = res.plan || null;
+      // Persist the plan turn with the plan payload so reload can restore it.
+      persistPlanBuildTurn("assistant", JSON.stringify(res), { plan: res.plan || null }).catch(
+        () => {},
+      );
     } else {
       toast(res.error || "Planning failed", { code: "PLAN_BUILD" });
+      // Persist error turns for audit (best-effort).
+      persistPlanBuildTurn("assistant", JSON.stringify(res)).catch(() => {});
     }
     renderPlanBuildLog();
   });
@@ -7332,6 +7498,8 @@ async function confirmPlanBuild(plan) {
       return t;
     });
     const res = await api("POST", "/epics", { epic: plan.epic, tickets });
+    // Archive the session as confirmed now that the epic has been created.
+    await archivePlanBuildSession("confirmed");
     const count = (res.ticket_numbers || []).length;
     const note = deferred
       ? ` (${deferred} repo link${deferred === 1 ? "" : "s"} deferred to bootstrap)`

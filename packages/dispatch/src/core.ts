@@ -39,6 +39,8 @@ import {
   type ScopeEdge,
   type ScopeNode,
   type ScopeRepo,
+  type PlanMessage,
+  type PlanSession,
   type Run,
   type RunKind,
   type TestContract,
@@ -65,6 +67,10 @@ import { EvidenceRepository } from "./repositories/evidenceRepository.js";
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
 import { RunRepository, type RunListResult } from "./repositories/runRepository.js";
+import {
+  PlanSessionRepository,
+  type PlanSessionListOptions,
+} from "./repositories/planSessionRepository.js";
 import {
   TicketRepoDeliveryRepository,
   type TicketRepoDeliveryWithRepo,
@@ -448,6 +454,7 @@ export class Dispatch {
   readonly ticketScopes: TicketScopeNodeRepository;
   readonly ticketDependencies: TicketDependencyRepository;
   readonly runs: RunRepository;
+  readonly planSessions: PlanSessionRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -509,6 +516,7 @@ export class Dispatch {
     this.ticketScopes = new TicketScopeNodeRepository(db);
     this.ticketDependencies = new TicketDependencyRepository(db);
     this.runs = new RunRepository(db);
+    this.planSessions = new PlanSessionRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -3215,6 +3223,73 @@ export class Dispatch {
    */
   sweepStaleRuns(): string[] {
     return this.runs.sweepStale(this.clock.now());
+  }
+
+  // --- Plan sessions (H9 — durable async plan-build chat) -------------------
+
+  /**
+   * Create a fresh active plan session. Any currently active session is
+   * archived as 'abandoned' first so only one session is active at a time.
+   */
+  createPlanSession(): PlanSession {
+    const now = this.clock.now();
+    this.planSessions.archiveAllActive(now);
+    return this.planSessions.create({ id: newId(), created_at: now, updated_at: now });
+  }
+
+  /**
+   * Fetch a plan session by id. Returns null when not found, so callers can
+   * distinguish a missing id from an active-but-empty session.
+   */
+  getPlanSession(id: string): PlanSession | null {
+    return this.planSessions.getById(id);
+  }
+
+  /**
+   * Return the most-recently-created active session, or null when none exists.
+   * Called on panel open so a reload restores the in-progress conversation.
+   */
+  getActivePlanSession(): PlanSession | null {
+    return this.planSessions.getActive();
+  }
+
+  /**
+   * Append a message to a plan session and optionally update the brief / stored
+   * plan. Returns the updated session, or null when the id is not found.
+   *
+   * `brief` should be supplied only on the first user turn (the opening line).
+   * `plan` should be supplied when the decompose helper returns a plan phase, as
+   * the raw plan JSON so the panel can restore the full proposal on reload.
+   */
+  appendPlanMessage(
+    id: string,
+    message: Omit<PlanMessage, "ts">,
+    opts: { brief?: string | null; plan?: unknown } = {},
+  ): PlanSession | null {
+    return this.planSessions.appendMessage({
+      id,
+      message: { ...message, ts: this.clock.now() },
+      ...(opts.brief !== undefined ? { brief: opts.brief } : {}),
+      ...(opts.plan !== undefined ? { plan_json: JSON.stringify(opts.plan) } : {}),
+      updated_at: this.clock.now(),
+    });
+  }
+
+  /**
+   * Archive a plan session. `status` must be 'confirmed' (the user approved the
+   * plan and tickets are being created) or 'abandoned' (the user started fresh or
+   * closed the panel without confirming). A no-op on an already-archived session.
+   */
+  archivePlanSession(id: string, status: "confirmed" | "abandoned"): void {
+    this.planSessions.archive({ id, status, updated_at: this.clock.now() });
+  }
+
+  /**
+   * List plan sessions, most-recently-created first. Capped at 20 by default.
+   * When `status` is given, only sessions with that status are returned.
+   */
+  listPlanSessions(options: PlanSessionListOptions = {}): PlanSession[] {
+    return this.planSessions.list(options);
   }
 
   // --- Board + dashboard reads (read-only showcase surfaces) ----------------

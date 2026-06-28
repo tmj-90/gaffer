@@ -215,7 +215,7 @@ describe("RUN-ACTIVITY: migration applies on an older (pre-v10) DB", () => {
     // Apply the current migration.
     migrate(db);
 
-    // The runs table now exists and the version was bumped to 10.
+    // The runs table now exists and the version was bumped to the current SCHEMA_VERSION.
     const after = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='runs'")
       .get();
@@ -223,7 +223,9 @@ describe("RUN-ACTIVITY: migration applies on an older (pre-v10) DB", () => {
     const version = db
       .prepare("SELECT value FROM schema_meta WHERE key='schema_version'")
       .get() as { value: string };
-    expect(version.value).toBe("10");
+    // The current schema version is 11 (H9 plan_sessions was added as a new table
+    // alongside the runs table in the same SCHEMA_SQL exec — no separate ALTER needed).
+    expect(Number(version.value)).toBeGreaterThanOrEqual(10);
 
     // The migrated table is usable by the repository.
     const repo = new RunRepository(db);

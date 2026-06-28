@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # =====================================================================
-# M1 — crash-safe worktree/branch cleanup (runner/tick.sh).
+# M1/R-2 — crash-safe worktree/branch cleanup (runner/tick.sh).
 # ---------------------------------------------------------------------
 # tick.sh only tore worktrees/branches down on its explicit success/error
 # paths; a CRASH or signal between worktree creation and one of those
 # paths orphaned the throwaway worktree and the `gaffer/ticket-*` branch
-# in the real repo. tick.sh now installs:
+# in the real repo. R-2 additionally installs the trap UP FRONT (right
+# after the config is sourced) so it ALSO covers the EARLIER candidate /
+# skill / access-boundary parsing — but unset-var-safe + a no-op until the
+# teardown helper and its rows exist. tick.sh now installs:
 #
-#   GAFFER_DELIVERY_COMPLETE=0
+#   GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
 #   gaffer_crash_cleanup() {
 #     [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ] && return 0
-#     gaffer_cleanup_worktrees drop-branch
+#     if declare -F gaffer_cleanup_worktrees >/dev/null 2>&1 && [ -n "${WT_ROWS:-}" ]; then
+#       gaffer_cleanup_worktrees drop-branch
+#     fi
+#     return 0
 #   }
 #   trap gaffer_crash_cleanup EXIT INT TERM
 #
@@ -23,6 +29,8 @@
 #   2. After GAFFER_DELIVERY_COMPLETE=1, the branch SURVIVES the trap
 #      (delivered work is kept for review/merge); only the worktree goes.
 #   3. The cleanup is idempotent (running it twice is a no-op, never fatal).
+#   5. (R-2) the EARLY trap — fired BEFORE any worktree/WT_ROWS exists —
+#      runs cleanly: no unbound-variable error, no partial state left.
 #
 # The trap/guard wiring below is kept BYTE-FOR-BYTE in step with tick.sh's
 # gaffer_crash_cleanup; a divergence should be caught in review.
@@ -80,10 +88,13 @@ gaffer_cleanup_worktrees() {
   done <<< "$WT_ROWS"
   [ -d "$WORKTREES_BASE" ] && rmdir "$WORKTREES_BASE" >/dev/null 2>&1 || true
 }
-GAFFER_DELIVERY_COMPLETE=0
+GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
 gaffer_crash_cleanup() {
   if [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ]; then return 0; fi
-  gaffer_cleanup_worktrees drop-branch
+  if declare -F gaffer_cleanup_worktrees >/dev/null 2>&1 && [ -n "${WT_ROWS:-}" ]; then
+    gaffer_cleanup_worktrees drop-branch
+  fi
+  return 0
 }
 trap gaffer_crash_cleanup EXIT INT TERM
 # ── end verbatim ──
@@ -148,6 +159,37 @@ if bash -c '
   }
   gaffer_cleanup_worktrees drop-branch
 '; then ok "re-running cleanup on a clean repo exits 0"; else fail "idempotent cleanup returned non-zero"; fi
+
+echo "== 5. (R-2) the EARLY trap runs cleanly BEFORE any worktree/WT_ROWS exists =="
+# Mirror tick.sh's UP-FRONT install: the trap is set right after the config is
+# sourced, BEFORE gaffer_cleanup_worktrees is defined and BEFORE WT_ROWS is set. A
+# crash here (during candidate/skill/access parsing) must run the trap with NO
+# unbound-variable abort (set -u) and leave no partial state — it is a deliberate
+# no-op because nothing has been created yet.
+cat > "$WORK/early.sh" <<'EARLY'
+set -uo pipefail
+# ── verbatim from tick.sh's UP-FRONT install (no helper/rows defined yet) ──
+GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
+gaffer_crash_cleanup() {
+  if [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ]; then return 0; fi
+  if declare -F gaffer_cleanup_worktrees >/dev/null 2>&1 && [ -n "${WT_ROWS:-}" ]; then
+    gaffer_cleanup_worktrees drop-branch
+  fi
+  return 0
+}
+trap gaffer_crash_cleanup EXIT INT TERM
+# ── end verbatim ──
+# Simulate a crash DURING early parsing — before any worktree, WT_ROWS, or
+# gaffer_cleanup_worktrees exists. The trap must fire and exit cleanly.
+exit 7
+EARLY
+early_err="$(bash "$WORK/early.sh" 2>&1 >/dev/null)"; early_rc=$?
+[ "$early_rc" -eq 7 ] && ok "early crash trap preserves the original exit code (7)" || fail "early crash trap changed the exit code (got $early_rc)"
+if printf '%s' "$early_err" | grep -qiE 'unbound variable|WT_ROWS:|gaffer_cleanup_worktrees: command not found'; then
+  fail "early trap hit an unbound-variable / undefined-helper error: $early_err"
+else
+  ok "early trap runs with no unbound-variable / undefined-helper error"
+fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

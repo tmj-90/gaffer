@@ -10,6 +10,38 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/factory.config.sh"
 mkdir -p "$GAFFER_DATA"
 
+# ── R-2: crash-cleanup trap installed UP FRONT (covers the whole lifecycle) ─────
+# The worktree teardown trap used to be installed only AFTER worktree setup, so a
+# crash or signal DURING the earlier candidate / skill / access-boundary parsing
+# left no cleanup — orphaning a stale worktree + half-finished gaffer/ branch from a
+# PRIOR attempt at the same ticket (the idempotent pre-create cleanup hadn't run
+# yet). We install ONE idempotent, unset-var-safe trap here, immediately after the
+# config is sourced, so it covers the entire per-ticket flow.
+#
+# Safety contract:
+#   • unset-var-safe: every var/path is guarded (`[ -n "$x" ]` / `[ -d "$x" ]`) and
+#     read with `${x:-}` defaults, so it runs cleanly BEFORE any worktree exists
+#     under `set -u` (no unbound-variable abort).
+#   • idempotent: it only acts once gaffer_cleanup_worktrees + WT_ROWS are defined
+#     (after worktree setup); before then it is a deliberate no-op. The underlying
+#     teardown is itself idempotent (`git worktree prune` / `branch -D` no-op when
+#     there's nothing to remove), so running the trap twice does no harm.
+#   • a SUCCESSFULLY-delivered branch is kept: once GAFFER_DELIVERY_COMPLETE=1 the
+#     trap returns early and never drops the branch review/merge depends on.
+GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
+gaffer_crash_cleanup() {
+  # A successfully-delivered branch is intentionally kept for review/merge; only tear
+  # down on an INCOMPLETE delivery (a crash/signal before the success point).
+  if [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ]; then return 0; fi
+  # Nothing to clean until worktree setup has defined the teardown helper + its rows.
+  # Before that point (config/candidate/skill/access parsing) this is a safe no-op.
+  if declare -F gaffer_cleanup_worktrees >/dev/null 2>&1 && [ -n "${WT_ROWS:-}" ]; then
+    gaffer_cleanup_worktrees drop-branch
+  fi
+  return 0
+}
+trap gaffer_crash_cleanup EXIT INT TERM
+
 # A-1 (parallel execution): the factory log, the per-run skip-file, and the
 # usage ledger are SHARED mutable state. Under GAFFER_CONCURRENCY>1 multiple
 # worker.sh processes run tick.sh at once and would interleave their appends. We
@@ -694,27 +726,21 @@ EOF
     [ -d "$WORKTREES_BASE" ] && rmdir "$WORKTREES_BASE" >/dev/null 2>&1 || true
   }
 
-  # ── M1: crash-safe worktree/branch cleanup ──────────────────────────────────
+  # ── M1/R-2: crash-safe worktree/branch cleanup ──────────────────────────────
   # The explicit success/error paths below tear worktrees down by hand, but a
   # CRASH or signal (the gaffer_timeout SIGTERM, a Ctrl-C, an unexpected `set -e`
   # abort) between worktree creation and one of those paths would ORPHAN the
   # throwaway worktrees and the half-finished `gaffer/ticket-*` branch in every
-  # write repo. We install an EXIT/INT/TERM trap that drops them — but GUARDED so a
-  # legitimately-delivered branch is never destroyed: on a successful delivery we
-  # set GAFFER_DELIVERY_COMPLETE=1 (the branch must survive for review/merge), and
-  # the trap then becomes a no-op for the branch. The cleanup itself is idempotent
-  # (`git worktree prune` / `branch -D` are no-ops when there's nothing to remove),
-  # so it is safe even when an explicit path already cleaned up. The trap is set
-  # ONLY now that gaffer_cleanup_worktrees + WT_ROWS/WORK_BRANCH/WORKTREES_BASE
-  # exist, so it can never reference an unset cleanup.
-  GAFFER_DELIVERY_COMPLETE=0
-  gaffer_crash_cleanup() {
-    # A successfully-delivered branch is intentionally kept for review/merge; only
-    # tear down on an INCOMPLETE delivery (crash/signal before the success point).
-    if [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ]; then return 0; fi
-    gaffer_cleanup_worktrees drop-branch
-  }
-  trap gaffer_crash_cleanup EXIT INT TERM
+  # write repo. The EXIT/INT/TERM trap that drops them is already installed UP FRONT
+  # (R-2, right after the config is sourced) so it ALSO covers the earlier candidate
+  # / skill / access-boundary parsing — but it is unset-var-safe and a no-op until
+  # gaffer_cleanup_worktrees + WT_ROWS are defined (i.e. until now). Now that the
+  # teardown helper and its rows exist, the trap becomes effective for this ticket.
+  # It is GUARDED so a legitimately-delivered branch is never destroyed: on a
+  # successful delivery we set GAFFER_DELIVERY_COMPLETE=1 (the branch must survive
+  # for review/merge) and the trap then returns early. The cleanup itself is
+  # idempotent (`git worktree prune` / `branch -D` are no-ops when there's nothing to
+  # remove), so it is safe even when an explicit path already cleaned up.
 
   # Idempotent re-runs: clear any stale worktrees from a previous attempt at this
   # ticket BEFORE creating fresh ones, and prune dangling worktree admin entries

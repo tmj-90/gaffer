@@ -197,6 +197,34 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 
+# --- Recoverable-delivery guard (GUARD B) ------------------------------------
+# When the agent produced ≥1 commit but a DOWNSTREAM gate (DoD / hygiene /
+# minimalism / empty-but-committed) failed, the delivery is RECOVERABLE: the
+# branch holds salvageable work, so the failure path PRESERVES the branch
+# (tears down only the disposable worktree), attaches the gate output to the
+# ticket as a rework note, and RE-INVOKES the delivery agent on the SAME branch
+# with that feedback — bounded by this cap. Only after the attempts are
+# exhausted is the ticket parked to `refining` WITH the branch + feedback (never
+# silently discarded). Set to 1 to disable retry (one attempt, then park).
+: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=2}"   # total delivery attempts per tick (≥1)
+export GAFFER_MAX_DELIVERY_ATTEMPTS
+
+# --- Ask-on-cap guard (GUARD C) ----------------------------------------------
+# When a mid-delivery agent call HITS a cap rather than failing a gate — it ran
+# to the turn cap (num_turns at/over GAFFER_MAX_TURNS) or Claude reported a
+# max-turns stop reason — the work is incomplete-but-not-broken. Instead of
+# silently discarding it, the tick PRESERVES the branch, emits a `ticket_parked`
+# notify event (ticket#, spend, dashboard URL; redaction honours
+# GAFFER_NOTIFY_REDACT), and parks the ticket as needs-human-review. This cap is
+# the turn count at/above which a call is treated as cap-hit; it defaults to the
+# turn cap itself so a call that consumed every turn is caught.
+: "${GAFFER_CAP_DETECT_TURNS:=${GAFFER_MAX_TURNS:-60}}"   # num_turns ≥ this ⇒ cap-hit
+export GAFFER_CAP_DETECT_TURNS
+# Dashboard base URL embedded in the cap-hit / park notify so the operator can
+# click straight through to the ticket. Defaults to the local dashboard.
+: "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"
+export GAFFER_DASHBOARD_URL
+
 # Portable wall-clock timeout. Usage: gaffer_timeout <seconds> <command> [args...]
 # Exit 124 on timeout (matching GNU timeout's convention) so callers can detect it.
 gaffer_timeout() {
@@ -814,6 +842,13 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # human review lane. In-tree, so this is defensive.
 # shellcheck source=lib/dod.sh
 [ -f "$RUNNER_DIR/lib/dod.sh" ] && source "$RUNNER_DIR/lib/dod.sh"
+
+# Recoverable-delivery + ask-on-cap primitives (GUARD B / GUARD C): defines
+# gaffer_branch_has_commits / gaffer_any_branch_has_commits (recoverable-vs-
+# unrecoverable discriminator), gaffer_is_cap_hit / gaffer_cap_num_turns /
+# gaffer_delivery_spend (cap detection + spend for the ask-on-cap notify).
+# shellcheck source=lib/delivery-recovery.sh
+[ -f "$RUNNER_DIR/lib/delivery-recovery.sh" ] && source "$RUNNER_DIR/lib/delivery-recovery.sh"
 
 # Per-repo backpressure (defines gaffer_repo_pressure / gaffer_repo_in_backpressure).
 # shellcheck source=lib/backpressure.sh

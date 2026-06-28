@@ -1136,6 +1136,9 @@ EOF
       result error; exit 0
     fi
     gaffer_cleanup_worktrees drop-branch
+    wg ticket move "$NUM" refining --reason "delivery failed: agent exited non-zero (rc=$rc) with no commits; branch dropped for retry" >/dev/null 2>&1 \
+      || wg block "$NUM" --reason "delivery failed: agent exited non-zero (rc=$rc) with no commits; branch dropped" >/dev/null 2>&1 \
+      || true
     gaffer_skip_ticket "$NUM"
     log "delivery FAILED for #$NUM (rc=$rc) — no commits produced; removed worktrees + branch $WORK_BRANCH; skipping it for the rest of this run"
     result error; exit 0
@@ -1156,12 +1159,18 @@ EOF
     case "$HEAD_BRANCH" in
       "$rbase"|"")
         gaffer_cleanup_worktrees drop-branch
+        wg ticket move "$NUM" refining --reason "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch); branch dropped" >/dev/null 2>&1 \
+          || wg block "$NUM" --reason "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch)" >/dev/null 2>&1 \
+          || true
         gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD is '$HEAD_BRANCH' (expected a gaffer/ branch, not the default '$rbase'); removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;
       gaffer/*) : ;;  # on the runner-owned branch as expected
       *)
         gaffer_cleanup_worktrees drop-branch
+        wg ticket move "$NUM" refining --reason "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch; branch dropped" >/dev/null 2>&1 \
+          || wg block "$NUM" --reason "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch" >/dev/null 2>&1 \
+          || true
         gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD '$HEAD_BRANCH' is not a gaffer/ branch; removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;

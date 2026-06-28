@@ -1509,14 +1509,21 @@ function routeReadModels(
       active: url.searchParams.get("active") ?? undefined,
       limit: url.searchParams.get("limit") ?? undefined,
     });
-    const active = wg.listRuns({ active: true });
+    // Active list is hard-capped (a wedged factory could leak many running rows);
+    // surface truncation so the panel can show "showing N of many" rather than
+    // silently dropping in-flight runs.
+    const activeResult = wg.listRunsResult({ active: true });
     // The recent list is the most-recent N of any status; drop the still-running
     // ones so `recent` reads as the finished tail (active are shown separately).
     const recent = wg
       .listRuns({ limit: q.limit })
       .filter((r) => r.status !== "running")
       .slice(0, q.limit);
-    sendJson(res, 200, { active, recent });
+    sendJson(res, 200, {
+      active: activeResult.runs,
+      active_truncated: activeResult.truncated,
+      recent,
+    });
     return;
   }
 

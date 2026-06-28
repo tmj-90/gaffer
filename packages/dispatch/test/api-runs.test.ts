@@ -59,10 +59,16 @@ describe("RUN-ACTIVITY REST: GET /api/runs", () => {
     const res = await fetch(`${h.baseUrl}/api/runs?active=1`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toMatch(/application\/json/);
-    const body = (await res.json()) as { active: Run[]; recent: Run[] };
+    const body = (await res.json()) as {
+      active: Run[];
+      active_truncated: boolean;
+      recent: Run[];
+    };
 
     expect(body.active.map((r) => r.id)).toEqual([running.id]);
     expect(body.active[0]!.status).toBe("running");
+    // FIX-4: the active list reports its truncation state (false well under cap).
+    expect(body.active_truncated).toBe(false);
 
     const recentIds = body.recent.map((r) => r.id);
     expect(recentIds).toContain(ok.id);

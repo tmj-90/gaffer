@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import { migrate } from "../src/db/connection.js";
-import { RunRepository } from "../src/repositories/runRepository.js";
+import {
+  DEFAULT_RUN_MAX_AGE_MS,
+  RunRepository,
+  resolveRunMaxAgeMs,
+} from "../src/repositories/runRepository.js";
 import { TestClock } from "../src/util/clock.js";
 
 /**
@@ -92,6 +96,41 @@ describe("RUN-ACTIVITY: runs facade lifecycle", () => {
     wg.markRunEnd(id, { exit_code: 1 });
     expect(wg.runs.findById(id)!.status).toBe("succeeded");
   });
+
+  it("hard-caps the active list and surfaces truncation (FIX-4)", () => {
+    const clock = new TestClock();
+    const w = Dispatch.open(":memory:", clock);
+    // Five running rows; cap the active list at 2.
+    for (let i = 0; i < 5; i++) {
+      clock.advanceSeconds(1);
+      w.recordRunStart({ kind: "other", repo: `r${i}` });
+    }
+    const capped = w.runs.list({ active: true, activeLimit: 2 });
+    expect(capped).toHaveLength(2);
+
+    const result = w.runs.listResult({ active: true, activeLimit: 2 });
+    expect(result.runs).toHaveLength(2);
+    expect(result.truncated).toBe(true);
+
+    // Under the cap → not truncated.
+    const roomy = w.runs.listResult({ active: true, activeLimit: 50 });
+    expect(roomy.runs).toHaveLength(5);
+    expect(roomy.truncated).toBe(false);
+    w.db.close();
+  });
+});
+
+describe("RUN-ACTIVITY: resolveRunMaxAgeMs", () => {
+  it("defaults when unset / empty / non-numeric / non-positive", () => {
+    expect(resolveRunMaxAgeMs({})).toBe(DEFAULT_RUN_MAX_AGE_MS);
+    expect(resolveRunMaxAgeMs({ GAFFER_RUN_MAX_AGE_MS: "" })).toBe(DEFAULT_RUN_MAX_AGE_MS);
+    expect(resolveRunMaxAgeMs({ GAFFER_RUN_MAX_AGE_MS: "abc" })).toBe(DEFAULT_RUN_MAX_AGE_MS);
+    expect(resolveRunMaxAgeMs({ GAFFER_RUN_MAX_AGE_MS: "0" })).toBe(DEFAULT_RUN_MAX_AGE_MS);
+    expect(resolveRunMaxAgeMs({ GAFFER_RUN_MAX_AGE_MS: "-5" })).toBe(DEFAULT_RUN_MAX_AGE_MS);
+  });
+  it("honours a positive override", () => {
+    expect(resolveRunMaxAgeMs({ GAFFER_RUN_MAX_AGE_MS: "60000" })).toBe(60000);
+  });
 });
 
 describe("RUN-ACTIVITY: sweepStaleRuns reconciles orphans", () => {
@@ -115,6 +154,40 @@ describe("RUN-ACTIVITY: sweepStaleRuns reconciles orphans", () => {
     const swept = wg.runs.sweepStale(new TestClock().now(), () => true);
     expect(swept).toEqual([id]);
     expect(wg.runs.findById(id)!.status).toBe("unknown");
+  });
+
+  it("age-caps a still-running row past max age regardless of pid liveness (PID-reuse mitigation)", () => {
+    // FIX-3: a row whose pid still probes alive (e.g. a reused pid) but whose
+    // start is older than maxAgeMs is swept anyway, so a reused pid can't keep a
+    // dead run wedged `running` forever.
+    const clock = new TestClock();
+    const wg = Dispatch.open(":memory:", clock);
+    // Started "now"; the run carries clock.now() as started_at.
+    const startedAt = clock.now();
+    const { id } = wg.recordRunStart({ kind: "product_owner", pid: process.pid });
+
+    // Sweep "1 hour later" with a 1-second cap, but with a probe that claims the
+    // pid is ALIVE — only the age cap can sweep it.
+    const oneHourLater = new Date(Date.parse(startedAt) + 60 * 60 * 1000).toISOString();
+    const swept = wg.runs.sweepStale(oneHourLater, () => true, 1000);
+    expect(swept).toEqual([id]);
+    const row = wg.runs.findById(id)!;
+    expect(row.status).toBe("unknown");
+    expect(row.detail).toMatch(/max age/);
+    wg.db.close();
+  });
+
+  it("does NOT age-cap a young row whose pid is still alive", () => {
+    const clock = new TestClock();
+    const wg = Dispatch.open(":memory:", clock);
+    const startedAt = clock.now();
+    const { id } = wg.recordRunStart({ kind: "onboard", pid: process.pid });
+    // 500ms later with a 1-hour cap and a live pid → not swept.
+    const soon = new Date(Date.parse(startedAt) + 500).toISOString();
+    const swept = wg.runs.sweepStale(soon, () => true, 60 * 60 * 1000);
+    expect(swept).toEqual([]);
+    expect(wg.runs.findById(id)!.status).toBe("running");
+    wg.db.close();
   });
 
   it("the facade sweepStaleRuns uses the real liveness probe end-to-end", () => {

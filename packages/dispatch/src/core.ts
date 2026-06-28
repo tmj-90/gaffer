@@ -64,7 +64,7 @@ import {
 import { EvidenceRepository } from "./repositories/evidenceRepository.js";
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
-import { RunRepository } from "./repositories/runRepository.js";
+import { RunRepository, type RunListResult } from "./repositories/runRepository.js";
 import {
   TicketRepoDeliveryRepository,
   type TicketRepoDeliveryWithRepo,
@@ -3192,8 +3192,19 @@ export class Dispatch {
    * the most-recent `limit` runs of any status. Powers the dashboard's "Running
    * now" panel.
    */
-  listRuns(options: { active?: boolean; limit?: number } = {}): Run[] {
+  listRuns(options: { active?: boolean; limit?: number; activeLimit?: number } = {}): Run[] {
     return this.runs.list(options);
+  }
+
+  /**
+   * As {@link listRuns}, but also reports whether the (active) list was truncated
+   * by its hard cap — so the API can surface "showing N of many" rather than
+   * silently dropping in-flight runs.
+   */
+  listRunsResult(
+    options: { active?: boolean; limit?: number; activeLimit?: number } = {},
+  ): RunListResult {
+    return this.runs.listResult(options);
   }
 
   /**

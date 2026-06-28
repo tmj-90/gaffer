@@ -45,13 +45,32 @@ crew doctor                     # readiness pre-flight (see below)
 crew stats                      # snapshot: repos, skills, idle loops, recent run outcomes
 crew scan                       # scan configured repos (branch + stack)
 crew run -a <agentId> --dry-run # one implementation-loop tick
-crew idle                       # one idle coverage-loop tick (drafts only)
+crew idle                       # run every enabled idle loop (drafts only)
+crew maintain                   # idle MAINTENANCE LANE: ONE scheduler-chosen loop (priority+rotation)
 crew skills --capability tests  # list skills by stack/capability
 crew safety check --command "git push --force"   # explain a safety decision
 ```
 
 `doctor` and `stats` render human-readable output by default; pass `--json` for
 the structured form.
+
+### `crew maintain` — the idle maintenance lane
+
+`crew idle` runs *every* enabled idle loop. `crew maintain` instead runs the
+**one** maintenance loop chosen by a **deterministic priority + rotation
+scheduler — no LLM in the choice** (audit item A4). It is the "factory improves
+the longer it runs" promise made literal: every quiet tick spends its tokens on
+the highest-leverage maintenance lane that is due.
+
+- **Priority:** `security_hotspot` → `coverage` / `test_quality` →
+  `type_quality` / `tech_debt` → `documentation` / `dependency_hygiene`.
+- **Rotation:** a persisted cursor (`loops.maintenance.cursor_path`, default
+  `$GAFFER_DATA/maintenance-cursor.json`) stops a high-priority lane starving the
+  rest and stops the same lane being picked twice in a row. The cadence survives
+  across ticks/processes.
+- **Enabled flags respected:** the lane only rotates through loops whose own
+  `enabled` flag is on; `loops.maintenance.enabled` gates the lane itself. OFF by
+  default. Wire it into the runner with `GAFFER_MAINTENANCE=1`.
 
 ### `crew doctor`
 

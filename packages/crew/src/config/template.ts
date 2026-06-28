@@ -192,6 +192,18 @@ loops:
     repos: []
     minimum_occurrences: 3
     draft_ratify_ticket: false # also draft a Dispatch ticket to ratify the lore
+  # ── Idle MAINTENANCE LANE (audit item A4) ──────────────────────────────────
+  # OFF by default. When ON (and GAFFER_MAINTENANCE=1 in the runner), a quiet
+  # idle tick runs ONE maintenance loop chosen by a DETERMINISTIC priority +
+  # rotation scheduler — NO LLM in the choice — instead of every idle loop or a
+  # single fixed scan. Priority: security_hotspot → coverage/test_quality →
+  # type_quality/tech_debt → documentation/dependency_hygiene; it rotates so no
+  # lane starves and the same lane is not picked on consecutive ticks. The lane
+  # only rotates through loops you have enabled above (each loop's own flag is
+  # the on/off switch); this block gates the lane itself + the rotation cursor.
+  maintenance:
+    enabled: false # set true (and GAFFER_MAINTENANCE=1) for the smart prioritised lane
+    cursor_path: null # null = <GAFFER_DATA>/maintenance-cursor.json; survives across ticks
   # The self-improving closed loop. OFF BY DEFAULT. When on, an idle tick may
   # promote its OWN drafted improvement tickets to 'ready' so the delivery loop
   # claims them — no human in the promote step. Deliberately hard to fire:

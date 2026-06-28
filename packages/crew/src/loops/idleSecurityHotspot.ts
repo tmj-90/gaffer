@@ -146,7 +146,17 @@ const DETECTORS: readonly Detector[] = [
     kind: "unsafe_api",
     match: (l) => UNSAFE_API_RE.test(l),
     // Refute a regex/parse `.exec(` — a RegExp.exec call is not code execution.
-    refute: (l) => /\.exec\s*\(/.test(l) && !/\b(?:child_process|cp|shell)\b/.test(l),
+    // SCOPED to the matched construct: only dismiss the line when its unsafe-API
+    // hit really IS the benign `.exec(` and there is NO OTHER unsafe construct on
+    // the same line. Otherwise a real `eval(...)` co-located with a `db.exec(...)`
+    // would be silently refuted ("line has .exec + no child_process") and a live
+    // code-execution sink would slip through unfiled.
+    refute: (l) =>
+      /\.exec\s*\(/.test(l) &&
+      !/\b(?:child_process|cp|shell)\b/.test(l) &&
+      !/\beval\s*\(/.test(l) &&
+      !/\bnew\s+Function\s*\(/.test(l) &&
+      !/\bexecSync\s*\(/.test(l),
     risk:
       "Dynamic code or shell execution (eval / new Function / child_process.exec) can run attacker-controlled input. " +
       "Avoid eval; prefer execFile with an argument array and validated inputs.",

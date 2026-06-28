@@ -18,7 +18,16 @@
 #     fi
 #     return 0
 #   }
-#   trap gaffer_crash_cleanup EXIT INT TERM
+#   gaffer_on_exit()   { local rc=$?; trap - EXIT INT TERM; gaffer_crash_cleanup; exit "$rc"; }
+#   gaffer_on_signal() { trap - EXIT INT TERM; gaffer_crash_cleanup; exit "$1"; }
+#   trap gaffer_on_exit EXIT
+#   trap 'gaffer_on_signal 130' INT
+#   trap 'gaffer_on_signal 143' TERM
+#
+# FIX-SIGNAL: a returning bash signal trap does NOT terminate the script — a
+# cleanup-only handler on INT/TERM would clean up then RESUME past the
+# interrupted point. The split EXIT/signal handlers above reset the trap and
+# exit with the right code (130 INT / 143 TERM) so termination is never swallowed.
 #
 # and sets GAFFER_DELIVERY_COMPLETE=1 once delivery is recorded AND the
 # worktrees are torn down (R-5: flag set AFTER teardown so a signal in the
@@ -35,6 +44,8 @@
 #      runs cleanly: no unbound-variable error, no partial state left.
 #   6. (R-5) tick.sh sets GAFFER_DELIVERY_COMPLETE=1 strictly AFTER the
 #      success-path worktree teardown (static ordering check).
+#   7. (FIX-SIGNAL) a real TERM/INT EXITS with 143/130 and execution does NOT
+#      continue past the signal (the after-signal marker is never written).
 #
 # The trap/guard wiring below is kept BYTE-FOR-BYTE in step with tick.sh's
 # gaffer_crash_cleanup; a divergence should be caught in review.
@@ -69,7 +80,7 @@ BASE="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
 make_runner() {
   cat > "$WORK/runner.sh" <<'RUNNER'
 set -uo pipefail
-REPO="$1"; WT="$2"; BASE="$3"; MODE="$4"
+REPO="$1"; WT="$2"; BASE="$3"; MODE="$4"; MARKER_DIR="${5:-}"
 WORK_BRANCH="gaffer/ticket-99-demo"
 WORKTREES_BASE="$(dirname "$WT")"
 # Single-row WT_ROWS: rid \t rname \t rpath \t rbase \t rwt  (mirrors tick.sh).
@@ -100,7 +111,20 @@ gaffer_crash_cleanup() {
   fi
   return 0
 }
-trap gaffer_crash_cleanup EXIT INT TERM
+gaffer_on_exit() {
+  local rc=$?
+  trap - EXIT INT TERM
+  gaffer_crash_cleanup
+  exit "$rc"
+}
+gaffer_on_signal() {   # $1 = exit code (130 INT, 143 TERM)
+  trap - EXIT INT TERM
+  gaffer_crash_cleanup
+  exit "$1"
+}
+trap gaffer_on_exit EXIT
+trap 'gaffer_on_signal 130' INT
+trap 'gaffer_on_signal 143' TERM
 # ── end verbatim ──
 
 mkdir -p "$WORKTREES_BASE"
@@ -108,8 +132,17 @@ git -C "$REPO" worktree add -B "$WORK_BRANCH" "$WT" "$BASE" >/dev/null 2>&1
 
 case "$MODE" in
   crash)    exit 1 ;;                       # crash BEFORE completion
-  sigterm)  kill -TERM $$ ; sleep 5 ;;      # signalled BEFORE completion
   complete) GAFFER_DELIVERY_COMPLETE=1; exit 0 ;;  # delivered → keep branch
+  signal-wait)
+    # FIX-SIGNAL harness: announce readiness, wait at a blocking point, then (if
+    # execution wrongly RESUMED past the signal) drop an after-signal marker. The
+    # parent sends INT/TERM during the wait; a correct handler exits 130/143 and
+    # the after-signal marker is NEVER written.
+    [ -n "$MARKER_DIR" ] || { echo "signal-wait needs MARKER_DIR" >&2; exit 2; }
+    touch "$MARKER_DIR/started"
+    sleep 5
+    touch "$MARKER_DIR/after-signal"   # must NEVER be reached after a signal
+    exit 0 ;;
 esac
 RUNNER
 }
@@ -123,12 +156,50 @@ bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" crash >/dev/null 2>&1 || true
 [ -e "$WT" ] && fail "crash left the worktree behind" || ok "crash removed the orphan worktree"
 branch_exists && fail "crash left the gaffer/ branch behind" || ok "crash removed the orphan branch"
 
-echo "== 2. SIGTERM BEFORE completion drops worktree + branch =="
+# FIX-SIGNAL harness note: each signal-wait runner is launched with job control
+# ENABLED (`set -m`) so the backgrounded non-interactive bash gets its OWN process
+# group with DEFAULT signal dispositions. A plain `&` async child hard-ignores
+# SIGINT (POSIX), making INT untrappable — a test artifact, not the production
+# reality. `set -m` mirrors tick.sh's REAL foreground execution under
+# loop.sh/worker.sh, where INT/TERM ARE trappable. The `&` + `$!` capture must
+# stay in THIS shell (not a function subshell) so `wait` can reap the child.
+wait_for_started() {  # $1=MK
+  local _i
+  for _i in $(seq 1 200); do [ -e "$1/started" ] && return 0; sleep 0.05; done
+  return 1
+}
+
+echo "== 2. SIGTERM BEFORE completion drops worktree + branch AND exits 143 =="
+# FIX-SIGNAL: a real TERM during a blocking wait must (a) tear down the orphan
+# worktree + branch and (b) EXIT 143 — never resume past the signal.
 make_runner
-WT="$WORK/wt-term"
-bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" sigterm >/dev/null 2>&1 || true
+WT="$WORK/wt-term"; MK="$WORK/mk-term"; mkdir -p "$MK"
+set -m
+bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" signal-wait "$MK" >/dev/null 2>&1 &
+rpid=$!
+set +m
+wait_for_started "$MK" || fail "TERM harness never reached its wait point"
+kill -TERM "$rpid" 2>/dev/null || true
+wait "$rpid"; term_rc=$?
+[ "$term_rc" -eq 143 ] && ok "SIGTERM exits 143 (terminated, not swallowed)" || fail "SIGTERM did not exit 143 (got $term_rc) — termination was swallowed"
+[ -e "$MK/after-signal" ] && fail "execution RESUMED past the TERM signal (after-signal marker written)" || ok "execution did NOT continue past the TERM signal"
 [ -e "$WT" ] && fail "SIGTERM left the worktree behind" || ok "SIGTERM removed the orphan worktree"
 branch_exists && fail "SIGTERM left the gaffer/ branch behind" || ok "SIGTERM removed the orphan branch"
+
+echo "== 2b. SIGINT BEFORE completion drops worktree + branch AND exits 130 =="
+make_runner
+WT="$WORK/wt-int"; MK="$WORK/mk-int"; mkdir -p "$MK"
+set -m
+bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" signal-wait "$MK" >/dev/null 2>&1 &
+rpid=$!
+set +m
+wait_for_started "$MK" || fail "INT harness never reached its wait point"
+kill -INT "$rpid" 2>/dev/null || true
+wait "$rpid"; int_rc=$?
+[ "$int_rc" -eq 130 ] && ok "SIGINT exits 130 (terminated, not swallowed)" || fail "SIGINT did not exit 130 (got $int_rc) — termination was swallowed"
+[ -e "$MK/after-signal" ] && fail "execution RESUMED past the INT signal (after-signal marker written)" || ok "execution did NOT continue past the INT signal"
+[ -e "$WT" ] && fail "SIGINT left the worktree behind" || ok "SIGINT removed the orphan worktree"
+branch_exists && fail "SIGINT left the gaffer/ branch behind" || ok "SIGINT removed the orphan branch"
 
 echo "== 3. a COMPLETED delivery keeps the branch (only the worktree is torn down) =="
 make_runner

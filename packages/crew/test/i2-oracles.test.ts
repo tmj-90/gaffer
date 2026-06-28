@@ -275,8 +275,65 @@ describe("securityOracle (semgrep)", () => {
     const repo = tempRepo("orc-sg-absent-");
     const oracle = createSecurityOracle(new ScriptedCommandRunner([]), {
       binary: "/nonexistent/semgrep",
+      // A ruleset IS configured here, so the unavailability is genuinely the
+      // absent binary (not the missing-ruleset guard).
+      ruleset: "p/local",
     });
-    expect(oracle.consult(repo).available).toBe(false);
+    const result = oracle.consult(repo);
+    expect(result.available).toBe(false);
+    if (!result.available) expect(result.reason).toMatch(/not found on PATH/);
+  });
+
+  it("is unavailable (and never invokes semgrep) when no ruleset is configured", () => {
+    // FIX-2: local-first. With neither options.ruleset nor GAFFER_SEMGREP_RULESET
+    // set, the oracle must NOT default to the network `auto` pack — it reports
+    // unavailable and the loop keeps its heuristic three-lens path. Crucially, no
+    // semgrep process is invoked (the runner records zero calls), even when the
+    // binary IS present on PATH.
+    const repo = tempRepo("orc-sg-noruleset-");
+    installLocalBin(repo, "semgrep");
+    const runner = new ScriptedCommandRunner([
+      { match: (c) => c.includes("semgrep"), result: { stdout: "{}", exitCode: 0 } },
+    ]);
+    // Explicitly empty env so a real GAFFER_SEMGREP_RULESET cannot leak in.
+    const oracle = createSecurityOracle(runner, { env: {} });
+    const result = oracle.consult(repo);
+    expect(result.available).toBe(false);
+    if (!result.available) {
+      expect(result.reason).toContain("GAFFER_SEMGREP_RULESET");
+    }
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("runs with an explicit ruleset via --config (never auto)", () => {
+    const repo = tempRepo("orc-sg-ruleset-");
+    installLocalBin(repo, "semgrep");
+    const runner = new ScriptedCommandRunner([
+      { match: (c) => c.includes("semgrep"), result: { stdout: sample, exitCode: 1 } },
+    ]);
+    const oracle = createSecurityOracle(runner, { ruleset: "p/local-ts", env: {} });
+    const result = oracle.consult(repo);
+    expect(result.available).toBe(true);
+    expect(runner.calls).toHaveLength(1);
+    const cmd = runner.calls[0]!.command;
+    expect(cmd).toContain("--config p/local-ts");
+    expect(cmd).not.toContain("auto");
+  });
+
+  it("reads the ruleset from GAFFER_SEMGREP_RULESET when no option is given", () => {
+    const repo = tempRepo("orc-sg-envruleset-");
+    installLocalBin(repo, "semgrep");
+    const runner = new ScriptedCommandRunner([
+      { match: (c) => c.includes("semgrep"), result: { stdout: sample, exitCode: 1 } },
+    ]);
+    const oracle = createSecurityOracle(runner, {
+      env: { GAFFER_SEMGREP_RULESET: "/etc/gaffer/semgrep-local.yml" },
+    });
+    const result = oracle.consult(repo);
+    expect(result.available).toBe(true);
+    const cmd = runner.calls[0]!.command;
+    expect(cmd).toContain("--config /etc/gaffer/semgrep-local.yml");
+    expect(cmd).not.toContain("auto");
   });
 });
 

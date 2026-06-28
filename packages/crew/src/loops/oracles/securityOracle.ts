@@ -9,14 +9,17 @@ import type { Oracle, OracleFinding, OracleResult, OracleSeverity } from "./type
  * Security oracle backed by semgrep. Runs `semgrep --json --config <ruleset>`
  * over the repo and normalizes results into precise findings (file, line span,
  * check-id rule, severity, message). semgrep is treated as STRICTLY OPTIONAL:
- * when it isn't on PATH, the oracle reports `available: false` and the
- * security-hotspot loop falls back to its existing three-lens grep+verify path.
+ * when it isn't on PATH — or when no ruleset is configured — the oracle reports
+ * `available: false` and the security-hotspot loop falls back to its existing
+ * three-lens grep+verify path.
  *
- * The default ruleset is `auto` (semgrep's curated registry pack). An operator
- * can point this at a local ruleset directory/file instead. We never fetch over
- * the network ourselves — semgrep manages its own rule cache; `auto` may require
- * connectivity on first use, so a curated LOCAL ruleset is the safer default for
- * a fully offline factory (deferred: shipping a bundled ruleset).
+ * LOCAL-FIRST: the ruleset is NEVER defaulted to `auto`. semgrep's `auto` pulls
+ * rules from the semgrep registry over the network on first use, which violates
+ * the offline-by-default contract of a local factory. The ruleset must therefore
+ * be configured explicitly, via `options.ruleset` or the `GAFFER_SEMGREP_RULESET`
+ * env var (pointing at a local ruleset file/dir). With neither set the oracle is
+ * unavailable — no semgrep is invoked — and the loop keeps its heuristic path.
+ * (Deferred: shipping a curated bundled local ruleset as the documented default.)
  */
 
 interface SemgrepResult {
@@ -67,20 +70,52 @@ function normalizeFile(file: string, root: string): string {
   return isAbsolute(file) ? relative(root, file) : file;
 }
 
+/** Env var naming a LOCAL semgrep ruleset (file or dir) passed to `--config`. */
+const RULESET_ENV = "GAFFER_SEMGREP_RULESET";
+
 /**
- * Build the semgrep security oracle. `ruleset` is passed to `--config`
- * (default `auto`). Absent binary → unavailable so the loop keeps its heuristic
- * three-lens path. A non-zero exit (findings present) is still a successful run.
+ * Resolve the ruleset to pass to `--config`, LOCAL-FIRST. Precedence:
+ * `options.ruleset` → `$GAFFER_SEMGREP_RULESET`. Whitespace is trimmed and an
+ * empty value is treated as unset. Returns `undefined` when nothing is
+ * configured — the oracle is then unavailable rather than silently falling back
+ * to the network `auto` pack. `auto` is never used as a default.
+ */
+function resolveRuleset(
+  optionRuleset: string | undefined,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  const fromOption = (optionRuleset ?? "").trim();
+  if (fromOption !== "") return fromOption;
+  const fromEnv = (env[RULESET_ENV] ?? "").trim();
+  return fromEnv !== "" ? fromEnv : undefined;
+}
+
+/**
+ * Build the semgrep security oracle. The ruleset passed to `--config` comes from
+ * `options.ruleset` or `$GAFFER_SEMGREP_RULESET` — never the network `auto` pack.
+ * Unavailable (so the loop keeps its heuristic three-lens path) when EITHER the
+ * binary is absent OR no ruleset is configured. A non-zero exit (findings
+ * present) is still a successful run.
  */
 export function createSecurityOracle(
   runner: CommandRunner,
-  options: { binary?: string; ruleset?: string } = {},
+  options: { binary?: string; ruleset?: string; env?: NodeJS.ProcessEnv } = {},
 ): Oracle {
   const binary = options.binary ?? "semgrep";
-  const ruleset = options.ruleset ?? "auto";
+  const env = options.env ?? process.env;
+  const ruleset = resolveRuleset(options.ruleset, env);
   return {
     id: "semgrep",
     consult(root: string): OracleResult {
+      // Local-first: refuse to run without an explicit local ruleset rather than
+      // defaulting to semgrep's network `auto` pack. Checked BEFORE resolving the
+      // binary so no semgrep process is ever spawned when unconfigured.
+      if (ruleset === undefined) {
+        return {
+          available: false,
+          reason: `semgrep ruleset not configured (set ${RULESET_ENV} to a local ruleset)`,
+        };
+      }
       const resolved = resolveBinary(binary, root);
       if (!resolved) return { available: false, reason: `${binary} not found on PATH` };
       const result = runner.runArgs(

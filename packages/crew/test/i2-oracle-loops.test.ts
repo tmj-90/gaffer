@@ -218,7 +218,10 @@ describe("security-hotspot loop with semgrep oracle", () => {
       { match: (c) => c.includes("semgrep"), result: { stdout: sgOut, exitCode: 1 } },
     ]);
     const wg = new FakeDispatchClient();
-    const d = deps(configForRepo(repo), wg, runner, { security: createSecurityOracle(runner) });
+    // An explicit local ruleset is required now that `auto` is never defaulted.
+    const d = deps(configForRepo(repo), wg, runner, {
+      security: createSecurityOracle(runner, { ruleset: "p/local" }),
+    });
 
     const outcome = runIdleSecurityHotspotLoop(d);
     expect(outcome.status).toBe("draft_created");
@@ -264,7 +267,9 @@ describe("security-hotspot loop with semgrep oracle", () => {
       },
     ]);
     const wg = new FakeDispatchClient();
-    const d = deps(configForRepo(repo), wg, runner, { security: createSecurityOracle(runner) });
+    const d = deps(configForRepo(repo), wg, runner, {
+      security: createSecurityOracle(runner, { ruleset: "p/local" }),
+    });
     expect(runIdleSecurityHotspotLoop(d).status).toBe("no_findings");
   });
 });

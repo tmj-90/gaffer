@@ -960,14 +960,34 @@ EOF
     log "EMPTY delivery for #$NUM — 0 commits / no diff across all write repos; parking (no blind retry)"
     wg attach-evidence "$NUM" --type manual_note \
       --summary "PARKED: empty delivery (no diff produced) — routing to refinement, not retrying blindly" >/dev/null 2>&1 || true
+    # R-6: the status-fetch + state-move used to fail SILENTLY — an empty status (a
+    # failed `wg ticket show`) wrongly fell through to the block branch, and any move
+    # failure was swallowed by `|| true`, leaving the ticket drifting in in_review.
+    # Now: an EMPTY status fetch is surfaced as a visible WARNING (and we conservatively
+    # try to block rather than mis-route), and EVERY move failure is logged explicitly
+    # with the ticket number + the attempted transition. All still NON-FATAL — the
+    # empty-delivery park must complete (worktree/branch teardown below) regardless.
     _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-    if [ "$_CUR_STATUS" = "in_review" ]; then
-      wg review reject "$NUM" --to refining --reviewer factory-empty \
-        --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1 \
-        && log "EMPTY: parked #$NUM (in_review → refining)" || true
+    if [ -z "$_CUR_STATUS" ]; then
+      log "EMPTY: WARNING — could not read status for #$NUM (status fetch returned empty); cannot confirm the in_review→refining transition. Attempting a block as a fallback."
+      if wg block "$NUM" --reason "empty delivery: agent produced no change — needs clarification/refinement (status unknown — fetch failed)" >/dev/null 2>&1; then
+        log "EMPTY: blocked #$NUM (status unknown)"
+      else
+        log "EMPTY: WARNING — could not block #$NUM after empty delivery (status unknown); ticket may be drifting — needs a human"
+      fi
+    elif [ "$_CUR_STATUS" = "in_review" ]; then
+      if wg review reject "$NUM" --to refining --reviewer factory-empty \
+        --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1; then
+        log "EMPTY: parked #$NUM (in_review → refining)"
+      else
+        log "EMPTY: WARNING — failed to move #$NUM (in_review → refining) after empty delivery; ticket left in in_review — needs a human"
+      fi
     else
-      wg block "$NUM" --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1 \
-        && log "EMPTY: blocked #$NUM (status '$_CUR_STATUS')" || true
+      if wg block "$NUM" --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1; then
+        log "EMPTY: blocked #$NUM (status '$_CUR_STATUS')"
+      else
+        log "EMPTY: WARNING — failed to block #$NUM (status '$_CUR_STATUS') after empty delivery; ticket may be drifting — needs a human"
+      fi
     fi
     gaffer_cleanup_worktrees drop-branch
     gaffer_skip_ticket "$NUM"

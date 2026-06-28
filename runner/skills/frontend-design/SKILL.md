@@ -10,7 +10,11 @@ area: frontend
 Build frontend that looks **intentional, opinionated, and specific to the product** — not
 a default template. The bar is: *would this look believable in a real product screenshot?*
 This pack is about visual quality and design judgement; pair it with `frontend-component`,
-`frontend-a11y`, and `frontend-responsive` for structure, semantics, and breakpoints.
+`frontend-a11y`, and `frontend-responsive` for structure, semantics, and breakpoints, and
+with **`design-system`** for the structural layer beneath the aesthetic — the three-tier
+token architecture (primitive → semantic → component) and full component state specs. This
+pack decides *how it should look*; `design-system` decides *how that look is structured so it
+scales*. Don't re-derive tokens or component-state matrices here — consume them from there.
 
 ## Before you write any code — pick a direction
 
@@ -41,6 +45,35 @@ Every meaningful surface must demonstrate **at least four**:
 9. **Motion that clarifies flow**, never distracts.
 10. **Data visualisation treated as part of the design system**, not an afterthought.
 
+## Decision checklist (priority order)
+
+Distilled reasoning rules — work them **top-down**; a failure high on the list outranks polish
+lower down. The token/component-state items defer to `design-system` (don't re-specify them here):
+
+1. **Accessibility (critical)** — contrast ≥ 4.5:1 text / 3:1 large+UI; visible focus rings;
+   alt text; `aria-label` on icon-only controls; tab order matches visual order; never convey
+   meaning by colour alone; respect `prefers-reduced-motion`.
+2. **Touch & interaction (critical)** — ≥ 44×44px targets with ≥ 8px gaps; don't rely on hover
+   for primary actions; every async action shows loading feedback; no instant 0ms state changes.
+3. **Performance (high)** — AVIF/WebP, lazy-load below the fold, reserve space so CLS < 0.1;
+   no layout thrash. See the budgets below.
+4. **Style selection (high)** — commit to one direction (above) and hold it consistently; SVG
+   icons, **never emoji as icons**; don't mix flat and skeuomorphic at random.
+5. **Layout & responsive (high)** — mobile-first breakpoints, viewport meta, no horizontal
+   scroll, never disable zoom, no fixed-px container widths.
+6. **Typography & colour (medium)** — body ≥ 16px, line-height ~1.5, a real type scale, and
+   **semantic colour tokens — no raw hex/`px` in components** (architecture: `design-system`).
+7. **Animation (medium)** — 150–300ms, motion conveys meaning (not decoration), compositor-only,
+   honour reduced-motion.
+8. **Forms & feedback (medium)** — visible labels (never placeholder-only), errors beside the
+   field, helper text, progressive disclosure.
+9. **Navigation (high)** — predictable back, bottom nav ≤ 5 items, deep-linkable state.
+10. **Charts & data (low)** — legends, tooltips, accessible colours, never colour-only encoding.
+
+For the **tokens** (three-tier architecture, dark-mode seam) and **component state matrices**
+(button/input/card/… across default/hover/focus/active/disabled/loading/error), use
+`design-system` — this pack assumes that structure and focuses on the visual judgement on top.
+
 ## Steps
 
 1. **Read the lore + tokens first.** `search_lore` (Memory MCP) for the design system,
@@ -48,8 +81,9 @@ Every meaningful surface must demonstrate **at least four**:
    surface; match the framework and styling system — never introduce a competing one.
 2. **Commit to one direction** (above) and a palette + type pairing before building.
 3. **Define design tokens as CSS custom properties** — colour, type scale (`clamp()` for
-   fluid sizes), spacing, durations, easings. Reference tokens everywhere; **hardcode no
-   raw hex or `px` font sizes** in component files.
+   fluid sizes), spacing, durations, easings, in the three-tier architecture from
+   `design-system` (primitive → semantic → component). Reference tokens everywhere;
+   **hardcode no raw hex or `px` font sizes** in component files.
 4. **Build semantic HTML first** — `header`/`nav`/`main`/`section`/`footer`, real `button`s,
    a single `h1`, labelled landmarks. Hierarchy comes from structure + scale, not `div` soup.
 5. **Layer and compose** — use overlap, surfaces, and a grid you deliberately break for

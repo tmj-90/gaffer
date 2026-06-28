@@ -197,3 +197,5 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - **[ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill)** (MIT) — its design-system token architecture, component specs, states-and-variants discipline, and design-system reasoning were adapted into the `design-system` / `frontend-design` / `brand` skill packs.
 - **[alirezarezvani/claude-skills](https://github.com/alirezarezvani/claude-skills)** (MIT) — adapted devops/marketing/product/docs skill packs (observability, SLO, runbook, CI/CD, incident-response, terraform, kubernetes, docker, adversarial review, API review, database schema, threat detection, cloud security, landing page, CRO, copywriting, SEO audit, schema markup, AEO, slides deck, PRD, user story, RICE, product discovery, md-document, changelog, code-tour).
 - **[Matt Pocock's skills](https://github.com/mattpocock/skills)** (MIT) — caveman ultra-compressed communication pattern (voice preserved per his repo's note).
+
+The full MIT licence text and copyright notice for each adapted source is retained in [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).

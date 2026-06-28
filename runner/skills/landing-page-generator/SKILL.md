@@ -9,7 +9,7 @@ area: marketing
 
 Not lorem ipsum — actual copy and structure that converts. Output complete, ready-to-ship TSX components with Tailwind.
 
-**Performance targets:** LCP < 1s · CLS < 0.1 · FID < 100ms
+**Performance targets:** LCP ≤ 2.5s · CLS < 0.1 · INP < 200ms
 
 ## Copy frameworks
 

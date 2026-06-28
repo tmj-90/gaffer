@@ -1,5 +1,5 @@
 import { type Db, inTransaction, openDatabase } from "./db/connection.js";
-import { claimTicketInput, createEpicInput } from "./domain/schemas.js";
+import { claimTicketInput } from "./domain/schemas.js";
 import {
   TICKET_STATUSES,
   parseReviewFeedback,
@@ -87,6 +87,7 @@ import {
   type TicketRepoAccessResult,
   type WorkPacketRepos,
 } from "./services/repoService.js";
+import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
 import { TransitionService, type TransitionResult } from "./services/transitionService.js";
 import { buildNotifierFromEnv } from "./notify/config.js";
@@ -335,15 +336,8 @@ export type { RepoDeliveryResult } from "./services/ticketService.js";
 /** A scope node enriched with its linked repos (for the node-detail view). */
 export type { ScopeNodeView } from "./services/scopeService.js";
 
-/**
- * Result of {@link Dispatch.createEpic} (EP-001): the id of the created `epic`
- * scope node and the numbers of the created tickets, in plan (input array) order.
- * The runner/skill resolves a ticket number back to a ticket via the usual reads.
- */
-export interface CreateEpicResult {
-  epicNodeId: string;
-  ticketNumbers: number[];
-}
+/** Result of {@link Dispatch.createEpic} (EP-001). */
+export type { CreateEpicResult } from "./services/epicsService.js";
 
 /** Result of adding a ticket dependency (EP-001). */
 export type { AddDependencyResult } from "./services/ticketService.js";
@@ -379,6 +373,7 @@ export class Dispatch {
   readonly decisionSvc: DecisionService;
   readonly ticketSvc: TicketService;
   readonly repoSvc: RepoService;
+  readonly epicsSvc: EpicsService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -486,6 +481,14 @@ export class Dispatch {
       suggestions: this.suggestions,
       scope: this.scope,
     });
+    this.epicsSvc = new EpicsService({
+      db,
+      clock: this.clock,
+      ticketScopes: this.ticketScopes,
+      scope: this.scope,
+      tickets: this.ticketSvc,
+      repos: this.repoSvc,
+    });
   }
 
   /** Open a Dispatch instance against a SQLite file (or ":memory:"). */
@@ -564,142 +567,7 @@ export class Dispatch {
    * the node, the tickets and the edges.
    */
   createEpic(raw: unknown, actor: Actor): CreateEpicResult {
-    const input = createEpicInput.parse(raw);
-
-    // Pre-flight the dependency indexes BEFORE any write so a bad plan fails
-    // cleanly (and cheaply) rather than part-way through the transaction.
-    const n = input.tickets.length;
-    for (let i = 0; i < n; i++) {
-      for (const dep of input.tickets[i]!.dependsOn) {
-        if (dep === i) {
-          throw new DispatchError("INVALID_DEPENDENCY", `Ticket #${i} cannot depend on itself.`, {
-            index: i,
-          });
-        }
-        if (dep < 0 || dep >= n) {
-          throw new DispatchError(
-            "INVALID_DEPENDENCY",
-            `Ticket #${i} depends on out-of-range index ${dep} (plan has ${n} tickets).`,
-            { index: i, depends_on_index: dep },
-          );
-        }
-      }
-    }
-    // Reject a cyclic plan up front via a DFS over the declared index edges.
-    this.assertEpicPlanIsAcyclic(input.tickets.map((t) => t.dependsOn));
-
-    return inTransaction(this.db, () => {
-      const node = this.scope.createScopeNode(
-        {
-          name: input.epic.name,
-          type: "epic",
-          ...(input.epic.description !== undefined ? { description: input.epic.description } : {}),
-        },
-        actor,
-      );
-
-      // Create every ticket first so the index→id map is complete before edges
-      // are wired. Each ticket is created via the normal createTicket path (draft,
-      // policy/scope validation), then ACs, repo link + access, and contained by
-      // the epic node.
-      const createdIds: string[] = [];
-      const createdNumbers: number[] = [];
-      for (const spec of input.tickets) {
-        const ticket = this.ticketSvc.createTicket(
-          {
-            title: spec.title,
-            description: spec.description,
-            ...(spec.priority !== undefined ? { priority: spec.priority } : {}),
-            ...(spec.risk_level !== undefined ? { risk_level: spec.risk_level } : {}),
-            ...(spec.policy_pack !== undefined ? { policy_pack: spec.policy_pack } : {}),
-            ...(spec.bootstrap !== undefined ? { bootstrap: spec.bootstrap } : {}),
-          },
-          actor,
-        );
-        createdIds.push(ticket.id);
-        createdNumbers.push(ticket.number ?? 0);
-
-        for (const text of spec.acceptanceCriteria) {
-          this.ticketSvc.addAcceptanceCriterion({ ticket_id: ticket.id, text }, actor);
-        }
-
-        if (spec.repo) {
-          // Internal seed of the epic ticket's repo link — uses the unguarded core
-          // so an agent-driven epic-create (the factory flow) still links its repo.
-          // The PUBLIC setTicketRepoAccess stays human/admin-only (P0 authz).
-          this.repoSvc.applyTicketRepoAccess(
-            {
-              ticket_id: ticket.id,
-              repo_id: spec.repo,
-              ...(spec.access !== undefined ? { access: spec.access } : {}),
-            },
-            actor,
-          );
-        }
-
-        // The epic node `contains` the ticket — a ticket↔scope link, so the epic
-        // groups its tickets the same way a product scope groups its work.
-        this.ticketScopes.upsert({
-          ticket_id: ticket.id,
-          scope_node_id: node.id,
-          relation: "secondary",
-          confidence: null,
-          reasons_json: JSON.stringify([`contained by epic '${input.epic.name}'`]),
-          created_at: this.clock.now(),
-          updated_at: this.clock.now(),
-        });
-      }
-
-      // Now wire the dependency edges by resolving each plan index to its id.
-      for (let i = 0; i < n; i++) {
-        for (const depIndex of input.tickets[i]!.dependsOn) {
-          this.ticketSvc.addDependency(
-            { ticket: createdIds[i]!, depends_on: createdIds[depIndex]! },
-            actor,
-          );
-        }
-      }
-
-      writeEvent(this.db, {
-        entity_type: "scope_node",
-        entity_id: node.id,
-        actor,
-        event_type: "epic.created",
-        payload: { name: input.epic.name, ticket_count: n, ticket_numbers: createdNumbers },
-      });
-
-      return { epicNodeId: node.id, ticketNumbers: createdNumbers };
-    });
-  }
-
-  /**
-   * Reject a cyclic epic plan: a DFS over the index→dependsOn adjacency. Throws
-   * INVALID_DEPENDENCY on the first back-edge. (createEpic also relies on
-   * addDependency's per-edge guard, but checking the whole plan up front gives a
-   * single clean failure before any row is written.)
-   */
-  private assertEpicPlanIsAcyclic(adjacency: ReadonlyArray<readonly number[]>): void {
-    const WHITE = 0;
-    const GREY = 1;
-    const BLACK = 2;
-    const color = new Array<number>(adjacency.length).fill(WHITE);
-    const visit = (node: number): void => {
-      color[node] = GREY;
-      for (const next of adjacency[node]!) {
-        if (color[next] === GREY) {
-          throw new DispatchError(
-            "INVALID_DEPENDENCY",
-            "The epic plan's dependencies form a cycle.",
-            { from_index: node, to_index: next },
-          );
-        }
-        if (color[next] === WHITE) visit(next);
-      }
-      color[node] = BLACK;
-    };
-    for (let i = 0; i < adjacency.length; i++) {
-      if (color[i] === WHITE) visit(i);
-    }
+    return this.epicsSvc.createEpic(raw, actor);
   }
 
   // --- Repositories --------------------------------------------------------

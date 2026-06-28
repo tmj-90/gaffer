@@ -20,8 +20,10 @@
 #   }
 #   trap gaffer_crash_cleanup EXIT INT TERM
 #
-# and sets GAFFER_DELIVERY_COMPLETE=1 once delivery is recorded (so a
-# legitimately-delivered branch is never dropped).
+# and sets GAFFER_DELIVERY_COMPLETE=1 once delivery is recorded AND the
+# worktrees are torn down (R-5: flag set AFTER teardown so a signal in the
+# gap can't leave the flag set while the worktree is still on disk), so a
+# legitimately-delivered branch is never dropped.
 #
 # This drives that EXACT contract against a REAL git repo + worktree:
 #   1. A crash (non-zero exit / SIGTERM) BEFORE completion → the orphaned
@@ -31,6 +33,8 @@
 #   3. The cleanup is idempotent (running it twice is a no-op, never fatal).
 #   5. (R-2) the EARLY trap — fired BEFORE any worktree/WT_ROWS exists —
 #      runs cleanly: no unbound-variable error, no partial state left.
+#   6. (R-5) tick.sh sets GAFFER_DELIVERY_COMPLETE=1 strictly AFTER the
+#      success-path worktree teardown (static ordering check).
 #
 # The trap/guard wiring below is kept BYTE-FOR-BYTE in step with tick.sh's
 # gaffer_crash_cleanup; a divergence should be caught in review.
@@ -189,6 +193,26 @@ if printf '%s' "$early_err" | grep -qiE 'unbound variable|WT_ROWS:|gaffer_cleanu
   fail "early trap hit an unbound-variable / undefined-helper error: $early_err"
 else
   ok "early trap runs with no unbound-variable / undefined-helper error"
+fi
+
+echo "== 6. (R-5) tick.sh sets GAFFER_DELIVERY_COMPLETE=1 AFTER the success-path teardown =="
+# Static ordering check against the REAL tick.sh: on the success path the flag must be
+# set strictly AFTER `gaffer_cleanup_worktrees` (the teardown), so a signal arriving
+# in the gap can't leave the flag set while the worktree is still on disk (a leak).
+TICK="$HERE/../tick.sh"
+if [ -f "$TICK" ]; then
+  # The success-path flag set is the LAST `GAFFER_DELIVERY_COMPLETE=1` line; the
+  # success teardown is the last BARE `gaffer_cleanup_worktrees` (no drop-branch) call
+  # that precedes it. Find both line numbers and assert teardown comes first.
+  set_line="$(grep -n '^[[:space:]]*GAFFER_DELIVERY_COMPLETE=1[[:space:]]*$' "$TICK" | tail -1 | cut -d: -f1)"
+  teardown_line="$(grep -n '^[[:space:]]*gaffer_cleanup_worktrees[[:space:]]*$' "$TICK" | awk -F: -v s="${set_line:-0}" '$1 < s {l=$1} END {print l}')"
+  if [ -n "$set_line" ] && [ -n "$teardown_line" ] && [ "$teardown_line" -lt "$set_line" ]; then
+    ok "GAFFER_DELIVERY_COMPLETE=1 (line $set_line) is AFTER the success teardown (line $teardown_line)"
+  else
+    fail "GAFFER_DELIVERY_COMPLETE=1 is not strictly after the success-path teardown (set=$set_line teardown=$teardown_line)"
+  fi
+else
+  ok "SKIP ordering check (tick.sh not found alongside the test)"
 fi
 
 echo

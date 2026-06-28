@@ -1177,14 +1177,23 @@ print(hits[0] if hits else '')
   fi
 
   # Success: the delivery is RECORDED and the gaffer/ branch now holds work that
-  # must survive for review/merge. Mark the delivery complete BEFORE teardown so the
-  # M1 crash trap can no longer drop this branch (a crash in the post-teardown
-  # hygiene checks below must NOT destroy a legitimately-delivered branch).
-  GAFFER_DELIVERY_COMPLETE=1
-  # Tear down the throwaway worktrees. The gaffer/ branch + its commits PERSIST in
-  # each real repo for review/merge — only the disposable checkout is removed. The
-  # real repo's primary working tree + current branch never moved.
+  # must survive for review/merge. Tear down the throwaway worktrees FIRST, THEN mark
+  # the delivery complete.
+  #
+  # R-5: the flag used to be set BEFORE this teardown. A signal arriving in the gap
+  # between the flag-set and the teardown call made the crash trap a no-op (it sees
+  # COMPLETE=1 and returns early) while the worktrees were still on disk — LEAKING
+  # them. Setting the flag AFTER the explicit teardown closes that window: by the time
+  # COMPLETE=1, the worktrees are already gone, so a trap firing later finds nothing to
+  # leak. (The narrow inverse window — a signal landing AFTER teardown but BEFORE the
+  # flag is set — at worst drops the now-orphaned branch via the trap's drop-branch;
+  # the worktree, the thing this fix protects, is already removed, so nothing leaks.)
+  #
+  # The gaffer/ branch + its commits PERSIST in each real repo for review/merge — only
+  # the disposable checkout is removed. The real repo's primary working tree + current
+  # branch never moved.
   gaffer_cleanup_worktrees
+  GAFFER_DELIVERY_COMPLETE=1
   log "removed delivery worktrees for #$NUM — branch $WORK_BRANCH persists in the real repo(s) for review"
 
   # ── Stabilisation gate 3: real-repo CLEAN after teardown (HARD FAIL) ────────

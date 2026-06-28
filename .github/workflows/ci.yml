@@ -42,11 +42,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Real audit gate: fails on any HIGH/CRITICAL advisory NOT documented in
+      # .github/audit-allowlist.txt. Accepted advisories are listed + justified
+      # there; everything new fails the build. (Replaces the old `|| true` no-op.)
       - name: Dependency audit
+        shell: bash
         run: |
           echo "::group::pnpm audit"
           pnpm audit --audit-level=high || true
           echo "::endgroup::"
+          .github/scripts/audit-gate.sh
 
       - name: Verify better-sqlite3 native binding loads
         # Resolve from a package that depends on it — pnpm does not hoist the

@@ -91,6 +91,7 @@ import {
   type SubmitForReviewInput,
 } from "./services/claimService.js";
 import { computeTicketDiff, type GitRunner, type TicketDiff } from "./services/diffService.js";
+import { DecisionService, type ResolveDecisionInput } from "./services/decisionService.js";
 import { ScopeService, type ScopeNodeView } from "./services/scopeService.js";
 import {
   SuggestionService,
@@ -353,12 +354,7 @@ export interface DashboardSummary {
 }
 
 /** Input for resolving a decision via the human surface. */
-export interface ResolveDecisionInput {
-  decisionId: string;
-  status: "accepted" | "rejected";
-  answer?: string | undefined;
-  rationale?: string | undefined;
-}
+export type { ResolveDecisionInput } from "./services/decisionService.js";
 
 /**
  * Delivery evidence attached by a SYSTEM/factory actor *without* a claim token.
@@ -450,6 +446,7 @@ export class Dispatch {
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
   readonly scope: ScopeService;
+  readonly decisionSvc: DecisionService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -525,6 +522,13 @@ export class Dispatch {
       ticketScopes: this.ticketScopes,
       tickets: this.tickets,
       repos: this.repos,
+    });
+    this.decisionSvc = new DecisionService({
+      db,
+      clock: this.clock,
+      decisions: this.decisions,
+      notifier: this.notifier,
+      onDecisionCreated: (d) => this.emitDecisionGate(d),
     });
   }
 
@@ -1376,90 +1380,15 @@ export class Dispatch {
     input: { title: string; question: string; severity?: DecisionSeverity; ticketId?: string },
     actor: Actor,
   ): Decision {
-    const now = this.clock.now();
-    const decision = inTransaction(this.db, () => {
-      const created: Decision = {
-        id: newId(),
-        title: input.title,
-        question: input.question,
-        rationale: null,
-        status: input.severity === "human_required" ? "human_required" : "requested",
-        decision_type: "product",
-        severity: input.severity ?? "human_preferred",
-        proposed_answer: null,
-        proposed_by: null,
-        confidence: null,
-        resolved_answer: null,
-        resolved_by: null,
-        resolved_at: null,
-        memory_record_id: null,
-        created_at: now,
-        updated_at: now,
-      };
-      this.decisions.insert(created);
-      if (input.ticketId) {
-        this.decisions.link(input.ticketId, created.id, "blocks", now);
-      }
-      writeEvent(this.db, {
-        entity_type: "decision",
-        entity_id: created.id,
-        actor,
-        event_type: "decision.created",
-        payload: { title: created.title, severity: created.severity },
-      });
-      return created;
-    });
-    // H2: a freshly raised decision is a human gate (clarification/decision pending
-    // a human answer). Emit after the transaction commits, best-effort.
-    this.emitDecisionGate(decision);
-    return decision;
+    return this.decisionSvc.createDecision(input, actor);
   }
 
   listPendingDecisions(): Decision[] {
-    return this.decisions.listPending();
+    return this.decisionSvc.listPendingDecisions();
   }
 
-  /**
-   * Resolve a decision (human surface): set its terminal status + resolved_*,
-   * record the answer/rationale and append an event. Refuses to re-resolve an
-   * already-terminal decision.
-   */
   resolveDecision(input: ResolveDecisionInput, actor: Actor): Decision {
-    const now = this.clock.now();
-    return inTransaction(this.db, () => {
-      const decision = this.decisions.findById(input.decisionId);
-      if (!decision) throw notFound("decision", input.decisionId);
-      if (
-        decision.status === "accepted" ||
-        decision.status === "rejected" ||
-        decision.status === "superseded"
-      ) {
-        throw new DispatchError(
-          "STATE_CONFLICT",
-          `Decision is already '${decision.status}' and cannot be resolved again.`,
-          { status: decision.status },
-        );
-      }
-      const ok = this.decisions.resolve(
-        decision.id,
-        input.status,
-        input.answer ?? null,
-        input.rationale ?? null,
-        actor.id ?? actor.type,
-        now,
-      );
-      if (!ok) {
-        throw new DispatchError("CONCURRENCY_CONFLICT", "Decision changed concurrently; retry.");
-      }
-      writeEvent(this.db, {
-        entity_type: "decision",
-        entity_id: decision.id,
-        actor,
-        event_type: "decision.resolved",
-        payload: { status: input.status, answer: input.answer ?? null },
-      });
-      return this.decisions.findById(decision.id)!;
-    });
+    return this.decisionSvc.resolveDecision(input, actor);
   }
 
   // --- Convenience transitions --------------------------------------------

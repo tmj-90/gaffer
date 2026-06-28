@@ -153,6 +153,17 @@ gaffer_dod_summary_line() {
   ' "$results" 2>/dev/null
 }
 
+# Count the gates that actually EXECUTED (PASS or FAIL) in a results file — i.e.
+# the gates that produced a real signal, excluding SKIP rows. Prints an integer.
+# Used to warn when a DoD run resolved to ALL-SKIP (zero executed gates): the run
+# then "passes" vacuously, so a misconfigured repo (no test_command etc.) is not
+# silently waved through (R1 LOW).
+gaffer_dod_executed_count() {
+  local results="$1"
+  awk -F'\t' '$1=="GATE" && ($4=="PASS" || $4=="FAIL") { n++ } END { print n+0 }' \
+    "$results" 2>/dev/null
+}
+
 # Build the compact evidence summary recorded on the ticket. First line is a
 # machine-parseable JSON object the dashboard Review view parses into a checklist;
 # the rest is a human-readable transcript (gate verdicts + any failing tails).

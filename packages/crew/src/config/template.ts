@@ -70,9 +70,28 @@ repos: []
 #   stack: python
 #   package_manager: poetry
 #   test_command: poetry run pytest
+#   lint_command: poetry run ruff check .
+#   typecheck_command: poetry run mypy auth_service
 #   coverage_command: poetry run pytest --cov=auth_service
 #   mutation_mode: branch_only
 #   risk_level: high
+#   # Per-repo Definition-of-Done override (I3). Omit to inherit the factory
+#   # default below. A gate with no matching command is SKIPPED, not failed.
+#   definition_of_done:
+#     enabled: true   # set false (or run with GAFFER_DOD=0) to disable enforcement
+#     tests: true
+#     typecheck: true
+#     lint: true
+
+# Factory-wide Definition of Done (I3). The runner runs these gates on every
+# non-empty delivery BEFORE it can reach the human review lane; a failing gate
+# auto-rejects the delivery back to rework. A repo's own definition_of_done
+# overrides this. Shipped gates: tests / typecheck / lint.
+definition_of_done:
+  enabled: true
+  tests: true
+  typecheck: true
+  lint: true
 
 agents: []
 # - id: claude-auth-01
@@ -173,6 +192,18 @@ loops:
     repos: []
     minimum_occurrences: 3
     draft_ratify_ticket: false # also draft a Dispatch ticket to ratify the lore
+  # ── Idle MAINTENANCE LANE (audit item A4) ──────────────────────────────────
+  # OFF by default. When ON (and GAFFER_MAINTENANCE=1 in the runner), a quiet
+  # idle tick runs ONE maintenance loop chosen by a DETERMINISTIC priority +
+  # rotation scheduler — NO LLM in the choice — instead of every idle loop or a
+  # single fixed scan. Priority: security_hotspot → coverage/test_quality →
+  # type_quality/tech_debt → documentation/dependency_hygiene; it rotates so no
+  # lane starves and the same lane is not picked on consecutive ticks. The lane
+  # only rotates through loops you have enabled above (each loop's own flag is
+  # the on/off switch); this block gates the lane itself + the rotation cursor.
+  maintenance:
+    enabled: false # set true (and GAFFER_MAINTENANCE=1) for the smart prioritised lane
+    cursor_path: null # null = <GAFFER_DATA>/maintenance-cursor.json; survives across ticks
   # The self-improving closed loop. OFF BY DEFAULT. When on, an idle tick may
   # promote its OWN drafted improvement tickets to 'ready' so the delivery loop
   # claims them — no human in the promote step. Deliberately hard to fire:

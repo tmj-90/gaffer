@@ -112,7 +112,16 @@ jobs:
           rc=0
           for t in runner/test/*.test.sh; do
             echo "::group::$t"
-            perl -e 'alarm shift; exec @ARGV' 120 bash "$t" || { c=$?; rc=1; case $c in 124|142) echo "::error::$t TIMED OUT (120s, exit $c)";; esac; }
+            out="$(perl -e 'alarm shift; exec @ARGV' 120 bash "$t" 2>&1)"; c=$?
+            echo "$out"
             echo "::endgroup::"
+            if [ "$c" -ne 0 ]; then
+              rc=1
+              case $c in
+                124|142) echo "::error::$t TIMED OUT (120s, exit $c)";;
+                *) tail="$(printf '%s\n' "$out" | grep -iE 'fail|✗|✘|not ok|error|expected|assert' | head -6 | tr '\n' '|')"
+                   echo "::error::$t FAILED (exit $c) :: ${tail:-see grouped log}";;
+              esac
+            fi
           done
           exit $rc

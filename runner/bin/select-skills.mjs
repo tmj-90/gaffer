@@ -67,6 +67,28 @@ function parseInlineList(value) {
     .filter((item) => item.length > 0);
 }
 
+/**
+ * Expand a compound stack label into the token set the registry matches on. A label
+ * like "typescript-react-native-expo" expands to its parts plus the whole
+ * ("typescript-react-native-expo", "typescript", "react", "native", "expo") so a skill
+ * tagged with either the broad or the specific stack still matches. Mirrors the Crew
+ * context packet's `ticketStacks` expansion EXACTLY so the runner CLI path (tick.sh,
+ * which passes the raw repo stack label) and the registry path agree. De-duped, order
+ * preserved (whole label first).
+ */
+export function expandStacks(stacks = []) {
+  const out = new Set();
+  for (const raw of stacks) {
+    const normalised = String(raw ?? "")
+      .toLowerCase()
+      .trim();
+    if (!normalised) continue;
+    out.add(normalised);
+    for (const part of normalised.split(/[-/]+/).filter(Boolean)) out.add(part);
+  }
+  return [...out];
+}
+
 /** Load every tagged skill from a SKILL.md library directory. */
 export function loadSkills(skillsDir = DEFAULT_SKILLS_DIR) {
   let entries;
@@ -91,20 +113,58 @@ export function loadSkills(skillsDir = DEFAULT_SKILLS_DIR) {
 }
 
 /**
+ * Cross-cutting areas whose skills apply to EVERY delivery regardless of stack
+ * or domain — the delivery mechanics: run tests (`testing`), lint/minimalism
+ * (`quality`), self/submit review (`review`), branch + record evidence
+ * (`workflow`), and security review (`security`, defense-in-depth on every
+ * delivery — policy). These are always eligible (subject to stack). Only DOMAIN
+ * areas (marketing/product/docs/devops/infra/data/meta/…) are opt-in.
+ */
+const UNIVERSAL_AREAS = new Set(["quality", "testing", "review", "workflow", "security"]);
+
+/**
  * A skill matches when its stack is unconstrained or intersects the wanted
- * stack(s), AND its area is unconstrained or equals the wanted area. An empty
- * query dimension imposes no constraint.
+ * stack(s), AND its area constraint is satisfied.
+ *
+ * Area handling (`area` is an OPT-IN constraint for DOMAIN packs only):
+ *
+ *   - No `area:`, or a UNIVERSAL area (see {@link UNIVERSAL_AREAS}) → always
+ *     eligible (subject to stack). The core delivery flow — run-tests,
+ *     run-lint, self-review, record-evidence, create-branch — fires on every
+ *     ticket regardless of stack/domain.
+ *   - DOMAIN area + explicit `area` query → must equal the requested area
+ *     (e.g. `--area frontend` pulls the frontend pack onto a web ticket).
+ *   - DOMAIN area + stack-only query (how tick.sh usually calls this) → opt-in:
+ *     included only if the skill is ALSO stack-tagged, so `frontend-design` /
+ *     `landing-page-generator` still route by stack, but marketing/product/meta
+ *     area-only packs don't leak onto every backend ticket.
  */
 export function skillMatches(skill, { stacks = [], area = "" } = {}) {
+  const hasStackTag = skill.stack.length > 0;
   const stackOk =
-    skill.stack.length === 0 || stacks.length === 0 || skill.stack.some((s) => stacks.includes(s));
-  const areaOk = !skill.area || !area || skill.area === area;
+    !hasStackTag || stacks.length === 0 || skill.stack.some((s) => stacks.includes(s));
+  let areaOk;
+  if (!skill.area || UNIVERSAL_AREAS.has(skill.area)) {
+    // No area, or a cross-cutting universal area — applies to every delivery.
+    areaOk = true;
+  } else if (area) {
+    // Explicit area query: a domain-area skill must match the requested area.
+    areaOk = skill.area === area;
+  } else {
+    // Stack-only query: a domain-area skill is opt-in unless stack-tagged.
+    areaOk = hasStackTag;
+  }
   return stackOk && areaOk;
 }
 
-/** Select skills from the library by stack + area. */
+/**
+ * Select skills from the library by stack + area. Compound stack labels (e.g.
+ * "typescript-react") are expanded to their parts before matching so the runner CLI
+ * path agrees with the Crew registry (see {@link expandStacks}).
+ */
 export function selectSkills({ skillsDir = DEFAULT_SKILLS_DIR, stacks = [], area = "" } = {}) {
-  return loadSkills(skillsDir).filter((skill) => skillMatches(skill, { stacks, area }));
+  const expanded = expandStacks(stacks);
+  return loadSkills(skillsDir).filter((skill) => skillMatches(skill, { stacks: expanded, area }));
 }
 
 /** Distinct area packs present in the library, sorted. */

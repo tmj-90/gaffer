@@ -76,6 +76,43 @@ export const mutationModeSchema = z.enum([
   "direct_push_allowed",
 ]);
 
+/**
+ * Definition-of-Done (audit I3). A deterministically-ENFORCED gate the RUNNER
+ * (never the agent) runs on a non-empty delivery BEFORE the ticket may rest in
+ * the human review lane. A failing gate auto-rejects the delivery back to rework
+ * with the gate output as evidence — a human never spends time on it.
+ *
+ * Each gate is default-ON; a gate whose command is not configured for the repo
+ * is SKIPPED (and that skip is logged), never failed. The master `enabled`
+ * mirrors the `GAFFER_DOD` env toggle: when the runner sees `GAFFER_DOD=0` it
+ * disables enforcement entirely (today's behaviour), and `GAFFER_DOD=1` forces
+ * it on; with the env unset the runner enforces whenever commands are configured.
+ *
+ * Gate → command source (read deterministically by the runner):
+ *   - tests     → the repo's `test_command`
+ *   - lint      → the repo's `lint_command` (this is the existing
+ *                 `require_lint_clean` policy, now actually RUN, not just asserted)
+ *   - typecheck → the repo's `typecheck_command` (null on most repos ⇒ skipped)
+ *
+ * DEFERRED (documented follow-ups, intentionally NOT gates here):
+ *   coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2),
+ *   CI-green (H3), docs-updated.
+ */
+export const definitionOfDoneSchema = z
+  .object({
+    // Master switch for this DoD block. Mirrors `GAFFER_DOD`. When false the
+    // runner skips DoD enforcement for the repo (today's behaviour). The env
+    // toggle, when set, wins over this value at runtime.
+    enabled: z.boolean().default(true),
+    // Run the repo's test_command as a gate.
+    tests: z.boolean().default(true),
+    // Run the repo's typecheck_command as a gate (skipped when unset).
+    typecheck: z.boolean().default(true),
+    // Run the repo's lint_command as a gate (the enforced require_lint_clean).
+    lint: z.boolean().default(true),
+  })
+  .default({});
+
 export const repoSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -89,6 +126,12 @@ export const repoSchema = z.object({
   lint_command: z.string().nullable().default(null),
   coverage_command: z.string().nullable().default(null),
   build_command: z.string().nullable().default(null),
+  // I3: the typecheck DoD gate's command (e.g. "pnpm typecheck"). Null ⇒ the
+  // typecheck gate is SKIPPED for this repo, not failed.
+  typecheck_command: z.string().nullable().default(null),
+  // I3: per-repo Definition-of-Done override. Omitted ⇒ inherit the factory
+  // default (`definition_of_done` at the top level).
+  definition_of_done: definitionOfDoneSchema.optional(),
   mutation_mode: mutationModeSchema.default("branch_only"),
   risk_level: z.enum(["low", "medium", "high", "critical"]).default("medium"),
   owners: z.array(z.string()).default([]),
@@ -278,6 +321,24 @@ export const loopsSchema = z
         max_tickets: z.number().int().positive().default(20),
       })
       .default({}),
+    // The idle MAINTENANCE LANE (audit item A4). OFF BY DEFAULT. When enabled,
+    // a quiet idle tick (no claimable ticket) runs ONE maintenance loop chosen
+    // by a deterministic priority + rotation scheduler — NO LLM in the choice —
+    // instead of the single fixed idle scan. Which loops it rotates through is
+    // determined by each loop's own `enabled` flag above; this block only gates
+    // the lane itself and points at the persisted rotation cursor.
+    maintenance: z
+      .object({
+        // Master toggle. OFF respects token cost; ON turns the smart prioritised
+        // lane on. The lane still only fires when at least one idle loop above is
+        // enabled (those provide the lanes it rotates through).
+        enabled: z.boolean().default(false),
+        // Where the rotation cursor is persisted so cadence survives across
+        // ticks/processes. Null = derive `<GAFFER_DATA>/maintenance-cursor.json`
+        // at the call site; an explicit path overrides it (handy for tests).
+        cursor_path: z.string().nullable().default(null),
+      })
+      .default({}),
     // The self-improving closed loop. OFF BY DEFAULT. When enabled, idle ticks may
     // auto-promote their own DRAFT improvement tickets to `ready` so the delivery
     // loop claims them — without a human in the promote step. It is deliberately
@@ -387,6 +448,9 @@ export const crewConfigSchema = z.object({
   ingest: ingestSchema,
   hooks: hooksSchema,
   logging: loggingSchema,
+  // I3: factory-wide Definition-of-Done default. A repo's own
+  // `definition_of_done`, when present, overrides this (see resolveDefinitionOfDone).
+  definition_of_done: definitionOfDoneSchema,
 });
 
 /**
@@ -401,7 +465,20 @@ export function resolveMinDeliveredTickets(
   return loopValue ?? loops.default_min_delivered_tickets;
 }
 
+/**
+ * Resolve a repo's effective Definition-of-Done: the repo's own
+ * `definition_of_done` when present, otherwise the factory-wide default. Mirrors
+ * resolveMinDeliveredTickets — specific overrides general.
+ */
+export function resolveDefinitionOfDone(
+  repo: Pick<z.infer<typeof repoSchema>, "definition_of_done">,
+  factoryDefault: z.infer<typeof definitionOfDoneSchema>,
+): z.infer<typeof definitionOfDoneSchema> {
+  return repo.definition_of_done ?? factoryDefault;
+}
+
 export type CrewConfig = z.infer<typeof crewConfigSchema>;
+export type DefinitionOfDoneConfig = z.infer<typeof definitionOfDoneSchema>;
 export type ContextConfig = z.infer<typeof contextSchema>;
 export type IngestConfig = z.infer<typeof ingestSchema>;
 export type RepoConfig = z.infer<typeof repoSchema>;

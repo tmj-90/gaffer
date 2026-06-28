@@ -51,11 +51,108 @@ fi
 # below); the bash call sites use the pre-split *_FLAG vars.
 # No colon: default only when UNSET, so an explicit empty value disables tiering
 # (falls back to the Claude default) rather than being re-defaulted.
+#
+# I1 routing: the static defaults below (opus/sonnet) are NOT treated as routing
+# overrides — they are the registry-equivalent baseline, so the router runs by
+# default and reproduces today's tiers (plan=opus / implement=sonnet) for a normal
+# ticket. An override is an EXPLICIT operator-set value: we capture "was it set
+# before config applied a default?" HERE, before the `=` default, so the router
+# (gaffer_route_model) can honour a pinned model while still routing otherwise.
+[ -n "${GAFFER_PLAN_MODEL+x}" ] && GAFFER_PLAN_MODEL_EXPLICIT=1 || GAFFER_PLAN_MODEL_EXPLICIT=0
+[ -n "${GAFFER_IMPL_MODEL+x}" ] && GAFFER_IMPL_MODEL_EXPLICIT=1 || GAFFER_IMPL_MODEL_EXPLICIT=0
+export GAFFER_PLAN_MODEL_EXPLICIT GAFFER_IMPL_MODEL_EXPLICIT
 : "${GAFFER_PLAN_MODEL=opus}"
 : "${GAFFER_IMPL_MODEL=sonnet}"
 export GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL
 GAFFER_PLAN_MODEL_FLAG=""; [ -n "${GAFFER_PLAN_MODEL:-}" ] && GAFFER_PLAN_MODEL_FLAG="--model $GAFFER_PLAN_MODEL"
 GAFFER_IMPL_MODEL_FLAG=""; [ -n "${GAFFER_IMPL_MODEL:-}" ] && GAFFER_IMPL_MODEL_FLAG="--model $GAFFER_IMPL_MODEL"
+
+# --- Intelligent, data-driven MODEL ROUTING (audit item I1) -------------------
+# The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket
+# the same model regardless of risk/complexity/history. I1 layers a deterministic,
+# CONFIG-DRIVEN ROUTER on top: a pure function (bin/route-model.mjs) maps a routing
+# context (phase, risk, AC count, stack, attempt, budget) to a concrete model id,
+# reading a named-tier REGISTRY (runner/model-registry.json). The decision is made
+# in CODE, never by an agent, and every decision is logged (gaffer_route_model →
+# the "ROUTE #N …" factory-log line) so an operator can answer "why did ticket N
+# use opus?". ADDING A MODEL/PROVIDER OR CHANGING A TIER IS A CONFIG EDIT in that
+# JSON (or GAFFER_MODEL_REGISTRY pointing elsewhere) — not a code change.
+#
+# BACKWARD COMPATIBLE: the default registry resolves a normal ticket to
+# plan=strong=opus / implement=mid=sonnet — exactly today's tiers — so a normal
+# ticket is unchanged. An OPERATOR-SET GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL still
+# pins the model (the override path in gaffer_route_model); the config's own
+# opus/sonnet DEFAULTS are the routing baseline, not an override, so they don't
+# suppress risk/attempt-aware routing (see GAFFER_*_MODEL_EXPLICIT above).
+: "${GAFFER_MODEL_REGISTRY:=$RUNNER_DIR/model-registry.json}"
+# Budget seam (H1 not built yet): GAFFER_BUDGET_REMAINING defaults to unlimited, so
+# the budget-aware downgrade never fires until H1 supplies a real feed AND an
+# operator sets GAFFER_BUDGET_LOW_THRESHOLD (>0). Both are documented follow-ups.
+: "${GAFFER_BUDGET_REMAINING:=}"
+: "${GAFFER_BUDGET_LOW_THRESHOLD:=0}"
+export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD
+
+# gaffer_route_model <phase> <risk> <ac_count> <stack> <attempt> [ticket]
+# Deterministic per-phase model routing. Echoes the resolved MODEL ID on stdout
+# (empty → no model id; caller falls back to the Claude default), and LOGS one
+# auditable "ROUTE #<ticket> …" line with the inputs + chosen tier/model/reasons.
+# An OPERATOR-SET GAFFER_<PHASE>_MODEL override wins (backward-compat): for an
+# implement/test phase GAFFER_IMPL_MODEL wins; for decompose/plan GAFFER_PLAN_MODEL
+# wins — exactly the two knobs that exist today (honoured only when *_EXPLICIT=1,
+# i.e. the operator set it — not the config default). Best-effort + fail-safe: if node
+# or the router is somehow unavailable the function echoes the matching static tier
+# and never aborts the tick.
+gaffer_route_model() {
+  local phase="${1:-implement}" risk="${2:-}" ac="${3:-0}" stack="${4:-}" attempt="${5:-1}" ticket="${6:-}"
+  # Backward-compatible EXPLICIT overrides (the two knobs that exist today). They
+  # win ONLY when the operator set them in the environment — NOT when they hold the
+  # config's own opus/sonnet defaults (those are the registry-equivalent baseline,
+  # so the router runs and reproduces today's tiers). *_EXPLICIT is captured in the
+  # model block above, before the `=` default is applied. An explicit empty value
+  # ("disable tiering") is honoured too: it routes to the Claude default for the
+  # phase. We still emit an audit line recording the override.
+  local override="" overrode=0
+  case "$phase" in
+    decompose|plan) [ "${GAFFER_PLAN_MODEL_EXPLICIT:-0}" = 1 ] && { override="${GAFFER_PLAN_MODEL:-}"; overrode=1; } ;;
+    *)              [ "${GAFFER_IMPL_MODEL_EXPLICIT:-0}" = 1 ] && { override="${GAFFER_IMPL_MODEL:-}"; overrode=1; } ;;
+  esac
+  if [ "$overrode" = 1 ]; then
+    log "ROUTE${ticket:+ #$ticket} phase=$phase risk=${risk:-medium} ac=$ac attempt=$attempt budget=${GAFFER_BUDGET_REMAINING:-unlimited} → model=$override (explicit GAFFER_*_MODEL override)"
+    printf '%s' "$override"
+    return 0
+  fi
+  local node_bin; node_bin="$(command -v node 2>/dev/null || true)"
+  if [ -z "$node_bin" ] || [ ! -f "$RUNNER_DIR/bin/route-model.mjs" ]; then
+    # Fail-safe: no router available → fall back to the static tier for this phase.
+    case "$phase" in
+      decompose|plan) printf '%s' "${GAFFER_PLAN_MODEL:-}" ;;
+      *)              printf '%s' "${GAFFER_IMPL_MODEL:-}" ;;
+    esac
+    return 0
+  fi
+  local json
+  json="$(GAFFER_MODEL_REGISTRY="$GAFFER_MODEL_REGISTRY" \
+          GAFFER_BUDGET_REMAINING="${GAFFER_BUDGET_REMAINING:-}" \
+          GAFFER_BUDGET_LOW_THRESHOLD="${GAFFER_BUDGET_LOW_THRESHOLD:-0}" \
+          "$node_bin" "$RUNNER_DIR/bin/route-model.mjs" \
+            --phase "$phase" --risk "$risk" --ac-count "$ac" \
+            --stack "$stack" --attempt "$attempt" --json 2>/dev/null || true)"
+  if [ -z "$json" ]; then
+    # Router crashed/empty → fall back to the static tier, never break the tick.
+    case "$phase" in
+      decompose|plan) printf '%s' "${GAFFER_PLAN_MODEL:-}" ;;
+      *)              printf '%s' "${GAFFER_IMPL_MODEL:-}" ;;
+    esac
+    return 0
+  fi
+  local model tier reasons
+  model="$(printf '%s' "$json" | jget "d.get('model','') or ''" 2>/dev/null || true)"
+  tier="$(printf '%s' "$json" | jget "d.get('tier','') or ''" 2>/dev/null || true)"
+  reasons="$(printf '%s' "$json" | jget "'; '.join(d.get('reasons',[]))" 2>/dev/null || true)"
+  log "ROUTE${ticket:+ #$ticket} phase=$phase risk=${risk:-medium} ac=$ac attempt=$attempt budget=${GAFFER_BUDGET_REMAINING:-unlimited} → tier=$tier model=$model [${reasons}]"
+  printf '%s' "$model"
+  return 0
+}
 
 # Optional two-model PLANNING DEBATE (decompose only). When ON *and* the work is
 # big enough (the size gate below), bin/decompose.mjs gaffers the epic via a
@@ -511,11 +608,17 @@ gaffer_usage_record() {
   local kind="$1" ticket="${2:-}" rc="${3:-0}" jsonfile="$4"
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs"
   [ -f "$mod" ] || return 0
+  # R-4: an append failure used to be doubly hidden — node stderr went to /dev/null
+  # here AND the tick.sh call sites discard stderr too. The ledger module now emits a
+  # WARNING line on a real append failure (a measurement gap), so route the module's
+  # stderr to the factory log ($GAFFER_LOG) instead of dropping it. The append itself
+  # stays best-effort (the trailing `|| true` keeps a ledger problem from failing the
+  # tick), but the WARNING is now VISIBLE in the log.
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
-      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   else
-    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   fi
 }
 
@@ -704,6 +807,13 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # Minimalism post-condition (defines gaffer_diff_stats / gaffer_check_minimalism).
 # shellcheck source=lib/minimalism.sh
 [ -f "$RUNNER_DIR/lib/minimalism.sh" ] && source "$RUNNER_DIR/lib/minimalism.sh"
+
+# Definition-of-Done gate (I3): defines gaffer_run_dod_gates / gaffer_dod_enabled /
+# gaffer_dod_run_one / gaffer_dod_summary_line / gaffer_dod_evidence_summary. The
+# enforced, runner-run gate (tests/typecheck/lint) every delivery clears BEFORE the
+# human review lane. In-tree, so this is defensive.
+# shellcheck source=lib/dod.sh
+[ -f "$RUNNER_DIR/lib/dod.sh" ] && source "$RUNNER_DIR/lib/dod.sh"
 
 # Per-repo backpressure (defines gaffer_repo_pressure / gaffer_repo_in_backpressure).
 # shellcheck source=lib/backpressure.sh

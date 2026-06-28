@@ -661,6 +661,32 @@ EOF
   else
     log "ready=$READY_COUNT → delivering #$NUM ('$TITLE') in $PRIMARY_REPO (single-repo) [stack=$STACK]"
   fi
+
+  # ── I1: intelligent, data-driven MODEL ROUTING for the implement phase ───────
+  # Replace the static GAFFER_IMPL_MODEL_FLAG with a per-ticket routing decision:
+  # read the ticket's risk, AC count, and attempt history from the dispatch view,
+  # pass them + the repo stack + the budget seam to the deterministic router, and
+  # let it pick the cheapest-correct tier. gaffer_route_model logs one auditable
+  # "ROUTE #N …" line and echoes the model id; an explicit GAFFER_IMPL_MODEL still
+  # wins (backward-compat). With the default registry + a normal ticket this
+  # resolves to mid=sonnet — exactly today's implement model.
+  ROUTE_RISK="$(echo "$SHOW" | jget "d['ticket'].get('risk_level','medium') or 'medium'" 2>/dev/null || echo medium)"
+  ROUTE_AC="$(echo "$SHOW" | jget "len(d.get('acceptanceCriteria',[]))" 2>/dev/null || echo 0)"
+  # attempt_count is 0-based (0 = first delivery); the router's attempt is 1-based
+  # so a prior rejection (attempt_count≥1) escalates. Default 0 if absent.
+  ROUTE_ATTEMPT_RAW="$(echo "$SHOW" | jget "int(d['ticket'].get('attempt_count',0) or 0)" 2>/dev/null || echo 0)"
+  ROUTE_ATTEMPT=$(( ${ROUTE_ATTEMPT_RAW:-0} + 1 ))
+  DELIVERY_MODEL="$(gaffer_route_model implement "$ROUTE_RISK" "$ROUTE_AC" "$STACK" "$ROUTE_ATTEMPT" "$NUM")"
+  # Per-tick implement flag: the router's model, or empty (→ Claude default) when
+  # the registry/override resolves to none. Falls back to the static flag only if
+  # routing yielded nothing AND the static tier is set.
+  ROUTE_IMPL_FLAG=""
+  if [ -n "$DELIVERY_MODEL" ]; then
+    ROUTE_IMPL_FLAG="--model $DELIVERY_MODEL"
+  elif [ -n "${GAFFER_IMPL_MODEL_FLAG:-}" ]; then
+    ROUTE_IMPL_FLAG="$GAFFER_IMPL_MODEL_FLAG"
+  fi
+
   if [ "$DRY_RUN" = "1" ]; then
     # DRY_RUN is strictly side-effect-free: we describe the worktree plan but
     # create NO worktrees, branches, or files.
@@ -682,6 +708,7 @@ EOF
     log "DRY_RUN: on success, would assert each worktree HEAD is $WORK_BRANCH, record per-repo delivery, then remove the worktrees (branch + commits PERSIST in the real repo)"
     log "DRY_RUN: on failure, would remove the worktrees AND delete branch $WORK_BRANCH so the real repo stays 100% clean"
     log "DRY_RUN: recommended skills = $SKILLS"
+    log "DRY_RUN: routed implement model = ${DELIVERY_MODEL:-<claude default>} (see the ROUTE #$NUM line above for the decision)"
     result worked; exit 0
   fi
 
@@ -853,7 +880,7 @@ EOF
        env -i "${GAFFER_AGENT_ENV[@]}" \
          GAFFER_WRITE_ROOTS="$WRITE_ROOTS" GAFFER_READ_ROOTS="$READ_ROOTS" \
          DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-         "$CLAUDE_BIN" -p "$PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $GAFFER_IMPL_MODEL_FLAG $GAFFER_MAX_TURNS_FLAG \
+         "$CLAUDE_BIN" -p "$PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $ROUTE_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
   ) >"$USAGE_JSON" 2>>"$GAFFER_LOG"
   rc=$?
   # Ledger the call (best-effort, swallowed) and append the agent's text to the log.

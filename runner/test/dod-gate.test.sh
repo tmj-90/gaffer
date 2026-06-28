@@ -53,7 +53,7 @@ RES="$WORK/a1.results"
 printf 'repo\t%s\t1\t1\t1\tfalse\t-\ttrue\n' "$WT" | gaffer_run_dod_gates "$RES"; A1_RC=$?
 [ "$A1_RC" -ne 0 ] && ok "A1 failing test_command → gate FAILS (rc=$A1_RC)" \
   || fail "A1 expected a non-zero gate result for a failing test_command"
-grep -qE '^GATE\ttests\trepo\tFAIL' "$RES" \
+grep -qE $'^GATE\ttests\trepo\tFAIL' "$RES" \
   && ok "A1 the FAILing gate is recorded by name (tests)" \
   || fail "A1 expected a FAIL row for the tests gate ($(cat "$RES"))"
 
@@ -68,7 +68,7 @@ RES="$WORK/a3.results"
 printf 'repo\t%s\t1\t1\t1\t-\t-\t-\n' "$WT" | gaffer_run_dod_gates "$RES"; A3_RC=$?
 [ "$A3_RC" -eq 0 ] && ok "A3 no command configured → gate PASSES (nothing to fail)" \
   || fail "A3 expected rc=0 when no commands are configured ($(cat "$RES"))"
-grep -qE '^GATE\ttests\trepo\tSKIP\t0\tno command configured' "$RES" \
+grep -qE $'^GATE\ttests\trepo\tSKIP\t0\tno command configured' "$RES" \
   && ok "A3 the un-configured gate is logged as SKIP (not FAIL)" \
   || fail "A3 expected a SKIP/no-command row for tests ($(cat "$RES"))"
 
@@ -77,7 +77,7 @@ RES="$WORK/a4.results"
 printf 'repo\t%s\t0\t0\t0\tfalse\t-\tfalse\n' "$WT" | gaffer_run_dod_gates "$RES"; A4_RC=$?
 [ "$A4_RC" -eq 0 ] && ok "A4 disabled gates are not run (failing cmd ignored)" \
   || fail "A4 expected rc=0 when all gates are disabled ($(cat "$RES"))"
-grep -qE '^GATE\ttests\trepo\tSKIP\t0\tgate disabled by config' "$RES" \
+grep -qE $'^GATE\ttests\trepo\tSKIP\t0\tgate disabled by config' "$RES" \
   && ok "A4 a disabled gate is logged as SKIP/disabled" \
   || fail "A4 expected a SKIP/disabled row for tests ($(cat "$RES"))"
 
@@ -100,7 +100,7 @@ printf 'repo\t%s\t1\t0\t0\t__gaffer_no_such_cmd__\t-\t-\n' "$WT" \
   | gaffer_run_dod_gates "$RES"; A5_RC=$?
 [ "$A5_RC" -ne 0 ] && ok "A5 a non-spawnable gate command → FAIL (no crash)" \
   || fail "A5 expected a non-zero result for an unrunnable command"
-grep -qE '^GATE\ttests\trepo\tFAIL' "$RES" \
+grep -qE $'^GATE\ttests\trepo\tFAIL' "$RES" \
   && ok "A5 the unrunnable gate is recorded as a FAIL" \
   || fail "A5 expected a FAIL row for the unrunnable command ($(cat "$RES"))"
 

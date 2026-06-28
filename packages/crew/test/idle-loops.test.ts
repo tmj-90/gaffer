@@ -1,10 +1,11 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { FakeCommandRunner } from "../src/adapters/commandRunner.js";
+import { FakeCommandRunner, systemCommandRunner } from "../src/adapters/commandRunner.js";
 import { EventLog } from "../src/events/eventLog.js";
 import { runIdleCoverageLoop } from "../src/loops/idleLoop.js";
 import { runIdleTestQualityLoop, scanTestQuality } from "../src/loops/idleTestQuality.js";
@@ -479,6 +480,37 @@ describe("tech-debt scan", () => {
     expect(hotspot!.product).toBeGreaterThan(50);
     // The churn lookup went through the injected command runner (git log).
     expect(runner.calls.some((c) => c.command.startsWith("git log"))).toBe(true);
+  });
+
+  it("does NOT execute shell metacharacters in a scanned filename (no injection)", () => {
+    // FIX-2: a malicious filename must never be interpolated into a shell string.
+    // The churn lookup runs `git log` over the REAL systemCommandRunner; a file
+    // literally named `$(touch PWNED).ts` would, under shell interpolation, run
+    // `touch PWNED` during the scan. With the no-shell argv path it is inert.
+    const repo = tempRepo("fg-td-inject-");
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "t@e"]);
+    execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+
+    const evil = "$(touch PWNED).ts";
+    writeFileSync(join(repo, evil), "const x = 1;\n");
+    execFileSync("git", ["-C", repo, "add", "-A"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "seed"]);
+
+    const config = configForRepo(repo, { coverage_command: null });
+    const wg = new FakeDispatchClient();
+    // REAL runner — this is the security boundary under test, not the fake.
+    const d = deps(config, wg, systemCommandRunner);
+    const root = d.repoRegistry.absolutePath(d.repoRegistry.list()[0]!);
+
+    const findings = scanTechDebt(d, root, [join(root, evil)], 500, 1_000_000);
+
+    // The injection payload must NOT have run: no PWNED file anywhere it could land.
+    expect(existsSync(join(repo, "PWNED"))).toBe(false);
+    expect(existsSync(join(root, "PWNED"))).toBe(false);
+    expect(existsSync(join(process.cwd(), "PWNED"))).toBe(false);
+    // And the scan still produced a sane result (1 real commit touched the file).
+    expect(Array.isArray(findings)).toBe(true);
   });
 
   it("detects a lexical-duplication cluster shared across two files", () => {

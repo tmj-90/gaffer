@@ -5,7 +5,11 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { FakeCommandRunner, systemCommandRunner } from "../src/adapters/commandRunner.js";
+import {
+  FakeCommandRunner,
+  systemCommandRunner,
+  type CommandRunner,
+} from "../src/adapters/commandRunner.js";
 import { EventLog } from "../src/events/eventLog.js";
 import { runIdleCoverageLoop } from "../src/loops/idleLoop.js";
 import { runIdleTestQualityLoop, scanTestQuality } from "../src/loops/idleTestQuality.js";
@@ -69,7 +73,7 @@ function configForRepo(
 function deps(
   config: CrewConfig,
   wg: FakeDispatchClient,
-  runner = new FakeCommandRunner({ stdout: "", exitCode: 0 }),
+  runner: CommandRunner = new FakeCommandRunner({ stdout: "", exitCode: 0 }),
 ) {
   return {
     config,

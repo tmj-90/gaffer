@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -288,5 +289,23 @@ describe("maintenance-lane commit (FIX-4) — atomic select+save under a lock", 
     const choice = commitMaintenanceChoice(config, path);
     expect(choice.lane).toBe("security_hotspot");
     expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it("skips the tick (lane null) when all lock attempts exhaust, rather than writing unlocked", () => {
+    const path = tmpCursorPath();
+    const config = withLanes(baseConfig(), ["security_hotspot"]);
+    const lockPath = `${path}.lock`;
+    // Hold the lock permanently so every acquire attempt fails.
+    writeFileSync(lockPath, "99999\n");
+
+    const choice = commitMaintenanceChoice(config, path);
+    expect(choice.lane).toBeNull();
+    expect(choice.reason).toMatch(/locked by another worker/i);
+    // The cursor on disk is unchanged — no unlocked write occurred.
+    expect(existsSync(path)).toBe(false);
+    // The lock file was NOT removed (we held it externally).
+    expect(existsSync(lockPath)).toBe(true);
+    // Clean up the lock for other tests.
+    rmSync(lockPath, { force: true });
   });
 });

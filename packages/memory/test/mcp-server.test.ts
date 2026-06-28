@@ -9,6 +9,10 @@
  * coverage before. Each test gets a fresh server+DB; the audit log is
  * silenced (MEMORY_AUDIT_OFF) and env gates are reset per-test.
  */
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import BetterSqlite3 from "better-sqlite3";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -21,7 +25,13 @@ import { buildMcpServer } from "../src/mcp/server.js";
 import { runMigrations } from "../src/db/migrations.js";
 import type { Database } from "better-sqlite3";
 
-const ENV_KEYS = ["MEMORY_ALLOW_RESTRICTED_MCP", "MEMORY_ALLOW_MCP_ABSENCE", "MEMORY_AUDIT_OFF"];
+const ENV_KEYS = [
+  "MEMORY_ALLOW_RESTRICTED_MCP",
+  "MEMORY_ALLOW_MCP_ABSENCE",
+  "MEMORY_AUTO_APPROVE",
+  "MEMORY_AUDIT_OFF",
+  "MEMORY_AUDIT_LOG",
+];
 const savedEnv: Record<string, string | undefined> = {};
 
 let db: Database;
@@ -74,12 +84,43 @@ async function callJson(
   };
 }
 
+/**
+ * Redirect the audit log to a fresh temp file and turn auditing ON for
+ * the current test, returning a reader for the parsed JSONL rows. Used by
+ * the restricted-gate tests that must prove the audit row reflects the
+ * gate decision (E-1: the audit trail is part of the trust boundary, not
+ * just the response body). The temp dir is cleaned up in afterEach.
+ */
+function captureAudit(): { rows: () => Array<Record<string, unknown>> } {
+  const dir = mkdtempSync(join(tmpdir(), "memory-audit-"));
+  const path = join(dir, "audit.jsonl");
+  // Pre-create so reads never hit ENOENT even if no row is written, and so
+  // the audit module's lazy ensureFile is a no-op against this path.
+  writeFileSync(path, "");
+  auditDirs.push(dir);
+  delete process.env["MEMORY_AUDIT_OFF"];
+  process.env["MEMORY_AUDIT_LOG"] = path;
+  return {
+    rows: () =>
+      readFileSync(path, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>),
+  };
+}
+
+const auditDirs: string[] = [];
+
 beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   // Silence the audit log so tests don't write ~/.memory/audit.jsonl.
+  // (captureAudit re-enables + redirects it for the tests that assert rows.)
   process.env["MEMORY_AUDIT_OFF"] = "1";
+  delete process.env["MEMORY_AUDIT_LOG"];
   delete process.env["MEMORY_ALLOW_RESTRICTED_MCP"];
   delete process.env["MEMORY_ALLOW_MCP_ABSENCE"];
+  delete process.env["MEMORY_AUTO_APPROVE"];
   db = newDb();
 });
 
@@ -92,6 +133,10 @@ afterEach(async () => {
     await client?.close();
   } catch {
     /* already closed */
+  }
+  while (auditDirs.length > 0) {
+    const dir = auditDirs.pop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -237,6 +282,32 @@ describe("MCP — search_lore", () => {
     expect(on.json.results.some((r: any) => r.restricted === true)).toBe(true);
   });
 
+  it("audits a restricted hit's id when the gate surfaces it (on-path trail)", async () => {
+    const audit = captureAudit();
+    const secret = addLore(db, {
+      title: "Restricted argon secret",
+      summary: "s",
+      body: "b",
+      restricted: true,
+      tags: ["security"],
+    });
+    process.env["MEMORY_ALLOW_RESTRICTED_MCP"] = "1";
+    client = await connectClient(db);
+    const { json } = await callJson(client, "search_lore", {
+      query: "restricted argon",
+      includeRestricted: true,
+    });
+    expect(json.results.some((r: any) => r.id === secret.id)).toBe(true);
+
+    // E-1: with the gate ON the restricted record is genuinely served, so
+    // the search_lore audit row records its id. With the gate OFF the
+    // server forces includeRestricted=false and this id never appears —
+    // inverting server.ts's `=== "1"` flips which branch runs and fails
+    // both the response and this audit assertion.
+    const row = audit.rows().find((r) => r["tool"] === "search_lore");
+    expect(row?.["resultIds"]).toContain(secret.id);
+  });
+
   it("rejects an out-of-range limit at the schema boundary", async () => {
     client = await connectClient(db);
     const { isError, text } = await callJson(client, "search_lore", {
@@ -260,7 +331,8 @@ describe("MCP — get_lore + restricted gate", () => {
     expect(json.body).toBe("the full body text");
   });
 
-  it("redacts a restricted record when the gate is off (id only, no body)", async () => {
+  it("redacts a restricted record when the gate is off, and audits blocked:restricted", async () => {
+    const audit = captureAudit();
     const lore = addLore(db, {
       title: "Secret",
       summary: "s",
@@ -274,9 +346,18 @@ describe("MCP — get_lore + restricted gate", () => {
     expect(json.body).toBeUndefined();
     expect(json.title).toBeUndefined();
     expect(JSON.stringify(json)).not.toContain("do not leak");
+
+    // E-1: the gate decision must also land in the audit trail. With the
+    // env flag OFF the get_lore row is marked blocked:"restricted" (the id
+    // resolved, but the body was withheld). Inverting server.ts's
+    // `=== "1"` would return the body AND drop this blocked marker.
+    const row = audit.rows().find((r) => r["tool"] === "get_lore");
+    expect(row?.["blocked"]).toBe("restricted");
+    expect(row?.["resultIds"]).toEqual([lore.id]);
   });
 
-  it("returns the body of a restricted record when the gate is on", async () => {
+  it("returns the body of a restricted record when the gate is on, with no blocked audit", async () => {
+    const audit = captureAudit();
     const lore = addLore(db, {
       title: "Secret",
       summary: "s",
@@ -287,6 +368,15 @@ describe("MCP — get_lore + restricted gate", () => {
     client = await connectClient(db);
     const { json } = await callJson(client, "get_lore", { id: lore.id });
     expect(json.body).toBe("now visible");
+
+    // E-1 mutation sanity (the ON direction): the audited get_lore call is
+    // an ordinary, NON-blocked access. If the gate check were inverted, the
+    // body assertion above would fail; this also pins that the granted
+    // access is NOT recorded as blocked.
+    const row = audit.rows().find((r) => r["tool"] === "get_lore");
+    expect(row).toBeDefined();
+    expect(row?.["blocked"]).toBeUndefined();
+    expect(row?.["resultIds"]).toEqual([lore.id]);
   });
 
   it("returns null for an unknown id", async () => {
@@ -364,6 +454,96 @@ describe("MCP — suggest_lore", () => {
     });
     expect(Array.isArray(json.possibleDuplicates)).toBe(true);
     expect(json.possibleDuplicates.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * E-1: the MEMORY_AUTO_APPROVE autonomy flag, exercised end-to-end through
+ * the MCP suggest_lore handler (server.ts reads
+ * `process.env["MEMORY_AUTO_APPROVE"] === "1"` and passes `autoApprove` to
+ * suggestLore). The unit gate (suggestLore({ autoApprove })) is covered in
+ * lore.test.ts; what was untested is the handler-level env wiring itself.
+ *
+ * Both directions are asserted so a one-char mutation of the env check
+ * (`=== "1"` → `!== "1"`, or dropping the flag) fails the suite:
+ *   - OFF (default): the suggestion lands `draft` and is invisible to the
+ *     default active-only search until a human approves it.
+ *   - ON: the suggestion lands `active` immediately and is searchable with
+ *     no approval step — the operator-trust path.
+ */
+describe("MCP — suggest_lore + MEMORY_AUTO_APPROVE (env gated)", () => {
+  it("keeps a suggestion in draft (hidden from default search) when the flag is off", async () => {
+    // Gate explicitly off (beforeEach already deletes it; assert the
+    // default behaviour is the safe one).
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Auto approve default convention",
+      summary: "s",
+      body: "b",
+    });
+    expect(json.status).toBe("draft");
+
+    // Draft is NOT in the default (active-only) search. If the env check
+    // were inverted, this record would be `active` and would show up here.
+    const search = await callJson(client, "search_lore", {
+      query: "auto approve default convention",
+    });
+    expect(search.json.results).toEqual([]);
+
+    // It only becomes visible once includeDrafts is requested — proving it
+    // really is parked in the governed draft state, not just missing.
+    const drafts = await callJson(client, "search_lore", {
+      query: "auto approve default convention",
+      includeDrafts: true,
+    });
+    expect(drafts.json.results.some((r: any) => r.id === json.id)).toBe(true);
+  });
+
+  it("lands a suggestion active and immediately searchable when the flag is on", async () => {
+    process.env["MEMORY_AUTO_APPROVE"] = "1";
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Auto approve enabled convention",
+      summary: "s",
+      body: "b",
+    });
+    // Handler-level proof: the env flag short-circuits the human-approval
+    // step, so the record is born `active`. With the flag off (above) the
+    // identical call yields `draft` — the two assertions bracket the gate.
+    expect(json.status).toBe("active");
+
+    // Active records ARE in the default search with no approval step.
+    const search = await callJson(client, "search_lore", {
+      query: "auto approve enabled convention",
+    });
+    expect(search.json.results.some((r: any) => r.id === json.id)).toBe(true);
+  });
+
+  it("treats any non-1 flag value as off (draft) — only an exact 1 auto-approves", async () => {
+    // The gate is a strict `=== "1"`; a truthy-but-not-"1" value must NOT
+    // auto-approve. This pins the comparison shape, not just truthiness.
+    process.env["MEMORY_AUTO_APPROVE"] = "true";
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Truthy but not one",
+      summary: "s",
+      body: "b",
+    });
+    expect(json.status).toBe("draft");
+  });
+
+  it("audits the auto-approved suggestion's id through the handler", async () => {
+    const audit = captureAudit();
+    process.env["MEMORY_AUTO_APPROVE"] = "1";
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Audited auto approve",
+      summary: "s",
+      body: "b",
+    });
+    expect(json.status).toBe("active");
+    const row = audit.rows().find((r) => r["tool"] === "suggest_lore");
+    expect(row?.["resultIds"]).toEqual([json.id]);
   });
 });
 

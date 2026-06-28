@@ -2,11 +2,35 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Dispatch } from "../src/core.js";
-import { resolveRunsDir, spawnTrackedRun } from "../src/api/runTracking.js";
+import { resolveRunsDir, spawnTrackedRun, type RunTracker } from "../src/api/runTracking.js";
 import { TestClock } from "../src/util/clock.js";
+
+/**
+ * Wrap node:fs so the test can observe per-run log fds: every openSync return is
+ * recorded in `openFds` and every closeSync removes it, letting the fail-closed
+ * test assert the SUT closed the fd it opened (rather than leaking it). The
+ * SUT's `import { openSync, closeSync } from "node:fs"` bindings resolve to these
+ * wrappers. Module mocks are hoisted, so this must use a self-contained factory.
+ */
+const { openFds } = vi.hoisted(() => ({ openFds: new Set<number>() }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    openSync: (...args: Parameters<typeof actual.openSync>): number => {
+      const fd = actual.openSync(...args);
+      openFds.add(fd);
+      return fd;
+    },
+    closeSync: (fd: number): void => {
+      openFds.delete(fd);
+      actual.closeSync(fd);
+    },
+  };
+});
 
 /**
  * RUN-ACTIVITY — the shared spawn wrapper. Drives a trivial child to assert it
@@ -114,6 +138,70 @@ describe("RUN-ACTIVITY: spawnTrackedRun records + captures + marks ended", () =>
     );
     expect(res.started).toBe(true);
     expect(res.runId).toBeNull();
+  });
+
+  it("fails CLOSED when recordRunStart throws after a successful spawn (no orphan)", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "wg-rt-"));
+    const env = { ...process.env, GAFFER_DATA: dataDir };
+
+    // A tracker that mints ids but THROWS on recordRunStart — simulating a
+    // registry write that fails (SQLite locked / migration / disk full) AFTER the
+    // child has already been spawned. The child must not be left orphaned.
+    let capturedPid: number | null = null;
+    let capturedLogPath: string | null | undefined;
+    const failingTracker: RunTracker = {
+      newRunId: () => "fixed-run-id",
+      recordRunStart: (input) => {
+        capturedPid = input.pid ?? null;
+        capturedLogPath = input.log_path;
+        throw new Error("registry write failed (simulated SQLITE_BUSY)");
+      },
+      markRunEnd: () => {
+        throw new Error("markRunEnd must not be called on the fail-closed path");
+      },
+    };
+
+    openFds.clear();
+
+    // A long-lived child so we can prove it was killed rather than having simply
+    // exited on its own before we checked.
+    expect(() =>
+      spawnTrackedRun(
+        {
+          bin: process.execPath,
+          args: ["-e", "setTimeout(() => {}, 60000)"],
+          env,
+          kind: "product_owner",
+          repo: "gaffer",
+        },
+        failingTracker,
+        env,
+      ),
+    ).toThrow(/registry write failed/);
+
+    // recordRunStart did receive a real, live pid (the spawn succeeded first).
+    expect(capturedPid).toBeGreaterThan(0);
+    const pid = capturedPid!;
+
+    // The child was SIGTERM'd: it must no longer be alive. SIGTERM is async, so
+    // poll briefly for the process to disappear.
+    const deadline = Date.now() + 5000;
+    let alive = true;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+        await new Promise((r) => setTimeout(r, 25));
+      } catch {
+        alive = false;
+        break;
+      }
+    }
+    expect(alive).toBe(false);
+
+    // The per-run log was opened (fd-bearing branch ran, not the ignore fallback)
+    // AND every fd opened by the SUT was closed on the fail-closed path — no leak.
+    expect(capturedLogPath).toBe(join(resolveRunsDir(env), "fixed-run-id.log"));
+    expect(openFds.size).toBe(0);
   });
 
   it("records a failed run and rethrows on a synchronous spawn failure", () => {

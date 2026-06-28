@@ -156,14 +156,32 @@ export function spawnTrackedRun(
     throw err;
   }
 
-  // Record the run now that we have its pid + log path.
-  tracker.recordRunStart({
-    id: runId,
-    kind: input.kind,
-    repo: input.repo ?? null,
-    pid: child.pid ?? null,
-    log_path: logPath,
-  });
+  // Record the run now that we have its pid + log path. This is the control
+  // plane's ONLY record of the child: the row, the log reference, the kill path
+  // and the exit listener all hang off it. If the registry write throws (SQLite
+  // locked, a failed migration, disk full, …) AFTER a successful spawn, the
+  // child is already running with no row, no kill path and no exit listener — a
+  // fail-OPEN orphan that defeats the control plane. Fail CLOSED instead: kill
+  // the child we just spawned, close the log fd, and rethrow so the caller sees
+  // the failure. Nothing was unref'd or listened-to yet, so a SIGTERM here fully
+  // reaps the orphan.
+  try {
+    tracker.recordRunStart({
+      id: runId,
+      kind: input.kind,
+      repo: input.repo ?? null,
+      pid: child.pid ?? null,
+      log_path: logPath,
+    });
+  } catch (err) {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // Best-effort: the child may have already exited between spawn and here.
+    }
+    if (logFd !== null) closeIgnore(logFd);
+    throw err;
+  }
 
   const finalize = (code: number | null, errDetail?: string): void => {
     if (logFd !== null) {

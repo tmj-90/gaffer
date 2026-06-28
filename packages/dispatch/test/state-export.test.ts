@@ -281,7 +281,12 @@ describe("dispatch state export", () => {
     // reviewer must justify every exclusion:
     //   - schema_meta: pure metadata, captured by the bundle's top-level
     //     schema_version and re-stamped by migrate() on import.
-    const INTENTIONALLY_EXCLUDED = ["schema_meta"];
+    //   - runs: machine-local control-plane data (the run-activity registry). Its
+    //     rows carry this machine's pids and GAFFER_DATA/runs/<id>.log paths and
+    //     have no FK to the board — they are meaningless (and a `running` row with
+    //     a foreign pid is actively misleading) on another machine. The bundle is
+    //     the portable BOARD; run history is intentionally not carried.
+    const INTENTIONALLY_EXCLUDED = ["schema_meta", "runs"];
 
     const covered = new Set<string>([...EXPORT_TABLES, ...INTENTIONALLY_EXCLUDED]);
 

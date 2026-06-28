@@ -11,7 +11,12 @@ import {
   type IdleScanOutcome,
 } from "./idleScans.js";
 import type { IdleLoopDeps } from "./idleLoop.js";
-import { resolveMinDeliveredTickets } from "../config/schema.js";
+import {
+  resolveMinDeliveredTickets,
+  type IdleLoopMode,
+  type RepoConfig,
+} from "../config/schema.js";
+import { oracleFindingKey, summariseOracleFindings, type Oracle } from "./oracles/index.js";
 
 const LOOP = "security_hotspot";
 
@@ -284,12 +289,58 @@ function summarise(repoName: string, findings: SecurityHotspotFinding[]): string
   return `${head}\n${detail}`;
 }
 
+const ORACLE_ACCEPTANCE =
+  `Each finding is a semgrep result (rule id + file/line). Acceptance criteria: ` +
+  `remediate the flagged sink (or document a vetted, scoped exception) and re-run semgrep clean.`;
+
 /**
- * Idle security-hotspot loop. Walks each in-scope repo's source files, flags
- * likely security hotspots, and creates a DRAFT ticket per repo carrying each
- * finding's file/location and why it's a risk. Observation only — never edits
- * code. Dependency-level risks (vulnerable/outdated packages) are owned by the
- * dependency-hygiene loop, so this loop focuses on in-source hotspots.
+ * Try the semgrep security oracle for one repo. Returns the apply result when the
+ * tool ran, or `null` when semgrep is absent (loop falls back to its three-lens
+ * grep+verify path). Logs the path taken either way.
+ */
+function trySecurityOracle(
+  deps: IdleLoopDeps,
+  oracle: Oracle,
+  mode: IdleLoopMode,
+  repo: RepoConfig,
+  root: string,
+): ReturnType<typeof applyScanFinding> | null {
+  const result = oracle.consult(root);
+  if (!result.available) {
+    deps.events.record("security_hotspot_oracle_unavailable", {
+      repoName: repo.name,
+      oracle: oracle.id,
+      reason: result.reason,
+    });
+    return null;
+  }
+  deps.events.record("security_hotspot_scanned", {
+    repoName: repo.name,
+    findings: result.findings.length,
+    path: "oracle",
+    oracle: oracle.id,
+  });
+  if (result.findings.length === 0) return { kind: "deduped" };
+  const summary = summariseOracleFindings(repo.name, "semgrep", result.findings, ORACLE_ACCEPTANCE);
+  return applyScanFinding(
+    deps,
+    LOOP,
+    mode,
+    repo,
+    `Security hotspots: ${repo.name}`,
+    summary,
+    oracleFindingKey(oracle.id, result.findings),
+  );
+}
+
+/**
+ * Idle security-hotspot loop. PREFERS the semgrep oracle (precise, rule-based
+ * findings) when one is wired and semgrep is installed; otherwise falls back to
+ * walking each in-scope repo's source files through the three-lens grep+verify
+ * heuristic. Either way it creates a DRAFT ticket per repo carrying each finding's
+ * file/location and why it's a risk, and logs the path taken (`oracle` vs
+ * `heuristic`). Observation only — never edits code. Dependency-level risks
+ * (vulnerable/outdated packages) are owned by the dependency-hygiene loop.
  */
 export function runIdleSecurityHotspotLoop(deps: IdleLoopDeps): IdleScanOutcome {
   deps.events.record("loop_started", { loop: LOOP });
@@ -303,9 +354,21 @@ export function runIdleSecurityHotspotLoop(deps: IdleLoopDeps): IdleScanOutcome 
     return { status: "no_repos" };
   }
 
+  const oracle = deps.oracles?.security;
   const results = [];
   for (const repo of candidates) {
     const root = deps.repoRegistry.absolutePath(repo);
+
+    // Oracle-first: a wired semgrep oracle whose tool is installed yields precise
+    // rule-based findings. Unavailable → null → fall back to the three lenses.
+    if (oracle) {
+      const oracleResult = trySecurityOracle(deps, oracle, mode, repo, root);
+      if (oracleResult !== null) {
+        results.push(oracleResult);
+        continue;
+      }
+    }
+
     const files = walkFiles(root, isSecurityScanFile);
     const findings: SecurityHotspotFinding[] = [];
     for (const path of files) {
@@ -314,6 +377,7 @@ export function runIdleSecurityHotspotLoop(deps: IdleLoopDeps): IdleScanOutcome 
     deps.events.record("security_hotspot_scanned", {
       repoName: repo.name,
       findings: findings.length,
+      path: "heuristic",
     });
     if (findings.length === 0) continue;
     results.push(

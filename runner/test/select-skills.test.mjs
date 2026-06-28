@@ -84,10 +84,13 @@ check("non-empty stacks must intersect", () => {
     "disjoint does not match",
   );
 });
-check("area must equal when both constrain", () => {
-  assert(skillMatches({ stack: [], area: "security" }, { area: "security" }), "equal area matches");
+check("area must equal when both constrain (domain areas)", () => {
   assert(
-    !skillMatches({ stack: [], area: "security" }, { area: "frontend" }),
+    skillMatches({ stack: [], area: "marketing" }, { area: "marketing" }),
+    "equal area matches",
+  );
+  assert(
+    !skillMatches({ stack: [], area: "marketing" }, { area: "product" }),
     "different area excluded",
   );
 });
@@ -96,8 +99,8 @@ check("FIX-2: an area-only skill is opt-in — excluded on a stack-only query", 
   // No area in the query → an area-only skill (stack:[] + area) does NOT match;
   // it is opt-in and only fires when its area is explicitly named.
   assert(
-    !skillMatches({ stack: [], area: "security" }, { area: "" }),
-    "area-only skill must NOT auto-fire when no area is queried",
+    !skillMatches({ stack: [], area: "marketing" }, { area: "" }),
+    "area-only domain skill must NOT auto-fire when no area is queried",
   );
   assert(
     !skillMatches({ stack: [], area: "marketing" }, { stacks: ["node"] }),
@@ -166,6 +169,26 @@ check("minimalism is an always-on QUALITY LENS (area: quality), injected by tick
     );
   }
 });
+
+check(
+  "security skills are always-on (area: security is universal) — defense-in-depth policy",
+  () => {
+    // Policy: every delivery gets the security lenses regardless of stack/domain.
+    for (const stack of ["node", "java", "python", "go", "typescript-react"]) {
+      const names = selectSkills({ stacks: [stack] }).map((s) => s.name);
+      for (const sec of [
+        "security-authz",
+        "security-input-validation",
+        "security-secret-handling",
+      ]) {
+        assert(
+          names.includes(sec),
+          `${sec} must auto-fire on the ${stack} stack-only query (security is always-on)`,
+        );
+      }
+    }
+  },
+);
 
 check("minimalism skill preserves safety guards and documents YAGNI + intensity levels", () => {
   const body = readFileSync(join(DEFAULT_SKILLS_DIR, "minimalism", "SKILL.md"), "utf8");

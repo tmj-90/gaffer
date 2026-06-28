@@ -33,9 +33,12 @@ function defaultAuditPath(): string {
   return join(homedir(), ".memory", "audit.jsonl");
 }
 
-let initialised = false;
+// Init cache keyed on the RESOLVED path, not a single global boolean. The path is
+// env-driven (MEMORY_AUDIT_LOG) and can differ between calls — a global flag would
+// short-circuit ensureFile for a brand-new path, leaving its dir/file uncreated.
+const initialisedPaths = new Set<string>();
 function ensureFile(path: string): void {
-  if (initialised) return;
+  if (initialisedPaths.has(path)) return;
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (!existsSync(path)) {
@@ -46,7 +49,7 @@ function ensureFile(path: string): void {
       // best-effort
     }
   }
-  initialised = true;
+  initialisedPaths.add(path);
 }
 
 export function audit(record: Omit<AuditRecord, "ts">): void {
@@ -56,7 +59,11 @@ export function audit(record: Omit<AuditRecord, "ts">): void {
   const line = JSON.stringify({ ts: new Date().toISOString(), ...record }) + "\n";
   try {
     appendFileSync(path, line);
-  } catch {
-    // Audit write failure must never break a tool call. Swallow.
+  } catch (err) {
+    // An audit write failure must never break a tool call — but it must not be
+    // silent either: a broken audit trail is a security-relevant gap, so surface
+    // a one-line warning to stderr (stdout is the MCP channel and must stay clean).
+    const reason = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[memory-audit] WARN: failed to append to ${path}: ${reason}\n`);
   }
 }

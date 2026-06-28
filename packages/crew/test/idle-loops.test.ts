@@ -1,13 +1,19 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { FakeCommandRunner } from "../src/adapters/commandRunner.js";
+import {
+  FakeCommandRunner,
+  systemCommandRunner,
+  type CommandRunner,
+} from "../src/adapters/commandRunner.js";
 import { EventLog } from "../src/events/eventLog.js";
 import { runIdleCoverageLoop } from "../src/loops/idleLoop.js";
 import { runIdleTestQualityLoop, scanTestQuality } from "../src/loops/idleTestQuality.js";
+import { runIdleTypeQualityLoop, scanTypeQuality } from "../src/loops/idleTypeQuality.js";
 import { runIdleDocsLoop, scanDocs } from "../src/loops/idleDocs.js";
 import {
   runIdleDependencyLoop,
@@ -19,6 +25,7 @@ import {
   runIdleSecurityHotspotLoop,
   scanSecurityHotspots,
 } from "../src/loops/idleSecurityHotspot.js";
+import { runIdleTechDebtLoop, scanTechDebt } from "../src/loops/idleTechDebt.js";
 import { runIdleLoops } from "../src/loops/idleRegistry.js";
 import { FakeDispatchClient } from "../src/dispatch/fakeClient.js";
 import { TestClock } from "../src/util/clock.js";
@@ -33,9 +40,11 @@ import { crewConfigSchema, type CrewConfig } from "../src/config/schema.js";
 function enableScanLoops(config: CrewConfig): CrewConfig {
   config.loops.idle_coverage.enabled = true;
   config.loops.idle_test_quality.enabled = true;
+  config.loops.idle_type_quality.enabled = true;
   config.loops.idle_documentation.enabled = true;
   config.loops.idle_dependencies.enabled = true;
   config.loops.idle_security_hotspot.enabled = true;
+  config.loops.idle_tech_debt.enabled = true;
   return config;
 }
 
@@ -64,7 +73,7 @@ function configForRepo(
 function deps(
   config: CrewConfig,
   wg: FakeDispatchClient,
-  runner = new FakeCommandRunner({ stdout: "", exitCode: 0 }),
+  runner: CommandRunner = new FakeCommandRunner({ stdout: "", exitCode: 0 }),
 ) {
   return {
     config,
@@ -321,6 +330,284 @@ describe("security-hotspot scan", () => {
   });
 });
 
+describe("type-quality scan", () => {
+  it("flags `as` casts, non-null `!`, @ts-* suppressions and bare any", () => {
+    const src = [
+      `const a = value as Widget;`,
+      `const b = config!.timeout;`,
+      `// @ts-ignore legacy`,
+      `function f(x: any): void {}`,
+      `const ok: number = 1;`,
+    ].join("\n");
+
+    const findings = scanTypeQuality(src, "app.ts");
+    const kinds = findings.map((f) => f.kind);
+    expect(kinds).toContain("cast");
+    expect(kinds).toContain("non_null");
+    expect(kinds).toContain("ts_suppression");
+    expect(kinds).toContain("any");
+    // Every finding carries a file location and a non-zero severity for ranking.
+    for (const f of findings) {
+      expect(f.file).toBe("app.ts");
+      expect(f.line).toBeGreaterThan(0);
+      expect(f.severity).toBeGreaterThan(0);
+    }
+  });
+
+  it("detects skipLibCheck:true in a tsconfig and ranks it highest", () => {
+    const findings = scanTypeQuality(
+      `{ "compilerOptions": { "skipLibCheck": true } }`,
+      "tsconfig.json",
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.kind).toBe("skip_lib_check");
+    // skipLibCheck outranks `as`/`!`/any.
+    const cast = scanTypeQuality(`const a = b as C;`, "x.ts")[0]!;
+    expect(findings[0]!.severity).toBeGreaterThan(cast.severity);
+  });
+
+  it("does not flag `!=` / logical-not or `import ... as` as findings", () => {
+    const src = [`if (a != b) return;`, `if (!ready) return;`, `import { x as y } from "z";`].join(
+      "\n",
+    );
+    const findings = scanTypeQuality(src, "clean.ts");
+    expect(findings.filter((f) => f.kind === "non_null")).toHaveLength(0);
+    expect(findings.filter((f) => f.kind === "cast")).toHaveLength(0);
+  });
+
+  it("creates a DRAFT ticket whose description carries the skill + acceptance criteria (no code edits)", () => {
+    const repo = tempRepo("fg-typ-");
+    writeFileSync(
+      join(repo, "thing.ts"),
+      `const a = value as Widget;\nconst b = config!.timeout;\n`,
+    );
+    const wg = new FakeDispatchClient();
+    const d = deps(configForRepo(repo), wg);
+
+    const outcome = runIdleTypeQualityLoop(d);
+    expect(outcome.status).toBe("draft_created");
+    if (outcome.status !== "draft_created") throw new Error("unreachable");
+
+    const ticket = wg.getTicket(outcome.drafts[0]!.ticketId);
+    expect(ticket.ticket.status).toBe("draft");
+    expect(ticket.ticket.description).toMatch(/no code was changed/i);
+    // AC: ticket names the typescript-conventions skill and the objective oracle.
+    expect(ticket.ticket.description).toMatch(/typescript-conventions/);
+    expect(ticket.ticket.description).toMatch(/pnpm typecheck/);
+    expect(ticket.ticket.description).toMatch(/no public API change/i);
+    expect(ticket.ticket.description).toMatch(/hotspot/i);
+    expect(ticket.repositories[0]!.name).toBe("demo");
+    expect(wg.evidence).toHaveLength(0);
+    expect(d.events.types()).toContain("type_quality_scanned");
+    expect(d.events.types()).toContain("idle_ticket_created");
+  });
+
+  it("reports no_findings when source is type-clean", () => {
+    const repo = tempRepo("fg-typ-clean-");
+    writeFileSync(
+      join(repo, "clean.ts"),
+      `export const add = (a: number, b: number): number => a + b;\n`,
+    );
+    const wg = new FakeDispatchClient();
+    expect(runIdleTypeQualityLoop(deps(configForRepo(repo), wg)).status).toBe("no_findings");
+  });
+
+  it("skips when ready tickets exist (an idle tick only fires with no ready work)", () => {
+    const repo = tempRepo("fg-typ-skip-");
+    writeFileSync(join(repo, "x.ts"), `const a = b as C;\n`);
+    const wg = new FakeDispatchClient();
+    wg.seedTicket({ title: "ready", status: "ready" });
+    expect(runIdleTypeQualityLoop(deps(configForRepo(repo), wg)).status).toBe(
+      "skipped_tickets_ready",
+    );
+  });
+
+  it("creates ONE draft when the same finding recurs across ticks (dedup)", () => {
+    const repo = tempRepo("fg-typ-dedup-");
+    writeFileSync(join(repo, "thing.ts"), `const a = value as Widget;\n`);
+    const wg = new FakeDispatchClient();
+
+    const first = runIdleTypeQualityLoop(deps(configForRepo(repo), wg));
+    expect(first.status).toBe("draft_created");
+    expect(wg.events.filter((e) => e.type === "draft_ticket.created")).toHaveLength(1);
+
+    const secondDeps = deps(configForRepo(repo), wg);
+    const second = runIdleTypeQualityLoop(secondDeps);
+    expect(wg.events.filter((e) => e.type === "draft_ticket.created")).toHaveLength(1);
+    expect(second.status).toBe("no_findings");
+    expect(secondDeps.events.types()).toContain("idle_finding_deduped");
+    expect(secondDeps.events.types()).not.toContain("idle_ticket_created");
+  });
+});
+
+describe("tech-debt scan", () => {
+  /** A source line that won't be flagged by any other detector. */
+  const filler = (n: number): string =>
+    Array.from({ length: n }, (_, i) => `const v${i} = ${i};`).join("\n");
+
+  it("flags a god-file whose LOC exceeds the threshold", () => {
+    const repo = tempRepo("fg-td-god-");
+    // 30 LOC core.ts with a low god_file_lines threshold; no churn (runner "").
+    writeFileSync(join(repo, "core.ts"), `${filler(30)}\n`);
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.idle_tech_debt.god_file_lines = 20;
+    config.loops.idle_tech_debt.churn_size_product_threshold = 1_000_000; // out of reach
+
+    const wg = new FakeDispatchClient();
+    const d = deps(config, wg); // default runner → stdout "" → churn 0
+    const root = d.repoRegistry.absolutePath(d.repoRegistry.list()[0]!);
+    const findings = scanTechDebt(d, root, [join(root, "core.ts")], 20, 1_000_000);
+    expect(findings.map((f) => f.kind)).toContain("god_file");
+    expect(findings.find((f) => f.kind === "god_file")!.loc).toBeGreaterThan(20);
+  });
+
+  it("flags a churn×size hotspot when commit-count × LOC exceeds the threshold", () => {
+    const repo = tempRepo("fg-td-churn-");
+    writeFileSync(join(repo, "app.js"), `${filler(10)}\n`); // 10 LOC, small (not a god-file)
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.idle_tech_debt.god_file_lines = 500; // app.js stays under
+    config.loops.idle_tech_debt.churn_size_product_threshold = 50; // 10 LOC × 6 commits = 60 > 50
+
+    const wg = new FakeDispatchClient();
+    // FakeCommandRunner supplies the commit count: 6 hashes on stdout.
+    const runner = new FakeCommandRunner({
+      stdout: ["a1", "b2", "c3", "d4", "e5", "f6"].join("\n"),
+      exitCode: 0,
+    });
+    const d = deps(config, wg, runner);
+    const root = d.repoRegistry.absolutePath(d.repoRegistry.list()[0]!);
+    const findings = scanTechDebt(d, root, [join(root, "app.js")], 500, 50);
+
+    const hotspot = findings.find((f) => f.kind === "churn_size");
+    expect(hotspot).toBeDefined();
+    expect(hotspot!.churn).toBe(6);
+    expect(hotspot!.product).toBeGreaterThan(50);
+    // The churn lookup went through the injected command runner (git log).
+    expect(runner.calls.some((c) => c.command.startsWith("git log"))).toBe(true);
+  });
+
+  it("does NOT execute shell metacharacters in a scanned filename (no injection)", () => {
+    // FIX-2: a malicious filename must never be interpolated into a shell string.
+    // The churn lookup runs `git log` over the REAL systemCommandRunner; a file
+    // literally named `$(touch PWNED).ts` would, under shell interpolation, run
+    // `touch PWNED` during the scan. With the no-shell argv path it is inert.
+    const repo = tempRepo("fg-td-inject-");
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "t@e"]);
+    execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+
+    const evil = "$(touch PWNED).ts";
+    writeFileSync(join(repo, evil), "const x = 1;\n");
+    execFileSync("git", ["-C", repo, "add", "-A"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "seed"]);
+
+    const config = configForRepo(repo, { coverage_command: null });
+    const wg = new FakeDispatchClient();
+    // REAL runner — this is the security boundary under test, not the fake.
+    const d = deps(config, wg, systemCommandRunner);
+    const root = d.repoRegistry.absolutePath(d.repoRegistry.list()[0]!);
+
+    const findings = scanTechDebt(d, root, [join(root, evil)], 500, 1_000_000);
+
+    // The injection payload must NOT have run: no PWNED file anywhere it could land.
+    expect(existsSync(join(repo, "PWNED"))).toBe(false);
+    expect(existsSync(join(root, "PWNED"))).toBe(false);
+    expect(existsSync(join(process.cwd(), "PWNED"))).toBe(false);
+    // And the scan still produced a sane result (1 real commit touched the file).
+    expect(Array.isArray(findings)).toBe(true);
+  });
+
+  it("detects a lexical-duplication cluster shared across two files", () => {
+    const repo = tempRepo("fg-td-dup-");
+    // A 10-line identical block present in BOTH files.
+    const block = Array.from({ length: 10 }, (_, i) => `  doThing(${i}, payload);`).join("\n");
+    writeFileSync(join(repo, "a.ts"), `export function a() {\n${block}\n}\n`);
+    writeFileSync(join(repo, "b.ts"), `export function b() {\n${block}\n}\n`);
+    const config = configForRepo(repo, { coverage_command: null });
+
+    const wg = new FakeDispatchClient();
+    const d = deps(config, wg); // churn 0, files small
+    const root = d.repoRegistry.absolutePath(d.repoRegistry.list()[0]!);
+    const findings = scanTechDebt(
+      d,
+      root,
+      [join(root, "a.ts"), join(root, "b.ts")],
+      500,
+      1_000_000,
+    );
+    const dupFiles = findings.filter((f) => f.kind === "duplication").map((f) => f.file);
+    expect(dupFiles).toContain("a.ts");
+    expect(dupFiles).toContain("b.ts");
+  });
+
+  it("reports nothing on small, clean, non-duplicated files", () => {
+    const repo = tempRepo("fg-td-clean-");
+    writeFileSync(join(repo, "small.ts"), `export const add = (a: number, b: number) => a + b;\n`);
+    const wg = new FakeDispatchClient();
+    expect(
+      runIdleTechDebtLoop(deps(configForRepo(repo, { coverage_command: null }), wg)).status,
+    ).toBe("no_findings");
+  });
+
+  it("creates a DRAFT ticket carrying both refactor skills and a behaviour-preserving AC (no code edits)", () => {
+    const repo = tempRepo("fg-td-draft-");
+    writeFileSync(join(repo, "god.ts"), `${filler(40)}\n`);
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.idle_tech_debt.god_file_lines = 20;
+
+    const wg = new FakeDispatchClient();
+    const d = deps(config, wg);
+    const outcome = runIdleTechDebtLoop(d);
+    expect(outcome.status).toBe("draft_created");
+    if (outcome.status !== "draft_created") throw new Error("unreachable");
+
+    const ticket = wg.getTicket(outcome.drafts[0]!.ticketId);
+    expect(ticket.ticket.status).toBe("draft");
+    expect(ticket.ticket.description).toMatch(/no code was changed/i);
+    expect(ticket.ticket.description).toMatch(/refactor-module/);
+    expect(ticket.ticket.description).toMatch(/minimalism/);
+    // Behaviour-preserving oracle: tests green before & after, no public API change.
+    expect(ticket.ticket.description).toMatch(/green BEFORE and AFTER/i);
+    expect(ticket.ticket.description).toMatch(/no public API change/i);
+    expect(ticket.ticket.description).toMatch(/no behaviour change/i);
+    expect(ticket.ticket.description).toMatch(/hotspot/i);
+    expect(ticket.repositories[0]!.name).toBe("demo");
+    expect(wg.evidence).toHaveLength(0);
+    expect(d.events.types()).toContain("tech_debt_scanned");
+    expect(d.events.types()).toContain("idle_ticket_created");
+  });
+
+  it("skips when ready tickets exist (an idle tick only fires with no ready work)", () => {
+    const repo = tempRepo("fg-td-ready-");
+    writeFileSync(join(repo, "x.ts"), `${filler(40)}\n`);
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.idle_tech_debt.god_file_lines = 20;
+    const wg = new FakeDispatchClient();
+    wg.seedTicket({ title: "ready", status: "ready" });
+    expect(runIdleTechDebtLoop(deps(config, wg)).status).toBe("skipped_tickets_ready");
+  });
+
+  it("creates ONE draft when the same repo is scanned twice (dedup)", () => {
+    const repo = tempRepo("fg-td-dedup-");
+    writeFileSync(join(repo, "god.ts"), `${filler(40)}\n`);
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.idle_tech_debt.god_file_lines = 20;
+
+    const wg = new FakeDispatchClient();
+    const first = runIdleTechDebtLoop(deps(config, wg));
+    expect(first.status).toBe("draft_created");
+    expect(wg.events.filter((e) => e.type === "draft_ticket.created")).toHaveLength(1);
+
+    const secondDeps = deps(configForRepo(repo, { coverage_command: null }), wg);
+    secondDeps.config.loops.idle_tech_debt.god_file_lines = 20;
+    const second = runIdleTechDebtLoop(secondDeps);
+    expect(wg.events.filter((e) => e.type === "draft_ticket.created")).toHaveLength(1);
+    expect(second.status).toBe("no_findings");
+    expect(secondDeps.events.types()).toContain("idle_finding_deduped");
+    expect(secondDeps.events.types()).not.toContain("idle_ticket_created");
+  });
+});
+
 describe("idle-loop modes", () => {
   /** Write a repo whose test_quality scan yields exactly one finding. */
   function smellyRepo(): string {
@@ -551,8 +838,10 @@ describe("idle-loop registry", () => {
     const ran = report.loops.map((l) => l.id);
     expect(ran).toContain("documentation");
     expect(ran).toContain("test_quality");
+    expect(ran).toContain("type_quality");
     expect(ran).toContain("dependency_hygiene");
     expect(ran).toContain("security_hotspot");
+    expect(ran).toContain("tech_debt");
     // Stubs are not present.
     expect(ran).not.toContain("lore_gap");
     expect(ran).not.toContain("design_drift");
@@ -574,9 +863,11 @@ describe("idle-loop registry", () => {
     const config = configForRepo(repo, { coverage_command: null });
     config.loops.idle_documentation.enabled = false;
     config.loops.idle_test_quality.enabled = false;
+    config.loops.idle_type_quality.enabled = false;
     config.loops.idle_dependencies.enabled = false;
     config.loops.idle_coverage.enabled = false;
     config.loops.idle_security_hotspot.enabled = false;
+    config.loops.idle_tech_debt.enabled = false;
     const report = runIdleLoops(deps(config, wg));
     expect(report.loops).toHaveLength(0);
   });
@@ -660,6 +951,8 @@ describe("scan loops default OFF", () => {
     expect(config.loops.idle_documentation.enabled).toBe(false);
     expect(config.loops.idle_dependencies.enabled).toBe(false);
     expect(config.loops.idle_security_hotspot.enabled).toBe(false);
+    expect(config.loops.idle_type_quality.enabled).toBe(false);
+    expect(config.loops.idle_tech_debt.enabled).toBe(false);
 
     const wg = new FakeDispatchClient();
     const report = runIdleLoops(deps(config, wg));
@@ -685,6 +978,7 @@ describe("scan loops default OFF", () => {
     expect(ran).toContain("test_quality");
     expect(ran).not.toContain("documentation");
     expect(ran).not.toContain("security_hotspot");
+    expect(ran).not.toContain("tech_debt");
     expect(report.totalDrafts).toBeGreaterThanOrEqual(1);
   });
 });

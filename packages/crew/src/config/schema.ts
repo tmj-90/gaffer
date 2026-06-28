@@ -211,6 +211,15 @@ export const loopsSchema = z
         min_delivered_tickets: minDeliveredTicketsSchema.nullable().default(null),
       })
       .default({}),
+    idle_type_quality: z
+      .object({
+        enabled: z.boolean().default(false),
+        trigger: z.string().default("when_queue_empty"),
+        mode: idleLoopModeSchema.default("create_draft_tickets"),
+        repos: z.array(z.string()).default([]),
+        min_delivered_tickets: minDeliveredTicketsSchema.nullable().default(null),
+      })
+      .default({}),
     idle_lore_gap: z
       .object({
         // Off by default: only meaningful with a real Memory configured.

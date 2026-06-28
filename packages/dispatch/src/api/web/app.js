@@ -4257,6 +4257,64 @@ function reopenedForReview(events) {
   return (events || []).some((ev) => ev.event_type === "ticket.reopened_for_review");
 }
 
+/**
+ * Definition-of-Done checklist (I3). The runner records the enforced DoD verdict
+ * as a `test_output` evidence row whose summary opens with `DoD: PASS|FAIL` and a
+ * machine-parseable JSON line: {"dod","gates":[{gate,repo,status,rc,note}…]}.
+ * Render the latest such row as a compact ✓/✗ checklist so the reviewer sees a
+ * pre-verified board — and, for a failing gate, the captured `note`. A FAIL row
+ * here means the delivery was AUTO-REJECTED before review; it lingers only as
+ * history, but surfacing it keeps the gate honest. All text goes through text
+ * nodes (el coerces strings) — never innerHTML — so it stays XSS-safe.
+ */
+function parseDodEvidence(evidence) {
+  const rows = (evidence || []).filter(
+    (ev) =>
+      ev.evidence_type === "test_output" &&
+      typeof ev.summary === "string" &&
+      ev.summary.startsWith("DoD: "),
+  );
+  if (rows.length === 0) return null;
+  // Newest wins: the last attached DoD row reflects the current verdict.
+  const summary = rows[rows.length - 1].summary;
+  const jsonLine = summary.split("\n")[1] || "";
+  try {
+    const parsed = JSON.parse(jsonLine);
+    if (!parsed || !Array.isArray(parsed.gates)) return null;
+    return parsed;
+  } catch {
+    // A malformed/legacy row must never break the Review view — just skip it.
+    return null;
+  }
+}
+
+function dodChecklist(evidence) {
+  const dod = parseDodEvidence(evidence);
+  if (!dod) return null;
+  const overall = dod.dod === "PASS" ? "PASS" : "FAIL";
+  const items = dod.gates.map((g) => {
+    const status = g.status === "PASS" ? "pass" : g.status === "FAIL" ? "fail" : "skip";
+    const mark = status === "pass" ? "✓" : status === "fail" ? "✗" : "–";
+    const children = [
+      el("span", { class: `dod-mark dod-${status}` }, mark),
+      el("span", { class: "dod-gate" }, String(g.gate || "gate")),
+      el("span", { class: "dod-repo ac-meta" }, String(g.repo || "")),
+    ];
+    // Only surface the note on a failing gate (it carries the captured tail/why).
+    if (status === "fail" && g.note) {
+      children.push(el("span", { class: "dod-note ac-meta" }, String(g.note)));
+    }
+    return el("li", { class: "dod-item" }, children);
+  });
+  return el("div", { class: `review-dod dod-${overall === "PASS" ? "ok" : "bad"}` }, [
+    el("div", { class: "ac-meta" }, [
+      "Definition of Done ",
+      badge(overall === "PASS" ? "all gates green" : "gate failed", "no-dot"),
+    ]),
+    el("ul", { class: "clean dod-list" }, items),
+  ]);
+}
+
 function reviewEvidenceList(evidence, acList) {
   if (!evidence || evidence.length === 0) return null;
   const acText = new Map((acList || []).map((a) => [a.id, a.text]));
@@ -4426,6 +4484,7 @@ async function renderReview() {
           ])
         : null,
       deliveryChildren.length ? el("p", { class: "ac-meta" }, deliveryChildren) : null,
+      dodChecklist(evidence),
       reviewEvidenceList(evidence, ac),
       canApprove ? diffBlockBanner : null,
       renderTicketDiff(t.id, canApprove ? applyDiffState : undefined),

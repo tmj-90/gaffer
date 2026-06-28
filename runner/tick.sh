@@ -9,6 +9,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 mkdir -p "$GAFFER_DATA"
+# Redirect the crew events log to $GAFFER_DATA so it is never written inside a
+# repo worktree (which would trip the delivery-hygiene gate). The GAFFER_* prefix
+# means this is automatically included by gaffer_agent_env and inherited by every
+# subshell (DoD gates, agent invocations, reviewer, clarifier).
+export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 
 # ── R-2: crash-cleanup trap installed UP FRONT (covers the whole lifecycle) ─────
 # The worktree teardown trap used to be installed only AFTER worktree setup, so a

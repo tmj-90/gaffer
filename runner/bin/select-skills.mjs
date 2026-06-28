@@ -113,35 +113,45 @@ export function loadSkills(skillsDir = DEFAULT_SKILLS_DIR) {
 }
 
 /**
+ * Cross-cutting areas whose skills apply to EVERY delivery regardless of stack
+ * or domain — the delivery mechanics: run tests (`testing`), lint/minimalism
+ * (`quality`), self/submit review (`review`), branch + record evidence
+ * (`workflow`). These are always eligible (subject to stack). Only DOMAIN areas
+ * (marketing/product/docs/devops/infra/data/meta/…) are opt-in.
+ */
+const UNIVERSAL_AREAS = new Set(["quality", "testing", "review", "workflow"]);
+
+/**
  * A skill matches when its stack is unconstrained or intersects the wanted
  * stack(s), AND its area constraint is satisfied.
  *
- * `area` is an OPT-IN constraint. The two modes are:
+ * Area handling (`area` is an OPT-IN constraint for DOMAIN packs only):
  *
- *   - Explicit area query (`area` non-empty): every skill that carries an
- *     `area:` must match it (and area-less skills still pass). This is the
- *     narrow "give me the X pack" path — e.g. `area: security` excludes
- *     `typescript-conventions` (area: language) even on a node stack.
- *   - Stack-only query (`area` empty, how tick.sh calls this): an AREA-ONLY
- *     skill (`stack:[]` + non-empty `area:`) is NOT auto-included — it would
- *     otherwise leak marketing/product/meta packs onto every backend ticket.
- *     A STACK-TAGGED skill still routes by its stack regardless of its area
- *     label, so `frontend-design`/`landing-page-generator` still fire for a
- *     matching web/react stack. Fully-unconstrained skills (`stack:[] area:''`)
- *     still match everything (workflow/quality helpers).
+ *   - No `area:`, or a UNIVERSAL area (see {@link UNIVERSAL_AREAS}) → always
+ *     eligible (subject to stack). The core delivery flow — run-tests,
+ *     run-lint, self-review, record-evidence, create-branch — fires on every
+ *     ticket regardless of stack/domain.
+ *   - DOMAIN area + explicit `area` query → must equal the requested area
+ *     (e.g. `--area frontend` pulls the frontend pack onto a web ticket).
+ *   - DOMAIN area + stack-only query (how tick.sh usually calls this) → opt-in:
+ *     included only if the skill is ALSO stack-tagged, so `frontend-design` /
+ *     `landing-page-generator` still route by stack, but marketing/product/meta
+ *     area-only packs don't leak onto every backend ticket.
  */
 export function skillMatches(skill, { stacks = [], area = "" } = {}) {
   const hasStackTag = skill.stack.length > 0;
   const stackOk =
     !hasStackTag || stacks.length === 0 || skill.stack.some((s) => stacks.includes(s));
   let areaOk;
-  if (area) {
-    // Explicit area: area-tagged skills must match it exactly; area-less pass.
-    areaOk = !skill.area || skill.area === area;
+  if (!skill.area || UNIVERSAL_AREAS.has(skill.area)) {
+    // No area, or a cross-cutting universal area — applies to every delivery.
+    areaOk = true;
+  } else if (area) {
+    // Explicit area query: a domain-area skill must match the requested area.
+    areaOk = skill.area === area;
   } else {
-    // Stack-only query: an area-only skill is opt-in (excluded); a stack-tagged
-    // skill routes by stack (its area label does not block it).
-    areaOk = !skill.area || hasStackTag;
+    // Stack-only query: a domain-area skill is opt-in unless stack-tagged.
+    areaOk = hasStackTag;
   }
   return stackOk && areaOk;
 }

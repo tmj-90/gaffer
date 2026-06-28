@@ -154,23 +154,17 @@ check("minimalism is an always-on QUALITY LENS (area: quality), injected by tick
   assert(min, "minimalism skill should load from the library");
   eq(min.stack, [], "minimalism is stack-agnostic (empty stack)");
   eq(min.area, "quality", "minimalism is an area: quality lens");
-  // FIX-2: as an area-tagged skill it is now opt-in for select-skills — it does
-  // NOT auto-fire on a stack-only query. Cross-cutting delivery is instead
-  // guaranteed by tick.sh's LENSES path (every `area: quality` skill is injected
-  // as MANDATORY regardless of stack). It still resolves on an explicit query.
+  // FIX-2 (corrected): `quality` is a UNIVERSAL area — the delivery mechanics
+  // (quality/testing/review/workflow) always fire regardless of stack. Only
+  // DOMAIN area packs (marketing/product/docs/…) are opt-in. So minimalism DOES
+  // auto-fire on every stack-only query.
   for (const stack of ["node", "python", "go"]) {
     const names = selectSkills({ stacks: [stack] }).map((s) => s.name);
     assert(
-      !names.includes("minimalism"),
-      `minimalism is opt-in now and must not auto-fire on the ${stack} stack-only query`,
+      names.includes("minimalism"),
+      `minimalism (area: quality, universal) must fire on the ${stack} stack-only query`,
     );
   }
-  assert(
-    selectSkills({ area: "quality" })
-      .map((s) => s.name)
-      .includes("minimalism"),
-    "minimalism still resolves under an explicit area: quality query",
-  );
 });
 
 check("minimalism skill preserves safety guards and documents YAGNI + intensity levels", () => {
@@ -194,19 +188,28 @@ check("AC1: selection by stack picks the right skills", () => {
   assert(tsNames.includes("typescript-conventions"), "typescript stack should select the TS pack");
   const pyNames = selectSkills({ stacks: ["python"] }).map((s) => s.name);
   assert(!pyNames.includes("typescript-conventions"), "python stack must not select the TS pack");
-  // FIX-2: area-tagged helpers (e.g. run-tests, area: testing) are now opt-in
-  // and no longer auto-fire on a stack-only query; they resolve under an
-  // explicit area query instead.
+  // FIX-2 (corrected): the universal delivery areas (testing/review/workflow/
+  // quality) always fire — run-tests (area: testing) auto-fires on every ticket.
   assert(
-    !pyNames.includes("run-tests"),
-    "area-tagged run-tests is opt-in: must not auto-fire on a stack-only query",
+    pyNames.includes("run-tests"),
+    "run-tests (area: testing, universal) must fire on a stack-only query",
   );
   assert(
-    selectSkills({ area: "testing" })
-      .map((s) => s.name)
-      .includes("run-tests"),
-    "run-tests still resolves under an explicit area: testing query",
+    pyNames.includes("submit-review") && pyNames.includes("record-evidence"),
+    "the universal review/workflow delivery skills must fire on a stack-only query",
   );
+  // ...but DOMAIN area packs (marketing/product/meta) must NOT leak onto a plain
+  // backend ticket — that was the original FIX-2 defect.
+  for (const leak of [
+    "aeo",
+    "seo-audit",
+    "copywriting",
+    "landing-page-generator",
+    "rice",
+    "caveman",
+  ]) {
+    assert(!pyNames.includes(leak), `domain pack ${leak} must NOT auto-fire on a stack-only query`);
+  }
 });
 
 check("AC1: node stack (this repo) selects the typescript pack", () => {

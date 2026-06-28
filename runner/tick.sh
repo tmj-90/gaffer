@@ -27,12 +27,25 @@ mkdir -p "$GAFFER_DATA"
 #     teardown is itself idempotent (`git worktree prune` / `branch -D` no-op when
 #     there's nothing to remove), so running the trap twice does no harm.
 #   • a SUCCESSFULLY-delivered branch is kept: once GAFFER_DELIVERY_COMPLETE=1 the
-#     trap returns early and never drops the branch review/merge depends on.
+#     trap returns early and never drops the branch review/merge depends on. The
+#     finer-grained GAFFER_KEEP_DELIVERY_BRANCH=1 (raised BEFORE delivery is
+#     recorded) keeps the branch while still allowing worktree teardown, so a
+#     late signal during the record→complete window can never delete a branch
+#     that is already review-visible (FIX-BRANCH).
 #   • EXIT vs signal: a returning bash signal trap does NOT end the script. EXIT
 #     uses gaffer_on_exit (preserves $?); INT/TERM use gaffer_on_signal which
 #     resets the trap and exits 130/143 so termination is never swallowed
 #     (FIX-SIGNAL).
 GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
+# Branch-retention seam (FIX-BRANCH): split "keep the delivered branch" from
+# "skip cleanup entirely". GAFFER_DELIVERY_COMPLETE=1 means "fully done — the trap
+# is a complete no-op". GAFFER_KEEP_DELIVERY_BRANCH=1 means "the worktree may still
+# be torn down, but the gaffer/ branch is now review/merge-visible and must NOT be
+# deleted". The flag is raised BEFORE the delivery is recorded (below), so there is
+# no point after the branch becomes review-visible at which a crash/signal would
+# delete it — a salvageable orphan worktree is always preferable to recorded
+# evidence pointing at a missing branch.
+GAFFER_KEEP_DELIVERY_BRANCH="${GAFFER_KEEP_DELIVERY_BRANCH:-0}"
 gaffer_crash_cleanup() {
   # A successfully-delivered branch is intentionally kept for review/merge; only tear
   # down on an INCOMPLETE delivery (a crash/signal before the success point).
@@ -40,7 +53,13 @@ gaffer_crash_cleanup() {
   # Nothing to clean until worktree setup has defined the teardown helper + its rows.
   # Before that point (config/candidate/skill/access parsing) this is a safe no-op.
   if declare -F gaffer_cleanup_worktrees >/dev/null 2>&1 && [ -n "${WT_ROWS:-}" ]; then
-    gaffer_cleanup_worktrees drop-branch
+    # Once the branch is review-visible (KEEP=1) tear down the worktree but PRESERVE
+    # the branch; only drop the branch when retention is off (genuine incomplete run).
+    if [ "${GAFFER_KEEP_DELIVERY_BRANCH:-0}" = "1" ]; then
+      gaffer_cleanup_worktrees
+    else
+      gaffer_cleanup_worktrees drop-branch
+    fi
   fi
   return 0
 }
@@ -1351,6 +1370,15 @@ for r in d.get("repositories", []) or []:
   # The diff is read from the WORKTREE (where the agent's commits live) while it
   # still exists; the recorded branch name is the gaffer/ branch, which persists in
   # the REAL repo after the worktree is removed below.
+  #
+  # FIX-BRANCH: the moment a delivery record makes the gaffer/ branch
+  # review/merge-visible, deleting that branch on a later crash/signal would leave
+  # recorded evidence pointing at a missing branch. Raise the branch-retention flag
+  # NOW — strictly BEFORE the first record below — so any crash trap from here on
+  # tears down the disposable worktree but PRESERVES the branch. A salvageable
+  # orphan branch is always preferable to a dangling delivery record. We keep
+  # GAFFER_DELIVERY_COMPLETE for the later "fully done, skip all cleanup" case.
+  GAFFER_KEEP_DELIVERY_BRANCH=1
   while IFS=$'\t' read -r rid rname rpath rbase rwt; do
     [ -n "$rwt" ] || continue
     rbase="${rbase:-main}"
@@ -1409,8 +1437,10 @@ for r in d.get("repositories", []) or []:
   # them. Setting the flag AFTER the explicit teardown closes that window: by the time
   # COMPLETE=1, the worktrees are already gone, so a trap firing later finds nothing to
   # leak. (The narrow inverse window — a signal landing AFTER teardown but BEFORE the
-  # flag is set — at worst drops the now-orphaned branch via the trap's drop-branch;
-  # the worktree, the thing this fix protects, is already removed, so nothing leaks.)
+  # flag is set — is now harmless to the branch too: GAFFER_KEEP_DELIVERY_BRANCH was
+  # already raised before delivery was recorded, so the trap in that window tears the
+  # worktree only and PRESERVES the now review-visible branch (FIX-BRANCH); the
+  # worktree, the thing this fix protects, is already removed, so nothing leaks.)
   #
   # The gaffer/ branch + its commits PERSIST in each real repo for review/merge — only
   # the disposable checkout is removed. The real repo's primary working tree + current

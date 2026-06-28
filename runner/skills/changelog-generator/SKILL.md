@@ -14,9 +14,9 @@ Conventional Commits → semantic bump → Keep a Changelog. Three steps, always
 | Commit type | Bump |
 |-------------|------|
 | `feat:` | MINOR |
-| `fix:`, `perf:`, `refactor:` | PATCH |
+| `fix:`, `perf:` | PATCH |
 | `BREAKING CHANGE:` footer or `!` suffix | MAJOR |
-| `docs:`, `chore:`, `ci:`, `test:` | No version bump |
+| `refactor:`, `docs:`, `chore:`, `ci:`, `test:` | No version bump |
 
 Multiple commits in a release: take the highest-ranking bump. One `feat:` in a release of ten `fix:` commits → MINOR bump.
 
@@ -97,6 +97,6 @@ Valid types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`
 
 ## Rules
 
-- Never version-bump for `docs:`, `chore:`, `ci:`, `test:` commits — these are maintenance, not user-facing changes.
+- Never version-bump for `refactor:`, `docs:`, `chore:`, `ci:`, `test:` commits — these are maintenance/internal, not user-facing changes.
 - `BREAKING CHANGE:` in the commit footer is a MAJOR bump regardless of the commit type prefix.
 - A changelog entry for an unreleased version should be marked `## [Unreleased]` until the tag is cut.

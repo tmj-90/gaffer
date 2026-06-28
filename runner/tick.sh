@@ -1264,6 +1264,12 @@ for r in d.get("repositories", []) or []:
       DOD_RESULTS="$GAFFER_DATA/.dod-$NUM.results"
       if printf '%s\n' "$DOD_ROWS" | gaffer_run_dod_gates "$DOD_RESULTS"; then
         log "DoD: #$NUM PASSED — $(gaffer_dod_summary_line "$DOD_RESULTS")"
+        # R1 LOW: an all-SKIP run passes vacuously. Warn loudly when ZERO gates
+        # actually executed so a misconfigured repo (e.g. no test_command) is not
+        # silently waved through as "PASSED".
+        if [ "$(gaffer_dod_executed_count "$DOD_RESULTS")" -eq 0 ]; then
+          log "DoD: WARNING — #$NUM passed with ZERO gates executed (all skipped); check this repo's test_command / typecheck / lint config — the delivery was NOT actually verified"
+        fi
         # Record the green checklist as evidence so the reviewer sees a pre-verified
         # board (the Review view renders it). Best-effort; never blocks a passing
         # delivery.

@@ -81,6 +81,19 @@ grep -qE '^GATE\ttests\trepo\tSKIP\t0\tgate disabled by config' "$RES" \
   && ok "A4 a disabled gate is logged as SKIP/disabled" \
   || fail "A4 expected a SKIP/disabled row for tests ($(cat "$RES"))"
 
+# A4b (R1 LOW): gaffer_dod_executed_count reports ZERO for an all-SKIP run, and
+# the executed count for a run that actually ran gates.
+RES="$WORK/a4b_skip.results"
+printf 'repo\t%s\t1\t1\t1\t-\t-\t-\n' "$WT" | gaffer_run_dod_gates "$RES"
+[ "$(gaffer_dod_executed_count "$RES")" -eq 0 ] \
+  && ok "A4b an all-SKIP run reports ZERO executed gates (warn trigger)" \
+  || fail "A4b expected 0 executed gates for an all-SKIP run ($(cat "$RES"))"
+RES="$WORK/a4b_run.results"
+printf 'repo\t%s\t1\t1\t1\ttrue\t-\ttrue\n' "$WT" | gaffer_run_dod_gates "$RES"
+[ "$(gaffer_dod_executed_count "$RES")" -eq 2 ] \
+  && ok "A4b a run with two real commands reports 2 executed gates" \
+  || fail "A4b expected 2 executed gates ($(cat "$RES"))"
+
 # A5: RESILIENCE — a command that errors to spawn (127) is a FAIL, not a crash.
 RES="$WORK/a5.results"
 printf 'repo\t%s\t1\t0\t0\t__gaffer_no_such_cmd__\t-\t-\n' "$WT" \

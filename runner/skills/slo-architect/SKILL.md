@@ -28,7 +28,7 @@ BR   → burn rate: how fast you're consuming the error budget right now
 ## Steps
 
 1. **Pick the right SLI.** Choose a measurement that reflects user experience, not system internals. Event-based (good events / total events) is usually cleaner than time-window averages.
-2. **Set a believable target.** Measure your actual reliability first. Set the SLO below your current p10 (tenth-percentile worst) so it's meaningful but achievable. 99.9% on a service that regularly drops to 99.5% is theatre.
+2. **Set a believable target.** Measure your actual reliability first. Set the SLO at or below the 10th percentile of your measured per-window reliability (a level you already meet in ~90% of windows) so it's meaningful but achievable. 99.9% on a service that regularly drops to 99.5% is theatre.
 3. **Calculate the error budget.** For 99.9% over 30 days: budget = 0.1% × 30d = 43.2 minutes of downtime. Document this number explicitly.
 4. **Wire multi-window burn-rate alerts.** Two windows (short + long) with two burn rates. Canonical Google SRE thresholds: 2% budget in 1h (fast burn, page now) + 5% budget in 6h (slow burn, ticket). Adapt to your SLO window.
 5. **Write the error-budget policy.** What happens when >50% of budget is gone mid-window? Freeze feature work, hold risky deploys, escalate. Get agreement before the SLO ships.

@@ -28,6 +28,10 @@ mkdir -p "$GAFFER_DATA"
 #     there's nothing to remove), so running the trap twice does no harm.
 #   • a SUCCESSFULLY-delivered branch is kept: once GAFFER_DELIVERY_COMPLETE=1 the
 #     trap returns early and never drops the branch review/merge depends on.
+#   • EXIT vs signal: a returning bash signal trap does NOT end the script. EXIT
+#     uses gaffer_on_exit (preserves $?); INT/TERM use gaffer_on_signal which
+#     resets the trap and exits 130/143 so termination is never swallowed
+#     (FIX-SIGNAL).
 GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
 gaffer_crash_cleanup() {
   # A successfully-delivered branch is intentionally kept for review/merge; only tear
@@ -40,7 +44,26 @@ gaffer_crash_cleanup() {
   fi
   return 0
 }
-trap gaffer_crash_cleanup EXIT INT TERM
+# FIX-SIGNAL: a bash signal trap that RETURNS normally does NOT terminate the
+# script — it cleans up then RESUMES execution past the interrupted point, so a
+# cleanup-only handler on INT/TERM would let the runner swallow termination and
+# keep going in an inconsistent state. We therefore split EXIT from the signal
+# handlers: each resets the trap first (so re-entry can't recurse) then exits with
+# the correct status. EXIT preserves the original `$?`; INT exits 130, TERM 143.
+gaffer_on_exit() {
+  local rc=$?
+  trap - EXIT INT TERM
+  gaffer_crash_cleanup
+  exit "$rc"
+}
+gaffer_on_signal() {   # $1 = exit code (130 INT, 143 TERM)
+  trap - EXIT INT TERM
+  gaffer_crash_cleanup
+  exit "$1"
+}
+trap gaffer_on_exit EXIT
+trap 'gaffer_on_signal 130' INT
+trap 'gaffer_on_signal 143' TERM
 
 # A-1 (parallel execution): the factory log, the per-run skip-file, and the
 # usage ledger are SHARED mutable state. Under GAFFER_CONCURRENCY>1 multiple

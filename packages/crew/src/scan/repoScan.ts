@@ -39,7 +39,14 @@ function detectNode(dir: string): DetectedStack {
   let stack = "node";
   const scripts = readPackageScripts(dir);
   if (scripts) {
-    if ("react" in detectDeps(dir) || hasScript(scripts, "build")) stack = "typescript-react";
+    const deps = detectDeps(dir);
+    // React Native / Expo first: these are mobile stacks even though they ship a
+    // package.json, so the mobile skill pack must route to them. The compound label
+    // expands (split on "-") to its parts at selection time, so "typescript-react-native"
+    // also matches the broad "typescript"/"react" packs, and "expo" routes the mobile pack.
+    if ("expo" in deps) stack = "typescript-react-native-expo";
+    else if ("react-native" in deps) stack = "typescript-react-native";
+    else if ("react" in deps || hasScript(scripts, "build")) stack = "typescript-react";
     else stack = "node";
   }
   const runner = packageManager === "npm" ? "npm run" : packageManager;

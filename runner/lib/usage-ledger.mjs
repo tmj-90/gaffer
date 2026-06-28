@@ -246,23 +246,36 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
 /**
  * Append one record to $GAFFER_DATA/usage-ledger.jsonl (or GAFFER_USAGE_LEDGER when
  * set — mirrors GAFFER_BLOCK_LEDGER). Gated on GAFFER_DATA so the test harness
- * (which doesn't set it) is unaffected, and FULLY SWALLOWED so a logging failure
- * can never fail or alter a tick. Returns true on a best-effort write, false if
- * gated off or it threw.
+ * (which doesn't set it) is unaffected, and NON-FATAL so a logging failure can never
+ * fail or alter a tick. Returns true on a best-effort write, false if gated off or
+ * the append threw.
+ *
+ * R-4: a gated-off return (no path resolvable) is intentional and stays silent. But
+ * once a path IS resolved, an append that THROWS (unwritable dir, full disk, perms)
+ * is a real MEASUREMENT GAP — cost goes unrecorded with no signal, so a partial run
+ * could read as "cheap". We emit a clear WARNING to stderr (which the tick.sh call
+ * site routes to the factory log) so the gap is VISIBLE, while still swallowing the
+ * error and returning false — the live delivery path is never affected.
  */
 export function appendUsageRecord(record, env = process.env) {
+  const explicit = env.GAFFER_USAGE_LEDGER;
+  let path = explicit;
+  if (!path) {
+    const dir = env.GAFFER_DATA;
+    if (!dir) return false; // gated: no GAFFER_DATA, no ledger (silent, intentional)
+    path = join(dir, LEDGER_FILENAME);
+  }
   try {
-    const explicit = env.GAFFER_USAGE_LEDGER;
-    let path = explicit;
-    if (!path) {
-      const dir = env.GAFFER_DATA;
-      if (!dir) return false; // gated: no GAFFER_DATA, no ledger (silent)
-      path = join(dir, LEDGER_FILENAME);
-    }
     appendFileSync(path, JSON.stringify(record) + "\n");
     return true;
-  } catch {
-    /* best-effort telemetry — never affect the tick or throw */
+  } catch (err) {
+    // Non-fatal, but NOT silent: a measurement gap must be visible to the operator.
+    const ticket = record && record.ticket != null ? ` (ticket #${record.ticket})` : "";
+    const reason = (err && err.message) || String(err);
+    process.stderr.write(
+      `WARNING: usage-ledger append FAILED${ticket} — cost for this call goes ` +
+        `UNMEASURED (path: ${path}): ${reason}\n`,
+    );
     return false;
   }
 }

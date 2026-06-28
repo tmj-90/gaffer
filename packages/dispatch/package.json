@@ -23,7 +23,7 @@
   "homepage": "https://github.com/tmj-90/gaffer/tree/main/packages/dispatch#readme",
   "bugs": "https://github.com/tmj-90/gaffer/issues",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "type": "module",
   "main": "dist/index.js",

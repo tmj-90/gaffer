@@ -10,6 +10,80 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/factory.config.sh"
 mkdir -p "$GAFFER_DATA"
 
+# ── R-2: crash-cleanup trap installed UP FRONT (covers the whole lifecycle) ─────
+# The worktree teardown trap used to be installed only AFTER worktree setup, so a
+# crash or signal DURING the earlier candidate / skill / access-boundary parsing
+# left no cleanup — orphaning a stale worktree + half-finished gaffer/ branch from a
+# PRIOR attempt at the same ticket (the idempotent pre-create cleanup hadn't run
+# yet). We install ONE idempotent, unset-var-safe trap here, immediately after the
+# config is sourced, so it covers the entire per-ticket flow.
+#
+# Safety contract:
+#   • unset-var-safe: every var/path is guarded (`[ -n "$x" ]` / `[ -d "$x" ]`) and
+#     read with `${x:-}` defaults, so it runs cleanly BEFORE any worktree exists
+#     under `set -u` (no unbound-variable abort).
+#   • idempotent: it only acts once gaffer_cleanup_worktrees + WT_ROWS are defined
+#     (after worktree setup); before then it is a deliberate no-op. The underlying
+#     teardown is itself idempotent (`git worktree prune` / `branch -D` no-op when
+#     there's nothing to remove), so running the trap twice does no harm.
+#   • a SUCCESSFULLY-delivered branch is kept: once GAFFER_DELIVERY_COMPLETE=1 the
+#     trap returns early and never drops the branch review/merge depends on. The
+#     finer-grained GAFFER_KEEP_DELIVERY_BRANCH=1 (raised BEFORE delivery is
+#     recorded) keeps the branch while still allowing worktree teardown, so a
+#     late signal during the record→complete window can never delete a branch
+#     that is already review-visible (FIX-BRANCH).
+#   • EXIT vs signal: a returning bash signal trap does NOT end the script. EXIT
+#     uses gaffer_on_exit (preserves $?); INT/TERM use gaffer_on_signal which
+#     resets the trap and exits 130/143 so termination is never swallowed
+#     (FIX-SIGNAL).
+GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
+# Branch-retention seam (FIX-BRANCH): split "keep the delivered branch" from
+# "skip cleanup entirely". GAFFER_DELIVERY_COMPLETE=1 means "fully done — the trap
+# is a complete no-op". GAFFER_KEEP_DELIVERY_BRANCH=1 means "the worktree may still
+# be torn down, but the gaffer/ branch is now review/merge-visible and must NOT be
+# deleted". The flag is raised BEFORE the delivery is recorded (below), so there is
+# no point after the branch becomes review-visible at which a crash/signal would
+# delete it — a salvageable orphan worktree is always preferable to recorded
+# evidence pointing at a missing branch.
+GAFFER_KEEP_DELIVERY_BRANCH="${GAFFER_KEEP_DELIVERY_BRANCH:-0}"
+gaffer_crash_cleanup() {
+  # A successfully-delivered branch is intentionally kept for review/merge; only tear
+  # down on an INCOMPLETE delivery (a crash/signal before the success point).
+  if [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ]; then return 0; fi
+  # Nothing to clean until worktree setup has defined the teardown helper + its rows.
+  # Before that point (config/candidate/skill/access parsing) this is a safe no-op.
+  if declare -F gaffer_cleanup_worktrees >/dev/null 2>&1 && [ -n "${WT_ROWS:-}" ]; then
+    # Once the branch is review-visible (KEEP=1) tear down the worktree but PRESERVE
+    # the branch; only drop the branch when retention is off (genuine incomplete run).
+    if [ "${GAFFER_KEEP_DELIVERY_BRANCH:-0}" = "1" ]; then
+      gaffer_cleanup_worktrees
+    else
+      gaffer_cleanup_worktrees drop-branch
+    fi
+  fi
+  return 0
+}
+# FIX-SIGNAL: a bash signal trap that RETURNS normally does NOT terminate the
+# script — it cleans up then RESUMES execution past the interrupted point, so a
+# cleanup-only handler on INT/TERM would let the runner swallow termination and
+# keep going in an inconsistent state. We therefore split EXIT from the signal
+# handlers: each resets the trap first (so re-entry can't recurse) then exits with
+# the correct status. EXIT preserves the original `$?`; INT exits 130, TERM 143.
+gaffer_on_exit() {
+  local rc=$?
+  trap - EXIT INT TERM
+  gaffer_crash_cleanup
+  exit "$rc"
+}
+gaffer_on_signal() {   # $1 = exit code (130 INT, 143 TERM)
+  trap - EXIT INT TERM
+  gaffer_crash_cleanup
+  exit "$1"
+}
+trap gaffer_on_exit EXIT
+trap 'gaffer_on_signal 130' INT
+trap 'gaffer_on_signal 143' TERM
+
 # A-1 (parallel execution): the factory log, the per-run skip-file, and the
 # usage ledger are SHARED mutable state. Under GAFFER_CONCURRENCY>1 multiple
 # worker.sh processes run tick.sh at once and would interleave their appends. We
@@ -43,6 +117,20 @@ _gaffer_append_line() { echo "$2" >> "$1"; }
 # Locked backpressure-report append: _gaffer_bp_record <file> <repo> <triple> <reason>.
 _gaffer_bp_record() { printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$1"; }
 result() { echo "TICK_RESULT=$1"; }
+# Derive an opt-in `--area` from the repo stack label where it is UNAMBIGUOUS, so
+# the area-only packs that select-skills now gates (FIX-2) still fire when the
+# stack clearly implies a domain. Today only the web/front-end family is safe to
+# auto-derive: a react/web/frontend stack → `area=frontend` (so frontend-a11y /
+# frontend-component / frontend-responsive / brand fire). Every other stack maps
+# to no area (the marketing/product/docs packs stay opt-in for a future
+# ticket-type that sets the area explicitly). Echoes the area or nothing.
+gaffer_area_for_stack() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    *react-native*|*expo*) ;; # mobile RN — frontend-design/mobile-ui already route by stack; no area
+    *react*|*frontend*|*web*) printf 'frontend' ;;
+    *) ;;
+  esac
+}
 # gaffer_quarantine + QUARANTINE_NOTICE are provided by lib/quarantine.sh (sourced
 # via factory.config.sh) — they wrap UNTRUSTED ticket-derived fields (title,
 # review feedback) in a delimited envelope before they reach the agent prompt.
@@ -179,7 +267,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
 
     # Recommended skills for the bootstrap: prefer plan-build's sibling builders,
     # but always include the scaffolder hint. (Same selector as normal delivery.)
-    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+    # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
+    # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
+    B_AREA="$(gaffer_area_for_stack "$STACK")"
+    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${B_AREA:+--area "$B_AREA"} --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
     [ -n "$B_SKILLS" ] || B_SKILLS="(scaffold the stack from the ticket's ACs)"
 
     if [ "$DRY_RUN" = "1" ]; then
@@ -443,7 +534,10 @@ print("\n".join(write_rows))
   # one actually mounted into the repo). Fall back to the Crew registry,
   # then to a generic instruction. Both selectors share the same matching rule:
   # an empty stack/area constraint means "no constraint".
-  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+  # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
+  # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
+  SKILL_AREA="$(gaffer_area_for_stack "$STACK")"
+  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${SKILL_AREA:+--area "$SKILL_AREA"} --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
   [ -n "$SKILLS" ] || SKILLS="$(fg skills --stack "$STACK" 2>/dev/null | jget "', '.join(s.get('id', s.get('name','')) for s in (d if isinstance(d,list) else d.get('skills',[])))" 2>/dev/null || true)"
   [ -n "$SKILLS" ] || SKILLS="(choose the skill whose description matches the ticket)"
 
@@ -629,6 +723,32 @@ EOF
   else
     log "ready=$READY_COUNT → delivering #$NUM ('$TITLE') in $PRIMARY_REPO (single-repo) [stack=$STACK]"
   fi
+
+  # ── I1: intelligent, data-driven MODEL ROUTING for the implement phase ───────
+  # Replace the static GAFFER_IMPL_MODEL_FLAG with a per-ticket routing decision:
+  # read the ticket's risk, AC count, and attempt history from the dispatch view,
+  # pass them + the repo stack + the budget seam to the deterministic router, and
+  # let it pick the cheapest-correct tier. gaffer_route_model logs one auditable
+  # "ROUTE #N …" line and echoes the model id; an explicit GAFFER_IMPL_MODEL still
+  # wins (backward-compat). With the default registry + a normal ticket this
+  # resolves to mid=sonnet — exactly today's implement model.
+  ROUTE_RISK="$(echo "$SHOW" | jget "d['ticket'].get('risk_level','medium') or 'medium'" 2>/dev/null || echo medium)"
+  ROUTE_AC="$(echo "$SHOW" | jget "len(d.get('acceptanceCriteria',[]))" 2>/dev/null || echo 0)"
+  # attempt_count is 0-based (0 = first delivery); the router's attempt is 1-based
+  # so a prior rejection (attempt_count≥1) escalates. Default 0 if absent.
+  ROUTE_ATTEMPT_RAW="$(echo "$SHOW" | jget "int(d['ticket'].get('attempt_count',0) or 0)" 2>/dev/null || echo 0)"
+  ROUTE_ATTEMPT=$(( ${ROUTE_ATTEMPT_RAW:-0} + 1 ))
+  DELIVERY_MODEL="$(gaffer_route_model implement "$ROUTE_RISK" "$ROUTE_AC" "$STACK" "$ROUTE_ATTEMPT" "$NUM")"
+  # Per-tick implement flag: the router's model, or empty (→ Claude default) when
+  # the registry/override resolves to none. Falls back to the static flag only if
+  # routing yielded nothing AND the static tier is set.
+  ROUTE_IMPL_FLAG=""
+  if [ -n "$DELIVERY_MODEL" ]; then
+    ROUTE_IMPL_FLAG="--model $DELIVERY_MODEL"
+  elif [ -n "${GAFFER_IMPL_MODEL_FLAG:-}" ]; then
+    ROUTE_IMPL_FLAG="$GAFFER_IMPL_MODEL_FLAG"
+  fi
+
   if [ "$DRY_RUN" = "1" ]; then
     # DRY_RUN is strictly side-effect-free: we describe the worktree plan but
     # create NO worktrees, branches, or files.
@@ -650,6 +770,7 @@ EOF
     log "DRY_RUN: on success, would assert each worktree HEAD is $WORK_BRANCH, record per-repo delivery, then remove the worktrees (branch + commits PERSIST in the real repo)"
     log "DRY_RUN: on failure, would remove the worktrees AND delete branch $WORK_BRANCH so the real repo stays 100% clean"
     log "DRY_RUN: recommended skills = $SKILLS"
+    log "DRY_RUN: routed implement model = ${DELIVERY_MODEL:-<claude default>} (see the ROUTE #$NUM line above for the decision)"
     result worked; exit 0
   fi
 
@@ -694,27 +815,21 @@ EOF
     [ -d "$WORKTREES_BASE" ] && rmdir "$WORKTREES_BASE" >/dev/null 2>&1 || true
   }
 
-  # ── M1: crash-safe worktree/branch cleanup ──────────────────────────────────
+  # ── M1/R-2: crash-safe worktree/branch cleanup ──────────────────────────────
   # The explicit success/error paths below tear worktrees down by hand, but a
   # CRASH or signal (the gaffer_timeout SIGTERM, a Ctrl-C, an unexpected `set -e`
   # abort) between worktree creation and one of those paths would ORPHAN the
   # throwaway worktrees and the half-finished `gaffer/ticket-*` branch in every
-  # write repo. We install an EXIT/INT/TERM trap that drops them — but GUARDED so a
-  # legitimately-delivered branch is never destroyed: on a successful delivery we
-  # set GAFFER_DELIVERY_COMPLETE=1 (the branch must survive for review/merge), and
-  # the trap then becomes a no-op for the branch. The cleanup itself is idempotent
-  # (`git worktree prune` / `branch -D` are no-ops when there's nothing to remove),
-  # so it is safe even when an explicit path already cleaned up. The trap is set
-  # ONLY now that gaffer_cleanup_worktrees + WT_ROWS/WORK_BRANCH/WORKTREES_BASE
-  # exist, so it can never reference an unset cleanup.
-  GAFFER_DELIVERY_COMPLETE=0
-  gaffer_crash_cleanup() {
-    # A successfully-delivered branch is intentionally kept for review/merge; only
-    # tear down on an INCOMPLETE delivery (crash/signal before the success point).
-    if [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ]; then return 0; fi
-    gaffer_cleanup_worktrees drop-branch
-  }
-  trap gaffer_crash_cleanup EXIT INT TERM
+  # write repo. The EXIT/INT/TERM trap that drops them is already installed UP FRONT
+  # (R-2, right after the config is sourced) so it ALSO covers the earlier candidate
+  # / skill / access-boundary parsing — but it is unset-var-safe and a no-op until
+  # gaffer_cleanup_worktrees + WT_ROWS are defined (i.e. until now). Now that the
+  # teardown helper and its rows exist, the trap becomes effective for this ticket.
+  # It is GUARDED so a legitimately-delivered branch is never destroyed: on a
+  # successful delivery we set GAFFER_DELIVERY_COMPLETE=1 (the branch must survive
+  # for review/merge) and the trap then returns early. The cleanup itself is
+  # idempotent (`git worktree prune` / `branch -D` are no-ops when there's nothing to
+  # remove), so it is safe even when an explicit path already cleaned up.
 
   # Idempotent re-runs: clear any stale worktrees from a previous attempt at this
   # ticket BEFORE creating fresh ones, and prune dangling worktree admin entries
@@ -827,7 +942,7 @@ EOF
        env -i "${GAFFER_AGENT_ENV[@]}" \
          GAFFER_WRITE_ROOTS="$WRITE_ROOTS" GAFFER_READ_ROOTS="$READ_ROOTS" \
          DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-         "$CLAUDE_BIN" -p "$PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $GAFFER_IMPL_MODEL_FLAG $GAFFER_MAX_TURNS_FLAG \
+         "$CLAUDE_BIN" -p "$PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $ROUTE_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
   ) >"$USAGE_JSON" 2>>"$GAFFER_LOG"
   rc=$?
   # Ledger the call (best-effort, swallowed) and append the agent's text to the log.
@@ -934,14 +1049,34 @@ EOF
     log "EMPTY delivery for #$NUM — 0 commits / no diff across all write repos; parking (no blind retry)"
     wg attach-evidence "$NUM" --type manual_note \
       --summary "PARKED: empty delivery (no diff produced) — routing to refinement, not retrying blindly" >/dev/null 2>&1 || true
+    # R-6: the status-fetch + state-move used to fail SILENTLY — an empty status (a
+    # failed `wg ticket show`) wrongly fell through to the block branch, and any move
+    # failure was swallowed by `|| true`, leaving the ticket drifting in in_review.
+    # Now: an EMPTY status fetch is surfaced as a visible WARNING (and we conservatively
+    # try to block rather than mis-route), and EVERY move failure is logged explicitly
+    # with the ticket number + the attempted transition. All still NON-FATAL — the
+    # empty-delivery park must complete (worktree/branch teardown below) regardless.
     _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-    if [ "$_CUR_STATUS" = "in_review" ]; then
-      wg review reject "$NUM" --to refining --reviewer factory-empty \
-        --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1 \
-        && log "EMPTY: parked #$NUM (in_review → refining)" || true
+    if [ -z "$_CUR_STATUS" ]; then
+      log "EMPTY: WARNING — could not read status for #$NUM (status fetch returned empty); cannot confirm the in_review→refining transition. Attempting a block as a fallback."
+      if wg block "$NUM" --reason "empty delivery: agent produced no change — needs clarification/refinement (status unknown — fetch failed)" >/dev/null 2>&1; then
+        log "EMPTY: blocked #$NUM (status unknown)"
+      else
+        log "EMPTY: WARNING — could not block #$NUM after empty delivery (status unknown); ticket may be drifting — needs a human"
+      fi
+    elif [ "$_CUR_STATUS" = "in_review" ]; then
+      if wg review reject "$NUM" --to refining --reviewer factory-empty \
+        --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1; then
+        log "EMPTY: parked #$NUM (in_review → refining)"
+      else
+        log "EMPTY: WARNING — failed to move #$NUM (in_review → refining) after empty delivery; ticket left in in_review — needs a human"
+      fi
     else
-      wg block "$NUM" --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1 \
-        && log "EMPTY: blocked #$NUM (status '$_CUR_STATUS')" || true
+      if wg block "$NUM" --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1; then
+        log "EMPTY: blocked #$NUM (status '$_CUR_STATUS')"
+      else
+        log "EMPTY: WARNING — failed to block #$NUM (status '$_CUR_STATUS') after empty delivery; ticket may be drifting — needs a human"
+      fi
     fi
     gaffer_cleanup_worktrees drop-branch
     gaffer_skip_ticket "$NUM"
@@ -1072,6 +1207,159 @@ print(hits[0] if hits else '')
     esac
   fi
 
+  # ── Stabilisation gate 2.5: DEFINITION OF DONE (I3 — HARD FAIL) ─────────────
+  # The single biggest "factory, not vibe" lever. The diff is non-empty (asserted
+  # above) and the work lives in the throwaway worktrees. BEFORE the ticket is
+  # allowed to rest in the human review lane, the RUNNER (never the agent) runs the
+  # enabled DoD gates — tests / typecheck / lint — DETERMINISTICALLY in each write
+  # repo's delivery worktree, each bounded by gaffer_timeout.
+  #   ALL pass/skip → proceed (record + submit as today).
+  #   ANY fail      → AUTO-REJECT back to refining/rework (the same path R-6/HYGIENE
+  #                   hardened), record the failing gate name + an output tail as
+  #                   evidence, drop the branch. A human never sees a failed gate;
+  #                   the next attempt gets the gate output as review feedback.
+  # A gate with NO configured command is SKIPPED (logged), not failed. GAFFER_DOD=0
+  # turns enforcement off entirely (today's behaviour). Per-gate toggles
+  # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) carry the resolved
+  # `definition_of_done` config; commands come from each repo's dispatch
+  # test_command/lint_command (+ GAFFER_DOD_TYPECHECK_CMD for typecheck, which has
+  # no dispatch field). DoD is best-effort RESILIENT: a gate command that itself
+  # errors to spawn is treated as a FAIL with a clear message, never a crash.
+  if gaffer_dod_enabled; then
+    # Per-repo commands from the dispatch payload, keyed by repo id (fallback name):
+    #   id|name <TAB> test_cmd <TAB> lint_cmd
+    # First line is the sentinel `@@DOD_PARSE_OK@@` emitted ONLY when the payload
+    # parsed — so an unparseable payload / missing python3 is detected, never
+    # silently treated as "no commands" (which would fail the gate OPEN).
+    DOD_CMD_MAP="$(echo "$SHOW" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(3)          # parse failure → no sentinel, non-zero
+print("@@DOD_PARSE_OK@@")
+for r in d.get("repositories", []) or []:
+    key = (r.get("id") or r.get("name") or "").strip()
+    if not key: continue
+    tc = (r.get("test_command") or "").replace("\t", " ").replace("\n", " ")
+    lc = (r.get("lint_command") or "").replace("\t", " ").replace("\n", " ")
+    print("\t".join([key, tc, lc]))
+' 2>/dev/null || true)"
+    if ! printf '%s\n' "$DOD_CMD_MAP" | grep -q '^@@DOD_PARSE_OK@@$'; then
+      # Could not parse the dispatch payload (or python3 is unavailable). Do NOT
+      # fail the gate OPEN by pretending no commands are configured: surface it as a
+      # visible WARNING and FAIL the delivery closed so a human looks, rather than
+      # silently shipping unverified work.
+      log "DoD: WARNING — could not parse the dispatch payload for #$NUM gate commands (python3 missing or malformed SHOW); FAILING CLOSED — parking, not submitting"
+      wg attach-evidence "$NUM" --type test_output \
+        --summary "DoD: FAIL"$'\n'"$(printf '{"dod":"FAIL","gates":[{"gate":"config","repo":"-","status":"FAIL","rc":"-","note":"could not resolve DoD gate commands from the dispatch payload"}]}')" >/dev/null 2>&1 \
+        && log "DoD: recorded config-FAIL evidence on #$NUM" \
+        || log "DoD: WARNING — could not attach config-FAIL evidence on #$NUM"
+      _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+      if [ "$_CUR_STATUS" = "in_review" ]; then
+        wg review reject "$NUM" --to refining --reviewer factory-dod \
+          --reason "Definition of Done could not run: gate commands unresolved from the dispatch payload" >/dev/null 2>&1 \
+          && log "DoD: parked #$NUM (in_review → refining) after a config-resolution failure" \
+          || log "DoD: WARNING — could not reject #$NUM to refining; ticket left in in_review — needs a human"
+      else
+        wg block "$NUM" --reason "Definition of Done could not run: gate commands unresolved from the dispatch payload" >/dev/null 2>&1 \
+          && log "DoD: blocked #$NUM (status was '$_CUR_STATUS')" \
+          || log "DoD: WARNING — could not park #$NUM (status '$_CUR_STATUS') — needs a human"
+      fi
+      gaffer_cleanup_worktrees drop-branch
+      gaffer_skip_ticket "$NUM"
+      log "delivery FAILED for #$NUM — DoD gate commands unresolvable; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
+      result error; exit 0
+    fi
+    # Strip the sentinel line; the remainder is the real id<TAB>test<TAB>lint map.
+    DOD_CMD_MAP="$(printf '%s\n' "$DOD_CMD_MAP" | grep -v '^@@DOD_PARSE_OK@@$')"
+    # Resolved per-gate enables (default ON; mirror the schema default). A loop /
+    # orchestrator that read crew.yaml can export these to honour a repo override.
+    _DOD_TESTS_ON="${GAFFER_DOD_TESTS:-1}"
+    _DOD_TC_ON="${GAFFER_DOD_TYPECHECK:-1}"
+    _DOD_LINT_ON="${GAFFER_DOD_LINT:-1}"
+    # Build the gate-runner input: one row per write repo with its resolved commands.
+    DOD_ROWS=""
+    while IFS=$'\t' read -r rid rname rpath rbase rwt; do
+      [ -n "$rwt" ] || continue
+      git -C "$rwt" rev-parse --git-dir >/dev/null 2>&1 || continue
+      _dkey="${rid:-$rname}"
+      _dlabel="${rname:-${rid:-repo}}"
+      # Look up this repo's commands from the map (exact id/name match).
+      _drow="$(printf '%s\n' "$DOD_CMD_MAP" | awk -F'\t' -v k="$_dkey" '$1==k{print; exit}')"
+      _dtest="$(printf '%s' "$_drow" | awk -F'\t' '{print $2}')"
+      _dlint="$(printf '%s' "$_drow" | awk -F'\t' '{print $3}')"
+      # typecheck has no dispatch field — a per-run override applies to every repo.
+      _dtc="${GAFFER_DOD_TYPECHECK_CMD:-}"
+      # Empty command fields MUST be the sentinel `-`: TAB is IFS-whitespace, so the
+      # gate runner's `read` would collapse adjacent empty tabs and shift columns.
+      [ -n "${_dtest// /}" ] || _dtest="-"
+      [ -n "${_dtc// /}" ]   || _dtc="-"
+      [ -n "${_dlint// /}" ] || _dlint="-"
+      DOD_ROWS+="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        "$_dlabel" "$rwt" "$_DOD_TESTS_ON" "$_DOD_TC_ON" "$_DOD_LINT_ON" \
+        "$_dtest" "$_dtc" "$_dlint")"$'\n'
+    done <<< "$WT_ROWS"
+    DOD_ROWS="${DOD_ROWS%$'\n'}"
+
+    if [ -n "$DOD_ROWS" ]; then
+      DOD_RESULTS="$GAFFER_DATA/.dod-$NUM.results"
+      if printf '%s\n' "$DOD_ROWS" | gaffer_run_dod_gates "$DOD_RESULTS"; then
+        log "DoD: #$NUM PASSED — $(gaffer_dod_summary_line "$DOD_RESULTS")"
+        # R1 LOW: an all-SKIP run passes vacuously. Warn loudly when ZERO gates
+        # actually executed so a misconfigured repo (e.g. no test_command) is not
+        # silently waved through as "PASSED".
+        if [ "$(gaffer_dod_executed_count "$DOD_RESULTS")" -eq 0 ]; then
+          log "DoD: WARNING — #$NUM passed with ZERO gates executed (all skipped); check this repo's test_command / typecheck / lint config — the delivery was NOT actually verified"
+        fi
+        # Record the green checklist as evidence so the reviewer sees a pre-verified
+        # board (the Review view renders it). Best-effort; never blocks a passing
+        # delivery.
+        _DOD_EV="$(gaffer_dod_evidence_summary "$DOD_RESULTS" PASS)"
+        [ -n "$_DOD_EV" ] && wg attach-evidence "$NUM" --type test_output \
+          --summary "$_DOD_EV" >/dev/null 2>&1 \
+          && log "DoD: recorded PASS checklist evidence on #$NUM" || true
+        rm -f "$DOD_RESULTS"
+      else
+        # ── A gate FAILED → auto-reject back to rework (never a human's time) ──
+        _DOD_SUM="$(gaffer_dod_summary_line "$DOD_RESULTS")"
+        log "DoD: #$NUM FAILED — $_DOD_SUM; auto-rejecting back to refining (not submitting for review)"
+        _DOD_EV="$(gaffer_dod_evidence_summary "$DOD_RESULTS" FAIL)"
+        # Record the failing checklist + output tail as evidence FIRST so the next
+        # attempt gets it as review feedback (and the board shows why it bounced). A
+        # FAILED attach is surfaced (not swallowed) — losing the feedback is a real
+        # regression in the learning loop, so the warning must be visible.
+        if [ -n "$_DOD_EV" ]; then
+          wg attach-evidence "$NUM" --type test_output --summary "$_DOD_EV" >/dev/null 2>&1 \
+            && log "DoD: recorded FAIL checklist evidence on #$NUM" \
+            || log "DoD: WARNING — could not attach FAIL evidence on #$NUM; the next attempt will have no DoD gate feedback"
+        else
+          log "DoD: WARNING — empty DoD evidence summary for #$NUM (could not build the checklist); failing closed without recorded feedback"
+        fi
+        # Park to refining (or block as a fallback), mirroring the HYGIENE path. The
+        # status fetch + move failures are surfaced visibly, never swallowed.
+        _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+        if [ "$_CUR_STATUS" = "in_review" ]; then
+          wg review reject "$NUM" --to refining --reviewer factory-dod \
+            --reason "Definition of Done failed: $_DOD_SUM" >/dev/null 2>&1 \
+            && log "DoD: parked #$NUM (in_review → refining)" \
+            || log "DoD: WARNING — could not reject #$NUM to refining; ticket left in in_review — needs a human"
+        else
+          wg block "$NUM" --reason "Definition of Done failed: $_DOD_SUM" >/dev/null 2>&1 \
+            && log "DoD: blocked #$NUM (status was '$_CUR_STATUS', not in_review)" \
+            || log "DoD: WARNING — could not park #$NUM (status '$_CUR_STATUS') after DoD failure — needs a human"
+        fi
+        rm -f "$DOD_RESULTS"
+        gaffer_cleanup_worktrees drop-branch
+        gaffer_skip_ticket "$NUM"
+        log "delivery FAILED for #$NUM — Definition of Done not met; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
+        result error; exit 0
+      fi
+    fi
+  else
+    log "DoD: enforcement OFF (GAFFER_DOD=${GAFFER_DOD:-unset}) — skipping the Definition-of-Done gate for #$NUM"
+  fi
+
   # Per-repo delivery recording (FG-008 / WG-005): for EACH write repo, persist a
   # per-repo delivery artifact (branch + diffstat as the evidence note). Single-repo
   # fallback → exactly one repo-delivery row; multi-repo → one per write repo. This
@@ -1082,6 +1370,15 @@ print(hits[0] if hits else '')
   # The diff is read from the WORKTREE (where the agent's commits live) while it
   # still exists; the recorded branch name is the gaffer/ branch, which persists in
   # the REAL repo after the worktree is removed below.
+  #
+  # FIX-BRANCH: the moment a delivery record makes the gaffer/ branch
+  # review/merge-visible, deleting that branch on a later crash/signal would leave
+  # recorded evidence pointing at a missing branch. Raise the branch-retention flag
+  # NOW — strictly BEFORE the first record below — so any crash trap from here on
+  # tears down the disposable worktree but PRESERVES the branch. A salvageable
+  # orphan branch is always preferable to a dangling delivery record. We keep
+  # GAFFER_DELIVERY_COMPLETE for the later "fully done, skip all cleanup" case.
+  GAFFER_KEEP_DELIVERY_BRANCH=1
   while IFS=$'\t' read -r rid rname rpath rbase rwt; do
     [ -n "$rwt" ] || continue
     rbase="${rbase:-main}"
@@ -1131,14 +1428,25 @@ print(hits[0] if hits else '')
   fi
 
   # Success: the delivery is RECORDED and the gaffer/ branch now holds work that
-  # must survive for review/merge. Mark the delivery complete BEFORE teardown so the
-  # M1 crash trap can no longer drop this branch (a crash in the post-teardown
-  # hygiene checks below must NOT destroy a legitimately-delivered branch).
-  GAFFER_DELIVERY_COMPLETE=1
-  # Tear down the throwaway worktrees. The gaffer/ branch + its commits PERSIST in
-  # each real repo for review/merge — only the disposable checkout is removed. The
-  # real repo's primary working tree + current branch never moved.
+  # must survive for review/merge. Tear down the throwaway worktrees FIRST, THEN mark
+  # the delivery complete.
+  #
+  # R-5: the flag used to be set BEFORE this teardown. A signal arriving in the gap
+  # between the flag-set and the teardown call made the crash trap a no-op (it sees
+  # COMPLETE=1 and returns early) while the worktrees were still on disk — LEAKING
+  # them. Setting the flag AFTER the explicit teardown closes that window: by the time
+  # COMPLETE=1, the worktrees are already gone, so a trap firing later finds nothing to
+  # leak. (The narrow inverse window — a signal landing AFTER teardown but BEFORE the
+  # flag is set — is now harmless to the branch too: GAFFER_KEEP_DELIVERY_BRANCH was
+  # already raised before delivery was recorded, so the trap in that window tears the
+  # worktree only and PRESERVES the now review-visible branch (FIX-BRANCH); the
+  # worktree, the thing this fix protects, is already removed, so nothing leaks.)
+  #
+  # The gaffer/ branch + its commits PERSIST in each real repo for review/merge — only
+  # the disposable checkout is removed. The real repo's primary working tree + current
+  # branch never moved.
   gaffer_cleanup_worktrees
+  GAFFER_DELIVERY_COMPLETE=1
   log "removed delivery worktrees for #$NUM — branch $WORK_BRANCH persists in the real repo(s) for review"
 
   # ── Stabilisation gate 3: real-repo CLEAN after teardown (HARD FAIL) ────────
@@ -1329,6 +1637,30 @@ EOF
       result clarified; exit 0
     fi
   fi
+fi
+
+# Nothing ready → idle MAINTENANCE LANE (audit item A4). OFF by default: spending
+# tokens on every empty tick is opt-in. When GAFFER_MAINTENANCE=1, instead of the
+# single fixed idle scan below, run the ONE maintenance loop chosen by crew's
+# deterministic priority+rotation scheduler (`fg maintain`) — security findings
+# first, then test-gaps, then type/tech-debt, then docs — rotating so no lane
+# starves. The chosen lane + rationale are logged so the decision is auditable.
+# The rotation cursor is persisted under $GAFFER_DATA so the cadence survives
+# across ticks. Which loops it rotates through is each idle loop's own enabled
+# flag in the crew config (loops.maintenance gates only the lane itself).
+if [ "${GAFFER_MAINTENANCE:-0}" = "1" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] && [ -f "$CREW_CONFIG" ]; then
+  log "no ready tickets → maintenance lane (deterministic scheduler picks one loop)"
+  if [ "$DRY_RUN" = "1" ]; then
+    log "DRY_RUN: would run: fg maintain (scheduler-chosen maintenance loop)"; result no_work; exit 0
+  fi
+  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain 2>>"$GAFFER_LOG")"
+  MCHOSEN="$(echo "$MOUT" | jget "d.get('report',{}).get('chosen') or 'none'" 2>/dev/null || echo none)"
+  MREASON="$(echo "$MOUT" | jget "d.get('report',{}).get('reason','')" 2>/dev/null || echo '')"
+  MSTATUS="$(echo "$MOUT" | jget "(d.get('report',{}).get('outcome') or {}).get('status') or 'no_op'" 2>/dev/null || echo no_op)"
+  MDRAFTS="$(echo "$MOUT" | jget "(d.get('report',{}).get('outcome') or {}).get('draftCount',0)" 2>/dev/null || echo 0)"
+  log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, drafts=$MDRAFTS"
+  [ "${MDRAFTS:-0}" -gt 0 ] && { result maintenance_drafted; exit 0; }
+  result maintenance_ran; exit 0
 fi
 
 # Nothing ready → idle scan to draft new work (crew). OFF by default: an idle

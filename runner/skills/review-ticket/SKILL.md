@@ -46,6 +46,16 @@ steps and the diff you can see.
    missed edge cases, leftover debug, or scope creep? Check conventions with `search_lore`
    (Memory MCP) and the surrounding code. A change can satisfy every AC and still be
    unsound — say so.
+   **Review the code in its own stack's terms.** Identify the diff's stack and, if a
+   matching stack pack is available in the skill library, load it and apply its
+   **Review checklist** as part of your soundness judgement — review Java like Java
+   (`java-conventions`), Python like Python (`python-conventions`), Go like Go
+   (`go-conventions`), TypeScript like TypeScript (`typescript-conventions`), and
+   high-visibility UI against the design bar (`frontend-design` / `mobile-ui`). This is a
+   steer, not a hard gate: if the relevant pack isn't present, fall back to the language's
+   idiomatic standards and the repo's lore. A diff that compiles but violates its stack's
+   conventions (an unguarded `Optional.get()`, a swallowed Go `error`, a bare `except`, a
+   floating promise, a template-looking UI) is grounds to RECOMMEND CHANGES.
 6. **Record your verdict via the MCP (advisory).** For each AC, record a finding with
    `record_ac_evidence` (Dispatch MCP): PASS/FAIL plus the specific reasoning. Then finish
    your message with ONE overall recommendation line:

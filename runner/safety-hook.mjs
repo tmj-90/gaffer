@@ -339,6 +339,14 @@ const PYTHON_WRITE_PRESENCE = [
   /\bPath\s*\([^)]*\)\s*\.\s*open\s*\(\s*["'][^"']*[waxWAX+]/,
   /\bos\.open\s*\([^)]*O_(?:WRONLY|RDWR|CREAT|APPEND|TRUNC)\b/,
   /\bshutil\.(?:copy|copy2|copyfile|copytree|move)\s*\(/,
+  // Shell-out from inside `python -c`: os.system / os.popen / subprocess.* spawn
+  // a child whose filesystem effects we cannot see, let alone prove in-bounds.
+  // Treat the shell-out as a write PRESENCE with no recoverable literal so the
+  // inline-write boundary fails CLOSED (a runtime path can never be confirmed).
+  // This is a conservative deny: shelling out from an inline interpreter is an
+  // evasion shape, not a normal delivery action (run the command directly).
+  /\bos\.(?:system|popen)\s*\(/,
+  /\bsubprocess\.(?:run|call|check_call|check_output|Popen)\s*\(/,
 ];
 const NODE_WRITE_PRESENCE = [
   /\b(?:fs\.)?(?:writeFileSync|writeFile|appendFileSync|appendFile|createWriteStream)\s*\(/,
@@ -651,8 +659,13 @@ const DENY_COMMANDS = [
   // run arbitrary commands over a tree — deny regardless of where the tree is.
   { re: /\bfind\b[^\n]*\s-delete\b/, why: "find -delete (destructive tree walk)" },
   {
-    re: /\bfind\b[^\n]*\s-exec(?:dir)?\s+(?:rm|sh|bash|zsh|dash)\b/,
-    why: "find -exec rm/shell (destructive tree walk)",
+    // `find … -exec <writer> …` runs a mutating command over a tree, with `{}`
+    // standing in for each matched path — the actual write target(s) are
+    // produced by the traversal and cannot be proven in-bounds from the command
+    // text. Deny the destructive/shell verbs AND the file-mutators (cp/mv/tee/…)
+    // conservatively (S-1: fail closed when the target can't be verified).
+    re: /\bfind\b[^\n]*\s-exec(?:dir)?\s+(?:rm|sh|bash|zsh|dash|cp|mv|tee|dd|install|ln|rsync|truncate|shred|chmod|chown)\b/,
+    why: "find -exec writer/shell (destructive or unverifiable-target tree walk)",
   },
   // Whole-file truncation/erasure primitives. `truncate`'s target is ALSO routed
   // through the write-target extractor (so an in-root truncate is judged there);
@@ -1128,6 +1141,121 @@ function effectiveVerbAfter(tokens) {
 // always yields "outside" and the boundary fails CLOSED.
 const UNVERIFIABLE_TARGET = " unverifiable ";
 
+// =====================================================================
+// QUOTE-AWARE TOKENIZATION + FAIL-CLOSED-ON-AMBIGUITY (S-1 / S-4)
+// ---------------------------------------------------------------------
+// The verb extractors below used to tokenize a segment with the naive regex
+//   /"[^"]*"|'[^']*'|\S+/g
+// which is WRONG whenever a quoted span begins mid-token. Concretely, a quoted
+// assignment value containing a space:
+//   HOME="/tmp/x y" cp a /root/b
+// tokenizes as ["HOME=\"/tmp/x", "y\"", "cp", "a", "/root/b"]: \S+ grabs
+// `HOME="/tmp/x` (stops at the space), leaving `y"` as a bogus token. The verb
+// resolver then strips `HOME="/tmp/x` as a `VAR=` assignment and reads `y"` as
+// the verb, so the real `cp` and its `/root/b` destination are never seen and
+// the write-boundary guard is bypassed entirely.
+//
+// Two-part fix:
+//   1. tokenizeSegment: a quote-aware walk that groups a quoted span into the
+//      token it belongs to (so `HOME="/tmp/x y"` is ONE token and `cp` is
+//      correctly the verb). This ALONE closes the S-1 assignment-quoted-space
+//      bypass — the destination is now seen and checked. It does not by itself
+//      fail closed; that is the second part.
+//   2. commandQuotingAmbiguous: a WHOLE-COMMAND check for constructs we cannot
+//      cleanly resolve — a genuinely unbalanced/unpaired quote, or a $'…'/$"…"
+//      ANSI-C / locale string whose escape semantics we deliberately do not
+//      model. When true, the extractor surfaces the existing UNVERIFIABLE_TARGET
+//      sentinel so the command is DENIED rather than slipping through.
+//
+// WHY this is checked on the WHOLE command, not per-segment: the segment
+// splitter (`split(/&&|\|\||[;&|\n]/)`) is quote-naive and will split on a `;`
+// or `|` that sits INSIDE a quoted string (e.g. a legitimate
+// `python -c "...; Path('x').write_text('y')"`), manufacturing fragments with
+// false-unbalanced quotes. Judging balance over the full command avoids
+// false-denying those legitimate quoted bodies while still catching a real
+// dangling quote, which is unbalanced at the whole-command level too.
+//
+// WHY fail-closed beats a cleverer parser here: this hook is a security
+// boundary, not a shell. A parser that tries to fully emulate bash quoting,
+// escaping, $'...', and expansion is a large, bug-prone surface, and every
+// parser bug that mis-resolves a token is a silent BYPASS of the write/read
+// boundary. Refusing to guess (deny on ambiguity) caps the blast radius at a
+// handful of extra FALSE DENIALS for genuinely malformed/exotic commands, while
+// guaranteeing no attacker-controlled quoting trick can slip a write target past
+// tokenization. A few false denials are the correct trade; a single new bypass
+// is not.
+//
+// tokenizeSegment returns the token array with surrounding quotes preserved
+// (downstream unquote/stripQuotes strips them) so the existing verb/operand
+// logic is unchanged.
+function tokenizeSegment(segment) {
+  const tokens = [];
+  let cur = "";
+  let has = false; // whether `cur` holds an in-progress token
+  let i = 0;
+  const n = segment.length;
+  while (i < n) {
+    const c = segment[i];
+    if (c === '"' || c === "'") {
+      // Group the whole quoted span (quotes included) into the current token.
+      const close = segment.indexOf(c, i + 1);
+      if (close === -1) {
+        // Unbalanced at the segment level: take the rest verbatim. Whole-command
+        // ambiguity (commandQuotingAmbiguous) decides whether this fails closed;
+        // this local fallback just avoids an infinite loop / partial token.
+        cur += segment.slice(i);
+        has = true;
+        break;
+      }
+      cur += segment.slice(i, close + 1);
+      has = true;
+      i = close + 1;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      if (has) {
+        tokens.push(cur);
+        cur = "";
+        has = false;
+      }
+      i += 1;
+      continue;
+    }
+    cur += c;
+    has = true;
+    i += 1;
+  }
+  if (has) tokens.push(cur);
+  return tokens;
+}
+
+/**
+ * WHOLE-COMMAND quoting-ambiguity check (S-1/S-4 fail-closed gate). Returns true
+ * when the command contains a construct the tokenizer cannot resolve without
+ * guessing: a $'…'/$"…" ANSI-C / locale quote (escape semantics we do not
+ * model), or a genuinely unbalanced/unpaired quote across the whole string.
+ * Callers translate `true` into the UNVERIFIABLE_TARGET sentinel → DENY.
+ */
+function commandQuotingAmbiguous(cmd) {
+  let i = 0;
+  const n = cmd.length;
+  while (i < n) {
+    const c = cmd[i];
+    // $'…' (ANSI-C) / $"…" (locale): unmodelled escape semantics → fail closed.
+    if (c === "$" && i + 1 < n && (cmd[i + 1] === "'" || cmd[i + 1] === '"')) {
+      return true;
+    }
+    if (c === '"' || c === "'") {
+      const close = cmd.indexOf(c, i + 1);
+      if (close === -1) return true; // dangling quote across the whole command
+      i = close + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return false;
+}
+
 // Mutating verbs whose target, when fed via `xargs`, comes from STDIN and so
 // cannot be verified against the roots → must fail closed as a write.
 const XARGS_WRITE_VERBS = new Set([
@@ -1240,9 +1368,18 @@ function extractBashWriteTargets(cmd) {
   // `dd of=FILE`.
   for (const m of cmd.matchAll(/\bof=("[^"]+"|'[^']+'|[^\s;&|<>]+)/g)) add(m[1]);
 
-  // Per-segment parsing for the verb-style mutators.
+  // FAIL-CLOSED gate (S-1/S-4): if the WHOLE command has quoting we cannot
+  // resolve (a $'…'/$"…" ANSI-C/locale string, or a dangling quote), a write
+  // verb + target could be hidden in it — surface the UNVERIFIABLE sentinel
+  // (classified "outside" → BLOCK). Judged over the whole command so the
+  // quote-naive segment splitter cannot manufacture false unbalance from a `;`
+  // inside a legitimate quoted body. See commandQuotingAmbiguous.
+  if (commandQuotingAmbiguous(cmd)) targets.push(UNVERIFIABLE_TARGET);
+
+  // Per-segment parsing for the verb-style mutators (quote-aware tokenizer so a
+  // quoted assignment value with a space no longer hides the real verb/target).
   for (const segment of cmd.split(/(?:&&|\|\||[;&|\n])/)) {
-    const tokens = segment.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+    const tokens = tokenizeSegment(segment.trim());
     if (tokens.length === 0) continue;
     // Resolve the EFFECTIVE verb: strip leading `VAR=value` assignments and no-op
     // wrapper commands so a demoted verb (`env tee …`, `VAR=1 mv …`) is still seen.
@@ -1282,6 +1419,31 @@ function extractBashWriteTargets(cmd) {
       for (const op of operands) {
         for (const t of extractAwkRedirectTargets(unquote(op))) targets.push(t);
       }
+    } else if (verb === "tar") {
+      // `tar -x …` EXTRACTS files onto the filesystem. The archive's member
+      // paths are invisible to us, so even an in-root `-C <dir>` can be escaped
+      // by a `../`-traversal entry inside the archive. We therefore (a) check any
+      // explicit `-C <dir>` destination, and (b) ALWAYS surface UNVERIFIABLE for
+      // an extraction, failing closed on archive-relative traversal we cannot
+      // see. (Create/list/append — `-c`/`-t`/`-r`/`-u` without `-x` — are not
+      // extractions and fall through untouched.) See tokenizeSegment rationale.
+      const isExtract = /(?:^|\s)-?-?(?:[A-Za-z]*x[A-Za-z]*|-extract\b)/.test(segment);
+      if (isExtract) {
+        // Honour an explicit `-C <dir>` / `--directory=<dir>` change-dir target.
+        const cdir = segment.match(/(?:^|\s)(?:-C\s+|--directory[=\s])("[^"]+"|'[^']+'|[^\s;&|]+)/);
+        if (cdir) add(cdir[1]);
+        targets.push(UNVERIFIABLE_TARGET); // archive-relative traversal → fail closed
+      }
+    } else if (verb === "git") {
+      // `git [-C dir] worktree add <path>` creates a NEW worktree directory at
+      // <path>; if <path> is outside the write-roots it writes outside the
+      // boundary. Find the `worktree add` pair among the (flag-stripped) operands
+      // — a leading `-C <dir>` survives as a bare `dir` operand, so we scan for
+      // the adjacency rather than assuming a fixed index.
+      const wi = operands.indexOf("worktree");
+      if (wi !== -1 && operands[wi + 1] === "add" && operands.length > wi + 2) {
+        add(operands[wi + 2]);
+      }
     }
   }
 
@@ -1308,7 +1470,11 @@ function extractBashWriteTargets(cmd) {
 function extractBashReadTargets(cmd) {
   const targets = [];
   for (const segment of cmd.split(/(?:&&|\|\||[;&|\n])/)) {
-    const tokens = segment.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+    // Quote-aware tokenization (same as the write path). Whole-command quoting
+    // ambiguity is already fail-closed by extractBashWriteTargets (which surfaces
+    // the UNVERIFIABLE sentinel and runs unconditionally), so the command is
+    // denied regardless; here we just parse quote-correctly for the read check.
+    const tokens = tokenizeSegment(segment.trim());
     if (tokens.length === 0) continue;
     // Resolve the EFFECTIVE verb so a demoted reader (`command cat …`,
     // `env X=1 cat …`) is still recognised against READ_TOOL_VERBS.

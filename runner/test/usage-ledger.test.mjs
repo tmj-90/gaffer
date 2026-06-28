@@ -179,6 +179,71 @@ console.log("== AC3: gated on GAFFER_DATA + fully swallowed ==");
   assert("gated-off append never throws", threw === false);
 }
 
+console.log("== R-4: an append FAILURE is non-fatal but VISIBLE (warns; doesn't throw) ==");
+{
+  // A resolvable path that cannot be written (the parent dir does not exist) forces
+  // appendFileSync to throw. The append must stay non-fatal (no throw, returns false)
+  // yet now SURFACE a WARNING so a measurement gap is visible — not silently dropped.
+  const unwritable = join(tmpdir(), "no-such-dir-xyz", "ledger.jsonl");
+  const errs = [];
+  const origWrite = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => {
+    errs.push(String(chunk));
+    return origWrite.call(process.stderr, chunk, ...rest);
+  };
+  let wrote = true;
+  let threw = false;
+  try {
+    wrote = appendUsageRecord({ ticket: 77, measured: true }, { GAFFER_USAGE_LEDGER: unwritable });
+  } catch {
+    threw = true;
+  } finally {
+    process.stderr.write = origWrite;
+  }
+  assert("R-4: append to an unwritable path returns false", wrote === false);
+  assert("R-4: append failure never throws (tick unaffected)", threw === false);
+  const warned = errs.join("");
+  assert(
+    "R-4: a WARNING is emitted on append failure",
+    /WARNING: usage-ledger append FAILED/.test(warned),
+  );
+  assert(
+    "R-4: the warning names the ticket + flags the unmeasured cost",
+    /#77/.test(warned) && /UNMEASURED/.test(warned),
+  );
+
+  // The gated-off case (no path resolvable) must stay SILENT — it's intentional, not
+  // a failure, so it must NOT cry wolf with a warning.
+  const errs2 = [];
+  const origWrite2 = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => {
+    errs2.push(String(chunk));
+    return origWrite2.call(process.stderr, chunk, ...rest);
+  };
+  try {
+    appendUsageRecord({ ticket: 1, measured: true }, {}); // no GAFFER_DATA, no path
+  } finally {
+    process.stderr.write = origWrite2;
+  }
+  assert(
+    "R-4: gated-off append stays silent (no false-alarm warning)",
+    !/WARNING/.test(errs2.join("")),
+  );
+}
+
+console.log("== R-4b: the tick.sh ledger call site routes the module's stderr to the log ==");
+{
+  // The WARNING reaches the operator only if the call site stops discarding node's
+  // stderr. gaffer_usage_record (factory.config.sh) must route it to $GAFFER_LOG.
+  const cfg = readFileSync(resolve(RUNNER_DIR, "factory.config.sh"), "utf8");
+  const fn = cfg.slice(cfg.indexOf("gaffer_usage_record() {"));
+  const body = fn.slice(0, fn.indexOf("\n}\n") + 1);
+  assert(
+    "R-4b: gaffer_usage_record routes module stderr to $GAFFER_LOG (not /dev/null)",
+    /2>>"\$GAFFER_LOG"/.test(body) && !/2>\/dev\/null/.test(body),
+  );
+}
+
 console.log("== AC3b: CLI prints .result text AND writes the ledger (gated on GAFFER_DATA) ==");
 {
   const dir = mkdtempSync(join(tmpdir(), "usage-cli-"));

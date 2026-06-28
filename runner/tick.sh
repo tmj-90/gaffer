@@ -1560,6 +1560,30 @@ EOF
   fi
 fi
 
+# Nothing ready → idle MAINTENANCE LANE (audit item A4). OFF by default: spending
+# tokens on every empty tick is opt-in. When GAFFER_MAINTENANCE=1, instead of the
+# single fixed idle scan below, run the ONE maintenance loop chosen by crew's
+# deterministic priority+rotation scheduler (`fg maintain`) — security findings
+# first, then test-gaps, then type/tech-debt, then docs — rotating so no lane
+# starves. The chosen lane + rationale are logged so the decision is auditable.
+# The rotation cursor is persisted under $GAFFER_DATA so the cadence survives
+# across ticks. Which loops it rotates through is each idle loop's own enabled
+# flag in the crew config (loops.maintenance gates only the lane itself).
+if [ "${GAFFER_MAINTENANCE:-0}" = "1" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] && [ -f "$CREW_CONFIG" ]; then
+  log "no ready tickets → maintenance lane (deterministic scheduler picks one loop)"
+  if [ "$DRY_RUN" = "1" ]; then
+    log "DRY_RUN: would run: fg maintain (scheduler-chosen maintenance loop)"; result no_work; exit 0
+  fi
+  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain 2>>"$GAFFER_LOG")"
+  MCHOSEN="$(echo "$MOUT" | jget "d.get('report',{}).get('chosen') or 'none'" 2>/dev/null || echo none)"
+  MREASON="$(echo "$MOUT" | jget "d.get('report',{}).get('reason','')" 2>/dev/null || echo '')"
+  MSTATUS="$(echo "$MOUT" | jget "(d.get('report',{}).get('outcome') or {}).get('status') or 'no_op'" 2>/dev/null || echo no_op)"
+  MDRAFTS="$(echo "$MOUT" | jget "(d.get('report',{}).get('outcome') or {}).get('draftCount',0)" 2>/dev/null || echo 0)"
+  log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, drafts=$MDRAFTS"
+  [ "${MDRAFTS:-0}" -gt 0 ] && { result maintenance_drafted; exit 0; }
+  result maintenance_ran; exit 0
+fi
+
 # Nothing ready → idle scan to draft new work (crew). OFF by default: an idle
 # factory should just poll + stop, not generate fresh work (and spend tokens) every
 # empty tick. Set IDLE_DRAFT_WHEN_IDLE=1 to let it draft new work when the queue is dry.

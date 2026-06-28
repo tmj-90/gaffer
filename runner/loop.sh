@@ -106,8 +106,16 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
 fi
 
 # ── Serial path (DEFAULT: GAFFER_CONCURRENCY=1) ───────────────────────────────
-# Byte-for-byte the pre-A-1 loop. At concurrency 1 the factory runs EXACTLY as it
-# always has — the parallel machinery above is fully bypassed.
+# Behavior-preserving at N=1: the parallel machinery above is fully bypassed and
+# the loop runs the same single-tick shape as the pre-A-1 factory, with TWO
+# deliberate, behavior-preserving deltas:
+#   • the day-cap bump is now FAIL-STOP — if gaffer_bump_day_count fails the run
+#     stops rather than spending unbounded against a cap it can no longer enforce
+#     (the R-1 hardening below); the pre-A-1 loop logged and continued.
+#   • the logging / skip-file / ledger writes are wrapped in gaffer_with_lock,
+#     which is a no-op at concurrency 1 (a single holder, never contended).
+# So it is NOT byte-for-byte identical to the pre-A-1 body; it is the same
+# behavior with the day-cap bump made fail-stop. Don't weaken the R-1 hardening.
 ticks=0
 empties=0
 while [ "$ticks" -lt "$MAX_TICKS" ]; do

@@ -614,7 +614,10 @@ gaffer_usage_record() {
 # than the cap per repo. 0 = that dimension is unlimited.
 : "${MAX_OPEN_AGENT_BRANCHES_PER_REPO:=3}"   # unmerged gaffer/* branches in the real repo
 : "${MAX_OPEN_AGENT_PRS_PER_REPO:=3}"        # in_review tickets targeting the repo
-: "${MAX_CONCURRENT_TICKETS_PER_REPO:=2}"    # active (unexpired) claims targeting the repo
+# The third backpressure dimension — active (claimed/in_progress) tickets per repo
+# — is MAX_CONCURRENT_TICKETS_PER_REPO, defined once above (default 1). It is NOT
+# re-defaulted here: a second `:=` would be dead (the value is already set) and any
+# different number in it would be a silently-ignored lie.
 
 # CLI helpers (use the built dist bins)
 # memory-mcp uses its own bin layout + the MEMORY_DB env var (no --db flag).

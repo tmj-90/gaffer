@@ -449,11 +449,22 @@ gaffer_is_self_target() {
 # mutable state (day-cap counter, usage ledger, skip-file, log) is serialised with
 # gaffer_with_lock (below).
 : "${GAFFER_CONCURRENCY:=1}"
-# Per-repo concurrency cap: never have more than this many tickets in flight for a
-# single repo at once (avoids a merge stampede / cross-ticket churn on one repo).
-# Enforced via the existing backpressure system (lib/backpressure.sh counts active
-# in-flight tickets per repo). MAX_CONCURRENT_TICKETS_PER_REPO is also the
-# backpressure "claims" cap, so the two stay consistent by construction.
+# Per-repo concurrency cap: aim to never have more than this many tickets in flight
+# for a single repo at once (avoids a merge stampede / cross-ticket churn on one
+# repo). Enforced via the existing backpressure system (lib/backpressure.sh counts
+# active in-flight tickets — claimed + in_progress — per repo). It is the same
+# value as the backpressure "claims" cap, so the two stay consistent by
+# construction.
+#
+# HONESTY (best-effort under concurrency): the cap is read at candidate-SELECTION
+# time, but the actual claim is deferred to the agent's own `claim_ticket` call. So
+# under GAFFER_CONCURRENCY>1 two ticks can each select a candidate for the same
+# under-cap repo before either has claimed, and the cap can be exceeded by up to the
+# in-flight count. The HARD guarantee here is only the per-ticket double-claim
+# invariant (a ticket is claimed at most once, enforced transactionally in
+# Dispatch); this per-repo cap is a throttle, not a transactional bound.
+# NOTE(follow-up): claiming in tick.sh BEFORE handing off to the agent (so
+# selection and claim are one atomic step) would make the per-repo cap exact.
 : "${MAX_CONCURRENT_TICKETS_PER_REPO:=1}"
 # Upper bound on how many ready candidates a single tick scans before giving up
 # and yielding no_work. Bounds the per-tick candidate walk (each candidate costs a

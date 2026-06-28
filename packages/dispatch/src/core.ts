@@ -8,7 +8,6 @@ import {
   type DecisionSeverity,
   type Evidence,
   type Repository,
-  type ReviewFeedback,
   type ScopeEdge,
   type ScopeNode,
   type ScopeRepo,
@@ -90,6 +89,7 @@ import {
   type BoardView,
   type DashboardSummary,
 } from "./services/boardService.js";
+import { ReviewGateService } from "./services/reviewGateService.js";
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
@@ -119,36 +119,8 @@ export function resolveMaxAttempts(env: NodeJS.ProcessEnv = process.env): number
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_ATTEMPTS;
 }
 
-/**
- * BBT-001 global toggle: is the independent black-box testing lane ON? Read from
- * `GAFFER_TESTING` (same env-driven path as the other autonomy/idle flags), OFF by
- * default so the lane is fully opt-in. Truthy values are "1"/"true"/"yes"/"on"
- * (case-insensitive); anything else (incl. unset) is OFF. When off, review approval
- * keeps today's behaviour (`in_review -> ready_for_merge`) and the lane is skipped
- * entirely.
- */
-export function isTestingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = (env.GAFFER_TESTING ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-/**
- * BBT-001: derive the PROVENANCE of a tester verdict from the recording actor's
- * type, so the dashboard can attribute a pass/fail ("by agent | human | system")
- * instead of surfacing an unattributed verdict. `admin` collapses to `human` (a
- * person), `agent` is the factory tester, `system` is an automated/seam recording.
- */
-export function testerProvenance(actor: Actor): "agent" | "human" | "system" {
-  switch (actor.type) {
-    case "agent":
-      return "agent";
-    case "system":
-      return "system";
-    case "human":
-    case "admin":
-      return "human";
-  }
-}
+/** BBT-001 global toggle: is the independent black-box testing lane ON? */
+export { isTestingEnabled, testerProvenance } from "./util/testingLane.js";
 
 export interface TicketView {
   ticket: Ticket;
@@ -253,6 +225,7 @@ export class Dispatch {
   readonly repoSvc: RepoService;
   readonly epicsSvc: EpicsService;
   readonly boardSvc: BoardService;
+  readonly reviewGateSvc: ReviewGateService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -376,6 +349,20 @@ export class Dispatch {
       decisions: this.decisions,
       claimsRepo: this.claimsRepo,
       events: this.events,
+    });
+    this.reviewGateSvc = new ReviewGateService({
+      db,
+      clock: this.clock,
+      tickets: this.tickets,
+      acs: this.acs,
+      evidence: this.evidence,
+      transitions: this.transitions,
+      ticketSvc: this.ticketSvc,
+      maxAttempts: this.maxAttempts,
+      testingEnabledOverride: this.testingEnabledOverride,
+      onTicketParked: (ticket, detail) => {
+        this.emitGate("ticket_parked", ticket, { status: "blocked", detail });
+      },
     });
   }
 
@@ -662,250 +649,28 @@ export class Dispatch {
     });
   }
 
-  /**
-   * Human review approval: `in_review -> ready_for_merge` (NOT `done`). The human
-   * has approved the diff; the merge runner now does the git merge and, once it
-   * lands, calls {@link markMerged} (`ready_for_merge -> done`). So `done` means
-   * the work is ACTUALLY merged, never "approved but the merge was partial/failed".
-   * The done-gate policy (AC satisfied, PR/diff present) is evaluated on THIS
-   * transition — it is the human sign-off.
-   */
   approveReview(ticketRef: string, actor: Actor): TransitionResult {
-    // P0 authz: review approval is the human sign-off that releases a delivery to
-    // merge. By DEFAULT only a human/admin may approve — an `agent`-type actor can
-    // never approve its own work, so the human gate is a real boundary. The
-    // dashboard's API_ACTOR is `{type:"human"}` and the operator CLI runs as human,
-    // so both always pass.
-    //
-    // OPT-IN "yolo" autonomy: an operator who wants a fully hands-off factory can
-    // set DISPATCH_ALLOW_AGENT_APPROVE=1, which also lets an `agent` actor approve.
-    // That deliberately removes the human gate — their machine, their call (see
-    // SECURITY.md; pairs with the runner's MERGE_ON_AGENT_REVIEW). Default-off keeps
-    // the gate intact.
-    const agentApproveAllowed =
-      actor.type === "agent" && process.env.DISPATCH_ALLOW_AGENT_APPROVE === "1";
-    if (actor.type !== "human" && actor.type !== "admin" && !agentApproveAllowed) {
-      throw new DispatchError(
-        "ACTOR_NOT_PERMITTED",
-        "Only a human or admin may approve a review (set DISPATCH_ALLOW_AGENT_APPROVE=1 to allow autonomous agent approval).",
-        { actor_type: actor.type },
-      );
-    }
-    const ticket = this.resolveTicket(ticketRef);
-    // BBT-001: when the independent-testing lane is ON (GAFFER_TESTING) AND this
-    // ticket is eligible (`can_be_tested`), review approval routes through the
-    // INDEPENDENT tester (`in_review -> in_testing`) instead of straight to merge.
-    // Otherwise — toggle off OR not testable — keep today's behaviour exactly
-    // (`in_review -> ready_for_merge`). The done-gate policy still fires later, when
-    // the lane exits to `ready_for_merge` (tester pass) or directly here.
-    if (this.testingEnabled() && ticket.can_be_tested === 1) {
-      const result = this.transitions.transition({
-        ticketId: ticket.id,
-        actor,
-        toStatus: "in_testing",
-        reason: "review_approved_to_testing",
-        expectedFromStatus: "in_review",
-        testerVerdict: true,
-      });
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: "ticket.routed_to_testing",
-        payload: { from: "in_review" },
-      });
-      return result;
-    }
-    return this.transitions.transition({
-      ticketId: ticket.id,
-      actor,
-      toStatus: "ready_for_merge",
-      reason: "review_approved",
-      expectedFromStatus: "in_review",
-    });
+    return this.reviewGateSvc.approveReview(ticketRef, actor);
   }
 
-  /**
-   * BBT-001 toggle accessor — overridable per-instance for tests. Defaults to the
-   * `GAFFER_TESTING` env read via {@link isTestingEnabled}.
-   */
-  private testingEnabled(): boolean {
-    return this.testingEnabledOverride ?? isTestingEnabled();
-  }
-
-  /**
-   * The independent black-box tester PASSED: the tests it wrote from the
-   * test_contract + acceptance criteria all pass, so the delivery may proceed to
-   * merge (`in_testing -> ready_for_merge`). The done-gate policy fires on THIS
-   * transition (AC satisfied, PR/diff present) exactly as it would have on a direct
-   * approval, so testing never weakens the merge gate.
-   *
-   * A `tester`-role agent (or any non-merging actor) records this; like the
-   * reviewer it CANNOT approve or merge — it can only report the test verdict. The
-   * actual merge stays the guarded `mark-merged` system path. `summary` is recorded
-   * as a `test_output` evidence row so the passing result is visible in review.
-   */
   testerPass(
     ticketRef: string,
     input: { summary: string; uri?: string },
     actor: Actor,
   ): TransitionResult {
-    // No actor-type gate beyond the structural one: a tester (agent), or a
-    // human/admin/system recording on its behalf, may report the verdict — but the
-    // ACTUAL merge stays the guarded system/admin-only `mark-merged` path, so a
-    // tester can never approve+merge its own verdict. That structural gate is the
-    // boundary, mirroring how an agent reviewer cannot approve.
-    const summary = input.summary.trim();
-    if (summary.length === 0) {
-      throw new DispatchError("VALIDATION_ERROR", "A test-result summary is required.");
-    }
-    return inTransaction(this.db, () => {
-      const ticket = this.resolveTicket(ticketRef);
-      if (ticket.status !== "in_testing") {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "Only a ticket in testing can be passed by the tester.",
-          { from: ticket.status, to: "ready_for_merge" },
-        );
-      }
-      // Record the passing test result as evidence so it is visible in review.
-      const evidenceId = newId();
-      const now = this.clock.now();
-      this.evidence.insert({
-        id: evidenceId,
-        ticket_id: ticket.id,
-        ac_id: null,
-        repo_id: null,
-        decision_id: null,
-        evidence_type: "test_output",
-        summary,
-        uri: input.uri ?? null,
-        // Provenance: capture WHO produced the verdict (derived from the actor type)
-        // so a later reviewer sees "tests passed — by <agent|human|system|stub>" on
-        // the dashboard instead of an unattributed pass.
-        payload_json: JSON.stringify({ verdict: "pass", provenance: testerProvenance(actor) }),
-        created_by: actor.id ?? actor.type,
-        created_at: now,
-      });
-      const result = this.transitions.transition({
-        ticketId: ticket.id,
-        actor,
-        toStatus: "ready_for_merge",
-        reason: "tester_passed",
-        expectedFromStatus: "in_testing",
-        testerVerdict: true,
-      });
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: "ticket.tester_passed",
-        payload: { evidence_id: evidenceId },
-      });
-      return result;
-    });
+    return this.reviewGateSvc.testerPass(ticketRef, input, actor);
   }
 
-  /**
-   * The independent black-box tester FAILED: a test it wrote from the contract +
-   * acceptance criteria does NOT pass — the implementation satisfies its own tests
-   * but not the AC. The ticket goes back to `refining` with the failing test as
-   * rejection evidence, REUSING the reject path (AC reset, attempt bump + retry-cap
-   * park, review feedback) so a tester failure is handled exactly like a review
-   * rejection. The `summary` (the failing test / why) becomes the rejection reason
-   * and is recorded as a `test_output` evidence row.
-   */
   testerFail(
     ticketRef: string,
     input: { summary: string; uri?: string },
     actor: Actor,
   ): TransitionResult {
-    const summary = input.summary.trim();
-    if (summary.length === 0) {
-      throw new DispatchError("VALIDATION_ERROR", "A failing-test summary is required.");
-    }
-    return inTransaction(this.db, () => {
-      const ticket = this.resolveTicket(ticketRef);
-      if (ticket.status !== "in_testing") {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "Only a ticket in testing can be failed by the tester.",
-          { from: ticket.status, to: "refining" },
-        );
-      }
-      // Record the failing test as evidence BEFORE the AC reset / transition.
-      const evidenceId = newId();
-      const now = this.clock.now();
-      this.evidence.insert({
-        id: evidenceId,
-        ticket_id: ticket.id,
-        ac_id: null,
-        repo_id: null,
-        decision_id: null,
-        evidence_type: "test_output",
-        summary,
-        uri: input.uri ?? null,
-        // Provenance: see testerPass — record who produced the FAIL verdict.
-        payload_json: JSON.stringify({ verdict: "fail", provenance: testerProvenance(actor) }),
-        created_by: actor.id ?? actor.type,
-        created_at: now,
-      });
-
-      // Reuse the reject machinery: attempt bump + retry-cap park, AC reset, review
-      // feedback. A cap-reached failure parks to `blocked` instead of re-queuing.
-      const nextAttempt = ticket.attempt_count + 1;
-      const capReached = nextAttempt >= this.maxAttempts;
-      const target: TicketStatus = capReached ? "blocked" : "refining";
-      const reason = `tester_failed:${summary}`;
-      const result = this.transitions.transition({
-        ticketId: ticket.id,
-        actor,
-        toStatus: target,
-        reason: capReached ? `retry_cap_reached:${reason}` : reason,
-        expectedFromStatus: "in_testing",
-        patch: { attempt_count: nextAttempt },
-        ...(capReached ? { park: true } : { testerVerdict: true }),
-      });
-      if (capReached) {
-        writeEvent(this.db, {
-          entity_type: "ticket",
-          entity_id: ticket.id,
-          actor,
-          event_type: "ticket.parked_retry_cap",
-          payload: { attempt_count: nextAttempt, max_attempts: this.maxAttempts, reason },
-        });
-      }
-      this.resetAcceptanceCriteria(ticket.id, actor);
-      const feedback: ReviewFeedback = {
-        reason,
-        reviewer: actor.id ?? null,
-        at: now,
-      };
-      this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: "ticket.tester_failed",
-        payload: { evidence_id: evidenceId },
-      });
-      return result;
-    });
+    return this.reviewGateSvc.testerFail(ticketRef, input, actor);
   }
 
   // --- Black-box testing handover (BBT-001) --------------------------------
 
-  /**
-   * Set (or clear) a ticket's `can_be_tested` eligibility flag — the gate that lets
-   * review approval route through the independent testing lane. Set by the PO /
-   * clarify / reviewer once an observable boundary may have changed.
-   *
-   * NO actor gate, by design and fail-safe: marking a ticket testable only ADDS a
-   * scrutiny step (it routes a future review approval through the independent tester
-   * BEFORE merge) — it can never bypass a gate or grant any access. The worst an
-   * agent can do by setting it is cause MORE testing, never less. Contrast
-   * {@link setTicketRepoAccess}, which GRANTS write access and so is human/admin-only.
-   */
   setTestable(
     ticketRef: string,
     canBeTested: boolean,
@@ -922,228 +687,27 @@ export class Dispatch {
     return this.ticketSvc.getTestContract(ticketRef);
   }
 
-  /**
-   * MERGE-COMPLETE: mark an approved-and-merging ticket actually merged
-   * (`ready_for_merge -> done`). This is the merge runner's callback after the git
-   * merge of the delivery branch landed cleanly. SYSTEM/admin only — a normal user
-   * or a board-drag can never fake "merged" (the guarded `markMerged` flag is
-   * required and the board-move path never sets it). The matching CLI is
-   * `wg ticket mark-merged <number> --as system`.
-   */
   markMerged(ref: string, actor: Actor): TransitionResult {
-    if (actor.type !== "system" && actor.type !== "admin") {
-      throw new DispatchError(
-        "ACTOR_NOT_PERMITTED",
-        "Only a system or admin actor may mark a ticket merged.",
-        { actor_type: actor.type },
-      );
-    }
-    const ticket = this.resolveTicket(ref);
-    return this.transitions.transition({
-      ticketId: ticket.id,
-      actor,
-      toStatus: "done",
-      reason: "merge_completed",
-      expectedFromStatus: "ready_for_merge",
-      markMerged: true,
-    });
+    return this.reviewGateSvc.markMerged(ref, actor);
   }
 
-  /**
-   * Re-open a `done` ticket for review (`done -> in_review`) after the auto-merge
-   * loop hit a CONFLICT and a resolver agent committed a resolution ON the delivery
-   * branch. This is the runner's re-approval callback: a human re-reviews the
-   * RESOLVED diff (the same Review surface, now showing the resolved branch) and
-   * re-approves, after which a later merge lands cleanly.
-   *
-   * SYSTEM/admin only — a normal user can never reopen a closed ticket this way
-   * (the board-move path rejects `done -> in_review`). Records the `resolution`
-   * summary as a `manual_note` delivery-artifact evidence row so it's visible in
-   * review, and emits a `ticket.reopened_for_review` event carrying a
-   * `merge_conflict_resolved` flag the UI surfaces as a "re-approve" banner.
-   */
   reopenForReview(
     ref: string,
     input: { reason: string; resolution: string },
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
-    if (actor.type !== "system" && actor.type !== "admin") {
-      throw new DispatchError(
-        "ACTOR_NOT_PERMITTED",
-        "Only a system or admin actor may reopen a done ticket for review.",
-        { actor_type: actor.type },
-      );
-    }
-    const reason = input.reason.trim();
-    const resolution = input.resolution.trim();
-    if (resolution.length === 0) {
-      throw new DispatchError("VALIDATION_ERROR", "A resolution summary is required.");
-    }
-    return inTransaction(this.db, () => {
-      const ticket = this.resolveTicket(ref);
-      // Reopen-for-review is reachable from a merged `done` ticket OR from a
-      // still-merging `ready_for_merge` ticket (the conflict the resolver fixed was
-      // hit during the merge). Anything else is not a reopenable state.
-      if (ticket.status !== "done" && ticket.status !== "ready_for_merge") {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "Only a done or merging ticket can be reopened for review.",
-          { from: ticket.status, to: "in_review" },
-        );
-      }
-      const result = this.transitions.transition({
-        ticketId: ticket.id,
-        actor,
-        toStatus: "in_review",
-        reason: reason.length > 0 ? reason : "reopened_for_review",
-        expectedFromStatus: ticket.status,
-        reopenForReview: true,
-      });
-      // Persist the resolver's summary as a visible delivery-artifact note so the
-      // reviewer reads WHAT was resolved alongside the resolved diff.
-      const now = this.clock.now();
-      const evidenceId = newId();
-      this.evidence.insert({
-        id: evidenceId,
-        ticket_id: ticket.id,
-        ac_id: null,
-        repo_id: null,
-        decision_id: null,
-        evidence_type: "manual_note",
-        summary: resolution,
-        uri: null,
-        payload_json: null,
-        created_by: actor.id ?? actor.type,
-        created_at: now,
-      });
-      const eventId = writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: "ticket.reopened_for_review",
-        payload: {
-          reason: reason.length > 0 ? reason : null,
-          resolution,
-          merge_conflict_resolved: true,
-          evidence_id: evidenceId,
-        },
-      });
-      return { ticketId: ticket.id, status: result.ticket.status, eventId };
-    });
+    return this.reviewGateSvc.reopenForReview(ref, input, actor);
   }
 
-  /**
-   * Human review rejection. A delivery rejected at review can be:
-   *
-   *  - sent back for rework (`refining` — the default): a human triages the
-   *    rejection reason before the ticket re-enters the delivery queue, so there
-   *    is no blind retry. `ready` is still accepted for callers that want the old
-   *    skip-triage behaviour.
-   *  - abandoned (`cancelled` — the won't-do bucket): the ticket will NOT be
-   *    built. This is the one-step "reject → won't do" reviewer affordance.
-   *
-   * In every case the ticket's acceptance criteria are reset to NOT satisfied:
-   * the ACs the now-rejected delivery marked satisfied are stale and misleading,
-   * so a rejected ticket shows 0/N satisfied again. An optional `reason` is
-   * recorded on the transition event so the rationale is auditable. Runs in one
-   * transaction so the status move and the AC reset commit together.
-   *
-   * Reachable from `in_review` AND from `ready_for_merge` (a human can change
-   * their mind PRE-merge: send the approved-and-merging ticket back for rework or
-   * abandon it). Note `ready_for_merge -> ready` is NOT a legal transition, so
-   * rework from a merging ticket must target `refining` (or `cancelled`).
-   */
   rejectReview(
     ticketRef: string,
     to: "ready" | "refining" | "cancelled",
     actor: Actor,
     reason?: string,
   ): TransitionResult {
-    // Capture whether the reject ended up PARKING the ticket (retry cap reached),
-    // so we can fire the H2 park notification AFTER the transaction commits.
-    let parked: { attempt: number; requestedTarget: string; reason: string } | null = null;
-    const result = inTransaction(this.db, () => {
-      const ticket = this.resolveTicket(ticketRef);
-      if (ticket.status !== "in_review" && ticket.status !== "ready_for_merge") {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "Only an in-review or merging ticket can be rejected.",
-          { from: ticket.status, to },
-        );
-      }
-      const resolvedReason = reason && reason.trim().length > 0 ? reason : "review_rejected";
-
-      // P1 retry-cap: abandoning to `cancelled` (won't-do) is terminal — it never
-      // re-enters the queue, so it neither increments the attempt counter nor is
-      // capped. A reject back into the queue (`ready`/`refining`) IS a retry: bump
-      // attempt_count and, once it reaches the cap, PARK to `blocked` (needs-human)
-      // instead of re-queuing the ticket to be re-delivered forever.
-      const isRequeue = to === "ready" || to === "refining";
-      const nextAttempt = isRequeue ? ticket.attempt_count + 1 : ticket.attempt_count;
-      const capReached = isRequeue && nextAttempt >= this.maxAttempts;
-      const target: TicketStatus = capReached ? "blocked" : to;
-
-      const result = this.transitions.transition({
-        ticketId: ticket.id,
-        actor,
-        toStatus: target,
-        reason: capReached ? `retry_cap_reached:${resolvedReason}` : resolvedReason,
-        expectedFromStatus: ticket.status,
-        // Carry the incremented attempt counter through the same guarded update.
-        ...(isRequeue ? { patch: { attempt_count: nextAttempt } } : {}),
-        // Abandoning at review is the guarded won't-do path.
-        ...(to === "cancelled" ? { wontDo: true } : {}),
-        // Parking past the cap is the guarded retry-cap path.
-        ...(capReached ? { park: true } : {}),
-      });
-      if (capReached) {
-        // Make the park auditable + visible: why the ticket needs a human now.
-        writeEvent(this.db, {
-          entity_type: "ticket",
-          entity_id: ticket.id,
-          actor,
-          event_type: "ticket.parked_retry_cap",
-          payload: {
-            attempt_count: nextAttempt,
-            max_attempts: this.maxAttempts,
-            requested_target: to,
-            reason: resolvedReason,
-          },
-        });
-        parked = { attempt: nextAttempt, requestedTarget: to, reason: resolvedReason };
-      }
-      this.resetAcceptanceCriteria(ticket.id, actor);
-      // WG-049: persist the rejection feedback on the ticket so the re-claiming
-      // agent (and the board) sees WHY it bounced. Cleared when it re-enters
-      // `in_review` (see TransitionService) so stale feedback never shows current.
-      const feedback: ReviewFeedback = {
-        reason: resolvedReason,
-        reviewer: actor.id ?? null,
-        at: this.clock.now(),
-      };
-      this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
-      return result;
-    });
-    // H2: a parked ticket (retry budget exhausted) now needs a human. Emit after
-    // the transaction commits, best-effort. A plain reject back into the queue is
-    // NOT a human gate, so only the park fires a notification.
-    if (parked !== null) {
-      const p: { attempt: number; requestedTarget: string; reason: string } = parked;
-      this.emitGate("ticket_parked", result.ticket, {
-        status: "blocked",
-        detail: `retry cap reached (attempt ${p.attempt}/${this.maxAttempts}): ${p.reason}`,
-      });
-    }
-    return result;
+    return this.reviewGateSvc.rejectReview(ticketRef, to, actor, reason);
   }
 
-  /**
-   * Reset every acceptance criterion on a ticket back to `pending` (NOT satisfied)
-   * and record an auditable `ticket.acceptance_criteria_reset` event. Wired into
-   * the reject/won't-do paths so a rejected ticket no longer carries the satisfied
-   * stamps from the delivery that was just thrown away. Safe to call when the
-   * ticket has no ACs (no-op event still recorded for the audit trail).
-   */
   resetAcceptanceCriteria(
     ref: string,
     actor: Actor,
@@ -1151,46 +715,12 @@ export class Dispatch {
     return this.ticketSvc.resetAcceptanceCriteria(ref, actor);
   }
 
-  /**
-   * Mark a ticket "won't do" (terminal `cancelled` bucket): the work will NOT be
-   * built. A deliberate, guarded move — it is rejected for in-flight/claimed
-   * tickets (only `draft`/`refining`/`ready`/`blocked`/`in_review`/`failed` can be
-   * abandoned, never `claimed`/`in_progress`/`done`) and never triggered by a
-   * stray board-drag (the won't-do flag is required). Resets the ticket's ACs to
-   * not-satisfied so a reopened ticket starts clean. Reversible via
-   * {@link reopenFromWontDo}.
-   */
   wontDo(ref: string, actor: Actor, reason?: string): TransitionResult {
-    return inTransaction(this.db, () => {
-      const ticket = this.resolveTicket(ref);
-      const result = this.transitions.transition({
-        ticketId: ticket.id,
-        actor,
-        toStatus: "cancelled",
-        reason: reason && reason.trim().length > 0 ? reason : "wont_do",
-        expectedFromStatus: ticket.status,
-        wontDo: true,
-      });
-      this.resetAcceptanceCriteria(ticket.id, actor);
-      return result;
-    });
+    return this.reviewGateSvc.wontDo(ref, actor, reason);
   }
 
-  /**
-   * Reopen a won't-do (`cancelled`) ticket back into the pipeline. Defaults to
-   * `refining` (triage the abandonment first), but `draft` is allowed for a clean
-   * restart. Neither target holds a claim, so reopening can never resurrect stale
-   * in-flight work. The reverse of {@link wontDo}.
-   */
   reopenFromWontDo(ref: string, to: "refining" | "draft", actor: Actor): TransitionResult {
-    const ticket = this.resolveTicket(ref);
-    return this.transitions.transition({
-      ticketId: ticket.id,
-      actor,
-      toStatus: to,
-      reason: "reopened_from_wont_do",
-      expectedFromStatus: "cancelled",
-    });
+    return this.reviewGateSvc.reopenFromWontDo(ref, to, actor);
   }
 
   // --- Agents + claims (M2) ------------------------------------------------

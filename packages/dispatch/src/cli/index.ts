@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 import { Command } from "commander";
 import { ZodError } from "zod";
@@ -7,6 +7,7 @@ import { ZodError } from "zod";
 import { Dispatch } from "../core.js";
 import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 import type { Actor } from "../domain/types.js";
+import { exportState, importStateFromJson, serializeBundle } from "../io/stateExport.js";
 import { DispatchError } from "../util/errors.js";
 import { resolveDbPath } from "../util/paths.js";
 import { VERSION } from "../version.js";
@@ -1081,6 +1082,52 @@ program
       const stats = computeStats(wg.db);
       if (opts.json) printJson(stats);
       else process.stdout.write(`${renderStats(stats)}\n`);
+    } finally {
+      wg.db.close();
+    }
+  });
+
+// --- Portability: export / import the whole board (H5) ----------------------
+
+program
+  .command("export")
+  .description(
+    "Export the whole Dispatch board to a portable JSON bundle (tickets, epics, " +
+      "scope graph, ACs, repos, decisions, reviews/evidence, work_events, claims). " +
+      "Writes to stdout by default, or to a file with --out.",
+  )
+  .option("-o, --out <file>", "write the bundle to this file ('-' for stdout)")
+  .action((opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    try {
+      const bundle = exportState(wg.db);
+      const json = serializeBundle(bundle);
+      const out = opts.out as string | undefined;
+      if (out === undefined || out === "-") {
+        process.stdout.write(json);
+      } else {
+        writeFileSync(out, json, { encoding: "utf8" });
+        printJson({ ok: true, out, tables: Object.keys(bundle.tables).length });
+      }
+    } finally {
+      wg.db.close();
+    }
+  });
+
+program
+  .command("import <file>")
+  .description(
+    "Import a board bundle (from 'dispatch export') into THIS database. Refuses a " +
+      "non-empty DB unless --force is given (which replaces its contents). Reads " +
+      "stdin when <file> is '-'.",
+  )
+  .option("--force", "replace the contents of a non-empty database", false)
+  .action((file: string, opts, cmd) => {
+    const json = file === "-" ? readStdin() : readFileSync(file, "utf8");
+    const wg = open(cmd.optsWithGlobals());
+    try {
+      const res = importStateFromJson(wg.db, json, { force: opts.force });
+      printJson({ ok: true, ...res });
     } finally {
       wg.db.close();
     }

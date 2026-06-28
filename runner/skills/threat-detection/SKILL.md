@@ -2,7 +2,7 @@
 name: threat-detection
 description: Use when hunting for threats in an environment, analysing IOCs, or detecting behavioural anomalies in telemetry. Covers hypothesis-driven threat hunting, IOC sweep generation, and MITRE ATT&CK-mapped signal prioritisation. For active declared incidents, use `incident-response`. For cloud misconfigurations, use `cloud-security`.
 stack: []
-area: security
+area: security-ops
 ---
 
 # Find threats that evaded automated controls

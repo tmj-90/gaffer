@@ -95,6 +95,8 @@ import {
   type SuggestByFields,
 } from "./services/suggestionService.js";
 import { TransitionService, type TransitionResult } from "./services/transitionService.js";
+import { buildNotifierFromEnv } from "./notify/config.js";
+import type { NotifyEvent, NotifyKind, Notifier } from "./notify/types.js";
 import { type Clock, systemClock } from "./util/clock.js";
 import { DispatchError, notFound } from "./util/errors.js";
 import { newId } from "./util/id.js";
@@ -467,16 +469,26 @@ export class Dispatch {
    */
   private readonly testingEnabledOverride: boolean | undefined;
 
+  /**
+   * H2 human-gate notifier — the opt-in seam that pings the operator when a
+   * ticket needs them (enters `in_review`, is parked/`blocked`, or a decision
+   * becomes pending). Injectable via the constructor option so tests can pass a
+   * fake; defaults to the env-built notifier (a no-op when nothing is
+   * configured). Every emit is best-effort and non-blocking — see {@link emitGate}.
+   */
+  private readonly notifier: Notifier;
+
   constructor(
     db: Db,
     readonly clock: Clock = systemClock,
     gitRunner?: GitRunner,
-    options: { maxAttempts?: number; testingEnabled?: boolean } = {},
+    options: { maxAttempts?: number; testingEnabled?: boolean; notifier?: Notifier } = {},
   ) {
     this.db = db;
     this.gitRunner = gitRunner;
     this.maxAttempts = options.maxAttempts ?? resolveMaxAttempts();
     this.testingEnabledOverride = options.testingEnabled;
+    this.notifier = options.notifier ?? buildNotifierFromEnv();
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
     this.repos = new RepoRepository(db);
@@ -506,7 +518,7 @@ export class Dispatch {
     path: string,
     clock: Clock = systemClock,
     gitRunner?: GitRunner,
-    options: { maxAttempts?: number; testingEnabled?: boolean } = {},
+    options: { maxAttempts?: number; testingEnabled?: boolean; notifier?: Notifier } = {},
   ): Dispatch {
     return new Dispatch(openDatabase(path), clock, gitRunner, options);
   }
@@ -1784,8 +1796,8 @@ export class Dispatch {
     actor: Actor,
   ): Decision {
     const now = this.clock.now();
-    return inTransaction(this.db, () => {
-      const decision: Decision = {
+    const decision = inTransaction(this.db, () => {
+      const created: Decision = {
         id: newId(),
         title: input.title,
         question: input.question,
@@ -1803,19 +1815,23 @@ export class Dispatch {
         created_at: now,
         updated_at: now,
       };
-      this.decisions.insert(decision);
+      this.decisions.insert(created);
       if (input.ticketId) {
-        this.decisions.link(input.ticketId, decision.id, "blocks", now);
+        this.decisions.link(input.ticketId, created.id, "blocks", now);
       }
       writeEvent(this.db, {
         entity_type: "decision",
-        entity_id: decision.id,
+        entity_id: created.id,
         actor,
         event_type: "decision.created",
-        payload: { title: decision.title, severity: decision.severity },
+        payload: { title: created.title, severity: created.severity },
       });
-      return decision;
+      return created;
     });
+    // H2: a freshly raised decision is a human gate (clarification/decision pending
+    // a human answer). Emit after the transaction commits, best-effort.
+    this.emitDecisionGate(decision);
+    return decision;
   }
 
   listPendingDecisions(): Decision[] {
@@ -2360,7 +2376,10 @@ export class Dispatch {
     actor: Actor,
     reason?: string,
   ): TransitionResult {
-    return inTransaction(this.db, () => {
+    // Capture whether the reject ended up PARKING the ticket (retry cap reached),
+    // so we can fire the H2 park notification AFTER the transaction commits.
+    let parked: { attempt: number; requestedTarget: string; reason: string } | null = null;
+    const result = inTransaction(this.db, () => {
       const ticket = this.resolveTicket(ticketRef);
       if (ticket.status !== "in_review" && ticket.status !== "ready_for_merge") {
         throw new DispatchError(
@@ -2408,6 +2427,7 @@ export class Dispatch {
             reason: resolvedReason,
           },
         });
+        parked = { attempt: nextAttempt, requestedTarget: to, reason: resolvedReason };
       }
       this.resetAcceptanceCriteria(ticket.id, actor);
       // WG-049: persist the rejection feedback on the ticket so the re-claiming
@@ -2421,6 +2441,17 @@ export class Dispatch {
       this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
       return result;
     });
+    // H2: a parked ticket (retry budget exhausted) now needs a human. Emit after
+    // the transaction commits, best-effort. A plain reject back into the queue is
+    // NOT a human gate, so only the park fires a notification.
+    if (parked !== null) {
+      const p: { attempt: number; requestedTarget: string; reason: string } = parked;
+      this.emitGate("ticket_parked", result.ticket, {
+        status: "blocked",
+        detail: `retry cap reached (attempt ${p.attempt}/${this.maxAttempts}): ${p.reason}`,
+      });
+    }
+    return result;
   }
 
   /**
@@ -2765,11 +2796,24 @@ export class Dispatch {
   }
 
   submitForReview(input: SubmitForReviewInput, actor: Actor): { status: string; eventId: string } {
-    return this.claims.submitForReview(input, actor);
+    const result = this.claims.submitForReview(input, actor);
+    // H2: the ticket has reached `in_review` and now needs a human reviewer. Fire
+    // AFTER the claim transaction commits so the notification can never roll the
+    // transition back; best-effort inside emitGate.
+    if (result.status === "in_review") {
+      const ticket = this.tickets.findById(input.ticket_id);
+      if (ticket) this.emitGate("review_needed", ticket, { detail: input.reason });
+    }
+    return result;
   }
 
   markBlocked(input: MarkBlockedInput, actor: Actor): { eventId: string } {
-    return this.claims.markBlocked(input, actor);
+    const result = this.claims.markBlocked(input, actor);
+    // H2: the ticket is now `blocked` and needs a human to unblock it. Emit after
+    // the block transaction commits, best-effort.
+    const ticket = this.tickets.findById(input.ticket_id);
+    if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+    return result;
   }
 
   releaseClaim(claimToken: string, actor: Actor): void {
@@ -2933,6 +2977,86 @@ export class Dispatch {
       });
       return { evidenceId, eventId };
     });
+  }
+
+  // --- H2 human-gate notifications -----------------------------------------
+
+  /**
+   * Fire a human-gate notification, best-effort. Called AFTER the triggering
+   * transaction has committed (the transition is already durable), so the emit
+   * can never roll the transition back. The {@link Notifier} itself swallows any
+   * sink failure with a log, but we also guard the event-building here so a stray
+   * read error (e.g. resolving the repo name) can never bubble into the caller.
+   *
+   * When nothing is configured the notifier is a no-op and `enabled` is false, so
+   * we skip building the event entirely (zero overhead on the hot path).
+   */
+  private emitGate(
+    kind: NotifyKind,
+    ticket: Ticket,
+    extra: { detail?: string | undefined; status?: string | undefined } = {},
+  ): void {
+    if (!this.notifier.enabled) return;
+    try {
+      this.notifier.notify(this.buildTicketEvent(kind, ticket, extra));
+    } catch {
+      // Defence in depth: the notifier is contracted not to throw, but a bug in
+      // event-building must never break a transition. Swallow — the gate already
+      // committed and the dashboard remains the source of truth.
+    }
+  }
+
+  /** Fire a decision-pending gate for a raised decision, best-effort. */
+  private emitDecisionGate(decision: Decision): void {
+    if (!this.notifier.enabled) return;
+    try {
+      this.notifier.notify({
+        kind: "decision_pending",
+        title: decision.title,
+        status: decision.status,
+        at: this.clock.now(),
+        ...(decision.question ? { detail: decision.question } : {}),
+      });
+    } catch {
+      // See emitGate — never let a notification break the caller.
+    }
+  }
+
+  /** Build the structured {@link NotifyEvent} for a ticket-scoped gate. */
+  private buildTicketEvent(
+    kind: NotifyKind,
+    ticket: Ticket,
+    extra: { detail?: string | undefined; status?: string | undefined },
+  ): NotifyEvent {
+    const repo = this.primaryRepoName(ticket.id);
+    const url = this.ticketUrl(ticket);
+    return {
+      kind,
+      title: ticket.title,
+      status: extra.status ?? ticket.status,
+      at: this.clock.now(),
+      ...(ticket.number !== null ? { ticket_number: ticket.number } : {}),
+      ...(repo !== undefined ? { repo } : {}),
+      ...(url !== undefined ? { url } : {}),
+      ...(extra.detail !== undefined ? { detail: extra.detail } : {}),
+    };
+  }
+
+  /** Best-effort primary/first repo name for a ticket, or undefined. */
+  private primaryRepoName(ticketId: string): string | undefined {
+    const links = this.repos.accessLinksForTicket(ticketId);
+    return links[0]?.name;
+  }
+
+  /**
+   * Build a clickable dashboard link for a ticket when `GAFFER_DASHBOARD_URL` is
+   * set, so the operator can jump straight to it. Optional — undefined when the
+   * base is unconfigured.
+   */
+  private ticketUrl(ticket: Ticket): string | undefined {
+    const base = (process.env.GAFFER_DASHBOARD_URL ?? "").trim();
+    if (base === "" || ticket.number === null) return undefined;
+    return `${base.replace(/\/+$/, "")}/tickets/${ticket.number}`;
   }
 
   // --- Reads ---------------------------------------------------------------

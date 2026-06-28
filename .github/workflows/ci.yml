@@ -75,6 +75,13 @@ jobs:
       - name: Test (packages)
         run: pnpm -r test
 
+      # Coverage gate: re-runs the suites with v8 coverage and enforces the
+      # per-package floor (thresholds live in each packages/*/vitest.config.ts).
+      # A drop below the floor fails the job. Runs after the plain test step so a
+      # coverage-provider hiccup is distinguishable from a real test failure.
+      - name: Coverage (floor gate)
+        run: pnpm -r test:coverage
+
       # Each runner test runs under a per-test wall-clock cap (perl alarm — portable
       # across the ubuntu + macOS runners; GNU `timeout` isn't on macOS). A hung test
       # is killed and reported as a failure (exit 124) instead of stalling the job.

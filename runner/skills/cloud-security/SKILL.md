@@ -2,7 +2,7 @@
 name: cloud-security
 description: Use when assessing cloud infrastructure for security misconfigurations, IAM privilege-escalation paths, S3 public exposure, open security-group rules, or IaC security gaps. Covers AWS, Azure, and GCP posture. For active cloud compromise, use `incident-response`. For behavioural anomalies, use `threat-detection`.
 stack: []
-area: security
+area: infra
 ---
 
 # Assess cloud posture before attackers do

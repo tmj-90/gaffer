@@ -32,6 +32,32 @@ ready, a tick first runs the **clarify intake gate** (auto-clarifies an ambiguou
 draft so it can't reach `ready` while load-bearing ambiguity remains), then idle
 ticks scan the repos and draft new tickets.
 
+### Idle maintenance lane (opt-in, deterministically prioritised)
+
+When there are no claimable tickets, the factory can do maintenance work instead
+of just polling. Set `GAFFER_MAINTENANCE=1` (OFF by default to respect token
+cost) and a quiet tick runs **one** maintenance loop chosen by a **deterministic
+priority + rotation scheduler — no LLM in the choice** (`fg maintain`):
+
+- **Priority order:** `security_hotspot` → `coverage` / `test_quality` →
+  `type_quality` / `tech_debt` → `documentation` / `dependency_hygiene`. Security
+  findings are always reached first.
+- **Rotation:** a persisted cursor (`$GAFFER_DATA/maintenance-cursor.json`) means
+  a high-priority lane can't starve the lower ones and the same lane isn't picked
+  on consecutive idle ticks. The cadence survives across ticks and processes.
+- **Which lanes rotate:** only the idle loops you have enabled in `crew.yaml`
+  (each loop's own `enabled` flag); `loops.maintenance` only gates the lane
+  itself. The chosen lane + rationale are logged every tick (`maintenance lane
+  chose '<lane>' (<reason>)`).
+- **Observation only:** like every idle loop, the chosen lane drafts tickets and
+  never edits code. The deepened `security_hotspot` lane runs three distinct
+  lenses (`security-secret-handling`, `security-input-validation`,
+  `security-authz`) and an adversarial default-refute verify pass before filing,
+  to cut false positives.
+
+Deferred (follow-up): dedicating a fraction of the A1 concurrency pool to the
+maintenance lane so it runs alongside delivery rather than only on idle ticks.
+
 ## The two MCP servers (the async delivery plane)
 - **Dispatch** — backlog/work control plane. Atomic claims/leases, evidence,
   append-only events; tools: `claim_next_ticket`, `get_ticket`, `record_ac_evidence`,

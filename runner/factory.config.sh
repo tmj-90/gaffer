@@ -123,7 +123,29 @@ gaffer_timeout() {
   fi
   if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
   if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
-  "$@"   # no timeout primitive available — run unbounded (best-effort)
+  # FAIL CLOSED (R-10): no timeout primitive (perl / timeout / gtimeout) is
+  # available. Running the command unbounded here is the denial-of-wallet hole —
+  # a runaway `claude -p` could burn unbounded wall-clock and tokens. Refuse to
+  # run the command, emit a clear setup error, and return 127 so every caller
+  # treats it as a fatal setup fault (see gaffer_timeout_preflight, which aborts
+  # the run up front rather than relying on each call site to notice).
+  echo "gaffer_timeout: FATAL — no timeout primitive (perl, timeout, or gtimeout) found; refusing to run '$1' unbounded. Install perl or coreutils." >&2
+  return 127
+}
+
+# Preflight (R-10): assert a timeout primitive exists BEFORE any agent call.
+# gaffer_timeout fails closed (returns 127) when none is present, but a runaway
+# call should never even be attempted — so callers (loop.sh, tick.sh) run this
+# once at startup and ABORT the whole run with a setup error if it fails. Returns
+# 0 when a primitive is available, 127 (with a stderr message) when not.
+gaffer_timeout_preflight() {
+  if command -v perl >/dev/null 2>&1 \
+    || command -v timeout >/dev/null 2>&1 \
+    || command -v gtimeout >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "gaffer: FATAL SETUP ERROR — no wall-clock timeout primitive available (need perl, timeout, or gtimeout). Refusing to start: agent calls cannot be bounded and could run away. Install perl or GNU coreutils." >&2
+  return 127
 }
 
 # --- Agent child-env scrub (C1/M2) -------------------------------------------

@@ -49,8 +49,11 @@
 //   merged:    { "phase":"merged", ticket, repo, branch, defaultBranch, digest }
 //              — the merge landed cleanly. `digest` reports the POST-REVIEW,
 //                DETERMINISTIC (no-agent) Repo-Digest refresh + feature→shipped:
-//                { applied, prepared, jobs:[{kind,ok}] } — see applyDigestAndFeature.
+//                { applied, prepared, jobs:[{kind,ok}], error? } — see applyDigestAndFeature.
 //                It is best-effort + fully swallowed: it can never fail the merge.
+//                When it FAILS, `applied:false` + `error` are carried here AND a
+//                prominent WARNING is logged (R-3), so a stale digest / a feature
+//                stuck at `building` is VISIBLE rather than silently swallowed.
 //   conflict_resolved_pending_reapproval:
 //              { "phase":"conflict_resolved_pending_reapproval", ticket, repo, branch,
 //                defaultBranch, reapproval:{...} }
@@ -452,6 +455,47 @@ export function applyDigestAndFeature({ ticketNumber, repo, featureId } = {}) {
 }
 
 /**
+ * R-3: turn the applyDigestAndFeature() result into the single post-merge log line.
+ * Pure (no I/O) so the merge path AND the tests share one decision:
+ *   • applied            → an INFO line summarising the jobs that ran;
+ *   • skipped (off-switch)→ an INFO line noting the deliberate skip;
+ *   • applied:false       → a prominent WARNING (level "warning"). The apply threw,
+ *                           so the feature can be stuck at `building` and the Repo
+ *                           Digest has SILENTLY drifted while the merge still landed.
+ *                           The emitted merge JSON also carries digest.applied:false
+ *                           (+ digest.error) so the dashboard/operator can flag it.
+ * Returns `{ level, message }`, or null when there's nothing to log.
+ */
+export function formatDigestApplyLog(digest, ticketNumber) {
+  if (!digest || typeof digest !== "object") return null;
+  if (digest.applied) {
+    const jobs =
+      (Array.isArray(digest.jobs) &&
+        digest.jobs.map((j) => `${j.kind}:${j.ok ? "ok" : "skip"}`).join(", ")) ||
+      "no-op";
+    return {
+      level: "info",
+      message:
+        `digest/feature: ${digest.prepared ? "applied prepared delta" : "minimal stamp (no prepared delta)"} ` +
+        `for #${ticketNumber} [${jobs}]`,
+    };
+  }
+  if (digest.skipped) {
+    return {
+      level: "info",
+      message: `digest/feature: skipped for #${ticketNumber} (${digest.skipped})`,
+    };
+  }
+  return {
+    level: "warning",
+    message:
+      `WARNING: #${ticketNumber} merged but digest/feature apply FAILED ` +
+      `(${digest.error ?? "unknown error"}) — Repo Digest is now STALE and the ` +
+      `feature may be stuck at 'building'; re-run the digest apply manually`,
+  };
+}
+
+/**
  * Create a throwaway worktree on the conflicting delivery branch so the resolver works
  * in isolation (the real checkout is left on the default branch). Returns the worktree
  * path, or throws on failure.
@@ -614,12 +658,8 @@ function main() {
     // (or fall back to a minimal stamp). Best-effort + fully swallowed: this can
     // NEVER fail or un-land the merge that already happened above.
     const digest = applyDigestAndFeature({ ticketNumber: resolved.number, repo: repo.name });
-    if (digest.applied) {
-      log(
-        `digest/feature: ${digest.prepared ? "applied prepared delta" : "minimal stamp (no prepared delta)"} ` +
-          `for #${resolved.number} [${digest.jobs.map((j) => `${j.kind}:${j.ok ? "ok" : "skip"}`).join(", ") || "no-op"}]`,
-      );
-    }
+    const digestLog = formatDigestApplyLog(digest, resolved.number);
+    if (digestLog) log(digestLog.message);
     // Clean up the now-merged delivery branch so they don't pile up. `-d` is safe:
     // it only deletes a branch fully merged into the current HEAD (the default branch
     // we just merged into), so an unmerged branch is never lost.

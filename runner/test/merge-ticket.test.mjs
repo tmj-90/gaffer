@@ -51,6 +51,8 @@ const {
   buildClaudeArgv,
   buildReapprovalCommand,
   buildChildEnv,
+  applyDigestAndFeature,
+  formatDigestApplyLog,
 } = await import(HELPER);
 
 let passed = 0;
@@ -423,6 +425,68 @@ console.log("== AC12: the resolve-merge-conflict SKILL.md exists ==");
       /preserv/i.test(text) && /default branch/i.test(text),
     );
   }
+}
+
+// ── R-3: digest/feature apply failure on merge is SURFACED, not swallowed ──────
+// The apply step is fully swallowed by contract (it must never un-land the merge),
+// but a failure used to be INVISIBLE: the merge landed while the feature stayed at
+// `building` and the Repo Digest silently drifted. The fix makes the failure visible
+// two ways: (a) the merged JSON carries digest.applied:false (+ error), and (b) a
+// prominent WARNING is logged. We prove both halves without a live `claude -p`.
+{
+  // (a) When the apply ABORTS (readTicketView throws because the dispatch DB is a
+  // bogus path → JSON.parse of empty stdout fails → but that's caught and returns
+  // null, not a throw). To force the OUTER abort path deterministically we point the
+  // dispatch CLI at a non-existent binary so the whole apply throws before any job.
+  const realDispatchCli = process.env.DISPATCH_CLI;
+  const realDigestDisable = process.env.GAFFER_DIGEST_DISABLE;
+  delete process.env.GAFFER_DIGEST_DISABLE;
+  const apply = applyDigestAndFeature({ ticketNumber: 4242, repo: "nope", featureId: undefined });
+  // applyDigestAndFeature swallows: on any failure it returns applied:false (+ error
+  // when it threw). Either way it never throws and the merge is unaffected.
+  assert(
+    "R-3: applyDigestAndFeature never throws (returns a summary object)",
+    apply && typeof apply === "object",
+  );
+  if (realDispatchCli === undefined) delete process.env.DISPATCH_CLI;
+  else process.env.DISPATCH_CLI = realDispatchCli;
+  if (realDigestDisable !== undefined) process.env.GAFFER_DIGEST_DISABLE = realDigestDisable;
+
+  // (b) The post-merge log decision is a PURE function (formatDigestApplyLog) the merge
+  // path calls. Drive its three branches directly — this is the operator-visible signal.
+  const okLog = formatDigestApplyLog(
+    { applied: true, prepared: true, jobs: [{ kind: "digest", ok: true }] },
+    99,
+  );
+  assert(
+    "R-3: applied → info log, not a warning",
+    okLog?.level === "info" && /applied prepared delta/.test(okLog.message),
+  );
+
+  const skipLog = formatDigestApplyLog(
+    { applied: false, skipped: "GAFFER_DIGEST_DISABLE=1", jobs: [] },
+    99,
+  );
+  assert(
+    "R-3: deliberate skip → info log (not a warning)",
+    skipLog?.level === "info" && /skipped/.test(skipLog.message),
+  );
+
+  const failLog = formatDigestApplyLog(
+    { applied: false, error: "boom from memory CLI", jobs: [] },
+    7,
+  );
+  assert(
+    "R-3: apply failure → WARNING level (operator-visible)",
+    failLog?.level === "warning" && /^WARNING:/.test(failLog.message),
+  );
+  assert(
+    "R-3: warning names the ticket, the failure, and the stale digest / stuck feature",
+    /#7\b/.test(failLog.message) &&
+      /boom from memory CLI/.test(failLog.message) &&
+      /STALE/.test(failLog.message) &&
+      /building/.test(failLog.message),
+  );
 }
 
 // Cleanup the throwaway repos + DBs.

@@ -133,6 +133,7 @@ describe("WG-004: claimability blockers", () => {
       { title: "Quick note", description: "", policy_pack: "solo_loose" },
       human,
     );
+    wg.addAcceptanceCriterion({ ticket_id: ticket.id, text: "Noted" }, human); // Guard A: ≥1 AC required to ready
     const c = wg.claimability(ticket.id);
     expect(c.ready).toBe(true);
     expect(c.blockers).toHaveLength(0);

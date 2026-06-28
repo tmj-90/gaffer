@@ -19,6 +19,7 @@ function freshWg(clock = new TestClock()): Dispatch {
 /** Create a ready (claimable) ticket; returns its id. */
 function readyTicket(wg: Dispatch, title = "Task"): string {
   const t = wg.createTicket({ title, policy_pack: "solo_loose", risk_level: "low" }, human);
+  wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
   wg.markReady(t.id, human);
   return t.id;
 }
@@ -169,6 +170,7 @@ describe("EP-001: dependency-aware claimability", () => {
       { title: "dependent-hi", policy_pack: "solo_loose", risk_level: "low", priority: 100 },
       human,
     );
+    wg.addAcceptanceCriterion({ ticket_id: dependentHi.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     wg.markReady(dependentHi.id, human);
     wg.addDependency({ ticket: dependentHi.id, depends_on: blocker }, human);
 
@@ -329,6 +331,8 @@ describe("EP-001: create_epic", () => {
     );
     const [p0, p1] = res.ticketNumbers.map((n) => wg.resolveTicket(`#${n}`));
     // Ready both, then confirm p1 is gated until p0 is done.
+    wg.addAcceptanceCriterion({ ticket_id: p0!.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
+    wg.addAcceptanceCriterion({ ticket_id: p1!.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     wg.markReady(p0!.id, human);
     wg.markReady(p1!.id, human);
 

@@ -93,8 +93,16 @@ describe("RealDispatchClient (parallel-build guard)", () => {
   });
 
   it("round-trips claimTicket + recordDeliveryArtifact against the real package", async () => {
-    const client = await RealDispatchClient.open(":memory:");
+    // fromFacade(Dispatch.open) so we hold the facade handle and can satisfy
+    // Guard A (≥1 acceptance criterion required before `ready`). The .open()
+    // path itself is covered by the "view + status round-trip" test above.
+    const human = { type: "human", id: "tester" } as const;
+    const wg = Dispatch.open(":memory:");
+    const client = RealDispatchClient.fromFacade(
+      wg as unknown as Parameters<typeof RealDispatchClient.fromFacade>[0],
+    );
     const draft = client.createDraftTicket({ title: "Deliver me", description: "x" });
+    wg.addAcceptanceCriterion({ ticket_id: draft.ticketId, text: "Delivered on a branch" }, human);
     client.markTicketReady(draft.ticketId);
     const agent = client.registerAgent({ capabilities: ["impl"], maxRisk: "high" });
 
@@ -320,9 +328,16 @@ describe("RealDispatchClient (parallel-build guard)", () => {
   });
 
   it("maps markTicketReady onto the facade markReady", async () => {
-    const client = await RealDispatchClient.open(":memory:");
+    // fromFacade(Dispatch.open) so we can add the AC Guard A now requires before
+    // `ready`. markTicketReady → facade.markReady is still exactly what's exercised.
+    const human = { type: "human", id: "tester" } as const;
+    const wg = Dispatch.open(":memory:");
+    const client = RealDispatchClient.fromFacade(
+      wg as unknown as Parameters<typeof RealDispatchClient.fromFacade>[0],
+    );
     const draft = client.createDraftTicket({ title: "Ready me", description: "idle draft" });
     expect(client.getTicket(draft.ticketId).ticket.status).toBe("draft");
+    wg.addAcceptanceCriterion({ ticket_id: draft.ticketId, text: "Readiness AC" }, human);
     client.markTicketReady(draft.ticketId);
     expect(client.getTicket(draft.ticketId).ticket.status).toBe("ready");
   });

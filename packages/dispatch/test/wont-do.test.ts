@@ -95,6 +95,7 @@ describe("won't do — core capability", () => {
       { title: "Build", description: "do it", policy_pack: "solo_loose" },
       human,
     );
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     wg.markReady(t.id, human);
     const agent = wg.registerAgent({ display_name: "a" }, human);
     wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, agentActor);

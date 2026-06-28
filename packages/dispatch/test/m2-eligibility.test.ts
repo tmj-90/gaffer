@@ -20,6 +20,7 @@ function readyTicket(
   title = "Task",
 ): string {
   const t = wg.createTicket({ title, policy_pack: "solo_loose", risk_level: risk }, human);
+  wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
   wg.markReady(t.id, human);
   return t.id;
 }
@@ -64,6 +65,7 @@ describe("P0-1: risk-level eligibility", () => {
       },
       human,
     );
+    wg.addAcceptanceCriterion({ ticket_id: highRisk.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     wg.markReady(highRisk.id, human);
     const lowRisk = readyTicket(wg, "low", "ok-for-agent");
 

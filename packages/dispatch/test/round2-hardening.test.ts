@@ -23,6 +23,7 @@ function readyTicket(
     { title: opts.title ?? "Task", policy_pack: "solo_loose", risk_level: opts.risk ?? "low" },
     human,
   );
+  wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
   wg.markReady(t.id, human);
   return t.id;
 }
@@ -125,6 +126,7 @@ describe("claimTicket (claim a chosen ticket)", () => {
       { title: "high", policy_pack: "solo_loose", risk_level: "low", priority: 100 },
       human,
     );
+    wg.addAcceptanceCriterion({ ticket_id: high.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     wg.markReady(high.id, human);
     const chosen = readyTicket(wg, { title: "chosen" });
     const agent = wg.registerAgent({ display_name: "a" }, human);

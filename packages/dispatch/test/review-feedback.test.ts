@@ -100,6 +100,8 @@ describe("WG-049: review-rejection feedback", () => {
 
     // A never-rejected ticket: claim result carries null.
     const fresh = structured(h.create_ticket({ title: "fresh", policy_pack: "solo_loose" }));
+    // Guard A: ≥1 AC required to ready
+    h.add_acceptance_criterion({ ticket_id: fresh.ticket_id as string, text: "Returns 200" });
     h.mark_ticket_ready({ ticket_id: fresh.ticket_id as string });
     const agent = wg.registerAgent({ display_name: "a" }, human);
     const cleanClaim = structured(h.claim_next_ticket({ agent_id: agent.id, ttl_seconds: 600 }));

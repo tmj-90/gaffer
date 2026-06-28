@@ -1067,11 +1067,12 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, ticketsRes, decisionsRes] = await Promise.all([
+  const [{ summary }, activity, ticketsRes, decisionsRes, costRes] = await Promise.all([
     api("GET", "/api/dashboard"),
     api("GET", "/api/activity?limit=200"),
     api("GET", "/tickets").catch(() => ({ tickets: [] })),
     api("GET", "/decisions").catch(() => ({ decisions: [] })),
+    api("GET", "/api/cost").catch(() => null),
   ]);
 
   const byStatus = summary.ticketsByStatus || {};
@@ -1220,6 +1221,31 @@ async function renderOverview() {
       }),
     ]),
   );
+
+  // --- Cost banner (H1) -------------------------------------------------------
+  // One small row: total spend all-time + today. Reads from /api/cost which
+  // reads the usage-ledger. Hidden when the ledger is absent / not configured.
+  if (costRes && (costRes.total_usd > 0 || costRes.today_usd > 0 || costRes.ticket_count > 0)) {
+    const fmtUsd = (v) => (typeof v === "number" ? `$${v.toFixed(4)}` : "—");
+    wrap.appendChild(
+      el("div", { class: "cost-banner" }, [
+        el("span", { class: "cost-item" }, [
+          el("span", { class: "cost-label" }, "All-time spend"),
+          el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
+        ]),
+        el("span", { class: "cost-sep" }, "·"),
+        el("span", { class: "cost-item" }, [
+          el("span", { class: "cost-label" }, "Today"),
+          el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
+        ]),
+        el("span", { class: "cost-sep" }, "·"),
+        el("span", { class: "cost-item" }, [
+          el("span", { class: "cost-label" }, "Tickets costed"),
+          el("span", { class: "cost-val tabnum" }, String(costRes.ticket_count)),
+        ]),
+      ]),
+    );
+  }
 
   // --- Development flow + Needs your attention (2-up) -----------------------
   wrap.appendChild(

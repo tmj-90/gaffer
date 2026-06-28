@@ -25,7 +25,7 @@ export {
   type NotifyLogger,
   type NotifySink,
 } from "./types.js";
-export { CompositeNotifier, NOOP_NOTIFIER } from "./notifier.js";
+export { CompositeNotifier, NOOP_NOTIFIER, redactEvent } from "./notifier.js";
 export {
   buildNotifierFromEnv,
   parseAllowedEvents,

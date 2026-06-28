@@ -75,6 +75,20 @@ _gaffer_append_line() { echo "$2" >> "$1"; }
 # Locked backpressure-report append: _gaffer_bp_record <file> <repo> <triple> <reason>.
 _gaffer_bp_record() { printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$1"; }
 result() { echo "TICK_RESULT=$1"; }
+# Derive an opt-in `--area` from the repo stack label where it is UNAMBIGUOUS, so
+# the area-only packs that select-skills now gates (FIX-2) still fire when the
+# stack clearly implies a domain. Today only the web/front-end family is safe to
+# auto-derive: a react/web/frontend stack → `area=frontend` (so frontend-a11y /
+# frontend-component / frontend-responsive / brand fire). Every other stack maps
+# to no area (the marketing/product/docs packs stay opt-in for a future
+# ticket-type that sets the area explicitly). Echoes the area or nothing.
+gaffer_area_for_stack() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    *react-native*|*expo*) ;; # mobile RN — frontend-design/mobile-ui already route by stack; no area
+    *react*|*frontend*|*web*) printf 'frontend' ;;
+    *) ;;
+  esac
+}
 # gaffer_quarantine + QUARANTINE_NOTICE are provided by lib/quarantine.sh (sourced
 # via factory.config.sh) — they wrap UNTRUSTED ticket-derived fields (title,
 # review feedback) in a delimited envelope before they reach the agent prompt.
@@ -211,7 +225,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
 
     # Recommended skills for the bootstrap: prefer plan-build's sibling builders,
     # but always include the scaffolder hint. (Same selector as normal delivery.)
-    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+    # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
+    # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
+    B_AREA="$(gaffer_area_for_stack "$STACK")"
+    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${B_AREA:+--area "$B_AREA"} --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
     [ -n "$B_SKILLS" ] || B_SKILLS="(scaffold the stack from the ticket's ACs)"
 
     if [ "$DRY_RUN" = "1" ]; then
@@ -475,7 +492,10 @@ print("\n".join(write_rows))
   # one actually mounted into the repo). Fall back to the Crew registry,
   # then to a generic instruction. Both selectors share the same matching rule:
   # an empty stack/area constraint means "no constraint".
-  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+  # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
+  # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
+  SKILL_AREA="$(gaffer_area_for_stack "$STACK")"
+  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${SKILL_AREA:+--area "$SKILL_AREA"} --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
   [ -n "$SKILLS" ] || SKILLS="$(fg skills --stack "$STACK" 2>/dev/null | jget "', '.join(s.get('id', s.get('name','')) for s in (d if isinstance(d,list) else d.get('skills',[])))" 2>/dev/null || true)"
   [ -n "$SKILLS" ] || SKILLS="(choose the skill whose description matches the ticket)"
 

@@ -8,6 +8,7 @@ import {
   selectSkills,
   loadSkills,
   listAreas,
+  expandStacks,
   DEFAULT_SKILLS_DIR,
 } from "../bin/select-skills.mjs";
 
@@ -174,6 +175,74 @@ check("stack + area compose", () => {
     ["security-authz", "security-input-validation", "security-secret-handling"],
     "node+security",
   );
+});
+
+// --- expandStacks (mirror the Crew registry compound expansion) -------------
+check("expandStacks splits a compound label into parts plus the whole", () => {
+  eq(
+    expandStacks(["typescript-react"]).sort(),
+    ["react", "typescript", "typescript-react"],
+    "typescript-react expands to its parts + whole",
+  );
+  eq(
+    expandStacks(["typescript-react-native-expo"]).sort(),
+    ["expo", "native", "react", "typescript", "typescript-react-native-expo"],
+    "RN+expo label expands to expo/native/react/typescript + whole",
+  );
+  eq(expandStacks(["java"]).sort(), ["java"], "a bare label expands to itself");
+  eq(expandStacks([]), [], "no stacks → no constraint");
+});
+
+// --- per-stack conventions/design packs route correctly ---------------------
+const conv = (stack) =>
+  selectSkills({ stacks: [stack] })
+    .map((s) => s.name)
+    .filter((n) => /-conventions$|^frontend-design$|^mobile-ui$/.test(n))
+    .sort();
+
+check("java stack recommends java-conventions and no other language pack", () => {
+  const names = conv("java");
+  assert(names.includes("java-conventions"), "java → java-conventions");
+  assert(!names.includes("python-conventions"), "java must not pull python-conventions");
+  assert(!names.includes("go-conventions"), "java must not pull go-conventions");
+  assert(!names.includes("typescript-conventions"), "java must not pull typescript-conventions");
+});
+
+check("go stack recommends go-conventions and excludes the others", () => {
+  const names = conv("go");
+  assert(names.includes("go-conventions"), "go → go-conventions");
+  assert(!names.includes("java-conventions"), "go must not pull java-conventions");
+  assert(!names.includes("python-conventions"), "go must not pull python-conventions");
+});
+
+check("python stack recommends python-conventions and excludes the others", () => {
+  const names = conv("python");
+  assert(names.includes("python-conventions"), "python → python-conventions");
+  assert(!names.includes("java-conventions"), "python must not pull java-conventions");
+  assert(!names.includes("go-conventions"), "python must not pull go-conventions");
+});
+
+check("plain node stack recommends typescript-conventions but NOT frontend-design", () => {
+  const names = conv("node");
+  assert(names.includes("typescript-conventions"), "node → typescript-conventions");
+  assert(!names.includes("frontend-design"), "plain node (no react) must not pull frontend-design");
+  assert(!names.includes("mobile-ui"), "plain node must not pull mobile-ui");
+});
+
+check("compound typescript-react routes the TS + frontend-design packs (web, not mobile)", () => {
+  const names = conv("typescript-react");
+  assert(names.includes("typescript-conventions"), "typescript-react → typescript-conventions");
+  assert(names.includes("frontend-design"), "typescript-react → frontend-design");
+  assert(!names.includes("mobile-ui"), "a web react app must NOT pull the mobile pack");
+});
+
+check("react-native / expo labels route the mobile pack (and not from plain web react)", () => {
+  for (const label of ["typescript-react-native", "typescript-react-native-expo"]) {
+    const names = conv(label);
+    assert(names.includes("mobile-ui"), `${label} → mobile-ui`);
+    assert(names.includes("frontend-design"), `${label} → frontend-design`);
+    assert(names.includes("typescript-conventions"), `${label} → typescript-conventions`);
+  }
 });
 
 // --- report -----------------------------------------------------------------

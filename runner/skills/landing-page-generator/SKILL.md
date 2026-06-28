@@ -1,7 +1,7 @@
 ---
 name: landing-page-generator
 description: Use when asked to create a landing page, marketing page, homepage, lead-capture page, campaign page, or conversion-optimised web page. Outputs complete Next.js/React (TSX) + Tailwind CSS components with proven copy frameworks (PAS/AIDA/BAB), SEO meta tags, and Core Web Vitals targets. Triggers on "create a landing page", "marketing page", "homepage", "lead gen page", or "conversion page".
-stack: [typescript, javascript, react, web]
+stack: []
 area: marketing
 ---
 

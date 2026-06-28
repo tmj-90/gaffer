@@ -67,6 +67,28 @@ function parseInlineList(value) {
     .filter((item) => item.length > 0);
 }
 
+/**
+ * Expand a compound stack label into the token set the registry matches on. A label
+ * like "typescript-react-native-expo" expands to its parts plus the whole
+ * ("typescript-react-native-expo", "typescript", "react", "native", "expo") so a skill
+ * tagged with either the broad or the specific stack still matches. Mirrors the Crew
+ * context packet's `ticketStacks` expansion EXACTLY so the runner CLI path (tick.sh,
+ * which passes the raw repo stack label) and the registry path agree. De-duped, order
+ * preserved (whole label first).
+ */
+export function expandStacks(stacks = []) {
+  const out = new Set();
+  for (const raw of stacks) {
+    const normalised = String(raw ?? "")
+      .toLowerCase()
+      .trim();
+    if (!normalised) continue;
+    out.add(normalised);
+    for (const part of normalised.split(/[-/]+/).filter(Boolean)) out.add(part);
+  }
+  return [...out];
+}
+
 /** Load every tagged skill from a SKILL.md library directory. */
 export function loadSkills(skillsDir = DEFAULT_SKILLS_DIR) {
   let entries;
@@ -102,9 +124,14 @@ export function skillMatches(skill, { stacks = [], area = "" } = {}) {
   return stackOk && areaOk;
 }
 
-/** Select skills from the library by stack + area. */
+/**
+ * Select skills from the library by stack + area. Compound stack labels (e.g.
+ * "typescript-react") are expanded to their parts before matching so the runner CLI
+ * path agrees with the Crew registry (see {@link expandStacks}).
+ */
 export function selectSkills({ skillsDir = DEFAULT_SKILLS_DIR, stacks = [], area = "" } = {}) {
-  return loadSkills(skillsDir).filter((skill) => skillMatches(skill, { stacks, area }));
+  const expanded = expandStacks(stacks);
+  return loadSkills(skillsDir).filter((skill) => skillMatches(skill, { stacks: expanded, area }));
 }
 
 /** Distinct area packs present in the library, sorted. */

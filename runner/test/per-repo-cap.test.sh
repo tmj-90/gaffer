@@ -3,7 +3,7 @@
 # A-1 — per-repo concurrency cap (MAX_CONCURRENT_TICKETS_PER_REPO).
 # ---------------------------------------------------------------------
 # The per-repo cap is enforced through the existing backpressure "claims"
-# dimension: a repo with N active in-flight (in_progress/claimed) tickets at/over
+# dimension: a repo with N active in-flight (claimed/in_progress) tickets at/over
 # MAX_CONCURRENT_TICKETS_PER_REPO is in BACKPRESSURE, so tick.sh SKIPS new claims
 # for it and a concurrent worker picks a DIFFERENT repo's candidate instead.
 # Dispatch access is stubbed (GAFFER_WG_LIST_CMD / GAFFER_WG_SHOW_CMD) so the
@@ -49,14 +49,18 @@ for R in "$REPOA" "$REPOB"; do
   echo base > "$R/f.txt"; git -C "$R" add -A; git -C "$R" commit -q -m base
 done
 
-# Stub dispatch. repoA has ONE in_progress ticket (#201); repoB has none.
+# Stub dispatch. repoA has ONE in-flight ticket (#201) in the REAL steady-state
+# claim status `claimed` — NOT `in_progress` (a delivery is `claimed` for almost
+# its whole life and only briefly `in_progress` inside submitForReview). Driving
+# the live status here is what makes this test catch a cap that only counted
+# `in_progress`: against such code repoA reads as 0 claims and the cap is inert.
 export GAFFER_WG_LIST_CMD="$WORK/wg_list.sh"
 export GAFFER_WG_SHOW_CMD="$WORK/wg_show.sh"
 cat > "$WORK/wg_list.sh" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
-  in_progress) echo '[{"number":201}]' ;;
-  *)           echo '[]' ;;
+  claimed) echo '[{"number":201}]' ;;
+  *)       echo '[]' ;;
 esac
 EOF
 cat > "$WORK/wg_show.sh" <<EOF

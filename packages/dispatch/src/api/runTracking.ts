@@ -176,6 +176,20 @@ export function spawnTrackedRun(
   } catch (err) {
     try {
       child.kill("SIGTERM");
+      // Give the child a short grace period to honour SIGTERM, then SIGKILL if
+      // still alive so a wedged child can never orphan the control plane.
+      const killGraceMs = 3_000;
+      const killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Already dead or permission error — nothing to do.
+        }
+      }, killGraceMs);
+      // If the process module is available keep the timer from blocking exit.
+      if (typeof killTimer === "object" && killTimer !== null && "unref" in killTimer) {
+        (killTimer as NodeJS.Timeout).unref();
+      }
     } catch {
       // Best-effort: the child may have already exited between spawn and here.
     }

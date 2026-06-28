@@ -204,6 +204,57 @@ describe("RUN-ACTIVITY: spawnTrackedRun records + captures + marks ended", () =>
     expect(openFds.size).toBe(0);
   });
 
+  it("escalates to SIGKILL after grace when SIGTERM does not reap the child", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "wg-rt-kill-"));
+    const env = { ...process.env, GAFFER_DATA: dataDir };
+
+    // A tracker that throws on recordRunStart — this is the fail-closed path that
+    // fires SIGTERM (+ SIGKILL after grace). Use a child that ignores SIGTERM so
+    // only the SIGKILL reaps it.
+    let capturedPid: number | null = null;
+    const failingTracker: RunTracker = {
+      newRunId: () => "kill-grace-run-id",
+      recordRunStart: (input) => {
+        capturedPid = input.pid ?? null;
+        throw new Error("registry write failed (kill-grace test)");
+      },
+      markRunEnd: () => {},
+    };
+
+    // A child that traps and ignores SIGTERM (only SIGKILL can stop it).
+    expect(() =>
+      spawnTrackedRun(
+        {
+          bin: process.execPath,
+          // Node child: catch SIGTERM and do nothing; only SIGKILL terminates.
+          args: ["-e", "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000)"],
+          env,
+          kind: "product_owner",
+          repo: "gaffer",
+        },
+        failingTracker,
+        env,
+      ),
+    ).toThrow(/registry write failed/);
+
+    expect(capturedPid).toBeGreaterThan(0);
+    const pid = capturedPid!;
+
+    // SIGKILL fires after the grace period. Wait up to 6s for the process to die.
+    const deadline = Date.now() + 6_000;
+    let alive = true;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+        await new Promise((r) => setTimeout(r, 100));
+      } catch {
+        alive = false;
+        break;
+      }
+    }
+    expect(alive).toBe(false);
+  }, 10_000);
+
   it("records a failed run and rethrows on a synchronous spawn failure", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "wg-rt-"));
     const env = { ...process.env, GAFFER_DATA: dataDir };

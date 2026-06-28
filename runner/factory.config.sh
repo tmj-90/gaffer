@@ -197,15 +197,36 @@ gaffer_with_lock() {
     return 1
   fi
   # Portable fallback: atomic mkdir spinlock (the macOS path — no flock there).
+  # GUARD: a locked section must finish well WITHIN GAFFER_LOCK_STALE — the
+  # liveness check below means a *live* holder is never reaped, but a section that
+  # outlives both the holder's death AND the staleness window would still be a bug.
   local lockdir="${lockfile}.d"
   local waited=0
   while ! mkdir "$lockdir" 2>/dev/null; do
-    # Reap a stale lock left by a killed holder (older than GAFFER_LOCK_STALE).
-    local age
-    age="$(_gaffer_lock_age "$lockdir")"
-    if [ "${age:-0}" -ge "$GAFFER_LOCK_STALE" ] 2>/dev/null; then
-      rm -rf "$lockdir" 2>/dev/null || true
-      continue
+    # Reap an ABANDONED lock — but only when its holder is provably gone. Staleness
+    # alone (mtime, set once at mkdir and never refreshed) wrongly reaps a live but
+    # slow holder, breaking mutual exclusion. Liveness, by holder PID, is
+    # authoritative:
+    #   • readable PID, still alive (kill -0 ok) → NOT stale, however long held: wait.
+    #   • readable PID, dead                     → reap immediately (holder gone).
+    #   • no readable PID                        → fall back to the mtime-stale check
+    #     (a holder killed before it wrote its pid, or a lost pid file).
+    local pid
+    pid="$(cat "$lockdir/pid" 2>/dev/null)"
+    if [ -n "$pid" ]; then
+      if kill -0 "$pid" 2>/dev/null; then
+        :   # holder is alive — never reap, just wait
+      else
+        rm -rf "$lockdir" 2>/dev/null || true   # holder PID is dead — abandoned
+        continue
+      fi
+    else
+      local age
+      age="$(_gaffer_lock_age "$lockdir")"
+      if [ "${age:-0}" -ge "$GAFFER_LOCK_STALE" ] 2>/dev/null; then
+        rm -rf "$lockdir" 2>/dev/null || true
+        continue
+      fi
     fi
     sleep 0.1
     waited=$((waited + 1))
@@ -214,6 +235,8 @@ gaffer_with_lock() {
       return 1
     fi
   done
+  # Record the holder PID so waiters can tell a live-but-slow holder from a dead one.
+  echo $$ > "$lockdir/pid" 2>/dev/null || true
   # Hold the lock for the duration of the command; always release, even on failure.
   "$@"; local rc=$?
   rmdir "$lockdir" 2>/dev/null || rm -rf "$lockdir" 2>/dev/null || true
@@ -221,6 +244,10 @@ gaffer_with_lock() {
 }
 
 # Seconds since a lock dir was created (its mtime). Portable across GNU/BSD stat.
+# Used only as the FALLBACK staleness signal when a lock has no live holder PID
+# (the live-holder check is authoritative; mtime is the last resort for an
+# abandoned lock left by a killed holder that never wrote — or had its pid file
+# lost).
 _gaffer_lock_age() {
   local d="$1" mtime now
   mtime="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo "")"

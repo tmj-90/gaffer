@@ -101,6 +101,62 @@ else
   fi
 fi
 
+echo "== AC5: a LIVE holder past GAFFER_LOCK_STALE is NOT reaped (mutual exclusion) =="
+# FIX-3 regression: staleness was judged purely by the lock dir's mtime (set once,
+# never refreshed), so a holder that ran longer than GAFFER_LOCK_STALE was wrongly
+# reaped by a waiter → two holders in the section at once. With PID-liveness
+# reaping, a live holder is never reaped however long it holds. Only meaningful on
+# the mkdir fallback (flock self-releases on death, no mtime reaping at all).
+if command -v flock >/dev/null 2>&1; then
+  ok "flock present — live-holder reaping N/A (flock has no mtime-stale path)"
+else
+  export GAFFER_LOCK_STALE=1 GAFFER_LOCK_TIMEOUT=10
+  LIVELOCK="$WORK/.live.lock"
+  LIVEMARK="$WORK/live-marks"; : > "$LIVEMARK"
+  # Holder A holds the section for 3s — WELL past GAFFER_LOCK_STALE=1.
+  hold_long() { echo "enter-A" >> "$LIVEMARK"; sleep 3; echo "exit-A" >> "$LIVEMARK"; }
+  gaffer_with_lock "$LIVELOCK" hold_long &
+  hpid=$!
+  sleep 0.5   # let A acquire and write its pid
+  # Waiter B tries to enter while A still holds AND the lock is already older than
+  # GAFFER_LOCK_STALE. A correct lock makes B WAIT for A; a broken (mtime-only) lock
+  # reaps A's dir and lets B in concurrently.
+  enter_b() { echo "enter-B" >> "$LIVEMARK"; echo "exit-B" >> "$LIVEMARK"; }
+  gaffer_with_lock "$LIVELOCK" enter_b &
+  wait
+  # A correct, non-interleaved log is: enter-A exit-A enter-B exit-B (B strictly
+  # after A). If A was reaped mid-section, B's enter appears BEFORE A's exit.
+  first_three="$(head -3 "$LIVEMARK" | tr '\n' ',')"
+  if [ "$first_three" = "enter-A,exit-A,enter-B," ]; then
+    ok "live holder past STALE was not reaped — B waited for A (no overlap)"
+  else
+    fail "live holder reaped mid-section — got order: $first_three"; sed 's/^/    /' "$LIVEMARK"
+  fi
+fi
+
+echo "== AC6: an ABANDONED lock (dead holder PID) IS still reaped =="
+# The liveness check must not WEDGE on a lock whose recorded PID is dead. A lock
+# dir carrying a never-running PID with a fresh mtime must still be acquirable
+# (dead PID → fall through to acquire), proving we didn't trade one wedge for
+# another.
+if command -v flock >/dev/null 2>&1; then
+  ok "flock present — dead-holder reaping N/A (flock self-releases)"
+else
+  export GAFFER_LOCK_STALE=120 GAFFER_LOCK_TIMEOUT=10
+  DEAD="$WORK/.dead.lock.d"
+  mkdir -p "$DEAD"
+  # A PID that is certainly not running. 2^31-ish is never a live pid here.
+  deadpid=2147480000
+  while kill -0 "$deadpid" 2>/dev/null; do deadpid=$((deadpid - 1)); done
+  echo "$deadpid" > "$DEAD/pid"
+  # mtime is FRESH (just created), so only the dead-PID path can reap it.
+  if gaffer_with_lock "$WORK/.dead.lock" true; then
+    ok "abandoned lock with a dead holder PID was reaped despite a fresh mtime"
+  else
+    fail "dead-holder lock NOT reaped — liveness check wedged on a dead PID"
+  fi
+fi
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"; exit 0

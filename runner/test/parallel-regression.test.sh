@@ -50,14 +50,18 @@ grep -q 'out="$(gaffer_timeout "$((GAFFER_TICK_TIMEOUT + 60))" bash "$HERE/tick.
 grep -q 'echo "tick $ticks/$MAX_TICKS → ${res:-unknown}"' "$RUNNER_DIR/loop.sh" \
   && ok "serial path still prints the canonical per-tick line" || fail "serial per-tick output changed"
 
-# The exact serial loop block must appear verbatim (the pre-A-1 body). We assert
-# the contiguous canonical block exists after the serial-path header comment.
+# The canonical serial loop PREAMBLE must appear verbatim — the loop-control shape
+# (ticks/empties counters + the day-cap gate) is unchanged from the pre-A-1 body.
+# NOTE: the serial path is behavior-preserving at N=1, NOT byte-identical: the
+# day-cap bump is now fail-stop (the R-1 hardening) and the log/skip/ledger writes
+# are lock-wrapped (no-ops at N=1). This check asserts only that the preamble block
+# is intact, not that the whole body is byte-for-byte the old one.
 serial_block='ticks=0
 empties=0
 while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if ! gaffer_day_cap_ok; then'
 if printf '%s' "$(cat "$RUNNER_DIR/loop.sh")" | grep -qF "$serial_block"; then
-  ok "serial loop preamble is byte-identical to the pre-A-1 body"
+  ok "serial loop preamble matches the pre-A-1 control shape (behavior-preserving at N=1)"
 else
   fail "serial loop preamble diverged from the pre-A-1 body"
 fi

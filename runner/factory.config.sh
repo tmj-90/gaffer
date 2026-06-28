@@ -711,6 +711,13 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # shellcheck source=lib/minimalism.sh
 [ -f "$RUNNER_DIR/lib/minimalism.sh" ] && source "$RUNNER_DIR/lib/minimalism.sh"
 
+# Definition-of-Done gate (I3): defines gaffer_run_dod_gates / gaffer_dod_enabled /
+# gaffer_dod_run_one / gaffer_dod_summary_line / gaffer_dod_evidence_summary. The
+# enforced, runner-run gate (tests/typecheck/lint) every delivery clears BEFORE the
+# human review lane. In-tree, so this is defensive.
+# shellcheck source=lib/dod.sh
+[ -f "$RUNNER_DIR/lib/dod.sh" ] && source "$RUNNER_DIR/lib/dod.sh"
+
 # Per-repo backpressure (defines gaffer_repo_pressure / gaffer_repo_in_backpressure).
 # shellcheck source=lib/backpressure.sh
 [ -f "$RUNNER_DIR/lib/backpressure.sh" ] && source "$RUNNER_DIR/lib/backpressure.sh"

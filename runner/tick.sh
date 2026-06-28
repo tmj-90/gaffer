@@ -1118,6 +1118,153 @@ print(hits[0] if hits else '')
     esac
   fi
 
+  # ── Stabilisation gate 2.5: DEFINITION OF DONE (I3 — HARD FAIL) ─────────────
+  # The single biggest "factory, not vibe" lever. The diff is non-empty (asserted
+  # above) and the work lives in the throwaway worktrees. BEFORE the ticket is
+  # allowed to rest in the human review lane, the RUNNER (never the agent) runs the
+  # enabled DoD gates — tests / typecheck / lint — DETERMINISTICALLY in each write
+  # repo's delivery worktree, each bounded by gaffer_timeout.
+  #   ALL pass/skip → proceed (record + submit as today).
+  #   ANY fail      → AUTO-REJECT back to refining/rework (the same path R-6/HYGIENE
+  #                   hardened), record the failing gate name + an output tail as
+  #                   evidence, drop the branch. A human never sees a failed gate;
+  #                   the next attempt gets the gate output as review feedback.
+  # A gate with NO configured command is SKIPPED (logged), not failed. GAFFER_DOD=0
+  # turns enforcement off entirely (today's behaviour). Per-gate toggles
+  # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) carry the resolved
+  # `definition_of_done` config; commands come from each repo's dispatch
+  # test_command/lint_command (+ GAFFER_DOD_TYPECHECK_CMD for typecheck, which has
+  # no dispatch field). DoD is best-effort RESILIENT: a gate command that itself
+  # errors to spawn is treated as a FAIL with a clear message, never a crash.
+  if gaffer_dod_enabled; then
+    # Per-repo commands from the dispatch payload, keyed by repo id (fallback name):
+    #   id|name <TAB> test_cmd <TAB> lint_cmd
+    # First line is the sentinel `@@DOD_PARSE_OK@@` emitted ONLY when the payload
+    # parsed — so an unparseable payload / missing python3 is detected, never
+    # silently treated as "no commands" (which would fail the gate OPEN).
+    DOD_CMD_MAP="$(echo "$SHOW" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(3)          # parse failure → no sentinel, non-zero
+print("@@DOD_PARSE_OK@@")
+for r in d.get("repositories", []) or []:
+    key = (r.get("id") or r.get("name") or "").strip()
+    if not key: continue
+    tc = (r.get("test_command") or "").replace("\t", " ").replace("\n", " ")
+    lc = (r.get("lint_command") or "").replace("\t", " ").replace("\n", " ")
+    print("\t".join([key, tc, lc]))
+' 2>/dev/null || true)"
+    if ! printf '%s\n' "$DOD_CMD_MAP" | grep -q '^@@DOD_PARSE_OK@@$'; then
+      # Could not parse the dispatch payload (or python3 is unavailable). Do NOT
+      # fail the gate OPEN by pretending no commands are configured: surface it as a
+      # visible WARNING and FAIL the delivery closed so a human looks, rather than
+      # silently shipping unverified work.
+      log "DoD: WARNING — could not parse the dispatch payload for #$NUM gate commands (python3 missing or malformed SHOW); FAILING CLOSED — parking, not submitting"
+      wg attach-evidence "$NUM" --type test_output \
+        --summary "DoD: FAIL"$'\n'"$(printf '{"dod":"FAIL","gates":[{"gate":"config","repo":"-","status":"FAIL","rc":"-","note":"could not resolve DoD gate commands from the dispatch payload"}]}')" >/dev/null 2>&1 \
+        && log "DoD: recorded config-FAIL evidence on #$NUM" \
+        || log "DoD: WARNING — could not attach config-FAIL evidence on #$NUM"
+      _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+      if [ "$_CUR_STATUS" = "in_review" ]; then
+        wg review reject "$NUM" --to refining --reviewer factory-dod \
+          --reason "Definition of Done could not run: gate commands unresolved from the dispatch payload" >/dev/null 2>&1 \
+          && log "DoD: parked #$NUM (in_review → refining) after a config-resolution failure" \
+          || log "DoD: WARNING — could not reject #$NUM to refining; ticket left in in_review — needs a human"
+      else
+        wg block "$NUM" --reason "Definition of Done could not run: gate commands unresolved from the dispatch payload" >/dev/null 2>&1 \
+          && log "DoD: blocked #$NUM (status was '$_CUR_STATUS')" \
+          || log "DoD: WARNING — could not park #$NUM (status '$_CUR_STATUS') — needs a human"
+      fi
+      gaffer_cleanup_worktrees drop-branch
+      gaffer_skip_ticket "$NUM"
+      log "delivery FAILED for #$NUM — DoD gate commands unresolvable; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
+      result error; exit 0
+    fi
+    # Strip the sentinel line; the remainder is the real id<TAB>test<TAB>lint map.
+    DOD_CMD_MAP="$(printf '%s\n' "$DOD_CMD_MAP" | grep -v '^@@DOD_PARSE_OK@@$')"
+    # Resolved per-gate enables (default ON; mirror the schema default). A loop /
+    # orchestrator that read crew.yaml can export these to honour a repo override.
+    _DOD_TESTS_ON="${GAFFER_DOD_TESTS:-1}"
+    _DOD_TC_ON="${GAFFER_DOD_TYPECHECK:-1}"
+    _DOD_LINT_ON="${GAFFER_DOD_LINT:-1}"
+    # Build the gate-runner input: one row per write repo with its resolved commands.
+    DOD_ROWS=""
+    while IFS=$'\t' read -r rid rname rpath rbase rwt; do
+      [ -n "$rwt" ] || continue
+      git -C "$rwt" rev-parse --git-dir >/dev/null 2>&1 || continue
+      _dkey="${rid:-$rname}"
+      _dlabel="${rname:-${rid:-repo}}"
+      # Look up this repo's commands from the map (exact id/name match).
+      _drow="$(printf '%s\n' "$DOD_CMD_MAP" | awk -F'\t' -v k="$_dkey" '$1==k{print; exit}')"
+      _dtest="$(printf '%s' "$_drow" | awk -F'\t' '{print $2}')"
+      _dlint="$(printf '%s' "$_drow" | awk -F'\t' '{print $3}')"
+      # typecheck has no dispatch field — a per-run override applies to every repo.
+      _dtc="${GAFFER_DOD_TYPECHECK_CMD:-}"
+      # Empty command fields MUST be the sentinel `-`: TAB is IFS-whitespace, so the
+      # gate runner's `read` would collapse adjacent empty tabs and shift columns.
+      [ -n "${_dtest// /}" ] || _dtest="-"
+      [ -n "${_dtc// /}" ]   || _dtc="-"
+      [ -n "${_dlint// /}" ] || _dlint="-"
+      DOD_ROWS+="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        "$_dlabel" "$rwt" "$_DOD_TESTS_ON" "$_DOD_TC_ON" "$_DOD_LINT_ON" \
+        "$_dtest" "$_dtc" "$_dlint")"$'\n'
+    done <<< "$WT_ROWS"
+    DOD_ROWS="${DOD_ROWS%$'\n'}"
+
+    if [ -n "$DOD_ROWS" ]; then
+      DOD_RESULTS="$GAFFER_DATA/.dod-$NUM.results"
+      if printf '%s\n' "$DOD_ROWS" | gaffer_run_dod_gates "$DOD_RESULTS"; then
+        log "DoD: #$NUM PASSED — $(gaffer_dod_summary_line "$DOD_RESULTS")"
+        # Record the green checklist as evidence so the reviewer sees a pre-verified
+        # board (the Review view renders it). Best-effort; never blocks a passing
+        # delivery.
+        _DOD_EV="$(gaffer_dod_evidence_summary "$DOD_RESULTS" PASS)"
+        [ -n "$_DOD_EV" ] && wg attach-evidence "$NUM" --type test_output \
+          --summary "$_DOD_EV" >/dev/null 2>&1 \
+          && log "DoD: recorded PASS checklist evidence on #$NUM" || true
+        rm -f "$DOD_RESULTS"
+      else
+        # ── A gate FAILED → auto-reject back to rework (never a human's time) ──
+        _DOD_SUM="$(gaffer_dod_summary_line "$DOD_RESULTS")"
+        log "DoD: #$NUM FAILED — $_DOD_SUM; auto-rejecting back to refining (not submitting for review)"
+        _DOD_EV="$(gaffer_dod_evidence_summary "$DOD_RESULTS" FAIL)"
+        # Record the failing checklist + output tail as evidence FIRST so the next
+        # attempt gets it as review feedback (and the board shows why it bounced). A
+        # FAILED attach is surfaced (not swallowed) — losing the feedback is a real
+        # regression in the learning loop, so the warning must be visible.
+        if [ -n "$_DOD_EV" ]; then
+          wg attach-evidence "$NUM" --type test_output --summary "$_DOD_EV" >/dev/null 2>&1 \
+            && log "DoD: recorded FAIL checklist evidence on #$NUM" \
+            || log "DoD: WARNING — could not attach FAIL evidence on #$NUM; the next attempt will have no DoD gate feedback"
+        else
+          log "DoD: WARNING — empty DoD evidence summary for #$NUM (could not build the checklist); failing closed without recorded feedback"
+        fi
+        # Park to refining (or block as a fallback), mirroring the HYGIENE path. The
+        # status fetch + move failures are surfaced visibly, never swallowed.
+        _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+        if [ "$_CUR_STATUS" = "in_review" ]; then
+          wg review reject "$NUM" --to refining --reviewer factory-dod \
+            --reason "Definition of Done failed: $_DOD_SUM" >/dev/null 2>&1 \
+            && log "DoD: parked #$NUM (in_review → refining)" \
+            || log "DoD: WARNING — could not reject #$NUM to refining; ticket left in in_review — needs a human"
+        else
+          wg block "$NUM" --reason "Definition of Done failed: $_DOD_SUM" >/dev/null 2>&1 \
+            && log "DoD: blocked #$NUM (status was '$_CUR_STATUS', not in_review)" \
+            || log "DoD: WARNING — could not park #$NUM (status '$_CUR_STATUS') after DoD failure — needs a human"
+        fi
+        rm -f "$DOD_RESULTS"
+        gaffer_cleanup_worktrees drop-branch
+        gaffer_skip_ticket "$NUM"
+        log "delivery FAILED for #$NUM — Definition of Done not met; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
+        result error; exit 0
+      fi
+    fi
+  else
+    log "DoD: enforcement OFF (GAFFER_DOD=${GAFFER_DOD:-unset}) — skipping the Definition-of-Done gate for #$NUM"
+  fi
+
   # Per-repo delivery recording (FG-008 / WG-005): for EACH write repo, persist a
   # per-repo delivery artifact (branch + diffstat as the evidence note). Single-repo
   # fallback → exactly one repo-delivery row; multi-repo → one per write repo. This

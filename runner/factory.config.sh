@@ -511,11 +511,17 @@ gaffer_usage_record() {
   local kind="$1" ticket="${2:-}" rc="${3:-0}" jsonfile="$4"
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs"
   [ -f "$mod" ] || return 0
+  # R-4: an append failure used to be doubly hidden — node stderr went to /dev/null
+  # here AND the tick.sh call sites discard stderr too. The ledger module now emits a
+  # WARNING line on a real append failure (a measurement gap), so route the module's
+  # stderr to the factory log ($GAFFER_LOG) instead of dropping it. The append itself
+  # stays best-effort (the trailing `|| true` keeps a ledger problem from failing the
+  # tick), but the WARNING is now VISIBLE in the log.
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
-      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   else
-    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   fi
 }
 

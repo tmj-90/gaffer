@@ -24,9 +24,10 @@ import {
 import {
   runIdleSecurityHotspotLoop,
   scanSecurityHotspots,
+  isLikelyFalsePositive,
 } from "../src/loops/idleSecurityHotspot.js";
 import { runIdleTechDebtLoop, scanTechDebt } from "../src/loops/idleTechDebt.js";
-import { runIdleLoops } from "../src/loops/idleRegistry.js";
+import { runIdleLoops, runMaintenanceLane } from "../src/loops/idleRegistry.js";
 import { FakeDispatchClient } from "../src/dispatch/fakeClient.js";
 import { TestClock } from "../src/util/clock.js";
 import { RepoRegistry } from "../src/index.js";
@@ -327,6 +328,107 @@ describe("security-hotspot scan", () => {
     expect(runIdleSecurityHotspotLoop(deps(configForRepo(repo), wg)).status).toBe(
       "skipped_tickets_ready",
     );
+  });
+});
+
+describe("security-hotspot three-lens + adversarial verify (A4)", () => {
+  it("attributes each finding to one of the three security lenses + skills", () => {
+    const src = [
+      `const apiKey = "sk_live_abcdef0123456789";`, // secret_handling
+      `const q = \`SELECT * FROM users WHERE id = \${userId}\`;`, // input_validation
+      `const agent = new https.Agent({ rejectUnauthorized: false });`, // authz
+    ].join("\n");
+    const findings = scanSecurityHotspots(src, "app.ts");
+    const lenses = new Set(findings.map((f) => f.lens));
+    expect(lenses).toContain("secret_handling");
+    expect(lenses).toContain("input_validation");
+    expect(lenses).toContain("authz");
+  });
+
+  it("the verify gate refutes commented-out matches (default-refute false positives)", () => {
+    // The same eval that would file on a live line is dropped when commented.
+    expect(scanSecurityHotspots(`eval(payload);`, "a.ts")).not.toHaveLength(0);
+    expect(scanSecurityHotspots(`// eval(payload);`, "a.ts")).toHaveLength(0);
+    expect(isLikelyFalsePositive('  // const apiKey = "sk_live_aaaaaaaaaaaaaaaa";')).toBe(true);
+    expect(isLikelyFalsePositive(`const apiKey = "sk_live_aaaaaaaaaaaaaaaa";`)).toBe(false);
+  });
+
+  it("the verify gate refutes a RegExp .exec (not code execution)", () => {
+    expect(scanSecurityHotspots(`const m = /foo/.exec(input);`, "a.ts")).toHaveLength(0);
+    // A real child_process exec still files.
+    expect(
+      scanSecurityHotspots(`child_process.exec(userCmd);`, "a.ts").some(
+        (f) => f.kind === "unsafe_api",
+      ),
+    ).toBe(true);
+  });
+
+  it("FIX-5: does NOT refute a real eval co-located with a benign .exec on one line", () => {
+    // The `.exec(` refuter must be scoped to the matched construct: a line that
+    // ALSO contains a real `eval(`/`new Function(`/`execSync(` is a genuine
+    // code-execution sink and must still file, not be masked by the `.exec(`.
+    const cases = [
+      `db.exec(query); eval(userInput);`,
+      `const m = /x/.exec(s); const f = new Function(body);`,
+      `cache.exec(); execSync(userCmd);`,
+    ];
+    for (const line of cases) {
+      expect(
+        scanSecurityHotspots(line, "a.ts").some((f) => f.kind === "unsafe_api"),
+        `expected a finding for: ${line}`,
+      ).toBe(true);
+    }
+    // ...but a benign `.exec(` alone is still refuted (no regression).
+    expect(scanSecurityHotspots(`const m = /foo/.exec(input);`, "a.ts")).toHaveLength(0);
+  });
+
+  it("the verify gate refutes a test-only disabled control", () => {
+    expect(
+      scanSecurityHotspots(
+        `const opt = { verify: false }; // mock transport for unit test`,
+        "a.ts",
+      ),
+    ).toHaveLength(0);
+    // A production rejectUnauthorized:false still files as an authz gap.
+    expect(
+      scanSecurityHotspots(`new https.Agent({ rejectUnauthorized: false });`, "a.ts").some(
+        (f) => f.lens === "authz",
+      ),
+    ).toBe(true);
+  });
+
+  it("still drafts a ticket on a real finding, naming the lens skill (no code edits)", () => {
+    const repo = tempRepo("fg-sec-lens-");
+    writeFileSync(join(repo, "handler.ts"), `eval(req.body);\n`);
+    const wg = new FakeDispatchClient();
+    const outcome = runIdleSecurityHotspotLoop(deps(configForRepo(repo), wg));
+    expect(outcome.status).toBe("draft_created");
+    if (outcome.status !== "draft_created") throw new Error("unreachable");
+    const ticket = wg.getTicket(outcome.drafts[0]!.ticketId);
+    expect(ticket.ticket.description).toMatch(/security-input-validation/);
+    expect(ticket.ticket.description).toMatch(/no code was changed/i);
+    expect(wg.evidence).toHaveLength(0);
+  });
+
+  it("files nothing when every candidate is refuted by the verify gate", () => {
+    const repo = tempRepo("fg-sec-allrefuted-");
+    // All matches are commented out → every candidate refuted → no_findings.
+    writeFileSync(join(repo, "x.ts"), `// eval(x);\n// el.innerHTML = userInput;\n`);
+    const wg = new FakeDispatchClient();
+    expect(runIdleSecurityHotspotLoop(deps(configForRepo(repo), wg)).status).toBe("no_findings");
+  });
+
+  it("dedups a re-found hotspot across ticks (one draft only)", () => {
+    const repo = tempRepo("fg-sec-dedup-");
+    writeFileSync(join(repo, "h.ts"), `eval(req.body);\n`);
+    const wg = new FakeDispatchClient();
+    const first = runIdleSecurityHotspotLoop(deps(configForRepo(repo), wg));
+    expect(first.status).toBe("draft_created");
+    const secondDeps = deps(configForRepo(repo), wg);
+    const second = runIdleSecurityHotspotLoop(secondDeps);
+    expect(second.status).toBe("no_findings");
+    expect(secondDeps.events.types()).toContain("idle_finding_deduped");
+    expect(wg.events.filter((e) => e.type === "draft_ticket.created")).toHaveLength(1);
   });
 });
 
@@ -870,6 +972,85 @@ describe("idle-loop registry", () => {
     config.loops.idle_tech_debt.enabled = false;
     const report = runIdleLoops(deps(config, wg));
     expect(report.loops).toHaveLength(0);
+  });
+});
+
+describe("maintenance lane (A4) — registry wiring", () => {
+  function cursorPath(): string {
+    return join(tempRepo("fg-maint-cursor-"), "cursor.json");
+  }
+
+  it("runs only the ONE scheduler-chosen loop and logs the choice", () => {
+    const repo = tempRepo("fg-maint-run-");
+    // A real security finding so the chosen lane has something to draft.
+    writeFileSync(join(repo, "h.ts"), `eval(req.body);\n`);
+    const wg = new FakeDispatchClient();
+    // Only security + documentation enabled → security wins on priority/first-run.
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.idle_coverage.enabled = false;
+    config.loops.idle_test_quality.enabled = false;
+    config.loops.idle_type_quality.enabled = false;
+    config.loops.idle_dependencies.enabled = false;
+    config.loops.idle_tech_debt.enabled = false;
+    // security_hotspot + documentation remain enabled by configForRepo.
+    const d = deps(config, wg);
+
+    const report = runMaintenanceLane(d, cursorPath());
+    expect(report.chosen).toBe("security_hotspot");
+    expect(report.outcome?.status).toBe("draft_created");
+    // The choice is logged (auditable) + only the chosen loop ran.
+    expect(d.events.types()).toContain("maintenance_lane_chosen");
+    expect(d.events.types()).toContain("security_hotspot_scanned");
+    // The documentation loop was NOT run this tick (single-lane per idle tick).
+    expect(d.events.types()).not.toContain("documentation_scanned");
+  });
+
+  it("persists the rotation cursor so consecutive ticks pick different lanes", () => {
+    const repo = tempRepo("fg-maint-rotate-");
+    const wg = new FakeDispatchClient();
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.idle_coverage.enabled = false;
+    config.loops.idle_test_quality.enabled = false;
+    config.loops.idle_type_quality.enabled = false;
+    config.loops.idle_dependencies.enabled = false;
+    config.loops.idle_tech_debt.enabled = false;
+    // security_hotspot + documentation enabled.
+    const path = cursorPath();
+
+    const first = runMaintenanceLane(deps(config, wg), path);
+    const second = runMaintenanceLane(deps(config, wg), path);
+    expect(first.chosen).toBe("security_hotspot");
+    expect(second.chosen).toBe("documentation"); // rotated, cursor persisted
+  });
+
+  it("reports chosen:null when no maintenance lane is enabled", () => {
+    const repo = tempRepo("fg-maint-none-");
+    const wg = new FakeDispatchClient();
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.idle_documentation.enabled = false;
+    config.loops.idle_test_quality.enabled = false;
+    config.loops.idle_type_quality.enabled = false;
+    config.loops.idle_dependencies.enabled = false;
+    config.loops.idle_coverage.enabled = false;
+    config.loops.idle_security_hotspot.enabled = false;
+    config.loops.idle_tech_debt.enabled = false;
+
+    const d = deps(config, wg);
+    const report = runMaintenanceLane(d, cursorPath());
+    expect(report.chosen).toBeNull();
+    expect(report.outcome).toBeNull();
+    expect(d.events.types()).toContain("maintenance_lane_finished");
+  });
+
+  it("skips when ready tickets exist (the chosen loop's own guard fires)", () => {
+    const repo = tempRepo("fg-maint-ready-");
+    writeFileSync(join(repo, "h.ts"), `eval(req.body);\n`);
+    const wg = new FakeDispatchClient();
+    wg.seedTicket({ title: "ready", status: "ready" });
+    const config = configForRepo(repo, { coverage_command: null });
+    const report = runMaintenanceLane(deps(config, wg), cursorPath());
+    // A lane is still chosen, but its own queue-skip guard short-circuits it.
+    expect(report.outcome?.status).toBe("skipped_tickets_ready");
   });
 });
 

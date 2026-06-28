@@ -32,6 +32,32 @@ ready, a tick first runs the **clarify intake gate** (auto-clarifies an ambiguou
 draft so it can't reach `ready` while load-bearing ambiguity remains), then idle
 ticks scan the repos and draft new tickets.
 
+### Idle maintenance lane (opt-in, deterministically prioritised)
+
+When there are no claimable tickets, the factory can do maintenance work instead
+of just polling. Set `GAFFER_MAINTENANCE=1` (OFF by default to respect token
+cost) and a quiet tick runs **one** maintenance loop chosen by a **deterministic
+priority + rotation scheduler — no LLM in the choice** (`fg maintain`):
+
+- **Priority order:** `security_hotspot` → `coverage` / `test_quality` →
+  `type_quality` / `tech_debt` → `documentation` / `dependency_hygiene`. Security
+  findings are always reached first.
+- **Rotation:** a persisted cursor (`$GAFFER_DATA/maintenance-cursor.json`) means
+  a high-priority lane can't starve the lower ones and the same lane isn't picked
+  on consecutive idle ticks. The cadence survives across ticks and processes.
+- **Which lanes rotate:** only the idle loops you have enabled in `crew.yaml`
+  (each loop's own `enabled` flag); `loops.maintenance` only gates the lane
+  itself. The chosen lane + rationale are logged every tick (`maintenance lane
+  chose '<lane>' (<reason>)`).
+- **Observation only:** like every idle loop, the chosen lane drafts tickets and
+  never edits code. The deepened `security_hotspot` lane runs three distinct
+  lenses (`security-secret-handling`, `security-input-validation`,
+  `security-authz`) and an adversarial default-refute verify pass before filing,
+  to cut false positives.
+
+Deferred (follow-up): dedicating a fraction of the A1 concurrency pool to the
+maintenance lane so it runs alongside delivery rather than only on idle ticks.
+
 ## The two MCP servers (the async delivery plane)
 - **Dispatch** — backlog/work control plane. Atomic claims/leases, evidence,
   append-only events; tools: `claim_next_ticket`, `get_ticket`, `record_ac_evidence`,
@@ -250,6 +276,7 @@ Config + stop conditions (cost guards) live in `factory.config.sh`. Logs land in
 - `test/intake-gate.test.sh` — clarify intake-gate wiring (`bash test/intake-gate.test.sh`)
 - `lib/hygiene.sh` — delivery-hygiene assertions: hard-fail guard against the leaks an unattended run produced (copied src tree, leaked `.crew/events.jsonl`, self-referential/broken symlinks, `node_modules` added/deleted)
 - `lib/minimalism.sh` — minimalism post-condition (smallest-change note required; oversized diffs flagged `needs_human_review: oversized_diff`)
+- `lib/dod.sh` — **enforced Definition of Done (I3)**: the runner (never the agent) runs the enabled DoD gates — **tests / typecheck / lint** — deterministically in each write repo's delivery worktree, each under `gaffer_timeout`, BEFORE a ticket may rest in the human review lane. ALL pass/skip → proceed; ANY fail → **auto-reject back to refining** (the same path R-6/HYGIENE hardened) with the failing gate name + an output tail recorded as `test_output` evidence (the Review view renders the ✓/✗ checklist). A gate with **no configured command is SKIPPED, not failed** (and logged). Configurable per repo + factory-wide (`definition_of_done` in `crew.yaml`); `GAFFER_DOD=0` disables enforcement (today's behaviour). Commands come from each repo's dispatch `test_command`/`lint_command` (+ `GAFFER_DOD_TYPECHECK_CMD` for typecheck, which has no dispatch field). **Ships:** tests · typecheck · lint. **Deferred follow-ups (NOT yet gates):** coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2), CI-green (H3), docs-updated.
 - `lib/backpressure.sh` — per-repo backpressure (unmerged `gaffer/*` branches + in_review tickets + active claims vs cap)
 - `run-summary.sh` — end-of-run report (landed / failed-safe / parked / re-queued / oversized / per-repo pressure / cleanup state); printed by `loop.sh`
 - `test/hygiene.test.sh` — delivery-hygiene validation (`bash test/hygiene.test.sh`)
@@ -257,6 +284,7 @@ Config + stop conditions (cost guards) live in `factory.config.sh`. Logs land in
 - `test/backpressure.test.sh` — per-repo backpressure validation (`bash test/backpressure.test.sh`)
 - `test/run-summary.test.sh` — run-summary report validation (`bash test/run-summary.test.sh`)
 - `test/stabilisation-integration.test.sh` — end-to-end proof the hygiene + backpressure gates fire against real `tick.sh` (`bash test/stabilisation-integration.test.sh`)
+- `test/dod-gate.test.sh` — Definition-of-Done validation: a failing `test_command` fails the gate; all-pass proceeds; an un-configured gate is skipped not failed; a disabled gate is not run; an unrunnable command is a fail not a crash; `GAFFER_DOD=0` disables enforcement; and (against the **real dispatch CLI**) a DoD failure review-rejects an in_review ticket to refining with the checklist recorded as evidence (`bash test/dod-gate.test.sh`)
 - `test/self-op-ban.test.sh` — self-operation ban unit tests for `gaffer_is_self_target` + tick.sh wiring (`bash test/self-op-ban.test.sh`)
 - `test/self-op-ban-integration.test.sh` — end-to-end proof the self-op ban refuses a delivery whose target is a Gaffer component, honours `GAFFER_ALLOW_SELF_DELIVERY=1`, and leaves a non-Gaffer target unaffected (`bash test/self-op-ban-integration.test.sh`)
 - `launchd/com.gaffer.factory.plist.template` — scheduled-run template with `__GAFFER_REPO__` / `__GAFFER_DATA__` placeholders (disabled by default; render with `sed` before loading)

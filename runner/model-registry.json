@@ -1,0 +1,30 @@
+{
+  "$comment": "Gaffer model-routing REGISTRY (audit item I1). The router (bin/route-model.mjs) reads this to turn a routing context into a concrete model id. ADDING A MODEL/PROVIDER OR CHANGING A TIER IS A CONFIG EDIT HERE — never a code change (acceptance criterion). Override the whole file with GAFFER_MODEL_REGISTRY=<path>, or override any single resolved model with GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL (those always win, preserving today's behaviour).",
+
+  "tiers": {
+    "$comment": "Named tiers → concrete model ids. A tier is the unit a phase/rule routes to; the router only ever emits a tier's model id. Add a provider-specific model by adding a tier (e.g. \"local\": \"ollama:qwen2.5-coder\") and pointing a phase or the escalation order at it — no code change.",
+    "cheap": "haiku",
+    "mid": "sonnet",
+    "strong": "opus"
+  },
+
+  "escalationOrder": ["cheap", "mid", "strong"],
+
+  "phaseDefaults": {
+    "$comment": "Per-PHASE default tier. The cheapest-correct layer that can do the phase wins; failure-escalation + risk/complexity rules move off this default at routing time. decompose/plan reason deeply (strong); implement/test default mid; self-review mid; merge-conflict-resolve is delicate (strong); onboarding scans cheap.",
+    "decompose": "strong",
+    "plan": "strong",
+    "implement": "mid",
+    "test": "mid",
+    "self-review": "mid",
+    "merge-conflict-resolve": "strong",
+    "onboarding": "cheap"
+  },
+
+  "localSeam": {
+    "$comment": "SEAM for local models on the cheap idle/scan path (privacy + ~zero cost). Set \"enabled\": true and point \"tier\" at a tier whose model id is a local provider (e.g. add tiers.local = \"ollama:qwen2.5-coder\" and set tier: \"local\"). When enabled, the idle/scan phases (\"onboarding\") resolve to this tier. FULL local-provider wiring (a provider adapter that turns \"ollama:...\" into the right CLI flags / base URL) is a documented FOLLOW-UP — this only wires the registry seam so the routing decision is already config-expressible.",
+    "enabled": false,
+    "tier": "cheap",
+    "phases": ["onboarding"]
+  }
+}

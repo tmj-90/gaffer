@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { Command } from "commander";
 import { z } from "zod";
@@ -22,7 +23,12 @@ import {
 } from "../memory/prefetch.js";
 import { ingestGithubIssues } from "../ingest/githubIssues.js";
 import { ingestJiraIssues } from "../ingest/jiraIssues.js";
-import { runIdleLoops, runIdleLoreGap, runIdleFeatureBacklog } from "../loops/idleRegistry.js";
+import {
+  runIdleLoops,
+  runIdleLoreGap,
+  runIdleFeatureBacklog,
+  runMaintenanceLane,
+} from "../loops/idleRegistry.js";
 import { runImplementationLoop } from "../loops/implementationLoop.js";
 import { MockAgentRuntime } from "../runtime/agentRuntime.js";
 import { loadSkillRegistry } from "../skills/loader.js";
@@ -427,6 +433,41 @@ program
       ...(featureBacklog ? { featureBacklog } : {}),
       events: events.types(),
     });
+  });
+
+program
+  .command("maintain")
+  .description(
+    "Run the idle MAINTENANCE LANE: one scheduler-chosen maintenance loop (priority + rotation)",
+  )
+  .action(async (_opts, cmd) => {
+    const ctx = loadEverything(cmd.optsWithGlobals());
+    const { loaded, repoRegistry } = ctx;
+    const events = new EventLog(systemClock, {
+      filePath: loaded.config.logging.event_log_path,
+      redact: loaded.config.logging.redact,
+    });
+    const dispatch = await openDispatch(ctx);
+    const baseDeps = {
+      config: loaded.config,
+      repoRegistry,
+      dispatch,
+      runner: systemCommandRunner,
+      events,
+      clock: systemClock,
+    };
+
+    // Cursor path precedence: explicit config override → $GAFFER_DATA →
+    // factory root. Persisting the cursor keeps the rotation cadence across ticks.
+    const dataDir =
+      process.env.GAFFER_DATA && process.env.GAFFER_DATA.length > 0
+        ? process.env.GAFFER_DATA
+        : loaded.rootDir;
+    const cursorPath =
+      loaded.config.loops.maintenance.cursor_path ?? join(dataDir, "maintenance-cursor.json");
+
+    const report = runMaintenanceLane(baseDeps, cursorPath);
+    printJson({ ok: true, report, events: events.types() });
   });
 
 program

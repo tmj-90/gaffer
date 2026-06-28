@@ -38,9 +38,78 @@ echo "gaffer factory: starting (DRY_RUN=$DRY_RUN, max_ticks=$MAX_TICKS, stop_aft
 # (a fresh DB has none) but a real failure shouldn't pass silently — log it.
 wg expire-claims >/dev/null 2>&1 \
   || echo "gaffer factory: WARNING — expire-claims failed; stale claims from a prior run may persist." >&2
+
+# A-1: reclaim worktrees orphaned by a killed worker on a PRIOR run. expire-claims
+# above released their claims (so the ticket is no longer claimed/in_progress);
+# this sweeps the matching stale worktree dirs. Safe even at concurrency 1 — a
+# clean data dir has none — and it NEVER touches a worktree whose ticket is still
+# claimed/in_progress (a live worker's), so it's safe to run before the pool spins.
+if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
+  _reclaimed="$(gaffer_cleanup_orphaned_worktrees 2>/dev/null | tr '\n' ' ')"
+  [ -n "${_reclaimed// /}" ] && echo "gaffer factory: reclaimed orphaned worktree(s) for ticket(s): ${_reclaimed% }"
+fi
+
+RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"   # run start, for the trust report's run-scoping
+
+if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
+  # ── Parallel path (opt-in: GAFFER_CONCURRENCY>1) ──────────────────────────
+  # Spawn a pool of N worker.sh processes that each loop claim→deliver via tick.sh
+  # until the queue is drained, wait on them all, then aggregate their per-worker
+  # result files. The shared per-run MAX_TICKS budget is divided across the pool
+  # (rounded up) so the pool's TOTAL ticks still honour MAX_TICKS. Each worker
+  # carries the SAME per-tick wall-clock cap as the serial path.
+  N="$GAFFER_CONCURRENCY"
+  WORKER_MAX_TICKS=$(( (MAX_TICKS + N - 1) / N ))
+  export WORKER_MAX_TICKS
+  WORKERS_DIR="$GAFFER_DATA/.workers"
+  rm -rf "$WORKERS_DIR"; mkdir -p "$WORKERS_DIR"
+  echo "gaffer factory: parallel mode — spawning $N worker(s) (each up to $WORKER_MAX_TICKS tick(s); MAX_TICKS=$MAX_TICKS total)."
+  pids=()
+  i=0
+  while [ "$i" -lt "$N" ]; do
+    bash "$HERE/worker.sh" "$i" &
+    pids+=("$!")
+    i=$((i + 1))
+  done
+  # Wait for every worker; a non-zero worker exit is logged but never aborts the
+  # join (we still want the other workers' results + cleanup).
+  for p in "${pids[@]}"; do
+    wait "$p" || echo "gaffer factory: WARNING — a worker (pid $p) exited non-zero." >&2
+  done
+  # Aggregate per-worker result files: "<worked> <reviewed> <clarified> <idle> <nowork> <error> <ticks>".
+  ticks=0; tot_worked=0; tot_reviewed=0; tot_clarified=0; tot_idle=0; tot_nowork=0; tot_error=0
+  for rf in "$WORKERS_DIR"/*.result; do
+    [ -f "$rf" ] || continue
+    read -r w r c idl nw er tk < "$rf" || continue
+    tot_worked=$((tot_worked + ${w:-0})); tot_reviewed=$((tot_reviewed + ${r:-0}))
+    tot_clarified=$((tot_clarified + ${c:-0})); tot_idle=$((tot_idle + ${idl:-0}))
+    tot_nowork=$((tot_nowork + ${nw:-0})); tot_error=$((tot_error + ${er:-0}))
+    ticks=$((ticks + ${tk:-0}))
+  done
+  echo "gaffer factory: parallel run aggregated — ticks=$ticks worked=$tot_worked reviewed=$tot_reviewed clarified=$tot_clarified idle_drafted=$tot_idle no_work=$tot_nowork error=$tot_error."
+
+  # A-1: final orphan sweep — a worker killed DURING this run leaves a stale
+  # worktree; its claim is reaped on the NEXT run's expire-claims, but sweep the
+  # now-unclaimed ones we can already see. NEVER touches a claimed/in_progress
+  # ticket's worktree, so a (now-finished) pool leaves only genuinely-stale dirs.
+  if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
+    _reclaimed_end="$(gaffer_cleanup_orphaned_worktrees 2>/dev/null | tr '\n' ' ')"
+    [ -n "${_reclaimed_end// /}" ] && echo "gaffer factory: end-of-run reclaimed orphaned worktree(s): ${_reclaimed_end% }"
+  fi
+
+  echo "gaffer factory: done after $ticks tick(s)."
+  if [ -f "$HERE/run-summary.sh" ]; then
+    echo
+    SUMMARY_SINCE="$RUN_STARTED" bash "$HERE/run-summary.sh" || true
+  fi
+  exit 0
+fi
+
+# ── Serial path (DEFAULT: GAFFER_CONCURRENCY=1) ───────────────────────────────
+# Byte-for-byte the pre-A-1 loop. At concurrency 1 the factory runs EXACTLY as it
+# always has — the parallel machinery above is fully bypassed.
 ticks=0
 empties=0
-RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"   # run start, for the trust report's run-scoping
 while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if ! gaffer_day_cap_ok; then
     echo "gaffer factory: per-day cap (MAX_TICKS_PER_DAY=$MAX_TICKS_PER_DAY, used $(gaffer_day_count)) reached — stopping."

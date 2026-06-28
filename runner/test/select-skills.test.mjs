@@ -236,6 +236,18 @@ check("compound typescript-react routes the TS + frontend-design packs (web, not
   assert(!names.includes("mobile-ui"), "a web react app must NOT pull the mobile pack");
 });
 
+check("web/react stack routes the design-system pack (not plain node, not java)", () => {
+  const tsReact = selectSkills({ stacks: ["typescript-react"] }).map((s) => s.name);
+  assert(tsReact.includes("design-system"), "typescript-react → design-system");
+  assert(tsReact.includes("frontend-design"), "design-system routes alongside frontend-design");
+
+  const node = selectSkills({ stacks: ["node"] }).map((s) => s.name);
+  assert(!node.includes("design-system"), "plain node (no react) must not pull design-system");
+
+  const java = selectSkills({ stacks: ["java"] }).map((s) => s.name);
+  assert(!java.includes("design-system"), "a java stack must not pull design-system");
+});
+
 check("react-native / expo labels route the mobile pack (and not from plain web react)", () => {
   for (const label of ["typescript-react-native", "typescript-react-native-expo"]) {
     const names = conv(label);

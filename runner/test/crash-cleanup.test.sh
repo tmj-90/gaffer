@@ -11,10 +11,15 @@
 # teardown helper and its rows exist. tick.sh now installs:
 #
 #   GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
+#   GAFFER_KEEP_DELIVERY_BRANCH="${GAFFER_KEEP_DELIVERY_BRANCH:-0}"
 #   gaffer_crash_cleanup() {
 #     [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ] && return 0
 #     if declare -F gaffer_cleanup_worktrees >/dev/null 2>&1 && [ -n "${WT_ROWS:-}" ]; then
-#       gaffer_cleanup_worktrees drop-branch
+#       if [ "${GAFFER_KEEP_DELIVERY_BRANCH:-0}" = "1" ]; then
+#         gaffer_cleanup_worktrees           # keep the review-visible branch
+#       else
+#         gaffer_cleanup_worktrees drop-branch
+#       fi
 #     fi
 #     return 0
 #   }
@@ -24,15 +29,18 @@
 #   trap 'gaffer_on_signal 130' INT
 #   trap 'gaffer_on_signal 143' TERM
 #
+# and sets GAFFER_DELIVERY_COMPLETE=1 once delivery is recorded AND the
+# worktrees are torn down (R-5: flag set AFTER teardown so a signal in the
+# gap can't leave the flag set while the worktree is still on disk), so a
+# legitimately-delivered branch is never dropped. GAFFER_KEEP_DELIVERY_BRANCH=1
+# is raised earlier still — BEFORE delivery is recorded (FIX-BRANCH) — so a late
+# signal in the record→complete window tears the worktree but PRESERVES the now
+# review-visible branch.
+#
 # FIX-SIGNAL: a returning bash signal trap does NOT terminate the script — a
 # cleanup-only handler on INT/TERM would clean up then RESUME past the
 # interrupted point. The split EXIT/signal handlers above reset the trap and
 # exit with the right code (130 INT / 143 TERM) so termination is never swallowed.
-#
-# and sets GAFFER_DELIVERY_COMPLETE=1 once delivery is recorded AND the
-# worktrees are torn down (R-5: flag set AFTER teardown so a signal in the
-# gap can't leave the flag set while the worktree is still on disk), so a
-# legitimately-delivered branch is never dropped.
 #
 # This drives that EXACT contract against a REAL git repo + worktree:
 #   1. A crash (non-zero exit / SIGTERM) BEFORE completion → the orphaned
@@ -46,6 +54,8 @@
 #      success-path worktree teardown (static ordering check).
 #   7. (FIX-SIGNAL) a real TERM/INT EXITS with 143/130 and execution does NOT
 #      continue past the signal (the after-signal marker is never written).
+#   8. (FIX-BRANCH) with GAFFER_KEEP_DELIVERY_BRANCH=1, a crash-cleanup tears
+#      the worktree but PRESERVES the review-visible branch.
 #
 # The trap/guard wiring below is kept BYTE-FOR-BYTE in step with tick.sh's
 # gaffer_crash_cleanup; a divergence should be caught in review.
@@ -104,10 +114,15 @@ gaffer_cleanup_worktrees() {
   [ -d "$WORKTREES_BASE" ] && rmdir "$WORKTREES_BASE" >/dev/null 2>&1 || true
 }
 GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
+GAFFER_KEEP_DELIVERY_BRANCH="${GAFFER_KEEP_DELIVERY_BRANCH:-0}"
 gaffer_crash_cleanup() {
   if [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ]; then return 0; fi
   if declare -F gaffer_cleanup_worktrees >/dev/null 2>&1 && [ -n "${WT_ROWS:-}" ]; then
-    gaffer_cleanup_worktrees drop-branch
+    if [ "${GAFFER_KEEP_DELIVERY_BRANCH:-0}" = "1" ]; then
+      gaffer_cleanup_worktrees
+    else
+      gaffer_cleanup_worktrees drop-branch
+    fi
   fi
   return 0
 }
@@ -133,6 +148,12 @@ git -C "$REPO" worktree add -B "$WORK_BRANCH" "$WT" "$BASE" >/dev/null 2>&1
 case "$MODE" in
   crash)    exit 1 ;;                       # crash BEFORE completion
   complete) GAFFER_DELIVERY_COMPLETE=1; exit 0 ;;  # delivered → keep branch
+  keep-branch)
+    # Simulate the FIX-BRANCH window: delivery recorded → retention raised; then
+    # a crash (signal-equivalent) BEFORE GAFFER_DELIVERY_COMPLETE. The trap must
+    # tear the worktree but KEEP the review-visible branch.
+    GAFFER_KEEP_DELIVERY_BRANCH=1
+    exit 1 ;;
   signal-wait)
     # FIX-SIGNAL harness: announce readiness, wait at a blocking point, then (if
     # execution wrongly RESUMED past the signal) drop an after-signal marker. The
@@ -281,6 +302,37 @@ if [ -f "$TICK" ]; then
     ok "GAFFER_DELIVERY_COMPLETE=1 (line $set_line) is AFTER the success teardown (line $teardown_line)"
   else
     fail "GAFFER_DELIVERY_COMPLETE=1 is not strictly after the success-path teardown (set=$set_line teardown=$teardown_line)"
+  fi
+else
+  ok "SKIP ordering check (tick.sh not found alongside the test)"
+fi
+
+echo "== 7. (FIX-BRANCH) crash-cleanup with retention ON keeps the review-visible branch =="
+# After a delivery is recorded the branch is review/merge-visible; a crash/signal in
+# the record→complete window must tear the worktree but PRESERVE the branch (a
+# salvageable orphan branch beats recorded evidence pointing at a deleted branch).
+make_runner
+WT="$WORK/wt-keep"
+bash "$WORK/runner.sh" "$REPO" "$WT" "$BASE" keep-branch >/dev/null 2>&1 || true
+[ -e "$WT" ] && fail "retention crash left the worktree behind" || ok "retention crash removed the disposable worktree"
+branch_exists && ok "review-visible branch SURVIVES a crash with retention ON" || fail "review-visible branch was wrongly DELETED on a crash (dangling delivery record)"
+# Tidy the kept branch for subsequent steps.
+git -C "$REPO" branch -D gaffer/ticket-99-demo >/dev/null 2>&1 || true
+
+echo "== 8. (FIX-BRANCH) tick.sh raises GAFFER_KEEP_DELIVERY_BRANCH=1 BEFORE recording delivery =="
+# Static ordering check against the REAL tick.sh: the retention flag must be raised
+# strictly BEFORE the first delivery-record call, so no review-visible branch can be
+# dropped by a later crash/signal.
+TICK="$HERE/../tick.sh"
+if [ -f "$TICK" ]; then
+  keep_line="$(grep -n '^[[:space:]]*GAFFER_KEEP_DELIVERY_BRANCH=1[[:space:]]*$' "$TICK" | head -1 | cut -d: -f1)"
+  # The first ACTUAL delivery-record invocation (the `wg ... repo-delivery record`
+  # call), not a comment mentioning it.
+  rec_line="$(grep -n 'wg ticket repo-delivery record' "$TICK" | head -1 | cut -d: -f1)"
+  if [ -n "$keep_line" ] && [ -n "$rec_line" ] && [ "$keep_line" -lt "$rec_line" ]; then
+    ok "GAFFER_KEEP_DELIVERY_BRANCH=1 (line $keep_line) is BEFORE the first delivery record (line $rec_line)"
+  else
+    fail "retention flag not raised before delivery recording (keep=$keep_line rec=$rec_line)"
   fi
 else
   ok "SKIP ordering check (tick.sh not found alongside the test)"

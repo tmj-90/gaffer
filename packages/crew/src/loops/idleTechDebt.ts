@@ -11,8 +11,14 @@ import {
   type IdleScanOutcome,
 } from "./idleScans.js";
 import type { IdleLoopDeps } from "./idleLoop.js";
-import { resolveMinDeliveredTickets } from "../config/schema.js";
+import { resolveMinDeliveredTickets, type RepoConfig } from "../config/schema.js";
 import { dateStamp } from "../util/clock.js";
+import {
+  oracleFindingKey,
+  summariseOracleFindings,
+  type Oracle,
+  type OracleFinding,
+} from "./oracles/index.js";
 
 const LOOP = "tech_debt";
 
@@ -241,13 +247,63 @@ function summarise(repoName: string, date: string, findings: readonly TechDebtFi
   return `${head}\n\nTop hotspots:\n${detail}\n\n${acceptance}`;
 }
 
+const ORACLE_ACCEPTANCE =
+  `Skills: ${SKILL_IDS.join(" + ")}. Acceptance criteria (behaviour-preserving oracle): ` +
+  `the repo's tests are green BEFORE and AFTER, with no public API change and no behaviour change. ` +
+  `(Findings are eslint / dead-code tool output — resolving them clears the tool.)`;
+
 /**
- * Idle tech-debt loop. Walks each in-scope repo's non-test source files and
- * flags refactor hotspots — god-files, churn×size hotspots (commit count via the
- * injected command runner × LOC), and lexical duplication clusters — then drafts
- * ONE observation-only ticket per repo (dedup key `tech_debt:${repo}`) handing a
- * delivery agent the `refactor-module` + `minimalism` skills with a
- * behaviour-preserving acceptance oracle. Observation only — never edits code.
+ * Consult the tech-debt oracles (eslint, dead-code) for one repo and merge their
+ * precise findings. Returns the merged findings when AT LEAST ONE oracle was
+ * available (so the loop drafts from tool output), or `null` when none were —
+ * meaning the loop must fall back to its heuristic scan. Logs the path taken.
+ */
+function tryTechDebtOracles(
+  deps: IdleLoopDeps,
+  oracles: { eslint?: Oracle; deadCode?: Oracle },
+  repo: RepoConfig,
+  root: string,
+): { findings: OracleFinding[]; toolIds: string[] } | null {
+  const merged: OracleFinding[] = [];
+  const toolIds: string[] = [];
+  let anyAvailable = false;
+
+  for (const oracle of [oracles.eslint, oracles.deadCode]) {
+    if (!oracle) continue;
+    const result = oracle.consult(root);
+    if (!result.available) {
+      deps.events.record("tech_debt_oracle_unavailable", {
+        repoName: repo.name,
+        oracle: oracle.id,
+        reason: result.reason,
+      });
+      continue;
+    }
+    anyAvailable = true;
+    toolIds.push(oracle.id);
+    merged.push(...result.findings);
+  }
+
+  if (!anyAvailable) return null;
+  deps.events.record("tech_debt_scanned", {
+    repoName: repo.name,
+    findings: merged.length,
+    path: "oracle",
+    oracles: toolIds,
+  });
+  return { findings: merged, toolIds };
+}
+
+/**
+ * Idle tech-debt loop. PREFERS its tool oracles (eslint quality/complexity +
+ * knip/ts-prune dead-code) when wired and installed, drafting from their precise
+ * findings; otherwise falls back to walking each in-scope repo's non-test source
+ * files and flagging the heuristic refactor hotspots — god-files, churn×size
+ * hotspots (commit count via the injected command runner × LOC), and lexical
+ * duplication clusters. Either way it drafts ONE observation-only ticket per repo
+ * handing a delivery agent the `refactor-module` + `minimalism` skills with a
+ * behaviour-preserving acceptance oracle, and logs the path taken (`oracle` vs
+ * `heuristic`). Observation only — never edits code.
  */
 export function runIdleTechDebtLoop(deps: IdleLoopDeps): IdleScanOutcome {
   deps.events.record("loop_started", { loop: LOOP });
@@ -268,12 +324,47 @@ export function runIdleTechDebtLoop(deps: IdleLoopDeps): IdleScanOutcome {
   }
 
   const date = dateStamp(deps.clock);
+  const oracleSet: { eslint?: Oracle; deadCode?: Oracle } = {
+    ...(deps.oracles?.eslint ? { eslint: deps.oracles.eslint } : {}),
+    ...(deps.oracles?.deadCode ? { deadCode: deps.oracles.deadCode } : {}),
+  };
+  const hasOracle = Boolean(oracleSet.eslint || oracleSet.deadCode);
   const results = [];
   for (const repo of candidates) {
     const root = deps.repoRegistry.absolutePath(repo);
+
+    // Oracle-first: when at least one tech-debt oracle is wired AND available,
+    // draft from its precise findings instead of the grep heuristic.
+    if (hasOracle) {
+      const oracleResult = tryTechDebtOracles(deps, oracleSet, repo, root);
+      if (oracleResult !== null) {
+        if (oracleResult.findings.length === 0) {
+          results.push(applyHandled());
+          continue;
+        }
+        const label = oracleResult.toolIds.join("+");
+        results.push(
+          applyScanFinding(
+            deps,
+            LOOP,
+            mode,
+            repo,
+            `Tech-debt hotspots: ${repo.name}`,
+            `${summariseOracleFindings(repo.name, label, oracleResult.findings, ORACLE_ACCEPTANCE)}\n\n(${date})`,
+            oracleFindingKey(label, oracleResult.findings),
+          ),
+        );
+        continue;
+      }
+    }
+
     const files = walkFiles(root, isTechDebtScanFile);
     const findings = scanTechDebt(deps, root, files, god_file_lines, churn_size_product_threshold);
-    deps.events.record("tech_debt_scanned", { repoName: repo.name, findings: findings.length });
+    deps.events.record("tech_debt_scanned", {
+      repoName: repo.name,
+      findings: findings.length,
+      path: "heuristic",
+    });
     if (findings.length === 0) continue;
     results.push(
       applyScanFinding(
@@ -288,4 +379,9 @@ export function runIdleTechDebtLoop(deps: IdleLoopDeps): IdleScanOutcome {
   }
 
   return finalizeScan(deps, LOOP, results);
+}
+
+/** A no-op "handled, nothing to draft" result (oracle ran clean). */
+function applyHandled(): ReturnType<typeof applyScanFinding> {
+  return { kind: "deduped" };
 }

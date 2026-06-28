@@ -8,6 +8,12 @@ import { runIdleTechDebtLoop } from "./idleTechDebt.js";
 import { runIdleTestQualityLoop } from "./idleTestQuality.js";
 import { runIdleTypeQualityLoop } from "./idleTypeQuality.js";
 import { SelfImproveGate } from "./selfImprove.js";
+import {
+  chooseMaintenanceLane,
+  loadCursor,
+  saveCursor,
+  type MaintenanceCursor,
+} from "./maintenanceLane.js";
 import type { IdleScanOutcome } from "./idleScans.js";
 
 /** A normalised outcome the registry reports for every idle loop. */
@@ -193,4 +199,70 @@ export async function runIdleFeatureBacklog(
   // The remaining variants (skipped_tickets_ready / no_repos / no_findings) carry
   // no extra payload and map straight onto the registry's normalised outcome.
   return { id: "feature_backlog", outcome: { status: outcome.status } };
+}
+
+/** What the maintenance lane did on one idle tick. */
+export interface MaintenanceLaneReport {
+  /** The lane the deterministic scheduler chose, or null when none was eligible. */
+  chosen: IdleLoopId | null;
+  /** Human-readable rationale (logged so the choice is auditable). */
+  reason: string;
+  /** The chosen loop's normalised outcome (null when nothing ran). */
+  outcome: IdleLoopRunOutcome | null;
+  /** The rotation cursor after this selection (already persisted when a path was given). */
+  cursor: MaintenanceCursor;
+}
+
+/**
+ * Run the idle MAINTENANCE LANE (audit item A4): instead of running every idle
+ * loop (`runIdleLoops`) or a single fixed scan, pick the ONE highest-leverage
+ * maintenance loop that is due via the deterministic {@link chooseMaintenanceLane}
+ * scheduler (priority + rotation, NO LLM) and run only that loop.
+ *
+ * The rotation cursor is loaded from / saved to `cursorPath` so the cadence
+ * survives across ticks and processes. A lane is only eligible when its own idle
+ * loop is enabled in config, so the lane respects every per-loop toggle.
+ *
+ * Returns the chosen lane, the rationale (for the caller's log line), and the
+ * loop's outcome. When no lane is eligible (none enabled) it advances + persists
+ * the cursor and reports `chosen: null` with a null outcome.
+ */
+export function runMaintenanceLane(deps: IdleLoopDeps, cursorPath: string): MaintenanceLaneReport {
+  deps.events.record("maintenance_lane_started", {});
+  const cursor = loadCursor(cursorPath);
+  const choice = chooseMaintenanceLane(deps.config, cursor);
+  saveCursor(cursorPath, choice.nextCursor);
+
+  if (choice.lane === null) {
+    deps.events.record("maintenance_lane_finished", { chosen: null, reason: choice.reason });
+    return { chosen: null, reason: choice.reason, outcome: null, cursor: choice.nextCursor };
+  }
+
+  const def = IDLE_LOOPS.find((d) => d.id === choice.lane);
+  if (!def) {
+    // The scheduler only returns lanes that map to a sync IDLE_LOOPS entry, so
+    // this is unreachable in practice; fail safe rather than throw on an idle tick.
+    deps.events.record("maintenance_lane_finished", {
+      chosen: choice.lane,
+      reason: "lane has no sync loop definition",
+    });
+    return {
+      chosen: choice.lane,
+      reason: "lane has no sync loop definition",
+      outcome: null,
+      cursor: choice.nextCursor,
+    };
+  }
+
+  // The chosen lane runs with its own self-improve gate, matching runIdleLoops.
+  const selfImprove = deps.selfImprove ?? SelfImproveGate.fromConfig(deps.config, deps.events);
+  const runDeps: IdleLoopDeps = { ...deps, selfImprove };
+  deps.events.record("maintenance_lane_chosen", { chosen: choice.lane, reason: choice.reason });
+  const outcome = def.run(runDeps);
+  deps.events.record("maintenance_lane_finished", {
+    chosen: choice.lane,
+    reason: choice.reason,
+    status: outcome.status,
+  });
+  return { chosen: choice.lane, reason: choice.reason, outcome, cursor: choice.nextCursor };
 }

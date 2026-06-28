@@ -140,6 +140,47 @@ describe("maintenance-lane scheduler — enabled-flag respect", () => {
   });
 });
 
+describe("maintenance-lane scheduler — future-stamped cursor (FIX-1)", () => {
+  it("still schedules a future-stamped high-priority lane (does not starve security)", () => {
+    // A torn write / tick reset / restored old $GAFFER_DATA can leave a lane's
+    // lastRunTick far AHEAD of the cursor tick. On the old code staleness went
+    // negative, sorting that lane dead-last forever — security ran 0 times.
+    const config = withLanes(baseConfig(), [...MAINTENANCE_LANES]);
+    let cursor: MaintenanceCursor = {
+      tick: 2,
+      lastRunTick: { security_hotspot: 1_000_000 },
+      lastChosen: null,
+    };
+
+    const counts: Record<string, number> = {};
+    for (let i = 0; i < 30; i++) {
+      const choice = chooseMaintenanceLane(config, cursor);
+      counts[choice.lane!] = (counts[choice.lane!] ?? 0) + 1;
+      cursor = choice.nextCursor;
+    }
+
+    // Old code: 0. Fixed: clamped staleness lets it rotate in fairly.
+    expect(counts.security_hotspot ?? 0).toBeGreaterThan(0);
+  });
+
+  it("loadCursor drops a lastRunTick entry that exceeds the cursor tick", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "maint-future-")), "cursor.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        tick: 5,
+        lastRunTick: { security_hotspot: 99, coverage: 3 },
+        lastChosen: null,
+      }),
+      "utf8",
+    );
+    const loaded = loadCursor(path);
+    // The future-stamped entry is dropped (treated as never-run); the valid one stays.
+    expect(loaded.lastRunTick.security_hotspot).toBeUndefined();
+    expect(loaded.lastRunTick.coverage).toBe(3);
+  });
+});
+
 describe("maintenance-lane cursor persistence", () => {
   function tmpCursorPath(): string {
     return join(mkdtempSync(join(tmpdir(), "maint-cursor-")), "cursor.json");

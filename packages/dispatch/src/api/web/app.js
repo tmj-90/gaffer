@@ -1932,26 +1932,162 @@ async function viewRunLog(run) {
   }
 }
 
-/** One active run row: kind · repo · elapsed · spinner. */
-function activeRunRow(run) {
-  return el("li", { class: "run-row run-active" }, [
-    el("span", { class: "run-spinner", "aria-hidden": "true" }),
-    el("span", { class: "run-kind" }, runKindLabel(run.kind)),
-    run.repo ? el("span", { class: "run-repo dim" }, run.repo) : null,
-    el(
-      "span",
-      { class: "run-elapsed dim tabnum", title: `started ${fmtTime(run.started_at)}` },
-      runDuration(run),
-    ),
-  ]);
+/**
+ * Open the run-detail drawer for a run. Fetches GET /api/runs/:id and renders
+ * phase · turns · spend + a streaming factory-log tail. For active runs it polls
+ * every 3s until the run settles; the timer is cleared when the sheet closes.
+ *
+ * Zero-state safe: missing detail fields render as "—".
+ */
+function viewRunDetail(runId, kindLabel) {
+  const POLL_MS = 3000;
+  let detailTimer = null;
+
+  const metaBar = el("div", { class: "run-detail-meta" });
+  const logSection = el("div", { class: "run-detail-log" });
+  const body = el("div", { class: "run-detail" }, [metaBar, logSection]);
+
+  // Intercept sheet close to cancel polling.
+  const origClose = closeSheet;
+  const cleanup = () => {
+    if (detailTimer !== null) {
+      clearInterval(detailTimer);
+      detailTimer = null;
+    }
+  };
+
+  openSheet(`${kindLabel} · detail`, body);
+
+  // Patch the sheet close button to also clear the timer (one-shot: the next
+  // openSheet call will rebuild the head, so this is safe).
+  const closeBtn = document.querySelector(".sheet-head .icon-btn");
+  if (closeBtn) {
+    const orig = closeBtn.onclick;
+    closeBtn.onclick = () => {
+      cleanup();
+      if (orig) orig();
+      else origClose();
+    };
+  }
+
+  const fmtCost = (usd) => (usd > 0 ? `$${usd.toFixed(4)}` : null);
+  const fmtTurns = (n) => (n > 0 ? `${n} turn${n === 1 ? "" : "s"}` : null);
+
+  const renderDetail = (detail) => {
+    clear(metaBar);
+    clear(logSection);
+
+    const chips = [];
+    if (detail.phase) chips.push(el("span", { class: "run-detail-chip" }, detail.phase));
+    const turns = fmtTurns(detail.num_turns);
+    if (turns) chips.push(el("span", { class: "run-detail-chip dim" }, turns));
+    const cost = fmtCost(detail.cost_usd);
+    if (cost) chips.push(el("span", { class: "run-detail-chip tabnum" }, cost));
+    if (detail.outcome) {
+      const tone =
+        detail.outcome === "in_review"
+          ? "ok"
+          : detail.outcome === "FAILED" || detail.outcome === "FLAGGED"
+            ? "danger"
+            : "warn";
+      chips.push(badge(detail.outcome, tone));
+    } else if (detail.run.status === "running") {
+      chips.push(el("span", { class: "run-spinner run-spinner--sm", "aria-hidden": "true" }));
+    }
+    if (chips.length) metaBar.appendChild(el("div", { class: "run-detail-chips" }, chips));
+    if (detail.ticket_number !== null) {
+      metaBar.appendChild(
+        el("p", { class: "run-detail-ticket dim" }, `Ticket #${detail.ticket_number}`),
+      );
+    }
+
+    if (detail.log_tail) {
+      logSection.appendChild(
+        el("pre", { class: "run-log-pre run-detail-log-pre" }, detail.log_tail),
+      );
+    } else if (detail.run.status !== "running") {
+      logSection.appendChild(el("p", { class: "dim" }, "No log captured for this run."));
+    } else {
+      logSection.appendChild(el("p", { class: "dim" }, "Waiting for log output…"));
+    }
+  };
+
+  const fetchDetail = async () => {
+    try {
+      const data = await api("GET", `/api/runs/${encodeURIComponent(runId)}`);
+      if (!document.querySelector(".sheet.open")) {
+        cleanup();
+        return;
+      }
+      renderDetail(data.detail);
+      // Stop polling once the run has settled (no longer running).
+      if (data.detail.run.status !== "running") {
+        cleanup();
+      }
+    } catch {
+      // Leave the last paint on transient errors.
+    }
+  };
+
+  // Initial paint: show a loading placeholder, then fetch.
+  metaBar.appendChild(el("p", { class: "dim" }, "Loading…"));
+  fetchDetail();
+
+  detailTimer = setInterval(() => {
+    if (!document.querySelector(".sheet.open")) {
+      cleanup();
+      return;
+    }
+    fetchDetail();
+  }, POLL_MS);
 }
 
-/** One finished run row: kind · repo · status · duration · view-log. */
+/**
+ * Format a USD cost for inline display in a run row.
+ * Returns null when cost is zero/unknown (so no chip is rendered).
+ */
+function runCostChip(costUsd) {
+  if (!costUsd || costUsd <= 0) return null;
+  return el("span", { class: "run-cost-chip tabnum dim" }, `$${costUsd.toFixed(4)}`);
+}
+
+/** One active run row: kind · repo · phase · elapsed · spinner · detail button. */
+function activeRunRow(run) {
+  // `run._phase` and `run._cost_usd` are injected by the enriched list render.
+  const phaseChip = run._phase ? el("span", { class: "run-phase-chip dim" }, run._phase) : null;
+  const costChip = runCostChip(run._cost_usd);
+  return el(
+    "li",
+    {
+      class: "run-row run-active run-row--clickable",
+      onclick: () => viewRunDetail(run.id, runKindLabel(run.kind)),
+      title: "Click to view live detail",
+    },
+    [
+      el("span", { class: "run-spinner", "aria-hidden": "true" }),
+      el("span", { class: "run-kind" }, runKindLabel(run.kind)),
+      run.repo ? el("span", { class: "run-repo dim" }, run.repo) : null,
+      phaseChip,
+      costChip,
+      el(
+        "span",
+        { class: "run-elapsed dim tabnum", title: `started ${fmtTime(run.started_at)}` },
+        runDuration(run),
+      ),
+    ],
+  );
+}
+
+/** One finished run row: kind · repo · phase · status · cost · duration · view-log. */
 function finishedRunRow(run) {
+  const phaseChip = run._phase ? el("span", { class: "run-phase-chip dim" }, run._phase) : null;
+  const costChip = runCostChip(run._cost_usd);
   return el("li", { class: "run-row run-done" }, [
     el("span", { class: "run-kind" }, runKindLabel(run.kind)),
     run.repo ? el("span", { class: "run-repo dim" }, run.repo) : null,
+    phaseChip,
     runStatusBadge(run.status),
+    costChip,
     el(
       "span",
       { class: "run-elapsed dim tabnum", title: `ended ${fmtTime(run.ended_at)}` },
@@ -2007,13 +2143,45 @@ function runActivityPanel() {
     }
   };
 
+  /**
+   * Fetch the enriched detail for a run (best-effort). Returns the detail
+   * object on success, null on any error. Used to inject phase + cost_usd into
+   * run rows without blocking the main list render.
+   */
+  const fetchRunDetail = async (runId) => {
+    try {
+      const data = await api("GET", `/api/runs/${encodeURIComponent(runId)}`);
+      return data.detail || null;
+    } catch {
+      return null;
+    }
+  };
+
   const poll = async () => {
     if (stopped) return;
     try {
       const data = await api("GET", "/api/runs?active=1");
       // Don't paint into a panel that's been detached mid-flight (view changed).
       if (stopped) return;
-      render(data.active || [], data.recent || []);
+      const active = data.active || [];
+      const recent = data.recent || [];
+
+      // Enrich active runs with phase + cost_usd via parallel detail fetches
+      // (best-effort: failures leave the fields unset, rows still render).
+      if (active.length > 0) {
+        const details = await Promise.all(active.map((r) => fetchRunDetail(r.id)));
+        if (!stopped) {
+          for (let i = 0; i < active.length; i++) {
+            const d = details[i];
+            if (d) {
+              active[i]._phase = d.phase || null;
+              active[i]._cost_usd = d.cost_usd || 0;
+            }
+          }
+        }
+      }
+
+      if (!stopped) render(active, recent);
     } catch {
       // A transient read failure shouldn't blank the panel; leave the last paint.
     }

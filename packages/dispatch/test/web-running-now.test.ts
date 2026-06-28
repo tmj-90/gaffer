@@ -173,4 +173,85 @@ describe("web: Running now panel", () => {
     expect(empty).not.toBeNull();
     expect(empty!.textContent).toMatch(/nothing running/i);
   });
+
+  it("active run rows are clickable and open the detail drawer", async () => {
+    runsPayload = {
+      active: [
+        {
+          id: "run-active-detail",
+          kind: "poll_work",
+          repo: "myrepo",
+          status: "running",
+          started_at: new Date(Date.now() - 10_000).toISOString(),
+          ended_at: null,
+          log_path: "/tmp/runs/run-active-detail.log",
+        },
+      ],
+      recent: [],
+    };
+
+    // Stub the detail endpoint with realistic enriched data.
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (input: RequestInfo) => {
+        const url = String(input);
+        const json = (obj: unknown) =>
+          new Response(JSON.stringify(obj), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.includes("/api/runs/run-active-detail") && !url.includes("/log")) {
+          return json({
+            detail: {
+              run: { id: "run-active-detail", status: "running" },
+              ticket_number: 7,
+              phase: "implement",
+              model: "claude-sonnet-4-6",
+              num_turns: 3,
+              cost_usd: 0.0042,
+              log_tail: "ROUTE #7 phase=implement...\ndelivering #7",
+              outcome: null,
+            },
+          });
+        }
+        if (url.includes("/api/runs")) return json(runsPayload);
+        if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
+        if (url.includes("/api/activity")) return json({ events: [], total: 0 });
+        if (url.includes("/decisions")) return json({ decisions: [] });
+        if (url.includes("/api/audit")) return json({ available: false, entries: [] });
+        return json({});
+      },
+    );
+
+    await loadApp();
+
+    const activeRow = document.querySelector(".run-active") as HTMLElement;
+    expect(activeRow).not.toBeNull();
+    // Row is clickable.
+    expect(activeRow.classList.contains("run-row--clickable")).toBe(true);
+
+    // Click to open the detail drawer.
+    activeRow.click();
+    await tick();
+    await tick();
+    await tick();
+
+    // Sheet should be open with detail content.
+    const sheet = document.querySelector(".sheet.open");
+    expect(sheet).not.toBeNull();
+
+    // Phase chip should be rendered.
+    const chips = sheet!.querySelectorAll(".run-detail-chip");
+    const chipsText = Array.from(chips).map((c) => c.textContent);
+    expect(chipsText).toContain("implement");
+
+    // Ticket number should be visible.
+    const ticketLine = sheet!.querySelector(".run-detail-ticket");
+    expect(ticketLine).not.toBeNull();
+    expect(ticketLine!.textContent).toContain("#7");
+
+    // Log tail should be rendered.
+    const logPre = sheet!.querySelector(".run-log-pre");
+    expect(logPre).not.toBeNull();
+    expect(logPre!.textContent).toContain("ROUTE #7");
+  });
 });

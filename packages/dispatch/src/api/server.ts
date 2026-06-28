@@ -12,6 +12,7 @@ import {
   resolveLedgerPath,
   todaySpend,
 } from "../cost/costAggregator.js";
+import { buildRunDetail } from "./runDetail.js";
 import { isAuthorized } from "./auth.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
@@ -1564,6 +1565,25 @@ function routeReadModels(
       by_repo: agg.by_repo.slice(0, TOP_N),
       top_tickets: agg.by_ticket.slice(0, TOP_N),
     });
+    return;
+  }
+
+  // RUN-ACTIVITY: GET /api/runs/:id — enriched run detail (phase · model · turns
+  // · cost · log tail · outcome) assembled from the run row + its log file +
+  // the usage ledger. Zero-state safe: missing log or absent ledger returns
+  // null/zero fields rather than a 5xx. 404 for unknown run ids.
+  if (segments.length === 3 && segments[1] === "runs") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const run = wg.runs.findById(segments[2] as string);
+    if (!run) {
+      sendJson(res, 404, errorBody("NOT_FOUND", "Run not found."));
+      return;
+    }
+    // Read the byte-capped raw tail (same reader as the /log endpoint); the
+    // detail builder then applies the line cap on top.
+    const logText = run.log_path ? readLogTail(run.log_path, RUN_LOG_TAIL_BYTES) : null;
+    const detail = buildRunDetail(run, logText, process.env);
+    sendJson(res, 200, { detail });
     return;
   }
 

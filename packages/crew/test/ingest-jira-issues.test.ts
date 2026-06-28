@@ -21,6 +21,11 @@ class ScriptedRunner implements CommandRunner {
     this.calls.push({ command, cwd });
     return this.responder(command);
   }
+  runArgs(file: string, args: readonly string[], cwd: string): CommandResult {
+    const command = [file, ...args].join(" ");
+    this.calls.push({ command, cwd });
+    return this.responder(command);
+  }
 }
 
 function ok(stdout: string): CommandResult {

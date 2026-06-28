@@ -185,16 +185,22 @@ gaffer_with_lock() {
     # flock(1) (Linux/CI): hold an exclusive lock on a dedicated fd, run the
     # command, release on close. -w bounds the wait so a wedged holder can't hang
     # the worker forever. Exit 1 specifically signals "couldn't acquire".
-    local fd
-    exec {fd}>>"$lockfile" 2>/dev/null || { "$@"; return $?; }
-    if flock -w "$GAFFER_LOCK_TIMEOUT" "$fd"; then
-      "$@"; local rc=$?
-      flock -u "$fd"; eval "exec $fd>&-"
-      return $rc
+    # Hold the lock on fd 9 inside a SUBSHELL so the lock descriptor NEVER exists in
+    # the parent shell. The earlier form opened a dynamic `{fd}>>` in the parent and
+    # ran the command there — but lock-wrapped log()/skip/ledger calls fire inside the
+    # tick's own `while read`/process-substitution loops, and a parent-held descriptor
+    # collided with / leaked into those loops, silently breaking candidate selection on
+    # the flock (Linux) path. The subshell scopes fd 9 to itself and auto-closes it on
+    # exit (releasing the lock); every lock-wrapped call is an external file write, so
+    # running it in a subshell is behaviour-preserving. `exit 75` is flock's
+    # couldn't-acquire signal (EX_TEMPFAIL; the wrapped writers never return it).
+    ( flock -w "$GAFFER_LOCK_TIMEOUT" 9 || exit 75; "$@" ) 9>>"$lockfile"
+    local rc=$?
+    if [ "$rc" = 75 ]; then
+      echo "gaffer_with_lock: could not acquire $lockfile within ${GAFFER_LOCK_TIMEOUT}s" >&2
+      return 1
     fi
-    eval "exec $fd>&-"
-    echo "gaffer_with_lock: could not acquire $lockfile within ${GAFFER_LOCK_TIMEOUT}s" >&2
-    return 1
+    return "$rc"
   fi
   # Portable fallback: atomic mkdir spinlock (the macOS path — no flock there).
   # GUARD: a locked section must finish well WITHIN GAFFER_LOCK_STALE — the

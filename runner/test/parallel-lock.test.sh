@@ -157,6 +157,19 @@ else
   fi
 fi
 
+echo "== AC7: a lock-wrapped call inside a parent while-read loop is fd-isolated =="
+# Regression: the flock path used to open the lock descriptor in the PARENT shell, which
+# collided with the tick's process-substitution candidate loops and silently dropped
+# iterations (passed on macOS's fd-free mkdir path, failed on the Linux flock path).
+# Drive that exact shape — every iteration must run.
+n7=0
+while IFS= read -r line7; do
+  gaffer_with_lock "$(mktemp -u "${TMPDIR:-/tmp}/lk.XXXX")" echo "$line7" >/dev/null 2>&1
+  n7=$((n7 + 1))
+done < <(printf 'a\nb\nc\nd\ne\n')
+[ "$n7" = 5 ] && ok "all 5 parent read-loop iterations ran (lock fd did not corrupt the loop)" \
+  || fail "parent while-read loop corrupted by the lock descriptor (ran $n7 of 5)"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"; exit 0

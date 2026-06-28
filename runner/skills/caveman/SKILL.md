@@ -9,6 +9,11 @@ area: meta
 
 > Adapted from [Matt Pocock's caveman](https://github.com/mattpocock/skills) (MIT). Voice preserved per his repo's note.
 
+> **Manual-only.** This is a user-comms mode, not a delivery lens — it is tagged
+> `area: meta` so the factory's area-gated skill selector (see
+> `runner/bin/select-skills.mjs`) does NOT auto-inject it into every ticket. It
+> activates only when the user explicitly invokes it (the triggers above).
+
 Respond terse like smart caveman. All technical substance stay. Only fluff die.
 
 ## Persistence

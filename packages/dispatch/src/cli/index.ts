@@ -8,6 +8,8 @@ import { Dispatch } from "../core.js";
 import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 import type { Actor } from "../domain/types.js";
 import { exportState, importStateFromJson, serializeBundle } from "../io/stateExport.js";
+import { buildNotifierFromEnv } from "../notify/config.js";
+import { isNotifyKind } from "../notify/types.js";
 import { DispatchError } from "../util/errors.js";
 import { resolveDbPath } from "../util/paths.js";
 import { VERSION } from "../version.js";
@@ -1131,6 +1133,42 @@ program
     } finally {
       wg.db.close();
     }
+  });
+
+// --- H2 notifications: a setup-helper to test the configured sinks ----------
+const notify = program.command("notify").description("Human-gate notification commands");
+notify
+  .command("test")
+  .description(
+    "Fire a synthetic human-gate event through the sinks configured via the " +
+      "GAFFER_NOTIFY_* env vars (webhook · slack · desktop). With nothing " +
+      "configured the notifier is a no-op and this reports 'disabled'.",
+  )
+  .option(
+    "--kind <kind>",
+    "gate kind: review_needed · ticket_blocked · ticket_parked · decision_pending",
+    "review_needed",
+  )
+  .action((opts: { kind?: string }) => {
+    const kind = opts.kind ?? "review_needed";
+    if (!isNotifyKind(kind)) {
+      throw new DispatchError("VALIDATION_ERROR", `Unknown notify kind: ${kind}`, {
+        allowed: ["review_needed", "ticket_blocked", "ticket_parked", "decision_pending"],
+      });
+    }
+    const notifier = buildNotifierFromEnv();
+    if (!notifier.enabled) {
+      printJson({ ok: true, enabled: false, message: "no notify sinks configured" });
+      return;
+    }
+    notifier.notify({
+      kind,
+      title: "Synthetic test event",
+      status: "in_review",
+      at: new Date().toISOString(),
+      detail: "dispatch notify test",
+    });
+    printJson({ ok: true, enabled: true, fired: kind });
   });
 
 async function main(): Promise<void> {

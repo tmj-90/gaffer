@@ -321,6 +321,24 @@ export const loopsSchema = z
         max_tickets: z.number().int().positive().default(20),
       })
       .default({}),
+    // The idle MAINTENANCE LANE (audit item A4). OFF BY DEFAULT. When enabled,
+    // a quiet idle tick (no claimable ticket) runs ONE maintenance loop chosen
+    // by a deterministic priority + rotation scheduler — NO LLM in the choice —
+    // instead of the single fixed idle scan. Which loops it rotates through is
+    // determined by each loop's own `enabled` flag above; this block only gates
+    // the lane itself and points at the persisted rotation cursor.
+    maintenance: z
+      .object({
+        // Master toggle. OFF respects token cost; ON turns the smart prioritised
+        // lane on. The lane still only fires when at least one idle loop above is
+        // enabled (those provide the lanes it rotates through).
+        enabled: z.boolean().default(false),
+        // Where the rotation cursor is persisted so cadence survives across
+        // ticks/processes. Null = derive `<GAFFER_DATA>/maintenance-cursor.json`
+        // at the call site; an explicit path overrides it (handy for tests).
+        cursor_path: z.string().nullable().default(null),
+      })
+      .default({}),
     // The self-improving closed loop. OFF BY DEFAULT. When enabled, idle ticks may
     // auto-promote their own DRAFT improvement tickets to `ready` so the delivery
     // loop claims them — without a human in the promote step. It is deliberately

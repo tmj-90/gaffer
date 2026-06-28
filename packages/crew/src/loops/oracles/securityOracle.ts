@@ -73,6 +73,14 @@ function normalizeFile(file: string, root: string): string {
 /** Env var naming a LOCAL semgrep ruleset (file or dir) passed to `--config`. */
 const RULESET_ENV = "GAFFER_SEMGREP_RULESET";
 
+/** Env var that allows remote rulesets (opt-in). Disabled by default. */
+const ALLOW_REMOTE_ENV = "GAFFER_SEMGREP_ALLOW_REMOTE";
+
+/** True when the ruleset looks like a remote semgrep registry pack. */
+function isRemoteRuleset(ruleset: string): boolean {
+  return ruleset === "auto" || ruleset.startsWith("p/") || ruleset.startsWith("r/");
+}
+
 /**
  * Resolve the ruleset to pass to `--config`, LOCAL-FIRST. Precedence:
  * `options.ruleset` → `$GAFFER_SEMGREP_RULESET`. Whitespace is trimmed and an
@@ -114,6 +122,14 @@ export function createSecurityOracle(
         return {
           available: false,
           reason: `semgrep ruleset not configured (set ${RULESET_ENV} to a local ruleset)`,
+        };
+      }
+      // Offline-by-default: reject remote registry packs unless the operator
+      // explicitly opts in via GAFFER_SEMGREP_ALLOW_REMOTE=1.
+      if (isRemoteRuleset(ruleset) && (env[ALLOW_REMOTE_ENV] ?? "").trim() !== "1") {
+        return {
+          available: false,
+          reason: `semgrep ruleset '${ruleset}' looks like a remote registry pack (auto/p//r/); set ${ALLOW_REMOTE_ENV}=1 to allow remote rulesets`,
         };
       }
       const resolved = resolveBinary(binary, root);

@@ -275,9 +275,9 @@ describe("securityOracle (semgrep)", () => {
     const repo = tempRepo("orc-sg-absent-");
     const oracle = createSecurityOracle(new ScriptedCommandRunner([]), {
       binary: "/nonexistent/semgrep",
-      // A ruleset IS configured here, so the unavailability is genuinely the
-      // absent binary (not the missing-ruleset guard).
-      ruleset: "p/local",
+      // A local ruleset IS configured here, so the unavailability is genuinely the
+      // absent binary (not the missing-ruleset guard or the remote-pack guard).
+      ruleset: "/etc/gaffer/local-rules.yml",
     });
     const result = oracle.consult(repo);
     expect(result.available).toBe(false);
@@ -305,18 +305,18 @@ describe("securityOracle (semgrep)", () => {
     expect(runner.calls).toHaveLength(0);
   });
 
-  it("runs with an explicit ruleset via --config (never auto)", () => {
+  it("runs with an explicit local ruleset via --config (never auto)", () => {
     const repo = tempRepo("orc-sg-ruleset-");
     installLocalBin(repo, "semgrep");
     const runner = new ScriptedCommandRunner([
       { match: (c) => c.includes("semgrep"), result: { stdout: sample, exitCode: 1 } },
     ]);
-    const oracle = createSecurityOracle(runner, { ruleset: "p/local-ts", env: {} });
+    const oracle = createSecurityOracle(runner, { ruleset: "/etc/gaffer/rules.yml", env: {} });
     const result = oracle.consult(repo);
     expect(result.available).toBe(true);
     expect(runner.calls).toHaveLength(1);
     const cmd = runner.calls[0]!.command;
-    expect(cmd).toContain("--config p/local-ts");
+    expect(cmd).toContain("--config /etc/gaffer/rules.yml");
     expect(cmd).not.toContain("auto");
   });
 
@@ -334,6 +334,48 @@ describe("securityOracle (semgrep)", () => {
     const cmd = runner.calls[0]!.command;
     expect(cmd).toContain("--config /etc/gaffer/semgrep-local.yml");
     expect(cmd).not.toContain("auto");
+  });
+
+  it("rejects a remote-looking ruleset (auto) without GAFFER_SEMGREP_ALLOW_REMOTE=1", () => {
+    const repo = tempRepo("orc-sg-remote-auto-");
+    installLocalBin(repo, "semgrep");
+    const runner = new ScriptedCommandRunner([
+      { match: (c) => c.includes("semgrep"), result: { stdout: "{}", exitCode: 0 } },
+    ]);
+    const oracle = createSecurityOracle(runner, { ruleset: "auto", env: {} });
+    const result = oracle.consult(repo);
+    expect(result.available).toBe(false);
+    if (!result.available) expect(result.reason).toMatch(/remote registry pack/i);
+    // No semgrep process was invoked.
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("allows a remote ruleset when GAFFER_SEMGREP_ALLOW_REMOTE=1 is set", () => {
+    const repo = tempRepo("orc-sg-remote-allowed-");
+    installLocalBin(repo, "semgrep");
+    const runner = new ScriptedCommandRunner([
+      { match: (c) => c.includes("semgrep"), result: { stdout: sample, exitCode: 1 } },
+    ]);
+    const oracle = createSecurityOracle(runner, {
+      ruleset: "p/javascript",
+      env: { GAFFER_SEMGREP_ALLOW_REMOTE: "1" },
+    });
+    const result = oracle.consult(repo);
+    expect(result.available).toBe(true);
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]!.command).toContain("--config p/javascript");
+  });
+
+  it("rejects p/ and r/ remote pack prefixes without GAFFER_SEMGREP_ALLOW_REMOTE=1", () => {
+    const repo = tempRepo("orc-sg-remote-pack-");
+    installLocalBin(repo, "semgrep");
+    const runner = new ScriptedCommandRunner([]);
+    for (const remote of ["p/security", "r/javascript", "auto"]) {
+      const oracle = createSecurityOracle(runner, { ruleset: remote, env: {} });
+      const result = oracle.consult(repo);
+      expect(result.available).toBe(false);
+      expect(runner.calls).toHaveLength(0);
+    }
   });
 });
 

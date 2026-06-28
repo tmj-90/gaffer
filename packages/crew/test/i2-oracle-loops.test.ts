@@ -220,7 +220,7 @@ describe("security-hotspot loop with semgrep oracle", () => {
     const wg = new FakeDispatchClient();
     // An explicit local ruleset is required now that `auto` is never defaulted.
     const d = deps(configForRepo(repo), wg, runner, {
-      security: createSecurityOracle(runner, { ruleset: "p/local" }),
+      security: createSecurityOracle(runner, { ruleset: "/etc/gaffer/local-rules.yml", env: {} }),
     });
 
     const outcome = runIdleSecurityHotspotLoop(d);
@@ -268,7 +268,7 @@ describe("security-hotspot loop with semgrep oracle", () => {
     ]);
     const wg = new FakeDispatchClient();
     const d = deps(configForRepo(repo), wg, runner, {
-      security: createSecurityOracle(runner, { ruleset: "p/local" }),
+      security: createSecurityOracle(runner, { ruleset: "/etc/gaffer/local-rules.yml", env: {} }),
     });
     expect(runIdleSecurityHotspotLoop(d).status).toBe("no_findings");
   });

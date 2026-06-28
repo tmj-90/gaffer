@@ -29,6 +29,27 @@ the repo's existing idioms — provably correct, not just compiling.
 7. **Verify + evidence.** Run tests + lint, record `test_output` via the
    `record-evidence` skill, and submit for review.
 
+## Build / Test
+
+- **Type check:** `tsc --noEmit` (or the repo's script) — fix the cause, never widen `tsconfig`.
+- **Lint/format:** the repo's ESLint + Prettier scripts; fix, don't suppress.
+- **Tests:** the repo's runner (Vitest/Jest); coverage via its coverage script.
+- The DoD is verified by the repo's configured test/coverage commands — run them and
+  record the output; a green type-check + tested run is the evidence.
+
+## Review checklist (a TS reviewer must check)
+
+- **Strict mode intact** — no weakened `tsconfig`, no stray `@ts-ignore`/`@ts-expect-error`
+  without justification.
+- **`unknown` over `any`** — every `any` is justified in a comment; `satisfies` used instead
+  of type assertions where possible.
+- **External input validated** at the boundary (e.g. Zod), not cast.
+- **No floating promises**, no empty catch blocks — every promise is awaited/handled and
+  errors are handled or rethrown.
+- **Named exports** by default; imports ordered external → internal alias → relative,
+  alphabetised; `const` over `let`, no `var`.
+- **Lint/format clean** — matches the repo's ESLint + Prettier config exactly.
+
 ## Rules
 
 - Strict mode stays on; no widening `tsconfig` to silence errors.

@@ -170,10 +170,23 @@ check("stack + area compose", () => {
   const sel = selectSkills({ stacks: ["node"], area: "security" })
     .map((s) => s.name)
     .sort();
-  eq(
-    sel,
-    ["security-authz", "security-input-validation", "security-secret-handling"],
-    "node+security",
+  // Original three stack-specific node security packs must be present
+  for (const name of ["security-authz", "security-input-validation", "security-secret-handling"]) {
+    assert(sel.includes(name), `node+security must include ${name}`);
+  }
+  // Stack-agnostic security packs (cloud-security, threat-detection) also appear — expected
+  assert(
+    sel.includes("cloud-security"),
+    "node+security must include cloud-security (stack-agnostic)",
+  );
+  assert(
+    sel.includes("threat-detection"),
+    "node+security must include threat-detection (stack-agnostic)",
+  );
+  // No non-security packs appear
+  assert(
+    !sel.includes("typescript-conventions"),
+    "security area must not pull typescript-conventions",
   );
 });
 
@@ -255,6 +268,131 @@ check("react-native / expo labels route the mobile pack (and not from plain web 
     assert(names.includes("frontend-design"), `${label} → frontend-design`);
     assert(names.includes("typescript-conventions"), `${label} → typescript-conventions`);
   }
+});
+
+// --- new skill-pack area routing (feat/skill-enrichment-v2) -----------------
+
+check("marketing area packs exist and route for marketing area", () => {
+  const marketingNames = selectSkills({ area: "marketing" }).map((s) => s.name);
+  for (const name of [
+    "landing-page-generator",
+    "page-cro",
+    "copywriting",
+    "seo-audit",
+    "schema-markup",
+    "aeo",
+    "slides-deck",
+  ]) {
+    assert(marketingNames.includes(name), `marketing area missing ${name}`);
+  }
+  // marketing packs must NOT appear for devops area
+  const devopsNames = selectSkills({ area: "devops" }).map((s) => s.name);
+  assert(
+    !devopsNames.includes("landing-page-generator"),
+    "landing-page-generator must not appear in devops area",
+  );
+  assert(!devopsNames.includes("copywriting"), "copywriting must not appear in devops area");
+});
+
+check("devops area packs exist and route correctly", () => {
+  const devopsNames = selectSkills({ area: "devops" }).map((s) => s.name);
+  for (const name of [
+    "observability-designer",
+    "slo-architect",
+    "runbook-generator",
+    "ci-cd-pipeline",
+    "incident-response",
+  ]) {
+    assert(devopsNames.includes(name), `devops area missing ${name}`);
+  }
+  // devops packs must NOT appear for marketing area
+  const marketingNames = selectSkills({ area: "marketing" }).map((s) => s.name);
+  assert(
+    !marketingNames.includes("observability-designer"),
+    "observability-designer must not appear in marketing area",
+  );
+  assert(
+    !marketingNames.includes("slo-architect"),
+    "slo-architect must not appear in marketing area",
+  );
+});
+
+check("infra area packs exist and route correctly", () => {
+  const infraNames = selectSkills({ area: "infra" }).map((s) => s.name);
+  for (const name of ["terraform-patterns", "kubernetes-operator", "docker-development"]) {
+    assert(infraNames.includes(name), `infra area missing ${name}`);
+  }
+  // infra packs must NOT appear for product area
+  const productNames = selectSkills({ area: "product" }).map((s) => s.name);
+  assert(
+    !productNames.includes("terraform-patterns"),
+    "terraform-patterns must not appear in product area",
+  );
+});
+
+check("product area packs exist and route correctly", () => {
+  const productNames = selectSkills({ area: "product" }).map((s) => s.name);
+  for (const name of ["prd", "user-story", "rice", "product-discovery"]) {
+    assert(productNames.includes(name), `product area missing ${name}`);
+  }
+});
+
+check("docs area packs exist and route correctly", () => {
+  const docsNames = selectSkills({ area: "docs" }).map((s) => s.name);
+  for (const name of ["md-document", "changelog-generator", "code-tour"]) {
+    assert(docsNames.includes(name), `docs area missing ${name}`);
+  }
+});
+
+check("review area packs exist and route correctly", () => {
+  const reviewNames = selectSkills({ area: "review" }).map((s) => s.name);
+  for (const name of ["adversarial-reviewer", "api-design-reviewer"]) {
+    assert(reviewNames.includes(name), `review area missing ${name}`);
+  }
+});
+
+check("data area packs exist", () => {
+  const dataNames = selectSkills({ area: "data" }).map((s) => s.name);
+  assert(
+    dataNames.includes("database-schema-designer"),
+    "data area missing database-schema-designer",
+  );
+});
+
+check("caveman is meta area and stack-agnostic (selects for any stack)", () => {
+  const caveman = all.find((s) => s.name === "caveman");
+  assert(caveman, "caveman skill should load from the library");
+  assert(caveman.area === "meta", "caveman must have area: meta");
+  eq(caveman.stack, [], "caveman is stack-agnostic");
+  for (const stack of ["node", "python", "go", "java"]) {
+    const names = selectSkills({ stacks: [stack] }).map((s) => s.name);
+    assert(names.includes("caveman"), `caveman should be selectable for the ${stack} stack`);
+  }
+});
+
+check("stack-constrained infra skills (terraform, k8s) route by stack token", () => {
+  // terraform stack → terraform-patterns
+  const tf = selectSkills({ stacks: ["terraform"] }).map((s) => s.name);
+  assert(tf.includes("terraform-patterns"), "terraform stack → terraform-patterns");
+  // kubernetes stack → kubernetes-operator
+  const k8s = selectSkills({ stacks: ["kubernetes"] }).map((s) => s.name);
+  assert(k8s.includes("kubernetes-operator"), "kubernetes stack → kubernetes-operator");
+  // plain node must not pull stack-constrained infra packs
+  const node = selectSkills({ stacks: ["node"] }).map((s) => s.name);
+  assert(!node.includes("terraform-patterns"), "plain node must not pull terraform-patterns");
+  assert(!node.includes("kubernetes-operator"), "plain node must not pull kubernetes-operator");
+});
+
+check("landing-page-generator routes for react stack (marketing area, web stack)", () => {
+  // landing-page-generator has stack: [typescript, javascript, react, web]
+  const react = selectSkills({ stacks: ["react"] }).map((s) => s.name);
+  assert(react.includes("landing-page-generator"), "react stack → landing-page-generator");
+  // java stack must not pull it
+  const java = selectSkills({ stacks: ["java"] }).map((s) => s.name);
+  assert(
+    !java.includes("landing-page-generator"),
+    "java stack must not pull landing-page-generator",
+  );
 });
 
 // --- report -----------------------------------------------------------------

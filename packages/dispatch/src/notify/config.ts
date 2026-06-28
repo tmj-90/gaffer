@@ -17,12 +17,16 @@ import {
  *   - GAFFER_NOTIFY_SLACK_URL    Slack incoming-webhook URL (text variant)
  *   - GAFFER_NOTIFY_DESKTOP=1    fire a native desktop banner
  *   - GAFFER_NOTIFY_EVENTS       CSV allow-list of kinds; default = all gates
+ *   - GAFFER_NOTIFY_REDACT=1     send a MINIMAL body (kind + ticket_number +
+ *                                status + url only) — drops the agent-influenceable
+ *                                free-text title/detail from outbound webhooks
  */
 export const NOTIFY_ENV = {
   webhookUrl: "GAFFER_NOTIFY_WEBHOOK_URL",
   slackUrl: "GAFFER_NOTIFY_SLACK_URL",
   desktop: "GAFFER_NOTIFY_DESKTOP",
   events: "GAFFER_NOTIFY_EVENTS",
+  redact: "GAFFER_NOTIFY_REDACT",
 } as const;
 
 /** Default allow-list: every human-gate kind fires. */
@@ -65,7 +69,13 @@ export function buildNotifierFromEnv(env: NodeJS.ProcessEnv = process.env): Noti
 
   if (sinks.length === 0) return NOOP_NOTIFIER;
 
-  return new CompositeNotifier(sinks, parseAllowedEvents(env[NOTIFY_ENV.events]));
+  const redact = isTruthyFlag(env[NOTIFY_ENV.redact]);
+  return new CompositeNotifier(
+    sinks,
+    parseAllowedEvents(env[NOTIFY_ENV.events]),
+    undefined,
+    redact,
+  );
 }
 
 /** A boolean env flag is on for "1"/"true"/"yes" (case-insensitive). */

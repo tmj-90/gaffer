@@ -307,6 +307,105 @@ describe("WebhookSink", () => {
   });
 });
 
+describe("FIX-6 outbound redaction (GAFFER_NOTIFY_REDACT)", () => {
+  // An agent-influenceable event: the title/detail are free text a prompt-injected
+  // agent can steer, so they must not leave the box when redaction is on.
+  const sensitive: NotifyEvent = {
+    kind: "review_needed",
+    ticket_number: 42,
+    title: "EXFIL token=sk-secret-abc123",
+    detail: "leaked: AKIA_FAKE_KEY and a customer email",
+    status: "in_review",
+    repo: "svc",
+    url: "https://dash.test/t/42",
+    at: "2026-01-01T00:00:00.000Z",
+  };
+
+  /** Capture the JSON body a CompositeNotifier+WebhookSink actually POSTs. */
+  async function capturePost(redact: boolean): Promise<Record<string, unknown>> {
+    let body = "";
+    const transport: HttpTransport = async (_url, init) => {
+      body = init.body;
+      return { ok: true, status: 200 };
+    };
+    const sink = new WebhookSink("https://example.test/hook", transport);
+    const notifier = new CompositeNotifier([sink], ["review_needed"], undefined, redact);
+    notifier.notify(sensitive);
+    // notify() is fire-and-forget; let the sink's microtask flush.
+    await new Promise((r) => setTimeout(r, 0));
+    return JSON.parse(body) as Record<string, unknown>;
+  }
+
+  it("full mode (default) sends the raw title and detail", async () => {
+    const sent = await capturePost(false);
+    expect(sent["title"]).toBe(sensitive.title);
+    expect(sent["detail"]).toBe(sensitive.detail);
+    expect(sent["kind"]).toBe("review_needed");
+    expect(sent["ticket_number"]).toBe(42);
+  });
+
+  it("redacted mode drops title/detail/repo, keeps kind+ticket+status+url", async () => {
+    const sent = await capturePost(true);
+    // The agent-influenceable free text must be GONE.
+    expect(sent["title"]).toBeUndefined();
+    expect(sent["detail"]).toBeUndefined();
+    expect(sent["repo"]).toBeUndefined();
+    expect(JSON.stringify(sent)).not.toContain("EXFIL");
+    expect(JSON.stringify(sent)).not.toContain("AKIA_FAKE_KEY");
+    // The structural triage fields stay.
+    expect(sent["kind"]).toBe("review_needed");
+    expect(sent["ticket_number"]).toBe(42);
+    expect(sent["status"]).toBe("in_review");
+    expect(sent["url"]).toBe("https://dash.test/t/42");
+  });
+
+  it("GAFFER_NOTIFY_REDACT=1 makes the env-built notifier POST a redacted body", async () => {
+    // buildNotifierFromEnv constructs its own WebhookSink over the global fetch, so
+    // stub fetch to capture the body the env-wired notifier actually sends.
+    const realFetch = globalThis.fetch;
+    let body = "";
+    globalThis.fetch = (async (_url: string, init: { body: string }) => {
+      body = init.body;
+      return { ok: true, status: 200 } as Response;
+    }) as typeof fetch;
+    try {
+      const notifier = buildNotifierFromEnv({
+        GAFFER_NOTIFY_WEBHOOK_URL: "https://example.test/hook",
+        GAFFER_NOTIFY_REDACT: "1",
+      });
+      expect(notifier.enabled).toBe(true);
+      notifier.notify(sensitive);
+      await new Promise((r) => setTimeout(r, 0));
+      const sent = JSON.parse(body) as Record<string, unknown>;
+      expect(sent["title"]).toBeUndefined();
+      expect(sent["detail"]).toBeUndefined();
+      expect(sent["kind"]).toBe("review_needed");
+      expect(sent["ticket_number"]).toBe(42);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("without the flag the env-built notifier POSTs the full body", async () => {
+    const realFetch = globalThis.fetch;
+    let body = "";
+    globalThis.fetch = (async (_url: string, init: { body: string }) => {
+      body = init.body;
+      return { ok: true, status: 200 } as Response;
+    }) as typeof fetch;
+    try {
+      const notifier = buildNotifierFromEnv({
+        GAFFER_NOTIFY_WEBHOOK_URL: "https://example.test/hook",
+      });
+      notifier.notify(sensitive);
+      await new Promise((r) => setTimeout(r, 0));
+      expect((JSON.parse(body) as Record<string, unknown>)["title"]).toBe(sensitive.title);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
 describe("SlackSink", () => {
   it("rewrites the body to Slack's {text} shape", async () => {
     let captured = "";

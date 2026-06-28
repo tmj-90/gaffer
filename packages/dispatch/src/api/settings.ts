@@ -217,6 +217,17 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "(review_needed · ticket_blocked · ticket_parked · decision_pending). " +
       "Empty = all gates.",
   },
+  {
+    key: "GAFFER_NOTIFY_REDACT",
+    type: "boolean",
+    group: "notifications",
+    label: "Redact webhook payload",
+    help:
+      "Send a minimal outbound body (kind · ticket number · status · dashboard URL) " +
+      "and drop the free-text ticket title/detail. Use when the webhook/Slack " +
+      "endpoint is outside your trust boundary — ticket text can be " +
+      "prompt-injection-influenced.",
+  },
 ] as const;
 
 /** Fast lookup of a known key → its descriptor. */

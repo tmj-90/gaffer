@@ -976,6 +976,86 @@ allowed("literal in-root redirect still allowed", "echo ok > sub/ok.txt");
 allowed("literal in-root tee still allowed", "echo ok | tee sub/ok.txt");
 allowed("literal in-root cp still allowed", "cp src/a.ts sub/b.ts");
 
+// =====================================================================
+// S-1 / S-4 — fail-closed-on-quoting-ambiguity tokenizer bypass
+// ---------------------------------------------------------------------
+// The old segment tokenizer (`/"[^"]*"|'[^']*'|\S+/g`) mis-parsed a quoted
+// assignment value containing a space: `HOME="/tmp/x y" cp a /root/b` split as
+// ["HOME=\"/tmp/x", "y\"", …], so `HOME="/tmp/x` was stripped as a `VAR=`
+// assignment, `y"` became a bogus verb, and the real `cp /root/b` destination
+// was never checked → write-boundary BYPASS. Same class: `$'…'` ANSI-C / `$"…"`
+// locale strings and unbalanced quotes. The quote-aware tokenizer now either
+// parses these correctly (so the real verb+target IS checked) or, when a segment
+// is genuinely unresolvable, fails CLOSED via the UNVERIFIABLE sentinel.
+//
+// Each case runs with GAFFER_WRITE_ROOTS = a temp dir, cwd inside it, targeting
+// a path OUTSIDE that root — so the ONLY reason it could escape is the bug. All
+// were ALLOWED pre-fix and MUST now BLOCK (exit 2).
+{
+  const S1_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-s1amb-")));
+  const S1_ENV = { GAFFER_WRITE_ROOTS: S1_ROOT };
+  const denyAmb = (label, cmd) => {
+    const code = runWithEnv(bash(cmd), S1_ENV, S1_ROOT);
+    if (code === 2) passed += 1;
+    else failures.push(`DENY expected but got exit ${code}: ${label} — ${cmd}`);
+  };
+  const allowAmb = (label, cmd) => {
+    const code = runWithEnv(bash(cmd), S1_ENV, S1_ROOT);
+    if (code === 0) passed += 1;
+    else failures.push(`ALLOW expected but got exit ${code}: ${label} — ${cmd}`);
+  };
+
+  // (a) Quoted-assignment-with-space — THE S-1 bypass and its variants.
+  denyAmb("quoted-assignment space hides cp dest", `HOME="/tmp/x y" cp a /root/b`);
+  denyAmb("quoted-assignment space hides mv dest", `FOO="/a b" mv x /home/operator/evil`);
+  denyAmb("quoted-assignment space hides tee dest", `LANG="en US" tee /home/operator/.zshrc`);
+  denyAmb("quoted-assignment space (single quotes)", `HOME='/tmp/x y' cp a /home/operator/e`);
+
+  // (b) `$'…'` ANSI-C and `$"…"` locale quoting — unmodelled escape semantics.
+  denyAmb("ansi-c $'…' in redirect target", `printf %s $'\\x2f' > /home/operator/e`);
+  denyAmb("ansi-c $'…' as cp arg", `cp $'\\x41' /home/operator/e`);
+  denyAmb('locale $"…" as cp arg', `cp $"x y" /home/operator/e`);
+
+  // (c) Unbalanced / unpaired quote — cannot tokenize → fail closed.
+  denyAmb("unbalanced double quote", `cp a "/home/operator/e`);
+  denyAmb("unbalanced single quote", `mv x '/home/operator/e`);
+
+  // (d) Newly-handled verbs (conservative, target-unprovable → deny).
+  denyAmb("git worktree add outside root", `git worktree add /home/operator/wt`);
+  denyAmb(
+    "git -C worktree add outside root",
+    `git -C /home/operator/r worktree add /home/operator/wt`,
+  );
+  denyAmb("tar -x extract with -C outside root", `tar -xf evil.tar -C /home/operator`);
+  denyAmb("tar -x extract (archive traversal unverifiable)", `tar -xf evil.tar`);
+  denyAmb("tar -xzf extract (traversal unverifiable)", `tar -xzf evil.tgz`);
+  denyAmb("find -exec cp (unverifiable {} target)", `find . -exec cp {} /home/operator/x ;`);
+  denyAmb("find -exec mv (unverifiable {} target)", `find . -exec mv {} /home/operator/x ;`);
+  denyAmb("inline python os.system shell-out", `python -c "import os; os.system('cp a /root/b')"`);
+  denyAmb("inline python os.popen shell-out", `python -c "import os; os.popen('rm -rf /')"`);
+  denyAmb(
+    "inline python subprocess shell-out",
+    `python3 -c "import subprocess; subprocess.run(['cp','a','/root/b'])"`,
+  );
+
+  // (e) The fix must NOT over-block legitimate, in-scope commands.
+  allowAmb("legit quoted-assignment in-root cp", `HOME="${S1_ROOT}/h" cp a "${S1_ROOT}/b"`);
+  allowAmb("legit cp with quoted-space in-root dst", `cp a "${S1_ROOT}/b c"`);
+  allowAmb("legit echo quoted redirect in-root", `echo "a b c" > "${S1_ROOT}/out.txt"`);
+  allowAmb("legit tar CREATE archive (not extract)", `tar czf dist.tgz dist/`);
+  allowAmb("legit tar -tf list (not extract)", `tar -tf archive.tar`);
+  allowAmb("legit git worktree list (not add)", `git worktree list`);
+  allowAmb("legit find -exec grep reader", `find . -type f -exec grep TODO {} ;`);
+  // Legit inline interpreters: a quoted `;` inside the `-c` body must NOT be
+  // mistaken for an unbalanced-quote (the whole-command balance check guards this).
+  allowAmb("legit inline python print", `python3 -c "print(1+1)"`);
+  allowAmb(
+    "legit inline python write_text in-root (quoted ; in body)",
+    `python3 -c "from pathlib import Path; Path('${S1_ROOT}/p').write_text('x')"`,
+  );
+  rmSync(S1_ROOT, { recursive: true, force: true });
+}
+
 if (failures.length) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
   for (const f of failures) console.error("  ✗ " + f);

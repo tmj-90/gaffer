@@ -220,6 +220,19 @@ export const loopsSchema = z
         min_delivered_tickets: minDeliveredTicketsSchema.nullable().default(null),
       })
       .default({}),
+    idle_tech_debt: z
+      .object({
+        enabled: z.boolean().default(false),
+        trigger: z.string().default("when_queue_empty"),
+        mode: idleLoopModeSchema.default("create_draft_tickets"),
+        repos: z.array(z.string()).default([]),
+        min_delivered_tickets: minDeliveredTicketsSchema.nullable().default(null),
+        // A non-test source file over this many LOC is flagged as a god-file.
+        god_file_lines: z.number().int().positive().default(500),
+        // A churn×size hotspot is flagged when (commit count × LOC) exceeds this.
+        churn_size_product_threshold: z.number().int().positive().default(5000),
+      })
+      .default({}),
     idle_lore_gap: z
       .object({
         // Off by default: only meaningful with a real Memory configured.

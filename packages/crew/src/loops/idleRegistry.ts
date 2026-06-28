@@ -4,6 +4,7 @@ import { runIdleDocsLoop } from "./idleDocs.js";
 import { runIdleLoreGapLoop, type IdleLoreGapDeps } from "./idleLoreGap.js";
 import { runIdleFeatureBacklogLoop, type IdleFeatureBacklogDeps } from "./idleFeatureBacklog.js";
 import { runIdleSecurityHotspotLoop } from "./idleSecurityHotspot.js";
+import { runIdleTechDebtLoop } from "./idleTechDebt.js";
 import { runIdleTestQualityLoop } from "./idleTestQuality.js";
 import { runIdleTypeQualityLoop } from "./idleTypeQuality.js";
 import { SelfImproveGate } from "./selfImprove.js";
@@ -34,6 +35,7 @@ export type IdleLoopId =
   | "documentation"
   | "dependency_hygiene"
   | "security_hotspot"
+  | "tech_debt"
   | "lore_gap"
   | "design_drift";
 
@@ -97,6 +99,11 @@ export const IDLE_LOOPS: readonly IdleLoopDefinition[] = [
     id: "security_hotspot",
     enabled: (d) => d.config.loops.idle_security_hotspot.enabled,
     run: (d) => normalizeScan(runIdleSecurityHotspotLoop(d)),
+  },
+  {
+    id: "tech_debt",
+    enabled: (d) => d.config.loops.idle_tech_debt.enabled,
+    run: (d) => normalizeScan(runIdleTechDebtLoop(d)),
   },
   // TODO(memory): design-drift scan needs Memory boundary definitions.
 ];

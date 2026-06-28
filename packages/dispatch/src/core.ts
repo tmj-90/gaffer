@@ -39,6 +39,8 @@ import {
   type ScopeEdge,
   type ScopeNode,
   type ScopeRepo,
+  type Run,
+  type RunKind,
   type TestContract,
   type Ticket,
   type TicketDependency,
@@ -62,6 +64,7 @@ import {
 import { EvidenceRepository } from "./repositories/evidenceRepository.js";
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
+import { RunRepository } from "./repositories/runRepository.js";
 import {
   TicketRepoDeliveryRepository,
   type TicketRepoDeliveryWithRepo,
@@ -444,6 +447,7 @@ export class Dispatch {
   readonly scopeRepos: ScopeRepoRepository;
   readonly ticketScopes: TicketScopeNodeRepository;
   readonly ticketDependencies: TicketDependencyRepository;
+  readonly runs: RunRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -504,6 +508,7 @@ export class Dispatch {
     this.scopeRepos = new ScopeRepoRepository(db);
     this.ticketScopes = new TicketScopeNodeRepository(db);
     this.ticketDependencies = new TicketDependencyRepository(db);
+    this.runs = new RunRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -3126,6 +3131,79 @@ export class Dispatch {
   /** WG-006: only the hidden repositories (the "Hidden repos" page's source). */
   listHiddenRepos(): Repository[] {
     return this.repos.listHidden();
+  }
+
+  // --- Run-activity registry (RUN-ACTIVITY) ---------------------------------
+
+  /** Mint a fresh run id (so a caller can name a per-run log file up front). */
+  newRunId(): string {
+    return newId();
+  }
+
+  /**
+   * Record the start of a background run (a detached API-spawned child). Returns
+   * the run id so the caller can later {@link markRunEnd} it (and the dashboard
+   * can poll its status). The row is created `running`; `pid`/`log_path` are
+   * stored as given (null when the platform withheld a pid or no log was opened).
+   * The repo (the run's target, when known) is recorded for the panel.
+   *
+   * `id` may be supplied by the caller (so a per-run log file can be named by the
+   * id BEFORE the row is written); when omitted a fresh id is minted.
+   */
+  recordRunStart(input: {
+    id?: string;
+    kind: RunKind;
+    repo?: string | null;
+    pid?: number | null;
+    log_path?: string | null;
+  }): { id: string } {
+    const id = input.id ?? newId();
+    this.runs.insertStart({
+      id,
+      kind: input.kind,
+      repo: input.repo ?? null,
+      pid: input.pid ?? null,
+      log_path: input.log_path ?? null,
+      started_at: this.clock.now(),
+    });
+    return { id };
+  }
+
+  /**
+   * Mark a tracked run ended. Derives status from the child's exit code: 0 ⇒
+   * `succeeded`, any other value (or a null/unknown code) ⇒ `failed`. A no-op if
+   * the run was already swept to `unknown` (the first writer wins — see
+   * {@link RunRepository.markEnd}), so a late exit listener never resurrects a
+   * reconciled row.
+   */
+  markRunEnd(id: string, input: { exit_code: number | null; detail?: string | null }): void {
+    const status: Run["status"] = input.exit_code === 0 ? "succeeded" : "failed";
+    this.runs.markEnd({
+      id,
+      status,
+      ended_at: this.clock.now(),
+      exit_code: input.exit_code,
+      detail: input.detail ?? null,
+    });
+  }
+
+  /**
+   * List tracked runs. `active` ⇒ only the in-flight (`running`) runs; otherwise
+   * the most-recent `limit` runs of any status. Powers the dashboard's "Running
+   * now" panel.
+   */
+  listRuns(options: { active?: boolean; limit?: number } = {}): Run[] {
+    return this.runs.list(options);
+  }
+
+  /**
+   * Reconcile orphaned runs on API startup: any `running` row whose pid is no
+   * longer alive is flipped to `unknown` (the API restarted mid-run, so the exit
+   * listener that would have marked it died with the previous process). Returns
+   * the ids swept. Idempotent — a row already ended is left untouched.
+   */
+  sweepStaleRuns(): string[] {
+    return this.runs.sweepStale(this.clock.now());
   }
 
   // --- Board + dashboard reads (read-only showcase surfaces) ----------------

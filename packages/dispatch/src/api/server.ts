@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +45,7 @@ import {
   idleLoopsBody,
   onboardRepoBody,
   runProductOwnerBody,
+  runsQuery,
   settingsBody,
   setRepoHiddenBody,
   setPrimaryScopeBody,
@@ -324,13 +325,17 @@ function handleError(res: ServerResponse, err: unknown): void {
  */
 export function createApiHandler(
   wg: Dispatch,
-  runner: ProductOwnerRunner = createProductOwnerRunner(),
+  // RUN-ACTIVITY: the default runners are wired with `wg` as the run tracker, so
+  // each detached spawn records a `runs` row and captures its output to a per-run
+  // log (earlier params are in scope for later default expressions). A caller that
+  // passes its own runner opts out of tracking unless it wires a tracker itself.
+  runner: ProductOwnerRunner = createProductOwnerRunner(process.env, wg),
   planBuildRunner: PlanBuildRunner = createPlanBuildRunner(),
-  mergeRunner: MergeRunner = createMergeRunner(),
-  pollWorkRunner: PollWorkRunner = createPollWorkRunner(),
+  mergeRunner: MergeRunner = createMergeRunner(process.env, undefined, wg),
+  pollWorkRunner: PollWorkRunner = createPollWorkRunner(process.env, wg),
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
-  onboardRunner: OnboardRunner = createOnboardRunner(),
+  onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
 ): (req: IncomingMessage, res: ServerResponse) => void {
   // Resolve the HSTS posture ONCE from the bind host (not per request), so a
   // spoofed Host header can't toggle Strict-Transport-Security on/off.
@@ -363,13 +368,14 @@ export function createApiHandler(
 /** Construct an http.Server wrapping the Dispatch facade. */
 export function createApiServer(
   wg: Dispatch,
-  runner: ProductOwnerRunner = createProductOwnerRunner(),
+  // RUN-ACTIVITY: default runners track via `wg` (see createApiHandler).
+  runner: ProductOwnerRunner = createProductOwnerRunner(process.env, wg),
   planBuildRunner: PlanBuildRunner = createPlanBuildRunner(),
-  mergeRunner: MergeRunner = createMergeRunner(),
-  pollWorkRunner: PollWorkRunner = createPollWorkRunner(),
+  mergeRunner: MergeRunner = createMergeRunner(process.env, undefined, wg),
+  pollWorkRunner: PollWorkRunner = createPollWorkRunner(process.env, wg),
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
-  onboardRunner: OnboardRunner = createOnboardRunner(),
+  onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
 ): Server {
   return createServer(
     createApiHandler(
@@ -1494,6 +1500,46 @@ function routeReadModels(
     return;
   }
 
+  // RUN-ACTIVITY: GET /api/runs?active=1&limit=N — the in-flight + recent runs
+  // that power the dashboard's "Running now" panel. Returns BOTH the active runs
+  // and the most-recent finished runs so the panel renders in one fetch.
+  if (segments.length === 2 && segments[1] === "runs") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const q = runsQuery.parse({
+      active: url.searchParams.get("active") ?? undefined,
+      limit: url.searchParams.get("limit") ?? undefined,
+    });
+    const active = wg.listRuns({ active: true });
+    // The recent list is the most-recent N of any status; drop the still-running
+    // ones so `recent` reads as the finished tail (active are shown separately).
+    const recent = wg
+      .listRuns({ limit: q.limit })
+      .filter((r) => r.status !== "running")
+      .slice(0, q.limit);
+    sendJson(res, 200, { active, recent });
+    return;
+  }
+
+  // RUN-ACTIVITY: GET /api/runs/:id/log — the tail (last RUN_LOG_TAIL_BYTES) of a
+  // run's captured output, as text/plain. 404 when the run or its log is missing.
+  // Privileged read like the rest of /api (behind the bearer gate in route()).
+  if (segments.length === 4 && segments[1] === "runs" && segments[3] === "log") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const run = wg.runs.findById(segments[2] as string);
+    if (!run || !run.log_path) {
+      sendJson(res, 404, errorBody("NOT_FOUND", "No log for that run."));
+      return;
+    }
+    const tail = readLogTail(run.log_path, RUN_LOG_TAIL_BYTES);
+    if (tail === null) {
+      sendJson(res, 404, errorBody("NOT_FOUND", "Run log file is missing."));
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    res.end(tail);
+    return;
+  }
+
   sendJson(res, 404, errorBody("NOT_FOUND", `No route for ${method} ${url.pathname}.`));
 }
 
@@ -1507,5 +1553,38 @@ function safeDecode(segment: string): string | null {
     return decodeURIComponent(segment);
   } catch {
     return null;
+  }
+}
+
+/** Cap on the run-log tail returned by GET /api/runs/:id/log (last 64KB). */
+const RUN_LOG_TAIL_BYTES = 64 * 1024;
+
+/**
+ * Read the last `maxBytes` of a run log file as UTF-8 text. Returns null when the
+ * file is missing/unreadable (the route maps that to a 404). Reading only the
+ * tail (via stat + a positioned read) bounds memory regardless of log size — a
+ * long-running, chatty run never balloons the response.
+ */
+function readLogTail(path: string, maxBytes: number): string | null {
+  let fd: number | null = null;
+  try {
+    const size = statSync(path).size;
+    const start = size > maxBytes ? size - maxBytes : 0;
+    const length = Math.min(size, maxBytes);
+    if (length === 0) return "";
+    fd = openSync(path, "r");
+    const buf = Buffer.allocUnsafe(length);
+    const read = readSync(fd, buf, 0, length, start);
+    return buf.subarray(0, read).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already closed / invalid — nothing to do.
+      }
+    }
   }
 }

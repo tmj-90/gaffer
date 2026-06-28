@@ -241,6 +241,81 @@ async function runAsyncAction(btn, running, fn) {
   }
 }
 
+/**
+ * Like {@link runAsyncAction}, but keeps the button in its running state until
+ * the REAL background run (not just the HTTP spawn-ack) finishes.
+ *
+ * The pre-RUN-ACTIVITY bug: the spawn POST returns in milliseconds, so the
+ * button reset while the (~minute-long) `claude -p` work churned on invisibly —
+ * the button looked "done" when it wasn't. Here `fn` returns the run id(s) the
+ * action started; the button stays disabled + spinning while ANY of them is
+ * still active (polled via GET /api/runs?active=1), then resets. A safety cap
+ * stops the poll so a wedged run can never disable the button forever; the
+ * "Running now" panel remains the source of truth either way.
+ */
+async function runAsyncActionUntilDone(btn, running, fn) {
+  if (!btn || btn.disabled) return;
+  const original = [...btn.childNodes];
+  const restore = () => {
+    btn.disabled = false;
+    btn.classList.remove("is-running");
+    btn.removeAttribute("aria-busy");
+    clear(btn);
+    for (const node of original) btn.appendChild(node);
+  };
+  btn.disabled = true;
+  btn.classList.add("is-running");
+  btn.setAttribute("aria-busy", "true");
+  clear(btn);
+  btn.appendChild(el("span", { class: "btn-spinner", "aria-hidden": "true" }));
+  btn.appendChild(el("span", {}, running));
+
+  let runIds;
+  try {
+    const ids = await fn();
+    runIds = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+  } catch (e) {
+    toast(e.message || "Unexpected error", { code: e.code });
+    restore();
+    return;
+  }
+
+  // No trackable run id came back (e.g. unconfigured) — nothing to wait on.
+  if (runIds.length === 0) {
+    restore();
+    return;
+  }
+
+  // Poll until none of our run ids is still active, or a safety cap elapses
+  // (~10 min) so a stuck run never wedges the button. The panel still reflects it.
+  const POLL_MS = 3000;
+  const MAX_POLLS = 200;
+  const wanted = new Set(runIds);
+  let polls = 0;
+  const done = () =>
+    new Promise((resolve) => {
+      const tick = async () => {
+        polls += 1;
+        let activeIds = new Set();
+        try {
+          const data = await api("GET", "/api/runs?active=1");
+          activeIds = new Set((data.active || []).map((r) => r.id));
+        } catch {
+          // transient — try again next tick
+        }
+        const stillRunning = [...wanted].some((id) => activeIds.has(id));
+        if (!stillRunning || polls >= MAX_POLLS) {
+          resolve();
+          return;
+        }
+        setTimeout(tick, POLL_MS);
+      };
+      setTimeout(tick, POLL_MS);
+    });
+  await done();
+  restore();
+}
+
 // --- Login gate (restyled, behaviour preserved) -----------------------------
 
 /** Render the access-token login gate into #app and hide app chrome. */
@@ -1181,6 +1256,12 @@ async function renderOverview() {
     ]),
   );
 
+  // --- "Running now" — what's in flight right now (RUN-ACTIVITY) -----------
+  // Polls GET /api/runs every ~3s so a triggered background run (Suggest work /
+  // onboard / poll-work / merge) is visible while it churns, with its captured
+  // log a click away when it finishes. Quiet empty state when nothing's running.
+  wrap.appendChild(runActivityPanel());
+
   // --- Decisions (inline, when present) ------------------------------------
   if (decisions.length) {
     const decCard = el("div", { class: "card decisions-card", id: "decisions" }, [
@@ -1704,7 +1785,13 @@ function openSuggestWorkPicker(repos, nodes) {
           }
           body = { scopeNodeId: nodeSel.value };
         }
-        runAsyncAction(runBtn, "Suggesting work…", async () => {
+        // RUN-ACTIVITY: keep the button "running" until the REAL product-owner
+        // run finishes (not just the millisecond spawn-ack, which is the bug this
+        // fixes). `fn` returns the tracked run id(s); runAsyncActionUntilDone keeps
+        // the button disabled + spinning while any of them is active (polling
+        // GET /api/runs), then restores it. The "Running now" panel reflects the
+        // same run live in parallel.
+        runAsyncActionUntilDone(runBtn, "Suggesting work…", async () => {
           const res = await api("POST", "/product-owner/runs", body);
           const t = res.target || {};
           const msg =
@@ -1712,6 +1799,17 @@ function openSuggestWorkPicker(repos, nodes) {
               ? `Node run started for '${t.scope_node_name || ""}' — ${res.ran ?? 0} repo${res.ran === 1 ? "" : "s"}${res.truncated ? " (truncated)" : ""}.`
               : `Repo run started for '${t.repo || repoSel.value}'.`;
           toast(msg, { ok: true });
+          // Surface the live run in the Overview panel immediately, but keep this
+          // sheet open so the button itself stays in its true running state until
+          // the run flips (the whole point of the fix).
+          // Collect the tracked run id(s) to wait on: node-level fans out to
+          // res.runs[].run.runId; repo-level is res.run.runId.
+          if (t.level === "node") {
+            return (res.runs || []).map((r) => r.run && r.run.runId).filter(Boolean);
+          }
+          return res.run && res.run.runId ? [res.run.runId] : [];
+        }).then(() => {
+          // Run finished (or the safety cap elapsed) — close the sheet and refresh.
           closeSheet();
           router();
         });
@@ -1741,6 +1839,174 @@ function openSuggestWorkPicker(repos, nodes) {
   );
 
   openSheet("Suggest work", form);
+}
+
+// --- "Running now" panel (RUN-ACTIVITY) -------------------------------------
+
+/** Human label for a run kind (the backend's snake_case → a readable noun). */
+const RUN_KIND_LABELS = {
+  product_owner: "Suggest work",
+  onboard: "Onboard repo",
+  poll_work: "Poll for work",
+  merge: "Merge",
+  other: "Run",
+};
+function runKindLabel(kind) {
+  return RUN_KIND_LABELS[kind] || kind || "Run";
+}
+
+/** Badge tone for a finished run's status. */
+function runStatusBadge(status) {
+  const tone =
+    status === "succeeded"
+      ? "ok"
+      : status === "failed"
+        ? "danger"
+        : status === "unknown"
+          ? "warn"
+          : "";
+  return badge(status, tone);
+}
+
+/** Elapsed/duration text for a run row, from its start (+ end when finished). */
+function runDuration(run) {
+  const start = Date.parse(run.started_at);
+  if (Number.isNaN(start)) return "—";
+  const end = run.ended_at ? Date.parse(run.ended_at) : Date.now();
+  return fmtDuration(end - start);
+}
+
+/** Open the captured log for a finished run in a sheet (best-effort fetch). */
+async function viewRunLog(run) {
+  const body = el("div", { class: "run-log" }, [el("p", { class: "dim" }, "Loading log…")]);
+  openSheet(`${runKindLabel(run.kind)} log`, body);
+  try {
+    const tok = authToken();
+    const res = await fetch(`/api/runs/${encodeURIComponent(run.id)}/log`, {
+      headers: tok ? { authorization: "Bearer " + tok } : {},
+    });
+    clear(body);
+    if (!res.ok) {
+      body.appendChild(
+        el(
+          "p",
+          { class: "dim" },
+          res.status === 404 ? "No log captured for this run." : "Could not load the log.",
+        ),
+      );
+      return;
+    }
+    const text = await res.text();
+    body.appendChild(
+      el("pre", { class: "run-log-pre" }, text && text.trim() ? text : "(log is empty)"),
+    );
+  } catch {
+    clear(body);
+    body.appendChild(el("p", { class: "dim" }, "Could not load the log."));
+  }
+}
+
+/** One active run row: kind · repo · elapsed · spinner. */
+function activeRunRow(run) {
+  return el("li", { class: "run-row run-active" }, [
+    el("span", { class: "run-spinner", "aria-hidden": "true" }),
+    el("span", { class: "run-kind" }, runKindLabel(run.kind)),
+    run.repo ? el("span", { class: "run-repo dim" }, run.repo) : null,
+    el(
+      "span",
+      { class: "run-elapsed dim tabnum", title: `started ${fmtTime(run.started_at)}` },
+      runDuration(run),
+    ),
+  ]);
+}
+
+/** One finished run row: kind · repo · status · duration · view-log. */
+function finishedRunRow(run) {
+  return el("li", { class: "run-row run-done" }, [
+    el("span", { class: "run-kind" }, runKindLabel(run.kind)),
+    run.repo ? el("span", { class: "run-repo dim" }, run.repo) : null,
+    runStatusBadge(run.status),
+    el(
+      "span",
+      { class: "run-elapsed dim tabnum", title: `ended ${fmtTime(run.ended_at)}` },
+      runDuration(run),
+    ),
+    run.log_path
+      ? el(
+          "button",
+          { class: "btn small run-viewlog", type: "button", onclick: () => viewRunLog(run) },
+          "view log",
+        )
+      : null,
+  ]);
+}
+
+/**
+ * The "Running now" panel: a compact card that polls GET /api/runs?active=1
+ * every ~3s, showing each in-flight run (kind · repo · elapsed · spinner) and
+ * the most-recent finished runs (status · duration · view-log). When there are
+ * zero active and zero recent it renders a quiet empty state instead of clutter.
+ *
+ * Lifecycle: the poll self-terminates once the panel node is detached from the
+ * DOM (a view change rebuilds Overview from scratch), so no global teardown hook
+ * is needed. The first paint is synchronous-ish (an immediate fetch) so the card
+ * never flashes empty before the first interval.
+ */
+function runActivityPanel() {
+  const POLL_MS = 3000;
+  const card = el("div", { class: "card run-activity", id: "running-now" }, [
+    el("h2", {}, [icon("activity"), "Running now"]),
+  ]);
+  const listWrap = el("div", { class: "run-activity-body" }, [
+    el("p", { class: "dim" }, "Loading runs…"),
+  ]);
+  card.appendChild(listWrap);
+
+  let stopped = false;
+
+  const render = (active, recent) => {
+    clear(listWrap);
+    if ((!active || active.length === 0) && (!recent || recent.length === 0)) {
+      listWrap.appendChild(
+        emptyState("Nothing running", "Background runs you trigger show up here.", "activity"),
+      );
+      return;
+    }
+    if (active && active.length) {
+      listWrap.appendChild(el("ul", { class: "run-list" }, active.map(activeRunRow)));
+    }
+    if (recent && recent.length) {
+      listWrap.appendChild(el("div", { class: "run-recent-title dim" }, "Recently finished"));
+      listWrap.appendChild(el("ul", { class: "run-list" }, recent.map(finishedRunRow)));
+    }
+  };
+
+  const poll = async () => {
+    if (stopped) return;
+    try {
+      const data = await api("GET", "/api/runs?active=1");
+      // Don't paint into a panel that's been detached mid-flight (view changed).
+      if (stopped) return;
+      render(data.active || [], data.recent || []);
+    } catch {
+      // A transient read failure shouldn't blank the panel; leave the last paint.
+    }
+  };
+
+  // Immediate first paint (the card is still being assembled into the view, so we
+  // do NOT gate this on attachment — only the recurring interval self-terminates
+  // on detach, once the card has actually been mounted).
+  poll();
+  const timer = setInterval(() => {
+    if (stopped || !document.body.contains(card)) {
+      clearInterval(timer);
+      stopped = true;
+      return;
+    }
+    poll();
+  }, POLL_MS);
+
+  return card;
 }
 
 async function renderWork() {

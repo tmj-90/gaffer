@@ -166,6 +166,10 @@ export function migrate(db: Db): void {
   //    the rebuilt table is backfilled too. Both are no-ops on a fresh DB.
   widenTicketStatusCheckForInTesting(db);
   alterTicketsAddTestingColumns(db);
+  // RUN-ACTIVITY (v9→v10): the `runs` control-plane registry. A brand-new
+  // standalone table created idempotently by SCHEMA_SQL's CREATE TABLE IF NOT
+  // EXISTS (like ticket_dependencies / ticket_repo_delivery), so — having no
+  // columns added to a pre-existing table — it needs no ADD COLUMN migration.
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +

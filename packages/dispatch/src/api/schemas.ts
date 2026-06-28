@@ -524,3 +524,24 @@ export const activityQuery = z.object({
   offset: z.coerce.number().int().min(0).catch(0).default(0),
 });
 export type ActivityQuery = z.infer<typeof activityQuery>;
+
+/** Default + max for the most-recent-runs list on GET /api/runs. */
+export const RUNS_DEFAULT_LIMIT = 20;
+export const RUNS_MAX_LIMIT = 100;
+
+/**
+ * Query for GET /api/runs. `active=1` ⇒ only the in-flight runs (the "Running
+ * now" panel's primary feed); `limit` bounds the recent list returned alongside.
+ * Both are best-effort coerced (`.catch`) so a junk query never 422s a read.
+ */
+export const runsQuery = z.object({
+  active: z.coerce.boolean().catch(false).default(false),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(RUNS_MAX_LIMIT)
+    .catch(RUNS_DEFAULT_LIMIT)
+    .default(RUNS_DEFAULT_LIMIT),
+});
+export type RunsQuery = z.infer<typeof runsQuery>;

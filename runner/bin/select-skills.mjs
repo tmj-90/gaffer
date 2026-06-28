@@ -116,10 +116,11 @@ export function loadSkills(skillsDir = DEFAULT_SKILLS_DIR) {
  * Cross-cutting areas whose skills apply to EVERY delivery regardless of stack
  * or domain — the delivery mechanics: run tests (`testing`), lint/minimalism
  * (`quality`), self/submit review (`review`), branch + record evidence
- * (`workflow`). These are always eligible (subject to stack). Only DOMAIN areas
- * (marketing/product/docs/devops/infra/data/meta/…) are opt-in.
+ * (`workflow`), and security review (`security`, defense-in-depth on every
+ * delivery — policy). These are always eligible (subject to stack). Only DOMAIN
+ * areas (marketing/product/docs/devops/infra/data/meta/…) are opt-in.
  */
-const UNIVERSAL_AREAS = new Set(["quality", "testing", "review", "workflow"]);
+const UNIVERSAL_AREAS = new Set(["quality", "testing", "review", "workflow", "security"]);
 
 /**
  * A skill matches when its stack is unconstrained or intersects the wanted

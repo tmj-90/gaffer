@@ -42,6 +42,33 @@ ACCEPTED_IDS="$accepted" node -e '
       console.error("audit-gate: ERROR — could not parse pnpm audit JSON: " + e.message);
       process.exit(2);
     }
+    // Shape guard: a zero-offender result is only trustworthy if the output has the
+    // shape we know how to read. If a pnpm change renames/removes the `advisories`
+    // key, `parsed.advisories || {}` would silently report "clean" while ignoring
+    // every real advisory. Refuse to trust an unexpected shape — exit non-zero so
+    // the gate fails loudly and a human re-checks the parser rather than shipping a
+    // false all-clear.
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      console.error(
+        "audit-gate: ERROR — unexpected pnpm audit JSON shape (not an object); " +
+          "refusing to report clean. The audit output format may have changed.",
+      );
+      process.exit(2);
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, "advisories")) {
+      console.error(
+        "audit-gate: ERROR — pnpm audit JSON has no `advisories` key; refusing to " +
+          "report clean. The audit output format may have changed — update this parser.",
+      );
+      process.exit(2);
+    }
+    if (typeof parsed.advisories !== "object" || parsed.advisories === null) {
+      console.error(
+        "audit-gate: ERROR — pnpm audit `advisories` is not an object; refusing to " +
+          "report clean. The audit output format may have changed.",
+      );
+      process.exit(2);
+    }
     const accepted = new Set(
       (process.env.ACCEPTED_IDS || "").split("\n").map((s) => s.trim()).filter(Boolean),
     );

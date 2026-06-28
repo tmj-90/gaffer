@@ -334,6 +334,8 @@ repo
   .option("--branch <branch>", "default branch", "main")
   .option("--stack <stack>", "stack")
   .option("--test <cmd>", "test command")
+  .option("--lint <cmd>", "lint command (the I3 lint DoD gate)")
+  .option("--coverage <cmd>", "coverage command")
   .action((opts, cmd) => {
     const wg = open(cmd.optsWithGlobals());
     const r = wg.registerRepository(
@@ -344,6 +346,8 @@ repo
         default_branch: opts.branch,
         stack: opts.stack,
         test_command: opts.test,
+        lint_command: opts.lint,
+        coverage_command: opts.coverage,
       },
       cliActor(),
     );

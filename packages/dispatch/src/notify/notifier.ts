@@ -6,6 +6,23 @@ const consoleLogger: NotifyLogger = {
 };
 
 /**
+ * Reduce an event to a MINIMAL, redacted shape for outbound delivery: only the
+ * structural fields an operator needs to triage (kind, ticket number, status, the
+ * dashboard URL, and the timestamp). The free-text `title`/`detail` — which a
+ * prompt-injected agent can influence via ticket content — and the `repo` name are
+ * dropped, so nothing agent-controllable is exfiltrated to a webhook/Slack sink.
+ */
+export function redactEvent(event: NotifyEvent): NotifyEvent {
+  return {
+    kind: event.kind,
+    at: event.at,
+    ...(event.status !== undefined ? { status: event.status } : {}),
+    ...(event.ticket_number !== undefined ? { ticket_number: event.ticket_number } : {}),
+    ...(event.url !== undefined ? { url: event.url } : {}),
+  };
+}
+
+/**
  * The real {@link Notifier}: a registry of sinks plus a gate allow-list. Firing
  * an event:
  *   1. drops it if its `kind` is not in the allow-list (filtered),
@@ -22,15 +39,18 @@ export class CompositeNotifier implements Notifier {
   private readonly sinks: readonly NotifySink[];
   private readonly allow: ReadonlySet<NotifyKind>;
   private readonly logger: NotifyLogger;
+  private readonly redact: boolean;
 
   constructor(
     sinks: readonly NotifySink[],
     allowedKinds: readonly NotifyKind[],
     logger: NotifyLogger = consoleLogger,
+    redact = false,
   ) {
     this.sinks = sinks;
     this.allow = new Set(allowedKinds);
     this.logger = logger;
+    this.redact = redact;
   }
 
   get enabled(): boolean {
@@ -40,8 +60,12 @@ export class CompositeNotifier implements Notifier {
   notify(event: NotifyEvent): void {
     if (this.sinks.length === 0) return;
     if (!this.allow.has(event.kind)) return;
+    // When redaction is on, strip agent-influenceable free text BEFORE the event
+    // reaches any sink, so every outbound channel (webhook + Slack) gets the
+    // minimal shape — one chokepoint rather than per-sink redaction.
+    const outbound = this.redact ? redactEvent(event) : event;
     for (const sink of this.sinks) {
-      this.fireOne(sink, event);
+      this.fireOne(sink, outbound);
     }
   }
 

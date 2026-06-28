@@ -70,9 +70,28 @@ repos: []
 #   stack: python
 #   package_manager: poetry
 #   test_command: poetry run pytest
+#   lint_command: poetry run ruff check .
+#   typecheck_command: poetry run mypy auth_service
 #   coverage_command: poetry run pytest --cov=auth_service
 #   mutation_mode: branch_only
 #   risk_level: high
+#   # Per-repo Definition-of-Done override (I3). Omit to inherit the factory
+#   # default below. A gate with no matching command is SKIPPED, not failed.
+#   definition_of_done:
+#     enabled: true   # set false (or run with GAFFER_DOD=0) to disable enforcement
+#     tests: true
+#     typecheck: true
+#     lint: true
+
+# Factory-wide Definition of Done (I3). The runner runs these gates on every
+# non-empty delivery BEFORE it can reach the human review lane; a failing gate
+# auto-rejects the delivery back to rework. A repo's own definition_of_done
+# overrides this. Shipped gates: tests / typecheck / lint.
+definition_of_done:
+  enabled: true
+  tests: true
+  typecheck: true
+  lint: true
 
 agents: []
 # - id: claude-auth-01

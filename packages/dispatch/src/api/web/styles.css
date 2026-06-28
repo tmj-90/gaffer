@@ -5008,6 +5008,52 @@ code.mono {
   color: var(--text-faint);
 }
 
+/* Definition-of-Done checklist (I3): a compact ✓/✗ board the reviewer scans
+   before reading the diff — a green DoD means the change was pre-verified. */
+.review-dod {
+  margin-top: var(--s-3);
+  padding: var(--s-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--line-hair);
+  border-left: 3px solid var(--ok);
+}
+.review-dod.dod-bad {
+  border-left-color: var(--danger);
+}
+ul.dod-list {
+  margin-top: var(--s-2);
+}
+.dod-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-size: var(--step--1);
+}
+.dod-mark {
+  font-weight: 700;
+  width: 1.1em;
+  display: inline-block;
+  text-align: center;
+}
+.dod-mark.dod-pass {
+  color: var(--ok);
+}
+.dod-mark.dod-fail {
+  color: var(--danger);
+}
+.dod-mark.dod-skip {
+  color: var(--text-faint);
+}
+.dod-gate {
+  font-variant: small-caps;
+  letter-spacing: 0.02em;
+}
+.dod-note {
+  color: var(--text-dim);
+}
+
 .scope-preview,
 .where-block {
   margin-top: var(--s-2);

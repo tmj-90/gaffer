@@ -8,6 +8,7 @@ import { FakeCommandRunner } from "../src/adapters/commandRunner.js";
 import { EventLog } from "../src/events/eventLog.js";
 import { runIdleCoverageLoop } from "../src/loops/idleLoop.js";
 import { runIdleTestQualityLoop, scanTestQuality } from "../src/loops/idleTestQuality.js";
+import { runIdleTypeQualityLoop, scanTypeQuality } from "../src/loops/idleTypeQuality.js";
 import { runIdleDocsLoop, scanDocs } from "../src/loops/idleDocs.js";
 import {
   runIdleDependencyLoop,
@@ -33,6 +34,7 @@ import { crewConfigSchema, type CrewConfig } from "../src/config/schema.js";
 function enableScanLoops(config: CrewConfig): CrewConfig {
   config.loops.idle_coverage.enabled = true;
   config.loops.idle_test_quality.enabled = true;
+  config.loops.idle_type_quality.enabled = true;
   config.loops.idle_documentation.enabled = true;
   config.loops.idle_dependencies.enabled = true;
   config.loops.idle_security_hotspot.enabled = true;
@@ -321,6 +323,116 @@ describe("security-hotspot scan", () => {
   });
 });
 
+describe("type-quality scan", () => {
+  it("flags `as` casts, non-null `!`, @ts-* suppressions and bare any", () => {
+    const src = [
+      `const a = value as Widget;`,
+      `const b = config!.timeout;`,
+      `// @ts-ignore legacy`,
+      `function f(x: any): void {}`,
+      `const ok: number = 1;`,
+    ].join("\n");
+
+    const findings = scanTypeQuality(src, "app.ts");
+    const kinds = findings.map((f) => f.kind);
+    expect(kinds).toContain("cast");
+    expect(kinds).toContain("non_null");
+    expect(kinds).toContain("ts_suppression");
+    expect(kinds).toContain("any");
+    // Every finding carries a file location and a non-zero severity for ranking.
+    for (const f of findings) {
+      expect(f.file).toBe("app.ts");
+      expect(f.line).toBeGreaterThan(0);
+      expect(f.severity).toBeGreaterThan(0);
+    }
+  });
+
+  it("detects skipLibCheck:true in a tsconfig and ranks it highest", () => {
+    const findings = scanTypeQuality(
+      `{ "compilerOptions": { "skipLibCheck": true } }`,
+      "tsconfig.json",
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.kind).toBe("skip_lib_check");
+    // skipLibCheck outranks `as`/`!`/any.
+    const cast = scanTypeQuality(`const a = b as C;`, "x.ts")[0]!;
+    expect(findings[0]!.severity).toBeGreaterThan(cast.severity);
+  });
+
+  it("does not flag `!=` / logical-not or `import ... as` as findings", () => {
+    const src = [`if (a != b) return;`, `if (!ready) return;`, `import { x as y } from "z";`].join(
+      "\n",
+    );
+    const findings = scanTypeQuality(src, "clean.ts");
+    expect(findings.filter((f) => f.kind === "non_null")).toHaveLength(0);
+    expect(findings.filter((f) => f.kind === "cast")).toHaveLength(0);
+  });
+
+  it("creates a DRAFT ticket whose description carries the skill + acceptance criteria (no code edits)", () => {
+    const repo = tempRepo("fg-typ-");
+    writeFileSync(
+      join(repo, "thing.ts"),
+      `const a = value as Widget;\nconst b = config!.timeout;\n`,
+    );
+    const wg = new FakeDispatchClient();
+    const d = deps(configForRepo(repo), wg);
+
+    const outcome = runIdleTypeQualityLoop(d);
+    expect(outcome.status).toBe("draft_created");
+    if (outcome.status !== "draft_created") throw new Error("unreachable");
+
+    const ticket = wg.getTicket(outcome.drafts[0]!.ticketId);
+    expect(ticket.ticket.status).toBe("draft");
+    expect(ticket.ticket.description).toMatch(/no code was changed/i);
+    // AC: ticket names the typescript-conventions skill and the objective oracle.
+    expect(ticket.ticket.description).toMatch(/typescript-conventions/);
+    expect(ticket.ticket.description).toMatch(/pnpm typecheck/);
+    expect(ticket.ticket.description).toMatch(/no public API change/i);
+    expect(ticket.ticket.description).toMatch(/hotspot/i);
+    expect(ticket.repositories[0]!.name).toBe("demo");
+    expect(wg.evidence).toHaveLength(0);
+    expect(d.events.types()).toContain("type_quality_scanned");
+    expect(d.events.types()).toContain("idle_ticket_created");
+  });
+
+  it("reports no_findings when source is type-clean", () => {
+    const repo = tempRepo("fg-typ-clean-");
+    writeFileSync(
+      join(repo, "clean.ts"),
+      `export const add = (a: number, b: number): number => a + b;\n`,
+    );
+    const wg = new FakeDispatchClient();
+    expect(runIdleTypeQualityLoop(deps(configForRepo(repo), wg)).status).toBe("no_findings");
+  });
+
+  it("skips when ready tickets exist (an idle tick only fires with no ready work)", () => {
+    const repo = tempRepo("fg-typ-skip-");
+    writeFileSync(join(repo, "x.ts"), `const a = b as C;\n`);
+    const wg = new FakeDispatchClient();
+    wg.seedTicket({ title: "ready", status: "ready" });
+    expect(runIdleTypeQualityLoop(deps(configForRepo(repo), wg)).status).toBe(
+      "skipped_tickets_ready",
+    );
+  });
+
+  it("creates ONE draft when the same finding recurs across ticks (dedup)", () => {
+    const repo = tempRepo("fg-typ-dedup-");
+    writeFileSync(join(repo, "thing.ts"), `const a = value as Widget;\n`);
+    const wg = new FakeDispatchClient();
+
+    const first = runIdleTypeQualityLoop(deps(configForRepo(repo), wg));
+    expect(first.status).toBe("draft_created");
+    expect(wg.events.filter((e) => e.type === "draft_ticket.created")).toHaveLength(1);
+
+    const secondDeps = deps(configForRepo(repo), wg);
+    const second = runIdleTypeQualityLoop(secondDeps);
+    expect(wg.events.filter((e) => e.type === "draft_ticket.created")).toHaveLength(1);
+    expect(second.status).toBe("no_findings");
+    expect(secondDeps.events.types()).toContain("idle_finding_deduped");
+    expect(secondDeps.events.types()).not.toContain("idle_ticket_created");
+  });
+});
+
 describe("idle-loop modes", () => {
   /** Write a repo whose test_quality scan yields exactly one finding. */
   function smellyRepo(): string {
@@ -551,6 +663,7 @@ describe("idle-loop registry", () => {
     const ran = report.loops.map((l) => l.id);
     expect(ran).toContain("documentation");
     expect(ran).toContain("test_quality");
+    expect(ran).toContain("type_quality");
     expect(ran).toContain("dependency_hygiene");
     expect(ran).toContain("security_hotspot");
     // Stubs are not present.
@@ -574,6 +687,7 @@ describe("idle-loop registry", () => {
     const config = configForRepo(repo, { coverage_command: null });
     config.loops.idle_documentation.enabled = false;
     config.loops.idle_test_quality.enabled = false;
+    config.loops.idle_type_quality.enabled = false;
     config.loops.idle_dependencies.enabled = false;
     config.loops.idle_coverage.enabled = false;
     config.loops.idle_security_hotspot.enabled = false;
@@ -660,6 +774,7 @@ describe("scan loops default OFF", () => {
     expect(config.loops.idle_documentation.enabled).toBe(false);
     expect(config.loops.idle_dependencies.enabled).toBe(false);
     expect(config.loops.idle_security_hotspot.enabled).toBe(false);
+    expect(config.loops.idle_type_quality.enabled).toBe(false);
 
     const wg = new FakeDispatchClient();
     const report = runIdleLoops(deps(config, wg));

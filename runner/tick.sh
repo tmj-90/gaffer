@@ -18,6 +18,13 @@ result() { echo "TICK_RESULT=$1"; }
 
 [ -f "$DISPATCH_DIR/dist/cli/index.js" ] || { log "dispatch not built — run: pnpm -C $DISPATCH_DIR build"; result error; exit 1; }
 
+# R-10: fail closed on a missing timeout primitive. Every live `claude -p` call
+# below runs under gaffer_timeout, which now REFUSES to run unbounded when no
+# perl/timeout/gtimeout exists. Assert one is present up front and abort the tick
+# as a setup error rather than discovering it mid-delivery (a runaway agent must
+# never even be launched).
+gaffer_timeout_preflight || { log "no timeout primitive — aborting tick (setup error)"; result error; exit 1; }
+
 # Ensure a stable factory agent (register once).
 if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
   wg init >/dev/null 2>&1 || true

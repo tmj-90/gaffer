@@ -517,6 +517,18 @@ print("\n".join(write_rows))
   READ_ROOTS="$(printf '%s\n' "$WG_PARTITION" | sed -n '/^@@READ_PATHS@@$/,/^@@WRITE_ROWS@@$/p' | sed '1d;$d')"
   WRITE_ROWS="$(printf '%s\n' "$WG_PARTITION" | sed -n '/^@@WRITE_ROWS@@$/,$p' | sed '1d')"
 
+  # R-9: detect a partition PARSE FAILURE (markers absent) vs a legitimately
+  # empty partition (markers present, just no write paths — an older ticket or a
+  # ticket with only read-only repos). When the python3 partition script crashes
+  # or produces no output (the `|| true` swallows the exit code), WG_PARTITION has
+  # no section markers, so all three variables above are empty. Distinguish:
+  #   • markers PRESENT   → parse succeeded; WRITE_ROOTS empty = legitimate fallback.
+  #   • markers ABSENT    → python3/json failure; warn so a multi-repo ticket's
+  #                         incomplete delivery is visible (not silent single-repo).
+  if ! printf '%s\n' "$WG_PARTITION" | grep -qF '@@WRITE_PATHS@@'; then
+    log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (python3/json failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH). A multi-repo ticket would deliver incomplete."
+  fi
+
   # Back-compat (older tickets with no WG-002 access boundary): fall back to the
   # single delivery repo as the sole write repo. This reproduces EXACTLY today's
   # single-repo behaviour — one write root, one gaffer/ branch, no read roots.

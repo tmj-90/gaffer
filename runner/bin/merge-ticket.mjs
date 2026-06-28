@@ -742,6 +742,30 @@ function main() {
     return;
   }
 
+  // R-7: check the resolver's exit code BEFORE treating the run as successful.
+  // spawnSync sets res.error for spawn failures but res.status for process exits.
+  // A non-zero exit means the resolver agent itself failed (crash, MCP error, etc.);
+  // firing re-approval with an empty or garbage summary in that case produces a
+  // misleading "conflict_resolved_pending_reapproval" event with no real fix on the
+  // branch. Soft-fail with a descriptive JSON output so the operator can investigate.
+  if (res.status !== 0 && res.status !== null) {
+    removeWorktree(repo.localPath, worktree);
+    emit(
+      {
+        phase: "conflict_resolver_failed",
+        ticket: resolved.number,
+        repo: repo.name,
+        branch,
+        defaultBranch: repo.defaultBranch,
+        resolver_exit: res.status,
+        resolver_stderr: (res.stderr || "").trim().slice(0, 500),
+        error: `resolver agent exited ${res.status} — re-approval suppressed; branch ${branch} preserved for manual resolution`,
+      },
+      1,
+    );
+    return;
+  }
+
   const summary = (res.stdout || "").trim();
   if (summary) log(summary);
 

@@ -10,6 +10,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 mkdir -p "$GAFFER_DATA"
+
+# R-10: fail closed before spinning any ticks. gaffer_timeout refuses to run an
+# agent call unbounded when no perl/timeout/gtimeout exists; abort the whole run
+# with a setup error here so we never start a loop that can't bound its calls.
+gaffer_timeout_preflight || { echo "gaffer factory: aborting — no timeout primitive (setup error)." >&2; exit 1; }
+
 rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" "$GAFFER_DATA/.clarified-tickets" \
       "$GAFFER_DATA/.backpressure-repos"   # fresh run: nothing skipped / no backpressure recorded yet
 

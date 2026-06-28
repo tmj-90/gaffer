@@ -105,9 +105,12 @@ sys.exit(1)" "$target"; then
 
 # Compute a repo's pressure across all three dimensions and echo a single line:
 #   "<branches> <in_review> <claims>"
-# active-claims count is approximated by in-flight (claimed/in_progress) tickets for
-# the repo — the WG status that represents a live claim. If a future status name is
-# used for active work, extend the status set here.
+# The active-claims count is the number of IN-FLIGHT tickets for the repo. An
+# in-flight delivery is `claimed` for essentially its whole lifetime — Dispatch
+# moves a ticket to `claimed` on claim and only flips it to `in_progress` for the
+# brief window inside submitForReview. Counting `in_progress` alone would leave the
+# cap inert during live delivery, so we count BOTH live statuses (claimed +
+# in_progress). If a future status name represents live work, extend the set here.
 #   gaffer_repo_pressure <repo-path> <default-branch> [repo-name]
 gaffer_repo_pressure() {
   local repo="$1" def="${2:-main}" name="${3:-}"
@@ -115,15 +118,18 @@ gaffer_repo_pressure() {
   local branches inreview claims
   branches="$(gaffer_repo_unmerged_branches "$repo" "$def")"
   inreview="$(gaffer_repo_tickets_in_status in_review "$key")"
-  # An active claim shows as an in-flight ticket status. Dispatch moves a claimed
-  # ticket out of `ready`; the live-work status is `in_progress` (claimed). Count
-  # those as concurrent tickets. Fall back to 0 if the status is unknown/empty.
-  claims="$(gaffer_repo_tickets_in_status in_progress "$key")"
+  # Live work = claimed (the steady state of an in-flight delivery) + in_progress
+  # (the brief submit-for-review window). Sum both so the cap throttles real work.
+  claims="$(gaffer_repo_tickets_in_status claimed "$key")"
+  claims=$(( ${claims:-0} + $(gaffer_repo_tickets_in_status in_progress "$key") ))
   # If repo name differs from path and path-keyed lookups found nothing, also try
   # the name so either identifier works.
   if [ -n "$name" ] && [ "$name" != "$repo" ]; then
     if [ "${inreview:-0}" = "0" ]; then inreview="$(gaffer_repo_tickets_in_status in_review "$name")"; fi
-    if [ "${claims:-0}" = "0" ]; then claims="$(gaffer_repo_tickets_in_status in_progress "$name")"; fi
+    if [ "${claims:-0}" = "0" ]; then
+      claims="$(gaffer_repo_tickets_in_status claimed "$name")"
+      claims=$(( ${claims:-0} + $(gaffer_repo_tickets_in_status in_progress "$name") ))
+    fi
   fi
   printf '%s %s %s\n' "${branches:-0}" "${inreview:-0}" "${claims:-0}"
 }

@@ -123,7 +123,143 @@ gaffer_timeout() {
   fi
   if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
   if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
-  "$@"   # no timeout primitive available — run unbounded (best-effort)
+  # FAIL CLOSED (R-10): no timeout primitive (perl / timeout / gtimeout) is
+  # available. Running the command unbounded here is the denial-of-wallet hole —
+  # a runaway `claude -p` could burn unbounded wall-clock and tokens. Refuse to
+  # run the command, emit a clear setup error, and return 127 so every caller
+  # treats it as a fatal setup fault (see gaffer_timeout_preflight, which aborts
+  # the run up front rather than relying on each call site to notice).
+  echo "gaffer_timeout: FATAL — no timeout primitive (perl, timeout, or gtimeout) found; refusing to run '$1' unbounded. Install perl or coreutils." >&2
+  return 127
+}
+
+# Preflight (R-10): assert a timeout primitive exists BEFORE any agent call.
+# gaffer_timeout fails closed (returns 127) when none is present, but a runaway
+# call should never even be attempted — so callers (loop.sh, tick.sh) run this
+# once at startup and ABORT the whole run with a setup error if it fails. Returns
+# 0 when a primitive is available, 127 (with a stderr message) when not.
+gaffer_timeout_preflight() {
+  if command -v perl >/dev/null 2>&1 \
+    || command -v timeout >/dev/null 2>&1 \
+    || command -v gtimeout >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "gaffer: FATAL SETUP ERROR — no wall-clock timeout primitive available (need perl, timeout, or gtimeout). Refusing to start: agent calls cannot be bounded and could run away. Install perl or GNU coreutils." >&2
+  return 127
+}
+
+# --- Portable file lock (A-1 parallel execution) -----------------------------
+# Serialise a critical section across concurrent worker.sh processes. Mirrors the
+# gaffer_timeout shim's discipline: prefer the best primitive, fall back portably,
+# NEVER skip the lock silently. macOS ships NO `flock`, so the universal fallback
+# is an atomic `mkdir` spinlock — `mkdir` is an atomic create-or-fail syscall on
+# every POSIX filesystem, so exactly one racer creates the lock dir and the rest
+# spin until it's released. A stale lock (a worker killed mid-section) is reaped
+# by age so the factory can never wedge on a dead holder's lock.
+#
+# Usage: gaffer_with_lock <lockfile> <command> [args...]
+#   The command runs while the caller holds an EXCLUSIVE lock keyed on <lockfile>.
+#   Returns the command's own exit status (so callers see real failures), or 1 if
+#   the lock could not be acquired within the bound.
+: "${GAFFER_LOCK_TIMEOUT:=30}"     # max seconds to wait for a contended lock
+: "${GAFFER_LOCK_STALE:=120}"      # mkdir-lock older than this is treated as stale
+
+# True iff flock(1) is present AND bash supports dynamic fds ({fd}>>, bash >=4.1).
+# Both are required for the flock path; otherwise the portable mkdir path is used.
+_gaffer_can_flock() {
+  command -v flock >/dev/null 2>&1 || return 1
+  local maj="${BASH_VERSINFO[0]:-0}" min="${BASH_VERSINFO[1]:-0}"
+  [ "$maj" -gt 4 ] 2>/dev/null && return 0
+  [ "$maj" -eq 4 ] 2>/dev/null && [ "$min" -ge 1 ] 2>/dev/null && return 0
+  return 1
+}
+gaffer_with_lock() {
+  local lockfile="$1"; shift
+  [ -n "$lockfile" ] || { "$@"; return $?; }
+  # Prefer flock(1) ONLY when both flock and bash's dynamic-fd syntax ({fd}>>) are
+  # available — i.e. flock present AND bash >= 4.1. macOS ships bash 3.2 with no
+  # flock, so it always takes the portable mkdir path below; a Linux/CI box has
+  # flock + bash 4+. This guard keeps the {fd}>> form from ever being parsed on an
+  # interpreter that can't handle it.
+  if _gaffer_can_flock; then
+    # flock(1) (Linux/CI): hold an exclusive lock on a dedicated fd, run the
+    # command, release on close. -w bounds the wait so a wedged holder can't hang
+    # the worker forever. Exit 1 specifically signals "couldn't acquire".
+    # Hold the lock on fd 9 inside a SUBSHELL so the lock descriptor NEVER exists in
+    # the parent shell. The earlier form opened a dynamic `{fd}>>` in the parent and
+    # ran the command there — but lock-wrapped log()/skip/ledger calls fire inside the
+    # tick's own `while read`/process-substitution loops, and a parent-held descriptor
+    # collided with / leaked into those loops, silently breaking candidate selection on
+    # the flock (Linux) path. The subshell scopes fd 9 to itself and auto-closes it on
+    # exit (releasing the lock); every lock-wrapped call is an external file write, so
+    # running it in a subshell is behaviour-preserving. `exit 75` is flock's
+    # couldn't-acquire signal (EX_TEMPFAIL; the wrapped writers never return it).
+    ( flock -w "$GAFFER_LOCK_TIMEOUT" 9 || exit 75; "$@" ) 9>>"$lockfile"
+    local rc=$?
+    if [ "$rc" = 75 ]; then
+      echo "gaffer_with_lock: could not acquire $lockfile within ${GAFFER_LOCK_TIMEOUT}s" >&2
+      return 1
+    fi
+    return "$rc"
+  fi
+  # Portable fallback: atomic mkdir spinlock (the macOS path — no flock there).
+  # GUARD: a locked section must finish well WITHIN GAFFER_LOCK_STALE — the
+  # liveness check below means a *live* holder is never reaped, but a section that
+  # outlives both the holder's death AND the staleness window would still be a bug.
+  local lockdir="${lockfile}.d"
+  local waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    # Reap an ABANDONED lock — but only when its holder is provably gone. Staleness
+    # alone (mtime, set once at mkdir and never refreshed) wrongly reaps a live but
+    # slow holder, breaking mutual exclusion. Liveness, by holder PID, is
+    # authoritative:
+    #   • readable PID, still alive (kill -0 ok) → NOT stale, however long held: wait.
+    #   • readable PID, dead                     → reap immediately (holder gone).
+    #   • no readable PID                        → fall back to the mtime-stale check
+    #     (a holder killed before it wrote its pid, or a lost pid file).
+    local pid
+    pid="$(cat "$lockdir/pid" 2>/dev/null)"
+    if [ -n "$pid" ]; then
+      if kill -0 "$pid" 2>/dev/null; then
+        :   # holder is alive — never reap, just wait
+      else
+        rm -rf "$lockdir" 2>/dev/null || true   # holder PID is dead — abandoned
+        continue
+      fi
+    else
+      local age
+      age="$(_gaffer_lock_age "$lockdir")"
+      if [ "${age:-0}" -ge "$GAFFER_LOCK_STALE" ] 2>/dev/null; then
+        rm -rf "$lockdir" 2>/dev/null || true
+        continue
+      fi
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+    if [ "$waited" -ge "$((GAFFER_LOCK_TIMEOUT * 10))" ]; then
+      echo "gaffer_with_lock: could not acquire $lockdir within ${GAFFER_LOCK_TIMEOUT}s" >&2
+      return 1
+    fi
+  done
+  # Record the holder PID so waiters can tell a live-but-slow holder from a dead one.
+  echo $$ > "$lockdir/pid" 2>/dev/null || true
+  # Hold the lock for the duration of the command; always release, even on failure.
+  "$@"; local rc=$?
+  rmdir "$lockdir" 2>/dev/null || rm -rf "$lockdir" 2>/dev/null || true
+  return $rc
+}
+
+# Seconds since a lock dir was created (its mtime). Portable across GNU/BSD stat.
+# Used only as the FALLBACK staleness signal when a lock has no live holder PID
+# (the live-holder check is authoritative; mtime is the last resort for an
+# abandoned lock left by a killed holder that never wrote — or had its pid file
+# lost).
+_gaffer_lock_age() {
+  local d="$1" mtime now
+  mtime="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo "")"
+  [ -n "$mtime" ] || { echo 0; return 0; }
+  now="$(date +%s)"
+  echo $((now - mtime))
 }
 
 # --- Agent child-env scrub (C1/M2) -------------------------------------------
@@ -308,6 +444,41 @@ gaffer_is_self_target() {
 : "${MAX_TICKS_PER_DAY:=50}"
 : "${DAILY_COUNTER_FILE:=$GAFFER_DATA/.daily-ticks}"
 
+# --- Parallel ticket execution (A-1) -----------------------------------------
+# How many worker processes deliver tickets at once. The DEFAULT of 1 is a hard
+# requirement: at 1 the loop runs the exact single-tick path it always has —
+# byte-identical behaviour, fully backward-compatible — and ONLY branches into a
+# worker pool when an operator opts into N>1. Parallelism is safe because each
+# ticket is claimed atomically (a partial unique index → exactly one winner under
+# a race), dependency-gated transactionally, and delivered in its own
+# deterministic per-ticket worktree on its own branch; the genuinely shared
+# mutable state (day-cap counter, usage ledger, skip-file, log) is serialised with
+# gaffer_with_lock (below).
+: "${GAFFER_CONCURRENCY:=1}"
+# Per-repo concurrency cap: aim to never have more than this many tickets in flight
+# for a single repo at once (avoids a merge stampede / cross-ticket churn on one
+# repo). Enforced via the existing backpressure system (lib/backpressure.sh counts
+# active in-flight tickets — claimed + in_progress — per repo). It is the same
+# value as the backpressure "claims" cap, so the two stay consistent by
+# construction.
+#
+# HONESTY (best-effort under concurrency): the cap is read at candidate-SELECTION
+# time, but the actual claim is deferred to the agent's own `claim_ticket` call. So
+# under GAFFER_CONCURRENCY>1 two ticks can each select a candidate for the same
+# under-cap repo before either has claimed, and the cap can be exceeded by up to the
+# in-flight count. The HARD guarantee here is only the per-ticket double-claim
+# invariant (a ticket is claimed at most once, enforced transactionally in
+# Dispatch); this per-repo cap is a throttle, not a transactional bound.
+# NOTE(follow-up): claiming in tick.sh BEFORE handing off to the agent (so
+# selection and claim are one atomic step) would make the per-repo cap exact.
+: "${MAX_CONCURRENT_TICKETS_PER_REPO:=1}"
+# Upper bound on how many ready candidates a single tick scans before giving up
+# and yielding no_work. Bounds the per-tick candidate walk (each candidate costs a
+# `ticket show` + pressure probe) so a large ready queue can't make every tick do
+# O(queue) work. 0 = unlimited (scan the whole ready list, the pre-A-1 behaviour).
+: "${MAX_CANDIDATES:=25}"
+export GAFFER_CONCURRENCY MAX_CONCURRENT_TICKETS_PER_REPO MAX_CANDIDATES
+
 # --- Honest USAGE LEDGER (per agent invocation) ------------------------------
 # Every headless `claude -p` call is switched to `--output-format json` and its
 # real usage (tokens verbatim, dollars RELAYED from Claude Code's own
@@ -328,11 +499,24 @@ export GAFFER_USAGE_LEDGER
 # human-readable log) and appends one ledger record. Fully swallowed: a missing
 # module / node error must never affect the tick (we still emit nothing and
 # return 0). Stdout of this function is the agent's text only.
+#
+# A-1 (parallel execution): the ledger is a SHARED append-only JSONL file. Under
+# GAFFER_CONCURRENCY>1 several workers record usage concurrently; a record can
+# exceed the OS atomic-append size (PIPE_BUF), so two appends could interleave and
+# corrupt a line. We serialise the whole record call under .ledger.lock when
+# gaffer_with_lock is defined (always, via this file). gaffer_with_lock runs the
+# command in-process with inherited stdout, so the agent's `.result` passthrough is
+# preserved. At concurrency 1 the lock is uncontended → behaviour is unchanged.
 gaffer_usage_record() {
   local kind="$1" ticket="${2:-}" rc="${3:-0}" jsonfile="$4"
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs"
   [ -f "$mod" ] || return 0
-  node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+  if declare -F gaffer_with_lock >/dev/null 2>&1; then
+    gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+  else
+    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>/dev/null || true
+  fi
 }
 
 # Who reviews in_review tickets before they can be approved to done:
@@ -447,7 +631,10 @@ gaffer_usage_record() {
 # than the cap per repo. 0 = that dimension is unlimited.
 : "${MAX_OPEN_AGENT_BRANCHES_PER_REPO:=3}"   # unmerged gaffer/* branches in the real repo
 : "${MAX_OPEN_AGENT_PRS_PER_REPO:=3}"        # in_review tickets targeting the repo
-: "${MAX_CONCURRENT_TICKETS_PER_REPO:=2}"    # active (unexpired) claims targeting the repo
+# The third backpressure dimension — active (claimed/in_progress) tickets per repo
+# — is MAX_CONCURRENT_TICKETS_PER_REPO, defined once above (default 1). It is NOT
+# re-defaulted here: a second `:=` would be dead (the value is already set) and any
+# different number in it would be a silently-ignored lie.
 
 # CLI helpers (use the built dist bins)
 # memory-mcp uses its own bin layout + the MEMORY_DB env var (no --db flag).
@@ -521,6 +708,11 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # Per-repo backpressure (defines gaffer_repo_pressure / gaffer_repo_in_backpressure).
 # shellcheck source=lib/backpressure.sh
 [ -f "$RUNNER_DIR/lib/backpressure.sh" ] && source "$RUNNER_DIR/lib/backpressure.sh"
+
+# Orphaned-worktree recovery (defines gaffer_cleanup_orphaned_worktrees) — sweeps
+# stale per-ticket worktrees left by killed workers (A-1 parallel execution).
+# shellcheck source=lib/orphan-recovery.sh
+[ -f "$RUNNER_DIR/lib/orphan-recovery.sh" ] && source "$RUNNER_DIR/lib/orphan-recovery.sh"
 
 # Dashboard process tracking (defines gaffer_dashboard_pid / _pidfile / _write_pid):
 # precise running-detection via a recorded+validated PID instead of a broad pgrep.

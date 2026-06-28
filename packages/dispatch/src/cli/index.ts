@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 import { Command } from "commander";
 import { ZodError } from "zod";
@@ -7,6 +7,9 @@ import { ZodError } from "zod";
 import { Dispatch } from "../core.js";
 import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 import type { Actor } from "../domain/types.js";
+import { exportState, importStateFromJson, serializeBundle } from "../io/stateExport.js";
+import { buildNotifierFromEnv } from "../notify/config.js";
+import { isNotifyKind } from "../notify/types.js";
 import { DispatchError } from "../util/errors.js";
 import { resolveDbPath } from "../util/paths.js";
 import { VERSION } from "../version.js";
@@ -1084,6 +1087,88 @@ program
     } finally {
       wg.db.close();
     }
+  });
+
+// --- Portability: export / import the whole board (H5) ----------------------
+
+program
+  .command("export")
+  .description(
+    "Export the whole Dispatch board to a portable JSON bundle (tickets, epics, " +
+      "scope graph, ACs, repos, decisions, reviews/evidence, work_events, claims). " +
+      "Writes to stdout by default, or to a file with --out.",
+  )
+  .option("-o, --out <file>", "write the bundle to this file ('-' for stdout)")
+  .action((opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    try {
+      const bundle = exportState(wg.db);
+      const json = serializeBundle(bundle);
+      const out = opts.out as string | undefined;
+      if (out === undefined || out === "-") {
+        process.stdout.write(json);
+      } else {
+        writeFileSync(out, json, { encoding: "utf8" });
+        printJson({ ok: true, out, tables: Object.keys(bundle.tables).length });
+      }
+    } finally {
+      wg.db.close();
+    }
+  });
+
+program
+  .command("import <file>")
+  .description(
+    "Import a board bundle (from 'dispatch export') into THIS database. Refuses a " +
+      "non-empty DB unless --force is given (which replaces its contents). Reads " +
+      "stdin when <file> is '-'.",
+  )
+  .option("--force", "replace the contents of a non-empty database", false)
+  .action((file: string, opts, cmd) => {
+    const json = file === "-" ? readStdin() : readFileSync(file, "utf8");
+    const wg = open(cmd.optsWithGlobals());
+    try {
+      const res = importStateFromJson(wg.db, json, { force: opts.force });
+      printJson({ ok: true, ...res });
+    } finally {
+      wg.db.close();
+    }
+  });
+
+// --- H2 notifications: a setup-helper to test the configured sinks ----------
+const notify = program.command("notify").description("Human-gate notification commands");
+notify
+  .command("test")
+  .description(
+    "Fire a synthetic human-gate event through the sinks configured via the " +
+      "GAFFER_NOTIFY_* env vars (webhook · slack · desktop). With nothing " +
+      "configured the notifier is a no-op and this reports 'disabled'.",
+  )
+  .option(
+    "--kind <kind>",
+    "gate kind: review_needed · ticket_blocked · ticket_parked · decision_pending",
+    "review_needed",
+  )
+  .action((opts: { kind?: string }) => {
+    const kind = opts.kind ?? "review_needed";
+    if (!isNotifyKind(kind)) {
+      throw new DispatchError("VALIDATION_ERROR", `Unknown notify kind: ${kind}`, {
+        allowed: ["review_needed", "ticket_blocked", "ticket_parked", "decision_pending"],
+      });
+    }
+    const notifier = buildNotifierFromEnv();
+    if (!notifier.enabled) {
+      printJson({ ok: true, enabled: false, message: "no notify sinks configured" });
+      return;
+    }
+    notifier.notify({
+      kind,
+      title: "Synthetic test event",
+      status: "in_review",
+      at: new Date().toISOString(),
+      detail: "dispatch notify test",
+    });
+    printJson({ ok: true, enabled: true, fired: kind });
   });
 
 async function main(): Promise<void> {

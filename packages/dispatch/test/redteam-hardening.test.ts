@@ -238,6 +238,26 @@ describe("P0 fix 2: approveReview / setTicketRepoAccess refuse an agent actor", 
     wg.db.close();
   });
 
+  // Crown-jewel invariant — the OTHER direction. The opt-in "yolo" override
+  // (DISPATCH_ALLOW_AGENT_APPROVE=1) must ACTUALLY let an agent approve. Locking
+  // both directions means a `===`->`!==` (or dropped-condition) mutation on the
+  // override gate is caught: off => refused (test above), on => permitted (here).
+  it("approveReview PERMITS an agent actor when DISPATCH_ALLOW_AGENT_APPROVE=1", () => {
+    const prev = process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+    process.env.DISPATCH_ALLOW_AGENT_APPROVE = "1";
+    try {
+      const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner);
+      const ticketId = inReviewWithWriteRepo(wg);
+      // With the override ON the agent now clears the human-only gate.
+      expect(wg.approveReview(ticketId, agentActor).ticket.status).toBe("ready_for_merge");
+      wg.db.close();
+    } finally {
+      // Restore so the override never leaks into sibling tests (it defaults off).
+      if (prev === undefined) delete process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+      else process.env.DISPATCH_ALLOW_AGENT_APPROVE = prev;
+    }
+  });
+
   it("setTicketRepoAccess REFUSES an agent actor (no self-granting write)", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     const repo = wg.registerRepository({ name: "svc" }, human);

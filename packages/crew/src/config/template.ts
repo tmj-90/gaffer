@@ -152,6 +152,20 @@ loops:
     mode: create_draft_tickets
     repos: []
     min_delivered_tickets: null
+  idle_type_quality:
+    enabled: false # type-debt scan (as casts / non-null ! / @ts-* / skipLibCheck); opt in per factory
+    trigger: when_queue_empty
+    mode: create_draft_tickets
+    repos: []
+    min_delivered_tickets: null
+  idle_tech_debt:
+    enabled: false # refactor-hotspot scan (god-files / churn×size / duplication); opt in per factory
+    trigger: when_queue_empty
+    mode: create_draft_tickets
+    repos: []
+    min_delivered_tickets: null
+    god_file_lines: 500 # non-test source files over this LOC are flagged as god-files
+    churn_size_product_threshold: 5000 # flag when (commit count × LOC) exceeds this
   idle_lore_gap:
     enabled: false # requires a real Memory; emits suggestions, never edits code
     trigger: when_queue_empty

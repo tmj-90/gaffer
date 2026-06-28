@@ -52,3 +52,24 @@ export { TicketRepository, type TicketListFilter } from "./repositories/ticketRe
 export { DispatchError } from "./util/errors.js";
 export { systemClock, TestClock, type Clock } from "./util/clock.js";
 export { resolveDbPath } from "./util/paths.js";
+export {
+  NOTIFY_KINDS,
+  isNotifyKind,
+  CompositeNotifier,
+  NOOP_NOTIFIER,
+  buildNotifierFromEnv,
+  parseAllowedEvents,
+  DEFAULT_NOTIFY_EVENTS,
+  NOTIFY_ENV,
+  WebhookSink,
+  SlackSink,
+  DesktopSink,
+  type Notifier,
+  type NotifyEvent,
+  type NotifyKind,
+  type NotifySink,
+  type HttpTransport,
+  type CommandRunner,
+  type CommandResult,
+  type NotifyLogger,
+} from "./notify/index.js";

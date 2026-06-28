@@ -42,17 +42,27 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Real audit gate: fails on any HIGH/CRITICAL advisory NOT documented in
+      # .github/audit-allowlist.txt. Accepted advisories are listed + justified
+      # there; everything new fails the build. (Replaces the old `|| true` no-op.)
       - name: Dependency audit
+        shell: bash
         run: |
           echo "::group::pnpm audit"
           pnpm audit --audit-level=high || true
           echo "::endgroup::"
+          .github/scripts/audit-gate.sh
 
       - name: Verify better-sqlite3 native binding loads
-        # Resolve from a package that depends on it — pnpm does not hoist the
-        # native module to the workspace root, so a root require() would fail.
-        working-directory: packages/memory
-        run: node -e "const D=require('better-sqlite3');const db=new D(':memory:');db.exec('create table t(x)');db.prepare('insert into t values (1)').run();if(db.prepare('select count(*) c from t').get().c!==1)throw new Error('better-sqlite3 binding check failed');db.close();console.log('better-sqlite3 native binding OK')"
+        # Both packages depend on better-sqlite3 (now unified on ^12). Resolve the
+        # native module from EACH package — pnpm does not hoist it to the workspace
+        # root, so a root require() would fail, and a binding can build for one
+        # package's install context but not another. Check both.
+        shell: bash
+        run: |
+          for pkg in dispatch memory; do
+            ( cd "packages/$pkg" && node -e "const D=require('better-sqlite3');const db=new D(':memory:');db.exec('create table t(x)');db.prepare('insert into t values (1)').run();if(db.prepare('select count(*) c from t').get().c!==1)throw new Error('better-sqlite3 binding check failed');db.close();console.log('$pkg: better-sqlite3 native binding OK')" )
+          done
 
       - name: Lint
         run: pnpm lint
@@ -74,6 +84,13 @@ jobs:
 
       - name: Test (packages)
         run: pnpm -r test
+
+      # Coverage gate: re-runs the suites with v8 coverage and enforces the
+      # per-package floor (thresholds live in each packages/*/vitest.config.ts).
+      # A drop below the floor fails the job. Runs after the plain test step so a
+      # coverage-provider hiccup is distinguishable from a real test failure.
+      - name: Coverage (floor gate)
+        run: pnpm -r test:coverage
 
       # Each runner test runs under a per-test wall-clock cap (perl alarm — portable
       # across the ubuntu + macOS runners; GNU `timeout` isn't on macOS). A hung test

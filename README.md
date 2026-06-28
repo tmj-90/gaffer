@@ -104,7 +104,7 @@ Four components, one workspace:
 |---|---|
 | **Dispatch** · `packages/dispatch` | The control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard + CLI. |
 | **Crew** · `packages/crew` | The factory runtime — factory-level MCP tools, a hooks engine, and idle loops that draft work, ingest issues, and self-improve. |
-| **Runner** · `runner/` | The orchestrator — bash that spawns a `claude -p` agent per ticket, with a 31-skill library, a deterministic safety hook, git-worktree isolation, and model tiering (plan on a strong model, implement on a fast one). |
+| **Runner** · `runner/` | The orchestrator — bash that spawns a `claude -p` agent per ticket, with a 32-skill library, a deterministic safety hook, git-worktree isolation, and model tiering (plan on a strong model, implement on a fast one). |
 | **Memory** · `packages/memory` | The durable, human-gated memory the factory learns into — the lore knowledge base plus the Repo Understanding engine (digest + feature ledger). *(Also usable standalone — see [`packages/memory/README.md`](packages/memory/README.md).)* |
 
 ```
@@ -169,7 +169,7 @@ gaffer/
 │   ├── dispatch/    control plane  (REST + MCP + dashboard + CLI)
 │   ├── crew/   factory runtime (MCP + hooks + idle loops)
 │   └── memory/    durable gated memory + repo understanding (MCP)
-├── runner/           bash orchestrator, 31-skill library, safety hook
+├── runner/           bash orchestrator, 32-skill library, safety hook
 ├── pnpm-workspace.yaml
 └── package.json
 ```
@@ -182,7 +182,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Dispatch queue, tickets, epics, scopes, review gate (REST + MCP + CLI)
 - Crew MCP tool server (factory tools, hooks engine, idle loops, repo onboarding)
 - Memory embeddings, Repo Digest, feature ledger, gated lore
-- Runner factory loop with 31-skill library and model tiering
+- Runner factory loop with 32-skill library and model tiering
 - Deterministic safety hook (`runner/safety-hook.mjs`) — worktree isolation, fails closed
 - Web dashboard with all seven views: Overview, Work, Review, Epics, Map, Memory, Settings
 
@@ -190,4 +190,4 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Container sandbox is a stub — worktree isolation plus `sandbox-exec` (macOS only, Apple-deprecated) is the current boundary; no per-subprocess network isolation
 - No REST RBAC (the API token is shared; no per-user or per-scope permissions)
 - Safety hook is tested on macOS; non-macOS behaviour is best-effort and untested
-- No third-party skill *marketplace* yet. The 31 bundled skills load automatically — the factory injects the whole library into every ticket's agent, and `gaffer skills install` adds them to your own Claude Code. Authoring a new skill is still just dropping a `SKILL.md` into `runner/skills/`.
+- No third-party skill *marketplace* yet. The 32 bundled skills load automatically — the factory injects the whole library into every ticket's agent, and `gaffer skills install` adds them to your own Claude Code. Authoring a new skill is still just dropping a `SKILL.md` into `runner/skills/`.

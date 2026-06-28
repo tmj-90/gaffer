@@ -251,14 +251,24 @@ check("stack + area compose", () => {
   for (const name of ["security-authz", "security-input-validation", "security-secret-handling"]) {
     assert(sel.includes(name), `node+security must include ${name}`);
   }
-  // Stack-agnostic security packs (cloud-security, threat-detection) also appear — expected
+  // cloud-security (re-tagged area: infra) and threat-detection (area:
+  // security-ops) are specialised — they no longer ride the security area and
+  // resolve only under their own areas.
   assert(
-    sel.includes("cloud-security"),
-    "node+security must include cloud-security (stack-agnostic)",
+    !sel.includes("cloud-security"),
+    "cloud-security re-tagged to infra: must not appear in a security query",
   );
   assert(
-    sel.includes("threat-detection"),
-    "node+security must include threat-detection (stack-agnostic)",
+    selectSkills({ area: "infra" })
+      .map((s) => s.name)
+      .includes("cloud-security"),
+    "cloud-security resolves under area: infra",
+  );
+  assert(
+    selectSkills({ area: "security-ops" })
+      .map((s) => s.name)
+      .includes("threat-detection"),
+    "threat-detection resolves under area: security-ops",
   );
   // No non-security packs appear
   assert(

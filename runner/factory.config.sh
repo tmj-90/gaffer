@@ -915,3 +915,36 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # Set to 1 for a factory you want actively refining its own backlog while idle.
 : "${CLARIFY_DRAFTS_WHEN_IDLE:=0}"
 : "${IDLE_DRAFT_WHEN_IDLE:=0}"
+
+# --- H4: real PR creation (opt-in) -------------------------------------------
+# When GAFFER_CREATE_PR=1 AND the primary write repo has a GitHub remote, the
+# runner runs `gh pr create` after a successful delivery and records the resulting
+# URL back as pr_url on the ticket. Off by default — opt in per-run or globally.
+# The `gh` binary is injectable via GAFFER_GH_BIN (default: `gh`) so tests can
+# stub it without a real remote.
+: "${GAFFER_CREATE_PR:=0}"   # 1/true/yes/on to enable real PR creation; default OFF
+: "${GAFFER_GH_BIN:=gh}"     # injectable gh binary (for tests)
+export GAFFER_CREATE_PR GAFFER_GH_BIN
+
+# --- H3: CI-aware review gate (opt-in) ----------------------------------------
+# When GAFFER_REQUIRE_CI=1, after the delivery branch/PR exists the runner polls
+# `gh pr checks <branch>` until checks are green, then lets the ticket enter the
+# human review lane. If CI goes red, the ticket is auto-rejected back to rework
+# with the failing check (name + url) as evidence. On poll timeout the gate
+# surfaces "CI still pending" and proceeds rather than hanging forever.
+# Off by default — fully backward-compatible when unset.
+: "${GAFFER_REQUIRE_CI:=0}"            # 1/true/yes/on to require CI green before review
+: "${GAFFER_CI_POLL_ATTEMPTS:=20}"     # max poll cycles before "still pending" timeout
+: "${GAFFER_CI_POLL_INTERVAL_SECS:=30}" # seconds between polls
+export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
+
+# H4 PR-creation helper (defines gaffer_create_pr / gaffer_pr_create_enabled /
+# gaffer_has_github_remote / gaffer_build_pr_body). Sourced here so the functions
+# are available in tick.sh which sources factory.config.sh.
+# shellcheck source=lib/pr-create.sh
+[ -f "$RUNNER_DIR/lib/pr-create.sh" ] && source "$RUNNER_DIR/lib/pr-create.sh"
+
+# H3 CI-gate helper (defines gaffer_ci_gate / gaffer_ci_gate_enabled /
+# gaffer_parse_checks). Sourced here for the same reason.
+# shellcheck source=lib/ci-gate.sh
+[ -f "$RUNNER_DIR/lib/ci-gate.sh" ] && source "$RUNNER_DIR/lib/ci-gate.sh"

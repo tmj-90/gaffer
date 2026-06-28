@@ -1670,6 +1670,44 @@ for r in d.get("repositories", []) or []:
     fi
   fi
 
+  # ── H4: real PR creation (opt-in GAFFER_CREATE_PR=1) ─────────────────────────
+  # After the delivery is fully recorded and the worktrees are torn down, attempt
+  # to open a GitHub PR. This is ALWAYS best-effort: a failure is logged but never
+  # rolls back the delivery or changes the ticket status. The `gh` binary is
+  # injectable via GAFFER_GH_BIN so the no-op (flag off / no remote) path is clean.
+  _PR_URL=""
+  if declare -F gaffer_create_pr >/dev/null 2>&1; then
+    _PR_URL="$(gaffer_create_pr "$NUM" "$PRIMARY_REPO" "$WORK_BRANCH" "$DEFAULT_BRANCH" "$TITLE" 2>>"$GAFFER_LOG" || true)"
+  else
+    log "H4: pr-create.sh not loaded — skipping (GAFFER_CREATE_PR=${GAFFER_CREATE_PR:-0})"
+  fi
+
+  # ── H3: CI-aware review gate (opt-in GAFFER_REQUIRE_CI=1) ─────────────────────
+  # When enabled, poll CI checks on the delivery branch before letting the ticket
+  # enter the human review lane. Green → proceed. Red → auto-reject back to rework.
+  # Timeout (pending after all attempts) → surface and proceed. Flag off → no-op.
+  if declare -F gaffer_ci_gate >/dev/null 2>&1; then
+    gaffer_ci_gate "$NUM" "$PRIMARY_REPO" "$WORK_BRANCH" "${_PR_URL:-}"
+    _CI_RC=$?
+    if [ "$_CI_RC" = "2" ]; then
+      # CI went red → auto-reject back to rework so a human never sees a broken CI.
+      log "H3: CI FAILED for #$NUM — auto-rejecting delivery back to rework (ticket left for re-delivery)"
+      _CUR_CI_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+      if [ "$_CUR_CI_STATUS" = "in_review" ]; then
+        wg review reject "$NUM" --to refining --reviewer factory-ci \
+          --reason "H3: CI checks failed on branch $WORK_BRANCH — see attached evidence for the failing check" \
+          >/dev/null 2>&1 \
+          && log "H3: auto-rejected #$NUM (in_review → refining)" \
+          || log "H3: WARNING — could not auto-reject #$NUM to refining (non-fatal)"
+      else
+        log "H3: ticket #$NUM is in status '$_CUR_CI_STATUS' (not in_review) — no state move needed"
+      fi
+      result error; exit 0
+    fi
+  else
+    log "H3: ci-gate.sh not loaded — skipping (GAFFER_REQUIRE_CI=${GAFFER_REQUIRE_CI:-0})"
+  fi
+
   result worked; exit 0
 fi
 

@@ -16,6 +16,92 @@ import type { AgentRuntime } from "../runtime/agentRuntime.js";
 import type { SafetyPolicy } from "../safety/policySchema.js";
 import type { DispatchClient } from "../dispatch/client.js";
 
+// ---------------------------------------------------------------------------
+// H4 — injectable PR creation seam
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a PR creation attempt. `prUrl` is the newly-created PR URL when the
+ * attempt succeeded; `null` when the flag is off, there is no GitHub remote, or
+ * the `gh` call failed. The implementation loop records a non-null URL back onto
+ * the ticket via `recordDeliveryArtifact`.
+ */
+export interface PrCreateResult {
+  /** The created PR URL, or null when creation was skipped / failed. */
+  prUrl: string | null;
+  /** Human-readable one-line summary of what happened (for the event log). */
+  summary: string;
+}
+
+/**
+ * Injectable seam for GitHub PR creation (H4). The real implementation runs
+ * `gh pr create`; tests inject a `FakePrCreator` so no remote is needed.
+ */
+export interface PrCreator {
+  /**
+   * Create a PR for the delivery branch and return its URL.
+   *
+   * @param p.ticketId     Dispatch ticket id (for evidence recording).
+   * @param p.ticketNumber Human-visible ticket number (for the PR body).
+   * @param p.repoPath     Local path of the primary write repo.
+   * @param p.branch       Delivery branch name.
+   * @param p.baseBranch   Target base branch (default: "main").
+   * @param p.title        PR title (usually the ticket title).
+   * @param p.evidenceBundle  Evidence items to include in the PR body.
+   */
+  createPr(p: {
+    ticketId: string;
+    ticketNumber: number;
+    repoPath: string;
+    branch: string;
+    baseBranch: string;
+    title: string;
+    evidenceBundle: ReadonlyArray<{
+      evidenceType: string;
+      summary: string;
+      acId?: string;
+    }>;
+  }): PrCreateResult;
+}
+
+// ---------------------------------------------------------------------------
+// H3 — injectable CI polling seam
+// ---------------------------------------------------------------------------
+
+/**
+ * Outcome of a CI gate poll. `"green"` means all checks passed; `"red"` means at
+ * least one check failed (caller should auto-reject); `"timeout"` means checks
+ * are still pending after max attempts (caller should surface and proceed).
+ */
+export type CiGateOutcome = "green" | "red" | "timeout" | "skipped";
+
+/**
+ * A failing CI check record (for the auto-reject evidence).
+ */
+export interface CiFailingCheck {
+  name: string;
+  url?: string;
+}
+
+/**
+ * Injectable seam for CI-gate polling (H3). The real implementation calls
+ * `gh pr checks`; tests inject a `FakeCiGate` so no remote is needed.
+ */
+export interface CiGate {
+  /**
+   * Poll CI checks for the delivery branch and block until green, red, or
+   * timeout (bounded by the implementation). Never throws.
+   *
+   * @param p.branch    The delivery branch to poll checks for.
+   * @param p.repoPath  Local path of the primary write repo.
+   * @param p.prUrl     The PR URL if already created (optional hint).
+   */
+  pollChecks(p: { branch: string; repoPath: string; prUrl?: string | null }): {
+    outcome: CiGateOutcome;
+    failingChecks?: CiFailingCheck[];
+  };
+}
+
 export interface ImplementationLoopDeps {
   config: CrewConfig;
   policy: SafetyPolicy;
@@ -29,6 +115,18 @@ export interface ImplementationLoopDeps {
   skillRegistry?: SkillRegistry;
   /** Optional hook engine. When absent, the loop behaves exactly as before. */
   hooks?: HookRegistry;
+  /**
+   * H4: injectable PR creator. When absent, PR creation is skipped (today's
+   * behaviour). Inject a real `GhPrCreator` (or `FakePrCreator` in tests) to
+   * opt into real PR creation.
+   */
+  prCreator?: PrCreator;
+  /**
+   * H3: injectable CI gate. When absent, CI polling is skipped (today's
+   * behaviour). Inject a real `GhCiGate` (or `FakeCiGate` in tests) to opt
+   * into CI-aware gating.
+   */
+  ciGate?: CiGate;
 }
 
 export interface ImplementationLoopOptions {
@@ -42,12 +140,14 @@ export type ImplementationLoopOutcome =
   | { status: "no_ticket" }
   | { status: "claim_vetoed"; reason: string }
   | {
-      status: "submitted_for_review" | "blocked" | "completed";
+      status: "submitted_for_review" | "blocked" | "completed" | "ci_rejected";
       ticketId: string;
       ticketNumber: number;
       branch: string;
       packet: ContextPacket;
       evidenceIds: string[];
+      /** H4: the created PR URL, when PR creation was attempted and succeeded. */
+      prUrl?: string | null;
     };
 
 /**
@@ -288,6 +388,111 @@ function runImplementationLoopInner(
   }
   events.record("evidence_recorded", { ticketId: claim.ticketId, count: evidenceIds.length });
 
+  // ── H4: real PR creation (opt-in via prCreator dep) ─────────────────────────
+  // When a PrCreator is injected, attempt to open a GitHub PR for this delivery
+  // branch now — after evidence is recorded (so the PR body has content) but
+  // before submitForReview (so the pr_url is on the ticket when it enters review).
+  // Always best-effort: a failure is recorded in the event log but never blocks
+  // the delivery or alters the ticket status.
+  let prUrl: string | null = null;
+  if (deps.prCreator) {
+    const primary = packet.repositories[0];
+    const prResult = deps.prCreator.createPr({
+      ticketId: claim.ticketId,
+      ticketNumber: claim.number,
+      repoPath: primary?.path ?? "",
+      branch,
+      baseBranch: primary?.defaultBranch ?? "main",
+      title: packet.ticket.title,
+      evidenceBundle: result.evidence.map((e) => ({
+        evidenceType: e.evidenceType,
+        summary: e.summary,
+        ...(e.acId ? { acId: e.acId } : {}),
+      })),
+    });
+    prUrl = prResult.prUrl;
+    events.record("pr_creation_attempted", {
+      ticketId: claim.ticketId,
+      prUrl,
+      summary: prResult.summary,
+    });
+    if (prUrl) {
+      // Record the PR URL back onto the ticket so the done-gate and reviewer
+      // can resolve the PR from Dispatch rather than grepping git.
+      deps.dispatch.recordDeliveryArtifact({
+        ticketId: claim.ticketId,
+        branchName: branch,
+        prUrl,
+      });
+      events.record("pr_url_recorded", { ticketId: claim.ticketId, prUrl });
+    }
+  }
+
+  // ── H3: CI-aware review gate (opt-in via ciGate dep) ─────────────────────────
+  // When a CiGate is injected, poll CI checks for the delivery branch and hold
+  // the ticket in an awaiting_ci sub-state (internally — no Dispatch status
+  // change) until checks are green. If CI goes red, auto-reject back to rework
+  // with the failing check as evidence. On timeout, surface and proceed.
+  // Always best-effort: flag off (no ciGate) = today's behaviour.
+  if (deps.ciGate) {
+    events.record("ci_gate_started", { ticketId: claim.ticketId, branch });
+    const ciResult = deps.ciGate.pollChecks({
+      branch,
+      repoPath: packet.repositories[0]?.path ?? "",
+      prUrl,
+    });
+    events.record("ci_gate_finished", {
+      ticketId: claim.ticketId,
+      branch,
+      outcome: ciResult.outcome,
+      failingChecks: ciResult.failingChecks ?? [],
+    });
+
+    if (ciResult.outcome === "red") {
+      // CI failed → auto-reject back to rework; never enter the human review lane.
+      const failDetail =
+        ciResult.failingChecks && ciResult.failingChecks.length > 0
+          ? ciResult.failingChecks.map((c) => `${c.name}${c.url ? ` (${c.url})` : ""}`).join(", ")
+          : "unknown failing check";
+      const reason = `H3: CI checks failed on branch ${branch} — ${failDetail}`;
+      deps.dispatch.recordEvidence({
+        claimToken: claim.claimToken,
+        ticketId: claim.ticketId,
+        evidenceType: "test_output",
+        summary: `CI FAIL: ${failDetail}`,
+      });
+      deps.dispatch.markBlocked({
+        claimToken: claim.claimToken,
+        ticketId: claim.ticketId,
+        reason,
+      });
+      events.record("ci_rejected", { ticketId: claim.ticketId, reason, failDetail });
+      events.record("loop_finished", { loop: "implementation", result: "ci_rejected" });
+      return {
+        status: "ci_rejected",
+        ticketId: claim.ticketId,
+        ticketNumber: claim.number,
+        branch,
+        packet,
+        evidenceIds,
+        prUrl,
+      };
+    }
+
+    if (ciResult.outcome === "timeout") {
+      // CI still pending: surface via evidence and proceed to review so a human
+      // can watch CI finish.
+      deps.dispatch.recordEvidence({
+        claimToken: claim.claimToken,
+        ticketId: claim.ticketId,
+        evidenceType: "manual_note",
+        summary: `H3: CI checks still pending after max poll attempts — proceeding to human review; CI may still be running on branch ${branch}`,
+      });
+      events.record("ci_timeout_surfaced", { ticketId: claim.ticketId, branch });
+    }
+    // outcome === "green" or "skipped" → fall through to submitForReview.
+  }
+
   if (deps.config.loops.implementation.submit_for_review) {
     // Verifiable delivery post-conditions: re-derive from the delivery's own
     // facts that required steps actually happened, instead of trusting them. A
@@ -383,6 +588,10 @@ function runImplementationLoopInner(
   }
 
   events.record("loop_finished", { loop: "implementation", result: result.status });
+  // Include prUrl in the outcome whenever a PrCreator was present (even if it
+  // returned null, so callers can distinguish "not attempted" from "attempted but
+  // no remote"). When no PrCreator is injected the field is absent.
+  const prUrlField = deps.prCreator !== undefined ? { prUrl } : {};
   return {
     status: result.status,
     ticketId: claim.ticketId,
@@ -390,6 +599,7 @@ function runImplementationLoopInner(
     branch,
     packet,
     evidenceIds,
+    ...prUrlField,
   };
 }
 

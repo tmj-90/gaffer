@@ -24,7 +24,7 @@ JSON-LD is the recommended format (Google's preference). Schema.org types are th
 
 ## JSON-LD placement
 
-Always in `<head>` as a `<script type="application/ld+json">` block. Never in the body. One `<script>` block per schema type per page (or a `@graph` array for multiple types).
+Prefer `<head>` as a `<script type="application/ld+json">` block. Google also supports JSON-LD placed in the `<body>` (including markup injected by JavaScript), so in-body placement is valid when `<head>` injection isn't practical — `<head>` is simply the cleaner default. One `<script>` block per schema type per page (or a `@graph` array for multiple types).
 
 ```html
 <script type="application/ld+json">

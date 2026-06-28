@@ -6,6 +6,12 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import { readAuditTail } from "../audit/auditTail.js";
+import {
+  aggregateCosts,
+  readLedgerRows,
+  resolveLedgerPath,
+  todaySpend,
+} from "../cost/costAggregator.js";
 import { isAuthorized } from "./auth.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
@@ -1523,6 +1529,40 @@ function routeReadModels(
       active: activeResult.runs,
       active_truncated: activeResult.truncated,
       recent,
+    });
+    return;
+  }
+
+  // GET /api/cost — factory-wide cost summary from the usage ledger.
+  // Defensive: returns a zero-state envelope when the ledger is absent or
+  // unreadable. Lists are capped so a large ledger never bloats the response.
+  // Behind the same bearer gate as the rest of /api (checked in route()).
+  if (segments.length === 2 && segments[1] === "cost") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const TOP_N = 25;
+    // Build a ticket-number→repo-name resolver from the dispatch state.
+    const resolver = (ticketNumber: number): string | null => {
+      try {
+        const ticket = wg.tickets.findByNumber(ticketNumber);
+        if (!ticket) return null;
+        const links = wg.repos.accessLinksForTicket(ticket.id);
+        return links[0]?.name ?? null;
+      } catch {
+        return null;
+      }
+    };
+    const agg = aggregateCosts(process.env, resolver);
+    // Compute today's spend separately for the dashboard tile.
+    const ledgerPath = resolveLedgerPath(process.env);
+    const rows = ledgerPath ? readLedgerRows(ledgerPath) : [];
+    const today_usd = todaySpend(rows);
+    sendJson(res, 200, {
+      total_usd: agg.total_usd,
+      today_usd,
+      ticket_count: agg.ticket_count,
+      last_record_at: agg.last_record_at,
+      by_repo: agg.by_repo.slice(0, TOP_N),
+      top_tickets: agg.by_ticket.slice(0, TOP_N),
     });
     return;
   }

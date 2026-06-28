@@ -107,11 +107,18 @@ export interface MaintenanceChoice {
 /**
  * How "stale" a lane is: how many ticks since it last ran. A never-run enabled
  * lane is maximally stale so it is reached before any lane runs twice.
+ *
+ * The difference is clamped at 0: a lane whose `lastRunTick` exceeds the current
+ * `cursor.tick` (from a torn write, a tick reset, or a restored older
+ * `$GAFFER_DATA`) would otherwise yield a NEGATIVE staleness and sort dead-last
+ * forever — starving the highest-priority lane (security) to zero runs. A
+ * future-stamped lane is treated as staleness 0 (just-run), so it neither jumps
+ * the queue nor gets buried by it.
  */
 function staleness(cursor: MaintenanceCursor, lane: IdleLoopId): number {
   const last = cursor.lastRunTick[lane];
   if (last === undefined) return Number.POSITIVE_INFINITY;
-  return cursor.tick - last;
+  return Math.max(0, cursor.tick - last);
 }
 
 /**
@@ -135,8 +142,13 @@ function staleness(cursor: MaintenanceCursor, lane: IdleLoopId): number {
  */
 export function chooseMaintenanceLane(
   config: CrewConfig,
-  cursor: MaintenanceCursor,
+  rawCursor: MaintenanceCursor,
 ): MaintenanceChoice {
+  // Defensively strip any future-stamped lane (lastRunTick > tick) up front so a
+  // torn write / tick reset / restored old $GAFFER_DATA can't bury a lane below a
+  // clamped staleness of 0 forever — the highest-priority lane (security) would
+  // otherwise be starved to zero runs. A dropped entry reads as never-run.
+  const cursor = sanitizeCursor(rawCursor);
   const enabled = MAINTENANCE_LANES.filter((lane) => isLaneEnabled(config, lane));
   const advancedTick = cursor.tick + 1;
 
@@ -197,10 +209,25 @@ export function loadCursor(path: string): MaintenanceCursor {
   if (!existsSync(path)) return emptyCursor();
   try {
     const parsed = maintenanceCursorSchema.safeParse(JSON.parse(readFileSync(path, "utf8")));
-    return parsed.success ? parsed.data : emptyCursor();
+    if (!parsed.success) return emptyCursor();
+    return sanitizeCursor(parsed.data);
   } catch {
     return emptyCursor();
   }
+}
+
+/**
+ * Defensively drop any `lastRunTick` entry that exceeds the cursor's `tick`. Such
+ * an entry can only come from a torn write, a tick reset, or a restored older
+ * `$GAFFER_DATA`; left in place it would future-stamp a lane. Dropping it makes
+ * the lane look never-run (maximally stale) so it is rescued rather than starved.
+ */
+function sanitizeCursor(cursor: MaintenanceCursor): MaintenanceCursor {
+  const cleaned: Record<string, number> = {};
+  for (const [lane, last] of Object.entries(cursor.lastRunTick)) {
+    if (last <= cursor.tick) cleaned[lane] = last;
+  }
+  return { ...cursor, lastRunTick: cleaned };
 }
 
 /** Persist the rotation cursor to `path`, creating the parent dir as needed. */

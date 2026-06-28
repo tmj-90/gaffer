@@ -11,7 +11,7 @@ A concise map of how the system fits together.
 | **Dispatch** | `packages/dispatch` | Control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard (7 views) + CLI. |
 | **Crew** | `packages/crew` | Factory runtime — MCP tool server, hooks engine, idle loops (draft work, ingest issues, self-improve), repo onboarding. |
 | **Memory** | `packages/memory` | Durable, human-gated knowledge — lore knowledge base, Repo Digest, feature ledger, grounded lore drafts. Also usable standalone as `memory-mcp`. |
-| **Runner** | `runner/` | Bash orchestrator — spawns a `claude -p` agent per ticket, 37-skill library, deterministic safety hook, git-worktree isolation, model tiering. |
+| **Runner** | `runner/` | Bash orchestrator — spawns a `claude -p` agent per ticket, 38-skill library, deterministic safety hook, git-worktree isolation, model tiering. |
 
 All four live in a single pnpm monorepo. The runner derives every path from its own location (`runner/factory.config.sh`) so any checkout root works.
 
@@ -96,7 +96,7 @@ The Dispatch REST API and MCP server are for humans and the dashboard, not the d
 
 ### Add a skill
 
-Create `runner/skills/<name>/SKILL.md`. The runner's 37-skill library is loaded from this directory. Each skill is a structured markdown prompt fragment that the agent receives for specific task types. No TypeScript compilation needed.
+Create `runner/skills/<name>/SKILL.md`. The runner's 38-skill library is loaded from this directory. Each skill is a structured markdown prompt fragment that the agent receives for specific task types. No TypeScript compilation needed.
 
 ### Add a Dispatch route
 

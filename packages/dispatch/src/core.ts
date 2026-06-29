@@ -21,6 +21,7 @@ import {
   type TicketScopeNode,
   type TicketStatus,
   type WorkEvent,
+  parseTestContract,
 } from "./domain/types.js";
 import { listEvents, writeEvent } from "./events/eventWriter.js";
 import { AcRepository } from "./repositories/acRepository.js";
@@ -138,6 +139,11 @@ export interface TicketView {
   /** Recorded evidence rows (oldest first), so reviewers can judge inline. */
   evidence: Evidence[];
   events: WorkEvent[];
+  /**
+   * BBT-001: the parsed test_contract (or null). Surfaced as a structured object
+   * so CLI callers and the API never receive a JSON-in-JSON string.
+   */
+  testContract: TestContract | null;
 }
 
 /**
@@ -1004,6 +1010,9 @@ export class Dispatch {
       dependencies: this.ticketDependencies.listForTicket(ticket.id),
       evidence: this.evidence.listForTicket(ticket.id),
       events: listEvents(this.db, "ticket", ticket.id),
+      // BBT-001: parse the JSON-encoded test_contract to a structured object so
+      // consumers (CLI, API) never receive a JSON-in-JSON string.
+      testContract: parseTestContract(ticket.test_contract),
     };
   }
 

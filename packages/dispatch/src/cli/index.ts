@@ -2,11 +2,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
 
 import { Command } from "commander";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 
 import { Dispatch } from "../core.js";
 import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 import type { Actor } from "../domain/types.js";
+import { DECISION_SEVERITIES, TICKET_STATUSES } from "../domain/types.js";
 import { exportState, importStateFromJson, serializeBundle } from "../io/stateExport.js";
 import { buildNotifierFromEnv } from "../notify/config.js";
 import { isNotifyKind } from "../notify/types.js";
@@ -18,6 +19,15 @@ import { computeStats, renderDoctor, renderStats, runDoctor } from "./ops.js";
 /** The human running the CLI is the actor for events. */
 function cliActor(): Actor {
   return { type: "human", id: process.env.USER ?? "cli" };
+}
+
+/** Validate that a claim TTL is a positive integer, throwing a structured error otherwise. */
+function validateTtl(ttl: number): void {
+  if (!Number.isInteger(ttl) || ttl <= 0) {
+    throw new DispatchError("VALIDATION_ERROR", `--ttl must be a positive integer (got ${ttl}).`, {
+      ttl,
+    });
+  }
 }
 
 /** Resolve a `--as <type>` flag to an Actor (BBT-001 tester verdict commands). */
@@ -149,6 +159,16 @@ ticket
   .description("List tickets")
   .option("-s, --status <status>", "filter by status")
   .action((opts, cmd) => {
+    if (opts.status !== undefined) {
+      const statusResult = z.enum(TICKET_STATUSES).safeParse(opts.status);
+      if (!statusResult.success) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `Invalid status: "${opts.status}". Allowed: ${TICKET_STATUSES.join(", ")}.`,
+          { status: opts.status, allowed: TICKET_STATUSES },
+        );
+      }
+    }
     const wg = open(cmd.optsWithGlobals());
     const rows = wg.list(opts.status);
     printJson(rows.map((t) => ({ number: t.number, status: t.status, title: t.title, id: t.id })));
@@ -782,13 +802,21 @@ program
   .option("--severity <sev>", "severity", "human_preferred")
   .option("--ticket <ref>", "block this ticket")
   .action((opts, cmd) => {
+    const severityResult = z.enum(DECISION_SEVERITIES).safeParse(opts.severity);
+    if (!severityResult.success) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `Invalid severity: "${opts.severity}". Allowed: ${DECISION_SEVERITIES.join(", ")}.`,
+        { severity: opts.severity, allowed: DECISION_SEVERITIES },
+      );
+    }
     const wg = open(cmd.optsWithGlobals());
     const ticketId = opts.ticket ? wg.resolveTicket(opts.ticket).id : undefined;
     const d = wg.createDecision(
       {
         title: opts.title,
         question: opts.question,
-        severity: opts.severity,
+        severity: severityResult.data,
         ...(ticketId ? { ticketId } : {}),
       },
       cliActor(),
@@ -822,6 +850,7 @@ program
   .requiredOption("-a, --agent <id>", "agent id")
   .option("--ttl <seconds>", "claim TTL seconds", (v) => Number(v), 900)
   .action((opts, cmd) => {
+    validateTtl(opts.ttl);
     const wg = open(cmd.optsWithGlobals());
     const res = wg.claimNextTicket(
       { agentId: opts.agent, ttlSeconds: opts.ttl },
@@ -838,6 +867,7 @@ program
   .option("--ttl <seconds>", "claim TTL seconds", (v) => Number(v), 900)
   .option("--cap <capability...>", "agent capabilities to apply", [])
   .action((ref, opts, cmd) => {
+    validateTtl(opts.ttl);
     const wg = open(cmd.optsWithGlobals());
     const res = wg.claimTicket(
       { ticket_id: ref, agent_id: opts.agent, ttl_seconds: opts.ttl, capabilities: opts.cap },
@@ -956,9 +986,17 @@ review
   .command("approve <ref>")
   .description("Approve a ticket in review (in_review -> ready_for_merge); evaluates policy")
   .option("--reviewer <id>", "reviewer id")
+  .option(
+    "--as <type>",
+    "actor type: human (default) or agent (requires DISPATCH_ALLOW_AGENT_APPROVE=1)",
+    "human",
+  )
   .action((ref, opts, cmd) => {
     const wg = open(cmd.optsWithGlobals());
-    const actor: Actor = { type: "human", id: opts.reviewer ?? "reviewer" };
+    const actor: Actor =
+      opts.as === "agent"
+        ? { type: "agent", id: opts.reviewer ?? "agent" }
+        : { type: "human", id: opts.reviewer ?? "reviewer" };
     const res = wg.approveReview(ref, actor);
     printJson({ ok: true, status: res.ticket.status, event: res.eventId, policy: res.policy });
     wg.db.close();
@@ -1129,7 +1167,21 @@ program
   )
   .option("--force", "replace the contents of a non-empty database", false)
   .action((file: string, opts, cmd) => {
-    const json = file === "-" ? readStdin() : readFileSync(file, "utf8");
+    let json: string;
+    if (file === "-") {
+      json = readStdin();
+    } else {
+      try {
+        json = readFileSync(file, "utf8");
+      } catch (err) {
+        const isEnoent = (err as NodeJS.ErrnoException).code === "ENOENT";
+        throw new DispatchError(
+          isEnoent ? "FILE_NOT_FOUND" : "IO_ERROR",
+          isEnoent ? `File not found: ${file}` : `Could not read file: ${file}`,
+          { file },
+        );
+      }
+    }
     const wg = open(cmd.optsWithGlobals());
     try {
       const res = importStateFromJson(wg.db, json, { force: opts.force });

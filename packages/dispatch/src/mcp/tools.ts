@@ -3,6 +3,7 @@ import { z } from "zod";
 import { audit } from "../audit/audit.js";
 import { resultIdsFor, sanitiseRequest } from "../audit/redact.js";
 import type { Dispatch } from "../core.js";
+import { PR_URL_SAFE, PR_URL_SAFE_MESSAGE } from "../domain/schemas.js";
 import { DECISION_SEVERITIES, parseReviewFeedback, parseTestContract } from "../domain/types.js";
 import type { Actor } from "../domain/types.js";
 import { DispatchError } from "../util/errors.js";
@@ -88,7 +89,7 @@ export const toolSchemas = {
   create_ticket: {
     title: z.string().min(1),
     description: z.string().optional(),
-    priority: z.number().int().optional(),
+    priority: z.number().int().min(0).max(1_000).optional(),
     risk_level: z.enum(["low", "medium", "high", "critical"]).optional(),
     policy_pack: z.enum(["solo_loose", "team_light", "factory_strict", "regulated"]).optional(),
     repo: z.string().optional(),
@@ -149,7 +150,7 @@ export const toolSchemas = {
     claim_token: z.string().min(1),
     ticket_id: z.string().min(1),
     branch_name: z.string().optional(),
-    pr_url: z.string().optional(),
+    pr_url: z.string().refine(PR_URL_SAFE, PR_URL_SAFE_MESSAGE).optional(),
     commit: z.string().optional(),
     diff_summary: z.string().optional(),
   },
@@ -160,7 +161,7 @@ export const toolSchemas = {
     repo_id: z.string().min(1),
     branch_name: z.string().optional(),
     commit_sha: z.string().optional(),
-    pr_url: z.string().optional(),
+    pr_url: z.string().refine(PR_URL_SAFE, PR_URL_SAFE_MESSAGE).optional(),
     status: z
       .enum([
         "not_started",
@@ -204,7 +205,7 @@ export const toolSchemas = {
           title: z.string().min(1),
           description: z.string().optional(),
           acceptanceCriteria: z.array(z.string().min(1)).optional(),
-          priority: z.number().int().optional(),
+          priority: z.number().int().min(0).max(1_000).optional(),
           risk_level: z.enum(["low", "medium", "high", "critical"]).optional(),
           policy_pack: z
             .enum(["solo_loose", "team_light", "factory_strict", "regulated"])

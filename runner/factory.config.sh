@@ -503,10 +503,18 @@ gaffer_agent_env() {
   # VALUE is read separately via indirect expansion and preserved verbatim.
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    # Drop the credential-shaped vars even if a prefix below would re-admit them.
+    # Drop the credential-shaped AND outbound-endpoint vars even if a keep-prefix
+    # would re-admit them. A prompt-injected agent must not be able to read the
+    # runner's own exfiltration channels (notify webhooks, Slack URL, dashboard URL).
     case "$name" in
-      ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN) : ;;  # explicitly allowed below
+      # Explicitly kept despite matching deny patterns below — claude -p auth:
+      ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL) : ;;
+      # Credential-shaped vars — never reach the agent:
       *_TOKEN|*_SECRET|*_KEY|*_PASSWORD|*_PASSWD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|DISPATCH_API_TOKEN)
+        continue ;;
+      # Outbound endpoint / notify config — runner-only; the agent must not read
+      # its own potential exfiltration channel:
+      GAFFER_NOTIFY_*|*_WEBHOOK*|*_SLACK*|*_URL)
         continue ;;
     esac
     local matched=0
@@ -893,6 +901,10 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # gaffer_dod_run_one / gaffer_dod_summary_line / gaffer_dod_evidence_summary. The
 # enforced, runner-run gate (tests/typecheck/lint) every delivery clears BEFORE the
 # human review lane. In-tree, so this is defensive.
+# GAFFER_ALLOW_NO_DOD=1 — waiver for repos with genuinely no runnable gates: a
+# delivery that passes with ZERO gates executed is otherwise a hard fail (the work
+# was never verified). Set only when test_command and lint_command are deliberately
+# absent; without it the delivery is parked for the operator to investigate.
 # shellcheck source=lib/dod.sh
 [ -f "$RUNNER_DIR/lib/dod.sh" ] && source "$RUNNER_DIR/lib/dod.sh"
 

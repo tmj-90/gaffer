@@ -33,14 +33,19 @@ AGENT_ENV="$(
   env -i \
     PATH="/usr/bin:/bin" HOME="/home/agent" \
     ANTHROPIC_API_KEY="sk-ant-keepme" \
+    ANTHROPIC_BASE_URL="https://api.anthropic.com" \
     MCP_CONFIG="/tmp/.mcp.json" DISPATCH_DB="/tmp/wg.sqlite" MEMORY_DB="/tmp/lg.sqlite" \
     CLAUDE_BIN="claude" CLAUDE_FLAGS="--permission-mode acceptEdits" \
-    GAFFER_PLAN_MODEL="opus" \
+    GAFFER_PLAN_MODEL="opus" GAFFER_MAX_TURNS="200" \
     GITHUB_TOKEN="gh-LEAK" GH_TOKEN="gh2-LEAK" \
     AWS_ACCESS_KEY_ID="AKIA-LEAK" AWS_SECRET_ACCESS_KEY="aws-secret-LEAK" \
     AWS_SESSION_TOKEN="aws-session-LEAK" AWS_REGION="eu-west-2" \
     DISPATCH_API_TOKEN="bearer-LEAK" DB_PASSWORD="hunter2-LEAK" \
     SOME_API_KEY="generic-LEAK" SOME_SECRET="generic-secret-LEAK" \
+    GAFFER_NOTIFY_WEBHOOK_URL="https://hooks.example.com/secret-LEAK" \
+    GAFFER_NOTIFY_SLACK_URL="https://hooks.slack.com/T123/secret-LEAK" \
+    GAFFER_DASHBOARD_URL="http://127.0.0.1:8787-LEAK" \
+    GAFFER_SLACK_WEBHOOK="https://hooks.slack.com/legacy-LEAK" \
     RUNNER_DIR="$RUNNER_DIR" \
     bash -c '
       source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
@@ -57,14 +62,23 @@ for danger in GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
   if has "$danger"; then fail "$danger leaked into the agent env"; else ok "$danger is stripped"; fi
 done
 
+echo "== outbound endpoint / notify config is STRIPPED (FIX #1 — exfiltration channel) =="
+for endpoint in GAFFER_NOTIFY_WEBHOOK_URL GAFFER_NOTIFY_SLACK_URL \
+                GAFFER_DASHBOARD_URL GAFFER_SLACK_WEBHOOK; do
+  if has "$endpoint"; then fail "$endpoint leaked into the agent env (outbound channel)"; else ok "$endpoint is stripped"; fi
+done
+
 echo "== claude -p auth + MCP wiring SURVIVE (don't break the agent) =="
-for keep in PATH HOME ANTHROPIC_API_KEY MCP_CONFIG DISPATCH_DB MEMORY_DB \
-            CLAUDE_BIN CLAUDE_FLAGS GAFFER_PLAN_MODEL AWS_REGION; do
+for keep in PATH HOME ANTHROPIC_API_KEY ANTHROPIC_BASE_URL MCP_CONFIG DISPATCH_DB MEMORY_DB \
+            CLAUDE_BIN CLAUDE_FLAGS GAFFER_PLAN_MODEL GAFFER_MAX_TURNS AWS_REGION; do
   if has "$keep"; then ok "$keep is preserved"; else fail "$keep was dropped (would break the agent)"; fi
 done
 
 echo "== ANTHROPIC_API_KEY survives despite ending in _KEY =="
 if has ANTHROPIC_API_KEY; then ok "ANTHROPIC_API_KEY kept (claude auth)"; else fail "ANTHROPIC_API_KEY wrongly stripped"; fi
+
+echo "== ANTHROPIC_BASE_URL survives despite ending in _URL (explicit keep) =="
+if has ANTHROPIC_BASE_URL; then ok "ANTHROPIC_BASE_URL kept (claude base URL override)"; else fail "ANTHROPIC_BASE_URL wrongly stripped"; fi
 
 echo "== values are preserved verbatim (no truncation/quoting damage) =="
 VAL="$(

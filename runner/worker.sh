@@ -81,6 +81,10 @@ while [ "$ticks" -lt "$W_MAX_TICKS" ]; do
     # emitted by the maintenance lane in tick.sh (~line 1898-1899). Without
     # these cases they fell through to *) and were miscounted as errors.
     maintenance_drafted|maintenance_ran) idle=$((idle + 1)); empties=0 ;;
+    # PAUSE-ON-CAP: a cap-hit delivery paused IN PLACE (partial work preserved on a
+    # live worktree) is PRODUCTIVE, not an error — it produced committed work and is
+    # awaiting a human Continue/Stop. Count it with `worked`.
+    paused)            worked=$((worked + 1)); empties=0 ;;
     no_work)           nowork=$((nowork + 1)); empties=$((empties + 1)) ;;
     *)                 errors=$((errors + 1)); empties=0 ;;
   esac

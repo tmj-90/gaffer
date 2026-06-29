@@ -260,6 +260,19 @@ export GAFFER_MAX_DELIVERY_ATTEMPTS
 # turn cap itself so a call that consumed every turn is caught.
 : "${GAFFER_CAP_DETECT_TURNS:=${GAFFER_MAX_TURNS:-60}}"   # num_turns ≥ this ⇒ cap-hit
 export GAFFER_CAP_DETECT_TURNS
+
+# --- Pause-on-cap (PAUSE-ON-CAP) ---------------------------------------------
+# On a mid-delivery cap-hit (turn cap) or budget-cap with committed work, PAUSE the
+# delivery IN PLACE instead of tearing the worktree down: keep the worktree + branch
+# alive, set the ticket `paused`, persist the resume context, notify, and wait for a
+# human's one-click Continue (re-enter the SAME worktree) / Stop (tear down + abandon).
+# Set to 0 to fall back to the legacy park-to-refining + teardown behaviour.
+: "${GAFFER_PAUSE_ON_CAP:=1}"        # 1 = pause+keep worktree (default); 0 = legacy park+teardown
+export GAFFER_PAUSE_ON_CAP
+# How many resume-requested paused tickets the loop re-enters per tick (≥1). Bounds
+# the per-tick resume work so a backlog of Continue presses doesn't starve new claims.
+: "${GAFFER_MAX_RESUMES_PER_TICK:=1}"
+export GAFFER_MAX_RESUMES_PER_TICK
 # Dashboard base URL embedded in the cap-hit / park notify so the operator can
 # click straight through to the ticket. Defaults to the local dashboard.
 : "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"

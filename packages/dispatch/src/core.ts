@@ -297,7 +297,7 @@ export class Dispatch {
     this.runs = new RunRepository(db);
     this.planSessions = new PlanSessionRepository(db);
     this.pausedDeliveries = new PausedDeliveryRepository(db);
-    this.transitions = new TransitionService(db, clock, gitRunner);
+    this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
       repos: this.repos,

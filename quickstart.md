@@ -61,6 +61,15 @@ runner/gaffer dashboard --lan
 Prints a URL (`http://<your-lan-ip>:8787`) and a bearer **token** — paste the token at the
 login prompt. (`runner/gaffer dashboard` without `--lan` binds loopback-only, no token.)
 
+> **Wiring reference — always launch the dashboard via `gaffer dashboard`.** It wires
+> every action command (`DISPATCH_PRODUCT_OWNER_CMD`, `DISPATCH_MERGE_CMD`,
+> `DISPATCH_TICK_CMD`, `DISPATCH_ONBOARD_CMD`, `DISPATCH_TESTER_CMD`) into the API's
+> environment. An ad-hoc launch (`node packages/dispatch/dist/api/bin.js`) leaves them
+> unset, so the dashboard's buttons silently no-op. The API logs a
+> `dispatch-api action commands — wired: …; missing: …` line at startup so a
+> mis-launched dashboard is obvious. See [`.env.example`](.env.example) for the full
+> wiring + knob reference.
+
 In the dashboard (seven views):
 - **Overview** — the factory at a glance (throughput, what needs you, stale claims).
 - **Work** — the ticket board (plan → implement → test → review).

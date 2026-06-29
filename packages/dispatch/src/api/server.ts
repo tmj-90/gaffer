@@ -1561,9 +1561,11 @@ function routeReadModels(
   }
 
   // /api/board — tickets grouped into kanban columns (+ closed area).
+  // Accepts optional ?repo= to restrict the board to one repository.
   if (segments.length === 2 && segments[1] === "board") {
     if (method !== "GET") return methodNotAllowed(res);
-    sendJson(res, 200, wg.board());
+    const repoFilter = url.searchParams.get("repo") ?? undefined;
+    sendJson(res, 200, wg.board(repoFilter));
     return;
   }
 

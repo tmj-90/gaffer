@@ -25,6 +25,7 @@ function seedClaimed(wg: Dispatch, ttlSeconds = 600): { ticketId: string; token:
   const h = makeHandlers(wg, agentActor);
   const ticketId = h.create_ticket({ title: "Work", policy_pack: "solo_loose" }).structuredContent
     .ticket_id as string;
+  h.add_acceptance_criterion({ ticket_id: ticketId, text: "AC" }); // Guard A: ≥1 AC required to ready
   h.mark_ticket_ready({ ticket_id: ticketId });
   const agent = wg.registerAgent({ display_name: "bot" }, human);
   const token = h.claim_next_ticket({ agent_id: agent.id, ttl_seconds: ttlSeconds })

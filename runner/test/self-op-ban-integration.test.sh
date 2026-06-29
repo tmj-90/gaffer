@@ -51,6 +51,8 @@ WG init >/dev/null 2>&1
 WG repo add -n dispatch --path "$GAFFER_COMPONENT" --branch main --stack typescript --test "true" >/dev/null 2>&1
 SELF_NUM="$(WG ticket create -t "Self-op: tweak dispatch" -p solo_loose 2>&1 | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['number'])")"
 WG repo link "$SELF_NUM" dispatch >/dev/null 2>&1
+# GUARD A: a delivery-bound ticket needs ≥1 acceptance criterion to ready.
+WG ac add "$SELF_NUM" -t "Self-op AC" >/dev/null 2>&1
 WG ticket ready "$SELF_NUM" >/dev/null 2>&1
 
 # Ticket 2 (control): targets a normal, non-Gaffer repo.
@@ -110,6 +112,7 @@ echo "== PROOF B (override): GAFFER_ALLOW_SELF_DELIVERY=1 restores delivery =="
 # Re-ready a fresh self-target ticket (the first is now blocked).
 SELF2="$(WG ticket create -t "Self-op override: tweak dispatch" -p solo_loose 2>&1 | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['number'])")"
 WG repo link "$SELF2" dispatch >/dev/null 2>&1
+WG ac add "$SELF2" -t "Self-op override AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
 WG ticket ready "$SELF2" >/dev/null 2>&1
 OUT_OVERRIDE="$(run_tick GAFFER_ALLOW_SELF_DELIVERY=1)"
 if printf '%s' "$OUT_OVERRIDE" | grep -q "delivering #$SELF2"; then
@@ -127,6 +130,7 @@ echo "== PROOF C (control): a NON-Gaffer target is unaffected =="
 # Un-ready the override self-target so only the normal ticket is deliverable,
 # then ready the normal ticket.
 WG ticket move "$SELF2" draft >/dev/null 2>&1 || true
+WG ac add "$NORM_NUM" -t "Normal control AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
 WG ticket ready "$NORM_NUM" >/dev/null 2>&1
 OUT_NORMAL="$(run_tick)"
 if printf '%s' "$OUT_NORMAL" | grep -q "delivering #$NORM_NUM"; then

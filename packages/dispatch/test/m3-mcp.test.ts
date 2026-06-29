@@ -138,6 +138,7 @@ describe("M3: MCP tool layer", () => {
 
     const ticketId = structured(h.create_ticket({ title: "Releasable", policy_pack: "solo_loose" }))
       .ticket_id as string;
+    h.add_acceptance_criterion({ ticket_id: ticketId, text: "AC" }); // Guard A: ≥1 AC required to ready
     h.mark_ticket_ready({ ticket_id: ticketId });
 
     const agent = wg.registerAgent({ display_name: "claude" }, { type: "human", id: "tom" });
@@ -183,6 +184,7 @@ describe("M3: MCP tool layer", () => {
     const h = makeHandlers(wg, agentActor);
     const ticketId = structured(h.create_ticket({ title: "Snake", policy_pack: "solo_loose" }))
       .ticket_id as string;
+    h.add_acceptance_criterion({ ticket_id: ticketId, text: "AC" }); // Guard A: ≥1 AC required to ready
     h.mark_ticket_ready({ ticket_id: ticketId });
     const agent = wg.registerAgent({ display_name: "claude" }, { type: "human", id: "tom" });
     const claim = structured(h.claim_next_ticket({ agent_id: agent.id, ttl_seconds: 600 }));
@@ -197,9 +199,11 @@ describe("M3: MCP tool layer", () => {
     const h = makeHandlers(wg, agentActor);
     const high = structured(h.create_ticket({ title: "high", policy_pack: "solo_loose" }))
       .ticket_id as string;
+    h.add_acceptance_criterion({ ticket_id: high, text: "AC" }); // Guard A: ≥1 AC required to ready
     h.mark_ticket_ready({ ticket_id: high });
     const chosen = structured(h.create_ticket({ title: "chosen", policy_pack: "solo_loose" }))
       .ticket_id as string;
+    h.add_acceptance_criterion({ ticket_id: chosen, text: "AC" }); // Guard A: ≥1 AC required to ready
     h.mark_ticket_ready({ ticket_id: chosen });
     const agent = wg.registerAgent({ display_name: "claude" }, { type: "human", id: "tom" });
 
@@ -228,6 +232,7 @@ describe("M3: MCP tool layer", () => {
     const h = makeHandlers(wg, agentActor);
     const ticketId = structured(h.create_ticket({ title: "Deliver", policy_pack: "solo_loose" }))
       .ticket_id as string;
+    h.add_acceptance_criterion({ ticket_id: ticketId, text: "AC" }); // Guard A: ≥1 AC required to ready
     h.mark_ticket_ready({ ticket_id: ticketId });
     const agent = wg.registerAgent({ display_name: "claude" }, { type: "human", id: "tom" });
     const claimToken = structured(h.claim_next_ticket({ agent_id: agent.id, ttl_seconds: 600 }))
@@ -268,6 +273,7 @@ describe("M3: MCP tool layer", () => {
     const h = makeHandlers(wg, agentActor);
     const ticketId = structured(h.create_ticket({ title: "Blockable", policy_pack: "solo_loose" }))
       .ticket_id as string;
+    h.add_acceptance_criterion({ ticket_id: ticketId, text: "AC" }); // Guard A: ≥1 AC required to ready
     h.mark_ticket_ready({ ticket_id: ticketId });
     const agent = wg.registerAgent({ display_name: "claude" }, { type: "human", id: "tom" });
     const claim = structured(h.claim_next_ticket({ agent_id: agent.id, ttl_seconds: 600 }));

@@ -42,13 +42,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Real audit gate: fails on any HIGH/CRITICAL advisory NOT documented in
-      # .github/audit-allowlist.txt. Accepted advisories are listed + justified
-      # there; everything new fails the build. (Replaces the old `|| true` no-op.)
+      # Real audit gate: audit-gate.sh fails on any HIGH/CRITICAL advisory NOT
+      # documented in .github/audit-allowlist.txt. Accepted advisories are listed
+      # + justified there; everything new fails the build.
+      # The bare `pnpm audit` call above is display-only (human-readable table);
+      # `|| true` is intentional — pnpm audit exits non-zero for ANY advisory,
+      # including allowlisted ones, so omitting it would abort the step before
+      # audit-gate.sh (the actual enforcement) runs. The gate is audit-gate.sh.
       - name: Dependency audit
         shell: bash
         run: |
-          echo "::group::pnpm audit"
+          echo "::group::pnpm audit (human-readable display)"
           pnpm audit --audit-level=high || true
           echo "::endgroup::"
           .github/scripts/audit-gate.sh

@@ -7278,3 +7278,121 @@ body {
   color: var(--text-faint);
   margin-right: 6px;
 }
+
+/* --- "Running now" panel (RUN-ACTIVITY) ------------------------------------
+   What's in flight right now: active runs with a live spinner + elapsed, and a
+   recently-finished tail with a status badge and a "view log" affordance. */
+.run-activity h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.run-activity h2 svg {
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+}
+.run-activity-body {
+  margin-top: 4px;
+}
+.run-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--line);
+}
+.run-row:last-child {
+  border-bottom: 0;
+}
+.run-kind {
+  font-weight: 600;
+}
+.run-repo {
+  font-size: 0.86rem;
+}
+.run-elapsed {
+  margin-left: auto;
+  font-size: 0.84rem;
+}
+.run-row .run-viewlog {
+  margin-left: 8px;
+}
+.run-active .run-kind {
+  color: var(--accent);
+}
+.run-recent-title {
+  margin: 12px 0 4px;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+/* The active-run spinner (matches .btn-spinner, sized for a list row). */
+.run-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  animation: spin 0.7s linear infinite;
+}
+/* The captured-log sheet body. */
+.run-log-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+/* H1: Cost banner — a slim, token-lean cost summary row below the KPI cards. */
+.cost-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  align-items: center;
+  padding: 8px 14px;
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 0.8rem;
+  color: var(--text-2, var(--muted));
+  margin-bottom: 4px;
+}
+.cost-item {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.cost-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+}
+.cost-val {
+  font-weight: 600;
+  color: var(--text);
+}
+.cost-sep {
+  color: var(--line);
+  user-select: none;
+}

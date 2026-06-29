@@ -99,6 +99,14 @@ export function evaluatePolicy(
     //                  block unresolved 'suggested' repos.
     //   regulated      = factory_strict + human ready approval.
     const sr = ctx.scopeRepo;
+    // ≥1 acceptance criterion is required for EVERY delivery-bound policy,
+    // solo_loose included. A 0-AC ticket can never be delivered safely: it has
+    // nothing to verify and nothing the done-gate can hold the work to. Catching
+    // it free at the `ready` transition stops a 0-AC ticket from ever reaching a
+    // paid delivery (the ticket #64 waste failure).
+    if (ac.length === 0) {
+      failures.push(fail("AC_REQUIRED", "At least one acceptance criterion is required."));
+    }
     if (pack === "solo_loose") {
       if (ctx.ticket.description.trim().length === 0) {
         warnings.push(fail("DESCRIPTION_RECOMMENDED", "A description is recommended."));
@@ -126,9 +134,6 @@ export function evaluatePolicy(
               "(an unmapped single repo can be promoted via mono_fallback), or accept a suggested repo.",
           ),
         );
-      }
-      if (ac.length === 0) {
-        failures.push(fail("AC_REQUIRED", "At least one acceptance criterion is required."));
       }
       if (ctx.hasUnresolvedHumanRequired) {
         failures.push(

@@ -21,7 +21,7 @@ Initial public release of Gaffer — a local-first, supervised software factory.
 
 **Memory** (`packages/memory`) — durable, human-gated knowledge. A knowledge base (lore) plus the Repo Understanding engine: Repo Digest, feature ledger, and grounded lore drafts. Seeded at onboarding; refreshed as tickets merge. Also usable standalone as `memory-mcp`.
 
-**Runner** (`runner/`) — the bash orchestrator. Spawns a `claude -p` agent per ticket with a 31-skill library. Includes a deterministic PreToolUse safety hook (`safety-hook.mjs`) that scopes writes to the per-ticket git worktree and fails closed. Model tiering: planning on a strong model, implementation on a fast one. Per-call resource caps (wall-clock timeout + agent turn cap).
+**Runner** (`runner/`) — the bash orchestrator. Spawns a `claude -p` agent per ticket with a 66-skill library. Includes a deterministic PreToolUse safety hook (`safety-hook.mjs`) that scopes writes to the per-ticket git worktree and fails closed. Model tiering: planning on a strong model, implementation on a fast one. Per-call resource caps (wall-clock timeout + agent turn cap).
 
 **Web dashboard** — seven views: Overview, Work, Review, Epics, Map, Memory, Settings. Review is the human gate where tickets wait for approval before any merge occurs.
 

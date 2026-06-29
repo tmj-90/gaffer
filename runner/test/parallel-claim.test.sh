@@ -56,6 +56,7 @@ cli init >/dev/null 2>&1
 # Three independent ready tickets + two agents.
 for i in 1 2 3; do
   cli ticket create -t "T$i" --risk low >/dev/null 2>&1
+  cli ac add "$i" -t "T$i AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
   cli ticket ready "$i" >/dev/null 2>&1
 done
 A1="$(cli agent register -n w1 --max-risk high 2>/dev/null | jget "json.load(sys.stdin)['agent']['id']")"
@@ -85,7 +86,7 @@ echo "== AC2: 2 workers + 3 ready → exactly 2 in flight, 1 waits =="
 P1="$(cli ticket create -t P-a --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
 P2="$(cli ticket create -t P-b --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
 P3="$(cli ticket create -t P-c --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
-for t in "$P1" "$P2" "$P3"; do cli ticket ready "$t" >/dev/null 2>&1; done
+for t in "$P1" "$P2" "$P3"; do cli ac add "$t" -t "P AC" >/dev/null 2>&1; cli ticket ready "$t" >/dev/null 2>&1; done  # GUARD A: ≥1 AC to ready
 cli claim-ticket "$P1" -a "$A1" >/dev/null 2>&1 && qr1=0 || qr1=$?
 cli claim-ticket "$P2" -a "$A2" >/dev/null 2>&1 && qr2=0 || qr2=$?
 { [ "$qr1" = "0" ] && [ "$qr2" = "0" ]; } && ok "two workers claimed two distinct tickets (both rc 0)" \
@@ -111,6 +112,8 @@ echo "== AC3: dependency gate — phase-2 unclaimable until phase-1 done =="
 PH1="$(cli ticket create -t phase1 --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
 PH2="$(cli ticket create -t phase2 --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
 cli ticket dep add "$PH2" "$PH1" >/dev/null 2>&1
+cli ac add "$PH1" -t "phase1 AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
+cli ac add "$PH2" -t "phase2 AC" >/dev/null 2>&1
 cli ticket ready "$PH1" >/dev/null 2>&1
 cli ticket ready "$PH2" >/dev/null 2>&1
 cli claim-ticket "$PH2" -a "$A1" >/dev/null 2>&1 && depclaim=0 || depclaim=$?

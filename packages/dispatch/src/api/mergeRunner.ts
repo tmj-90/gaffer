@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type RunTracker, spawnTrackedRun } from "./runTracking.js";
 
 /**
  * Fires the configured auto-merge command when a ticket is approved (the human
@@ -30,6 +30,8 @@ export interface MergeTriggerResult {
   pid: number | null;
   /** Reason a merge was NOT triggered (e.g. "not_configured"), when applicable. */
   skipped?: string;
+  /** The tracked run id (when a registry is wired), so the UI can poll it. */
+  runId?: string | null;
 }
 
 export interface MergeRunner {
@@ -94,6 +96,7 @@ function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export function createMergeRunner(
   env: NodeJS.ProcessEnv = process.env,
   log: MergeLogger = defaultLogger,
+  tracker?: RunTracker,
 ): MergeRunner {
   return {
     trigger({ ticketNumber }) {
@@ -107,23 +110,19 @@ export function createMergeRunner(
       try {
         // No shell: argv is [bin, ...args]; the ticket number is a discrete argv
         // element, never interpolated into a command line. The child env has
-        // Dispatch's bearer token stripped.
-        const child = spawn(bin!, args, {
-          detached: true,
-          stdio: "ignore",
-          env: childEnv(env),
-        });
-        child.on("error", (err) => {
-          log(
-            `merge command failed to start for ticket #${ticketNumber}: ` +
-              `${err instanceof Error ? err.message : String(err)} — ticket left done for manual merge`,
-          );
-        });
-        child.unref();
-        return { triggered: true, pid: child.pid ?? null };
+        // Dispatch's bearer token stripped. RUN-ACTIVITY: recorded + output
+        // captured when a tracker is wired (the merge's outcome is now a row, not
+        // just a console breadcrumb). The child's own error listener still logs.
+        const result = spawnTrackedRun(
+          { bin: bin!, args, env: childEnv(env), kind: "merge", repo: null },
+          tracker,
+          env,
+        );
+        return { triggered: true, pid: result.pid, runId: result.runId };
       } catch (err) {
         // A synchronous spawn failure must not break the approve response — log
-        // and fall through to the manual-merge default.
+        // and fall through to the manual-merge default. spawnTrackedRun has
+        // already recorded the failed attempt when a tracker was wired.
         log(
           `could not spawn merge command for ticket #${ticketNumber}: ` +
             `${err instanceof Error ? err.message : String(err)} — ticket left done for manual merge`,

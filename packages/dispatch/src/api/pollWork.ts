@@ -1,8 +1,7 @@
-import { spawn } from "node:child_process";
-
 import { DispatchError } from "../util/errors.js";
 
 import { parseCommand } from "./mergeRunner.js";
+import { type RunTracker, spawnTrackedRun } from "./runTracking.js";
 
 /**
  * Fires a single factory tick on demand — the Work/board view's "Poll for work"
@@ -31,6 +30,8 @@ export interface PollWorkResult {
   started: boolean;
   /** OS process id of the spawned tick, or null if the platform withheld one. */
   pid: number | null;
+  /** The tracked run id (when a registry is wired), so the UI can poll it. */
+  runId?: string | null;
 }
 
 export interface PollWorkRunner {
@@ -51,7 +52,10 @@ function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * env var is unset/blank it throws NOT_CONFIGURED — the click had no effect and the
  * human should be told why, rather than silently doing nothing.
  */
-export function createPollWorkRunner(env: NodeJS.ProcessEnv = process.env): PollWorkRunner {
+export function createPollWorkRunner(
+  env: NodeJS.ProcessEnv = process.env,
+  tracker?: RunTracker,
+): PollWorkRunner {
   return {
     run() {
       const tokens = parseCommand(env[TICK_CMD_ENV] ?? "");
@@ -65,13 +69,13 @@ export function createPollWorkRunner(env: NodeJS.ProcessEnv = process.env): Poll
       const [bin, ...args] = tokens;
       // No shell: argv is [bin, ...args]; the request carries no input into the
       // command. The child env has Dispatch's bearer token stripped.
-      const child = spawn(bin!, args, {
-        detached: true,
-        stdio: "ignore",
-        env: childEnv(env),
-      });
-      child.unref();
-      return { started: true, pid: child.pid ?? null };
+      // RUN-ACTIVITY: recorded + output captured when a tracker is wired.
+      const result = spawnTrackedRun(
+        { bin: bin!, args, env: childEnv(env), kind: "poll_work", repo: null },
+        tracker,
+        env,
+      );
+      return { started: result.started, pid: result.pid, runId: result.runId };
     },
   };
 }

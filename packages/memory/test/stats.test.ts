@@ -117,6 +117,29 @@ describe("topCitedRecords", () => {
     delete process.env["MEMORY_AUDIT_OFF"];
   });
 
+  it("excludes restricted records even when they have been read", () => {
+    const pub = addLore(db, { title: "public-record", summary: "s", body: "b" });
+    const secret = addLore(db, {
+      title: "secret-record",
+      summary: "s",
+      body: "b",
+      restricted: true,
+    });
+    // Simulate reads for both via direct event insertion (getLore would be
+    // gated by the restricted field itself, but stats must still hide titles).
+    db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'read', ?)").run(
+      pub.id,
+      new Date().toISOString(),
+    );
+    db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'read', ?)").run(
+      secret.id,
+      new Date().toISOString(),
+    );
+    const top = topCitedRecords(db, { sinceDays: 7 });
+    expect(top.map((r) => r.id)).toContain(pub.id);
+    expect(top.map((r) => r.id)).not.toContain(secret.id);
+  });
+
   it("ranks by read count desc; ties broken by updated_at desc", () => {
     const a = addLore(db, { title: "a-record", summary: "s", body: "b" });
     const b = addLore(db, { title: "b-record", summary: "s", body: "b" });
@@ -183,6 +206,17 @@ describe("retireCandidates", () => {
     suggestLore(db, { title: "draft", summary: "s", body: "b" });
     const candidates = retireCandidates(db, { quietForDays: 30 });
     expect(candidates).toEqual([]);
+  });
+
+  it("excludes restricted records from retire candidates", () => {
+    addLore(db, {
+      title: "restricted-stale",
+      summary: "s",
+      body: "b",
+      restricted: true,
+    });
+    const candidates = retireCandidates(db, { quietForDays: 30 });
+    expect(candidates.map((c) => c.title)).not.toContain("restricted-stale");
   });
 
   it("sorts no-source/low-confidence first as the cheapest-to-retire", () => {

@@ -34,6 +34,18 @@ fi
 sed -i.bak "s#sqlite_path:.*#sqlite_path: $DISPATCH_DB#" "$CREW_CONFIG" && rm -f "$CREW_CONFIG.bak"
 echo "  ✓ databases + crew.yaml ready (dispatch db: $DISPATCH_DB)"
 
+# Pre-approve the dispatch + memory MCP servers for THIS repo so headless
+# `claude -p` runs (and any project `.mcp.json` discovery) get the factory's tools
+# without an interactive "trust this server?" prompt — which has no answerer in a
+# headless run (Claude Code 2.1.x project-scoped MCP gate). Idempotent + scoped to
+# those two servers; best-effort so a quirky $HOME never blocks setup.
+echo "── MCP trust ($GAFFER_HOME)"
+if node "$HERE/lib/mcp-trust.mjs" "$GAFFER_HOME"; then
+  echo "  ✓ dispatch+memory MCP pre-approved for headless runs"
+else
+  echo "  (note: MCP trust seeding skipped — pre-approve dispatch+memory manually if headless runs file 0 tickets)"
+fi
+
 echo
 echo "Setup complete. From here:"
 echo "  $HERE/gaffer onboard /path/to/your/repo   # add a repo (registers + scans, one step)"

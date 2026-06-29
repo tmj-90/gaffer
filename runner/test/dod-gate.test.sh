@@ -239,6 +239,42 @@ else
   fail "C the DoD gate must precede delivery recording (dod=$DOD_LINE rec=$REC_LINE)"
 fi
 
+# ---------------------------------------------------------------------
+echo "== PART D: FIX-6 — zero-gate enforcement and GAFFER_ALLOW_NO_DOD opt-out =="
+# D1: a delivery where ZERO DoD gates executed must be a FAIL, not just a warning.
+#     Verify that gaffer_dod_executed_count returns 0 for an all-skip run (the
+#     condition tick.sh checks) and that tick.sh handles it as a hard fail.
+RES="$WORK/d1.results"
+printf 'repo\t%s\t1\t1\t1\t-\t-\t-\n' "$WT" | gaffer_run_dod_gates "$RES"; D1_RC=$?
+[ "$D1_RC" -eq 0 ] \
+  && ok "D1 all-skip run returns rc=0 from gaffer_run_dod_gates (gate itself is neutral)" \
+  || fail "D1 expected rc=0 from an all-skip run ($(cat "$RES"))"
+D1_COUNT="$(gaffer_dod_executed_count "$RES")"
+[ "$D1_COUNT" -eq 0 ] \
+  && ok "D1 gaffer_dod_executed_count=0 confirmed — triggers tick.sh zero-gate fail path" \
+  || fail "D1 expected 0 executed gates, got $D1_COUNT"
+# tick.sh must FAIL (not just warn) when count=0 and GAFFER_ALLOW_NO_DOD is unset:
+grep -q 'GAFFER_ALLOW_NO_DOD' "$RUNNER_DIR/tick.sh" \
+  && ok "D1 tick.sh has the GAFFER_ALLOW_NO_DOD guard (not just a warning)" \
+  || fail "D1 tick.sh is missing the GAFFER_ALLOW_NO_DOD gate"
+grep -qF 'zero DoD gates executed' "$RUNNER_DIR/tick.sh" \
+  && ok "D1 tick.sh fails with a zero-gates-executed message (not a silent pass)" \
+  || fail "D1 tick.sh does not have the zero-gates-executed FAIL message"
+
+# D2: GAFFER_ALLOW_NO_DOD=1 is the explicit opt-out that allows zero-gate deliveries.
+grep -qE "GAFFER_ALLOW_NO_DOD.*=.*['\"]?1['\"]?" "$RUNNER_DIR/tick.sh" \
+  && ok "D2 GAFFER_ALLOW_NO_DOD=1 is the explicit opt-out in tick.sh" \
+  || fail "D2 tick.sh missing the GAFFER_ALLOW_NO_DOD=1 opt-out guard"
+# The opt-out must emit a visible warning (not a silent bypass):
+grep -q 'GAFFER_ALLOW_NO_DOD=1 waiver' "$RUNNER_DIR/tick.sh" \
+  && ok "D2 the opt-out path logs a visible WARNING (not a silent bypass)" \
+  || fail "D2 tick.sh opt-out path must log a visible waiver warning"
+
+# D3: GAFFER_ALLOW_NO_DOD is documented in factory.config.sh (one-liner for operators).
+grep -q 'GAFFER_ALLOW_NO_DOD' "$RUNNER_DIR/factory.config.sh" \
+  && ok "D3 GAFFER_ALLOW_NO_DOD is documented in factory.config.sh" \
+  || fail "D3 GAFFER_ALLOW_NO_DOD must be documented in factory.config.sh"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

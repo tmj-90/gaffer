@@ -1571,8 +1571,11 @@ print(hits[0] if hits else '')
   #                   hardened), record the failing gate name + an output tail as
   #                   evidence, drop the branch. A human never sees a failed gate;
   #                   the next attempt gets the gate output as review feedback.
-  # A gate with NO configured command is SKIPPED (logged), not failed. GAFFER_DOD=0
-  # turns enforcement off entirely (today's behaviour). Per-gate toggles
+  # A gate with NO configured command is SKIPPED (logged), not failed. A delivery
+  # where ZERO gates actually executed is a HARD FAIL by default (the work was not
+  # verified); set GAFFER_ALLOW_NO_DOD=1 to waive this for repos with no runnable
+  # gates (see factory.config.sh). GAFFER_DOD=0 turns enforcement off entirely.
+  # Per-gate toggles
   # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) carry the resolved
   # `definition_of_done` config; commands come from each repo's dispatch
   # test_command/lint_command (+ GAFFER_DOD_TYPECHECK_CMD for typecheck, which has
@@ -1664,11 +1667,21 @@ for r in d.get("repositories", []) or []:
       DOD_RESULTS="$GAFFER_DATA/.dod-$NUM.results"
       if printf '%s\n' "$DOD_ROWS" | gaffer_run_dod_gates "$DOD_RESULTS"; then
         log "DoD: #$NUM PASSED — $(gaffer_dod_summary_line "$DOD_RESULTS")"
-        # R1 LOW: an all-SKIP run passes vacuously. Warn loudly when ZERO gates
-        # actually executed so a misconfigured repo (e.g. no test_command) is not
-        # silently waved through as "PASSED".
+        # Zero executed gates means no gate commands are configured (all skipped):
+        # the delivery was never actually verified. FAIL by default so a
+        # misconfigured repo cannot silently ship unverified work. Opt out with
+        # GAFFER_ALLOW_NO_DOD=1 only for repos that genuinely have no runnable
+        # gates (see factory.config.sh for documentation of this knob).
         if [ "$(gaffer_dod_executed_count "$DOD_RESULTS")" -eq 0 ]; then
-          log "DoD: WARNING — #$NUM passed with ZERO gates executed (all skipped); check this repo's test_command / typecheck / lint config — the delivery was NOT actually verified"
+          if [ "${GAFFER_ALLOW_NO_DOD:-0}" = "1" ]; then
+            log "DoD: WARNING — #$NUM passed with ZERO gates executed (GAFFER_ALLOW_NO_DOD=1 waiver active); configure test_command / lint_command to remove this opt-out"
+          else
+            log "DoD: FAILING #$NUM — zero DoD gates executed (all skipped); no test_command or lint_command configured. Set GAFFER_ALLOW_NO_DOD=1 to allow deliveries with no runnable gates (see factory.config.sh)"
+            rm -f "$DOD_RESULTS"
+            _recover_or_park "definition-of-done" "Definition of Done: zero gates executed — no test_command or lint_command configured; configure gate commands or set GAFFER_ALLOW_NO_DOD=1"
+            [ "$_DELIV_OUTCOME" = "retry" ] && continue
+            result error; exit 0
+          fi
         fi
         # Record the green checklist as evidence so the reviewer sees a pre-verified
         # board (the Review view renders it). Best-effort; never blocks a passing

@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import { createApiServer } from "../src/api/server.js";
+import type { Run } from "../src/domain/types.js";
 import {
   buildRunDetail,
   detectOutcome,

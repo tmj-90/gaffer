@@ -222,9 +222,9 @@ describe("aggregateRows — math", () => {
       makeRow({ ticket: 3, total_cost_usd: 0.5 }),
     ];
     const agg = aggregateRows(rows);
-    expect(agg.by_ticket[0].ticket).toBe(2);
-    expect(agg.by_ticket[1].ticket).toBe(3);
-    expect(agg.by_ticket[2].ticket).toBe(1);
+    expect(agg.by_ticket[0]!.ticket).toBe(2);
+    expect(agg.by_ticket[1]!.ticket).toBe(3);
+    expect(agg.by_ticket[2]!.ticket).toBe(1);
   });
 
   it("tracks the most recent ts as last_record_at", () => {
@@ -290,8 +290,8 @@ describe("readLedgerRows", () => {
     const rows = readLedgerRows(ledger);
     // Only 2 valid rows despite 5 lines
     expect(rows).toHaveLength(2);
-    expect(rows[0].ticket).toBe(1);
-    expect(rows[1].ticket).toBe(2);
+    expect(rows[0]!.ticket).toBe(1);
+    expect(rows[1]!.ticket).toBe(2);
   });
 
   it("returns [] for an empty file", () => {

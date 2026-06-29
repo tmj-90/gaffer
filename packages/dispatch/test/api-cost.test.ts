@@ -168,11 +168,11 @@ describe("GET /api/cost", () => {
         num_turns: number;
       }>;
       expect(tops.length).toBe(2);
-      expect(tops[0].ticket).toBe(2); // highest cost
-      expect(tops[0].total_cost_usd).toBeCloseTo(0.3);
-      expect(tops[1].ticket).toBe(1);
-      expect(tops[1].total_cost_usd).toBeCloseTo(0.15);
-      expect(tops[1].num_turns).toBe(8); // 5 + 3
+      expect(tops[0]!.ticket).toBe(2); // highest cost
+      expect(tops[0]!.total_cost_usd).toBeCloseTo(0.3);
+      expect(tops[1]!.ticket).toBe(1);
+      expect(tops[1]!.total_cost_usd).toBeCloseTo(0.15);
+      expect(tops[1]!.num_turns).toBe(8); // 5 + 3
 
       // by_repo: no registered repos, so all unlinked
       const byRepo = body.by_repo as Array<{
@@ -181,9 +181,9 @@ describe("GET /api/cost", () => {
         ticket_count: number;
       }>;
       expect(byRepo.length).toBe(1);
-      expect(byRepo[0].repo).toBe("(unlinked)");
-      expect(byRepo[0].total_cost_usd).toBeCloseTo(0.45);
-      expect(byRepo[0].ticket_count).toBe(2);
+      expect(byRepo[0]!.repo).toBe("(unlinked)");
+      expect(byRepo[0]!.total_cost_usd).toBeCloseTo(0.45);
+      expect(byRepo[0]!.ticket_count).toBe(2);
 
       expect(typeof body.last_record_at).toBe("string");
     } finally {

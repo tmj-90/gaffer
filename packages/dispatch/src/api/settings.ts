@@ -263,10 +263,7 @@ export function readSettingsFile(path: string): Record<string, string> {
   } catch (err) {
     // A missing file is expected (nothing saved yet) → empty map.
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw new DispatchError(
-      "INTERNAL_ERROR",
-      `Could not read settings file at ${path}: ${describe(err)}`,
-    );
+    throw new DispatchError("INTERNAL_ERROR", `Could not read settings file: ${describe(err)}`);
   }
   const trimmed = raw.trim();
   if (trimmed === "") return {};
@@ -274,13 +271,10 @@ export function readSettingsFile(path: string): Record<string, string> {
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    throw new DispatchError("INTERNAL_ERROR", `Settings file at ${path} is not valid JSON.`);
+    throw new DispatchError("INTERNAL_ERROR", "Settings file is not valid JSON.");
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new DispatchError(
-      "INTERNAL_ERROR",
-      `Settings file at ${path} must be a flat JSON object.`,
-    );
+    throw new DispatchError("INTERNAL_ERROR", "Settings file must be a flat JSON object.");
   }
   // Keep only string values for known keys; ignore anything stale/foreign so a
   // hand-edited file can never inject an unknown key into the UI.

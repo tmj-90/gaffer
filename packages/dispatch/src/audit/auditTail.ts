@@ -25,7 +25,6 @@ export const AUDIT_TAIL_MAX = 200;
 /** The shape returned to the API: whether the log exists + the tail. */
 export interface AuditTail {
   available: boolean;
-  path: string | null;
   entries: AuditTailEntry[];
 }
 
@@ -65,7 +64,7 @@ export function readAuditTail(limit: number): AuditTail {
   const clamped = Math.max(1, Math.min(AUDIT_TAIL_MAX, Math.floor(limit)));
   const path = resolveAuditPath();
   if (!existsSync(path)) {
-    return { available: false, path: null, entries: [] };
+    return { available: false, entries: [] };
   }
 
   let raw: string;
@@ -73,7 +72,7 @@ export function readAuditTail(limit: number): AuditTail {
     raw = readFileSync(path, "utf8");
   } catch {
     // An unreadable log behaves like an absent one for the UI's purposes.
-    return { available: false, path: null, entries: [] };
+    return { available: false, entries: [] };
   }
 
   const lines = raw.split("\n").filter((line) => line.trim().length > 0);
@@ -91,5 +90,5 @@ export function readAuditTail(limit: number): AuditTail {
     entries.push(projectEntry(parsed as Record<string, unknown>));
   }
 
-  return { available: true, path, entries };
+  return { available: true, entries };
 }

@@ -374,6 +374,7 @@ const STATUS_LABELS = {
   done: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
+  paused: "Paused",
 };
 function statusLabel(status) {
   return STATUS_LABELS[status] || status;
@@ -401,6 +402,10 @@ const STAGE_FOR_STATUS = {
   claimed: 2,
   in_progress: 2,
   blocked: 2,
+  // PAUSE-ON-CAP: paused shares the blocked column on the board (boardService maps
+  // both to "blocked"). Use the same pipeline stage so a paused in-flight ticket
+  // never falls back to stage 0 (draft).
+  paused: 2,
   in_review: 3,
   // BBT-001: the independent-testing lane shares the "review" lifecycle stage —
   // it's post-delivery, pre-merge, just like in_review/ready_for_merge.
@@ -631,8 +636,19 @@ async function router() {
   const reduce = prefersReducedMotion();
   if (document.startViewTransition && !reduce) {
     // Snapshot synchronously, then run the marker-glide; the awaited content
-    // resolves inside the transition's update callback.
-    document.startViewTransition(swap);
+    // resolves inside the transition's update callback. A rapid navigation aborts
+    // the in-flight transition, rejecting its .ready/.finished with
+    // InvalidStateError — the DOM update still runs, so swallow those rejections (and
+    // any synchronous throw) to keep an unguarded exception off every interrupted
+    // view change.
+    try {
+      const vt = document.startViewTransition(swap);
+      vt.ready?.catch(() => {});
+      vt.finished?.catch(() => {});
+      vt.updateCallbackDone?.catch(() => {});
+    } catch {
+      void swap();
+    }
   } else {
     await swap();
   }
@@ -1198,7 +1214,7 @@ async function renderOverview() {
         label: "Flow efficiency",
         value: String(flowEff),
         unit: "%",
-        tone: "violet",
+        tone: "accent",
         delta: half(actByDay),
         series: flowEffSeries,
       }),
@@ -1625,6 +1641,63 @@ function svgDonut(pct) {
 }
 
 /** One reverse-chronological activity row: time · ticket · event · actor. */
+/**
+ * Turn a machine event_type ("ticket.acceptance_criteria_reset") into a human
+ * label ("Acceptance criteria reset"). A few cases read better with a bespoke
+ * verb; everything else is derived by dropping the entity prefix and
+ * sentence-casing the remainder, so new event types degrade gracefully.
+ */
+const EVENT_LABELS = {
+  "ticket.created": "Ticket created",
+  "ticket.transitioned": "Ticket moved",
+  "ticket.claimed": "Ticket claimed",
+  "ticket.evidence_recorded": "Evidence recorded",
+  "ticket.acceptance_criteria_reset": "Acceptance criteria reset",
+  "ticket.reopened_for_review": "Reopened for review",
+};
+function humanizeEvent(type) {
+  if (!type) return "Event";
+  if (EVENT_LABELS[type]) return EVENT_LABELS[type];
+  const tail = type.includes(".") ? type.slice(type.indexOf(".") + 1) : type;
+  const words = tail.replace(/_/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Event";
+}
+
+/** "from_status" -> "From status" — a readable label for a payload key. */
+function humanizeKey(key) {
+  const words = String(key).replace(/_/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
+}
+
+/**
+ * Render an event's JSON payload as readable key·value pairs rather than a raw
+ * JSON dump. Only primitive values are shown (nested objects are omitted to keep
+ * the timeline scannable); returns null when there is nothing worth showing.
+ */
+function formatPayload(jsonStr) {
+  let obj;
+  try {
+    obj = JSON.parse(jsonStr);
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const pairs = Object.entries(obj).filter(
+    ([, v]) => v != null && v !== "" && typeof v !== "object",
+  );
+  if (!pairs.length) return null;
+  return el(
+    "div",
+    { class: "ev-payload" },
+    pairs.map(([k, v]) =>
+      el("span", { class: "ev-pair" }, [
+        el("span", { class: "ev-key" }, humanizeKey(k)),
+        el("span", { class: "ev-val" }, String(v)),
+      ]),
+    ),
+  );
+}
+
 function renderFeedRow(ev) {
   const ticketRef =
     ev.ticket_number != null
@@ -1637,7 +1710,11 @@ function renderFeedRow(ev) {
   return el("li", { class: "feed-row" }, [
     el("time", { class: "feed-time tabnum", datetime: ev.created_at }, fmtTime(ev.created_at)),
     ticketRef,
-    el("span", { class: `feed-event ev-${ev.event_type.split(".")[0]}` }, ev.event_type),
+    el(
+      "span",
+      { class: `feed-event ev-${ev.event_type.split(".")[0]}` },
+      humanizeEvent(ev.event_type),
+    ),
     el(
       "span",
       { class: "feed-actor dim" },
@@ -1664,6 +1741,7 @@ const TICKET_STATUSES = [
   "done",
   "failed",
   "cancelled",
+  "paused",
 ];
 const RISK_LEVELS = ["low", "medium", "high", "critical"];
 const BOARD_COLUMN_LABELS = {
@@ -2450,6 +2528,10 @@ const TICKET_ACTION_KEYS = {
   done: [],
   failed: [],
   cancelled: ["reopen"],
+  // PAUSE-ON-CAP: a paused (cap-hit) delivery offers one-click Continue (re-enter
+  // the existing worktree) or Stop (tear down + abandon). The banner above the bar
+  // surfaces the reason + spend-so-far.
+  paused: ["pause_continue", "pause_stop"],
 };
 function ticketActionKeys(status) {
   return TICKET_ACTION_KEYS[status] || [];
@@ -3051,6 +3133,44 @@ async function renderTicket(id) {
         },
         "Reopen → refining",
       ),
+    // PAUSE-ON-CAP: re-enter delivery in the existing worktree. The factory loop
+    // picks up resume-requested paused tickets and continues them in place.
+    pause_continue: () =>
+      el(
+        "button",
+        {
+          class: "btn ok",
+          type: "button",
+          title: "Continue this paused delivery — the factory resumes it in its existing worktree",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/continue`, {});
+              toast("Continue requested — the factory will resume this ticket", { ok: true });
+              router();
+            }),
+        },
+        "Continue",
+      ),
+    // PAUSE-ON-CAP: abandon the paused delivery (tear down + cancel).
+    pause_stop: () =>
+      el(
+        "button",
+        {
+          class: "btn danger",
+          type: "button",
+          title: "Stop this paused delivery — abandon it and tear down its worktree",
+          onclick: () =>
+            guard(async () => {
+              const reason = window.prompt("Reason for stopping this paused delivery? (optional)");
+              if (reason === null) return; // cancelled the prompt
+              const body = reason.trim() === "" ? {} : { reason: reason.trim() };
+              await api("POST", `/tickets/${t.id}/stop`, body);
+              toast("Stopped — paused delivery abandoned", { ok: true });
+              router();
+            }),
+        },
+        "Stop",
+      ),
   };
 
   // "Merging…" — a passive indicator on the approved-and-merging state, shown
@@ -3069,6 +3189,30 @@ async function renderTicket(id) {
     ...ticketActionKeys(t.status).map((key) => (actionButtons[key] ? actionButtons[key]() : null)),
   ].filter(Boolean);
 
+  // PAUSE-ON-CAP banner: when a delivery is paused on a turn/budget cap, surface WHY
+  // (reason + spend-so-far, read from the latest ticket.paused event) above the
+  // Continue / Stop actions so the human can decide at a glance.
+  const pausedBanner =
+    t.status === "paused"
+      ? (() => {
+          const p = pausedInfo(events);
+          const reasonLabel = p.reason === "budget_cap" ? "budget cap reached" : "hit the turn cap";
+          const bits = [
+            p.spend ? `spend so far ${p.spend}` : null,
+            p.turns != null ? `${p.turns} turns` : null,
+          ].filter(Boolean);
+          return el("div", { class: "reopen-banner paused-banner" }, [
+            icon("alert"),
+            el("div", {}, [
+              el("strong", {}, "Delivery paused — "),
+              `${reasonLabel} mid-delivery. The worktree + branch are kept alive` +
+                (bits.length ? ` (${bits.join(", ")})` : "") +
+                ". Continue to resume in place, or Stop to abandon it.",
+            ]),
+          ]);
+        })()
+      : null;
+
   const head = el("div", { class: "card card-accent" }, [
     el("div", { class: "num" }, t.number != null ? `#${t.number}` : t.id),
     el("h1", { class: "detail-title" }, t.title),
@@ -3082,6 +3226,7 @@ async function renderTicket(id) {
     t.description
       ? el("p", { class: "desc" }, t.description)
       : el("p", { class: "desc dim" }, "No description."),
+    pausedBanner,
     headActions.length
       ? el("div", { class: "btn-row", style: "margin-top:16px" }, headActions)
       : null,
@@ -3200,16 +3345,14 @@ async function renderTicket(id) {
           { class: "timeline" },
           events.map((ev) =>
             el("li", {}, [
-              el("div", { class: "ev-type" }, ev.event_type),
+              el("div", { class: "ev-type" }, humanizeEvent(ev.event_type)),
               el("div", { class: "ev-time" }, fmtTime(ev.created_at)),
               el(
                 "div",
                 { class: "ev-actor" },
                 `${ev.actor_type}${ev.actor_id ? ` · ${ev.actor_id}` : ""}`,
               ),
-              ev.payload_json && ev.payload_json !== "{}"
-                ? el("div", { class: "ev-payload" }, ev.payload_json)
-                : null,
+              ev.payload_json && ev.payload_json !== "{}" ? formatPayload(ev.payload_json) : null,
             ]),
           ),
         )
@@ -3787,7 +3930,13 @@ function loadClaimability(ticketId, box) {
           "ul",
           { class: "claim-blockers" },
           blockers.map((b) =>
-            el("li", {}, typeof b === "string" ? b : b.message || b.reason || JSON.stringify(b)),
+            el(
+              "li",
+              {},
+              typeof b === "string"
+                ? b
+                : b.message || b.reason || b.label || "Blocked by an unmet condition",
+            ),
           ),
         ),
       );
@@ -4718,6 +4867,29 @@ function renderTicketDiff(ticketId, onState) {
 /** True when the ticket's events show a merge-conflict-resolved reopen pending re-review. */
 function reopenedForReview(events) {
   return (events || []).some((ev) => ev.event_type === "ticket.reopened_for_review");
+}
+
+// PAUSE-ON-CAP: pull the latest pause reason/spend/turns/branch off the events so the
+// detail view's paused banner can explain WHY the delivery paused. Returns an empty
+// shape when there is no pause event (defensive — the banner only renders for
+// status === 'paused' anyway).
+function pausedInfo(events) {
+  const out = { reason: "cap_hit", spend: null, turns: null, branch: null };
+  const paused = (events || []).filter((ev) => ev.event_type === "ticket.paused");
+  const last = paused[paused.length - 1];
+  if (!last) return out;
+  let payload;
+  try {
+    payload = JSON.parse(last.payload_json || "{}");
+  } catch {
+    // Malformed payload — fall back to the defaults already in `out`.
+    return out;
+  }
+  if (payload.reason) out.reason = payload.reason;
+  if (payload.spend != null) out.spend = payload.spend;
+  if (payload.turns != null) out.turns = payload.turns;
+  if (payload.branch_name != null) out.branch = payload.branch_name;
+  return out;
 }
 
 /**

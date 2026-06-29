@@ -8,12 +8,15 @@
 # the data dir with stale checkouts (and their `gaffer/ticket-*` branches linger in
 # the real repos). gaffer_cleanup_orphaned_worktrees sweeps them.
 #
-# SAFETY — never remove a LIVE worker's worktree. A worktree is only swept when its
-# ticket is in a TERMINAL or UNCLAIMED state. A ticket actively being delivered by a
-# concurrent worker is `claimed` or `in_progress`; those are PROTECTED and never
-# touched. Everything else (done/failed/cancelled/ready/draft/blocked/in_review/…,
-# or a ticket that no longer exists) means no worker is mid-delivery on it, so its
-# leftover worktree is safe to remove.
+# SAFETY — never remove a LIVE worker's worktree, AND never remove a PAUSED
+# delivery's worktree. A worktree is only swept when its ticket is in a TERMINAL or
+# UNCLAIMED state. A ticket actively being delivered by a concurrent worker is
+# `claimed` or `in_progress`; a ticket whose in-flight delivery hit a cap and was
+# PAUSED IN PLACE (PAUSE-ON-CAP) is `paused` and its worktree (committed AND
+# uncommitted work) MUST survive for the one-click resume. All three are PROTECTED
+# and never touched. Everything else (done/failed/cancelled/ready/draft/blocked/
+# in_review/…, or a ticket that no longer exists) means no worker is mid-delivery on
+# it and it is not paused, so its leftover worktree is safe to remove.
 #
 # The worktree's owning real-repo is unknown from the dir alone (the dir holds one
 # leaf per write repo), so removal is done with `git worktree remove` issued from
@@ -66,8 +69,8 @@ _orphan_remove_worktree_dir() {
 }
 
 # Sweep every $GAFFER_DATA/worktrees/ticket-<NUM>/ whose ticket is NOT actively
-# being delivered (status ∉ {claimed,in_progress}). Echoes each removed ticket
-# number. Best-effort; returns 0 always.
+# being delivered AND not paused (status ∉ {claimed,in_progress,paused}). Echoes
+# each removed ticket number. Best-effort; returns 0 always.
 #   gaffer_cleanup_orphaned_worktrees
 gaffer_cleanup_orphaned_worktrees() {
   local wtroot="${GAFFER_DATA:-}/worktrees"
@@ -79,8 +82,9 @@ gaffer_cleanup_orphaned_worktrees() {
     [ -n "$num" ] || continue
     status="$(_orphan_ticket_status "$num")"
     case "$status" in
-      claimed|in_progress)
-        # A live concurrent worker owns this ticket — DO NOT touch its worktree.
+      claimed|in_progress|paused)
+        # A live concurrent worker owns this ticket (claimed/in_progress), or it is
+        # a PAUSED delivery awaiting resume (PAUSE-ON-CAP) — DO NOT touch its worktree.
         : ;;
       *)
         # Terminal/unclaimed/unknown → no worker mid-delivery → safe to reclaim.

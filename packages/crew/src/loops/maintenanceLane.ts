@@ -312,13 +312,13 @@ export function commitMaintenanceChoice(config: CrewConfig, path: string): Maint
     }
   }
 
-  // Extreme contention: fall back to a single unlocked select+save. This is the
-  // pre-FIX-4 behaviour (still correct for a single worker) rather than throwing
-  // on a quiet idle tick.
-  const cursor = loadCursor(path);
-  const choice = chooseMaintenanceLane(config, cursor);
-  saveCursor(path, choice.nextCursor);
-  return choice;
+  // All attempts exhausted — skip this tick rather than performing an unlocked
+  // write that could skew the rotation (two workers picking the same lane).
+  return {
+    lane: null,
+    reason: "maintenance cursor locked by another worker; skipping this idle tick",
+    nextCursor: loadCursor(path),
+  };
 }
 
 /** Try to take the exclusive lock. O_EXCL create succeeds for one process only. */

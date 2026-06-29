@@ -36,6 +36,7 @@ describe("M1: solo_loose readiness", () => {
   it("marks ready with only a title", () => {
     const wg = freshWg();
     const t = wg.createTicket({ title: "Quick fix", policy_pack: "solo_loose" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     const res = wg.markReady(t.id, human);
     expect(res.ticket.status).toBe("ready");
     expect(res.policy?.allowed).toBe(true);
@@ -85,9 +86,13 @@ describe("M1: transition rules", () => {
   it("records every transition in the event log", () => {
     const wg = freshWg();
     const t = wg.createTicket({ title: "x" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     wg.transitions.transition({ ticketId: t.id, actor: human, toStatus: "refining" });
     wg.markReady(t.id, human);
-    const events = wg.view(t.id).events.map((e) => e.event_type);
+    const events = wg
+      .view(t.id)
+      .events.map((e) => e.event_type)
+      .filter((type) => type !== "ac.added");
     expect(events).toEqual(["ticket.created", "ticket.transitioned", "ticket.transitioned"]);
   });
 

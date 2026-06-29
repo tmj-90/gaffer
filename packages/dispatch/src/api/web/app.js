@@ -241,6 +241,81 @@ async function runAsyncAction(btn, running, fn) {
   }
 }
 
+/**
+ * Like {@link runAsyncAction}, but keeps the button in its running state until
+ * the REAL background run (not just the HTTP spawn-ack) finishes.
+ *
+ * The pre-RUN-ACTIVITY bug: the spawn POST returns in milliseconds, so the
+ * button reset while the (~minute-long) `claude -p` work churned on invisibly —
+ * the button looked "done" when it wasn't. Here `fn` returns the run id(s) the
+ * action started; the button stays disabled + spinning while ANY of them is
+ * still active (polled via GET /api/runs?active=1), then resets. A safety cap
+ * stops the poll so a wedged run can never disable the button forever; the
+ * "Running now" panel remains the source of truth either way.
+ */
+async function runAsyncActionUntilDone(btn, running, fn) {
+  if (!btn || btn.disabled) return;
+  const original = [...btn.childNodes];
+  const restore = () => {
+    btn.disabled = false;
+    btn.classList.remove("is-running");
+    btn.removeAttribute("aria-busy");
+    clear(btn);
+    for (const node of original) btn.appendChild(node);
+  };
+  btn.disabled = true;
+  btn.classList.add("is-running");
+  btn.setAttribute("aria-busy", "true");
+  clear(btn);
+  btn.appendChild(el("span", { class: "btn-spinner", "aria-hidden": "true" }));
+  btn.appendChild(el("span", {}, running));
+
+  let runIds;
+  try {
+    const ids = await fn();
+    runIds = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+  } catch (e) {
+    toast(e.message || "Unexpected error", { code: e.code });
+    restore();
+    return;
+  }
+
+  // No trackable run id came back (e.g. unconfigured) — nothing to wait on.
+  if (runIds.length === 0) {
+    restore();
+    return;
+  }
+
+  // Poll until none of our run ids is still active, or a safety cap elapses
+  // (~10 min) so a stuck run never wedges the button. The panel still reflects it.
+  const POLL_MS = 3000;
+  const MAX_POLLS = 200;
+  const wanted = new Set(runIds);
+  let polls = 0;
+  const done = () =>
+    new Promise((resolve) => {
+      const tick = async () => {
+        polls += 1;
+        let activeIds = new Set();
+        try {
+          const data = await api("GET", "/api/runs?active=1");
+          activeIds = new Set((data.active || []).map((r) => r.id));
+        } catch {
+          // transient — try again next tick
+        }
+        const stillRunning = [...wanted].some((id) => activeIds.has(id));
+        if (!stillRunning || polls >= MAX_POLLS) {
+          resolve();
+          return;
+        }
+        setTimeout(tick, POLL_MS);
+      };
+      setTimeout(tick, POLL_MS);
+    });
+  await done();
+  restore();
+}
+
 // --- Login gate (restyled, behaviour preserved) -----------------------------
 
 /** Render the access-token login gate into #app and hide app chrome. */
@@ -992,11 +1067,12 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, ticketsRes, decisionsRes] = await Promise.all([
+  const [{ summary }, activity, ticketsRes, decisionsRes, costRes] = await Promise.all([
     api("GET", "/api/dashboard"),
     api("GET", "/api/activity?limit=200"),
     api("GET", "/tickets").catch(() => ({ tickets: [] })),
     api("GET", "/decisions").catch(() => ({ decisions: [] })),
+    api("GET", "/api/cost").catch(() => null),
   ]);
 
   const byStatus = summary.ticketsByStatus || {};
@@ -1146,6 +1222,31 @@ async function renderOverview() {
     ]),
   );
 
+  // --- Cost banner (H1) -------------------------------------------------------
+  // One small row: total spend all-time + today. Reads from /api/cost which
+  // reads the usage-ledger. Hidden when the ledger is absent / not configured.
+  if (costRes && (costRes.total_usd > 0 || costRes.today_usd > 0 || costRes.ticket_count > 0)) {
+    const fmtUsd = (v) => (typeof v === "number" ? `$${v.toFixed(4)}` : "—");
+    wrap.appendChild(
+      el("div", { class: "cost-banner" }, [
+        el("span", { class: "cost-item" }, [
+          el("span", { class: "cost-label" }, "All-time spend"),
+          el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
+        ]),
+        el("span", { class: "cost-sep" }, "·"),
+        el("span", { class: "cost-item" }, [
+          el("span", { class: "cost-label" }, "Today"),
+          el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
+        ]),
+        el("span", { class: "cost-sep" }, "·"),
+        el("span", { class: "cost-item" }, [
+          el("span", { class: "cost-label" }, "Tickets costed"),
+          el("span", { class: "cost-val tabnum" }, String(costRes.ticket_count)),
+        ]),
+      ]),
+    );
+  }
+
   // --- Development flow + Needs your attention (2-up) -----------------------
   wrap.appendChild(
     el("div", { class: "ov-grid ov-2" }, [
@@ -1180,6 +1281,12 @@ async function renderOverview() {
       ]),
     ]),
   );
+
+  // --- "Running now" — what's in flight right now (RUN-ACTIVITY) -----------
+  // Polls GET /api/runs every ~3s so a triggered background run (Suggest work /
+  // onboard / poll-work / merge) is visible while it churns, with its captured
+  // log a click away when it finishes. Quiet empty state when nothing's running.
+  wrap.appendChild(runActivityPanel());
 
   // --- Decisions (inline, when present) ------------------------------------
   if (decisions.length) {
@@ -1704,7 +1811,13 @@ function openSuggestWorkPicker(repos, nodes) {
           }
           body = { scopeNodeId: nodeSel.value };
         }
-        runAsyncAction(runBtn, "Suggesting work…", async () => {
+        // RUN-ACTIVITY: keep the button "running" until the REAL product-owner
+        // run finishes (not just the millisecond spawn-ack, which is the bug this
+        // fixes). `fn` returns the tracked run id(s); runAsyncActionUntilDone keeps
+        // the button disabled + spinning while any of them is active (polling
+        // GET /api/runs), then restores it. The "Running now" panel reflects the
+        // same run live in parallel.
+        runAsyncActionUntilDone(runBtn, "Suggesting work…", async () => {
           const res = await api("POST", "/product-owner/runs", body);
           const t = res.target || {};
           const msg =
@@ -1712,6 +1825,17 @@ function openSuggestWorkPicker(repos, nodes) {
               ? `Node run started for '${t.scope_node_name || ""}' — ${res.ran ?? 0} repo${res.ran === 1 ? "" : "s"}${res.truncated ? " (truncated)" : ""}.`
               : `Repo run started for '${t.repo || repoSel.value}'.`;
           toast(msg, { ok: true });
+          // Surface the live run in the Overview panel immediately, but keep this
+          // sheet open so the button itself stays in its true running state until
+          // the run flips (the whole point of the fix).
+          // Collect the tracked run id(s) to wait on: node-level fans out to
+          // res.runs[].run.runId; repo-level is res.run.runId.
+          if (t.level === "node") {
+            return (res.runs || []).map((r) => r.run && r.run.runId).filter(Boolean);
+          }
+          return res.run && res.run.runId ? [res.run.runId] : [];
+        }).then(() => {
+          // Run finished (or the safety cap elapsed) — close the sheet and refresh.
           closeSheet();
           router();
         });
@@ -1741,6 +1865,342 @@ function openSuggestWorkPicker(repos, nodes) {
   );
 
   openSheet("Suggest work", form);
+}
+
+// --- "Running now" panel (RUN-ACTIVITY) -------------------------------------
+
+/** Human label for a run kind (the backend's snake_case → a readable noun). */
+const RUN_KIND_LABELS = {
+  product_owner: "Suggest work",
+  onboard: "Onboard repo",
+  poll_work: "Poll for work",
+  merge: "Merge",
+  other: "Run",
+};
+function runKindLabel(kind) {
+  return RUN_KIND_LABELS[kind] || kind || "Run";
+}
+
+/** Badge tone for a finished run's status. */
+function runStatusBadge(status) {
+  const tone =
+    status === "succeeded"
+      ? "ok"
+      : status === "failed"
+        ? "danger"
+        : status === "unknown"
+          ? "warn"
+          : "";
+  return badge(status, tone);
+}
+
+/** Elapsed/duration text for a run row, from its start (+ end when finished). */
+function runDuration(run) {
+  const start = Date.parse(run.started_at);
+  if (Number.isNaN(start)) return "—";
+  const end = run.ended_at ? Date.parse(run.ended_at) : Date.now();
+  return fmtDuration(end - start);
+}
+
+/** Open the captured log for a finished run in a sheet (best-effort fetch). */
+async function viewRunLog(run) {
+  const body = el("div", { class: "run-log" }, [el("p", { class: "dim" }, "Loading log…")]);
+  openSheet(`${runKindLabel(run.kind)} log`, body);
+  try {
+    const tok = authToken();
+    const res = await fetch(`/api/runs/${encodeURIComponent(run.id)}/log`, {
+      headers: tok ? { authorization: "Bearer " + tok } : {},
+    });
+    clear(body);
+    if (!res.ok) {
+      body.appendChild(
+        el(
+          "p",
+          { class: "dim" },
+          res.status === 404 ? "No log captured for this run." : "Could not load the log.",
+        ),
+      );
+      return;
+    }
+    const text = await res.text();
+    body.appendChild(
+      el("pre", { class: "run-log-pre" }, text && text.trim() ? text : "(log is empty)"),
+    );
+  } catch {
+    clear(body);
+    body.appendChild(el("p", { class: "dim" }, "Could not load the log."));
+  }
+}
+
+/**
+ * Open the run-detail drawer for a run. Fetches GET /api/runs/:id and renders
+ * phase · turns · spend + a streaming factory-log tail. For active runs it polls
+ * every 3s until the run settles; the timer is cleared when the sheet closes.
+ *
+ * Zero-state safe: missing detail fields render as "—".
+ */
+function viewRunDetail(runId, kindLabel) {
+  const POLL_MS = 3000;
+  let detailTimer = null;
+
+  const metaBar = el("div", { class: "run-detail-meta" });
+  const logSection = el("div", { class: "run-detail-log" });
+  const body = el("div", { class: "run-detail" }, [metaBar, logSection]);
+
+  // Intercept sheet close to cancel polling.
+  const origClose = closeSheet;
+  const cleanup = () => {
+    if (detailTimer !== null) {
+      clearInterval(detailTimer);
+      detailTimer = null;
+    }
+  };
+
+  openSheet(`${kindLabel} · detail`, body);
+
+  // Patch the sheet close button to also clear the timer (one-shot: the next
+  // openSheet call will rebuild the head, so this is safe).
+  const closeBtn = document.querySelector(".sheet-head .icon-btn");
+  if (closeBtn) {
+    const orig = closeBtn.onclick;
+    closeBtn.onclick = () => {
+      cleanup();
+      if (orig) orig();
+      else origClose();
+    };
+  }
+
+  const fmtCost = (usd) => (usd > 0 ? `$${usd.toFixed(4)}` : null);
+  const fmtTurns = (n) => (n > 0 ? `${n} turn${n === 1 ? "" : "s"}` : null);
+
+  const renderDetail = (detail) => {
+    clear(metaBar);
+    clear(logSection);
+
+    const chips = [];
+    if (detail.phase) chips.push(el("span", { class: "run-detail-chip" }, detail.phase));
+    const turns = fmtTurns(detail.num_turns);
+    if (turns) chips.push(el("span", { class: "run-detail-chip dim" }, turns));
+    const cost = fmtCost(detail.cost_usd);
+    if (cost) chips.push(el("span", { class: "run-detail-chip tabnum" }, cost));
+    if (detail.outcome) {
+      const tone =
+        detail.outcome === "in_review"
+          ? "ok"
+          : detail.outcome === "FAILED" || detail.outcome === "FLAGGED"
+            ? "danger"
+            : "warn";
+      chips.push(badge(detail.outcome, tone));
+    } else if (detail.run.status === "running") {
+      chips.push(el("span", { class: "run-spinner run-spinner--sm", "aria-hidden": "true" }));
+    }
+    if (chips.length) metaBar.appendChild(el("div", { class: "run-detail-chips" }, chips));
+    if (detail.ticket_number !== null) {
+      metaBar.appendChild(
+        el("p", { class: "run-detail-ticket dim" }, `Ticket #${detail.ticket_number}`),
+      );
+    }
+
+    if (detail.log_tail) {
+      logSection.appendChild(
+        el("pre", { class: "run-log-pre run-detail-log-pre" }, detail.log_tail),
+      );
+    } else if (detail.run.status !== "running") {
+      logSection.appendChild(el("p", { class: "dim" }, "No log captured for this run."));
+    } else {
+      logSection.appendChild(el("p", { class: "dim" }, "Waiting for log output…"));
+    }
+  };
+
+  const fetchDetail = async () => {
+    try {
+      const data = await api("GET", `/api/runs/${encodeURIComponent(runId)}`);
+      if (!document.querySelector(".sheet.open")) {
+        cleanup();
+        return;
+      }
+      renderDetail(data.detail);
+      // Stop polling once the run has settled (no longer running).
+      if (data.detail.run.status !== "running") {
+        cleanup();
+      }
+    } catch {
+      // Leave the last paint on transient errors.
+    }
+  };
+
+  // Initial paint: show a loading placeholder, then fetch.
+  metaBar.appendChild(el("p", { class: "dim" }, "Loading…"));
+  fetchDetail();
+
+  detailTimer = setInterval(() => {
+    if (!document.querySelector(".sheet.open")) {
+      cleanup();
+      return;
+    }
+    fetchDetail();
+  }, POLL_MS);
+}
+
+/**
+ * Format a USD cost for inline display in a run row.
+ * Returns null when cost is zero/unknown (so no chip is rendered).
+ */
+function runCostChip(costUsd) {
+  if (!costUsd || costUsd <= 0) return null;
+  return el("span", { class: "run-cost-chip tabnum dim" }, `$${costUsd.toFixed(4)}`);
+}
+
+/** One active run row: kind · repo · phase · elapsed · spinner · detail button. */
+function activeRunRow(run) {
+  // `run._phase` and `run._cost_usd` are injected by the enriched list render.
+  const phaseChip = run._phase ? el("span", { class: "run-phase-chip dim" }, run._phase) : null;
+  const costChip = runCostChip(run._cost_usd);
+  return el(
+    "li",
+    {
+      class: "run-row run-active run-row--clickable",
+      onclick: () => viewRunDetail(run.id, runKindLabel(run.kind)),
+      title: "Click to view live detail",
+    },
+    [
+      el("span", { class: "run-spinner", "aria-hidden": "true" }),
+      el("span", { class: "run-kind" }, runKindLabel(run.kind)),
+      run.repo ? el("span", { class: "run-repo dim" }, run.repo) : null,
+      phaseChip,
+      costChip,
+      el(
+        "span",
+        { class: "run-elapsed dim tabnum", title: `started ${fmtTime(run.started_at)}` },
+        runDuration(run),
+      ),
+    ],
+  );
+}
+
+/** One finished run row: kind · repo · phase · status · cost · duration · view-log. */
+function finishedRunRow(run) {
+  const phaseChip = run._phase ? el("span", { class: "run-phase-chip dim" }, run._phase) : null;
+  const costChip = runCostChip(run._cost_usd);
+  return el("li", { class: "run-row run-done" }, [
+    el("span", { class: "run-kind" }, runKindLabel(run.kind)),
+    run.repo ? el("span", { class: "run-repo dim" }, run.repo) : null,
+    phaseChip,
+    runStatusBadge(run.status),
+    costChip,
+    el(
+      "span",
+      { class: "run-elapsed dim tabnum", title: `ended ${fmtTime(run.ended_at)}` },
+      runDuration(run),
+    ),
+    run.log_path
+      ? el(
+          "button",
+          { class: "btn small run-viewlog", type: "button", onclick: () => viewRunLog(run) },
+          "view log",
+        )
+      : null,
+  ]);
+}
+
+/**
+ * The "Running now" panel: a compact card that polls GET /api/runs?active=1
+ * every ~3s, showing each in-flight run (kind · repo · elapsed · spinner) and
+ * the most-recent finished runs (status · duration · view-log). When there are
+ * zero active and zero recent it renders a quiet empty state instead of clutter.
+ *
+ * Lifecycle: the poll self-terminates once the panel node is detached from the
+ * DOM (a view change rebuilds Overview from scratch), so no global teardown hook
+ * is needed. The first paint is synchronous-ish (an immediate fetch) so the card
+ * never flashes empty before the first interval.
+ */
+function runActivityPanel() {
+  const POLL_MS = 3000;
+  const card = el("div", { class: "card run-activity", id: "running-now" }, [
+    el("h2", {}, [icon("activity"), "Running now"]),
+  ]);
+  const listWrap = el("div", { class: "run-activity-body" }, [
+    el("p", { class: "dim" }, "Loading runs…"),
+  ]);
+  card.appendChild(listWrap);
+
+  let stopped = false;
+
+  const render = (active, recent) => {
+    clear(listWrap);
+    if ((!active || active.length === 0) && (!recent || recent.length === 0)) {
+      listWrap.appendChild(
+        emptyState("Nothing running", "Background runs you trigger show up here.", "activity"),
+      );
+      return;
+    }
+    if (active && active.length) {
+      listWrap.appendChild(el("ul", { class: "run-list" }, active.map(activeRunRow)));
+    }
+    if (recent && recent.length) {
+      listWrap.appendChild(el("div", { class: "run-recent-title dim" }, "Recently finished"));
+      listWrap.appendChild(el("ul", { class: "run-list" }, recent.map(finishedRunRow)));
+    }
+  };
+
+  /**
+   * Fetch the enriched detail for a run (best-effort). Returns the detail
+   * object on success, null on any error. Used to inject phase + cost_usd into
+   * run rows without blocking the main list render.
+   */
+  const fetchRunDetail = async (runId) => {
+    try {
+      const data = await api("GET", `/api/runs/${encodeURIComponent(runId)}`);
+      return data.detail || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const poll = async () => {
+    if (stopped) return;
+    try {
+      const data = await api("GET", "/api/runs?active=1");
+      // Don't paint into a panel that's been detached mid-flight (view changed).
+      if (stopped) return;
+      const active = data.active || [];
+      const recent = data.recent || [];
+
+      // Enrich active runs with phase + cost_usd via parallel detail fetches
+      // (best-effort: failures leave the fields unset, rows still render).
+      if (active.length > 0) {
+        const details = await Promise.all(active.map((r) => fetchRunDetail(r.id)));
+        if (!stopped) {
+          for (let i = 0; i < active.length; i++) {
+            const d = details[i];
+            if (d) {
+              active[i]._phase = d.phase || null;
+              active[i]._cost_usd = d.cost_usd || 0;
+            }
+          }
+        }
+      }
+
+      if (!stopped) render(active, recent);
+    } catch {
+      // A transient read failure shouldn't blank the panel; leave the last paint.
+    }
+  };
+
+  // Immediate first paint (the card is still being assembled into the view, so we
+  // do NOT gate this on attachment — only the recurring interval self-terminates
+  // on detach, once the card has actually been mounted).
+  poll();
+  const timer = setInterval(() => {
+    if (stopped || !document.body.contains(card)) {
+      clearInterval(timer);
+      stopped = true;
+      return;
+    }
+    poll();
+  }, POLL_MS);
+
+  return card;
 }
 
 async function renderWork() {
@@ -6102,6 +6562,19 @@ function renderEpicDag(byPhase, phases, depViewById) {
 // any point, and the decomposer's own advisory turn ceiling force-plans rather than
 // rejecting — see PLAN_BUILD_FORCE_EMPHASIS_TURNS for when the escape is emphasised.
 
+// H9 — DURABLE SESSIONS: the panel persists its conversation to the server via
+// /plan-sessions so a reload or navigation-away restores the exact history +
+// proposed plan. Each turn calls POST /plan-sessions/:id/turns to append both
+// the user message and the assistant reply. On first open the panel fetches
+// GET /plan-sessions/active to restore any in-progress session. "Start new plan"
+// archives the current session (POST /plan-sessions/:id/archive, status:abandoned)
+// and creates a fresh one. Confirming a plan archives with status:confirmed.
+//
+// GRACEFUL DEGRADATION: every session API call is best-effort. If the endpoint
+// is unreachable (older server, network blip) the panel continues with in-memory
+// state exactly as before H9 — `planBuildState.sessionId` stays null and no
+// persistence calls are attempted for that session.
+
 let planBuildEls = null;
 let planBuildState = null;
 
@@ -6147,11 +6620,23 @@ function ensurePlanBuild() {
             el("div", { class: "pb-sub dim" }, "Brief → phased epic of draft tickets"),
           ]),
         ]),
-        el(
-          "button",
-          { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closePlanBuild },
-          el("span", { html: "✕" }),
-        ),
+        el("div", { class: "pb-head-actions" }, [
+          el(
+            "button",
+            {
+              class: "btn pb-new-plan",
+              type: "button",
+              "aria-label": "Start a new plan (archives current conversation)",
+              onclick: startNewPlanBuild,
+            },
+            "New plan",
+          ),
+          el(
+            "button",
+            { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closePlanBuild },
+            el("span", { html: "✕" }),
+          ),
+        ]),
       ]),
       el("div", { class: "pb-guardrail" }, [
         icon("alert", "pb-guard-ico"),
@@ -6189,12 +6674,109 @@ function ensurePlanBuild() {
   return planBuildEls;
 }
 
+// ---------------------------------------------------------------------------
+//  Session helpers — best-effort; never throw to the caller.
+// ---------------------------------------------------------------------------
+
+/**
+ * Restore the in-progress session state from a server session row.
+ * Parses messages_json and populates planBuildState.history + plan.
+ * The server stores assistant turns as JSON-stringified decompose envelopes;
+ * user turns store the raw text in `content`.
+ */
+function restorePlanBuildSession(session) {
+  if (!planBuildState || !session) return;
+  planBuildState.sessionId = session.id;
+  planBuildState.brief = session.brief || null;
+
+  let messages;
+  try {
+    messages = JSON.parse(session.messages_json || "[]");
+  } catch {
+    messages = [];
+  }
+
+  const history = [];
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      // First user message is the brief; subsequent ones are answers.
+      const isFirst = history.filter((t) => t.role === "user").length === 0;
+      history.push(
+        isFirst ? { role: "user", brief: msg.content } : { role: "user", answer: msg.content },
+      );
+    } else if (msg.role === "assistant") {
+      try {
+        const envelope = JSON.parse(msg.content);
+        if (envelope && envelope.phase === "clarify") {
+          history.push({ role: "assistant", questions: envelope.questions || [] });
+        }
+        // plan turns are restored via plan_json below, not via history
+      } catch {
+        // Malformed assistant message — skip.
+      }
+    }
+  }
+  planBuildState.history = history;
+
+  if (session.plan_json) {
+    try {
+      planBuildState.plan = JSON.parse(session.plan_json);
+    } catch {
+      planBuildState.plan = null;
+    }
+  }
+}
+
+/**
+ * Create a new server-side session. Best-effort: if the API is unreachable,
+ * sessionId stays null and the panel works in pure in-memory mode.
+ */
+async function createPlanBuildSession() {
+  try {
+    const res = await api("POST", "/plan-sessions");
+    if (res && res.session && res.session.id) {
+      planBuildState.sessionId = res.session.id;
+    }
+  } catch {
+    // Degrade gracefully — session persistence unavailable.
+  }
+}
+
+/**
+ * Append a message to the current session. Called after each user turn and
+ * after each assistant reply. Best-effort — never interrupts the chat.
+ */
+async function persistPlanBuildTurn(role, content, opts) {
+  const id = planBuildState && planBuildState.sessionId;
+  if (!id) return;
+  try {
+    await api("POST", `/plan-sessions/${id}/turns`, { role, content, ...opts });
+  } catch {
+    // Session persistence unavailable — continue in-memory.
+  }
+}
+
+/**
+ * Archive the current session (if any). Called on "Start new plan" (abandoned)
+ * and on confirmPlanBuild (confirmed). Best-effort.
+ */
+async function archivePlanBuildSession(status) {
+  const id = planBuildState && planBuildState.sessionId;
+  if (!id) return;
+  try {
+    await api("POST", `/plan-sessions/${id}/archive`, { status });
+  } catch {
+    // Ignore — the session may not exist on an older server.
+  }
+}
+
 function openPlanBuild() {
   const { scrim, input } = ensurePlanBuild();
   // `mode` is the start toggle: "new" (greenfield app) vs "extend" (add tickets
   // to an existing scope node / epic). `target` holds the chosen extend node and
   // becomes the `context` sent to the decomposer on the first turn. `nodes` is
   // loaded lazily for the extend picker; an empty list just hides the option.
+  // `sessionId` is the server-side session id (null when persistence unavailable).
   planBuildState = {
     history: [],
     plan: null,
@@ -6204,25 +6786,59 @@ function openPlanBuild() {
     target: null,
     nodes: [],
     repos: [],
+    sessionId: null,
   };
   renderPlanBuildLog();
   scrim.classList.add("open");
   document.addEventListener("keydown", planBuildKeydown);
   setTimeout(() => input.focus(), 50);
-  // Best-effort: populate the "Extend existing" picker with both repos and scope
-  // nodes (the shared targetPicker offers both). The panel works without them.
+  // Best-effort: restore the in-progress session from the server, and populate
+  // the "Extend existing" picker. Both are non-blocking; the panel works without them.
   guard(async () => {
-    const [nodesRes, reposRes] = await Promise.all([
+    const [sessionRes, nodesRes, reposRes] = await Promise.all([
+      api("GET", "/plan-sessions/active").catch(() => null),
       api("GET", "/scope/nodes"),
       api("GET", "/repositories"),
     ]);
-    if (planBuildState) {
-      planBuildState.nodes = nodesRes.nodes || [];
-      planBuildState.repos = reposRes.repositories || [];
-      // Only repaint while still on the empty intro (no turns sent yet).
-      if (planBuildState.history.length === 0) renderPlanBuildLog();
+    if (!planBuildState) return; // panel was closed during the fetch
+    // Restore server session (if one exists and the panel hasn't been interacted with).
+    if (sessionRes && sessionRes.session && planBuildState.history.length === 0) {
+      restorePlanBuildSession(sessionRes.session);
+    } else if (!sessionRes || !sessionRes.session) {
+      // No active session on the server — create one (best-effort).
+      await createPlanBuildSession();
     }
+    planBuildState.nodes = nodesRes.nodes || [];
+    planBuildState.repos = reposRes.repositories || [];
+    // Only repaint while still on the empty intro (no turns sent yet) OR if we
+    // just restored a session with history.
+    renderPlanBuildLog();
   });
+}
+
+/**
+ * Archive the current session as 'abandoned' and open a fresh one.
+ * The "New plan" button in the panel header calls this.
+ */
+async function startNewPlanBuild() {
+  if (!planBuildState || planBuildState.busy) return;
+  await archivePlanBuildSession("abandoned");
+  // Reset in-memory state.
+  planBuildState = {
+    history: [],
+    plan: null,
+    busy: false,
+    brief: null,
+    mode: "new",
+    target: null,
+    nodes: planBuildState ? planBuildState.nodes : [],
+    repos: planBuildState ? planBuildState.repos : [],
+    sessionId: null,
+  };
+  renderPlanBuildLog();
+  // Create a fresh server-side session.
+  await createPlanBuildSession();
+  if (planBuildEls) planBuildEls.input.focus();
 }
 function closePlanBuild() {
   if (!planBuildEls) return;
@@ -6779,6 +7395,8 @@ async function submitPlanBuildTurn(opts = {}) {
     planBuildState.history.push(
       isFirst ? { role: "user", brief: text } : { role: "user", answer: text },
     );
+    // Persist the user turn server-side (best-effort; never awaited before the render).
+    persistPlanBuildTurn("user", text, isFirst ? { brief: text } : {}).catch(() => {});
     input.value = "";
     input.style.height = "auto";
   }
@@ -6830,10 +7448,18 @@ async function submitPlanBuildTurn(opts = {}) {
     planBuildState.busy = false;
     if (res.phase === "clarify") {
       planBuildState.history.push({ role: "assistant", questions: res.questions || [] });
+      // Persist the assistant clarify turn server-side (best-effort).
+      persistPlanBuildTurn("assistant", JSON.stringify(res)).catch(() => {});
     } else if (res.phase === "plan") {
       planBuildState.plan = res.plan || null;
+      // Persist the plan turn with the plan payload so reload can restore it.
+      persistPlanBuildTurn("assistant", JSON.stringify(res), { plan: res.plan || null }).catch(
+        () => {},
+      );
     } else {
       toast(res.error || "Planning failed", { code: "PLAN_BUILD" });
+      // Persist error turns for audit (best-effort).
+      persistPlanBuildTurn("assistant", JSON.stringify(res)).catch(() => {});
     }
     renderPlanBuildLog();
   });
@@ -6872,6 +7498,8 @@ async function confirmPlanBuild(plan) {
       return t;
     });
     const res = await api("POST", "/epics", { epic: plan.epic, tickets });
+    // Archive the session as confirmed now that the epic has been created.
+    await archivePlanBuildSession("confirmed");
     const count = (res.ticket_numbers || []).length;
     const note = deferred
       ? ` (${deferred} repo link${deferred === 1 ? "" : "s"} deferred to bootstrap)`

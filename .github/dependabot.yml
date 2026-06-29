@@ -5,12 +5,21 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Group minor and patch bumps into a single PR to reduce noise.
+    # Major bumps are left ungrouped so each gets individual review.
     groups:
-      dev-dependencies:
-        dependency-type: development
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
     open-pull-requests-limit: 10
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - minor
+          - patch

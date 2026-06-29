@@ -86,11 +86,45 @@ export function parseConfig(yamlText: string, source = "<string>"): CrewConfig {
   return parseWith(crewConfigSchema, raw, "crew config", source);
 }
 
+/**
+ * Resolve the effective events-log path for a loaded config.
+ *
+ * Priority (highest first):
+ *   1. `GAFFER_CREW_EVENTS` env var — lets the runner redirect the log outside
+ *      any repo worktree so delivery hygiene checks stay clean.
+ *   2. `config.logging.event_log_path` from the YAML (default `./.crew/events.jsonl`).
+ *
+ * The resolved path is what every EventLog consumer should write to. The
+ * override is also applied inside `loadConfig` so that
+ * `loaded.config.logging.event_log_path` always returns the effective path —
+ * callers do not need to call this function separately.
+ */
+export function resolveEventLogPath(loaded: LoadedConfig): string {
+  const envOverride = process.env.GAFFER_CREW_EVENTS;
+  if (envOverride && envOverride.length > 0) {
+    return envOverride;
+  }
+  return loaded.config.logging.event_log_path;
+}
+
 /** Load + validate the crew config file from disk. */
 export function loadConfig(configPath: string): LoadedConfig {
   const absolute = isAbsolute(configPath) ? configPath : resolve(process.cwd(), configPath);
   const raw = readYamlFile(absolute);
   const config = parseWith(crewConfigSchema, raw, "crew config", absolute);
+
+  // Apply the GAFFER_CREW_EVENTS env override so every consumer that reads
+  // config.logging.event_log_path automatically gets the redirected path
+  // without needing to call resolveEventLogPath() explicitly.
+  const envOverride = process.env.GAFFER_CREW_EVENTS;
+  if (envOverride && envOverride.length > 0) {
+    const overridden: typeof config = {
+      ...config,
+      logging: { ...config.logging, event_log_path: envOverride },
+    };
+    return { config: overridden, rootDir: dirname(absolute), configPath: absolute };
+  }
+
   return { config, rootDir: dirname(absolute), configPath: absolute };
 }
 

@@ -13,6 +13,8 @@ import {
 import type { IdleLoopDeps } from "./idleLoop.js";
 import { resolveMinDeliveredTickets } from "../config/schema.js";
 import { dateStamp } from "../util/clock.js";
+import { oracleFindingKey, summariseOracleFindings, type Oracle } from "./oracles/index.js";
+import type { IdleLoopMode, RepoConfig } from "../config/schema.js";
 
 const LOOP = "type_quality";
 
@@ -166,11 +168,60 @@ function summarise(repoName: string, date: string, findings: TypeQualityFinding[
   return `${head}\n\nTop files by type-debt hotspot count:\n${fileList}\n\n${acceptance}`;
 }
 
+/** Acceptance criteria handed to a delivery agent for an oracle-sourced ticket. */
+const ORACLE_ACCEPTANCE =
+  `Skill: ${SKILL_ID}. Acceptance criteria: \`pnpm typecheck\` and \`pnpm test\` stay green ` +
+  `and no public API change. (Findings are tsc diagnostics — fixing them clears the checker.)`;
+
 /**
- * Idle type-quality loop. Walks each in-scope repo's non-test TypeScript sources
- * and tsconfigs, flags type-debt signals (`skipLibCheck:true`, `@ts-*`
- * suppressions, `as` casts, non-null `!`, bare `any`), and creates a DRAFT
- * ticket per repo with a top-files-by-hotspot summary. Observation only — never
+ * Try the tsc oracle for one repo. Returns the per-finding apply result when the
+ * oracle ran (so the loop drafts from precise diagnostics), or `null` when the
+ * tool is unavailable (so the caller falls back to the heuristic). Either branch
+ * logs which path ran for the audit.
+ */
+function tryTypeOracle(
+  deps: IdleLoopDeps,
+  oracle: Oracle,
+  mode: IdleLoopMode,
+  repo: RepoConfig,
+  root: string,
+  date: string,
+): ReturnType<typeof applyScanFinding> | null {
+  const result = oracle.consult(root);
+  if (!result.available) {
+    deps.events.record("type_quality_oracle_unavailable", {
+      repoName: repo.name,
+      oracle: oracle.id,
+      reason: result.reason,
+    });
+    return null;
+  }
+  deps.events.record("type_quality_scanned", {
+    repoName: repo.name,
+    findings: result.findings.length,
+    path: "oracle",
+    oracle: oracle.id,
+  });
+  if (result.findings.length === 0) return { kind: "deduped" };
+  const summary = summariseOracleFindings(repo.name, "tsc", result.findings, ORACLE_ACCEPTANCE);
+  return applyScanFinding(
+    deps,
+    LOOP,
+    mode,
+    repo,
+    `Type-quality findings: ${repo.name}`,
+    `${summary}\n\n(${date})`,
+    oracleFindingKey(oracle.id, result.findings),
+  );
+}
+
+/**
+ * Idle type-quality loop. PREFERS the tsc oracle (precise diagnostics) when one
+ * is wired and TypeScript is installed; otherwise falls back to walking each
+ * in-scope repo's non-test TypeScript sources and tsconfigs and flagging the
+ * heuristic type-debt signals (`skipLibCheck:true`, `@ts-*` suppressions, `as`
+ * casts, non-null `!`, bare `any`). Either way it creates a DRAFT ticket per repo
+ * and logs the path taken (`oracle` vs `heuristic`). Observation only — never
  * edits code; a delivery agent (not this scan) would later remediate.
  */
 export function runIdleTypeQualityLoop(deps: IdleLoopDeps): IdleScanOutcome {
@@ -186,15 +237,31 @@ export function runIdleTypeQualityLoop(deps: IdleLoopDeps): IdleScanOutcome {
   }
 
   const date = dateStamp(deps.clock);
+  const oracle = deps.oracles?.tsc;
   const results = [];
   for (const repo of candidates) {
     const root = deps.repoRegistry.absolutePath(repo);
+
+    // Oracle-first: a wired tsc oracle whose tool is installed yields precise
+    // diagnostics. An unavailable oracle returns null → fall through to grep.
+    if (oracle) {
+      const oracleResult = tryTypeOracle(deps, oracle, mode, repo, root, date);
+      if (oracleResult !== null) {
+        results.push(oracleResult);
+        continue;
+      }
+    }
+
     const files = walkFiles(root, isTypeScanFile);
     const findings: TypeQualityFinding[] = [];
     for (const path of files) {
       findings.push(...scanTypeQuality(safeRead(path), relative(root, path)));
     }
-    deps.events.record("type_quality_scanned", { repoName: repo.name, findings: findings.length });
+    deps.events.record("type_quality_scanned", {
+      repoName: repo.name,
+      findings: findings.length,
+      path: "heuristic",
+    });
     if (findings.length === 0) continue;
     results.push(
       applyScanFinding(

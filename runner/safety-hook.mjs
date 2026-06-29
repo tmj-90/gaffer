@@ -25,6 +25,11 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
+// Canonical dangerous-command deny list — the SINGLE source of truth shared with
+// the crew classifier's parity test (S-3). The hook consumes `{ re, why, install? }`;
+// the extra parity metadata on each rule is inert here. See the module header.
+import { DANGEROUS_COMMANDS as DENY_COMMANDS } from "./lib/dangerous-commands.mjs";
+
 /**
  * Canonicalise a path symlink-safely, even when it doesn't exist yet (a file
  * about to be written): realpath the longest existing ancestor, then re-append
@@ -624,88 +629,6 @@ const READ_TOOL_VERBS = new Set([
   "tac",
   "bat",
 ]);
-
-// Dangerous shell patterns (checked against the raw command string).
-const DENY_COMMANDS = [
-  { re: /git\s+push\b[^\n|;&]*(--force\b|--force-with-lease\b|\s-f\b|\s\+)/, why: "force push" },
-  {
-    re: /git\s+push\b[^\n|;&]*\b(origin\s+)?(main|master|release|production|prod)\b/,
-    why: "push to a protected branch",
-  },
-  { re: /git\s+push\b[^\n|;&]*--delete\b/, why: "remote branch/tag deletion" },
-  { re: /git\s+(branch\s+-D|tag\s+-d)\b/, why: "branch/tag force-deletion" },
-  { re: /git\s+reset\s+--hard\b/, why: "hard reset" },
-  {
-    re: /git\s+clean\s+-[a-z]*f[a-z]*d|git\s+clean\s+-[a-z]*d[a-z]*f/,
-    why: "git clean -fd (destructive)",
-  },
-  { re: /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/, why: "rm -rf" },
-  {
-    re: /\b(curl|wget)\b[^\n|;&]*\|\s*(sh|bash|zsh)\b/,
-    why: "pipe-to-shell of a downloaded script",
-  },
-  // `install: true` tags the ONE rule the bootstrap allowance may relax (see
-  // bootstrapInstallAllowed). brew/sudo are NOT tagged, so they stay blocked even
-  // during a bootstrap tick — only package-manager installs into the fresh repo
-  // are ever permitted.
-  {
-    re: /\b(npm|pnpm|yarn)\s+(i\b|install\b|add\b)|\bpip\d?\s+install\b/,
-    why: "dependency install (needs human approval)",
-    install: true,
-  },
-  { re: /\bbrew\s+install\b/, why: "dependency install (needs human approval)" },
-  { re: /\bsudo\b/, why: "sudo" },
-  // `find … -delete` and `find … -exec rm|sh|bash …` recursively destroy or
-  // run arbitrary commands over a tree — deny regardless of where the tree is.
-  { re: /\bfind\b[^\n]*\s-delete\b/, why: "find -delete (destructive tree walk)" },
-  {
-    // `find … -exec <writer> …` runs a mutating command over a tree, with `{}`
-    // standing in for each matched path — the actual write target(s) are
-    // produced by the traversal and cannot be proven in-bounds from the command
-    // text. Deny the destructive/shell verbs AND the file-mutators (cp/mv/tee/…)
-    // conservatively (S-1: fail closed when the target can't be verified).
-    re: /\bfind\b[^\n]*\s-exec(?:dir)?\s+(?:rm|sh|bash|zsh|dash|cp|mv|tee|dd|install|ln|rsync|truncate|shred|chmod|chown)\b/,
-    why: "find -exec writer/shell (destructive or unverifiable-target tree walk)",
-  },
-  // Whole-file truncation/erasure primitives. `truncate`'s target is ALSO routed
-  // through the write-target extractor (so an in-root truncate is judged there);
-  // `shred` always destroys, so it is blanket-denied here.
-  { re: /\bshred\b/, why: "shred (irrecoverable file erase)" },
-  // Git config keys that hijack execution or hook behaviour: pointing hooksPath
-  // at attacker files, swapping fsmonitor/sshCommand to run a payload, or
-  // installing an alias that shells out. Match `git [-C dir] config … <key>`.
-  {
-    re: /\bgit\b[^\n|;&]*\bconfig\b[^\n|;&]*\b(core\.hooksPath|core\.fsmonitor|core\.sshCommand|alias\.[\w-]+)\b/,
-    why: "git config of an execution-hijacking key (hooksPath/fsmonitor/sshCommand/alias)",
-  },
-  // Scheduled-execution / service-loading primitives — a way to persist or run
-  // code out of band of this hook.
-  { re: /\bcrontab\b/, why: "crontab (scheduled execution)" },
-  { re: /\bat\s+(?:-f\b|now\b|[0-9])/, why: "at (scheduled execution)" },
-  { re: /\blaunchctl\s+(?:load|bootstrap)\b/, why: "launchctl load/bootstrap (service loading)" },
-  // CONTROL-PLANE BYPASS (backstops the authz P0). The agent must reach Dispatch
-  // ONLY through the scoped MCP server — never the privileged CLI and never the
-  // raw database. The CLI can mint a human-grade approval, mark a ticket merged,
-  // reject, or grant repo access; the MCP surface the agent is given cannot. Block
-  // every privileged `wg|dispatch|fg|crew` write subcommand from agent Bash.
-  // Read-only inspection (`wg ticket show`, `wg ticket list`) stays allowed so the
-  // agent can still look things up; only the state-changing verbs are denied.
-  {
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|reject|repo-access)\b/,
-    why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
-  },
-  // Raw DB access: sqlite3 (or a node CLI) operating on the Dispatch/Memory
-  // database file bypasses the MCP entirely. Match a sqlite3/node invocation whose
-  // text references the configured DB path (or any *dispatch*/*memory* .sqlite).
-  {
-    re: /\bsqlite3\b[^\n|;&]*(?:\$\{?(?:DISPATCH_DB|MEMORY_DB)\}?|[^\s'"]*(?:dispatch|memory)[^\s'"]*\.sqlite\b)/i,
-    why: "raw sqlite3 on the Dispatch/Memory database (use the scoped MCP, not the raw DB)",
-  },
-  {
-    re: /\bnode\b[^\n|;&]*(?:dispatch|crew)[^\n|;&]*\/(?:dist\/)?cli\b/i,
-    why: "raw node CLI invocation of the Dispatch/Crew control plane (use the scoped MCP)",
-  },
-];
 
 // =====================================================================
 // BOOTSTRAP-ONLY INSTALL ALLOWANCE (greenfield create-a-repo mode)

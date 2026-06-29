@@ -134,6 +134,8 @@ else
     fail "could not create a ticket for the DRY_RUN smoke"
   else
     WG repo link "$NUM" repo >/dev/null 2>&1
+    # GUARD A: a delivery-bound ticket needs ≥1 acceptance criterion to ready.
+    WG ac add "$NUM" -t "Routing smoke AC" >/dev/null 2>&1
     WG ticket ready "$NUM" >/dev/null 2>&1
     SMOKE_DATA="$WORK/.gaffer-tick"
     OUT="$(env DISPATCH_DB="$DB" GAFFER_DATA="$SMOKE_DATA" DRY_RUN=1 \

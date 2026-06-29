@@ -38,11 +38,21 @@ export const STATE_FORMAT_VERSION = 1;
  * foreign keys ON. The order is also the export order, but export ordering doesn't
  * matter for correctness — only import does.
  *
- * EXCLUDED: `schema_meta`. It is pure metadata (only the `schema_version` row in
- * practice), captured by the bundle's top-level `schema_version` field and
- * re-stamped by {@link migrate} on import — re-inserting it would be redundant and
- * could fight the importer's own version stamp. Every other table in SCHEMA_SQL
- * carries durable state and IS included.
+ * EXCLUDED:
+ *  - `schema_meta`: pure metadata (only the `schema_version` row in practice),
+ *    captured by the bundle's top-level `schema_version` field and re-stamped by
+ *    {@link migrate} on import — re-inserting it would be redundant and could
+ *    fight the importer's own version stamp.
+ *  - `runs`: the run-activity registry (schema_version 10) is machine-local
+ *    control-plane data — its rows carry this machine's pids and
+ *    `$GAFFER_DATA/runs/<id>.log` paths and have no FK to the board. They are
+ *    meaningless on another machine (and a `running` row imported with a foreign
+ *    pid would actively mislead the stale-run sweep), so run history is NOT part
+ *    of the portable board bundle.
+ *
+ * Every other table in SCHEMA_SQL carries durable board state and IS included.
+ * The drift guard in state-export.test.ts enforces that any future durable table
+ * is consciously added here or excluded with a reason.
  */
 export const EXPORT_TABLES = [
   // Roots (no FK dependencies).

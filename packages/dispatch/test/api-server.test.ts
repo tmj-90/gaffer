@@ -131,6 +131,8 @@ describe("API: human REST surface", () => {
   it("rejects a review back to refining", async () => {
     const created = await call(h.baseUrl, "POST", "/tickets", { title: "Refactor" });
     const ticket = created.body.ticket as { id: string };
+    // Guard A: ≥1 AC required to ready
+    await call(h.baseUrl, "POST", `/tickets/${ticket.id}/acceptance-criteria`, { text: "AC" });
     await call(h.baseUrl, "POST", `/tickets/${ticket.id}/ready`);
 
     const agent = h.wg.registerAgent({ display_name: "a" }, human);
@@ -157,6 +159,8 @@ describe("API: human REST surface", () => {
   it("rejects a review with a missing reason (422 — reason is required)", async () => {
     const created = await call(h.baseUrl, "POST", "/tickets", { title: "Needs reason" });
     const ticket = created.body.ticket as { id: string };
+    // Guard A: ≥1 AC required to ready
+    await call(h.baseUrl, "POST", `/tickets/${ticket.id}/acceptance-criteria`, { text: "AC" });
     await call(h.baseUrl, "POST", `/tickets/${ticket.id}/ready`);
     const agent = h.wg.registerAgent({ display_name: "a" }, human);
     const claim = h.wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, human);
@@ -238,6 +242,8 @@ describe("API: human REST surface", () => {
   it("lists active claims and revokes one, returning the ticket to ready", async () => {
     const created = await call(h.baseUrl, "POST", "/tickets", { title: "Claimable" });
     const ticket = created.body.ticket as { id: string };
+    // Guard A: ≥1 AC required to ready
+    await call(h.baseUrl, "POST", `/tickets/${ticket.id}/acceptance-criteria`, { text: "AC" });
     await call(h.baseUrl, "POST", `/tickets/${ticket.id}/ready`);
     const agent = h.wg.registerAgent({ display_name: "claude-01" }, human);
     h.wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, human);

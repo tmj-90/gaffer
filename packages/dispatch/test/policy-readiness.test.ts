@@ -34,9 +34,10 @@ function strictReadyBase(wg: Dispatch, pack: PolicyPack): string {
 }
 
 describe("WG-003 / TEST-002: solo_loose", () => {
-  it("can mark a scope-less, repo-less ticket ready", () => {
+  it("can mark a scope-less, repo-less ticket ready (with ≥1 AC)", () => {
     const wg = fresh();
     const t = wg.createTicket({ title: "Quick", policy_pack: "solo_loose" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "Does the thing" }, human);
     const res = wg.markReady(t.id, human);
     expect(res.ticket.status).toBe("ready");
     wg.db.close();
@@ -45,9 +46,38 @@ describe("WG-003 / TEST-002: solo_loose", () => {
   it("a missing repo is a warning, not a blocker", () => {
     const wg = fresh();
     const t = wg.createTicket({ title: "Quick", policy_pack: "solo_loose" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "Does the thing" }, human);
     const res = wg.transitions.preview(t.id, "ready");
     expect(res?.allowed).toBe(true);
     expect(res?.warnings.map((w) => w.code)).toContain("REPO_RECOMMENDED");
+    wg.db.close();
+  });
+});
+
+// GUARD A (waste-guards): a 0-AC ticket must never be deliverable. Every
+// delivery-bound policy, solo_loose included, rejects a 0-AC ticket at `ready`.
+describe("GUARD A: ≥1 acceptance criterion required at ready (all packs)", () => {
+  it("blocks a 0-AC solo_loose ticket with AC_REQUIRED", () => {
+    const wg = fresh();
+    const t = wg.createTicket({ title: "No ACs", policy_pack: "solo_loose" }, human);
+    expect(readyFailures(wg, t.id)).toContain("AC_REQUIRED");
+    expect(() => wg.markReady(t.id, human)).toThrowError(DispatchError);
+    wg.db.close();
+  });
+
+  it("a 1-AC solo_loose ticket still readies (AC_REQUIRED cleared)", () => {
+    const wg = fresh();
+    const t = wg.createTicket({ title: "Has AC", policy_pack: "solo_loose" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "Does X" }, human);
+    expect(readyFailures(wg, t.id)).not.toContain("AC_REQUIRED");
+    expect(wg.markReady(t.id, human).ticket.status).toBe("ready");
+    wg.db.close();
+  });
+
+  it("blocks a 0-AC team_light ticket with AC_REQUIRED", () => {
+    const wg = fresh();
+    const t = wg.createTicket({ title: "T", description: "d", policy_pack: "team_light" }, human);
+    expect(readyFailures(wg, t.id)).toContain("AC_REQUIRED");
     wg.db.close();
   });
 });

@@ -46,6 +46,8 @@ WG init >/dev/null 2>&1
 WG repo add -n repo --path "$REPO" --branch main --stack typescript --test "true" >/dev/null 2>&1
 TNUM="$(WG ticket create -t "Stabilisation integration ticket" -p solo_loose 2>&1 | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['number'])")"
 WG repo link "$TNUM" repo >/dev/null 2>&1
+# GUARD A: every delivery-bound ticket needs ≥1 acceptance criterion to ready.
+WG ac add "$TNUM" -t "Stabilisation integration AC" >/dev/null 2>&1
 WG ticket ready "$TNUM" >/dev/null 2>&1
 [ "$(WG ticket list -s ready 2>&1 | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")" = "1" ] \
   && ok "fixture: 1 ready ticket targeting repo" || fail "fixture setup failed (no ready ticket)"

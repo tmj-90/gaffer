@@ -1,8 +1,7 @@
-import { spawn } from "node:child_process";
-
 import { DispatchError } from "../util/errors.js";
 
 import { parseCommand } from "./mergeRunner.js";
+import { type RunTracker, spawnTrackedRun } from "./runTracking.js";
 
 /**
  * Kicks off a headless product-owner run — the "Suggest work" button's backend.
@@ -23,6 +22,8 @@ export interface ProductOwnerRunResult {
   started: boolean;
   /** OS process id of the spawned run, or null if the platform withheld one. */
   pid: number | null;
+  /** The tracked run id (when a registry is wired), so the UI can poll it. */
+  runId?: string | null;
 }
 
 export interface ProductOwnerRunner {
@@ -48,8 +49,16 @@ function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * environment, not on the command line. Dispatch's own bearer token is STRIPPED
  * from the child env as defence-in-depth (contract: agent children never inherit
  * DISPATCH_API_TOKEN) so a misbehaving run helper can never echo it back.
+ *
+ * RUN-ACTIVITY: when a {@link RunTracker} is wired the run is recorded in the
+ * `runs` registry and its (previously discarded) output is captured to a per-run
+ * log file — so a run that files 0 tickets is diagnosable. Without a tracker the
+ * spawn degrades to the legacy ignore-output behaviour.
  */
-export function createProductOwnerRunner(env: NodeJS.ProcessEnv = process.env): ProductOwnerRunner {
+export function createProductOwnerRunner(
+  env: NodeJS.ProcessEnv = process.env,
+  tracker?: RunTracker,
+): ProductOwnerRunner {
   return {
     run({ repo }) {
       const tokens = parseCommand(env[PRODUCT_OWNER_CMD_ENV] ?? "");
@@ -64,13 +73,18 @@ export function createProductOwnerRunner(env: NodeJS.ProcessEnv = process.env): 
       const base = childEnv(env);
       // No shell: argv is [bin, ...args]; the only caller-derived value (`repo`)
       // rides in the child env, never on the command line. Token stripped above.
-      const child = spawn(bin!, args, {
-        detached: true,
-        stdio: "ignore",
-        env: repo ? { ...base, [PRODUCT_OWNER_REPO_ENV]: repo } : base,
-      });
-      child.unref();
-      return { started: true, pid: child.pid ?? null };
+      const result = spawnTrackedRun(
+        {
+          bin: bin!,
+          args,
+          env: repo ? { ...base, [PRODUCT_OWNER_REPO_ENV]: repo } : base,
+          kind: "product_owner",
+          repo: repo ?? null,
+        },
+        tracker,
+        env,
+      );
+      return { started: result.started, pid: result.pid, runId: result.runId };
     },
   };
 }

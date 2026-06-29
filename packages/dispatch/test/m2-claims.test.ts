@@ -15,6 +15,7 @@ function freshWg(clock = new TestClock()): Dispatch {
 /** A ready, claimable solo_loose ticket. */
 function readyTicket(wg: Dispatch, title = "Task"): string {
   const t = wg.createTicket({ title, policy_pack: "solo_loose" }, human);
+  wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
   wg.markReady(t.id, human);
   return t.id;
 }

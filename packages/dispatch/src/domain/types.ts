@@ -688,3 +688,104 @@ export interface TicketDependencyView {
   status: TicketStatus;
   satisfied: boolean;
 }
+
+// ============================================================================
+// RUN-ACTIVITY (schema_version 10): a control-plane registry of API-spawned
+// detached runs (the "Suggest work" / onboard / poll-work / merge buttons).
+// Each row tracks one detached child so the dashboard can show what's in flight
+// and surface the per-run log a run that filed nothing would otherwise discard.
+// ============================================================================
+
+/** The kind of background run a {@link Run} row tracks. */
+export const RUN_KINDS = ["product_owner", "onboard", "poll_work", "merge", "other"] as const;
+export type RunKind = (typeof RUN_KINDS)[number];
+
+/**
+ * The lifecycle status of a {@link Run}:
+ *  - `running`   — the child is live (recorded on spawn);
+ *  - `succeeded` — the child exited 0;
+ *  - `failed`    — the child exited non-zero (or its exit code was unknown);
+ *  - `unknown`   — the run was `running` but its pid is no longer alive when the
+ *    API swept stale rows on startup (the API restarted mid-run, so the exit
+ *    listener never fired and we can't know the outcome).
+ */
+export const RUN_STATUSES = ["running", "succeeded", "failed", "unknown"] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+/** A tracked background run (control-plane registry row). */
+export interface Run {
+  id: string;
+  kind: RunKind;
+  /** The repo the run targets, when known (null for poll-work / merge). */
+  repo: string | null;
+  /** OS process id of the spawned child, or null if the platform withheld one. */
+  pid: number | null;
+  status: RunStatus;
+  started_at: string;
+  /** When the child exited (or was swept stale). Null while still running. */
+  ended_at: string | null;
+  /** The child's exit code once it ended, when known. */
+  exit_code: number | null;
+  /** Absolute path to the per-run log file (captured stdout+stderr). */
+  log_path: string | null;
+  /** Optional free-text detail (e.g. a spawn-failure reason). */
+  detail: string | null;
+}
+
+// ============================================================================
+// Plan Sessions (H9 — durable async plan-build chat).
+//
+// A plan session persists the decompose conversation server-side so a reload or
+// navigation-away restores the exact history + proposed plan. Each session
+// belongs to one brief; the conversation lives in the `messages_json` column
+// (JSON array of role+content+ts objects). When a plan is confirmed or
+// abandoned the session is archived (status → 'confirmed' | 'abandoned') and
+// the panel opens a fresh one on next use.
+//
+// NOTE (deferred): true background decompose jobs (fire, navigate away, poll
+// on return) require a separate persistent job queue; the current approach
+// persists in-progress state synchronously per turn so a reload mid-turn shows
+// the last complete state rather than a blank panel.
+// ============================================================================
+
+/** Lifecycle status of a plan session. */
+export const PLAN_SESSION_STATUSES = ["active", "confirmed", "abandoned"] as const;
+export type PlanSessionStatus = (typeof PLAN_SESSION_STATUSES)[number];
+
+/** A single message in the plan-build conversation. */
+export interface PlanMessage {
+  role: "user" | "assistant";
+  /** ISO-8601 UTC timestamp the message was recorded. */
+  ts: string;
+  /**
+   * Serialised content — for user turns this is the raw text; for assistant
+   * turns it is the JSON-stringified `{ phase, questions? | plan? | error? }`
+   * envelope from the decompose helper so the client can re-render it exactly.
+   */
+  content: string;
+}
+
+/** A durable plan-build chat session row. */
+export interface PlanSession {
+  id: string;
+  status: PlanSessionStatus;
+  /** The one-line brief the session started with (null until the first user turn). */
+  brief: string | null;
+  /** JSON-encoded array of {@link PlanMessage} objects. */
+  messages_json: string;
+  /**
+   * JSON-encoded proposed plan from the decompose helper (`{ epic, tickets }`),
+   * or null while the session is still in the clarification phase.
+   */
+  plan_json: string | null;
+  /**
+   * Target repo name (brownfield extend), or null for greenfield / unknown.
+   * Stored as context for the session summary; the decomposer uses the full
+   * `context` object carried in the message payload.
+   */
+  target_repo: string | null;
+  /** Scope node name when the session is an "extend existing" session. */
+  target_scope: string | null;
+  created_at: string;
+  updated_at: string;
+}

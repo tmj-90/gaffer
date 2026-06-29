@@ -9,6 +9,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 mkdir -p "$GAFFER_DATA"
+# Redirect the crew events log to $GAFFER_DATA so it is never written inside a
+# repo worktree (which would trip the delivery-hygiene gate). The GAFFER_* prefix
+# means this is automatically included by gaffer_agent_env and inherited by every
+# subshell (DoD gates, agent invocations, reviewer, clarifier).
+export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 
 # ── R-2: crash-cleanup trap installed UP FRONT (covers the whole lifecycle) ─────
 # The worktree teardown trap used to be installed only AFTER worktree setup, so a
@@ -512,6 +517,18 @@ print("\n".join(write_rows))
   READ_ROOTS="$(printf '%s\n' "$WG_PARTITION" | sed -n '/^@@READ_PATHS@@$/,/^@@WRITE_ROWS@@$/p' | sed '1d;$d')"
   WRITE_ROWS="$(printf '%s\n' "$WG_PARTITION" | sed -n '/^@@WRITE_ROWS@@$/,$p' | sed '1d')"
 
+  # R-9: detect a partition PARSE FAILURE (markers absent) vs a legitimately
+  # empty partition (markers present, just no write paths — an older ticket or a
+  # ticket with only read-only repos). When the python3 partition script crashes
+  # or produces no output (the `|| true` swallows the exit code), WG_PARTITION has
+  # no section markers, so all three variables above are empty. Distinguish:
+  #   • markers PRESENT   → parse succeeded; WRITE_ROOTS empty = legitimate fallback.
+  #   • markers ABSENT    → python3/json failure; warn so a multi-repo ticket's
+  #                         incomplete delivery is visible (not silent single-repo).
+  if ! printf '%s\n' "$WG_PARTITION" | grep -qF '@@WRITE_PATHS@@'; then
+    log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (python3/json failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH). A multi-repo ticket would deliver incomplete."
+  fi
+
   # Back-compat (older tickets with no WG-002 access boundary): fall back to the
   # single delivery repo as the sole write repo. This reproduces EXACTLY today's
   # single-repo behaviour — one write root, one gaffer/ branch, no read roots.
@@ -860,6 +877,16 @@ EOF
       # lives only in the main checkout, and installs are hook-blocked. Symlink the real
       # repo's node_modules in so `pnpm test`/`build` resolve. No-op for non-JS repos.
       [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
+      # Workspaces (pnpm/yarn/npm monorepos) keep test/build binaries in PER-PACKAGE
+      # node_modules/.bin, not the root — so also symlink each sub-package's node_modules,
+      # or `vitest`/`tsc` are unresolvable in the worktree and the DoD gate fails to RUN
+      # (every workspace delivery would die with "vitest: command not found" → rc=1).
+      while IFS= read -r _nm; do
+        _rel="${_nm#"$rpath"/}"
+        [ "$_rel" = "node_modules" ] && continue
+        [ -e "$rwt/$_rel" ] && continue
+        mkdir -p "$(dirname "$rwt/$_rel")" 2>/dev/null && ln -sfn "$_nm" "$rwt/$_rel"
+      done < <(find "$rpath" -maxdepth 3 -name node_modules -type d 2>/dev/null)
     else
       log "FAIL: could not add worktree $rwt on $WORK_BRANCH (base $rbase) for write repo ${rname:-repo} ($rpath) for #$NUM"
       WT_FAILED=1
@@ -925,6 +952,102 @@ EOF
       log "STRICT_MODE active but provider '${SANDBOX_PROVIDER:-sandbox-exec}' added no OS sandbox — worktree isolation + safety hook still apply"
     fi
   fi
+  # ── GUARD B: recoverable-delivery attempt loop ──────────────────────────────
+  # The agent invocation + every DOWNSTREAM gate (DoD / hygiene / minimalism /
+  # empty-but-committed) run inside this bounded loop. A RECOVERABLE failure (the
+  # agent produced ≥1 commit but a gate failed) PRESERVES the branch, attaches the
+  # gate's output as a rework note, and `continue`s to re-invoke the SAME agent on
+  # the SAME branch with that feedback — up to GAFFER_MAX_DELIVERY_ATTEMPTS. When
+  # attempts exhaust, the recoverable handler parks the ticket to `refining` WITH
+  # the branch + feedback (never silent-discards). UNRECOVERABLE failures (no
+  # commit / empty / crash / safety / cap-hit) keep today's behaviour and break
+  # out of the loop via their own `exit 0`. The INVARIANT — a delivery with ≥1
+  # commit NEVER has its branch deleted by the failure path — is enforced by
+  # routing every committed-branch failure through gaffer_cleanup_worktrees with
+  # NO drop-branch.
+  _MAX_DELIVERY_ATTEMPTS="${GAFFER_MAX_DELIVERY_ATTEMPTS:-2}"
+  [ "$_MAX_DELIVERY_ATTEMPTS" -ge 1 ] 2>/dev/null || _MAX_DELIVERY_ATTEMPTS=1
+  _DELIV_ATTEMPT=0
+
+  # _recover_or_park <gate-name> <feedback-text>
+  # A RECOVERABLE gate failure (branch carries ≥1 commit). PRESERVES the branch —
+  # tears down ONLY the disposable worktree — records the gate feedback as a
+  # rework note the next attempt reads (REVIEW FEEDBACK block), and decides:
+  #   • attempts remain → set _DELIV_OUTCOME=retry; the caller `continue`s, the
+  #     loop re-invokes the agent on the same branch with the feedback;
+  #   • attempts exhausted → park the ticket to `refining` WITH the branch +
+  #     feedback (review reject, or block as a fallback), then _DELIV_OUTCOME=parked
+  #     so the caller exits. The branch is NEVER dropped here.
+  _recover_or_park() {
+    local gate="$1" feedback="$2"
+    # Rework note so the NEXT attempt's REVIEW FEEDBACK block surfaces it (and the
+    # board shows why it bounced). Best-effort; never fatal.
+    wg attach-evidence "$NUM" --type manual_note \
+      --summary "REWORK ($gate, attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS): $feedback" >/dev/null 2>&1 || true
+    if [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ]; then
+      # Preserve the branch; tear down only the worktree so the next attempt re-adds
+      # a fresh worktree on the SAME branch (worktree add -B resets it to base, but
+      # the agent re-delivers from the feedback — the branch ref + its history live
+      # in the real repo between attempts).
+      gaffer_cleanup_worktrees
+      log "RECOVER: #$NUM $gate failed on attempt $_DELIV_ATTEMPT — branch $WORK_BRANCH PRESERVED; re-invoking the agent with feedback (attempt $((_DELIV_ATTEMPT + 1))/$_MAX_DELIVERY_ATTEMPTS)"
+      _DELIV_OUTCOME="retry"
+      return 0
+    fi
+    # Attempts exhausted — park to refining WITH the branch + feedback. NEVER drop
+    # the branch: a delivery with commits keeps its salvageable work.
+    local _cur
+    _cur="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+    if [ "$_cur" = "in_review" ]; then
+      wg review reject "$NUM" --to refining --reviewer factory-recover \
+        --reason "$gate failed after $_MAX_DELIVERY_ATTEMPTS attempts: $feedback (branch $WORK_BRANCH preserved)" >/dev/null 2>&1 \
+        && log "RECOVER: parked #$NUM (in_review → refining) after exhausting $_MAX_DELIVERY_ATTEMPTS attempts — branch $WORK_BRANCH PRESERVED for rework" \
+        || log "RECOVER: WARNING — could not reject #$NUM to refining; ticket left in_review — needs a human (branch $WORK_BRANCH preserved)"
+    else
+      wg block "$NUM" --reason "$gate failed after $_MAX_DELIVERY_ATTEMPTS attempts: $feedback (branch $WORK_BRANCH preserved)" >/dev/null 2>&1 \
+        && log "RECOVER: blocked #$NUM (status '$_cur') after exhausting attempts — branch $WORK_BRANCH PRESERVED for rework" \
+        || log "RECOVER: WARNING — could not park #$NUM (status '$_cur') — needs a human (branch $WORK_BRANCH preserved)"
+    fi
+    # Tear down ONLY the worktree; the branch survives for rework.
+    gaffer_cleanup_worktrees
+    gaffer_skip_ticket "$NUM"
+    log "delivery PARKED for #$NUM — $gate not met after $_MAX_DELIVERY_ATTEMPTS attempts; worktree removed, branch $WORK_BRANCH PRESERVED"
+    _DELIV_OUTCOME="parked"
+    return 0
+  }
+
+  while [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ]; do
+  _DELIV_ATTEMPT=$((_DELIV_ATTEMPT + 1))
+  _DELIV_OUTCOME=""
+  [ "$_DELIV_ATTEMPT" -gt 1 ] && log "delivery for #$NUM — re-invoking agent (attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS) on branch $WORK_BRANCH"
+  # On a retry the prior worktree was torn down (branch preserved); re-add a fresh
+  # worktree on the SAME branch so the agent re-delivers from the recorded feedback.
+  if [ "$_DELIV_ATTEMPT" -gt 1 ]; then
+    while IFS=$'\t' read -r rid rname rpath rbase rwt; do
+      [ -n "$rpath" ] || continue
+      rbase="${rbase:-main}"
+      git -C "$rpath" rev-parse --git-dir >/dev/null 2>&1 || continue
+      git -C "$rpath" worktree prune >/dev/null 2>&1 || true
+      mkdir -p "$WORKTREES_BASE"
+      # Re-checkout the EXISTING branch (no -B reset) so the prior attempt's commits
+      # are the starting point for rework. Fall back to -B off base if the branch
+      # somehow vanished (defensive — it should always exist).
+      if ! git -C "$rpath" worktree add "$rwt" "$WORK_BRANCH" >/dev/null 2>&1; then
+        git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1 || true
+      fi
+      [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
+      # Workspaces (pnpm/yarn/npm monorepos) keep test/build binaries in PER-PACKAGE
+      # node_modules/.bin, not the root — so also symlink each sub-package's node_modules,
+      # or `vitest`/`tsc` are unresolvable in the worktree and the DoD gate fails to RUN
+      # (every workspace delivery would die with "vitest: command not found" → rc=1).
+      while IFS= read -r _nm; do
+        _rel="${_nm#"$rpath"/}"
+        [ "$_rel" = "node_modules" ] && continue
+        [ -e "$rwt/$_rel" ] && continue
+        mkdir -p "$(dirname "$rwt/$_rel")" 2>/dev/null && ln -sfn "$_nm" "$rwt/$_rel"
+      done < <(find "$rpath" -maxdepth 3 -name node_modules -type d 2>/dev/null)
+    done <<< "$WT_ROWS"
+  fi
   # USAGE LEDGER: switch to --output-format json and CAPTURE stdout (the JSON
   # result object) to a temp file so we can ledger the real usage, WITHOUT
   # changing the delivery path — stderr still streams to $GAFFER_LOG, and the
@@ -945,6 +1068,51 @@ EOF
          "$CLAUDE_BIN" -p "$PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $ROUTE_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
   ) >"$USAGE_JSON" 2>>"$GAFFER_LOG"
   rc=$?
+  # ── GUARD C: ask-on-cap detection (BEFORE the ledger removes the JSON) ───────
+  # If the agent hit a turn/budget cap mid-delivery (num_turns at/over the cap, or
+  # a max-turns stop reason) AND it produced ≥1 commit, the work is incomplete but
+  # salvageable: do NOT silent-fail+discard. Preserve the branch, emit a
+  # `ticket_parked` notify (ticket#, spend, dashboard URL; redaction honoured by
+  # the dispatch notifier), and park the ticket as needs-human-review. A cap-hit
+  # with NO commit is an empty/unrecoverable delivery and falls through to the
+  # normal empty path below (no false "parked, branch preserved").
+  _CAP_HIT=0
+  if gaffer_is_cap_hit "$USAGE_JSON" "$rc"; then _CAP_HIT=1; fi
+  if [ "$_CAP_HIT" = "1" ] && gaffer_any_branch_has_commits "$WT_ROWS"; then
+    _CAP_SPEND="$(gaffer_delivery_spend "$USAGE_JSON")"
+    _CAP_TURNS="$(gaffer_cap_num_turns "$USAGE_JSON")"
+    gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+    rm -f "$USAGE_JSON"
+    log "CAP: #$NUM hit a turn/budget cap mid-delivery (turns=${_CAP_TURNS:-?}, spend=${_CAP_SPEND}) — preserving branch $WORK_BRANCH, notifying, parking for human review"
+    # Park as needs-human-review: surface the cap on the ticket, then block with a
+    # needs_human_review reason (the ticket_parked notify routes it for the human).
+    wg attach-evidence "$NUM" --type manual_note \
+      --summary "needs_human_review: delivery hit a turn/budget cap (turns=${_CAP_TURNS:-unknown}, spend=${_CAP_SPEND}) — partial work preserved on branch $WORK_BRANCH; a human should review/continue it" >/dev/null 2>&1 || true
+    _CAP_CUR="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+    if [ "$_CAP_CUR" = "in_review" ]; then
+      wg review reject "$NUM" --to refining --reviewer factory-cap \
+        --reason "needs_human_review: hit turn/budget cap mid-delivery (turns=${_CAP_TURNS:-unknown}, spend=${_CAP_SPEND}); branch $WORK_BRANCH preserved" >/dev/null 2>&1 \
+        && log "CAP: parked #$NUM (in_review → refining) — needs human review" \
+        || log "CAP: WARNING — could not move #$NUM to refining; left in_review — needs a human"
+    else
+      wg block "$NUM" --reason "needs_human_review: hit turn/budget cap mid-delivery (turns=${_CAP_TURNS:-unknown}, spend=${_CAP_SPEND}); branch $WORK_BRANCH preserved" >/dev/null 2>&1 \
+        && log "CAP: blocked #$NUM (needs human review, status was '$_CAP_CUR')" \
+        || log "CAP: WARNING — could not park #$NUM (status '$_CAP_CUR') — needs a human"
+    fi
+    # Emit the human-gate notify through the configured sinks (no-op if none set).
+    # GAFFER_NOTIFY_REDACT drops the free-text title/detail at the dispatch layer.
+    wg notify emit --kind ticket_parked --ticket "$NUM" \
+      --title "$TITLE" --status needs_human_review \
+      --url "${GAFFER_DASHBOARD_URL:-}/tickets/$NUM" \
+      --detail "hit turn/budget cap mid-delivery (turns=${_CAP_TURNS:-unknown}, spend=${_CAP_SPEND}); branch $WORK_BRANCH preserved" >/dev/null 2>&1 \
+      && log "CAP: emitted ticket_parked notify for #$NUM" \
+      || log "CAP: notify emit for #$NUM did not fire (no sinks configured or emit failed) — non-fatal"
+    # Preserve the branch: tear down ONLY the disposable worktree.
+    gaffer_cleanup_worktrees
+    gaffer_skip_ticket "$NUM"
+    log "delivery PARKED (cap-hit) for #$NUM — branch $WORK_BRANCH PRESERVED for human review"
+    result error; exit 0
+  fi
   # Ledger the call (best-effort, swallowed) and append the agent's text to the log.
   gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
   rm -f "$USAGE_JSON"
@@ -970,14 +1138,26 @@ EOF
     fi
   fi
 
-  # A failed delivery: skip this ticket for the rest of the run so it doesn't starve
-  # the queue, and surface it. (loop.sh clears the skip file each run.) Roll back
-  # the worktrees AND delete the just-created gaffer/ branch so a botched run leaves
-  # the real repo 100% clean (no orphan worktree, no half-finished branch).
+  # A failed delivery (non-zero rc): classify RECOVERABLE vs UNRECOVERABLE.
+  #   • UNRECOVERABLE (no commit on any branch / crash / timeout with no work):
+  #     roll back the worktrees AND delete the gaffer/ branch so a botched run
+  #     leaves the real repo 100% clean — today's behaviour, unchanged.
+  #   • RECOVERABLE (≥1 commit produced before the non-zero exit): the branch
+  #     holds salvageable work, so PRESERVE the branch, attach the rc as feedback,
+  #     and retry-or-park (GUARD B). The INVARIANT: a delivery with ≥1 commit is
+  #     never branch-dropped by a failure path.
   if [ "$rc" -ne 0 ]; then
+    if gaffer_any_branch_has_commits "$WT_ROWS"; then
+      _recover_or_park "agent-exit" "agent exited non-zero (rc=$rc) after committing work — retrying on the same branch with this context"
+      [ "$_DELIV_OUTCOME" = "retry" ] && continue
+      result error; exit 0
+    fi
     gaffer_cleanup_worktrees drop-branch
+    wg ticket move "$NUM" refining --reason "delivery failed: agent exited non-zero (rc=$rc) with no commits; branch dropped for retry" >/dev/null 2>&1 \
+      || wg block "$NUM" --reason "delivery failed: agent exited non-zero (rc=$rc) with no commits; branch dropped" >/dev/null 2>&1 \
+      || true
     gaffer_skip_ticket "$NUM"
-    log "delivery FAILED for #$NUM (rc=$rc) — removed worktrees + branch $WORK_BRANCH; skipping it for the rest of this run"
+    log "delivery FAILED for #$NUM (rc=$rc) — no commits produced; removed worktrees + branch $WORK_BRANCH; skipping it for the rest of this run"
     result error; exit 0
   fi
 
@@ -996,12 +1176,18 @@ EOF
     case "$HEAD_BRANCH" in
       "$rbase"|"")
         gaffer_cleanup_worktrees drop-branch
+        wg ticket move "$NUM" refining --reason "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch); branch dropped" >/dev/null 2>&1 \
+          || wg block "$NUM" --reason "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch)" >/dev/null 2>&1 \
+          || true
         gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD is '$HEAD_BRANCH' (expected a gaffer/ branch, not the default '$rbase'); removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;
       gaffer/*) : ;;  # on the runner-owned branch as expected
       *)
         gaffer_cleanup_worktrees drop-branch
+        wg ticket move "$NUM" refining --reason "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch; branch dropped" >/dev/null 2>&1 \
+          || wg block "$NUM" --reason "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch" >/dev/null 2>&1 \
+          || true
         gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD '$HEAD_BRANCH' is not a gaffer/ branch; removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;
@@ -1105,24 +1291,35 @@ EOF
   if [ -n "$HYGIENE_REASONS" ]; then
     log "HYGIENE: delivery for #$NUM is NOT hygienic:"$'\n'"$HYGIENE_REASONS"
     if [ "${HYGIENE_ENFORCE:-1}" = "1" ]; then
-      # Park: surface the violation on the ticket, return it to refining (never
-      # submit), tear down worktrees + drop the branch so nothing leaks downstream.
+      # RECOVERABLE (GUARD B): the agent produced commits — a hygiene violation
+      # (a leaked path on the branch) is fixable on a re-delivery, and the
+      # invariant forbids dropping a committed branch. Preserve the branch, attach
+      # the violation as feedback, and retry-or-park. The next attempt re-checks
+      # out the SAME branch and the feedback names the offending paths to remove.
+      _HY_FLAT="$(printf '%s' "$HYGIENE_REASONS" | tr '\n' ' ')"
+      if gaffer_any_branch_has_commits "$WT_ROWS"; then
+        _recover_or_park "hygiene" "delivery hygiene violation — remove these leaked paths and re-deliver: $_HY_FLAT"
+        [ "$_DELIV_OUTCOME" = "retry" ] && continue
+        result error; exit 0
+      fi
+      # No commits (e.g. a leak that is purely a worktree artifact with no diff):
+      # there is nothing salvageable on the branch — drop it as before.
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED: delivery hygiene violation (not submitted):"$'\n'"$HYGIENE_REASONS" >/dev/null 2>&1 || true
       _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
       if [ "$_CUR_STATUS" = "in_review" ]; then
         wg review reject "$NUM" --to refining --reviewer factory-hygiene \
-          --reason "delivery hygiene violation: $(printf '%s' "$HYGIENE_REASONS" | tr '\n' ' ')" >/dev/null 2>&1 \
+          --reason "delivery hygiene violation: $_HY_FLAT" >/dev/null 2>&1 \
           && log "HYGIENE: parked #$NUM (in_review → refining)" \
           || log "HYGIENE: could not reject #$NUM to refining (non-fatal)"
       else
-        wg block "$NUM" --reason "delivery hygiene violation: $(printf '%s' "$HYGIENE_REASONS" | tr '\n' ' ')" >/dev/null 2>&1 \
+        wg block "$NUM" --reason "delivery hygiene violation: $_HY_FLAT" >/dev/null 2>&1 \
           && log "HYGIENE: blocked #$NUM (status was '$_CUR_STATUS', not in_review)" \
           || log "HYGIENE: could not park #$NUM (non-fatal); status was '$_CUR_STATUS'"
       fi
       gaffer_cleanup_worktrees drop-branch
       gaffer_skip_ticket "$NUM"
-      log "delivery FAILED for #$NUM — hygiene violation; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
+      log "delivery FAILED for #$NUM — hygiene violation, no commits; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
       result error; exit 0
     else
       log "HYGIENE_ENFORCE=0 — logging the violation but NOT failing the tick (debugging mode)"
@@ -1169,20 +1366,12 @@ print(hits[0] if hits else '')
         # on a missing note instead, for fully-unsupervised runs that need the gate.
         if [ "${MINIMALISM_REQUIRE_NOTE:-0}" = "1" ]; then
           log "MINIMALISM: #$NUM has NO smallest-change note — failing (MINIMALISM_REQUIRE_NOTE=1) ($_MZ_FILES files / $_MZ_LINES lines)"
-          wg attach-evidence "$NUM" --type manual_note \
-            --summary "PARKED: minimalism post-condition failed — $GAFFER_MINIMALISM_REASON (computed: ${_MZ_FILES} files / ${_MZ_LINES} lines)" >/dev/null 2>&1 || true
-          _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-          if [ "$_CUR_STATUS" = "in_review" ]; then
-            wg review reject "$NUM" --to refining --reviewer factory-minimalism \
-              --reason "minimalism: $GAFFER_MINIMALISM_REASON" >/dev/null 2>&1 \
-              && log "MINIMALISM: parked #$NUM (in_review → refining)" || true
-          else
-            wg block "$NUM" --reason "minimalism: $GAFFER_MINIMALISM_REASON" >/dev/null 2>&1 \
-              && log "MINIMALISM: blocked #$NUM (status '$_CUR_STATUS')" || true
-          fi
-          gaffer_cleanup_worktrees drop-branch
-          gaffer_skip_ticket "$NUM"
-          log "delivery FAILED for #$NUM — missing smallest-change note; parked, removed worktrees + branch"
+          # RECOVERABLE (GUARD B): a committed diff with a missing smallest-change
+          # note is fixable on a re-delivery (the agent records the note). The diff
+          # is non-empty here (asserted earlier), so the branch carries commits —
+          # preserve it, attach the reason as feedback, and retry-or-park.
+          _recover_or_park "minimalism" "minimalism post-condition failed — $GAFFER_MINIMALISM_REASON (computed: ${_MZ_FILES} files / ${_MZ_LINES} lines); record a smallest-change note and re-deliver"
+          [ "$_DELIV_OUTCOME" = "retry" ] && continue
           result error; exit 0
         else
           log "MINIMALISM: #$NUM missing smallest-change note — flagging needs_human_review (not failing); human judges minimality from the diff at review"
@@ -1266,9 +1455,14 @@ for r in d.get("repositories", []) or []:
           && log "DoD: blocked #$NUM (status was '$_CUR_STATUS')" \
           || log "DoD: WARNING — could not park #$NUM (status '$_CUR_STATUS') — needs a human"
       fi
-      gaffer_cleanup_worktrees drop-branch
+      # GUARD B invariant: the agent committed work before this CONFIG failure
+      # (the diff was asserted non-empty above), so the branch carries salvageable
+      # work — PRESERVE it (worktree-only teardown). Re-invoking the agent cannot
+      # fix an unresolvable gate-command/env problem, so this does NOT retry; it
+      # parks once with the branch kept for a human to resolve the config + re-run.
+      gaffer_cleanup_worktrees
       gaffer_skip_ticket "$NUM"
-      log "delivery FAILED for #$NUM — DoD gate commands unresolvable; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
+      log "delivery FAILED for #$NUM — DoD gate commands unresolvable; parked, removed worktree, branch $WORK_BRANCH PRESERVED (config problem — needs a human), not recording delivery"
       result error; exit 0
     fi
     # Strip the sentinel line; the remainder is the real id<TAB>test<TAB>lint map.
@@ -1336,29 +1530,29 @@ for r in d.get("repositories", []) or []:
         else
           log "DoD: WARNING — empty DoD evidence summary for #$NUM (could not build the checklist); failing closed without recorded feedback"
         fi
-        # Park to refining (or block as a fallback), mirroring the HYGIENE path. The
-        # status fetch + move failures are surfaced visibly, never swallowed.
-        _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-        if [ "$_CUR_STATUS" = "in_review" ]; then
-          wg review reject "$NUM" --to refining --reviewer factory-dod \
-            --reason "Definition of Done failed: $_DOD_SUM" >/dev/null 2>&1 \
-            && log "DoD: parked #$NUM (in_review → refining)" \
-            || log "DoD: WARNING — could not reject #$NUM to refining; ticket left in in_review — needs a human"
-        else
-          wg block "$NUM" --reason "Definition of Done failed: $_DOD_SUM" >/dev/null 2>&1 \
-            && log "DoD: blocked #$NUM (status was '$_CUR_STATUS', not in_review)" \
-            || log "DoD: WARNING — could not park #$NUM (status '$_CUR_STATUS') after DoD failure — needs a human"
-        fi
         rm -f "$DOD_RESULTS"
-        gaffer_cleanup_worktrees drop-branch
-        gaffer_skip_ticket "$NUM"
-        log "delivery FAILED for #$NUM — Definition of Done not met; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
+        # RECOVERABLE (GUARD B) — THE ticket #64 case: the agent produced commits
+        # but a downstream gate (tests / typecheck / lint) failed. This is exactly
+        # the failure that must NEVER delete the branch. Preserve the branch,
+        # attach the failing checklist as feedback, and retry-or-park: re-invoke
+        # the SAME agent on the SAME branch with the DoD failure as feedback, up to
+        # GAFFER_MAX_DELIVERY_ATTEMPTS, then park to refining WITH branch + feedback.
+        _recover_or_park "definition-of-done" "Definition of Done failed: $_DOD_SUM — fix the failing gate(s) and re-deliver"
+        [ "$_DELIV_OUTCOME" = "retry" ] && continue
         result error; exit 0
       fi
     fi
   else
     log "DoD: enforcement OFF (GAFFER_DOD=${GAFFER_DOD:-unset}) — skipping the Definition-of-Done gate for #$NUM"
   fi
+
+  # ── GUARD B: every gate passed → leave the recoverable-attempt loop ─────────
+  # Reaching here means the agent delivered AND every downstream gate (empty /
+  # hygiene / minimalism / DoD) passed on this attempt. Break out of the retry
+  # loop into the success recording below. (Recoverable gate failures `continue`
+  # the loop; unrecoverable ones already `exit 0`.)
+  break
+  done   # end GUARD B recoverable-delivery attempt loop
 
   # Per-repo delivery recording (FG-008 / WG-005): for EACH write repo, persist a
   # per-repo delivery artifact (branch + diffstat as the evidence note). Single-repo
@@ -1474,6 +1668,48 @@ for r in d.get("repositories", []) or []:
     else
       log "HYGIENE_ENFORCE=0 — logging the post-teardown leak but NOT failing the tick"
     fi
+  fi
+
+  # ── H4: real PR creation (opt-in GAFFER_CREATE_PR=1) ─────────────────────────
+  # After the delivery is fully recorded and the worktrees are torn down, attempt
+  # to open a GitHub PR. This is ALWAYS best-effort: a failure is logged but never
+  # rolls back the delivery or changes the ticket status. The `gh` binary is
+  # injectable via GAFFER_GH_BIN so the no-op (flag off / no remote) path is clean.
+  _PR_URL=""
+  if declare -F gaffer_create_pr >/dev/null 2>&1; then
+    _PR_URL="$(gaffer_create_pr "$NUM" "$PRIMARY_REPO" "$WORK_BRANCH" "$DEFAULT_BRANCH" "$TITLE" 2>>"$GAFFER_LOG" || true)"
+  else
+    log "H4: pr-create.sh not loaded — skipping (GAFFER_CREATE_PR=${GAFFER_CREATE_PR:-0})"
+  fi
+
+  # ── H3: CI-aware review gate (opt-in GAFFER_REQUIRE_CI=1) ─────────────────────
+  # When enabled, poll CI checks on the delivery branch before letting the ticket
+  # enter the human review lane.
+  #   green checks            → proceed (rc=0)
+  #   red checks              → auto-reject back to rework (rc=2)
+  #   timeout / no-PR / no-checks (strict, default) → auto-reject (rc=2)
+  #   timeout / no-PR / no-checks (GAFFER_CI_TIMEOUT_POLICY=proceed) → proceed (rc=0)
+  #   flag off                → no-op (rc=0)
+  if declare -F gaffer_ci_gate >/dev/null 2>&1; then
+    gaffer_ci_gate "$NUM" "$PRIMARY_REPO" "$WORK_BRANCH" "${_PR_URL:-}"
+    _CI_RC=$?
+    if [ "$_CI_RC" = "2" ]; then
+      # CI went red → auto-reject back to rework so a human never sees a broken CI.
+      log "H3: CI FAILED for #$NUM — auto-rejecting delivery back to rework (ticket left for re-delivery)"
+      _CUR_CI_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+      if [ "$_CUR_CI_STATUS" = "in_review" ]; then
+        wg review reject "$NUM" --to refining --reviewer factory-ci \
+          --reason "H3: CI checks failed on branch $WORK_BRANCH — see attached evidence for the failing check" \
+          >/dev/null 2>&1 \
+          && log "H3: auto-rejected #$NUM (in_review → refining)" \
+          || log "H3: WARNING — could not auto-reject #$NUM to refining (non-fatal)"
+      else
+        log "H3: ticket #$NUM is in status '$_CUR_CI_STATUS' (not in_review) — no state move needed"
+      fi
+      result error; exit 0
+    fi
+  else
+    log "H3: ci-gate.sh not loaded — skipping (GAFFER_REQUIRE_CI=${GAFFER_REQUIRE_CI:-0})"
   fi
 
   result worked; exit 0

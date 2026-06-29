@@ -77,6 +77,14 @@ const CONFIG = {
   dispatchDb: process.env.DISPATCH_DB || resolve(GAFFER_DATA, "dispatch.sqlite"),
   memoryDb: process.env.MEMORY_DB || resolve(GAFFER_DATA, "memory.sqlite"),
   mcpConfig: process.env.MCP_CONFIG || resolve(RUNNER_DIR, ".mcp.json"),
+  // The built MCP server bins. The .mcp.json template references these as
+  // ${DISPATCH_MCP_BIN}/${MEMORY_MCP_BIN}; they MUST be substituted (exactly as
+  // tick.sh does) or the dispatch MCP server never starts and the agent has no
+  // create_ticket tool — it drafts into the void. Default to the dist bins.
+  dispatchMcpBin:
+    process.env.DISPATCH_MCP_BIN || resolve(GAFFER_HOME, "packages/dispatch/dist/mcp/bin.js"),
+  memoryMcpBin:
+    process.env.MEMORY_MCP_BIN || resolve(GAFFER_HOME, "packages/memory/dist/mcp/bin.js"),
   claudeSettings: process.env.CLAUDE_SETTINGS || resolve(RUNNER_DIR, "claude", "settings.json"),
   skillsDir: process.env.SKILLS_DIR || resolve(RUNNER_DIR, "skills"),
   claudeBin: process.env.CLAUDE_BIN || "claude",
@@ -243,14 +251,19 @@ function installProjectLocalWiring(repoPath) {
     .join(RUNNER_DIR);
   writeFileSync(resolve(claudeDir, "settings.json"), settings);
 
-  // MCP runtime config with the two DB paths substituted to this run's databases.
+  // MCP runtime config with the DB paths AND the MCP server bins substituted to
+  // this run's wiring — all four placeholders, or the dispatch MCP won't start.
   mkdirSync(GAFFER_DATA, { recursive: true });
   const mcpRuntime = resolve(GAFFER_DATA, "mcp-product-owner-runtime.json");
   const mcp = readFileSync(CONFIG.mcpConfig, "utf8")
     .split("${DISPATCH_DB}")
     .join(CONFIG.dispatchDb)
     .split("${MEMORY_DB}")
-    .join(CONFIG.memoryDb);
+    .join(CONFIG.memoryDb)
+    .split("${DISPATCH_MCP_BIN}")
+    .join(CONFIG.dispatchMcpBin)
+    .split("${MEMORY_MCP_BIN}")
+    .join(CONFIG.memoryMcpBin);
   writeFileSync(mcpRuntime, mcp);
   return mcpRuntime;
 }

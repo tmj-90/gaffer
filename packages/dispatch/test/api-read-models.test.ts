@@ -356,7 +356,8 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
       expect(res.status).toBe(200);
       expect(res.body.available).toBe(false);
       expect(res.body.entries).toEqual([]);
-      expect(res.body.path).toBeNull();
+      // path is omitted from the response to avoid leaking server filesystem layout.
+      expect(res.body.path).toBeUndefined();
     } finally {
       if (prev === undefined) delete process.env.DISPATCH_AUDIT;
       else process.env.DISPATCH_AUDIT = prev;

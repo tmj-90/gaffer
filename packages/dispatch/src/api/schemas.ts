@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { GIT_REF_SAFE, GIT_REF_SAFE_MESSAGE } from "../domain/schemas.js";
+import {
+  GIT_REF_SAFE,
+  GIT_REF_SAFE_MESSAGE,
+  PR_URL_SAFE,
+  PR_URL_SAFE_MESSAGE,
+} from "../domain/schemas.js";
 import {
   RISK_LEVELS,
   SCOPE_EDGE_RELATIONS,
@@ -37,7 +42,7 @@ export type CreateTicketRepo = z.infer<typeof createTicketRepo>;
 export const createTicketBody = z.object({
   title: z.string().trim().min(1).max(300),
   description: z.string().max(20_000).optional(),
-  priority: z.number().int().optional(),
+  priority: z.number().int().min(0).max(1_000).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
   policy_pack: z.enum(["solo_loose", "team_light", "factory_strict", "regulated"]).optional(),
   source: z.string().max(200).optional(),
@@ -191,7 +196,7 @@ export const recordDeliveryArtifactBody = z
       .max(500)
       .regex(GIT_REF_SAFE, GIT_REF_SAFE_MESSAGE)
       .optional(),
-    pr_url: z.string().trim().min(1).max(2_000).optional(),
+    pr_url: z.string().trim().min(1).max(2_000).refine(PR_URL_SAFE, PR_URL_SAFE_MESSAGE).optional(),
     commit: z.string().trim().min(1).max(200).optional(),
     diff_summary: z.string().trim().min(1).max(20_000).optional(),
   })
@@ -270,13 +275,17 @@ export const ACTIVITY_DEFAULT_LIMIT = 50;
 const scopeTags = z.array(z.string().trim().min(1).max(100)).max(100);
 const scopeReasons = z.array(z.string().trim().min(1).max(2_000)).max(50);
 
+// eslint-disable-next-line no-control-regex -- explicit control-byte guard (NUL/newline/etc.).
+const NO_CONTROL_CHARS = (v: string): boolean => !/[\x00-\x1f]/.test(v);
+const NO_CONTROL_CHARS_MESSAGE = "must not contain control characters (NUL, newline, etc.)";
+
 /** Body for POST /scope/nodes. */
 export const createScopeNodeBody = z.object({
-  name: z.string().trim().min(1).max(200),
+  name: z.string().trim().min(1).max(200).refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE),
   type: z.enum(SCOPE_NODE_TYPES),
-  description: z.string().max(20_000).optional(),
+  description: z.string().max(20_000).refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
-  owner: z.string().max(200).optional(),
+  owner: z.string().max(200).refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE).optional(),
   tags: scopeTags.optional(),
   lore_tags: scopeTags.optional(),
 });
@@ -284,11 +293,17 @@ export type CreateScopeNodeBody = z.infer<typeof createScopeNodeBody>;
 
 /** Body for PATCH /scope/nodes/:id. */
 export const updateScopeNodeBody = z.object({
-  name: z.string().trim().min(1).max(200).optional(),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE)
+    .optional(),
   type: z.enum(SCOPE_NODE_TYPES).optional(),
-  description: z.string().max(20_000).optional(),
+  description: z.string().max(20_000).refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
-  owner: z.string().max(200).optional(),
+  owner: z.string().max(200).refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE).optional(),
   tags: scopeTags.optional(),
   lore_tags: scopeTags.optional(),
 });
@@ -369,7 +384,7 @@ export const recordRepoDeliveryBody = z.object({
     .regex(GIT_REF_SAFE, GIT_REF_SAFE_MESSAGE)
     .optional(),
   commit_sha: z.string().trim().min(1).max(200).optional(),
-  pr_url: z.string().trim().min(1).max(2_000).optional(),
+  pr_url: z.string().trim().min(1).max(2_000).refine(PR_URL_SAFE, PR_URL_SAFE_MESSAGE).optional(),
   status: z.enum(TICKET_REPO_DELIVERY_STATUSES).optional(),
   evidence_ref: z.string().trim().min(1).max(2_000).optional(),
 });
@@ -405,7 +420,7 @@ const epicTicketBody = z.object({
   title: z.string().trim().min(1).max(300),
   description: z.string().max(20_000).optional(),
   acceptanceCriteria: z.array(z.string().trim().min(1).max(2_000)).max(50).optional(),
-  priority: z.number().int().optional(),
+  priority: z.number().int().min(0).max(1_000).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
   policy_pack: z.enum(["solo_loose", "team_light", "factory_strict", "regulated"]).optional(),
   repo: z.string().min(1).max(200).optional(),

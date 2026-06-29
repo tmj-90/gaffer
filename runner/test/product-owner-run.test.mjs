@@ -134,7 +134,7 @@ console.log(
   });
   // USAGE LEDGER: --output-format json is now part of every invocation so stdout
   // carries the real usage; it is non-breaking here (this run never parses stdout).
-  eq("argv shape (json envelope + skill prompt + mcp + flags)", argv, [
+  eq("argv shape (json envelope + skill prompt + mcp + flags + scoped MCP grant)", argv, [
     "-p",
     "P",
     "--output-format",
@@ -143,9 +143,21 @@ console.log(
     "/tmp/mcp.json",
     "--permission-mode",
     "acceptEdits",
+    "--allowedTools",
+    "mcp__dispatch",
+    "mcp__memory",
   ]);
   const noMcp = buildClaudeArgv({ prompt: "P", mcpConfig: "", flags: ["--foo"] });
-  eq("no mcp config → omitted", noMcp, ["-p", "P", "--output-format", "json", "--foo"]);
+  eq("no mcp config → omitted (grant still appended)", noMcp, [
+    "-p",
+    "P",
+    "--output-format",
+    "json",
+    "--foo",
+    "--allowedTools",
+    "mcp__dispatch",
+    "mcp__memory",
+  ]);
 }
 
 console.log("== AC5: --dry-run resolves DISPATCH_PRODUCT_OWNER_REPO → planned invocation ==");

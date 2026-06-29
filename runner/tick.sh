@@ -377,10 +377,16 @@ EOF
     # ── Hygiene gate (HARD FAIL) — same assertions as normal delivery, run on the
     # initial-commit tree (diff vs the empty tree). Catches a leaked events log,
     # broken symlinks, etc. node_modules added by the install is NOT a hygiene
-    # violation for a bootstrap (it is expected), so we relax the node_modules
-    # fragment for THIS assertion only via HYGIENE_FORBIDDEN_PATHS.
+    # violation for a bootstrap (it is expected), so we relax ONLY the node_modules
+    # fragment — all other forbidden paths (.crew/, *.events.jsonl, .claude/,
+    # CLAUDE.factory.md, .mcp.json, mcp-runtime.json) remain forbidden.
+    # BUG 3 fix: previously used HYGIENE_FORBIDDEN_PATHS='.crew/ *.events.jsonl'
+    # which silently exempted .claude/, CLAUDE.factory.md, .mcp.json and
+    # mcp-runtime.json. Now we build the relaxed list by taking the full default
+    # and removing only the node_modules fragment.
     EMPTY_TREE="$(git -C "$B_DIR" hash-object -t tree /dev/null 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)"
-    B_HYGIENE="$(HYGIENE_FORBIDDEN_PATHS='.crew/ *.events.jsonl' \
+    _BOOTSTRAP_HYGIENE_PATHS="$(printf '%s\n' ${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.json} | grep -v '^node_modules$' | tr '\n' ' ')"
+    B_HYGIENE="$(HYGIENE_FORBIDDEN_PATHS="$_BOOTSTRAP_HYGIENE_PATHS" \
                  gaffer_assert_clean_delivery "$B_DIR" "$EMPTY_TREE" 2>/dev/null)" || true
     if [ -n "$B_HYGIENE" ]; then
       log "BOOTSTRAP HYGIENE: #$NUM scaffold is NOT hygienic:"$'\n'"$B_HYGIENE"
@@ -1208,8 +1214,12 @@ EOF
       # Exclude non-deliverables at the `git add` itself (pathspec), so this can't be
       # defeated by gitignore gaps (the node_modules SYMLINK the runner creates escapes
       # the `node_modules/` dir-pattern) or by exclude-file state. Deterministic.
+      # BUG 4 fix: also exclude nested node_modules (packages/*/node_modules etc.)
+      # using the glob pathspec; the top-level ':(exclude)node_modules' alone does
+      # NOT match paths like packages/web/node_modules added by workspace symlinks.
       git -C "$rwt" add -A -- . \
-        ':(exclude)node_modules' ':(exclude).claude' ':(exclude)CLAUDE.factory.md' \
+        ':(exclude)node_modules' ':(exclude,glob)**/node_modules/**' \
+        ':(exclude).claude' ':(exclude)CLAUDE.factory.md' \
         ':(exclude).mcp.json' ':(exclude)mcp-runtime.json' ':(exclude)dist' ':(exclude)build' \
         ':(exclude).next' ':(exclude)coverage' >/dev/null 2>&1
       if git -C "$rwt" commit -q -m "deliver #$NUM: $TITLE" >/dev/null 2>&1; then
@@ -1738,6 +1748,25 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       RDEFAULT="$(echo "$RSHOW" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'")"
       log "review_mode=$REVIEW_MODE → agent-reviewing in_review #$RNUM in $RREPO (branch ${RBRANCH:-unknown}, base $RDEFAULT)"
       if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run a reviewer agent on #$RNUM (branch ${RBRANCH:-unknown})"; result reviewed; exit 0; fi
+      # BUG 1 fix: snapshot the repo's current branch BEFORE checking out the
+      # delivery branch so we can restore it unconditionally on exit (success OR
+      # failure / crash), leaving the real repo's working tree exactly as found.
+      # BUG 2 fix: clean up the injected .claude/ + CLAUDE.factory.md on the same
+      # trap — they must never persist in the real repo after a review tick.
+      RORIG="$(git -C "$RREPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+      _review_cleanup() {
+        # Restore the original branch (if we changed it and know where to go back).
+        if [ -n "${RORIG:-}" ] && [ -n "${RBRANCH:-}" ]; then
+          git -C "$RREPO" checkout "$RORIG" >/dev/null 2>&1 || true
+        fi
+        # Remove the injected runner config from the real repo.
+        rm -f "$RREPO/CLAUDE.factory.md"
+        rm -f "$RREPO/.claude/settings.json"
+        rm -f "$RREPO/.claude/skills"
+        # If .claude/ is now empty (we created it), remove it too — best-effort.
+        rmdir "$RREPO/.claude" 2>/dev/null || true
+      }
+      trap '_review_cleanup; trap - EXIT' EXIT
       [ -n "$RBRANCH" ] && git -C "$RREPO" checkout "$RBRANCH" >/dev/null 2>&1 || true
       [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing — refusing live review (fail closed)"; result error; exit 1; }
       mkdir -p "$RREPO/.claude"; ln -sfn "$SKILLS_DIR" "$RREPO/.claude/skills"
@@ -1805,6 +1834,7 @@ EOF
           log "#$RNUM is done but MERGE_ON_AGENT_REVIEW=0 — leaving $RBRANCH for HUMAN approval before merge"
         fi
       fi
+      _review_cleanup; trap - EXIT
       result reviewed; exit 0
     fi
   fi
@@ -1840,6 +1870,15 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
         result clarified; exit 0
       fi
       [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing — refusing live clarify (fail closed)"; result error; exit 1; }
+      # BUG 2 fix: remove injected runner config from the clarify repo on exit
+      # (success OR failure / crash) so the real repo is always left clean.
+      _clarify_cleanup() {
+        rm -f "$CREPO/CLAUDE.factory.md"
+        rm -f "$CREPO/.claude/settings.json"
+        rm -f "$CREPO/.claude/skills"
+        rmdir "$CREPO/.claude" 2>/dev/null || true
+      }
+      trap '_clarify_cleanup; trap - EXIT' EXIT
       mkdir -p "$CREPO/.claude"; ln -sfn "$SKILLS_DIR" "$CREPO/.claude/skills"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$CREPO/.claude/settings.json"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
@@ -1870,6 +1909,7 @@ EOF
       rm -f "$C_USAGE_JSON"
       _gaffer_locked .skip.lock _gaffer_append_line "$CLARIFIED_FILE" "$CNUM"
       log "clarify pass for draft #$CNUM finished (rc=$crc)"
+      _clarify_cleanup; trap - EXIT
       result clarified; exit 0
     fi
   fi

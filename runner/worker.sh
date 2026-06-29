@@ -62,19 +62,27 @@ while [ "$ticks" -lt "$W_MAX_TICKS" ]; do
   # Each tick spends (invokes claude -p), so it counts against the shared per-day
   # ledger. gaffer_bump_day_count is lock-serialised (budget.sh) so concurrent
   # workers never lose a count.
-  if ! gaffer_bump_day_count; then
-    echo "worker $WORKER_ID: ERROR — could not persist per-day tick count; stopping." >&2
-    break
+  # BUG 6 fix: DRY_RUN ticks never call claude -p so must not consume the daily
+  # budget — skip the bump entirely when DRY_RUN=1.
+  if [ "${DRY_RUN:-0}" != "1" ]; then
+    if ! gaffer_bump_day_count; then
+      echo "worker $WORKER_ID: ERROR — could not persist per-day tick count; stopping." >&2
+      break
+    fi
   fi
 
   res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
   case "${res:-unknown}" in
-    worked)       worked=$((worked + 1)); empties=0 ;;
-    reviewed)     reviewed=$((reviewed + 1)); empties=0 ;;
-    clarified)    clarified=$((clarified + 1)); empties=0 ;;
-    idle_drafted) idle=$((idle + 1)); empties=0 ;;
-    no_work)      nowork=$((nowork + 1)); empties=$((empties + 1)) ;;
-    *)            errors=$((errors + 1)); empties=0 ;;
+    worked)            worked=$((worked + 1)); empties=0 ;;
+    reviewed)          reviewed=$((reviewed + 1)); empties=0 ;;
+    clarified)         clarified=$((clarified + 1)); empties=0 ;;
+    idle_drafted)      idle=$((idle + 1)); empties=0 ;;
+    # BUG 5 fix: maintenance_drafted / maintenance_ran are productive results
+    # emitted by the maintenance lane in tick.sh (~line 1898-1899). Without
+    # these cases they fell through to *) and were miscounted as errors.
+    maintenance_drafted|maintenance_ran) idle=$((idle + 1)); empties=0 ;;
+    no_work)           nowork=$((nowork + 1)); empties=$((empties + 1)) ;;
+    *)                 errors=$((errors + 1)); empties=0 ;;
   esac
   echo "worker $WORKER_ID: tick $ticks → ${res:-unknown}" >&2
 

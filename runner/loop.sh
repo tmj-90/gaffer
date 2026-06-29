@@ -134,9 +134,13 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # silently failed, the day cap would never advance and an overnight run could
   # blow past MAX_TICKS_PER_DAY. So if it fails, log it AND stop the run rather than
   # keep spending unbounded against a cap we can no longer enforce.
-  if ! gaffer_bump_day_count; then
-    echo "gaffer factory: ERROR — could not persist the per-day tick count; the day cap can no longer be enforced. Stopping to avoid unbounded spend." >&2
-    break
+  # BUG 6 fix: DRY_RUN ticks never call claude -p so must not consume the daily
+  # budget — skip the bump entirely when DRY_RUN=1.
+  if [ "${DRY_RUN:-0}" != "1" ]; then
+    if ! gaffer_bump_day_count; then
+      echo "gaffer factory: ERROR — could not persist the per-day tick count; the day cap can no longer be enforced. Stopping to avoid unbounded spend." >&2
+      break
+    fi
   fi
   res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
   echo "tick $ticks/$MAX_TICKS → ${res:-unknown}"

@@ -632,8 +632,19 @@ async function router() {
   const reduce = prefersReducedMotion();
   if (document.startViewTransition && !reduce) {
     // Snapshot synchronously, then run the marker-glide; the awaited content
-    // resolves inside the transition's update callback.
-    document.startViewTransition(swap);
+    // resolves inside the transition's update callback. A rapid navigation aborts
+    // the in-flight transition, rejecting its .ready/.finished with
+    // InvalidStateError — the DOM update still runs, so swallow those rejections (and
+    // any synchronous throw) to keep an unguarded exception off every interrupted
+    // view change.
+    try {
+      const vt = document.startViewTransition(swap);
+      vt.ready?.catch(() => {});
+      vt.finished?.catch(() => {});
+      vt.updateCallbackDone?.catch(() => {});
+    } catch {
+      void swap();
+    }
   } else {
     await swap();
   }

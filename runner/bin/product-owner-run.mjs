@@ -196,6 +196,48 @@ export function resolveRepo(dbPath, name) {
 }
 
 /**
+ * Count the DRAFT tickets linked to a repo NAME via the dispatch sqlite (read-only,
+ * zero deps). Used by the draft-count guard to compare a before/after snapshot so a
+ * run that files NOTHING is loud rather than a silent exit-0. Returns the integer
+ * count, or `null` when the count is UNMEASURABLE (db missing / node:sqlite absent /
+ * query error) — the caller skips the guard on null so a transient read error can't
+ * raise a false "filed 0" alarm. Importable + side-effect-free for tests.
+ */
+export function countDraftTickets(dbPath, repoName) {
+  const name = String(repoName ?? "").trim();
+  if (!name) return null;
+  if (!existsSync(dbPath)) return null;
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    return null;
+  }
+  let db;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM tickets t " +
+          "JOIN ticket_repos tr ON tr.ticket_id = t.id " +
+          "JOIN repositories r ON r.id = tr.repo_id " +
+          "WHERE t.status = 'draft' AND r.name = ?",
+      )
+      .get(name);
+    const n = Number(row?.n ?? 0);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/**
  * Build the headless prompt fed to `claude -p`. It pins the product-owner skill,
  * the draft-only / no-questions discipline, and the ticket-count bound. `repoName`
  * is what the dispatch MCP create_ticket links by; `repoPath` is where the skill
@@ -384,6 +426,10 @@ function main() {
     return;
   }
 
+  // DRAFT-COUNT GUARD: snapshot the repo's draft count BEFORE the run so we can tell
+  // whether the agent actually filed anything. `null` = unmeasurable (guard skipped).
+  const draftsBefore = countDraftTickets(CONFIG.dispatchDb, resolved.name);
+
   const argv = buildClaudeArgv({ prompt, mcpConfig: mcpRuntime, flags: CONFIG.claudeFlags });
   const res = spawnSync(CONFIG.claudeBin, argv, {
     cwd: resolved.localPath,
@@ -431,7 +477,35 @@ function main() {
     if (text) log(text.trim());
   }
   log(`product-owner run for "${resolved.name}" finished (exit ${res.status ?? 0})`);
-  emit({ phase: "done", repo: resolved.name, exit: res.status ?? 0 }, res.status ?? 0);
+
+  // DRAFT-COUNT GUARD: a clean `claude` exit does NOT mean tickets were filed — a
+  // denied MCP (no create_ticket tool) or an agent that decided to file nothing both
+  // exit 0. Compare the after-snapshot to the before-snapshot: when we CAN measure
+  // (both non-null) and the net new drafts is ≤ 0, fail LOUD (non-zero, with a
+  // reason) instead of reporting a misleading "done". When unmeasurable, we don't
+  // raise a false alarm — we just report `filed: null`.
+  const draftsAfter = countDraftTickets(CONFIG.dispatchDb, resolved.name);
+  const filed = draftsBefore !== null && draftsAfter !== null ? draftsAfter - draftsBefore : null;
+
+  if (filed !== null && filed <= 0) {
+    log(
+      `ERROR: filed 0 drafts for "${resolved.name}" (drafts ${draftsBefore} → ${draftsAfter}) — MCP create_ticket likely denied or the run proposed nothing`,
+    );
+    emit(
+      {
+        phase: "error",
+        repo: resolved.name,
+        filed: 0,
+        exit: res.status ?? 0,
+        reason: "filed 0 drafts — MCP create_ticket likely denied",
+      },
+      1,
+    );
+    return;
+  }
+
+  log(`filed ${filed === null ? "unknown (unmeasurable)" : filed} draft(s) for "${resolved.name}"`);
+  emit({ phase: "done", repo: resolved.name, exit: res.status ?? 0, filed }, res.status ?? 0);
 }
 
 // Run only as a CLI (importable for tests).

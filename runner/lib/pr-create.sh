@@ -20,8 +20,11 @@
 # KNOBS (set in factory.config.sh or environment):
 #   GAFFER_CREATE_PR=0      off by default; set to 1 to opt in.
 #   GAFFER_GH_BIN=gh        which `gh` binary to call (injectable for tests).
+#   GAFFER_PR_REMOTE=origin which remote to push the delivery branch to before
+#                           creating the PR (default: origin).
 
 : "${GAFFER_GH_BIN:=gh}"
+: "${GAFFER_PR_REMOTE:=origin}"
 
 # True when PR creation is opted in.
 gaffer_pr_create_enabled() {
@@ -150,8 +153,19 @@ gaffer_create_pr() {
 
   local base="${def_branch:-main}"
   local pr_title="${title:-Deliver #$num}"
-  local pr_url=""
-  pr_url="$(
+
+  # Push the delivery branch to the remote before creating the PR.
+  # gh pr create does NOT push — the remote ref must exist first.
+  # Suppress both stdout and stderr: git outputs "branch set up to track" to
+  # stdout on some platforms, and we must not pollute the pr_url return value.
+  if ! git -C "$repo_dir" push --set-upstream "$GAFFER_PR_REMOTE" "$branch:$branch" >/dev/null 2>&1; then
+    log "H4: git push failed for #$num (remote=$GAFFER_PR_REMOTE branch=$branch) — skipping PR creation (non-fatal)"
+    rm -f "$body_file"
+    return 1
+  fi
+
+  local pr_out=""
+  pr_out="$(
     cd "$repo_dir" 2>/dev/null &&
     "$GAFFER_GH_BIN" pr create \
       --title "$pr_title" \
@@ -161,9 +175,13 @@ gaffer_create_pr() {
   )" || true
   rm -f "$body_file"
 
-  # gh pr create prints the URL on success; on failure it prints an error.
-  # A URL starts with "https://".
-  if printf '%s' "$pr_url" | grep -qE '^https://'; then
+  # gh pr create may print warnings or info lines before/after the URL.
+  # Extract ONLY the https:// URL line; take the last match in case there are
+  # multiple (e.g. "View pull request" banners duplicating the URL).
+  local pr_url=""
+  pr_url="$(printf '%s\n' "$pr_out" | grep -E '^https://[^[:space:]]+$' | tail -1)"
+
+  if [ -n "$pr_url" ]; then
     log "H4: created PR for #$num → $pr_url"
     # Persist the PR URL back onto the ticket (best-effort; non-fatal).
     wg delivery-artifact "$num" --branch "$branch" --pr-url "$pr_url" --as system >/dev/null 2>&1 \
@@ -172,7 +190,7 @@ gaffer_create_pr() {
     printf '%s' "$pr_url"
     return 0
   else
-    log "H4: gh pr create failed for #$num (output: $(printf '%s' "$pr_url" | head -3)) — non-fatal"
+    log "H4: gh pr create failed for #$num (output: $(printf '%s\n' "$pr_out" | head -3)) — non-fatal"
     return 1
   fi
 }

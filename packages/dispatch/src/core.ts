@@ -7,6 +7,7 @@ import {
   type Decision,
   type DecisionSeverity,
   type Evidence,
+  type PausedDelivery,
   type Repository,
   type ScopeEdge,
   type ScopeNode,
@@ -34,6 +35,7 @@ import {
   type ActivityQuery,
 } from "./repositories/eventRepository.js";
 import { EvidenceRepository } from "./repositories/evidenceRepository.js";
+import { PausedDeliveryRepository } from "./repositories/pausedDeliveryRepository.js";
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
 import { RunRepository, type RunListResult } from "./repositories/runRepository.js";
@@ -90,6 +92,7 @@ import {
   type BoardView,
   type DashboardSummary,
 } from "./services/boardService.js";
+import { PauseService, type PauseInput } from "./services/pauseService.js";
 import { ReviewGateService } from "./services/reviewGateService.js";
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
@@ -222,6 +225,7 @@ export class Dispatch {
   readonly ticketDependencies: TicketDependencyRepository;
   readonly runs: RunRepository;
   readonly planSessions: PlanSessionRepository;
+  readonly pausedDeliveries: PausedDeliveryRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -232,6 +236,7 @@ export class Dispatch {
   readonly epicsSvc: EpicsService;
   readonly boardSvc: BoardService;
   readonly reviewGateSvc: ReviewGateService;
+  readonly pauseSvc: PauseService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -291,6 +296,7 @@ export class Dispatch {
     this.ticketDependencies = new TicketDependencyRepository(db);
     this.runs = new RunRepository(db);
     this.planSessions = new PlanSessionRepository(db);
+    this.pausedDeliveries = new PausedDeliveryRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -368,6 +374,19 @@ export class Dispatch {
       testingEnabledOverride: this.testingEnabledOverride,
       onTicketParked: (ticket, detail) => {
         this.emitGate("ticket_parked", ticket, { status: "blocked", detail });
+      },
+    });
+    this.pauseSvc = new PauseService({
+      db,
+      clock: this.clock,
+      tickets: this.tickets,
+      paused: this.pausedDeliveries,
+      transitions: this.transitions,
+      ticketSvc: this.ticketSvc,
+      // A pause is a needs-human-review checkpoint — route it through the same
+      // ticket_parked gate as the retry-cap park so the existing sinks fire.
+      onTicketPaused: (ticket, detail) => {
+        this.emitGate("ticket_parked", ticket, { status: "paused", detail });
       },
     });
   }
@@ -727,6 +746,52 @@ export class Dispatch {
 
   reopenFromWontDo(ref: string, to: "refining" | "draft", actor: Actor): TransitionResult {
     return this.reviewGateSvc.reopenFromWontDo(ref, to, actor);
+  }
+
+  // --- Pause-on-cap (PAUSE-ON-CAP) -----------------------------------------
+
+  /**
+   * Pause an in-flight delivery that hit a turn/budget cap (`* -> paused`). The
+   * runner keeps the worktree + branch alive and records the resume context.
+   */
+  pauseDelivery(ref: string, input: PauseInput, actor: Actor): TransitionResult {
+    return this.pauseSvc.pauseDelivery(ref, input, actor);
+  }
+
+  /** The human pressed Continue — mark a paused ticket resume-requested. */
+  continuePaused(ref: string, actor: Actor): { ticketId: string; eventId: string } {
+    return this.pauseSvc.requestContinue(ref, actor);
+  }
+
+  /**
+   * The factory loop re-entered delivery in the existing worktree (`paused ->
+   * in_progress`). Returns the resume context the runner re-invokes the agent with.
+   */
+  beginResume(
+    ref: string,
+    actor: Actor,
+  ): { ticketId: string; eventId: string; context: PausedDelivery } {
+    return this.pauseSvc.beginResume(ref, actor);
+  }
+
+  /** Stop/abandon a paused delivery (`paused -> cancelled`); drops the resume context. */
+  stopPaused(ref: string, actor: Actor, reason?: string): TransitionResult {
+    return this.pauseSvc.stop(ref, actor, reason);
+  }
+
+  /** Read the resume context for a paused ticket (or null). */
+  pausedContext(ref: string): PausedDelivery | null {
+    return this.pauseSvc.getContext(ref);
+  }
+
+  /** All paused tickets a human has asked to continue (oldest first). */
+  listResumeRequested(): PausedDelivery[] {
+    return this.pauseSvc.listResumeRequested();
+  }
+
+  /** Drop the resume context once a resumed delivery completes (runner cleanup). */
+  clearPausedContext(ref: string): void {
+    this.pauseSvc.clearContext(ref);
   }
 
   // --- Agents + claims (M2) ------------------------------------------------

@@ -2724,6 +2724,12 @@ html::after {
   color: var(--text-faint);
   background: var(--surface-2);
 }
+/* PAUSE-ON-CAP: a paused (cap-hit) delivery — amber, distinct from blocked/danger. */
+.badge.status-paused {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--amber-line);
+}
 
 /* risk */
 .badge.risk-low {
@@ -6410,6 +6416,14 @@ body {
   width: 18px;
   height: 18px;
   flex: 0 0 auto;
+}
+/* PAUSE-ON-CAP banner — multi-line explanation, top-aligned icon. */
+.paused-banner {
+  align-items: flex-start;
+  line-height: 1.45;
+}
+.paused-banner svg {
+  margin-top: 2px;
 }
 
 /* ── Memory (Repo Digest · Feature ledger · Lore) ──────────────────────────

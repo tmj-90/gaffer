@@ -374,6 +374,7 @@ const STATUS_LABELS = {
   done: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
+  paused: "Paused",
 };
 function statusLabel(status) {
   return STATUS_LABELS[status] || status;
@@ -1725,6 +1726,7 @@ const TICKET_STATUSES = [
   "done",
   "failed",
   "cancelled",
+  "paused",
 ];
 const RISK_LEVELS = ["low", "medium", "high", "critical"];
 const BOARD_COLUMN_LABELS = {
@@ -2511,6 +2513,10 @@ const TICKET_ACTION_KEYS = {
   done: [],
   failed: [],
   cancelled: ["reopen"],
+  // PAUSE-ON-CAP: a paused (cap-hit) delivery offers one-click Continue (re-enter
+  // the existing worktree) or Stop (tear down + abandon). The banner above the bar
+  // surfaces the reason + spend-so-far.
+  paused: ["pause_continue", "pause_stop"],
 };
 function ticketActionKeys(status) {
   return TICKET_ACTION_KEYS[status] || [];
@@ -3112,6 +3118,44 @@ async function renderTicket(id) {
         },
         "Reopen → refining",
       ),
+    // PAUSE-ON-CAP: re-enter delivery in the existing worktree. The factory loop
+    // picks up resume-requested paused tickets and continues them in place.
+    pause_continue: () =>
+      el(
+        "button",
+        {
+          class: "btn ok",
+          type: "button",
+          title: "Continue this paused delivery — the factory resumes it in its existing worktree",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/continue`, {});
+              toast("Continue requested — the factory will resume this ticket", { ok: true });
+              router();
+            }),
+        },
+        "Continue",
+      ),
+    // PAUSE-ON-CAP: abandon the paused delivery (tear down + cancel).
+    pause_stop: () =>
+      el(
+        "button",
+        {
+          class: "btn danger",
+          type: "button",
+          title: "Stop this paused delivery — abandon it and tear down its worktree",
+          onclick: () =>
+            guard(async () => {
+              const reason = window.prompt("Reason for stopping this paused delivery? (optional)");
+              if (reason === null) return; // cancelled the prompt
+              const body = reason.trim() === "" ? {} : { reason: reason.trim() };
+              await api("POST", `/tickets/${t.id}/stop`, body);
+              toast("Stopped — paused delivery abandoned", { ok: true });
+              router();
+            }),
+        },
+        "Stop",
+      ),
   };
 
   // "Merging…" — a passive indicator on the approved-and-merging state, shown
@@ -3130,6 +3174,30 @@ async function renderTicket(id) {
     ...ticketActionKeys(t.status).map((key) => (actionButtons[key] ? actionButtons[key]() : null)),
   ].filter(Boolean);
 
+  // PAUSE-ON-CAP banner: when a delivery is paused on a turn/budget cap, surface WHY
+  // (reason + spend-so-far, read from the latest ticket.paused event) above the
+  // Continue / Stop actions so the human can decide at a glance.
+  const pausedBanner =
+    t.status === "paused"
+      ? (() => {
+          const p = pausedInfo(events);
+          const reasonLabel = p.reason === "budget_cap" ? "budget cap reached" : "hit the turn cap";
+          const bits = [
+            p.spend ? `spend so far ${p.spend}` : null,
+            p.turns != null ? `${p.turns} turns` : null,
+          ].filter(Boolean);
+          return el("div", { class: "reopen-banner paused-banner" }, [
+            icon("alert"),
+            el("div", {}, [
+              el("strong", {}, "Delivery paused — "),
+              `${reasonLabel} mid-delivery. The worktree + branch are kept alive` +
+                (bits.length ? ` (${bits.join(", ")})` : "") +
+                ". Continue to resume in place, or Stop to abandon it.",
+            ]),
+          ]);
+        })()
+      : null;
+
   const head = el("div", { class: "card card-accent" }, [
     el("div", { class: "num" }, t.number != null ? `#${t.number}` : t.id),
     el("h1", { class: "detail-title" }, t.title),
@@ -3143,6 +3211,7 @@ async function renderTicket(id) {
     t.description
       ? el("p", { class: "desc" }, t.description)
       : el("p", { class: "desc dim" }, "No description."),
+    pausedBanner,
     headActions.length
       ? el("div", { class: "btn-row", style: "margin-top:16px" }, headActions)
       : null,
@@ -4783,6 +4852,29 @@ function renderTicketDiff(ticketId, onState) {
 /** True when the ticket's events show a merge-conflict-resolved reopen pending re-review. */
 function reopenedForReview(events) {
   return (events || []).some((ev) => ev.event_type === "ticket.reopened_for_review");
+}
+
+// PAUSE-ON-CAP: pull the latest pause reason/spend/turns/branch off the events so the
+// detail view's paused banner can explain WHY the delivery paused. Returns an empty
+// shape when there is no pause event (defensive — the banner only renders for
+// status === 'paused' anyway).
+function pausedInfo(events) {
+  const out = { reason: "cap_hit", spend: null, turns: null, branch: null };
+  const paused = (events || []).filter((ev) => ev.event_type === "ticket.paused");
+  const last = paused[paused.length - 1];
+  if (!last) return out;
+  let payload;
+  try {
+    payload = JSON.parse(last.payload_json || "{}");
+  } catch {
+    // Malformed payload — fall back to the defaults already in `out`.
+    return out;
+  }
+  if (payload.reason) out.reason = payload.reason;
+  if (payload.spend != null) out.spend = payload.spend;
+  if (payload.turns != null) out.turns = payload.turns;
+  if (payload.branch_name != null) out.branch = payload.branch_name;
+  return out;
 }
 
 /**

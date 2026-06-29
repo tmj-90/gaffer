@@ -136,6 +136,19 @@ export const wontDoBody = z.object({
 export type WontDoBody = z.infer<typeof wontDoBody>;
 
 /**
+ * PAUSE-ON-CAP bodies. POST /tickets/:id/continue takes no fields (the dashboard
+ * Continue button just signals "resume this"); POST /tickets/:id/stop carries an
+ * optional reason for the audit trail.
+ */
+export const continuePausedBody = z.object({}).strip();
+export type ContinuePausedBody = z.infer<typeof continuePausedBody>;
+
+export const stopPausedBody = z.object({
+  reason: z.string().trim().min(1).max(20_000).optional(),
+});
+export type StopPausedBody = z.infer<typeof stopPausedBody>;
+
+/**
  * BBT-001 bodies. POST /tickets/:id/testable sets the testing-lane eligibility
  * flag; POST /tickets/:id/test-contract records the testing handover; POST
  * /tickets/:id/tester records a tester verdict (pass/fail) from the dashboard.

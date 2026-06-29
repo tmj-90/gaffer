@@ -28,8 +28,61 @@ export const TICKET_STATUSES = [
   "done",
   "failed",
   "cancelled",
+  // PAUSE-ON-CAP (schema_version 12): an IN-FLIGHT delivery that hit the turn cap
+  // (GAFFER_MAX_TURNS) or the budget cap (GAFFER_BUDGET_REMAINING) mid-delivery and
+  // was PAUSED IN PLACE — its worktree + branch (committed AND uncommitted work)
+  // are kept alive on the runner host, and the resume context lives in the
+  // `paused_deliveries` table. Distinct from `refining` (back in the queue) and
+  // `cancelled` (abandoned): a paused ticket is parked awaiting a human's one-click
+  // Continue (re-enter the SAME worktree) or Stop (tear down + abandon). Reached
+  // only via the guarded pause path; left via the guarded resume / stop paths.
+  "paused",
 ] as const;
 export type TicketStatus = (typeof TICKET_STATUSES)[number];
+
+/**
+ * Why an in-flight delivery was paused (PAUSE-ON-CAP). `cap_hit` = the agent ran
+ * to the turn cap; `budget_cap` = the configured USD budget headroom was exhausted.
+ * Both are recoverable checkpoints, not failures — the work is preserved and the
+ * ticket waits for a human Continue/Stop.
+ */
+export const PAUSE_REASONS = ["cap_hit", "budget_cap"] as const;
+export type PauseReason = (typeof PAUSE_REASONS)[number];
+
+/**
+ * The durable resume context for a {@link TicketStatus} `paused` ticket (one row
+ * per paused ticket in `paused_deliveries`). It survives a runner restart so the
+ * factory loop can re-enter delivery IN THE EXISTING worktree without re-cloning or
+ * losing context. `resume_requested` (0/1) is flipped to 1 by the human Continue
+ * action; the factory-loop selection picks up resume-requested rows and re-invokes
+ * the agent in `worktree_path` on `branch_name`.
+ */
+export interface PausedDelivery {
+  ticket_id: string;
+  /** Why the delivery paused — see {@link PauseReason}. */
+  reason: PauseReason;
+  /** The runner-owned delivery branch the partial work lives on (gaffer/…). */
+  branch_name: string | null;
+  /** Absolute path of the PRIMARY worktree kept alive for the resume. */
+  worktree_path: string | null;
+  /**
+   * JSON-encoded full worktree map (the runner's WT_ROWS — one entry per write
+   * repo) so a multi-repo delivery resumes every worktree, not just the primary.
+   */
+  worktrees_json: string | null;
+  /** Primary repo name/path the delivery targets (display + audit). */
+  repo: string | null;
+  /** Delivery attempt number at the time of the pause (accumulates across resumes). */
+  attempt: number;
+  /** Accumulated agent turns reported by the capped call, or null if unmeasured. */
+  turns: number | null;
+  /** Spend-so-far relayed verbatim from the capped call (e.g. "$2.5600" / "unknown"). */
+  spend: string | null;
+  /** 1 ⇒ a human pressed Continue and the factory loop should resume this ticket. */
+  resume_requested: number;
+  created_at: string;
+  updated_at: string;
+}
 
 export const RISK_LEVELS = ["low", "medium", "high", "critical"] as const;
 export type RiskLevel = (typeof RISK_LEVELS)[number];

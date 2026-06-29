@@ -18,6 +18,50 @@ export const PRODUCT_OWNER_CMD_ENV = "DISPATCH_PRODUCT_OWNER_CMD";
 /** Env var the spawned command reads to learn which repo to suggest work for. */
 export const PRODUCT_OWNER_REPO_ENV = "DISPATCH_PRODUCT_OWNER_REPO";
 
+/**
+ * The dashboard's action-command env vars — each backs a button that spawns a
+ * detached factory runner. When the API is launched ad-hoc (e.g. `node bin.js`
+ * directly) instead of via `gaffer dashboard`, these go UNSET and the matching
+ * buttons silently no-op (or 500 with NOT_CONFIGURED), which looks like the
+ * dashboard is broken. We log the wired/missing split once at startup so a
+ * mis-launched dashboard is obvious from the API log.
+ */
+export const ACTION_COMMAND_ENVS = [
+  "DISPATCH_PRODUCT_OWNER_CMD",
+  "DISPATCH_MERGE_CMD",
+  "DISPATCH_TICK_CMD",
+  "DISPATCH_ONBOARD_CMD",
+  "DISPATCH_TESTER_CMD",
+] as const;
+
+/**
+ * Report which {@link ACTION_COMMAND_ENVS} are wired vs missing. Pure: returns the
+ * split and writes a single human-readable line via `write` (stderr by default, so
+ * it never pollutes a JSON stdout). Exposed for the startup log and for tests.
+ */
+export function reportActionCommandWiring(
+  env: NodeJS.ProcessEnv = process.env,
+  write: (line: string) => void = (line) => process.stderr.write(line),
+): { wired: string[]; missing: string[] } {
+  const wired: string[] = [];
+  const missing: string[] = [];
+  for (const key of ACTION_COMMAND_ENVS) {
+    if ((env[key] ?? "").trim() !== "") wired.push(key);
+    else missing.push(key);
+  }
+  write(
+    `dispatch-api action commands — wired: ${wired.join(", ") || "(none)"}; ` +
+      `missing: ${missing.join(", ") || "(none)"}` +
+      (missing.length > 0
+        ? " — those dashboard buttons will no-op; launch via `gaffer dashboard` to wire them all\n"
+        : "\n"),
+  );
+  return { wired, missing };
+}
+
+/** Process-once guard so the startup wiring line is logged a single time. */
+let actionWiringReported = false;
+
 export interface ProductOwnerRunResult {
   started: boolean;
   /** OS process id of the spawned run, or null if the platform withheld one. */
@@ -59,6 +103,14 @@ export function createProductOwnerRunner(
   env: NodeJS.ProcessEnv = process.env,
   tracker?: RunTracker,
 ): ProductOwnerRunner {
+  // STARTUP DIAGNOSTIC: the default runner is constructed once when the API server
+  // boots (a default param of createApiServer/createApiHandler), so logging here
+  // surfaces the action-command wiring exactly once at startup — without touching
+  // the server bootstrap. Guarded so repeated construction (tests) stays quiet.
+  if (!actionWiringReported) {
+    actionWiringReported = true;
+    reportActionCommandWiring(env);
+  }
   return {
     run({ repo }) {
       const tokens = parseCommand(env[PRODUCT_OWNER_CMD_ENV] ?? "");

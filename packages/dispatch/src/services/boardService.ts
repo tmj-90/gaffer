@@ -199,7 +199,11 @@ export function columnFor(status: TicketStatus): BoardColumn | null {
     case "claimed":
     case "in_progress":
       return "in_progress";
+    // PAUSE-ON-CAP: a paused delivery is a needs-human checkpoint (parked but
+    // recoverable). It shares the `blocked` column on the board; the ticket detail
+    // view surfaces the distinct paused banner + Continue/Stop actions.
     case "blocked":
+    case "paused":
       return "blocked";
     case "in_review":
       return "in_review";

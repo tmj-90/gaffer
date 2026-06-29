@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import { migrate } from "../src/db/connection.js";
+import { SCHEMA_VERSION } from "../src/db/schema.js";
 import { createApiServer } from "../src/api/server.js";
 import { TestClock } from "../src/util/clock.js";
 import Database from "better-sqlite3";
@@ -51,13 +52,13 @@ describe("plan_sessions migration", () => {
     db.close();
   });
 
-  it("stamps schema_version 11 after migration", () => {
+  it("stamps the current schema_version after migration", () => {
     const db = new Database(":memory:");
     migrate(db);
     const row = db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get() as
       | { value: string }
       | undefined;
-    expect(Number(row?.value)).toBe(11);
+    expect(Number(row?.value)).toBe(SCHEMA_VERSION);
     db.close();
   });
 });

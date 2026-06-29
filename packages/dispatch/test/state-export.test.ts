@@ -293,6 +293,12 @@ describe("dispatch state export", () => {
       // Sessions are tied to a browser session on this machine; they contain no work-item
       // data that needs to round-trip. An imported board should start a fresh conversation.
       "plan_sessions",
+      // paused_deliveries: machine-local resume context (PAUSE-ON-CAP). Its rows
+      // carry THIS host's worktree paths + delivery branch for an in-flight paused
+      // delivery; they are meaningless on another machine (the worktree doesn't
+      // exist there), so they are not part of the portable board bundle — exactly
+      // like `runs`.
+      "paused_deliveries",
     ];
 
     const covered = new Set<string>([...EXPORT_TABLES, ...INTENTIONALLY_EXCLUDED]);

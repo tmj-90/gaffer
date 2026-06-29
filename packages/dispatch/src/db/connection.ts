@@ -166,6 +166,14 @@ export function migrate(db: Db): void {
   //    the rebuilt table is backfilled too. Both are no-ops on a fresh DB.
   widenTicketStatusCheckForInTesting(db);
   alterTicketsAddTestingColumns(db);
+  // PAUSE-ON-CAP (v11→v12): widen the `tickets.status` CHECK to allow the new
+  // `paused` status (an in-flight delivery paused on a turn/budget cap, its worktree
+  // kept alive). SQLite cannot ALTER a CHECK in place, so a genuine prior-version
+  // table is rebuilt via the supported recipe. Must run BEFORE SCHEMA_SQL so its
+  // CREATE INDEX statements re-attach to the rebuilt table. No-op on a fresh DB and
+  // on a table whose CHECK already lists 'paused'. The new `paused_deliveries` table
+  // is created by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS — no ADD COLUMN migration.
+  widenTicketStatusCheckForPaused(db);
   // RUN-ACTIVITY (v9→v10): the `runs` control-plane registry. A brand-new
   // standalone table created idempotently by SCHEMA_SQL's CREATE TABLE IF NOT
   // EXISTS (like ticket_dependencies / ticket_repo_delivery), so — having no
@@ -577,6 +585,121 @@ function alterTicketsAddTestingColumns(db: Db): void {
   }
   if (!cols.has("test_contract")) {
     db.exec("ALTER TABLE tickets ADD COLUMN test_contract TEXT");
+  }
+}
+
+/**
+ * PAUSE-ON-CAP migration (v11→v12): widen the `tickets.status` CHECK to allow the
+ * new `paused` status (an in-flight delivery paused on a turn/budget cap). SQLite
+ * cannot ALTER a CHECK in place, so an existing table whose CHECK omits it is
+ * rebuilt via the supported recipe (create the widened table, copy rows preserving
+ * ids so child FKs stay valid, drop the old, rename, restore indexes). Idempotent +
+ * safe:
+ *  - no-op on a fresh DB (table absent — SCHEMA_SQL creates the widened version);
+ *  - no-op when the existing CHECK already permits 'paused';
+ *  - no-op on a hand-rolled minimal fixture with no status CHECK (detected by the
+ *    absence of 'in_testing' in the CHECK — a genuine v9+ table lists it).
+ * foreign_keys is toggled off for the swap as the SQLite docs require, then restored.
+ * By v11 a genuine table carries the full column set (through test_contract), so all
+ * of them are copied.
+ */
+function widenTicketStatusCheckForPaused(db: Db): void {
+  const ddlRow = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tickets'")
+    .get() as { sql: string } | undefined;
+  // Table absent (fresh DB) — SCHEMA_SQL will create it with the status allowed.
+  if (!ddlRow) return;
+  // Already widened (fresh-created or previously migrated) — nothing to do.
+  if (ddlRow.sql.includes("'paused'")) return;
+  // Only a genuine v9+ `tickets` table needs the rebuild: it carries a status CHECK
+  // that already lists 'in_testing'. A hand-rolled fixture without that (or with no
+  // status CHECK at all) does not constrain the status, so it accepts the new value
+  // with no rebuild — skip it (rebuilding a table missing NOT NULL columns fails).
+  if (!ddlRow.sql.includes("'in_testing'")) return;
+
+  // Copy only the columns the existing table actually has (intersected with the new
+  // table's) so the rebuild never references a missing column; the rest inherit the
+  // new table's defaults.
+  const existingCols = new Set(
+    (db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  const NEW_COLS = [
+    "id",
+    "number",
+    "title",
+    "description",
+    "status",
+    "priority",
+    "risk_level",
+    "policy_pack",
+    "source",
+    "created_by",
+    "reviewer",
+    "branch_name",
+    "pr_url",
+    "attempt_count",
+    "row_version",
+    "scheduled_after",
+    "due_at",
+    "bootstrap",
+    "last_review_feedback",
+    "can_be_tested",
+    "test_contract",
+    "created_at",
+    "updated_at",
+  ];
+  const copyCols = NEW_COLS.filter((c) => existingCols.has(c));
+  const copyList = copyCols.join(", ");
+
+  // The widened table definition. Kept in lockstep with SCHEMA_SQL's tickets.
+  const newTableDdl = `
+    CREATE TABLE tickets_new (
+      id            TEXT PRIMARY KEY,
+      number        INTEGER UNIQUE,
+      title         TEXT NOT NULL,
+      description   TEXT NOT NULL DEFAULT '',
+      status        TEXT NOT NULL CHECK (status IN (
+        'draft','refining','ready','claimed','in_progress',
+        'blocked','in_review','in_testing','ready_for_merge','done','failed','cancelled','paused'
+      )),
+      priority      INTEGER NOT NULL DEFAULT 0,
+      risk_level    TEXT NOT NULL DEFAULT 'medium' CHECK (risk_level IN ('low','medium','high','critical')),
+      policy_pack   TEXT NOT NULL DEFAULT 'solo_loose',
+      source        TEXT,
+      created_by    TEXT,
+      reviewer      TEXT,
+      branch_name   TEXT,
+      pr_url        TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      row_version   INTEGER NOT NULL DEFAULT 0,
+      scheduled_after TEXT,
+      due_at        TEXT,
+      bootstrap     INTEGER NOT NULL DEFAULT 0,
+      last_review_feedback TEXT,
+      can_be_tested INTEGER NOT NULL DEFAULT 0,
+      test_contract TEXT,
+      created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )`;
+
+  const fkWasOn = (db.pragma("foreign_keys", { simple: true }) as number) === 1;
+  if (fkWasOn) db.pragma("foreign_keys = OFF");
+  try {
+    db.exec("DROP TABLE IF EXISTS tickets_new");
+    db.exec(newTableDdl);
+    db.exec(
+      `INSERT INTO tickets_new (${copyList})
+       SELECT ${copyList} FROM tickets`,
+    );
+    db.exec("DROP TABLE tickets");
+    db.exec("ALTER TABLE tickets_new RENAME TO tickets");
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_tickets_status_priority ON tickets(status, priority DESC, created_at ASC)",
+    );
+    db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack)");
+  } finally {
+    if (fkWasOn) db.pragma("foreign_keys = ON");
   }
 }
 

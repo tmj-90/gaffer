@@ -1059,6 +1059,133 @@ program
     wg.db.close();
   });
 
+// --- Pause-on-cap (PAUSE-ON-CAP): pause / continue / stop / resume ----------
+
+ticket
+  .command("pause <ref>")
+  .description(
+    "Pause an in-flight delivery that hit a turn/budget cap (-> paused). The runner " +
+      "keeps the worktree + branch alive; this records the resume context. System actor.",
+  )
+  .requiredOption("--reason <reason>", "cap_hit (turn cap) or budget_cap")
+  .option("--branch <name>", "the gaffer/ delivery branch the partial work lives on")
+  .option("--worktree <path>", "absolute path of the primary worktree kept alive")
+  .option("--worktrees-json <json>", "JSON map of all write-repo worktrees (WT_ROWS)")
+  .option("--repo <name>", "primary repo name/path the delivery targets")
+  .option("--attempt <n>", "delivery attempt number at the pause", "0")
+  .option("--turns <n>", "accumulated agent turns reported by the capped call")
+  .option("--spend <text>", "spend-so-far relayed verbatim (e.g. $2.5600 or unknown)")
+  .action((ref, opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const reason = opts.reason as string;
+    if (reason !== "cap_hit" && reason !== "budget_cap") {
+      throw new DispatchError("VALIDATION_ERROR", "--reason must be 'cap_hit' or 'budget_cap'.", {
+        reason,
+      });
+    }
+    const toInt = (v: string | undefined): number | null =>
+      v === undefined || v === "" ? null : Number.parseInt(v, 10);
+    const res = wg.pauseDelivery(
+      ref,
+      {
+        reason,
+        branch_name: opts.branch ?? null,
+        worktree_path: opts.worktree ?? null,
+        worktrees_json: opts.worktreesJson ?? null,
+        repo: opts.repo ?? null,
+        attempt: toInt(opts.attempt) ?? 0,
+        turns: toInt(opts.turns),
+        spend: opts.spend ?? null,
+      },
+      { type: "system" },
+    );
+    printJson({ ok: true, status: res.ticket.status, event: res.eventId });
+    wg.db.close();
+  });
+
+ticket
+  .command("continue <ref>")
+  .description(
+    "Continue a paused delivery: mark it resume-requested so the factory loop resumes it.",
+  )
+  .action((ref, _opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const res = wg.continuePaused(ref, cliActor());
+    printJson({ ok: true, ticket_id: res.ticketId, event: res.eventId, resume_requested: true });
+    wg.db.close();
+  });
+
+ticket
+  .command("stop <ref>")
+  .description(
+    "Stop a paused delivery: abandon it (-> cancelled), drop the resume context. The runner reaps the worktree.",
+  )
+  .option("--reason <text>", "why the paused delivery is being abandoned")
+  .action((ref, opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const res = wg.stopPaused(ref, cliActor(), opts.reason);
+    printJson({ ok: true, status: res.ticket.status, event: res.eventId });
+    wg.db.close();
+  });
+
+ticket
+  .command("resume-begin <ref>")
+  .description(
+    "Factory-loop resume entry point: re-enter delivery in the EXISTING worktree " +
+      "(paused -> in_progress) and print the resume context (worktree, branch, attempt). System actor.",
+  )
+  .action((ref, _opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const res = wg.beginResume(ref, { type: "system" });
+    printJson({ ok: true, ticket_id: res.ticketId, event: res.eventId, context: res.context });
+    wg.db.close();
+  });
+
+ticket
+  .command("paused-context <ref>")
+  .description(
+    "Print the resume context for a paused ticket (worktree path, branch, attempt, spend), or null.",
+  )
+  .action((ref, _opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    printJson({ ok: true, context: wg.pausedContext(ref) });
+    wg.db.close();
+  });
+
+ticket
+  .command("resume-requested")
+  .description(
+    "List paused tickets a human has asked to continue (oldest first) — the factory loop's resume queue.",
+  )
+  .action((_opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    // Enrich each resume-context row with the ticket NUMBER + title so the factory
+    // loop (which keys worktree dirs + prompts on the number) can resume without a
+    // second lookup. A row whose ticket vanished is skipped defensively.
+    const rows = wg.listResumeRequested().map((r) => {
+      try {
+        const t = wg.view(r.ticket_id).ticket;
+        return { ...r, number: t.number, title: t.title, status: t.status };
+      } catch {
+        return { ...r, number: null, title: null, status: null };
+      }
+    });
+    printJson(rows);
+    wg.db.close();
+  });
+
+ticket
+  .command("paused-clear <ref>")
+  .description(
+    "Drop a resume context once a resumed delivery finally leaves the paused state (runner cleanup).",
+  )
+  .action((ref, _opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    wg.clearPausedContext(ref);
+    printJson({ ok: true, cleared: true });
+    wg.db.close();
+  });
+
 // --- System delivery evidence (no claim token; system actor only) ----------
 
 program

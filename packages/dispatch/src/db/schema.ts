@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   description   TEXT NOT NULL DEFAULT '',
   status        TEXT NOT NULL CHECK (status IN (
     'draft','refining','ready','claimed','in_progress',
-    'blocked','in_review','in_testing','ready_for_merge','done','failed','cancelled'
+    'blocked','in_review','in_testing','ready_for_merge','done','failed','cancelled','paused'
   )),
   priority      INTEGER NOT NULL DEFAULT 0,
   risk_level    TEXT NOT NULL DEFAULT 'medium' CHECK (risk_level IN ('low','medium','high','critical')),
@@ -455,4 +455,37 @@ CREATE TABLE IF NOT EXISTS plan_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_plan_sessions_status_created
   ON plan_sessions(status, created_at DESC);
+
+-- ============================================================================
+-- Paused deliveries (PAUSE-ON-CAP). Additive, schema_version 12.
+--
+-- One row per ticket whose IN-FLIGHT delivery hit the turn cap (GAFFER_MAX_TURNS)
+-- or the budget cap (GAFFER_BUDGET_REMAINING) and was PAUSED IN PLACE rather than
+-- torn down. The row is the durable RESUME CONTEXT: it survives a runner restart so
+-- the factory loop can re-enter delivery in the EXISTING worktree (no re-clone, no
+-- lost work). resume_requested (0/1) is flipped to 1 by the human Continue action;
+-- the loop's selection picks up resume-requested rows and re-invokes the agent on
+-- branch_name in worktree_path. The row is deleted on resume-completion or Stop.
+--
+-- Keyed 1:1 on ticket_id (FK CASCADE so it vanishes with its ticket). A brand-new
+-- standalone table created idempotently by CREATE TABLE IF NOT EXISTS — no ADD
+-- COLUMN migration needed (only the tickets.status CHECK widening, in connection.ts).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS paused_deliveries (
+  ticket_id        TEXT PRIMARY KEY REFERENCES tickets(id) ON DELETE CASCADE,
+  reason           TEXT NOT NULL CHECK (reason IN ('cap_hit','budget_cap')),
+  branch_name      TEXT,
+  worktree_path    TEXT,
+  worktrees_json   TEXT,
+  repo             TEXT,
+  attempt          INTEGER NOT NULL DEFAULT 0,
+  turns            INTEGER,
+  spend            TEXT,
+  resume_requested INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_paused_deliveries_resume
+  ON paused_deliveries(resume_requested, created_at ASC);
 `;

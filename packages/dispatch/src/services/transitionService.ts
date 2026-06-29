@@ -19,6 +19,7 @@ import { computeTicketDiff, type GitRunner } from "./diffService.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { DecisionRepository } from "../repositories/decisionRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
+import { PausedDeliveryRepository } from "../repositories/pausedDeliveryRepository.js";
 import { RepoRepository } from "../repositories/repoRepository.js";
 import { TicketRepoDeliveryRepository } from "../repositories/ticketRepoDeliveryRepository.js";
 import { ScopeRepoRepository } from "../repositories/scopeRepoRepository.js";
@@ -117,6 +118,25 @@ const ALLOWED: ReadonlySet<string> = new Set([
   // never resurrect stale in-flight work.
   "cancelled->refining",
   "cancelled->draft",
+  // PAUSE-ON-CAP: an IN-FLIGHT delivery that hit the turn/budget cap is paused IN
+  // PLACE (worktree kept alive). Reachable from the live delivery states only, and
+  // guarded by `pauseDelivery` so a stray board-drag can never park a ticket as
+  // paused. `claimed` is included because a delivery may cap before it announces
+  // `in_progress`; `in_review` because the cap can land on a post-submit step.
+  "in_progress->paused",
+  "in_review->paused",
+  "claimed->paused",
+  // Resume: the human pressed Continue and the factory loop re-entered delivery in
+  // the EXISTING worktree, so the ticket returns to `in_progress`. Guarded by
+  // `resumeDelivery` so only the loop's resume entry point can route here.
+  "paused->in_progress",
+  // Stop: the human abandoned the paused delivery (tear down + cancel). Reuses the
+  // guarded won't-do path (`wontDo`).
+  "paused->cancelled",
+  // Reversible un-pause WITHOUT resuming: a human triages a paused ticket back into
+  // the queue at `refining`. Neither target holds a claim, so this is always safe —
+  // no guard, mirroring cancelled->refining.
+  "paused->refining",
 ]);
 
 /** Which gated transitions trigger a policy evaluation. */
@@ -187,6 +207,23 @@ export interface TransitionInput {
    * testing. Same guarded-flag pattern as {@link wontDo} / {@link markMerged}.
    */
   testerVerdict?: boolean;
+  /**
+   * PAUSE-ON-CAP opt-in flag the pause path (`in_progress|in_review|claimed ->
+   * paused`) MUST set. Pausing an in-flight delivery on a turn/budget cap is a
+   * deliberate runner action taken only by {@link Dispatch.pauseDelivery}; without
+   * this flag a transition into `paused` is rejected as ILLEGAL_TRANSITION even
+   * though it is in the ALLOWED set, so a stray board-drag can never park a ticket
+   * as paused (and orphan a live worktree).
+   */
+  pauseDelivery?: boolean;
+  /**
+   * PAUSE-ON-CAP opt-in flag the resume path (`paused -> in_progress`) MUST set.
+   * Re-entering delivery in the existing worktree is reachable only through the
+   * factory loop's resume entry point ({@link Dispatch.beginResume}); without this
+   * flag the transition is rejected as ILLEGAL_TRANSITION so a board-drag cannot
+   * fake a resume of paused work.
+   */
+  resumeDelivery?: boolean;
 }
 
 export interface TransitionResult {
@@ -217,12 +254,23 @@ export class TransitionService {
    */
   private readonly gitRunner: GitRunner | undefined;
 
+  /**
+   * Optional handle to the paused-delivery store. When present, any transition
+   * OUT of `paused` that is NOT a resume (`paused->in_progress`) atomically deletes
+   * the stale context row — including `paused->refining` (human board triage) and
+   * `paused->cancelled` (stop, though PauseService.stop() also cleans up directly).
+   * Injectable so callers that don't have the repo can omit it.
+   */
+  private readonly pausedDeliveries: PausedDeliveryRepository | undefined;
+
   constructor(
     private readonly db: Db,
     private readonly clock: Clock,
     gitRunner?: GitRunner,
+    pausedDeliveries?: PausedDeliveryRepository,
   ) {
     this.gitRunner = gitRunner;
+    this.pausedDeliveries = pausedDeliveries;
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
     this.repos = new RepoRepository(db);
@@ -326,6 +374,26 @@ export class TransitionService {
         );
       }
 
+      // PAUSE-ON-CAP: pausing an in-flight delivery (`* -> paused`) is a deliberate
+      // runner action that KEEPS a live worktree; reject it on any route that did not
+      // opt in via the pause path so a stray board-drag can never park a ticket as
+      // paused. The resume route (`paused -> in_progress`) is likewise gated so only
+      // the loop's resume entry point can re-enter delivery.
+      if (input.toStatus === "paused" && !input.pauseDelivery) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A ticket can only be paused via the pause-on-cap path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+      if (key === "paused->in_progress" && !input.resumeDelivery) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A paused ticket can only resume delivery via the resume path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
       // Won't-do (`* -> cancelled`) is a deliberate terminal abandon. Reject it on
       // any route that did not opt in via the won't-do path so a stray board-drag
       // onto a "Won't do" column can never silently swallow a ticket.
@@ -384,6 +452,15 @@ export class TransitionService {
         },
         ...(input.correlationId ? { correlation_id: input.correlationId } : {}),
       });
+
+      // Exiting `paused` to any state other than `in_progress` (resume): the live
+      // worktree is no longer tracked; drop the stale pause context atomically so
+      // no reader sees ghost data.  The resume path keeps the context alive so a
+      // re-cap upserts over it.  PauseService.stop() (paused->cancelled) also calls
+      // delete directly; the double-delete is a no-op in SQLite.
+      if (ticket.status === "paused" && input.toStatus !== "in_progress") {
+        this.pausedDeliveries?.delete(ticket.id);
+      }
 
       const updated = this.tickets.findById(ticket.id)!;
       return policy ? { ticket: updated, eventId, policy } : { ticket: updated, eventId };

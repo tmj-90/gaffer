@@ -1684,8 +1684,12 @@ for r in d.get("repositories", []) or []:
 
   # ── H3: CI-aware review gate (opt-in GAFFER_REQUIRE_CI=1) ─────────────────────
   # When enabled, poll CI checks on the delivery branch before letting the ticket
-  # enter the human review lane. Green → proceed. Red → auto-reject back to rework.
-  # Timeout (pending after all attempts) → surface and proceed. Flag off → no-op.
+  # enter the human review lane.
+  #   green checks            → proceed (rc=0)
+  #   red checks              → auto-reject back to rework (rc=2)
+  #   timeout / no-PR / no-checks (strict, default) → auto-reject (rc=2)
+  #   timeout / no-PR / no-checks (GAFFER_CI_TIMEOUT_POLICY=proceed) → proceed (rc=0)
+  #   flag off                → no-op (rc=0)
   if declare -F gaffer_ci_gate >/dev/null 2>&1; then
     gaffer_ci_gate "$NUM" "$PRIMARY_REPO" "$WORK_BRANCH" "${_PR_URL:-}"
     _CI_RC=$?

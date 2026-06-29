@@ -12,8 +12,11 @@
 #   7. gaffer_ci_gate returns 0 (proceed) when GAFFER_REQUIRE_CI=0 (flag off).
 #   8. gaffer_ci_gate with injectable gh returning green → rc=0.
 #   9. gaffer_ci_gate with injectable gh returning red → rc=2 + evidence attached.
-#  10. gaffer_ci_gate poll timeout → rc=0 (surfaces "CI still pending", proceeds).
+#  10. gaffer_ci_gate poll timeout → rc=2 (fail closed, strict default).
 #  11. No GitHub remote → gaffer_ci_gate returns 0 (no-op).
+#  12. gaffer_ci_gate poll timeout + GAFFER_CI_TIMEOUT_POLICY=proceed → rc=0 (proceed-with-note).
+#  13. gaffer_ci_gate no-PR/no-checks (all polls empty) → rc=2 under strict.
+#  14. gaffer_ci_gate no-PR/no-checks + GAFFER_CI_TIMEOUT_POLICY=proceed → rc=0.
 #
 # Uses a real but minimal git repo + a stub dispatch CLI for evidence.
 # Run: bash test/h3-ci-gate.test.sh
@@ -132,6 +135,7 @@ GAFFER_REQUIRE_CI=1
 GAFFER_GH_BIN="$GH_GREEN"
 GAFFER_CI_POLL_ATTEMPTS=1
 GAFFER_CI_POLL_INTERVAL_SECS=0
+unset GAFFER_CI_TIMEOUT_POLICY
 
 gaffer_ci_gate "2" "$REPO_GH" "gaffer/ticket-2" ""
 [ $? = 0 ] \
@@ -159,29 +163,89 @@ grep -q "build" "$WG_CALLS" \
   && ok "T9 failing check name recorded in evidence" \
   || fail "T9 expected failing check name 'build' in evidence call"
 
-# T10: poll timeout → rc=0 (surfaces and proceeds, not hung).
-# A gh stub that always returns pending so we exhaust attempts quickly.
+echo "== gaffer_ci_gate timeout strict mode (default) =="
+
+# T10: poll timeout under strict default → rc=2 (fail closed).
 GH_PENDING="$WORK/gh-pending.sh"
 printf '#!/bin/sh\nprintf "build\tin_progress\t\thttps://x/1\n"\n' > "$GH_PENDING"
 chmod +x "$GH_PENDING"
 GAFFER_GH_BIN="$GH_PENDING"
 GAFFER_CI_POLL_ATTEMPTS=2
 GAFFER_CI_POLL_INTERVAL_SECS=0
+unset GAFFER_CI_TIMEOUT_POLICY
 : > "$WG_CALLS"
 
 gaffer_ci_gate "4" "$REPO_GH" "gaffer/ticket-4" ""
 _CI_RC=$?
-[ "$_CI_RC" = "0" ] \
-  && ok "T10 poll timeout → rc=0 (proceed, not hung)" \
-  || fail "T10 expected rc=0 for timeout, got $_CI_RC"
+[ "$_CI_RC" = "2" ] \
+  && ok "T10 poll timeout strict → rc=2 (fail closed)" \
+  || fail "T10 expected rc=2 for timeout under strict mode, got $_CI_RC"
 
 grep -q "attach-evidence" "$WG_CALLS" \
-  && ok "T10 'CI still pending' evidence attached via wg" \
-  || fail "T10 expected attach-evidence call for pending note"
+  && ok "T10 'CI BLOCKED' evidence attached via wg" \
+  || fail "T10 expected attach-evidence call for strict timeout"
 
-grep -qi "pending" "$WG_CALLS" \
-  && ok "T10 'pending' surfaced in evidence text" \
-  || fail "T10 expected 'pending' in evidence text, got: $(cat "$WG_CALLS")"
+echo "== gaffer_ci_gate timeout GAFFER_CI_TIMEOUT_POLICY=proceed =="
+
+# T12: poll timeout + GAFFER_CI_TIMEOUT_POLICY=proceed → rc=0 (proceed-with-note).
+GAFFER_CI_TIMEOUT_POLICY=proceed
+GAFFER_GH_BIN="$GH_PENDING"
+GAFFER_CI_POLL_ATTEMPTS=2
+GAFFER_CI_POLL_INTERVAL_SECS=0
+: > "$WG_CALLS"
+
+gaffer_ci_gate "12" "$REPO_GH" "gaffer/ticket-12" ""
+_CI_RC=$?
+[ "$_CI_RC" = "0" ] \
+  && ok "T12 poll timeout + GAFFER_CI_TIMEOUT_POLICY=proceed → rc=0 (proceed-with-note)" \
+  || fail "T12 expected rc=0 for timeout with proceed policy, got $_CI_RC"
+
+grep -q "attach-evidence" "$WG_CALLS" \
+  && ok "T12 proceed-with-note evidence attached via wg" \
+  || fail "T12 expected attach-evidence call for proceed note"
+
+grep -qi "proceed" "$WG_CALLS" \
+  && ok "T12 'proceed' surfaced in evidence text" \
+  || fail "T12 expected 'proceed' in evidence text, got: $(cat "$WG_CALLS")"
+
+echo "== gaffer_ci_gate no-PR / no-checks strict mode =="
+
+# T13: all polls return empty (no PR exists yet) → rc=2 under strict.
+GH_EMPTY="$WORK/gh-empty.sh"
+printf '#!/bin/sh\n# prints nothing — simulates no PR or no checks\n' > "$GH_EMPTY"
+chmod +x "$GH_EMPTY"
+GAFFER_GH_BIN="$GH_EMPTY"
+GAFFER_CI_POLL_ATTEMPTS=2
+GAFFER_CI_POLL_INTERVAL_SECS=0
+unset GAFFER_CI_TIMEOUT_POLICY
+: > "$WG_CALLS"
+
+gaffer_ci_gate "13" "$REPO_GH" "gaffer/ticket-13" ""
+_CI_RC=$?
+[ "$_CI_RC" = "2" ] \
+  && ok "T13 no-PR/no-checks strict → rc=2 (fail closed)" \
+  || fail "T13 expected rc=2 for no-PR strict mode, got $_CI_RC"
+
+grep -q "attach-evidence" "$WG_CALLS" \
+  && ok "T13 no-PR evidence attached via wg" \
+  || fail "T13 expected attach-evidence call for no-PR case"
+
+# T14: all polls return empty + GAFFER_CI_TIMEOUT_POLICY=proceed → rc=0.
+GAFFER_CI_TIMEOUT_POLICY=proceed
+GAFFER_GH_BIN="$GH_EMPTY"
+GAFFER_CI_POLL_ATTEMPTS=2
+GAFFER_CI_POLL_INTERVAL_SECS=0
+: > "$WG_CALLS"
+
+gaffer_ci_gate "14" "$REPO_GH" "gaffer/ticket-14" ""
+_CI_RC=$?
+[ "$_CI_RC" = "0" ] \
+  && ok "T14 no-PR/no-checks + GAFFER_CI_TIMEOUT_POLICY=proceed → rc=0" \
+  || fail "T14 expected rc=0 for no-PR with proceed policy, got $_CI_RC"
+
+grep -q "attach-evidence" "$WG_CALLS" \
+  && ok "T14 proceed note attached even for no-PR case" \
+  || fail "T14 expected attach-evidence for no-PR proceed case"
 
 echo ""
 echo "Results: $PASS passed, ${#FAILURES[@]} failed"

@@ -159,6 +159,59 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
     expect(columns.some((c) => c.column === "cancelled" || c.column === "failed")).toBe(false);
   });
 
+  // --- /api/board?repo= (repo filter) ----------------------------------------
+
+  describe("GET /api/board?repo= — repo filter", () => {
+    it("returns only tickets linked to the requested repo", async () => {
+      // Register two repos and link one ticket to each.
+      h.wg.registerRepository({ name: "repo-alpha" }, human);
+      h.wg.registerRepository({ name: "repo-beta" }, human);
+
+      const alpha = makeTicket(h.wg, "Alpha ticket");
+      const beta = makeTicket(h.wg, "Beta ticket");
+      const unlinked = makeTicket(h.wg, "Unlinked ticket");
+
+      h.wg.linkRepository(alpha.id, "repo-alpha", "primary", human);
+      h.wg.linkRepository(beta.id, "repo-beta", "primary", human);
+
+      const res = await call(h.baseUrl, "GET", "/api/board?repo=repo-alpha");
+      expect(res.status).toBe(200);
+
+      const columns = res.body.columns as Array<{ column: string; cards: Array<{ id: string }> }>;
+      const allCardIds = columns.flatMap((c) => c.cards.map((card) => card.id));
+
+      expect(allCardIds).toContain(alpha.id);
+      expect(allCardIds).not.toContain(beta.id);
+      expect(allCardIds).not.toContain(unlinked.id);
+    });
+
+    it("returns an empty board for an unknown repo", async () => {
+      makeTicket(h.wg, "Some ticket");
+
+      const res = await call(h.baseUrl, "GET", "/api/board?repo=no-such-repo");
+      expect(res.status).toBe(200);
+
+      const columns = res.body.columns as Array<{ column: string; cards: Array<{ id: string }> }>;
+      const allCardIds = columns.flatMap((c) => c.cards.map((card) => card.id));
+      expect(allCardIds).toHaveLength(0);
+    });
+
+    it("returns the full board when no repo filter is provided (back-compat)", async () => {
+      h.wg.registerRepository({ name: "repo-gamma" }, human);
+      const t1 = makeTicket(h.wg, "Linked ticket");
+      const t2 = makeTicket(h.wg, "Free ticket");
+      h.wg.linkRepository(t1.id, "repo-gamma", "primary", human);
+
+      const res = await call(h.baseUrl, "GET", "/api/board");
+      expect(res.status).toBe(200);
+
+      const columns = res.body.columns as Array<{ column: string; cards: Array<{ id: string }> }>;
+      const allCardIds = columns.flatMap((c) => c.cards.map((card) => card.id));
+      expect(allCardIds).toContain(t1.id);
+      expect(allCardIds).toContain(t2.id);
+    });
+  });
+
   // --- /api/activity -------------------------------------------------------
 
   it("GET /api/activity returns events newest-first across all tickets", async () => {

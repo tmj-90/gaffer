@@ -161,7 +161,9 @@ describe("CliMemoryClient write verbs", () => {
       db: "/db",
       runner: recordingRunner({ features: { status: 1, stdout: "", stderr: "boom" } }).runner,
     });
-    await expect(badClient.listFeatures("acme-bridge")).rejects.toThrow(/MEMORY_UNAVAILABLE|error/i);
+    await expect(badClient.listFeatures("acme-bridge")).rejects.toThrow(
+      /MEMORY_UNAVAILABLE|error/i,
+    );
   });
 
   it("propagates a non-zero digest set exit as a write failure", async () => {

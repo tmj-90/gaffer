@@ -20,6 +20,9 @@ mcp-runtime.json
 # ...but the committed wiring reference is tracked (real secrets never go in it).
 !.env.example
 
+# Local-only git hook guards (banned-name / secret check) — never committed.
+.husky/*.local
+
 # OS / editor noise
 .DS_Store
 *.log

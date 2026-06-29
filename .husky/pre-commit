@@ -1,1 +1,4 @@
+# Local-only guards (gitignored real-name / secret check). No-op if absent.
+if [ -f .husky/secrets-guard.local ]; then sh .husky/secrets-guard.local || exit 1; fi
+
 pnpm exec lint-staged

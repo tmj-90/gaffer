@@ -18,6 +18,15 @@ import {
 /** Zod input schemas — validate at the CLI/MCP boundary before touching the DB. */
 
 /**
+ * A reusable refine that enforces `http://` or `https://` on any pr_url string.
+ * `javascript:`, `data:`, and other schemes that could run code in a browser
+ * rendering the URL are explicitly rejected. Apply to every pr_url field across
+ * the API, domain, and MCP boundaries.
+ */
+export const PR_URL_SAFE = (v: string): boolean => /^https?:\/\//i.test(v);
+export const PR_URL_SAFE_MESSAGE = "pr_url must start with http:// or https://";
+
+/**
  * Git-ref-safe pattern for any value handed to git as a positional ref/branch
  * argument downstream (P1-A: git option-injection). Rejects a LEADING `-` (so a
  * value like `--upload-pack=…`, `--output=x`, or a bare `-` can never be
@@ -39,7 +48,7 @@ export const GIT_REF_SAFE_MESSAGE =
 export const createTicketInput = z.object({
   title: z.string().trim().min(1, "title is required").max(300),
   description: z.string().max(20_000).default(""),
-  priority: z.number().int().default(0),
+  priority: z.number().int().min(0).max(1_000).default(0),
   risk_level: z.enum(RISK_LEVELS).default("medium"),
   policy_pack: z.enum(POLICY_PACKS).default("solo_loose"),
   source: z.string().max(200).optional(),
@@ -109,7 +118,7 @@ export const recordDeliveryArtifactInput = z
       .max(500)
       .regex(GIT_REF_SAFE, GIT_REF_SAFE_MESSAGE)
       .optional(),
-    pr_url: z.string().trim().min(1).max(2_000).optional(),
+    pr_url: z.string().trim().min(1).max(2_000).refine(PR_URL_SAFE, PR_URL_SAFE_MESSAGE).optional(),
     commit: z.string().trim().min(1).max(200).optional(),
     diff_summary: z.string().trim().min(1).max(20_000).optional(),
   })
@@ -139,13 +148,22 @@ export type SetRequiredCapabilitiesInput = z.infer<typeof setRequiredCapabilitie
 const tags = z.array(z.string().trim().min(1).max(100)).max(100);
 const reasons = z.array(z.string().trim().min(1).max(2_000)).max(50);
 
+// eslint-disable-next-line no-control-regex -- explicit control-byte guard (NUL/newline/etc.).
+const NO_CONTROL_CHARS = (v: string): boolean => !/[\x00-\x1f]/.test(v);
+const NO_CONTROL_CHARS_MESSAGE = "must not contain control characters (NUL, newline, etc.)";
+
 /** Create a scope node. `type` is validated against the node-type enum. */
 export const createScopeNodeInput = z.object({
-  name: z.string().trim().min(1, "scope node name is required").max(200),
+  name: z
+    .string()
+    .trim()
+    .min(1, "scope node name is required")
+    .max(200)
+    .refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE),
   type: z.enum(SCOPE_NODE_TYPES),
-  description: z.string().max(20_000).optional(),
+  description: z.string().max(20_000).refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE).optional(),
   risk_level: z.enum(RISK_LEVELS).default("medium"),
-  owner: z.string().max(200).optional(),
+  owner: z.string().max(200).refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE).optional(),
   tags: tags.optional(),
   lore_tags: tags.optional(),
 });
@@ -153,11 +171,17 @@ export type CreateScopeNodeInput = z.infer<typeof createScopeNodeInput>;
 
 /** Patch a scope node. Every field is optional; only present keys are written. */
 export const updateScopeNodeInput = z.object({
-  name: z.string().trim().min(1).max(200).optional(),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE)
+    .optional(),
   type: z.enum(SCOPE_NODE_TYPES).optional(),
-  description: z.string().max(20_000).optional(),
+  description: z.string().max(20_000).refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
-  owner: z.string().max(200).optional(),
+  owner: z.string().max(200).refine(NO_CONTROL_CHARS, NO_CONTROL_CHARS_MESSAGE).optional(),
   tags: tags.optional(),
   lore_tags: tags.optional(),
 });
@@ -249,7 +273,7 @@ export const recordRepoDeliveryInput = z.object({
     .regex(GIT_REF_SAFE, GIT_REF_SAFE_MESSAGE)
     .optional(),
   commit_sha: z.string().trim().min(1).max(200).optional(),
-  pr_url: z.string().trim().min(1).max(2_000).optional(),
+  pr_url: z.string().trim().min(1).max(2_000).refine(PR_URL_SAFE, PR_URL_SAFE_MESSAGE).optional(),
   status: z.enum(TICKET_REPO_DELIVERY_STATUSES).optional(),
   evidence_ref: z.string().trim().min(1).max(2_000).optional(),
 });
@@ -320,7 +344,7 @@ export const epicTicketInput = z.object({
   title: z.string().trim().min(1, "ticket title is required").max(300),
   description: z.string().max(20_000).default(""),
   acceptanceCriteria: z.array(z.string().trim().min(1).max(2_000)).max(50).default([]),
-  priority: z.number().int().optional(),
+  priority: z.number().int().min(0).max(1_000).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
   policy_pack: z.enum(POLICY_PACKS).optional(),
   repo: z.string().min(1).max(200).optional(),

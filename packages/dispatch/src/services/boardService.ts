@@ -309,10 +309,14 @@ export class BoardService {
    * AC progress, blocking-decision count and active-claim/lease state.
    * cancelled/failed tickets are returned separately as a "closed" area.
    * Read-only — no mutation.
+   *
+   * @param repo Optional repository name/id — when supplied, only tickets
+   *   linked to that repo are included. Omit (or pass undefined) for the
+   *   full board (back-compat).
    */
-  board(): BoardView {
+  board(repo?: string): BoardView {
     const now = this.clock.now();
-    const tickets = this.tickets.listFiltered({});
+    const tickets = this.tickets.listFiltered(repo ? { repo } : {});
 
     // Index active claims by ticket so each card resolves its holder in O(1).
     const claimsByTicket = new Map<string, ActiveClaimView>();

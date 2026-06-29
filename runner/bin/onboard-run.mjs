@@ -46,6 +46,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeAndWrite } from "../lib/onboard-analyze.mjs";
+import { seedMcpTrust } from "../lib/mcp-trust.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -284,6 +285,18 @@ function main() {
   if (res.stdout) log(res.stdout.trim());
   if (res.stderr) log(res.stderr.trim());
   log(`onboard run for "${opts.repo}" finished (exit ${res.status ?? 0})`);
+
+  // Pre-approve the dispatch + memory MCP servers for this repo so the factory's
+  // future headless runs (product-owner, delivery, tester) get the tools without
+  // an interactive approval prompt (Claude Code 2.1.x project-scoped MCP gate).
+  // Best-effort + idempotent: a failure here must NEVER fail the onboard.
+  if ((res.status ?? 0) === 0) {
+    try {
+      seedMcpTrust(repoPath, { log: (m) => log(`mcp-trust: ${m}`) });
+    } catch (err) {
+      log(`mcp-trust: skipped: ${err?.message ?? err}`);
+    }
+  }
 
   // MODEL-BACKED analysis (supersedes crew's mechanical digest/features).
   // Gated + best-effort: it only runs when the crew onboard SUCCEEDED and the

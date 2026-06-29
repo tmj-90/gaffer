@@ -34,7 +34,8 @@ try {
 }
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = resolve(HERE, "..", "bin", "product-owner-run.mjs");
-const { resolveRepo, buildPrompt, buildClaudeArgv, agentChildEnv } = await import(HELPER);
+const { resolveRepo, buildPrompt, buildClaudeArgv, agentChildEnv, countDraftTickets } =
+  await import(HELPER);
 
 let passed = 0;
 const failures = [];
@@ -237,6 +238,48 @@ console.log("== P2-A: DISPATCH_API_TOKEN is stripped from the agent child env ==
   if (code === 0 && out && out.childEnvHasApiToken === false) {
     ok("dry-run confirms the spawned child env would NOT carry DISPATCH_API_TOKEN");
   } else fail(`dry-run token-strip wrong (code=${code}, out=${JSON.stringify(out)})`);
+}
+
+console.log("== DRAFT-COUNT GUARD: countDraftTickets counts draft tickets per repo ==");
+{
+  // Extend the throwaway DB with the tickets + ticket_repos tables countDraftTickets
+  // joins, then assert it counts ONLY draft tickets linked to the named repo.
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(DB_PATH);
+  db.exec(
+    "CREATE TABLE tickets (id TEXT PRIMARY KEY, status TEXT NOT NULL);" +
+      "CREATE TABLE ticket_repos (ticket_id TEXT NOT NULL, repo_id TEXT NOT NULL);",
+  );
+  // demo (r1) gets 2 drafts + 1 ready; an unlinked draft and an other-repo draft
+  // must NOT be counted for demo.
+  const ins = db.prepare("INSERT INTO tickets (id,status) VALUES (?,?)");
+  const link = db.prepare("INSERT INTO ticket_repos (ticket_id,repo_id) VALUES (?,?)");
+  ins.run("t1", "draft");
+  link.run("t1", "r1");
+  ins.run("t2", "draft");
+  link.run("t2", "r1");
+  ins.run("t3", "ready");
+  link.run("t3", "r1");
+  ins.run("t4", "draft"); // unlinked to any repo
+  db.prepare("INSERT INTO repositories (id,name,local_path,default_branch) VALUES (?,?,?,?)").run(
+    "r2",
+    "other",
+    resolve(WORKDIR, "other-repo"),
+    "main",
+  );
+  ins.run("t5", "draft");
+  link.run("t5", "r2");
+  db.close();
+
+  eq("counts 2 drafts for demo", countDraftTickets(DB_PATH, "demo"), 2);
+  eq("counts 1 draft for other", countDraftTickets(DB_PATH, "other"), 1);
+  eq("unknown repo → 0", countDraftTickets(DB_PATH, "ghost"), 0);
+  eq("blank name → null (unmeasurable)", countDraftTickets(DB_PATH, "  "), null);
+  eq(
+    "missing db → null (unmeasurable)",
+    countDraftTickets(resolve(WORKDIR, "absent.sqlite"), "demo"),
+    null,
+  );
 }
 
 // Cleanup the throwaway DB + repo dir.

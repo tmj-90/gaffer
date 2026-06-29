@@ -1,3 +1,4 @@
+import { inTransaction } from "../db/connection.js";
 import type { Db } from "../db/connection.js";
 import type { PlanMessage, PlanSession, PlanSessionStatus } from "../domain/types.js";
 
@@ -99,39 +100,44 @@ export class PlanSessionRepository {
    * Append a message to the session's history and optionally update brief /
    * plan_json. Returns the updated session, or null when the id is unknown.
    *
-   * The read-modify-write for messages_json is acceptable here: plan-build
-   * sessions are single-user and have very low turn frequency.
+   * The read-modify-write is wrapped in a SQLite transaction so concurrent
+   * callers (e.g. two browser tabs posting turns simultaneously) cannot
+   * interleave their reads and writes, which would cause one turn to be lost.
+   * better-sqlite3 transactions are synchronous and hold an immediate write lock,
+   * so the append is atomic. Behaviour for the single-writer case is unchanged.
    */
   appendMessage(input: PlanSessionAppendInput): PlanSession | null {
-    const session = this.getById(input.id);
-    if (!session) return null;
+    return inTransaction(this.db, () => {
+      const session = this.getById(input.id);
+      if (!session) return null;
 
-    // Parse existing messages, push new one, re-serialise.
-    let messages: PlanMessage[];
-    try {
-      messages = JSON.parse(session.messages_json) as PlanMessage[];
-    } catch {
-      messages = [];
-    }
-    messages.push(input.message);
-    const newMessagesJson = JSON.stringify(messages);
+      // Parse existing messages, push new one, re-serialise.
+      let messages: PlanMessage[];
+      try {
+        messages = JSON.parse(session.messages_json) as PlanMessage[];
+      } catch {
+        messages = [];
+      }
+      messages.push(input.message);
+      const newMessagesJson = JSON.stringify(messages);
 
-    const updates: string[] = ["messages_json = ?", "updated_at = ?"];
-    const params: unknown[] = [newMessagesJson, input.updated_at];
+      const updates: string[] = ["messages_json = ?", "updated_at = ?"];
+      const params: unknown[] = [newMessagesJson, input.updated_at];
 
-    if (input.brief !== undefined) {
-      updates.push("brief = ?");
-      params.push(input.brief ?? null);
-    }
-    if (input.plan_json !== undefined) {
-      updates.push("plan_json = ?");
-      params.push(input.plan_json ?? null);
-    }
+      if (input.brief !== undefined) {
+        updates.push("brief = ?");
+        params.push(input.brief ?? null);
+      }
+      if (input.plan_json !== undefined) {
+        updates.push("plan_json = ?");
+        params.push(input.plan_json ?? null);
+      }
 
-    params.push(input.id);
-    this.db.prepare(`UPDATE plan_sessions SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+      params.push(input.id);
+      this.db.prepare(`UPDATE plan_sessions SET ${updates.join(", ")} WHERE id = ?`).run(...params);
 
-    return this.getById(input.id)!;
+      return this.getById(input.id)!;
+    });
   }
 
   /**

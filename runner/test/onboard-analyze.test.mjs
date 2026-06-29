@@ -685,7 +685,8 @@ console.log("== AC18: analyzeAndWrite end-to-end drafts grounded+cited+induction
   const urlDraft = suggests.find((s) => s.includes("Webhook retries cap at 2h"));
   assert(
     "URL draft sets --source",
-    urlDraft.includes("--source") && urlDraft.includes("https://github.com/acme/acme-bridge/pull/9"),
+    urlDraft.includes("--source") &&
+      urlDraft.includes("https://github.com/acme/acme-bridge/pull/9"),
   );
   assert(
     "URL draft confidence capped to medium (model said high)",

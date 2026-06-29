@@ -8,6 +8,7 @@ import type { EventLog } from "../events/eventLog.js";
 import type { RepoRegistry } from "../registry/repoRegistry.js";
 import type { SelfImproveGate } from "./selfImprove.js";
 import type { DispatchClient } from "../dispatch/client.js";
+import type { Oracle } from "./oracles/types.js";
 
 export interface CoverageFinding {
   repoName: string;
@@ -29,6 +30,30 @@ export interface IdleLoopDeps {
    * tests and when the feature is off, leaving draft behaviour unchanged.
    */
   selfImprove?: SelfImproveGate;
+  /**
+   * Optional tool-backed oracles (I2). When present, a scan loop PREFERS its
+   * oracle's precise findings; when an oracle is absent or its tool isn't
+   * installed, the loop falls back to its heuristic path unchanged. Local-first:
+   * no oracle is ever a hard dependency, and these are absent in the heuristic
+   * tests and on a fresh config, so default behaviour is preserved.
+   */
+  oracles?: OracleSet;
+}
+
+/**
+ * The oracle adapters a scan loop may consult. Each is independently optional —
+ * a loop only switches to its oracle when the matching entry is present AND its
+ * tool resolves on PATH at consult time.
+ */
+export interface OracleSet {
+  /** Feeds the type-quality loop (tsc diagnostics). */
+  tsc?: Oracle;
+  /** Feeds the tech-debt loop (eslint quality/complexity findings). */
+  eslint?: Oracle;
+  /** Feeds the tech-debt loop (knip / ts-prune dead-code findings). */
+  deadCode?: Oracle;
+  /** Feeds the security-hotspot loop (semgrep findings). */
+  security?: Oracle;
 }
 
 export interface CoverageDraft {

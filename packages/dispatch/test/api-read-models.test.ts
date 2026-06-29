@@ -71,9 +71,11 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
     makeTicket(h.wg, "Draft ticket");
     // ready
     const ready = makeTicket(h.wg, "Ready ticket");
+    h.wg.addAcceptanceCriterion({ ticket_id: ready.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     h.wg.markReady(ready.id, human);
     // claimed/in_progress -> collapsed "in_progress" column
     const claimed = makeTicket(h.wg, "Claimed ticket");
+    h.wg.addAcceptanceCriterion({ ticket_id: claimed.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     h.wg.markReady(claimed.id, human);
     const agent = h.wg.registerAgent({ display_name: "claude-board" }, human);
     h.wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, human);
@@ -132,6 +134,7 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
 
   it("board marks a claim stale once its lease has passed expiry", async () => {
     const t = makeTicket(h.wg, "Stale lease");
+    h.wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     h.wg.markReady(t.id, human);
     const agent = h.wg.registerAgent({ display_name: "slow-agent" }, human);
     h.wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 60 }, human);
@@ -162,6 +165,7 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
     const a = makeTicket(h.wg, "First");
     h.clock.advanceSeconds(1);
     const b = makeTicket(h.wg, "Second");
+    h.wg.addAcceptanceCriterion({ ticket_id: a.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     h.clock.advanceSeconds(1);
     h.wg.markReady(a.id, human); // newest event
 
@@ -220,6 +224,7 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
   it("GET /api/dashboard summarises counts, open decisions and active claims", async () => {
     const draft = makeTicket(h.wg, "A draft");
     const ready = makeTicket(h.wg, "A ready");
+    h.wg.addAcceptanceCriterion({ ticket_id: ready.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     h.wg.markReady(ready.id, human);
     const agent = h.wg.registerAgent({ display_name: "claude-dash" }, human);
     h.wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, human);
@@ -245,6 +250,7 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
 
   it("dashboard counts stale claims once their lease passes expiry", async () => {
     const t = makeTicket(h.wg, "Will go stale");
+    h.wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     h.wg.markReady(t.id, human);
     const agent = h.wg.registerAgent({ display_name: "ghost" }, human);
     h.wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 30 }, human);
@@ -282,6 +288,7 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
     // B 30s → median(ready) = 20s. The draft span before the first transition
     // and the still-open `claimed` span are not completed intervals, so absent.
     const a = makeTicket(h.wg, "A");
+    h.wg.addAcceptanceCriterion({ ticket_id: a.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     h.wg.markReady(a.id, human);
     const agentA = h.wg.registerAgent({ display_name: "worker-a" }, human);
     h.wg.claimNextTicket({ agentId: agentA.id, ttlSeconds: 600 }, human);
@@ -289,6 +296,7 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
     stampTransition(a.id, "claimed", "2026-01-01T00:00:10.000Z"); // 10s in ready
 
     const b = makeTicket(h.wg, "B");
+    h.wg.addAcceptanceCriterion({ ticket_id: b.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     h.wg.markReady(b.id, human);
     const agentB = h.wg.registerAgent({ display_name: "worker-b" }, human);
     h.wg.claimNextTicket({ agentId: agentB.id, ttlSeconds: 600 }, human);
@@ -309,6 +317,7 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
 
   it("dashboard flags tickets stuck in a non-terminal state beyond the threshold", async () => {
     const stale = makeTicket(h.wg, "Languishing");
+    h.wg.addAcceptanceCriterion({ ticket_id: stale.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     h.wg.markReady(stale.id, human); // enters ready
     // Pin the ready entry to the clock epoch, then advance 26h past it (>24h).
     stampTransition(stale.id, "ready", "2026-01-01T00:00:00.000Z");

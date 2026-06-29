@@ -489,6 +489,44 @@ export const settingsBody = z.object({
 });
 export type SettingsBody = z.infer<typeof settingsBody>;
 
+// --- Plan sessions (H9 — durable async plan-build chat) --------------------
+
+/**
+ * Body for POST /plan-sessions/:id/turns — appends a user or assistant message
+ * to the session's history and, for the first user turn, records the brief.
+ *
+ * `role` is required. `content` is the raw text (user turns) or the JSON-
+ * serialised decompose-result envelope (assistant turns). `plan` is the raw
+ * plan object when an assistant turn delivers a plan phase — stored server-side
+ * so the panel can restore the proposal on reload. `brief` is forwarded by the
+ * client on the first user turn only.
+ */
+export const planSessionTurnBody = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().max(100_000),
+  brief: z.string().trim().min(1).max(4_000).optional(),
+  plan: z.unknown().optional(),
+});
+export type PlanSessionTurnBody = z.infer<typeof planSessionTurnBody>;
+
+/**
+ * Body for POST /plan-sessions/:id/archive — transitions the session to
+ * 'confirmed' (user approved the plan) or 'abandoned' (user started fresh).
+ */
+export const planSessionArchiveBody = z.object({
+  status: z.enum(["confirmed", "abandoned"]),
+});
+export type PlanSessionArchiveBody = z.infer<typeof planSessionArchiveBody>;
+
+/**
+ * Query for GET /plan-sessions — optional status filter + limit cap.
+ */
+export const planSessionListQuery = z.object({
+  status: z.enum(["active", "confirmed", "abandoned"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+export type PlanSessionListQuery = z.infer<typeof planSessionListQuery>;
+
 /**
  * Body for PUT /api/idle-loops — the editable slice of each idle scan loop. Each
  * entry names a known idle loop (`key`), its enabled flag, and the repo NAMES it
@@ -524,3 +562,24 @@ export const activityQuery = z.object({
   offset: z.coerce.number().int().min(0).catch(0).default(0),
 });
 export type ActivityQuery = z.infer<typeof activityQuery>;
+
+/** Default + max for the most-recent-runs list on GET /api/runs. */
+export const RUNS_DEFAULT_LIMIT = 20;
+export const RUNS_MAX_LIMIT = 100;
+
+/**
+ * Query for GET /api/runs. `active=1` ⇒ only the in-flight runs (the "Running
+ * now" panel's primary feed); `limit` bounds the recent list returned alongside.
+ * Both are best-effort coerced (`.catch`) so a junk query never 422s a read.
+ */
+export const runsQuery = z.object({
+  active: z.coerce.boolean().catch(false).default(false),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(RUNS_MAX_LIMIT)
+    .catch(RUNS_DEFAULT_LIMIT)
+    .default(RUNS_DEFAULT_LIMIT),
+});
+export type RunsQuery = z.infer<typeof runsQuery>;

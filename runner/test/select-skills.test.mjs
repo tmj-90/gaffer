@@ -475,15 +475,18 @@ check("stack-constrained infra skills (terraform, k8s) route by stack token", ()
   assert(!node.includes("kubernetes-operator"), "plain node must not pull kubernetes-operator");
 });
 
-check("landing-page-generator routes for react stack (marketing area, web stack)", () => {
-  // landing-page-generator has stack: [typescript, javascript, react, web]
+check("landing-page-generator is area-only (opt-in marketing, not stack-routed)", () => {
+  // After making stack: [], it is area-only — must NOT fire on a react stack query.
   const react = selectSkills({ stacks: ["react"] }).map((s) => s.name);
-  assert(react.includes("landing-page-generator"), "react stack → landing-page-generator");
-  // java stack must not pull it
-  const java = selectSkills({ stacks: ["java"] }).map((s) => s.name);
   assert(
-    !java.includes("landing-page-generator"),
-    "java stack must not pull landing-page-generator",
+    !react.includes("landing-page-generator"),
+    "react stack must NOT pull landing-page-generator (now area-only)",
+  );
+  // It DOES resolve under --area marketing.
+  const marketing = selectSkills({ area: "marketing" }).map((s) => s.name);
+  assert(
+    marketing.includes("landing-page-generator"),
+    "landing-page-generator resolves under area: marketing",
   );
 });
 

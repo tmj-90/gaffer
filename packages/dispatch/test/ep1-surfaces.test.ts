@@ -49,8 +49,10 @@ describe("EP-001 MCP: create_epic + add_dependency + get_ticket dependencies", (
     const h = makeHandlers(wg, agentActor);
 
     const blocker = wg.createTicket({ title: "blocker" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: blocker.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     wg.markReady(blocker.id, human);
     const dependent = wg.createTicket({ title: "dependent" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: dependent.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     wg.markReady(dependent.id, human);
 
     const depRes = h.add_dependency({ ticket: dependent.id, depends_on: blocker.id });

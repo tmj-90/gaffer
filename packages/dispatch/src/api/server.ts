@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +6,13 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import { readAuditTail } from "../audit/auditTail.js";
+import {
+  aggregateCosts,
+  readLedgerRows,
+  resolveLedgerPath,
+  todaySpend,
+} from "../cost/costAggregator.js";
+import { buildRunDetail } from "./runDetail.js";
 import { isAuthorized } from "./auth.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
@@ -36,6 +43,9 @@ import {
   linkTicketScopeBody,
   moveTicketBody,
   planBuildBody,
+  planSessionArchiveBody,
+  planSessionListQuery,
+  planSessionTurnBody,
   recordDeliveryArtifactBody,
   recordRepoDeliveryBody,
   rejectReviewBody,
@@ -45,6 +55,7 @@ import {
   idleLoopsBody,
   onboardRepoBody,
   runProductOwnerBody,
+  runsQuery,
   settingsBody,
   setRepoHiddenBody,
   setPrimaryScopeBody,
@@ -324,13 +335,17 @@ function handleError(res: ServerResponse, err: unknown): void {
  */
 export function createApiHandler(
   wg: Dispatch,
-  runner: ProductOwnerRunner = createProductOwnerRunner(),
+  // RUN-ACTIVITY: the default runners are wired with `wg` as the run tracker, so
+  // each detached spawn records a `runs` row and captures its output to a per-run
+  // log (earlier params are in scope for later default expressions). A caller that
+  // passes its own runner opts out of tracking unless it wires a tracker itself.
+  runner: ProductOwnerRunner = createProductOwnerRunner(process.env, wg),
   planBuildRunner: PlanBuildRunner = createPlanBuildRunner(),
-  mergeRunner: MergeRunner = createMergeRunner(),
-  pollWorkRunner: PollWorkRunner = createPollWorkRunner(),
+  mergeRunner: MergeRunner = createMergeRunner(process.env, undefined, wg),
+  pollWorkRunner: PollWorkRunner = createPollWorkRunner(process.env, wg),
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
-  onboardRunner: OnboardRunner = createOnboardRunner(),
+  onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
 ): (req: IncomingMessage, res: ServerResponse) => void {
   // Resolve the HSTS posture ONCE from the bind host (not per request), so a
   // spoofed Host header can't toggle Strict-Transport-Security on/off.
@@ -363,13 +378,14 @@ export function createApiHandler(
 /** Construct an http.Server wrapping the Dispatch facade. */
 export function createApiServer(
   wg: Dispatch,
-  runner: ProductOwnerRunner = createProductOwnerRunner(),
+  // RUN-ACTIVITY: default runners track via `wg` (see createApiHandler).
+  runner: ProductOwnerRunner = createProductOwnerRunner(process.env, wg),
   planBuildRunner: PlanBuildRunner = createPlanBuildRunner(),
-  mergeRunner: MergeRunner = createMergeRunner(),
-  pollWorkRunner: PollWorkRunner = createPollWorkRunner(),
+  mergeRunner: MergeRunner = createMergeRunner(process.env, undefined, wg),
+  pollWorkRunner: PollWorkRunner = createPollWorkRunner(process.env, wg),
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
-  onboardRunner: OnboardRunner = createOnboardRunner(),
+  onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
 ): Server {
   return createServer(
     createApiHandler(
@@ -619,6 +635,97 @@ async function route(
       sendJson(res, 200, result);
       return;
     }
+
+    // ── Plan sessions (H9 — durable async plan-build chat) ─────────────────
+    //
+    // POST /plan-sessions            — create a new session (archives current active)
+    // GET  /plan-sessions            — list sessions (most-recent first, capped)
+    // GET  /plan-sessions/active     — the most-recently-created active session
+    // GET  /plan-sessions/:id        — fetch one session by id
+    // POST /plan-sessions/:id/turns  — append a message + optional brief/plan update
+    // POST /plan-sessions/:id/archive — transition to confirmed or abandoned
+    //
+    // All are behind the same bearer-token gate as the rest of the control plane.
+    if (segments[0] === "plan-sessions") {
+      // POST /plan-sessions — create a fresh session (current active is archived).
+      if (segments.length === 1) {
+        if (method === "POST") {
+          const session = wg.createPlanSession();
+          sendJson(res, 201, { session });
+          return;
+        }
+        if (method === "GET") {
+          const q = planSessionListQuery.parse(
+            Object.fromEntries(new URL(req.url ?? "/", "http://x").searchParams),
+          );
+          const sessions = wg.listPlanSessions({
+            ...(q.status !== undefined ? { status: q.status } : {}),
+            ...(q.limit !== undefined ? { limit: q.limit } : {}),
+          });
+          sendJson(res, 200, { sessions });
+          return;
+        }
+        return methodNotAllowed(res);
+      }
+      // GET /plan-sessions/active — most-recently-created active session or null.
+      if (segments.length === 2 && segments[1] === "active") {
+        if (method !== "GET") return methodNotAllowed(res);
+        const session = wg.getActivePlanSession();
+        sendJson(res, 200, { session });
+        return;
+      }
+      // /plan-sessions/:id — fetch by id.
+      if (segments.length === 2) {
+        const id = segments[1]!;
+        if (method !== "GET") return methodNotAllowed(res);
+        const session = wg.getPlanSession(id);
+        if (!session) {
+          sendJson(res, 404, { error: { code: "NOT_FOUND", message: "Plan session not found." } });
+          return;
+        }
+        sendJson(res, 200, { session });
+        return;
+      }
+      // /plan-sessions/:id/turns — append a message to the session.
+      if (segments.length === 3 && segments[2] === "turns") {
+        const id = segments[1]!;
+        if (method !== "POST") return methodNotAllowed(res);
+        const body = planSessionTurnBody.parse(await readJsonBody(req));
+        const session = wg.appendPlanMessage(
+          id,
+          { role: body.role, content: body.content },
+          {
+            ...(body.brief !== undefined ? { brief: body.brief } : {}),
+            ...(body.plan !== undefined ? { plan: body.plan } : {}),
+          },
+        );
+        if (!session) {
+          sendJson(res, 404, { error: { code: "NOT_FOUND", message: "Plan session not found." } });
+          return;
+        }
+        sendJson(res, 200, { session });
+        return;
+      }
+      // /plan-sessions/:id/archive — transition to confirmed or abandoned.
+      if (segments.length === 3 && segments[2] === "archive") {
+        const id = segments[1]!;
+        if (method !== "POST") return methodNotAllowed(res);
+        const body = planSessionArchiveBody.parse(await readJsonBody(req));
+        const existing = wg.getPlanSession(id);
+        if (!existing) {
+          sendJson(res, 404, { error: { code: "NOT_FOUND", message: "Plan session not found." } });
+          return;
+        }
+        wg.archivePlanSession(id, body.status);
+        const updated = wg.getPlanSession(id)!;
+        sendJson(res, 200, { session: updated });
+        return;
+      }
+      return sendJson(res, 404, {
+        error: { code: "NOT_FOUND", message: "Unknown plan-sessions path." },
+      });
+    }
+
     // POST /poll-work — fire a single factory tick on demand (the Work/board
     // view's "Poll for work" button). Spawns the configured DISPATCH_TICK_CMD
     // using the SAME safe pattern as the merge/product-owner runners (no shell,
@@ -1494,6 +1601,106 @@ function routeReadModels(
     return;
   }
 
+  // RUN-ACTIVITY: GET /api/runs?active=1&limit=N — the in-flight + recent runs
+  // that power the dashboard's "Running now" panel. Returns BOTH the active runs
+  // and the most-recent finished runs so the panel renders in one fetch.
+  if (segments.length === 2 && segments[1] === "runs") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const q = runsQuery.parse({
+      active: url.searchParams.get("active") ?? undefined,
+      limit: url.searchParams.get("limit") ?? undefined,
+    });
+    // Active list is hard-capped (a wedged factory could leak many running rows);
+    // surface truncation so the panel can show "showing N of many" rather than
+    // silently dropping in-flight runs.
+    const activeResult = wg.listRunsResult({ active: true });
+    // The recent list is the most-recent N of any status; drop the still-running
+    // ones so `recent` reads as the finished tail (active are shown separately).
+    const recent = wg
+      .listRuns({ limit: q.limit })
+      .filter((r) => r.status !== "running")
+      .slice(0, q.limit);
+    sendJson(res, 200, {
+      active: activeResult.runs,
+      active_truncated: activeResult.truncated,
+      recent,
+    });
+    return;
+  }
+
+  // GET /api/cost — factory-wide cost summary from the usage ledger.
+  // Defensive: returns a zero-state envelope when the ledger is absent or
+  // unreadable. Lists are capped so a large ledger never bloats the response.
+  // Behind the same bearer gate as the rest of /api (checked in route()).
+  if (segments.length === 2 && segments[1] === "cost") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const TOP_N = 25;
+    // Build a ticket-number→repo-name resolver from the dispatch state.
+    const resolver = (ticketNumber: number): string | null => {
+      try {
+        const ticket = wg.tickets.findByNumber(ticketNumber);
+        if (!ticket) return null;
+        const links = wg.repos.accessLinksForTicket(ticket.id);
+        return links[0]?.name ?? null;
+      } catch {
+        return null;
+      }
+    };
+    const agg = aggregateCosts(process.env, resolver);
+    // Compute today's spend separately for the dashboard tile.
+    const ledgerPath = resolveLedgerPath(process.env);
+    const rows = ledgerPath ? readLedgerRows(ledgerPath) : [];
+    const today_usd = todaySpend(rows);
+    sendJson(res, 200, {
+      total_usd: agg.total_usd,
+      today_usd,
+      ticket_count: agg.ticket_count,
+      last_record_at: agg.last_record_at,
+      by_repo: agg.by_repo.slice(0, TOP_N),
+      top_tickets: agg.by_ticket.slice(0, TOP_N),
+    });
+    return;
+  }
+
+  // RUN-ACTIVITY: GET /api/runs/:id — enriched run detail (phase · model · turns
+  // · cost · log tail · outcome) assembled from the run row + its log file +
+  // the usage ledger. Zero-state safe: missing log or absent ledger returns
+  // null/zero fields rather than a 5xx. 404 for unknown run ids.
+  if (segments.length === 3 && segments[1] === "runs") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const run = wg.runs.findById(segments[2] as string);
+    if (!run) {
+      sendJson(res, 404, errorBody("NOT_FOUND", "Run not found."));
+      return;
+    }
+    // Read the byte-capped raw tail (same reader as the /log endpoint); the
+    // detail builder then applies the line cap on top.
+    const logText = run.log_path ? readLogTail(run.log_path, RUN_LOG_TAIL_BYTES) : null;
+    const detail = buildRunDetail(run, logText, process.env);
+    sendJson(res, 200, { detail });
+    return;
+  }
+
+  // RUN-ACTIVITY: GET /api/runs/:id/log — the tail (last RUN_LOG_TAIL_BYTES) of a
+  // run's captured output, as text/plain. 404 when the run or its log is missing.
+  // Privileged read like the rest of /api (behind the bearer gate in route()).
+  if (segments.length === 4 && segments[1] === "runs" && segments[3] === "log") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const run = wg.runs.findById(segments[2] as string);
+    if (!run || !run.log_path) {
+      sendJson(res, 404, errorBody("NOT_FOUND", "No log for that run."));
+      return;
+    }
+    const tail = readLogTail(run.log_path, RUN_LOG_TAIL_BYTES);
+    if (tail === null) {
+      sendJson(res, 404, errorBody("NOT_FOUND", "Run log file is missing."));
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    res.end(tail);
+    return;
+  }
+
   sendJson(res, 404, errorBody("NOT_FOUND", `No route for ${method} ${url.pathname}.`));
 }
 
@@ -1507,5 +1714,38 @@ function safeDecode(segment: string): string | null {
     return decodeURIComponent(segment);
   } catch {
     return null;
+  }
+}
+
+/** Cap on the run-log tail returned by GET /api/runs/:id/log (last 64KB). */
+const RUN_LOG_TAIL_BYTES = 64 * 1024;
+
+/**
+ * Read the last `maxBytes` of a run log file as UTF-8 text. Returns null when the
+ * file is missing/unreadable (the route maps that to a 404). Reading only the
+ * tail (via stat + a positioned read) bounds memory regardless of log size — a
+ * long-running, chatty run never balloons the response.
+ */
+function readLogTail(path: string, maxBytes: number): string | null {
+  let fd: number | null = null;
+  try {
+    const size = statSync(path).size;
+    const start = size > maxBytes ? size - maxBytes : 0;
+    const length = Math.min(size, maxBytes);
+    if (length === 0) return "";
+    fd = openSync(path, "r");
+    const buf = Buffer.allocUnsafe(length);
+    const read = readSync(fd, buf, 0, length, start);
+    return buf.subarray(0, read).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already closed / invalid — nothing to do.
+      }
+    }
   }
 }

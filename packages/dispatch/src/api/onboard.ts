@@ -1,8 +1,7 @@
-import { spawn } from "node:child_process";
-
 import { DispatchError } from "../util/errors.js";
 
 import { parseCommand } from "./mergeRunner.js";
+import { type RunTracker, spawnTrackedRun } from "./runTracking.js";
 
 /**
  * Kicks off a repo onboarding run — the Memory view's "Onboard a repo" button's
@@ -29,6 +28,8 @@ export interface OnboardRunResult {
   started: boolean;
   /** OS process id of the spawned run, or null if the platform withheld one. */
   pid: number | null;
+  /** The tracked run id (when a registry is wired), so the UI can poll it. */
+  runId?: string | null;
 }
 
 export interface OnboardRunner {
@@ -59,7 +60,10 @@ function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * something to happen — so it surfaces a clean NOT_CONFIGURED, exactly like the
  * poll-work / product-owner runners do (mapped to a 503 envelope, never a 500).
  */
-export function createOnboardRunner(env: NodeJS.ProcessEnv = process.env): OnboardRunner {
+export function createOnboardRunner(
+  env: NodeJS.ProcessEnv = process.env,
+  tracker?: RunTracker,
+): OnboardRunner {
   return {
     run({ repo }) {
       const tokens = parseCommand(env[ONBOARD_CMD_ENV] ?? "");
@@ -74,13 +78,19 @@ export function createOnboardRunner(env: NodeJS.ProcessEnv = process.env): Onboa
       const base = childEnv(env);
       // No shell: argv is [bin, ...args]; the only caller-derived value (`repo`)
       // rides in the child env, never on the command line. Token stripped above.
-      const child = spawn(bin!, args, {
-        detached: true,
-        stdio: "ignore",
-        env: { ...base, [ONBOARD_REPO_ENV]: repo },
-      });
-      child.unref();
-      return { started: true, pid: child.pid ?? null };
+      // RUN-ACTIVITY: recorded + output captured when a tracker is wired.
+      const result = spawnTrackedRun(
+        {
+          bin: bin!,
+          args,
+          env: { ...base, [ONBOARD_REPO_ENV]: repo },
+          kind: "onboard",
+          repo,
+        },
+        tracker,
+        env,
+      );
+      return { started: result.started, pid: result.pid, runId: result.runId };
     },
   };
 }

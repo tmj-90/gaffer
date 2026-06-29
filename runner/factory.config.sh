@@ -85,10 +85,50 @@ GAFFER_IMPL_MODEL_FLAG=""; [ -n "${GAFFER_IMPL_MODEL:-}" ] && GAFFER_IMPL_MODEL_
 # opus/sonnet DEFAULTS are the routing baseline, not an override, so they don't
 # suppress risk/attempt-aware routing (see GAFFER_*_MODEL_EXPLICIT above).
 : "${GAFFER_MODEL_REGISTRY:=$RUNNER_DIR/model-registry.json}"
-# Budget seam (H1 not built yet): GAFFER_BUDGET_REMAINING defaults to unlimited, so
-# the budget-aware downgrade never fires until H1 supplies a real feed AND an
-# operator sets GAFFER_BUDGET_LOW_THRESHOLD (>0). Both are documented follow-ups.
-: "${GAFFER_BUDGET_REMAINING:=}"
+# H1 cost/budget visibility knobs.
+# GAFFER_BUDGET_USD — operator spending ceiling in USD for the factory's total
+#   spend (summed from the usage-ledger). Unset or 0 = unlimited (the default).
+#   Example: GAFFER_BUDGET_USD=5.00 (stop routing to expensive models at $5).
+: "${GAFFER_BUDGET_USD:=}"
+export GAFFER_BUDGET_USD
+
+# GAFFER_BUDGET_REMAINING — live USD headroom. Recomputed here from the ledger
+# so the I1 router (gaffer_route_model) and Guard C (ask-on-cap) can read a
+# real figure instead of "unlimited". Empty = unlimited (GAFFER_BUDGET_USD unset
+# or ledger unreadable). Updated every time factory.config.sh is sourced (once
+# per tick at source-time in tick.sh / loop.sh).
+if [ -n "${GAFFER_BUDGET_USD:-}" ] && command -v node >/dev/null 2>&1 \
+   && [ -n "${GAFFER_USAGE_LEDGER:-}${GAFFER_DATA:-}" ]; then
+  _gaffer_budget_remaining="$(node - <<'__BUDGET_JS__' 2>/dev/null || true
+const fs = require('fs');
+const path = require('path');
+const ledger = process.env.GAFFER_USAGE_LEDGER ||
+  (process.env.GAFFER_DATA ? path.join(process.env.GAFFER_DATA, 'usage-ledger.jsonl') : '');
+if (!ledger) { process.stdout.write(''); process.exit(0); }
+let spend = 0;
+try {
+  const lines = fs.readFileSync(ledger, 'utf8').split('\n');
+  for (const ln of lines) {
+    const t = ln.trim(); if (!t) continue;
+    try {
+      const r = JSON.parse(t);
+      const c = r.total_cost_usd;
+      if (typeof c === 'number' && Number.isFinite(c) && c >= 0) spend += c;
+    } catch { /* skip malformed */ }
+  }
+} catch { /* missing ledger = 0 spend */ }
+const budget = parseFloat(process.env.GAFFER_BUDGET_USD || '0');
+if (budget <= 0) { process.stdout.write(''); process.exit(0); }
+const remaining = Math.max(0, budget - spend);
+process.stdout.write(remaining.toFixed(6));
+__BUDGET_JS__
+)"
+  : "${GAFFER_BUDGET_REMAINING:=$_gaffer_budget_remaining}"
+  unset _gaffer_budget_remaining
+else
+  # No budget configured or node unavailable → unlimited (the pre-H1 default).
+  : "${GAFFER_BUDGET_REMAINING:=}"
+fi
 : "${GAFFER_BUDGET_LOW_THRESHOLD:=0}"
 export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD
 
@@ -196,6 +236,34 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 : "${GAFFER_MAX_TURNS:=60}"        # max agent turns per claude -p call
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
+
+# --- Recoverable-delivery guard (GUARD B) ------------------------------------
+# When the agent produced ≥1 commit but a DOWNSTREAM gate (DoD / hygiene /
+# minimalism / empty-but-committed) failed, the delivery is RECOVERABLE: the
+# branch holds salvageable work, so the failure path PRESERVES the branch
+# (tears down only the disposable worktree), attaches the gate output to the
+# ticket as a rework note, and RE-INVOKES the delivery agent on the SAME branch
+# with that feedback — bounded by this cap. Only after the attempts are
+# exhausted is the ticket parked to `refining` WITH the branch + feedback (never
+# silently discarded). Set to 1 to disable retry (one attempt, then park).
+: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=2}"   # total delivery attempts per tick (≥1)
+export GAFFER_MAX_DELIVERY_ATTEMPTS
+
+# --- Ask-on-cap guard (GUARD C) ----------------------------------------------
+# When a mid-delivery agent call HITS a cap rather than failing a gate — it ran
+# to the turn cap (num_turns at/over GAFFER_MAX_TURNS) or Claude reported a
+# max-turns stop reason — the work is incomplete-but-not-broken. Instead of
+# silently discarding it, the tick PRESERVES the branch, emits a `ticket_parked`
+# notify event (ticket#, spend, dashboard URL; redaction honours
+# GAFFER_NOTIFY_REDACT), and parks the ticket as needs-human-review. This cap is
+# the turn count at/above which a call is treated as cap-hit; it defaults to the
+# turn cap itself so a call that consumed every turn is caught.
+: "${GAFFER_CAP_DETECT_TURNS:=${GAFFER_MAX_TURNS:-60}}"   # num_turns ≥ this ⇒ cap-hit
+export GAFFER_CAP_DETECT_TURNS
+# Dashboard base URL embedded in the cap-hit / park notify so the operator can
+# click straight through to the ticket. Defaults to the local dashboard.
+: "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"
+export GAFFER_DASHBOARD_URL
 
 # Portable wall-clock timeout. Usage: gaffer_timeout <seconds> <command> [args...]
 # Exit 124 on timeout (matching GNU timeout's convention) so callers can detect it.
@@ -815,6 +883,13 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # shellcheck source=lib/dod.sh
 [ -f "$RUNNER_DIR/lib/dod.sh" ] && source "$RUNNER_DIR/lib/dod.sh"
 
+# Recoverable-delivery + ask-on-cap primitives (GUARD B / GUARD C): defines
+# gaffer_branch_has_commits / gaffer_any_branch_has_commits (recoverable-vs-
+# unrecoverable discriminator), gaffer_is_cap_hit / gaffer_cap_num_turns /
+# gaffer_delivery_spend (cap detection + spend for the ask-on-cap notify).
+# shellcheck source=lib/delivery-recovery.sh
+[ -f "$RUNNER_DIR/lib/delivery-recovery.sh" ] && source "$RUNNER_DIR/lib/delivery-recovery.sh"
+
 # Per-repo backpressure (defines gaffer_repo_pressure / gaffer_repo_in_backpressure).
 # shellcheck source=lib/backpressure.sh
 [ -f "$RUNNER_DIR/lib/backpressure.sh" ] && source "$RUNNER_DIR/lib/backpressure.sh"
@@ -840,3 +915,36 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # Set to 1 for a factory you want actively refining its own backlog while idle.
 : "${CLARIFY_DRAFTS_WHEN_IDLE:=0}"
 : "${IDLE_DRAFT_WHEN_IDLE:=0}"
+
+# --- H4: real PR creation (opt-in) -------------------------------------------
+# When GAFFER_CREATE_PR=1 AND the primary write repo has a GitHub remote, the
+# runner runs `gh pr create` after a successful delivery and records the resulting
+# URL back as pr_url on the ticket. Off by default — opt in per-run or globally.
+# The `gh` binary is injectable via GAFFER_GH_BIN (default: `gh`) so tests can
+# stub it without a real remote.
+: "${GAFFER_CREATE_PR:=0}"   # 1/true/yes/on to enable real PR creation; default OFF
+: "${GAFFER_GH_BIN:=gh}"     # injectable gh binary (for tests)
+export GAFFER_CREATE_PR GAFFER_GH_BIN
+
+# --- H3: CI-aware review gate (opt-in) ----------------------------------------
+# When GAFFER_REQUIRE_CI=1, after the delivery branch/PR exists the runner polls
+# `gh pr checks <branch>` until checks are green, then lets the ticket enter the
+# human review lane. If CI goes red, the ticket is auto-rejected back to rework
+# with the failing check (name + url) as evidence. On poll timeout the gate
+# surfaces "CI still pending" and proceeds rather than hanging forever.
+# Off by default — fully backward-compatible when unset.
+: "${GAFFER_REQUIRE_CI:=0}"            # 1/true/yes/on to require CI green before review
+: "${GAFFER_CI_POLL_ATTEMPTS:=20}"     # max poll cycles before "still pending" timeout
+: "${GAFFER_CI_POLL_INTERVAL_SECS:=30}" # seconds between polls
+export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
+
+# H4 PR-creation helper (defines gaffer_create_pr / gaffer_pr_create_enabled /
+# gaffer_has_github_remote / gaffer_build_pr_body). Sourced here so the functions
+# are available in tick.sh which sources factory.config.sh.
+# shellcheck source=lib/pr-create.sh
+[ -f "$RUNNER_DIR/lib/pr-create.sh" ] && source "$RUNNER_DIR/lib/pr-create.sh"
+
+# H3 CI-gate helper (defines gaffer_ci_gate / gaffer_ci_gate_enabled /
+# gaffer_parse_checks). Sourced here for the same reason.
+# shellcheck source=lib/ci-gate.sh
+[ -f "$RUNNER_DIR/lib/ci-gate.sh" ] && source "$RUNNER_DIR/lib/ci-gate.sh"

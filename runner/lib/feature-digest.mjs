@@ -126,19 +126,39 @@ export function encodeDigestDelta(delta) {
  * summary is a well-formed GAFFER_DIGEST_DELTA_V1 payload, else null. Tolerant:
  * a malformed/garbage payload returns null (the merge then falls back) — it never
  * throws, because a bad prepared note must never break a merge.
+ *
+ * R-8: a row that STARTS with the delta marker but fails to parse is logged as a
+ * WARNING so the operator can see that prepared digest work was lost. Silent null
+ * returns only for rows that do NOT start with the marker (i.e. unrelated evidence).
  */
 export function parseDigestDeltaSummary(summary) {
   const text = String(summary ?? "").trim();
   if (!text.startsWith(DIGEST_DELTA_MARKER)) return null;
   const json = text.slice(DIGEST_DELTA_MARKER.length).trim();
-  if (!json) return null;
+  if (!json) {
+    process.stderr.write(
+      `WARNING: digest-delta row starts with ${DIGEST_DELTA_MARKER} marker but has no JSON payload — ` +
+        `prepared digest work LOST (falling back to minimal stamp)\n`,
+    );
+    return null;
+  }
   let obj;
   try {
     obj = JSON.parse(json);
-  } catch {
+  } catch (err) {
+    process.stderr.write(
+      `WARNING: digest-delta row starts with ${DIGEST_DELTA_MARKER} marker but JSON is malformed ` +
+        `(${err?.message ?? err}) — prepared digest work LOST (falling back to minimal stamp)\n`,
+    );
     return null;
   }
-  if (!obj || typeof obj !== "object") return null;
+  if (!obj || typeof obj !== "object") {
+    process.stderr.write(
+      `WARNING: digest-delta row starts with ${DIGEST_DELTA_MARKER} marker but parsed to a non-object ` +
+        `(got ${typeof obj}) — prepared digest work LOST (falling back to minimal stamp)\n`,
+    );
+    return null;
+  }
   return obj;
 }
 

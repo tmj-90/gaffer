@@ -91,6 +91,7 @@ async function startHarness(runner: PollWorkRunner, seedReady = true): Promise<H
     // spawn / NOT_CONFIGURED paths below are exercised (empty queue is tested separately).
     const human = { type: "human" as const, id: "tom" };
     const t = wg.createTicket({ title: "seed ready" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready
     wg.markReady(t.id, human);
   }
   let runs = 0;

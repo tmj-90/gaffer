@@ -71,7 +71,7 @@ export function topCitedRecords(
               COUNT(e.rowid) AS readCount
        FROM events e
        INNER JOIN lore l ON l.id = e.lore_id
-       WHERE e.kind = 'read' AND e.ts >= ?
+       WHERE e.kind = 'read' AND e.ts >= ? AND l.restricted = 0
        GROUP BY l.id
        ORDER BY readCount DESC, l.updated_at DESC
        LIMIT ?`,
@@ -111,6 +111,7 @@ export function retireCandidates(
        FROM lore l
        LEFT JOIN last_reads lr ON lr.lore_id = l.id
        WHERE l.status = 'active'
+         AND l.restricted = 0
          AND (lr.last_read_at IS NULL OR lr.last_read_at < ?)
        ORDER BY hasSource ASC,
                 CASE l.confidence

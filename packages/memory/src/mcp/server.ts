@@ -392,6 +392,19 @@ export function buildMcpServer(db: Database): McpServer {
           resultCount: lore ? 1 : 0,
           resultIds: lore ? [lore.id] : [],
         });
+        if (!lore) {
+          const notFound = { found: false, id: args.id };
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(notFound, null, 2),
+              },
+            ],
+            structuredContent: notFound,
+          };
+        }
         return {
           content: [
             {
@@ -399,7 +412,7 @@ export function buildMcpServer(db: Database): McpServer {
               text: JSON.stringify(lore, null, 2),
             },
           ],
-          ...(lore ? { structuredContent: lore as unknown as Record<string, unknown> } : {}),
+          structuredContent: lore as unknown as Record<string, unknown>,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -597,11 +610,12 @@ export function buildMcpServer(db: Database): McpServer {
         const out = {
           id: lore.id,
           status: lore.status,
-          message:
-            "Draft created. A human will review with `memory review` and " +
-            "promote with `memory approve " +
-            lore.id +
-            "`.",
+          message: autoApprove
+            ? "Record approved and active."
+            : "Draft created. A human will review with `memory review` and " +
+              "promote with `memory approve " +
+              lore.id +
+              "`.",
           possibleDuplicates,
           restrictedDuplicateCount,
         };
@@ -1338,7 +1352,7 @@ export function buildMcpServer(db: Database): McpServer {
         "record where the idea came from.",
       inputSchema: {
         repo: z.string().min(1).describe("The repo this feature belongs to."),
-        name: z.string().min(1).describe("Short feature name."),
+        name: z.string().min(1).max(200).describe("Short feature name (≤ 200 chars)."),
         summary: z.string().describe("One-line summary of the feature."),
         scope_node: z
           .string()

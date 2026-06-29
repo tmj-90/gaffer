@@ -379,10 +379,12 @@ describe("MCP — get_lore + restricted gate", () => {
     expect(row?.["resultIds"]).toEqual([lore.id]);
   });
 
-  it("returns null for an unknown id", async () => {
+  it("returns a structured {found:false} sentinel with isError for an unknown id", async () => {
     client = await connectClient(db);
-    const { text } = await callJson(client, "get_lore", { id: "zzzzzzzz" });
-    expect(text).toBe("null");
+    const { isError, json } = await callJson(client, "get_lore", { id: "zzzzzzzz" });
+    expect(isError).toBe(true);
+    expect(json.found).toBe(false);
+    expect(json.id).toBe("zzzzzzzz");
   });
 });
 
@@ -544,6 +546,32 @@ describe("MCP — suggest_lore + MEMORY_AUTO_APPROVE (env gated)", () => {
     expect(json.status).toBe("active");
     const row = audit.rows().find((r) => r["tool"] === "suggest_lore");
     expect(row?.["resultIds"]).toEqual([json.id]);
+  });
+
+  it("omits the 'run memory review' instruction in the message when auto-approve is on", async () => {
+    process.env["MEMORY_AUTO_APPROVE"] = "1";
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "No review needed",
+      summary: "s",
+      body: "b",
+    });
+    expect(json.status).toBe("active");
+    expect(json.message).not.toMatch(/memory review/i);
+    expect(json.message).not.toMatch(/memory approve/i);
+  });
+
+  it("includes the 'run memory review' instruction in the message when auto-approve is off", async () => {
+    // Gate explicitly off (beforeEach already deletes it).
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Human review required",
+      summary: "s",
+      body: "b",
+    });
+    expect(json.status).toBe("draft");
+    expect(json.message).toMatch(/memory review/i);
+    expect(json.message).toMatch(/memory approve/i);
   });
 });
 

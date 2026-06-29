@@ -1209,9 +1209,12 @@ export class Dispatch {
 
   /**
    * Kanban board: tickets grouped into columns, AC progress enriched. Read-only.
+   *
+   * @param repo Optional repository name/id — when supplied, only tickets
+   *   linked to that repo are included. Omit for the full board.
    */
-  board(): BoardView {
-    return this.boardSvc.board();
+  board(repo?: string): BoardView {
+    return this.boardSvc.board(repo);
   }
 
   activity(query: ActivityQuery): { events: ActivityEvent[]; total: number } {

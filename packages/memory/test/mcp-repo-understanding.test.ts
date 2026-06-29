@@ -169,6 +169,28 @@ describe("MCP — add_feature (repo-level and node-level)", () => {
     });
     expect(structuredContent).toEqual(json);
   });
+
+  it("accepts a name exactly 200 chars long (boundary)", async () => {
+    client = await connectClient(db);
+    const name = "a".repeat(200);
+    const { isError, json } = await callJson(client, "add_feature", {
+      repo: "app",
+      name,
+      summary: "s",
+    });
+    expect(isError).toBe(false);
+    expect(json.id).toMatch(/^[a-z2-9]{8}$/);
+  });
+
+  it("rejects a name over 200 chars with a validation error", async () => {
+    client = await connectClient(db);
+    const { isError } = await callJson(client, "add_feature", {
+      repo: "app",
+      name: "a".repeat(201),
+      summary: "s",
+    });
+    expect(isError).toBe(true);
+  });
 });
 
 describe("MCP — list_features (scope_node + status filters)", () => {

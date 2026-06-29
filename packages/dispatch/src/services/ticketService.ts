@@ -725,8 +725,10 @@ export class TicketService {
   resolveTicket(ref: string): Ticket {
     const byId = this.tickets.findById(ref);
     if (byId) return byId;
-    const asNumber = Number(ref.replace(/^#/, ""));
-    if (Number.isInteger(asNumber)) {
+    // Accept #N and T-N as ticket-number shortcuts.
+    const normalised = ref.replace(/^#/, "").replace(/^T-/, "");
+    const asNumber = Number(normalised);
+    if (Number.isInteger(asNumber) && asNumber > 0) {
       const byNumber = this.tickets.findByNumber(asNumber);
       if (byNumber) return byNumber;
     }

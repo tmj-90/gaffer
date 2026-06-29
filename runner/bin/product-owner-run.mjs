@@ -322,7 +322,14 @@ export function buildClaudeArgv({ prompt, mcpConfig, flags }) {
   // non-breaking; we ledger the usage and log the unwrapped `.result` text below.
   const args = ["-p", prompt, "--output-format", "json"];
   if (mcpConfig) args.push("--mcp-config", mcpConfig);
-  return args.concat(flags);
+  // Explicitly grant the factory's two MCP servers for THIS headless call. Claude
+  // Code 2.1.x ignores the settings.json `permissions.allow` list on a workspace that
+  // hasn't been interactively trusted — and a headless `claude -p` can't accept that
+  // trust dialog — so without this the dispatch MCP's create_ticket is denied and the
+  // PO files 0. `--allowedTools` is a per-invocation, scoped grant honored regardless
+  // of workspace trust; the safety hook + acceptEdits still apply. Scoped to our own
+  // dispatch+memory servers only — no global config is touched.
+  return args.concat(flags, ["--allowedTools", "mcp__dispatch", "mcp__memory"]);
 }
 
 /**

@@ -189,12 +189,21 @@ if [ -f "$TICK" ]; then
   else
     fail "tick.sh DoD-fail path does NOT route through _recover_or_park"
   fi
-  # The cap-hit (GUARD C) path must preserve the branch (bare teardown, never
-  # drop-branch) and emit a ticket_parked notify.
-  if grep -q 'PARKED (cap-hit)' "$TICK" && grep -q 'notify emit --kind ticket_parked' "$TICK"; then
-    ok "tick.sh cap-hit path parks + emits a ticket_parked notify"
+  # PAUSE-ON-CAP: the cap-hit (GUARD C) path must now PAUSE IN PLACE — pause the
+  # ticket via dispatch, raise the worktree-retention flag, and NOT tear the worktree
+  # down. It must NOT fall back to the old park+teardown (no bare cap-hit cleanup).
+  if grep -q 'PAUSED (cap-hit)' "$TICK" && grep -q 'wg ticket pause' "$TICK" \
+     && grep -q 'GAFFER_PAUSE_KEEP_WORKTREE=1' "$TICK"; then
+    ok "tick.sh cap-hit path PAUSES in place + raises the worktree-keep flag"
   else
-    fail "tick.sh cap-hit path missing the park/notify wiring"
+    fail "tick.sh cap-hit path missing the pause-in-place wiring"
+  fi
+  # The crash-cleanup trap must skip teardown for a paused worktree (the survival
+  # invariant), and orphan-recovery must protect a paused ticket's worktree.
+  if grep -q 'GAFFER_PAUSE_KEEP_WORKTREE.*= "1"' "$TICK" || grep -q 'GAFFER_PAUSE_KEEP_WORKTREE:-0.*= "1"' "$TICK"; then
+    ok "tick.sh crash-cleanup honours the paused worktree-keep flag"
+  else
+    fail "tick.sh crash-cleanup does not skip teardown for a paused worktree"
   fi
   # The recoverable loop is bounded by GAFFER_MAX_DELIVERY_ATTEMPTS.
   if grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS' "$TICK"; then

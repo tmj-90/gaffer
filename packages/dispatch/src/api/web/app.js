@@ -2208,8 +2208,9 @@ async function renderWork() {
 
   // Board endpoint powers the board; the filtered /tickets list powers list mode.
   // Repos + scope nodes feed the "Suggest work" target picker (Feature B).
+  const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
   const [board, reposRes, nodesRes] = await Promise.all([
-    api("GET", "/api/board"),
+    api("GET", `/api/board${boardQs}`),
     api("GET", "/repositories"),
     api("GET", "/scope/nodes"),
   ]);
@@ -2539,6 +2540,8 @@ function moveMenuKeydown(e) {
 /** Board (kanban) — columns by status; filters dim non-matching cards client-side. */
 function renderBoard(columns, closed, wontDo = []) {
   const wrap = el("div");
+  // repo is filtered server-side via ?repo= on /api/board; only status and
+  // risk need client-side dimming here (no repo field on BoardCard).
   const matches = (card) =>
     (!workState.status || card.status === workState.status) &&
     (!workState.risk || card.risk_level === workState.risk);

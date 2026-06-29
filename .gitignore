@@ -17,6 +17,8 @@ mcp-runtime.json
 # Secrets / local env
 .env
 .env.*
+# ...but the committed wiring reference is tracked (real secrets never go in it).
+!.env.example
 
 # OS / editor noise
 .DS_Store

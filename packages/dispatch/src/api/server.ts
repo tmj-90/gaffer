@@ -41,6 +41,7 @@ import {
   createScopeRepoBody,
   createTicketBody,
   linkTicketScopeBody,
+  continuePausedBody,
   moveTicketBody,
   planBuildBody,
   planSessionArchiveBody,
@@ -63,6 +64,7 @@ import {
   setTestableBody,
   setTestContractBody,
   setTicketRepoAccessBody,
+  stopPausedBody,
   suggestReposBody,
   testerVerdictBody,
   ticketListQuery,
@@ -423,6 +425,9 @@ const TICKET_SUB = {
   REOPEN_FOR_REVIEW: "reopen-for-review",
   WONT_DO: "wont-do",
   REOPEN: "reopen",
+  // PAUSE-ON-CAP: one-click Continue / Stop for a paused (cap-hit) delivery.
+  CONTINUE: "continue",
+  STOP: "stop",
   DELIVERY_ARTIFACT: "delivery-artifact",
   REQUIRED_CAPABILITIES: "required-capabilities",
   REVIEWER: "reviewer",
@@ -1063,6 +1068,29 @@ async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.REOPEN && method === "POST") {
     const body = reopenWontDoBody.parse(await readJsonBody(req));
     const result = wg.reopenFromWontDo(id, body.to, API_ACTOR);
+    sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
+    return;
+  }
+
+  // PAUSE-ON-CAP: /tickets/:id/continue — one-click Continue a paused (cap-hit)
+  // delivery. Marks the paused ticket resume-requested so the factory loop re-enters
+  // delivery in the existing worktree. 409 if the ticket isn't paused.
+  if (segments.length === 3 && sub === TICKET_SUB.CONTINUE && method === "POST") {
+    continuePausedBody.parse(await readJsonBody(req));
+    const result = wg.continuePaused(id, API_ACTOR);
+    sendJson(res, 200, {
+      ticket_id: result.ticketId,
+      event_id: result.eventId,
+      resume_requested: true,
+    });
+    return;
+  }
+
+  // PAUSE-ON-CAP: /tickets/:id/stop — abandon a paused delivery (-> cancelled),
+  // dropping the resume context; the runner reaps the worktree. 409 if not paused.
+  if (segments.length === 3 && sub === TICKET_SUB.STOP && method === "POST") {
+    const body = stopPausedBody.parse(await readJsonBody(req));
+    const result = wg.stopPaused(id, API_ACTOR, body.reason);
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }

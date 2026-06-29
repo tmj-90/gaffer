@@ -51,7 +51,15 @@
 // =====================================================================
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  symlinkSync,
+  rmSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -268,12 +276,22 @@ export function buildPrompt({ repoName, repoPath, maxTickets }) {
 
 /**
  * Install the project-local .claude wiring (settings+safety hook, skills symlink)
- * and the MCP runtime config into the target repo — exactly as tick.sh does for the
- * clarify/review passes — so the headless run gets the same safety boundary and the
- * dispatch/memory MCP servers. Returns the runtime MCP config path.
+ * into a **throwaway agent-home directory** under GAFFER_DATA, and write the MCP
+ * runtime config alongside it. Returns `{ agentHome, mcpRuntime }`.
+ *
+ * The registered repo checkout is NEVER touched: writing `.claude/` there would
+ * dirty the operator's working tree and expose it as a write-root even though the
+ * PO run is draft-only (all writes go through the dispatch MCP).  Instead:
+ *
+ *   agentHome  — ephemeral per-run dir (e.g. <GAFFER_DATA>/po-runtime-XXXXXX).
+ *                Claude's cwd + GAFFER_WRITE_ROOTS are set to this dir.
+ *   repoPath   — the registered checkout.  Only GAFFER_READ_ROOTS points here so
+ *                the agent can inspect README/manifest/git log, nothing more.
  */
-function installProjectLocalWiring(repoPath) {
-  const claudeDir = resolve(repoPath, ".claude");
+function installProjectLocalWiring() {
+  mkdirSync(GAFFER_DATA, { recursive: true });
+  const agentHome = mkdtempSync(resolve(GAFFER_DATA, "po-runtime-"));
+  const claudeDir = resolve(agentHome, ".claude");
   mkdirSync(claudeDir, { recursive: true });
 
   // Skills symlink → the factory's skills dir (so `product-owner` resolves).
@@ -295,7 +313,6 @@ function installProjectLocalWiring(repoPath) {
 
   // MCP runtime config with the DB paths AND the MCP server bins substituted to
   // this run's wiring — all four placeholders, or the dispatch MCP won't start.
-  mkdirSync(GAFFER_DATA, { recursive: true });
   const mcpRuntime = resolve(GAFFER_DATA, "mcp-product-owner-runtime.json");
   const mcp = readFileSync(CONFIG.mcpConfig, "utf8")
     .split("${DISPATCH_DB}")
@@ -307,7 +324,7 @@ function installProjectLocalWiring(repoPath) {
     .split("${MEMORY_MCP_BIN}")
     .join(CONFIG.memoryMcpBin);
   writeFileSync(mcpRuntime, mcp);
-  return mcpRuntime;
+  return { agentHome, mcpRuntime };
 }
 
 /**
@@ -425,9 +442,23 @@ function main() {
     `proposing work for "${resolved.name}" (${resolved.localPath}); max ${opts.maxTickets} drafts, timeout ${opts.timeoutMs}ms`,
   );
 
+  // Throwaway agent-home dir (populated by installProjectLocalWiring). Cleaned up
+  // on process exit via the 'exit' handler below — including when emit()/fail()
+  // call process.exit(), because the 'exit' event fires synchronously on exit.
+  let agentHome = null;
+  process.on("exit", () => {
+    if (agentHome) {
+      try {
+        rmSync(agentHome, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
   let mcpRuntime;
   try {
-    mcpRuntime = installProjectLocalWiring(resolved.localPath);
+    ({ agentHome, mcpRuntime } = installProjectLocalWiring());
   } catch (e) {
     fail(`failed to install project-local wiring: ${e?.message ?? e}`);
     return;
@@ -439,7 +470,9 @@ function main() {
 
   const argv = buildClaudeArgv({ prompt, mcpConfig: mcpRuntime, flags: CONFIG.claudeFlags });
   const res = spawnSync(CONFIG.claudeBin, argv, {
-    cwd: resolved.localPath,
+    // Run in the throwaway agent-home dir, NOT the registered repo. The agent
+    // writes only via the dispatch MCP; the repo is read-only (GAFFER_READ_ROOTS).
+    cwd: agentHome,
     encoding: "utf8",
     timeout: opts.timeoutMs,
     maxBuffer: 32 * 1024 * 1024,
@@ -449,9 +482,12 @@ function main() {
       ...agentChildEnv(),
       DISPATCH_DB: CONFIG.dispatchDb,
       MEMORY_DB: CONFIG.memoryDb,
-      // Repo-access boundary (FG-007): the run only writes via the dispatch MCP; it
-      // is read-only on the repo, so the repo is its sole write-root for the hook.
-      GAFFER_WRITE_ROOTS: resolved.localPath,
+      // FG-007 (revised): the write-root is the throwaway agent-home, NOT the
+      // registered repo. The repo is exposed as a READ root so the safety hook
+      // allows the agent to inspect it (README/manifest/git log) without ever
+      // being able to write to it.
+      GAFFER_WRITE_ROOTS: agentHome,
+      GAFFER_READ_ROOTS: resolved.localPath,
     },
   });
 

@@ -19,6 +19,7 @@ import { computeTicketDiff, type GitRunner } from "./diffService.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { DecisionRepository } from "../repositories/decisionRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
+import { PausedDeliveryRepository } from "../repositories/pausedDeliveryRepository.js";
 import { RepoRepository } from "../repositories/repoRepository.js";
 import { TicketRepoDeliveryRepository } from "../repositories/ticketRepoDeliveryRepository.js";
 import { ScopeRepoRepository } from "../repositories/scopeRepoRepository.js";
@@ -253,12 +254,23 @@ export class TransitionService {
    */
   private readonly gitRunner: GitRunner | undefined;
 
+  /**
+   * Optional handle to the paused-delivery store. When present, any transition
+   * OUT of `paused` that is NOT a resume (`paused->in_progress`) atomically deletes
+   * the stale context row — including `paused->refining` (human board triage) and
+   * `paused->cancelled` (stop, though PauseService.stop() also cleans up directly).
+   * Injectable so callers that don't have the repo can omit it.
+   */
+  private readonly pausedDeliveries: PausedDeliveryRepository | undefined;
+
   constructor(
     private readonly db: Db,
     private readonly clock: Clock,
     gitRunner?: GitRunner,
+    pausedDeliveries?: PausedDeliveryRepository,
   ) {
     this.gitRunner = gitRunner;
+    this.pausedDeliveries = pausedDeliveries;
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
     this.repos = new RepoRepository(db);
@@ -440,6 +452,15 @@ export class TransitionService {
         },
         ...(input.correlationId ? { correlation_id: input.correlationId } : {}),
       });
+
+      // Exiting `paused` to any state other than `in_progress` (resume): the live
+      // worktree is no longer tracked; drop the stale pause context atomically so
+      // no reader sees ghost data.  The resume path keeps the context alive so a
+      // re-cap upserts over it.  PauseService.stop() (paused->cancelled) also calls
+      // delete directly; the double-delete is a no-op in SQLite.
+      if (ticket.status === "paused" && input.toStatus !== "in_progress") {
+        this.pausedDeliveries?.delete(ticket.id);
+      }
 
       const updated = this.tickets.findById(ticket.id)!;
       return policy ? { ticket: updated, eventId, policy } : { ticket: updated, eventId };

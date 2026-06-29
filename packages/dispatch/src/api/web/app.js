@@ -402,6 +402,10 @@ const STAGE_FOR_STATUS = {
   claimed: 2,
   in_progress: 2,
   blocked: 2,
+  // PAUSE-ON-CAP: paused shares the blocked column on the board (boardService maps
+  // both to "blocked"). Use the same pipeline stage so a paused in-flight ticket
+  // never falls back to stage 0 (draft).
+  paused: 2,
   in_review: 3,
   // BBT-001: the independent-testing lane shares the "review" lifecycle stage —
   // it's post-delivery, pre-merge, just like in_review/ready_for_merge.

@@ -176,6 +176,35 @@ describe("pause-on-cap — continue / resume / stop transitions", () => {
     expect(wg.pausedContext(ticketId)).toBeNull();
   });
 
+  it("paused->refining (human board triage) drops the stale pause context", () => {
+    // FIX 2: before the fix, moveTicket(paused->refining) left a stale
+    // paused_deliveries row; after the fix it is cleared atomically.
+    const wg = freshWg();
+    const { ticketId } = claimedTicket(wg);
+    wg.pauseDelivery(ticketId, CTX, system);
+    expect(wg.pausedContext(ticketId)).not.toBeNull(); // context exists while paused
+
+    // Human board-drag: paused -> refining (triage before re-queueing).
+    const res = wg.moveTicket(ticketId, "refining", human);
+    expect(res.ticket.status).toBe("refining");
+    // Context must be gone — no ghost data for a non-paused ticket.
+    expect(wg.pausedContext(ticketId)).toBeNull();
+  });
+
+  it("paused->in_progress (resume) PRESERVES the pause context for the runner", () => {
+    // The resume path keeps the context alive so the runner can re-enter the
+    // existing worktree; only non-resume exits drop it.
+    const wg = freshWg();
+    const { ticketId } = claimedTicket(wg);
+    wg.pauseDelivery(ticketId, CTX, system);
+    wg.continuePaused(ticketId, human);
+    wg.beginResume(ticketId, system); // paused -> in_progress
+    expect(wg.view(ticketId).ticket.status).toBe("in_progress");
+    // Context is preserved so the runner knows the worktree path.
+    expect(wg.pausedContext(ticketId)).not.toBeNull();
+    expect(wg.pausedContext(ticketId)?.branch_name).toBe(CTX.branch_name);
+  });
+
   it("a re-pause after a resume upserts the context (attempt accumulates)", () => {
     const wg = freshWg();
     const { ticketId } = claimedTicket(wg);

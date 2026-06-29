@@ -233,7 +233,7 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 # If perl is somehow absent it falls back to GNU `timeout`/`gtimeout` when present,
 # else runs the command unbounded (best-effort — never breaks the call).
 : "${GAFFER_TICK_TIMEOUT:=1800}"   # 30 min hard wall-clock cap per claude -p call
-: "${GAFFER_MAX_TURNS:=60}"        # max agent turns per claude -p call
+: "${GAFFER_MAX_TURNS:=200}"        # max agent turns per claude -p call
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 

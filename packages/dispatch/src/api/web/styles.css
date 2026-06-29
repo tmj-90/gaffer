@@ -15,56 +15,56 @@
      Single source of truth for tokens — no raw hex outside :root.
      =========================================================================== */
 
-  /* --- surfaces: filmic graphite, deep floor → machined panels ------------ */
-  --bg: #06080b; /* the room floor — almost black, faintly cool */
-  --bg-2: #0a0d12;
-  --bg-3: #0e1217;
-  --surface: #12161c; /* instrument panel */
-  --surface-2: #181d25;
-  --surface-3: #222934;
-  --surface-4: #2e3742;
-  --line: #2b333d;
-  --line-strong: #3a444f;
-  --line-soft: rgba(37, 183, 202, 0.18);
-  --line-hair: rgba(255, 255, 255, 0.06);
-  --grid-line: rgba(120, 150, 170, 0.045); /* blueprint underlay */
-  --grid-line-2: rgba(120, 150, 170, 0.07);
+  /* --- surfaces: warm editorial paper → barely-there panels --------------- */
+  --bg: #f6f4ef; /* the page — warm paper */
+  --bg-2: #f1eee7;
+  --bg-3: #ece8df;
+  --surface: #fcfbf7; /* a panel is a whisper above the paper */
+  --surface-2: #ffffff;
+  --surface-3: #f1eee7;
+  --surface-4: #ece8df;
+  --line: rgba(22, 20, 15, 0.14); /* ink hairline — structure lives here */
+  --line-strong: rgba(22, 20, 15, 0.26);
+  --line-soft: rgba(22, 20, 15, 0.1);
+  --line-hair: rgba(22, 20, 15, 0.06);
+  --grid-line: rgba(22, 20, 15, 0.022); /* faint drafting underlay */
+  --grid-line-2: rgba(22, 20, 15, 0.038);
 
-  /* --- brand: cyan phosphor (system) + amber lamp (LIVE / now) ------------ */
-  --accent: #2ec5da; /* phosphor cyan — the system signal */
-  --accent-bright: #5fe0f0;
-  --accent-press: #1f9eb0;
-  --accent-soft: rgba(46, 197, 218, 0.13);
-  --accent-line: rgba(46, 197, 218, 0.38);
-  --accent-glow: rgba(46, 197, 218, 0.55);
-  --amber: #ffb53d; /* the live lamp — warm, alive, "now / attention" */
-  --amber-bright: #ffd07a;
-  --amber-soft: rgba(255, 181, 61, 0.14);
-  --amber-line: rgba(255, 181, 61, 0.46);
-  --amber-glow: rgba(255, 181, 61, 0.6);
+  /* --- brand: surgical editorial red (system) + warm ochre (LIVE / now) --- */
+  --accent: #e5371f; /* editorial red — the system signal, used sparingly */
+  --accent-bright: #f0573f;
+  --accent-press: #b72712;
+  --accent-soft: rgba(229, 55, 31, 0.08);
+  --accent-line: rgba(229, 55, 31, 0.32);
+  --accent-glow: rgba(229, 55, 31, 0.28);
+  --amber: #b26a00; /* warm ochre — the live lamp / "now / attention" */
+  --amber-bright: #d98a1e;
+  --amber-soft: rgba(178, 106, 0, 0.12);
+  --amber-line: rgba(178, 106, 0, 0.4);
+  --amber-glow: rgba(178, 106, 0, 0.3);
 
-  /* --- text --------------------------------------------------------------- */
-  --text: #f3f6f9;
-  --text-dim: #aab3bd;
-  --text-faint: #717b87;
-  --text-ghost: #4b545f;
-  --on-accent: #04222a;
+  /* --- text: warm near-black ink ------------------------------------------ */
+  --text: #16140f;
+  --text-dim: #4a463d;
+  --text-faint: #7c766a;
+  --text-ghost: #a39c8e;
+  --on-accent: #fdf6f3;
   --white: #ffffff;
 
   /* --- status ------------------------------------------------------------- */
-  --ok: #3ad29f;
-  --ok-soft: rgba(58, 210, 159, 0.14);
-  --warn: #ffb53d;
-  --warn-soft: rgba(255, 181, 61, 0.14);
-  --danger: #ff5d6e;
-  --danger-soft: rgba(255, 93, 110, 0.14);
-  --info: #2ec5da;
-  --info-soft: rgba(46, 197, 218, 0.13);
-  --violet: #a594ff;
-  --violet-soft: rgba(165, 148, 255, 0.14);
+  --ok: #2f6b4f;
+  --ok-soft: rgba(47, 107, 79, 0.1);
+  --warn: #b26a00;
+  --warn-soft: rgba(178, 106, 0, 0.12);
+  --danger: #c0341a;
+  --danger-soft: rgba(192, 52, 26, 0.1);
+  --info: #3c6e8f;
+  --info-soft: rgba(60, 110, 143, 0.1);
+  --violet: #6e5a8c;
+  --violet-soft: rgba(110, 90, 140, 0.12);
 
-  /* --- type: Space Grotesk display · Inter body · JetBrains Mono telemetry */
-  --display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  /* --- type: Fraunces editorial display · Inter body · JetBrains Mono telemetry */
+  --display: "Fraunces", Georgia, "Times New Roman", serif;
   --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --step--1: 0.82rem;
@@ -92,24 +92,22 @@
   --s-7: 48px;
   --s-8: 64px;
 
-  /* --- shape: machined, slightly tighter than the old soft cards --------- */
-  --r: 12px;
-  --r-sm: 8px;
-  --r-lg: 18px;
+  /* --- shape: crisp editorial — square-ish, structure from rules --------- */
+  --r: 6px;
+  --r-sm: 4px;
+  --r-lg: 10px;
   --r-pill: 999px;
 
-  /* --- depth ------------------------------------------------------------- */
-  --bevel: 0 1px 0 rgba(255, 255, 255, 0.05) inset;
-  --shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px -12px rgba(0, 0, 0, 0.6);
-  --shadow-lg: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 24px 60px -24px rgba(0, 0, 0, 0.7);
-  --elev-0: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
-  --elev-1:
-    0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 1px 1px rgba(0, 0, 0, 0.5),
-    0 14px 36px -18px rgba(0, 0, 0, 0.8);
-  --elev-2: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 30px 70px -30px rgba(0, 0, 0, 0.9);
+  /* --- depth: ink-on-paper — minimal lift, hairlines do the work --------- */
+  --bevel: none;
+  --shadow: 0 1px 2px rgba(22, 20, 15, 0.05);
+  --shadow-lg: 0 12px 40px -22px rgba(22, 20, 15, 0.22);
+  --elev-0: 0 1px 1px rgba(22, 20, 15, 0.04);
+  --elev-1: 0 1px 2px rgba(22, 20, 15, 0.06), 0 8px 24px -18px rgba(22, 20, 15, 0.18);
+  --elev-2: 0 16px 48px -24px rgba(22, 20, 15, 0.24);
   --ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
-  --glow: 0 0 0 1px var(--accent-line), 0 0 22px -8px var(--accent);
-  --glow-amber: 0 0 0 1px var(--amber-line), 0 0 22px -8px var(--amber);
+  --glow: 0 0 0 1px var(--accent-line);
+  --glow-amber: 0 0 0 1px var(--amber-line);
 
   /* --- motion: cinematic, instrument-grade ------------------------------- */
   --ease: cubic-bezier(0.16, 1, 0.3, 1); /* expressive ease-out */
@@ -118,7 +116,7 @@
   --fast: 140ms;
   --med: 240ms;
   --slow: 420ms;
-  --step-dur: 520ms; /* a navigation "camera step" */
+  --step-dur: 380ms; /* an editorial page-turn */
 
   /* --- chrome dimensions -------------------------------------------------- */
   --rail-w: 244px; /* persistent left command rail */
@@ -164,8 +162,8 @@ body::before {
   inset: 0;
   z-index: -2;
   background:
-    radial-gradient(1300px 680px at 18% -10%, rgba(46, 197, 218, 0.07), transparent 60%),
-    radial-gradient(1100px 620px at 100% 0%, rgba(255, 181, 61, 0.04), transparent 55%),
+    radial-gradient(1300px 680px at 18% -10%, rgba(229, 55, 31, 0.035), transparent 60%),
+    radial-gradient(1100px 620px at 100% 0%, rgba(178, 106, 0, 0.03), transparent 55%),
     radial-gradient(1200px 900px at 50% 120%, var(--bg-2), transparent 60%), var(--bg);
 }
 body::after {
@@ -249,10 +247,12 @@ code,
   background: transparent;
 }
 
-/* Focus — cyan ring, visible only for keyboard. */
+/* Focus — a red editorial ring, keyboard-only. Uses outline (not box-shadow)
+   so it composites OVER component shadows instead of losing the cascade to a
+   card's own box-shadow — every focusable element gets a visible ring. */
 :focus-visible {
-  outline: none;
-  box-shadow: var(--ring);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
   border-radius: var(--r-sm);
 }
 
@@ -305,7 +305,7 @@ code,
   width: 30px;
   height: 30px;
   flex: 0 0 auto;
-  filter: drop-shadow(0 2px 8px rgba(46, 197, 218, 0.25));
+  filter: drop-shadow(0 2px 8px rgba(22, 20, 15, 0.25));
 }
 .brand-text {
   display: flex;
@@ -388,11 +388,9 @@ code,
   inset: 0;
   z-index: -1;
   border-radius: var(--r-sm);
-  background: linear-gradient(180deg, rgba(46, 197, 218, 0.18), rgba(46, 197, 218, 0.07));
+  background: var(--accent-soft);
   border: 1px solid var(--accent-line);
-  box-shadow:
-    inset 0 0 0 1px var(--line-hair),
-    0 0 22px -8px var(--accent-glow);
+  box-shadow: inset 0 0 0 1px var(--line-hair);
   view-transition-name: navmarker;
 }
 .nav-link.active .nav-ico {
@@ -662,7 +660,7 @@ code,
     padding: 9px 12px;
     border-radius: var(--r-sm);
     border: 1px solid var(--line);
-    background: linear-gradient(180deg, rgba(255, 181, 61, 0.06), transparent), var(--surface);
+    background: linear-gradient(180deg, rgba(178, 106, 0, 0.06), transparent), var(--surface);
     font-size: 0.66rem;
     letter-spacing: var(--track-label);
     text-transform: uppercase;
@@ -701,11 +699,11 @@ code,
 @keyframes lamp-breathe {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(255, 181, 61, 0.5);
+    box-shadow: 0 0 0 0 rgba(178, 106, 0, 0.5);
     opacity: 0.85;
   }
   50% {
-    box-shadow: 0 0 14px 2px rgba(255, 181, 61, 0.55);
+    box-shadow: 0 0 14px 2px rgba(178, 106, 0, 0.55);
     opacity: 1;
   }
 }
@@ -770,45 +768,37 @@ code,
   animation: cam-in-back var(--step-dur) var(--ease-io) both;
 }
 
+/* Editorial page turn: a calm cross-fade with a small directional drift — no
+   blur, no scale. The page settles like a turned leaf, not a camera dolly. */
 @keyframes cam-out-fwd {
   to {
     opacity: 0;
-    transform: translateX(-7%) scale(0.94);
-    filter: blur(6px);
+    transform: translateX(-1.5%);
   }
 }
 @keyframes cam-in-fwd {
   0% {
     opacity: 0;
-    transform: translateX(9%) scale(1.04);
-    filter: blur(10px);
-  }
-  60% {
-    opacity: 1;
-    filter: blur(0);
+    transform: translateX(2%);
   }
   100% {
+    opacity: 1;
     transform: none;
   }
 }
 @keyframes cam-out-back {
   to {
     opacity: 0;
-    transform: translateX(7%) scale(0.94);
-    filter: blur(6px);
+    transform: translateX(1.5%);
   }
 }
 @keyframes cam-in-back {
   0% {
     opacity: 0;
-    transform: translateX(-9%) scale(1.04);
-    filter: blur(10px);
-  }
-  60% {
-    opacity: 1;
-    filter: blur(0);
+    transform: translateX(-2%);
   }
   100% {
+    opacity: 1;
     transform: none;
   }
 }
@@ -1505,12 +1495,12 @@ html::after {
   flex: 0 0 auto;
 }
 .stat-card .stat-value {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
+  font-family: var(--display);
+  font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1;
   font-size: var(--metric-md);
-  font-weight: 700;
-  line-height: 0.92;
+  font-weight: 600;
+  line-height: 0.94;
   letter-spacing: var(--track-tight);
   color: var(--text);
   margin-top: auto;
@@ -1526,7 +1516,7 @@ html::after {
 .stat-card.featured {
   min-height: 148px;
   background:
-    radial-gradient(120% 120% at 0% 0%, rgba(46, 197, 218, 0.06), transparent 55%),
+    radial-gradient(120% 120% at 0% 0%, var(--accent-soft), transparent 55%),
     linear-gradient(180deg, var(--surface-2), var(--surface) 70%);
 }
 .stat-card.featured .stat-value {
@@ -1575,7 +1565,7 @@ html::after {
 }
 .stat-card.tone-warn .stat-value {
   color: var(--amber);
-  text-shadow: 0 0 24px rgba(255, 181, 61, 0.4);
+  text-shadow: 0 0 24px rgba(178, 106, 0, 0.4);
 }
 .stat-card.tone-warn::after {
   background: radial-gradient(circle at 75% 80%, var(--amber-soft), transparent 70%);
@@ -1601,7 +1591,7 @@ html::after {
 }
 .stat-card.tone-accent .stat-value {
   color: var(--accent);
-  text-shadow: 0 0 24px rgba(46, 197, 218, 0.38);
+  text-shadow: 0 0 24px rgba(22, 20, 15, 0.38);
 }
 /* ===========================================================================
    THE INSTRUMENT CLUSTER — throughput as one cockpit gauge, not N cards
@@ -1775,14 +1765,14 @@ html::after {
 }
 .gauge.tone-accent .gauge-value {
   color: var(--accent);
-  text-shadow: 0 0 22px rgba(46, 197, 218, 0.4);
+  text-shadow: 0 0 22px rgba(22, 20, 15, 0.4);
 }
 .gauge.tone-warn {
   --gauge: var(--amber);
 }
 .gauge.tone-warn .gauge-value {
   color: var(--amber);
-  text-shadow: 0 0 22px rgba(255, 181, 61, 0.42);
+  text-shadow: 0 0 22px rgba(178, 106, 0, 0.42);
 }
 .gauge.tone-danger {
   --gauge: var(--danger);
@@ -2178,7 +2168,8 @@ html::after {
   margin-bottom: var(--s-4);
 }
 .panel-title {
-  font-size: var(--step-0);
+  font-family: var(--display);
+  font-size: 1.18rem;
   font-weight: 600;
   color: var(--text);
   letter-spacing: var(--track-tight);
@@ -2192,9 +2183,25 @@ html::after {
 .panel-link {
   font-size: var(--step--1);
   color: var(--accent);
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 0% 1.5px;
+  transition:
+    background-size var(--med) var(--ease),
+    color var(--fast) var(--ease);
 }
 .panel-link:hover {
-  color: var(--accent-bright);
+  color: var(--accent-press);
+  background-size: 100% 1.5px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel-link {
+    transition: none;
+  }
+  .panel-link:hover {
+    background-size: 100% 1.5px;
+  }
 }
 
 /* --- KPI row --- */
@@ -2292,12 +2299,12 @@ html::after {
   color: var(--text);
 }
 .kpi-val {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  font-size: clamp(1.7rem, 1.2rem + 1vw, 2.1rem);
-  font-weight: 700;
+  font-family: var(--display);
+  font-variant-numeric: lining-nums tabular-nums;
+  font-size: clamp(2.3rem, 1.6rem + 1.8vw, 3rem);
+  font-weight: 600;
   letter-spacing: var(--track-tight);
-  line-height: 1;
+  line-height: 0.95;
 }
 .kpi-unit {
   font-size: 0.64rem;
@@ -2527,7 +2534,7 @@ html::after {
   display: grid;
   place-items: center;
   padding: var(--s-3) 0 var(--s-2);
-  color: var(--violet);
+  color: var(--accent);
 }
 .donut-svg {
   width: 156px;
@@ -2547,9 +2554,11 @@ html::after {
   gap: 2px;
 }
 .donut-pct {
-  font-family: var(--mono);
-  font-size: 1.7rem;
-  font-weight: 700;
+  font-family: var(--display);
+  font-variant-numeric: lining-nums tabular-nums;
+  font-size: 2rem;
+  font-weight: 600;
+  letter-spacing: var(--track-tight);
   color: var(--text);
 }
 .donut-cap {
@@ -3389,22 +3398,24 @@ td.title-cell {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: var(--s-5) var(--s-3);
+  gap: var(--s-2);
+  padding: var(--s-6) var(--s-3);
   text-align: center;
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: var(--track-label);
   text-transform: uppercase;
-  color: var(--text-faint);
-  border: 1px dashed var(--line);
+  color: var(--text-ghost);
+  border: 1px dashed var(--line-soft);
   border-radius: var(--r-sm);
-  background: rgba(255, 255, 255, 0.012);
+  background: var(--bg-2);
 }
 .board-empty-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--line);
+  background: transparent;
+  border: 1px solid var(--line-strong);
 }
 
 .board-card,
@@ -3855,17 +3866,31 @@ td.title-cell {
   color: var(--text-dim);
 }
 .ev-payload {
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  color: var(--text-dim);
-  background: var(--bg);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.ev-pair {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 0.7rem;
+  padding: 2px 8px;
   border: 1px solid var(--line-hair);
-  border-radius: var(--r-sm);
-  padding: 6px 8px;
-  margin-top: 5px;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+}
+.ev-key {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ev-val {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
 }
 
 .audit-panel summary {
@@ -4440,9 +4465,7 @@ td.title-cell {
   border-radius: var(--r-lg);
   background: var(--surface-2);
   border: 1px solid var(--line);
-  box-shadow:
-    inset 0 0 0 1px var(--line-hair),
-    0 0 28px -10px var(--accent);
+  box-shadow: inset 0 0 0 1px var(--line-hair);
 }
 /* Concentric pulse rings behind the glyph give empty states atmosphere. */
 .empty-state .es-icon::before,
@@ -4464,8 +4487,9 @@ td.title-cell {
 }
 .empty-state .es-title {
   color: var(--text);
-  font-weight: 700;
-  font-size: var(--step-1);
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: var(--step-2);
   letter-spacing: var(--track-tight);
 }
 .empty-state .es-sub {
@@ -6230,8 +6254,8 @@ body {
 /* Several turns deep, lift it so it reads as the obvious way out of the loop. */
 .pb-force.pb-force-strong {
   box-shadow:
-    0 0 0 2px var(--accent-amber, #f5a623),
-    0 4px 14px rgba(0, 0, 0, 0.25);
+    0 0 0 2px var(--amber),
+    0 4px 14px rgba(22, 20, 15, 0.18);
 }
 
 /* Plan-a-build start toggle: New app vs Extend existing (+ scope picker). */
@@ -7201,7 +7225,7 @@ body {
   gap: var(--s-5);
   flex-wrap: wrap;
   border-color: var(--amber-line);
-  background: linear-gradient(180deg, rgba(255, 181, 61, 0.05), transparent 60%), var(--surface);
+  background: linear-gradient(180deg, rgba(178, 106, 0, 0.05), transparent 60%), var(--surface);
 }
 .gate-main {
   display: flex;

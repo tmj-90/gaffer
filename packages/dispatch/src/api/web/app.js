@@ -1198,7 +1198,7 @@ async function renderOverview() {
         label: "Flow efficiency",
         value: String(flowEff),
         unit: "%",
-        tone: "violet",
+        tone: "accent",
         delta: half(actByDay),
         series: flowEffSeries,
       }),
@@ -1625,6 +1625,63 @@ function svgDonut(pct) {
 }
 
 /** One reverse-chronological activity row: time · ticket · event · actor. */
+/**
+ * Turn a machine event_type ("ticket.acceptance_criteria_reset") into a human
+ * label ("Acceptance criteria reset"). A few cases read better with a bespoke
+ * verb; everything else is derived by dropping the entity prefix and
+ * sentence-casing the remainder, so new event types degrade gracefully.
+ */
+const EVENT_LABELS = {
+  "ticket.created": "Ticket created",
+  "ticket.transitioned": "Ticket moved",
+  "ticket.claimed": "Ticket claimed",
+  "ticket.evidence_recorded": "Evidence recorded",
+  "ticket.acceptance_criteria_reset": "Acceptance criteria reset",
+  "ticket.reopened_for_review": "Reopened for review",
+};
+function humanizeEvent(type) {
+  if (!type) return "Event";
+  if (EVENT_LABELS[type]) return EVENT_LABELS[type];
+  const tail = type.includes(".") ? type.slice(type.indexOf(".") + 1) : type;
+  const words = tail.replace(/_/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Event";
+}
+
+/** "from_status" -> "From status" — a readable label for a payload key. */
+function humanizeKey(key) {
+  const words = String(key).replace(/_/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
+}
+
+/**
+ * Render an event's JSON payload as readable key·value pairs rather than a raw
+ * JSON dump. Only primitive values are shown (nested objects are omitted to keep
+ * the timeline scannable); returns null when there is nothing worth showing.
+ */
+function formatPayload(jsonStr) {
+  let obj;
+  try {
+    obj = JSON.parse(jsonStr);
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const pairs = Object.entries(obj).filter(
+    ([, v]) => v != null && v !== "" && typeof v !== "object",
+  );
+  if (!pairs.length) return null;
+  return el(
+    "div",
+    { class: "ev-payload" },
+    pairs.map(([k, v]) =>
+      el("span", { class: "ev-pair" }, [
+        el("span", { class: "ev-key" }, humanizeKey(k)),
+        el("span", { class: "ev-val" }, String(v)),
+      ]),
+    ),
+  );
+}
+
 function renderFeedRow(ev) {
   const ticketRef =
     ev.ticket_number != null
@@ -1637,7 +1694,11 @@ function renderFeedRow(ev) {
   return el("li", { class: "feed-row" }, [
     el("time", { class: "feed-time tabnum", datetime: ev.created_at }, fmtTime(ev.created_at)),
     ticketRef,
-    el("span", { class: `feed-event ev-${ev.event_type.split(".")[0]}` }, ev.event_type),
+    el(
+      "span",
+      { class: `feed-event ev-${ev.event_type.split(".")[0]}` },
+      humanizeEvent(ev.event_type),
+    ),
     el(
       "span",
       { class: "feed-actor dim" },
@@ -3200,16 +3261,14 @@ async function renderTicket(id) {
           { class: "timeline" },
           events.map((ev) =>
             el("li", {}, [
-              el("div", { class: "ev-type" }, ev.event_type),
+              el("div", { class: "ev-type" }, humanizeEvent(ev.event_type)),
               el("div", { class: "ev-time" }, fmtTime(ev.created_at)),
               el(
                 "div",
                 { class: "ev-actor" },
                 `${ev.actor_type}${ev.actor_id ? ` · ${ev.actor_id}` : ""}`,
               ),
-              ev.payload_json && ev.payload_json !== "{}"
-                ? el("div", { class: "ev-payload" }, ev.payload_json)
-                : null,
+              ev.payload_json && ev.payload_json !== "{}" ? formatPayload(ev.payload_json) : null,
             ]),
           ),
         )
@@ -3787,7 +3846,13 @@ function loadClaimability(ticketId, box) {
           "ul",
           { class: "claim-blockers" },
           blockers.map((b) =>
-            el("li", {}, typeof b === "string" ? b : b.message || b.reason || JSON.stringify(b)),
+            el(
+              "li",
+              {},
+              typeof b === "string"
+                ? b
+                : b.message || b.reason || b.label || "Blocked by an unmet condition",
+            ),
           ),
         ),
       );

@@ -27,28 +27,28 @@
              H297
              C189 922 102 835 102 727
              V481
-             C102 432 126 388 164 350Z" fill="#062B73"/>
+             C102 432 126 388 164 350Z" fill="#16140F"/>
 
     <!-- Factory roof teeth -->
-    <path d="M164 235 L278 314 L278 234 L392 314 L392 234 L506 314 L506 234 L615 311 L615 376 L164 376 Z" fill="#062B73"/>
+    <path d="M164 235 L278 314 L278 234 L392 314 L392 234 L506 314 L506 234 L615 311 L615 376 L164 376 Z" fill="#16140F"/>
 
     <!-- Chimney -->
-    <rect x="494" y="117" width="77" height="137" rx="10" fill="#168D9E"/>
-    <rect x="509" y="67" width="11" height="59" rx="5.5" fill="#062B73"/>
-    <path d="M520 67 H663 L633 101 L663 134 H520 Z" fill="#F4B21E"/>
+    <rect x="494" y="117" width="77" height="137" rx="10" fill="#E5371F"/>
+    <rect x="509" y="67" width="11" height="59" rx="5.5" fill="#16140F"/>
+    <path d="M520 67 H663 L633 101 L663 134 H520 Z" fill="#B26A00"/>
 
     <!-- Inner card -->
     <rect x="319" y="569" width="296" height="208" rx="24" fill="#FFFFFF"/>
-    <rect x="320" y="444" width="263" height="63" rx="18" fill="#062B73"/>
+    <rect x="320" y="444" width="263" height="63" rx="18" fill="#16140F"/>
     <rect x="319" y="569" width="296" height="208" rx="24" stroke="#FFFFFF" stroke-width="2" opacity="0.4"/>
 
     <!-- List lines -->
-    <rect x="320" y="622" width="175" height="31" rx="15.5" fill="#168D9E"/>
-    <rect x="320" y="710" width="175" height="31" rx="15.5" fill="#168D9E"/>
-    <rect x="320" y="798" width="175" height="31" rx="15.5" fill="#168D9E" transform="translate(0,-88)"/>
+    <rect x="320" y="622" width="175" height="31" rx="15.5" fill="#E5371F"/>
+    <rect x="320" y="710" width="175" height="31" rx="15.5" fill="#E5371F"/>
+    <rect x="320" y="798" width="175" height="31" rx="15.5" fill="#E5371F" transform="translate(0,-88)"/>
 
     <!-- Check badge -->
-    <circle cx="559" cy="680" r="79" fill="#F4B21E"/>
+    <circle cx="559" cy="680" r="79" fill="#B26A00"/>
     <path d="M522 682 L549 709 L598 649" stroke="#FFFFFF" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 </svg>

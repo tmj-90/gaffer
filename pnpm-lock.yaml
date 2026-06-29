@@ -37,7 +37,7 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.4
-        version: 1.29.0(zod@3.25.76)
+        version: 1.29.0(zod@4.4.3)
       commander:
         specifier: ^12.1.0
         version: 12.1.0
@@ -48,8 +48,8 @@ importers:
         specifier: ^2.5.1
         version: 2.9.0
       zod:
-        specifier: ^3.23.8
-        version: 3.25.76
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/node':
         specifier: ^22.5.0
@@ -71,7 +71,7 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.4
-        version: 1.29.0(zod@3.25.76)
+        version: 1.29.0(zod@4.4.3)
       better-sqlite3:
         specifier: ^12.10.0
         version: 12.11.1
@@ -82,8 +82,8 @@ importers:
         specifier: ^2.5.1
         version: 2.9.0
       zod:
-        specifier: ^3.23.8
-        version: 3.25.76
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.11
@@ -111,13 +111,13 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.4
-        version: 1.29.0(zod@3.25.76)
+        version: 1.29.0(zod@4.4.3)
       better-sqlite3:
         specifier: ^12.10.0
         version: 12.11.1
       zod:
-        specifier: ^3.23.8
-        version: 3.25.76
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.11
@@ -2181,8 +2181,8 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
-  zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
 snapshots:
 
@@ -2482,7 +2482,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@modelcontextprotocol/sdk@1.29.0(zod@3.25.76)':
+  '@modelcontextprotocol/sdk@1.29.0(zod@4.4.3)':
     dependencies:
       '@hono/node-server': 1.19.14(hono@4.12.27)
       ajv: 8.20.0
@@ -2499,8 +2499,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 3.25.76
-      zod-to-json-schema: 3.25.2(zod@3.25.76)
+      zod: 4.4.3
+      zod-to-json-schema: 3.25.2(zod@4.4.3)
     transitivePeerDependencies:
       - supports-color
 
@@ -4115,8 +4115,8 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zod-to-json-schema@3.25.2(zod@3.25.76):
+  zod-to-json-schema@3.25.2(zod@4.4.3):
     dependencies:
-      zod: 3.25.76
+      zod: 4.4.3
 
-  zod@3.25.76: {}
+  zod@4.4.3: {}

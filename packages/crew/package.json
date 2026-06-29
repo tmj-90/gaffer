@@ -59,7 +59,7 @@
     "commander": "^12.1.0",
     "dispatch": "workspace:*",
     "yaml": "^2.5.1",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",

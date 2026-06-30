@@ -50,13 +50,12 @@
 //   the (detached) log and exits non-zero.
 // =====================================================================
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   writeFileSync,
   symlinkSync,
   rmSync,
@@ -71,6 +70,7 @@ import {
   parseClaudeJson,
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
+import { primeContextBlock } from "../lib/context-primer.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -251,97 +251,22 @@ export function countDraftTickets(dbPath, repoName) {
 }
 
 /**
- * Derive the CANONICAL repo identity per the chunk-2b contract — MUST match
- * onboard's repoCanonical + tick.sh EXACTLY: the repo's remote.origin.url, else
- * its realpath (the bash side's `pwd -P`). The repoKey memory derives from this
- * is what the onboard card pass keyed its cards under.
- */
-function repoCanonical(repoPath) {
-  try {
-    const url = execFileSync("git", ["-C", repoPath, "config", "--get", "remote.origin.url"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (url) return url;
-  } catch {
-    /* not a git repo / no remote — fall through to realpath */
-  }
-  try {
-    return realpathSync(repoPath);
-  } catch {
-    return resolve(repoPath);
-  }
-}
-
-/**
- * Pull a repo-wide file-card context block for the PO prompt (mirrors the
- * delivery-path injection in tick.sh). There is NO ticket scope here, so the
- * query is a repo-overview string and the packet's digest + top cards ground
- * the suggestions. FAIL-SOFT: any memory error / no cards → "" and the prompt
+ * Pull a repo-wide file-card context block for the PO prompt.
+ *
+ * Delegates to the shared primeContextBlock helper (lib/context-primer.mjs)
+ * using a repo-overview query so the packet's digest + top cards ground the
+ * PO suggestions. FAIL-SOFT: any memory error / no cards → "" and the prompt
  * runs exactly as before. Cards are a guide; the agent must read the real file.
+ *
+ * Exported so tests can call it directly (backwards-compatible signature).
  */
 export function repoContextBlock({ repoName, repoPath, env = process.env }) {
-  try {
-    const cliBin = env.MEMORY_CLI_BIN || CONFIG.memoryCliBin;
-    const db = env.MEMORY_DB || CONFIG.memoryDb;
-    if (!cliBin || !db || !existsSync(cliBin)) return "";
-    const canonical = repoCanonical(repoPath);
-    const res = spawnSync(
-      process.execPath,
-      [
-        cliBin,
-        "cards-for-scope",
-        "--canonical",
-        canonical,
-        "--repo",
-        repoName,
-        "--query",
-        `${repoName} product overview — what this repo does and what to build next`,
-        "--max-cards",
-        "14",
-        "--max-tokens",
-        "1800",
-        "--per-card-max-tokens",
-        "160",
-        "--json",
-      ],
-      { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: { ...env, MEMORY_DB: db } },
-    );
-    if (res.error || (res.status ?? 0) !== 0 || !res.stdout) return "";
-    let packet;
-    try {
-      packet = JSON.parse(res.stdout);
-    } catch {
-      return "";
-    }
-    const cards = Array.isArray(packet.cards) ? packet.cards : [];
-    const tiers = new Map(
-      (Array.isArray(packet.selectionOrder) ? packet.selectionOrder : []).map((e) => [
-        e.path,
-        e.tier,
-      ]),
-    );
-    const lines = [];
-    if (packet.digest?.overview) lines.push(`Repo digest: ${String(packet.digest.overview).trim()}`);
-    for (const c of cards) {
-      const tier = tiers.get(c.path) || "fts";
-      let head = `  - [${tier}] ${c.path}`;
-      if (c.tldr) head += ` — ${String(c.tldr).trim()}`;
-      lines.push(head);
-    }
-    if (cards.length === 0 && !packet.digest?.overview) return "";
-    return [
-      "",
-      "PRIOR CONTEXT (file cards) — the runner pre-selected these from the repo's",
-      "file-card index to orient your product thinking. These cards help you choose",
-      "what to read; before relying on any detail, read the actual file or excerpt —",
-      "a card is a guide, never authoritative source.",
-      ...lines,
-      "",
-    ].join("\n");
-  } catch {
-    return "";
-  }
+  return primeContextBlock({
+    realRepoPath: repoPath,
+    repo: repoName,
+    query: `${repoName} product overview — what this repo does and what to build next`,
+    env: { ...env, MEMORY_CLI_BIN: env.MEMORY_CLI_BIN || CONFIG.memoryCliBin },
+  });
 }
 
 /**

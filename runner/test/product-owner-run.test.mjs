@@ -252,6 +252,43 @@ console.log("== P2-A: DISPATCH_API_TOKEN is stripped from the agent child env ==
   } else fail(`dry-run token-strip wrong (code=${code}, out=${JSON.stringify(out)})`);
 }
 
+console.log("== M3: agentChildEnv strips outbound-endpoint vars; keeps ANTHROPIC_BASE_URL ==");
+{
+  // The agent must not be able to read the runner's notify/webhook/Slack channels
+  // and exfiltrate to them. ANTHROPIC_BASE_URL is the ONE *_URL exception (API routing).
+  const childEnv = agentChildEnv({
+    PATH: "/usr/bin",
+    // Outbound endpoint / notify vars that must be stripped:
+    GAFFER_NOTIFY_WEBHOOK_URL: "https://hooks.example.com/secret-webhook",
+    GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/TXXXXX/BXXXXX/secret",
+    GAFFER_NOTIFY_EXTRA: "extra-notify-var",
+    MY_WEBHOOK_URL: "https://corp.example.com/webhook",
+    SLACK_WEBHOOK_TOKEN: "xoxb-slack-token",
+    FOO_URL: "https://internal.corp/endpoint",
+    // Must NOT be stripped — the one *_URL exception:
+    ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+    // Must NOT be stripped — benign GAFFER_* knob:
+    GAFFER_MAX_TURNS: "25",
+    // Existing credential strip still works:
+    DISPATCH_API_TOKEN: "bearer-token",
+  });
+  assert("M3: removes GAFFER_NOTIFY_WEBHOOK_URL", !("GAFFER_NOTIFY_WEBHOOK_URL" in childEnv));
+  assert("M3: removes GAFFER_NOTIFY_SLACK_URL", !("GAFFER_NOTIFY_SLACK_URL" in childEnv));
+  assert("M3: removes GAFFER_NOTIFY_EXTRA", !("GAFFER_NOTIFY_EXTRA" in childEnv));
+  assert("M3: removes *_WEBHOOK* var (MY_WEBHOOK_URL)", !("MY_WEBHOOK_URL" in childEnv));
+  assert("M3: removes *_SLACK* var", !("SLACK_WEBHOOK_TOKEN" in childEnv));
+  assert("M3: removes generic *_URL var (FOO_URL)", !("FOO_URL" in childEnv));
+  assert(
+    "M3: KEEPS ANTHROPIC_BASE_URL (sole *_URL exception for API routing)",
+    childEnv.ANTHROPIC_BASE_URL === "https://api.anthropic.com",
+  );
+  assert("M3: KEEPS benign GAFFER_MAX_TURNS", childEnv.GAFFER_MAX_TURNS === "25");
+  assert(
+    "M3: still removes DISPATCH_API_TOKEN (credential strip unaffected)",
+    !("DISPATCH_API_TOKEN" in childEnv),
+  );
+}
+
 console.log("== DRAFT-COUNT GUARD: countDraftTickets counts draft tickets per repo ==");
 {
   // Extend the throwaway DB with the tickets + ticket_repos tables countDraftTickets

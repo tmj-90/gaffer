@@ -340,7 +340,10 @@ function installProjectLocalWiring() {
 
   // MCP runtime config with the DB paths AND the MCP server bins substituted to
   // this run's wiring — all four placeholders, or the dispatch MCP won't start.
-  const mcpRuntime = resolve(GAFFER_DATA, "mcp-product-owner-runtime.json");
+  // Written INTO agentHome (the per-run ephemeral dir) so concurrent "Suggest work"
+  // runs can't overwrite each other's MCP wiring (FIX 4: eliminated shared path
+  // $GAFFER_DATA/mcp-product-owner-runtime.json). Cleaned up with agentHome on exit.
+  const mcpRuntime = resolve(agentHome, "mcp-runtime.json");
   const mcp = readFileSync(CONFIG.mcpConfig, "utf8")
     .split("${DISPATCH_DB}")
     .join(CONFIG.dispatchDb)
@@ -377,26 +380,55 @@ export function buildClaudeArgv({ prompt, mcpConfig, flags }) {
 }
 
 /**
- * Build the child env for the headless agent (P2-A). The product-owner run only
- * needs the MCP DB paths + repo-access wiring; it must NEVER inherit Dispatch's
- * bearer token or any other ambient credential. We start from a COPY of `base`
- * and DELETE DISPATCH_API_TOKEN plus any *_TOKEN / *_SECRET the agent doesn't
- * need, so a misbehaving (or prompt-injected) skill can't read a credential out
- * of its environment and echo it back. The explicit run vars are layered on top
- * by the caller.
+ * Build the child env for the headless agent (P2-A/M3). The product-owner run
+ * must NEVER inherit Dispatch's bearer token, any other ambient credential, or
+ * any outbound-endpoint var the runner uses for its own exfiltration channels.
+ * We start from a COPY of `base` and DELETE:
+ *   • Credential-shaped vars: DISPATCH_API_TOKEN, AWS_ACCESS_KEY_ID (named
+ *     explicitly — ends in _ID), and anything matching *_TOKEN / *_SECRET /
+ *     *_KEY / *_PASSWORD / *_PASSWD.
+ *   • Outbound endpoint / notify vars: GAFFER_NOTIFY_* (runner's notification
+ *     webhooks), *_WEBHOOK* (generic webhook vars), *_SLACK* (Slack endpoint
+ *     vars), and *_URL (any URL-typed var). A prompt-injected product-owner
+ *     agent must not be able to read GAFFER_NOTIFY_WEBHOOK_URL from its env
+ *     and exfiltrate to it.
+ * Explicit exceptions kept despite the deny patterns above:
+ *   • ANTHROPIC_API_KEY — the ONE *_KEY the spawned `claude` needs for auth.
+ *   • ANTHROPIC_AUTH_TOKEN — alternate auth form.
+ *   • ANTHROPIC_BASE_URL — the ONE *_URL needed to route `claude` to a custom
+ *     endpoint (e.g. a Bedrock or proxy base URL); without it the agent can't
+ *     reach the API.
+ * This RESTORES true parity with the shell gaffer_agent_env() in
+ * factory.config.sh — both paths now drop the same credential AND
+ * outbound-endpoint classes. The explicit run vars are layered on top by the
+ * caller.
  */
 export function agentChildEnv(base = process.env) {
   const env = { ...base };
   for (const key of Object.keys(env)) {
-    // M2: broaden the credential denylist beyond *_TOKEN/*_SECRET to also catch
-    // *_KEY (AWS_ACCESS_KEY_ID etc.), *_PASSWORD/*_PASSWD and AWS session tokens.
-    // ANTHROPIC_API_KEY is the ONE *_KEY the spawned `claude` needs for auth, so
-    // it is explicitly preserved.
-    if (key === "ANTHROPIC_API_KEY" || key === "ANTHROPIC_AUTH_TOKEN") continue;
+    // Explicit keeps — survive all deny checks below.
+    if (
+      key === "ANTHROPIC_API_KEY" ||
+      key === "ANTHROPIC_AUTH_TOKEN" ||
+      key === "ANTHROPIC_BASE_URL"
+    )
+      continue;
+    // Credential-shaped vars — never reach the agent.
     if (
       key === "DISPATCH_API_TOKEN" ||
-      key === "AWS_ACCESS_KEY_ID" || // ends in _ID, so name it explicitly
+      key === "AWS_ACCESS_KEY_ID" || // ends in _ID, so named explicitly
       /(_TOKEN|_SECRET|_KEY|_PASSWORD|_PASSWD)$/.test(key)
+    ) {
+      delete env[key];
+      continue;
+    }
+    // Outbound endpoint / notify config — runner-only; the agent must not read
+    // its own potential exfiltration channel (parity with shell gaffer_agent_env).
+    if (
+      /^GAFFER_NOTIFY_/.test(key) ||
+      /_WEBHOOK/.test(key) ||
+      /_SLACK/.test(key) ||
+      /_URL$/.test(key)
     ) {
       delete env[key];
     }
@@ -432,10 +464,11 @@ function main() {
 
   if (opts.dryRun) {
     // Test/inspection path: report the planned invocation WITHOUT touching the repo
-    // (no wiring install) or spawning claude.
+    // (no wiring install) or spawning claude. Show a representative per-run path so
+    // the dry-run output makes the ephemeral-file intent clear (FIX 4).
     const argv = buildClaudeArgv({
       prompt,
-      mcpConfig: resolve(GAFFER_DATA, "mcp-product-owner-runtime.json"),
+      mcpConfig: resolve(GAFFER_DATA, "po-runtime-XXXXXX", "mcp-runtime.json"),
       flags: CONFIG.claudeFlags,
     });
     // P2-A: surface whether the (token-stripped) child env would still carry the
@@ -504,8 +537,11 @@ function main() {
     timeout: opts.timeoutMs,
     maxBuffer: 32 * 1024 * 1024,
     env: {
-      // P2-A: start from a token-stripped copy of the parent env so the agent
-      // never inherits DISPATCH_API_TOKEN (or any *_TOKEN/*_SECRET).
+      // P2-A/M3: start from a credential-and-endpoint-stripped copy of the
+      // parent env so the agent never inherits DISPATCH_API_TOKEN, any
+      // *_TOKEN / *_SECRET / *_KEY, or outbound-endpoint vars
+      // (GAFFER_NOTIFY_*, *_WEBHOOK*, *_SLACK*, *_URL — except
+      // ANTHROPIC_BASE_URL which the agent needs to reach the API).
       ...agentChildEnv(),
       DISPATCH_DB: CONFIG.dispatchDb,
       MEMORY_DB: CONFIG.memoryDb,

@@ -268,7 +268,19 @@ export function sha256(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
-function countLines(content: string): number {
+/**
+ * Mechanically extract the structural symbol set for a file (exports, classes,
+ * functions, SQL schema objects, …) using the same per-file-type extractors
+ * the model-validation gate uses. Exposed so the card WRITER (onboard) and the
+ * VALIDATOR agree on exactly the same symbol set — there is then no
+ * cross-extractor mismatch that could spuriously fail a card's symbol check.
+ * Returns a sorted, de-duplicated array. Unsupported file types yield [].
+ */
+export function extractFileSymbols(path: string, content: string): string[] {
+  return [...extractSymbols(content, detectFileType(path))].sort();
+}
+
+export function countLines(content: string): number {
   if (content.length === 0) return 0;
   let count = 1;
   for (let i = 0; i < content.length; i++) {

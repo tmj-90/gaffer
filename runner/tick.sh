@@ -766,6 +766,105 @@ $_RF_Q
 "
   fi
 
+  # ── PRIOR CONTEXT (file cards) — chunk 2b push of the budgeted scope packet ──
+  # Runner has ALREADY resolved scope (write/read partition above). Pull the
+  # repo's file cards for this ticket and PUSH them into the delivery prompt so
+  # the agent starts oriented instead of re-scanning. The agent still PULLS more
+  # via the memory MCP. FAIL-SOFT: any memory error / no cards → empty block and
+  # delivery proceeds exactly as before. Cards are a retrieval AID, never source.
+  #
+  # CANONICAL CONTRACT (must match onboard's repoCanonical EXACTLY): the repo's
+  # remote.origin.url, else its realpath (pwd -P). Derived from the REAL primary
+  # repo path (not the worktree) so the realpath fallback matches what onboard
+  # keyed the cards under; a worktree shares the same remote.origin.url anyway.
+  FILE_CARDS_BLOCK=""
+  PRIME_CONTEXT_CALLED=false
+  CARDS_SERVED=0
+  CARDS_COVERAGE=""
+  _CARD_REAL_REPO="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $3}')"
+  [ -n "$_CARD_REAL_REPO" ] || _CARD_REAL_REPO="$REPO_PATH"
+  _CARD_REPO_NAME="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $2}')"
+  [ -n "$_CARD_REPO_NAME" ] || _CARD_REPO_NAME="$(basename "$_CARD_REAL_REPO")"
+  if [ -n "$_CARD_REAL_REPO" ] && [ -d "$_CARD_REAL_REPO" ]; then
+    canonical="$(git -C "$_CARD_REAL_REPO" config --get remote.origin.url 2>/dev/null)"; [ -z "$canonical" ] && canonical="$(cd "$_CARD_REAL_REPO" && pwd -P)"
+    _CARD_DESC="$(echo "$SHOW" | jget "(d['ticket'].get('description') or '')[:600]" 2>/dev/null || echo '')"
+    _CARD_QUERY="$(printf '%s %s' "$TITLE" "$_CARD_DESC")"
+    _CARD_JSON="$(lg cards-for-scope --canonical "$canonical" --repo "$_CARD_REPO_NAME" --query "$_CARD_QUERY" --max-cards 12 --max-tokens 1800 --per-card-max-tokens 160 --json 2>/dev/null || true)"
+    if [ -n "$_CARD_JSON" ]; then
+      # Render the packet into a compact, agent-facing block. python3 fails soft:
+      # bad/empty JSON or zero cards yields no block (and CARDS_SERVED stays 0).
+      _CARD_RENDER="$(printf '%s' "$_CARD_JSON" | python3 -c '
+import sys, json
+try:
+    p = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+cards = p.get("cards") or []
+order = {e["path"]: e["tier"] for e in (p.get("selectionOrder") or [])}
+lines = []
+dg = p.get("digest")
+if dg and dg.get("overview"):
+    lines.append("Repo digest: " + dg["overview"].strip())
+for c in cards:
+    tier = order.get(c.get("path"), "fts")
+    head = "  - [%s] %s" % (tier, c.get("path",""))
+    if c.get("tldr"):
+        head += " — " + c["tldr"].strip()
+    lines.append(head)
+    syms = c.get("symbols") or []
+    if syms:
+        lines.append("      symbols: " + ", ".join(syms[:8]))
+cov = p.get("coverage") or {}
+missing = cov.get("missing") or []
+tr = p.get("truncationReason")
+foot = []
+if missing:
+    foot.append("no card yet for: " + ", ".join(missing[:8]))
+if tr:
+    foot.append(tr)
+print("@@COUNT@@%d" % len(cards))
+print("@@COVERAGE@@served=%d requested=%d missing=%d" % (len(cards), cov.get("requested",0), len(missing)))
+if cards:
+    print("@@BODY@@")
+    print("\n".join(lines))
+    if foot:
+        print("  (" + "; ".join(foot) + ")")
+' 2>/dev/null || true)"
+      CARDS_SERVED="$(printf '%s\n' "$_CARD_RENDER" | sed -n 's/^@@COUNT@@//p' | head -1)"
+      [ -n "$CARDS_SERVED" ] || CARDS_SERVED=0
+      CARDS_COVERAGE="$(printf '%s\n' "$_CARD_RENDER" | sed -n 's/^@@COVERAGE@@//p' | head -1)"
+      _CARD_BODY="$(printf '%s\n' "$_CARD_RENDER" | sed -n '/^@@BODY@@$/,$p' | sed '1d')"
+      if [ "${CARDS_SERVED:-0}" -gt 0 ] 2>/dev/null && [ -n "$_CARD_BODY" ]; then
+        PRIME_CONTEXT_CALLED=true
+        FILE_CARDS_BLOCK="
+PRIOR CONTEXT (file cards) — the runner pre-selected these from the repo's
+file-card index to help you CHOOSE WHAT TO READ. These cards help you choose what
+to read. Before editing any file, read the actual file or the relevant excerpt —
+a card is a guide, never authoritative source. Pull more via the memory MCP
+(\`cards_for_scope\` / \`card get\` / \`card search\`) when you need them.
+$_CARD_BODY
+"
+      fi
+    fi
+  fi
+  if [ "$PRIME_CONTEXT_CALLED" = "true" ]; then
+    log "cards: primed delivery #$NUM with $CARDS_SERVED file card(s) [$CARDS_COVERAGE]"
+  else
+    log "cards: no file-card context for #$NUM (none served / memory unavailable) — proceeding without"
+  fi
+  # METRICS (chunk 2b) — record the mechanically-observable retrieval facts for
+  # this delivery: prime_context_called + cards_served + coverage. Best-effort,
+  # gated on GAFFER_DATA, fully swallowed (never affects delivery). The
+  # complementary reads-before-first-write signal is captured at the safety-hook
+  # tool-call layer ($GAFFER_DATA/tool-metrics.jsonl), keyed by GAFFER_TICKET.
+  if [ -n "${GAFFER_DATA:-}" ]; then
+    {
+      printf '{"ts":"%s","ticket":"%s","prime_context_called":%s,"cards_served":%s,"coverage":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" "$CARDS_COVERAGE" \
+        >> "$GAFFER_DATA/delivery-metrics.jsonl"
+    } 2>/dev/null || true
+  fi
+
   TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
   if [ "$_RESUMING" = "1" ]; then
     # PAUSE-ON-CAP continuation prompt: the prior progress is ALREADY in this worktree
@@ -781,6 +880,7 @@ Ticket #$NUM, title: $TITLE_Q
 Recommended skills (pick the ONE whose description matches this ticket): $SKILLS
 ALWAYS-APPLY lenses (mandatory on EVERY change): $LENSES
 $REVIEW_FEEDBACK_BLOCK
+$FILE_CARDS_BLOCK
 YOU PREVIOUSLY WORKED ON THIS TICKET IN THIS WORKTREE — the prior progress is committed
 and/or present as working changes here. Do NOT start over and do NOT re-scaffold. First
 run \`get_ticket\` and \`git log --oneline\` + \`git status\` to see what is already done,
@@ -814,11 +914,14 @@ ALWAYS-APPLY lenses (mandatory on EVERY change, not optional): $LENSES
   code, fewer moving parts — while satisfying every AC and never weakening a guard. Read
   its SKILL.md and apply it as you implement and again in self-review.
 $REVIEW_FEEDBACK_BLOCK
+$FILE_CARDS_BLOCK
 Follow your brief (CLAUDE.factory.md): claim THIS specific ticket (#$NUM) — the one
 the tick assigned you — via the dispatch MCP tool claim_ticket with ticket_id "$NUM"
 and agent_id "$AGENT" (NOT claim_next_ticket, which could hand you a different ticket
 if the queue shifted); get_ticket; then
-consult memory search_lore for conventions, then implement to satisfy every
+consult memory search_lore for conventions and use the PRIOR CONTEXT file cards above
+(when present) to choose what to read FIRST — read the actual files before editing;
+re-scan the tree only for what the cards do not already cover. Then implement to satisfy every
 acceptance criterion using the matching skill, run the repo's tests, then COMMIT your
 work on the current branch — run: git add -A && git commit -m "deliver #$NUM: <summary>".
 An uncommitted edit is NOT a delivery; the branch MUST carry your commit. Then use the
@@ -1208,6 +1311,7 @@ EOF
     && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $WRAP \
        env -i "${GAFFER_AGENT_ENV[@]}" \
          GAFFER_WRITE_ROOTS="$WRITE_ROOTS" GAFFER_READ_ROOTS="$READ_ROOTS" \
+         GAFFER_DATA="$GAFFER_DATA" GAFFER_TICKET="$NUM" \
          DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
          "$CLAUDE_BIN" -p "$PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $ROUTE_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
   ) >"$USAGE_JSON" 2>>"$GAFFER_LOG"

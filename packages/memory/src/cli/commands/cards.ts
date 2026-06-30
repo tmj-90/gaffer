@@ -12,9 +12,20 @@
  *
  * ISOLATION: no imports from dispatch or crew.
  */
-import { getFileCard, repoKey, searchFileCards } from "../../core/fileCards.js";
+import { readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+
+import { getFileCard, repoKey, searchFileCards, setWatermark, upsertFileCard } from "../../core/fileCards.js";
+import {
+  countLines,
+  extractFileSymbols,
+  sha256,
+  validateMechanical,
+  validateModel,
+} from "../../core/cardValidation.js";
 import { cardsForScope } from "../../core/scopePacket.js";
 import { openDb } from "../../db/index.js";
+import type { ModelStatus } from "../../db/types.js";
 import { getBool, getString, getStringArray } from "../args.js";
 import type { parseArgs } from "../args.js";
 
@@ -293,19 +304,194 @@ export async function cmdCardsForScope(args: ReturnType<typeof parseArgs>): Prom
   }
 }
 
+// ── card upsert ───────────────────────────────────────────────────────
+
+/**
+ * `memory card upsert --canonical <c> --repo <r> --repo-root <abs> --path <rel>
+ *   [--tldr <t>] [--role-primary <r>] [--role-tag <x> ...] [--model <m>]
+ *   [--prompt-version <v>] [--synced-commit <sha>] [--source <s>] [--json]`
+ *
+ * The WRITE seam for onboard's structure-first card pass. The caller supplies
+ * only the MODEL-derived intent (tldr / role); this command owns the mechanical
+ * truth: it reads the file off disk (repo-root + path), computes content_hash +
+ * loc, extracts the symbol set, then runs BOTH deterministic gates
+ * (validateMechanical → card_status, validateModel → model_status) before the
+ * transactional upsert. Symbols are extracted HERE (not trusted from the
+ * caller) so the stored set and the verification set are identical — the model
+ * gate can never spuriously fail on a symbol mismatch.
+ *
+ * A file we cannot read is reported as a shadow skip and NOT written (a card
+ * with no mechanical content has no retrieval value). Best-effort by design:
+ * the onboard caller treats any non-zero exit as "skip this file, keep going".
+ */
+export async function cmdCardUpsert(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const resolved = resolveRepoArgs(args, "card upsert");
+  if (!resolved) return 2;
+
+  const path = getString(args.flags, "path");
+  if (!path) {
+    process.stderr.write("memory: card upsert requires --path <repo-relative-file-path>\n");
+    return 2;
+  }
+  const repoRoot = getString(args.flags, "repo-root");
+  if (!repoRoot || !isAbsolute(repoRoot)) {
+    process.stderr.write("memory: card upsert requires --repo-root <absolute-repo-path>\n");
+    return 2;
+  }
+
+  const tldr = getString(args.flags, "tldr");
+  const rolePrimary = getString(args.flags, "role-primary");
+  const roleTags = getStringArray(args.flags, "role-tag");
+  const model = getString(args.flags, "model");
+  const promptVersion = getString(args.flags, "prompt-version");
+  const syncedCommit = getString(args.flags, "synced-commit");
+  const source = getString(args.flags, "source") ?? "onboard";
+  const json = getBool(args.flags, "json");
+
+  // Read the file off disk — the mechanical source of truth. A path that
+  // escapes the repo root, or is unreadable, yields a shadow skip. Both sides
+  // are normalised via resolve() first so a trailing/double slash in repo-root
+  // (e.g. ".../T//repo") can't defeat the containment check.
+  const root = resolve(repoRoot);
+  const abs = resolve(root, path);
+  let fileContent: string | null = null;
+  if (abs === root || abs.startsWith(root + "/")) {
+    try {
+      fileContent = readFileSync(abs, "utf8");
+    } catch {
+      fileContent = null;
+    }
+  }
+
+  if (fileContent === null) {
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({ path, written: false, cardStatus: "shadow", reason: "file not readable" }) +
+          "\n",
+      );
+    } else {
+      process.stderr.write(`memory: card upsert skipped '${path}' — file not readable\n`);
+    }
+    return 1;
+  }
+
+  const db = openDb();
+  try {
+    const rk = repoKey(resolved.canonical);
+    const contentHash = sha256(fileContent);
+    const loc = countLines(fileContent);
+    const symbols = extractFileSymbols(path, fileContent);
+
+    // Mechanical gate → card_status. (No readRoots: onboard files are inside the
+    // repo by construction; the source label is "onboard", not a path.)
+    const mech = validateMechanical({ path, contentHash, loc, source, fileContent });
+
+    // Model gate → model_status. With no model summary supplied the card is a
+    // mechanical-only card (model_status='absent') — still useful for retrieval.
+    let modelStatus: ModelStatus = "absent";
+    let validationError: string | null = null;
+    const hasModel = Boolean(tldr || rolePrimary || roleTags.length > 0);
+    if (hasModel) {
+      const mv = validateModel({ path, tldr, rolePrimary, roleTags, symbols, fileContent });
+      modelStatus = mv.modelStatus;
+      validationError = mv.validationError;
+    }
+
+    const card = upsertFileCard(db, {
+      repoKey: rk,
+      repo: resolved.repo,
+      path,
+      contentHash,
+      loc,
+      symbols,
+      ...(syncedCommit ? { syncedCommit } : {}),
+      source,
+      ...(tldr ? { tldr } : {}),
+      ...(rolePrimary ? { rolePrimary } : {}),
+      ...(roleTags.length > 0 ? { roleTags } : {}),
+      cardStatus: mech.cardStatus,
+      modelStatus,
+      validatedAt: new Date().toISOString(),
+      ...(validationError
+        ? { validationError }
+        : mech.reasons.length > 0
+          ? { validationError: mech.reasons.join("; ") }
+          : {}),
+      ...(model ? { model } : {}),
+      ...(promptVersion ? { promptVersion } : {}),
+    });
+
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({
+          path: card.path,
+          written: true,
+          cardStatus: card.cardStatus,
+          modelStatus: card.modelStatus,
+          symbols: symbols.length,
+          ...(validationError ? { validationError } : {}),
+        }) + "\n",
+      );
+    } else {
+      process.stdout.write(
+        `card upsert ${card.path} [card=${card.cardStatus} model=${card.modelStatus}] (${symbols.length} symbols)\n`,
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+// ── card sync (watermark) ─────────────────────────────────────────────
+
+/**
+ * `memory card sync --canonical <c> --repo <r> --commit <sha> [--json]`
+ *
+ * Record the repo's card-set watermark (the commit the cards were built from)
+ * via setWatermark. Called once at the end of an onboard card pass.
+ */
+export async function cmdCardSync(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const resolved = resolveRepoArgs(args, "card sync");
+  if (!resolved) return 2;
+
+  const commit = getString(args.flags, "commit");
+  if (!commit) {
+    process.stderr.write("memory: card sync requires --commit <sha>\n");
+    return 2;
+  }
+
+  const db = openDb();
+  try {
+    const sync = setWatermark(db, repoKey(resolved.canonical), resolved.repo, commit);
+    if (getBool(args.flags, "json")) {
+      process.stdout.write(JSON.stringify({ ok: true, sync }) + "\n");
+    } else {
+      process.stdout.write(`card watermark for ${sync.repo} set to ${sync.syncedCommit}\n`);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 // ── card dispatcher ───────────────────────────────────────────────────
 
 /**
  * `memory card <sub>` — dispatch card sub-commands.
  *   get     --canonical <c> --repo <r> --path <p>
  *   search  --canonical <c> --repo <r> --query <q>
+ *   upsert  --canonical <c> --repo <r> --repo-root <abs> --path <rel> [model fields]
+ *   sync    --canonical <c> --repo <r> --commit <sha>
  */
 export async function cmdCard(args: ReturnType<typeof parseArgs>): Promise<number> {
   const sub = args.positionals[0];
   if (sub === "get") return await cmdCardGet(args);
   if (sub === "search") return await cmdCardSearch(args);
+  if (sub === "upsert") return await cmdCardUpsert(args);
+  if (sub === "sync") return await cmdCardSync(args);
   process.stderr.write(
-    "memory: card requires a subcommand — `memory card get` or `memory card search`\n",
+    "memory: card requires a subcommand — `memory card get|search|upsert|sync`\n",
   );
   return 2;
 }

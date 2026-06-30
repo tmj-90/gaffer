@@ -107,9 +107,9 @@ missing = cov.get("missing") or []
 tr      = p.get("truncationReason")
 foot    = []
 if missing:
-    foot.append("no card yet for: " + ", ".join(missing[:8]))
+    foot.append("no card yet for: " + ", ".join(sanitize(s) for s in missing[:8]))
 if tr:
-    foot.append(tr)
+    foot.append(sanitize(tr))
 if not lines:
     sys.exit(0)
 print("\n".join(lines))

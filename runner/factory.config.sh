@@ -440,18 +440,22 @@ _gaffer_lock_age() {
   echo $((now - mtime))
 }
 
-# --- Agent child-env scrub (C1/M2) -------------------------------------------
+# --- Agent child-env scrub (C1/M2/M3) ----------------------------------------
 # The live `claude -p` launches (delivery, bootstrap, agent-review, clarify) run
 # in a subshell that, by default, INHERITS the full parent environment. That env
 # carries ambient credentials the runner needs but the AGENT does not —
-# GITHUB_TOKEN, AWS_* keys, DISPATCH_API_TOKEN, and anything else matching
-# *_TOKEN / *_SECRET / *_KEY / *_PASSWORD. A prompt-injected agent that can read
-# its own environment could exfiltrate those. The .mjs runners already scrub
-# their child env (agentChildEnv); this is the shell parity for the bash call
-# sites, and it is intentionally an ALLOWLIST rather than a denylist: we start
-# from nothing (`env -i`) and hand the agent ONLY what `claude -p`, its MCP
-# tools, and the per-call boundary vars need. Nothing else can leak by accident,
-# including credentials we haven't thought of yet.
+# GITHUB_TOKEN, AWS_* keys, DISPATCH_API_TOKEN, anything matching
+# *_TOKEN / *_SECRET / *_KEY / *_PASSWORD, AND the runner's own outbound-endpoint
+# vars (GAFFER_NOTIFY_*, *_WEBHOOK*, *_SLACK*, *_URL). A prompt-injected agent
+# that can read its own environment could exfiltrate credentials OR post to a
+# notify webhook it found in GAFFER_NOTIFY_WEBHOOK_URL.
+# The agentChildEnv() function in bin/product-owner-run.mjs now also drops these
+# outbound-endpoint classes (keeping ANTHROPIC_BASE_URL as the sole *_URL
+# exception, for API routing), RESTORING true parity between the two code paths.
+# This function is an ALLOWLIST rather than a denylist: we start from nothing
+# (`env -i`) and hand the agent ONLY what `claude -p`, its MCP tools, and the
+# per-call boundary vars need. Nothing else can leak by accident, including
+# credentials we haven't thought of yet.
 #
 # Usage:
 #   gaffer_agent_env                       # populates the GAFFER_AGENT_ENV array
@@ -473,12 +477,16 @@ _gaffer_lock_age() {
 #   - MCP_CONFIG, DISPATCH_DB, MEMORY_DB, DISPATCH_MCP_BIN, MEMORY_MCP_BIN — the
 #     agent's MCP servers + their DB paths (its only data-plane reach).
 #   - GAFFER_* knobs the agent or its hooks read (models, caps, write/read roots,
-#     skill/quarantine wiring). The per-call boundary vars are layered on top by
-#     the caller AFTER this array, so they always win.
+#     skill/quarantine wiring). EXCEPTION: GAFFER_NOTIFY_* vars (notification
+#     webhooks / Slack endpoints) are blocked by the deny case above even though
+#     they match this prefix — the agent must not read its own exfiltration channel.
+#     The per-call boundary vars are layered on top by the caller AFTER this array,
+#     so they always win.
 #   - npm_config_* — the scoped/locked bootstrap install knobs.
 # Everything NOT named here is dropped — in particular GITHUB_TOKEN, AWS access
-# keys/secrets/session tokens, DISPATCH_API_TOKEN, and any *_TOKEN / *_SECRET /
-# *_KEY (besides ANTHROPIC_API_KEY) / *_PASSWORD.
+# keys/secrets/session tokens, DISPATCH_API_TOKEN, any *_TOKEN / *_SECRET /
+# *_KEY (besides ANTHROPIC_API_KEY) / *_PASSWORD, and the outbound-endpoint class
+# (GAFFER_NOTIFY_*, *_WEBHOOK*, *_SLACK*, *_URL — except ANTHROPIC_BASE_URL).
 GAFFER_AGENT_ENV=()
 gaffer_agent_env() {
   GAFFER_AGENT_ENV=()

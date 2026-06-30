@@ -1918,33 +1918,56 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       RDEFAULT="$(echo "$RSHOW" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'")"
       log "review_mode=$REVIEW_MODE → agent-reviewing in_review #$RNUM in $RREPO (branch ${RBRANCH:-unknown}, base $RDEFAULT)"
       if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run a reviewer agent on #$RNUM (branch ${RBRANCH:-unknown})"; result reviewed; exit 0; fi
-      # BUG 1 fix: snapshot the repo's current branch BEFORE checking out the
-      # delivery branch so we can restore it unconditionally on exit (success OR
-      # failure / crash), leaving the real repo's working tree exactly as found.
-      # BUG 2 fix: clean up the injected .claude/ + CLAUDE.factory.md on the same
-      # trap — they must never persist in the real repo after a review tick.
-      RORIG="$(git -C "$RREPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+      # BLOCKING 1 fix: run the reviewer in a THROWAWAY git worktree so the
+      # registered repo's working tree, HEAD, and any pre-existing .claude/ are
+      # NEVER touched. The worktree lives under $GAFFER_DATA and is torn down by
+      # _review_cleanup on ALL exit paths (EXIT, INT, TERM). Using a per-ticket
+      # path (review-wt-$RNUM) prevents collisions when GAFFER_CONCURRENCY>1.
+      WT="$GAFFER_DATA/review-wt-$RNUM"
       _review_cleanup() {
-        # Restore the original branch (if we changed it and know where to go back).
-        if [ -n "${RORIG:-}" ] && [ -n "${RBRANCH:-}" ]; then
-          git -C "$RREPO" checkout "$RORIG" >/dev/null 2>&1 || true
+        if [ -n "${WT:-}" ] && [ -e "$WT" ]; then
+          git -C "$RREPO" worktree remove --force "$WT" 2>/dev/null || true
+          git -C "$RREPO" worktree prune 2>/dev/null || true
         fi
-        # Remove the injected runner config from the real repo.
-        rm -f "$RREPO/CLAUDE.factory.md"
-        rm -f "$RREPO/.claude/settings.json"
-        rm -f "$RREPO/.claude/skills"
-        # If .claude/ is now empty (we created it), remove it too — best-effort.
-        rmdir "$RREPO/.claude" 2>/dev/null || true
       }
-      trap '_review_cleanup; trap - EXIT' EXIT
-      [ -n "$RBRANCH" ] && git -C "$RREPO" checkout "$RBRANCH" >/dev/null 2>&1 || true
+      # BLOCKING 2 fix: install review-scoped EXIT + signal traps so
+      # _review_cleanup fires under INT/TERM as well as on a normal exit.
+      # Each handler clears ALL three traps first (matching the global idiom)
+      # to prevent re-entry, runs the worktree cleanup, then chains the global
+      # crash cleanup and exits with the correct status code. On the normal
+      # completion path the caller restores the global traps explicitly so
+      # subsequent code (result/exit) continues under the standard handlers.
+      _review_on_exit() {
+        local rc=$?
+        trap - EXIT INT TERM
+        _review_cleanup
+        gaffer_crash_cleanup
+        exit "$rc"
+      }
+      _review_on_int()  { trap - EXIT INT TERM; _review_cleanup; gaffer_crash_cleanup; exit 130; }
+      _review_on_term() { trap - EXIT INT TERM; _review_cleanup; gaffer_crash_cleanup; exit 143; }
+      trap _review_on_exit EXIT
+      trap _review_on_int  INT
+      trap _review_on_term TERM
       [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing — refusing live review (fail closed)"; result error; exit 1; }
-      mkdir -p "$RREPO/.claude"; ln -sfn "$SKILLS_DIR" "$RREPO/.claude/skills"
-      sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$RREPO/.claude/settings.json"
+      # Fail CLOSED if no branch is recorded — the reviewer must never operate
+      # on an unknown HEAD (mirrors the delivery-path fail-closed checkout guard).
+      if [ -z "${RBRANCH:-}" ]; then
+        log "REVIEW-ERROR: no delivery branch recorded for ticket #$RNUM — refusing review (fail closed)"
+        result error; exit 1
+      fi
+      # Fail CLOSED if the throwaway worktree can't be created — prevents the
+      # reviewer from operating on the wrong code.
+      if ! git -C "$RREPO" worktree add --force "$WT" "$RBRANCH" >/dev/null 2>&1; then
+        log "REVIEW-ERROR: failed to create review worktree for branch '$RBRANCH' in $RREPO — refusing review of #$RNUM (fail closed; branch may be missing or corrupt)"
+        result error; exit 1
+      fi
+      mkdir -p "$WT/.claude"; ln -sfn "$SKILLS_DIR" "$WT/.claude/skills"
+      sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$WT/.claude/settings.json"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
-      cp -f "$HERE/claude/CLAUDE.md" "$RREPO/CLAUDE.factory.md"
+      cp -f "$HERE/claude/CLAUDE.md" "$WT/CLAUDE.factory.md"
       read -r -d '' RPROMPT <<EOF || true
 You are a REVIEWER agent. You did NOT implement this ticket, so you may JUDGE it — but
 your verdict is ADVISORY ONLY: an agent review is NOT a human approval and MUST NOT
@@ -1955,24 +1978,24 @@ path. You record your verdict ONLY through the scoped dispatch MCP.
 $QUARANTINE_NOTICE
 Use the review-ticket skill to review in_review ticket #$RNUM: call get_ticket (dispatch)
 for its acceptance criteria and recorded evidence; inspect the delivered change with
-\`git diff $RDEFAULT...HEAD\` in $RREPO; judge whether each AC is genuinely met and the
+\`git diff $RDEFAULT...HEAD\` in $WT; judge whether each AC is genuinely met and the
 change is sound (tests, scope, quality). Then RECORD YOUR VERDICT as evidence via the
 dispatch MCP record_ac_evidence (one entry per AC: PASS/FAIL + the specific reasoning),
 and finish with a one-line overall recommendation: "RECOMMEND APPROVE" only if every AC
 holds up, otherwise "RECOMMEND CHANGES" with specific, actionable feedback (default to
 RECOMMEND CHANGES if any AC isn't clearly evidenced). Leave the ticket in in_review — a
 human reads your recommendation and makes the final approve/reject decision. Work only
-in: $RREPO
+in: $WT
 EOF
-      # Repo-access boundary (FG-007): the reviewer works only in $RREPO, so that
-      # is the single write-root. (Multi-root from ticket access data is a later wave.)
+      # Repo-access boundary (FG-007): the reviewer works only in the throwaway
+      # worktree ($WT). The registered repo's working tree is never a write root.
       R_USAGE_JSON="$GAFFER_DATA/.usage-$RNUM.json"; : > "$R_USAGE_JSON"
       # C1/M2: scrub ambient credentials from the reviewer agent's env (allowlist).
       gaffer_agent_env
-      ( cd "$RREPO" \
+      ( cd "$WT" \
           && gaffer_timeout "$GAFFER_TICK_TIMEOUT" \
              env -i "${GAFFER_AGENT_ENV[@]}" \
-               GAFFER_WRITE_ROOTS="$RREPO" \
+               GAFFER_WRITE_ROOTS="$WT" \
                DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
                "$CLAUDE_BIN" -p "$RPROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $GAFFER_IMPL_MODEL_FLAG $GAFFER_MAX_TURNS_FLAG ) >"$R_USAGE_JSON" 2>>"$GAFFER_LOG"
       rrc=$?
@@ -2004,7 +2027,14 @@ EOF
           log "#$RNUM is done but MERGE_ON_AGENT_REVIEW=0 — leaving $RBRANCH for HUMAN approval before merge"
         fi
       fi
-      _review_cleanup; trap - EXIT
+      # Restore the global traps now that the review block is complete. Run cleanup
+      # once explicitly here so the worktree is gone before the result line fires;
+      # trap - EXIT clears our review-scoped EXIT handler so gaffer_on_exit (the
+      # restored global) won't double-call _review_cleanup on the subsequent exit.
+      _review_cleanup
+      trap gaffer_on_exit EXIT
+      trap 'gaffer_on_signal 130' INT
+      trap 'gaffer_on_signal 143' TERM
       result reviewed; exit 0
     fi
   fi

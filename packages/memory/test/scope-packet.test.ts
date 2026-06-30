@@ -457,7 +457,7 @@ describe("FTS tldr index fix — failed/absent tldr not indexed", () => {
       source: CANONICAL,
       cardStatus: "active",
       modelStatus: "absent",
-      tldr: null,
+      tldr: undefined,
     });
 
     // Path match

@@ -33,6 +33,55 @@ const LOC_TOLERANCE_MIN_DELTA = 5; // always allow ≤ 5 line diff
 const TLDR_MAX_CHARS = 500;
 
 /**
+ * The card-generation skill's role taxonomy (packages/memory/skills/
+ * card-generation/SKILL.md §"Role taxonomy"). A card's `role_primary`, when
+ * present, MUST be one of these labels. An empty/absent role is allowed (the
+ * model may legitimately decline to classify), but a *present* role outside the
+ * taxonomy is garbage metadata and fails the model gate.
+ */
+export const ALLOWED_ROLE_PRIMARY: ReadonlySet<string> = new Set([
+  "entrypoint",
+  "route",
+  "service",
+  "data-model",
+  "migration",
+  "config",
+  "test",
+  "util",
+  "client",
+  "middleware",
+  "store",
+  "view",
+  "script",
+  "types",
+]);
+
+/** Max number of secondary role tags (skill: "role_tags (0–4 tags)"). */
+const MAX_ROLE_TAGS = 4;
+
+/**
+ * Shape every role tag must satisfy (skill: "short, lowercase, specific").
+ * Lowercase letter start, then lowercase alphanumerics and hyphens.
+ */
+const ROLE_TAG_PATTERN = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Instruction-shaped phrases that must never appear in model-derived card text.
+ * This is a belt-and-suspenders defence layered ON TOP of the <untrusted-file-cards>
+ * quarantine envelope (see runner/lib/context-primer.*): even if the envelope
+ * were bypassed, a card whose tldr/role text reads like an instruction to the
+ * agent ("ignore previous instructions", "self-approve", …) is rejected at the
+ * validation gate so it never serves. Matched case-insensitively as substrings.
+ */
+const INSTRUCTION_DENYLIST: ReadonlyArray<string> = [
+  "ignore previous instructions",
+  "system:",
+  "assistant:",
+  "self-approve",
+  "do not read",
+];
+
+/**
  * Path fragments that indicate a file contains secrets or credentials.
  * Cards for these paths are excluded by default (card_status = 'shadow').
  * Callers can pass generated_include_patterns to re-include specific paths
@@ -221,7 +270,11 @@ export interface ModelValidationResult {
  * Gates (all must pass for model_status = 'active'):
  *   1. tldr within character cap.
  *   2. tldr contains no secret-looking text.
- *   3. Language-aware symbol verification: claimed symbols actually appear
+ *   3. role_primary, when present, is one of the taxonomy labels.
+ *   4. role_tags: at most MAX_ROLE_TAGS, each matching ROLE_TAG_PATTERN.
+ *   5. no instruction-shaped text in tldr/role_primary/role_tags (defence in
+ *      depth on top of the untrusted-file-cards quarantine envelope).
+ *   6. Language-aware symbol verification: claimed symbols actually appear
  *      in the extracted symbol set for the file type (TS/JS, Python, SQL
  *      migrations). Unsupported file types pass with lower confidence
  *      (model_status stays active but a note is added).
@@ -247,7 +300,48 @@ export function validateModel(card: ModelValidationInput): ModelValidationResult
     };
   }
 
-  // 3. Language-aware symbol verification.
+  // 3. role_primary taxonomy. A present role outside the taxonomy is garbage
+  //    metadata; empty/absent is allowed (the model may decline to classify).
+  const rolePrimary = (card.rolePrimary ?? "").trim();
+  if (rolePrimary && !ALLOWED_ROLE_PRIMARY.has(rolePrimary)) {
+    return {
+      modelStatus: "failed_validation",
+      validationError: `role_primary '${rolePrimary}' is not in the taxonomy (allowed: ${[
+        ...ALLOWED_ROLE_PRIMARY,
+      ].join(", ")})`,
+    };
+  }
+
+  // 4. role_tags shape: at most MAX_ROLE_TAGS, each lowercase + hyphen only.
+  const roleTags = card.roleTags ?? [];
+  if (roleTags.length > MAX_ROLE_TAGS) {
+    return {
+      modelStatus: "failed_validation",
+      validationError: `role_tags has ${roleTags.length} tags (max ${MAX_ROLE_TAGS})`,
+    };
+  }
+  for (const tag of roleTags) {
+    if (!ROLE_TAG_PATTERN.test(tag)) {
+      return {
+        modelStatus: "failed_validation",
+        validationError: `role_tag '${tag}' is malformed (must match ${ROLE_TAG_PATTERN.source})`,
+      };
+    }
+  }
+
+  // 5. Instruction-shaped text across all model-derived text fields. Defence in
+  //    depth: the card text is already quarantined inside <untrusted-file-cards>
+  //    at injection time, but a card that reads like an instruction is rejected
+  //    here too so it never serves in the first place.
+  const denylistHit = findInstructionShapedText([rolePrimary, ...roleTags, card.tldr ?? ""]);
+  if (denylistHit) {
+    return {
+      modelStatus: "failed_validation",
+      validationError: `model text contains instruction-shaped phrase '${denylistHit}' (treated as injection)`,
+    };
+  }
+
+  // 6. Language-aware symbol verification.
   if (card.symbols.length > 0) {
     const fileType = detectFileType(card.path);
     const symbolCheck = verifySymbols(card.symbols, card.fileContent, fileType);
@@ -287,6 +381,19 @@ export function countLines(content: string): number {
     if (content[i] === "\n") count++;
   }
   return count;
+}
+
+/**
+ * Scan a set of model-derived text fields for any instruction-shaped phrase
+ * from INSTRUCTION_DENYLIST. Returns the first matched phrase (for the error
+ * message) or null when clean. Case-insensitive substring match.
+ */
+function findInstructionShapedText(fields: ReadonlyArray<string>): string | null {
+  const haystack = fields.join("\n").toLowerCase();
+  for (const phrase of INSTRUCTION_DENYLIST) {
+    if (haystack.includes(phrase)) return phrase;
+  }
+  return null;
 }
 
 /**

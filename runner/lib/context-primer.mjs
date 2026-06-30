@@ -164,8 +164,12 @@ export function primeContextBlock({ realRepoPath, repo, query, paths = [], env =
     const missing = Array.isArray(cov.missing) ? cov.missing : [];
     const tr = packet.truncationReason;
     const foot = [];
-    if (missing.length > 0) foot.push(`no card yet for: ${missing.slice(0, 8).join(", ")}`);
-    if (tr) foot.push(String(tr));
+    // Footer values are repo/scope-derived too (requested paths, truncation
+    // reason) — sanitise them like card fields so an embedded delimiter can't
+    // break out of the <untrusted-file-cards> envelope.
+    if (missing.length > 0)
+      foot.push(`no card yet for: ${missing.slice(0, 8).map(sanitizeCardField).join(", ")}`);
+    if (tr) foot.push(sanitizeCardField(String(tr)));
 
     if (lines.length === 0) return "";
 

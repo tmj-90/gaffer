@@ -766,89 +766,27 @@ $_RF_Q
 "
   fi
 
-  # ── PRIOR CONTEXT (file cards) — chunk 2b push of the budgeted scope packet ──
+  # ── PRIOR CONTEXT (file cards) — via shared gaffer_prime_context_block ───────
   # Runner has ALREADY resolved scope (write/read partition above). Pull the
-  # repo's file cards for this ticket and PUSH them into the delivery prompt so
-  # the agent starts oriented instead of re-scanning. The agent still PULLS more
-  # via the memory MCP. FAIL-SOFT: any memory error / no cards → empty block and
-  # delivery proceeds exactly as before. Cards are a retrieval AID, never source.
-  #
-  # CANONICAL CONTRACT (must match onboard's repoCanonical EXACTLY): the repo's
-  # remote.origin.url, else its realpath (pwd -P). Derived from the REAL primary
-  # repo path (not the worktree) so the realpath fallback matches what onboard
-  # keyed the cards under; a worktree shares the same remote.origin.url anyway.
+  # repo's file cards for this ticket via the shared primer and PUSH them into
+  # the delivery prompt so the agent starts oriented instead of re-scanning.
+  # The agent still PULLS more via the memory MCP.
+  # FAIL-SOFT: any memory error / no cards → empty block and delivery proceeds
+  # exactly as before. Cards are a retrieval AID, never source.
   FILE_CARDS_BLOCK=""
   PRIME_CONTEXT_CALLED=false
   CARDS_SERVED=0
-  CARDS_COVERAGE=""
   _CARD_REAL_REPO="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $3}')"
   [ -n "$_CARD_REAL_REPO" ] || _CARD_REAL_REPO="$REPO_PATH"
   _CARD_REPO_NAME="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $2}')"
   [ -n "$_CARD_REPO_NAME" ] || _CARD_REPO_NAME="$(basename "$_CARD_REAL_REPO")"
-  if [ -n "$_CARD_REAL_REPO" ] && [ -d "$_CARD_REAL_REPO" ]; then
-    canonical="$(git -C "$_CARD_REAL_REPO" config --get remote.origin.url 2>/dev/null)"; [ -z "$canonical" ] && canonical="$(cd "$_CARD_REAL_REPO" && pwd -P)"
-    _CARD_DESC="$(echo "$SHOW" | jget "(d['ticket'].get('description') or '')[:600]" 2>/dev/null || echo '')"
-    _CARD_QUERY="$(printf '%s %s' "$TITLE" "$_CARD_DESC")"
-    _CARD_JSON="$(lg cards-for-scope --canonical "$canonical" --repo "$_CARD_REPO_NAME" --query "$_CARD_QUERY" --max-cards 12 --max-tokens 1800 --per-card-max-tokens 160 --json 2>/dev/null || true)"
-    if [ -n "$_CARD_JSON" ]; then
-      # Render the packet into a compact, agent-facing block. python3 fails soft:
-      # bad/empty JSON or zero cards yields no block (and CARDS_SERVED stays 0).
-      _CARD_RENDER="$(printf '%s' "$_CARD_JSON" | python3 -c '
-import sys, json
-try:
-    p = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-cards = p.get("cards") or []
-order = {e["path"]: e["tier"] for e in (p.get("selectionOrder") or [])}
-lines = []
-dg = p.get("digest")
-if dg and dg.get("overview"):
-    lines.append("Repo digest: " + dg["overview"].strip())
-for c in cards:
-    tier = order.get(c.get("path"), "fts")
-    head = "  - [%s] %s" % (tier, c.get("path",""))
-    if c.get("tldr"):
-        head += " — " + c["tldr"].strip()
-    lines.append(head)
-    syms = c.get("symbols") or []
-    if syms:
-        lines.append("      symbols: " + ", ".join(syms[:8]))
-cov = p.get("coverage") or {}
-missing = cov.get("missing") or []
-tr = p.get("truncationReason")
-foot = []
-if missing:
-    foot.append("no card yet for: " + ", ".join(missing[:8]))
-if tr:
-    foot.append(tr)
-print("@@COUNT@@%d" % len(cards))
-print("@@COVERAGE@@served=%d requested=%d missing=%d" % (len(cards), cov.get("requested",0), len(missing)))
-if cards:
-    print("@@BODY@@")
-    print("\n".join(lines))
-    if foot:
-        print("  (" + "; ".join(foot) + ")")
-' 2>/dev/null || true)"
-      CARDS_SERVED="$(printf '%s\n' "$_CARD_RENDER" | sed -n 's/^@@COUNT@@//p' | head -1)"
-      [ -n "$CARDS_SERVED" ] || CARDS_SERVED=0
-      CARDS_COVERAGE="$(printf '%s\n' "$_CARD_RENDER" | sed -n 's/^@@COVERAGE@@//p' | head -1)"
-      _CARD_BODY="$(printf '%s\n' "$_CARD_RENDER" | sed -n '/^@@BODY@@$/,$p' | sed '1d')"
-      if [ "${CARDS_SERVED:-0}" -gt 0 ] 2>/dev/null && [ -n "$_CARD_BODY" ]; then
-        PRIME_CONTEXT_CALLED=true
-        FILE_CARDS_BLOCK="
-PRIOR CONTEXT (file cards) — the runner pre-selected these from the repo's
-file-card index to help you CHOOSE WHAT TO READ. These cards help you choose what
-to read. Before editing any file, read the actual file or the relevant excerpt —
-a card is a guide, never authoritative source. Pull more via the memory MCP
-(\`cards_for_scope\` / \`card get\` / \`card search\`) when you need them.
-$_CARD_BODY
-"
-      fi
-    fi
-  fi
-  if [ "$PRIME_CONTEXT_CALLED" = "true" ]; then
-    log "cards: primed delivery #$NUM with $CARDS_SERVED file card(s) [$CARDS_COVERAGE]"
+  _CARD_DESC="$(echo "$SHOW" | jget "(d['ticket'].get('description') or '')[:600]" 2>/dev/null || echo '')"
+  _CARD_QUERY="$(printf '%s %s' "$TITLE" "$_CARD_DESC")"
+  FILE_CARDS_BLOCK="$(gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
+  if [ -n "$FILE_CARDS_BLOCK" ]; then
+    PRIME_CONTEXT_CALLED=true
+    CARDS_SERVED="$(printf '%s\n' "$FILE_CARDS_BLOCK" | grep -c "^  - \[" 2>/dev/null || echo 0)"
+    log "cards: primed delivery #$NUM with ${CARDS_SERVED} file card(s)"
   else
     log "cards: no file-card context for #$NUM (none served / memory unavailable) — proceeding without"
   fi
@@ -859,8 +797,8 @@ $_CARD_BODY
   # tool-call layer ($GAFFER_DATA/tool-metrics.jsonl), keyed by GAFFER_TICKET.
   if [ -n "${GAFFER_DATA:-}" ]; then
     {
-      printf '{"ts":"%s","ticket":"%s","prime_context_called":%s,"cards_served":%s,"coverage":"%s"}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" "$CARDS_COVERAGE" \
+      printf '{"ts":"%s","ticket":"%s","prime_context_called":%s,"cards_served":%s}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" \
         >> "$GAFFER_DATA/delivery-metrics.jsonl"
     } 2>/dev/null || true
   fi
@@ -2049,6 +1987,12 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
       cp -f "$HERE/claude/CLAUDE.md" "$RREPO/CLAUDE.factory.md"
+      # File-card context for the reviewer — orients it on the repo's structure
+      # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.
+      _RSHOW_TITLE="$(echo "$RSHOW" | jget "d['ticket']['title']" 2>/dev/null || echo '')"
+      _RDESC="$(echo "$RSHOW" | jget "(d['ticket'].get('description') or '')[:400]" 2>/dev/null || echo '')"
+      _REVIEW_CARDS="$(gaffer_prime_context_block "$RREPO" "$(basename "$RREPO")" \
+        "$(printf '%s %s' "$_RSHOW_TITLE" "$_RDESC")" 2>/dev/null || true)"
       read -r -d '' RPROMPT <<EOF || true
 You are a REVIEWER agent. You did NOT implement this ticket, so you may JUDGE it — but
 your verdict is ADVISORY ONLY: an agent review is NOT a human approval and MUST NOT
@@ -2068,6 +2012,7 @@ RECOMMEND CHANGES if any AC isn't clearly evidenced). Leave the ticket in in_rev
 human reads your recommendation and makes the final approve/reject decision. Work only
 in: $RREPO
 EOF
+      RPROMPT="${RPROMPT}${_REVIEW_CARDS}"
       # Repo-access boundary (FG-007): the reviewer works only in $RREPO, so that
       # is the single write-root. (Multi-root from ticket access data is a later wave.)
       R_USAGE_JSON="$GAFFER_DATA/.usage-$RNUM.json"; : > "$R_USAGE_JSON"
@@ -2159,6 +2104,11 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
       sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
       cp -f "$HERE/claude/CLAUDE.md" "$CREPO/CLAUDE.factory.md"
+      # File-card context for the intake agent — orients it on the repo before
+      # it reads the ticket and spots ambiguities. FAIL-SOFT via gaffer_prime_context_block.
+      _CDESC="$(echo "$CSHOW" | jget "(d['ticket'].get('description') or '')[:400]" 2>/dev/null || echo '')"
+      _CLARIFY_CARDS="$(gaffer_prime_context_block "$CREPO" "$(basename "$CREPO")" \
+        "$(printf '%s %s' "$CTITLE" "$_CDESC")" 2>/dev/null || true)"
       read -r -d '' CPROMPT <<EOF || true
 You are an INTAKE agent — do NOT implement anything and do NOT write code. Use the
 clarify skill on DRAFT ticket #$CNUM: call get_ticket (dispatch) and search_lore
@@ -2169,6 +2119,7 @@ request_decision (a genuine unmade decision). NEVER mark the ticket ready and ne
 guess past a real ambiguity — if one stays unresolved, mark_ticket_blocked with the
 open question. Work only in: $CREPO
 EOF
+      CPROMPT="${CPROMPT}${_CLARIFY_CARDS}"
       C_USAGE_JSON="$GAFFER_DATA/.usage-$CNUM.json"; : > "$C_USAGE_JSON"
       # C1/M2: scrub ambient credentials from the clarify agent's env (allowlist).
       gaffer_agent_env

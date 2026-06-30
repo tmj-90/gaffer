@@ -97,43 +97,136 @@ case "$SCOPE" in
   *) fail "cards-for-scope returned no card for the fixture (got: ${SCOPE:0:200})" ;;
 esac
 
-echo "== B. tick.sh derives canonical per the contract + injects the block =="
-# B1: the EXACT canonical contract line (must match onboard/PO derivation).
-if grep -qF 'canonical="$(git -C "$_CARD_REAL_REPO" config --get remote.origin.url 2>/dev/null)"; [ -z "$canonical" ] && canonical="$(cd "$_CARD_REAL_REPO" && pwd -P)"' "$TICK"; then
-  ok "canonical contract line present verbatim (remote.origin.url || pwd -P)"
-else
-  fail "tick.sh missing the exact canonical contract line"
-fi
-# B2: it calls cards-for-scope.
-grep -q 'lg cards-for-scope --canonical "\$canonical"' "$TICK" \
-  && ok "tick.sh calls cards-for-scope with the derived canonical" \
-  || fail "tick.sh does not call cards-for-scope"
-# B3: $FILE_CARDS_BLOCK is injected into BOTH delivery prompts (resume + fresh).
-INJECTS="$(grep -c '^\$FILE_CARDS_BLOCK$' "$TICK")"
-[ "${INJECTS:-0}" -ge 2 ] && ok "FILE_CARDS_BLOCK injected into both prompts ($INJECTS)" \
-  || fail "expected FILE_CARDS_BLOCK injected into both prompts, found $INJECTS"
-# B4: the non-authoritative framing is present.
-grep -qF 'a card is a guide, never authoritative source' "$TICK" \
-  && ok "non-authoritative 'read the real file' framing present" \
-  || fail "framing sentence missing from tick.sh"
-# B5: FAIL-SOFT — the block defaults empty and only sets when cards were served.
-grep -q 'FILE_CARDS_BLOCK=""' "$TICK" \
-  && ok "FILE_CARDS_BLOCK defaults empty (fail-soft)" \
-  || fail "FILE_CARDS_BLOCK is not initialised empty"
+PRIMER_SH="$RUNNER_DIR/lib/context-primer.sh"
+PRIMER_MJS="$RUNNER_DIR/lib/context-primer.mjs"
 
-echo "== B6. fail-soft: a broken memory CLI yields an EMPTY block (no error) =="
-EMPTY_BLOCK="$(MEMORY_CLI_BIN=/nonexistent/memory.js MEMORY_DB="$MEM_DB" \
+echo "== B. shared helper present + tick.sh wired through it =="
+# B1: the canonical contract lives in context-primer.sh (not inlined in tick.sh).
+grep -q "git -C.*config --get remote.origin.url" "$PRIMER_SH" \
+  && ok "canonical contract (remote.origin.url) present in context-primer.sh" \
+  || fail "context-primer.sh missing the canonical derivation"
+grep -q "pwd -P" "$PRIMER_SH" \
+  && ok "realpath fallback (pwd -P) present in context-primer.sh" \
+  || fail "context-primer.sh missing the pwd -P fallback"
+# B2: context-primer.sh calls lg and passes cards-for-scope as a command.
+# The argv is built via an array so lg and cards-for-scope are on different
+# lines — check for both independently.
+if grep -q '\blg\b' "$PRIMER_SH" && grep -q 'cards-for-scope' "$PRIMER_SH"; then
+  ok "context-primer.sh calls lg with cards-for-scope"
+else
+  fail "context-primer.sh does not call lg cards-for-scope"
+fi
+# B3: $FILE_CARDS_BLOCK is still injected into BOTH delivery prompts (resume + fresh).
+INJECTS="$(grep -c '^\$FILE_CARDS_BLOCK$' "$TICK")"
+[ "${INJECTS:-0}" -ge 2 ] && ok "FILE_CARDS_BLOCK injected into both delivery prompts ($INJECTS)" \
+  || fail "expected FILE_CARDS_BLOCK in both delivery prompts, found $INJECTS"
+# B4: the non-authoritative framing lives in context-primer.sh.
+grep -qF 'a card is a guide, never authoritative source' "$PRIMER_SH" \
+  && ok "non-authoritative framing present in context-primer.sh" \
+  || fail "framing sentence missing from context-primer.sh"
+# B5: FAIL-SOFT — FILE_CARDS_BLOCK defaults empty and is set by the helper call.
+grep -q 'FILE_CARDS_BLOCK=""' "$TICK" \
+  && ok "FILE_CARDS_BLOCK initialised empty in tick.sh (fail-soft)" \
+  || fail "FILE_CARDS_BLOCK is not initialised empty in tick.sh"
+# B6-tick: tick.sh calls gaffer_prime_context_block for delivery.
+grep -q 'gaffer_prime_context_block.*_CARD_REAL_REPO' "$TICK" \
+  && ok "tick.sh delivery calls gaffer_prime_context_block" \
+  || fail "tick.sh delivery does not call gaffer_prime_context_block"
+# B7-tick: tick.sh calls gaffer_prime_context_block for clarify.
+grep -q 'gaffer_prime_context_block.*CREPO\|gaffer_prime_context_block.*CREPO' "$TICK" \
+  && ok "tick.sh clarify calls gaffer_prime_context_block" \
+  || fail "tick.sh clarify does not call gaffer_prime_context_block"
+# B8-tick: tick.sh calls gaffer_prime_context_block for review.
+grep -q 'gaffer_prime_context_block.*RREPO\|gaffer_prime_context_block.*basename.*RREPO' "$TICK" \
+  && ok "tick.sh review calls gaffer_prime_context_block" \
+  || fail "tick.sh review does not call gaffer_prime_context_block"
+
+echo "== F. bash helper gaffer_prime_context_block — live block + fail-soft =="
+# F1: emits a block when cards exist (fixture DB from section A above).
+# Source factory.config.sh (which now sources context-primer.sh) so lg + the
+# helper are available.  We fake DISPATCH_DB so gaffer_assert_db_vars passes.
+F1_OUT="$(MEMORY_DB="$MEM_DB" DISPATCH_DB="$MEM_DB" MEMORY_CLI_BIN="$MEMORY_CLI" \
+  bash --noprofile --norc -c "
+    RUNNER_DIR='$RUNNER_DIR'
+    source '$RUNNER_DIR/lib/context-primer.sh'
+    # Provide a minimal lg() using the real memory CLI.
+    lg() { MEMORY_DB=\"\$MEMORY_DB\" node \"\$MEMORY_CLI_BIN\" \"\$@\"; }
+    gaffer_prime_context_block '$REPO' 'demo' 'math add' 2>/dev/null
+  " 2>/dev/null || true)"
+case "$F1_OUT" in
+  *"PRIOR CONTEXT (file cards)"*) ok "bash helper emits block when cards exist" ;;
+  *) fail "bash helper emits no block when cards exist (got: ${F1_OUT:0:200})" ;;
+esac
+case "$F1_OUT" in
+  *"a card is a guide, never authoritative source"*) ok "bash helper includes non-authoritative framing" ;;
+  *) fail "bash helper missing non-authoritative framing" ;;
+esac
+
+# F2: fail-soft — broken memory CLI → empty output, no error.
+F2_OUT="$(MEMORY_DB="$MEM_DB" DISPATCH_DB="$MEM_DB" MEMORY_CLI_BIN=/nonexistent/memory.js \
+  bash --noprofile --norc -c "
+    RUNNER_DIR='$RUNNER_DIR'
+    source '$RUNNER_DIR/lib/context-primer.sh'
+    lg() { MEMORY_DB=\"\$MEMORY_DB\" node \"\$MEMORY_CLI_BIN\" \"\$@\"; }
+    gaffer_prime_context_block '$REPO' 'demo' 'math add' 2>/dev/null
+    echo 'DONE'
+  " 2>/dev/null || true)"
+case "$F2_OUT" in
+  *"PRIOR CONTEXT"*) fail "bash helper should fail-soft when memory CLI missing" ;;
+  *"DONE"*) ok "bash helper fails soft to empty when memory CLI is nonexistent" ;;
+  *) ok "bash helper fails soft to empty when memory CLI is nonexistent (empty output)" ;;
+esac
+
+echo "== G. JS helper primeContextBlock — live block + fail-soft =="
+# G1: fail-soft — broken memory CLI → "" and no throw.
+G1_OUT="$(node --input-type=module -e '
+import { primeContextBlock } from "'"$PRIMER_MJS"'";
+const b = primeContextBlock({
+  realRepoPath: "'"$REPO"'",
+  repo: "demo",
+  query: "math add",
+  env: { ...process.env, MEMORY_CLI_BIN: "/nonexistent/memory.js", MEMORY_DB: "'"$MEM_DB"'" },
+});
+process.stdout.write("BLOCKLEN=" + b.length + "\n");
+' 2>&1 || true)"
+case "$G1_OUT" in
+  *"BLOCKLEN=0"*) ok "JS primeContextBlock fails soft to empty when memory CLI is missing" ;;
+  *) fail "JS primeContextBlock should return empty on missing CLI (got: ${G1_OUT:0:160})" ;;
+esac
+
+# G2: emits a block when cards + digest exist.
+G2_OUT="$(MEMORY_DB="$MEM_DB" MEMORY_CLI_BIN="$MEMORY_CLI" \
   node --input-type=module -e '
+import { primeContextBlock } from "'"$PRIMER_MJS"'";
+const b = primeContextBlock({
+  realRepoPath: "'"$REPO"'",
+  repo: "demo",
+  query: "math add",
+  env: process.env,
+});
+process.stdout.write(b);
+' 2>&1 || true)"
+case "$G2_OUT" in
+  *"PRIOR CONTEXT (file cards)"*) ok "JS primeContextBlock emits block when cards exist" ;;
+  *) fail "JS primeContextBlock emits no block when cards exist (got: ${G2_OUT:0:200})" ;;
+esac
+case "$G2_OUT" in
+  *"a card is a guide, never authoritative source"*) ok "JS primeContextBlock includes non-authoritative framing" ;;
+  *) fail "JS primeContextBlock missing non-authoritative framing" ;;
+esac
+
+echo "== B6. fail-soft: a broken memory CLI yields an EMPTY block (PO path via shared helper) =="
+EMPTY_BLOCK="$(node --input-type=module -e '
 import { repoContextBlock } from "'"$RUNNER_DIR"'/bin/product-owner-run.mjs";
-const b = repoContextBlock({ repoName: "demo", repoPath: "'"$REPO"'", env: { ...process.env, MEMORY_CLI_BIN: "/nonexistent/memory.js" } });
+const b = repoContextBlock({ repoName: "demo", repoPath: "'"$REPO"'", env: { ...process.env, MEMORY_CLI_BIN: "/nonexistent/memory.js", MEMORY_DB: "'"$MEM_DB"'" } });
 process.stdout.write("BLOCKLEN=" + b.length + "\n");
 ' 2>&1 || true)"
 case "$EMPTY_BLOCK" in
-  *"BLOCKLEN=0"*) ok "PO repoContextBlock fails soft to empty when memory CLI is missing" ;;
+  *"BLOCKLEN=0"*) ok "PO repoContextBlock (via shared helper) fails soft to empty when memory CLI missing" ;;
   *) fail "PO repoContextBlock should fail soft to empty (got: ${EMPTY_BLOCK:0:160})" ;;
 esac
 
-echo "== B7. PO repoContextBlock injects a block (digest + cards ground it) =="
+echo "== B7. PO repoContextBlock injects a block (digest + cards via shared helper) =="
 # The PO path is repo-wide (no ticket scope): its packet is grounded by the
 # repo DIGEST + top cards. Seed a digest (as a real onboard would) so the block
 # has content, then assert the PO block renders it behind the same framing.
@@ -148,11 +241,11 @@ const b = repoContextBlock({ repoName: "demo", repoPath: "'"$REPO"'", env: proce
 process.stdout.write(b);
 ' 2>&1 || true)"
 case "$PO_BLOCK" in
-  *"PRIOR CONTEXT (file cards)"*"Repo digest:"*) ok "PO block carries the digest-grounded context" ;;
+  *"PRIOR CONTEXT (file cards)"*"Repo digest:"*) ok "PO block carries the digest-grounded context (via shared helper)" ;;
   *) fail "PO block did not render (got: ${PO_BLOCK:0:200})" ;;
 esac
 case "$PO_BLOCK" in
-  *"a card is a guide, never authoritative source"*) ok "PO block keeps the non-authoritative framing" ;;
+  *"a card is a guide, never authoritative source"*) ok "PO block keeps the non-authoritative framing (via shared helper)" ;;
   *) fail "PO block missing the non-authoritative framing" ;;
 esac
 

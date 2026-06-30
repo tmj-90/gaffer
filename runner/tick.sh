@@ -1937,7 +1937,17 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
         rmdir "$RREPO/.claude" 2>/dev/null || true
       }
       trap '_review_cleanup; trap - EXIT' EXIT
-      [ -n "$RBRANCH" ] && git -C "$RREPO" checkout "$RBRANCH" >/dev/null 2>&1 || true
+      # FIX 3: fail CLOSED on a bad branch checkout. The old `|| true` silently
+      # swallowed checkout failures, leaving the reviewer on the wrong HEAD —
+      # it could then emit RECOMMEND APPROVE for code it never saw. On failure we
+      # log a clear warning and route through the same error path as the surrounding
+      # fail-closed guards so the tick never proceeds to run the reviewer.
+      if [ -n "$RBRANCH" ]; then
+        if ! git -C "$RREPO" checkout "$RBRANCH" >/dev/null 2>&1; then
+          log "REVIEW-ERROR: failed to checkout branch '$RBRANCH' in $RREPO — refusing review of #$RNUM (fail closed; branch may be missing or corrupt)"
+          result error; exit 1
+        fi
+      fi
       [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing — refusing live review (fail closed)"; result error; exit 1; }
       mkdir -p "$RREPO/.claude"; ln -sfn "$SKILLS_DIR" "$RREPO/.claude/skills"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$RREPO/.claude/settings.json"

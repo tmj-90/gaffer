@@ -15,13 +15,24 @@
 # defaults below — with `:=` so a real env var ALWAYS overrides the file (env wins).
 # Keys are validated to env-var-name shape so a tampered file can't inject anything;
 # values are bash vars (never eval'd), tabs/newlines stripped.
+#
+# SAFETY DENYLIST: MERGE_ON_AGENT_REVIEW and AUTO_MERGE are EXCLUDED from the
+# settings.json loader.  Their defaults (both 0) are hardcoded below and must
+# resolve to 0 from any clean environment regardless of what a stale settings.json
+# says.  Allowing settings.json to set these would silently enable auto-merge for
+# every subsequent source — a non-idempotent, unsafe-unattended side effect.
+# Operators must set these via env vars (not the dashboard Settings panel).
 if [ -f "$GAFFER_DATA/settings.json" ] && command -v node >/dev/null 2>&1; then
   while IFS=$'\t' read -r _sk _sv; do
     # eval KEPT: this is a dynamic-NAME `:=` default assignment (env always wins),
     # not a command seam. The key is shape-validated above; the value is only ever
     # *assigned* to that var, never re-parsed as a command. No argv form expresses
     # "assign-if-unset to a variable whose name is in $_sk".
-    case "$_sk" in [A-Z_][A-Z0-9_]*) eval ": \${$_sk:=\$_sv}" ;; esac
+    case "$_sk" in
+      # Safety-critical merge controls: hardcoded defaults win; settings.json ignored.
+      MERGE_ON_AGENT_REVIEW|AUTO_MERGE) ;;
+      [A-Z_][A-Z0-9_]*) eval ": \${$_sk:=\$_sv}" ;;
+    esac
   done < <(node -e 'try{const s=require(process.argv[1]);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")}catch{}' "$GAFFER_DATA/settings.json")
   unset _sk _sv
 fi

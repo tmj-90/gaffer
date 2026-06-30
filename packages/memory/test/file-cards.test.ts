@@ -437,7 +437,7 @@ describe("searchFileCards", () => {
       cardInput({
         path: "src/db/migrations/001-initial.sql",
         symbols: ["users", "sessions"],
-        tldr: null,
+        tldr: undefined,
         modelStatus: "absent",
       }),
     );

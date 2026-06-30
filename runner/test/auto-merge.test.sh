@@ -32,6 +32,13 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/automerge-test.XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
+# Isolate default-resolution from the operator's real $GAFFER_DATA/settings.json:
+# point GAFFER_DATA at an empty dir so the AC1 checks verify the hardcoded factory
+# defaults (AUTO_MERGE / MERGE_ON_AGENT_REVIEW = 0), not whatever the dashboard
+# Settings panel persisted on this machine.
+export GAFFER_DATA="$WORK/gaffer-data"
+mkdir -p "$GAFFER_DATA"
+
 # Build a repo on `main` with one commit, plus a `feature` branch off it. The
 # caller appends commits to feature/main to set up clean vs conflicting merges.
 new_repo() {

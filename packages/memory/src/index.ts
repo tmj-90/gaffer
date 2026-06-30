@@ -59,22 +59,45 @@ export type {
   ListFeaturesOptions,
   UpsertDigestInput,
 } from "./core/repoUnderstanding.js";
+export {
+  getFileCard,
+  getWatermark,
+  listCardsForPaths,
+  repoKey,
+  searchFileCards,
+  setWatermark,
+  upsertFileCard,
+} from "./core/fileCards.js";
+export type { UpsertFileCardInput } from "./core/fileCards.js";
+export { validateMechanical, validateModel, sha256 } from "./core/cardValidation.js";
+export type {
+  MechanicalValidationInput,
+  MechanicalValidationResult,
+  ModelValidationInput,
+  ModelValidationResult,
+} from "./core/cardValidation.js";
 export type {
   AddLoreInput,
   Boundary,
   BoundaryRole,
   BoundaryStatus,
+  CardStatus,
   DigestSource,
   Feature,
   FeatureRow,
   FeatureStatus,
+  FileCard,
+  FileCardRow,
   Lore,
   LoreConfidence,
   LoreRow,
   LoreStatus,
   LoreSummary,
+  ModelStatus,
   RepoDigest,
   RepoDigestRow,
+  RepoSync,
+  RepoSyncRow,
   SearchOptions,
   UpdateLoreInput,
 } from "./db/types.js";

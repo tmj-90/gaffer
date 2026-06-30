@@ -766,6 +766,43 @@ $_RF_Q
 "
   fi
 
+  # ── PRIOR CONTEXT (file cards) — via shared gaffer_prime_context_block ───────
+  # Runner has ALREADY resolved scope (write/read partition above). Pull the
+  # repo's file cards for this ticket via the shared primer and PUSH them into
+  # the delivery prompt so the agent starts oriented instead of re-scanning.
+  # The agent still PULLS more via the memory MCP.
+  # FAIL-SOFT: any memory error / no cards → empty block and delivery proceeds
+  # exactly as before. Cards are a retrieval AID, never source.
+  FILE_CARDS_BLOCK=""
+  PRIME_CONTEXT_CALLED=false
+  CARDS_SERVED=0
+  _CARD_REAL_REPO="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $3}')"
+  [ -n "$_CARD_REAL_REPO" ] || _CARD_REAL_REPO="$REPO_PATH"
+  _CARD_REPO_NAME="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $2}')"
+  [ -n "$_CARD_REPO_NAME" ] || _CARD_REPO_NAME="$(basename "$_CARD_REAL_REPO")"
+  _CARD_DESC="$(echo "$SHOW" | jget "(d['ticket'].get('description') or '')[:600]" 2>/dev/null || echo '')"
+  _CARD_QUERY="$(printf '%s %s' "$TITLE" "$_CARD_DESC")"
+  FILE_CARDS_BLOCK="$(gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
+  if [ -n "$FILE_CARDS_BLOCK" ]; then
+    PRIME_CONTEXT_CALLED=true
+    CARDS_SERVED="$(printf '%s\n' "$FILE_CARDS_BLOCK" | grep -c "^  - \[" 2>/dev/null || echo 0)"
+    log "cards: primed delivery #$NUM with ${CARDS_SERVED} file card(s)"
+  else
+    log "cards: no file-card context for #$NUM (none served / memory unavailable) — proceeding without"
+  fi
+  # METRICS (chunk 2b) — record the mechanically-observable retrieval facts for
+  # this delivery: prime_context_called + cards_served + coverage. Best-effort,
+  # gated on GAFFER_DATA, fully swallowed (never affects delivery). The
+  # complementary reads-before-first-write signal is captured at the safety-hook
+  # tool-call layer ($GAFFER_DATA/tool-metrics.jsonl), keyed by GAFFER_TICKET.
+  if [ -n "${GAFFER_DATA:-}" ]; then
+    {
+      printf '{"ts":"%s","ticket":"%s","prime_context_called":%s,"cards_served":%s}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" \
+        >> "$GAFFER_DATA/delivery-metrics.jsonl"
+    } 2>/dev/null || true
+  fi
+
   TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
   if [ "$_RESUMING" = "1" ]; then
     # PAUSE-ON-CAP continuation prompt: the prior progress is ALREADY in this worktree
@@ -781,6 +818,7 @@ Ticket #$NUM, title: $TITLE_Q
 Recommended skills (pick the ONE whose description matches this ticket): $SKILLS
 ALWAYS-APPLY lenses (mandatory on EVERY change): $LENSES
 $REVIEW_FEEDBACK_BLOCK
+$FILE_CARDS_BLOCK
 YOU PREVIOUSLY WORKED ON THIS TICKET IN THIS WORKTREE — the prior progress is committed
 and/or present as working changes here. Do NOT start over and do NOT re-scaffold. First
 run \`get_ticket\` and \`git log --oneline\` + \`git status\` to see what is already done,
@@ -814,11 +852,14 @@ ALWAYS-APPLY lenses (mandatory on EVERY change, not optional): $LENSES
   code, fewer moving parts — while satisfying every AC and never weakening a guard. Read
   its SKILL.md and apply it as you implement and again in self-review.
 $REVIEW_FEEDBACK_BLOCK
+$FILE_CARDS_BLOCK
 Follow your brief (CLAUDE.factory.md): claim THIS specific ticket (#$NUM) — the one
 the tick assigned you — via the dispatch MCP tool claim_ticket with ticket_id "$NUM"
 and agent_id "$AGENT" (NOT claim_next_ticket, which could hand you a different ticket
 if the queue shifted); get_ticket; then
-consult memory search_lore for conventions, then implement to satisfy every
+consult memory search_lore for conventions and use the PRIOR CONTEXT file cards above
+(when present) to choose what to read FIRST — read the actual files before editing;
+re-scan the tree only for what the cards do not already cover. Then implement to satisfy every
 acceptance criterion using the matching skill, run the repo's tests, then COMMIT your
 work on the current branch — run: git add -A && git commit -m "deliver #$NUM: <summary>".
 An uncommitted edit is NOT a delivery; the branch MUST carry your commit. Then use the
@@ -1208,6 +1249,7 @@ EOF
     && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $WRAP \
        env -i "${GAFFER_AGENT_ENV[@]}" \
          GAFFER_WRITE_ROOTS="$WRITE_ROOTS" GAFFER_READ_ROOTS="$READ_ROOTS" \
+         GAFFER_DATA="$GAFFER_DATA" GAFFER_TICKET="$NUM" \
          DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
          "$CLAUDE_BIN" -p "$PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $ROUTE_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
   ) >"$USAGE_JSON" 2>>"$GAFFER_LOG"
@@ -1968,6 +2010,14 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
       cp -f "$HERE/claude/CLAUDE.md" "$WT/CLAUDE.factory.md"
+      # File-card context for the reviewer — orients it on the repo's structure
+      # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.
+      # Cards are keyed off the REAL repo ($RREPO) canonical identity, not the
+      # throwaway worktree, so they match what onboard indexed.
+      _RSHOW_TITLE="$(echo "$RSHOW" | jget "d['ticket']['title']" 2>/dev/null || echo '')"
+      _RDESC="$(echo "$RSHOW" | jget "(d['ticket'].get('description') or '')[:400]" 2>/dev/null || echo '')"
+      _REVIEW_CARDS="$(gaffer_prime_context_block "$RREPO" "$(basename "$RREPO")" \
+        "$(printf '%s %s' "$_RSHOW_TITLE" "$_RDESC")" 2>/dev/null || true)"
       read -r -d '' RPROMPT <<EOF || true
 You are a REVIEWER agent. You did NOT implement this ticket, so you may JUDGE it — but
 your verdict is ADVISORY ONLY: an agent review is NOT a human approval and MUST NOT
@@ -1987,6 +2037,7 @@ RECOMMEND CHANGES if any AC isn't clearly evidenced). Leave the ticket in in_rev
 human reads your recommendation and makes the final approve/reject decision. Work only
 in: $WT
 EOF
+      RPROMPT="${RPROMPT}${_REVIEW_CARDS}"
       # Repo-access boundary (FG-007): the reviewer works only in the throwaway
       # worktree ($WT). The registered repo's working tree is never a write root.
       R_USAGE_JSON="$GAFFER_DATA/.usage-$RNUM.json"; : > "$R_USAGE_JSON"
@@ -2085,6 +2136,11 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
       sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
       cp -f "$HERE/claude/CLAUDE.md" "$CREPO/CLAUDE.factory.md"
+      # File-card context for the intake agent — orients it on the repo before
+      # it reads the ticket and spots ambiguities. FAIL-SOFT via gaffer_prime_context_block.
+      _CDESC="$(echo "$CSHOW" | jget "(d['ticket'].get('description') or '')[:400]" 2>/dev/null || echo '')"
+      _CLARIFY_CARDS="$(gaffer_prime_context_block "$CREPO" "$(basename "$CREPO")" \
+        "$(printf '%s %s' "$CTITLE" "$_CDESC")" 2>/dev/null || true)"
       read -r -d '' CPROMPT <<EOF || true
 You are an INTAKE agent — do NOT implement anything and do NOT write code. Use the
 clarify skill on DRAFT ticket #$CNUM: call get_ticket (dispatch) and search_lore
@@ -2095,6 +2151,7 @@ request_decision (a genuine unmade decision). NEVER mark the ticket ready and ne
 guess past a real ambiguity — if one stays unresolved, mark_ticket_blocked with the
 open question. Work only in: $CREPO
 EOF
+      CPROMPT="${CPROMPT}${_CLARIFY_CARDS}"
       C_USAGE_JSON="$GAFFER_DATA/.usage-$CNUM.json"; : > "$C_USAGE_JSON"
       # C1/M2: scrub ambient credentials from the clarify agent's env (allowlist).
       gaffer_agent_env

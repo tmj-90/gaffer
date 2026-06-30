@@ -108,6 +108,39 @@ function logBlock(reason) {
   }
 }
 
+// Append one tool-call observation to the per-run metrics ledger
+// ($GAFFER_DATA/tool-metrics.jsonl). PURE TELEMETRY: this records WHAT tool was
+// called (Read / Write / Bash / …) and its target so an offline aggregator can
+// compute the chunk-2b "reads-before-first-write" proxy (unique files read +
+// read count before the first Write, the real "unnecessary scans avoided"
+// signal). It mirrors logBlock exactly: gated on GAFFER_DATA, fully swallowed,
+// and NEVER read by the allow/block decision — it cannot weaken the hook.
+function logToolCall(tool, target) {
+  try {
+    const dir = process.env.GAFFER_DATA;
+    if (!dir) return;
+    const t = String(tool || "");
+    const kind =
+      t === "Read"
+        ? "read"
+        : t === "Write" || t === "Edit" || t === "MultiEdit" || t === "NotebookEdit"
+          ? "write"
+          : t === "Bash"
+            ? "bash"
+            : "other";
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      ticket: process.env.GAFFER_TICKET || null,
+      tool: t,
+      kind,
+      target: target ? String(target).slice(0, 240) : null,
+    });
+    appendFileSync(join(dir, "tool-metrics.jsonl"), entry + "\n");
+  } catch {
+    /* best-effort telemetry — must never affect the decision or fail the hook */
+  }
+}
+
 function block(reason) {
   logBlock(reason);
   process.stderr.write(`BLOCKED by gaffer safety hook: ${reason}\n`);
@@ -1570,6 +1603,9 @@ process.stdin.on("end", () => {
   CURRENT_TOOL = tool;
   CURRENT_TARGET =
     input.command ?? input.file_path ?? input.filePath ?? input.notebook_path ?? null;
+  // Chunk 2b metric: record every observed tool call (telemetry only — this runs
+  // BEFORE dispatch and never influences the allow/block outcome below).
+  logToolCall(tool, CURRENT_TARGET);
   switch (tool) {
     case "Bash":
       return checkCommand(String(input.command ?? ""));

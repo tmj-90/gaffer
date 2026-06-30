@@ -15,7 +15,14 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
-import { getFileCard, repoKey, searchFileCards, setWatermark, upsertFileCard } from "../../core/fileCards.js";
+import {
+  getFileCard,
+  markCardReviewFailed,
+  repoKey,
+  searchFileCards,
+  setWatermark,
+  upsertFileCard,
+} from "../../core/fileCards.js";
 import {
   countLines,
   extractFileSymbols,
@@ -366,8 +373,12 @@ export async function cmdCardUpsert(args: ReturnType<typeof parseArgs>): Promise
   if (fileContent === null) {
     if (json) {
       process.stdout.write(
-        JSON.stringify({ path, written: false, cardStatus: "shadow", reason: "file not readable" }) +
-          "\n",
+        JSON.stringify({
+          path,
+          written: false,
+          cardStatus: "shadow",
+          reason: "file not readable",
+        }) + "\n",
       );
     } else {
       process.stderr.write(`memory: card upsert skipped '${path}' — file not readable\n`);
@@ -475,14 +486,64 @@ export async function cmdCardSync(args: ReturnType<typeof parseArgs>): Promise<n
   }
 }
 
+// ── card mark-failed ───────────────────────────────────────────────────
+
+/**
+ * `memory card mark-failed --canonical <c> --repo <r> --path <p> --reason <r> [--json]`
+ *
+ * Downgrade a card's model_status from 'active' to 'failed_validation'
+ * after a semantic review pass. Only touches model trust fields; mechanical
+ * fields (path, content_hash, loc, symbols) are not modified.
+ *
+ * Used by onboard-analyze.mjs's review gate. Not intended for interactive use.
+ */
+export async function cmdCardMarkFailed(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const resolved = resolveRepoArgs(args, "card mark-failed");
+  if (!resolved) return 2;
+
+  const path = getString(args.flags, "path");
+  if (!path) {
+    process.stderr.write("memory: card mark-failed requires --path <file-path>\n");
+    return 2;
+  }
+  const reason = getString(args.flags, "reason");
+  if (!reason) {
+    process.stderr.write("memory: card mark-failed requires --reason <text>\n");
+    return 2;
+  }
+
+  const json = getBool(args.flags, "json");
+  const db = openDb();
+  try {
+    const rk = repoKey(resolved.canonical);
+    const changed = markCardReviewFailed(db, rk, path, reason);
+
+    if (json) {
+      process.stdout.write(JSON.stringify({ path, changed, reason }) + "\n");
+    } else {
+      if (changed) {
+        process.stdout.write(`card mark-failed: ${path} downgraded to failed_validation\n`);
+      } else {
+        process.stdout.write(
+          `card mark-failed: ${path} not updated (not found or not model_status=active)\n`,
+        );
+      }
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 // ── card dispatcher ───────────────────────────────────────────────────
 
 /**
  * `memory card <sub>` — dispatch card sub-commands.
- *   get     --canonical <c> --repo <r> --path <p>
- *   search  --canonical <c> --repo <r> --query <q>
- *   upsert  --canonical <c> --repo <r> --repo-root <abs> --path <rel> [model fields]
- *   sync    --canonical <c> --repo <r> --commit <sha>
+ *   get          --canonical <c> --repo <r> --path <p>
+ *   search       --canonical <c> --repo <r> --query <q>
+ *   upsert       --canonical <c> --repo <r> --repo-root <abs> --path <rel> [model fields]
+ *   sync         --canonical <c> --repo <r> --commit <sha>
+ *   mark-failed  --canonical <c> --repo <r> --path <p> --reason <r>
  */
 export async function cmdCard(args: ReturnType<typeof parseArgs>): Promise<number> {
   const sub = args.positionals[0];
@@ -490,8 +551,9 @@ export async function cmdCard(args: ReturnType<typeof parseArgs>): Promise<numbe
   if (sub === "search") return await cmdCardSearch(args);
   if (sub === "upsert") return await cmdCardUpsert(args);
   if (sub === "sync") return await cmdCardSync(args);
+  if (sub === "mark-failed") return await cmdCardMarkFailed(args);
   process.stderr.write(
-    "memory: card requires a subcommand — `memory card get|search|upsert|sync`\n",
+    "memory: card requires a subcommand — `memory card get|search|upsert|sync|mark-failed`\n",
   );
   return 2;
 }

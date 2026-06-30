@@ -156,6 +156,75 @@ case "$PO_BLOCK" in
   *) fail "PO block missing the non-authoritative framing" ;;
 esac
 
+echo "== D. skill loading: CARD_PROMPT_VERSION is derived from the card-generation skill =="
+CARD_GEN_SKILL="$GAFFER_HOME/packages/memory/skills/card-generation/SKILL.md"
+CARD_REV_SKILL="$GAFFER_HOME/packages/memory/skills/card-review/SKILL.md"
+[ -f "$CARD_GEN_SKILL" ] \
+  && ok "card-generation SKILL.md exists at expected path" \
+  || fail "card-generation SKILL.md missing ($CARD_GEN_SKILL)"
+[ -f "$CARD_REV_SKILL" ] \
+  && ok "card-review SKILL.md exists at expected path" \
+  || fail "card-review SKILL.md missing ($CARD_REV_SKILL)"
+PROMPT_VER="$(node --input-type=module -e '
+import { CARD_PROMPT_VERSION } from "'"$RUNNER_DIR"'/lib/onboard-analyze.mjs";
+process.stdout.write(CARD_PROMPT_VERSION + "\n");
+' 2>/dev/null || true)"
+case "$PROMPT_VER" in
+  card-generation-v1:????????*)
+    ok "CARD_PROMPT_VERSION is skill-derived ($PROMPT_VER)" ;;
+  card-generation-v1:unknown)
+    fail "CARD_PROMPT_VERSION hash is 'unknown' — skill file may not be loadable" ;;
+  *)
+    fail "CARD_PROMPT_VERSION not skill-derived (got: ${PROMPT_VER:-<empty>})" ;;
+esac
+
+echo "== E. review gate: an obviously-wrong TLDR is downgraded to failed_validation =="
+MEM_DB_REVIEW="$TMP/memory_review.sqlite"
+REVIEW_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB_REVIEW" GAFFER_PLAN_MODEL="test-model" \
+  node --input-type=module -e '
+import { emitFileCards, repoCanonical } from "'"$RUNNER_DIR"'/lib/onboard-analyze.mjs";
+// Generation stub: returns a WRONG tldr (auth middleware on a math file)
+const badTurn = () => ({
+  tldr: "Handles authentication middleware and session token verification.",
+  rolePrimary: "middleware",
+  roleTags: ["auth", "session"],
+});
+// Review stub: rejects the bad tldr
+const rejectReview = () => ({
+  verdict: "reject",
+  reason: "TLDR describes auth middleware but file only contains math utilities (add, PI).",
+});
+const stats = emitFileCards("'"$REPO"'", { repoId: "demo", name: "demo" }, {
+  env: process.env,
+  runTurn: badTurn,
+  runReviewTurn: rejectReview,
+});
+process.stdout.write("REVIEW_STATS=" + JSON.stringify(stats) + "\n");
+' 2>&1)"
+echo "$REVIEW_OUT" | sed 's/^/    /'
+# The card should be model_status=failed_validation because the review rejected it.
+CANONICAL_REVIEW="$(cd "$REPO" && pwd -P)"
+REVIEW_SEARCH="$(MEMORY_DB="$MEM_DB_REVIEW" node "$MEMORY_CLI" card search \
+  --canonical "$CANONICAL_REVIEW" --repo demo --query math --json 2>/dev/null || true)"
+case "$REVIEW_SEARCH" in
+  *'"modelStatus": "failed_validation"'*)
+    ok "review gate downgraded bad TLDR → model_status=failed_validation" ;;
+  *'"modelStatus": "active"'*)
+    fail "review gate did not downgrade bad TLDR (model_status still active)" ;;
+  *)
+    # Card may not have been written at all or search returned nothing
+    REVIEW_CARDED="$(printf '%s\n' "$REVIEW_OUT" | sed -n 's/.*"carded":\([0-9]*\).*/\1/p' | head -1)"
+    if [ "${REVIEW_CARDED:-0}" -ge 1 ]; then
+      fail "review gate: card was written but status check failed (got: ${REVIEW_SEARCH:0:200})"
+    else
+      fail "review gate: no card written (got: ${REVIEW_OUT:0:200})"
+    fi ;;
+esac
+DOWNGRADED="$(printf '%s\n' "$REVIEW_OUT" | grep -c '"downgraded":' || true)"
+[ "${DOWNGRADED:-0}" -ge 1 ] \
+  && ok "review stats report at least one downgrade" \
+  || fail "review stats did not report any downgrade"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "file-cards-onboard: all $PASS checks passed"

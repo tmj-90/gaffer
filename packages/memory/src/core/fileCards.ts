@@ -482,3 +482,73 @@ export function setWatermark(db: Database, rk: string, repo: string, commit: str
   tx();
   return getWatermark(db, rk)!;
 }
+
+// ── Review gate (semantic validation) ────────────────────────────────
+
+/**
+ * Downgrade a card's model_status to 'failed_validation' after a semantic
+ * review (the review gate in onboard-analyze.mjs). Only touches the model
+ * trust fields — mechanical fields (path, content_hash, loc, symbols) are
+ * never modified by this call.
+ *
+ * Also removes the tldr from the FTS index (tldr is only indexed when
+ * model_status = 'active') so a downgraded summary doesn't continue to
+ * drive search ranking.
+ *
+ * Returns true when the row was updated (i.e. the card existed and had
+ * model_status = 'active'), false otherwise.
+ */
+export function markCardReviewFailed(
+  db: Database,
+  rk: string,
+  path: string,
+  reason: string,
+): boolean {
+  const ts = nowIso();
+  let changed = false;
+
+  const tx = db.transaction(() => {
+    // Only downgrade cards that currently have model_status = 'active'.
+    // A card already in 'failed_validation' or 'absent' is left alone.
+    const existing = db
+      .prepare(
+        "SELECT rowid FROM file_card WHERE repo_key = ? AND path = ? AND model_status = 'active'",
+      )
+      .get(rk, path) as { rowid: number } | undefined;
+    if (!existing) return;
+
+    db.prepare(
+      `UPDATE file_card SET
+         model_status = 'failed_validation',
+         validation_error = ?,
+         validated_at = ?,
+         updated_at = ?
+       WHERE repo_key = ? AND path = ?`,
+    ).run(reason, ts, ts, rk, path);
+
+    // Remove tldr from FTS — only indexed when model_status = 'active'.
+    db.prepare("DELETE FROM file_card_fts WHERE rowid = ?").run(existing.rowid);
+    const row = db
+      .prepare("SELECT path, symbols FROM file_card WHERE repo_key = ? AND path = ?")
+      .get(rk, path) as { path: string; symbols: string } | undefined;
+    if (row) {
+      let symsText = "";
+      try {
+        const parsed: unknown = JSON.parse(row.symbols);
+        if (Array.isArray(parsed)) symsText = (parsed as string[]).join(" ");
+      } catch {
+        /* symsText stays as "" */
+      }
+      db.prepare(
+        "INSERT INTO file_card_fts(rowid, path, tldr, symbols_fts) VALUES (?, ?, NULL, ?)",
+      ).run(existing.rowid, row.path, symsText);
+    }
+
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'file_card_review_failed', ?, ?)",
+    ).run(`${rk}:${path}`, ts, JSON.stringify({ repoKey: rk, path, reason }));
+    changed = true;
+  });
+  tx();
+  return changed;
+}

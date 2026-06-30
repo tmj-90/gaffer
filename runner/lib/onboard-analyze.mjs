@@ -47,6 +47,7 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +61,33 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
+
+// ── Skill-library loading (card-generation + card-review) ─────────────────────
+// Skills live in packages/memory/skills/ alongside the memory-onboard skill.
+// We read them at module init time and compute a stable hash so any skill edit
+// automatically bumps the prompt_version written onto each card.
+
+const MEMORY_SKILLS_DIR = resolve(HERE, "..", "..", "packages", "memory", "skills");
+
+function _loadSkillContent(skillName) {
+  const p = join(MEMORY_SKILLS_DIR, skillName, "SKILL.md");
+  try {
+    const text = readFileSync(p, "utf8");
+    // Strip the YAML frontmatter block (---...---) and return the body.
+    const m = /^---\s*\n[\s\S]*?\n---\s*\n/.exec(text);
+    return m ? text.slice(m[0].length).trim() : text.trim();
+  } catch {
+    return null;
+  }
+}
+
+function _skillHash(text) {
+  if (!text) return "unknown";
+  return createHash("sha256").update(text).digest("hex").slice(0, 8);
+}
+
+const CARD_GENERATION_SKILL = _loadSkillContent("card-generation");
+const CARD_REVIEW_SKILL = _loadSkillContent("card-review");
 
 // ── Material-gathering bounds (keep the prompt bounded + cheap) ───────────────
 const README_MAX_CHARS = 6000;
@@ -1080,9 +1108,7 @@ export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
   });
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      appendUsageRecord(
-        unknownRecord({ kind, reason: "onboard analysis claude call timed out" }),
-      );
+      appendUsageRecord(unknownRecord({ kind, reason: "onboard analysis claude call timed out" }));
       return { timedOut: true, stdout: "" };
     }
     throw res.error;
@@ -1332,8 +1358,31 @@ export function writeUnderstanding(
 // Best-effort throughout: any per-file failure logs + continues; nothing here
 // ever throws into the onboard.
 
-/** Prompt-version stamp written onto every model-summarised card. */
-export const CARD_PROMPT_VERSION = "onboard-card-v1";
+/**
+ * Prompt-version stamp written onto every model-summarised card.
+ * Derived from the sha256 of the card-generation skill content so any
+ * skill edit bumps the version and the agent knows which skill produced the card.
+ */
+export const CARD_PROMPT_VERSION = `card-generation-v1:${_skillHash(CARD_GENERATION_SKILL)}`;
+
+/** Fallback generation rules used when the skill file is unreadable. */
+const CARD_GENERATION_FALLBACK = [
+  "TLDR discipline: state what the file DOES and WHY IT EXISTS in 1-2 sentences.",
+  "Be concrete: name what it owns. Stay under 400 chars. Never restate the filename.",
+  "Role taxonomy: entrypoint, route, service, data-model, migration, config, test,",
+  "  util, client, middleware, store, view, script, types — pick the dominant one.",
+  "Symbols: only names ACTUALLY PRESENT in the structure shown. NEVER invent.",
+  "A card is a retrieval aid, never authoritative source.",
+  "Anti-patterns: over-claiming scope, guessing from filename, vague 'handles X'.",
+].join("\n");
+
+const CARD_GENERATION_RULES = CARD_GENERATION_SKILL ?? CARD_GENERATION_FALLBACK;
+
+/** Review-skill prompt version stamp. */
+export const CARD_REVIEW_PROMPT_VERSION = `card-review-v1:${_skillHash(CARD_REVIEW_SKILL)}`;
+
+/** Default max cards to semantically review per onboard (overridable via env). */
+const CARD_REVIEW_SAMPLE_DEFAULT = 5;
 
 // Source files worth carding (skip data/lockfiles/markdown — cards index CODE).
 const CARD_SOURCE_EXT =
@@ -1413,7 +1462,8 @@ export function enumerateSourceFiles(repoPath, caps = cardCaps()) {
   const files = [];
   const capsHit = new Set();
   let totalBytes = 0;
-  const secretLike = /(^|\/)(\.env|\.netrc|\.npmrc|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|secrets?|credentials?)(\.|$|\/)/i;
+  const secretLike =
+    /(^|\/)(\.env|\.netrc|\.npmrc|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|secrets?|credentials?)(\.|$|\/)/i;
 
   const walk = (dir) => {
     if (files.length >= caps.maxFiles) {
@@ -1525,11 +1575,14 @@ export function extractStructureSummary(content, fileType) {
 export function buildCardPrompt(rel, fileType, structure, snippet) {
   const lines = [];
   lines.push(
-    "Summarise ONE source file as a retrieval-aid 'file card'. The card helps an",
-    "agent CHOOSE WHAT TO READ — it is NEVER authoritative source. Be terse and",
-    "factual; do not invent. Ground every word in the structure + snippet shown.",
+    "You are the onboard card-generation pass for a source file. Follow the",
+    "card-generation skill rules below, then produce strict JSON.",
     "",
     QUARANTINE_NOTICE,
+    "",
+    "== CARD-GENERATION SKILL RULES ==",
+    CARD_GENERATION_RULES,
+    "== END SKILL RULES ==",
     "",
     `File: ${rel}  (${fileType})`,
     "",
@@ -1544,11 +1597,63 @@ export function buildCardPrompt(rel, fileType, structure, snippet) {
     "```json",
     "{",
     `  "tldr": "<<=${CARD_TLDR_MAX_CHARS} chars: what this file does + when to read it>",`,
-    '  "role_primary": "<one short label: e.g. route-handler, data-model, util, config, test, migration>",',
+    '  "role_primary": "<one label from the skill taxonomy>",',
     '  "role_tags": ["<0-4 short topic tags>"]',
     "}",
     "```",
     "Never include secrets, tokens, or credentials in the tldr.",
+    "Never invent a symbol or behaviour not shown in the structure + snippet.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Build the review prompt for ONE card: the card's model fields + the file's
+ * structure + head snippet. The card-review skill drives the verdict.
+ * Returns a prompt for a single `claude -p` turn that yields
+ * { verdict: "pass|revise|reject", reason: "…" }.
+ */
+export function buildCardReviewPrompt(rel, fileType, structure, snippet, fields) {
+  const reviewRules =
+    CARD_REVIEW_SKILL ??
+    [
+      "Judge if the TLDR is directionally accurate given the structure + snippet.",
+      "pass = directionally right. revise = specific false claim. reject = fundamentally wrong.",
+      "Do not penalise imprecision; only catch meaningful errors.",
+    ].join("\n");
+
+  const lines = [];
+  lines.push(
+    "You are the onboard card-review gate. Review the file card below against the",
+    "file's mechanical structure and head snippet. Follow the card-review skill rules.",
+    "",
+    QUARANTINE_NOTICE,
+    "",
+    "== CARD-REVIEW SKILL RULES ==",
+    reviewRules,
+    "== END SKILL RULES ==",
+    "",
+    `File: ${rel}  (${fileType})`,
+    "",
+    "CARD BEING REVIEWED:",
+    `  tldr: ${fields.tldr}`,
+  );
+  if (fields.rolePrimary) lines.push(`  role_primary: ${fields.rolePrimary}`);
+  if (fields.roleTags?.length) lines.push(`  role_tags: ${fields.roleTags.join(", ")}`);
+  lines.push("");
+  if (structure.imports.length > 0)
+    lines.push("File imports:", quarantine("imports", structure.imports.join(", ")), "");
+  if (structure.symbols.length > 0)
+    lines.push("File top-level symbols:", quarantine("symbols", structure.symbols.join(", ")), "");
+  lines.push("File snippet (head):", quarantine("snippet", snippet), "");
+  lines.push(
+    "OUTPUT — return EXACTLY one fenced ```json block as the LAST thing:",
+    "```json",
+    "{",
+    '  "verdict": "pass | revise | reject",',
+    '  "reason": "<one sentence: what is correct, or what specific claim is wrong>"',
+    "}",
+    "```",
   );
   return lines.join("\n");
 }
@@ -1561,10 +1666,35 @@ export function validateCardFields(obj) {
   if (tldr.length > CARD_TLDR_MAX_CHARS) tldr = `${tldr.slice(0, CARD_TLDR_MAX_CHARS - 1)}…`;
   const rolePrimary = String(obj.role_primary ?? "").trim();
   const roleTags = (Array.isArray(obj.role_tags) ? obj.role_tags : [])
-    .map((t) => String(t ?? "").trim().toLowerCase())
+    .map((t) =>
+      String(t ?? "")
+        .trim()
+        .toLowerCase(),
+    )
     .filter(Boolean)
     .slice(0, 4);
   return { tldr, rolePrimary, roleTags };
+}
+
+/** The set of valid verdict values from the card-review pass. */
+const CARD_REVIEW_VERDICTS = new Set(["pass", "revise", "reject"]);
+
+/**
+ * Parse + sanitise the model's card-review verdict. Returns
+ * { verdict, reason } or null when the output is unusable.
+ * An unusable review verdict is treated as "pass" by the caller
+ * (fail-safe: reviews that can't be parsed don't downgrade cards).
+ */
+export function validateCardReviewResult(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  const verdict = String(obj.verdict ?? "")
+    .trim()
+    .toLowerCase();
+  if (!CARD_REVIEW_VERDICTS.has(verdict)) return null;
+  const reason = String(obj.reason ?? "")
+    .trim()
+    .slice(0, 500);
+  return { verdict, reason };
 }
 
 /**
@@ -1600,9 +1730,107 @@ function upsertCardCli(cfg, { canonical, repo, repoRoot, rel, head, fields }, en
     if (fields.tldr) args.push("--tldr", fields.tldr);
     if (fields.rolePrimary) args.push("--role-primary", fields.rolePrimary);
     for (const tag of fields.roleTags ?? []) args.push("--role-tag", tag);
-    args.push("--model", env.GAFFER_PLAN_MODEL || "unknown", "--prompt-version", CARD_PROMPT_VERSION);
+    args.push(
+      "--model",
+      env.GAFFER_PLAN_MODEL || "unknown",
+      "--prompt-version",
+      CARD_PROMPT_VERSION,
+    );
   }
   return runMemoryCli(cfg, args, env);
+}
+
+/** Run one semantic review turn (ledgered under kind "onboard-review"). */
+function runCardReviewTurn(prompt, env = process.env) {
+  const turn = runAnalysisTurn(prompt, env, "onboard-review");
+  if (turn.timedOut) return null;
+  return validateCardReviewResult(extractLastJsonBlock(turn.stdout));
+}
+
+/** Run the `memory card mark-failed` CLI verb for one card. */
+function markFailedCli(cfg, { canonical, repo, rel, reason }, env = process.env) {
+  return runMemoryCli(
+    cfg,
+    [
+      "card",
+      "mark-failed",
+      "--canonical",
+      canonical,
+      "--repo",
+      repo,
+      "--path",
+      rel,
+      "--reason",
+      reason,
+      "--json",
+    ],
+    env,
+  );
+}
+
+/**
+ * Sampled semantic review gate. Takes a list of review candidates (model-active
+ * cards with their generation context), samples up to maxReviews, runs the
+ * card-review skill prompt for each, and downgrades any card the reviewer
+ * flags as wrong. Best-effort: any failure logs + continues; never throws.
+ *
+ * maxReviews defaults to CARD_REVIEW_SAMPLE_DEFAULT (env: GAFFER_CARD_REVIEW_SAMPLE).
+ * Set to 0 to disable. The sample is taken from the front of the list (the
+ * first model-carded files in enumeration order).
+ *
+ * Returns { reviewed, downgraded } for the log.
+ */
+export function runCardReviewSample(
+  candidates,
+  { cfg, canonical, repo, env = process.env, log = () => {}, runReviewTurn },
+) {
+  const rawCap = parseInt(env.GAFFER_CARD_REVIEW_SAMPLE ?? "", 10);
+  const maxReviews = Number.isFinite(rawCap) && rawCap >= 0 ? rawCap : CARD_REVIEW_SAMPLE_DEFAULT;
+  if (maxReviews === 0 || candidates.length === 0) {
+    if (maxReviews === 0) log("review gate disabled (GAFFER_CARD_REVIEW_SAMPLE=0)");
+    return { reviewed: 0, downgraded: 0 };
+  }
+
+  const sample = candidates.slice(0, maxReviews);
+  let reviewed = 0;
+  let downgraded = 0;
+
+  for (const c of sample) {
+    try {
+      const prompt = buildCardReviewPrompt(c.rel, c.fileType, c.structure, c.snippet, c.fields);
+      const result = runReviewTurn(prompt);
+      if (!result) {
+        log(`review: no parseable verdict for ${c.rel} — treating as pass`);
+        continue;
+      }
+      reviewed += 1;
+      const { verdict, reason } = result;
+      if (verdict === "pass") {
+        log(`review: ${c.rel} → pass`);
+        continue;
+      }
+      // Downgrade the card.
+      const mfRes = markFailedCli(
+        cfg,
+        { canonical, repo, rel: c.rel, reason: `semantic-review(${verdict}): ${reason}` },
+        env,
+      );
+      if (mfRes.error || (mfRes.status ?? 0) !== 0) {
+        log(
+          `review: mark-failed for ${c.rel} failed — card remains active: ` +
+            `${mfRes.error?.message ?? mfRes.stderr?.trim() ?? `exit ${mfRes.status}`}`,
+        );
+      } else {
+        downgraded += 1;
+        log(`review: ${c.rel} → ${verdict} (downgraded): ${reason}`);
+      }
+    } catch (err) {
+      log(`review: turn failed for ${c.rel} (${err?.message ?? err}) — treating as pass`);
+    }
+  }
+
+  log(`review gate done: ${reviewed}/${sample.length} reviewed, ${downgraded} downgraded`);
+  return { reviewed, downgraded };
 }
 
 /**
@@ -1616,7 +1844,13 @@ function upsertCardCli(cfg, { canonical, repo, repoRoot, rel, head, fields }, en
 export function emitFileCards(
   repoPath,
   scan,
-  { cfg, env = process.env, log = () => {}, runTurn = (p) => runCardTurn(p, env) } = {},
+  {
+    cfg,
+    env = process.env,
+    log = () => {},
+    runTurn = (p) => runCardTurn(p, env),
+    runReviewTurn = (p) => runCardReviewTurn(p, env),
+  } = {},
 ) {
   const stats = {
     enumerated: 0,
@@ -1647,6 +1881,8 @@ export function emitFileCards(
   stats.capsHit = capsHit;
 
   let modelBudget = caps.maxModelCards;
+  /** Cards whose model summary passed the deterministic gate — eligible for semantic review. */
+  const reviewCandidates = [];
   for (const f of files) {
     let content;
     try {
@@ -1658,6 +1894,7 @@ export function emitFileCards(
     // Model summary only while the model budget lasts; everything else is a
     // cheap mechanical-only card (still a real retrieval signal).
     let fields = null;
+    let reviewEntry = null;
     if (modelBudget > 0) {
       const fileType = cardFileType(f.rel);
       const structure = extractStructureSummary(content, fileType);
@@ -1672,6 +1909,8 @@ export function emitFileCards(
         fields = null;
       }
       modelBudget -= 1;
+      // Capture context for the semantic review gate (only if model fields were produced).
+      if (fields) reviewEntry = { rel: f.rel, fileType, structure, snippet, fields };
     }
     const res = upsertCardCli(
       resolvedCfg,
@@ -1687,6 +1926,16 @@ export function emitFileCards(
     }
     stats.carded += 1;
     if (fields) stats.modelCarded += 1;
+    // Collect for semantic review if the deterministic gate passed (modelStatus=active).
+    if (reviewEntry) {
+      let upsertOut = null;
+      try {
+        upsertOut = JSON.parse(res.stdout ?? "");
+      } catch {
+        /* ignore */
+      }
+      if (upsertOut?.modelStatus === "active") reviewCandidates.push(reviewEntry);
+    }
   }
 
   // Watermark = HEAD (Phase-2 freshness loop reads this).
@@ -1697,7 +1946,9 @@ export function emitFileCards(
       env,
     );
     if (wres.error || (wres.status ?? 0) !== 0) {
-      log(`card watermark set failed: ${wres.error?.message ?? wres.stderr?.trim() ?? `exit ${wres.status}`}`);
+      log(
+        `card watermark set failed: ${wres.error?.message ?? wres.stderr?.trim() ?? `exit ${wres.status}`}`,
+      );
     } else {
       stats.watermark = head;
     }
@@ -1726,6 +1977,27 @@ export function emitFileCards(
       `model=${stats.modelCarded} skipped=${stats.skipped} failed=${stats.failed} ` +
       `watermark=${stats.watermark ?? "none"}`,
   );
+
+  // ── Sampled semantic review gate ──────────────────────────────────────────
+  // After the mechanical pass, run a bounded semantic review over a sample of
+  // model-active cards. Cards the reviewer flags as wrong are downgraded to
+  // model_status='failed_validation'. Best-effort: never fails the onboard.
+  if (reviewCandidates.length > 0) {
+    try {
+      const reviewStats = runCardReviewSample(reviewCandidates, {
+        cfg: resolvedCfg,
+        canonical,
+        repo,
+        env,
+        log: (m) => log(`review: ${m}`),
+        runReviewTurn,
+      });
+      stats.reviewStats = reviewStats;
+    } catch (err) {
+      log(`review: gate failed (${err?.message ?? err}) — cards remain as-is`);
+    }
+  }
+
   return stats;
 }
 
@@ -1747,6 +2019,7 @@ export function analyzeAndWrite(
     log = () => {},
     runTurn = (prompt) => runAnalysisTurn(prompt, env),
     runCardTurn: runCardTurnInjected = (prompt) => runCardTurn(prompt, env),
+    runReviewTurn: runReviewTurnInjected = (prompt) => runCardReviewTurn(prompt, env),
   } = {},
 ) {
   const cfg = memoryCliConfig(env);
@@ -1802,6 +2075,7 @@ export function analyzeAndWrite(
         env,
         log: (m) => log(`cards: ${m}`),
         runTurn: runCardTurnInjected,
+        runReviewTurn: runReviewTurnInjected,
       });
     } catch (err) {
       log(`cards: file-card pass failed (${err?.message ?? err}) — onboard unaffected`);

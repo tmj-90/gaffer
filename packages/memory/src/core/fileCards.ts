@@ -298,11 +298,14 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
       rowid = Number(info.lastInsertRowid);
     }
 
-    // Insert fresh FTS row — tldr may be null (FTS5 treats null as empty string).
+    // Insert fresh FTS row. tldr is indexed ONLY when model_status = 'active':
+    // a failed or absent summary shouldn't drive search ranking. path and
+    // symbols_fts are always indexed so mechanical fields remain discoverable.
+    const ftsTldr = modelStatus === "active" ? (input.tldr ?? null) : null;
     db.prepare("INSERT INTO file_card_fts(rowid, path, tldr, symbols_fts) VALUES (?, ?, ?, ?)").run(
       rowid,
       path,
-      input.tldr ?? null,
+      ftsTldr,
       symbolsFts,
     );
 
@@ -401,6 +404,39 @@ export function listCardsForPaths(
        ORDER BY path`,
     )
     .all(rk, ...paths) as FileCardRow[];
+  return rows.map(rowToFileCard);
+}
+
+/**
+ * Fetch active cards whose path starts with any of the given prefixes.
+ * Useful for scope expansion: if the runner passes directory paths (e.g.
+ * "src/api"), this returns all carded files under those directories.
+ *
+ * Trailing "/" is normalised away before the LIKE pattern is built so
+ * both "src/api" and "src/api/" produce the same prefix match.
+ *
+ * Only 'active' cards are returned; paths with no card or with stale/shadow
+ * status are silently omitted — callers treat absence as "no card, read
+ * the file normally".
+ */
+export function listCardsForPathPrefixes(
+  db: Database,
+  rk: string,
+  prefixes: ReadonlyArray<string>,
+): FileCard[] {
+  if (prefixes.length === 0) return [];
+  const conditions = prefixes.map(() => "path LIKE ?").join(" OR ");
+  // Normalise: strip trailing "/" then append "/%"
+  const likeArgs = prefixes.map((p) => `${p.replace(/\/+$/, "")}/%`);
+  const rows = db
+    .prepare(
+      `SELECT * FROM file_card
+       WHERE repo_key = ?
+         AND card_status = 'active'
+         AND (${conditions})
+       ORDER BY path`,
+    )
+    .all(rk, ...likeArgs) as FileCardRow[];
   return rows.map(rowToFileCard);
 }
 

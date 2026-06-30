@@ -20,6 +20,7 @@ import {
   cmdFeatures,
   cmdImpact,
 } from "./commands/knowledge.js";
+import { cmdCard, cmdCardsForScope } from "./commands/cards.js";
 import {
   cmdAbsent,
   cmdAudit,
@@ -209,6 +210,23 @@ COMMANDS
                             lifecycle status. --node filters to a single
                             scope-node (a sub-area of the repo); omit it
                             to list every feature in the repo.
+  card get --canonical <url-or-path> --repo <name> --path <file-path> [--json]
+                            Fetch a single file card. Mechanical fields
+                            (path, loc, symbols) always present; model
+                            fields (tldr, role) only when model_status=active.
+                            Absence of a card ≠ the file is unimportant.
+  card search --canonical <c> --repo <r> --query <q> [--limit N] [--json]
+                            FTS search over file cards (path, tldr, symbols).
+                            Returns cards ordered by bm25 relevance.
+  cards-for-scope --canonical <c> --repo <r> --query <q>
+      [--paths p1 --paths p2] [--important-paths p3]
+      [--max-cards N] [--max-tokens N] [--per-card-max-tokens N] [--json]
+                            Assemble a budgeted scope packet: prioritised
+                            file cards (path-first, then FTS) + repo digest
+                            + top lore. Use at the start of a task to
+                            orient an agent. --json outputs machine-readable
+                            JSON; human-readable by default.
+                            Cards are retrieval aids — not authoritative.
   hooks install [--project] [--dry-run]
                             Wire the Claude Code Stop-hook for
                             session-end review nudges. Writes
@@ -319,6 +337,10 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdFeature(parsed);
       case "features":
         return await cmdFeatures(parsed);
+      case "card":
+        return await cmdCard(parsed);
+      case "cards-for-scope":
+        return await cmdCardsForScope(parsed);
       case "hooks":
         return await cmdHooks(parsed);
       case "doctor":

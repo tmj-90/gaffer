@@ -21,7 +21,9 @@ if [ -f "$GAFFER_DATA/settings.json" ] && command -v node >/dev/null 2>&1; then
     # not a command seam. The key is shape-validated above; the value is only ever
     # *assigned* to that var, never re-parsed as a command. No argv form expresses
     # "assign-if-unset to a variable whose name is in $_sk".
-    case "$_sk" in [A-Z_][A-Z0-9_]*) eval ": \${$_sk:=\$_sv}" ;; esac
+    case "$_sk" in
+      [A-Z_][A-Z0-9_]*) eval ": \${$_sk:=\$_sv}" ;;
+    esac
   done < <(node -e 'try{const s=require(process.argv[1]);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")}catch{}' "$GAFFER_DATA/settings.json")
   unset _sk _sv
 fi
@@ -904,6 +906,11 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # Minimalism post-condition (defines gaffer_diff_stats / gaffer_check_minimalism).
 # shellcheck source=lib/minimalism.sh
 [ -f "$RUNNER_DIR/lib/minimalism.sh" ] && source "$RUNNER_DIR/lib/minimalism.sh"
+
+# Shared file-card context primer (defines gaffer_prime_context_block).
+# Sourced after the config above so it can use lg / MEMORY_CLI_BIN / MEMORY_DB.
+# shellcheck source=lib/context-primer.sh
+[ -f "$RUNNER_DIR/lib/context-primer.sh" ] && source "$RUNNER_DIR/lib/context-primer.sh"
 
 # Definition-of-Done gate (I3): defines gaffer_run_dod_gates / gaffer_dod_enabled /
 # gaffer_dod_run_one / gaffer_dod_summary_line / gaffer_dod_evidence_summary. The

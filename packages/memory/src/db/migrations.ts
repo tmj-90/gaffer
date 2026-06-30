@@ -248,6 +248,78 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    id: "006-file-cards",
+    up(db) {
+      // File Cards — retrieval-aid index (see plan moonlit-dazzling-nebula).
+      //
+      // A file card is a HEURISTIC summary of one file in a repo. It helps
+      // agents choose what to read; it is NOT authoritative. Agents must
+      // read the actual file before editing.
+      //
+      // Trust split (non-negotiable; see plan §split-trust):
+      //   - card_status  ∈ active|stale|shadow — mechanical validity gate.
+      //     Mechanical fields (path, content_hash, loc, symbols, source) are
+      //     served whenever card_status = 'active'.
+      //   - model_status ∈ active|failed_validation|absent — summary validity.
+      //     tldr / role_* fields are served ONLY when model_status = 'active'.
+      //     A card with valid mechanical data but a failed summary still serves
+      //     its mechanical half — callers must handle both statuses independently.
+      //
+      // repo_key — stable sha256 of the canonical path or remote URL (NOT
+      // the friendly display name). Insulates the key from renames and
+      // multi-worktree clashes; `repo` carries the display string separately.
+      //
+      // file_card_fts — TS-maintained virtual table (same discipline as
+      // lore_fts: no SQL triggers, debuggable, no FTS5 'delete'-magic
+      // gotchas when WAL + transactions overlap). symbols_fts is a flat
+      // space-joined derivation of the symbols JSON array.
+      //
+      // repo_sync — one row per repo key recording the last synced commit
+      // (Phase-2 watermark). Written once onboard completes.
+      db.exec(`
+        CREATE TABLE file_card (
+          id              TEXT NOT NULL PRIMARY KEY,
+          repo_key        TEXT NOT NULL,
+          repo            TEXT NOT NULL,
+          path            TEXT NOT NULL,
+          content_hash    TEXT NOT NULL,
+          loc             INTEGER NOT NULL,
+          symbols         TEXT NOT NULL,
+          synced_commit   TEXT,
+          source          TEXT NOT NULL,
+          tldr            TEXT,
+          role_primary    TEXT,
+          role_tags       TEXT,
+          card_status     TEXT NOT NULL DEFAULT 'active'
+            CHECK (card_status IN ('active','stale','shadow')),
+          model_status    TEXT NOT NULL DEFAULT 'absent'
+            CHECK (model_status IN ('active','failed_validation','absent')),
+          validated_at    TEXT,
+          validation_error TEXT,
+          model           TEXT,
+          prompt_version  TEXT,
+          created_at      TEXT NOT NULL,
+          updated_at      TEXT NOT NULL,
+          UNIQUE (repo_key, path)
+        );
+        CREATE INDEX idx_file_card_repo_key ON file_card(repo_key);
+        CREATE INDEX idx_file_card_repo_key_status ON file_card(repo_key, card_status);
+
+        CREATE VIRTUAL TABLE file_card_fts USING fts5(
+          path, tldr, symbols_fts,
+          tokenize = 'porter unicode61'
+        );
+
+        CREATE TABLE repo_sync (
+          repo_key    TEXT PRIMARY KEY,
+          repo        TEXT NOT NULL,
+          synced_commit TEXT NOT NULL,
+          updated_at  TEXT NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 /**

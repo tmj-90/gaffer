@@ -70,6 +70,7 @@ import {
   parseClaudeJson,
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
+import { primeContextBlock } from "../lib/context-primer.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -93,6 +94,10 @@ const CONFIG = {
     process.env.DISPATCH_MCP_BIN || resolve(GAFFER_HOME, "packages/dispatch/dist/mcp/bin.js"),
   memoryMcpBin:
     process.env.MEMORY_MCP_BIN || resolve(GAFFER_HOME, "packages/memory/dist/mcp/bin.js"),
+  // The memory CLI bin — used to pull the repo-context file-card packet for the
+  // PO prompt (cards-for-scope). Mirrors tick.sh's MEMORY_CLI_BIN default.
+  memoryCliBin:
+    process.env.MEMORY_CLI_BIN || resolve(GAFFER_HOME, "packages/memory/dist/bin/memory.js"),
   claudeSettings: process.env.CLAUDE_SETTINGS || resolve(RUNNER_DIR, "claude", "settings.json"),
   skillsDir: process.env.SKILLS_DIR || resolve(RUNNER_DIR, "skills"),
   claudeBin: process.env.CLAUDE_BIN || "claude",
@@ -246,16 +251,38 @@ export function countDraftTickets(dbPath, repoName) {
 }
 
 /**
+ * Pull a repo-wide file-card context block for the PO prompt.
+ *
+ * Delegates to the shared primeContextBlock helper (lib/context-primer.mjs)
+ * using a repo-overview query so the packet's digest + top cards ground the
+ * PO suggestions. FAIL-SOFT: any memory error / no cards → "" and the prompt
+ * runs exactly as before. Cards are a guide; the agent must read the real file.
+ *
+ * Exported so tests can call it directly (backwards-compatible signature).
+ */
+export function repoContextBlock({ repoName, repoPath, env = process.env }) {
+  return primeContextBlock({
+    realRepoPath: repoPath,
+    repo: repoName,
+    query: `${repoName} product overview — what this repo does and what to build next`,
+    env: { ...env, MEMORY_CLI_BIN: env.MEMORY_CLI_BIN || CONFIG.memoryCliBin },
+  });
+}
+
+/**
  * Build the headless prompt fed to `claude -p`. It pins the product-owner skill,
  * the draft-only / no-questions discipline, and the ticket-count bound. `repoName`
  * is what the dispatch MCP create_ticket links by; `repoPath` is where the skill
- * inspects the repo from.
+ * inspects the repo from. A best-effort file-card context block is pushed in
+ * (fail-soft: omitted entirely when memory has no cards).
  */
 export function buildPrompt({ repoName, repoPath, maxTickets }) {
+  const cardContext = repoContextBlock({ repoName, repoPath });
   return [
     `Use the product-owner skill to propose the next product work for the repo "${repoName}"`,
     `(checked out at ${repoPath} — inspect it there: README, docs, package manifest, brand`,
     `files, and \`git log\`).`,
+    cardContext,
     "",
     "You are running HEADLESS with NO human in the loop. Use your judgement and NEVER ask",
     "the user anything — do NOT call AskUserQuestion or block on a question. If a decision",

@@ -349,6 +349,35 @@ describe("cardsForScope — coverage reporting", () => {
     expect(packet.coverage.missing).toContain("src/core/missing.ts");
     expect(packet.coverage.missing).not.toContain("src/api/payments.ts");
   });
+
+  it("FIX 3: a requested DIRECTORY path is not missing when child cards are served", () => {
+    // "src/api" is requested as a path hint (a directory, not a file).
+    // cards-for-scope serves src/api/payments.ts and src/api/auth.ts via the
+    // path-prefix query.  "src/api" itself has no card, but it should NOT
+    // appear in coverage.missing because its children were served.
+    makeCard(db, "src/api/payments.ts");
+    makeCard(db, "src/api/auth.ts");
+
+    const packet = cardsForScope(db, {
+      repoCanonical: CANONICAL,
+      repo: REPO,
+      query: "api",
+      paths: ["src/api"],
+    });
+
+    // At least one child card must have been served via the prefix query.
+    expect(packet.cards.some((c) => c.path.startsWith("src/api/"))).toBe(true);
+    // The directory itself must NOT appear in missing (Fix 3).
+    expect(packet.coverage.missing).not.toContain("src/api");
+    // A truly absent path still appears in missing.
+    const packet2 = cardsForScope(db, {
+      repoCanonical: CANONICAL,
+      repo: REPO,
+      query: "api",
+      paths: ["src/nonexistent-dir"],
+    });
+    expect(packet2.coverage.missing).toContain("src/nonexistent-dir");
+  });
 });
 
 // ── FTS tldr index fix ────────────────────────────────────────────────

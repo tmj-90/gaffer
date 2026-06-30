@@ -357,9 +357,18 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
   // ── Coverage: paths with no active card ───────────────────────────
   const allRequestedPaths = [...paths, ...importantPaths];
   const missing = allRequestedPaths.filter((p) => {
-    // A path is "missing" if we got no active card for it AND it's not in
-    // seen via a prefix match. Check seen directly.
-    return !seen.has(p);
+    // Exact match: a card for this exact path was selected.
+    if (seen.has(p)) return false;
+    // Directory-prefix match (FIX 3): a requested DIRECTORY path (e.g.
+    // "src/api") is considered COVERED if any served card is a direct or
+    // transitive child (i.e. its path starts with "<p>/").  Without this
+    // check, "src/api" would appear in `missing` even when "src/api/foo.ts"
+    // was served via a path-prefix query, producing a spurious warning.
+    const prefix = p + "/";
+    for (const servedPath of seen.keys()) {
+      if (servedPath.startsWith(prefix)) return false;
+    }
+    return true;
   });
 
   // ── Build selectionOrder ──────────────────────────────────────────

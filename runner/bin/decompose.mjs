@@ -416,7 +416,7 @@ function resolveRepoPath(name) {
   try {
     const { DatabaseSync } = _require("node:sqlite");
     const dbPath = process.env.DISPATCH_DB || resolve(_GAFFER_HOME, ".gaffer", "dispatch.sqlite");
-    const db = new DatabaseSync(dbPath, { readonly: true });
+    const db = new DatabaseSync(dbPath, { readOnly: true });
     const row = db.prepare("SELECT local_path FROM repositories WHERE name = ? LIMIT 1").get(name);
     db.close();
     return row?.local_path ?? null;
@@ -509,13 +509,19 @@ export function buildPrompt(req) {
   // it drafts tickets.  FAIL-SOFT: resolveRepoPath returns null when the DB is
   // absent or the repo is not registered, and primeContextBlock returns "" on
   // any error — both are "no context, proceed without" by design.
-  const cardContext = targetRepo
-    ? primeContextBlock({
-        realRepoPath: resolveRepoPath(targetRepo) ?? "",
-        repo: targetRepo,
-        query: `${targetRepo} — existing repo overview and conventions for brownfield decomposition`,
-      })
-    : "";
+  //
+  // FIX 1: resolve to null (not "") and skip injection entirely when null.
+  // Passing "" caused repoCanonical("") → resolve("") → process.cwd(), so
+  // cards were queried for the wrong repo and labelled as the target.
+  const repoPath = targetRepo ? resolveRepoPath(targetRepo) : null;
+  const cardContext =
+    targetRepo && repoPath
+      ? primeContextBlock({
+          realRepoPath: repoPath,
+          repo: targetRepo,
+          query: `${targetRepo} — existing repo overview and conventions for brownfield decomposition`,
+        })
+      : "";
   return [
     "Use the plan-build skill to decompose this app brief into a phased,",
     "dependency-ordered epic of tickets. Follow the skill's structured-output",

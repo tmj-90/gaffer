@@ -336,3 +336,123 @@ export interface Feature {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+
+// ── File Cards (retrieval-aid index, migration 006) ───────────────────
+
+/**
+ * Mechanical validity of a file card. Applies to the structural fields
+ * (path, content_hash, loc, symbols, source). These are served whenever
+ * card_status = 'active', regardless of model_status.
+ *
+ *   - active  — mechanical fields are valid; serve them.
+ *   - stale   — card exists but the file has changed since the card was
+ *               written (detected by content_hash mismatch or a newer
+ *               synced_commit). Still searchable; surfaced with a warning.
+ *   - shadow  — card was invalidated by a mechanical gate failure (path
+ *               missing, source outside read roots, secret pattern matched,
+ *               etc.). Not served in active queries.
+ */
+export type CardStatus = "active" | "stale" | "shadow";
+
+/**
+ * Validity of the model-generated summary fields (tldr, role_primary,
+ * role_tags). Served ONLY when model_status = 'active'. A card whose
+ * mechanical fields are valid but whose summary failed validation still
+ * serves its mechanical half — callers must check both statuses.
+ *
+ *   - active             — summary passed all deterministic gates; serve it.
+ *   - failed_validation  — summary failed a gate (bad symbols, secret text,
+ *                          tldr over cap, etc.); validation_error carries why.
+ *   - absent             — no summary has been written yet (freshly inserted
+ *                          card, or the model run was skipped).
+ */
+export type ModelStatus = "active" | "failed_validation" | "absent";
+
+/**
+ * Raw DB row for a file card. JSON columns (symbols, role_tags) are stored
+ * as strings; parsed into arrays by `rowToFileCard`. Mirrors the snake_case
+ * column names exactly so better-sqlite3 can bind without mapping.
+ */
+export interface FileCardRow {
+  readonly id: string;
+  readonly repo_key: string;
+  readonly repo: string;
+  readonly path: string;
+  readonly content_hash: string;
+  readonly loc: number;
+  /** JSON-encoded string[] — exported symbol names, class names, route patterns, etc. */
+  readonly symbols: string;
+  readonly synced_commit: string | null;
+  readonly source: string;
+  readonly tldr: string | null;
+  readonly role_primary: string | null;
+  /** JSON-encoded string[] or null. */
+  readonly role_tags: string | null;
+  readonly card_status: CardStatus;
+  readonly model_status: ModelStatus;
+  readonly validated_at: string | null;
+  readonly validation_error: string | null;
+  readonly model: string | null;
+  readonly prompt_version: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+/**
+ * Public file card shape returned by core functions. camelCase, JSON
+ * arrays parsed. Trust-split serving is applied by `getFileCard`:
+ *   - mechanical fields always present when card_status = 'active'.
+ *   - tldr / rolePrimary / roleTags are null when model_status ≠ 'active',
+ *     even if the underlying row has a value — callers must never bypass
+ *     this serving rule by querying the DB directly.
+ */
+export interface FileCard {
+  readonly id: string;
+  readonly repoKey: string;
+  readonly repo: string;
+  readonly path: string;
+  readonly contentHash: string;
+  readonly loc: number;
+  /** Parsed symbols array (exported names, classes, routes, test titles, etc.). */
+  readonly symbols: ReadonlyArray<string>;
+  readonly syncedCommit?: string;
+  readonly source: string;
+  /**
+   * Model-generated one-liner. Served only when model_status = 'active'.
+   * null otherwise — even if the row has a tldr value. This is the
+   * trust-split serving rule; it is non-negotiable.
+   */
+  readonly tldr: string | null;
+  /** Primary role label (e.g. 'domain', 'api', 'test', 'config'). null when model not active. */
+  readonly rolePrimary: string | null;
+  /** Role tags array. null when model not active. */
+  readonly roleTags: ReadonlyArray<string> | null;
+  readonly cardStatus: CardStatus;
+  readonly modelStatus: ModelStatus;
+  readonly validatedAt?: string;
+  readonly validationError?: string;
+  readonly model?: string;
+  readonly promptVersion?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/** Raw DB row for repo_sync. */
+export interface RepoSyncRow {
+  readonly repo_key: string;
+  readonly repo: string;
+  readonly synced_commit: string;
+  readonly updated_at: string;
+}
+
+/**
+ * The watermark record for a repo — records the git commit at which
+ * the last full onboard scan completed. Used by Phase-2 freshness
+ * loop to detect which files changed since the last scan.
+ */
+export interface RepoSync {
+  readonly repoKey: string;
+  readonly repo: string;
+  readonly syncedCommit: string;
+  readonly updatedAt: string;
+}

@@ -376,6 +376,29 @@ export function readRecentCommits(repoPath, max = GIT_LOG_MAX) {
 }
 
 /**
+ * Read the set of file paths touched in recent commits — the churn signal for
+ * value-routing. Uses `git log --name-only` (no diff content, just paths).
+ * Returns a Set<string> of repo-relative paths, or empty Set on error / non-git.
+ */
+export function readChurnFiles(repoPath, max = GIT_LOG_MAX) {
+  try {
+    const out = execFileSync(
+      "git",
+      ["-C", repoPath, "log", `--no-merges`, `--name-only`, `--pretty=format:`, `-${max}`],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 4 * 1024 * 1024 },
+    );
+    const paths = new Set();
+    for (const line of out.split("\n")) {
+      const t = line.trim();
+      if (t) paths.add(t);
+    }
+    return paths;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
  * ADR / decision-doc titles (skill Step 2.3). ADRs are "the cleanest source of
  * decisions that aren't obvious from code". We list the FILENAMES (cheap, bounded)
  * under the conventional decision dirs so the model knows which decisions exist and
@@ -1397,6 +1420,141 @@ const CARD_SNIPPET_MAX_CHARS = 1500; // bounded snippet head fed to the model
 const CARD_STRUCTURE_MAX_SYMBOLS = 60; // symbol names shown in the structure block
 const CARD_TLDR_MAX_CHARS = 480; // under cardValidation's 500 cap
 
+/**
+ * Compute a value score for a source file to prioritise it for model-card budget
+ * allocation. Combines size (log-scaled, 0-40 pts), path importance (0-50 pts),
+ * and git churn (0-30 pts). Higher = spend the model budget here first.
+ */
+export function fileValueScore(rel, size, churnPaths) {
+  let score = 0;
+
+  // 1. Size signal: 0–40 pts (log-scale: ~1KB→10, ~10KB→20, ~100KB→30, ~200KB→40)
+  const sizeScore = size <= 0 ? 0 : Math.min(40, (Math.log2(size) / Math.log2(200 * 1024)) * 40);
+  score += sizeScore;
+
+  const r = rel.replace(/\\/g, "/").toLowerCase();
+
+  // 2. Path importance: 0–50 pts
+  if (/(?:^|\/)safety[-_.]?hook(?:\.|$)/.test(r)) score += 50; // safety-critical
+  if (/(?:^|\/)tick\.[a-z]+$/.test(r)) score += 40; // tick orchestrator
+  if (/\/migrations?\//i.test(r) && /\.sql$/i.test(r)) score += 38; // SQL migrations
+  if (/\b(migration|schema|migrate)\b/.test(r) && /\.sql$/i.test(r)) score += 38;
+  if (/\/(?:cli|bin)\/index\.(ts|js|mjs|cjs)$/.test(r)) score += 35; // CLI entrypoints
+  if (/\/(?:app|server|main|bin)\.(ts|js|mjs|cjs)$/.test(r)) score += 32; // process entry
+  if (/\/src\/index\.(ts|js|mjs|cjs)$/.test(r)) score += 28; // package public entry
+  if (/\/(?:core|store|engine|service)(?:\.|\/)/.test(r) && !/test/i.test(r)) score += 25;
+  if (/\/(?:api|routes?|router)\//.test(r) && !/test/i.test(r)) score += 20;
+
+  // 3. Git churn signal: 0–30 pts
+  if (churnPaths && churnPaths.has(rel)) score += 30;
+
+  return score;
+}
+
+/**
+ * Derive the top-level "area" of a repo-relative file path, used for the spread guard.
+ * `packages/<pkg>/…` → `packages/<pkg>`; everything else: the first path segment.
+ */
+export function topLevelArea(rel) {
+  const r = rel.replace(/\\/g, "/");
+  const parts = r.split("/");
+  if (parts.length >= 2 && parts[0] === "packages") return `packages/${parts[1]}`;
+  return parts[0] || ".";
+}
+
+/** Role priority for rollup: entrypoints + services describe areas better than utils. */
+const ROLLUP_ROLE_PRIORITY = [
+  "entrypoint",
+  "service",
+  "middleware",
+  "route",
+  "store",
+  "client",
+  "util",
+  "data-model",
+  "migration",
+  "config",
+  "script",
+  "test",
+  "types",
+];
+
+function rollupRoleRank(role) {
+  const i = ROLLUP_ROLE_PRIORITY.indexOf(String(role ?? "").toLowerCase());
+  return i < 0 ? ROLLUP_ROLE_PRIORITY.length : i;
+}
+
+/**
+ * Build a rollup digest from the model-carded files collected by emitFileCards.
+ * Groups cards by top-level area; derives `structure` from per-area card tldrs
+ * and `overview` from the model's extracted features + top service/entrypoint tldrs.
+ * Returns null when collectedCards is empty — caller keeps the existing digest.
+ *
+ * This is the "apex of the DAG": the digest is the last thing written, after the
+ * cards exist, so it can reflect the real architecture rather than just the
+ * tree/README signals available at the start of onboarding.
+ */
+export function buildRollupDigest(collectedCards, modelUnderstanding, material) {
+  if (!Array.isArray(collectedCards) || collectedCards.length === 0) return null;
+
+  // Group by area, sort each group by role priority.
+  const areaMap = new Map();
+  for (const c of collectedCards) {
+    const area = topLevelArea(c.rel);
+    const list = areaMap.get(area);
+    if (list) list.push(c);
+    else areaMap.set(area, [c]);
+  }
+
+  // Structure: one bullet per area anchored on the area's top card tldr.
+  const structureLines = [];
+  for (const [area, cards] of areaMap) {
+    const sorted = cards.slice().sort((a, b) => rollupRoleRank(a.role) - rollupRoleRank(b.role));
+    const topTldr = sorted
+      .slice(0, 2)
+      .map((c) => c.tldr)
+      .filter(Boolean)
+      .join("; ");
+    structureLines.push(`${area}: ${topTldr || `${cards.length} source file(s)`}`);
+  }
+
+  // Overview: model features (product capabilities) + top service/entrypoint tldr.
+  const features = modelUnderstanding?.features ?? [];
+  const serviceCards = collectedCards
+    .filter((c) => /entrypoint|service/.test(String(c.role ?? "").toLowerCase()))
+    .slice(0, 2)
+    .map((c) => c.tldr)
+    .filter(Boolean);
+
+  let overview;
+  const repoName = String(material?.name ?? "this repo");
+  if (features.length > 0) {
+    const capList = features.map((f) => f.name).join(", ");
+    const anchor = serviceCards.length > 0 ? ` ${serviceCards[0]}` : "";
+    overview = `${repoName}: ${capList}.${anchor}`;
+  } else if (serviceCards.length > 0) {
+    overview = `${repoName}: ${serviceCards[0]}`;
+  } else {
+    overview =
+      modelUnderstanding?.digest?.overview ??
+      `'${repoName}' repository (rollup from ${collectedCards.length} model-carded files).`;
+  }
+
+  const conventions =
+    modelUnderstanding?.digest?.conventions ?? `Stack: ${material?.scan?.stack ?? "undetermined"}.`;
+  const stack = modelUnderstanding?.digest?.stack ?? material?.scan?.stack ?? null;
+
+  return {
+    overview: overview.trim(),
+    structure:
+      structureLines.length > 0
+        ? `Multi-package repository:\n- ${structureLines.join("\n- ")}`
+        : (modelUnderstanding?.digest?.structure ?? "Structure not analysed."),
+    conventions,
+    stack,
+  };
+}
+
 /** When true (default), the onboard runs the per-file card pass. */
 function cardEmissionEnabled(env = process.env) {
   return String(env.GAFFER_CARD_EMIT ?? "1").trim() !== "0";
@@ -1861,6 +2019,7 @@ export function emitFileCards(
     capsHit: [],
     coverageNote: null,
     watermark: null,
+    collectedCards: [],
   };
   const resolvedCfg = cfg ?? memoryCliConfig(env);
   if (!resolvedCfg) {
@@ -1880,10 +2039,22 @@ export function emitFileCards(
   stats.enumerated = files.length;
   stats.capsHit = capsHit;
 
+  // ── Value-routing: rank files by value score so model budget goes to the most
+  // important files repo-wide rather than the first enumerated alphabetically.
+  const churnPaths = readChurnFiles(repoPath);
+  const rankedFiles = files
+    .map((f) => ({ ...f, _score: fileValueScore(f.rel, f.size, churnPaths) }))
+    .sort((a, b) => b._score - a._score);
+
+  // Spread guard: cap any one top-level area at ≤55% of the model budget so a
+  // single large package can't monopolise all model cards.
+  const maxAreaModelCards = Math.ceil(caps.maxModelCards * 0.55);
+  const areaModelCounts = new Map();
+
   let modelBudget = caps.maxModelCards;
   /** Cards whose model summary passed the deterministic gate — eligible for semantic review. */
   const reviewCandidates = [];
-  for (const f of files) {
+  for (const f of rankedFiles) {
     let content;
     try {
       content = readFileSync(f.abs, "utf8");
@@ -1891,11 +2062,14 @@ export function emitFileCards(
       stats.skipped += 1;
       continue;
     }
-    // Model summary only while the model budget lasts; everything else is a
-    // cheap mechanical-only card (still a real retrieval signal).
+    // Model summary only while the model budget lasts and the area spread guard
+    // allows it; everything else is a cheap mechanical-only card (still a real
+    // retrieval signal).
     let fields = null;
     let reviewEntry = null;
-    if (modelBudget > 0) {
+    const area = topLevelArea(f.rel);
+    const areaCount = areaModelCounts.get(area) ?? 0;
+    if (modelBudget > 0 && areaCount < maxAreaModelCards) {
       const fileType = cardFileType(f.rel);
       const structure = extractStructureSummary(content, fileType);
       const snippet =
@@ -1910,7 +2084,10 @@ export function emitFileCards(
       }
       modelBudget -= 1;
       // Capture context for the semantic review gate (only if model fields were produced).
-      if (fields) reviewEntry = { rel: f.rel, fileType, structure, snippet, fields };
+      if (fields) {
+        areaModelCounts.set(area, areaCount + 1);
+        reviewEntry = { rel: f.rel, fileType, structure, snippet, fields };
+      }
     }
     const res = upsertCardCli(
       resolvedCfg,
@@ -1925,7 +2102,11 @@ export function emitFileCards(
       continue;
     }
     stats.carded += 1;
-    if (fields) stats.modelCarded += 1;
+    if (fields) {
+      stats.modelCarded += 1;
+      // Collect for rollup digest (area + role + tldr grouped by area).
+      stats.collectedCards.push({ rel: f.rel, role: fields.rolePrimary, tldr: fields.tldr });
+    }
     // Collect for semantic review if the deterministic gate passed (modelStatus=active).
     if (reviewEntry) {
       let upsertOut = null;
@@ -1960,10 +2141,12 @@ export function emitFileCards(
   // or when more files were enumerated than the model budget covered.
   const overModelBudget = files.length > caps.maxModelCards;
   if (capsHit.length > 0 || overModelBudget) {
+    const areaDistrib = [...areaModelCounts.entries()].map(([a, n]) => `${a}=${n}`).join(", ");
     const note =
       `file-card coverage: enumerated=${stats.enumerated} carded=${stats.carded} ` +
       `model-summarised=${stats.modelCarded}/${caps.maxModelCards} skipped=${stats.skipped} ` +
-      `failed=${stats.failed}` +
+      `failed=${stats.failed} selection-basis=value-score` +
+      (areaDistrib ? ` area-dist=[${areaDistrib}]` : "") +
       (capsHit.length > 0 ? ` caps-hit=[${capsHit.join(", ")}]` : "") +
       (overModelBudget
         ? ` — ${files.length - caps.maxModelCards} file(s) got a mechanical-only card (model budget exhausted)`
@@ -2082,6 +2265,51 @@ export function analyzeAndWrite(
     }
   } else {
     log("cards: file-card pass disabled (GAFFER_CARD_EMIT=0)");
+  }
+
+  // ── Rollup digest (top of the DAG) ──────────────────────────────────────────
+  // Generate the digest AFTER the cards exist so it can reflect the real
+  // architecture rather than just the tree/README signals seen at prompt-build time.
+  // Only runs when cards produced model summaries; falls back silently to the
+  // earlier digest write. Best-effort: never fails the onboard.
+  if (cardStats && cardStats.collectedCards && cardStats.collectedCards.length > 0) {
+    try {
+      const rollup = buildRollupDigest(
+        cardStats.collectedCards,
+        usedModel ? understanding : null,
+        material,
+      );
+      if (rollup) {
+        const rollupArgs = [
+          "digest",
+          "set",
+          repo,
+          "--overview",
+          rollup.overview,
+          "--structure",
+          rollup.structure,
+          "--conventions",
+          rollup.conventions,
+          "--stack",
+          rollup.stack ?? "unknown",
+          "--source",
+          "onboard",
+        ];
+        const rres = runMemoryCli(cfg, rollupArgs, env);
+        if (rres.error || (rres.status ?? 0) !== 0) {
+          log(
+            `rollup digest set failed: ${rres.error?.message ?? rres.stderr?.trim() ?? `exit ${rres.status}`}`,
+          );
+        } else {
+          log(
+            `rollup digest written from ${cardStats.collectedCards.length} model-carded files ` +
+              `across ${new Set(cardStats.collectedCards.map((c) => topLevelArea(c.rel))).size} area(s)`,
+          );
+        }
+      }
+    } catch (err) {
+      log(`rollup digest failed (${err?.message ?? err}) — initial digest preserved`);
+    }
   }
 
   return { ran: true, usedModel, stats, ...(cardStats ? { cardStats } : {}) };

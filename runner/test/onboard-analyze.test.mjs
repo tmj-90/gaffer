@@ -47,6 +47,8 @@ const {
   parseLoreTitles,
   normalizeDedupKey,
   isSourceUrl,
+  cardModel,
+  refreshFileCards,
   INFRA_NOT_FEATURES_RULE,
   MEMORY_ONBOARD_RULE,
   INDUCTION_TAG,
@@ -827,6 +829,102 @@ console.log("== AC17b: lore dedup survives model REWORDING across re-onboards ==
   const second = writeUnderstanding(cfg, "demo", secondRun, { env: process.env });
   eq("re-onboard: reworded lore NOT drafted (no accumulation)", second.loreDrafted, 0);
   eq("re-onboard: reworded lore skipped", second.loreSkipped, 1);
+}
+
+console.log("== cardModel: GAFFER_CARD_MODEL / default Sonnet ==");
+{
+  assert("cardModel defaults to claude-sonnet-4-5", cardModel({}) === "claude-sonnet-4-5");
+  assert(
+    "cardModel respects GAFFER_CARD_MODEL override",
+    cardModel({ GAFFER_CARD_MODEL: "claude-opus-4" }) === "claude-opus-4",
+  );
+  assert(
+    "cardModel ignores blank GAFFER_CARD_MODEL",
+    cardModel({ GAFFER_CARD_MODEL: "  " }) === "claude-sonnet-4-5",
+  );
+}
+
+console.log("== refreshFileCards: changed file gets re-carded + watermark advances ==");
+{
+  // Build a tiny git repo with one source file.
+  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-cards-"));
+  const srcFile = join(repoDir, "src", "util.ts");
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(srcFile, "export function greet(name: string) { return `Hi ${name}`; }\n");
+  const { execSync } = await import("node:child_process");
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    {
+      cwd: repoDir,
+      stdio: "ignore",
+    },
+  );
+
+  // A fake memory CLI that records calls + returns success.
+  const dir = mkdtempSync(resolve(tmpdir(), "refresh-memcli-"));
+  const logFile = join(dir, "calls.jsonl");
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      // card upsert returns JSON with modelStatus so the review path can parse it.
+      "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') { process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n'); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+
+  const cfg = { cliBin, db: join(dir, "lore.sqlite") };
+  const env = {
+    ...process.env,
+    MEMORY_CLI_BIN: cliBin,
+    MEMORY_DB: cfg.db,
+    GAFFER_PLAN_MODEL: "test-model",
+  };
+  const stubTurn = () => ({ tldr: "Greet utility.", rolePrimary: "util", roleTags: ["strings"] });
+
+  const rStats = refreshFileCards(repoDir, ["src/util.ts"], {
+    cfg,
+    env,
+    log: () => {},
+    repo: "test-repo",
+    canonical: "file://" + repoDir,
+    runTurn: stubTurn,
+  });
+
+  assert("refreshed count = 1 for one changed source file", rStats.refreshed === 1);
+  assert("watermark advanced (non-null)", rStats.watermark !== null);
+
+  const { readFileSync: readFS } = await import("node:fs");
+  const calls = readFS(logFile, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+
+  assert(
+    "card upsert was called for src/util.ts",
+    calls.some((c) => c[0] === "card" && c[1] === "upsert" && c.includes("src/util.ts")),
+  );
+  assert(
+    "card sync (watermark advance) was called",
+    calls.some((c) => c[0] === "card" && c[1] === "sync" && c.includes("--commit")),
+  );
+  assert(
+    "non-source files in changedPaths are skipped",
+    (() => {
+      // .md and .json should not produce upsert calls — refreshed count stays 0
+      const r2 = refreshFileCards(repoDir, ["README.md", "package.json"], {
+        cfg,
+        env,
+        log: () => {},
+        repo: "test-repo",
+        canonical: "file://" + repoDir,
+        runTurn: stubTurn,
+      });
+      return r2.refreshed === 0;
+    })(),
+  );
 }
 
 console.log("");

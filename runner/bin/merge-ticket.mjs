@@ -68,7 +68,8 @@
 //   failure (missing repo/branch/safety hook, spawn error, timeout).
 // =====================================================================
 
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
@@ -79,6 +80,7 @@ import {
   buildMinimalDigestStamp,
   selectPreparedDelta,
 } from "../lib/feature-digest.mjs";
+import { refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -368,6 +370,37 @@ function runMemoryCli(args) {
     encoding: "utf8",
     env: { ...process.env, MEMORY_DB: CONFIG.memoryDb },
   });
+}
+
+/**
+ * Read the card-set watermark (synced_commit) for a repo from the memory SQLite
+ * directly. Pure read-only — avoids a CLI round-trip and keeps the dependency
+ * on `repo_sync` schema explicit. Returns null when the DB is absent, the table
+ * is missing (pre-migration), or no row exists yet.
+ */
+function readCardWatermark(memDbPath, canonical) {
+  if (!existsSync(memDbPath)) return null;
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    return null;
+  }
+  let db;
+  try {
+    db = new DatabaseSync(memDbPath, { readOnly: true });
+    const rk = createHash("sha256").update(canonical).digest("hex");
+    const row = db.prepare("SELECT synced_commit FROM repo_sync WHERE repo_key = ?").get(rk);
+    return row?.synced_commit ?? null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
+  }
 }
 
 /**
@@ -678,6 +711,49 @@ function main() {
           ? `dashboard repo rebuilt — UI is current`
           : `dashboard rebuild failed (exit ${b.status ?? "spawn-error"}) — run \`pnpm build\` in ${repo.name} to refresh the UI`,
       );
+    }
+    // Incremental card refresh: re-card files that changed in this merge so
+    // Memory stays fresh without a full re-onboard. Fail-soft: any error here
+    // is swallowed and NEVER affects the merge outcome (already landed above).
+    try {
+      const canonical = repoCanonical(repo.localPath);
+      const syncedCommit = readCardWatermark(CONFIG.memoryDb, canonical);
+      if (syncedCommit) {
+        // Changed files between the last carded commit and the post-merge HEAD.
+        const diffOut = execFileSync(
+          "git",
+          ["-C", repo.localPath, "diff", "--name-only", `${syncedCommit}..HEAD`],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+        ).trim();
+        const changedPaths = diffOut
+          ? diffOut
+              .split("\n")
+              .map((p) => p.trim())
+              .filter(Boolean)
+          : [];
+        if (changedPaths.length > 0) {
+          const cfg = { cliBin: MEMORY_CLI, db: CONFIG.memoryDb };
+          const rStats = refreshFileCards(repo.localPath, changedPaths, {
+            cfg,
+            env: { ...process.env, MEMORY_DB: CONFIG.memoryDb },
+            log: (m) => log(`card-refresh: ${m}`),
+            repo: repo.name,
+            canonical,
+          });
+          log(
+            `card-refresh: refreshed=${rStats.refreshed} skipped=${rStats.skipped} ` +
+              `failed=${rStats.failed} watermark=${rStats.watermark ?? "none"}`,
+          );
+        } else {
+          log("card-refresh: no source-file changes — watermark already current");
+        }
+      } else {
+        log(
+          "card-refresh: no watermark recorded for this repo — skipping (run `gaffer onboard` to initialise)",
+        );
+      }
+    } catch (err) {
+      log(`card-refresh: failed (${err?.message ?? err}) — skipped; merge unaffected`);
     }
     emit(
       {

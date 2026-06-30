@@ -7,8 +7,50 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 
-command -v pnpm >/dev/null || { echo "pnpm is required (https://pnpm.io)"; exit 1; }
-command -v node >/dev/null || { echo "node is required (>= 20)"; exit 1; }
+# ── prerequisite preflight ─────────────────────────────────────────────────
+# Check everything up front with actionable messages, so a fresh machine fails
+# HERE (with the fix in hand) instead of sailing through setup + dry-run and
+# then dying on the first real tick. Hard deps (setup itself needs them) abort;
+# live-only deps (needed only at DRY_RUN=0) warn but don't block setup.
+echo "── prerequisites"
+_hard_missing=0
+_live_missing=0
+if command -v node >/dev/null; then
+  _node_major="$(node -v | sed 's/v\([0-9]*\).*/\1/')"
+  if [ "${_node_major:-0}" -ge 22 ] 2>/dev/null; then
+    echo "  ✓ node $(node -v)"
+  else
+    echo "  ✗ node $(node -v) — Gaffer needs Node 22 or 24 (https://nodejs.org)"; _hard_missing=1
+  fi
+else
+  echo "  ✗ node — install Node 22 or 24 (https://nodejs.org)"; _hard_missing=1
+fi
+if command -v pnpm >/dev/null; then
+  echo "  ✓ pnpm $(pnpm -v)"
+else
+  echo "  ✗ pnpm — run 'corepack enable' (ships with Node; pins pnpm@10.33.0), or see https://pnpm.io"; _hard_missing=1
+fi
+if command -v git >/dev/null; then
+  echo "  ✓ git"
+else
+  echo "  ✗ git — required to register repos and run each ticket in a worktree"; _hard_missing=1
+fi
+if command -v python3 >/dev/null; then
+  echo "  ✓ python3"
+else
+  echo "  ⚠ python3 — needed for LIVE ticks (runner JSON parsing + portable timeout shim); setup + dry-run work without it"; _live_missing=1
+fi
+if command -v claude >/dev/null; then
+  echo "  ✓ claude"
+else
+  echo "  ⚠ claude — needed for LIVE agent runs (onboard/plan/deliver); install + authenticate before DRY_RUN=0"; _live_missing=1
+fi
+if [ "$_hard_missing" = 1 ]; then
+  echo
+  echo "Install the tools marked ✗ above, then re-run: bash runner/setup.sh"
+  exit 1
+fi
+[ "$_live_missing" = 1 ] && echo "  (⚠ items are fine for setup + dry-run — resolve before going live with DRY_RUN=0)"
 
 echo "Gaffer factory setup"
 # Workspace install + build: one root `pnpm install` resolves the whole

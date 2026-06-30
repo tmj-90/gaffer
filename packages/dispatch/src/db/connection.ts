@@ -318,24 +318,31 @@ function widenScopeNodeTypeCheckForEpic(db: Db): void {
       updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     )`;
 
+  // PRAGMA foreign_keys must be toggled OUTSIDE the transaction — SQLite
+  // silently ignores PRAGMA statements inside a transaction. The table-swap DDL
+  // itself (create/copy/drop/rename/reindex) runs atomically inside the
+  // transaction so a crash between DROP and RENAME can never permanently lose
+  // the table (FIX 2: atomic DDL rebuild).
   const fkWasOn = (db.pragma("foreign_keys", { simple: true }) as number) === 1;
   if (fkWasOn) db.pragma("foreign_keys = OFF");
   try {
-    db.exec("DROP TABLE IF EXISTS scope_nodes_new");
-    db.exec(newTableDdl);
-    db.exec(
-      `INSERT INTO scope_nodes_new
-         (id, name, type, description, risk_level, owner, tags_json, lore_tags_json, created_at, updated_at)
-       SELECT id, name, type, description, risk_level, owner, tags_json, lore_tags_json, created_at, updated_at
-       FROM scope_nodes`,
-    );
-    db.exec("DROP TABLE scope_nodes");
-    db.exec("ALTER TABLE scope_nodes_new RENAME TO scope_nodes");
-    // Restore the indexes SCHEMA_SQL declares on scope_nodes (idempotent re-creation
-    // by SCHEMA_SQL afterwards is harmless, but recreate here so the table is
-    // immediately complete).
-    db.exec("CREATE INDEX IF NOT EXISTS idx_scope_nodes_type ON scope_nodes(type)");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_scope_nodes_name ON scope_nodes(name)");
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS scope_nodes_new");
+      db.exec(newTableDdl);
+      db.exec(
+        `INSERT INTO scope_nodes_new
+           (id, name, type, description, risk_level, owner, tags_json, lore_tags_json, created_at, updated_at)
+         SELECT id, name, type, description, risk_level, owner, tags_json, lore_tags_json, created_at, updated_at
+         FROM scope_nodes`,
+      );
+      db.exec("DROP TABLE scope_nodes");
+      db.exec("ALTER TABLE scope_nodes_new RENAME TO scope_nodes");
+      // Restore the indexes SCHEMA_SQL declares on scope_nodes (idempotent re-creation
+      // by SCHEMA_SQL afterwards is harmless, but recreate here so the table is
+      // immediately complete).
+      db.exec("CREATE INDEX IF NOT EXISTS idx_scope_nodes_type ON scope_nodes(type)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_scope_nodes_name ON scope_nodes(name)");
+    })();
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON");
   }
@@ -429,24 +436,30 @@ function widenTicketStatusCheckForReadyForMerge(db: Db): void {
       updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     )`;
 
+  // PRAGMA foreign_keys must be toggled OUTSIDE the transaction — SQLite
+  // silently ignores PRAGMA statements inside a transaction. The table-swap DDL
+  // itself runs atomically inside the transaction so a crash between DROP and
+  // RENAME can never permanently lose the table (FIX 2: atomic DDL rebuild).
   const fkWasOn = (db.pragma("foreign_keys", { simple: true }) as number) === 1;
   if (fkWasOn) db.pragma("foreign_keys = OFF");
   try {
-    db.exec("DROP TABLE IF EXISTS tickets_new");
-    db.exec(newTableDdl);
-    db.exec(
-      `INSERT INTO tickets_new (${copyList})
-       SELECT ${copyList} FROM tickets`,
-    );
-    db.exec("DROP TABLE tickets");
-    db.exec("ALTER TABLE tickets_new RENAME TO tickets");
-    // Restore the indexes SCHEMA_SQL declares on tickets (it also re-creates them
-    // idempotently afterwards, but recreate here so the table is immediately complete).
-    db.exec(
-      "CREATE INDEX IF NOT EXISTS idx_tickets_status_priority ON tickets(status, priority DESC, created_at ASC)",
-    );
-    db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level)");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack)");
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS tickets_new");
+      db.exec(newTableDdl);
+      db.exec(
+        `INSERT INTO tickets_new (${copyList})
+         SELECT ${copyList} FROM tickets`,
+      );
+      db.exec("DROP TABLE tickets");
+      db.exec("ALTER TABLE tickets_new RENAME TO tickets");
+      // Restore the indexes SCHEMA_SQL declares on tickets (it also re-creates them
+      // idempotently afterwards, but recreate here so the table is immediately complete).
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_tickets_status_priority ON tickets(status, priority DESC, created_at ASC)",
+      );
+      db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack)");
+    })();
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON");
   }
@@ -545,22 +558,28 @@ function widenTicketStatusCheckForInTesting(db: Db): void {
       updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     )`;
 
+  // PRAGMA foreign_keys must be toggled OUTSIDE the transaction — SQLite
+  // silently ignores PRAGMA statements inside a transaction. The table-swap DDL
+  // itself runs atomically inside the transaction so a crash between DROP and
+  // RENAME can never permanently lose the table (FIX 2: atomic DDL rebuild).
   const fkWasOn = (db.pragma("foreign_keys", { simple: true }) as number) === 1;
   if (fkWasOn) db.pragma("foreign_keys = OFF");
   try {
-    db.exec("DROP TABLE IF EXISTS tickets_new");
-    db.exec(newTableDdl);
-    db.exec(
-      `INSERT INTO tickets_new (${copyList})
-       SELECT ${copyList} FROM tickets`,
-    );
-    db.exec("DROP TABLE tickets");
-    db.exec("ALTER TABLE tickets_new RENAME TO tickets");
-    db.exec(
-      "CREATE INDEX IF NOT EXISTS idx_tickets_status_priority ON tickets(status, priority DESC, created_at ASC)",
-    );
-    db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level)");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack)");
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS tickets_new");
+      db.exec(newTableDdl);
+      db.exec(
+        `INSERT INTO tickets_new (${copyList})
+         SELECT ${copyList} FROM tickets`,
+      );
+      db.exec("DROP TABLE tickets");
+      db.exec("ALTER TABLE tickets_new RENAME TO tickets");
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_tickets_status_priority ON tickets(status, priority DESC, created_at ASC)",
+      );
+      db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack)");
+    })();
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON");
   }
@@ -682,22 +701,28 @@ function widenTicketStatusCheckForPaused(db: Db): void {
       updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     )`;
 
+  // PRAGMA foreign_keys must be toggled OUTSIDE the transaction — SQLite
+  // silently ignores PRAGMA statements inside a transaction. The table-swap DDL
+  // itself runs atomically inside the transaction so a crash between DROP and
+  // RENAME can never permanently lose the table (FIX 2: atomic DDL rebuild).
   const fkWasOn = (db.pragma("foreign_keys", { simple: true }) as number) === 1;
   if (fkWasOn) db.pragma("foreign_keys = OFF");
   try {
-    db.exec("DROP TABLE IF EXISTS tickets_new");
-    db.exec(newTableDdl);
-    db.exec(
-      `INSERT INTO tickets_new (${copyList})
-       SELECT ${copyList} FROM tickets`,
-    );
-    db.exec("DROP TABLE tickets");
-    db.exec("ALTER TABLE tickets_new RENAME TO tickets");
-    db.exec(
-      "CREATE INDEX IF NOT EXISTS idx_tickets_status_priority ON tickets(status, priority DESC, created_at ASC)",
-    );
-    db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level)");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack)");
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS tickets_new");
+      db.exec(newTableDdl);
+      db.exec(
+        `INSERT INTO tickets_new (${copyList})
+         SELECT ${copyList} FROM tickets`,
+      );
+      db.exec("DROP TABLE tickets");
+      db.exec("ALTER TABLE tickets_new RENAME TO tickets");
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_tickets_status_priority ON tickets(status, priority DESC, created_at ASC)",
+      );
+      db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack)");
+    })();
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON");
   }

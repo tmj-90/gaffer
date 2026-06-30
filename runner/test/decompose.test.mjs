@@ -576,6 +576,37 @@ console.log("== Prompt quarantine (P1 prompt-injection) ==");
   );
 }
 
+console.log("== FIX 1: null repo path → no card context emitted in prompt ==");
+{
+  // When targetRepo is set but resolveRepoPath returns null (no DISPATCH_DB in
+  // the test environment), buildPrompt must skip card injection entirely — no
+  // "PRIOR CONTEXT" or <untrusted-file-cards> in the prompt.  Pre-fix, the
+  // code used `resolveRepoPath(targetRepo) ?? ""` which passed "" to
+  // primeContextBlock and resolved to process.cwd() as the repo, potentially
+  // querying the wrong repo's cards and labelling them as the target.
+  const prompt = buildPrompt({
+    brief: "redo the auth flow",
+    repo: "no-such-repo-in-test-db",
+    history: [],
+  });
+  assert(
+    "null repo path → no PRIOR CONTEXT block in prompt (card injection skipped)",
+    !prompt.includes("PRIOR CONTEXT"),
+  );
+  assert(
+    "null repo path → no untrusted-file-cards in prompt",
+    !prompt.includes("untrusted-file-cards"),
+  );
+  assert(
+    "null repo path → brownfield MODE block still present (repo is still targeted)",
+    prompt.includes("EXISTING-REPO (BROWNFIELD) MODE"),
+  );
+
+  // Greenfield (no repo at all) also emits no card context.
+  const green = buildPrompt({ brief: "build from scratch", history: [] });
+  assert("greenfield (no repo) → no PRIOR CONTEXT block", !green.includes("PRIOR CONTEXT"));
+}
+
 console.log("== plan-build SKILL carries the brownfield branch + updated description ==");
 {
   const skillPath = resolve(HERE, "..", "skills", "plan-build", "SKILL.md");

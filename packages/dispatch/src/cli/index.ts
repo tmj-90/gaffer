@@ -931,19 +931,54 @@ program
 program
   .command("runner-release <ref>")
   .description(
-    "RUNNER-OWNED-BOOKKEEPING: release/park a runner-held delivery claim. --to ready (failure/retry) or refining (park, branch preserved). --token releases the matching claim; omit it for a tokenless resumed delivery.",
+    "RUNNER-OWNED-BOOKKEEPING: release/park a runner-held delivery claim. --to ready (failure/retry), refining (legacy park), or blocked (rework loop exhausted — VISIBLE column). --token releases the matching claim; omit it for a tokenless resumed delivery.",
   )
-  .requiredOption("--to <status>", "ready|refining")
+  .requiredOption("--to <status>", "ready|refining|blocked")
   .option("--token <token>", "claim token to release (optional for a resumed delivery)")
-  .option("--reason <text>", "reason recorded on the transition")
+  .option("--reason <text>", "reason recorded on the transition + card")
+  .option("--reason-code <code>", "structured reason code, e.g. rework_exhausted")
+  .option("--attempt <n>", "rework attempt number reached (paired with --max)")
+  .option("--max <n>", "rework attempt ceiling (GAFFER_MAX_DELIVERY_ATTEMPTS)")
   .action((ref, opts, cmd) => {
-    if (opts.to !== "ready" && opts.to !== "refining") {
-      throw new Error("--to must be 'ready' or 'refining'");
+    if (opts.to !== "ready" && opts.to !== "refining" && opts.to !== "blocked") {
+      throw new Error("--to must be 'ready', 'refining', or 'blocked'");
     }
     const wg = open(cmd.optsWithGlobals());
     const t = wg.resolveTicket(ref);
     const res = wg.runnerRelease(
-      { ticket_id: t.id, to: opts.to, claimToken: opts.token, reason: opts.reason },
+      {
+        ticket_id: t.id,
+        to: opts.to,
+        claimToken: opts.token,
+        reason: opts.reason,
+        ...(opts.reasonCode ? { reasonCode: opts.reasonCode } : {}),
+        ...(opts.attempt !== undefined ? { attempt: Number(opts.attempt) } : {}),
+        ...(opts.max !== undefined ? { maxAttempts: Number(opts.max) } : {}),
+      },
+      { type: "system" },
+    );
+    printJson({ ok: true, ...res });
+    wg.db.close();
+  });
+
+program
+  .command("runner-rework <ref>")
+  .description(
+    "RUNNER-OWNED-BOOKKEEPING: record a live rework attempt on an in-flight delivery (stays in_progress). Surfaces 'reworking · attempt N/M' + the latest failure on the board card between retries.",
+  )
+  .requiredOption("--attempt <n>", "current rework attempt (1-based)")
+  .requiredOption("--max <n>", "rework attempt ceiling")
+  .option("--reason <text>", "latest failure detail shown on the card")
+  .action((ref, opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const t = wg.resolveTicket(ref);
+    const res = wg.recordReworkAttempt(
+      {
+        ticket_id: t.id,
+        attempt: Number(opts.attempt),
+        maxAttempts: Number(opts.max),
+        reason: opts.reason ?? "reworking",
+      },
       { type: "system" },
     );
     printJson({ ok: true, ...res });

@@ -565,16 +565,31 @@ export class ClaimService {
    * RUNNER-OWNED-BOOKKEEPING: the factory runner holds the delivery claim and is
    * the authority that releases/parks it when a delivery fails or exhausts its
    * retries. On FAILURE the ticket returns to `ready` (blind-requeue safe); on
-   * PARK it routes to `refining` (needs triage, branch preserved). A resumed
-   * delivery is `in_progress` and carries no runner-held token, so `claimToken` is
-   * OPTIONAL — when present the matching active claim is released so the ticket
-   * carries no dangling claim; when absent (resume) the ticket is simply
+   * PARK it routes to `refining` (legacy triage) or, when the rework loop exhausts
+   * its attempt/cost budget, to the VISIBLE `blocked` column with a structured
+   * `rework_exhausted` reason so a human never wonders where the ticket went. A
+   * resumed delivery is `in_progress` and carries no runner-held token, so
+   * `claimToken` is OPTIONAL — when present the matching active claim is released so
+   * the ticket carries no dangling claim; when absent (resume) the ticket is simply
    * transitioned. The guarded `runnerRelease` transitions make the otherwise
-   * board-unreachable `claimed->refining` / `in_progress->{ready,refining}`
-   * routes legal for exactly this path.
+   * board-unreachable `claimed->{refining,blocked}` / `in_progress->{ready,refining,
+   * blocked}` routes legal for exactly this path.
+   *
+   * When parking (`refining`/`blocked`) the latest failure feedback is written to
+   * `last_review_feedback` (with the optional `reasonCode`/`attempt`/`maxAttempts`)
+   * so the board card surfaces WHY the ticket bounced and, for `blocked`, a
+   * `ticket.blocked` event is appended for the activity trail + the human-unblock gate.
    */
   runnerRelease(
-    input: { ticket_id: string; to: "ready" | "refining"; claimToken?: string; reason?: string },
+    input: {
+      ticket_id: string;
+      to: "ready" | "refining" | "blocked";
+      claimToken?: string;
+      reason?: string;
+      reasonCode?: string;
+      attempt?: number;
+      maxAttempts?: number;
+    },
     actor: Actor,
   ): { status: string; eventId: string } {
     const now = this.clock.now();
@@ -598,15 +613,71 @@ export class ClaimService {
           payload: { claim_id: claim.id },
         });
       }
+      const reason = input.reason ?? `runner_release_${input.to}`;
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: input.to,
-        reason: input.reason ?? `runner_release_${input.to}`,
+        reason,
         systemOverride: true,
         runnerRelease: true,
       });
+      // Parking (not a blind requeue to `ready`) preserves salvageable work and
+      // needs a human eye — surface the failure on the card via last_review_feedback.
+      if (input.to === "refining" || input.to === "blocked") {
+        const feedback: ReviewFeedback = { reason, reviewer: actor.id ?? null, at: now };
+        if (input.reasonCode) feedback.code = input.reasonCode;
+        if (typeof input.attempt === "number") feedback.attempt = input.attempt;
+        if (typeof input.maxAttempts === "number") feedback.maxAttempts = input.maxAttempts;
+        this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
+      }
+      if (input.to === "blocked") {
+        writeEvent(this.db, {
+          entity_type: "ticket",
+          entity_id: ticket.id,
+          actor,
+          event_type: "ticket.blocked",
+          payload: { reason, reason_code: input.reasonCode ?? null },
+        });
+      }
       return { status: result.ticket.status, eventId: result.eventId };
+    });
+  }
+
+  /**
+   * RUNNER-OWNED-BOOKKEEPING: record a live rework attempt WITHOUT changing status.
+   * While the runner re-invokes the agent between failed delivery attempts the
+   * ticket stays visibly `in_progress` (it IS being worked, not gone) — this writes
+   * the latest failure + the attempt counter to `last_review_feedback` so the board
+   * card can render "reworking · attempt N/M" and the real failure detail. It NEVER
+   * transitions the ticket and is a no-op-safe read on any status. Best-effort from
+   * the runner's perspective; a failure here never aborts a delivery.
+   */
+  recordReworkAttempt(
+    input: { ticket_id: string; attempt: number; maxAttempts: number; reason: string },
+    actor: Actor,
+  ): { eventId: string } {
+    const now = this.clock.now();
+    return inTransaction(this.db, () => {
+      const ticket = this.tickets.findById(input.ticket_id);
+      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const feedback: ReviewFeedback = {
+        reason: input.reason,
+        reviewer: actor.id ?? null,
+        at: now,
+        code: "reworking",
+        attempt: input.attempt,
+        maxAttempts: input.maxAttempts,
+      };
+      this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.reworking",
+        payload: { attempt: input.attempt, max_attempts: input.maxAttempts, reason: input.reason },
+      });
+      return { eventId };
     });
   }
 

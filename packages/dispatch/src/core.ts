@@ -907,10 +907,38 @@ export class Dispatch {
    * (`in_progress`) delivery can be parked too. See ClaimService.runnerRelease.
    */
   runnerRelease(
-    input: { ticket_id: string; to: "ready" | "refining"; claimToken?: string; reason?: string },
+    input: {
+      ticket_id: string;
+      to: "ready" | "refining" | "blocked";
+      claimToken?: string;
+      reason?: string;
+      reasonCode?: string;
+      attempt?: number;
+      maxAttempts?: number;
+    },
     actor: Actor,
   ): { status: string; eventId: string } {
-    return this.claims.runnerRelease(input, actor);
+    const result = this.claims.runnerRelease(input, actor);
+    // Parking to the VISIBLE `blocked` column needs a human to unblock it — fire the
+    // gate AFTER the claim transaction commits, best-effort (mirrors markBlocked).
+    if (result.status === "blocked") {
+      const ticket = this.tickets.findById(input.ticket_id);
+      if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+    }
+    return result;
+  }
+
+  /**
+   * RUNNER-OWNED-BOOKKEEPING: record a live rework attempt on an in-flight delivery
+   * so the board shows "reworking · attempt N/M" + the latest failure while the
+   * runner re-invokes the agent. Does NOT change status. See
+   * {@link ClaimService.recordReworkAttempt}.
+   */
+  recordReworkAttempt(
+    input: { ticket_id: string; attempt: number; maxAttempts: number; reason: string },
+    actor: Actor,
+  ): { eventId: string } {
+    return this.claims.recordReworkAttempt(input, actor);
   }
 
   releaseClaim(claimToken: string, actor: Actor): void {

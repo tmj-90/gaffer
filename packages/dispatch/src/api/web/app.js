@@ -2803,22 +2803,39 @@ function renderBoardCard(card) {
       )
     : null;
 
-  // WG-049: a ticket bounced back from review carries the reviewer's reason, so a
-  // human triaging the board sees WHY it's in rework without opening the ticket.
-  const reject = card.lastReviewFeedback
-    ? el(
-        "div",
-        {
-          class: "card-reject",
-          title: `Rejected by ${card.lastReviewFeedback.reviewer || "reviewer"}`,
-        },
-        [
-          el("span", { class: "card-reject-label" }, "Rejected:"),
-          " ",
-          card.lastReviewFeedback.reason,
-        ],
-      )
-    : null;
+  // WG-049 + rework loop: a ticket bounced back from review OR being reworked in
+  // place carries a reason, so a human triaging the board sees WHAT is happening
+  // without opening the ticket. Three shapes, keyed off the structured feedback code:
+  //   • reworking        → the runner is re-invoking the agent right now (in_progress):
+  //                        "Reworking · attempt N/M" so the ticket never looks "gone".
+  //   • rework_exhausted → the rework loop hit its attempt/cost ceiling and parked to
+  //                        the VISIBLE blocked column: "Rework exhausted".
+  //   • (none)           → an ordinary human review rejection: "Rejected".
+  const reject = (() => {
+    const fb = card.lastReviewFeedback;
+    if (!fb) return null;
+    const attemptSuffix =
+      typeof fb.attempt === "number" && typeof fb.maxAttempts === "number"
+        ? ` · attempt ${fb.attempt}/${fb.maxAttempts}`
+        : "";
+    let label = "Rejected:";
+    let cls = "card-reject";
+    let title = `Rejected by ${fb.reviewer || "reviewer"}`;
+    if (fb.code === "reworking") {
+      label = `Reworking${attemptSuffix}:`;
+      cls = "card-reject card-reworking";
+      title = "Runner is re-invoking the agent";
+    } else if (fb.code === "rework_exhausted") {
+      label = `Rework exhausted${attemptSuffix}:`;
+      cls = "card-reject card-rework-exhausted";
+      title = "Rework loop hit its attempt/cost ceiling — needs a human";
+    }
+    return el("div", { class: cls, title }, [
+      el("span", { class: "card-reject-label" }, label),
+      " ",
+      fb.reason,
+    ]);
+  })();
 
   const node = el(
     "a",

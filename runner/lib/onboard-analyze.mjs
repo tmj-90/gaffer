@@ -1074,8 +1074,11 @@ export function agentChildEnv(base = process.env) {
  *             card calls so a tight delivery tick cap doesn't kill card generation).
  *             Falls back to GAFFER_TICK_TIMEOUT, then the hardcoded default (1800 s).
  *   maxTurns — GAFFER_MAX_TURNS (default 60).
- *   model    — GAFFER_PLAN_MODEL (deep reasoning; analysis is a reasoning step).
+ *   model    — GAFFER_ONBOARD_SYNTH_MODEL → GAFFER_PLAN_MODEL → Sonnet default
+ *             (deep reasoning; digest/feature/lore synthesis + the card-review gate).
  */
+export const SYNTH_MODEL_DEFAULT = "claude-sonnet-4-5";
+
 export function analysisCaps(env = process.env) {
   const onboardSec = parseInt(env.GAFFER_ONBOARD_TIMEOUT ?? "", 10);
   const tickSec = parseInt(env.GAFFER_TICK_TIMEOUT ?? "", 10);
@@ -1087,7 +1090,13 @@ export function analysisCaps(env = process.env) {
         : 1800;
   const timeoutMs = timeoutSec * 1000;
   const maxTurns = parseInt(env.GAFFER_MAX_TURNS ?? "", 10) || 60;
-  const model = (env.GAFFER_PLAN_MODEL ?? "").trim();
+  // Synthesis model (digest / features / lore analysis + the card-review gate).
+  // A FEW deep-reasoning calls — keep them on Sonnet. Knob precedence:
+  // GAFFER_ONBOARD_SYNTH_MODEL → GAFFER_PLAN_MODEL → Sonnet default. The per-file
+  // card pass overrides this with cardModel() (Haiku) via a scoped env, so the
+  // two speeds coexist: cheap Haiku for the many cards, Sonnet for the few syntheses.
+  const model =
+    (env.GAFFER_ONBOARD_SYNTH_MODEL ?? env.GAFFER_PLAN_MODEL ?? "").trim() || SYNTH_MODEL_DEFAULT;
   return { timeoutMs, maxTurns, model };
 }
 
@@ -1404,13 +1413,23 @@ const CARD_MAX_FILES_DEFAULT = 4000; // GAFFER_CARD_MAX_FILES (sanity cap only)
 // such as an 8 k-line app.js (~280 KB) are well under this cap — include them.
 // The model only reads a bounded head snippet, so raw file size is not a cost signal.
 const CARD_MAX_BYTES_PER_FILE_DEFAULT = 2 * 1024 * 1024; // GAFFER_CARD_MAX_BYTES_PER_FILE (~2 MB)
-const CARD_SNIPPET_MAX_CHARS = 1500; // bounded snippet head fed to the model
+// Bounded snippet head fed to the model. Default kept SMALL: the mechanical
+// structure (imports + symbols) is usually enough for a TLDR, and the snippet is
+// the single biggest per-file input. Env-tunable via GAFFER_CARD_SNIPPET_CHARS;
+// set to 0 to drop the snippet entirely (structure-only cards).
+const CARD_SNIPPET_MAX_CHARS_DEFAULT = 400;
 const CARD_STRUCTURE_MAX_SYMBOLS = 60; // symbol names shown in the structure block
 const CARD_TLDR_MAX_CHARS = 480; // under cardValidation's 500 cap
-// Default model for per-file card generation. Sonnet is the right balance: good
-// enough for file TLDRs, significantly cheaper than Opus. Override per-repo via
-// GAFFER_CARD_MODEL if needed.
-const CARD_MODEL_DEFAULT = "claude-sonnet-4-5";
+// Default model for per-file card generation. Haiku is validated good-enough for
+// per-file TLDRs (structure-first, short output) and is far cheaper than Sonnet —
+// the card pass makes HUNDREDS of calls, so this is where model cost is decided.
+// The digest/feature/lore SYNTHESIS pass stays on Sonnet (see analysisCaps).
+// Override per-repo via GAFFER_CARD_MODEL if a repo needs a stronger card model.
+const CARD_MODEL_DEFAULT = "claude-haiku-4-5";
+// Files carded per `claude` call. Sending B files per call amortises the (static)
+// skill prefix across B cards instead of paying it per file — the dominant cost.
+// B=1 exactly reproduces the original one-file-per-call behaviour (safe fallback).
+const CARD_BATCH_DEFAULT = 8;
 
 /**
  * Derive the top-level "area" of a repo-relative file path, used by buildRollupDigest
@@ -1536,11 +1555,39 @@ export function cardCaps(env = process.env) {
 
 /**
  * Resolve the model to use for per-file card generation. Reads GAFFER_CARD_MODEL
- * first; falls back to CARD_MODEL_DEFAULT (Sonnet). Card generation is a simple
- * file-TLDR task and does NOT need a deep-reasoning model.
+ * first; falls back to CARD_MODEL_DEFAULT (Haiku). Card generation is a simple
+ * structure-first file-TLDR task and does NOT need a deep-reasoning model — this
+ * is the cheap tier for the hundreds of per-file calls. Synthesis (digest/feature/
+ * lore) stays on the Sonnet tier resolved by analysisCaps.
  */
 export function cardModel(env = process.env) {
   return (env.GAFFER_CARD_MODEL ?? "").trim() || CARD_MODEL_DEFAULT;
+}
+
+/**
+ * Files carded per `claude` call. GAFFER_CARD_BATCH (default 8, min 1). B=1 is the
+ * safe fallback: exactly one file per call, one card parsed back — original behaviour.
+ */
+export function cardBatch(env = process.env) {
+  const v = parseInt(env.GAFFER_CARD_BATCH ?? "", 10);
+  return Number.isFinite(v) && v >= 1 ? v : CARD_BATCH_DEFAULT;
+}
+
+/**
+ * Head-snippet budget (chars) fed to the card model per file. GAFFER_CARD_SNIPPET_CHARS
+ * (default CARD_SNIPPET_MAX_CHARS_DEFAULT); 0 drops the snippet entirely (structure-only).
+ */
+export function cardSnippetChars(env = process.env) {
+  const v = parseInt(env.GAFFER_CARD_SNIPPET_CHARS ?? "", 10);
+  return Number.isFinite(v) && v >= 0 ? v : CARD_SNIPPET_MAX_CHARS_DEFAULT;
+}
+
+/** Build the bounded head snippet for a file's content given a char budget. */
+function cardSnippet(content, maxChars) {
+  if (maxChars <= 0) return "";
+  return content.length > maxChars
+    ? `${content.slice(0, maxChars)}\n…[snippet truncated — read the file for the rest]`
+    : content;
 }
 
 /**
@@ -1711,7 +1758,8 @@ export function buildCardPrompt(rel, fileType, structure, snippet) {
     lines.push("Imports:", quarantine("imports", structure.imports.join(", ")), "");
   if (structure.symbols.length > 0)
     lines.push("Top-level symbols:", quarantine("symbols", structure.symbols.join(", ")), "");
-  lines.push("Snippet (file head — NOT the whole file):", quarantine("snippet", snippet), "");
+  if (snippet)
+    lines.push("Snippet (file head — NOT the whole file):", quarantine("snippet", snippet), "");
   lines.push(
     "OUTPUT — return EXACTLY one fenced ```json block as the LAST thing, this shape:",
     "```json",
@@ -1725,6 +1773,75 @@ export function buildCardPrompt(rel, fileType, structure, snippet) {
     "Never invent a symbol or behaviour not shown in the structure + snippet.",
   );
   return lines.join("\n");
+}
+
+/**
+ * Build ONE prompt covering a BATCH of files (the skill prefix — sent on every
+ * card call — is the dominant cost, so amortise it across B files). Each file is
+ * a numbered block with its mechanical structure + optional bounded snippet. Asks
+ * for a single JSON object with one card per index. `entries` is an array of
+ * { rel, fileType, structure, snippet } (same shape buildCardPrompt consumes).
+ */
+export function buildCardBatchPrompt(entries) {
+  const lines = [];
+  lines.push(
+    "You are the onboard card-generation pass. Write ONE card per file below.",
+    "Follow the card-generation skill rules, then produce strict JSON.",
+    "",
+    QUARANTINE_NOTICE,
+    "",
+    "== CARD-GENERATION SKILL RULES ==",
+    CARD_GENERATION_RULES,
+    "== END SKILL RULES ==",
+    "",
+    `${entries.length} file(s) follow, each with an index. Write one card per index —`,
+    "ground every card ONLY in that file's own structure + snippet (never another file's).",
+    "",
+  );
+  entries.forEach((e, i) => {
+    lines.push(`── FILE ${i}: ${e.rel}  (${e.fileType}) ──`);
+    if (e.structure.imports.length > 0)
+      lines.push(`Imports:`, quarantine(`imports-${i}`, e.structure.imports.join(", ")));
+    if (e.structure.symbols.length > 0)
+      lines.push(`Top-level symbols:`, quarantine(`symbols-${i}`, e.structure.symbols.join(", ")));
+    if (e.snippet) lines.push(`Snippet (head):`, quarantine(`snippet-${i}`, e.snippet));
+    lines.push("");
+  });
+  lines.push(
+    "OUTPUT — return EXACTLY one fenced ```json block as the LAST thing, this shape:",
+    "```json",
+    "{",
+    '  "cards": [',
+    `    { "index": 0, "tldr": "<<=${CARD_TLDR_MAX_CHARS} chars: what this file does + when to read it>", "role_primary": "<one skill label>", "role_tags": ["<0-4 tags>"] }`,
+    "  ]",
+    "}",
+    "```",
+    `Return one card object per file, indices 0..${entries.length - 1} (order need not match).`,
+    "Never invent a symbol not shown for that file. Never include secrets/tokens/credentials.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Parse + sanitise a BATCH card result into a dense array of length `count`
+ * (fields | null per index). Accepts { cards: [...] } (preferred) or a bare
+ * array. Each entry runs through the SAME validateCardFields gate as a single
+ * card; entries with an out-of-range/duplicate index are dropped. Never throws.
+ */
+export function validateCardBatch(obj, count) {
+  const out = new Array(count).fill(null);
+  const cards = Array.isArray(obj?.cards) ? obj.cards : Array.isArray(obj) ? obj : null;
+  if (!cards) return out;
+  cards.forEach((entry, pos) => {
+    if (!entry || typeof entry !== "object") return;
+    // Prefer an explicit index; fall back to array position when absent.
+    const raw = entry.index ?? entry.idx;
+    const idx = Number.isInteger(Number(raw)) ? Number(raw) : pos;
+    if (idx < 0 || idx >= count || out[idx] !== null) return;
+    const fields = validateCardFields(entry);
+    if (fields) out[idx] = fields;
+  });
+  return out;
 }
 
 /**
@@ -1822,16 +1939,34 @@ export function validateCardReviewResult(obj) {
  * in tests. Returns { tldr, rolePrimary, roleTags } or null (so the file still
  * gets a mechanical-only card).
  *
- * Uses GAFFER_CARD_MODEL (default: Sonnet) — NOT GAFFER_PLAN_MODEL — so per-file
+ * Uses GAFFER_CARD_MODEL (default: Haiku) — NOT the synthesis model — so per-file
  * TLDR generation doesn't consume expensive reasoning-model budget.
  */
 function runCardTurn(prompt, env = process.env) {
-  // Override GAFFER_PLAN_MODEL with the card-specific model so runAnalysisTurn
+  // Override the synth-model knobs with the card-specific model so runAnalysisTurn
   // picks it up through analysisCaps without touching the caller's env.
-  const cardEnv = { ...env, GAFFER_PLAN_MODEL: cardModel(env) };
+  const cardEnv = cardTurnEnv(env);
   const turn = runAnalysisTurn(prompt, cardEnv, "onboard");
   if (turn.timedOut) return null;
   return validateCardFields(extractLastJsonBlock(turn.stdout));
+}
+
+/** Scope the card model onto a child env, overriding both synth-model knobs. */
+function cardTurnEnv(env) {
+  const model = cardModel(env);
+  return { ...env, GAFFER_PLAN_MODEL: model, GAFFER_ONBOARD_SYNTH_MODEL: model };
+}
+
+/**
+ * Run ONE model turn over a BATCH of `count` files (ledgered under "onboard").
+ * Returns a dense array (fields | null per index) or null on timeout (caller then
+ * writes mechanical-only cards for the whole batch). Same cheap card model as
+ * runCardTurn. Injectable in tests.
+ */
+function runCardBatchTurn(prompt, count, env = process.env) {
+  const turn = runAnalysisTurn(prompt, cardTurnEnv(env), "onboard");
+  if (turn.timedOut) return null;
+  return validateCardBatch(extractLastJsonBlock(turn.stdout), count);
 }
 
 /** Run `memory card upsert` for one file. Returns the spawnSync result. */
@@ -1960,7 +2095,11 @@ export function runCardReviewSample(
  * the watermark = HEAD. Gated on the memory CLI; best-effort per file.
  * Returns a small stats object for the onboard log/JSON.
  *
- * `runTurn` is injectable (the live runCardTurn in production; a stub in tests).
+ * Files are carded in BATCHES of `cardBatch(env)` (GAFFER_CARD_BATCH, default 8):
+ * one `claude` call per batch, B cards parsed back and each run through the SAME
+ * validation + trust-split + upsert as before. B=1 exactly reproduces the original
+ * one-file-per-call path (uses `runTurn`); B>1 uses `runBatchTurn`. Both are
+ * injectable (live turns in production; stubs in tests).
  */
 export function emitFileCards(
   repoPath,
@@ -1970,6 +2109,7 @@ export function emitFileCards(
     env = process.env,
     log = () => {},
     runTurn = (p) => runCardTurn(p, env),
+    runBatchTurn = (p, count) => runCardBatchTurn(p, count, env),
     runReviewTurn = (p) => runCardReviewTurn(p, env),
   } = {},
 ) {
@@ -2002,70 +2142,115 @@ export function emitFileCards(
   stats.enumerated = files.length;
   stats.capsHit = capsHit;
 
+  const batch = cardBatch(env);
+  const snippetChars = cardSnippetChars(env);
+
   /** Cards whose model summary passed the deterministic gate — eligible for semantic review. */
   const reviewCandidates = [];
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i];
-    // Periodic progress — keeps long onboards observable without flooding the log.
-    if (i > 0 && i % 10 === 0) {
-      log(`file cards: ${i}/${files.length} done`);
-    }
-    let content;
-    try {
-      content = readFileSync(f.abs, "utf8");
-    } catch {
-      stats.skipped += 1;
-      continue;
-    }
-    // Every enumerated source file receives a model summary — no budget gate,
-    // no area spread guard. Per-file model-call timeout is bounded by
-    // GAFFER_ONBOARD_TIMEOUT (see analysisCaps).
-    let fields = null;
-    let reviewEntry = null;
-    const fileType = cardFileType(f.rel);
-    const structure = extractStructureSummary(content, fileType);
-    const snippet =
-      content.length > CARD_SNIPPET_MAX_CHARS
-        ? `${content.slice(0, CARD_SNIPPET_MAX_CHARS)}\n…[snippet truncated — read the file for the rest]`
-        : content;
-    try {
-      fields = runTurn(buildCardPrompt(f.rel, fileType, structure, snippet));
-    } catch (err) {
-      log(`card model turn failed for ${f.rel} (${err?.message ?? err}) — mechanical-only`);
-    }
-    // Capture context for the semantic review gate (only if model fields were produced).
-    if (fields) {
-      reviewEntry = { rel: f.rel, fileType, structure, snippet, fields };
-    }
+
+  /**
+   * The per-file terminal step — IDENTICAL across the B=1 and B>1 paths: upsert
+   * via the memory CLI (which owns mechanical truth + both validation gates),
+   * account the trust-split, and collect model-active cards for the review gate.
+   */
+  const finalizeCard = (entry, fields) => {
     const res = upsertCardCli(
       resolvedCfg,
-      { canonical, repo, repoRoot: repoPath, rel: f.rel, head, fields },
+      { canonical, repo, repoRoot: repoPath, rel: entry.rel, head, fields },
       env,
     );
     if (res.error || (res.status ?? 0) !== 0) {
       stats.failed += 1;
       log(
-        `card upsert "${f.rel}" failed: ${res.error?.message ?? res.stderr?.trim() ?? `exit ${res.status}`}`,
+        `card upsert "${entry.rel}" failed: ${res.error?.message ?? res.stderr?.trim() ?? `exit ${res.status}`}`,
       );
-      continue;
+      return;
     }
     stats.carded += 1;
     if (fields) {
       stats.modelCarded += 1;
       // Collect for rollup digest (area + role + tldr grouped by area).
-      stats.collectedCards.push({ rel: f.rel, role: fields.rolePrimary, tldr: fields.tldr });
-    }
-    // Collect for semantic review if the deterministic gate passed (modelStatus=active).
-    if (reviewEntry) {
+      stats.collectedCards.push({ rel: entry.rel, role: fields.rolePrimary, tldr: fields.tldr });
+      // Collect for semantic review if the deterministic gate passed (modelStatus=active).
       let upsertOut = null;
       try {
         upsertOut = JSON.parse(res.stdout ?? "");
       } catch {
         /* ignore */
       }
-      if (upsertOut?.modelStatus === "active") reviewCandidates.push(reviewEntry);
+      if (upsertOut?.modelStatus === "active") {
+        reviewCandidates.push({ ...entry, fields });
+      }
+    }
+  };
+
+  // Build the structure+snippet entry for one enumerated file (null = unreadable).
+  const prepareEntry = (f) => {
+    let content;
+    try {
+      content = readFileSync(f.abs, "utf8");
+    } catch {
+      return null;
+    }
+    const fileType = cardFileType(f.rel);
+    return {
+      rel: f.rel,
+      fileType,
+      structure: extractStructureSummary(content, fileType),
+      snippet: cardSnippet(content, snippetChars),
+    };
+  };
+
+  // Run one prepared chunk through the model and finalize every card in it.
+  const processChunk = (entries) => {
+    if (entries.length === 0) return;
+    let fieldsList;
+    if (batch === 1) {
+      // B=1 safe fallback — exactly one file per call, one card parsed back.
+      const e = entries[0];
+      let fields = null;
+      try {
+        fields = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
+      } catch (err) {
+        log(`card model turn failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
+      }
+      fieldsList = [fields];
+    } else {
+      let arr = null;
+      try {
+        arr = runBatchTurn(buildCardBatchPrompt(entries), entries.length);
+      } catch (err) {
+        log(
+          `card batch turn failed for ${entries.length} file(s) ` +
+            `(${err?.message ?? err}) — mechanical-only`,
+        );
+      }
+      fieldsList = entries.map((_, i) => (arr ? (arr[i] ?? null) : null));
+    }
+    for (let i = 0; i < entries.length; i++) finalizeCard(entries[i], fieldsList[i]);
+  };
+
+  // Every enumerated source file receives a card — no budget gate. We accumulate a
+  // batch of prepared entries and flush each full chunk; per-call timeout is bounded
+  // by GAFFER_ONBOARD_TIMEOUT (see analysisCaps).
+  let pending = [];
+  for (let i = 0; i < files.length; i++) {
+    // Periodic progress — keeps long onboards observable without flooding the log.
+    if (i > 0 && i % 10 === 0) {
+      log(`file cards: ${i}/${files.length} done`);
+    }
+    const entry = prepareEntry(files[i]);
+    if (!entry) {
+      stats.skipped += 1;
+      continue;
+    }
+    pending.push(entry);
+    if (pending.length >= batch) {
+      processChunk(pending);
+      pending = [];
     }
   }
+  processChunk(pending);
 
   // Watermark = HEAD (Phase-2 freshness loop reads this).
   if (head) {
@@ -2098,7 +2283,8 @@ export function emitFileCards(
 
   log(
     `file cards: enumerated=${stats.enumerated} carded=${stats.carded} ` +
-      `model=${stats.modelCarded} skipped=${stats.skipped} failed=${stats.failed} ` +
+      `model-summarised=${stats.modelCarded} skipped=${stats.skipped} failed=${stats.failed} ` +
+      `cardModel=${cardModel(env)} batch=${batch} snippet=${snippetChars} ` +
       `watermark=${stats.watermark ?? "none"}`,
   );
 
@@ -2163,10 +2349,13 @@ export function refreshFileCards(
     return result;
   }
   const caps = cardCaps(env);
+  const snippetChars = cardSnippetChars(env);
   const head = headCommit(repoPath);
   const secretLike =
     /(^|\/)(\.env|\.netrc|\.npmrc|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|secrets?|credentials?)(\.|$|\/)/i;
 
+  // Refresh re-cards a small, targeted set (few files), so it stays one-file-per-call
+  // — the batch amortisation only matters for the hundreds-of-files onboard pass.
   for (const rel of changedPaths) {
     if (!CARD_SOURCE_EXT.test(rel)) {
       result.skipped += 1;
@@ -2203,10 +2392,7 @@ export function refreshFileCards(
     let fields = null;
     const fileType = cardFileType(rel);
     const structure = extractStructureSummary(content, fileType);
-    const snippet =
-      content.length > CARD_SNIPPET_MAX_CHARS
-        ? `${content.slice(0, CARD_SNIPPET_MAX_CHARS)}\n…[snippet truncated — read the file for the rest]`
-        : content;
+    const snippet = cardSnippet(content, snippetChars);
     try {
       fields = runTurn(buildCardPrompt(rel, fileType, structure, snippet));
     } catch (err) {
@@ -2264,6 +2450,8 @@ export function analyzeAndWrite(
     log = () => {},
     runTurn = (prompt) => runAnalysisTurn(prompt, env),
     runCardTurn: runCardTurnInjected = (prompt) => runCardTurn(prompt, env),
+    runCardBatchTurn: runCardBatchTurnInjected = (prompt, count) =>
+      runCardBatchTurn(prompt, count, env),
     runReviewTurn: runReviewTurnInjected = (prompt) => runCardReviewTurn(prompt, env),
   } = {},
 ) {
@@ -2320,6 +2508,7 @@ export function analyzeAndWrite(
         env,
         log: (m) => log(`cards: ${m}`),
         runTurn: runCardTurnInjected,
+        runBatchTurn: runCardBatchTurnInjected,
         runReviewTurn: runReviewTurnInjected,
       });
     } catch (err) {

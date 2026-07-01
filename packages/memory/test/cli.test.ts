@@ -741,3 +741,125 @@ describe("repo understanding — write verbs (digest set/touch, feature add/adva
     expect(err).toMatch(/feature requires a subcommand/);
   });
 });
+
+// ── file-card refresh verbs: delete-file-card + get-card-watermark ────────
+describe("CLI — delete-file-card + get-card-watermark (incremental refresh seam)", () => {
+  const CANONICAL = "/repos/app";
+  const REPO = "app";
+
+  /** Seed one card via the CLI upsert verb (reads the file off disk). */
+  async function seedCard(relPath: string): Promise<void> {
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    const { dirname, join } = await import("node:path");
+    const abs = join(dir, relPath);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, "export const x = 1;\n");
+    out = "";
+    const code = await run(
+      "card",
+      "upsert",
+      "--canonical",
+      CANONICAL,
+      "--repo",
+      REPO,
+      "--repo-root",
+      dir,
+      "--path",
+      relPath,
+      "--json",
+    );
+    expect(code).toBe(0);
+  }
+
+  it("get-card-watermark returns null before any sync, then the stored commit after", async () => {
+    // Absent → syncedCommit:null, exit 0 (absence is a valid answer).
+    expect(
+      await run("get-card-watermark", "--canonical", CANONICAL, "--repo", REPO, "--json"),
+    ).toBe(0);
+    expect(JSON.parse(out).syncedCommit).toBeNull();
+
+    // Record a watermark, then read it back through the verb.
+    expect(
+      await run("card", "sync", "--canonical", CANONICAL, "--repo", REPO, "--commit", "deadbeef"),
+    ).toBe(0);
+    out = "";
+    expect(
+      await run("get-card-watermark", "--canonical", CANONICAL, "--repo", REPO, "--json"),
+    ).toBe(0);
+    expect(JSON.parse(out).syncedCommit).toBe("deadbeef");
+  });
+
+  it("delete-file-card removes an existing card, then reports a no-op on a second call", async () => {
+    await seedCard("src/gone.ts");
+    // Present before the delete.
+    out = "";
+    expect(
+      await run(
+        "card",
+        "get",
+        "--canonical",
+        CANONICAL,
+        "--repo",
+        REPO,
+        "--path",
+        "src/gone.ts",
+        "--json",
+      ),
+    ).toBe(0);
+    expect(JSON.parse(out).found).toBe(true);
+
+    // Delete removes it.
+    out = "";
+    expect(
+      await run(
+        "delete-file-card",
+        "--canonical",
+        CANONICAL,
+        "--repo",
+        REPO,
+        "--path",
+        "src/gone.ts",
+        "--json",
+      ),
+    ).toBe(0);
+    expect(JSON.parse(out)).toMatchObject({ ok: true, deleted: true });
+
+    // Gone afterwards.
+    out = "";
+    expect(
+      await run(
+        "card",
+        "get",
+        "--canonical",
+        CANONICAL,
+        "--repo",
+        REPO,
+        "--path",
+        "src/gone.ts",
+        "--json",
+      ),
+    ).toBe(0);
+    expect(JSON.parse(out).found).toBe(false);
+
+    // Second delete is a no-op (deleted:false) but still exit 0.
+    out = "";
+    expect(
+      await run(
+        "delete-file-card",
+        "--canonical",
+        CANONICAL,
+        "--repo",
+        REPO,
+        "--path",
+        "src/gone.ts",
+        "--json",
+      ),
+    ).toBe(0);
+    expect(JSON.parse(out)).toMatchObject({ ok: true, deleted: false });
+  });
+
+  it("delete-file-card requires --path", async () => {
+    expect(await run("delete-file-card", "--canonical", CANONICAL, "--repo", REPO)).toBe(2);
+    expect(err).toMatch(/requires --path/);
+  });
+});

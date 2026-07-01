@@ -16,7 +16,9 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import {
+  deleteFileCard,
   getFileCard,
+  getWatermark,
   markCardReviewFailed,
   repoKey,
   searchFileCards,
@@ -479,6 +481,85 @@ export async function cmdCardSync(args: ReturnType<typeof parseArgs>): Promise<n
       process.stdout.write(JSON.stringify({ ok: true, sync }) + "\n");
     } else {
       process.stdout.write(`card watermark for ${sync.repo} set to ${sync.syncedCommit}\n`);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+// ── delete-file-card ────────────────────────────────────────────────────
+
+/**
+ * `memory delete-file-card --canonical <c> --repo <r> --path <p> [--json]`
+ *
+ * Hard-delete one file card (row + FTS entry) so a DELETED or RENAMED-away
+ * file no longer leaves a stale card behind. The Runner calls this via the
+ * memory CLI during incremental card refresh — it must NEVER reach into
+ * Memory's DB directly (boundary rule).
+ *
+ * A no-op delete (no card for the path) is reported as ok=true, deleted=false
+ * and still exits 0: the caller's intent (no card should exist) is satisfied.
+ */
+export async function cmdDeleteFileCard(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const resolved = resolveRepoArgs(args, "delete-file-card");
+  if (!resolved) return 2;
+
+  const path = getString(args.flags, "path");
+  if (!path) {
+    process.stderr.write("memory: delete-file-card requires --path <file-path>\n");
+    return 2;
+  }
+
+  const json = getBool(args.flags, "json");
+  const db = openDb();
+  try {
+    const rk = repoKey(resolved.canonical);
+    const deleted = deleteFileCard(db, rk, path);
+
+    if (json) {
+      process.stdout.write(JSON.stringify({ ok: true, path, deleted }) + "\n");
+    } else if (deleted) {
+      process.stdout.write(`delete-file-card: ${path} removed (card + FTS)\n`);
+    } else {
+      process.stdout.write(`delete-file-card: ${path} had no card — nothing to remove\n`);
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+// ── get-card-watermark ──────────────────────────────────────────────────
+
+/**
+ * `memory get-card-watermark --canonical <c> --repo <r> [--json]`
+ *
+ * Read-only fetch of the repo's card-set watermark (repo_sync.synced_commit)
+ * via getWatermark. This is the CLI seam the Runner uses INSTEAD of reading
+ * Memory's SQLite directly — Memory owns its DB; callers go through the CLI.
+ *
+ * With --json prints `{ syncedCommit: <sha|null> }`; human-readable otherwise.
+ * Exits 0 even when no watermark exists yet (syncedCommit=null) — absence is a
+ * valid answer, not an error.
+ */
+export async function cmdGetCardWatermark(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const resolved = resolveRepoArgs(args, "get-card-watermark");
+  if (!resolved) return 2;
+
+  const json = getBool(args.flags, "json");
+  const db = openDb();
+  try {
+    const rk = repoKey(resolved.canonical);
+    const sync = getWatermark(db, rk);
+    const syncedCommit = sync?.syncedCommit ?? null;
+
+    if (json) {
+      process.stdout.write(JSON.stringify({ syncedCommit }) + "\n");
+    } else if (syncedCommit) {
+      process.stdout.write(`${syncedCommit}\n`);
+    } else {
+      process.stdout.write("(no card watermark recorded for this repo)\n");
     }
     return 0;
   } finally {

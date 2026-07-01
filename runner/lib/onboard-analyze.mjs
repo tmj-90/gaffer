@@ -2400,21 +2400,25 @@ export function emitFileCards(
  * re-running a full onboard.
  *
  * @param {string}   repoPath     Absolute path to the repository root.
- * @param {string[]} changedPaths Relative paths (from git diff --name-only) to re-card.
+ * @param {string[]} changedPaths Relative paths (added/modified/copied/type-changed,
+ *                                plus the NEW path of a rename) to re-card.
  * @param {object}   options
  * @param {object}   options.cfg          Memory CLI config ({ cliBin, db }).
+ * @param {string[]} [options.deletions]  Relative paths whose cards must be TOMBSTONED
+ *                                        (deleted files + the OLD path of a rename).
  * @param {object}   [options.env]        Process env; defaults to process.env.
  * @param {Function} [options.log]        Log sink.
  * @param {string}   [options.repo]       Repo name / ID for the card store.
  * @param {string}   [options.canonical]  Canonical repo path (defaults to repoCanonical(repoPath)).
  * @param {Function} [options.runTurn]    Injectable model turn (tests use a stub).
- * @returns {{ refreshed: number, skipped: number, failed: number, watermark: string|null }}
+ * @returns {{ refreshed: number, deleted: number, skipped: number, failed: number, watermark: string|null }}
  */
 export function refreshFileCards(
   repoPath,
   changedPaths,
   {
     cfg,
+    deletions = [],
     env = process.env,
     log = () => {},
     repo = "",
@@ -2422,7 +2426,7 @@ export function refreshFileCards(
     runTurn = (p) => runCardTurn(p, env),
   } = {},
 ) {
-  const result = { refreshed: 0, skipped: 0, failed: 0, watermark: null };
+  const result = { refreshed: 0, deleted: 0, skipped: 0, failed: 0, watermark: null };
   if (!cfg) {
     log("memory CLI not configured — skipping card refresh");
     return result;
@@ -2436,6 +2440,30 @@ export function refreshFileCards(
   const head = headCommit(repoPath);
   const secretLike =
     /(^|\/)(\.env|\.netrc|\.npmrc|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|secrets?|credentials?)(\.|$|\/)/i;
+
+  // ── Tombstone deleted / renamed-away cards FIRST ────────────────────────────
+  // A deleted or renamed file must not leave a stale card behind (it would
+  // mislead retrieval). We go through the memory CLI `delete-file-card` verb —
+  // NEVER writing Memory's DB directly (boundary rule). Fail-soft: a delete
+  // error is logged + counted, never thrown, but it DOES block the watermark
+  // advance (see below) so the next merge retries the tombstone.
+  for (const rel of deletions) {
+    if (!rel || !rel.trim()) continue;
+    const dres = runMemoryCli(
+      cfg,
+      ["delete-file-card", "--canonical", canonical, "--repo", repo, "--path", rel, "--json"],
+      env,
+    );
+    if (dres.error || (dres.status ?? 0) !== 0) {
+      result.failed += 1;
+      log(
+        `card delete "${rel}" failed: ${dres.error?.message ?? dres.stderr?.trim() ?? `exit ${dres.status}`}`,
+      );
+    } else {
+      result.deleted += 1;
+      log(`card deleted (stale/renamed): ${rel}`);
+    }
+  }
 
   // Refresh re-cards a small, targeted set (few files), so it stays one-file-per-call
   // — the batch amortisation only matters for the hundreds-of-files onboard pass.
@@ -2492,8 +2520,13 @@ export function refreshFileCards(
     }
   }
 
-  // Advance watermark to HEAD so the next refresh diff starts from here.
-  if (head) {
+  // Advance watermark to HEAD so the next refresh diff starts from here — but
+  // ONLY when the whole batch (tombstones + refreshes) completed without a hard
+  // failure. If any delete or upsert hard-failed, we hold the watermark where it
+  // is so the NEXT merge re-diffs from the same base and retries the stragglers.
+  // A "skip" (non-source ext, oversized, secret-like) is NOT a hard failure —
+  // it's an expected no-op that must not pin the watermark.
+  if (head && result.failed === 0) {
     const wres = runMemoryCli(
       cfg,
       ["card", "sync", "--canonical", canonical, "--repo", repo, "--commit", head],
@@ -2506,11 +2539,15 @@ export function refreshFileCards(
     } else {
       result.watermark = head;
     }
+  } else if (result.failed > 0) {
+    log(
+      `card watermark held (not advanced): ${result.failed} hard failure(s) — next merge will retry`,
+    );
   }
 
   log(
-    `card refresh: refreshed=${result.refreshed} skipped=${result.skipped} ` +
-      `failed=${result.failed} watermark=${result.watermark ?? "none"}`,
+    `card refresh: refreshed=${result.refreshed} deleted=${result.deleted} ` +
+      `skipped=${result.skipped} failed=${result.failed} watermark=${result.watermark ?? "none"}`,
   );
   return result;
 }

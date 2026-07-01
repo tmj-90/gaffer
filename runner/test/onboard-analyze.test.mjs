@@ -1304,6 +1304,129 @@ console.log("== refreshFileCards: changed file gets re-carded + watermark advanc
   );
 }
 
+console.log("== refreshFileCards: deleted + renamed files tombstone their cards ==");
+{
+  const { execSync } = await import("node:child_process");
+  const { readFileSync: readFS } = await import("node:fs");
+
+  // A tiny git repo with two source files.
+  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-del-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "keep.ts"), "export const keep = 1;\n");
+  // The renamed-to file exists on disk post-merge (a real rename leaves the new path).
+  writeFileSync(join(repoDir, "src", "new.ts"), "export const renamed = 1;\n");
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+
+  // Fake memory CLI: logs argv, returns success. card upsert emits modelStatus.
+  const dir = mkdtempSync(resolve(tmpdir(), "refresh-del-cli-"));
+  const logFile = join(dir, "calls.jsonl");
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') { process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n'); }",
+      "if (process.argv[2] === 'delete-file-card') { process.stdout.write(JSON.stringify({ ok: true, deleted: true }) + '\\n'); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+
+  const cfg = { cliBin, db: join(dir, "lore.sqlite") };
+  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: cfg.db };
+  const stubTurn = () => ({ tldr: "x", rolePrimary: "util", roleTags: ["t"] });
+
+  // A renamed file: old path tombstoned, new path re-carded. Plus a pure delete.
+  const rStats = refreshFileCards(repoDir, ["src/new.ts"], {
+    cfg,
+    deletions: ["src/old.ts", "src/removed.ts"],
+    env,
+    log: () => {},
+    repo: "test-repo",
+    canonical: "file://" + repoDir,
+    runTurn: stubTurn,
+  });
+
+  const calls = readFS(logFile, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+
+  assert("deleted count = 2 (renamed-old + removed)", rStats.deleted === 2);
+  assert(
+    "delete-file-card called for the renamed-away old path",
+    calls.some((c) => c[0] === "delete-file-card" && c.includes("src/old.ts")),
+  );
+  assert(
+    "delete-file-card called for the removed path",
+    calls.some((c) => c[0] === "delete-file-card" && c.includes("src/removed.ts")),
+  );
+  assert(
+    "card upsert called for the renamed-to new path",
+    calls.some((c) => c[0] === "card" && c[1] === "upsert" && c.includes("src/new.ts")),
+  );
+  assert("refreshed count = 1 (the new path)", rStats.refreshed === 1);
+  assert("no hard failures → failed = 0", rStats.failed === 0);
+  assert("watermark advanced (clean batch)", rStats.watermark !== null);
+}
+
+console.log("== refreshFileCards: watermark HELD when a tombstone hard-fails ==");
+{
+  const { execSync } = await import("node:child_process");
+  const { readFileSync: readFS } = await import("node:fs");
+
+  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-hold-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "keep.ts"), "export const keep = 1;\n");
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+
+  // Fake CLI that HARD-FAILS the delete-file-card verb (exit 1) but succeeds
+  // on card sync — proving the watermark guard, not a sync failure.
+  const dir = mkdtempSync(resolve(tmpdir(), "refresh-hold-cli-"));
+  const logFile = join(dir, "calls.jsonl");
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "if (process.argv[2] === 'delete-file-card') { process.stderr.write('boom\\n'); process.exit(1); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+
+  const cfg = { cliBin, db: join(dir, "lore.sqlite") };
+  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: cfg.db };
+
+  const rStats = refreshFileCards(repoDir, [], {
+    cfg,
+    deletions: ["src/old.ts"],
+    env,
+    log: () => {},
+    repo: "test-repo",
+    canonical: "file://" + repoDir,
+    runTurn: () => null,
+  });
+
+  const calls = readFS(logFile, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+
+  assert("delete hard-failure counted as failed", rStats.failed === 1);
+  assert("watermark HELD (null) after hard failure", rStats.watermark === null);
+  assert(
+    "card sync was NOT called (watermark not advanced)",
+    !calls.some((c) => c[0] === "card" && c[1] === "sync"),
+  );
+}
+
 console.log("");
 if (failures.length === 0) {
   console.log(`onboard-analyze: all ${passed} checks passed`);

@@ -40,6 +40,16 @@ const ALLOWED: ReadonlySet<string> = new Set([
   "in_progress->blocked",
   "in_progress->in_review",
   "in_progress->failed",
+  // RUNNER-OWNED-BOOKKEEPING: the factory runner now holds the delivery claim and
+  // is the authority that releases/parks it when a delivery fails or exhausts its
+  // retries. On FAILURE it returns the ticket to `ready` (blind-requeue safe); on
+  // PARK it routes to `refining` (needs triage, branch preserved). A resumed
+  // delivery is `in_progress`, so both source states must be reachable. These are
+  // guarded by the `runnerRelease` flag below so a stray board-drag can never use
+  // them — only Dispatch.runnerRelease sets it.
+  "claimed->refining",
+  "in_progress->ready",
+  "in_progress->refining",
   "blocked->ready",
   "blocked->refining",
   // Approve takes a delivery to `ready_for_merge` (NOT `done`): the human has
@@ -224,6 +234,16 @@ export interface TransitionInput {
    * fake a resume of paused work.
    */
   resumeDelivery?: boolean;
+  /**
+   * RUNNER-OWNED-BOOKKEEPING opt-in flag the runner-release/park paths
+   * (`claimed->refining`, `in_progress->ready`, `in_progress->refining`) MUST set.
+   * Releasing or parking a runner-held delivery claim is a deliberate factory
+   * action taken only by {@link Dispatch.runnerRelease}; without this flag those
+   * transitions are rejected as ILLEGAL_TRANSITION even though they are in the
+   * ALLOWED set, so a stray board-drag can never re-route an in-flight delivery.
+   * Same guarded-flag pattern as {@link wontDo} / {@link pauseDelivery}.
+   */
+  runnerRelease?: boolean;
 }
 
 export interface TransitionResult {
@@ -390,6 +410,23 @@ export class TransitionService {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
           "A paused ticket can only resume delivery via the resume path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
+      // RUNNER-OWNED-BOOKKEEPING: releasing/parking a runner-held delivery claim
+      // (`claimed->refining`, `in_progress->ready`, `in_progress->refining`) is
+      // reachable only through the runner-release path. Reject any other route so a
+      // stray board-drag can never re-route an in-flight delivery.
+      if (
+        (key === "claimed->refining" ||
+          key === "in_progress->ready" ||
+          key === "in_progress->refining") &&
+        !input.runnerRelease
+      ) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "An in-flight delivery can only be released/parked via the runner-release path.",
           { from: ticket.status, to: input.toStatus },
         );
       }

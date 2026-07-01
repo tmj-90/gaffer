@@ -900,6 +900,19 @@ export class Dispatch {
     return result;
   }
 
+  /**
+   * RUNNER-OWNED-BOOKKEEPING: release/park a runner-held delivery claim. Failure
+   * routes the ticket to `ready` (retry); park routes to `refining` (triage,
+   * branch preserved). `claimToken` is optional so a tokenless resumed
+   * (`in_progress`) delivery can be parked too. See ClaimService.runnerRelease.
+   */
+  runnerRelease(
+    input: { ticket_id: string; to: "ready" | "refining"; claimToken?: string; reason?: string },
+    actor: Actor,
+  ): { status: string; eventId: string } {
+    return this.claims.runnerRelease(input, actor);
+  }
+
   releaseClaim(claimToken: string, actor: Actor): void {
     this.claims.releaseClaim(claimToken, actor);
   }

@@ -44,11 +44,19 @@ gaffer_prime_context_block() {
   # Fail-soft: missing or non-existent repo path → empty output.
   [ -n "$_gpc_real_repo" ] && [ -d "$_gpc_real_repo" ] || return 0
 
-  # CANONICAL CONTRACT (must match onboard's repoCanonical EXACTLY):
-  # the repo's remote.origin.url, else its realpath (pwd -P).
+  # CANONICAL CONTRACT: get the NORMALISED canonical from the memory CLI so
+  # read-time (here) and write-time (onboard) identity derivation live in ONE
+  # place and can never drift.  `memory repo-canonical` derives
+  # remote.origin.url (else the realpath) and collapses every URL form
+  # (ssh/https/git://) to `host/owner/repo`.  If the CLI is unavailable we
+  # FAIL SOFT to the raw derivation — repoKey normalises again internally, so
+  # the key still matches; this fallback just loses the shared-code guarantee.
   local _gpc_canonical
-  _gpc_canonical="$(git -C "$_gpc_real_repo" config --get remote.origin.url 2>/dev/null)"
-  [ -z "$_gpc_canonical" ] && _gpc_canonical="$(cd "$_gpc_real_repo" && pwd -P)"
+  _gpc_canonical="$(lg repo-canonical --repo-root "$_gpc_real_repo" 2>/dev/null)"
+  if [ -z "$_gpc_canonical" ]; then
+    _gpc_canonical="$(git -C "$_gpc_real_repo" config --get remote.origin.url 2>/dev/null)"
+    [ -z "$_gpc_canonical" ] && _gpc_canonical="$(cd "$_gpc_real_repo" && pwd -P)"
+  fi
 
   # Build the cards-for-scope argv.  Caller-supplied paths narrow the
   # search; omitting them falls back to the query-driven selection.
@@ -69,6 +77,20 @@ gaffer_prime_context_block() {
   local _gpc_json
   _gpc_json="$(lg "${_gpc_argv[@]}" 2>/dev/null)" || return 0
   [ -n "$_gpc_json" ] || return 0
+
+  # FAIL LOUD: forward any repo_key-mismatch diagnostics from the packet to
+  # stderr (the runner log) — NEVER into the agent prompt (stdout).  A silent
+  # empty packet when cards demonstrably exist under a different key is exactly
+  # the bug this guards against.
+  printf '%s' "$_gpc_json" | python3 -c '
+import sys, json
+try:
+    p = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for d in (p.get("diagnostics") or []):
+    sys.stderr.write("WARN[file-cards]: " + str(d) + "\n")
+' 2>/dev/null || true
 
   # Render the packet into a compact, agent-facing block.  python3 is
   # fail-soft: bad JSON or zero cards AND no digest yields no output.

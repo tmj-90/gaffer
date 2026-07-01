@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -488,4 +488,37 @@ CREATE TABLE IF NOT EXISTS paused_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_paused_deliveries_resume
   ON paused_deliveries(resume_requested, created_at ASC);
+
+-- ============================================================================
+-- Failure-diagnosis trail (FAILURE-DIAGNOSIS). Additive, schema_version 13.
+--
+-- One row per rework ATTEMPT the runner records between failed delivery retries.
+-- Where tickets.last_review_feedback keeps only the LATEST attempt (overwritten
+-- each retry, for the board chip), this table APPENDS every attempt so the full
+-- ordered failure history survives — the surface an operator returns to when
+-- triaging an async engine. Each row carries the DISTILLED failure the runner's
+-- DoD distiller produced (the real failing test + assertion/stack, NOT a
+-- gate-name summary), the gate that failed, the attempt counter, and the AC it
+-- was working toward when known. Powers the per-ticket "why did #N fail" view and
+-- the cross-ticket "these keep bouncing" signal (repeated same-gate failures).
+--
+-- Keyed by ticket_id (FK CASCADE so the trail vanishes with its ticket). A
+-- brand-new standalone table created idempotently by CREATE TABLE IF NOT EXISTS —
+-- no ADD COLUMN migration needed.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS rework_attempts (
+  id                TEXT PRIMARY KEY,
+  ticket_id         TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  attempt           INTEGER NOT NULL,
+  max_attempts      INTEGER,
+  gate              TEXT,
+  distilled_failure TEXT NOT NULL,
+  ac_id             TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rework_attempts_ticket
+  ON rework_attempts(ticket_id, attempt ASC);
+CREATE INDEX IF NOT EXISTS idx_rework_attempts_gate
+  ON rework_attempts(gate);
 `;

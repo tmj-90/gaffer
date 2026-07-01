@@ -426,6 +426,8 @@ const TICKET_SUB = {
   MOVE: "move",
   READY_APPROVAL: "ready-approval",
   EVENTS: "events",
+  // FAILURE-DIAGNOSIS: the ordered "why did #N fail" rework trail.
+  REWORK_TRAIL: "rework-trail",
   REVIEW: "review",
   MARK_MERGED: "mark-merged",
   DIFF: "diff",
@@ -920,6 +922,8 @@ async function routeTickets(
         dependencies: view.dependencies,
         evidence: view.evidence,
         events: view.events,
+        // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
+        rework_trail: view.reworkTrail,
       });
       return;
     }
@@ -968,6 +972,14 @@ async function routeTickets(
   // /tickets/:id/events
   if (segments.length === 3 && sub === TICKET_SUB.EVENTS && method === "GET") {
     sendJson(res, 200, { events: wg.listTicketEvents(id) });
+    return;
+  }
+
+  // FAILURE-DIAGNOSIS: /tickets/:id/rework-trail — the full ordered "why did #N
+  // fail" history (attempt 1 → 2 → …), each with the distilled failing test +
+  // assertion. Distinct from the board's latest-only rework chip.
+  if (segments.length === 3 && sub === TICKET_SUB.REWORK_TRAIL && method === "GET") {
+    sendJson(res, 200, { rework_trail: wg.reworkTrail(id) });
     return;
   }
 
@@ -1632,6 +1644,24 @@ function routeReadModels(
       limit: q.limit,
       offset: q.offset,
     });
+    return;
+  }
+
+  // FAILURE-DIAGNOSIS: GET /api/rework/bouncing?min=&limit= — the cross-ticket
+  // "these keep bouncing" signal: tickets with a rework trail, ranked worst-first
+  // (repeated same-gate failures lead). The operator's key quality signal.
+  if (segments.length === 3 && segments[1] === "rework" && segments[2] === "bouncing") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const parseCap = (raw: string | null, fallback: number): number => {
+      if (raw === null) return fallback;
+      const n = Number.parseInt(raw, 10);
+      return Number.isInteger(n) && n > 0 ? n : fallback;
+    };
+    const bouncing = wg.bouncingTickets({
+      minReworks: parseCap(url.searchParams.get("min"), 2),
+      limit: parseCap(url.searchParams.get("limit"), 20),
+    });
+    sendJson(res, 200, { bouncing });
     return;
   }
 

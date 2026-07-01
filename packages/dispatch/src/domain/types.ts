@@ -432,6 +432,52 @@ export function parseReviewFeedback(raw: string | null): ReviewFeedback | null {
   }
 }
 
+/**
+ * FAILURE-DIAGNOSIS: one persisted rework attempt in a ticket's failure trail.
+ * Unlike {@link ReviewFeedback} (which keeps only the LATEST attempt on the card),
+ * these APPEND — the full ordered history of why a ticket kept failing. Each row
+ * carries the DISTILLED failure the runner's DoD distiller produced (the real
+ * failing test + assertion/stack), not a gate-name summary.
+ */
+export interface ReworkAttempt {
+  id: string;
+  ticket_id: string;
+  /** 1-based attempt counter for this rework loop. */
+  attempt: number;
+  /** The attempt ceiling in force when this row was recorded (may be null). */
+  max_attempts: number | null;
+  /** The gate that failed (e.g. `tests`, `definition-of-done`, `lint`). */
+  gate: string | null;
+  /** The full distilled failing test + assertion/stack — the crux of the trail. */
+  distilled_failure: string;
+  /** The acceptance criterion being worked toward when known (else null). */
+  ac_id: string | null;
+  created_at: string;
+}
+
+/**
+ * FAILURE-DIAGNOSIS: the cross-ticket "these keep bouncing" aggregate. One row per
+ * ticket with a rework trail, ranked so the operator sees the worst quality
+ * offenders first — especially tickets that repeatedly fail the SAME gate
+ * ({@link top_gate_count}), the strongest signal of a stuck ticket.
+ */
+export interface BouncingTicket {
+  ticket_id: string;
+  number: number | null;
+  title: string;
+  status: string;
+  /** Total rework attempts recorded across the ticket's trail. */
+  rework_count: number;
+  /** How many DISTINCT gates the ticket failed. */
+  distinct_gates: number;
+  /** The single gate the ticket failed most often (null when no gate was recorded). */
+  top_gate: string | null;
+  /** How many times {@link top_gate} failed — the same-gate repeat signal. */
+  top_gate_count: number;
+  /** Timestamp of the most recent attempt in the trail. */
+  last_attempt_at: string;
+}
+
 export interface AcceptanceCriterion {
   id: string;
   ticket_id: string;

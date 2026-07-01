@@ -182,6 +182,10 @@ export function migrate(db: Db): void {
   // H9 (v10→v11): the `plan_sessions` durable plan-build chat table. Also a
   // brand-new standalone table with no FKs to other tables, created idempotently
   // by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS — no ADD COLUMN migration needed.
+  //
+  // FAILURE-DIAGNOSIS (v12→v13): the `rework_attempts` failure-trail table. A
+  // brand-new standalone table (FK to tickets, CASCADE) created idempotently by
+  // SCHEMA_SQL's CREATE TABLE IF NOT EXISTS — no ADD COLUMN migration needed.
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +

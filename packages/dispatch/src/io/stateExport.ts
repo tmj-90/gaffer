@@ -79,6 +79,10 @@ export const EXPORT_TABLES = [
   "external_refs",
   // Self-referential within tickets (already present by here).
   "ticket_dependencies",
+  // FAILURE-DIAGNOSIS: the append-only rework failure trail (FK to tickets). Durable
+  // board diagnostics — the "why did #N fail" history is exactly the kind of asset
+  // the README promises you carry between machines, so it IS part of the bundle.
+  "rework_attempts",
 ] as const;
 
 export type ExportTable = (typeof EXPORT_TABLES)[number];
@@ -108,6 +112,7 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   work_events: "id",
   external_refs: "id",
   ticket_dependencies: "ticket_id, depends_on_ticket_id",
+  rework_attempts: "id",
 };
 
 /** A single table's rows, each row a column→value map (SQLite scalar values). */

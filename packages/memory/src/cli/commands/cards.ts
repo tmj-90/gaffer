@@ -16,15 +16,19 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import {
+  cardKeysForRepoName,
   deleteFileCard,
+  diagnoseRepoKeyMismatch,
   getFileCard,
   getWatermark,
   markCardReviewFailed,
+  rekeyRepo,
   repoKey,
   searchFileCards,
   setWatermark,
   upsertFileCard,
 } from "../../core/fileCards.js";
+import { canonicalizeRepo } from "../../core/repoIdentity.js";
 import {
   countLines,
   extractFileSymbols,
@@ -154,9 +158,27 @@ export async function cmdCardSearch(args: ReturnType<typeof parseArgs>): Promise
     const rk = repoKey(resolved.canonical);
     const cards = searchFileCards(db, rk, query, limit);
 
+    // FAIL LOUD: an empty result when cards exist under a different key is a
+    // canonical/key mismatch, not "no cards" — surface it on stderr.
+    const diagnostic =
+      cards.length === 0
+        ? diagnoseRepoKeyMismatch(db, rk, resolved.repo, resolved.canonical)
+        : null;
+    if (diagnostic) process.stderr.write(`memory: WARN ${diagnostic}\n`);
+
     if (json) {
       process.stdout.write(
-        JSON.stringify({ query, repo: resolved.repo, count: cards.length, cards }, null, 2) + "\n",
+        JSON.stringify(
+          {
+            query,
+            repo: resolved.repo,
+            count: cards.length,
+            cards,
+            ...(diagnostic ? { diagnostics: [diagnostic] } : {}),
+          },
+          null,
+          2,
+        ) + "\n",
       );
       return 0;
     }
@@ -247,6 +269,13 @@ export async function cmdCardsForScope(args: ReturnType<typeof parseArgs>): Prom
       maxTokens,
       perCardMaxTokens,
     });
+
+    // FAIL LOUD: surface any repo_key-mismatch diagnostics on stderr so the
+    // runner log / operator sees them — never let an empty packet pass silently
+    // when cards demonstrably exist under a different key.
+    for (const d of packet.diagnostics ?? []) {
+      process.stderr.write(`memory: WARN ${d}\n`);
+    }
 
     if (json) {
       process.stdout.write(JSON.stringify(packet, null, 2) + "\n");
@@ -412,6 +441,7 @@ export async function cmdCardUpsert(args: ReturnType<typeof parseArgs>): Promise
 
     const card = upsertFileCard(db, {
       repoKey: rk,
+      canonical: resolved.canonical,
       repo: resolved.repo,
       path,
       contentHash,
@@ -476,7 +506,13 @@ export async function cmdCardSync(args: ReturnType<typeof parseArgs>): Promise<n
 
   const db = openDb();
   try {
-    const sync = setWatermark(db, repoKey(resolved.canonical), resolved.repo, commit);
+    const sync = setWatermark(
+      db,
+      repoKey(resolved.canonical),
+      resolved.repo,
+      commit,
+      resolved.canonical,
+    );
     if (getBool(args.flags, "json")) {
       process.stdout.write(JSON.stringify({ ok: true, sync }) + "\n");
     } else {
@@ -636,5 +672,153 @@ export async function cmdCard(args: ReturnType<typeof parseArgs>): Promise<numbe
   process.stderr.write(
     "memory: card requires a subcommand — `memory card get|search|upsert|sync|mark-failed`\n",
   );
+  return 2;
+}
+
+// ── repo-canonical ─────────────────────────────────────────────────────
+
+/**
+ * `memory repo-canonical --repo-root <abs> [--json]`
+ * `memory repo-canonical --canonical <url-or-path> [--json]`
+ *
+ * Print the NORMALISED canonical for a repo. This is the seam
+ * context-primer.sh (and any bash caller) uses so read-time and write-time
+ * identity derivation can never drift — the normalisation lives in ONE place
+ * (the memory package), not hand-rolled in shell.
+ *
+ * With --repo-root, derives remote.origin.url (else the realpath) then
+ * normalises. With --canonical, just normalises the given string.
+ */
+export async function cmdRepoCanonical(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const explicit = getString(args.flags, "canonical");
+  const repoRoot = getString(args.flags, "repo-root");
+  const json = getBool(args.flags, "json");
+
+  let raw: string | undefined = explicit;
+  if (!raw && repoRoot) {
+    // Derive remote.origin.url, else the realpath fallback — the same contract
+    // onboard uses. Normalisation then collapses every form to one key.
+    const { execFileSync } = await import("node:child_process");
+    try {
+      raw = execFileSync("git", ["-C", repoRoot, "config", "--get", "remote.origin.url"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      raw = undefined; // not a git repo / no remote → fall through to path
+    }
+    if (!raw) {
+      // No remote → the realpath fallback. MUST resolve symlinks (realpathSync
+      // ≡ the onboard side's repoCanonical and the primer's old `pwd -P`), or
+      // the read-time key won't match the write-time key on symlinked paths
+      // (e.g. macOS /var → /private/var).
+      const { realpathSync } = await import("node:fs");
+      try {
+        raw = realpathSync(repoRoot);
+      } catch {
+        raw = resolve(repoRoot);
+      }
+    }
+  }
+
+  if (!raw) {
+    process.stderr.write(
+      "memory: repo-canonical requires --repo-root <abs> or --canonical <url-or-path>\n",
+    );
+    return 2;
+  }
+
+  const canonical = canonicalizeRepo(raw);
+  if (json) {
+    process.stdout.write(JSON.stringify({ canonical, key: repoKey(raw) }) + "\n");
+  } else {
+    process.stdout.write(canonical + "\n");
+  }
+  return 0;
+}
+
+// ── cards rekey ─────────────────────────────────────────────────────────
+
+/**
+ * `memory cards rekey --canonical <url-or-path> --repo <name> [--dry-run] [--json]`
+ *
+ * Re-key every card + watermark for the display name <name> onto the
+ * NORMALISED repoKey(canonical). This is the migration for cards onboarded
+ * before canonicalisation: their repo_key is an sha256 of an un-normalised
+ * URL/path that can't be reversed from the hash — so we re-key from the
+ * available signal (the `repo` display name) in ONE transaction, keeping FTS
+ * intact. --dry-run reports what WOULD move without writing.
+ */
+export async function cmdCardsRekey(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const resolved = resolveRepoArgs(args, "cards rekey");
+  if (!resolved) return 2;
+
+  const dryRun = getBool(args.flags, "dry-run");
+  const json = getBool(args.flags, "json");
+  const db = openDb();
+  try {
+    const newKey = repoKey(resolved.canonical);
+    const canonical = canonicalizeRepo(resolved.canonical);
+    const before = cardKeysForRepoName(db, resolved.repo);
+    const fromKeys = before.filter((k) => k.repoKey !== newKey);
+
+    if (dryRun) {
+      const wouldMove = fromKeys.reduce((a, b) => a + b.count, 0);
+      const out = {
+        dryRun: true,
+        repo: resolved.repo,
+        canonical,
+        newKey,
+        fromKeys,
+        wouldMove,
+      };
+      if (json) {
+        process.stdout.write(JSON.stringify(out, null, 2) + "\n");
+      } else if (fromKeys.length === 0) {
+        process.stdout.write(
+          `cards rekey (dry-run): '${resolved.repo}' already on key ${newKey.slice(0, 12)}… — nothing to move\n`,
+        );
+      } else {
+        process.stdout.write(
+          `cards rekey (dry-run): would move ${wouldMove} card(s) for '${resolved.repo}' to ${newKey.slice(0, 12)}… (canonical '${canonical}')\n` +
+            fromKeys.map((k) => `  from ${k.repoKey.slice(0, 12)}… (${k.count})`).join("\n") +
+            "\n",
+        );
+      }
+      return 0;
+    }
+
+    const result = rekeyRepo(db, resolved.repo, resolved.canonical);
+    if (json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    } else if (result.noop) {
+      process.stdout.write(
+        `cards rekey: '${result.repo}' already on key ${result.newKey.slice(0, 12)}… — no change\n`,
+      );
+    } else {
+      process.stdout.write(
+        `cards rekey: '${result.repo}' → key ${result.newKey.slice(0, 12)}… (canonical '${result.canonical}')\n` +
+          `  re-keyed ${result.cardsRekeyed} card(s)` +
+          (result.collisionsDropped > 0
+            ? `, dropped ${result.collisionsDropped} stale duplicate(s)`
+            : "") +
+          (result.syncRekeyed ? ", moved watermark" : "") +
+          "\n",
+      );
+    }
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `memory cards <sub>` dispatcher.
+ *   rekey  --canonical <c> --repo <r> [--dry-run] [--json]
+ */
+export async function cmdCards(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const sub = args.positionals[0];
+  if (sub === "rekey") return await cmdCardsRekey(args);
+  process.stderr.write("memory: cards requires a subcommand — `memory cards rekey`\n");
   return 2;
 }

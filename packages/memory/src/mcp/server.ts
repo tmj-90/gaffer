@@ -6,7 +6,12 @@ import { z } from "zod";
 import { audit } from "../core/audit.js";
 import { findActiveAbsence, recordAbsence } from "../core/absence.js";
 import { findDependents, suggestBoundary } from "../core/boundaries.js";
-import { getFileCard, repoKey, searchFileCards } from "../core/fileCards.js";
+import {
+  diagnoseRepoKeyMismatch,
+  getFileCard,
+  repoKey,
+  searchFileCards,
+} from "../core/fileCards.js";
 import {
   addFeature,
   advanceFeature,
@@ -1597,6 +1602,12 @@ export function buildMcpServer(db: Database): McpServer {
         const rk = repoKey(args.repoCanonical);
         const limit = Math.min(args.limit ?? 20, 50);
         const cards = searchFileCards(db, rk, args.query, limit);
+        // FAIL LOUD: empty result while cards exist under a different key is a
+        // canonical/key mismatch, not "no cards" — surface it, don't hide it.
+        const diagnostic =
+          cards.length === 0
+            ? diagnoseRepoKeyMismatch(db, rk, args.repo, args.repoCanonical)
+            : null;
         audit({
           tool: "search_file_cards",
           request: {
@@ -1613,6 +1624,7 @@ export function buildMcpServer(db: Database): McpServer {
           repo: args.repo,
           count: cards.length,
           cards,
+          ...(diagnostic ? { diagnostics: [diagnostic] } : {}),
           caveat:
             "Cards are retrieval aids — use them to choose files to read, not " +
             "as a substitute for reading the code. Model fields (tldr, role) " +

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
-import type { Actor } from "../src/domain/types.js";
+import { parseReviewFeedback, type Actor } from "../src/domain/types.js";
 import { makeHandlers } from "../src/mcp/tools.js";
+import { BOARD_COLUMNS } from "../src/services/boardService.js";
 import { TestClock } from "../src/util/clock.js";
 
 const agentActor: Actor = { type: "agent", id: "mcp-agent" };
@@ -57,7 +58,7 @@ describe("runner-owned bookkeeping", () => {
       if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
       else process.env.GAFFER_CLAIM_TOKEN = prev;
     }
-    expect(wg.view(ticketId).acceptanceCriteria[0].status).toBe("satisfied");
+    expect(wg.view(ticketId).acceptanceCriteria[0]?.status).toBe("satisfied");
   });
 
   it("mark_ticket_blocked resolves the env token; with none it stays rejected for agents", () => {
@@ -110,6 +111,90 @@ describe("runner-owned bookkeeping", () => {
       systemActor,
     );
     expect(res.status).toBe("refining");
+  });
+
+  it("runnerRelease --to blocked parks an exhausted rework to the VISIBLE column (rework_exhausted)", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const { ticketId, token } = seedReadyClaimedTicket(wg);
+    const res = wg.runnerRelease(
+      {
+        ticket_id: ticketId,
+        to: "blocked",
+        claimToken: token,
+        reason: "DoD failed after 3 attempts (branch preserved)",
+        reasonCode: "rework_exhausted",
+        attempt: 3,
+        maxAttempts: 3,
+      },
+      systemActor,
+    );
+    expect(res.status).toBe("blocked");
+
+    const view = wg.view(ticketId);
+    // The structured feedback surfaces on the card (code + attempt/max), so the
+    // board renders "Rework exhausted · attempt 3/3" and a human sees WHY it parked.
+    const fb = parseReviewFeedback(view.ticket.last_review_feedback);
+    expect(fb?.code).toBe("rework_exhausted");
+    expect(fb?.attempt).toBe(3);
+    expect(fb?.maxAttempts).toBe(3);
+
+    // `blocked` is a real board column (VISIBLE), unlike `refining` (draft).
+    expect(BOARD_COLUMNS).toContain("blocked");
+    expect(BOARD_COLUMNS).not.toContain("refining");
+    const card = wg
+      .board()
+      .columns.find((c) => c.column === "blocked")
+      ?.cards.find((c) => c.id === ticketId);
+    expect(card).toBeTruthy();
+    expect(card?.lastReviewFeedback?.code).toBe("rework_exhausted");
+
+    // The claim is released (no dangling claim) and a ticket.blocked event is on the
+    // trail for the human-unblock gate.
+    const types = view.events.map((e) => e.event_type);
+    expect(types).toContain("claim.released");
+    expect(types).toContain("ticket.blocked");
+  });
+
+  it("recordReworkAttempt surfaces the attempt on the card WITHOUT changing status", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const { ticketId } = seedReadyClaimedTicket(wg);
+    const before = wg.view(ticketId).ticket.status;
+
+    const res = wg.recordReworkAttempt(
+      { ticket_id: ticketId, attempt: 2, maxAttempts: 3, reason: "tests: expected 3 to be 4" },
+      systemActor,
+    );
+    expect(res.eventId).toBeTruthy();
+
+    const view = wg.view(ticketId);
+    // Status is untouched — the ticket stays in its live (visible) column while
+    // being reworked; it never routes to refining and never looks "gone".
+    expect(view.ticket.status).toBe(before);
+    const fb = parseReviewFeedback(view.ticket.last_review_feedback);
+    expect(fb?.code).toBe("reworking");
+    expect(fb?.attempt).toBe(2);
+    expect(fb?.maxAttempts).toBe(3);
+    expect(fb?.reason).toContain("expected 3 to be 4");
+    expect(view.events.map((e) => e.event_type)).toContain("ticket.reworking");
+  });
+
+  it("runnerRelease --to blocked works tokenlessly for a resumed (in_progress) delivery", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const { ticketId } = seedReadyClaimedTicket(wg);
+    wg.moveTicket(ticketId, "in_progress", systemActor);
+    const res = wg.runnerRelease(
+      {
+        ticket_id: ticketId,
+        to: "blocked",
+        reason: "rework exhausted",
+        reasonCode: "rework_exhausted",
+      },
+      systemActor,
+    );
+    expect(res.status).toBe("blocked");
+    expect(parseReviewFeedback(wg.view(ticketId).ticket.last_review_feedback)?.code).toBe(
+      "rework_exhausted",
+    );
   });
 
   it("runnerRelease works tokenlessly for a resumed (in_progress) delivery", () => {
@@ -189,6 +274,6 @@ describe("runner-owned bookkeeping", () => {
     });
     expect(res.isError).toBe(true);
     // B's AC stays unsatisfied — no cross-ticket evidence leaked in.
-    expect(wg.view(b.ticketId).acceptanceCriteria[0].status).not.toBe("satisfied");
+    expect(wg.view(b.ticketId).acceptanceCriteria[0]?.status).not.toBe("satisfied");
   });
 });

@@ -387,6 +387,21 @@ export interface ReviewFeedback {
   reason: string;
   reviewer: string | null;
   at: string;
+  /**
+   * Structured machine code for WHY the ticket bounced, so the board and the next
+   * attempt can key off it rather than parsing free text. `rework_exhausted` marks
+   * a delivery parked to `blocked` after the runner's rework loop hit its attempt
+   * or per-ticket cost ceiling. Absent for ordinary human review rejections.
+   */
+  code?: string;
+  /**
+   * The runner's live rework attempt (1-based) while a ticket is being reworked in
+   * place (`in_progress`), so the board can render "reworking · attempt N/M". Set by
+   * the runner between delivery retries; absent for a human review rejection.
+   */
+  attempt?: number;
+  /** The rework attempt ceiling (GAFFER_MAX_DELIVERY_ATTEMPTS) paired with {@link attempt}. */
+  maxAttempts?: number;
 }
 
 /**
@@ -399,11 +414,19 @@ export function parseReviewFeedback(raw: string | null): ReviewFeedback | null {
   try {
     const parsed = JSON.parse(raw) as Partial<ReviewFeedback>;
     if (typeof parsed.reason !== "string" || typeof parsed.at !== "string") return null;
-    return {
+    const out: ReviewFeedback = {
       reason: parsed.reason,
       reviewer: typeof parsed.reviewer === "string" ? parsed.reviewer : null,
       at: parsed.at,
     };
+    if (typeof parsed.code === "string" && parsed.code.length > 0) out.code = parsed.code;
+    if (typeof parsed.attempt === "number" && Number.isFinite(parsed.attempt)) {
+      out.attempt = parsed.attempt;
+    }
+    if (typeof parsed.maxAttempts === "number" && Number.isFinite(parsed.maxAttempts)) {
+      out.maxAttempts = parsed.maxAttempts;
+    }
+    return out;
   } catch {
     return null;
   }

@@ -137,6 +137,76 @@ grep -q 'BACKPRESSURE: skipping ready' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh skips a ready ticket whose repo is in backpressure" \
   || fail "tick.sh missing the backpressure skip path"
 
+echo "== SWEEP: abandoned-branch sweep must NEVER delete a PRESERVED branch =="
+# Data-loss guard: a delivery branch is often the ONLY copy of committed work. A
+# ticket parked for rework PRESERVES its branch (rework → blocked, other paths →
+# refining). The sweep must delete ONLY genuinely-abandoned branches: a ticket
+# that is POSITIVELY cancelled AND has no delivery record. Everything else — every
+# live/preserved state, and any ambiguous status — is kept.
+SREPO="$WORK/sweeprepo"
+git init -q -b main "$SREPO"
+git -C "$SREPO" config user.email gaffer@test; git -C "$SREPO" config user.name gaffer-test
+printf 'base\n' > "$SREPO/f.txt"; git -C "$SREPO" add -A && git -C "$SREPO" commit -q -m base
+# Each gaffer/ticket-N branch carries a unique unmerged commit.
+for n in 10 11 12 13 14 15; do
+  git -C "$SREPO" checkout -q -b "gaffer/ticket-$n" main
+  printf 'work %s\n' "$n" >> "$SREPO/f.txt"
+  git -C "$SREPO" commit -q -am "work $n"
+done
+git -C "$SREPO" checkout -q main
+
+# Stub `ticket show`: map ticket number → status.
+#   10 refining · 11 blocked · 12 cancelled · 13 cancelled · 14 in_progress · 15 draft
+cat > "$WORK/wg_show_sweep.sh" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  10) s=refining ;;   11) s=blocked ;;     12) s=cancelled ;;
+  13) s=cancelled ;;  14) s=in_progress ;; 15) s=draft ;;
+  *) s="" ;;
+esac
+printf '{"ticket":{"status":"%s"}}' "$s"
+EOF
+# Stub `repo-delivery list`: ticket 13's branch IS a recorded delivery artifact;
+# everyone else has none ([]).
+cat > "$WORK/wg_deliveries_sweep.sh" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  13) printf '[{"branch_name":"gaffer/ticket-13","repo":"repo"}]' ;;
+  *)  printf '[]' ;;
+esac
+EOF
+chmod +x "$WORK/wg_show_sweep.sh" "$WORK/wg_deliveries_sweep.sh"
+
+SWEPT="$(GAFFER_WG_SHOW_CMD="$WORK/wg_show_sweep.sh" \
+         GAFFER_WG_DELIVERIES_CMD="$WORK/wg_deliveries_sweep.sh" \
+         gaffer_sweep_abandoned_branches "$SREPO" main)"
+
+branch_exists() { git -C "$SREPO" show-ref --verify --quiet "refs/heads/$1"; }
+
+# Only the genuinely-abandoned branch (cancelled + no delivery record) is swept.
+[ "$SWEPT" = "gaffer/ticket-12" ] \
+  && ok "swept ONLY the cancelled, no-delivery branch (gaffer/ticket-12)" \
+  || fail "sweep deleted the wrong set: '$SWEPT' (expected only gaffer/ticket-12)"
+! branch_exists gaffer/ticket-12 && ok "cancelled+abandoned branch actually deleted" \
+  || fail "genuinely-abandoned branch should have been deleted"
+# PRESERVED states survive — the data-loss guard.
+branch_exists gaffer/ticket-10 && ok "refining branch PRESERVED (rework park)" || fail "refining branch was wrongly swept — DATA LOSS"
+branch_exists gaffer/ticket-11 && ok "blocked branch PRESERVED (rework park)"  || fail "blocked branch was wrongly swept — DATA LOSS"
+branch_exists gaffer/ticket-14 && ok "in_progress branch PRESERVED"            || fail "in_progress branch was wrongly swept — DATA LOSS"
+branch_exists gaffer/ticket-15 && ok "draft branch PRESERVED (live ticket)"    || fail "draft branch was wrongly swept"
+# A cancelled ticket whose branch is a recorded delivery artifact is still kept.
+branch_exists gaffer/ticket-13 && ok "cancelled branch WITH delivery record PRESERVED" || fail "delivery-artifact branch was wrongly swept — DATA LOSS"
+
+echo "== SWEEP: an unresolvable status (transient wg error) keeps the branch =="
+# No show stub → status resolves empty → not 'cancelled' → PRESERVE (fail-safe).
+git -C "$SREPO" checkout -q -b gaffer/ticket-99 main
+printf 'work 99\n' >> "$SREPO/f.txt"; git -C "$SREPO" commit -q -am "work 99"
+git -C "$SREPO" checkout -q main
+SWEPT2="$(GAFFER_WG_SHOW_CMD="/bin/false" GAFFER_WG_DELIVERIES_CMD="/bin/false" \
+          gaffer_sweep_abandoned_branches "$SREPO" main)"
+branch_exists gaffer/ticket-99 && ok "ambiguous-status branch PRESERVED (fail-safe)" || fail "ambiguous-status branch was wrongly swept"
+printf '%s\n' "$SWEPT2" | grep -q 'ticket-99' && fail "ticket-99 must not be reported swept" || ok "no PRESERVED branch reported swept under wg failure"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

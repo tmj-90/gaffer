@@ -58,7 +58,8 @@ node "$MEMORY_CLI" init >/dev/null 2>&1 || true
 export MEMORY_DB="$MEM_DB"
 
 echo "== A. emitFileCards writes ≥1 validated card (real memory CLI, stub turn) =="
-EMIT_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB" GAFFER_PLAN_MODEL="test-model" \
+# GAFFER_CARD_BATCH=1 exercises the safe one-file-per-call path with the single-turn stub.
+EMIT_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB" GAFFER_PLAN_MODEL="test-model" GAFFER_CARD_BATCH=1 \
   node --input-type=module -e '
 import { emitFileCards, repoCanonical } from "'"$RUNNER_DIR"'/lib/onboard-analyze.mjs";
 const stub = () => ({ tldr: "Math helpers: add() plus the PI constant.", rolePrimary: "util", roleTags: ["math"] });

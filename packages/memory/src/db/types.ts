@@ -376,6 +376,8 @@ export type ModelStatus = "active" | "failed_validation" | "absent";
 export interface FileCardRow {
   readonly id: string;
   readonly repo_key: string;
+  /** Normalised canonical (host/owner/repo or path) — migration 007. Null on pre-007 rows. */
+  readonly canonical: string | null;
   readonly repo: string;
   readonly path: string;
   readonly content_hash: string;
@@ -409,6 +411,8 @@ export interface FileCardRow {
 export interface FileCard {
   readonly id: string;
   readonly repoKey: string;
+  /** Normalised canonical the key was derived from (migration 007). Undefined on pre-007 rows. */
+  readonly canonical?: string;
   readonly repo: string;
   readonly path: string;
   readonly contentHash: string;
@@ -440,6 +444,8 @@ export interface FileCard {
 /** Raw DB row for repo_sync. */
 export interface RepoSyncRow {
   readonly repo_key: string;
+  /** Normalised canonical — migration 007. Null on pre-007 rows. */
+  readonly canonical: string | null;
   readonly repo: string;
   readonly synced_commit: string;
   readonly updated_at: string;
@@ -452,6 +458,8 @@ export interface RepoSyncRow {
  */
 export interface RepoSync {
   readonly repoKey: string;
+  /** Normalised canonical (migration 007). Undefined on pre-007 rows. */
+  readonly canonical?: string;
   readonly repo: string;
   readonly syncedCommit: string;
   readonly updatedAt: string;

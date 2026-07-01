@@ -195,15 +195,22 @@ export function evaluatePolicy(
 
   // ---- Review → done ------------------------------------------------------
   if (gate === "done") {
+    // Recomputed-diff verification applies to EVERY delivery-bound pack —
+    // solo_loose (the DEFAULT pack) included. `done` must correspond to a REAL,
+    // server-recomputed `git diff base...delivery-branch` on the recorded branch
+    // (see transitionService.hasRealDeliveryDiff); agent prose (a `diff_summary`
+    // row) or an unvalidated `pr_url` never satisfies it. Previously solo_loose
+    // ran an EMPTY done-gate, so this check never fired for the default pack and
+    // agent-authored review evidence could satisfy sign-off with no real change.
+    if (!ctx.hasPrOrDiff) {
+      failures.push(fail("PR_OR_DIFF_REQUIRED", "A PR or diff summary is required."));
+    }
     if (pack === "team_light" || pack === "factory_strict" || pack === "regulated") {
       const unresolved = ac.filter((c) => c.status === "pending" || c.status === "failed");
       if (unresolved.length > 0) {
         failures.push(
           fail("AC_UNRESOLVED", `${unresolved.length} acceptance criteria are unresolved.`),
         );
-      }
-      if (!ctx.hasPrOrDiff) {
-        failures.push(fail("PR_OR_DIFF_REQUIRED", "A PR or diff summary is required."));
       }
     }
     if (pack === "factory_strict" || pack === "regulated") {

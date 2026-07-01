@@ -2169,6 +2169,34 @@ export function emitFileCards(
   const caps = cardCaps(env);
   const canonical = repoCanonical(repoPath);
   const head = headCommit(repoPath);
+
+  // SELF-HEAL: re-key any cards this repo already has under an un-normalised
+  // repo_key (onboarded before canonicalisation) onto the normalised key so
+  // this pass adds to — rather than orphaning beside — the existing set. A
+  // no-op when the cards are already on the normalised key. Fail-soft.
+  const rekeyRes = runMemoryCli(
+    resolvedCfg,
+    ["cards", "rekey", "--canonical", canonical, "--repo", repo, "--json"],
+    env,
+  );
+  if (rekeyRes.error || (rekeyRes.status ?? 0) !== 0) {
+    log(
+      `cards rekey skipped: ${rekeyRes.error?.message ?? rekeyRes.stderr?.trim() ?? `exit ${rekeyRes.status}`}`,
+    );
+  } else {
+    try {
+      const r = JSON.parse(String(rekeyRes.stdout ?? "{}"));
+      if (r && !r.noop && (r.cardsRekeyed || r.collisionsDropped || r.syncRekeyed)) {
+        log(
+          `cards rekey: re-keyed ${r.cardsRekeyed ?? 0} card(s) to normalised key ` +
+            `(dropped ${r.collisionsDropped ?? 0} duplicate(s))`,
+        );
+      }
+    } catch {
+      /* non-JSON output — ignore, self-heal is best-effort */
+    }
+  }
+
   const { files, capsHit } = enumerateSourceFiles(repoPath, caps);
   stats.enumerated = files.length;
   stats.capsHit = capsHit;

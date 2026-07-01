@@ -968,7 +968,13 @@ program
   )
   .requiredOption("--attempt <n>", "current rework attempt (1-based)")
   .requiredOption("--max <n>", "rework attempt ceiling")
-  .option("--reason <text>", "latest failure detail shown on the card")
+  .option("--reason <text>", "latest failure detail shown on the card (short)")
+  .option("--gate <name>", "the gate that failed (e.g. tests, definition-of-done)")
+  .option(
+    "--failure <text>",
+    "the FULL distilled failing test + assertion/stack, appended to the durable failure trail (falls back to --reason)",
+  )
+  .option("--ac <id>", "the acceptance criterion being worked toward, when known")
   .action((ref, opts, cmd) => {
     const wg = open(cmd.optsWithGlobals());
     const t = wg.resolveTicket(ref);
@@ -978,6 +984,9 @@ program
         attempt: Number(opts.attempt),
         maxAttempts: Number(opts.max),
         reason: opts.reason ?? "reworking",
+        ...(opts.gate ? { gate: String(opts.gate) } : {}),
+        ...(opts.failure ? { distilledFailure: String(opts.failure) } : {}),
+        ...(opts.ac ? { acId: String(opts.ac) } : {}),
       },
       { type: "system" },
     );

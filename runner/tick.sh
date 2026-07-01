@@ -1384,8 +1384,12 @@ $real
       # change — it stays claimed/in_progress (visible), never routed to refining.
       local _next=$((_DELIV_ATTEMPT + 1))
       local _short; _short="$(printf '%s' "$real" | grep -v '^[[:space:]]*$' | head -1)"
+      # FAILURE-DIAGNOSIS: pass BOTH the short one-line reason (the board chip) AND
+      # the FULL distilled failure ($real — the real failing test + assertion/stack)
+      # so the durable per-ticket trail keeps the full block, not the truncated
+      # summary. Fail-soft: a persist error never fails the delivery loop.
       [ "${DRY_RUN:-0}" = "1" ] || wg runner-rework "$NUM" --attempt "$_next" --max "$_MAX_DELIVERY_ATTEMPTS" \
-        --reason "${gate}: ${_short:-failed}" >/dev/null 2>&1 || true
+        --reason "${gate}: ${_short:-failed}" --gate "$gate" --failure "$real" >/dev/null 2>&1 || true
       # Preserve the branch; tear down only the worktree so the next attempt re-adds
       # a fresh worktree on the SAME branch (the branch ref + its history live in the
       # real repo between attempts).

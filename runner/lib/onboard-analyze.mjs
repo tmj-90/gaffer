@@ -1420,6 +1420,18 @@ const CARD_MAX_BYTES_PER_FILE_DEFAULT = 2 * 1024 * 1024; // GAFFER_CARD_MAX_BYTE
 const CARD_SNIPPET_MAX_CHARS_DEFAULT = 400;
 const CARD_STRUCTURE_MAX_SYMBOLS = 60; // symbol names shown in the structure block
 const CARD_TLDR_MAX_CHARS = 480; // under cardValidation's 500 cap
+// Per-file symbol cap in BATCH prompt context. Tighter than CARD_STRUCTURE_MAX_SYMBOLS
+// (60) so one large file with hundreds of exports can't crowd out its batchmates.
+// A truncation note in the prompt tells the model the list is clipped.
+const CARD_BATCH_SYMBOLS_PER_FILE = 40;
+// LOC threshold above which a file is routed to its own solo pass (batch-of-1).
+// Prevents an 8 k-line file with ~235 symbols from poisoning seven companions —
+// the batch is only as robust as its biggest member, so isolate the monsters.
+const CARD_OVERSIZED_LOC = 2000;
+// Snippet char budget for a solo oversized file. Larger than the shared default
+// (400) so Haiku has real context to write a meaningful TLDR for a large file
+// rather than a purely mechanical card.
+export const CARD_SOLO_SNIPPET_CHARS = 1200;
 // Default model for per-file card generation. Haiku is validated good-enough for
 // per-file TLDRs (structure-first, short output) and is far cheaper than Sonnet —
 // the card pass makes HUNDREDS of calls, so this is where model cost is decided.
@@ -1800,10 +1812,29 @@ export function buildCardBatchPrompt(entries) {
   );
   entries.forEach((e, i) => {
     lines.push(`── FILE ${i}: ${e.rel}  (${e.fileType}) ──`);
-    if (e.structure.imports.length > 0)
-      lines.push(`Imports:`, quarantine(`imports-${i}`, e.structure.imports.join(", ")));
-    if (e.structure.symbols.length > 0)
-      lines.push(`Top-level symbols:`, quarantine(`symbols-${i}`, e.structure.symbols.join(", ")));
+    // Cap imports + symbols per file in batch context so one large file can't
+    // dominate the prompt token budget. A truncation note preserves honesty with
+    // the model — it knows the list is clipped and should card from what it sees.
+    const batchImports = e.structure.imports.slice(0, CARD_BATCH_SYMBOLS_PER_FILE);
+    const importsExtra = e.structure.imports.length - batchImports.length;
+    const batchSymbols = e.structure.symbols.slice(0, CARD_BATCH_SYMBOLS_PER_FILE);
+    const symbolsExtra = e.structure.symbols.length - batchSymbols.length;
+    if (batchImports.length > 0)
+      lines.push(
+        `Imports:`,
+        quarantine(
+          `imports-${i}`,
+          batchImports.join(", ") + (importsExtra > 0 ? ` …[${importsExtra} more]` : ""),
+        ),
+      );
+    if (batchSymbols.length > 0)
+      lines.push(
+        `Top-level symbols:`,
+        quarantine(
+          `symbols-${i}`,
+          batchSymbols.join(", ") + (symbolsExtra > 0 ? ` …[${symbolsExtra} more]` : ""),
+        ),
+      );
     if (e.snippet) lines.push(`Snippet (head):`, quarantine(`snippet-${i}`, e.snippet));
     lines.push("");
   });
@@ -2185,7 +2216,8 @@ export function emitFileCards(
   };
 
   // Build the structure+snippet entry for one enumerated file (null = unreadable).
-  const prepareEntry = (f) => {
+  // Pass overrideSnippetChars to widen the snippet budget for oversized solo files.
+  const prepareEntry = (f, overrideSnippetChars = snippetChars) => {
     let content;
     try {
       content = readFileSync(f.abs, "utf8");
@@ -2193,29 +2225,37 @@ export function emitFileCards(
       return null;
     }
     const fileType = cardFileType(f.rel);
+    const loc = content.split("\n").length;
     return {
       rel: f.rel,
       fileType,
+      loc,
+      isOversized: loc > CARD_OVERSIZED_LOC,
       structure: extractStructureSummary(content, fileType),
-      snippet: cardSnippet(content, snippetChars),
+      snippet: cardSnippet(content, overrideSnippetChars),
     };
   };
 
   // Run one prepared chunk through the model and finalize every card in it.
-  const processChunk = (entries) => {
+  // forceSolo: always use the single-file path regardless of the global batch size.
+  // Used for oversized-file isolation so a monster never shares a batch prompt.
+  const processChunk = (entries, { forceSolo = false } = {}) => {
     if (entries.length === 0) return;
     let fieldsList;
-    if (batch === 1) {
-      // B=1 safe fallback — exactly one file per call, one card parsed back.
-      const e = entries[0];
-      let fields = null;
-      try {
-        fields = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
-      } catch (err) {
-        log(`card model turn failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
-      }
-      fieldsList = [fields];
+    if (batch === 1 || forceSolo) {
+      // Single-file path: B=1 safe fallback OR oversized isolation.
+      // Process each entry with a separate runTurn call — clean output budget per file.
+      fieldsList = entries.map((e) => {
+        let fields = null;
+        try {
+          fields = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
+        } catch (err) {
+          log(`card model turn failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
+        }
+        return fields;
+      });
     } else {
+      // Batch path: one call covers all entries.
       let arr = null;
       try {
         arr = runBatchTurn(buildCardBatchPrompt(entries), entries.length);
@@ -2225,6 +2265,31 @@ export function emitFileCards(
             `(${err?.message ?? err}) — mechanical-only`,
         );
       }
+      // Per-file retry on PARTIAL shortfall: the batch returned but some slots are
+      // null (the model dropped or mis-aligned them). Retry each missing file
+      // individually so a bad batch costs a retry, not N lost cards. Log it honestly.
+      // A TOTAL failure (arr === null — e.g. timeout) is left as mechanical-only;
+      // retrying all files after a complete timeout isn't worth the additional cost.
+      if (arr !== null) {
+        const missing = [];
+        for (let j = 0; j < entries.length; j++) {
+          if (arr[j] === null) missing.push(j);
+        }
+        if (missing.length > 0) {
+          log(
+            `batch returned ${entries.length - missing.length}/${entries.length} — ` +
+              `retrying ${missing.length} individually`,
+          );
+          for (const j of missing) {
+            const e = entries[j];
+            try {
+              arr[j] = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
+            } catch (err) {
+              log(`card retry failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
+            }
+          }
+        }
+      }
       fieldsList = entries.map((_, i) => (arr ? (arr[i] ?? null) : null));
     }
     for (let i = 0; i < entries.length; i++) finalizeCard(entries[i], fieldsList[i]);
@@ -2233,6 +2298,9 @@ export function emitFileCards(
   // Every enumerated source file receives a card — no budget gate. We accumulate a
   // batch of prepared entries and flush each full chunk; per-call timeout is bounded
   // by GAFFER_ONBOARD_TIMEOUT (see analysisCaps).
+  // Oversized files (> CARD_OVERSIZED_LOC lines, only relevant when batch > 1) are
+  // isolated: the current pending batch is flushed first, then the large file gets its
+  // own solo pass with a wider snippet budget so it can't poison its companions.
   let pending = [];
   for (let i = 0; i < files.length; i++) {
     // Periodic progress — keeps long onboards observable without flooding the log.
@@ -2244,10 +2312,25 @@ export function emitFileCards(
       stats.skipped += 1;
       continue;
     }
-    pending.push(entry);
-    if (pending.length >= batch) {
+    if (entry.isOversized && batch > 1) {
+      // Flush whatever is pending so this file never shares a batch call.
       processChunk(pending);
       pending = [];
+      // Re-prepare with the wider solo snippet budget so the model has more context
+      // for a large file. Re-reading the file is a one-time per-oversized-file cost.
+      const soloEntry = prepareEntry(files[i], Math.max(snippetChars, CARD_SOLO_SNIPPET_CHARS));
+      if (!soloEntry) {
+        stats.skipped += 1;
+        continue;
+      }
+      log(`oversized file isolated (${soloEntry.loc} loc): ${soloEntry.rel} — solo pass`);
+      processChunk([soloEntry], { forceSolo: true });
+    } else {
+      pending.push(entry);
+      if (pending.length >= batch) {
+        processChunk(pending);
+        pending = [];
+      }
     }
   }
   processChunk(pending);

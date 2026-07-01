@@ -71,6 +71,12 @@ gaffer_prime_context_block() {
   for _gpc_p in "${_gpc_paths[@]+"${_gpc_paths[@]}"}"; do
     _gpc_argv+=(--paths "$_gpc_p")
   done
+  # MEMORY FEEDBACK LOOP: when the caller sets GAFFER_RECALL_TICKET (the delivery
+  # prime does), pass --ticket so memory LOGS which items it served into this
+  # ticket's context. The later `recall-feedback` call at ticket outcome reads
+  # that read-event log to adjust confidence. Fail-soft: unset ⇒ no logging,
+  # identical behaviour to before.
+  [ -n "${GAFFER_RECALL_TICKET:-}" ] && _gpc_argv+=(--ticket "$GAFFER_RECALL_TICKET")
   _gpc_argv+=(--json)
 
   # Call the memory CLI (fail-soft: any error or empty output → return 0).

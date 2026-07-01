@@ -7800,6 +7800,12 @@ function openOnboardPicker(repos, presetRepo) {
         { class: "mode-note dim" },
         "Scans the repo, registers it in Dispatch, and builds its Memory digest + feature inventory.",
       ),
+      el(
+        "p",
+        { class: "mode-note dim" },
+        "Cards the whole repo — a sizeable one-off (several minutes + model calls for larger repos). " +
+          "Memory then refreshes itself incrementally as agents deliver, so you don't need to re-run it.",
+      ),
       el("div", { class: "field" }, [el("label", {}, "Registered repo"), repoSel]),
       el("div", { class: "or-divider dim" }, "or"),
       el("div", { class: "field" }, [el("label", {}, "Local path"), pathInput]),

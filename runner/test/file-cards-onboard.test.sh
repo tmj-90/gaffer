@@ -58,7 +58,8 @@ node "$MEMORY_CLI" init >/dev/null 2>&1 || true
 export MEMORY_DB="$MEM_DB"
 
 echo "== A. emitFileCards writes ≥1 validated card (real memory CLI, stub turn) =="
-EMIT_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB" GAFFER_PLAN_MODEL="test-model" \
+# GAFFER_CARD_BATCH=1 exercises the safe one-file-per-call path with the single-turn stub.
+EMIT_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB" GAFFER_PLAN_MODEL="test-model" GAFFER_CARD_BATCH=1 \
   node --input-type=module -e '
 import { emitFileCards, repoCanonical } from "'"$RUNNER_DIR"'/lib/onboard-analyze.mjs";
 const stub = () => ({ tldr: "Math helpers: add() plus the PI constant.", rolePrimary: "util", roleTags: ["math"] });
@@ -397,7 +398,11 @@ esac
 
 echo "== E. review gate: an obviously-wrong TLDR is downgraded to failed_validation =="
 MEM_DB_REVIEW="$TMP/memory_review.sqlite"
-REVIEW_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB_REVIEW" GAFFER_PLAN_MODEL="test-model" \
+# GAFFER_CARD_BATCH=1 forces the single-turn path so the injected runTurn/runReviewTurn
+# stubs drive generation + review deterministically. The batched default (8) calls the
+# real runBatchTurn, which is NOT injected here and is absent in CI (no claude) — which
+# left the card mechanical-only, so nothing got reviewed and the downgrade never fired.
+REVIEW_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB_REVIEW" GAFFER_PLAN_MODEL="test-model" GAFFER_CARD_BATCH=1 \
   node --input-type=module -e '
 import { emitFileCards, repoCanonical } from "'"$RUNNER_DIR"'/lib/onboard-analyze.mjs";
 // Generation stub: returns a WRONG tldr (auth middleware on a math file)

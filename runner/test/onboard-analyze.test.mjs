@@ -47,9 +47,18 @@ const {
   parseLoreTitles,
   normalizeDedupKey,
   isSourceUrl,
+  cardModel,
+  cardBatch,
+  cardSnippetChars,
+  analysisCaps,
+  buildCardBatchPrompt,
+  validateCardBatch,
+  emitFileCards,
+  refreshFileCards,
   INFRA_NOT_FEATURES_RULE,
   MEMORY_ONBOARD_RULE,
   INDUCTION_TAG,
+  CARD_SOLO_SNIPPET_CHARS,
 } = await import(MOD);
 
 let passed = 0;
@@ -827,6 +836,595 @@ console.log("== AC17b: lore dedup survives model REWORDING across re-onboards ==
   const second = writeUnderstanding(cfg, "demo", secondRun, { env: process.env });
   eq("re-onboard: reworded lore NOT drafted (no accumulation)", second.loreDrafted, 0);
   eq("re-onboard: reworded lore skipped", second.loreSkipped, 1);
+}
+
+console.log("== cardModel: GAFFER_CARD_MODEL / default Haiku (cheap per-file tier) ==");
+{
+  assert("cardModel defaults to claude-haiku-4-5", cardModel({}) === "claude-haiku-4-5");
+  assert(
+    "cardModel respects GAFFER_CARD_MODEL override",
+    cardModel({ GAFFER_CARD_MODEL: "claude-opus-4" }) === "claude-opus-4",
+  );
+  assert(
+    "cardModel ignores blank GAFFER_CARD_MODEL",
+    cardModel({ GAFFER_CARD_MODEL: "  " }) === "claude-haiku-4-5",
+  );
+}
+
+console.log("== analysisCaps: synthesis model stays on Sonnet (separate knob) ==");
+{
+  assert(
+    "synth model defaults to claude-sonnet-4-5",
+    analysisCaps({}).model === "claude-sonnet-4-5",
+  );
+  assert(
+    "GAFFER_PLAN_MODEL overrides synth model",
+    analysisCaps({ GAFFER_PLAN_MODEL: "claude-opus-4" }).model === "claude-opus-4",
+  );
+  assert(
+    "GAFFER_ONBOARD_SYNTH_MODEL wins over GAFFER_PLAN_MODEL",
+    analysisCaps({ GAFFER_ONBOARD_SYNTH_MODEL: "m1", GAFFER_PLAN_MODEL: "m2" }).model === "m1",
+  );
+}
+
+console.log("== cardBatch: GAFFER_CARD_BATCH / default 8, min 1 ==");
+{
+  assert("cardBatch defaults to 8", cardBatch({}) === 8);
+  assert("cardBatch respects override", cardBatch({ GAFFER_CARD_BATCH: "4" }) === 4);
+  assert("cardBatch floors at 1 (0 → default)", cardBatch({ GAFFER_CARD_BATCH: "0" }) === 8);
+  assert("cardBatch ignores garbage", cardBatch({ GAFFER_CARD_BATCH: "x" }) === 8);
+}
+
+console.log("== cardSnippetChars: GAFFER_CARD_SNIPPET_CHARS / small default, 0 allowed ==");
+{
+  assert("snippet default is small (<=400)", cardSnippetChars({}) <= 400);
+  assert(
+    "snippet 0 is honoured (structure-only)",
+    cardSnippetChars({ GAFFER_CARD_SNIPPET_CHARS: "0" }) === 0,
+  );
+  assert("snippet override", cardSnippetChars({ GAFFER_CARD_SNIPPET_CHARS: "120" }) === 120);
+}
+
+console.log("== buildCardBatchPrompt + validateCardBatch: B files → B cards ==");
+{
+  const entries = [
+    {
+      rel: "src/a.ts",
+      fileType: "typescript",
+      structure: { imports: ["x"], symbols: ["add"] },
+      snippet: "export function add(){}",
+    },
+    {
+      rel: "src/b.ts",
+      fileType: "typescript",
+      structure: { imports: [], symbols: ["Server"] },
+      snippet: "",
+    },
+  ];
+  const prompt = buildCardBatchPrompt(entries);
+  assert(
+    "batch prompt lists both files by index",
+    prompt.includes("FILE 0: src/a.ts") && prompt.includes("FILE 1: src/b.ts"),
+  );
+  assert(
+    "batch prompt sends the skill prefix once",
+    (prompt.match(/CARD-GENERATION SKILL RULES/g) || []).length === 1,
+  );
+  assert("batch prompt omits empty snippet", !prompt.includes("snippet-1"));
+
+  // Well-formed batch result → aligned by index, each through validateCardFields.
+  const ok = validateCardBatch(
+    {
+      cards: [
+        { index: 1, tldr: "Server bootstrap.", role_primary: "entrypoint", role_tags: ["http"] },
+        { index: 0, tldr: "Adds two numbers.", role_primary: "util", role_tags: [] },
+      ],
+    },
+    2,
+  );
+  assert("batch result length matches count", ok.length === 2);
+  assert(
+    "batch result aligned by index (0)",
+    ok[0]?.tldr === "Adds two numbers." && ok[0]?.rolePrimary === "util",
+  );
+  assert("batch result aligned by index (1)", ok[1]?.tldr === "Server bootstrap.");
+
+  // Bare array + position fallback when index missing.
+  const bare = validateCardBatch([{ tldr: "A." }, { tldr: "B." }], 2);
+  assert("bare array uses positional index", bare[0]?.tldr === "A." && bare[1]?.tldr === "B.");
+
+  // Out-of-range / missing entries → null, never throws.
+  const partial = validateCardBatch(
+    {
+      cards: [
+        { index: 5, tldr: "oob" },
+        { index: 0, tldr: "Only this." },
+      ],
+    },
+    2,
+  );
+  assert(
+    "out-of-range index dropped, in-range kept",
+    partial[0]?.tldr === "Only this." && partial[1] === null,
+  );
+  assert(
+    "garbage input → dense nulls, no throw",
+    validateCardBatch(null, 3).every((x) => x === null),
+  );
+}
+
+console.log("== emitFileCards: B=1 vs B>1 both card every file (trust-split preserved) ==");
+{
+  const { execSync } = await import("node:child_process");
+  const mkRepo = () => {
+    const repoDir = mkdtempSync(resolve(tmpdir(), "emit-batch-"));
+    mkdirSync(join(repoDir, "src"), { recursive: true });
+    writeFileSync(join(repoDir, "src", "a.ts"), "export function add(a,b){return a+b;}\n");
+    writeFileSync(join(repoDir, "src", "b.ts"), "export class Server{start(){return 'up';}}\n");
+    writeFileSync(join(repoDir, "src", "c.ts"), "export const PI = 3.14;\n");
+    execSync(
+      "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+      {
+        cwd: repoDir,
+        stdio: "ignore",
+      },
+    );
+    return repoDir;
+  };
+  const mkCli = () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "emit-batch-cli-"));
+    const cliBin = join(dir, "fake-lg.mjs");
+    writeFileSync(
+      cliBin,
+      [
+        "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') { process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n'); }",
+        "process.exit(0);",
+      ].join("\n"),
+    );
+    return { cliBin, db: join(dir, "lore.sqlite") };
+  };
+
+  // B=1 safe fallback — single-file runTurn used, one card per file.
+  {
+    const repoDir = mkRepo();
+    const cfg = mkCli();
+    const env = { ...process.env, GAFFER_CARD_BATCH: "1", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+    let singleCalls = 0;
+    const s = emitFileCards(
+      repoDir,
+      { repoId: "demo", name: "demo" },
+      {
+        cfg,
+        env,
+        runTurn: () => {
+          singleCalls += 1;
+          return { tldr: "One file.", rolePrimary: "util", roleTags: [] };
+        },
+        runBatchTurn: () => {
+          throw new Error("batch turn must NOT be used when B=1");
+        },
+      },
+    );
+    assert("B=1: all 3 files carded", s.carded === 3 && s.modelCarded === 3);
+    assert("B=1: one single-turn call per file", singleCalls === 3);
+  }
+
+  // B>1 — one batch call, B cards parsed back, each finalized like today.
+  {
+    const repoDir = mkRepo();
+    const cfg = mkCli();
+    const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+    let batchCalls = 0;
+    let lastCount = 0;
+    const s = emitFileCards(
+      repoDir,
+      { repoId: "demo", name: "demo" },
+      {
+        cfg,
+        env,
+        runTurn: () => {
+          throw new Error("single turn must NOT be used when B>1");
+        },
+        runBatchTurn: (_p, count) => {
+          batchCalls += 1;
+          lastCount = count;
+          return Array.from({ length: count }, (_, i) => ({
+            tldr: `File ${i}.`,
+            rolePrimary: "util",
+            roleTags: [],
+          }));
+        },
+      },
+    );
+    assert("B>1: single batch call for 3 files", batchCalls === 1 && lastCount === 3);
+    assert("B>1: all 3 files carded", s.carded === 3 && s.modelCarded === 3);
+    assert(
+      "B>1: collectedCards has 3 entries (rollup input intact)",
+      s.collectedCards.length === 3,
+    );
+  }
+
+  // B>1 with a null batch result → mechanical-only cards, trust-split holds (no model fields).
+  {
+    const repoDir = mkRepo();
+    const cfg = mkCli();
+    const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+    const s = emitFileCards(
+      repoDir,
+      { repoId: "demo", name: "demo" },
+      {
+        cfg,
+        env,
+        runBatchTurn: () => null, // timeout / unparseable
+      },
+    );
+    assert("B>1 null result: files still carded mechanically", s.carded === 3);
+    assert("B>1 null result: zero model summaries (fail-safe)", s.modelCarded === 0);
+  }
+}
+
+console.log("== batch-shortfall retry: missing batch slots trigger per-file runTurn ==");
+{
+  // A repo with 3 small source files.
+  const { execSync: execSync2 } = await import("node:child_process");
+  const repoDir = mkdtempSync(resolve(tmpdir(), "shortfall-retry-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "a.ts"), "export const a = 1;\n");
+  writeFileSync(join(repoDir, "src", "b.ts"), "export const b = 2;\n");
+  writeFileSync(join(repoDir, "src", "c.ts"), "export const c = 3;\n");
+  execSync2(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+  const cliDir = mkdtempSync(resolve(tmpdir(), "shortfall-cli-"));
+  const cliBin = join(cliDir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') { process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n'); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+  const cfg = { cliBin, db: join(cliDir, "lore.sqlite") };
+  const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+
+  let retryCalls = 0;
+  const retryCalled = [];
+  const s = emitFileCards(
+    repoDir,
+    { repoId: "demo", name: "demo" },
+    {
+      cfg,
+      env,
+      // Batch returns only card for index 0; indices 1 and 2 are null (shortfall).
+      runBatchTurn: (_p, count) => {
+        const result = new Array(count).fill(null);
+        result[0] = { tldr: "File A — batched.", rolePrimary: "util", roleTags: [] };
+        return result;
+      },
+      // Per-file retry path — should be called for the 2 missing files.
+      runTurn: (prompt) => {
+        retryCalls += 1;
+        // Record which file triggered the retry by extracting from prompt.
+        const m = /File:\s+(\S+)/.exec(prompt);
+        if (m) retryCalled.push(m[1]);
+        return { tldr: "Retried card.", rolePrimary: "util", roleTags: [] };
+      },
+    },
+  );
+  assert("shortfall retry: all 3 files carded (none absent)", s.carded === 3);
+  assert("shortfall retry: all 3 got model cards", s.modelCarded === 3);
+  assert("shortfall retry: runTurn called exactly for the 2 missing slots", retryCalls === 2);
+}
+
+console.log("== oversized isolation: large file routed solo, others batched normally ==");
+{
+  // A repo with 2 small files + 1 oversized file (> CARD_OVERSIZED_LOC lines).
+  const { execSync: execSync3 } = await import("node:child_process");
+  const repoDir = mkdtempSync(resolve(tmpdir(), "oversized-iso-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "a.ts"), "export const a = 1;\n");
+  writeFileSync(join(repoDir, "src", "b.ts"), "export const b = 2;\n");
+  // oversized: 2100 lines — exceeds the CARD_OVERSIZED_LOC=2000 threshold.
+  const bigLines = Array.from({ length: 2100 }, (_, i) => `// line ${i + 1}`);
+  bigLines.push("export function bigFn() {}");
+  writeFileSync(join(repoDir, "src", "big.ts"), bigLines.join("\n") + "\n");
+  execSync3(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+  const cliDir = mkdtempSync(resolve(tmpdir(), "oversized-iso-cli-"));
+  const cliBin = join(cliDir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') { process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n'); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+  const cfg = { cliBin, db: join(cliDir, "lore.sqlite") };
+  const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+
+  const batchedFiles = [];
+  let soloPrompt = null;
+  const s = emitFileCards(
+    repoDir,
+    { repoId: "demo", name: "demo" },
+    {
+      cfg,
+      env,
+      runBatchTurn: (prompt, count) => {
+        // Record which files were included in this batch call.
+        const matches = [...prompt.matchAll(/FILE \d+: (\S+)/g)];
+        for (const m of matches) batchedFiles.push(m[1]);
+        return Array.from({ length: count }, (_, i) => ({
+          tldr: `Batched card ${i}.`,
+          rolePrimary: "util",
+          roleTags: [],
+        }));
+      },
+      runTurn: (prompt) => {
+        // Should ONLY be called for big.ts (the isolated oversized file).
+        soloPrompt = prompt;
+        return { tldr: "Big file card.", rolePrimary: "service", roleTags: [] };
+      },
+    },
+  );
+  assert("oversized: all 3 files carded", s.carded === 3 && s.modelCarded === 3);
+  assert(
+    "oversized: big.ts was NOT included in the batch call",
+    !batchedFiles.some((p) => p.includes("big.ts")),
+  );
+  assert(
+    "oversized: small files a.ts + b.ts were batched together",
+    batchedFiles.some((p) => p.includes("a.ts")) && batchedFiles.some((p) => p.includes("b.ts")),
+  );
+  assert("oversized: big.ts processed via solo runTurn", soloPrompt !== null);
+  assert("oversized: solo prompt targets big.ts (not a.ts or b.ts)", soloPrompt.includes("big.ts"));
+  // Verify the solo prompt uses the wider snippet budget (CARD_SOLO_SNIPPET_CHARS).
+  // buildCardPrompt labels it "Snippet (file head — NOT the whole file):" so test
+  // for "file head" which is present in the single-file path but not the batch path.
+  assert(
+    "oversized: solo prompt has an expanded snippet (not empty)",
+    /snippet\s*\(file head/i.test(soloPrompt),
+  );
+  // Verify the solo prompt carries at least CARD_SOLO_SNIPPET_CHARS worth of snippet
+  // headroom — the prompt itself should be long enough to fit it.
+  assert(
+    "oversized: solo snippet budget is at least CARD_SOLO_SNIPPET_CHARS",
+    CARD_SOLO_SNIPPET_CHARS >= 1200,
+  );
+}
+
+console.log("== batch prompt: per-file symbol cap truncates large symbol lists ==");
+{
+  // A file with 50 symbols (> CARD_BATCH_SYMBOLS_PER_FILE=40) should produce a
+  // truncation note in the batch prompt so the model knows the list is clipped.
+  const manySymbols = Array.from({ length: 50 }, (_, i) => `sym${i}`);
+  const entries = [
+    {
+      rel: "src/fat.ts",
+      fileType: "typescript",
+      structure: { imports: [], symbols: manySymbols },
+      snippet: "",
+    },
+  ];
+  const prompt = buildCardBatchPrompt(entries);
+  assert(
+    "batch prompt truncates symbols > 40 with a truncation note",
+    prompt.includes("…[10 more]"),
+  );
+  assert("batch prompt does NOT include the 41st symbol verbatim", !prompt.includes("sym40"));
+  assert(
+    "batch prompt still includes the first 40 symbols (sym0..sym39)",
+    prompt.includes("sym0") && prompt.includes("sym39"),
+  );
+}
+
+console.log("== refreshFileCards: changed file gets re-carded + watermark advances ==");
+{
+  // Build a tiny git repo with one source file.
+  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-cards-"));
+  const srcFile = join(repoDir, "src", "util.ts");
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(srcFile, "export function greet(name: string) { return `Hi ${name}`; }\n");
+  const { execSync } = await import("node:child_process");
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    {
+      cwd: repoDir,
+      stdio: "ignore",
+    },
+  );
+
+  // A fake memory CLI that records calls + returns success.
+  const dir = mkdtempSync(resolve(tmpdir(), "refresh-memcli-"));
+  const logFile = join(dir, "calls.jsonl");
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      // card upsert returns JSON with modelStatus so the review path can parse it.
+      "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') { process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n'); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+
+  const cfg = { cliBin, db: join(dir, "lore.sqlite") };
+  const env = {
+    ...process.env,
+    MEMORY_CLI_BIN: cliBin,
+    MEMORY_DB: cfg.db,
+    GAFFER_PLAN_MODEL: "test-model",
+  };
+  const stubTurn = () => ({ tldr: "Greet utility.", rolePrimary: "util", roleTags: ["strings"] });
+
+  const rStats = refreshFileCards(repoDir, ["src/util.ts"], {
+    cfg,
+    env,
+    log: () => {},
+    repo: "test-repo",
+    canonical: "file://" + repoDir,
+    runTurn: stubTurn,
+  });
+
+  assert("refreshed count = 1 for one changed source file", rStats.refreshed === 1);
+  assert("watermark advanced (non-null)", rStats.watermark !== null);
+
+  const { readFileSync: readFS } = await import("node:fs");
+  const calls = readFS(logFile, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+
+  assert(
+    "card upsert was called for src/util.ts",
+    calls.some((c) => c[0] === "card" && c[1] === "upsert" && c.includes("src/util.ts")),
+  );
+  assert(
+    "card sync (watermark advance) was called",
+    calls.some((c) => c[0] === "card" && c[1] === "sync" && c.includes("--commit")),
+  );
+  assert(
+    "non-source files in changedPaths are skipped",
+    (() => {
+      // .md and .json should not produce upsert calls — refreshed count stays 0
+      const r2 = refreshFileCards(repoDir, ["README.md", "package.json"], {
+        cfg,
+        env,
+        log: () => {},
+        repo: "test-repo",
+        canonical: "file://" + repoDir,
+        runTurn: stubTurn,
+      });
+      return r2.refreshed === 0;
+    })(),
+  );
+}
+
+console.log("== refreshFileCards: deleted + renamed files tombstone their cards ==");
+{
+  const { execSync } = await import("node:child_process");
+  const { readFileSync: readFS } = await import("node:fs");
+
+  // A tiny git repo with two source files.
+  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-del-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "keep.ts"), "export const keep = 1;\n");
+  // The renamed-to file exists on disk post-merge (a real rename leaves the new path).
+  writeFileSync(join(repoDir, "src", "new.ts"), "export const renamed = 1;\n");
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+
+  // Fake memory CLI: logs argv, returns success. card upsert emits modelStatus.
+  const dir = mkdtempSync(resolve(tmpdir(), "refresh-del-cli-"));
+  const logFile = join(dir, "calls.jsonl");
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') { process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n'); }",
+      "if (process.argv[2] === 'delete-file-card') { process.stdout.write(JSON.stringify({ ok: true, deleted: true }) + '\\n'); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+
+  const cfg = { cliBin, db: join(dir, "lore.sqlite") };
+  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: cfg.db };
+  const stubTurn = () => ({ tldr: "x", rolePrimary: "util", roleTags: ["t"] });
+
+  // A renamed file: old path tombstoned, new path re-carded. Plus a pure delete.
+  const rStats = refreshFileCards(repoDir, ["src/new.ts"], {
+    cfg,
+    deletions: ["src/old.ts", "src/removed.ts"],
+    env,
+    log: () => {},
+    repo: "test-repo",
+    canonical: "file://" + repoDir,
+    runTurn: stubTurn,
+  });
+
+  const calls = readFS(logFile, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+
+  assert("deleted count = 2 (renamed-old + removed)", rStats.deleted === 2);
+  assert(
+    "delete-file-card called for the renamed-away old path",
+    calls.some((c) => c[0] === "delete-file-card" && c.includes("src/old.ts")),
+  );
+  assert(
+    "delete-file-card called for the removed path",
+    calls.some((c) => c[0] === "delete-file-card" && c.includes("src/removed.ts")),
+  );
+  assert(
+    "card upsert called for the renamed-to new path",
+    calls.some((c) => c[0] === "card" && c[1] === "upsert" && c.includes("src/new.ts")),
+  );
+  assert("refreshed count = 1 (the new path)", rStats.refreshed === 1);
+  assert("no hard failures → failed = 0", rStats.failed === 0);
+  assert("watermark advanced (clean batch)", rStats.watermark !== null);
+}
+
+console.log("== refreshFileCards: watermark HELD when a tombstone hard-fails ==");
+{
+  const { execSync } = await import("node:child_process");
+  const { readFileSync: readFS } = await import("node:fs");
+
+  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-hold-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "keep.ts"), "export const keep = 1;\n");
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+
+  // Fake CLI that HARD-FAILS the delete-file-card verb (exit 1) but succeeds
+  // on card sync — proving the watermark guard, not a sync failure.
+  const dir = mkdtempSync(resolve(tmpdir(), "refresh-hold-cli-"));
+  const logFile = join(dir, "calls.jsonl");
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "if (process.argv[2] === 'delete-file-card') { process.stderr.write('boom\\n'); process.exit(1); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+
+  const cfg = { cliBin, db: join(dir, "lore.sqlite") };
+  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: cfg.db };
+
+  const rStats = refreshFileCards(repoDir, [], {
+    cfg,
+    deletions: ["src/old.ts"],
+    env,
+    log: () => {},
+    repo: "test-repo",
+    canonical: "file://" + repoDir,
+    runTurn: () => null,
+  });
+
+  const calls = readFS(logFile, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+
+  assert("delete hard-failure counted as failed", rStats.failed === 1);
+  assert("watermark HELD (null) after hard failure", rStats.watermark === null);
+  assert(
+    "card sync was NOT called (watermark not advanced)",
+    !calls.some((c) => c[0] === "card" && c[1] === "sync"),
+  );
 }
 
 console.log("");

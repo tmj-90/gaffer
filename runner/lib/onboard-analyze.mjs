@@ -1070,15 +1070,33 @@ export function agentChildEnv(base = process.env) {
 
 /**
  * Read the per-call caps from the env, matching decompose / the bash call sites:
- *   timeout — GAFFER_TICK_TIMEOUT seconds (default 1800) → ms.
+ *   timeout — GAFFER_ONBOARD_TIMEOUT (overrides GAFFER_TICK_TIMEOUT for onboard
+ *             card calls so a tight delivery tick cap doesn't kill card generation).
+ *             Falls back to GAFFER_TICK_TIMEOUT, then the hardcoded default (1800 s).
  *   maxTurns — GAFFER_MAX_TURNS (default 60).
- *   model    — GAFFER_PLAN_MODEL (deep reasoning; analysis is a reasoning step).
+ *   model    — GAFFER_ONBOARD_SYNTH_MODEL → GAFFER_PLAN_MODEL → Sonnet default
+ *             (deep reasoning; digest/feature/lore synthesis + the card-review gate).
  */
+export const SYNTH_MODEL_DEFAULT = "claude-sonnet-4-5";
+
 export function analysisCaps(env = process.env) {
-  const timeoutSec = parseInt(env.GAFFER_TICK_TIMEOUT ?? "", 10);
-  const timeoutMs = Number.isFinite(timeoutSec) && timeoutSec > 0 ? timeoutSec * 1000 : 1800 * 1000;
+  const onboardSec = parseInt(env.GAFFER_ONBOARD_TIMEOUT ?? "", 10);
+  const tickSec = parseInt(env.GAFFER_TICK_TIMEOUT ?? "", 10);
+  const timeoutSec =
+    Number.isFinite(onboardSec) && onboardSec > 0
+      ? onboardSec
+      : Number.isFinite(tickSec) && tickSec > 0
+        ? tickSec
+        : 1800;
+  const timeoutMs = timeoutSec * 1000;
   const maxTurns = parseInt(env.GAFFER_MAX_TURNS ?? "", 10) || 60;
-  const model = (env.GAFFER_PLAN_MODEL ?? "").trim();
+  // Synthesis model (digest / features / lore analysis + the card-review gate).
+  // A FEW deep-reasoning calls — keep them on Sonnet. Knob precedence:
+  // GAFFER_ONBOARD_SYNTH_MODEL → GAFFER_PLAN_MODEL → Sonnet default. The per-file
+  // card pass overrides this with cardModel() (Haiku) via a scoped env, so the
+  // two speeds coexist: cheap Haiku for the many cards, Sonnet for the few syntheses.
+  const model =
+    (env.GAFFER_ONBOARD_SYNTH_MODEL ?? env.GAFFER_PLAN_MODEL ?? "").trim() || SYNTH_MODEL_DEFAULT;
   return { timeoutMs, maxTurns, model };
 }
 
@@ -1342,19 +1360,18 @@ export function writeUnderstanding(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FILE-CARD EMISSION (chunk 2b) — structure-first, budgeted per-file cards.
+// FILE-CARD EMISSION (chunk 2b) — structure-first per-file cards.
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// A second onboard pass that writes ONE file card per source file (a retrieval
-// AID, never authoritative source). It is STRUCTURE-FIRST + BUDGETED:
+// A second onboard pass that writes ONE model-summarised card per source file
+// (a retrieval AID, never authoritative source). It is STRUCTURE-FIRST:
 //   • Mechanical truth (content_hash, loc, the symbol set) is owned by the
 //     `memory card upsert` verb, which reads the file itself and runs both
 //     validation gates — so we NEVER feed the model a whole/truncated raw file.
-//   • The model only supplies INTENT (tldr / role) from a STRUCTURE summary +
-//     a small bounded snippet, and only for the first `maxModelCards` files.
-//   • Every other enumerated file still gets a cheap mechanical-only card.
-//   • Caps (maxFiles / maxBytesPerFile / maxTotalBytes / maxModelCards / timeout)
-//     are explicit; a cap hit is recorded as a coverage note (never silent).
+//   • The model supplies INTENT (tldr / role) from a STRUCTURE summary +
+//     a small bounded snippet, for EVERY enumerated source file (no budget cap).
+//   • Caps (maxFiles / maxBytesPerFile) are sanity limits only; a cap hit is
+//     recorded as a coverage note (never silent).
 // Best-effort throughout: any per-file failure logs + continues; nothing here
 // ever throws into the onboard.
 
@@ -1388,14 +1405,148 @@ const CARD_REVIEW_SAMPLE_DEFAULT = 5;
 const CARD_SOURCE_EXT =
   /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|cs|php|swift|scala|sql|graphql|proto)$/i;
 
-// Defaults for the failure budget (each overridable via env — see cardCaps).
-const CARD_MAX_FILES_DEFAULT = 150; // GAFFER_CARD_MAX_FILES
-const CARD_MAX_BYTES_PER_FILE_DEFAULT = 200 * 1024; // GAFFER_CARD_MAX_BYTES_PER_FILE
-const CARD_MAX_TOTAL_BYTES_DEFAULT = 8 * 1024 * 1024; // GAFFER_CARD_MAX_TOTAL_BYTES
-const CARD_MAX_MODEL_CARDS_DEFAULT = 60; // GAFFER_CARD_MAX_MODEL_CARDS
-const CARD_SNIPPET_MAX_CHARS = 1500; // bounded snippet head fed to the model
+// Defaults for the enumeration caps (each overridable via env — see cardCaps).
+// Raised: every source file now gets a model card; the maxFiles cap is a safety
+// net for pathological repos only (not a budget gate).
+const CARD_MAX_FILES_DEFAULT = 4000; // GAFFER_CARD_MAX_FILES (sanity cap only)
+// Hard-skip genuinely huge blobs (minified/bundled output). Real source files
+// such as an 8 k-line app.js (~280 KB) are well under this cap — include them.
+// The model only reads a bounded head snippet, so raw file size is not a cost signal.
+const CARD_MAX_BYTES_PER_FILE_DEFAULT = 2 * 1024 * 1024; // GAFFER_CARD_MAX_BYTES_PER_FILE (~2 MB)
+// Bounded snippet head fed to the model. Default kept SMALL: the mechanical
+// structure (imports + symbols) is usually enough for a TLDR, and the snippet is
+// the single biggest per-file input. Env-tunable via GAFFER_CARD_SNIPPET_CHARS;
+// set to 0 to drop the snippet entirely (structure-only cards).
+const CARD_SNIPPET_MAX_CHARS_DEFAULT = 400;
 const CARD_STRUCTURE_MAX_SYMBOLS = 60; // symbol names shown in the structure block
 const CARD_TLDR_MAX_CHARS = 480; // under cardValidation's 500 cap
+// Per-file symbol cap in BATCH prompt context. Tighter than CARD_STRUCTURE_MAX_SYMBOLS
+// (60) so one large file with hundreds of exports can't crowd out its batchmates.
+// A truncation note in the prompt tells the model the list is clipped.
+const CARD_BATCH_SYMBOLS_PER_FILE = 40;
+// LOC threshold above which a file is routed to its own solo pass (batch-of-1).
+// Prevents an 8 k-line file with ~235 symbols from poisoning seven companions —
+// the batch is only as robust as its biggest member, so isolate the monsters.
+const CARD_OVERSIZED_LOC = 2000;
+// Snippet char budget for a solo oversized file. Larger than the shared default
+// (400) so Haiku has real context to write a meaningful TLDR for a large file
+// rather than a purely mechanical card.
+export const CARD_SOLO_SNIPPET_CHARS = 1200;
+// Default model for per-file card generation. Haiku is validated good-enough for
+// per-file TLDRs (structure-first, short output) and is far cheaper than Sonnet —
+// the card pass makes HUNDREDS of calls, so this is where model cost is decided.
+// The digest/feature/lore SYNTHESIS pass stays on Sonnet (see analysisCaps).
+// Override per-repo via GAFFER_CARD_MODEL if a repo needs a stronger card model.
+const CARD_MODEL_DEFAULT = "claude-haiku-4-5";
+// Files carded per `claude` call. Sending B files per call amortises the (static)
+// skill prefix across B cards instead of paying it per file — the dominant cost.
+// B=1 exactly reproduces the original one-file-per-call behaviour (safe fallback).
+const CARD_BATCH_DEFAULT = 8;
+
+/**
+ * Derive the top-level "area" of a repo-relative file path, used by buildRollupDigest
+ * to group cards by package/module.
+ * `packages/<pkg>/…` → `packages/<pkg>`; everything else: the first path segment.
+ */
+export function topLevelArea(rel) {
+  const r = rel.replace(/\\/g, "/");
+  const parts = r.split("/");
+  if (parts.length >= 2 && parts[0] === "packages") return `packages/${parts[1]}`;
+  return parts[0] || ".";
+}
+
+/** Role priority for rollup: entrypoints + services describe areas better than utils. */
+const ROLLUP_ROLE_PRIORITY = [
+  "entrypoint",
+  "service",
+  "middleware",
+  "route",
+  "store",
+  "client",
+  "util",
+  "data-model",
+  "migration",
+  "config",
+  "script",
+  "test",
+  "types",
+];
+
+function rollupRoleRank(role) {
+  const i = ROLLUP_ROLE_PRIORITY.indexOf(String(role ?? "").toLowerCase());
+  return i < 0 ? ROLLUP_ROLE_PRIORITY.length : i;
+}
+
+/**
+ * Build a rollup digest from the model-carded files collected by emitFileCards.
+ * Groups cards by top-level area; derives `structure` from per-area card tldrs
+ * and `overview` from the model's extracted features + top service/entrypoint tldrs.
+ * Returns null when collectedCards is empty — caller keeps the existing digest.
+ *
+ * This is the "apex of the DAG": the digest is the last thing written, after the
+ * cards exist, so it can reflect the real architecture rather than just the
+ * tree/README signals available at the start of onboarding.
+ */
+export function buildRollupDigest(collectedCards, modelUnderstanding, material) {
+  if (!Array.isArray(collectedCards) || collectedCards.length === 0) return null;
+
+  // Group by area, sort each group by role priority.
+  const areaMap = new Map();
+  for (const c of collectedCards) {
+    const area = topLevelArea(c.rel);
+    const list = areaMap.get(area);
+    if (list) list.push(c);
+    else areaMap.set(area, [c]);
+  }
+
+  // Structure: one bullet per area anchored on the area's top card tldr.
+  const structureLines = [];
+  for (const [area, cards] of areaMap) {
+    const sorted = cards.slice().sort((a, b) => rollupRoleRank(a.role) - rollupRoleRank(b.role));
+    const topTldr = sorted
+      .slice(0, 2)
+      .map((c) => c.tldr)
+      .filter(Boolean)
+      .join("; ");
+    structureLines.push(`${area}: ${topTldr || `${cards.length} source file(s)`}`);
+  }
+
+  // Overview: model features (product capabilities) + top service/entrypoint tldr.
+  const features = modelUnderstanding?.features ?? [];
+  const serviceCards = collectedCards
+    .filter((c) => /entrypoint|service/.test(String(c.role ?? "").toLowerCase()))
+    .slice(0, 2)
+    .map((c) => c.tldr)
+    .filter(Boolean);
+
+  let overview;
+  const repoName = String(material?.name ?? "this repo");
+  if (features.length > 0) {
+    const capList = features.map((f) => f.name).join(", ");
+    const anchor = serviceCards.length > 0 ? ` ${serviceCards[0]}` : "";
+    overview = `${repoName}: ${capList}.${anchor}`;
+  } else if (serviceCards.length > 0) {
+    overview = `${repoName}: ${serviceCards[0]}`;
+  } else {
+    overview =
+      modelUnderstanding?.digest?.overview ??
+      `'${repoName}' repository (rollup from ${collectedCards.length} model-carded files).`;
+  }
+
+  const conventions =
+    modelUnderstanding?.digest?.conventions ?? `Stack: ${material?.scan?.stack ?? "undetermined"}.`;
+  const stack = modelUnderstanding?.digest?.stack ?? material?.scan?.stack ?? null;
+
+  return {
+    overview: overview.trim(),
+    structure:
+      structureLines.length > 0
+        ? `Multi-package repository:\n- ${structureLines.join("\n- ")}`
+        : (modelUnderstanding?.digest?.structure ?? "Structure not analysed."),
+    conventions,
+    stack,
+  };
+}
 
 /** When true (default), the onboard runs the per-file card pass. */
 function cardEmissionEnabled(env = process.env) {
@@ -1411,9 +1562,44 @@ export function cardCaps(env = process.env) {
   return {
     maxFiles: num("GAFFER_CARD_MAX_FILES", CARD_MAX_FILES_DEFAULT),
     maxBytesPerFile: num("GAFFER_CARD_MAX_BYTES_PER_FILE", CARD_MAX_BYTES_PER_FILE_DEFAULT),
-    maxTotalBytes: num("GAFFER_CARD_MAX_TOTAL_BYTES", CARD_MAX_TOTAL_BYTES_DEFAULT),
-    maxModelCards: num("GAFFER_CARD_MAX_MODEL_CARDS", CARD_MAX_MODEL_CARDS_DEFAULT),
   };
+}
+
+/**
+ * Resolve the model to use for per-file card generation. Reads GAFFER_CARD_MODEL
+ * first; falls back to CARD_MODEL_DEFAULT (Haiku). Card generation is a simple
+ * structure-first file-TLDR task and does NOT need a deep-reasoning model — this
+ * is the cheap tier for the hundreds of per-file calls. Synthesis (digest/feature/
+ * lore) stays on the Sonnet tier resolved by analysisCaps.
+ */
+export function cardModel(env = process.env) {
+  return (env.GAFFER_CARD_MODEL ?? "").trim() || CARD_MODEL_DEFAULT;
+}
+
+/**
+ * Files carded per `claude` call. GAFFER_CARD_BATCH (default 8, min 1). B=1 is the
+ * safe fallback: exactly one file per call, one card parsed back — original behaviour.
+ */
+export function cardBatch(env = process.env) {
+  const v = parseInt(env.GAFFER_CARD_BATCH ?? "", 10);
+  return Number.isFinite(v) && v >= 1 ? v : CARD_BATCH_DEFAULT;
+}
+
+/**
+ * Head-snippet budget (chars) fed to the card model per file. GAFFER_CARD_SNIPPET_CHARS
+ * (default CARD_SNIPPET_MAX_CHARS_DEFAULT); 0 drops the snippet entirely (structure-only).
+ */
+export function cardSnippetChars(env = process.env) {
+  const v = parseInt(env.GAFFER_CARD_SNIPPET_CHARS ?? "", 10);
+  return Number.isFinite(v) && v >= 0 ? v : CARD_SNIPPET_MAX_CHARS_DEFAULT;
+}
+
+/** Build the bounded head snippet for a file's content given a char budget. */
+function cardSnippet(content, maxChars) {
+  if (maxChars <= 0) return "";
+  return content.length > maxChars
+    ? `${content.slice(0, maxChars)}\n…[snippet truncated — read the file for the rest]`
+    : content;
 }
 
 /**
@@ -1461,7 +1647,6 @@ export function headCommit(repoPath) {
 export function enumerateSourceFiles(repoPath, caps = cardCaps()) {
   const files = [];
   const capsHit = new Set();
-  let totalBytes = 0;
   const secretLike =
     /(^|\/)(\.env|\.netrc|\.npmrc|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|secrets?|credentials?)(\.|$|\/)/i;
 
@@ -1482,10 +1667,6 @@ export function enumerateSourceFiles(repoPath, caps = cardCaps()) {
         capsHit.add("maxFiles");
         return;
       }
-      if (totalBytes >= caps.maxTotalBytes) {
-        capsHit.add("maxTotalBytes");
-        return;
-      }
       if (e.name.startsWith(".")) continue;
       const abs = join(dir, e.name);
       if (e.isDirectory()) {
@@ -1503,15 +1684,13 @@ export function enumerateSourceFiles(repoPath, caps = cardCaps()) {
       } catch {
         continue;
       }
+      // Hard-skip genuinely huge blobs (e.g. minified/bundled output > 2 MB).
+      // Real source files are well under this limit; the model only reads a
+      // bounded head snippet so raw file size is irrelevant for prompt cost.
       if (size > caps.maxBytesPerFile) {
         capsHit.add("maxBytesPerFile");
-        continue; // too big to read into the prompt budget — skip (noted)
+        continue;
       }
-      if (totalBytes + size > caps.maxTotalBytes) {
-        capsHit.add("maxTotalBytes");
-        return;
-      }
-      totalBytes += size;
       files.push({ rel, abs, size });
     }
   };
@@ -1591,7 +1770,8 @@ export function buildCardPrompt(rel, fileType, structure, snippet) {
     lines.push("Imports:", quarantine("imports", structure.imports.join(", ")), "");
   if (structure.symbols.length > 0)
     lines.push("Top-level symbols:", quarantine("symbols", structure.symbols.join(", ")), "");
-  lines.push("Snippet (file head — NOT the whole file):", quarantine("snippet", snippet), "");
+  if (snippet)
+    lines.push("Snippet (file head — NOT the whole file):", quarantine("snippet", snippet), "");
   lines.push(
     "OUTPUT — return EXACTLY one fenced ```json block as the LAST thing, this shape:",
     "```json",
@@ -1605,6 +1785,94 @@ export function buildCardPrompt(rel, fileType, structure, snippet) {
     "Never invent a symbol or behaviour not shown in the structure + snippet.",
   );
   return lines.join("\n");
+}
+
+/**
+ * Build ONE prompt covering a BATCH of files (the skill prefix — sent on every
+ * card call — is the dominant cost, so amortise it across B files). Each file is
+ * a numbered block with its mechanical structure + optional bounded snippet. Asks
+ * for a single JSON object with one card per index. `entries` is an array of
+ * { rel, fileType, structure, snippet } (same shape buildCardPrompt consumes).
+ */
+export function buildCardBatchPrompt(entries) {
+  const lines = [];
+  lines.push(
+    "You are the onboard card-generation pass. Write ONE card per file below.",
+    "Follow the card-generation skill rules, then produce strict JSON.",
+    "",
+    QUARANTINE_NOTICE,
+    "",
+    "== CARD-GENERATION SKILL RULES ==",
+    CARD_GENERATION_RULES,
+    "== END SKILL RULES ==",
+    "",
+    `${entries.length} file(s) follow, each with an index. Write one card per index —`,
+    "ground every card ONLY in that file's own structure + snippet (never another file's).",
+    "",
+  );
+  entries.forEach((e, i) => {
+    lines.push(`── FILE ${i}: ${e.rel}  (${e.fileType}) ──`);
+    // Cap imports + symbols per file in batch context so one large file can't
+    // dominate the prompt token budget. A truncation note preserves honesty with
+    // the model — it knows the list is clipped and should card from what it sees.
+    const batchImports = e.structure.imports.slice(0, CARD_BATCH_SYMBOLS_PER_FILE);
+    const importsExtra = e.structure.imports.length - batchImports.length;
+    const batchSymbols = e.structure.symbols.slice(0, CARD_BATCH_SYMBOLS_PER_FILE);
+    const symbolsExtra = e.structure.symbols.length - batchSymbols.length;
+    if (batchImports.length > 0)
+      lines.push(
+        `Imports:`,
+        quarantine(
+          `imports-${i}`,
+          batchImports.join(", ") + (importsExtra > 0 ? ` …[${importsExtra} more]` : ""),
+        ),
+      );
+    if (batchSymbols.length > 0)
+      lines.push(
+        `Top-level symbols:`,
+        quarantine(
+          `symbols-${i}`,
+          batchSymbols.join(", ") + (symbolsExtra > 0 ? ` …[${symbolsExtra} more]` : ""),
+        ),
+      );
+    if (e.snippet) lines.push(`Snippet (head):`, quarantine(`snippet-${i}`, e.snippet));
+    lines.push("");
+  });
+  lines.push(
+    "OUTPUT — return EXACTLY one fenced ```json block as the LAST thing, this shape:",
+    "```json",
+    "{",
+    '  "cards": [',
+    `    { "index": 0, "tldr": "<<=${CARD_TLDR_MAX_CHARS} chars: what this file does + when to read it>", "role_primary": "<one skill label>", "role_tags": ["<0-4 tags>"] }`,
+    "  ]",
+    "}",
+    "```",
+    `Return one card object per file, indices 0..${entries.length - 1} (order need not match).`,
+    "Never invent a symbol not shown for that file. Never include secrets/tokens/credentials.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Parse + sanitise a BATCH card result into a dense array of length `count`
+ * (fields | null per index). Accepts { cards: [...] } (preferred) or a bare
+ * array. Each entry runs through the SAME validateCardFields gate as a single
+ * card; entries with an out-of-range/duplicate index are dropped. Never throws.
+ */
+export function validateCardBatch(obj, count) {
+  const out = new Array(count).fill(null);
+  const cards = Array.isArray(obj?.cards) ? obj.cards : Array.isArray(obj) ? obj : null;
+  if (!cards) return out;
+  cards.forEach((entry, pos) => {
+    if (!entry || typeof entry !== "object") return;
+    // Prefer an explicit index; fall back to array position when absent.
+    const raw = entry.index ?? entry.idx;
+    const idx = Number.isInteger(Number(raw)) ? Number(raw) : pos;
+    if (idx < 0 || idx >= count || out[idx] !== null) return;
+    const fields = validateCardFields(entry);
+    if (fields) out[idx] = fields;
+  });
+  return out;
 }
 
 /**
@@ -1701,11 +1969,35 @@ export function validateCardReviewResult(obj) {
  * Run one per-file card model turn (ledgered under kind "onboard"). Injectable
  * in tests. Returns { tldr, rolePrimary, roleTags } or null (so the file still
  * gets a mechanical-only card).
+ *
+ * Uses GAFFER_CARD_MODEL (default: Haiku) — NOT the synthesis model — so per-file
+ * TLDR generation doesn't consume expensive reasoning-model budget.
  */
 function runCardTurn(prompt, env = process.env) {
-  const turn = runAnalysisTurn(prompt, env, "onboard");
+  // Override the synth-model knobs with the card-specific model so runAnalysisTurn
+  // picks it up through analysisCaps without touching the caller's env.
+  const cardEnv = cardTurnEnv(env);
+  const turn = runAnalysisTurn(prompt, cardEnv, "onboard");
   if (turn.timedOut) return null;
   return validateCardFields(extractLastJsonBlock(turn.stdout));
+}
+
+/** Scope the card model onto a child env, overriding both synth-model knobs. */
+function cardTurnEnv(env) {
+  const model = cardModel(env);
+  return { ...env, GAFFER_PLAN_MODEL: model, GAFFER_ONBOARD_SYNTH_MODEL: model };
+}
+
+/**
+ * Run ONE model turn over a BATCH of `count` files (ledgered under "onboard").
+ * Returns a dense array (fields | null per index) or null on timeout (caller then
+ * writes mechanical-only cards for the whole batch). Same cheap card model as
+ * runCardTurn. Injectable in tests.
+ */
+function runCardBatchTurn(prompt, count, env = process.env) {
+  const turn = runAnalysisTurn(prompt, cardTurnEnv(env), "onboard");
+  if (turn.timedOut) return null;
+  return validateCardBatch(extractLastJsonBlock(turn.stdout), count);
 }
 
 /** Run `memory card upsert` for one file. Returns the spawnSync result. */
@@ -1730,12 +2022,7 @@ function upsertCardCli(cfg, { canonical, repo, repoRoot, rel, head, fields }, en
     if (fields.tldr) args.push("--tldr", fields.tldr);
     if (fields.rolePrimary) args.push("--role-primary", fields.rolePrimary);
     for (const tag of fields.roleTags ?? []) args.push("--role-tag", tag);
-    args.push(
-      "--model",
-      env.GAFFER_PLAN_MODEL || "unknown",
-      "--prompt-version",
-      CARD_PROMPT_VERSION,
-    );
+    args.push("--model", cardModel(env), "--prompt-version", CARD_PROMPT_VERSION);
   }
   return runMemoryCli(cfg, args, env);
 }
@@ -1834,12 +2121,16 @@ export function runCardReviewSample(
 }
 
 /**
- * The structure-first, budgeted file-card pass. Enumerates source files, writes
- * a mechanical card for each (and a model-summarised card for the first
- * `maxModelCards`), then records the watermark = HEAD. Gated on the memory CLI;
- * best-effort per file. Returns a small stats object for the onboard log/JSON.
+ * The structure-first file-card pass. Enumerates source files and writes a
+ * model-summarised card for every source file (no budget gate), then records
+ * the watermark = HEAD. Gated on the memory CLI; best-effort per file.
+ * Returns a small stats object for the onboard log/JSON.
  *
- * `runTurn` is injectable (the live runCardTurn in production; a stub in tests).
+ * Files are carded in BATCHES of `cardBatch(env)` (GAFFER_CARD_BATCH, default 8):
+ * one `claude` call per batch, B cards parsed back and each run through the SAME
+ * validation + trust-split + upsert as before. B=1 exactly reproduces the original
+ * one-file-per-call path (uses `runTurn`); B>1 uses `runBatchTurn`. Both are
+ * injectable (live turns in production; stubs in tests).
  */
 export function emitFileCards(
   repoPath,
@@ -1849,6 +2140,7 @@ export function emitFileCards(
     env = process.env,
     log = () => {},
     runTurn = (p) => runCardTurn(p, env),
+    runBatchTurn = (p, count) => runCardBatchTurn(p, count, env),
     runReviewTurn = (p) => runCardReviewTurn(p, env),
   } = {},
 ) {
@@ -1861,6 +2153,7 @@ export function emitFileCards(
     capsHit: [],
     coverageNote: null,
     watermark: null,
+    collectedCards: [],
   };
   const resolvedCfg = cfg ?? memoryCliConfig(env);
   if (!resolvedCfg) {
@@ -1880,63 +2173,167 @@ export function emitFileCards(
   stats.enumerated = files.length;
   stats.capsHit = capsHit;
 
-  let modelBudget = caps.maxModelCards;
+  const batch = cardBatch(env);
+  const snippetChars = cardSnippetChars(env);
+
   /** Cards whose model summary passed the deterministic gate — eligible for semantic review. */
   const reviewCandidates = [];
-  for (const f of files) {
-    let content;
-    try {
-      content = readFileSync(f.abs, "utf8");
-    } catch {
-      stats.skipped += 1;
-      continue;
-    }
-    // Model summary only while the model budget lasts; everything else is a
-    // cheap mechanical-only card (still a real retrieval signal).
-    let fields = null;
-    let reviewEntry = null;
-    if (modelBudget > 0) {
-      const fileType = cardFileType(f.rel);
-      const structure = extractStructureSummary(content, fileType);
-      const snippet =
-        content.length > CARD_SNIPPET_MAX_CHARS
-          ? `${content.slice(0, CARD_SNIPPET_MAX_CHARS)}\n…[snippet truncated — read the file for the rest]`
-          : content;
-      try {
-        fields = runTurn(buildCardPrompt(f.rel, fileType, structure, snippet));
-      } catch (err) {
-        log(`card model turn failed for ${f.rel} (${err?.message ?? err}) — mechanical-only`);
-        fields = null;
-      }
-      modelBudget -= 1;
-      // Capture context for the semantic review gate (only if model fields were produced).
-      if (fields) reviewEntry = { rel: f.rel, fileType, structure, snippet, fields };
-    }
+
+  /**
+   * The per-file terminal step — IDENTICAL across the B=1 and B>1 paths: upsert
+   * via the memory CLI (which owns mechanical truth + both validation gates),
+   * account the trust-split, and collect model-active cards for the review gate.
+   */
+  const finalizeCard = (entry, fields) => {
     const res = upsertCardCli(
       resolvedCfg,
-      { canonical, repo, repoRoot: repoPath, rel: f.rel, head, fields },
+      { canonical, repo, repoRoot: repoPath, rel: entry.rel, head, fields },
       env,
     );
     if (res.error || (res.status ?? 0) !== 0) {
       stats.failed += 1;
       log(
-        `card upsert "${f.rel}" failed: ${res.error?.message ?? res.stderr?.trim() ?? `exit ${res.status}`}`,
+        `card upsert "${entry.rel}" failed: ${res.error?.message ?? res.stderr?.trim() ?? `exit ${res.status}`}`,
       );
-      continue;
+      return;
     }
     stats.carded += 1;
-    if (fields) stats.modelCarded += 1;
-    // Collect for semantic review if the deterministic gate passed (modelStatus=active).
-    if (reviewEntry) {
+    if (fields) {
+      stats.modelCarded += 1;
+      // Collect for rollup digest (area + role + tldr grouped by area).
+      stats.collectedCards.push({ rel: entry.rel, role: fields.rolePrimary, tldr: fields.tldr });
+      // Collect for semantic review if the deterministic gate passed (modelStatus=active).
       let upsertOut = null;
       try {
         upsertOut = JSON.parse(res.stdout ?? "");
       } catch {
         /* ignore */
       }
-      if (upsertOut?.modelStatus === "active") reviewCandidates.push(reviewEntry);
+      if (upsertOut?.modelStatus === "active") {
+        reviewCandidates.push({ ...entry, fields });
+      }
+    }
+  };
+
+  // Build the structure+snippet entry for one enumerated file (null = unreadable).
+  // Pass overrideSnippetChars to widen the snippet budget for oversized solo files.
+  const prepareEntry = (f, overrideSnippetChars = snippetChars) => {
+    let content;
+    try {
+      content = readFileSync(f.abs, "utf8");
+    } catch {
+      return null;
+    }
+    const fileType = cardFileType(f.rel);
+    const loc = content.split("\n").length;
+    return {
+      rel: f.rel,
+      fileType,
+      loc,
+      isOversized: loc > CARD_OVERSIZED_LOC,
+      structure: extractStructureSummary(content, fileType),
+      snippet: cardSnippet(content, overrideSnippetChars),
+    };
+  };
+
+  // Run one prepared chunk through the model and finalize every card in it.
+  // forceSolo: always use the single-file path regardless of the global batch size.
+  // Used for oversized-file isolation so a monster never shares a batch prompt.
+  const processChunk = (entries, { forceSolo = false } = {}) => {
+    if (entries.length === 0) return;
+    let fieldsList;
+    if (batch === 1 || forceSolo) {
+      // Single-file path: B=1 safe fallback OR oversized isolation.
+      // Process each entry with a separate runTurn call — clean output budget per file.
+      fieldsList = entries.map((e) => {
+        let fields = null;
+        try {
+          fields = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
+        } catch (err) {
+          log(`card model turn failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
+        }
+        return fields;
+      });
+    } else {
+      // Batch path: one call covers all entries.
+      let arr = null;
+      try {
+        arr = runBatchTurn(buildCardBatchPrompt(entries), entries.length);
+      } catch (err) {
+        log(
+          `card batch turn failed for ${entries.length} file(s) ` +
+            `(${err?.message ?? err}) — mechanical-only`,
+        );
+      }
+      // Per-file retry on PARTIAL shortfall: the batch returned but some slots are
+      // null (the model dropped or mis-aligned them). Retry each missing file
+      // individually so a bad batch costs a retry, not N lost cards. Log it honestly.
+      // A TOTAL failure (arr === null — e.g. timeout) is left as mechanical-only;
+      // retrying all files after a complete timeout isn't worth the additional cost.
+      if (arr !== null) {
+        const missing = [];
+        for (let j = 0; j < entries.length; j++) {
+          if (arr[j] === null) missing.push(j);
+        }
+        if (missing.length > 0) {
+          log(
+            `batch returned ${entries.length - missing.length}/${entries.length} — ` +
+              `retrying ${missing.length} individually`,
+          );
+          for (const j of missing) {
+            const e = entries[j];
+            try {
+              arr[j] = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
+            } catch (err) {
+              log(`card retry failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
+            }
+          }
+        }
+      }
+      fieldsList = entries.map((_, i) => (arr ? (arr[i] ?? null) : null));
+    }
+    for (let i = 0; i < entries.length; i++) finalizeCard(entries[i], fieldsList[i]);
+  };
+
+  // Every enumerated source file receives a card — no budget gate. We accumulate a
+  // batch of prepared entries and flush each full chunk; per-call timeout is bounded
+  // by GAFFER_ONBOARD_TIMEOUT (see analysisCaps).
+  // Oversized files (> CARD_OVERSIZED_LOC lines, only relevant when batch > 1) are
+  // isolated: the current pending batch is flushed first, then the large file gets its
+  // own solo pass with a wider snippet budget so it can't poison its companions.
+  let pending = [];
+  for (let i = 0; i < files.length; i++) {
+    // Periodic progress — keeps long onboards observable without flooding the log.
+    if (i > 0 && i % 10 === 0) {
+      log(`file cards: ${i}/${files.length} done`);
+    }
+    const entry = prepareEntry(files[i]);
+    if (!entry) {
+      stats.skipped += 1;
+      continue;
+    }
+    if (entry.isOversized && batch > 1) {
+      // Flush whatever is pending so this file never shares a batch call.
+      processChunk(pending);
+      pending = [];
+      // Re-prepare with the wider solo snippet budget so the model has more context
+      // for a large file. Re-reading the file is a one-time per-oversized-file cost.
+      const soloEntry = prepareEntry(files[i], Math.max(snippetChars, CARD_SOLO_SNIPPET_CHARS));
+      if (!soloEntry) {
+        stats.skipped += 1;
+        continue;
+      }
+      log(`oversized file isolated (${soloEntry.loc} loc): ${soloEntry.rel} — solo pass`);
+      processChunk([soloEntry], { forceSolo: true });
+    } else {
+      pending.push(entry);
+      if (pending.length >= batch) {
+        processChunk(pending);
+        pending = [];
+      }
     }
   }
+  processChunk(pending);
 
   // Watermark = HEAD (Phase-2 freshness loop reads this).
   if (head) {
@@ -1956,25 +2353,21 @@ export function emitFileCards(
     log("no HEAD commit (not a git repo?) — skipping card watermark");
   }
 
-  // Coverage note — NEVER silently skip. Emitted when a cap truncated the set,
-  // or when more files were enumerated than the model budget covered.
-  const overModelBudget = files.length > caps.maxModelCards;
-  if (capsHit.length > 0 || overModelBudget) {
+  // Coverage note — emitted only when a filesystem cap (maxFiles or maxBytesPerFile)
+  // truncated the enumerated set so the caller can see what was skipped.
+  if (capsHit.length > 0) {
     const note =
       `file-card coverage: enumerated=${stats.enumerated} carded=${stats.carded} ` +
-      `model-summarised=${stats.modelCarded}/${caps.maxModelCards} skipped=${stats.skipped} ` +
-      `failed=${stats.failed}` +
-      (capsHit.length > 0 ? ` caps-hit=[${capsHit.join(", ")}]` : "") +
-      (overModelBudget
-        ? ` — ${files.length - caps.maxModelCards} file(s) got a mechanical-only card (model budget exhausted)`
-        : "");
+      `model-summarised=${stats.modelCarded} skipped=${stats.skipped} ` +
+      `failed=${stats.failed} caps-hit=[${capsHit.join(", ")}]`;
     stats.coverageNote = note;
     log(`COVERAGE NOTE — ${note}`);
   }
 
   log(
     `file cards: enumerated=${stats.enumerated} carded=${stats.carded} ` +
-      `model=${stats.modelCarded} skipped=${stats.skipped} failed=${stats.failed} ` +
+      `model-summarised=${stats.modelCarded} skipped=${stats.skipped} failed=${stats.failed} ` +
+      `cardModel=${cardModel(env)} batch=${batch} snippet=${snippetChars} ` +
       `watermark=${stats.watermark ?? "none"}`,
   );
 
@@ -2002,6 +2395,164 @@ export function emitFileCards(
 }
 
 /**
+ * Re-card a specific set of changed files and advance the watermark to the new
+ * HEAD commit. Called after a successful merge to keep cards current without
+ * re-running a full onboard.
+ *
+ * @param {string}   repoPath     Absolute path to the repository root.
+ * @param {string[]} changedPaths Relative paths (added/modified/copied/type-changed,
+ *                                plus the NEW path of a rename) to re-card.
+ * @param {object}   options
+ * @param {object}   options.cfg          Memory CLI config ({ cliBin, db }).
+ * @param {string[]} [options.deletions]  Relative paths whose cards must be TOMBSTONED
+ *                                        (deleted files + the OLD path of a rename).
+ * @param {object}   [options.env]        Process env; defaults to process.env.
+ * @param {Function} [options.log]        Log sink.
+ * @param {string}   [options.repo]       Repo name / ID for the card store.
+ * @param {string}   [options.canonical]  Canonical repo path (defaults to repoCanonical(repoPath)).
+ * @param {Function} [options.runTurn]    Injectable model turn (tests use a stub).
+ * @returns {{ refreshed: number, deleted: number, skipped: number, failed: number, watermark: string|null }}
+ */
+export function refreshFileCards(
+  repoPath,
+  changedPaths,
+  {
+    cfg,
+    deletions = [],
+    env = process.env,
+    log = () => {},
+    repo = "",
+    canonical = repoCanonical(repoPath),
+    runTurn = (p) => runCardTurn(p, env),
+  } = {},
+) {
+  const result = { refreshed: 0, deleted: 0, skipped: 0, failed: 0, watermark: null };
+  if (!cfg) {
+    log("memory CLI not configured — skipping card refresh");
+    return result;
+  }
+  if (!repo) {
+    log("no repo name — skipping card refresh");
+    return result;
+  }
+  const caps = cardCaps(env);
+  const snippetChars = cardSnippetChars(env);
+  const head = headCommit(repoPath);
+  const secretLike =
+    /(^|\/)(\.env|\.netrc|\.npmrc|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|secrets?|credentials?)(\.|$|\/)/i;
+
+  // ── Tombstone deleted / renamed-away cards FIRST ────────────────────────────
+  // A deleted or renamed file must not leave a stale card behind (it would
+  // mislead retrieval). We go through the memory CLI `delete-file-card` verb —
+  // NEVER writing Memory's DB directly (boundary rule). Fail-soft: a delete
+  // error is logged + counted, never thrown, but it DOES block the watermark
+  // advance (see below) so the next merge retries the tombstone.
+  for (const rel of deletions) {
+    if (!rel || !rel.trim()) continue;
+    const dres = runMemoryCli(
+      cfg,
+      ["delete-file-card", "--canonical", canonical, "--repo", repo, "--path", rel, "--json"],
+      env,
+    );
+    if (dres.error || (dres.status ?? 0) !== 0) {
+      result.failed += 1;
+      log(
+        `card delete "${rel}" failed: ${dres.error?.message ?? dres.stderr?.trim() ?? `exit ${dres.status}`}`,
+      );
+    } else {
+      result.deleted += 1;
+      log(`card deleted (stale/renamed): ${rel}`);
+    }
+  }
+
+  // Refresh re-cards a small, targeted set (few files), so it stays one-file-per-call
+  // — the batch amortisation only matters for the hundreds-of-files onboard pass.
+  for (const rel of changedPaths) {
+    if (!CARD_SOURCE_EXT.test(rel)) {
+      result.skipped += 1;
+      continue;
+    }
+    if (secretLike.test(rel)) {
+      result.skipped += 1;
+      continue;
+    }
+    const abs = join(repoPath, rel);
+    if (!existsSync(abs)) {
+      // File was deleted — skip (the card remains stale but does no harm).
+      result.skipped += 1;
+      continue;
+    }
+    let size;
+    try {
+      size = statSync(abs).size;
+    } catch {
+      result.skipped += 1;
+      continue;
+    }
+    if (size > caps.maxBytesPerFile) {
+      result.skipped += 1;
+      continue;
+    }
+    let content;
+    try {
+      content = readFileSync(abs, "utf8");
+    } catch {
+      result.skipped += 1;
+      continue;
+    }
+    let fields = null;
+    const fileType = cardFileType(rel);
+    const structure = extractStructureSummary(content, fileType);
+    const snippet = cardSnippet(content, snippetChars);
+    try {
+      fields = runTurn(buildCardPrompt(rel, fileType, structure, snippet));
+    } catch (err) {
+      log(`card model turn failed for ${rel} (${err?.message ?? err}) — mechanical-only`);
+    }
+    const res = upsertCardCli(cfg, { canonical, repo, repoRoot: repoPath, rel, head, fields }, env);
+    if (res.error || (res.status ?? 0) !== 0) {
+      result.failed += 1;
+      log(
+        `card upsert "${rel}" failed: ${res.error?.message ?? res.stderr?.trim() ?? `exit ${res.status}`}`,
+      );
+    } else {
+      result.refreshed += 1;
+    }
+  }
+
+  // Advance watermark to HEAD so the next refresh diff starts from here — but
+  // ONLY when the whole batch (tombstones + refreshes) completed without a hard
+  // failure. If any delete or upsert hard-failed, we hold the watermark where it
+  // is so the NEXT merge re-diffs from the same base and retries the stragglers.
+  // A "skip" (non-source ext, oversized, secret-like) is NOT a hard failure —
+  // it's an expected no-op that must not pin the watermark.
+  if (head && result.failed === 0) {
+    const wres = runMemoryCli(
+      cfg,
+      ["card", "sync", "--canonical", canonical, "--repo", repo, "--commit", head],
+      env,
+    );
+    if (wres.error || (wres.status ?? 0) !== 0) {
+      log(
+        `card watermark advance failed: ${wres.error?.message ?? wres.stderr?.trim() ?? `exit ${wres.status}`}`,
+      );
+    } else {
+      result.watermark = head;
+    }
+  } else if (result.failed > 0) {
+    log(
+      `card watermark held (not advanced): ${result.failed} hard failure(s) — next merge will retry`,
+    );
+  }
+
+  log(
+    `card refresh: refreshed=${result.refreshed} deleted=${result.deleted} ` +
+      `skipped=${result.skipped} failed=${result.failed} watermark=${result.watermark ?? "none"}`,
+  );
+  return result;
+}
+
+/**
  * The end-to-end analysis pass: gather material → run the model → parse/validate →
  * fall back if needed → write to memory. Gated on the memory CLI being configured.
  * Best-effort throughout: every failure degrades to the minimal honest fallback (no
@@ -2019,6 +2570,8 @@ export function analyzeAndWrite(
     log = () => {},
     runTurn = (prompt) => runAnalysisTurn(prompt, env),
     runCardTurn: runCardTurnInjected = (prompt) => runCardTurn(prompt, env),
+    runCardBatchTurn: runCardBatchTurnInjected = (prompt, count) =>
+      runCardBatchTurn(prompt, count, env),
     runReviewTurn: runReviewTurnInjected = (prompt) => runCardReviewTurn(prompt, env),
   } = {},
 ) {
@@ -2075,6 +2628,7 @@ export function analyzeAndWrite(
         env,
         log: (m) => log(`cards: ${m}`),
         runTurn: runCardTurnInjected,
+        runBatchTurn: runCardBatchTurnInjected,
         runReviewTurn: runReviewTurnInjected,
       });
     } catch (err) {
@@ -2082,6 +2636,51 @@ export function analyzeAndWrite(
     }
   } else {
     log("cards: file-card pass disabled (GAFFER_CARD_EMIT=0)");
+  }
+
+  // ── Rollup digest (top of the DAG) ──────────────────────────────────────────
+  // Generate the digest AFTER the cards exist so it can reflect the real
+  // architecture rather than just the tree/README signals seen at prompt-build time.
+  // Only runs when cards produced model summaries; falls back silently to the
+  // earlier digest write. Best-effort: never fails the onboard.
+  if (cardStats && cardStats.collectedCards && cardStats.collectedCards.length > 0) {
+    try {
+      const rollup = buildRollupDigest(
+        cardStats.collectedCards,
+        usedModel ? understanding : null,
+        material,
+      );
+      if (rollup) {
+        const rollupArgs = [
+          "digest",
+          "set",
+          repo,
+          "--overview",
+          rollup.overview,
+          "--structure",
+          rollup.structure,
+          "--conventions",
+          rollup.conventions,
+          "--stack",
+          rollup.stack ?? "unknown",
+          "--source",
+          "onboard",
+        ];
+        const rres = runMemoryCli(cfg, rollupArgs, env);
+        if (rres.error || (rres.status ?? 0) !== 0) {
+          log(
+            `rollup digest set failed: ${rres.error?.message ?? rres.stderr?.trim() ?? `exit ${rres.status}`}`,
+          );
+        } else {
+          log(
+            `rollup digest written from ${cardStats.collectedCards.length} model-carded files ` +
+              `across ${new Set(cardStats.collectedCards.map((c) => topLevelArea(c.rel))).size} area(s)`,
+          );
+        }
+      }
+    } catch (err) {
+      log(`rollup digest failed (${err?.message ?? err}) — initial digest preserved`);
+    }
   }
 
   return { ran: true, usedModel, stats, ...(cardStats ? { cardStats } : {}) };

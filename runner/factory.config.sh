@@ -350,23 +350,53 @@ gaffer_timeout() {
   local secs="$1"; shift
   if [ -z "$secs" ] || [ "$secs" -le 0 ] 2>/dev/null; then "$@"; return $?; fi
   if command -v perl >/dev/null 2>&1; then
-    # perl alarm() + fork: the child exec's the command; the parent arms alarm($t)
-    # and waits. On SIGALRM the parent kills the child's process group and exits
-    # 124 (GNU timeout's convention); otherwise it relays the child's exit status.
+    # perl alarm() + fork: the child does setpgrp() (its own process group, so a
+    # spawned `claude -p` AND all its MCP/child processes share the child's PGID)
+    # then exec's the command; the parent arms alarm($t) and waits.
+    #
+    # ORPHAN-REAP (wallet-drain fix): a timed-out or killed agent must never leave
+    # an orphaned `claude -p` burning tokens. On ANY teardown path — SIGALRM
+    # (timeout), or the parent itself receiving SIGTERM/SIGINT (the tick's crash
+    # trap, or the outer per-tick timeout) — we tear down the WHOLE child process
+    # group and ESCALATE TERM -> KILL after a short grace, so a signal-ignoring
+    # agent cannot survive. Forwarding on TERM/INT is what stops the child being
+    # orphaned when the PARENT is killed (perl's default SIGTERM would just die and
+    # leave the child group running). Optionally records the child PGID to
+    # $GAFFER_TIMEOUT_PGID_FILE so a belt-and-braces tick-exit trap can reap a
+    # survivor; the file is removed on normal completion so it never goes stale.
     perl -e '
+      use POSIX ":sys_wait_h";
       my $t = shift;
       my $pid = fork();
       die "fork: $!" unless defined $pid;
       if ($pid == 0) { setpgrp(0,0); exec @ARGV or exit 127; }
-      $SIG{ALRM} = sub { kill "TERM", -$pid; kill "TERM", $pid; exit 124 };
+      my $pf = $ENV{GAFFER_TIMEOUT_PGID_FILE};
+      if ($pf) { if (open(my $fh, ">", $pf)) { print $fh $pid; close $fh; } }
+      my $clear = sub { unlink $pf if $pf; };
+      my $reap = sub {
+        my ($code) = @_;
+        kill "TERM", -$pid; kill "TERM", $pid;
+        my $gone = 0;
+        for (1..20) { if (waitpid($pid, WNOHANG) == $pid) { $gone = 1; last } select(undef,undef,undef,0.1); }
+        unless ($gone) { kill "KILL", -$pid; kill "KILL", $pid; }
+        $clear->();
+        exit $code;
+      };
+      $SIG{ALRM} = sub { $reap->(124) };
+      $SIG{TERM} = sub { $reap->(143) };
+      $SIG{INT}  = sub { $reap->(130) };
       alarm $t;
       waitpid($pid, 0);
-      exit($? >> 8 ? $? >> 8 : ($? & 127 ? 128 + ($? & 127) : 0));
+      my $st = $?;
+      $clear->();
+      exit($st >> 8 ? $st >> 8 : ($st & 127 ? 128 + ($st & 127) : 0));
     ' "$secs" "$@"
     return $?
   fi
-  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
-  if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
+  # GNU/BSD timeout fallbacks: `-s TERM -k <grace>` escalates to SIGKILL after the
+  # grace if the command ignores TERM, so a runaway agent is still reaped.
+  if command -v timeout >/dev/null 2>&1; then timeout -s TERM -k 10 "$secs" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout -s TERM -k 10 "$secs" "$@"; return $?; fi
   # FAIL CLOSED (R-10): no timeout primitive (perl / timeout / gtimeout) is
   # available. Running the command unbounded here is the denial-of-wallet hole —
   # a runaway `claude -p` could burn unbounded wall-clock and tokens. Refuse to

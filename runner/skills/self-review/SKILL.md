@@ -51,9 +51,9 @@ self-approve is a red flag to surface — never a reason to lower the gate.
    changed hunks. Loop until the diff is one you would approve.
 7. **Only then proceed.** When every AC is pointed-to-and-proven, scope is clean, the
    smallest-change check is recorded, and you'd approve the diff yourself, hand off to
-   `record-evidence` / `submit-review`. If the review surfaced something you genuinely can't
-   resolve, `mark_ticket_blocked` with the reason rather than submitting a diff you don't
-   stand behind.
+   `record-evidence`, then STOP — the runner records the delivery and submits for review.
+   If the review surfaced something you genuinely can't resolve, `mark_ticket_blocked`
+   with the reason rather than leaving a diff you don't stand behind.
 
 ## Rules
 

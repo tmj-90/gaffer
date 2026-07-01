@@ -1,57 +1,47 @@
 ---
 name: submit-review
-description: Use once a ticket's work is implemented and every acceptance criterion has real evidence, to hand the ticket to human review — as a pull request when a remote exists, or as a local branch when it doesn't. Invoke whenever you are ready to close out a claimed ticket and a human must approve `done`.
+description: Reference for how a finished ticket reaches human review in the Gaffer factory. Submission is RUNNER-OWNED — the agent commits its work and evidences the ACs, then stops; the runner records the delivery, pushes, opens the PR, and submits for review. Invoke when you think your work is ready to hand off, to confirm what you must do (commit + evidence) and what the runner does for you (push, PR, submit).
 stack: []
 area: review
 ---
 
-# Submit the ticket for review
+# Handing a ticket to review (runner-owned)
 
-Hand finished work to a human reviewer. You never approve your own work — deliver the
-change, submit for review, and let a human move the ticket to `done`.
+You do **not** submit your own work. In the Gaffer factory the **runner** — not the
+agent — owns delivery bookkeeping: after your agent run it runs the gates
+(tests/lint/hygiene/minimalism), records the delivery, pushes the branch and opens the
+PR when a remote exists, and moves the ticket to `in_review`. This makes submission
+deterministic and token-free, and guarantees a ticket is only ever submitted once its
+gates are green.
 
-Delivery adapts to the repo: **with a remote** you open a PR; **without one** a local
-feature branch *is* the delivery — that is a valid, expected outcome, not a failure.
-
-This skill is the **single owner of submission**: commit, push (if a remote exists),
-open the PR, and `submit_ticket_for_review` all happen here and nowhere else. The
-`record-evidence` skill produces AC evidence and stops; it never submits. Run
-`record-evidence` first to evidence every AC, then this skill to deliver and submit.
-
-## Steps
+## What YOU do (then stop)
 
 1. **Confirm every AC is evidenced.** Call `get_ticket` (Dispatch MCP) and check each
-   AC has true evidence recorded. If any is missing, record it first via the
-   `record-evidence` skill — do not submit a half-evidenced ticket.
+   AC has true evidence. If any is missing, record it via the `record-evidence` skill.
 2. **Confirm the gates are green** in this session: tests (`run-tests`), lint
-   (`run-lint`), and any coverage threshold (`run-coverage`) the ticket requires.
+   (`run-lint`), and any coverage threshold the ticket requires. Fix anything red.
 3. **Commit on the feature branch** with a clear conventional message referencing the
-   ticket. Then check for a remote: `git remote` (or `git remote get-url origin`).
-   - **No remote → stop here.** The committed local branch is the delivery. Do **not**
-     push, do **not** open a PR, and do **not** treat the missing remote as an error.
-   - **Remote present →** `git push -u origin <branch>` (normal push of the prefixed
-     feature branch only — force-push and pushes to protected branches are hook-blocked).
-4. **Record the delivery as evidence:**
-   - **Remote + `gh` available →** open a PR with `gh pr create` (base = default branch)
-     whose body carries the AC + evidence + test output + lore consulted, then
-     `record_ac_evidence` with `evidence_type: pull_request` and the PR URL.
-   - **No remote (or no `gh`) →** `record_ac_evidence` with `evidence_type: diff_summary`
-     — the branch name plus a short summary of what changed and how it was verified.
-5. **Heartbeat** with `heartbeat_claim` if the work ran long, then **submit** with
-   `submit_ticket_for_review` (claim_token + ticket_id + a short `reason` that states how it
-   was delivered — PR URL, or "delivered on local branch `<name>`; no remote configured").
-   This moves the ticket to `in_review` for a human.
-6. **If you cannot finish** (open question, missing dependency, failing environment), call
-   `mark_ticket_blocked` with a clear reason instead of submitting incomplete work.
+   ticket (`git add -A && git commit -m "deliver #<n>: <summary>"`). An uncommitted
+   edit is NOT a delivery — the branch must carry your commit. If you forget, the
+   runner auto-commits your uncommitted changes as a safety net, but commit yourself.
+4. **Stop.** Do **not** push, do **not** open a PR, do **not** call
+   `submit_ticket_for_review`. The runner does all of that. If you cannot finish (open
+   question, missing dependency, failing environment), call `mark_ticket_blocked` with
+   a clear reason instead of leaving half-done work.
+
+## What the RUNNER does (not you)
+
+- Runs the Definition-of-Done and hygiene/minimalism gates on your committed diff.
+- Records the delivery (branch + diff summary + per-repo delivery rows).
+- Pushes the branch and opens the PR (`gh pr create`) when the repo has a remote.
+- Submits the ticket for review (moves it to `in_review`).
 
 ## Rules
 
 - Never self-approve `done` or merge — only a human does, after review.
-- A **missing remote is normal** — deliver on the local branch and submit; never block or
-  fail a ticket just because there's nowhere to push.
-- Don't force-push, don't push to or target a protected branch — the hook blocks it.
-- Don't submit until every AC has real evidence and the gates are green.
-- The evidence and `reason` must reflect what you actually did, verified, and how it landed.
+- Never push, open a PR, or `submit_ticket_for_review` yourself — that is the runner's job.
+- Don't consider yourself done until every AC has real evidence and the gates are green —
+  the runner's gates will bounce a delivery that isn't.
 
 ## Capture lore
 

@@ -239,6 +239,17 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 
+# RUNNER-OWNED-BOOKKEEPING: the runner (not the agent) claims the delivery ticket at
+# selection and holds the claim for the whole delivery. The lease TTL must therefore
+# cover EVERY attempt of one delivery (up to GAFFER_MAX_DELIVERY_ATTEMPTS agent runs,
+# each bounded by GAFFER_TICK_TIMEOUT) plus the runner's own gate/record/submit time —
+# so a normal delivery never needs a heartbeat. The runner ALSO heartbeats the claim
+# at the start of each retry attempt (belt-and-braces), so even a mis-sized TTL can't
+# let the lease lapse mid-delivery. Default: attempts × timeout + 5 min margin.
+: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=2}"
+: "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-2} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
+export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
+
 # --- Recoverable-delivery guard (GUARD B) ------------------------------------
 # When the agent produced ≥1 commit but a DOWNSTREAM gate (DoD / hygiene /
 # minimalism / empty-but-committed) failed, the delivery is RECOVERABLE: the
@@ -658,15 +669,15 @@ gaffer_is_self_target() {
 # value as the backpressure "claims" cap, so the two stay consistent by
 # construction.
 #
-# HONESTY (best-effort under concurrency): the cap is read at candidate-SELECTION
-# time, but the actual claim is deferred to the agent's own `claim_ticket` call. So
-# under GAFFER_CONCURRENCY>1 two ticks can each select a candidate for the same
-# under-cap repo before either has claimed, and the cap can be exceeded by up to the
-# in-flight count. The HARD guarantee here is only the per-ticket double-claim
-# invariant (a ticket is claimed at most once, enforced transactionally in
-# Dispatch); this per-repo cap is a throttle, not a transactional bound.
-# NOTE(follow-up): claiming in tick.sh BEFORE handing off to the agent (so
-# selection and claim are one atomic step) would make the per-repo cap exact.
+# CONCURRENCY (RUNNER-OWNED-BOOKKEEPING): selection AND claim are now one atomic step —
+# the runner claims the chosen candidate in tick.sh (via `wg claim-ticket`) BEFORE any
+# worktree or agent, and skips to the next candidate if the claim loses the race. The
+# per-ticket double-claim invariant is enforced transactionally in Dispatch (a ticket is
+# claimed at most once), so a ticket is never worked by two ticks. The per-repo cap here
+# is still read at selection time (a throttle, not a transactional bound): under
+# GAFFER_CONCURRENCY>1 two ticks can each pass the pressure probe for the same under-cap
+# repo before either claims, so the cap can be momentarily exceeded by up to the in-flight
+# count — but each ticket is still claimed at most once.
 : "${MAX_CONCURRENT_TICKETS_PER_REPO:=1}"
 # Upper bound on how many ready candidates a single tick scans before giving up
 # and yielding no_work. Bounds the per-tick candidate walk (each candidate costs a

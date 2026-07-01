@@ -169,6 +169,46 @@ if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
 fi
 AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
 
+# ── RUNNER-OWNED-BOOKKEEPING: the runner holds the delivery claim ────────────
+# The runner (not the agent) claims the chosen ticket at SELECTION, holds the claim
+# token for the whole delivery, submits after ITS gates pass, and releases/parks the
+# claim on failure. CLAIM_TOKEN is captured by the candidate-loop claim below; it
+# stays EMPTY for a resumed delivery (the runner holds no token — the ticket is
+# already in_progress) and for DRY_RUN (never claims).
+CLAIM_TOKEN=""
+
+# Release/park the runner-held delivery claim (RUNNER-OWNED-BOOKKEEPING). $1 =
+# ready|refining, $2 = reason. With a token (normal delivery) the matching claim is
+# released; without one (a resumed in_progress delivery) the ticket is transitioned
+# tokenlessly via the same guarded runner-release path. Best-effort + logged.
+gaffer_release_delivery() {
+  local to="$1" reason="$2"
+  # DRY_RUN never claims, so it never releases — keep it side-effect-free.
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  if [ -n "${CLAIM_TOKEN:-}" ]; then
+    wg runner-release "$NUM" --to "$to" --token "$CLAIM_TOKEN" --reason "$reason" >/dev/null 2>&1 \
+      && log "released claim on #$NUM → $to ($reason)" \
+      || log "WARNING — could not release claim on #$NUM → $to ($reason); needs a human"
+  else
+    wg runner-release "$NUM" --to "$to" --reason "$reason" >/dev/null 2>&1 \
+      && log "transitioned #$NUM → $to ($reason)" \
+      || log "WARNING — could not transition #$NUM → $to ($reason); needs a human"
+  fi
+}
+
+# Submit a passed delivery for review (RUNNER-OWNED-BOOKKEEPING). With a runner-held
+# token (normal delivery) it uses the claim-gated submit (claimed → in_review,
+# completing the claim); a resumed delivery (no token, already in_progress) is moved
+# straight to in_review. $1 = reason. Returns non-zero (logged) on failure.
+gaffer_submit_delivery() {
+  local reason="$1"
+  if [ -n "${CLAIM_TOKEN:-}" ]; then
+    wg submit "$NUM" --token "$CLAIM_TOKEN" --reason "$reason" >/dev/null 2>&1
+  else
+    wg ticket move "$NUM" in_review >/dev/null 2>&1
+  fi
+}
+
 # ── PAUSE-ON-CAP: resume-requested paused tickets take priority ──────────────
 # A human pressed Continue on a paused (cap-hit) delivery: re-enter delivery IN THE
 # EXISTING worktree (no new worktree, no re-clone, no lost context). The factory loop
@@ -273,6 +313,24 @@ if [ "$READY_COUNT" -gt 0 ]; then
         continue
       fi
     fi
+    # ── RUNNER-OWNED-BOOKKEEPING: claim the chosen candidate NOW ───────────────
+    # Selection AND claim are one atomic step: the runner claims the ticket here,
+    # BEFORE any worktree or agent, so the claim itself is the concurrency lock that
+    # prevents two ticks from working the same ticket (Dispatch enforces one active
+    # claim per ticket transactionally). If the claim fails (lost race / ineligible),
+    # do NOT deliver — skip this candidate and keep scanning. DRY_RUN never claims
+    # (it must stay side-effect-free). The captured token authorises the runner's
+    # later submit and is injected into the agent's MCP env for its evidence writes.
+    if [ "$DRY_RUN" != "1" ]; then
+      _CLAIM_JSON="$(wg claim-ticket "$_cand" --agent "$AGENT" --ttl "$GAFFER_CLAIM_TTL" 2>/dev/null || true)"
+      _CLAIM_TOK="$(printf '%s' "$_CLAIM_JSON" | jget "d.get('claimToken','')" 2>/dev/null || echo '')"
+      if [ -z "$_CLAIM_TOK" ]; then
+        log "candidate #$_cand — claim FAILED (lost race / ineligible); skipping and continuing the scan"
+        continue
+      fi
+      CLAIM_TOKEN="$_CLAIM_TOK"
+      log "claimed #$_cand for delivery (runner holds the claim; ttl=${GAFFER_CLAIM_TTL}s)"
+    fi
     NUM="$_cand"; SHOW="$_cshow"; REPO_PATH="$_crepo"
     STACK="$(echo "$_cshow" | jget "(d['repositories'][0]['stack'] if d['repositories'] else '') or ''" 2>/dev/null)"
     TITLE="$(echo "$_cshow" | jget "d['ticket']['title']" 2>/dev/null)"
@@ -307,11 +365,13 @@ if [ "$READY_COUNT" -gt 0 ]; then
     B_NAME="$(gaffer_bootstrap_repo_name "$SHOW")"
     if [ -z "$B_NAME" ]; then
       log "BOOTSTRAP: #$NUM is marked bootstrap but no target repo name could be derived — leaving for a human"
+      gaffer_release_delivery ready "bootstrap: no target repo name — leaving for a human"
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
     B_DIR="$(gaffer_bootstrap_repo_dir "$B_NAME")" || B_DIR=""
     if [ -z "$B_DIR" ]; then
       log "BOOTSTRAP: #$NUM target repo name '$B_NAME' is unsafe (path traversal) — refusing"
+      gaffer_release_delivery ready "bootstrap: unsafe target repo name — refusing"
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
     # SELF-OPERATION BAN (greenfield): a bootstrap target that would land IN a
@@ -320,17 +380,19 @@ if [ "$READY_COUNT" -gt 0 ]; then
       log "SELF-OP: refusing bootstrap #$NUM — target '$B_DIR' is (or is inside) a Gaffer component; the factory must not scaffold over its own source. Set GAFFER_ALLOW_SELF_DELIVERY=1 to override (first-party dogfooding only)."
       wg attach-evidence "$NUM" --type manual_note \
         --summary "SELF-OP BAN: refused bootstrap — target '$B_DIR' is a Gaffer component (factory's own source). Override with GAFFER_ALLOW_SELF_DELIVERY=1." >/dev/null 2>&1 || true
-      # Same set-aside as the delivery path: un-ready (ready -> draft) so the loop
-      # won't re-select it; the bootstrap ticket isn't claimed at this point either.
+      # RUNNER-OWNED-BOOKKEEPING: the runner holds the claim now, so release it first
+      # (claimed → ready), THEN un-ready (ready -> draft) so the loop won't re-select it.
+      gaffer_release_delivery ready "self-op: bootstrap target is a Gaffer component"
       wg ticket move "$NUM" draft >/dev/null 2>&1 || true
       gaffer_skip_ticket "$NUM"
-      log "SELF-OP: set aside bootstrap #$NUM for a human (un-readied ready→draft + skipped this run)"
+      log "SELF-OP: set aside bootstrap #$NUM for a human (released claim + un-readied ready→draft + skipped this run)"
       result no_work; exit 0
     fi
     if ! B_REFUSE="$(gaffer_bootstrap_target_ok "$B_DIR")"; then
       log "BOOTSTRAP: #$NUM refused — $B_REFUSE"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "BOOTSTRAP REFUSED: $B_REFUSE" >/dev/null 2>&1 || true
+      gaffer_release_delivery ready "bootstrap refused: $B_REFUSE"
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
     log "ready=$READY_COUNT → BOOTSTRAP #$NUM ('$TITLE') → create new repo '$B_NAME' at $B_DIR [stack=$STACK]"
@@ -367,7 +429,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$B_DIR/.claude/settings.json"
     MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
     gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"; result error; exit 1; }
-    sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" \
+    # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
+    # MCP server env so the agent's evidence writes resolve it without ever handling
+    # the token string. Substituted alongside the DB/bin placeholders.
+    sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" -e "s#\${GAFFER_CLAIM_TOKEN}#${CLAIM_TOKEN}#g" \
         "$MCP_CONFIG" > "$MCP_RUNTIME"
     cp -f "$HERE/claude/CLAUDE.md" "$B_DIR/CLAUDE.factory.md"
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
@@ -380,15 +445,16 @@ $QUARANTINE_NOTICE
 Bootstrap ticket #$NUM, title: $B_TITLE_Q
 Recommended skills: $B_SKILLS
 
-Claim THIS ticket (#$NUM) via the dispatch MCP tool claim_ticket with ticket_id
-"$NUM" and agent_id "$AGENT"; get_ticket; consult memory search_lore for any
-org conventions; then scaffold the stack the ticket describes (package.json /
+This ticket is ALREADY CLAIMED for you by the runner — do NOT claim it (no
+claim_ticket / claim_next_ticket). Start with get_ticket; consult memory search_lore
+for any org conventions; then scaffold the stack the ticket describes (package.json /
 tsconfig / .gitignore / a minimal hello-world or app skeleton), satisfying every
 acceptance criterion. You MAY run the dependency install ONCE in this directory
 (it is permitted only here, for this bootstrap). Run the project's tests if the
 scaffold defines any. Make the initial commit on the current branch. Record the
-smallest-change note (minimalism lens) describing the scaffold, evidence each AC
-via the record-evidence skill, and submit for review. Never self-approve.
+smallest-change note (minimalism lens) describing the scaffold and evidence each AC
+via the record-evidence skill, then STOP. Do NOT submit for review, push, or open a
+PR — the runner runs the gates, records the delivery, and submits. Never self-approve.
 
 Your working directory IS the new repo and the ONLY writable root: $B_DIR
 Do NOT write or read outside it. Do NOT branch — commit on the current branch.
@@ -424,6 +490,7 @@ EOF
     rm -f "$B_USAGE_JSON"
     log "bootstrap delivery for #$NUM finished (rc=$brc)"
     if [ "$brc" -ne 0 ]; then
+      gaffer_release_delivery refining "bootstrap failed (rc=$brc) — scaffold left at $B_DIR for inspection"
       gaffer_skip_ticket "$NUM"
       log "BOOTSTRAP FAILED for #$NUM (rc=$brc) — leaving $B_DIR for inspection; not onboarding"
       result error; exit 0
@@ -435,7 +502,7 @@ EOF
       log "BOOTSTRAP #$NUM produced no commit — parking (no scaffold to onboard)"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED: bootstrap produced no initial commit — needs clarification" >/dev/null 2>&1 || true
-      wg block "$NUM" --reason "bootstrap produced no initial commit" >/dev/null 2>&1 || true
+      gaffer_release_delivery refining "bootstrap produced no initial commit"
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
 
@@ -458,7 +525,7 @@ EOF
       if [ "${HYGIENE_ENFORCE:-1}" = "1" ]; then
         wg attach-evidence "$NUM" --type manual_note \
           --summary "PARKED: bootstrap hygiene violation (not onboarded):"$'\n'"$B_HYGIENE" >/dev/null 2>&1 || true
-        wg block "$NUM" --reason "bootstrap hygiene: $(printf '%s' "$B_HYGIENE" | tr '\n' ' ')" >/dev/null 2>&1 || true
+        gaffer_release_delivery refining "bootstrap hygiene: $(printf '%s' "$B_HYGIENE" | tr '\n' ' ')"
         gaffer_skip_ticket "$NUM"
         log "BOOTSTRAP FAILED for #$NUM — hygiene violation; not onboarding"
         result error; exit 0
@@ -491,7 +558,7 @@ print(hits[0] if hits else '')
         log "BOOTSTRAP MINIMALISM: #$NUM has NO smallest-change note — failing ($_BMZ_FILES files / $_BMZ_LINES lines)"
         wg attach-evidence "$NUM" --type manual_note \
           --summary "PARKED: bootstrap minimalism — missing smallest-change note (${_BMZ_FILES} files / ${_BMZ_LINES} lines)" >/dev/null 2>&1 || true
-        wg block "$NUM" --reason "bootstrap minimalism: missing smallest-change note" >/dev/null 2>&1 || true
+        gaffer_release_delivery refining "bootstrap minimalism: missing smallest-change note"
         gaffer_skip_ticket "$NUM"; result error; exit 0
       else
         log "MINIMALISM_ENFORCE=0 — #$NUM bootstrap missing smallest-change note, flagging not failing"
@@ -531,6 +598,15 @@ print(hits[0] if hits else '')
       log "BOOTSTRAP: dispatch registration of '$B_NAME' FAILED — the dependent tickets would not unblock; flagging #$NUM"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "needs_human_review: bootstrap scaffold succeeded but dispatch repo registration of '$B_NAME' failed — onboard manually so dependents unblock" >/dev/null 2>&1 || true
+    fi
+
+    # RUNNER-OWNED-BOOKKEEPING: the runner (holding the claim) submits the bootstrap
+    # ticket for review now that its gates passed and the delivery is recorded. The
+    # agent no longer submits.
+    if gaffer_submit_delivery "bootstrapped new repo $B_NAME at $B_DIR on $B_DEFAULT_BRANCH"; then
+      log "BOOTSTRAP: submitted #$NUM for review (→ in_review)"
+    else
+      log "BOOTSTRAP: WARNING — could not submit #$NUM for review; delivery recorded but ticket left claimed — needs a human"
     fi
 
     result worked; exit 0
@@ -636,7 +712,9 @@ print("\n".join(write_rows))
   [ -n "$LENSES" ] || LENSES="minimalism"
 
   if [ -z "$REPO_PATH" ] || [ ! -d "$REPO_PATH" ]; then
-    log "ticket #$NUM has no local repo path; leaving it for a human"; result no_work; exit 0
+    log "ticket #$NUM has no local repo path; leaving it for a human"
+    gaffer_release_delivery ready "no local repo path — leaving it for a human"
+    result no_work; exit 0
   fi
 
   # The agent's working directory (cwd) is the PRIMARY write repo: relative-path
@@ -676,15 +754,15 @@ print("\n".join(write_rows))
       log "SELF-OP: refusing to deliver #$NUM — target '$SELF_HIT' is (or is inside) a Gaffer component; the factory must not edit its own source. Set GAFFER_ALLOW_SELF_DELIVERY=1 to override (first-party dogfooding only)."
       wg attach-evidence "$NUM" --type manual_note \
         --summary "SELF-OP BAN: refused delivery — target '$SELF_HIT' is a Gaffer component (factory's own source). Override with GAFFER_ALLOW_SELF_DELIVERY=1." >/dev/null 2>&1 || true
-      # Set aside for a human, using the runner's existing un-ready board move
-      # (ready -> draft). The ticket is NOT claimed yet at this point, so `wg block`
-      # (claim-token-gated) can't apply; un-readying takes it OUT of `ready` so the
-      # candidate loop never re-selects it — exactly the "set aside, don't re-claim
+      # Set aside for a human. RUNNER-OWNED-BOOKKEEPING: the runner holds the claim
+      # now, so release it first (claimed → ready), THEN un-ready it (ready -> draft)
+      # so the candidate loop never re-selects it — the "set aside, don't re-claim
       # forever" mechanism the board already provides. SKIP_FILE is belt-and-braces
       # within the current run (loop.sh clears it per run).
+      gaffer_release_delivery ready "self-op: target is a Gaffer component"
       wg ticket move "$NUM" draft >/dev/null 2>&1 || true
       gaffer_skip_ticket "$NUM"
-      log "SELF-OP: set aside #$NUM for a human (un-readied ready→draft + skipped this run; not delivered, not re-claimed)"
+      log "SELF-OP: set aside #$NUM for a human (released claim + un-readied ready→draft + skipped this run; not delivered, not re-claimed)"
       result no_work; exit 0
     fi
   fi
@@ -825,8 +903,9 @@ run \`get_ticket\` and \`git log --oneline\` + \`git status\` to see what is alr
 then CONTINUE from there and FINISH it: implement the remaining acceptance criteria, run
 the repo's tests, and COMMIT any new work on the current branch —
 run: git add -A && git commit -m "deliver #$NUM: <summary>". An uncommitted edit is NOT a
-delivery. Then use the record-evidence skill to evidence each AC, the prepare-digest-delta
-skill, and the submit-review skill to submit for review. Never self-approve.
+delivery. Then use the record-evidence skill to evidence each AC and the prepare-digest-delta
+skill, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the gates,
+records the delivery, and submits. Never self-approve.
 If blocked, mark_ticket_blocked with a reason.
 
 REPO ACCESS BOUNDARY (enforced by the safety hook — not just guidance):
@@ -853,10 +932,9 @@ ALWAYS-APPLY lenses (mandatory on EVERY change, not optional): $LENSES
   its SKILL.md and apply it as you implement and again in self-review.
 $REVIEW_FEEDBACK_BLOCK
 $FILE_CARDS_BLOCK
-Follow your brief (CLAUDE.factory.md): claim THIS specific ticket (#$NUM) — the one
-the tick assigned you — via the dispatch MCP tool claim_ticket with ticket_id "$NUM"
-and agent_id "$AGENT" (NOT claim_next_ticket, which could hand you a different ticket
-if the queue shifted); get_ticket; then
+Follow your brief (CLAUDE.factory.md): this ticket (#$NUM) is ALREADY CLAIMED for you by
+the runner — do NOT claim it (no claim_ticket / claim_next_ticket). Start with get_ticket;
+then
 consult memory search_lore for conventions and use the PRIOR CONTEXT file cards above
 (when present) to choose what to read FIRST — read the actual files before editing;
 re-scan the tree only for what the cards do not already cover. Then implement to satisfy every
@@ -865,8 +943,8 @@ work on the current branch — run: git add -A && git commit -m "deliver #$NUM: 
 An uncommitted edit is NOT a delivery; the branch MUST carry your commit. Then use the
 record-evidence skill to evidence each AC, then the prepare-digest-delta skill to record
 (INERT, applied post-review by the merge) how the Repo Digest should move + which feature
-this ships, then the submit-review skill to submit for review (it owns
-commit/push/PR/submit_ticket_for_review). Never self-approve.
+this ships, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the
+gates, records the delivery, pushes/opens the PR, and submits. Never self-approve.
 If blocked, mark_ticket_blocked with a reason.
 
 REPO ACCESS BOUNDARY (enforced by the safety hook — not just guidance):
@@ -1078,8 +1156,11 @@ EOF
       log "RESUME FAILED for #$NUM — could not reuse the paused worktree; branch $WORK_BRANCH left intact for a human"
       result error; exit 0
     fi
-    # Roll back anything partially created so a failed setup leaves no residue.
+    # Roll back anything partially created so a failed setup leaves no residue, and
+    # release the runner-held claim back to `ready` (nothing was produced — a retry is
+    # safe on a later tick).
     gaffer_cleanup_worktrees drop-branch
+    gaffer_release_delivery ready "worktree setup failed — no work produced; retry"
     gaffer_skip_ticket "$NUM"
     log "delivery FAILED for #$NUM — a write repo could not be worktree'd; not running the agent"
     result error; exit 0
@@ -1104,7 +1185,12 @@ EOF
   # == destination → the redirect truncates the file → "Invalid MCP configuration").
   MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
   gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live run (fail closed)"; result error; exit 1; }
-  sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" \
+  # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
+  # MCP server env (GAFFER_CLAIM_TOKEN) so the agent's token-gated evidence writes
+  # resolve it from the server env — the agent never handles the token. Empty for a
+  # resumed delivery (the runner holds no token), which the MCP server treats as
+  # "no token" (the resume agent's evidence writes are best-effort, as before).
+  sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" -e "s#\${GAFFER_CLAIM_TOKEN}#${CLAIM_TOKEN}#g" \
       "$MCP_CONFIG" > "$MCP_RUNTIME"
   cp -f "$HERE/claude/CLAUDE.md" "$PRIMARY_REPO/CLAUDE.factory.md"
   gaffer_exclude_runner_config "$PRIMARY_REPO"   # keep runner config out of `git add -A`
@@ -1180,7 +1266,11 @@ EOF
       return 0
     fi
     # Attempts exhausted — park to refining WITH the branch + feedback. NEVER drop
-    # the branch: a delivery with commits keeps its salvageable work.
+    # the branch: a delivery with commits keeps its salvageable work. RUNNER-OWNED-
+    # BOOKKEEPING: the runner holds the claim and has NOT submitted (the gate ran
+    # pre-submit), so the ticket is `claimed`/`in_progress` — release/park it via the
+    # runner-release path. (The `in_review` branch is defensive only: it can't be
+    # reached pre-submit, but if a stray submit ever landed, reuse the reviewer reject.)
     local _cur
     _cur="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
     if [ "$_cur" = "in_review" ]; then
@@ -1189,9 +1279,8 @@ EOF
         && log "RECOVER: parked #$NUM (in_review → refining) after exhausting $_MAX_DELIVERY_ATTEMPTS attempts — branch $WORK_BRANCH PRESERVED for rework" \
         || log "RECOVER: WARNING — could not reject #$NUM to refining; ticket left in_review — needs a human (branch $WORK_BRANCH preserved)"
     else
-      wg block "$NUM" --reason "$gate failed after $_MAX_DELIVERY_ATTEMPTS attempts: $feedback (branch $WORK_BRANCH preserved)" >/dev/null 2>&1 \
-        && log "RECOVER: blocked #$NUM (status '$_cur') after exhausting attempts — branch $WORK_BRANCH PRESERVED for rework" \
-        || log "RECOVER: WARNING — could not park #$NUM (status '$_cur') — needs a human (branch $WORK_BRANCH preserved)"
+      gaffer_release_delivery refining "$gate failed after $_MAX_DELIVERY_ATTEMPTS attempts: $feedback (branch $WORK_BRANCH preserved)"
+      log "RECOVER: parked #$NUM (→ refining) after exhausting $_MAX_DELIVERY_ATTEMPTS attempts — branch $WORK_BRANCH PRESERVED for rework"
     fi
     # Tear down ONLY the worktree; the branch survives for rework.
     gaffer_cleanup_worktrees
@@ -1204,6 +1293,12 @@ EOF
   while [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ]; do
   _DELIV_ATTEMPT=$((_DELIV_ATTEMPT + 1))
   _DELIV_OUTCOME=""
+  # RUNNER-OWNED-BOOKKEEPING: heartbeat the runner-held claim at the start of each
+  # attempt so the lease covers the whole delivery even across retries (belt-and-
+  # braces with the generously-sized GAFFER_CLAIM_TTL). No-op when the runner holds
+  # no token (a resumed delivery). Best-effort — a failed heartbeat is logged, and
+  # the generous TTL still covers the delivery.
+  [ -n "${CLAIM_TOKEN:-}" ] && { wg heartbeat "$CLAIM_TOKEN" >/dev/null 2>&1 || log "heartbeat for #$NUM claim failed (non-fatal; TTL still covers the delivery)"; }
   [ "$_DELIV_ATTEMPT" -gt 1 ] && log "delivery for #$NUM — re-invoking agent (attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS) on branch $WORK_BRANCH"
   # On a retry the prior worktree was torn down (branch preserved); re-add a fresh
   # worktree on the SAME branch so the agent re-delivers from the recorded feedback.
@@ -1355,9 +1450,10 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
       result error; exit 0
     fi
     gaffer_cleanup_worktrees drop-branch
-    wg ticket move "$NUM" refining --reason "delivery failed: agent exited non-zero (rc=$rc) with no commits; branch dropped for retry" >/dev/null 2>&1 \
-      || wg block "$NUM" --reason "delivery failed: agent exited non-zero (rc=$rc) with no commits; branch dropped" >/dev/null 2>&1 \
-      || true
+    # RUNNER-OWNED-BOOKKEEPING: nothing was produced — release the runner-held claim
+    # back to `ready` so a later tick can retry cleanly (skip-file prevents a re-pick
+    # THIS run). Replaces the old "agent didn't submit" move-or-block fallback.
+    gaffer_release_delivery ready "delivery failed: agent exited non-zero (rc=$rc) with no commits; branch dropped for retry"
     gaffer_skip_ticket "$NUM"
     log "delivery FAILED for #$NUM (rc=$rc) — no commits produced; removed worktrees + branch $WORK_BRANCH; skipping it for the rest of this run"
     result error; exit 0
@@ -1378,18 +1474,14 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
     case "$HEAD_BRANCH" in
       "$rbase"|"")
         gaffer_cleanup_worktrees drop-branch
-        wg ticket move "$NUM" refining --reason "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch); branch dropped" >/dev/null 2>&1 \
-          || wg block "$NUM" --reason "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch)" >/dev/null 2>&1 \
-          || true
+        gaffer_release_delivery ready "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch); branch dropped"
         gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD is '$HEAD_BRANCH' (expected a gaffer/ branch, not the default '$rbase'); removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;
       gaffer/*) : ;;  # on the runner-owned branch as expected
       *)
         gaffer_cleanup_worktrees drop-branch
-        wg ticket move "$NUM" refining --reason "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch; branch dropped" >/dev/null 2>&1 \
-          || wg block "$NUM" --reason "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch" >/dev/null 2>&1 \
-          || true
+        gaffer_release_delivery ready "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch; branch dropped"
         gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD '$HEAD_BRANCH' is not a gaffer/ branch; removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;
@@ -1397,8 +1489,8 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
   done <<< "$WT_ROWS"
 
   # ── Auto-commit safety net ─────────────────────────────────────────────────
-  # Agents sometimes EDIT files and submit for review WITHOUT running git commit;
-  # the change then vanishes as an "empty" (0-commit) branch and the ticket is
+  # Agents sometimes EDIT files but STOP WITHOUT running git commit; the change then
+  # vanishes as an "empty" (0-commit) branch and the ticket is
   # parked, losing correct work. If a write-repo worktree has uncommitted changes,
   # commit them on the gaffer/ branch so a forgotten commit never drops the work.
   # Runner config is git-excluded + hygiene-forbidden, so this captures only the
@@ -1426,10 +1518,12 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
 
   # ── Re-queue/park policy: EMPTY delivery (0 commits / no diff) → PARK ───────
   # A delivery that produced no change is never blind-retried: the agent couldn't
-  # action the ticket as specified. Park it to `refining` with a clear reason (or
-  # block as a fallback) so a human / the clarify path can disambiguate, then drop
-  # the empty branch. Computed across ALL write repos: empty only if EVERY write
-  # repo's branch diff is empty.
+  # action the ticket as specified. RUNNER-OWNED-BOOKKEEPING: the runner holds the
+  # claim and has NOT submitted (the gate runs pre-submit), so it releases/parks the
+  # held claim to `refining` (needs triage) directly — replacing the old status-probe
+  # fallback that existed only because the AGENT used to submit and might not have.
+  # Computed across ALL write repos: empty only if EVERY write repo's branch diff is
+  # empty.
   ANY_DIFF=0
   while IFS=$'\t' read -r rid rname rpath rbase rwt; do
     [ -n "$rwt" ] || continue
@@ -1441,35 +1535,7 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
     log "EMPTY delivery for #$NUM — 0 commits / no diff across all write repos; parking (no blind retry)"
     wg attach-evidence "$NUM" --type manual_note \
       --summary "PARKED: empty delivery (no diff produced) — routing to refinement, not retrying blindly" >/dev/null 2>&1 || true
-    # R-6: the status-fetch + state-move used to fail SILENTLY — an empty status (a
-    # failed `wg ticket show`) wrongly fell through to the block branch, and any move
-    # failure was swallowed by `|| true`, leaving the ticket drifting in in_review.
-    # Now: an EMPTY status fetch is surfaced as a visible WARNING (and we conservatively
-    # try to block rather than mis-route), and EVERY move failure is logged explicitly
-    # with the ticket number + the attempted transition. All still NON-FATAL — the
-    # empty-delivery park must complete (worktree/branch teardown below) regardless.
-    _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-    if [ -z "$_CUR_STATUS" ]; then
-      log "EMPTY: WARNING — could not read status for #$NUM (status fetch returned empty); cannot confirm the in_review→refining transition. Attempting a block as a fallback."
-      if wg block "$NUM" --reason "empty delivery: agent produced no change — needs clarification/refinement (status unknown — fetch failed)" >/dev/null 2>&1; then
-        log "EMPTY: blocked #$NUM (status unknown)"
-      else
-        log "EMPTY: WARNING — could not block #$NUM after empty delivery (status unknown); ticket may be drifting — needs a human"
-      fi
-    elif [ "$_CUR_STATUS" = "in_review" ]; then
-      if wg review reject "$NUM" --to refining --reviewer factory-empty \
-        --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1; then
-        log "EMPTY: parked #$NUM (in_review → refining)"
-      else
-        log "EMPTY: WARNING — failed to move #$NUM (in_review → refining) after empty delivery; ticket left in in_review — needs a human"
-      fi
-    else
-      if wg block "$NUM" --reason "empty delivery: agent produced no change — needs clarification/refinement" >/dev/null 2>&1; then
-        log "EMPTY: blocked #$NUM (status '$_CUR_STATUS')"
-      else
-        log "EMPTY: WARNING — failed to block #$NUM (status '$_CUR_STATUS') after empty delivery; ticket may be drifting — needs a human"
-      fi
-    fi
+    gaffer_release_delivery refining "empty delivery: agent produced no change — needs clarification/refinement"
     gaffer_cleanup_worktrees drop-branch
     gaffer_skip_ticket "$NUM"
     log "delivery PARKED for #$NUM — empty; removed worktrees + branch $WORK_BRANCH"
@@ -1509,20 +1575,11 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
         result error; exit 0
       fi
       # No commits (e.g. a leak that is purely a worktree artifact with no diff):
-      # there is nothing salvageable on the branch — drop it as before.
+      # there is nothing salvageable on the branch — drop it. RUNNER-OWNED-
+      # BOOKKEEPING: release/park the held claim to refining directly (pre-submit).
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED: delivery hygiene violation (not submitted):"$'\n'"$HYGIENE_REASONS" >/dev/null 2>&1 || true
-      _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-      if [ "$_CUR_STATUS" = "in_review" ]; then
-        wg review reject "$NUM" --to refining --reviewer factory-hygiene \
-          --reason "delivery hygiene violation: $_HY_FLAT" >/dev/null 2>&1 \
-          && log "HYGIENE: parked #$NUM (in_review → refining)" \
-          || log "HYGIENE: could not reject #$NUM to refining (non-fatal)"
-      else
-        wg block "$NUM" --reason "delivery hygiene violation: $_HY_FLAT" >/dev/null 2>&1 \
-          && log "HYGIENE: blocked #$NUM (status was '$_CUR_STATUS', not in_review)" \
-          || log "HYGIENE: could not park #$NUM (non-fatal); status was '$_CUR_STATUS'"
-      fi
+      gaffer_release_delivery refining "delivery hygiene violation: $_HY_FLAT"
       gaffer_cleanup_worktrees drop-branch
       gaffer_skip_ticket "$NUM"
       log "delivery FAILED for #$NUM — hygiene violation, no commits; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
@@ -1653,17 +1710,9 @@ for r in d.get("repositories", []) or []:
         --summary "DoD: FAIL"$'\n'"$(printf '{"dod":"FAIL","gates":[{"gate":"config","repo":"-","status":"FAIL","rc":"-","note":"could not resolve DoD gate commands from the dispatch payload"}]}')" >/dev/null 2>&1 \
         && log "DoD: recorded config-FAIL evidence on #$NUM" \
         || log "DoD: WARNING — could not attach config-FAIL evidence on #$NUM"
-      _CUR_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-      if [ "$_CUR_STATUS" = "in_review" ]; then
-        wg review reject "$NUM" --to refining --reviewer factory-dod \
-          --reason "Definition of Done could not run: gate commands unresolved from the dispatch payload" >/dev/null 2>&1 \
-          && log "DoD: parked #$NUM (in_review → refining) after a config-resolution failure" \
-          || log "DoD: WARNING — could not reject #$NUM to refining; ticket left in in_review — needs a human"
-      else
-        wg block "$NUM" --reason "Definition of Done could not run: gate commands unresolved from the dispatch payload" >/dev/null 2>&1 \
-          && log "DoD: blocked #$NUM (status was '$_CUR_STATUS')" \
-          || log "DoD: WARNING — could not park #$NUM (status '$_CUR_STATUS') — needs a human"
-      fi
+      # RUNNER-OWNED-BOOKKEEPING: release/park the held claim to refining (pre-submit;
+      # the branch is preserved for a human to fix the config + re-run).
+      gaffer_release_delivery refining "Definition of Done could not run: gate commands unresolved from the dispatch payload"
       # GUARD B invariant: the agent committed work before this CONFIG failure
       # (the diff was asserted non-empty above), so the branch carries salvageable
       # work — PRESERVE it (worktree-only teardown). Re-invoking the agent cannot
@@ -1772,6 +1821,20 @@ for r in d.get("repositories", []) or []:
   # the loop; unrecoverable ones already `exit 0`.)
   break
   done   # end GUARD B recoverable-delivery attempt loop
+
+  # ── RUNNER-OWNED-BOOKKEEPING: submit for review (the runner, not the agent) ──
+  # Every gate passed. The runner (which holds the claim) now submits the ticket for
+  # review — deterministic + token-free from the agent's perspective. A normal
+  # delivery uses the claim-gated `wg submit` (claimed → in_review, completing the
+  # claim); a resumed delivery (no runner-held token) is moved in_progress → in_review.
+  # The delivery-artifact / diff_summary / per-repo records BELOW run as a SYSTEM actor
+  # and are status-independent, so submitting first (matching the old agent-submit
+  # ordering) keeps the done-gate's PR/diff evidence attached to an in_review ticket.
+  if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
+    log "submitted #$NUM for review (→ in_review) — runner-owned submit"
+  else
+    log "WARNING — could not submit #$NUM for review (runner submit failed); delivery is recorded but the ticket is not in_review — needs a human / claim-recovery"
+  fi
 
   # Per-repo delivery recording (FG-008 / WG-005): for EACH write repo, persist a
   # per-repo delivery artifact (branch + diffstat as the evidence note). Single-repo
@@ -2008,7 +2071,10 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$WT/.claude/settings.json"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
-      sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
+      # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
+      # substituted EMPTY (the MCP server treats "" as "no token"). Substituting it
+      # strips the placeholder so the literal ${GAFFER_CLAIM_TOKEN} never leaks in.
+      sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" -e "s#\${GAFFER_CLAIM_TOKEN}#${CLAIM_TOKEN}#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
       cp -f "$HERE/claude/CLAUDE.md" "$WT/CLAUDE.factory.md"
       # File-card context for the reviewer — orients it on the repo's structure
       # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.
@@ -2134,7 +2200,10 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$CREPO/.claude/settings.json"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
-      sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
+      # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
+      # substituted EMPTY (the MCP server treats "" as "no token"). Substituting it
+      # strips the placeholder so the literal ${GAFFER_CLAIM_TOKEN} never leaks in.
+      sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" -e "s#\${GAFFER_CLAIM_TOKEN}#${CLAIM_TOKEN}#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
       cp -f "$HERE/claude/CLAUDE.md" "$CREPO/CLAUDE.factory.md"
       # File-card context for the intake agent — orients it on the repo before
       # it reads the ticket and spots ambiguities. FAIL-SOFT via gaffer_prime_context_block.

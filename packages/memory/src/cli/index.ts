@@ -22,9 +22,11 @@ import {
 } from "./commands/knowledge.js";
 import {
   cmdCard,
+  cmdCards,
   cmdCardsForScope,
   cmdDeleteFileCard,
   cmdGetCardWatermark,
+  cmdRepoCanonical,
 } from "./commands/cards.js";
 import {
   cmdAbsent,
@@ -242,6 +244,19 @@ COMMANDS
                             Read the repo's card-set watermark (synced_commit).
                             The CLI seam the Runner uses to fetch the watermark
                             instead of reading Memory's DB directly.
+  repo-canonical (--repo-root <abs> | --canonical <url-or-path>) [--json]
+                            Print the NORMALISED canonical (host/owner/repo,
+                            lowercased — or the path fallback for no-remote
+                            repos). The seam bash callers use so read/write
+                            identity derivation can't drift. --json also
+                            prints the derived repo_key.
+  cards rekey --canonical <c> --repo <r> [--dry-run] [--json]
+                            Re-key every card + watermark for display name <r>
+                            onto repoKey(normalised canonical), in ONE
+                            transaction (FTS stays intact). Migration for cards
+                            onboarded before canonicalisation whose repo_key is
+                            an sha256 of an un-normalised URL. --dry-run reports
+                            what would move without writing.
   cards-for-scope --canonical <c> --repo <r> --query <q>
       [--paths p1 --paths p2] [--important-paths p3]
       [--max-cards N] [--max-tokens N] [--per-card-max-tokens N] [--json]
@@ -363,6 +378,10 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdFeatures(parsed);
       case "card":
         return await cmdCard(parsed);
+      case "cards":
+        return await cmdCards(parsed);
+      case "repo-canonical":
+        return await cmdRepoCanonical(parsed);
       case "delete-file-card":
         return await cmdDeleteFileCard(parsed);
       case "get-card-watermark":

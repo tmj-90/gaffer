@@ -37,6 +37,7 @@
 import type { Database } from "better-sqlite3";
 
 import {
+  diagnoseRepoKeyMismatch,
   listCardsForPathPrefixes,
   listCardsForPaths,
   repoKey as computeRepoKey,
@@ -117,6 +118,14 @@ export interface ScopePacket {
    * debugging selection decisions.
    */
   readonly selectionBasis: string;
+  /**
+   * FAIL-LOUD diagnostics. Present (non-empty) when the packet came back
+   * empty BUT the store demonstrably holds cards for this repo under a
+   * different repo_key — i.e. a canonical/key mismatch. Callers (CLI, runner
+   * prime path) MUST surface these to a log/stderr — never silently return an
+   * empty result when cards exist. Omitted when there is nothing to warn about.
+   */
+  readonly diagnostics?: readonly string[];
 }
 
 // ── Input ─────────────────────────────────────────────────────────────
@@ -387,6 +396,16 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
 
   const selectionBasis = buildSelectionBasis(paths, importantPaths, query);
 
+  // FAIL LOUD: if we're about to hand back an empty card set, check whether
+  // the store actually HAS cards for this repo under a different key (the
+  // canonical/key-mismatch trap). If so, attach a diagnostic rather than
+  // silently returning nothing.
+  const diagnostics: string[] = [];
+  if (selectedCards.length === 0) {
+    const warn = diagnoseRepoKeyMismatch(db, rk, input.repo, input.repoCanonical);
+    if (warn) diagnostics.push(warn);
+  }
+
   return {
     cards: selectedCards,
     digest,
@@ -400,5 +419,6 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
       missing,
     },
     selectionBasis,
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
 }

@@ -60,15 +60,20 @@ export type {
   UpsertDigestInput,
 } from "./core/repoUnderstanding.js";
 export {
+  cardKeysForRepoName,
+  countActiveCards,
+  diagnoseRepoKeyMismatch,
   getFileCard,
   getWatermark,
   listCardsForPaths,
+  rekeyRepo,
   repoKey,
   searchFileCards,
   setWatermark,
   upsertFileCard,
 } from "./core/fileCards.js";
-export type { UpsertFileCardInput } from "./core/fileCards.js";
+export type { RekeyResult, RepoKeyPresence, UpsertFileCardInput } from "./core/fileCards.js";
+export { canonicalizeRepo } from "./core/repoIdentity.js";
 export { validateMechanical, validateModel, sha256 } from "./core/cardValidation.js";
 export type {
   MechanicalValidationInput,

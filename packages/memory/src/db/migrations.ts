@@ -320,6 +320,24 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // Persist the NORMALISED canonical (host/owner/repo or path) that a row's
+    // repo_key was derived from. Before this, only the sha256(repo_key) was
+    // stored — which can't be reversed — so a repo onboarded via one URL form
+    // (ssh) and searched via another (https) produced different keys and
+    // SILENTLY returned 0 cards. `repoKey` now normalises via canonicalizeRepo
+    // at the single chokepoint, and this column records the canonical so
+    // existing rows can be re-keyed (see rekeyRepo / `memory cards rekey`) and
+    // future rows carry their identity for debugging. Nullable: pre-007 rows
+    // have no stored canonical until they are re-keyed or re-onboarded.
+    id: "007-repo-canonical-column",
+    up(db) {
+      db.exec(`
+        ALTER TABLE file_card ADD COLUMN canonical TEXT;
+        ALTER TABLE repo_sync ADD COLUMN canonical TEXT;
+      `);
+    },
+  },
 ];
 
 /**

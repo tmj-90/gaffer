@@ -15,6 +15,30 @@ mkdir -p "$GAFFER_DATA"
 # subshell (DoD gates, agent invocations, reviewer, clarifier).
 export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 
+# ORPHAN-REAP (wallet-drain): every live `claude -p` in this tick runs under
+# gaffer_timeout, which records the agent's process-group id here while it is
+# in-flight and REMOVES the file the instant the agent returns normally. So this
+# file only ever holds a LIVE agent PGID — a survivor of an abnormal tick death.
+# The crash-cleanup trap (below) reaps that group as a belt-and-braces backstop to
+# gaffer_timeout's own TERM/INT-forwarding + TERM->KILL escalation. Per-tick ($$)
+# so concurrent workers never clobber each other's record.
+export GAFFER_TIMEOUT_PGID_FILE="$GAFFER_DATA/.agent-pgid.$$"
+# Reap an orphaned agent process group if one is still recorded (see above). TERM
+# the whole group, brief grace, then KILL any survivor so no `claude -p` lingers
+# burning tokens. Numeric-guarded and fully best-effort — never faults the trap.
+gaffer_reap_orphan_agent() {
+  local f="${GAFFER_TIMEOUT_PGID_FILE:-}" pgid
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  pgid="$(cat "$f" 2>/dev/null || true)"
+  rm -f "$f" 2>/dev/null || true
+  [ -n "$pgid" ] || return 0
+  case "$pgid" in *[!0-9]*) return 0 ;; esac   # numeric PGID only
+  kill -TERM "-$pgid" 2>/dev/null || true
+  sleep 1
+  kill -KILL "-$pgid" 2>/dev/null || true
+  return 0
+}
+
 # ── R-2: crash-cleanup trap installed UP FRONT (covers the whole lifecycle) ─────
 # The worktree teardown trap used to be installed only AFTER worktree setup, so a
 # crash or signal DURING the earlier candidate / skill / access-boundary parsing
@@ -59,6 +83,11 @@ GAFFER_KEEP_DELIVERY_BRANCH="${GAFFER_KEEP_DELIVERY_BRANCH:-0}"
 # (it touches neither worktree nor branch) for this paused ticket.
 GAFFER_PAUSE_KEEP_WORKTREE="${GAFFER_PAUSE_KEEP_WORKTREE:-0}"
 gaffer_crash_cleanup() {
+  # Reap any orphaned in-flight agent FIRST — before any branch/worktree decision.
+  # A runaway `claude -p` must be torn down regardless of how this tick ends
+  # (complete, paused, or crashed); on a clean finish this is a no-op because
+  # gaffer_timeout already removed the PGID record.
+  gaffer_reap_orphan_agent
   # A paused delivery keeps its worktree + branch ALIVE for the one-click resume —
   # the crash-cleanup must never tear it down. This is the load-bearing PAUSE-ON-CAP
   # invariant: a paused worktree survives the tick's exit.

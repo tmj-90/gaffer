@@ -261,8 +261,17 @@ function classifyRootAccess(absPath, { writeRoots, readRoots }) {
 // Secret-bearing / sensitive paths — never written, never read (keeps secrets
 // out of the model's context window too). Anchored to end-of-path for the
 // Read/Write file checks below.
+//
+// TOKEN FILES (dashboard-token boundary): the Dispatch REST auth token is
+// persisted to `$GAFFER_DATA/dashboard-token`. `$GAFFER_DATA` sits in the
+// delivery agent's READ allowlist, so without this a same-user agent could read
+// the token off disk and self-approve its own work over the API, defeating the
+// env-scrub. We treat the token file — and the general credential-token family
+// (`*-token`, `*.token`, `*_token`, `*-token.<ext>`) — as a secret path. The
+// `[._-]tokens?` join requires a real separator before `token`, so a bare word
+// like `TOKEN` in an unrelated position is not a path match here.
 const SECRET_PATH =
-  /(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt))$/i;
+  /(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt)|dashboard-token|[\w.-]*[._-]tokens?(\.[\w-]+)?)$/i;
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
 
 // =====================================================================
@@ -297,8 +306,12 @@ const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
 // string (not anchored to end-of-path — a command can reference the path
 // mid-line, in quotes, as an argument, etc.). Covers the same families as
 // SECRET_PATH plus directory-style markers (.ssh/, .aws/).
+// The `dashboard-token`/`*-token` fragments require a `[._-]` separator directly
+// before `token` (or match the literal `dashboard-token`), so an unrelated bare
+// word like `TOKEN` used as a grep pattern is NOT flagged — only real token-file
+// references (`.gaffer/dashboard-token`, `api.token`, `foo_token`) are.
 const SECRET_PATH_FRAGMENT =
-  /(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b)/i;
+  /(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|dashboard-token\b|[\w./-]*[._-]tokens?\b)/i;
 
 // Glob/wildcard tokens whose literal part overlaps a secret family. These
 // resolve to secret paths at runtime even though no full secret name is
@@ -306,7 +319,7 @@ const SECRET_PATH_FRAGMENT =
 // `*credential*`, `*secret*`). We match the wildcard form specifically so
 // an ordinary glob like `*.ts` or `src/*` is not flagged.
 const SECRET_GLOB =
-  /(\.e[*?]|\.en[*?]|\.env[*?]|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?])/i;
+  /(\.e[*?]|\.en[*?]|\.env[*?]|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?]|[*?][\w./-]*token|token[\w./-]*[*?]|dashboard-token[*?])/i;
 
 // Shell read/redirect/source positions that consume a file's CONTENTS
 // without naming a "reader" binary:
@@ -314,9 +327,9 @@ const SECRET_GLOB =
 //   `source .env` / `. .env`   load secrets into the environment
 //   `read ... < .env` / `mapfile < .env`  (the `<` rule catches these too)
 const REDIRECT_READ =
-  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?)/i;
+  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|dashboard-token|[._-]tokens?)/i;
 const SOURCE_SECRET =
-  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?)/i;
+  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|dashboard-token|[._-]tokens?)/i;
 
 // Command-substitution / pipe / xargs constructs that decouple the tool
 // from the path it operates on, hiding the data flow from static analysis.
@@ -342,7 +355,7 @@ const FILE_READ_PRIMITIVE =
 // We can't follow the dataflow, so any secret-path assignment is treated
 // as a read boundary unless the whole command is a single safe governed op.
 const SECRET_ASSIGNMENT =
-  /\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b)/i;
+  /\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b|dashboard-token\b|[._-]tokens?\b)/i;
 
 // =====================================================================
 // INLINE-INTERPRETER FILESYSTEM BOUNDARY (FG-007, P0/P1)

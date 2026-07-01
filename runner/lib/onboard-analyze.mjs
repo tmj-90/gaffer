@@ -1950,8 +1950,11 @@ const CARD_REVIEW_VERDICTS = new Set(["pass", "revise", "reject"]);
 /**
  * Parse + sanitise the model's card-review verdict. Returns
  * { verdict, reason } or null when the output is unusable.
- * An unusable review verdict is treated as "pass" by the caller
- * (fail-safe: reviews that can't be parsed don't downgrade cards).
+ * An unusable/unparseable review verdict is treated as FAIL-CLOSED by the
+ * caller: the card could not be vouched for, so its model fields are NOT
+ * trusted — the card is downgraded to mechanical-only, matching the
+ * trust-split. (Historically this failed OPEN — treated as "pass" — which
+ * let a poisoned card survive a review the model silently failed to parse.)
  */
 export function validateCardReviewResult(obj) {
   if (!obj || typeof obj !== "object") return null;
@@ -2059,7 +2062,15 @@ function markFailedCli(cfg, { canonical, repo, rel, reason }, env = process.env)
  * Sampled semantic review gate. Takes a list of review candidates (model-active
  * cards with their generation context), samples up to maxReviews, runs the
  * card-review skill prompt for each, and downgrades any card the reviewer
- * flags as wrong. Best-effort: any failure logs + continues; never throws.
+ * flags as wrong. Never throws.
+ *
+ * FAIL-CLOSED: a review that returns no parseable verdict, or whose turn throws,
+ * means the card could NOT be vouched for — its model fields are downgraded to
+ * mechanical-only (mark-failed), matching the trust-split. A card is only left
+ * with its model fields intact when a review explicitly returns `verdict: pass`.
+ * (The prior behaviour failed OPEN — an unparseable/errored review was treated
+ * as a pass — so a poisoned card could survive a review the model silently
+ * failed to produce.)
  *
  * maxReviews defaults to CARD_REVIEW_SAMPLE_DEFAULT (env: GAFFER_CARD_REVIEW_SAMPLE).
  * Set to 0 to disable. The sample is taken from the front of the list (the
@@ -2082,12 +2093,39 @@ export function runCardReviewSample(
   let reviewed = 0;
   let downgraded = 0;
 
+  // Downgrade one card's model fields to mechanical-only. Returns true when the
+  // mark-failed CLI succeeded. A failed mark-failed is logged and leaves the
+  // card active — a secondary CLI failure we can't do better than surface.
+  const downgrade = (rel, reason) => {
+    const mfRes = markFailedCli(cfg, { canonical, repo, rel, reason }, env);
+    if (mfRes.error || (mfRes.status ?? 0) !== 0) {
+      log(
+        `review: mark-failed for ${rel} failed — card remains active: ` +
+          `${mfRes.error?.message ?? mfRes.stderr?.trim() ?? `exit ${mfRes.status}`}`,
+      );
+      return false;
+    }
+    return true;
+  };
+
   for (const c of sample) {
     try {
       const prompt = buildCardReviewPrompt(c.rel, c.fileType, c.structure, c.snippet, c.fields);
       const result = runReviewTurn(prompt);
+      // FAIL-CLOSED: no parseable verdict → the card is unverified, so its model
+      // fields are NOT trusted. Downgrade to mechanical-only rather than
+      // letting an unreviewable (possibly poisoned) card keep its model text.
       if (!result) {
-        log(`review: no parseable verdict for ${c.rel} — treating as pass`);
+        reviewed += 1;
+        if (
+          downgrade(
+            c.rel,
+            "semantic-review(unverified): no parseable verdict — model fields untrusted (fail-closed)",
+          )
+        ) {
+          downgraded += 1;
+          log(`review: ${c.rel} → unverified verdict — downgraded (fail-closed)`);
+        }
         continue;
       }
       reviewed += 1;
@@ -2096,23 +2134,24 @@ export function runCardReviewSample(
         log(`review: ${c.rel} → pass`);
         continue;
       }
-      // Downgrade the card.
-      const mfRes = markFailedCli(
-        cfg,
-        { canonical, repo, rel: c.rel, reason: `semantic-review(${verdict}): ${reason}` },
-        env,
-      );
-      if (mfRes.error || (mfRes.status ?? 0) !== 0) {
-        log(
-          `review: mark-failed for ${c.rel} failed — card remains active: ` +
-            `${mfRes.error?.message ?? mfRes.stderr?.trim() ?? `exit ${mfRes.status}`}`,
-        );
-      } else {
+      // Explicit revise/reject → downgrade the card.
+      if (downgrade(c.rel, `semantic-review(${verdict}): ${reason}`)) {
         downgraded += 1;
         log(`review: ${c.rel} → ${verdict} (downgraded): ${reason}`);
       }
     } catch (err) {
-      log(`review: turn failed for ${c.rel} (${err?.message ?? err}) — treating as pass`);
+      // FAIL-CLOSED: a review turn that threw is an unverified card — downgrade
+      // it too rather than treating the error as an implicit pass.
+      reviewed += 1;
+      if (
+        downgrade(
+          c.rel,
+          `semantic-review(errored): ${err?.message ?? err} — model fields untrusted (fail-closed)`,
+        )
+      ) {
+        downgraded += 1;
+        log(`review: turn failed for ${c.rel} (${err?.message ?? err}) — downgraded (fail-closed)`);
+      }
     }
   }
 

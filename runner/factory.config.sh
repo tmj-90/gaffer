@@ -246,9 +246,31 @@ export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 # so a normal delivery never needs a heartbeat. The runner ALSO heartbeats the claim
 # at the start of each retry attempt (belt-and-braces), so even a mis-sized TTL can't
 # let the lease lapse mid-delivery. Default: attempts × timeout + 5 min margin.
-: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=2}"
-: "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-2} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
+#
+# Default is 3 (was 2) to give the ESCALATION LADDER room to work: attempt 1 delivers
+# with the routed model + the real failure fed back; attempt 2 RETHINKS the approach
+# (re-plan, optionally narrower scope); attempt 3 escalates to a STRONGER model
+# (GAFFER_REWORK_STRONG_MODEL) with the full feedback history. Set to 1 to disable
+# rework entirely (one attempt, then park to `blocked`).
+: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"
+: "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
 export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
+
+# ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning
+# for the hardest cases before a human is pulled in). Empty → keep the routed model
+# (no escalation). Defaults to the plan tier (opus) so the last attempt reasons as
+# hard as the planner does.
+: "${GAFFER_REWORK_STRONG_MODEL:=${GAFFER_PLAN_MODEL:-opus}}"
+export GAFFER_REWORK_STRONG_MODEL
+
+# DOUBLE-BOUND: a per-ticket rework COST ceiling (USD). The rework loop stops at
+# whichever hits FIRST — the attempt cap (above) OR this cumulative per-ticket spend
+# — then parks to `blocked` (rework_exhausted). Prevents unbounded token burn on one
+# stubborn ticket even when attempts remain. Defaults to the factory-wide
+# GAFFER_BUDGET_USD (a single ticket may not consume the whole budget on rework);
+# empty/0 → no per-ticket ceiling (attempt cap alone bounds it).
+: "${GAFFER_REWORK_BUDGET_USD:=${GAFFER_BUDGET_USD:-}}"
+export GAFFER_REWORK_BUDGET_USD
 
 # --- Recoverable-delivery guard (GUARD B) ------------------------------------
 # When the agent produced ≥1 commit but a DOWNSTREAM gate (DoD / hygiene /
@@ -256,11 +278,42 @@ export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
 # branch holds salvageable work, so the failure path PRESERVES the branch
 # (tears down only the disposable worktree), attaches the gate output to the
 # ticket as a rework note, and RE-INVOKES the delivery agent on the SAME branch
-# with that feedback — bounded by this cap. Only after the attempts are
-# exhausted is the ticket parked to `refining` WITH the branch + feedback (never
-# silently discarded). Set to 1 to disable retry (one attempt, then park).
-: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=2}"   # total delivery attempts per tick (≥1)
+# with that feedback — bounded by this cap. Only after the attempts (OR the
+# per-ticket rework budget, GAFFER_REWORK_BUDGET_USD) are exhausted is the ticket
+# parked to the VISIBLE `blocked` column WITH the branch + full feedback trail (a
+# structured `rework_exhausted` reason) — never silently discarded, never lost to
+# the board. Set to 1 to disable retry (one attempt, then park).
+: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"   # total delivery attempts per tick (≥1)
 export GAFFER_MAX_DELIVERY_ATTEMPTS
+
+# gaffer_ticket_rework_spend <ticket>
+# Sum this ticket's measured delivery spend (total_cost_usd) from the usage ledger
+# — the DOUBLE-BOUND's cost side. Prints a decimal USD figure (0 when unmeasured or
+# no ledger). Unmeasured ("unknown") records contribute 0 (honest: we never invent
+# a cost), so the ceiling is only ever tripped by REAL measured spend.
+gaffer_ticket_rework_spend() {
+  local ticket="$1"
+  command -v node >/dev/null 2>&1 || { printf '0'; return 0; }
+  local ledger="${GAFFER_USAGE_LEDGER:-${GAFFER_DATA:+$GAFFER_DATA/usage-ledger.jsonl}}"
+  [ -n "$ledger" ] && [ -f "$ledger" ] || { printf '0'; return 0; }
+  GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" node -e '
+    const fs=require("fs");
+    const want=String(process.env.GAFFER_RW_TICKET);
+    let spend=0;
+    try {
+      for (const ln of fs.readFileSync(process.env.GAFFER_RW_LEDGER,"utf8").split("\n")) {
+        const t=ln.trim(); if(!t) continue;
+        let r; try { r=JSON.parse(t); } catch { continue; }
+        if (r.kind!=="delivery") continue;
+        if (String(r.ticket)!==want) continue;
+        const c=r.total_cost_usd;
+        if (typeof c==="number" && Number.isFinite(c) && c>=0) spend+=c;
+      }
+    } catch {}
+    process.stdout.write(spend.toFixed(6));
+  ' 2>/dev/null || printf '0'
+}
+export -f gaffer_ticket_rework_spend 2>/dev/null || true
 
 # --- Ask-on-cap guard (GUARD C) ----------------------------------------------
 # When a mid-delivery agent call HITS a cap rather than failing a gate — it ran

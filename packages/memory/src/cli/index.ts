@@ -20,7 +20,12 @@ import {
   cmdFeatures,
   cmdImpact,
 } from "./commands/knowledge.js";
-import { cmdCard, cmdCardsForScope } from "./commands/cards.js";
+import {
+  cmdCard,
+  cmdCardsForScope,
+  cmdDeleteFileCard,
+  cmdGetCardWatermark,
+} from "./commands/cards.js";
 import {
   cmdAbsent,
   cmdAudit,
@@ -229,6 +234,14 @@ COMMANDS
                             Record the repo's card-set watermark (the commit
                             the cards were built from). Run once after an
                             onboard card pass.
+  delete-file-card --canonical <c> --repo <r> --path <p> [--json]
+                            Hard-delete one file card (row + FTS entry) for a
+                            deleted / renamed-away file so no stale card is left
+                            behind. No-op when the path has no card.
+  get-card-watermark --canonical <c> --repo <r> [--json]
+                            Read the repo's card-set watermark (synced_commit).
+                            The CLI seam the Runner uses to fetch the watermark
+                            instead of reading Memory's DB directly.
   cards-for-scope --canonical <c> --repo <r> --query <q>
       [--paths p1 --paths p2] [--important-paths p3]
       [--max-cards N] [--max-tokens N] [--per-card-max-tokens N] [--json]
@@ -350,6 +363,10 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdFeatures(parsed);
       case "card":
         return await cmdCard(parsed);
+      case "delete-file-card":
+        return await cmdDeleteFileCard(parsed);
+      case "get-card-watermark":
+        return await cmdGetCardWatermark(parsed);
       case "cards-for-scope":
         return await cmdCardsForScope(parsed);
       case "hooks":

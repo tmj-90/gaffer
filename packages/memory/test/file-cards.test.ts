@@ -19,6 +19,7 @@ import type { Database } from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  deleteFileCard,
   getFileCard,
   getWatermark,
   listCardsForPaths,
@@ -532,6 +533,75 @@ describe("listCardsForPaths", () => {
 
     const results = listCardsForPaths(db, TEST_REPO_KEY, ["src/a.ts"]);
     expect(results.every((r) => r.repoKey === TEST_REPO_KEY)).toBe(true);
+  });
+});
+
+// ── deleteFileCard ─────────────────────────────────────────────────────
+
+describe("deleteFileCard", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newDb();
+  });
+
+  it("hard-deletes the card row AND its FTS entry in one transaction", () => {
+    upsertFileCard(
+      db,
+      cardInput({ path: "src/gone.ts", symbols: ["Gone"], tldr: "to be removed" }),
+    );
+    // Both the card and its FTS row exist up front.
+    expect(getFileCard(db, TEST_REPO_KEY, "src/gone.ts")).not.toBeNull();
+    expect(searchFileCards(db, TEST_REPO_KEY, "Gone")).toHaveLength(1);
+
+    const removed = deleteFileCard(db, TEST_REPO_KEY, "src/gone.ts");
+    expect(removed).toBe(true);
+
+    // Card row gone.
+    const cardCount = (
+      db
+        .prepare("SELECT COUNT(*) AS n FROM file_card WHERE repo_key = ? AND path = ?")
+        .get(TEST_REPO_KEY, "src/gone.ts") as { n: number }
+    ).n;
+    expect(cardCount).toBe(0);
+    // FTS entry gone too — no orphan left to mislead search.
+    const ftsCount = (db.prepare("SELECT COUNT(*) AS n FROM file_card_fts").get() as { n: number })
+      .n;
+    expect(ftsCount).toBe(0);
+    expect(searchFileCards(db, TEST_REPO_KEY, "Gone")).toHaveLength(0);
+    expect(getFileCard(db, TEST_REPO_KEY, "src/gone.ts")).toBeNull();
+  });
+
+  it("returns false for a no-op delete (no card at the path)", () => {
+    expect(deleteFileCard(db, TEST_REPO_KEY, "src/never-existed.ts")).toBe(false);
+  });
+
+  it("emits a file_card_deleted audit event", () => {
+    upsertFileCard(db, cardInput({ path: "src/gone.ts" }));
+    deleteFileCard(db, TEST_REPO_KEY, "src/gone.ts");
+    const events = db
+      .prepare("SELECT payload FROM events WHERE kind = 'file_card_deleted'")
+      .all() as Array<{ payload: string }>;
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0]!.payload).path).toBe("src/gone.ts");
+  });
+
+  it("only removes the targeted card, leaving siblings intact", () => {
+    upsertFileCard(db, cardInput({ path: "src/a.ts", symbols: ["Alpha"] }));
+    upsertFileCard(db, cardInput({ path: "src/b.ts", symbols: ["Beta"] }));
+
+    deleteFileCard(db, TEST_REPO_KEY, "src/a.ts");
+
+    expect(getFileCard(db, TEST_REPO_KEY, "src/a.ts")).toBeNull();
+    expect(getFileCard(db, TEST_REPO_KEY, "src/b.ts")).not.toBeNull();
+    expect(searchFileCards(db, TEST_REPO_KEY, "Beta")).toHaveLength(1);
+    const ftsCount = (db.prepare("SELECT COUNT(*) AS n FROM file_card_fts").get() as { n: number })
+      .n;
+    expect(ftsCount).toBe(1);
+  });
+
+  it("rejects empty repoKey or path", () => {
+    expect(() => deleteFileCard(db, "", "src/x.ts")).toThrow(/repoKey/);
+    expect(() => deleteFileCard(db, TEST_REPO_KEY, "  ")).toThrow(/path/);
   });
 });
 

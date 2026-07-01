@@ -339,6 +339,48 @@ export function getFileCard(db: Database, rk: string, path: string): FileCard | 
   return row ? rowToFileCard(row) : null;
 }
 
+// ── Delete ────────────────────────────────────────────────────────────
+
+/**
+ * Hard-delete a file card by (repoKey, path): removes the `file_card` row AND
+ * its `file_card_fts` entry inside ONE transaction, mirroring the upsert-txn
+ * write discipline so the card table and FTS index never diverge. Used when a
+ * file is deleted or renamed (the old path) so a stale card is TOMBSTONED
+ * rather than left behind to mislead retrieval.
+ *
+ * Appends a 'file_card_deleted' event keyed by 'repo_key:path' for the audit
+ * trail (mirrors the upsert / review-failed event discipline).
+ *
+ * Returns true when a row was removed, false when no card existed for the path
+ * (a no-op delete is not an error — the caller's intent is satisfied either way).
+ */
+export function deleteFileCard(db: Database, rk: string, path: string): boolean {
+  if (!rk) throw new Error("deleteFileCard: repoKey must be non-empty");
+  const p = path.trim();
+  if (!p) throw new Error("deleteFileCard: path must be non-empty");
+
+  const ts = nowIso();
+  let deleted = false;
+
+  const tx = db.transaction(() => {
+    const existing = db
+      .prepare("SELECT rowid FROM file_card WHERE repo_key = ? AND path = ?")
+      .get(rk, p) as { rowid: number } | undefined;
+    if (!existing) return;
+
+    // FTS first (external-content-free FTS5 table keyed by rowid), then the row.
+    db.prepare("DELETE FROM file_card_fts WHERE rowid = ?").run(existing.rowid);
+    db.prepare("DELETE FROM file_card WHERE rowid = ?").run(existing.rowid);
+
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'file_card_deleted', ?, ?)",
+    ).run(`${rk}:${p}`, ts, JSON.stringify({ repoKey: rk, path: p }));
+    deleted = true;
+  });
+  tx();
+  return deleted;
+}
+
 // ── Search ────────────────────────────────────────────────────────────
 
 const SEARCH_FILE_CARDS_DEFAULT_LIMIT = 20;

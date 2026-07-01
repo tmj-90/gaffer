@@ -69,7 +69,6 @@
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
@@ -373,33 +372,75 @@ function runMemoryCli(args) {
 }
 
 /**
- * Read the card-set watermark (synced_commit) for a repo from the memory SQLite
- * directly. Pure read-only — avoids a CLI round-trip and keeps the dependency
- * on `repo_sync` schema explicit. Returns null when the DB is absent, the table
- * is missing (pre-migration), or no row exists yet.
+ * Parse `git diff --name-status -M <base>..HEAD` output into card-refresh work:
+ *   - refresh:   paths whose card must be re-built (A added, M modified,
+ *                C copied → the new copy, T type-changed, and the NEW path of an
+ *                R rename).
+ *   - deletions: paths whose card must be TOMBSTONED (D deleted, and the OLD
+ *                path of an R rename — it no longer exists at that path).
+ *
+ * Each line is tab-separated. Rename/copy records carry a similarity score on
+ * the status (e.g. `R097`) and THREE fields: `R097<TAB>old<TAB>new`. Everything
+ * else is `X<TAB>path`. Unknown/blank statuses are ignored (best-effort).
+ * Exported so a test can exercise the parsing without spawning git.
+ *
+ * @param {string} diffOut Raw stdout from the diff.
+ * @returns {{ refresh: string[], deletions: string[] }}
  */
-function readCardWatermark(memDbPath, canonical) {
-  if (!existsSync(memDbPath)) return null;
-  let DatabaseSync;
-  try {
-    ({ DatabaseSync } = require("node:sqlite"));
-  } catch {
-    return null;
-  }
-  let db;
-  try {
-    db = new DatabaseSync(memDbPath, { readOnly: true });
-    const rk = createHash("sha256").update(canonical).digest("hex");
-    const row = db.prepare("SELECT synced_commit FROM repo_sync WHERE repo_key = ?").get(rk);
-    return row?.synced_commit ?? null;
-  } catch {
-    return null;
-  } finally {
-    try {
-      db?.close();
-    } catch {
-      /* already closed */
+export function parseDiffStatus(diffOut) {
+  const refresh = [];
+  const deletions = [];
+  if (!diffOut) return { refresh, deletions };
+  for (const raw of diffOut.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (!line.trim()) continue;
+    const fields = line.split("\t");
+    const status = (fields[0] ?? "").trim();
+    if (!status) continue;
+    const code = status[0].toUpperCase();
+    if (code === "D") {
+      const p = (fields[1] ?? "").trim();
+      if (p) deletions.push(p);
+    } else if (code === "R") {
+      // Rename: old→new. Tombstone the old card, refresh the new path.
+      const oldPath = (fields[1] ?? "").trim();
+      const newPath = (fields[2] ?? "").trim();
+      if (oldPath) deletions.push(oldPath);
+      if (newPath) refresh.push(newPath);
+    } else if (code === "C") {
+      // Copy: old is unchanged, the NEW copy needs a card.
+      const newPath = (fields[2] ?? "").trim();
+      if (newPath) refresh.push(newPath);
+    } else if (code === "A" || code === "M" || code === "T") {
+      const p = (fields[1] ?? "").trim();
+      if (p) refresh.push(p);
     }
+    // U (unmerged), X, B and anything else: ignore — not a clean card target.
+  }
+  return { refresh, deletions };
+}
+
+/**
+ * Read the card-set watermark (synced_commit) for a repo THROUGH the memory CLI
+ * (`get-card-watermark`) — never by reading Memory's SQLite directly. Memory owns
+ * its DB; the Runner is a client of the CLI (boundary rule). Read-only + best-effort:
+ * returns null when the CLI is missing, errors, or reports no watermark yet.
+ */
+function readCardWatermark(canonical, repo) {
+  const res = runMemoryCli([
+    "get-card-watermark",
+    "--canonical",
+    canonical,
+    "--repo",
+    repo,
+    "--json",
+  ]);
+  if (res.error || (res.status ?? 0) !== 0) return null;
+  try {
+    const out = JSON.parse(res.stdout ?? "");
+    return out?.syncedCommit ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -717,32 +758,32 @@ function main() {
     // is swallowed and NEVER affects the merge outcome (already landed above).
     try {
       const canonical = repoCanonical(repo.localPath);
-      const syncedCommit = readCardWatermark(CONFIG.memoryDb, canonical);
+      const syncedCommit = readCardWatermark(canonical, repo.name);
       if (syncedCommit) {
-        // Changed files between the last carded commit and the post-merge HEAD.
+        // Diff the last carded commit → post-merge HEAD with STATUS so we see
+        // deletions and renames, not just adds/mods. `-M` turns a delete+add
+        // pair into a single R rename record (old→new). --name-only would miss
+        // both, leaving stale cards for files that no longer exist at that path.
         const diffOut = execFileSync(
           "git",
-          ["-C", repo.localPath, "diff", "--name-only", `${syncedCommit}..HEAD`],
+          ["-C", repo.localPath, "diff", "--name-status", "-M", `${syncedCommit}..HEAD`],
           { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
         ).trim();
-        const changedPaths = diffOut
-          ? diffOut
-              .split("\n")
-              .map((p) => p.trim())
-              .filter(Boolean)
-          : [];
-        if (changedPaths.length > 0) {
+        const { refresh, deletions } = parseDiffStatus(diffOut);
+        if (refresh.length > 0 || deletions.length > 0) {
           const cfg = { cliBin: MEMORY_CLI, db: CONFIG.memoryDb };
-          const rStats = refreshFileCards(repo.localPath, changedPaths, {
+          const rStats = refreshFileCards(repo.localPath, refresh, {
             cfg,
+            deletions,
             env: { ...process.env, MEMORY_DB: CONFIG.memoryDb },
             log: (m) => log(`card-refresh: ${m}`),
             repo: repo.name,
             canonical,
           });
           log(
-            `card-refresh: refreshed=${rStats.refreshed} skipped=${rStats.skipped} ` +
-              `failed=${rStats.failed} watermark=${rStats.watermark ?? "none"}`,
+            `card-refresh: refreshed=${rStats.refreshed} deleted=${rStats.deleted} ` +
+              `skipped=${rStats.skipped} failed=${rStats.failed} ` +
+              `watermark=${rStats.watermark ?? "none"}`,
           );
         } else {
           log("card-refresh: no source-file changes — watermark already current");

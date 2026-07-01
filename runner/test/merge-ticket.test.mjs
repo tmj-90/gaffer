@@ -53,6 +53,7 @@ const {
   buildChildEnv,
   applyDigestAndFeature,
   formatDigestApplyLog,
+  parseDiffStatus,
 } = await import(HELPER);
 
 let passed = 0;
@@ -486,6 +487,54 @@ console.log("== AC12: the resolve-merge-conflict SKILL.md exists ==");
       /boom from memory CLI/.test(failLog.message) &&
       /STALE/.test(failLog.message) &&
       /building/.test(failLog.message),
+  );
+}
+
+// --- parseDiffStatus: --name-status -M parsing --------------------------------
+console.log("== parseDiffStatus: statuses map to refresh vs deletions ==");
+{
+  const diff = [
+    "A\tsrc/added.ts",
+    "M\tsrc/modified.ts",
+    "D\tsrc/deleted.ts",
+    "T\tsrc/type-changed.ts",
+    "R097\tsrc/old-name.ts\tsrc/new-name.ts",
+    "C080\tsrc/origin.ts\tsrc/copy.ts",
+  ].join("\n");
+  const { refresh, deletions } = parseDiffStatus(diff);
+
+  assert("added file → refresh", refresh.includes("src/added.ts"));
+  assert("modified file → refresh", refresh.includes("src/modified.ts"));
+  assert("type-changed file → refresh", refresh.includes("src/type-changed.ts"));
+  assert("deleted file → deletions", deletions.includes("src/deleted.ts"));
+  assert("deleted file NOT in refresh", !refresh.includes("src/deleted.ts"));
+  assert("rename NEW path → refresh", refresh.includes("src/new-name.ts"));
+  assert("rename OLD path → deletions", deletions.includes("src/old-name.ts"));
+  assert("copy NEW path → refresh", refresh.includes("src/copy.ts"));
+  assert("copy ORIGIN (unchanged) NOT tombstoned", !deletions.includes("src/origin.ts"));
+  eq("empty diff → empty lists", parseDiffStatus(""), { refresh: [], deletions: [] });
+}
+
+// --- BOUNDARY: no direct Memory DB read remains in the Runner ------------------
+console.log("== boundary: Runner reads the card watermark via the memory CLI, not the DB ==");
+{
+  const src = require("node:fs").readFileSync(HELPER, "utf8");
+  // The card watermark must be fetched through the `get-card-watermark` CLI verb.
+  assert(
+    "merge-ticket calls the get-card-watermark memory CLI verb",
+    src.includes('"get-card-watermark"'),
+  );
+  // No direct SQL SELECT against Memory's repo_sync / file_card tables anywhere
+  // in the Runner entrypoint (the boundary rule: Memory owns its DB).
+  assert(
+    "no direct SELECT against repo_sync in the Runner",
+    !/repo_sync/.test(src) || !/SELECT[^;]*repo_sync/i.test(src),
+  );
+  assert("no SELECT ... FROM file_card in the Runner", !/FROM\s+file_card/i.test(src));
+  // The old direct-DB reader signature (memDbPath, canonical) is gone.
+  assert(
+    "readCardWatermark no longer opens the memory sqlite directly",
+    !/readCardWatermark\([^)]*memDbPath/.test(src) && !/repo_sync WHERE repo_key/.test(src),
   );
 }
 

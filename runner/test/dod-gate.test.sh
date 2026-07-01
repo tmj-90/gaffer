@@ -163,6 +163,7 @@ else
   TNUM="$(WG ticket create -t "DoD integration ticket" -p solo_loose --risk low 2>&1 \
     | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['number'])")"
   WG repo link "$TNUM" repo >/dev/null 2>&1
+  WG ac add "$TNUM" -t "DoD integration AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
   WG ticket ready "$TNUM" >/dev/null 2>&1
   # Drive it to in_review the way a delivery would: register an agent, claim the
   # chosen ticket → submit for review with the claim token.
@@ -222,9 +223,16 @@ grep -q 'Stabilisation gate 2.5: DEFINITION OF DONE' "$RUNNER_DIR/tick.sh" \
 grep -q 'gaffer_run_dod_gates' "$RUNNER_DIR/tick.sh" \
   && ok "C tick.sh invokes gaffer_run_dod_gates (runner-run, not the agent)" \
   || fail "C tick.sh does not call gaffer_run_dod_gates"
-grep -q 'reviewer factory-dod' "$RUNNER_DIR/tick.sh" \
-  && ok "C a DoD failure review-rejects to refining (auto-reject, not the human)" \
-  || fail "C tick.sh missing the DoD review-reject path"
+# RUNNER-OWNED-BOOKKEEPING: a DoD failure no longer review-rejects an in_review
+# ticket (the runner holds the claim and has NOT submitted). It routes through
+# _recover_or_park, which retries then parks the held claim to refining via the
+# runner-release path — the branch is preserved, and a human never sees the fail.
+grep -q '_recover_or_park "definition-of-done"' "$RUNNER_DIR/tick.sh" \
+  && ok "C a DoD failure parks to refining via _recover_or_park (auto-reject, not the human)" \
+  || fail "C tick.sh missing the DoD _recover_or_park path"
+perl -0777 -ne 'exit 0 if /Attempts exhausted.*?gaffer_release_delivery refining/ms; exit 1' "$RUNNER_DIR/tick.sh" \
+  && ok "C an exhausted-attempts park releases the runner-held claim to refining" \
+  || fail "C _recover_or_park does not release the runner-held claim to refining"
 # Fail-CLOSED on an unresolvable config: an unparseable dispatch payload must NOT
 # pretend "no commands" and ship unverified work — it parks instead.
 grep -q '@@DOD_PARSE_OK@@' "$RUNNER_DIR/tick.sh" \

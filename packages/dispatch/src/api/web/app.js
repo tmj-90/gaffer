@@ -1083,13 +1083,16 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, ticketsRes, decisionsRes, costRes] = await Promise.all([
-    api("GET", "/api/dashboard"),
-    api("GET", "/api/activity?limit=200"),
-    api("GET", "/tickets").catch(() => ({ tickets: [] })),
-    api("GET", "/decisions").catch(() => ({ decisions: [] })),
-    api("GET", "/api/cost").catch(() => null),
-  ]);
+  const [{ summary }, activity, ticketsRes, decisionsRes, costRes, bouncingRes] = await Promise.all(
+    [
+      api("GET", "/api/dashboard"),
+      api("GET", "/api/activity?limit=200"),
+      api("GET", "/tickets").catch(() => ({ tickets: [] })),
+      api("GET", "/decisions").catch(() => ({ decisions: [] })),
+      api("GET", "/api/cost").catch(() => null),
+      api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
+    ],
+  );
 
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
@@ -1315,6 +1318,15 @@ async function renderOverview() {
     wrap.appendChild(decCard);
   }
 
+  // --- FAILURE-DIAGNOSIS: "these keep bouncing" quality signal --------------
+  // Cross-ticket read model: tickets whose rework trail keeps growing, ranked so
+  // the ones repeatedly failing the SAME gate lead. Only shown when something is
+  // actually bouncing (a quiet factory shows no panel).
+  const bouncing = (bouncingRes && bouncingRes.bouncing) || [];
+  if (bouncing.length) {
+    wrap.appendChild(renderBouncingPanel(bouncing));
+  }
+
   // --- Live activity --------------------------------------------------------
   wrap.appendChild(
     el("div", { class: "card panel" }, [
@@ -1326,6 +1338,52 @@ async function renderOverview() {
   );
 
   return wrap;
+}
+
+/**
+ * FAILURE-DIAGNOSIS: the cross-ticket "these keep bouncing" panel. Each row is a
+ * ticket with a growing rework trail; the "same gate ×N" chip is the key signal —
+ * a ticket stuck failing one gate repeatedly is the operator's cue to intervene.
+ */
+function renderBouncingPanel(bouncing) {
+  return el("div", { class: "card panel bouncing-panel" }, [
+    panelHead("Repeatedly bouncing", `${bouncing.length}`),
+    el(
+      "p",
+      { class: "dim bouncing-sub" },
+      "Tickets reworking the most — those stuck on the same gate need a human.",
+    ),
+    el(
+      "ul",
+      { class: "bouncing-list" },
+      bouncing.map((b) => {
+        const ref = b.number != null ? `#${b.number}` : b.ticket_id.slice(0, 8);
+        const sameGate =
+          b.top_gate && b.top_gate_count > 1
+            ? el(
+                "span",
+                {
+                  class: "bounce-samegate",
+                  title: `Failed the ${b.top_gate} gate ${b.top_gate_count} times`,
+                },
+                `${b.top_gate} ×${b.top_gate_count}`,
+              )
+            : null;
+        return el(
+          "li",
+          {},
+          el("a", { class: "bounce-row", href: `#/ticket/${b.ticket_id}` }, [
+            el("span", { class: "bounce-num mono" }, ref),
+            el("span", { class: "bounce-title" }, b.title || "(untitled)"),
+            el("span", { class: "bounce-count", title: "Total rework attempts" }, [
+              `${b.rework_count}×`,
+            ]),
+            sameGate,
+          ]),
+        );
+      }),
+    ),
+  ]);
 }
 
 /** Overview header: title + supporting line + a right-aligned freshness stamp. */
@@ -3382,13 +3440,56 @@ async function renderTicket(id) {
   // contract ahead of time; the contract surfaces/render the same way in_testing.
   const testingCard = renderTestingCard(t, view.evidence || []);
 
+  // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
+  // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
+  // Distinct from the board's latest-only rework chip: this is the trail an
+  // operator returns to when triaging why a ticket kept bouncing.
+  const failureHistory = renderFailureHistory(view.rework_trail || []);
+
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, sideRepos, diffCard, acCard, testingCard, timeline]),
+      el("div", {}, [head, sideRepos, diffCard, failureHistory, acCard, testingCard, timeline]),
       el("div", {}, [sideFields, sideBlockers]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * FAILURE-DIAGNOSIS: render a ticket's full ordered rework failure trail (the "why
+ * did #N fail" history). Each attempt shows its gate + the DISTILLED failing test +
+ * assertion/stack the runner captured — not a one-line summary. Returns null when
+ * the ticket never bounced, so a clean ticket shows no card.
+ */
+function renderFailureHistory(trail) {
+  if (!Array.isArray(trail) || trail.length === 0) return null;
+  const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
+  return el("div", { class: "card failure-history" }, [
+    el("h2", {}, [icon("alert"), `Failure history (${attemptsLabel})`]),
+    el(
+      "p",
+      { class: "dim failure-history-sub" },
+      "Every rework attempt the runner recorded, oldest first — the real failing test + assertion for each.",
+    ),
+    el(
+      "ol",
+      { class: "failure-trail" },
+      trail.map((a) => {
+        const max =
+          typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
+        return el("li", { class: "failure-attempt" }, [
+          el("div", { class: "failure-attempt-head" }, [
+            el("span", { class: "failure-attempt-num" }, `Attempt ${a.attempt}${max}`),
+            a.gate ? el("span", { class: "failure-gate" }, a.gate) : null,
+            el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
+          ]),
+          // The distilled failure is untrusted captured tool output — render it as a
+          // text node inside <pre> (never innerHTML) so it can't inject markup.
+          el("pre", { class: "failure-detail" }, a.distilled_failure || "(no detail captured)"),
+        ]);
+      }),
+    ),
+  ]);
 }
 
 /**

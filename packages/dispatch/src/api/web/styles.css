@@ -3529,6 +3529,117 @@ td.title-cell {
 }
 
 /* ===========================================================================
+   FAILURE-DIAGNOSIS — the "why did #N fail" trail + "these keep bouncing" panel
+   =========================================================================== */
+
+.failure-history h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.failure-history-sub {
+  margin: -4px 0 10px;
+  font-size: 0.8rem;
+}
+.failure-trail {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.failure-attempt {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-left: 3px solid var(--danger);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--danger-soft);
+}
+.failure-attempt-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+}
+.failure-attempt-num {
+  font-weight: 700;
+  color: var(--danger);
+}
+.failure-gate {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+}
+.failure-attempt-time {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+.failure-detail {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface, #fff);
+  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+  max-height: 260px;
+  overflow: auto;
+}
+
+.bouncing-sub {
+  margin: 4px 0 10px;
+  font-size: 0.8rem;
+}
+.bouncing-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.bounce-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+  color: inherit;
+  text-decoration: none;
+}
+.bounce-row:hover {
+  background: var(--danger-soft);
+}
+.bounce-num {
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.bounce-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bounce-count {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--danger);
+}
+.bounce-samegate {
+  flex: 0 0 auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.7rem;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ===========================================================================
    Board moves — drag-to-move + touch status menu
    =========================================================================== */
 

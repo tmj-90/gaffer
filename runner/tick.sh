@@ -195,19 +195,27 @@ AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
 CLAIM_TOKEN=""
 
 # Release/park the runner-held delivery claim (RUNNER-OWNED-BOOKKEEPING). $1 =
-# ready|refining, $2 = reason. With a token (normal delivery) the matching claim is
-# released; without one (a resumed in_progress delivery) the ticket is transitioned
-# tokenlessly via the same guarded runner-release path. Best-effort + logged.
+# ready|refining|blocked, $2 = reason. Optional structured park metadata for the
+# board card + the activity trail: $3 = reason-code (e.g. rework_exhausted), $4 =
+# attempt reached, $5 = attempt ceiling. With a token (normal delivery) the matching
+# claim is released; without one (a resumed in_progress delivery) the ticket is
+# transitioned tokenlessly via the same guarded runner-release path. `blocked` is the
+# VISIBLE terminal park for an exhausted rework loop — a human never wonders where the
+# ticket went. Best-effort + logged.
 gaffer_release_delivery() {
-  local to="$1" reason="$2"
+  local to="$1" reason="$2" code="${3:-}" attempt="${4:-}" maxa="${5:-}"
   # DRY_RUN never claims, so it never releases — keep it side-effect-free.
   [ "${DRY_RUN:-0}" = "1" ] && return 0
+  local extra=()
+  [ -n "$code" ]    && extra+=(--reason-code "$code")
+  [ -n "$attempt" ] && extra+=(--attempt "$attempt")
+  [ -n "$maxa" ]    && extra+=(--max "$maxa")
   if [ -n "${CLAIM_TOKEN:-}" ]; then
-    wg runner-release "$NUM" --to "$to" --token "$CLAIM_TOKEN" --reason "$reason" >/dev/null 2>&1 \
+    wg runner-release "$NUM" --to "$to" --token "$CLAIM_TOKEN" --reason "$reason" ${extra[@]+"${extra[@]}"} >/dev/null 2>&1 \
       && log "released claim on #$NUM → $to ($reason)" \
       || log "WARNING — could not release claim on #$NUM → $to ($reason); needs a human"
   else
-    wg runner-release "$NUM" --to "$to" --reason "$reason" >/dev/null 2>&1 \
+    wg runner-release "$NUM" --to "$to" --reason "$reason" ${extra[@]+"${extra[@]}"} >/dev/null 2>&1 \
       && log "transitioned #$NUM → $to ($reason)" \
       || log "WARNING — could not transition #$NUM → $to ($reason); needs a human"
   fi
@@ -1259,58 +1267,136 @@ EOF
   # commit NEVER has its branch deleted by the failure path — is enforced by
   # routing every committed-branch failure through gaffer_cleanup_worktrees with
   # NO drop-branch.
-  _MAX_DELIVERY_ATTEMPTS="${GAFFER_MAX_DELIVERY_ATTEMPTS:-2}"
+  _MAX_DELIVERY_ATTEMPTS="${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}"
   [ "$_MAX_DELIVERY_ATTEMPTS" -ge 1 ] 2>/dev/null || _MAX_DELIVERY_ATTEMPTS=1
   _DELIV_ATTEMPT=0
+  # ESCALATION + REAL FEEDBACK state (RUNNER-OWNED REWORK LOOP):
+  #   _REWORK_HISTORY  — the accumulated, distilled real failures from EVERY prior
+  #                      attempt (the crux: the actual failing test + assertion, not a
+  #                      gate-name summary). Fed into the next attempt's prompt so the
+  #                      agent can self-correct; the FINAL attempt sees the full trail.
+  #   _REWORK_BLOCK    — the per-attempt prompt suffix built from the history + the
+  #                      escalation posture (rethink / stronger model). Empty on attempt 1.
+  _REWORK_HISTORY=""
+  _REWORK_BLOCK=""
 
-  # _recover_or_park <gate-name> <feedback-text>
+  # _recover_or_park <gate-name> <feedback-text> [real-failure-detail]
   # A RECOVERABLE gate failure (branch carries ≥1 commit). PRESERVES the branch —
-  # tears down ONLY the disposable worktree — records the gate feedback as a
-  # rework note the next attempt reads (REVIEW FEEDBACK block), and decides:
-  #   • attempts remain → set _DELIV_OUTCOME=retry; the caller `continue`s, the
-  #     loop re-invokes the agent on the same branch with the feedback;
-  #   • attempts exhausted → park the ticket to `refining` WITH the branch +
-  #     feedback (review reject, or block as a fallback), then _DELIV_OUTCOME=parked
-  #     so the caller exits. The branch is NEVER dropped here.
+  # tears down ONLY the disposable worktree — records the REAL failure (the distilled
+  # failing test + assertion, arg 3 when present; else the summary) for the next
+  # attempt, then decides against the DOUBLE-BOUND (attempt cap AND per-ticket cost):
+  #   • budget/attempts remain → _DELIV_OUTCOME=retry; the ticket stays VISIBLY
+  #     in_progress with "reworking · attempt N/M" + the latest failure on its card
+  #     (wg runner-rework), and the caller `continue`s so the loop re-invokes the
+  #     escalated agent on the same branch with the accumulated feedback;
+  #   • cap OR per-ticket cost ceiling hit → park the ticket to the VISIBLE `blocked`
+  #     column (rework_exhausted) WITH the branch + full feedback trail, then
+  #     _DELIV_OUTCOME=parked so the caller exits. The branch is NEVER dropped here.
   _recover_or_park() {
-    local gate="$1" feedback="$2"
-    # Rework note so the NEXT attempt's REVIEW FEEDBACK block surfaces it (and the
-    # board shows why it bounced). Best-effort; never fatal.
+    local gate="$1" feedback="$2" detail="${3:-}"
+    # The REAL failure fed to the next attempt: the distilled assertion/error when the
+    # caller captured one, else the human summary. This is the crux of (b) — the agent
+    # sees the actual failing test, not just "tests@repo failed".
+    local real="${detail:-$feedback}"
+    # Accumulate the full trail so the FINAL (stronger-model) attempt sees every prior
+    # failure, not just the latest — bounded so a chatty run can't unbound the prompt.
+    _REWORK_HISTORY="${_REWORK_HISTORY}
+── attempt $_DELIV_ATTEMPT — $gate ──
+$real
+"
+    _REWORK_HISTORY="$(printf '%s' "$_REWORK_HISTORY" | tail -c "${GAFFER_REWORK_HISTORY_BYTES:-8000}")"
+    # Durable rework note (activity trail + get_ticket) so the board + audit show WHY
+    # it bounced. Best-effort; never fatal.
     wg attach-evidence "$NUM" --type manual_note \
-      --summary "REWORK ($gate, attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS): $feedback" >/dev/null 2>&1 || true
-    if [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ]; then
+      --summary "REWORK ($gate, attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS): $real" >/dev/null 2>&1 || true
+
+    # DOUBLE-BOUND — cost side: stop the loop if this ticket's cumulative measured
+    # rework spend has reached the per-ticket ceiling, even when attempts remain. No
+    # unbounded token burn on one stubborn ticket.
+    local _cost_exhausted=0
+    if [ -n "${GAFFER_REWORK_BUDGET_USD:-}" ] \
+       && awk "BEGIN{exit !(${GAFFER_REWORK_BUDGET_USD:-0}+0 > 0)}" 2>/dev/null; then
+      local _spent; _spent="$(gaffer_ticket_rework_spend "$NUM" 2>/dev/null || echo 0)"
+      if awk "BEGIN{exit !(${_spent:-0}+0 >= ${GAFFER_REWORK_BUDGET_USD}+0)}" 2>/dev/null; then
+        _cost_exhausted=1
+        log "REWORK: #$NUM hit the per-ticket cost ceiling (spent \$${_spent} ≥ \$${GAFFER_REWORK_BUDGET_USD}) on attempt $_DELIV_ATTEMPT — parking to blocked (no unbounded burn)"
+      fi
+    fi
+
+    if [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ] && [ "$_cost_exhausted" -eq 0 ]; then
+      # VISIBILITY: keep the ticket in its live column but surface the rework state +
+      # the latest real failure on the card ("Reworking · attempt N/M"). No status
+      # change — it stays claimed/in_progress (visible), never routed to refining.
+      local _next=$((_DELIV_ATTEMPT + 1))
+      local _short; _short="$(printf '%s' "$real" | grep -v '^[[:space:]]*$' | head -1)"
+      [ "${DRY_RUN:-0}" = "1" ] || wg runner-rework "$NUM" --attempt "$_next" --max "$_MAX_DELIVERY_ATTEMPTS" \
+        --reason "${gate}: ${_short:-failed}" >/dev/null 2>&1 || true
       # Preserve the branch; tear down only the worktree so the next attempt re-adds
-      # a fresh worktree on the SAME branch (worktree add -B resets it to base, but
-      # the agent re-delivers from the feedback — the branch ref + its history live
-      # in the real repo between attempts).
+      # a fresh worktree on the SAME branch (the branch ref + its history live in the
+      # real repo between attempts).
       gaffer_cleanup_worktrees
-      log "RECOVER: #$NUM $gate failed on attempt $_DELIV_ATTEMPT — branch $WORK_BRANCH PRESERVED; re-invoking the agent with feedback (attempt $((_DELIV_ATTEMPT + 1))/$_MAX_DELIVERY_ATTEMPTS)"
+      log "RECOVER: #$NUM $gate failed on attempt $_DELIV_ATTEMPT — branch $WORK_BRANCH PRESERVED; re-invoking the agent with the real failure (attempt $_next/$_MAX_DELIVERY_ATTEMPTS)"
       _DELIV_OUTCOME="retry"
       return 0
     fi
-    # Attempts exhausted — park to refining WITH the branch + feedback. NEVER drop
-    # the branch: a delivery with commits keeps its salvageable work. RUNNER-OWNED-
-    # BOOKKEEPING: the runner holds the claim and has NOT submitted (the gate ran
-    # pre-submit), so the ticket is `claimed`/`in_progress` — release/park it via the
-    # runner-release path. (The `in_review` branch is defensive only: it can't be
-    # reached pre-submit, but if a stray submit ever landed, reuse the reviewer reject.)
-    local _cur
-    _cur="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-    if [ "$_cur" = "in_review" ]; then
-      wg review reject "$NUM" --to refining --reviewer factory-recover \
-        --reason "$gate failed after $_MAX_DELIVERY_ATTEMPTS attempts: $feedback (branch $WORK_BRANCH preserved)" >/dev/null 2>&1 \
-        && log "RECOVER: parked #$NUM (in_review → refining) after exhausting $_MAX_DELIVERY_ATTEMPTS attempts — branch $WORK_BRANCH PRESERVED for rework" \
-        || log "RECOVER: WARNING — could not reject #$NUM to refining; ticket left in_review — needs a human (branch $WORK_BRANCH preserved)"
-    else
-      gaffer_release_delivery refining "$gate failed after $_MAX_DELIVERY_ATTEMPTS attempts: $feedback (branch $WORK_BRANCH preserved)"
-      log "RECOVER: parked #$NUM (→ refining) after exhausting $_MAX_DELIVERY_ATTEMPTS attempts — branch $WORK_BRANCH PRESERVED for rework"
-    fi
+
+    # Cap OR per-ticket cost ceiling hit — park to the VISIBLE `blocked` column WITH
+    # the branch + feedback (rework_exhausted). NEVER drop the branch: a delivery with
+    # commits keeps its salvageable work. RUNNER-OWNED-BOOKKEEPING: the runner holds
+    # the claim and has NOT submitted (the gate ran pre-submit), so the ticket is
+    # `claimed`/`in_progress` — release/park it via the runner-release path so the
+    # claim is freed AND a human immediately sees it on the board (never `refining`,
+    # which hides in the draft column). A stray in_review ticket is unreachable here
+    # (the runner submits only AFTER the gate passes); if one ever occurred the
+    # runner-release transition is a no-op that logs a loud WARNING — fail-safe.
+    local _why="rework budget"; [ "$_cost_exhausted" -eq 0 ] && _why="$_MAX_DELIVERY_ATTEMPTS attempts"
+    local _reason="$gate failed after $_why: $real (branch $WORK_BRANCH preserved)"
+    gaffer_release_delivery blocked "$_reason" rework_exhausted "$_DELIV_ATTEMPT" "$_MAX_DELIVERY_ATTEMPTS"
+    log "RECOVER: parked #$NUM (→ blocked, rework_exhausted) after $_why — branch $WORK_BRANCH PRESERVED for rework, VISIBLE on the board"
     # Tear down ONLY the worktree; the branch survives for rework.
     gaffer_cleanup_worktrees
     gaffer_skip_ticket "$NUM"
-    log "delivery PARKED for #$NUM — $gate not met after $_MAX_DELIVERY_ATTEMPTS attempts; worktree removed, branch $WORK_BRANCH PRESERVED"
+    log "delivery PARKED for #$NUM — $gate not met (rework_exhausted, $_why); worktree removed, branch $WORK_BRANCH PRESERVED, VISIBLE in blocked"
     _DELIV_OUTCOME="parked"
     return 0
+  }
+
+  # ESCALATION LADDER — build the per-attempt prompt suffix + implement-model flag.
+  # Sets two globals read by the invocation below:
+  #   _REWORK_BLOCK       — appended to the base PROMPT so the re-invoked agent sees
+  #                         the REAL prior failure(s) + its escalation posture.
+  #   _ATTEMPT_IMPL_FLAG  — the model flag for THIS attempt (routed model by default;
+  #                         the FINAL attempt escalates to GAFFER_REWORK_STRONG_MODEL).
+  # Attempt 1: routed model, no rework suffix (base prompt).
+  # Attempt 2..(max-1): RETHINK — same model, but re-plan the approach (the prior
+  #                     approach failed the SAME gate; a tweak won't do) with the trail.
+  # Attempt max: STRONGER MODEL + the FULL feedback history (the last shot before a
+  #              human is pulled in).
+  gaffer_build_escalation() {
+    local attempt="$1"
+    _ATTEMPT_IMPL_FLAG="$ROUTE_IMPL_FLAG"
+    _REWORK_BLOCK=""
+    [ "$attempt" -le 1 ] && return 0
+    local is_final=0
+    [ "$attempt" -ge "$_MAX_DELIVERY_ATTEMPTS" ] && is_final=1
+    # Model escalation only on the FINAL attempt (and only if a strong model is set
+    # and the loop actually has >1 attempt to climb).
+    local posture
+    if [ "$is_final" = "1" ] && [ "$_MAX_DELIVERY_ATTEMPTS" -gt 1 ] && [ -n "${GAFFER_REWORK_STRONG_MODEL:-}" ]; then
+      _ATTEMPT_IMPL_FLAG="--model $GAFFER_REWORK_STRONG_MODEL"
+      posture="FINAL REWORK ATTEMPT (attempt $attempt/$_MAX_DELIVERY_ATTEMPTS) — you are the STRONGEST model on this ticket and this is the LAST attempt before it is parked to \`blocked\` for a human. The previous attempts failed the gate below. Do NOT repeat them: read the FULL failure trail, form a correct fix, and make every gate pass."
+    else
+      posture="RETHINK (attempt $attempt/$_MAX_DELIVERY_ATTEMPTS) — your previous approach FAILED the same gate. Do NOT just tweak it: step back, RE-PLAN the approach from the failure below (optionally narrow the scope to the smallest correct change), then implement and make the gate pass."
+    fi
+    # The failure trail is UNTRUSTED gate output — quarantine it (same envelope as the
+    # prior-review-feedback block) so an injected string in a test name can't steer the agent.
+    local _trail_q; _trail_q="$(gaffer_quarantine rework-feedback "$_REWORK_HISTORY" 2>/dev/null || printf '%s' "$_REWORK_HISTORY")"
+    _REWORK_BLOCK="
+REVIEW FEEDBACK — THIS DELIVERY WAS REWORKED. $posture
+The block below is the ACTUAL failure(s) from your prior attempt(s) on this SAME
+branch (the failing test name + the assertion/error), not a summary. Fix EXACTLY this:
+$_trail_q
+"
   }
 
   while [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ]; do
@@ -1322,7 +1408,13 @@ EOF
   # no token (a resumed delivery). Best-effort — a failed heartbeat is logged, and
   # the generous TTL still covers the delivery.
   [ -n "${CLAIM_TOKEN:-}" ] && { wg heartbeat "$CLAIM_TOKEN" >/dev/null 2>&1 || log "heartbeat for #$NUM claim failed (non-fatal; TTL still covers the delivery)"; }
-  [ "$_DELIV_ATTEMPT" -gt 1 ] && log "delivery for #$NUM — re-invoking agent (attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS) on branch $WORK_BRANCH"
+  # ESCALATION: pick THIS attempt's implement-model + rework prompt suffix from the
+  # ladder (routed model + base prompt on attempt 1; rethink; then stronger model +
+  # full failure trail on the final attempt).
+  gaffer_build_escalation "$_DELIV_ATTEMPT"
+  if [ "$_DELIV_ATTEMPT" -gt 1 ]; then
+    log "delivery for #$NUM — re-invoking agent (attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS) on branch $WORK_BRANCH [impl-model: ${_ATTEMPT_IMPL_FLAG:-default}]"
+  fi
   # On a retry the prior worktree was torn down (branch preserved); re-add a fresh
   # worktree on the SAME branch so the agent re-delivers from the recorded feedback.
   if [ "$_DELIV_ATTEMPT" -gt 1 ]; then
@@ -1369,7 +1461,7 @@ EOF
          GAFFER_WRITE_ROOTS="$WRITE_ROOTS" GAFFER_READ_ROOTS="$READ_ROOTS" \
          GAFFER_DATA="$GAFFER_DATA" GAFFER_TICKET="$NUM" \
          DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-         "$CLAUDE_BIN" -p "$PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $ROUTE_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
+         "$CLAUDE_BIN" -p "$PROMPT$_REWORK_BLOCK" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $_ATTEMPT_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
   ) >"$USAGE_JSON" 2>>"$GAFFER_LOG"
   rc=$?
   # ── GUARD C: PAUSE-ON-CAP detection (BEFORE the ledger removes the JSON) ─────
@@ -1808,8 +1900,12 @@ for r in d.get("repositories", []) or []:
       else
         # ── A gate FAILED → auto-reject back to rework (never a human's time) ──
         _DOD_SUM="$(gaffer_dod_summary_line "$DOD_RESULTS")"
-        log "DoD: #$NUM FAILED — $_DOD_SUM; auto-rejecting back to refining (not submitting for review)"
+        log "DoD: #$NUM FAILED — $_DOD_SUM; auto-rejecting back to rework (not submitting for review)"
         _DOD_EV="$(gaffer_dod_evidence_summary "$DOD_RESULTS" FAIL)"
+        # THE CRUX of (b): distil the ACTUAL failure (failing test name + assertion/
+        # error), not the gate-name summary, so the next attempt can self-correct.
+        # Read it from the results file BEFORE it is removed below.
+        _DOD_DETAIL="$(gaffer_dod_extract_failure "$DOD_RESULTS" 2>/dev/null || true)"
         # Record the failing checklist + output tail as evidence FIRST so the next
         # attempt gets it as review feedback (and the board shows why it bounced). A
         # FAILED attach is surfaced (not swallowed) — losing the feedback is a real
@@ -1826,9 +1922,12 @@ for r in d.get("repositories", []) or []:
         # but a downstream gate (tests / typecheck / lint) failed. This is exactly
         # the failure that must NEVER delete the branch. Preserve the branch,
         # attach the failing checklist as feedback, and retry-or-park: re-invoke
-        # the SAME agent on the SAME branch with the DoD failure as feedback, up to
-        # GAFFER_MAX_DELIVERY_ATTEMPTS, then park to refining WITH branch + feedback.
-        _recover_or_park "definition-of-done" "Definition of Done failed: $_DOD_SUM — fix the failing gate(s) and re-deliver"
+        # the ESCALATED agent on the SAME branch with the REAL failure as feedback, up
+        # to GAFFER_MAX_DELIVERY_ATTEMPTS (or the per-ticket cost ceiling), then park to
+        # the VISIBLE `blocked` column WITH branch + full feedback trail.
+        _recover_or_park "definition-of-done" \
+          "Definition of Done failed: $_DOD_SUM — fix the failing gate(s) and re-deliver" \
+          "$_DOD_DETAIL"
         [ "$_DELIV_OUTCOME" = "retry" ] && continue
         result error; exit 0
       fi

@@ -124,9 +124,13 @@ gaffer_run_dod_gates() {
           *)   note="exited $rc: $cmd" ;;
         esac
         printf 'GATE\t%s\t%s\tFAIL\t%s\t%s\n' "$gate" "$label" "$rc" "$note" >> "$results"
-        # Capture the failing output tail (bounded) for the evidence row.
+        # Capture the DISTILLED real failure (bounded) for the evidence row AND the
+        # next attempt's feedback — the failing test name(s) + the assertion/error/
+        # stack, NOT a blind tail of the whole log. Falls back to a plain tail when
+        # the distiller finds no framework signal, so a failure is never lost.
         printf -- '---DOD-OUTPUT %s@%s---\n' "$gate" "$label" >> "$results"
-        tail -n "$GAFFER_DOD_OUTPUT_TAIL" "$tmpout" 2>/dev/null >> "$results" || true
+        gaffer_dod_distill_output "$tmpout" "$GAFFER_DOD_OUTPUT_TAIL" >> "$results" 2>/dev/null \
+          || tail -n "$GAFFER_DOD_OUTPUT_TAIL" "$tmpout" 2>/dev/null >> "$results" || true
         printf -- '\n---END-DOD-OUTPUT---\n' >> "$results"
       fi
     done
@@ -227,4 +231,66 @@ PY
     out="$(printf 'DoD: %s\n%s\n\n%s' "$overall" "$json" "$(cat "$results" 2>/dev/null)")"
   fi
   printf '%s' "$out"
+}
+
+# How many lines of distilled failure to keep per gate. Bounded so a chatty stack
+# can't bloat the evidence row / the feedback fed back to the next attempt.
+: "${GAFFER_DOD_FEEDBACK_LINES:=${GAFFER_DOD_OUTPUT_TAIL:-40}}"
+
+# gaffer_dod_distill_output <infile> [maxlines]
+# Distil the ACTUAL failure from a gate command's raw output: the failing test
+# name(s) + the assertion/error/stack lines — NOT a blind tail or the summary
+# count line. Best-effort heuristics across vitest/jest, mvn/gradle, pytest and
+# go test; when NO framework signal matches it falls back to the last non-blank
+# lines so a failure is never lost. Prints at most <maxlines> lines (default
+# GAFFER_DOD_FEEDBACK_LINES). Pure text-in/text-out — trivially testable.
+gaffer_dod_distill_output() {
+  local infile="$1" max="${2:-$GAFFER_DOD_FEEDBACK_LINES}"
+  [ -f "$infile" ] || return 0
+  awk -v MAX="${max:-40}" '
+    # A line that carries real failure signal across the common stacks. Kept
+    # deliberately broad (best-effort): a false positive just keeps one extra
+    # line; a false negative is covered by the tail fallback below.
+    function is_signal(s) {
+      return (s ~ /--- FAIL:/ ||                              # go test
+              s ~ /(^|[ \t])FAILED([ \t]|:|$)/ ||             # pytest / gradle
+              s ~ /(^|[ \t])FAIL([ \t]|:|$)/ ||               # vitest / jest / go
+              s ~ /[✕✗×]/ ||                                  # vitest / jest marks
+              s ~ /(^|[ \t])● / ||                            # jest failing block
+              s ~ /AssertionError|Assertion/ ||
+              s ~ /[Ee]xpected|[Rr]eceived|but was|but got|actual:/ ||
+              s ~ /[A-Za-z_.]*(Error|Exception)(:| |$)/ ||    # FooError: / Exception
+              s ~ /panic:/ ||                                 # go
+              s ~ /Traceback|(^|[ \t])E[ \t]/ ||              # pytest error lines
+              s ~ /\[ERROR\]|<<< (FAILURE|ERROR)/ ||          # maven surefire
+              s ~ /(^|[ \t])assert/ ||
+              s ~ /:[0-9]+:[0-9]+|:[0-9]+\)/)                 # file:line stack refs
+    }
+    { line[NR]=$0; if (is_signal($0) && $0 !~ /^[ \t]*$/) { sig[NR]=1; nsig++ } }
+    END {
+      c=0
+      if (nsig>0) {
+        for (i=1;i<=NR && c<MAX;i++) if (sig[i]) { print line[i]; c++ }
+      } else {
+        start=NR-MAX+1; if (start<1) start=1
+        for (i=start;i<=NR;i++) if (line[i] !~ /^[ \t]*$/) print line[i]
+      }
+    }
+  ' "$infile" 2>/dev/null
+}
+
+# gaffer_dod_extract_failure <results-file>
+# Pull the DISTILLED real-failure text back out of a results file's framed
+# `---DOD-OUTPUT gate@repo--- … ---END-DOD-OUTPUT---` block(s) for feeding the
+# NEXT rework attempt (the REVIEW FEEDBACK block). Each block is prefixed with the
+# gate it came from. Prints nothing when the results carried no failing block.
+gaffer_dod_extract_failure() {
+  local results="$1"
+  [ -f "$results" ] || return 0
+  awk '
+    /^---DOD-OUTPUT / { h=$0; sub(/^---DOD-OUTPUT /,"",h); sub(/---[ \t]*$/,"",h);
+                        print "failing gate: " h; keep=1; next }
+    /^---END-DOD-OUTPUT---/ { keep=0; next }
+    keep && $0 !~ /^[ \t]*$/ { print "  " $0 }
+  ' "$results" 2>/dev/null
 }

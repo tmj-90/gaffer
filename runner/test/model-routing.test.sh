@@ -110,9 +110,15 @@ echo "== AC9: tick.sh wires the routed flag into the delivery call =="
 grep -q 'ROUTE_IMPL_FLAG="--model \$DELIVERY_MODEL"' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh builds ROUTE_IMPL_FLAG from the routed model" \
   || fail "tick.sh should build ROUTE_IMPL_FLAG from \$DELIVERY_MODEL"
-grep -q 'CLAUDE_FLAGS \$ROUTE_IMPL_FLAG \$GAFFER_MAX_TURNS_FLAG' "$RUNNER_DIR/tick.sh" \
-  && ok "the delivery call uses \$ROUTE_IMPL_FLAG (not the static flag)" \
-  || fail "the delivery call should splice in \$ROUTE_IMPL_FLAG"
+# The delivery call now splices in the PER-ATTEMPT implement flag ($_ATTEMPT_IMPL_FLAG),
+# which the escalation ladder initialises to the routed $ROUTE_IMPL_FLAG on attempt 1
+# and escalates to the stronger model on the final rework attempt.
+grep -q 'CLAUDE_FLAGS \$_ATTEMPT_IMPL_FLAG \$GAFFER_MAX_TURNS_FLAG' "$RUNNER_DIR/tick.sh" \
+  && ok "the delivery call uses \$_ATTEMPT_IMPL_FLAG (routed model by default, escalates on the final attempt)" \
+  || fail "the delivery call should splice in \$_ATTEMPT_IMPL_FLAG"
+grep -q '_ATTEMPT_IMPL_FLAG="\$ROUTE_IMPL_FLAG"' "$RUNNER_DIR/tick.sh" \
+  && ok "the per-attempt flag defaults to the routed \$ROUTE_IMPL_FLAG (attempt 1)" \
+  || fail "the per-attempt flag should default to \$ROUTE_IMPL_FLAG"
 grep -q 'gaffer_route_model implement' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh calls gaffer_route_model for the implement phase" \
   || fail "tick.sh should call gaffer_route_model implement"

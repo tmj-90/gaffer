@@ -37,12 +37,22 @@ gaffer_repo_unmerged_branches() {
   comm -23 <(printf '%s\n' "$all") <(printf '%s\n' "$merged") | grep -c . || echo 0
 }
 
-# Delete unmerged gaffer/* branches whose ticket is ABANDONED (parked to refining,
-# back to draft, or cancelled). These otherwise linger after a rejected delivery
-# and count against the backpressure cap (a rejected ticket's branch shouldn't
-# pressure the repo). Branches for ACTIVE tickets (ready/in_review/claimed/done)
-# are always kept; merged branches are left to the normal merged sweep. Echoes
-# each deleted branch name. Best-effort — never fatal.
+# Delete ONLY genuinely-abandoned unmerged gaffer/* branches. A "genuinely
+# abandoned" branch is one whose ticket is POSITIVELY cancelled (a terminal,
+# killed ticket) AND which is NOT recorded as a delivery artifact.
+#
+# DATA-LOSS GUARD (the reason this is deny-by-default): a delivery branch is
+# frequently the ONLY copy of committed delivery work. A ticket parked for rework
+# PRESERVES its branch — the rework loop parks to `blocked`, other recovery paths
+# park to `refining`, and both keep the branch alive for the next attempt. The
+# in-flight preserved/live states are therefore NEVER swept:
+#   refining · blocked · in_progress · paused · claimed  (non-terminal preserved)
+#   ready · in_review · done · draft                     (other live tickets)
+# Anything we cannot POSITIVELY confirm abandoned — an unknown status, or a status
+# lookup that fails/returns empty (transient `wg` error) — is KEPT: losing
+# committed work is far worse than a branch lingering one extra tick against the
+# cap. Merged branches are left to the normal merged sweep. Echoes each deleted
+# branch name. Best-effort — never fatal.
 #   gaffer_sweep_abandoned_branches <repo-path> <default-branch>
 gaffer_sweep_abandoned_branches() {
   local repo="$1" def="${2:-main}"
@@ -56,11 +66,31 @@ gaffer_sweep_abandoned_branches() {
     tstatus="$(_bp_wg_show "$num" 2>/dev/null | python3 -c "import sys,json
 try: print(json.load(sys.stdin)['ticket']['status'])
 except Exception: print('')" 2>/dev/null)"
-    case "$tstatus" in
-      refining|draft|cancelled)
-        git -C "$repo" branch -D "$b" >/dev/null 2>&1 && echo "$b" ;;
-    esac
+    # PRESERVE unless the ticket is POSITIVELY cancelled. Every live/preserved
+    # state, and every ambiguous/unresolvable status, keeps the branch.
+    [ "$tstatus" = "cancelled" ] || continue
+    # A cancelled ticket whose branch is a RECORDED delivery artifact is still
+    # kept — never nuke recorded delivery work.
+    gaffer_branch_is_delivery_artifact "$num" "$b" && continue
+    git -C "$repo" branch -D "$b" >/dev/null 2>&1 && echo "$b"
   done
+}
+
+# True (0) when branch $2 is recorded as a per-repo delivery artifact for ticket
+# $1. Reads the ticket's delivery rows via _bp_wg_deliveries (stubbable). Fails
+# SAFE: an accessor error or unparseable payload is treated as "recorded" (0) so
+# a branch we cannot prove is NOT a delivery artifact is kept. An empty `[]` list
+# is a valid "no delivery for this branch" answer (1 → eligible for sweep).
+#   gaffer_branch_is_delivery_artifact <ticket-number> <branch-name>
+gaffer_branch_is_delivery_artifact() {
+  local num="$1" branch="$2" out
+  out="$(_bp_wg_deliveries "$num" 2>/dev/null)" || return 0
+  printf '%s' "$out" | python3 -c "import sys,json
+b=sys.argv[1]
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)  # unparseable → fail safe (treat as recorded → keep)
+rows = d if isinstance(d, list) else (d.get('deliveries') or [])
+sys.exit(0 if any((r or {}).get('branch_name') == b for r in rows) else 1)" "$branch"
 }
 
 # Default Dispatch accessors (overridable by tests). Each appends its argument.
@@ -73,6 +103,13 @@ _bp_wg_list() {
 _bp_wg_show() {
   if [ -n "${GAFFER_WG_SHOW_CMD:-}" ]; then local -a c; read -ra c <<<"$GAFFER_WG_SHOW_CMD"; "${c[@]}" "$1"
   else wg ticket show "$1"; fi
+}
+# Prints the ticket's per-repo delivery artifacts JSON (`wg ticket repo-delivery
+# list <ref>`). Overridable by tests via GAFFER_WG_DELIVERIES_CMD (the ref is
+# appended as the last arg, same no-eval argv contract as the accessors above).
+_bp_wg_deliveries() {
+  if [ -n "${GAFFER_WG_DELIVERIES_CMD:-}" ]; then local -a c; read -ra c <<<"$GAFFER_WG_DELIVERIES_CMD"; "${c[@]}" "$1"
+  else wg ticket repo-delivery list "$1"; fi
 }
 
 # Count tickets of a given STATUS whose (first) repo local_path matches the target.

@@ -66,6 +66,23 @@ gaffer_crash_cleanup() {
   # A successfully-delivered branch is intentionally kept for review/merge; only tear
   # down on an INCOMPLETE delivery (a crash/signal before the success point).
   if [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ]; then return 0; fi
+  # M2: release the runner-held claim on a hard kill (SIGTERM/OOM/Ctrl-C) BEFORE the
+  # worktree teardown. Without this, a mid-delivery kill strands the ticket `claimed`
+  # until its lease TTL (~65 min) expires before anything can pick it up. A best-effort
+  # release back to `ready` hands it straight back for the common kill/OOM case,
+  # tightening the strand from ~65 min to near-zero. Strictly guarded: only when the
+  # runner actually holds a claim (CLAIM_TOKEN set) AND the ticket number is known
+  # (NUM set — there is a narrow window where the token is captured but NUM is not) AND
+  # the delivery did not complete / the pause-keep guard is off (both already ensured
+  # by the early returns above; re-checked here for defence). Never let a release
+  # failure abort the cleanup that follows (`|| true`). Guarded on the helper being
+  # defined so a signal arriving before its definition can't fault the trap.
+  if [ -n "${CLAIM_TOKEN:-}" ] && [ -n "${NUM:-}" ] \
+     && [ "${GAFFER_DELIVERY_COMPLETE:-0}" != "1" ] \
+     && [ "${GAFFER_PAUSE_KEEP_WORKTREE:-0}" != "1" ] \
+     && declare -F gaffer_release_delivery >/dev/null 2>&1; then
+    gaffer_release_delivery ready "runner killed mid-delivery — claim released by crash trap" || true
+  fi
   # Nothing to clean until worktree setup has defined the teardown helper + its rows.
   # Before that point (config/candidate/skill/access parsing) this is a safe no-op.
   if declare -F gaffer_cleanup_worktrees >/dev/null 2>&1 && [ -n "${WT_ROWS:-}" ]; then
@@ -605,11 +622,17 @@ print(hits[0] if hits else '')
     # agent no longer submits.
     if gaffer_submit_delivery "bootstrapped new repo $B_NAME at $B_DIR on $B_DEFAULT_BRANCH"; then
       log "BOOTSTRAP: submitted #$NUM for review (→ in_review)"
-    else
-      log "BOOTSTRAP: WARNING — could not submit #$NUM for review; delivery recorded but ticket left claimed — needs a human"
+      result worked; exit 0
     fi
-
-    result worked; exit 0
+    # M1 (data-loss path): the submit FAILED. Do NOT exit "worked" leaving the ticket
+    # `claimed` — on TTL expiry it is blindly reclaimed and re-bootstrapped, and the
+    # already-recorded delivery evidence then points at a superseded scaffold. Park the
+    # runner-held claim to `refining` (blocks the blind reclaim), skip it this run, and
+    # fail the tick for a manual review handoff.
+    gaffer_release_delivery refining "runner submit failed — needs manual review handoff"
+    gaffer_skip_ticket "$NUM"
+    log "BOOTSTRAP: WARNING — submit FAILED for #$NUM; parked → refining, NOT exiting worked — needs a human / claim-recovery"
+    result error; exit 0
   fi
 
   # ── Repo-access boundary (FG-007/FG-008): resolve the ticket's WRITE / READ
@@ -1833,7 +1856,21 @@ for r in d.get("repositories", []) or []:
   if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
     log "submitted #$NUM for review (→ in_review) — runner-owned submit"
   else
-    log "WARNING — could not submit #$NUM for review (runner submit failed); delivery is recorded but the ticket is not in_review — needs a human / claim-recovery"
+    # M1 (data-loss path): the submit FAILED. We must NOT fall through to record the
+    # delivery artifacts and exit "worked" — that leaves the ticket `claimed` with
+    # recorded evidence, and on TTL expiry a second tick reclaims it and runs
+    # `git worktree add -B …`, RESETTING the branch and discarding THIS delivery's
+    # commits while the recorded evidence points at now-absent commits. Instead, park
+    # the runner-held claim to `refining` (which preserves the branch AND blocks the
+    # blind reclaim-and-reset), skip the ticket for this run, and fail the tick for a
+    # manual review handoff — BEFORE any delivery-artifact recording below. Raise the
+    # branch-retention flag FIRST so the exit/crash trap tears down only the throwaway
+    # worktree and never the review-worthy branch.
+    GAFFER_KEEP_DELIVERY_BRANCH=1
+    gaffer_release_delivery refining "runner submit failed — needs manual review handoff"
+    gaffer_skip_ticket "$NUM"
+    log "WARNING — submit FAILED for #$NUM; parked → refining (branch $WORK_BRANCH PRESERVED), NOT recording delivery — needs a human / claim-recovery"
+    result error; exit 0
   fi
 
   # Per-repo delivery recording (FG-008 / WG-005): for EACH write repo, persist a

@@ -126,6 +126,20 @@ describe("runner-owned bookkeeping", () => {
     expect(res.status).toBe("refining");
   });
 
+  it("runnerRelease --to ready requeues a resumed (in_progress) delivery", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const { ticketId, token } = seedReadyClaimedTicket(wg);
+    // Simulate a resumed delivery: claimed -> in_progress. The original lease is
+    // irrelevant on resume; a crash-trap release hands it back to ready tokenlessly.
+    wg.moveTicket(ticketId, "in_progress", systemActor);
+    void token;
+    const res = wg.runnerRelease(
+      { ticket_id: ticketId, to: "ready", reason: "runner killed mid-delivery" },
+      systemActor,
+    );
+    expect(res.status).toBe("ready");
+  });
+
   it("the guarded release transitions are NOT reachable via a plain board move", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     const { ticketId } = seedReadyClaimedTicket(wg);
@@ -133,5 +147,48 @@ describe("runner-owned bookkeeping", () => {
     expect(() => wg.moveTicket(ticketId, "refining", { type: "admin", id: "tom" })).toThrow(
       /ILLEGAL_TRANSITION|not allowed|released\/parked/i,
     );
+  });
+
+  // The runner-release guard is an OR over three legs (claimed->refining,
+  // in_progress->ready, in_progress->refining). Assert EACH in_progress leg is
+  // independently unreachable via a plain board move, so dropping any one leg of the
+  // `||` chain in transitionService is caught here (not just the claimed->refining leg).
+  it("board move in_progress -> ready is illegal (runner-release-only leg)", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const { ticketId } = seedReadyClaimedTicket(wg);
+    wg.moveTicket(ticketId, "in_progress", systemActor);
+    expect(() => wg.moveTicket(ticketId, "ready", { type: "admin", id: "tom" })).toThrow(
+      /ILLEGAL_TRANSITION|not allowed|released\/parked/i,
+    );
+  });
+
+  it("board move in_progress -> refining is illegal (runner-release-only leg)", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const { ticketId } = seedReadyClaimedTicket(wg);
+    wg.moveTicket(ticketId, "in_progress", systemActor);
+    expect(() => wg.moveTicket(ticketId, "refining", { type: "admin", id: "tom" })).toThrow(
+      /ILLEGAL_TRANSITION|not allowed|released\/parked/i,
+    );
+  });
+
+  it("a claim token scoped to ticket A cannot evidence ticket B (CLAIM_INVALID)", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    // Ticket A: claimed by the runner, token in hand.
+    const { token: tokenA } = seedReadyClaimedTicket(wg);
+    // Ticket B: an independent ready+claimed ticket with its own AC.
+    const b = seedReadyClaimedTicket(wg);
+    const h = makeHandlers(wg, agentActor);
+    // Presenting A's token against B's AC must be rejected — the token is not an
+    // active claim on ticket B. The MCP guard surfaces this as an error result.
+    const res = h.record_ac_evidence({
+      ticket_id: b.ticketId,
+      ac_id: b.acId,
+      evidence_type: "test_output",
+      summary: "cross-ticket evidence attempt",
+      claim_token: tokenA,
+    });
+    expect(res.isError).toBe(true);
+    // B's AC stays unsatisfied — no cross-ticket evidence leaked in.
+    expect(wg.view(b.ticketId).acceptanceCriteria[0].status).not.toBe("satisfied");
   });
 });

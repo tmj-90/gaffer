@@ -85,15 +85,26 @@ TOK1="$(runner_claim 1 "$A1")"
 [ "$(status_of 1)" = "claimed" ] && ok "#1 moved ready → claimed at SELECTION (in-flight before the agent)" || fail "#1 not claimed after selection (got '$(status_of 1)')"
 [ "$(active_claims 1)" = "1" ] && ok "exactly one active claim on #1" || fail "expected exactly one active claim on #1"
 
-echo "== (b) CONCURRENCY: two ticks select #2 → exactly one claims, the other skips =="
-c1="$WORK/c1"; c2="$WORK/c2"
-runner_claim 2 "$A1" > "$c1" & p1=$!
-runner_claim 2 "$A2" > "$c2" & p2=$!
-wait "$p1"; wait "$p2"
-t1="$(cat "$c1")"; t2="$(cat "$c2")"
-won=0; [ -n "$t1" ] && won=$((won+1)); [ -n "$t2" ] && won=$((won+1))
-[ "$won" -eq 1 ] && ok "EXACTLY ONE tick captured a token (the other skips + keeps scanning)" || fail "expected exactly one winner, got $won (t1='$t1' t2='$t2')"
-[ "$(active_claims 2)" = "1" ] && ok "#2 has exactly ONE active claim (no double-claim)" || fail "#2 has $(active_claims 2) active claims (expected 1)"
+echo "== (b) CONCURRENCY: 20 ticks race for #2 → exactly one claims, the rest skip =="
+# The DB partial-unique index (one active claim per ticket) is the arbiter under real
+# contention. Fan out a HIGH degree of concurrency (>=20 simultaneous runner_claim
+# calls on the SAME ready ticket) so the winner is decided by the index, not by luck
+# of a 2-way race. EXACTLY ONE must capture a token; every other must capture NONE
+# (the empty-token guard makes the tick skip + keep scanning). No double-claim.
+CLAIMERS=20
+pids=()
+for i in $(seq 1 "$CLAIMERS"); do
+  # Alternate the two registered agents so distinct agents genuinely contend.
+  _ag="$A1"; [ $((i % 2)) -eq 0 ] && _ag="$A2"
+  runner_claim 2 "$_ag" > "$WORK/race.$i" & pids+=("$!")
+done
+for p in "${pids[@]}"; do wait "$p"; done
+won=0
+for i in $(seq 1 "$CLAIMERS"); do
+  [ -s "$WORK/race.$i" ] && won=$((won+1))
+done
+[ "$won" -eq 1 ] && ok "EXACTLY ONE of $CLAIMERS concurrent claimers captured a token (the rest skip + keep scanning)" || fail "expected exactly one winner out of $CLAIMERS, got $won"
+[ "$(active_claims 2)" = "1" ] && ok "#2 has exactly ONE active claim (index enforced — no double-claim under contention)" || fail "#2 has $(active_claims 2) active claims (expected 1)"
 [ "$(status_of 2)" = "claimed" ] && ok "#2 is claimed by the single winner" || fail "#2 not claimed (got '$(status_of 2)')"
 
 echo "== (c) FAILURE: a delivery failure releases the runner-held claim → ready =="

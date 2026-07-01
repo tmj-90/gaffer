@@ -263,6 +263,26 @@ gaffer_submit_delivery() {
   fi
 }
 
+# MEMORY FEEDBACK LOOP (RUNNER-OWNED-BOOKKEEPING): close the loop between WHAT
+# knowledge memory served into this ticket's context and HOW the ticket turned
+# out. The runner knows the outcome; it PASSES it to memory, which adjusts its
+# OWN items using its OWN read-event log (memory never reads the dispatch DB).
+# $1 = clean | reworked | blocked. Best-effort + logged: a feedback error NEVER
+# affects delivery. No-op under DRY_RUN, without the memory CLI, or when this
+# delivery logged no recall (RECALL_REPO_NAME unset ⇒ nothing to adjust).
+gaffer_recall_feedback() {
+  local _fb_outcome="$1"
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  [ -n "${RECALL_REPO_NAME:-}" ] && [ -n "${NUM:-}" ] || return 0
+  # `lg` (factory.config.sh) runs the memory CLI with MEMORY_DB in the child env.
+  declare -f lg >/dev/null 2>&1 || return 0
+  if lg recall-feedback --repo "$RECALL_REPO_NAME" --ticket "$NUM" --outcome "$_fb_outcome" >/dev/null 2>&1; then
+    log "memory: recall-feedback #$NUM → $_fb_outcome (served knowledge adjusted)"
+  else
+    log "memory: recall-feedback #$NUM ($_fb_outcome) failed — non-fatal, delivery unaffected"
+  fi
+}
+
 # ── PAUSE-ON-CAP: resume-requested paused tickets take priority ──────────────
 # A human pressed Continue on a paused (cap-hit) delivery: re-enter delivery IN THE
 # EXISTING worktree (no new worktree, no re-clone, no lost context). The factory loop
@@ -920,7 +940,13 @@ $_RF_Q
   [ -n "$_CARD_REPO_NAME" ] || _CARD_REPO_NAME="$(basename "$_CARD_REAL_REPO")"
   _CARD_DESC="$(echo "$SHOW" | jget "(d['ticket'].get('description') or '')[:600]" 2>/dev/null || echo '')"
   _CARD_QUERY="$(printf '%s %s' "$TITLE" "$_CARD_DESC")"
-  FILE_CARDS_BLOCK="$(gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
+  # Remember the display name + ticket used for THIS delivery's recall, so the
+  # outcome-feedback call below (submit / blocked-park) targets the exact
+  # (repo, ticket) memory logged the served items under. GAFFER_RECALL_TICKET
+  # is exported ONLY for the delivery prime (not review/clarify) so memory logs
+  # the read-event edge for the items that actually fed the delivered work.
+  RECALL_REPO_NAME="$_CARD_REPO_NAME"
+  FILE_CARDS_BLOCK="$(GAFFER_RECALL_TICKET="$NUM" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
   if [ -n "$FILE_CARDS_BLOCK" ]; then
     PRIME_CONTEXT_CALLED=true
     CARDS_SERVED="$(printf '%s\n' "$FILE_CARDS_BLOCK" | grep -c "^  - \[" 2>/dev/null || echo 0)"
@@ -1381,6 +1407,9 @@ $real
     local _why="rework budget"; [ "$_cost_exhausted" -eq 0 ] && _why="$_MAX_DELIVERY_ATTEMPTS attempts"
     local _reason="$gate failed after $_why: $real (branch $WORK_BRANCH preserved)"
     gaffer_release_delivery blocked "$_reason" rework_exhausted "$_DELIV_ATTEMPT" "$_MAX_DELIVERY_ATTEMPTS"
+    # MEMORY FEEDBACK LOOP: this ticket exhausted rework and parked to blocked —
+    # the knowledge served into its context did NOT help. Demote + flag it.
+    gaffer_recall_feedback blocked
     log "RECOVER: parked #$NUM (→ blocked, rework_exhausted) after $_why — branch $WORK_BRANCH PRESERVED for rework, VISIBLE on the board"
     # Tear down ONLY the worktree; the branch survives for rework.
     gaffer_cleanup_worktrees
@@ -1983,6 +2012,16 @@ for r in d.get("repositories", []) or []:
   # ordering) keeps the done-gate's PR/diff evidence attached to an in_review ticket.
   if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
     log "submitted #$NUM for review (→ in_review) — runner-owned submit"
+    # MEMORY FEEDBACK LOOP: the delivery shipped for review. Reward the served
+    # knowledge when it shipped CLEAN (first attempt, no prior review rejection);
+    # otherwise it shipped only after rework — a weaker signal, so demote + flag.
+    # _DELIV_ATTEMPT counts in-tick attempts (≥2 ⇒ reworked here); ROUTE_ATTEMPT_RAW
+    # is the dispatch attempt_count (≥1 ⇒ a PRIOR review rejection sent it back).
+    if [ "${_DELIV_ATTEMPT:-1}" -ge 2 ] || [ "${ROUTE_ATTEMPT_RAW:-0}" -ge 1 ]; then
+      gaffer_recall_feedback reworked
+    else
+      gaffer_recall_feedback clean
+    fi
   else
     # M1 (data-loss path): the submit FAILED. We must NOT fall through to record the
     # delivery artifacts and exit "worked" — that leaves the ticket `claimed` with

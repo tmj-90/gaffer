@@ -4,10 +4,12 @@ import {
   type AcceptanceCriterion,
   type Actor,
   type Agent,
+  type BouncingTicket,
   type Decision,
   type DecisionSeverity,
   type Evidence,
   type PausedDelivery,
+  type ReworkAttempt,
   type Repository,
   type ScopeEdge,
   type ScopeNode,
@@ -38,6 +40,7 @@ import { EvidenceRepository } from "./repositories/evidenceRepository.js";
 import { PausedDeliveryRepository } from "./repositories/pausedDeliveryRepository.js";
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
+import { ReworkAttemptRepository } from "./repositories/reworkAttemptRepository.js";
 import { RunRepository, type RunListResult } from "./repositories/runRepository.js";
 import {
   PlanSessionRepository,
@@ -147,6 +150,12 @@ export interface TicketView {
    * so CLI callers and the API never receive a JSON-in-JSON string.
    */
   testContract: TestContract | null;
+  /**
+   * FAILURE-DIAGNOSIS: the full ordered rework failure trail (attempt 1 → 2 → …),
+   * each with the distilled failing test + assertion/stack. Empty for a ticket that
+   * never bounced. Powers the ticket-detail "why did #N fail" history.
+   */
+  reworkTrail: ReworkAttempt[];
 }
 
 /**
@@ -225,6 +234,7 @@ export class Dispatch {
   readonly ticketDependencies: TicketDependencyRepository;
   readonly runs: RunRepository;
   readonly planSessions: PlanSessionRepository;
+  readonly reworkAttempts: ReworkAttemptRepository;
   readonly pausedDeliveries: PausedDeliveryRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
@@ -296,6 +306,7 @@ export class Dispatch {
     this.ticketDependencies = new TicketDependencyRepository(db);
     this.runs = new RunRepository(db);
     this.planSessions = new PlanSessionRepository(db);
+    this.reworkAttempts = new ReworkAttemptRepository(db);
     this.pausedDeliveries = new PausedDeliveryRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
@@ -929,16 +940,44 @@ export class Dispatch {
   }
 
   /**
-   * RUNNER-OWNED-BOOKKEEPING: record a live rework attempt on an in-flight delivery
-   * so the board shows "reworking · attempt N/M" + the latest failure while the
-   * runner re-invokes the agent. Does NOT change status. See
+   * RUNNER-OWNED-BOOKKEEPING + FAILURE-DIAGNOSIS: record a live rework attempt on an
+   * in-flight delivery so the board shows "reworking · attempt N/M" + the latest
+   * failure while the runner re-invokes the agent, AND append the full distilled
+   * failure to the durable trail. Does NOT change status. See
    * {@link ClaimService.recordReworkAttempt}.
    */
   recordReworkAttempt(
-    input: { ticket_id: string; attempt: number; maxAttempts: number; reason: string },
+    input: {
+      ticket_id: string;
+      attempt: number;
+      maxAttempts: number;
+      reason: string;
+      gate?: string;
+      distilledFailure?: string;
+      acId?: string;
+    },
     actor: Actor,
   ): { eventId: string } {
     return this.claims.recordReworkAttempt(input, actor);
+  }
+
+  /**
+   * FAILURE-DIAGNOSIS: the "why did #N fail" read model — the full ordered rework
+   * failure trail for one ticket (attempt 1 → 2 → …), each with the distilled
+   * failing test + assertion/stack. Resolves by ticket id or number.
+   */
+  reworkTrail(ref: string): ReworkAttempt[] {
+    const ticket = this.resolveTicket(ref);
+    return this.reworkAttempts.listForTicket(ticket.id);
+  }
+
+  /**
+   * FAILURE-DIAGNOSIS: the cross-ticket "these keep bouncing" signal — tickets with
+   * a rework trail at or above the floor, ranked worst-first (repeated same-gate
+   * failures lead). The operator's key quality signal.
+   */
+  bouncingTickets(options: { minReworks?: number; limit?: number } = {}): BouncingTicket[] {
+    return this.reworkAttempts.bouncing(options);
   }
 
   releaseClaim(claimToken: string, actor: Actor): void {
@@ -1119,6 +1158,8 @@ export class Dispatch {
       // BBT-001: parse the JSON-encoded test_contract to a structured object so
       // consumers (CLI, API) never receive a JSON-in-JSON string.
       testContract: parseTestContract(ticket.test_contract),
+      // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
+      reworkTrail: this.reworkAttempts.listForTicket(ticket.id),
     };
   }
 

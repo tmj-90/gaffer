@@ -16,6 +16,7 @@ import { AgentRepository } from "../repositories/agentRepository.js";
 import { ClaimRepository } from "../repositories/claimRepository.js";
 import { DecisionRepository } from "../repositories/decisionRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
+import { ReworkAttemptRepository } from "../repositories/reworkAttemptRepository.js";
 import { TicketDependencyRepository } from "../repositories/ticketDependencyRepository.js";
 import { TicketRepository } from "../repositories/ticketRepository.js";
 import type { TransitionService } from "./transitionService.js";
@@ -136,6 +137,7 @@ export class ClaimService {
   private readonly evidence: EvidenceRepository;
   private readonly decisions: DecisionRepository;
   private readonly dependencies: TicketDependencyRepository;
+  private readonly reworkAttempts: ReworkAttemptRepository;
 
   constructor(
     private readonly db: Db,
@@ -149,6 +151,7 @@ export class ClaimService {
     this.evidence = new EvidenceRepository(db);
     this.decisions = new DecisionRepository(db);
     this.dependencies = new TicketDependencyRepository(db);
+    this.reworkAttempts = new ReworkAttemptRepository(db);
   }
 
   // --- Agents --------------------------------------------------------------
@@ -645,16 +648,35 @@ export class ClaimService {
   }
 
   /**
-   * RUNNER-OWNED-BOOKKEEPING: record a live rework attempt WITHOUT changing status.
-   * While the runner re-invokes the agent between failed delivery attempts the
-   * ticket stays visibly `in_progress` (it IS being worked, not gone) — this writes
-   * the latest failure + the attempt counter to `last_review_feedback` so the board
-   * card can render "reworking · attempt N/M" and the real failure detail. It NEVER
-   * transitions the ticket and is a no-op-safe read on any status. Best-effort from
-   * the runner's perspective; a failure here never aborts a delivery.
+   * RUNNER-OWNED-BOOKKEEPING + FAILURE-DIAGNOSIS: record a live rework attempt
+   * WITHOUT changing status. While the runner re-invokes the agent between failed
+   * delivery attempts the ticket stays visibly `in_progress` (it IS being worked,
+   * not gone). This does two things:
+   *  - overwrites `last_review_feedback` with the latest failure + attempt counter
+   *    so the board card renders "reworking · attempt N/M" (the LATEST, as before);
+   *  - APPENDS a row to the `rework_attempts` failure trail so the FULL ordered
+   *    history survives, not just the latest — the surface an operator returns to
+   *    when triaging. The trail row keeps the full DISTILLED failure (`distilledFailure`,
+   *    the real failing test + assertion/stack) rather than the truncated board
+   *    summary in `reason`; when the runner omits it, `reason` is used as a fallback.
+   *
+   * It NEVER transitions the ticket and is a no-op-safe read on any status.
+   * Best-effort from the runner's perspective; a failure here never aborts a
+   * delivery (the runner wraps the call fail-soft).
    */
   recordReworkAttempt(
-    input: { ticket_id: string; attempt: number; maxAttempts: number; reason: string },
+    input: {
+      ticket_id: string;
+      attempt: number;
+      maxAttempts: number;
+      reason: string;
+      /** The gate that failed (e.g. `tests`, `definition-of-done`). Persisted on the trail. */
+      gate?: string;
+      /** The full distilled failing test + assertion/stack. Falls back to `reason`. */
+      distilledFailure?: string;
+      /** The AC being worked toward when known. */
+      acId?: string;
+    },
     actor: Actor,
   ): { eventId: string } {
     const now = this.clock.now();
@@ -670,12 +692,30 @@ export class ClaimService {
         maxAttempts: input.maxAttempts,
       };
       this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
+      // APPEND the full distilled failure to the durable trail (never overwrites a
+      // prior attempt). Keep the full block — the operator needs the real assertion,
+      // not the one-line board summary.
+      this.reworkAttempts.insert({
+        id: newId(),
+        ticket_id: ticket.id,
+        attempt: input.attempt,
+        max_attempts: input.maxAttempts,
+        gate: input.gate ?? null,
+        distilled_failure: input.distilledFailure ?? input.reason,
+        ac_id: input.acId ?? null,
+        created_at: now,
+      });
       const eventId = writeEvent(this.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
         actor,
         event_type: "ticket.reworking",
-        payload: { attempt: input.attempt, max_attempts: input.maxAttempts, reason: input.reason },
+        payload: {
+          attempt: input.attempt,
+          max_attempts: input.maxAttempts,
+          reason: input.reason,
+          gate: input.gate ?? null,
+        },
       });
       return { eventId };
     });

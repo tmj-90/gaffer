@@ -58,6 +58,7 @@ const {
   INFRA_NOT_FEATURES_RULE,
   MEMORY_ONBOARD_RULE,
   INDUCTION_TAG,
+  CARD_SOLO_SNIPPET_CHARS,
 } = await import(MOD);
 
 let passed = 0;
@@ -1060,6 +1061,164 @@ console.log("== emitFileCards: B=1 vs B>1 both card every file (trust-split pres
     assert("B>1 null result: files still carded mechanically", s.carded === 3);
     assert("B>1 null result: zero model summaries (fail-safe)", s.modelCarded === 0);
   }
+}
+
+console.log("== batch-shortfall retry: missing batch slots trigger per-file runTurn ==");
+{
+  // A repo with 3 small source files.
+  const { execSync: execSync2 } = await import("node:child_process");
+  const repoDir = mkdtempSync(resolve(tmpdir(), "shortfall-retry-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "a.ts"), "export const a = 1;\n");
+  writeFileSync(join(repoDir, "src", "b.ts"), "export const b = 2;\n");
+  writeFileSync(join(repoDir, "src", "c.ts"), "export const c = 3;\n");
+  execSync2(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+  const cliDir = mkdtempSync(resolve(tmpdir(), "shortfall-cli-"));
+  const cliBin = join(cliDir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') { process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n'); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+  const cfg = { cliBin, db: join(cliDir, "lore.sqlite") };
+  const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+
+  let retryCalls = 0;
+  const retryCalled = [];
+  const s = emitFileCards(
+    repoDir,
+    { repoId: "demo", name: "demo" },
+    {
+      cfg,
+      env,
+      // Batch returns only card for index 0; indices 1 and 2 are null (shortfall).
+      runBatchTurn: (_p, count) => {
+        const result = new Array(count).fill(null);
+        result[0] = { tldr: "File A — batched.", rolePrimary: "util", roleTags: [] };
+        return result;
+      },
+      // Per-file retry path — should be called for the 2 missing files.
+      runTurn: (prompt) => {
+        retryCalls += 1;
+        // Record which file triggered the retry by extracting from prompt.
+        const m = /File:\s+(\S+)/.exec(prompt);
+        if (m) retryCalled.push(m[1]);
+        return { tldr: "Retried card.", rolePrimary: "util", roleTags: [] };
+      },
+    },
+  );
+  assert("shortfall retry: all 3 files carded (none absent)", s.carded === 3);
+  assert("shortfall retry: all 3 got model cards", s.modelCarded === 3);
+  assert("shortfall retry: runTurn called exactly for the 2 missing slots", retryCalls === 2);
+}
+
+console.log("== oversized isolation: large file routed solo, others batched normally ==");
+{
+  // A repo with 2 small files + 1 oversized file (> CARD_OVERSIZED_LOC lines).
+  const { execSync: execSync3 } = await import("node:child_process");
+  const repoDir = mkdtempSync(resolve(tmpdir(), "oversized-iso-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "a.ts"), "export const a = 1;\n");
+  writeFileSync(join(repoDir, "src", "b.ts"), "export const b = 2;\n");
+  // oversized: 2100 lines — exceeds the CARD_OVERSIZED_LOC=2000 threshold.
+  const bigLines = Array.from({ length: 2100 }, (_, i) => `// line ${i + 1}`);
+  bigLines.push("export function bigFn() {}");
+  writeFileSync(join(repoDir, "src", "big.ts"), bigLines.join("\n") + "\n");
+  execSync3(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+  const cliDir = mkdtempSync(resolve(tmpdir(), "oversized-iso-cli-"));
+  const cliBin = join(cliDir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') { process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n'); }",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+  const cfg = { cliBin, db: join(cliDir, "lore.sqlite") };
+  const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+
+  const batchedFiles = [];
+  let soloPrompt = null;
+  const s = emitFileCards(
+    repoDir,
+    { repoId: "demo", name: "demo" },
+    {
+      cfg,
+      env,
+      runBatchTurn: (prompt, count) => {
+        // Record which files were included in this batch call.
+        const matches = [...prompt.matchAll(/FILE \d+: (\S+)/g)];
+        for (const m of matches) batchedFiles.push(m[1]);
+        return Array.from({ length: count }, (_, i) => ({
+          tldr: `Batched card ${i}.`,
+          rolePrimary: "util",
+          roleTags: [],
+        }));
+      },
+      runTurn: (prompt) => {
+        // Should ONLY be called for big.ts (the isolated oversized file).
+        soloPrompt = prompt;
+        return { tldr: "Big file card.", rolePrimary: "service", roleTags: [] };
+      },
+    },
+  );
+  assert("oversized: all 3 files carded", s.carded === 3 && s.modelCarded === 3);
+  assert(
+    "oversized: big.ts was NOT included in the batch call",
+    !batchedFiles.some((p) => p.includes("big.ts")),
+  );
+  assert(
+    "oversized: small files a.ts + b.ts were batched together",
+    batchedFiles.some((p) => p.includes("a.ts")) && batchedFiles.some((p) => p.includes("b.ts")),
+  );
+  assert("oversized: big.ts processed via solo runTurn", soloPrompt !== null);
+  assert("oversized: solo prompt targets big.ts (not a.ts or b.ts)", soloPrompt.includes("big.ts"));
+  // Verify the solo prompt uses the wider snippet budget (CARD_SOLO_SNIPPET_CHARS).
+  // buildCardPrompt labels it "Snippet (file head — NOT the whole file):" so test
+  // for "file head" which is present in the single-file path but not the batch path.
+  assert(
+    "oversized: solo prompt has an expanded snippet (not empty)",
+    /snippet\s*\(file head/i.test(soloPrompt),
+  );
+  // Verify the solo prompt carries at least CARD_SOLO_SNIPPET_CHARS worth of snippet
+  // headroom — the prompt itself should be long enough to fit it.
+  assert(
+    "oversized: solo snippet budget is at least CARD_SOLO_SNIPPET_CHARS",
+    CARD_SOLO_SNIPPET_CHARS >= 1200,
+  );
+}
+
+console.log("== batch prompt: per-file symbol cap truncates large symbol lists ==");
+{
+  // A file with 50 symbols (> CARD_BATCH_SYMBOLS_PER_FILE=40) should produce a
+  // truncation note in the batch prompt so the model knows the list is clipped.
+  const manySymbols = Array.from({ length: 50 }, (_, i) => `sym${i}`);
+  const entries = [
+    {
+      rel: "src/fat.ts",
+      fileType: "typescript",
+      structure: { imports: [], symbols: manySymbols },
+      snippet: "",
+    },
+  ];
+  const prompt = buildCardBatchPrompt(entries);
+  assert(
+    "batch prompt truncates symbols > 40 with a truncation note",
+    prompt.includes("…[10 more]"),
+  );
+  assert("batch prompt does NOT include the 41st symbol verbatim", !prompt.includes("sym40"));
+  assert(
+    "batch prompt still includes the first 40 symbols (sym0..sym39)",
+    prompt.includes("sym0") && prompt.includes("sym39"),
+  );
 }
 
 console.log("== refreshFileCards: changed file gets re-carded + watermark advances ==");

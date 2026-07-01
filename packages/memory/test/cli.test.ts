@@ -863,3 +863,146 @@ describe("CLI — delete-file-card + get-card-watermark (incremental refresh sea
     expect(err).toMatch(/requires --path/);
   });
 });
+
+describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
+  const CANONICAL = "/repos/app";
+  const REPO = "app";
+
+  async function seedLore(): Promise<string> {
+    // Distinctive token so cards-for-scope FTS reliably serves it.
+    const rc = await run(
+      "add",
+      "--title",
+      "Zorptastic hashing rule",
+      "--summary",
+      "zorptastic default policy",
+      "--body",
+      "always zorptastic",
+      "--repo",
+      REPO,
+      "--confidence",
+      "low",
+    );
+    expect(rc).toBe(0);
+    return firstId(out);
+  }
+
+  it("logs served items via cards-for-scope --ticket, then clean bumps confidence", async () => {
+    const id = await seedLore();
+    out = "";
+    // Serve the lore into ticket 42's context (recall edge logged).
+    expect(
+      await run(
+        "cards-for-scope",
+        "--canonical",
+        CANONICAL,
+        "--repo",
+        REPO,
+        "--query",
+        "zorptastic",
+        "--ticket",
+        "42",
+        "--json",
+      ),
+    ).toBe(0);
+    const packet = JSON.parse(out);
+    expect(packet.lore.some((l: { id: string }) => l.id === id)).toBe(true);
+
+    out = "";
+    expect(
+      await run(
+        "recall-feedback",
+        "--repo",
+        REPO,
+        "--ticket",
+        "42",
+        "--outcome",
+        "clean",
+        "--json",
+      ),
+    ).toBe(0);
+    const res = JSON.parse(out);
+    expect(res.alreadyApplied).toBe(false);
+    expect(res.loreAdjusted).toContain(id);
+
+    // Confidence bumped low → medium; shows in `show`.
+    out = "";
+    await run("show", id);
+    expect(out).toMatch(/conf=medium/);
+  });
+
+  it("blocked flags the served lore and surfaces it via `flagged`", async () => {
+    const id = await seedLore();
+    out = "";
+    await run(
+      "cards-for-scope",
+      "--canonical",
+      CANONICAL,
+      "--repo",
+      REPO,
+      "--query",
+      "zorptastic",
+      "--ticket",
+      "7",
+      "--json",
+    );
+    out = "";
+    expect(
+      await run(
+        "recall-feedback",
+        "--repo",
+        REPO,
+        "--ticket",
+        "7",
+        "--outcome",
+        "blocked",
+        "--json",
+      ),
+    ).toBe(0);
+
+    out = "";
+    expect(await run("flagged", "--repo", REPO, "--json")).toBe(0);
+    const items = JSON.parse(out);
+    expect(items.some((i: { id: string; type: string }) => i.id === id && i.type === "lore")).toBe(
+      true,
+    );
+  });
+
+  it("recall-feedback is idempotent per (ticket, outcome)", async () => {
+    await seedLore();
+    await run(
+      "cards-for-scope",
+      "--canonical",
+      CANONICAL,
+      "--repo",
+      REPO,
+      "--query",
+      "zorptastic",
+      "--ticket",
+      "3",
+      "--json",
+    );
+    await run("recall-feedback", "--repo", REPO, "--ticket", "3", "--outcome", "clean", "--json");
+    out = "";
+    expect(
+      await run("recall-feedback", "--repo", REPO, "--ticket", "3", "--outcome", "clean", "--json"),
+    ).toBe(0);
+    expect(JSON.parse(out).alreadyApplied).toBe(true);
+  });
+
+  it("recall-feedback rejects a bad --outcome and missing flags", async () => {
+    expect(await run("recall-feedback", "--repo", REPO, "--ticket", "1", "--outcome", "nope")).toBe(
+      2,
+    );
+    expect(err).toMatch(/--outcome/);
+    err = "";
+    expect(await run("recall-feedback", "--ticket", "1", "--outcome", "clean")).toBe(2);
+    expect(err).toMatch(/--repo/);
+  });
+
+  it("flagged reports nothing when there is nothing to review", async () => {
+    out = "";
+    expect(await run("flagged", "--repo", REPO)).toBe(0);
+    expect(out).toMatch(/No items flagged for review/);
+  });
+});

@@ -338,6 +338,63 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // Memory Feedback Loop — close the loop between WHAT knowledge was served
+    // into a ticket's context and HOW that ticket turned out, so memory gets
+    // smarter, not just bigger.
+    //
+    // recall_event — the read-event EDGE the feedback loop learns from. Each
+    // row records that a memory item (lore or file card) was SERVED into a
+    // given ticket's context during a recall (the runner's cards-for-scope
+    // prime). Keyed by (repo, ticket): the served SET per ticket. The
+    // (repo, ticket, item_type, item_id) UNIQUE makes re-priming the same
+    // ticket idempotent (the served edge is a set, not a stream) — the older,
+    // untyped `events(kind='read')` log stays as-is for the audit trail; this
+    // table adds the ticket dimension the loop needs.
+    //
+    // recall_feedback — the idempotency + audit ledger. Exactly one row per
+    // (repo, ticket, outcome): applying the same outcome twice is a no-op, so
+    // a re-run (or a retried runner call) can never double-adjust. Records how
+    // many items were adjusted for the audit trail.
+    //
+    // flagged_for_review (on lore + file_card) — the surfaced signal. Set when
+    // an item was in context for a reworked/blocked ticket: "this knowledge led
+    // to rework, a human should look." Cleared on a clean outcome. Additive
+    // column, DEFAULT 0, so every existing row reads back as not-flagged.
+    //
+    // ISOLATION (non-negotiable): none of this reads the dispatch DB. Memory
+    // learns from its OWN read-event log + an outcome the runner PASSES in.
+    id: "008-recall-feedback",
+    up(db) {
+      db.exec(`
+        CREATE TABLE recall_event (
+          id          TEXT PRIMARY KEY,
+          repo        TEXT NOT NULL,
+          ticket      TEXT NOT NULL,
+          item_type   TEXT NOT NULL
+            CHECK (item_type IN ('lore','card')),
+          item_id     TEXT NOT NULL,
+          served_at   TEXT NOT NULL,
+          UNIQUE (repo, ticket, item_type, item_id)
+        );
+        CREATE INDEX idx_recall_event_ticket ON recall_event(repo, ticket);
+
+        CREATE TABLE recall_feedback (
+          id             TEXT PRIMARY KEY,
+          repo           TEXT NOT NULL,
+          ticket         TEXT NOT NULL,
+          outcome        TEXT NOT NULL
+            CHECK (outcome IN ('clean','reworked','blocked')),
+          items_adjusted INTEGER NOT NULL,
+          applied_at     TEXT NOT NULL,
+          UNIQUE (repo, ticket, outcome)
+        );
+
+        ALTER TABLE lore ADD COLUMN flagged_for_review INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE file_card ADD COLUMN flagged_for_review INTEGER NOT NULL DEFAULT 0;
+      `);
+    },
+  },
 ];
 
 /**

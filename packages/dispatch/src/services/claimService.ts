@@ -562,6 +562,55 @@ export class ClaimService {
   }
 
   /**
+   * RUNNER-OWNED-BOOKKEEPING: the factory runner holds the delivery claim and is
+   * the authority that releases/parks it when a delivery fails or exhausts its
+   * retries. On FAILURE the ticket returns to `ready` (blind-requeue safe); on
+   * PARK it routes to `refining` (needs triage, branch preserved). A resumed
+   * delivery is `in_progress` and carries no runner-held token, so `claimToken` is
+   * OPTIONAL — when present the matching active claim is released so the ticket
+   * carries no dangling claim; when absent (resume) the ticket is simply
+   * transitioned. The guarded `runnerRelease` transitions make the otherwise
+   * board-unreachable `claimed->refining` / `in_progress->{ready,refining}`
+   * routes legal for exactly this path.
+   */
+  runnerRelease(
+    input: { ticket_id: string; to: "ready" | "refining"; claimToken?: string; reason?: string },
+    actor: Actor,
+  ): { status: string; eventId: string } {
+    const now = this.clock.now();
+    return inTransaction(this.db, () => {
+      const ticket = this.tickets.findById(input.ticket_id);
+      if (!ticket) throw notFound("ticket", input.ticket_id);
+      if (input.claimToken) {
+        const claim = this.activeClaimForToken(input.claimToken, now);
+        if (claim.ticket_id !== ticket.id) {
+          throw new DispatchError(
+            "CLAIM_INVALID",
+            "Claim token does not match an active claim on this ticket.",
+          );
+        }
+        this.claims.setStatus(claim.id, "released", now);
+        writeEvent(this.db, {
+          entity_type: "ticket",
+          entity_id: ticket.id,
+          actor,
+          event_type: "claim.released",
+          payload: { claim_id: claim.id },
+        });
+      }
+      const result = this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: input.to,
+        reason: input.reason ?? `runner_release_${input.to}`,
+        systemOverride: true,
+        runnerRelease: true,
+      });
+      return { status: result.ticket.status, eventId: result.eventId };
+    });
+  }
+
+  /**
    * System recovery: expire every active claim past its TTL and return its ticket
    * to `ready` — or to `blocked` if the ticket has an unresolved blocking decision.
    * Transitions use systemOverride so policy gates never stall recovery.

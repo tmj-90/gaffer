@@ -929,6 +929,28 @@ program
   });
 
 program
+  .command("runner-release <ref>")
+  .description(
+    "RUNNER-OWNED-BOOKKEEPING: release/park a runner-held delivery claim. --to ready (failure/retry) or refining (park, branch preserved). --token releases the matching claim; omit it for a tokenless resumed delivery.",
+  )
+  .requiredOption("--to <status>", "ready|refining")
+  .option("--token <token>", "claim token to release (optional for a resumed delivery)")
+  .option("--reason <text>", "reason recorded on the transition")
+  .action((ref, opts, cmd) => {
+    if (opts.to !== "ready" && opts.to !== "refining") {
+      throw new Error("--to must be 'ready' or 'refining'");
+    }
+    const wg = open(cmd.optsWithGlobals());
+    const t = wg.resolveTicket(ref);
+    const res = wg.runnerRelease(
+      { ticket_id: t.id, to: opts.to, claimToken: opts.token, reason: opts.reason },
+      { type: "system" },
+    );
+    printJson({ ok: true, ...res });
+    wg.db.close();
+  });
+
+program
   .command("delivery-artifact <ref>")
   .description("Record where a ticket was delivered (branch/PR). Persists onto the ticket.")
   .option("--token <token>", "claim token (required for agent actors)")

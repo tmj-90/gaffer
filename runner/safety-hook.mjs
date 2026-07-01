@@ -22,7 +22,7 @@
  * containment of a determined exfil needs an OS sandbox / permission boundary.
  */
 import { spawnSync } from "node:child_process";
-import { appendFileSync, realpathSync } from "node:fs";
+import { appendFileSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 // Canonical dangerous-command deny list — the SINGLE source of truth shared with
@@ -30,19 +30,50 @@ import { basename, dirname, join, resolve } from "node:path";
 // the extra parity metadata on each rule is inert here. See the module header.
 import { DANGEROUS_COMMANDS as DENY_COMMANDS } from "./lib/dangerous-commands.mjs";
 
+// Hard bounds so a pathological/deep path can NEVER blow the call stack. An
+// unbounded recursion here throws RangeError, and an uncaught throw would exit
+// the hook non-2 → Claude Code ALLOWS (fail-open). Both bounds THROW on breach;
+// the top-level decision guard turns that throw into a BLOCK (fail-closed).
+const MAX_PATH_LEN = 4096; // ~PATH_MAX; anything longer is pathological, not real
+const MAX_CANON_DEPTH = 512; // ancestor-walk + symlink-follow recursion ceiling
+
 /**
  * Canonicalise a path symlink-safely, even when it doesn't exist yet (a file
  * about to be written): realpath the longest existing ancestor, then re-append
  * the not-yet-created tail. Fixes false "outside repo" blocks under symlinked
  * roots like macOS /tmp -> /private/tmp.
+ *
+ * SYMLINK-ESCAPE HARDENING: when the path does not fully exist, we still FOLLOW a
+ * final component that is itself a symlink — including a DANGLING one whose target
+ * does not exist yet. A write "through" such a link lands at the link's TARGET,
+ * which may sit outside the write-root; resolving the target (not re-appending the
+ * link's own name) is what makes the out-of-root destination visible to the
+ * boundary check. Without this, `ln -s /outside ./link` then a write to `./link`
+ * resolved to the in-root `./link` and was allowed while the bytes escaped.
  */
-function canonicalize(p) {
+function canonicalize(p, depth = 0) {
+  if (typeof p !== "string" || p.length > MAX_PATH_LEN || depth > MAX_CANON_DEPTH) {
+    // Refuse to resolve a path we cannot bound safely — fail CLOSED via throw.
+    throw new Error("canonicalize: path too long or too deeply nested to resolve safely");
+  }
   try {
+    // realpathSync resolves ALL symlinks when the whole path exists.
     return realpathSync(p);
   } catch {
+    // p does not fully exist yet. If its FINAL component is a symlink (including a
+    // dangling one), follow the link to its target and canonicalise THAT so an
+    // out-of-root target is exposed to the boundary check.
+    try {
+      if (lstatSync(p).isSymbolicLink()) {
+        const target = readlinkSync(p);
+        return canonicalize(resolve(dirname(p), target), depth + 1);
+      }
+    } catch {
+      /* not a symlink / cannot lstat — fall through to the ancestor walk */
+    }
     const parent = dirname(p);
     if (parent === p) return p;
-    return resolve(canonicalize(parent), basename(p));
+    return resolve(canonicalize(parent, depth + 1), basename(p));
   }
 }
 
@@ -1513,6 +1544,23 @@ function checkCommand(cmd) {
   // Repo-access boundary for bash write ops and branch creation.
   const roots = resolveRoots();
   for (const target of extractBashWriteTargets(cmd)) {
+    // BASH-vs-WRITE PARITY: a bash write op must obey the SAME `.git` protection
+    // the Write tool applies in checkWrite — not just the write-root boundary. A
+    // `.git/…` write (e.g. `echo … > .git/hooks/post-commit`, `cp evil
+    // .git/hooks/post-commit`) was previously ALLOWED whenever the resolved
+    // target sat inside the write-root, because only the root check ran here —
+    // planting a git hook is arbitrary code execution on the next git operation.
+    // (UNVERIFIABLE_TARGET is a sentinel, not a real path — only the root check
+    // is meaningful for it, and it always classifies "outside".) Secret-file
+    // CONTENT writes via bash (`echo … > .env`, `cp x .env`, `tee .env`) are
+    // already denied by secretBoundaryReason above, so we do not re-check
+    // SECRET_PATH here — doing so would wrongly block a bare `rm .env.local`
+    // DELETION, which is intentionally allowed (a deletion is not an exfil).
+    if (target !== UNVERIFIABLE_TARGET && GIT_INTERNAL.test(target)) {
+      block(
+        `bash write inside .git (hooks / exec-hijack surface): ${target} — "${cmd.slice(0, 120)}"`,
+      );
+    }
     const access = classifyRootAccess(target, roots);
     if (access !== "write") {
       block(
@@ -1586,37 +1634,70 @@ function checkRead(filePath) {
   allow();
 }
 
+// FAIL-CLOSED GLOBAL GUARD: Claude Code treats ONLY exit 2 as blocking — ANY
+// other exit (including the exit 1 an uncaught exception produces) ALLOWS the
+// tool, voiding the entire hook. So ANY error we do not otherwise handle must
+// still BLOCK. We deliberately do NOT route this through block() (which touches
+// the telemetry ledger and could itself throw); we write stderr and exit 2
+// directly, the minimal fail-closed action.
+process.on("uncaughtException", (err) => {
+  try {
+    process.stderr.write(
+      `BLOCKED by gaffer safety hook: internal error — failing closed: ${err && err.message ? err.message : err}\n`,
+    );
+  } catch {
+    /* stderr write must never itself prevent the exit-2 fail-closed */
+  }
+  process.exit(2);
+});
+
 let raw = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => (raw += c));
 process.stdin.on("end", () => {
-  let payload = {};
+  // Wrap the WHOLE decision so any thrown error (e.g. canonicalize tripping its
+  // depth/length guard on a pathological path) fails CLOSED with exit 2 rather
+  // than escaping as exit 1 → ALLOW. block()/allow() call process.exit(), which
+  // terminates without throwing, so the normal decision path is unaffected.
   try {
-    payload = raw.trim() ? JSON.parse(raw) : {};
-  } catch {
-    // If we can't parse the hook payload, fail safe-open for non-mutating tools
-    // but the matchers below only route mutating tools here, so allow.
-    allow();
-  }
-  const tool = payload.tool_name ?? payload.toolName ?? "";
-  const input = payload.tool_input ?? payload.toolInput ?? {};
-  CURRENT_TOOL = tool;
-  CURRENT_TARGET =
-    input.command ?? input.file_path ?? input.filePath ?? input.notebook_path ?? null;
-  // Chunk 2b metric: record every observed tool call (telemetry only — this runs
-  // BEFORE dispatch and never influences the allow/block outcome below).
-  logToolCall(tool, CURRENT_TARGET);
-  switch (tool) {
-    case "Bash":
-      return checkCommand(String(input.command ?? ""));
-    case "Write":
-    case "Edit":
-    case "MultiEdit":
-    case "NotebookEdit":
-      return checkWrite(String(input.file_path ?? input.filePath ?? input.notebook_path ?? ""));
-    case "Read":
-      return checkRead(String(input.file_path ?? input.filePath ?? ""));
-    default:
-      return allow();
+    let payload = {};
+    let parsed = true;
+    try {
+      payload = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      parsed = false;
+    }
+    if (!parsed) {
+      // If we can't parse the hook payload, fail safe-open for non-mutating tools
+      // but the matchers below only route mutating tools here, so allow.
+      allow();
+      return;
+    }
+    const tool = payload.tool_name ?? payload.toolName ?? "";
+    const input = payload.tool_input ?? payload.toolInput ?? {};
+    CURRENT_TOOL = tool;
+    CURRENT_TARGET =
+      input.command ?? input.file_path ?? input.filePath ?? input.notebook_path ?? null;
+    // Chunk 2b metric: record every observed tool call (telemetry only — this runs
+    // BEFORE dispatch and never influences the allow/block outcome below).
+    logToolCall(tool, CURRENT_TARGET);
+    switch (tool) {
+      case "Bash":
+        return checkCommand(String(input.command ?? ""));
+      case "Write":
+      case "Edit":
+      case "MultiEdit":
+      case "NotebookEdit":
+        return checkWrite(String(input.file_path ?? input.filePath ?? input.notebook_path ?? ""));
+      case "Read":
+        return checkRead(String(input.file_path ?? input.filePath ?? ""));
+      default:
+        return allow();
+    }
+  } catch (err) {
+    // FAIL CLOSED: a crash while deciding must BLOCK, never exit 1/allow.
+    block(
+      `safety hook crashed while deciding — failing closed: ${err && err.message ? err.message : err}`,
+    );
   }
 });

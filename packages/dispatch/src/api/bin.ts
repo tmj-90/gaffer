@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 
-import { authConfigured } from "./auth.js";
+import { authConfigured, ensureApiToken } from "./auth.js";
 import { Dispatch } from "../core.js";
 import { resolveDbPath } from "../util/paths.js";
 import { DEFAULT_API_PORT, assertSafeBind, createApiServer } from "./server.js";
@@ -42,9 +42,19 @@ program
     "Allow binding to a non-loopback host despite the API having no auth (or DISPATCH_UNSAFE_BIND=1)",
   )
   .action((opts: { db?: string; port?: string; host: string; unsafeBind?: boolean }) => {
+    // Guarantee a bearer token before anything else so the control-plane
+    // mutations (review approve/reject, merge, every state-change) are gated BY
+    // DEFAULT, not merely by the loopback bind. When the operator has not set
+    // DISPATCH_API_TOKEN, a token is generated, persisted 0600 to
+    // $GAFFER_DATA/dashboard-token, and exported into the process env — so the
+    // human operator can authenticate while the delivery agent (whose child env
+    // the runner scrubs of the token) structurally cannot approve its own work.
+    const ensured = ensureApiToken(process.env);
+
     // Refuse to expose the API on a public interface unless it is safe: a bearer
-    // token is configured (DISPATCH_API_TOKEN), the operator opted in
-    // (--unsafe-bind), or it is a loopback bind. Runs before opening DB or socket.
+    // token is configured (always true now — see ensureApiToken above), the
+    // operator opted in (--unsafe-bind), or it is a loopback bind. Runs before
+    // opening DB or socket.
     assertSafeBind(opts.host, resolveUnsafeBind(opts.unsafeBind), authConfigured());
 
     const dbPath = resolveDbPath(opts.db);
@@ -62,10 +72,25 @@ program
     const server = createApiServer(wg, undefined, undefined, undefined, undefined, opts.host);
 
     server.listen(port, opts.host, () => {
-      const auth = authConfigured() ? "token-auth" : "no-auth";
       process.stdout.write(
-        `dispatch-api listening on http://${opts.host}:${port} (db: ${dbPath}, ${auth})\n`,
+        `dispatch-api listening on http://${opts.host}:${port} (db: ${dbPath}, token-auth)\n`,
       );
+      // Tell the operator how to authenticate. A freshly generated token is
+      // printed once so it can be copied into the dashboard / curl; a reused or
+      // env-supplied token is only referenced, never echoed.
+      if (ensured.source === "generated") {
+        process.stdout.write(
+          `dispatch-api: generated a new dashboard token (saved 0600 to ${ensured.path}).\n` +
+            `  Authenticate mutating requests with:  Authorization: Bearer ${ensured.token}\n`,
+        );
+      } else if (ensured.source === "file") {
+        process.stdout.write(
+          `dispatch-api: using the saved dashboard token at ${ensured.path} ` +
+            `(delete it to rotate).\n`,
+        );
+      } else {
+        process.stdout.write(`dispatch-api: using DISPATCH_API_TOKEN from the environment.\n`);
+      }
     });
 
     const shutdown = (): void => {

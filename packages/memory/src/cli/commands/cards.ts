@@ -37,6 +37,7 @@ import {
   validateModel,
 } from "../../core/cardValidation.js";
 import { cardsForScope } from "../../core/scopePacket.js";
+import { logRecall } from "../../core/recallFeedback.js";
 import { openDb } from "../../db/index.js";
 import type { ModelStatus } from "../../db/types.js";
 import { getBool, getString, getStringArray } from "../args.js";
@@ -275,6 +276,26 @@ export async function cmdCardsForScope(args: ReturnType<typeof parseArgs>): Prom
     // when cards demonstrably exist under a different key.
     for (const d of packet.diagnostics ?? []) {
       process.stderr.write(`memory: WARN ${d}\n`);
+    }
+
+    // MEMORY FEEDBACK LOOP — when a ticket id is supplied, record the read-event
+    // edge: which items memory SERVED into this ticket's context. The later
+    // `recall-feedback` verb reads this log to adjust confidence by outcome.
+    // FAIL-SOFT: logging must NEVER break the packet the caller depends on.
+    const ticket = getString(args.flags, "ticket");
+    if (ticket && ticket.trim()) {
+      try {
+        logRecall(db, {
+          repo: resolved.repo,
+          ticket: ticket.trim(),
+          loreIds: packet.lore.map((l) => l.id),
+          cardIds: packet.cards.map((c) => c.id),
+        });
+      } catch (err) {
+        process.stderr.write(
+          `memory: WARN recall-log failed for ticket ${ticket} — ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
     }
 
     if (json) {

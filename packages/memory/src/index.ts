@@ -32,6 +32,19 @@ export {
   verifyLore,
 } from "./core/lore.js";
 export { newLoreId } from "./core/ids.js";
+export { logRecall, recallFeedback, listFlaggedForReview } from "./core/recallFeedback.js";
+export type {
+  FlaggedCard,
+  FlaggedItem,
+  FlaggedLore,
+  ListFlaggedOptions,
+  LogRecallInput,
+  LogRecallResult,
+  RecallFeedbackInput,
+  RecallFeedbackResult,
+  RecallItemType,
+  RecallOutcome,
+} from "./core/recallFeedback.js";
 export {
   addBoundary,
   approveBoundary,

@@ -595,20 +595,29 @@ describe("Plan-sessions bearer 401", () => {
     else process.env.DISPATCH_API_TOKEN = originalToken;
   });
 
-  it("rejects plan-session requests without a token when auth is configured", async () => {
+  it("refuses MUTATING plan-session requests without a token; reads stay open on loopback", async () => {
     process.env.DISPATCH_API_TOKEN = TOKEN;
     const h = await startHarness();
     try {
-      const unauthenticated = await Promise.all([
+      // Mutating / state-changing requests MUST present the token — refused (401)
+      // without it. This is the structural stop on a tokenless local caller (e.g.
+      // the delivery agent's shell) mutating the control plane.
+      const mutating = await Promise.all([
         call(h.baseUrl, "POST", "/plan-sessions"),
-        call(h.baseUrl, "GET", "/plan-sessions/active"),
-        call(h.baseUrl, "GET", "/plan-sessions/some-id"),
         call(h.baseUrl, "POST", "/plan-sessions/some-id/turns", { role: "user", content: "x" }),
         call(h.baseUrl, "POST", "/plan-sessions/some-id/archive", { status: "abandoned" }),
+      ]);
+      for (const r of mutating) {
+        expect(r.status).toBe(401);
+      }
+      // Read-only requests stay open on a loopback bind so the local dashboard
+      // keeps working without wiring the token into the SPA.
+      const reads = await Promise.all([
+        call(h.baseUrl, "GET", "/plan-sessions/active"),
         call(h.baseUrl, "GET", "/plan-sessions"),
       ]);
-      for (const r of unauthenticated) {
-        expect(r.status).toBe(401);
+      for (const r of reads) {
+        expect(r.status).toBe(200);
       }
     } finally {
       await h.close();

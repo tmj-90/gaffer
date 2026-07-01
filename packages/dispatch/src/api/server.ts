@@ -13,7 +13,7 @@ import {
   todaySpend,
 } from "../cost/costAggregator.js";
 import { buildRunDetail } from "./runDetail.js";
-import { isAuthorized } from "./auth.js";
+import { isRequestAuthorized } from "./auth.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
 import { createMergeRunner, type MergeRunner } from "./mergeRunner.js";
@@ -76,11 +76,17 @@ import {
 /**
  * Human REST API for Dispatch — a thin HTTP control surface over the facade.
  *
- * AUTH: a single bearer token gates the API when `DISPATCH_API_TOKEN` is set —
- * every non-public request must then present it (this is what makes a non-loopback
- * bind safe; see {@link assertSafeBind}). What is NOT here yet is *role* enforcement:
- * the docs describe PM/Engineer/Tech-lead/Admin roles, but per-role RBAC is deferred,
- * so an authenticated caller currently acts as a single human actor with full rights.
+ * AUTH: a bearer token (`DISPATCH_API_TOKEN`) gates the control plane. The
+ * `dispatch-api` entrypoint auto-provisions one at startup when the operator has
+ * not set it (see {@link ensureApiToken}), so a token is present by default.
+ * Enforcement is method-aware (see {@link isRequestAuthorized}): EVERY mutating /
+ * state-changing request (review approve/reject, merge, board moves, every write)
+ * must present the token, while read-only GET/HEAD requests stay open on a
+ * loopback bind to preserve local dashboard UX. This is what structurally stops
+ * the delivery agent — whose child env the runner scrubs of the token — from
+ * self-approving its own work over REST. What is NOT here yet is *role*
+ * enforcement: per-role RBAC is deferred, so an authenticated caller acts as a
+ * single human actor with full rights.
  */
 
 /** Default port; overridden by DISPATCH_API_PORT / --port at the bin layer. */
@@ -363,6 +369,7 @@ export function createApiHandler(
       pollWorkRunner,
       memoryReader,
       onboardRunner,
+      loopbackBind,
       req,
       res,
     ).catch((err: unknown) => {
@@ -454,6 +461,10 @@ async function route(
   pollWorkRunner: PollWorkRunner,
   memoryReader: MemoryReader,
   onboardRunner: OnboardRunner,
+  // Resolved once from the bind host (see createApiHandler). Controls whether an
+  // unauthenticated READ may pass: reads stay open on a loopback bind for the
+  // local dashboard, but mutations always require the token.
+  loopbackBind: boolean,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -473,10 +484,13 @@ async function route(
       return;
     }
 
-    // Auth gate: static assets + /healthz above are public; everything else
-    // (the whole control-plane API) requires a bearer token when one is
-    // configured (DISPATCH_API_TOKEN). No-op when auth is disabled.
-    if (!isAuthorized(req)) {
+    // Auth gate: static assets + /healthz above are public. The control-plane
+    // API requires a bearer token (DISPATCH_API_TOKEN — auto-provisioned at
+    // startup by the dispatch-api entrypoint, so a token is present by default).
+    // Read-only requests stay open on a loopback bind to preserve local dashboard
+    // UX; EVERY mutating/state-changing request must present the token. No-op only
+    // when auth is fully disabled (no token configured — embedder/test posture).
+    if (!isRequestAuthorized(req, loopbackBind)) {
       sendJson(res, 401, {
         error: { code: "UNAUTHORIZED", message: "Missing or invalid bearer token." },
       });

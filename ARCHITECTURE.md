@@ -86,7 +86,9 @@ All state lives under `GAFFER_DATA` (default: `<repo-root>/.gaffer/`). Delete th
 Two MCP servers run during a ticket's agent session (wired via `runner/.mcp.json`):
 
 - **Crew MCP** (`packages/crew`) — exposes factory-level tools to the Claude agent: ticket reads, evidence recording, lore store/recall, repo context queries, hygiene checks.
-- **Memory MCP** (`packages/memory`) — exposes `recall` and `store` for the agent to read and write durable knowledge. All writes land as **drafts** (gated) unless `MEMORY_AUTO_APPROVE=1`.
+- **Memory MCP** (`packages/memory`) — exposes `recall` and `store` for the agent to read and write durable knowledge. Two trust tiers:
+  - **Gated (draft → human approve).** Interpretive claims — lore (`suggest_lore`) and cross-repo boundaries (`declare_boundary`) — land as **drafts**, invisible to default retrieval until a human runs `memory review` / `approve` (unless `MEMORY_AUTO_APPROVE=1`).
+  - **Direct-apply (bounded + quarantined).** Factual/proposal records — the repo digest (`update_repo_digest`), the feature ledger (`add_feature` / `advance_feature`), and file cards — apply directly (a digest is a post-merge reflection of real code, not an opinion to ratify). Because these are agent-writable and ungated, agent input is **length-bounded and sanitised on write**, and ALL agent-facing memory responses (cards, digest, lore, features) wrap agent-derived free text in a `<untrusted-…>` **quarantine envelope** so it reaches a future agent as data, never as instructions. File-card model fields additionally pass a mechanical validation + fail-closed semantic-review gate before they are ever served.
 
 The Dispatch REST API and MCP server are for humans and the dashboard, not the delivery agent. The safety hook explicitly denies the control-plane CLI and DB access to the agent.
 

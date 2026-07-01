@@ -331,7 +331,8 @@ describe("MCP — get_lore + restricted gate", () => {
     });
     client = await connectClient(db);
     const { json } = await callJson(client, "get_lore", { id: lore.id });
-    expect(json.body).toBe("the full body text");
+    // Agent-derived lore text is served inside the quarantine envelope.
+    expect(json.body).toBe("<untrusted-lore>the full body text</untrusted-lore>");
   });
 
   it("redacts a restricted record when the gate is off, and audits blocked:restricted", async () => {
@@ -370,7 +371,7 @@ describe("MCP — get_lore + restricted gate", () => {
     process.env["MEMORY_ALLOW_RESTRICTED_MCP"] = "1";
     client = await connectClient(db);
     const { json } = await callJson(client, "get_lore", { id: lore.id });
-    expect(json.body).toBe("now visible");
+    expect(json.body).toBe("<untrusted-lore>now visible</untrusted-lore>");
 
     // E-1 mutation sanity (the ON direction): the audited get_lore call is
     // an ordinary, NON-blocked access. If the gate check were inverted, the

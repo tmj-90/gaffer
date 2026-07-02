@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Dispatch API auth posture**: an operator-set `DISPATCH_API_TOKEN` now restores the strict posture — every request, including read-only GET/HEAD on a loopback bind (board, run detail, plan-session transcripts, human queue, cost), requires the bearer token. The auto-provisioned dashboard token keeps tokenless loopback reads open (secret-bearing paths like `/api/settings` stay gated). Previously an explicitly configured token was silently downgraded to the relaxed loopback-read posture.
+- **Dispatch bouncing-tickets query**: the cross-ticket rework signal (`bouncingTickets`) now computes the per-ticket gate breakdown, ranking, and limit in a single SQL statement instead of one query per candidate ticket with the limit applied after enrichment. Behaviour unchanged.
 
 ### Fixed
 

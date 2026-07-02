@@ -176,8 +176,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "budget",
     label: "Cheap-tier phases",
     help:
-      "Comma-separated phases whose work is biased to the cheap model tier " +
-      "(e.g. self-review, test, onboarding). High/critical-risk work is never cheapened.",
+      "Comma-separated phases whose work is biased to the cheap model tier. " +
+      "Only 'implement' is routed through the model router today, so 'implement' is " +
+      "the only value with any effect; other phase names are inert until their call " +
+      "sites are routed. High/critical-risk work is never cheapened.",
   },
 
   // --- Planning debate: multi-model plan critique ---

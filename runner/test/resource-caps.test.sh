@@ -49,25 +49,32 @@ gaffer_timeout 1 sleep 5; rc=$?
 [ "$rc" = "124" ] && ok "kills a runaway and exits 124" || fail "timeout should exit 124 (got $rc)"
 out="$(gaffer_timeout 0 echo hi)"; [ "$out" = "hi" ] && ok "cap of 0 disables the timeout (no-op)" || fail "cap 0 should run unbounded"
 
-echo "== tick.sh call sites wrapped =="
-# Every headless `claude -p` launch must run under gaffer_timeout AND (C1/M2) under
-# an `env -i "${GAFFER_AGENT_ENV[@]}"` allowlist scrub. Since the scrub makes each
-# launch a MULTI-LINE subshell (gaffer_timeout … \ env -i … \ "$CLAUDE_BIN" -p …),
-# we assert by structural COUNTS rather than a single-line regex: one
-# gaffer_timeout-with-tick-cap and one env -i scrub per claude -p site.
-TOTAL="$(grep -cE '"\$CLAUDE_BIN" -p' "$RUNNER_DIR/tick.sh" || true)"
-WRAPPED="$(grep -cE 'gaffer_timeout "\$GAFFER_TICK_TIMEOUT"' "$RUNNER_DIR/tick.sh" || true)"
-SCRUBBED="$(grep -cE 'env -i "\$\{GAFFER_AGENT_ENV\[@\]\}"' "$RUNNER_DIR/tick.sh" || true)"
-[ "$TOTAL" -ge 4 ] && ok "found $TOTAL claude -p call sites in tick.sh (>=4)" || fail "expected >=4 claude -p call sites (got $TOTAL)"
-[ "$WRAPPED" -ge "$TOTAL" ] && ok "all $TOTAL claude -p sites wrapped in gaffer_timeout ($WRAPPED tick-cap wrappers)" \
-  || fail "only $WRAPPED gaffer_timeout tick-cap wrappers for $TOTAL claude -p sites"
-[ "$SCRUBBED" = "$TOTAL" ] && ok "all $TOTAL claude -p sites launch via env -i agent-env allowlist (C1/M2)" \
-  || fail "only $SCRUBBED of $TOTAL claude -p sites use the env -i allowlist scrub"
-# --max-turns stays on the same line as the claude invocation, so the line-bound
-# check still holds.
-TURNS="$(grep -cE '"\$CLAUDE_BIN" -p.*\$GAFFER_MAX_TURNS_FLAG' "$RUNNER_DIR/tick.sh" || true)"
-[ "$TURNS" = "$TOTAL" ] && ok "all $TOTAL claude -p sites carry \$GAFFER_MAX_TURNS_FLAG" \
-  || fail "only $TURNS of $TOTAL claude -p sites carry --max-turns"
+echo "== the worker seam wraps the invocation; tick.sh routes through it =="
+# Spec 3 / Phase 1 consolidated the four formerly open-coded `claude -p` launches into
+# ONE worker_deliver seam (lib/worker.sh). The cap-wrapping invariant is unchanged —
+# it just lives in one place now: the single invocation must run under
+# gaffer_timeout, under an `env -i "${GAFFER_AGENT_ENV[@]}"` allowlist scrub (C1/M2),
+# and carry --max-turns ($GAFFER_MAX_TURNS_FLAG). tick.sh must no longer open-code the
+# launch — every agent turn routes through worker_deliver.
+WORKER="$RUNNER_DIR/lib/worker.sh"
+INLINE="$(grep -cE '"\$CLAUDE_BIN" -p' "$RUNNER_DIR/tick.sh" || true)"
+[ "$INLINE" = "0" ] && ok "tick.sh open-codes no claude -p launch (all via worker_deliver)" \
+  || fail "expected 0 open-coded claude -p in tick.sh (got $INLINE)"
+ROUTED="$(grep -cE '^[[:space:]]*worker_deliver ' "$RUNNER_DIR/tick.sh" || true)"
+[ "$ROUTED" -ge 4 ] && ok "tick.sh routes $ROUTED turns through worker_deliver (>=4)" \
+  || fail "expected >=4 worker_deliver routes in tick.sh (got $ROUTED)"
+TOTAL="$(grep -cE '"\$CLAUDE_BIN" -p' "$WORKER" || true)"
+WRAPPED="$(grep -cE 'gaffer_timeout "\$GAFFER_TICK_TIMEOUT"' "$WORKER" || true)"
+SCRUBBED="$(grep -cE 'env -i "\$\{GAFFER_AGENT_ENV\[@\]\}"' "$WORKER" || true)"
+[ "$TOTAL" = "1" ] && ok "worker seam has exactly 1 claude -p invocation" || fail "expected 1 claude -p in worker.sh (got $TOTAL)"
+[ "$WRAPPED" -ge "$TOTAL" ] && ok "the invocation is wrapped in gaffer_timeout ($WRAPPED tick-cap wrapper)" \
+  || fail "the worker invocation is not wrapped in gaffer_timeout"
+[ "$SCRUBBED" = "$TOTAL" ] && ok "the invocation launches via env -i agent-env allowlist (C1/M2)" \
+  || fail "the worker invocation does not use the env -i allowlist scrub"
+# --max-turns stays on the same line as the claude invocation, so the line-bound check holds.
+TURNS="$(grep -cE '"\$CLAUDE_BIN" -p.*\$GAFFER_MAX_TURNS_FLAG' "$WORKER" || true)"
+[ "$TURNS" = "$TOTAL" ] && ok "the invocation carries \$GAFFER_MAX_TURNS_FLAG" \
+  || fail "the worker invocation does not carry --max-turns"
 
 echo "== bootstrap install can't run lifecycle scripts =="
 grep -q 'npm_config_ignore_scripts=true' "$RUNNER_DIR/tick.sh" \

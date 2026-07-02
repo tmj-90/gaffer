@@ -1131,6 +1131,13 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # shellcheck source=lib/sandbox.sh
 [ -f "$RUNNER_DIR/lib/sandbox.sh" ] && source "$RUNNER_DIR/lib/sandbox.sh"
 
+# Worker seam (defines worker_deliver — the ONE headless `claude -p` invocation).
+# Sourced after sandbox.sh so worker_deliver can rely on gaffer_timeout /
+# gaffer_agent_env / CLAUDE_* being defined above. Mirrors the sandbox seam's
+# fail-soft source guard; it ships in-tree so this is just defensive.
+# shellcheck source=lib/worker.sh
+[ -f "$RUNNER_DIR/lib/worker.sh" ] && source "$RUNNER_DIR/lib/worker.sh"
+
 # Per-day cost guard helpers (gaffer_day_count / gaffer_bump_day_count /
 # gaffer_day_cap_ok). Sourced after the config above so they read MAX_TICKS_PER_DAY
 # and DAILY_COUNTER_FILE.

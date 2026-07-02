@@ -305,21 +305,30 @@ console.log("== AC3b: CLI prints .result text AND writes the ledger (gated on GA
   }
 }
 
-console.log("== AC4: --output-format json is wired into every call site ==");
+console.log("== AC4: --output-format json is wired into the consolidated invocation ==");
 {
+  // Spec 3 / Phase 1 moved the ONE `"$CLAUDE_BIN" -p …` invocation out of tick.sh's
+  // four call sites into the worker_deliver seam (lib/worker.sh). Intent preserved:
+  // the single invocation carries --output-format json, tick.sh routes all four
+  // agent turns (delivery, bootstrap, review, clarify) through worker_deliver, and
+  // each routed turn still ledgers via gaffer_usage_record.
   const tick = readFileSync(resolve(RUNNER_DIR, "tick.sh"), "utf8");
-  // The 4 bash call sites (delivery, bootstrap, review, clarify) each invoke
-  // `"$CLAUDE_BIN" -p …` and must carry --output-format json. Count only real
-  // invocation lines (CLAUDE_BIN + -p + --output-format json on one line), not
-  // the explanatory comments that also mention the flag.
-  const invocationSites = tick.split("\n").filter((l) => /"\$CLAUDE_BIN"\s+-p\b/.test(l)).length;
-  const jsonSites = tick
+  const worker = readFileSync(resolve(RUNNER_DIR, "lib", "worker.sh"), "utf8");
+  // No open-coded claude -p remains in tick.sh — it all flows through the seam.
+  const inlineSites = tick.split("\n").filter((l) => /"\$CLAUDE_BIN"\s+-p\b/.test(l)).length;
+  assert("tick.sh has no open-coded claude -p (moved to the worker seam)", inlineSites === 0);
+  // The seam is the ONE invocation site and it carries --output-format json.
+  const workerSites = worker.split("\n").filter((l) => /"\$CLAUDE_BIN"\s+-p\b/.test(l)).length;
+  const workerJson = worker
     .split("\n")
     .filter((l) => /"\$CLAUDE_BIN"\s+-p\b/.test(l) && /--output-format json/.test(l)).length;
-  assert("tick.sh has exactly 4 claude -p invocation sites", invocationSites === 4);
-  assert("tick.sh: all 4 invocation sites use --output-format json", jsonSites === 4);
+  assert("lib/worker.sh has exactly 1 claude -p invocation site", workerSites === 1);
+  assert("lib/worker.sh: the invocation uses --output-format json", workerJson === 1);
+  // tick.sh routes all 4 agent turns through the seam.
+  const routed = (tick.match(/^\s*worker_deliver /gm) || []).length;
+  assert("tick.sh routes exactly 4 turns through worker_deliver", routed === 4);
   assert(
-    "tick.sh: each site ledgers via gaffer_usage_record",
+    "tick.sh: each routed turn ledgers via gaffer_usage_record",
     (tick.match(/gaffer_usage_record/g) || []).length >= 4,
   );
   const dec = readFileSync(resolve(RUNNER_DIR, "bin", "decompose.mjs"), "utf8");

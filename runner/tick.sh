@@ -768,17 +768,15 @@ EOF
     # log; agent's `.result` text appended to the log below (preserves the log).
     B_USAGE_JSON="$GAFFER_DATA/.usage-$NUM.json"; : > "$B_USAGE_JSON"
     # C1/M2: strip ambient credentials from the live agent's env (allowlist via
-    # env -i). The per-call boundary/install vars are layered on top so they win.
-    gaffer_agent_env
-    ( cd "$B_DIR" \
-      && gaffer_timeout "$GAFFER_TICK_TIMEOUT" \
-         env -i "${GAFFER_AGENT_ENV[@]}" \
-           GAFFER_WRITE_ROOTS="$B_DIR" GAFFER_READ_ROOTS="" \
-           GAFFER_BOOTSTRAP_INSTALL=1 GAFFER_BOOTSTRAP_DIR="$B_DIR" \
-           npm_config_ignore_scripts=true \
-           DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-           "$CLAUDE_BIN" -p "$B_PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $GAFFER_IMPL_MODEL_FLAG $GAFFER_MAX_TURNS_FLAG \
-    ) >"$B_USAGE_JSON" 2>>"$GAFFER_LOG"
+    # env -i) — done inside worker_deliver. The per-call boundary/install vars in
+    # WORKER_CALL_ENV are layered on top of the allowlist so they win.
+    WORKER_CALL_ENV=(
+      "GAFFER_WRITE_ROOTS=$B_DIR" "GAFFER_READ_ROOTS="
+      "GAFFER_BOOTSTRAP_INSTALL=1" "GAFFER_BOOTSTRAP_DIR=$B_DIR"
+      "npm_config_ignore_scripts=true"
+      "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
+    )
+    worker_deliver "$B_DIR" "$B_PROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$B_USAGE_JSON"
     brc=$?
     gaffer_usage_record bootstrap "$NUM" "$brc" "$B_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
     rm -f "$B_USAGE_JSON"
@@ -1843,18 +1841,15 @@ $_trail_q
   # the MCP servers, and the runner reads ticket state from `wg ticket show`, not
   # from this stdout (which was previously discarded into the log anyway).
   USAGE_JSON="$GAFFER_DATA/.usage-$NUM.json"; : > "$USAGE_JSON"
-  # C1/M2: scrub ambient credentials from the live agent's env via an allowlist
-  # (env -i). It sits INSIDE the optional OS-sandbox $WRAP so the sandbox still
-  # wraps the whole agent; the per-call boundary vars are layered on top.
-  gaffer_agent_env
-  ( cd "$PRIMARY_REPO" \
-    && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $WRAP \
-       env -i "${GAFFER_AGENT_ENV[@]}" \
-         GAFFER_WRITE_ROOTS="$WRITE_ROOTS" GAFFER_READ_ROOTS="$READ_ROOTS" \
-         GAFFER_DATA="$GAFFER_DATA" GAFFER_TICKET="$NUM" \
-         DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-         "$CLAUDE_BIN" -p "$PROMPT$_REWORK_BLOCK" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $_ATTEMPT_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
-  ) >"$USAGE_JSON" 2>>"$GAFFER_LOG"
+  # C1/M2: scrub ambient credentials via an allowlist (env -i) inside worker_deliver.
+  # The scrub sits INSIDE the optional OS-sandbox $WRAP so the sandbox still wraps the
+  # whole agent; the per-call boundary vars in WORKER_CALL_ENV are layered on top.
+  WORKER_CALL_ENV=(
+    "GAFFER_WRITE_ROOTS=$WRITE_ROOTS" "GAFFER_READ_ROOTS=$READ_ROOTS"
+    "GAFFER_DATA=$GAFFER_DATA" "GAFFER_TICKET=$NUM"
+    "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
+  )
+  worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP"
   rc=$?
   # SKILL TELEMETRY: record which skills were SELECTED for this delivery (and,
   # best-effort, which were APPLIED — detected from the agent's output JSON) so a
@@ -2670,14 +2665,13 @@ EOF
       # Repo-access boundary (FG-007): the reviewer works only in the throwaway
       # worktree ($WT). The registered repo's working tree is never a write root.
       R_USAGE_JSON="$GAFFER_DATA/.usage-$RNUM.json"; : > "$R_USAGE_JSON"
-      # C1/M2: scrub ambient credentials from the reviewer agent's env (allowlist).
-      gaffer_agent_env
-      ( cd "$WT" \
-          && gaffer_timeout "$GAFFER_TICK_TIMEOUT" \
-             env -i "${GAFFER_AGENT_ENV[@]}" \
-               GAFFER_WRITE_ROOTS="$WT" \
-               DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-               "$CLAUDE_BIN" -p "$RPROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $GAFFER_IMPL_MODEL_FLAG $GAFFER_MAX_TURNS_FLAG ) >"$R_USAGE_JSON" 2>>"$GAFFER_LOG"
+      # C1/M2: scrub ambient credentials from the reviewer agent's env (allowlist)
+      # inside worker_deliver; the per-call vars in WORKER_CALL_ENV layer on top.
+      WORKER_CALL_ENV=(
+        "GAFFER_WRITE_ROOTS=$WT"
+        "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
+      )
+      worker_deliver "$WT" "$RPROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       rm -f "$R_USAGE_JSON"
@@ -2788,14 +2782,13 @@ open question. Work only in: $CREPO
 EOF
       CPROMPT="${CPROMPT}${_CLARIFY_CARDS}"
       C_USAGE_JSON="$GAFFER_DATA/.usage-$CNUM.json"; : > "$C_USAGE_JSON"
-      # C1/M2: scrub ambient credentials from the clarify agent's env (allowlist).
-      gaffer_agent_env
-      ( cd "$CREPO" \
-          && gaffer_timeout "$GAFFER_TICK_TIMEOUT" \
-             env -i "${GAFFER_AGENT_ENV[@]}" \
-               GAFFER_WRITE_ROOTS="$CREPO" \
-               DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-               "$CLAUDE_BIN" -p "$CPROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $GAFFER_PLAN_MODEL_FLAG $GAFFER_MAX_TURNS_FLAG ) >"$C_USAGE_JSON" 2>>"$GAFFER_LOG"
+      # C1/M2: scrub ambient credentials from the clarify agent's env (allowlist)
+      # inside worker_deliver; the per-call vars in WORKER_CALL_ENV layer on top.
+      WORKER_CALL_ENV=(
+        "GAFFER_WRITE_ROOTS=$CREPO"
+        "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
+      )
+      worker_deliver "$CREPO" "$CPROMPT" "$GAFFER_PLAN_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON"
       crc=$?
       gaffer_usage_record clarify "$CNUM" "$crc" "$C_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       rm -f "$C_USAGE_JSON"

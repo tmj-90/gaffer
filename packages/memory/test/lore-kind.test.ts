@@ -89,7 +89,10 @@ describe("migration 009 — back-fill kind from existing tags", () => {
       `CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);`,
     );
     const insert = db.prepare("INSERT INTO migrations (id, applied_at) VALUES (?, ?)");
-    for (const m of MIGRATIONS.slice(0, -1)) {
+    // Apply every migration BEFORE 009 — leaving the DB in its pre-`kind` shape
+    // regardless of how many migrations ship after 009.
+    const kindIdx = MIGRATIONS.findIndex((m) => m.id === "009-lore-kind");
+    for (const m of MIGRATIONS.slice(0, kindIdx)) {
       m.up(db);
       insert.run(m.id, new Date().toISOString());
     }
@@ -121,7 +124,7 @@ describe("migration 009 — back-fill kind from existing tags", () => {
     // A record tagged both 'decision' and 'convention' — higher intent wins.
     seedLore(db, "gggg7777", ["convention", "decision"]);
 
-    const m009 = MIGRATIONS[MIGRATIONS.length - 1]!;
+    const m009 = MIGRATIONS.find((m) => m.id === "009-lore-kind")!;
     expect(m009.id).toBe("009-lore-kind");
     m009.up(db);
 

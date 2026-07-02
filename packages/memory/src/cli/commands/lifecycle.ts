@@ -117,6 +117,11 @@ export async function cmdAdd(
   const confidence = parseConfidence(getString(args.flags, "confidence"));
   const restricted = getBool(args.flags, "restricted");
   const kind = parseKind(getString(args.flags, "kind"));
+  // Structured provenance (Spec-Driven Development, Phase 2b): when Dispatch
+  // seeds a frozen spec clause it stamps the (spec, clause) linkage so a later
+  // phase can JOIN the record back to the exact clause it came from.
+  const specId = getString(args.flags, "spec-id");
+  const clauseId = getString(args.flags, "clause-id");
 
   const db = openDb();
   try {
@@ -134,6 +139,8 @@ export async function cmdAdd(
       confidence,
       restricted,
       ...(kind ? { kind } : {}),
+      ...(specId ? { specId } : {}),
+      ...(clauseId ? { clauseId } : {}),
     });
     process.stdout.write(
       `memory: ${asDraft ? "suggested" : "added"} ${lore.id} (${lore.status})\n`,

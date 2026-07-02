@@ -4,9 +4,16 @@ import {
   type SpecClauseInput,
   updateSpecClausesInput,
 } from "../domain/schemas.js";
-import { type Actor, type Spec, type SpecClause, type SpecStatus } from "../domain/types.js";
+import {
+  type Actor,
+  parseSpecClauses,
+  type Spec,
+  type SpecClause,
+  type SpecStatus,
+} from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
 import type { SpecRepository } from "../repositories/specRepository.js";
+import { NullSpecClauseSeeder, type SpecClauseSeeder } from "./specClauseSeeder.js";
 import type { Clock } from "../util/clock.js";
 import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
@@ -15,6 +22,13 @@ export interface SpecsServiceDeps {
   readonly db: Db;
   readonly clock: Clock;
   readonly specs: SpecRepository;
+  /**
+   * Seeds a frozen spec's clauses into Memory as gated draft lore (Phase 2b).
+   * Optional: defaults to a no-op so existing callers/tests are unaffected. The
+   * live wiring ({@link file://./specClauseSeeder.ts}) shells out to the Memory
+   * CLI; seeding is best-effort and NEVER blocks or rolls back a freeze.
+   */
+  readonly clauseSeeder?: SpecClauseSeeder;
 }
 
 /**
@@ -30,11 +44,13 @@ export class SpecsService {
   private readonly db: Db;
   private readonly clock: Clock;
   private readonly specs: SpecRepository;
+  private readonly clauseSeeder: SpecClauseSeeder;
 
   constructor(deps: SpecsServiceDeps) {
     this.db = deps.db;
     this.clock = deps.clock;
     this.specs = deps.specs;
+    this.clauseSeeder = deps.clauseSeeder ?? new NullSpecClauseSeeder();
   }
 
   /** Create a spec (always `draft`). Clause ids are minted server-side when absent. */
@@ -110,7 +126,7 @@ export class SpecsService {
    * or re-drafted.
    */
   freezeSpec(id: string, actor: Actor): Spec {
-    return inTransaction(this.db, () => {
+    const frozen = inTransaction(this.db, () => {
       const spec = this.specs.findById(id);
       if (!spec) throw notFound("spec", id);
       this.assertDraft(spec);
@@ -124,6 +140,17 @@ export class SpecsService {
       });
       return this.getSpec(id);
     });
+
+    // Seed each clause into Memory as gated draft lore (Phase 2b) — done AFTER
+    // the freeze transaction has committed, and best-effort, so a Memory hiccup
+    // can never roll back or block the freeze. The seeder itself never throws;
+    // the extra guard is defence in depth against a future non-conforming impl.
+    try {
+      this.clauseSeeder.seedFrozenSpec(frozen, parseSpecClauses(frozen.clauses_json));
+    } catch {
+      // Intentionally swallowed — the spec is already frozen and immutable.
+    }
+    return frozen;
   }
 
   /**

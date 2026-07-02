@@ -93,6 +93,7 @@ import {
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
 import { SpecsService } from "./services/specsService.js";
+import { resolveSpecClauseSeeder } from "./services/specClauseSeeder.js";
 import {
   BoardService,
   resolveMoveTarget,
@@ -386,6 +387,10 @@ export class Dispatch {
       db,
       clock: this.clock,
       specs: this.specsRepo,
+      // Freeze seeds each clause into Memory as gated draft lore (Phase 2b).
+      // Live when MEMORY_CLI_BIN + MEMORY_DB are set; a no-op otherwise, so the
+      // standalone/offline path and unit tests are unaffected.
+      clauseSeeder: resolveSpecClauseSeeder(),
     });
     this.boardSvc = new BoardService({
       db,

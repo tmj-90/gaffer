@@ -334,6 +334,19 @@ export GAFFER_REWORK_STRONG_MODEL
 : "${GAFFER_REWORK_BUDGET_USD:=${GAFFER_BUDGET_USD:-}}"
 export GAFFER_REWORK_BUDGET_USD
 
+# FINDING-3: the CROSS-RUN bound on no-commit / wrong-branch delivery failures.
+# The per-run skip-file only stops a re-pick WITHIN one run; a ticket whose agent
+# deterministically crashes before committing was released back to `ready` and
+# re-picked every run — one full `claude -p` burned per run, forever, at
+# ESCALATING cost (the accumulated ledger spend feeds the difficulty router).
+# tick.sh counts these failures durably (per-ticket, under $GAFFER_DATA) and
+# after this many parks the ticket VISIBLY to `blocked` (rework_exhausted) —
+# the same double-bound shape as the in-delivery rework loop, so it defaults to
+# (and stays aligned with) GAFFER_MAX_DELIVERY_ATTEMPTS. ≥1; the counter resets
+# on a successful submit or on any park out of the delivery pipeline.
+: "${GAFFER_MAX_NOCOMMIT_FAILURES:=${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}}"
+export GAFFER_MAX_NOCOMMIT_FAILURES
+
 # --- Recoverable-delivery guard (GUARD B) ------------------------------------
 # When the agent produced ≥1 commit but a DOWNSTREAM gate (DoD / hygiene /
 # minimalism / empty-but-committed) failed, the delivery is RECOVERABLE: the

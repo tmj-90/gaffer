@@ -7870,6 +7870,17 @@ body {
   text-shadow: 0 0 10px var(--accent-glow);
 }
 
+/* cap panel-title icons — an unsized inline SVG (the "What I own" lock) was
+   defaulting to ~150px. Panel-title glyphs are small inline marks. */
+.panel-title svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+.what-i-own .panel-title svg {
+  color: var(--accent);
+}
+
 /* terminal prompt line (the old footer) */
 .footer {
   font-family: var(--mono);

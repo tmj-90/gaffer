@@ -1212,6 +1212,9 @@ async function renderOverview() {
   const wrap = el("div", { class: "view" });
   wrap.appendChild(overviewHead());
 
+  // Queue-first: what needs YOU leads the room, sitting above the metrics.
+  wrap.appendChild(whatIOwnPanel(humanQueueRes));
+
   // --- KPI row --------------------------------------------------------------
   wrap.appendChild(
     el("div", { class: "kpi-row" }, [
@@ -1284,12 +1287,6 @@ async function renderOverview() {
       ]),
     );
   }
-
-  // --- "What I own" — the operator's FIRST-CLASS lane (Track 2a) ------------
-  // Everything the HUMAN owns: decisions the agent delegated (WITH reasons),
-  // review sign-offs, and regulated ready-approvals / reviewer assignments —
-  // distinct from what the agent is churning (blocked/rework never appears here).
-  wrap.appendChild(whatIOwnPanel(humanQueueRes));
 
   // --- Development flow + Needs your attention (2-up) -----------------------
   wrap.appendChild(

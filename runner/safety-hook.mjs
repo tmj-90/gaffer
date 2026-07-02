@@ -270,8 +270,34 @@ function classifyRootAccess(absPath, { writeRoots, readRoots }) {
 // (`*-token`, `*.token`, `*_token`, `*-token.<ext>`) — as a secret path. The
 // `[._-]tokens?` join requires a real separator before `token`, so a bare word
 // like `TOKEN` in an unrelated position is not a path match here.
-const SECRET_PATH =
-  /(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt)|dashboard-token|[\w.-]*[._-]tokens?(\.[\w-]+)?)$/i;
+//
+// TOKEN-FAMILY PRECISION GUARD: a token-NAMED file whose name ends in a clear
+// SOURCE-CODE extension is source code, not a credential store —
+// `design-tokens.json` (the standard W3C design-tokens convention),
+// `csrf_token.ts`, `auth-token.js`. Blocking those parks every delivery
+// attempt of a routine frontend ticket in a design-tokens repo. This negative
+// lookahead exempts the token FAMILY only when the name is immediately
+// followed by ONE terminal source-code extension — the trailing (?![\w.])
+// means `x-token.ts.bak` / `x-tokens.json.b64` are NOT exempt. Everything
+// else stays blocked: extensionless token files (`api-token`, `deploy_token`),
+// `.token`-extension files (`foo.token`), credential-ish extensions
+// (`auth-token.txt`, `client-token.pem`), and the exact `dashboard-token`
+// file — which is matched by its own dedicated alternative in every rule, so
+// this guard can never weaken it. The guard applies to the PATH-POSITION
+// rules only (SECRET_PATH, SECRET_PATH_FRAGMENT, SECRET_ASSIGNMENT); the
+// data-flow-hiding vectors (SECRET_GLOB, REDIRECT_READ, SOURCE_SECRET) keep
+// over-blocking the whole token family by policy — a glob resolves at
+// runtime, and redirect/source consume contents in a position no legitimate
+// source-file workflow needs.
+const TOKEN_SOURCE_EXT_GUARD = String.raw`(?!\.(?:ts|tsx|js|jsx|mjs|cjs|json|css|scss|less|html|vue|svelte|md)(?![\w.]))`;
+// NOTE: `dashboard-token(\.[\w-]+)?` — the exact token file keeps its own
+// alternative WITH an optional extension so `dashboard-token.json` (previously
+// caught by the family rule) stays blocked now that the family exempts
+// source-code extensions.
+const SECRET_PATH = new RegExp(
+  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt)|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  "i",
+);
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
 
 // =====================================================================
@@ -309,9 +335,15 @@ const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
 // The `dashboard-token`/`*-token` fragments require a `[._-]` separator directly
 // before `token` (or match the literal `dashboard-token`), so an unrelated bare
 // word like `TOKEN` used as a grep pattern is NOT flagged — only real token-file
-// references (`.gaffer/dashboard-token`, `api.token`, `foo_token`) are.
-const SECRET_PATH_FRAGMENT =
-  /(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|dashboard-token\b|[\w./-]*[._-]tokens?\b)/i;
+// references (`.gaffer/dashboard-token`, `api.token`, `foo_token`) are. The
+// token family carries TOKEN_SOURCE_EXT_GUARD so a token-named SOURCE file
+// (`src/design-tokens.json`, `csrf_token.ts`) in an ordinary command position
+// (`npx prettier --write src/design-tokens.json`) is not flagged; the exact
+// `dashboard-token` alternative is guard-free and always fires.
+const SECRET_PATH_FRAGMENT = new RegExp(
+  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  "i",
+);
 
 // Glob/wildcard tokens whose literal part overlaps a secret family. These
 // resolve to secret paths at runtime even though no full secret name is
@@ -354,8 +386,14 @@ const FILE_READ_PRIMITIVE =
 // path to a variable, which a later command then dereferences via `$f`.
 // We can't follow the dataflow, so any secret-path assignment is treated
 // as a read boundary unless the whole command is a single safe governed op.
-const SECRET_ASSIGNMENT =
-  /\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b|dashboard-token\b|[._-]tokens?\b)/i;
+// The token family carries TOKEN_SOURCE_EXT_GUARD (path-position rule): a
+// build-style `FILE=src/design-tokens.json …` assignment of a token-named
+// SOURCE file is legitimate; `f=.gaffer/dashboard-token` and extensionless
+// token files stay denied.
+const SECRET_ASSIGNMENT = new RegExp(
+  String.raw`\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  "i",
+);
 
 // =====================================================================
 // INLINE-INTERPRETER FILESYSTEM BOUNDARY (FG-007, P0/P1)

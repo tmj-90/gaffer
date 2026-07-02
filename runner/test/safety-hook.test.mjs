@@ -150,6 +150,63 @@ else failures.push("DENY expected: Write dashboard-token");
 allowed("grep the word token in source (not a path)", "grep -n token src/app.ts");
 allowed("rm the token file (deletion, not a read)", "rm .gaffer/dashboard-token");
 
+// --- Token-family PRECISION (finding 7): source files vs credential stores ---
+// A token-NAMED file with a clear SOURCE-CODE extension is source code, not a
+// credential store: `design-tokens.json` (the W3C design-tokens convention),
+// `csrf_token.ts`, `auth-token.js`. Blocking those parked every delivery
+// attempt of routine frontend tickets. They must be readable/writable via the
+// file tools AND referencable in ordinary bash commands.
+for (const [tool, p] of [
+  ["Read", "src/theme/design-tokens.json"],
+  ["Write", "src/theme/design-tokens.json"],
+  ["Read", "src/csrf_token.ts"],
+  ["Write", "src/csrf_token.ts"],
+  ["Read", "src/auth-token.js"],
+  ["Write", "src/auth-token.js"],
+]) {
+  if (runFileTool(tool, p) === 0) passed += 1;
+  else failures.push(`ALLOW expected: ${tool} ${p} (token-named source file)`);
+}
+allowed("prettier over design-tokens.json", "npx prettier --write src/design-tokens.json");
+allowed("cat a design-tokens source file", "cat src/theme/design-tokens.json");
+allowed("sed -i edit of csrf_token.ts", "sed -i s/a/b/ src/csrf_token.ts");
+allowed("build command referencing auth-token.js", "node scripts/build.mjs src/auth-token.js");
+allowed(
+  "assign a token-named source file to a var (build-style)",
+  "FILE=src/design-tokens.json npx style-dictionary",
+);
+// The narrowing must NOT weaken any REAL-secret token case. The exact
+// dashboard-token file stays blocked on every vector (incl. with an extension
+// bolted on), and so do extensionless / .token / credential-ish-extension files.
+denied("pipe dashboard-token into xargs cat", "echo .gaffer/dashboard-token | xargs cat");
+denied("cat an extensionless -token file", "cat ~/.config/foo/api-token");
+denied("cat an extensionless _token file", "cat deploy_token");
+denied("head a credential-ish token file (.txt)", "head config/auth-token.txt");
+denied("cat a token .pem", "cat client-token.pem");
+// Double extensions are NOT a source-file exemption (terminal-extension rule).
+denied("token file with double extension stays blocked", "cat src/design-tokens.json.b64");
+// Data-flow-hiding vectors keep over-blocking the WHOLE token family, even for
+// token-named source files (glob resolves at runtime; redirect/source consume
+// contents in a position no legitimate source-file workflow needs).
+denied(
+  "redirect-read of a token-named file (bias to block)",
+  "node gen.mjs < src/design-tokens.json",
+);
+denied("source of a token-named file (bias to block)", "source src/design-tokens.json");
+denied("glob over the token family (bias to block)", "cat src/design-token*");
+// File-tool coverage for the still-blocked families.
+for (const [tool, p] of [
+  ["Read", ".gaffer/dashboard-token.json"], // exact name + any extension
+  ["Read", "config/api-token"], // extensionless
+  ["Write", "config/api-token"],
+  ["Read", "deploy_token"],
+  ["Read", "notes/foo.token"], // .token extension
+  ["Write", "config/auth-token.txt"], // credential-ish extension
+]) {
+  if (runFileTool(tool, p) === 2) passed += 1;
+  else failures.push(`DENY expected: ${tool} ${p} (real token-family secret)`);
+}
+
 // --- Pre-existing denials must STILL fire (no regression) --------------------
 denied("force push", "git push --force origin feature");
 denied("push to protected branch", "git push origin main");

@@ -12,6 +12,8 @@ import {
   resolveLedgerPath,
   todaySpend,
 } from "../cost/costAggregator.js";
+import { deliveryFlow, type FlowTicket } from "../health/deliveryFlow.js";
+import { aggregateHealth, type ReworkResolver } from "../health/healthAggregator.js";
 import { buildRunDetail } from "./runDetail.js";
 import { hasValidBearer, isRequestAuthorized } from "./auth.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
@@ -1983,6 +1985,65 @@ function routeReadModels(
       last_record_at: agg.last_record_at,
       by_repo: agg.by_repo.slice(0, TOP_N),
       top_tickets: agg.by_ticket.slice(0, TOP_N),
+    });
+    return;
+  }
+
+  // GET /api/health — factory-health / ROI synthesis. Two authoritative reads in
+  // one envelope, mirroring /api/cost's compose pattern:
+  //   1. ledger ROI (aggregateHealth) — cost-per-shipped, spend-by-kind, token
+  //      mix, measured-vs-unknown coverage, daily spend, cost-of-rework, latency;
+  //   2. delivery flow (deliveryFlow) — the ONE server-side cycle-time/throughput
+  //      definition the Overview now reads (was recomputed client-side).
+  // Defensive: zero-state safe when the ledger is absent; lists capped so a large
+  // ledger never bloats the response. Read-only, behind the same posture as /api.
+  if (segments.length === 2 && segments[1] === "health") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const TOP_N = 25;
+
+    // Shipped divisor + ticket list for delivery flow come from one ticket read.
+    const allTickets = wg.tickets.listFiltered({});
+    const shippedCount = allTickets.filter((t) => t.status === "done").length;
+    const flowTickets: FlowTicket[] = allTickets.map((t) => ({
+      status: t.status,
+      created_at: t.created_at,
+      updated_at: t.updated_at,
+    }));
+
+    // Rework resolver: ticket-number → rework-attempt count, one grouped query.
+    const reworkRows = wg.db
+      .prepare(
+        `SELECT t.number AS number, COUNT(*) AS c
+           FROM rework_attempts ra
+           JOIN tickets t ON t.id = ra.ticket_id
+          WHERE t.number IS NOT NULL
+          GROUP BY t.number`,
+      )
+      .all() as Array<{ number: number; c: number }>;
+    const reworkByNumber = new Map(reworkRows.map((r) => [r.number, r.c]));
+    const resolveRework: ReworkResolver = (n) => reworkByNumber.get(n) ?? 0;
+
+    const health = aggregateHealth(process.env, { shippedCount, resolveRework });
+    const flow = deliveryFlow(flowTickets, Date.parse(wg.clock.now()) || Date.now());
+
+    sendJson(res, 200, {
+      total_usd: health.total_usd,
+      ticket_count: health.ticket_count,
+      shipped_count: health.shipped_count,
+      cost_per_shipped_usd: health.cost_per_shipped_usd,
+      coverage: health.coverage,
+      by_kind: health.by_kind.slice(0, TOP_N),
+      by_model: health.by_model.slice(0, TOP_N),
+      daily_spend: health.daily_spend,
+      rework: {
+        total_rework_cost_usd: health.rework.total_rework_cost_usd,
+        rework_cost_share_pct: health.rework.rework_cost_share_pct,
+        by_ticket: health.rework.by_ticket.slice(0, TOP_N),
+      },
+      duration: health.duration,
+      cycle_time: flow.cycle_time,
+      throughput: flow.throughput,
+      last_record_at: health.last_record_at,
     });
     return;
   }

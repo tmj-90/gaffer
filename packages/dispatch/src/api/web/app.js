@@ -1157,16 +1157,25 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, ticketsRes, decisionsRes, costRes, bouncingRes, humanQueueRes] =
-    await Promise.all([
-      api("GET", "/api/dashboard"),
-      api("GET", "/api/activity?limit=200"),
-      api("GET", "/tickets").catch(() => ({ tickets: [] })),
-      api("GET", "/decisions").catch(() => ({ decisions: [] })),
-      api("GET", "/api/cost").catch(() => null),
-      api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
-      api("GET", "/api/human-queue").catch(() => ({ items: [], counts: { total: 0 } })),
-    ]);
+  const [
+    { summary },
+    activity,
+    ticketsRes,
+    decisionsRes,
+    costRes,
+    bouncingRes,
+    humanQueueRes,
+    healthRes,
+  ] = await Promise.all([
+    api("GET", "/api/dashboard"),
+    api("GET", "/api/activity?limit=200"),
+    api("GET", "/tickets").catch(() => ({ tickets: [] })),
+    api("GET", "/decisions").catch(() => ({ decisions: [] })),
+    api("GET", "/api/cost").catch(() => null),
+    api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
+    api("GET", "/api/human-queue").catch(() => ({ items: [], counts: { total: 0 } })),
+    api("GET", "/api/health").catch(() => null),
+  ]);
 
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
@@ -1196,21 +1205,21 @@ async function renderOverview() {
     }
     return days.map((d) => m[d.key]);
   };
-  const doneByDay = bucket(doneTickets, (t) => t.updated_at);
   const actByDay = bucket(events, (e) => e.created_at);
-  // cycle time per completion day (avg days created→done), line carried forward
-  const cycleAgg = {};
-  for (const t of doneTickets) {
-    const k = String(t.updated_at).slice(0, 10);
-    const dys = (Date.parse(t.updated_at) - Date.parse(t.created_at)) / DAY;
-    if (dys >= 0) (cycleAgg[k] = cycleAgg[k] || []).push(dys);
-  }
-  let carry = null;
-  const cycleLine = days.map((d) => {
-    const a = cycleAgg[d.key];
-    if (a && a.length) carry = a.reduce((x, y) => x + y, 0) / a.length;
-    return carry == null ? 0 : +carry.toFixed(2);
-  });
+
+  // AUTHORITATIVE cycle-time / throughput: read the ONE server-side definition
+  // from /api/health (src/health/deliveryFlow.ts) instead of recomputing it here.
+  // The server reproduces the former client maths, so displayed numbers are
+  // unchanged. Falls back to a zeroed 14-day shape when the endpoint is
+  // unavailable, so the KPI cards still render.
+  const health = healthRes || {};
+  const flowCycle = health.cycle_time || {};
+  const flowThr = health.throughput || {};
+  const zeroSeries = () => days.map(() => 0);
+  const cycleLine =
+    Array.isArray(flowCycle.series) && flowCycle.series.length === N ? flowCycle.series : zeroSeries();
+  const doneByDay =
+    Array.isArray(flowThr.series) && flowThr.series.length === N ? flowThr.series : zeroSeries();
 
   // --- distinct, real per-metric daily series (each KPI gets its own shape) --
   const createdByDay = bucket(tickets, (t) => t.created_at);
@@ -1230,17 +1239,13 @@ async function renderOverview() {
     return opened > 0 ? Math.round((shipped / (shipped + opened)) * 100) : 0;
   });
 
-  // --- headline metrics (real) ---------------------------------------------
-  const med = (arr) => {
-    if (!arr.length) return 0;
-    const s = [...arr].sort((a, b) => a - b);
-    const m = Math.floor(s.length / 2);
-    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-  };
+  // --- headline metrics -----------------------------------------------------
+  // Cycle time + throughput are server-authoritative (from /api/health above).
+  // cycleVals is retained ONLY to derive the Lead-time percentile below.
   const cycleVals = doneTickets
     .map((t) => (Date.parse(t.updated_at) - Date.parse(t.created_at)) / DAY)
     .filter((x) => x >= 0);
-  const cycleTime = med(cycleVals);
+  const cycleTime = typeof flowCycle.median_days === "number" ? flowCycle.median_days : 0;
   const leadTime = cycleVals.length
     ? Math.max(
         ...cycleVals
@@ -1249,8 +1254,8 @@ async function renderOverview() {
           .slice(0, Math.ceil(cycleVals.length / 2)),
       ) || cycleTime
     : 0;
-  const last7 = doneByDay.slice(-7).reduce((a, b) => a + b, 0);
-  const prev7 = doneByDay.slice(-14, -7).reduce((a, b) => a + b, 0);
+  const last7 = typeof flowThr.last7 === "number" ? flowThr.last7 : 0;
+  const prev7 = typeof flowThr.prev7 === "number" ? flowThr.prev7 : 0;
   const flowEff = Math.round(
     ((byStatus.done || 0) /
       Math.max(1, (byStatus.done || 0) + inReview + blocked + inProgress + (byStatus.ready || 0))) *

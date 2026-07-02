@@ -22,7 +22,7 @@
 # a substring/suffix tested against an added/deleted diff path. Empty config →
 # the built-in defaults so the guard is never silently disabled by an unset var.
 _hygiene_forbidden_fragments() {
-  local raw="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.json}"
+  local raw="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime}"
   printf '%s\n' $raw
 }
 
@@ -44,7 +44,7 @@ gaffer_exclude_runner_config() {
     [ -f "$excl" ] || : > "$excl" 2>/dev/null || exit 0
     grep -qsxF '# gaffer non-deliverables — never commit (added by gaffer_exclude_runner_config)' "$excl" 2>/dev/null \
       || printf '%s\n' '# gaffer non-deliverables — never commit (added by gaffer_exclude_runner_config)' >> "$excl" 2>/dev/null
-    for entry in '.claude/' 'CLAUDE.factory.md' '.mcp.json' 'mcp-runtime.json' \
+    for entry in '.claude/' 'CLAUDE.factory.md' '.mcp.json' 'mcp-runtime*.json' \
                  'node_modules' 'dist/' 'build/' '.next/' 'coverage/' '.turbo/'; do
       grep -qsxF "$entry" "$excl" 2>/dev/null || printf '%s\n' "$entry" >> "$excl" 2>/dev/null
     done

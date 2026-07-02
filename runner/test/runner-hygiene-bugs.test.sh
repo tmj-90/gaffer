@@ -187,7 +187,7 @@ source "$RUNNER_DIR/lib/hygiene.sh"
 
 # Verify the FIXED path-list builder: take the full HYGIENE_FORBIDDEN_PATHS and
 # strip only node_modules — all other forbidden paths must remain.
-FULL_PATHS="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.json}"
+FULL_PATHS="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime}"
 BOOTSTRAP_PATHS="$(printf '%s\n' $FULL_PATHS | grep -v '^node_modules$' | tr '\n' ' ')"
 
 # Confirm node_modules was stripped from the bootstrap list.
@@ -269,7 +269,7 @@ printf 'real change\n' >> "$NESTED_NM_REPO/src/index.ts"
 git -C "$NESTED_NM_REPO" add -A -- . \
   ':(exclude)node_modules' ':(exclude,glob)**/node_modules/**' \
   ':(exclude).claude' ':(exclude)CLAUDE.factory.md' \
-  ':(exclude).mcp.json' ':(exclude)mcp-runtime.json' ':(exclude)dist' ':(exclude)build' \
+  ':(exclude).mcp.json' ':(exclude,glob)mcp-runtime*.json' ':(exclude)dist' ':(exclude)build' \
   ':(exclude).next' ':(exclude)coverage' >/dev/null 2>&1
 STAGED="$(git -C "$NESTED_NM_REPO" diff --cached --name-only 2>/dev/null)"
 # Verify the nested node_modules were not staged.

@@ -23,6 +23,18 @@ export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 # gaffer_timeout's own TERM/INT-forwarding + TERM->KILL escalation. Per-tick ($$)
 # so concurrent workers never clobber each other's record.
 export GAFFER_TIMEOUT_PGID_FILE="$GAFFER_DATA/.agent-pgid.$$"
+
+# PER-TICK MCP RUNTIME CONFIG (B2). tick.sh seds the runner-held
+# GAFFER_CLAIM_TOKEN into this file and the agent's `claude -p --mcp-config`
+# reads it. Under GAFFER_CONCURRENCY>1, loop.sh runs N worker.sh against the SAME
+# $GAFFER_DATA: a single FIXED path let worker B's claim token overwrite worker
+# A's file between A writing it and A's claude reading it — so A's agent read B's
+# token and every token-gated evidence write failed CLAIM_INVALID (ACs never
+# marked, done-gate rejected good deliveries, budget burned). A lock can't fix it
+# (claude reads the file asynchronously, long after the tick returns), so each
+# tick gets its OWN path — fresh PID per tick.sh process, exactly like the PGID
+# file above. Removed on EXIT by the crash-cleanup trap.
+MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
 # Reap an orphaned agent process group if one is still recorded (see above). TERM
 # the whole group, brief grace, then KILL any survivor so no `claude -p` lingers
 # burning tokens. Numeric-guarded and fully best-effort — never faults the trap.
@@ -82,12 +94,26 @@ GAFFER_KEEP_DELIVERY_BRANCH="${GAFFER_KEEP_DELIVERY_BRANCH:-0}"
 # raises this flag before it exits; the crash-cleanup then becomes a COMPLETE no-op
 # (it touches neither worktree nor branch) for this paused ticket.
 GAFFER_PAUSE_KEEP_WORKTREE="${GAFFER_PAUSE_KEEP_WORKTREE:-0}"
+# CLAIM-RESOLVED seam (N3: no false "runner killed mid-delivery" page). The
+# normal flow resolves the claim exactly once — a deliberate park via
+# gaffer_release_delivery, or a successful submit via gaffer_submit_delivery.
+# Both consume/void the claim token. Without this flag the EXIT trap's
+# claim-release block below would then re-attempt the release with the now-void
+# token, fail, and log a spurious "needs a human". Once the claim is resolved by
+# the normal flow this flag is raised so the crash trap treats it as a clean end
+# and does NOT re-release. A genuine crash BEFORE any park/submit leaves it 0, so
+# the trap still releases a truly-stranded claim.
+GAFFER_CLAIM_RESOLVED="${GAFFER_CLAIM_RESOLVED:-0}"
 gaffer_crash_cleanup() {
   # Reap any orphaned in-flight agent FIRST — before any branch/worktree decision.
   # A runaway `claude -p` must be torn down regardless of how this tick ends
   # (complete, paused, or crashed); on a clean finish this is a no-op because
   # gaffer_timeout already removed the PGID record.
   gaffer_reap_orphan_agent
+  # B2: remove this tick's per-tick MCP runtime config (it carries the claim
+  # token). Best-effort; a leftover file is harmless (next tick has a new PID)
+  # but we don't want $GAFFER_DATA to accumulate one per tick.
+  [ -n "${MCP_RUNTIME:-}" ] && rm -f "$MCP_RUNTIME" 2>/dev/null || true
   # A paused delivery keeps its worktree + branch ALIVE for the one-click resume —
   # the crash-cleanup must never tear it down. This is the load-bearing PAUSE-ON-CAP
   # invariant: a paused worktree survives the tick's exit.
@@ -107,6 +133,7 @@ gaffer_crash_cleanup() {
   # failure abort the cleanup that follows (`|| true`). Guarded on the helper being
   # defined so a signal arriving before its definition can't fault the trap.
   if [ -n "${CLAIM_TOKEN:-}" ] && [ -n "${NUM:-}" ] \
+     && [ "${GAFFER_CLAIM_RESOLVED:-0}" != "1" ] \
      && [ "${GAFFER_DELIVERY_COMPLETE:-0}" != "1" ] \
      && [ "${GAFFER_PAUSE_KEEP_WORKTREE:-0}" != "1" ] \
      && declare -F gaffer_release_delivery >/dev/null 2>&1; then
@@ -248,6 +275,10 @@ gaffer_release_delivery() {
       && log "transitioned #$NUM → $to ($reason)" \
       || log "WARNING — could not transition #$NUM → $to ($reason); needs a human"
   fi
+  # The claim is now resolved by the normal flow (released, or a release we tried
+  # and already logged). Mark it so the EXIT crash trap does NOT re-attempt the
+  # release with the now-void token and page a spurious "needs a human" (N3).
+  GAFFER_CLAIM_RESOLVED=1
 }
 
 # Submit a passed delivery for review (RUNNER-OWNED-BOOKKEEPING). With a runner-held
@@ -256,11 +287,19 @@ gaffer_release_delivery() {
 # straight to in_review. $1 = reason. Returns non-zero (logged) on failure.
 gaffer_submit_delivery() {
   local reason="$1"
+  local _rc
   if [ -n "${CLAIM_TOKEN:-}" ]; then
     wg submit "$NUM" --token "$CLAIM_TOKEN" --reason "$reason" >/dev/null 2>&1
   else
     wg ticket move "$NUM" in_review >/dev/null 2>&1
   fi
+  _rc=$?
+  # On a successful submit the claim is COMPLETED (claimed → in_review): the token
+  # is consumed. Mark the claim resolved so the EXIT crash trap doesn't re-release
+  # it with the void token and page a spurious "needs a human" (N3). On failure we
+  # leave it 0 so the caller's park path (or a genuine crash) still resolves it.
+  [ "$_rc" -eq 0 ] && GAFFER_CLAIM_RESOLVED=1
+  return "$_rc"
 }
 
 # MEMORY FEEDBACK LOOP (RUNNER-OWNED-BOOKKEEPING): close the loop between WHAT
@@ -503,7 +542,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Fail-soft: falls back to the whole library on any error (see skills-mount.sh).
     gaffer_skills_mount "$B_DIR" "$B_SKILLS" "bootstrap-$NUM"
     sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$B_DIR/.claude/settings.json"
-    MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
+    MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
     gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"; result error; exit 1; }
     # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
     # MCP server env so the agent's evidence writes resolve it without ever handling
@@ -587,13 +626,14 @@ EOF
     # broken symlinks, etc. node_modules added by the install is NOT a hygiene
     # violation for a bootstrap (it is expected), so we relax ONLY the node_modules
     # fragment — all other forbidden paths (.crew/, *.events.jsonl, .claude/,
-    # CLAUDE.factory.md, .mcp.json, mcp-runtime.json) remain forbidden.
+    # CLAUDE.factory.md, .mcp.json, mcp-runtime) remain forbidden.
     # BUG 3 fix: previously used HYGIENE_FORBIDDEN_PATHS='.crew/ *.events.jsonl'
     # which silently exempted .claude/, CLAUDE.factory.md, .mcp.json and
-    # mcp-runtime.json. Now we build the relaxed list by taking the full default
-    # and removing only the node_modules fragment.
+    # mcp-runtime. Now we build the relaxed list by taking the full default
+    # and removing only the node_modules fragment. (The `mcp-runtime` substring
+    # also covers the per-tick `mcp-runtime.<pid>.json` files.)
     EMPTY_TREE="$(git -C "$B_DIR" hash-object -t tree /dev/null 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)"
-    _BOOTSTRAP_HYGIENE_PATHS="$(printf '%s\n' ${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.json} | grep -v '^node_modules$' | tr '\n' ' ')"
+    _BOOTSTRAP_HYGIENE_PATHS="$(printf '%s\n' ${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime} | grep -v '^node_modules$' | tr '\n' ' ')"
     B_HYGIENE="$(HYGIENE_FORBIDDEN_PATHS="$_BOOTSTRAP_HYGIENE_PATHS" \
                  gaffer_assert_clean_delivery "$B_DIR" "$EMPTY_TREE" 2>/dev/null)" || true
     if [ -n "$B_HYGIENE" ]; then
@@ -1277,7 +1317,7 @@ EOF
   # Substitute the real DB paths into a RUNTIME copy OUTSIDE the repo. Writing into
   # $PRIMARY_REPO/.mcp.json breaks when the target repo IS the runner itself (source
   # == destination → the redirect truncates the file → "Invalid MCP configuration").
-  MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
+  MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
   gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live run (fail closed)"; result error; exit 1; }
   # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
   # MCP server env (GAFFER_CLAIM_TOKEN) so the agent's token-gated evidence writes
@@ -1711,7 +1751,7 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
       git -C "$rwt" add -A -- . \
         ':(exclude)node_modules' ':(exclude,glob)**/node_modules/**' \
         ':(exclude).claude' ':(exclude)CLAUDE.factory.md' \
-        ':(exclude).mcp.json' ':(exclude)mcp-runtime.json' ':(exclude)dist' ':(exclude)build' \
+        ':(exclude).mcp.json' ':(exclude,glob)mcp-runtime*.json' ':(exclude)dist' ':(exclude)build' \
         ':(exclude).next' ':(exclude)coverage' >/dev/null 2>&1
       if git -C "$rwt" commit -q -m "deliver #$NUM: $TITLE" >/dev/null 2>&1; then
         log "auto-committed uncommitted changes for #$NUM in ${rname:-repo} (agent edited but did not commit)"
@@ -2305,7 +2345,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # Mount only the review-relevant + universal skill subset (not all ~66).
       gaffer_skills_mount "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$WT/.claude/settings.json"
-      MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
+      MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
       # substituted EMPTY (the MCP server treats "" as "no token"). Substituting it
@@ -2436,7 +2476,7 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # Mount only the clarify-relevant + universal skill subset (not all ~66).
       gaffer_skills_mount "$CREPO" "clarify, record-evidence" "clarify-$CNUM"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$CREPO/.claude/settings.json"
-      MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
+      MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
       # substituted EMPTY (the MCP server treats "" as "no token"). Substituting it

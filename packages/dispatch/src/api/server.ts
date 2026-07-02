@@ -19,6 +19,7 @@ import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
 import { createMergeRunner, type MergeRunner } from "./mergeRunner.js";
 import { createOnboardRunner, type OnboardRunner } from "./onboard.js";
 import { createPlanBuildRunner, type PlanBuildRunner } from "./planBuild.js";
+import { createSpecAuthorRunner, type SpecAuthorRunner } from "./specAuthor.js";
 import { createPollWorkRunner, type PollWorkRunner } from "./pollWork.js";
 import {
   createProductOwnerRunner,
@@ -66,6 +67,7 @@ import {
   setTestContractBody,
   setTicketRepoAccessBody,
   createSpecBody,
+  specBuildBody,
   updateSpecClausesBody,
   specListQuery,
   stopPausedBody,
@@ -441,6 +443,10 @@ export function createApiHandler(
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
   onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
+  // SPEC-DRIVEN (Phase 1c): the spec-author seam. Spawns runner/bin/spec-author.mjs
+  // exactly the way planBuildRunner spawns decompose.mjs. Appended last so existing
+  // positional callers of createApiHandler/createApiServer keep their argument slots.
+  specAuthorRunner: SpecAuthorRunner = createSpecAuthorRunner(),
 ): (req: IncomingMessage, res: ServerResponse) => void {
   // Resolve the HSTS posture ONCE from the bind host (not per request), so a
   // spoofed Host header can't toggle Strict-Transport-Security on/off.
@@ -456,6 +462,7 @@ export function createApiHandler(
       pollWorkRunner,
       memoryReader,
       onboardRunner,
+      specAuthorRunner,
       loopbackBind,
       bindHost,
       req,
@@ -483,6 +490,9 @@ export function createApiServer(
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
   onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
+  // SPEC-DRIVEN (Phase 1c): appended last (see createApiHandler) so positional
+  // callers of createApiServer keep their argument slots unchanged.
+  specAuthorRunner: SpecAuthorRunner = createSpecAuthorRunner(),
 ): Server {
   return createServer(
     createApiHandler(
@@ -494,6 +504,7 @@ export function createApiServer(
       bindHost,
       memoryReader,
       onboardRunner,
+      specAuthorRunner,
     ),
   );
 }
@@ -554,6 +565,8 @@ async function route(
   pollWorkRunner: PollWorkRunner,
   memoryReader: MemoryReader,
   onboardRunner: OnboardRunner,
+  // SPEC-DRIVEN (Phase 1c): the spec-author seam behind POST /spec-build.
+  specAuthorRunner: SpecAuthorRunner,
   // Resolved once from the bind host (see createApiHandler). Controls whether an
   // unauthenticated READ may pass: reads stay open on a loopback bind for the
   // local dashboard, but mutations always require the token.
@@ -809,6 +822,30 @@ async function route(
         // "Build the tickets now": the panel can force a plan at any point so the
         // user is never stuck clarifying. Forwarded only when set so a normal turn
         // is unchanged; the decomposer then returns a plan (never a clarify).
+        ...(body.forcePlan === true ? { forcePlan: true } : {}),
+      });
+      // The helper's own `error` phase is a normal, expected turn (bad brief,
+      // refusal, etc.), so it rides back as a 200 envelope the chat can render.
+      sendJson(res, 200, result);
+      return;
+    }
+    // POST /spec-build — one turn of the "Author a spec" step (Phase 1c). Spawns
+    // the runner spec-author helper with {brief,history,context?,forcePlan?} on
+    // stdin and returns its {phase:"clarify"|"spec"|"error"} JSON. It PROPOSES ONLY
+    // — nothing is created here; the frontend edits the draft clauses and confirms
+    // via POST /specs (create_spec) then POST /specs/:id/freeze. Behind the same
+    // bearer-token gate as plan-build (checked above).
+    if (segments.length === 1 && segments[0] === "spec-build") {
+      if (method !== "POST") return methodNotAllowed(res);
+      const body = specBuildBody.parse(await readJsonBody(req));
+      const result = await specAuthorRunner.run({
+        brief: body.brief,
+        history: body.history,
+        // Optional free-text grounding — forwarded only when present so a request
+        // without context has a byte-for-byte unchanged stdin shape.
+        ...(body.context !== undefined ? { context: body.context } : {}),
+        // "Draft the spec now": force a spec at any point so the user is never
+        // stuck clarifying. Forwarded only when set so a normal turn is unchanged.
         ...(body.forcePlan === true ? { forcePlan: true } : {}),
       });
       // The helper's own `error` phase is a normal, expected turn (bad brief,

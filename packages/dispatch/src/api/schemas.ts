@@ -540,6 +540,24 @@ export const planBuildBody = z.object({
 });
 export type PlanBuildBody = z.infer<typeof planBuildBody>;
 
+// --- Author a spec (spec-author chat step) ---------------------------------
+
+/**
+ * Body for POST /spec-build — a one-line brief plus the conversation history the
+ * frontend accumulates, mirroring {@link planBuildBody}. Unlike plan-build,
+ * `context` here is optional free-text grounding (e.g. "existing repo uses Vite +
+ * React"), not a structured extend target. `forcePlan` is the "Draft the spec now"
+ * escape: when true the spec-author STOPS clarifying and emits the best spec it can
+ * (it returns a spec, never a clarify). The panel can send it at any point.
+ */
+export const specBuildBody = z.object({
+  brief: z.string().trim().min(1).max(4_000),
+  history: z.array(planBuildTurn).max(40).optional().default([]),
+  context: z.string().trim().min(1).max(20_000).optional(),
+  forcePlan: z.boolean().optional(),
+});
+export type SpecBuildBody = z.infer<typeof specBuildBody>;
+
 // --- Settings panel (UI-editable factory config) ---------------------------
 
 /**

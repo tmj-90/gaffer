@@ -987,6 +987,13 @@ async function buildPaletteSources() {
     },
     {
       group: "Create",
+      label: "Author a spec",
+      hint: "brief → editable clauses → freeze",
+      icon: "spark",
+      run: () => openSpecBuild(),
+    },
+    {
+      group: "Create",
       label: "New scope node",
       hint: "map",
       icon: "map",
@@ -6845,6 +6852,15 @@ async function renderEpics(param) {
       el(
         "button",
         {
+          class: "btn",
+          type: "button",
+          onclick: () => openSpecBuild(),
+        },
+        [icon("spark"), el("span", {}, "Author a spec")],
+      ),
+      el(
+        "button",
+        {
           class: "btn primary",
           type: "button",
           onclick: () => openPlanBuild(),
@@ -8071,6 +8087,605 @@ async function confirmPlanBuild(plan) {
     // the hashchange when the param differs only — force a refresh to be safe.
     router();
   });
+}
+
+// ---------------------------------------------------------------------------
+//  Author a spec — the spec-author chat step (Spec-Driven Development, Phase 1c)
+// ---------------------------------------------------------------------------
+//
+// A sibling to "Plan a build": a one-line brief becomes an AI-drafted, EDITABLE
+// spec (clauses), which the human refines, then CREATES (POST /specs) and FREEZES
+// (POST /specs/:id/freeze). It PROPOSES ONLY — nothing is created until the human
+// presses "Create spec", and nothing is immutable until "Freeze". This flow is
+// entirely additive: the one-liner plan-build path above is untouched. It reuses
+// the pb-* panel styling (the spec panel is a second pb-panel instance) plus a few
+// spec-specific classes (sb-*) for the editable clause list.
+//
+// The chat half mirrors submitPlanBuildTurn: clarify turns show questions and let
+// the user continue; a "spec" turn hands its clauses to the editable draft. The
+// "Draft the spec now" (forcePlan) escape is always available so the user is never
+// stuck clarifying — exactly like plan-build's "Build the tickets".
+//
+// The three clause kinds match the dispatch/spec-author contract exactly.
+const SPEC_CLAUSE_KINDS = ["requirement", "non-goal", "decision"];
+
+let specBuildEls = null;
+let specBuildState = null;
+
+function ensureSpecBuild() {
+  if (specBuildEls) return specBuildEls;
+  const scrim = el("div", { class: "pb-scrim", onclick: closeSpecBuild });
+  const log = el("div", { class: "pb-log", role: "log", "aria-live": "polite" });
+  const input = el("textarea", {
+    class: "pb-input",
+    rows: "1",
+    placeholder: "Describe what the product must do, in one line…",
+    "aria-label": "Your message",
+  });
+  const sendBtn = el(
+    "button",
+    { class: "btn pb-send", type: "submit", "aria-label": "Send" },
+    icon("send"),
+  );
+  // "Draft the spec now" escape: forces the author to emit a spec from the brief +
+  // answers so far. Always visible so the user is NEVER stuck clarifying.
+  const forceBtn = el(
+    "button",
+    {
+      class: "btn primary pb-force",
+      type: "button",
+      "aria-label": "Draft the spec now from what you've told me",
+      onclick: () => submitSpecBuildTurn({ forcePlan: true }),
+    },
+    [icon("check"), el("span", {}, "Draft the spec")],
+  );
+  const actions = el("div", { class: "pb-actions" }, [forceBtn, sendBtn]);
+  const form = el("form", { class: "pb-composer" }, [input, actions]);
+  const panel = el(
+    "aside",
+    { class: "pb-panel", role: "dialog", "aria-modal": "true", "aria-label": "Author a spec" },
+    [
+      el("header", { class: "pb-head" }, [
+        el("div", { class: "pb-head-main" }, [
+          icon("spark", "pb-head-ico"),
+          el("div", {}, [
+            el("div", { class: "pb-title" }, "Author a spec"),
+            el("div", { class: "pb-sub dim" }, "Brief → editable clauses → freeze"),
+          ]),
+        ]),
+        el("div", { class: "pb-head-actions" }, [
+          el(
+            "button",
+            {
+              class: "btn pb-new-plan",
+              type: "button",
+              "aria-label": "Start a new spec (clears this conversation)",
+              onclick: startNewSpecBuild,
+            },
+            "New spec",
+          ),
+          el(
+            "button",
+            { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closeSpecBuild },
+            el("span", { html: "✕" }),
+          ),
+        ]),
+      ]),
+      el("div", { class: "pb-guardrail" }, [
+        icon("alert", "pb-guard-ico"),
+        el(
+          "span",
+          {},
+          "Proposes only. Nothing is created until you press Create spec — and nothing is locked until you Freeze.",
+        ),
+      ]),
+      log,
+      form,
+    ],
+  );
+  panel.addEventListener("click", (e) => e.stopPropagation());
+
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 140) + "px";
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    submitSpecBuildTurn();
+  });
+  scrim.appendChild(panel);
+  document.body.appendChild(scrim);
+
+  specBuildEls = { scrim, panel, log, input, sendBtn, forceBtn, form };
+  return specBuildEls;
+}
+
+function openSpecBuild() {
+  const { scrim, input } = ensureSpecBuild();
+  // `history` accumulates clarify turns; `draft` is the editable clause set once
+  // the author returns a spec; `createdSpec` is the persisted spec (with id) after
+  // Create; once `createdSpec` exists the flow shows the Freeze action.
+  specBuildState = {
+    history: [],
+    draft: null,
+    createdSpec: null,
+    busy: false,
+    brief: null,
+    title: "",
+  };
+  renderSpecBuildLog();
+  scrim.classList.add("open");
+  document.addEventListener("keydown", specBuildKeydown);
+  setTimeout(() => input.focus(), 50);
+}
+
+function startNewSpecBuild() {
+  if (!specBuildState || specBuildState.busy) return;
+  specBuildState = {
+    history: [],
+    draft: null,
+    createdSpec: null,
+    busy: false,
+    brief: null,
+    title: "",
+  };
+  renderSpecBuildLog();
+  if (specBuildEls) specBuildEls.input.focus();
+}
+
+function closeSpecBuild() {
+  if (!specBuildEls) return;
+  specBuildEls.scrim.classList.remove("open");
+  document.removeEventListener("keydown", specBuildKeydown);
+}
+function specBuildKeydown(e) {
+  if (e.key === "Escape") closeSpecBuild();
+}
+
+/** Repaint the spec conversation log from state (turns + the editable draft). */
+function renderSpecBuildLog() {
+  const { log } = specBuildEls;
+  clear(log);
+
+  if (specBuildState.history.length === 0 && !specBuildState.draft) {
+    log.appendChild(
+      el("div", { class: "pb-intro" }, [
+        el("p", {}, "Describe the product in one line and I'll draft a spec — for example:"),
+        el(
+          "ul",
+          { class: "pb-examples" },
+          ["a web app that tracks gym workouts", "an API that summarises PDFs"].map((ex) =>
+            el(
+              "li",
+              {},
+              el(
+                "button",
+                {
+                  class: "pb-example",
+                  type: "button",
+                  onclick: () => {
+                    specBuildEls.input.value = ex;
+                    specBuildEls.input.focus();
+                  },
+                },
+                ex,
+              ),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  for (const turn of specBuildState.history) {
+    if (turn.role === "user") {
+      log.appendChild(el("div", { class: "pb-msg pb-user" }, turn.answer || turn.brief || ""));
+    } else if (turn.role === "assistant" && turn.questions) {
+      log.appendChild(
+        el("div", { class: "pb-msg pb-bot" }, [
+          el("div", { class: "pb-bot-label dim" }, "Clarifying questions"),
+          el(
+            "ul",
+            { class: "pb-questions" },
+            turn.questions.map((q) => el("li", {}, q)),
+          ),
+        ]),
+      );
+    } else if (turn.role === "assistant" && turn.error) {
+      log.appendChild(
+        el("div", { class: "pb-msg pb-bot pb-error-msg" }, [
+          el("div", { class: "pb-bot-label" }, "Couldn't draft the spec"),
+          el("div", {}, turn.error),
+          el(
+            "div",
+            { class: "pb-error-hint dim" },
+            'Edit your brief and try again, or press "Draft the spec".',
+          ),
+        ]),
+      );
+    }
+  }
+
+  if (specBuildState.draft) {
+    log.appendChild(renderSpecDraft(specBuildState.draft));
+  }
+
+  if (specBuildState.busy) {
+    log.appendChild(
+      el("div", { class: "pb-msg pb-bot pb-thinking" }, [
+        el("span", { class: "pb-dot" }),
+        el("span", { class: "pb-dot" }),
+        el("span", { class: "pb-dot" }),
+      ]),
+    );
+  }
+
+  updateSpecBuildActions();
+  log.scrollTop = log.scrollHeight;
+}
+
+/**
+ * Composer state: the "Draft the spec" force button is always available so the
+ * user is never stuck clarifying. Once a draft is on screen the chat's job is done
+ * (edit/create takes over), so the whole composer is hidden.
+ */
+function updateSpecBuildActions() {
+  if (!specBuildEls) return;
+  const { forceBtn, form } = specBuildEls;
+  const turns = specBuildState.history.filter((t) => t.role === "user").length;
+  form.hidden = !!specBuildState.draft;
+  if (specBuildState.draft) return;
+  forceBtn.disabled = specBuildState.busy || turns === 0;
+}
+
+/**
+ * Render the editable clause draft. Each clause is a kind chip (select) + editable
+ * text + editable rationale, with a remove button; a footer allows adding a clause
+ * and — once at least one clause exists — Create spec. After Create, the row swaps
+ * to a Freeze action. All edits mutate the in-memory draft (the panel's UI state);
+ * the persisted spec is only written on Create / Freeze.
+ */
+function renderSpecDraft(draft) {
+  const clauses = draft.clauses || [];
+  const created = specBuildState.createdSpec;
+  const frozen = created && created.status === "frozen";
+  const wrap = el("div", { class: "pb-proposal sb-draft card card-amber" });
+
+  wrap.appendChild(
+    el("div", { class: "pb-proposal-head" }, [
+      badge(frozen ? "frozen" : created ? "created" : "draft", "no-dot"),
+      el("h3", { class: "pb-proposal-name" }, "Proposed spec"),
+    ]),
+  );
+
+  // Title field — required by create_spec; defaults to the brief. Editable until
+  // the spec is created (immutable server-side after that).
+  const titleInput = el("input", {
+    class: "sb-title",
+    type: "text",
+    value: specBuildState.title || "",
+    placeholder: "Spec title",
+    "aria-label": "Spec title",
+    maxlength: "300",
+    disabled: created ? "" : undefined,
+  });
+  titleInput.addEventListener("input", () => {
+    specBuildState.title = titleInput.value;
+    updateSpecCreateEnabled();
+  });
+  wrap.appendChild(el("div", { class: "field sb-title-field" }, [el("label", {}, "Title"), titleInput]));
+
+  const list = el("ol", { class: "pb-tickets sb-clauses" });
+  clauses.forEach((clause, i) => list.appendChild(renderSpecClauseRow(clause, i, !!created)));
+  wrap.appendChild(list);
+
+  if (!created) {
+    wrap.appendChild(
+      el("div", { class: "sb-add-row" }, [
+        el(
+          "button",
+          {
+            class: "btn sb-add",
+            type: "button",
+            onclick: () => {
+              specBuildState.draft.clauses.push({ kind: "requirement", text: "", rationale: "" });
+              renderSpecBuildLog();
+            },
+          },
+          [icon("plus"), el("span", {}, "Add clause")],
+        ),
+      ]),
+    );
+  }
+
+  // Persistent error slot (not just a toast) — mirrors pb-error-msg styling.
+  if (specBuildState.actionError) {
+    wrap.appendChild(
+      el("div", { class: "pb-msg pb-bot pb-error-msg sb-action-error" }, [
+        el("div", { class: "pb-bot-label" }, "Action failed"),
+        el("div", {}, specBuildState.actionError),
+      ]),
+    );
+  }
+
+  const confirmRow = el("div", { class: "pb-confirm-row" });
+  if (!created) {
+    const createBtn = el(
+      "button",
+      {
+        class: "btn primary sb-create",
+        type: "button",
+        onclick: () => createSpecFromDraft(),
+      },
+      [icon("check"), el("span", {}, "Create spec")],
+    );
+    confirmRow.appendChild(
+      el(
+        "p",
+        { class: "pb-confirm-note dim" },
+        `${clauses.length} clause${clauses.length === 1 ? "" : "s"} — created as a draft spec you can freeze when ready.`,
+      ),
+    );
+    confirmRow.appendChild(createBtn);
+  } else if (!frozen) {
+    confirmRow.appendChild(
+      el(
+        "p",
+        { class: "pb-confirm-note dim" },
+        "Spec created as draft. Freeze to lock the clauses and seed product-intent lore.",
+      ),
+    );
+    confirmRow.appendChild(
+      el(
+        "button",
+        { class: "btn primary sb-freeze", type: "button", onclick: () => freezeCreatedSpec() },
+        [icon("check"), el("span", {}, "Freeze spec")],
+      ),
+    );
+  } else {
+    confirmRow.appendChild(
+      el("p", { class: "pb-confirm-note dim" }, "Spec frozen — clauses are now immutable."),
+    );
+  }
+  wrap.appendChild(confirmRow);
+  return wrap;
+}
+
+/** One editable clause row: kind chip + text + rationale + remove. */
+function renderSpecClauseRow(clause, i, locked) {
+  const kindSel = el(
+    "select",
+    {
+      class: "select sb-kind",
+      "aria-label": `Clause ${i + 1} kind`,
+      disabled: locked ? "" : undefined,
+    },
+    SPEC_CLAUSE_KINDS.map((k) =>
+      el("option", { value: k, selected: clause.kind === k ? "" : undefined }, k),
+    ),
+  );
+  kindSel.addEventListener("change", () => {
+    specBuildState.draft.clauses[i].kind = kindSel.value;
+  });
+
+  const textArea = el("textarea", {
+    class: "pb-input sb-clause-text",
+    rows: "2",
+    value: clause.text || "",
+    placeholder: "One testable statement…",
+    "aria-label": `Clause ${i + 1} text`,
+    disabled: locked ? "" : undefined,
+  });
+  textArea.value = clause.text || "";
+  textArea.addEventListener("input", () => {
+    specBuildState.draft.clauses[i].text = textArea.value;
+    updateSpecCreateEnabled();
+  });
+
+  const rationaleInput = el("input", {
+    class: "sb-clause-rationale",
+    type: "text",
+    value: clause.rationale || "",
+    placeholder: "Rationale (optional)",
+    "aria-label": `Clause ${i + 1} rationale`,
+    disabled: locked ? "" : undefined,
+  });
+  rationaleInput.addEventListener("input", () => {
+    specBuildState.draft.clauses[i].rationale = rationaleInput.value;
+  });
+
+  const top = el("div", { class: "pb-ticket-top sb-clause-top" }, [
+    el("span", { class: "pb-ticket-idx tabnum" }, `#${i + 1}`),
+    kindSel,
+    !locked
+      ? el(
+          "button",
+          {
+            class: "icon-btn sb-remove",
+            type: "button",
+            "aria-label": `Remove clause ${i + 1}`,
+            onclick: () => {
+              specBuildState.draft.clauses.splice(i, 1);
+              renderSpecBuildLog();
+            },
+          },
+          el("span", { html: "✕" }),
+        )
+      : null,
+  ]);
+
+  return el("li", { class: "pb-ticket sb-clause" }, [top, textArea, rationaleInput]);
+}
+
+/** Enable/disable the Create button live from title + at-least-one-non-empty-clause. */
+function updateSpecCreateEnabled() {
+  if (!specBuildEls) return;
+  const btn = specBuildEls.panel.querySelector(".sb-create");
+  if (!btn) return;
+  const clauses = (specBuildState.draft && specBuildState.draft.clauses) || [];
+  const ok = (specBuildState.title || "").trim().length > 0 && clauses.some((c) => (c.text || "").trim());
+  btn.disabled = !ok || specBuildState.busy;
+}
+
+/**
+ * Send the next spec-author turn. Mirrors submitPlanBuildTurn: append the user
+ * message, POST /spec-build, fold the reply (clarify → questions; spec → editable
+ * draft; error → persistent in-chat error + toast). `forcePlan` drafts the spec now.
+ */
+async function submitSpecBuildTurn(opts = {}) {
+  const forcePlan = opts.forcePlan === true;
+  const { input, sendBtn } = specBuildEls;
+  const text = input.value.trim();
+  if (specBuildState.busy) return;
+  if (!forcePlan && !text) return;
+
+  const isFirst = specBuildState.history.length === 0;
+  if (forcePlan && isFirst && !text) {
+    toast("Tell me what to build first, then I can draft the spec.");
+    return;
+  }
+
+  if (text) {
+    if (isFirst) {
+      specBuildState.brief = text;
+      // Seed a sensible default title from the brief (editable in the draft view).
+      specBuildState.title = text.slice(0, 120);
+    }
+    specBuildState.history.push(
+      isFirst ? { role: "user", brief: text } : { role: "user", answer: text },
+    );
+    input.value = "";
+    input.style.height = "auto";
+  }
+
+  specBuildState.busy = true;
+  sendBtn.disabled = true;
+  sendBtn.classList.add("is-running");
+  sendBtn.setAttribute("aria-busy", "true");
+  clear(sendBtn);
+  sendBtn.appendChild(el("span", { class: "btn-spinner", "aria-hidden": "true" }));
+  sendBtn.appendChild(el("span", { class: "pb-send-label" }, "Drafting…"));
+  renderSpecBuildLog();
+
+  let failure = null;
+  try {
+    const res = await api("POST", "/spec-build", {
+      brief: specBuildState.brief,
+      history: specBuildState.history
+        .filter((t) => !(t.role === "assistant" && t.error))
+        .map((t) => (t.role === "user" && t.brief ? { role: "user", answer: t.brief } : t)),
+      ...(forcePlan ? { forcePlan: true } : {}),
+    });
+    if (res.phase === "clarify") {
+      specBuildState.history.push({ role: "assistant", questions: res.questions || [] });
+    } else if (res.phase === "spec") {
+      const clauses = (res.spec && Array.isArray(res.spec.clauses) ? res.spec.clauses : []).map(
+        (c) => ({
+          clause_id: c.clause_id,
+          kind: SPEC_CLAUSE_KINDS.includes(c.kind) ? c.kind : "requirement",
+          text: c.text || "",
+          rationale: c.rationale || "",
+        }),
+      );
+      specBuildState.draft = { clauses };
+    } else {
+      failure = res.error || "The spec author returned no result.";
+    }
+  } catch (e) {
+    failure = e && e.message ? e.message : "The request errored before a spec came back.";
+  }
+
+  specBuildState.busy = false;
+  if (failure) {
+    specBuildState.history.push({ role: "assistant", error: failure });
+    toast(failure, { code: "SPEC_BUILD" });
+  }
+  sendBtn.disabled = false;
+  sendBtn.classList.remove("is-running");
+  sendBtn.removeAttribute("aria-busy");
+  clear(sendBtn);
+  sendBtn.appendChild(icon("send"));
+  renderSpecBuildLog();
+}
+
+/** Human confirm → POST /specs. Clauses land as a draft spec, then Freeze appears. */
+async function createSpecFromDraft() {
+  if (!specBuildState || !specBuildState.draft || specBuildState.busy) return;
+  const title = (specBuildState.title || "").trim();
+  if (!title) {
+    toast("Give the spec a title first.");
+    return;
+  }
+  // Only send non-empty clauses; the server rejects blank text at its boundary.
+  const clauses = specBuildState.draft.clauses
+    .filter((c) => (c.text || "").trim())
+    .map((c) => ({
+      ...(c.clause_id ? { clause_id: c.clause_id } : {}),
+      kind: c.kind,
+      text: c.text.trim(),
+      ...(c.rationale && c.rationale.trim() ? { rationale: c.rationale.trim() } : {}),
+    }));
+  if (clauses.length === 0) {
+    toast("Add at least one clause with text before creating the spec.");
+    return;
+  }
+
+  specBuildState.busy = true;
+  specBuildState.actionError = null;
+  renderSpecBuildLog();
+  try {
+    const res = await api("POST", "/specs", {
+      title,
+      ...(specBuildState.brief ? { brief: specBuildState.brief } : {}),
+      clauses,
+    });
+    specBuildState.createdSpec = res.spec || null;
+    // Reflect the server-assigned clause ids/order back into the editable draft.
+    if (res.spec && Array.isArray(res.spec.clauses)) {
+      specBuildState.draft = {
+        clauses: res.spec.clauses.map((c) => ({
+          clause_id: c.clause_id,
+          kind: c.kind,
+          text: c.text,
+          rationale: c.rationale || "",
+        })),
+      };
+    }
+    toast("Spec created as draft — freeze it when ready.", { ok: true });
+  } catch (e) {
+    // Persistent error (rendered in the draft card), plus a toast for immediacy.
+    specBuildState.actionError = e && e.message ? e.message : "Could not create the spec.";
+    toast(specBuildState.actionError, { code: e && e.code });
+  } finally {
+    specBuildState.busy = false;
+    renderSpecBuildLog();
+  }
+}
+
+/** Freeze the created spec → immutable clauses + seeded product-intent lore. */
+async function freezeCreatedSpec() {
+  if (!specBuildState || !specBuildState.createdSpec || specBuildState.busy) return;
+  const id = specBuildState.createdSpec.id;
+  specBuildState.busy = true;
+  specBuildState.actionError = null;
+  renderSpecBuildLog();
+  try {
+    const res = await api("POST", `/specs/${id}/freeze`);
+    specBuildState.createdSpec = res.spec || specBuildState.createdSpec;
+    toast("Spec frozen — clauses are now immutable.", { ok: true });
+  } catch (e) {
+    specBuildState.actionError = e && e.message ? e.message : "Could not freeze the spec.";
+    toast(specBuildState.actionError, { code: e && e.code });
+  } finally {
+    specBuildState.busy = false;
+    renderSpecBuildLog();
+  }
 }
 
 // --- View: Memory (Repo Digest · Feature ledger · Lore) ---------------------

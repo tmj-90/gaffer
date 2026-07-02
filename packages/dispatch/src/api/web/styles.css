@@ -6419,6 +6419,63 @@ body {
   flex: 1 1 180px;
 }
 
+/* --- Author a spec: editable clause draft (Phase 1c) ---------------------- */
+.sb-title-field {
+  margin: 6px 0 12px;
+}
+.sb-title-field > label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.sb-title {
+  width: 100%;
+  font-weight: 600;
+}
+.sb-clauses {
+  gap: 10px;
+}
+.sb-clause-top {
+  justify-content: flex-start;
+}
+.sb-kind {
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  height: auto;
+  text-transform: lowercase;
+}
+.sb-remove {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+.sb-remove:hover {
+  color: var(--danger, var(--accent));
+}
+.sb-clause-text {
+  margin: 8px 0 6px;
+  min-height: 40px;
+}
+.sb-clause-rationale {
+  width: 100%;
+  font-size: 0.78rem;
+}
+.sb-add-row {
+  margin-top: 10px;
+}
+.sb-add {
+  width: 100%;
+  border-style: dashed;
+  color: var(--text-dim);
+}
+.sb-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.sb-action-error {
+  margin-top: 12px;
+}
+
 /* Stacked composer: the message box gets its own full-width row, then a separate
    actions row beneath it (escape on the left, send on the right) — rather than
    cramming textarea + both buttons inline. */

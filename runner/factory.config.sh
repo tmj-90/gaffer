@@ -145,10 +145,15 @@ if [ -z "${GAFFER_BUDGET_LOW_THRESHOLD:-}" ] && [ -n "${GAFFER_BUDGET_USD:-}" ] 
 fi
 : "${GAFFER_BUDGET_LOW_THRESHOLD:=0}"
 # GAFFER_CHEAP_PHASES — cost-as-control class knob (Settings). A comma/space list of
-# PHASES whose work the operator wants biased toward the cheap tier (e.g.
-# "self-review,test,onboarding"). The router (route-model.mjs cheapClassFromEnv)
-# reads this and biases one tier cheaper for a matching phase — but never overrides a
-# high/critical-risk escalation. Empty (default) = no class is force-cheapened.
+# PHASES whose work the operator wants biased toward the cheap tier. The router
+# (route-model.mjs cheapClassFromEnv) reads this and biases one tier cheaper for a
+# matching phase — but never overrides a high/critical-risk escalation. Empty
+# (default) = no class is force-cheapened.
+# HONEST SCOPE (finding 13): today ONLY the `implement` phase is routed through
+# gaffer_route_model (tick.sh's delivery call) — so `implement` is the only value
+# that has any effect (e.g. "implement"). Other phases (self-review, test,
+# onboarding, decompose…) use static model flags and do NOT consult the router yet;
+# listing them here is inert until those call sites are routed.
 : "${GAFFER_CHEAP_PHASES:=}"
 export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD GAFFER_CHEAP_PHASES
 

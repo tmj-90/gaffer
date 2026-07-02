@@ -72,9 +72,12 @@ PY
 # ESM import specifiers must be literals, so render the probe with the dist
 # paths baked in. Prints one JSON line: {"isError":bool,"code":…,"status":…}.
 MCP_PROBE="$WORK/mcp-probe.mjs"
-cat > "$MCP_PROBE" <<PROBE
-import { Dispatch } from ${CORE_JS@Q};
-import { makeHandlers } from ${TOOLS_JS@Q};
+# NOTE: quoted heredoc + dynamic import(process.env.*) — the dist paths arrive via
+# env, not baked in, so this stays bash-3.2 safe (macOS /bin/bash has no ${var@Q}).
+cat > "$MCP_PROBE" <<'PROBE'
+import { pathToFileURL } from "node:url";
+const { Dispatch } = await import(pathToFileURL(process.env.CORE_JS).href);
+const { makeHandlers } = await import(pathToFileURL(process.env.TOOLS_JS).href);
 const wg = Dispatch.open(process.env.DB);
 const h = makeHandlers(wg, { type: "agent", id: "mcp-agent" });
 const args = { ticket_id: process.env.TICKET_ID };
@@ -88,7 +91,7 @@ console.log(JSON.stringify({
 }));
 PROBE
 agent_mcp_submit() { # $1 = ticket id, env: GAFFER_CLAIM_TOKEN / EXPLICIT_TOKEN
-  DB="$DB" TICKET_ID="$1" node "$MCP_PROBE" 2>/dev/null
+  DB="$DB" TICKET_ID="$1" CORE_JS="$CORE_JS" TOOLS_JS="$TOOLS_JS" node "$MCP_PROBE" 2>/dev/null
 }
 
 # Seed one ready ticket + a runner claim; echoes "NUM<TAB>TID<TAB>TOKEN".

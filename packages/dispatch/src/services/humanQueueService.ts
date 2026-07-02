@@ -10,7 +10,9 @@ import type { Clock } from "../util/clock.js";
  *  - `decision`            — answer a genuine unmade decision the agent delegated;
  *  - `review`              — sign off a delivered ticket sitting in `in_review`;
  *  - `ready_approval`      — grant the human ready-approval a `regulated` ticket needs;
- *  - `reviewer_assignment` — assign a reviewer a `regulated` ticket needs to be ready.
+ *  - `reviewer_assignment` — assign the reviewer a `factory_strict`/`regulated`
+ *                            ticket needs to be ready (mirrors the policy gate's
+ *                            REVIEWER_REQUIRED profile set).
  */
 export type HumanQueueKind = "decision" | "review" | "ready_approval" | "reviewer_assignment";
 
@@ -76,7 +78,7 @@ const REVIEW_REASON_FALLBACK = "Delivered by the agent — awaiting your review 
 const READY_APPROVAL_REASON =
   "Regulated ticket — needs your ready-approval before it can enter the queue.";
 const REVIEWER_ASSIGNMENT_REASON =
-  "Regulated ticket — assign a reviewer before it can be made ready.";
+  "Policy gate (factory_strict/regulated) — assign a reviewer before it can be made ready.";
 
 /**
  * Aggregates the HUMAN's queue: the decisions and approvals the agent delegated
@@ -154,13 +156,17 @@ export class HumanQueueService {
       });
     }
 
-    // --- Regulated tickets awaiting a human gate before they can be ready -----
+    // --- Policy-gated drafts awaiting a human gate before they can be ready ---
     // Scoped to `draft`: the pre-ready window where the human ready-approval and
     // reviewer-assignment gates apply. This deliberately excludes `refining`/
     // `blocked` (agent-owned rework churn) — those are NOT the human's queue.
+    // Which packs owe which gate mirrors the policy ready-gate (policy.ts):
+    // REVIEWER_REQUIRED fires for factory_strict AND regulated, while the human
+    // ready-approval (HUMAN_APPROVAL_REQUIRED) is regulated-only.
     for (const t of this.tickets.list("draft")) {
-      if (t.policy_pack !== "regulated") continue;
-      if (!this.events.hasTicketEvent(t.id, "ticket.ready_approved")) {
+      const pack = t.policy_pack;
+      if (pack !== "factory_strict" && pack !== "regulated") continue;
+      if (pack === "regulated" && !this.events.hasTicketEvent(t.id, "ticket.ready_approved")) {
         items.push({
           kind: "ready_approval",
           label: "Ready-approval",

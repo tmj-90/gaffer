@@ -1,10 +1,12 @@
 // Track 2a — the HUMAN's "What I own" queue read model (Dispatch.humanQueue()).
 //
 // Proves the aggregation surfaces everything the OPERATOR owns — pending
-// decisions (with their reasons), tickets awaiting review sign-off, and
-// regulated tickets awaiting ready-approval / reviewer-assignment — each with
-// the reason and how long it has waited, and EXCLUDES agent-owned blocked/rework
-// churn. Read-only: it changes no decision/approval semantics.
+// decisions (with their reasons), tickets awaiting review sign-off, regulated
+// tickets awaiting ready-approval, and factory_strict/regulated tickets awaiting
+// reviewer-assignment (mirroring the policy gate's REVIEWER_REQUIRED profile
+// set) — each with the reason and how long it has waited, and EXCLUDES
+// agent-owned blocked/rework churn. Read-only: it changes no decision/approval
+// semantics.
 
 import { describe, expect, it } from "vitest";
 
@@ -145,6 +147,36 @@ describe("humanQueue: regulated tickets awaiting a human gate", () => {
     const wg = fresh();
     wg.createTicket({ title: "Loose", description: "d", policy_pack: "solo_loose" }, human);
     expect(wg.humanQueue().items).toHaveLength(0);
+    wg.db.close();
+  });
+});
+
+describe("humanQueue: factory_strict tickets awaiting reviewer assignment", () => {
+  it("surfaces reviewer-assignment (but NOT ready-approval) for a factory_strict draft", () => {
+    const wg = fresh();
+    const t = wg.createTicket(
+      { title: "Strict change", description: "d", policy_pack: "factory_strict" },
+      human,
+    );
+    const queue = wg.humanQueue();
+    const kinds = queue.items.filter((i) => i.ticket?.id === t.id).map((i) => i.kind);
+    // The policy ready-gate's REVIEWER_REQUIRED fires for factory_strict AND
+    // regulated — without this queue item the draft would block invisibly.
+    expect(kinds).toEqual(["reviewer_assignment"]);
+    expect(queue.counts.reviewerAssignments).toBe(1);
+    // The human ready-approval gate (HUMAN_APPROVAL_REQUIRED) is regulated-only.
+    expect(queue.counts.readyApprovals).toBe(0);
+    wg.db.close();
+  });
+
+  it("drops the item once a reviewer is assigned to the factory_strict draft", () => {
+    const wg = fresh();
+    const t = wg.createTicket(
+      { title: "Strict", description: "d", policy_pack: "factory_strict" },
+      human,
+    );
+    wg.assignReviewer(t.id, "alice", human);
+    expect(wg.humanQueue().items.some((i) => i.kind === "reviewer_assignment")).toBe(false);
     wg.db.close();
   });
 });

@@ -281,6 +281,17 @@ export interface TransitionInput {
    * never re-route in-flight work. Set only by {@link Dispatch.humanReleaseTicket}.
    */
   humanRelease?: boolean;
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 1) signal: on a review APPROVAL, whether the
+   * delivery was approved UNCHANGED (`true`), edited before approval (`false`), or
+   * indeterminate (`null` — SHAs unknown, so we never overstate agreement). Set ONLY
+   * by {@link import("./reviewGateService.js").ReviewGateService.approveReview}; when
+   * provided (including `null`) it is emitted on the `ticket.transitioned` payload as
+   * `approved_unchanged` so the read-only recommendation service can compute an
+   * honest per-repo/per-risk "approved unchanged" rate. Absent on every non-approve
+   * transition, so their payload shape is byte-for-byte unchanged.
+   */
+  approvedUnchanged?: boolean | null;
 }
 
 export interface TransitionResult {
@@ -568,6 +579,12 @@ export class TransitionService {
           to: input.toStatus,
           reason: input.reason ?? null,
           patch: input.patch ?? null,
+          // GRADUATED-AUTONOMY: only the approve path sets this key, so a non-approve
+          // transition's payload stays byte-for-byte unchanged. `null` is meaningful
+          // (approved, but unchanged/edited couldn't be determined).
+          ...(input.approvedUnchanged !== undefined
+            ? { approved_unchanged: input.approvedUnchanged }
+            : {}),
         },
         ...(input.correlationId ? { correlation_id: input.correlationId } : {}),
       });

@@ -2071,6 +2071,17 @@ function routeReadModels(
     return;
   }
 
+  // GRADUATED-AUTONOMY (Spec 2, Phase 2): GET /api/autonomy/recommendations — the
+  // read-only, advisory per-repo/per-risk/per-gate autonomy recommendations backed by
+  // the review track record. Never enables anything (Phase 3 adds the enable action);
+  // the Settings surface renders these as advisory text. Behind the same bearer gate
+  // as the rest of /api (checked in route()).
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "recommendations") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, { recommendations: wg.autonomyRecommendationsList() });
+    return;
+  }
+
   // RUN-ACTIVITY: GET /api/runs/:id — enriched run detail (phase · model · turns
   // · cost · log tail · outcome) assembled from the run row + its log file +
   // the usage ledger. Zero-state safe: missing log or absent ledger returns

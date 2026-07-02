@@ -4582,16 +4582,23 @@ async function renderSettings() {
   // Load the env-override settings plus the crew idle-loop config + the repos and
   // scope nodes the idle-loop target picker needs. Best-effort on the extras: a
   // failure there must not blank the whole Settings page.
-  const [{ settings }, idleLoopsRes, reposRes, nodesRes] = await Promise.all([
+  const [{ settings }, idleLoopsRes, reposRes, nodesRes, autonomyRecRes] = await Promise.all([
     api("GET", "/api/settings"),
     api("GET", "/api/idle-loops").catch(() => null),
     api("GET", "/repositories").catch(() => ({ repositories: [] })),
     api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
+    // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
+    // blank the page if the endpoint is unavailable.
+    api("GET", "/api/autonomy/recommendations").catch(() => null),
   ]);
   const all = Array.isArray(settings) ? settings : [];
   const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
   const repos = reposRes.repositories || [];
   const nodes = nodesRes.nodes || [];
+  const autonomyRecs =
+    autonomyRecRes && Array.isArray(autonomyRecRes.recommendations)
+      ? autonomyRecRes.recommendations
+      : [];
 
   const wrap = el("div", { class: "view settings-view" });
   wrap.appendChild(viewHead("Settings", all.length ? `${all.length}` : null));
@@ -4616,6 +4623,11 @@ async function renderSettings() {
 
   // Autonomy dial — the headline: how many human gates are open right now.
   wrap.appendChild(autonomyDial(all));
+
+  // GRADUATED-AUTONOMY (Spec 2, Phase 2): advisory recommendations backed by the
+  // review track record. Read-only — no enable action yet (Phase 3 adds it).
+  const recPanel = autonomyRecommendationsPanel(autonomyRecs);
+  if (recPanel) wrap.appendChild(recPanel);
 
   // edit registry: key → { def, read() } for non-locked inputs, so Save collects
   // only the values the operator can actually change.
@@ -4714,6 +4726,57 @@ function autonomyDial(all) {
         ),
       ),
     ]),
+  ]);
+}
+
+/**
+ * GRADUATED-AUTONOMY (Spec 2, Phase 2): advisory recommendations panel.
+ *
+ * Read-only: it surfaces "you've approved N of M low-risk deliveries in api-repo
+ * unchanged — consider auto-merge for risk=low" backed by the real review track
+ * record. NO enable action yet — Phase 3 adds the explicit-confirm enablement + the
+ * policy table. Returns null when there's nothing worth recommending (below the
+ * sample floor / rate threshold), so the panel simply doesn't appear.
+ */
+function autonomyRecommendationsPanel(recs) {
+  if (!Array.isArray(recs) || recs.length === 0) return null;
+  const gateLabel = (g) => (g === "merge" ? "Auto-merge" : "Auto-approve");
+  return el("div", { class: "card panel autonomy-recs" }, [
+    el("div", { class: "ar-head" }, [
+      icon("spark", "ar-ico"),
+      el("div", {}, [
+        el("h2", { class: "ar-title" }, "Autonomy suggestions"),
+        el(
+          "p",
+          { class: "section-note dim" },
+          "Based on your review track record. Advisory only — nothing changes until you enable it.",
+        ),
+      ]),
+    ]),
+    el(
+      "ul",
+      { class: "ar-list" },
+      recs.map((r) => {
+        const confPct = Math.round((Number(r.confidence) || 0) * 100);
+        const reasons = Array.isArray(r.reasons) ? r.reasons : [];
+        return el("li", { class: "ar-item" }, [
+          el("div", { class: "ar-item-head" }, [
+            el("span", { class: `ar-gate ar-gate-${r.gate}` }, gateLabel(r.gate)),
+            el("span", { class: "ar-risk" }, `risk=${r.riskLevel}`),
+            el("span", { class: "ar-repo" }, r.repoName || ""),
+            el("span", { class: "ar-conf dim tabnum", title: "confidence" }, `${confPct}%`),
+          ]),
+          el("p", { class: "ar-headline" }, r.headline || ""),
+          reasons.length
+            ? el(
+                "ul",
+                { class: "ar-reasons dim" },
+                reasons.map((reason) => el("li", {}, reason)),
+              )
+            : null,
+        ]);
+      }),
+    ),
   ]);
 }
 

@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 import { type Db, inTransaction, openDatabase } from "./db/connection.js";
 import { claimTicketInput } from "./domain/schemas.js";
 import {
@@ -27,6 +29,7 @@ import {
   type TicketScopeNode,
   type TicketStatus,
   type WorkEvent,
+  isActiveTicketRepoRelation,
   parseTestContract,
 } from "./domain/types.js";
 import { listEvents, writeEvent } from "./events/eventWriter.js";
@@ -106,7 +109,11 @@ import {
 } from "./services/boardService.js";
 import { PauseService, type PauseInput } from "./services/pauseService.js";
 import { HumanQueueService, type HumanQueue } from "./services/humanQueueService.js";
-import { ReviewGateService } from "./services/reviewGateService.js";
+import { ReviewGateService, type ApprovalShas } from "./services/reviewGateService.js";
+import {
+  AutonomyRecommendationService,
+  type AutonomyRecommendation,
+} from "./services/autonomyRecommendationService.js";
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
@@ -269,6 +276,7 @@ export class Dispatch {
   readonly specCoverageSvc: SpecCoverageService;
   readonly boardSvc: BoardService;
   readonly reviewGateSvc: ReviewGateService;
+  readonly autonomyRecommendations: AutonomyRecommendationService;
   readonly pauseSvc: PauseService;
   readonly humanQueueSvc: HumanQueueService;
   /**
@@ -428,6 +436,12 @@ export class Dispatch {
       onTicketParked: (ticket, detail) => {
         this.emitGate("ticket_parked", ticket, { status: "blocked", detail });
       },
+      // GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve delivery-vs-merge SHAs so the
+      // approve path can emit `approved_unchanged`. Pure read; degrades to unknown.
+      approvalShaResolver: (ticket) => this.resolveApprovalShas(ticket),
+    });
+    this.autonomyRecommendations = new AutonomyRecommendationService({
+      reviewDecisions: () => this.events.reviewDecisions(),
     });
     this.pauseSvc = new PauseService({
       db,
@@ -478,6 +492,50 @@ export class Dispatch {
       },
       ticket.id,
     );
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve the delivery-vs-merge SHAs for a
+   * ticket's WRITE repos so {@link ReviewGateService.approveReview} can emit an honest
+   * `approved_unchanged` signal. The delivery SHA is the recorded per-repo
+   * `commit_sha`; the merge SHA is the current head of the delivery branch
+   * (`git rev-parse <branch>`). Returns a representative pair the pure
+   * {@link approvalUnchanged} helper maps to unchanged/edited/unknown:
+   *   - any write repo edited (both SHAs known and differing) → an unequal pair;
+   *   - else every write repo known-and-unchanged → an equal pair;
+   *   - any repo indeterminate (no delivery SHA / branch / on-disk repo / git error)
+   *     → a null pair (unknown — never overstate agreement).
+   * Pure read; a missing git runner or no write repos yields `null` (unknown).
+   */
+  private resolveApprovalShas(ticket: Ticket): ApprovalShas | null {
+    if (!this.gitRunner) return null;
+    const runGit = this.gitRunner;
+    const links = this.repos.accessLinksForTicket(ticket.id);
+    const writeRepos = links.filter(
+      (l) => isActiveTicketRepoRelation(l.relation) && l.access === "write",
+    );
+    if (writeRepos.length === 0) return null;
+
+    const pairs: ApprovalShas[] = writeRepos.map((repo) => {
+      const delivery = this.repoDeliveries.find(ticket.id, repo.id);
+      const deliverySha = delivery?.commit_sha ?? null;
+      const branch =
+        delivery?.branch_name ??
+        this.repos.ticketRepoBranch(ticket.id, repo.id) ??
+        ticket.branch_name;
+      if (!deliverySha || !branch || !repo.local_path || !existsSync(repo.local_path)) {
+        return { deliverySha, mergeSha: null };
+      }
+      const res = runGit(repo.local_path, ["rev-parse", branch]);
+      const mergeSha = res.status === 0 ? res.stdout.trim() || null : null;
+      return { deliverySha, mergeSha };
+    });
+
+    const known = (p: ApprovalShas): boolean => p.deliverySha !== null && p.mergeSha !== null;
+    const edited = pairs.find((p) => known(p) && p.deliverySha !== p.mergeSha);
+    if (edited) return edited; // a real edited pair → helper returns false.
+    if (pairs.some((p) => !known(p))) return { deliverySha: null, mergeSha: null }; // unknown.
+    return pairs[0] ?? null; // all known-and-equal → an unchanged pair.
   }
 
   // --- Tickets -------------------------------------------------------------
@@ -1489,6 +1547,15 @@ export class Dispatch {
    */
   board(repo?: string): BoardView {
     return this.boardSvc.board(repo);
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 2): read-only, advisory per-repo/per-risk/
+   * per-gate autonomy recommendations backed by the review track record. NEVER
+   * enables anything — the operator acts on it (Phase 3 adds the enable action).
+   */
+  autonomyRecommendationsList(): AutonomyRecommendation[] {
+    return this.autonomyRecommendations.recommend();
   }
 
   activity(query: ActivityQuery): { events: ActivityEvent[]; total: number } {

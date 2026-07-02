@@ -20,12 +20,12 @@ export class TicketRepository {
           (id, number, title, description, status, priority, risk_level, policy_pack,
            source, created_by, reviewer, branch_name, pr_url, attempt_count, row_version,
            scheduled_after, due_at, bootstrap, last_review_feedback, can_be_tested,
-           test_contract, human_owner, delivery_budget_usd, created_at, updated_at)
+           test_contract, human_owner, human_delivered, delivery_budget_usd, created_at, updated_at)
          VALUES
           (@id, @number, @title, @description, @status, @priority, @risk_level, @policy_pack,
            @source, @created_by, @reviewer, @branch_name, @pr_url, @attempt_count, @row_version,
            @scheduled_after, @due_at, @bootstrap, @last_review_feedback, @can_be_tested,
-           @test_contract, @human_owner, @delivery_budget_usd, @created_at, @updated_at)`,
+           @test_contract, @human_owner, @human_delivered, @delivery_budget_usd, @created_at, @updated_at)`,
       )
       .run(ticket);
   }
@@ -105,6 +105,19 @@ export class TicketRepository {
    */
   setHumanOwner(id: string, value: string | null): void {
     this.db.prepare(`UPDATE tickets SET human_owner = @value WHERE id = @id`).run({ id, value });
+  }
+
+  /**
+   * TRACK-2b: set (or, with `null`, clear) the ticket's durable `human_delivered`
+   * marker. A plain write — no row_version bump — since callers run it inside the
+   * same transaction as the guarded status change it accompanies (the transition
+   * service stamps it when a human-owned ticket submits `in_progress -> in_review`
+   * and clears it whenever the ticket re-enters the delivery pipeline).
+   */
+  setHumanDelivered(id: string, value: string | null): void {
+    this.db
+      .prepare(`UPDATE tickets SET human_delivered = @value WHERE id = @id`)
+      .run({ id, value });
   }
 
   /**

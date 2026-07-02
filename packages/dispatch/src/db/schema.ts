@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- connection.ts for an existing DB; the default below (NULL) mirrors the backfill —
   -- pre-v14 tickets are all agent-shaped.
   human_owner   TEXT,
+  -- TRACK-2b (schema_version 16): the durable DELIVERED-BY-HAND marker. human_owner
+  -- above is cleared the instant the ticket leaves in_progress, so by approve time
+  -- nothing distinguished a hand delivery — and the done-gate's server-recomputed
+  -- diff requirement (PR_OR_DIFF_REQUIRED) structurally can never be met by work a
+  -- human did outside the factory (no delivery branch/repo row is recorded). NULL ⇒
+  -- the current review submission is agent-delivered (the recomputed-diff gate
+  -- applies in full). NON-NULL (the human actor's id/name) ⇒ the work under review
+  -- was delivered by hand: set by the transition service when a HUMAN-OWNED ticket
+  -- submits in_progress -> in_review, and cleared whenever the ticket re-enters the
+  -- delivery pipeline (any move out of the review lane in_review/in_testing/
+  -- ready_for_merge/done), so a later agent redelivery is never exempted. Added by
+  -- an idempotent ALTER in connection.ts for an existing DB; the default below
+  -- (NULL) mirrors the backfill — pre-v16 review submissions are agent-shaped.
+  human_delivered TEXT,
   -- TRACK-3a (schema_version 15): the per-ticket DELIVERY BUDGET ceiling in USD.
   -- NULL ⇒ no per-ticket ceiling (the factory-wide GAFFER_REWORK_BUDGET_USD /
   -- GAFFER_BUDGET_USD env defaults apply). NON-NULL ⇒ this ticket's cumulative

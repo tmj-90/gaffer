@@ -150,6 +150,7 @@ export class TicketService {
         can_be_tested: 0,
         test_contract: null,
         human_owner: null,
+        human_delivered: null,
         delivery_budget_usd: input.delivery_budget_usd ?? null,
         created_at: now,
         updated_at: now,

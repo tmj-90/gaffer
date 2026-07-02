@@ -202,6 +202,17 @@ export interface Ticket {
    */
   human_owner: string | null;
   /**
+   * TRACK-2b: the durable DELIVERED-BY-HAND marker. {@link human_owner} is cleared
+   * the instant the ticket leaves `in_progress`, so this separate marker records
+   * that the work CURRENTLY under review was delivered by hand — set (to the human
+   * actor's id/name) when a human-owned ticket submits `in_progress -> in_review`,
+   * cleared whenever the ticket re-enters the delivery pipeline (any move out of
+   * the review lane). The done-gate consults it to exempt a hand delivery from the
+   * server-recomputed-diff requirement (PR_OR_DIFF_REQUIRED) it can structurally
+   * never meet; a later agent redelivery is never exempted.
+   */
+  human_delivered: string | null;
+  /**
    * TRACK-3a: the per-ticket DELIVERY BUDGET ceiling in USD, or `null` for no
    * per-ticket ceiling (the factory-wide env budget applies). A first-class
    * extension of the rework loop's per-ticket cost ceiling: the runner parks the

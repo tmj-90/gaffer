@@ -198,6 +198,13 @@ export function migrate(db: Db): void {
   // fresh DB (SCHEMA_SQL creates it) and idempotent on an already-migrated one. Runs
   // AFTER every prior tickets rebuild so the rebuilt table is backfilled too.
   alterTicketsAddDeliveryBudget(db);
+  // TRACK-2b (v15→v16): add the durable `human_delivered` column to an EXISTING
+  // tickets table (the delivered-by-hand marker the done-gate consults to exempt a
+  // hand delivery from the server-recomputed-diff requirement). A plain additive
+  // ALTER (free TEXT marker, no CHECK to widen). No-op on a fresh DB (SCHEMA_SQL
+  // creates it) and idempotent on an already-migrated one. Runs AFTER every prior
+  // tickets rebuild so the rebuilt table is backfilled too.
+  alterTicketsAddHumanDelivered(db);
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +
@@ -311,6 +318,27 @@ function alterTicketsAddDeliveryBudget(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("delivery_budget_usd")) {
     db.exec("ALTER TABLE tickets ADD COLUMN delivery_budget_usd REAL");
+  }
+}
+
+/**
+ * TRACK-2b additive migration (v15→v16): add the `human_delivered` column to an
+ * EXISTING `tickets` table — the durable delivered-by-hand marker. `human_owner`
+ * is cleared the moment a ticket leaves `in_progress`, so the done-gate needs this
+ * separate marker to know the work under review was delivered by hand (and exempt
+ * it from the server-recomputed-diff requirement it can structurally never meet).
+ * Like `human_owner`, `CREATE TABLE IF NOT EXISTS` won't add a column to an
+ * existing table, so it must be ALTERed in. Idempotent (skipped when the column
+ * already exists). Existing rows inherit the default (NULL ⇒ agent-delivered),
+ * which is exactly the backfill — pre-v16 review submissions all came from the
+ * factory. No CHECK to widen, so this is a plain additive ALTER — no table rebuild.
+ */
+function alterTicketsAddHumanDelivered(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("human_delivered")) {
+    db.exec("ALTER TABLE tickets ADD COLUMN human_delivered TEXT");
   }
 }
 

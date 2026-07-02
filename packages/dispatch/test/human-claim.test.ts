@@ -164,6 +164,72 @@ describe("TRACK-2b: hand-back + review paths", () => {
   });
 });
 
+describe("TRACK-2b: a human-delivered ticket can reach done (PR_OR_DIFF exemption)", () => {
+  let wg: Dispatch;
+  beforeEach(() => {
+    wg = freshWg();
+  });
+
+  it("human-claim → in_review → APPROVE → ready_for_merge → merged done, with no recorded diff", () => {
+    const ticketId = readyTicket(wg);
+    wg.humanClaimTicket(ticketId, human);
+    // The human submits their own work for review via the ordinary board move.
+    wg.moveTicket(ticketId, "in_review", human);
+
+    // A hand delivery has no recorded branch/repo row, so the server-recomputed
+    // diff can never exist — the done-gate must NOT dead-end the human lane here.
+    const approved = wg.approveReview(ticketId, human);
+    expect(approved.ticket.status).toBe("ready_for_merge");
+
+    const merged = wg.markMerged(ticketId, { type: "system" });
+    expect(merged.ticket.status).toBe("done");
+    expect(wg.view(ticketId).ticket.status).toBe("done");
+  });
+
+  it("the delivered-by-hand marker is durable: set on submit, surviving the human_owner clear", () => {
+    const ticketId = readyTicket(wg);
+    wg.humanClaimTicket(ticketId, human);
+    wg.moveTicket(ticketId, "in_review", human);
+    const t = wg.view(ticketId).ticket;
+    expect(t.human_owner).toBeNull(); // cleared on leaving in_progress …
+    expect(t.human_delivered).toBe("tom"); // … but the delivery marker persists.
+  });
+
+  it("clears the marker when the ticket re-enters the pipeline — an agent redelivery still needs a real diff", () => {
+    const ticketId = readyTicket(wg);
+    wg.humanClaimTicket(ticketId, human);
+    wg.moveTicket(ticketId, "in_review", human);
+    // Reviewer sends the hand delivery back for rework.
+    wg.rejectReview(ticketId, "ready", human, "not quite");
+    expect(wg.view(ticketId).ticket.human_delivered).toBeNull();
+
+    // An agent now claims and submits WITHOUT any recorded branch/diff — the
+    // stale human marker must not weaken PR_OR_DIFF_REQUIRED for the agent lane.
+    const agent = wg.registerAgent({ display_name: "a1" }, human);
+    const claim = wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 300 }, agentActor);
+    expect(claim?.ticketId).toBe(ticketId);
+    wg.submitForReview({ claimToken: claim!.claimToken, ticket_id: ticketId }, agentActor);
+    try {
+      wg.approveReview(ticketId, human);
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DispatchError);
+      expect((err as DispatchError).code).toBe("POLICY_DENIED");
+    }
+    expect(wg.view(ticketId).ticket.status).toBe("in_review");
+  });
+
+  it("an agent-lane ticket with no diff is still blocked at approve (gate intact)", () => {
+    const ticketId = readyTicket(wg);
+    const agent = wg.registerAgent({ display_name: "a1" }, human);
+    const claim = wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 300 }, agentActor);
+    expect(claim?.ticketId).toBe(ticketId);
+    wg.submitForReview({ claimToken: claim!.claimToken, ticket_id: ticketId }, agentActor);
+    expect(() => wg.approveReview(ticketId, human)).toThrowError(DispatchError);
+    expect(wg.view(ticketId).ticket.status).toBe("in_review");
+  });
+});
+
 describe("TRACK-2b: the board surfaces human WIP distinctly", () => {
   it("a human-owned card carries humanOwner and no agent claim", () => {
     const wg = freshWg();

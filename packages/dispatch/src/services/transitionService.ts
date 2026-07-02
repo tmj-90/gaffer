@@ -155,6 +155,21 @@ const ALLOWED: ReadonlySet<string> = new Set([
   "paused->refining",
 ]);
 
+/**
+ * TRACK-2b: the review lane — the statuses across which the durable
+ * `human_delivered` marker stays meaningful once a hand delivery has been
+ * submitted for review. The moment a ticket moves to any status OUTSIDE this set
+ * it has re-entered the delivery pipeline (rework, hand-back, park, abandon …),
+ * so the marker is cleared: whatever is delivered NEXT must earn the done-gate on
+ * its own terms (a later agent redelivery is never exempted by a stale marker).
+ */
+const REVIEW_LANE_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
+  "in_review",
+  "in_testing",
+  "ready_for_merge",
+  "done",
+]);
+
 /** Which gated transitions trigger a policy evaluation. */
 function gateFor(to: TicketStatus): PolicyGate | null {
   if (to === "ready") return "ready";
@@ -525,6 +540,22 @@ export class TransitionService {
       // whose from-status is `ready` with no marker, so this never fights that.)
       if (ticket.human_owner !== null && input.toStatus !== "in_progress") {
         this.tickets.setHumanOwner(ticket.id, null);
+        // A HUMAN-OWNED ticket submitting for review is a hand delivery: stamp the
+        // DURABLE delivered-by-hand marker (it survives the human_owner clear
+        // above) so the done-gate can exempt it from the server-recomputed-diff
+        // requirement it structurally can never meet — no delivery branch/repo row
+        // is ever recorded for by-hand work.
+        if (input.toStatus === "in_review") {
+          this.tickets.setHumanDelivered(ticket.id, ticket.human_owner);
+        }
+      }
+      // The delivered-by-hand marker only describes the CURRENT review submission.
+      // Any move that re-enters the delivery pipeline (rework to ready/refining,
+      // park, abandon, a fresh claim …) invalidates it, so a later agent
+      // redelivery is never exempted by a stale marker. (Setting + clearing can't
+      // collide: the set above targets `in_review`, which is inside the lane.)
+      if (ticket.human_delivered !== null && !REVIEW_LANE_STATUSES.has(input.toStatus)) {
+        this.tickets.setHumanDelivered(ticket.id, null);
       }
 
       const eventId = writeEvent(this.db, {
@@ -565,6 +596,7 @@ export class TransitionService {
       hasUnresolvedHumanRequired: this.decisions.hasUnresolvedHumanRequired(ticket.id),
       evidenceCountByAc: this.evidence.countByAc(ticket.id),
       hasPrOrDiff: this.hasRealDeliveryDiff(ticket),
+      humanDelivered: ticket.human_delivered !== null,
       hasReviewer: ticket.reviewer !== null && ticket.reviewer !== "",
       humanApprovedReady: this.hasReadyApproval(ticket.id),
       scopeRepo: this.scopeRepoContext(ticket.id),

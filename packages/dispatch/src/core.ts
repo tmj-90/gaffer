@@ -19,6 +19,7 @@ import {
   type Run,
   type RunKind,
   type Spec,
+  type SpecCoverage,
   type SpecStatus,
   type TestContract,
   type Ticket,
@@ -43,6 +44,7 @@ import { PausedDeliveryRepository } from "./repositories/pausedDeliveryRepositor
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
 import { ReworkAttemptRepository } from "./repositories/reworkAttemptRepository.js";
+import { SpecCoverageRepository } from "./repositories/specCoverageRepository.js";
 import { SpecRepository } from "./repositories/specRepository.js";
 import { RunRepository, type RunListResult } from "./repositories/runRepository.js";
 import {
@@ -93,7 +95,9 @@ import {
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
 import { SpecsService } from "./services/specsService.js";
+import { SpecCoverageService } from "./services/specCoverageService.js";
 import { resolveSpecClauseSeeder } from "./services/specClauseSeeder.js";
+import { resolveSpecLoreReader } from "./services/specLoreReader.js";
 import {
   BoardService,
   resolveMoveTarget,
@@ -252,6 +256,7 @@ export class Dispatch {
   readonly reworkAttempts: ReworkAttemptRepository;
   readonly pausedDeliveries: PausedDeliveryRepository;
   readonly specsRepo: SpecRepository;
+  readonly specCoverageRepo: SpecCoverageRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -261,6 +266,7 @@ export class Dispatch {
   readonly repoSvc: RepoService;
   readonly epicsSvc: EpicsService;
   readonly specsSvc: SpecsService;
+  readonly specCoverageSvc: SpecCoverageService;
   readonly boardSvc: BoardService;
   readonly reviewGateSvc: ReviewGateService;
   readonly pauseSvc: PauseService;
@@ -327,6 +333,7 @@ export class Dispatch {
     this.reworkAttempts = new ReworkAttemptRepository(db);
     this.pausedDeliveries = new PausedDeliveryRepository(db);
     this.specsRepo = new SpecRepository(db);
+    this.specCoverageRepo = new SpecCoverageRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -391,6 +398,13 @@ export class Dispatch {
       // Live when MEMORY_CLI_BIN + MEMORY_DB are set; a no-op otherwise, so the
       // standalone/offline path and unit tests are unaffected.
       clauseSeeder: resolveSpecClauseSeeder(),
+    });
+    this.specCoverageSvc = new SpecCoverageService({
+      specs: this.specsRepo,
+      coverage: this.specCoverageRepo,
+      // Best-effort seeded-lore status via the Memory CLI when wired; a no-op
+      // (`unknown` for every clause) otherwise, so the read never blocks.
+      loreReader: resolveSpecLoreReader(),
     });
     this.boardSvc = new BoardService({
       db,
@@ -556,6 +570,16 @@ export class Dispatch {
    */
   freezeSpec(id: string, actor: Actor): Spec {
     return this.specsSvc.freezeSpec(id, actor);
+  }
+
+  /**
+   * TRACEABILITY (Phase 3): the coverage read model for a spec — per clause, the
+   * covering ACs, whether it is covered / satisfied / an orphan (the gap report),
+   * and the bounce count from the rework trail, plus a spec-level rollup. Throws
+   * NOT_FOUND when the spec is absent. Pure read — never mutates the board.
+   */
+  specCoverage(id: string): SpecCoverage {
+    return this.specCoverageSvc.specCoverage(id);
   }
 
   // --- Repositories --------------------------------------------------------

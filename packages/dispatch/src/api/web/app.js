@@ -121,6 +121,8 @@ const ICONS = {
   settings:
     '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  specs:
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M9 13l1.5 1.5L13 12M9 17h5"/>',
 };
 function icon(name, cls) {
   const ns = "http://www.w3.org/2000/svg";
@@ -539,6 +541,7 @@ const VIEWS = {
   factory: renderFactory,
   memory: renderMemory,
   epics: renderEpics,
+  specs: renderSpecs,
   settings: renderSettings,
   create: renderCreate,
   ticket: renderTicket,
@@ -563,6 +566,7 @@ const NAV = [
   { id: "work", label: "Work", icon: "work" },
   { id: "review", label: "Review", icon: "review" },
   { id: "epics", label: "Epics", icon: "epics" },
+  { id: "specs", label: "Specs", icon: "specs" },
   { id: "factory", label: "Map", icon: "map" },
   { id: "memory", label: "Memory", icon: "memory" },
   { id: "settings", label: "Settings", icon: "settings" },
@@ -594,7 +598,7 @@ function navigate(hash) {
 // Navigation order — used to decide which way the "camera" steps so a forward
 // move (Overview → Settings) and a back move read differently. This is what
 // makes navigating feel like walking through a plan rather than a page reload.
-const NAV_ORDER = ["overview", "work", "review", "epics", "factory", "memory", "settings"];
+const NAV_ORDER = ["overview", "work", "review", "epics", "specs", "factory", "memory", "settings"];
 let lastAreaIndex = 0;
 
 let activeArea = "overview";
@@ -8828,6 +8832,259 @@ function onboardButton(repos, presetRepo, opts) {
     [icon("plus"), el("span", {}, "Onboard a repo")],
   );
   return btn;
+}
+
+// --- Specs (Spec-Driven Development, Phase 3: coverage & traceability) -------
+
+const SPEC_STATUS_LABEL = { draft: "Draft", frozen: "Frozen", superseded: "Superseded" };
+const CLAUSE_KIND_LABEL = { requirement: "Requirement", "non-goal": "Non-goal", decision: "Decision" };
+const LORE_STATUS_LABEL = { active: "reaching agents", draft: "unratified", absent: "not seeded", unknown: "" };
+
+/** Count clauses on a spec row without throwing on a malformed clauses_json. */
+function specClauseCount(spec) {
+  try {
+    const parsed = JSON.parse(spec.clauses_json || "[]");
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Specs view. Two surfaces on one route: a list of specs (#/specs) and, for a
+ * given spec (#/specs/:id), the coverage TRACE — each clause → its covering ACs
+ * (satisfied vs open), the coverage gaps (orphan clauses) called out, per-clause
+ * bounce counts, and the seeded-lore ratification status. Modelled on renderEpics.
+ */
+async function renderSpecs(param) {
+  const specId = param ? decodeURIComponent(param) : "";
+  return specId ? renderSpecDetail(specId) : renderSpecList();
+}
+
+async function renderSpecList() {
+  const res = await api("GET", "/specs");
+  const specs = res.specs || [];
+
+  const wrap = el("div", { class: "view", dataset: { view: "specs" } });
+  wrap.appendChild(
+    viewHead("Specs", `${specs.length} spec${specs.length === 1 ? "" : "s"}`, [
+      el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
+        icon("spark"),
+        el("span", {}, "Author a spec"),
+      ]),
+    ]),
+  );
+  wrap.appendChild(
+    el(
+      "p",
+      { class: "epics-lede dim" },
+      "A spec is a frozen statement of product intent. Open one to trace each clause through to the acceptance criteria that satisfy it — and to see the coverage gaps.",
+    ),
+  );
+
+  if (specs.length === 0) {
+    wrap.appendChild(
+      emptyState(
+        "No specs yet",
+        "Author a spec from a brief — Dispatch drafts testable clauses you edit, then freeze.",
+        "specs",
+      ),
+    );
+    return wrap;
+  }
+
+  const list = el("div", { class: "spec-list" });
+  for (const spec of specs) list.appendChild(renderSpecCard(spec));
+  wrap.appendChild(list);
+  return wrap;
+}
+
+/** One spec = a card linking to its coverage trace. */
+function renderSpecCard(spec) {
+  const count = specClauseCount(spec);
+  return el(
+    "button",
+    {
+      class: "spec-card",
+      type: "button",
+      dataset: { specId: spec.id, status: spec.status },
+      onclick: () => navigate(`#/specs/${encodeURIComponent(spec.id)}`),
+    },
+    [
+      el("div", { class: "spec-card-head" }, [
+        el("span", { class: "spec-card-title" }, spec.title),
+        badge(SPEC_STATUS_LABEL[spec.status] || spec.status, `spec-status-${spec.status}`),
+      ]),
+      spec.brief ? el("p", { class: "spec-card-brief dim" }, spec.brief) : null,
+      el("div", { class: "spec-card-meta dim" }, [
+        el("span", {}, `${count} clause${count === 1 ? "" : "s"}`),
+        spec.target_repo ? el("span", { class: "tag-chip" }, spec.target_repo) : null,
+      ]),
+    ],
+  );
+}
+
+async function renderSpecDetail(specId) {
+  const res = await api("GET", `/specs/${encodeURIComponent(specId)}/coverage`);
+  const cov = res.coverage;
+
+  const wrap = el("div", { class: "view", dataset: { view: "specs" } });
+  const r = cov.rollup;
+  wrap.appendChild(
+    viewHead(cov.title, `Spec · ${SPEC_STATUS_LABEL[cov.status] || cov.status}`, [
+      el("button", { class: "btn", type: "button", onclick: () => navigate("#/specs") }, [
+        icon("arrow"),
+        el("span", {}, "All specs"),
+      ]),
+      cov.scope_node_id
+        ? el(
+            "button",
+            {
+              class: "btn",
+              type: "button",
+              onclick: () => navigate(`#/epics/${encodeURIComponent(cov.scope_node_id)}`),
+            },
+            [icon("epics"), el("span", {}, "Open epic")],
+          )
+        : null,
+    ]),
+  );
+
+  // Rollup: covered / satisfied / orphans — the at-a-glance coverage health.
+  wrap.appendChild(
+    el("div", { class: "spec-rollup", dataset: { total: String(r.total) } }, [
+      specStat("Clauses", r.total, "total"),
+      specStat("Covered", `${r.covered}/${r.total}`, "covered"),
+      specStat("Satisfied", `${r.satisfied}/${r.total}`, "satisfied"),
+      specStat("Gaps", r.orphans.length, r.orphans.length > 0 ? "gap" : "ok"),
+    ]),
+  );
+
+  // Coverage gaps: orphan clauses (no covering AC) called out first.
+  if (r.orphans.length > 0) {
+    const orphanClauses = cov.clauses.filter((c) => c.orphan);
+    wrap.appendChild(
+      el("div", { class: "coverage-gaps", dataset: { count: String(orphanClauses.length) } }, [
+        el("div", { class: "coverage-gaps-head" }, [
+          icon("alert"),
+          el(
+            "strong",
+            {},
+            `${orphanClauses.length} coverage gap${orphanClauses.length === 1 ? "" : "s"}`,
+          ),
+          el("span", { class: "dim" }, "— clauses with no acceptance criterion covering them"),
+        ]),
+        el(
+          "ul",
+          { class: "coverage-gaps-list" },
+          orphanClauses.map((c) =>
+            el("li", { dataset: { clauseId: c.clause_id } }, [
+              badge(CLAUSE_KIND_LABEL[c.kind] || c.kind, `clause-kind kind-${c.kind}`),
+              el("span", {}, c.text),
+            ]),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  // The trace: one block per clause → covering ACs → satisfied/open.
+  const trace = el("div", { class: "spec-trace" });
+  for (const clause of cov.clauses) trace.appendChild(renderClauseTrace(clause));
+  wrap.appendChild(trace);
+
+  if (cov.gate_enabled) {
+    wrap.appendChild(
+      el(
+        "p",
+        { class: "dim section-note" },
+        "Spec-coverage DoD gate is ARMED (advisory): a clause with no satisfied AC will be flagged.",
+      ),
+    );
+  }
+  return wrap;
+}
+
+function specStat(label, value, tone) {
+  return el("div", { class: "spec-stat", dataset: { tone } }, [
+    el("span", { class: "spec-stat-value" }, String(value)),
+    el("span", { class: "spec-stat-label dim" }, label),
+  ]);
+}
+
+/** One clause's trace row: kind + text, coverage state, bounce count, its ACs. */
+function renderClauseTrace(clause) {
+  const state = clause.orphan ? "orphan" : clause.satisfied ? "satisfied" : "open";
+  const block = el("div", {
+    class: "spec-clause",
+    dataset: {
+      clauseId: clause.clause_id,
+      state,
+      covered: String(clause.covered),
+      orphan: String(clause.orphan),
+      satisfied: String(clause.satisfied),
+    },
+  });
+
+  const head = el("div", { class: "spec-clause-head" }, [
+    badge(CLAUSE_KIND_LABEL[clause.kind] || clause.kind, `clause-kind kind-${clause.kind}`),
+    el("span", { class: "spec-clause-text" }, clause.text),
+  ]);
+  const tags = el("div", { class: "spec-clause-tags" });
+  // Coverage state chip: green satisfied / amber open / red gap.
+  tags.appendChild(
+    clause.orphan
+      ? badge("Gap — no AC", "clause-state state-orphan")
+      : clause.satisfied
+        ? badge("Satisfied", "clause-state state-satisfied")
+        : badge("Open", "clause-state state-open"),
+  );
+  if (clause.bounce_count > 0) {
+    tags.appendChild(badge(`bounced ${clause.bounce_count}×`, "clause-bounce no-dot"));
+  }
+  if (clause.lore_status && clause.lore_status !== "unknown") {
+    const label = LORE_STATUS_LABEL[clause.lore_status] || clause.lore_status;
+    tags.appendChild(
+      badge(
+        `lore: ${clause.lore_status}${label ? ` (${label})` : ""}`,
+        `lore-${clause.lore_status === "active" ? "active" : "draft"} no-dot`,
+      ),
+    );
+  }
+  head.appendChild(tags);
+  block.appendChild(head);
+  if (clause.rationale) {
+    block.appendChild(el("p", { class: "spec-clause-rationale dim" }, clause.rationale));
+  }
+
+  if (clause.orphan) {
+    block.appendChild(
+      el(
+        "p",
+        { class: "spec-clause-empty dim" },
+        "No acceptance criterion covers this clause — it is a coverage gap.",
+      ),
+    );
+    return block;
+  }
+
+  const acs = el(
+    "div",
+    { class: "spec-clause-acs" },
+    clause.covering_acs.map((ac) =>
+      el("div", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
+        badge(ac.satisfied ? "satisfied" : ac.ac_status, `ac-${ac.satisfied ? "satisfied" : "pending"}`),
+        el("span", { class: "spec-ac-text" }, ac.ac_text),
+        el(
+          "a",
+          { class: "spec-ac-ticket", href: `#/ticket/${encodeURIComponent(ac.ticket_id)}` },
+          ac.ticket_number != null ? `#${ac.ticket_number}` : ac.ticket_title,
+        ),
+      ]),
+    ),
+  );
+  block.appendChild(acs);
+  return block;
 }
 
 async function renderMemory(param) {

@@ -1041,3 +1041,92 @@ export function parseSpecClauses(raw: string | null): SpecClause[] {
     return [];
   }
 }
+
+// ============================================================================
+// Spec coverage & traceability (Spec-Driven Development, Phase 3).
+//
+// The coverage read model answers, for a frozen spec: which acceptance criteria
+// back each clause, whether the clause is COVERED (>=1 AC) / SATISFIED (>=1
+// satisfied AC) / an ORPHAN (no covering AC — the gap report), and how many
+// times the requirement BOUNCED (the rework/failure trail joined to the clause
+// via its ACs' tickets). It is a pure read model — it never mutates the board.
+// ============================================================================
+
+/**
+ * The seeded-lore ratification status attached (best-effort) to a clause. Mirrors
+ * Memory's lore lifecycle: `draft` = seeded but unratified, `active` = approved and
+ * reaching delivery agents. `absent` = Memory is wired but no record was seeded for
+ * this clause; `unknown` = Memory isn't wired / the read failed (never fatal).
+ */
+export const SPEC_LORE_STATUSES = ["draft", "active", "absent", "unknown"] as const;
+export type SpecLoreStatus = (typeof SPEC_LORE_STATUSES)[number];
+
+/**
+ * One acceptance criterion that covers a clause, with the ticket it belongs to.
+ * `satisfied` is the derived boolean the trace renders green.
+ */
+export interface CoveringAc {
+  ac_id: string;
+  ac_text: string;
+  /** The AC's raw status (pending | satisfied | failed | waived). */
+  ac_status: AcStatus;
+  /** True iff {@link ac_status} is `satisfied`. */
+  satisfied: boolean;
+  ticket_id: string;
+  ticket_number: number | null;
+  ticket_title: string;
+  ticket_status: string;
+}
+
+/**
+ * Coverage for a single clause: its covering ACs plus the derived signals the
+ * trace surfaces — covered / satisfied / orphan (the gap) and the bounce count.
+ */
+export interface ClauseCoverage {
+  clause_id: string;
+  kind: SpecClauseKind;
+  text: string;
+  rationale?: string;
+  /** ACs whose `spec_clause_id` references this clause (may be empty ⇒ orphan). */
+  covering_acs: CoveringAc[];
+  /** True iff at least one AC covers the clause. */
+  covered: boolean;
+  /** True iff at least one covering AC is satisfied. */
+  satisfied: boolean;
+  /** True iff NO AC covers the clause — the gap report entry. */
+  orphan: boolean;
+  /**
+   * How many rework/failure attempts landed on the tickets that cover this clause
+   * — "requirement X bounced N×". Joined SQL-side from the append-only
+   * `rework_attempts` trail via the clause's ACs' tickets.
+   */
+  bounce_count: number;
+  /** Seeded-lore ratification status (best-effort; `unknown` when Memory is unwired). */
+  lore_status: SpecLoreStatus;
+}
+
+/** Spec-level rollup: covered/total, satisfied/total, and the orphan clause ids. */
+export interface SpecCoverageRollup {
+  total: number;
+  covered: number;
+  satisfied: number;
+  /** Clause ids with no covering AC — the gap report. */
+  orphans: string[];
+}
+
+/**
+ * The full coverage read model for one spec: the per-clause trace plus a rollup.
+ * `gate_enabled` reflects the (currently non-enforcing) spec-coverage DoD flag —
+ * wired for later, off by default (see {@link file://../policy/specCoverageGate.ts}).
+ */
+export interface SpecCoverage {
+  spec_id: string;
+  title: string;
+  status: SpecStatus;
+  /** Soft link to the epic/scope node this spec drives, when one is set. */
+  scope_node_id: string | null;
+  clauses: ClauseCoverage[];
+  rollup: SpecCoverageRollup;
+  /** The spec-coverage DoD gate flag — non-enforcing today, surfaced for visibility. */
+  gate_enabled: boolean;
+}

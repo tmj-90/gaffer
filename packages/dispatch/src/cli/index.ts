@@ -359,6 +359,7 @@ ac.command("add <ref>")
   .requiredOption("-t, --text <text>", "AC text")
   .option("--verify <method>", "verification method")
   .option("--evidence", "evidence required", false)
+  .option("--clause <id>", "frozen-spec clause id this AC satisfies (spec_clause_id provenance)")
   .action((ref, opts, cmd) => {
     const wg = open(cmd.optsWithGlobals());
     const t = wg.resolveTicket(ref);
@@ -368,6 +369,7 @@ ac.command("add <ref>")
         text: opts.text,
         verification_method: opts.verify,
         evidence_required: opts.evidence,
+        ...(opts.clause ? { spec_clause_id: opts.clause } : {}),
       },
       cliActor(),
     );
@@ -503,6 +505,19 @@ spec
     const wg = open(cmd.optsWithGlobals());
     const s = wg.freezeSpec(id, cliActor());
     printJson({ ok: true, spec: s });
+    wg.db.close();
+  });
+
+spec
+  .command("coverage <id>")
+  .description(
+    "Show the coverage read model for a spec: per clause its covering ACs " +
+      "(satisfied vs open), covered / satisfied / orphan (the gap report) and the " +
+      "bounce count, plus a spec-level rollup.",
+  )
+  .action((id: string, _opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    printJson(wg.specCoverage(id));
     wg.db.close();
   });
 

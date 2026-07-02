@@ -677,6 +677,19 @@ async function route(
       sendJson(res, 200, { spec });
       return;
     }
+    // GET /specs/:id/coverage — the Phase-3 traceability read model: per clause,
+    // its covering ACs (satisfied vs open), covered / satisfied / orphan (the gap
+    // report), and the bounce count; plus a spec-level rollup. Pure read.
+    if (
+      segments.length === 3 &&
+      segments[0] === "specs" &&
+      segments[2] === "coverage"
+    ) {
+      if (method !== "GET") return methodNotAllowed(res);
+      const coverage = wg.specCoverage(segments[1] as string);
+      sendJson(res, 200, { coverage });
+      return;
+    }
     // GET   /specs/:id  — fetch one spec.
     // PATCH /specs/:id  — replace a DRAFT spec's clauses (rejected once frozen).
     if (segments.length === 2 && segments[0] === "specs") {

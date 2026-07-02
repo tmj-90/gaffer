@@ -733,7 +733,7 @@ function buildChrome() {
   const live = el("div", { class: "rail-status", title: "Factory online" }, [
     el("span", { class: "live-lamp" }),
     el("span", { class: "rail-status-text" }, "LIVE"),
-    el("span", { class: "rail-status-meta mono" }, "on watch"),
+    el("span", { class: "rail-status-meta mono", id: "live-tick" }, "tick 001"),
   ]);
   const rail = el(
     "nav",
@@ -820,6 +820,25 @@ function buildChrome() {
     ),
   );
   bottomnav.hidden = false;
+
+  startLiveTick();
+}
+
+// Live heartbeat — the tick counter breathes in the bar so the room reads
+// "on watch". Purely cosmetic; the number is a monotonic tick, not real data.
+let liveTickTimer;
+function startLiveTick() {
+  if (liveTickTimer) return;
+  let n = 0;
+  liveTickTimer = setInterval(() => {
+    n++;
+    const t = document.getElementById("live-tick");
+    if (!t) return;
+    t.textContent = "tick " + String(n).padStart(3, "0");
+    if (prefersReducedMotion()) return;
+    t.classList.add("tick-flash");
+    setTimeout(() => t.classList.remove("tick-flash"), 200);
+  }, 1700);
 }
 
 function syncNav() {

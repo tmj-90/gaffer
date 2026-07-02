@@ -7671,3 +7671,269 @@ body {
   color: var(--line);
   user-select: none;
 }
+
+/* ===========================================================================
+   TERMINAL-TABS SHELL  (redesign layer — overrides the vertical rail)
+   The appbar stays a horizontal top bar at every width. Nav becomes terminal
+   tabs with a gliding amber underline (reusing the navmarker View-Transition),
+   the content runs full-width below and flies past on navigation. Phones keep
+   the bottom-nav.
+   =========================================================================== */
+
+/* tabs from tablet up; phones keep the bottom-nav */
+@media (min-width: 760px) {
+  .nav-rail {
+    display: flex !important;
+  }
+}
+
+/* retire the desktop vertical rail-lift — appbar is a sticky top bar */
+@media (min-width: 980px) {
+  .shell {
+    padding-left: 0;
+  }
+  .appbar {
+    position: sticky;
+    inset: auto;
+    top: 0;
+    width: auto;
+    height: auto;
+    min-height: calc(50px + var(--safe-t));
+    flex-direction: row;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--safe-t) clamp(var(--s-4), 3vw, var(--s-6)) 0;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--bg-2), rgba(11, 10, 7, 0.82));
+    box-shadow: none;
+    overflow: visible;
+  }
+  .appbar::after {
+    display: none;
+  }
+  .nav-rail {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 2px;
+    margin: 0 0 0 var(--s-4);
+  }
+  .app {
+    max-width: 1580px;
+  }
+  .appbar > .btn,
+  .appbar .logout-btn {
+    width: auto;
+    margin-top: 0;
+  }
+}
+
+/* order inside the bar: brand · tabs · [spacer] · live · ⌘K · new · logout */
+.appbar .brand {
+  order: 0;
+  margin-right: var(--s-4);
+  padding-right: var(--s-3);
+  border-right: 1px solid var(--line);
+  align-self: center;
+}
+/* a terminal wordmark is just the name — drop the "CONTROL ROOM" sub next to tabs */
+.appbar .brand-sub {
+  display: none;
+}
+.appbar .brand-icon,
+.appbar .brand-mark {
+  width: 24px;
+  height: 24px;
+}
+.appbar .brand-name {
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+}
+.appbar .nav-rail {
+  order: 1;
+  align-items: stretch;
+}
+.appbar .appbar-spacer {
+  order: 2;
+}
+.appbar .rail-status {
+  order: 3;
+}
+.appbar .cmdk-trigger {
+  order: 4;
+}
+.appbar > .btn {
+  order: 5;
+}
+.appbar .logout-btn {
+  order: 6;
+}
+
+/* the tabs */
+.nav-link {
+  position: relative;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+  text-transform: lowercase;
+  padding: 10px 15px 13px;
+  gap: 7px;
+}
+.nav-link .nav-ico {
+  width: 15px;
+  height: 15px;
+  opacity: 0.85;
+}
+.nav-link .nav-rule {
+  display: none;
+}
+.nav-link:hover {
+  color: var(--text-dim);
+  background: transparent;
+}
+.nav-link:hover .nav-ico {
+  transform: none;
+  opacity: 1;
+}
+.nav-link.active {
+  color: var(--accent);
+  text-shadow: 0 0 14px var(--accent-glow);
+  background: transparent;
+}
+.nav-link.active .nav-ico {
+  color: var(--accent);
+  opacity: 1;
+}
+/* slab → a gliding amber underline (keeps view-transition-name: navmarker) */
+.nav-link.active::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  top: auto;
+  height: 2px;
+  z-index: 1;
+  border: none;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+  box-shadow:
+    0 0 12px var(--accent-glow),
+    0 0 4px var(--accent);
+}
+.nav-count {
+  font-size: 0.56rem;
+  padding: 2px 5px;
+  min-width: 16px;
+}
+
+/* LIVE + tick, inline in the bar at every width; the dot goes green (mock) */
+.rail-status {
+  display: flex !important;
+  margin: 0;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  align-items: center;
+  gap: var(--s-2);
+}
+.rail-status .live-lamp {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+  animation: none;
+}
+.rail-status .live-lamp::after {
+  border-color: rgba(126, 208, 138, 0.5);
+  animation: none;
+}
+.rail-status-text {
+  color: var(--ok);
+}
+.rail-status-meta {
+  color: var(--text-dim);
+  text-transform: none;
+  letter-spacing: 0.06em;
+  transition: color 0.18s ease;
+}
+.rail-status-meta.tick-flash {
+  color: var(--accent);
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
+/* terminal prompt line (the old footer) */
+.footer {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.footer .footer-ps {
+  color: var(--accent);
+  text-shadow: 0 0 8px var(--accent-glow);
+}
+.footer .footer-cur {
+  display: inline-block;
+  width: 7px;
+  height: 12px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: prompt-blink 0.9s steps(1) infinite;
+}
+@keyframes prompt-blink {
+  50% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .footer .footer-cur {
+    animation: none;
+  }
+}
+
+/* amp the content fly-through — bank + slide + a slight scale dip (running hot).
+   Redefining these keyframes (last definition wins) upgrades the calm drift. */
+@keyframes cam-out-fwd {
+  to {
+    opacity: 0;
+    transform: translateX(-6%) scale(0.985);
+  }
+}
+@keyframes cam-in-fwd {
+  0% {
+    opacity: 0;
+    transform: translateX(7%) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes cam-out-back {
+  to {
+    opacity: 0;
+    transform: translateX(6%) scale(0.985);
+  }
+}
+@keyframes cam-in-back {
+  0% {
+    opacity: 0;
+    transform: translateX(-7%) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}

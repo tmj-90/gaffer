@@ -19,6 +19,23 @@ export interface CoveringAcRow {
   ticket_status: string;
 }
 
+/**
+ * One DANGLING acceptance criterion: an AC whose `spec_clause_id` names THIS spec
+ * (it carries the spec's `<specId>:` namespace) but points at a clause that is no
+ * longer live on the spec — e.g. a clause removed from the draft after the AC was
+ * authored. It is a broken provenance link the gap report must surface (the ticket
+ * side of the orphan story, distinct from an orphan clause with no AC).
+ */
+export interface DanglingAcRow {
+  ac_id: string;
+  ac_text: string;
+  spec_clause_id: string;
+  ticket_id: string;
+  ticket_number: number | null;
+  ticket_title: string;
+  ticket_status: string;
+}
+
 /** One per-clause bounce aggregate: rework attempts on the clause's ACs' tickets. */
 export interface ClauseBounceRow {
   clause_id: string;
@@ -97,5 +114,35 @@ export class SpecCoverageRepository {
           GROUP BY ct.clause_id`,
       )
       .all(...clauseIds) as ClauseBounceRow[];
+  }
+
+  /**
+   * DANGLING ACs: acceptance criteria whose `spec_clause_id` sits in THIS spec's
+   * `<specId>:` namespace but names no live clause (`liveClauseIds`). This is the
+   * ticket-side orphan report — a broken provenance link where the AC still claims a
+   * clause that has since been removed. The namespace prefix is what scopes the scan
+   * to this spec; `specId` is a server-minted UUID, so it carries no LIKE
+   * metacharacters (`%`/`_`) and needs no escaping. An empty `liveClauseIds` (a spec
+   * with no clauses) makes EVERY namespaced AC dangling, which is correct.
+   */
+  danglingAcs(specId: string, liveClauseIds: readonly string[]): DanglingAcRow[] {
+    const notLive = liveClauseIds.length
+      ? ` AND ac.spec_clause_id NOT IN (${liveClauseIds.map(() => "?").join(", ")})`
+      : "";
+    return this.db
+      .prepare(
+        `SELECT ac.id            AS ac_id,
+                ac.text          AS ac_text,
+                ac.spec_clause_id AS spec_clause_id,
+                t.id             AS ticket_id,
+                t.number         AS ticket_number,
+                t.title          AS ticket_title,
+                t.status         AS ticket_status
+           FROM acceptance_criteria ac
+           JOIN tickets t ON t.id = ac.ticket_id
+          WHERE ac.spec_clause_id LIKE ?${notLive}
+          ORDER BY ac.spec_clause_id ASC, t.number ASC, ac.id ASC`,
+      )
+      .all(`${specId}:%`, ...liveClauseIds) as DanglingAcRow[];
   }
 }

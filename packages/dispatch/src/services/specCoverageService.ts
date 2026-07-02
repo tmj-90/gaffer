@@ -1,6 +1,7 @@
 import {
   type ClauseCoverage,
   type CoveringAc,
+  type DanglingAc,
   parseSpecClauses,
   type SpecClause,
   type SpecCoverage,
@@ -66,6 +67,17 @@ export class SpecCoverageService {
     const acsByClause = groupBy(this.coverage.coveringAcs(clauseIds), (r) => r.clause_id);
     const bounceByClause = indexBy(this.coverage.bounceCounts(clauseIds), (r) => r.clause_id);
     const loreStatus = safeLoreStatus(this.loreReader, spec, clauses);
+    // Ticket-side gap report: ACs that still claim a (now-removed) clause of THIS
+    // spec. Scoped to the spec's namespace by id, so it can't pick up other specs' ACs.
+    const danglingAcs: DanglingAc[] = this.coverage.danglingAcs(spec.id, clauseIds).map((r) => ({
+      ac_id: r.ac_id,
+      ac_text: r.ac_text,
+      spec_clause_id: r.spec_clause_id,
+      ticket_id: r.ticket_id,
+      ticket_number: r.ticket_number,
+      ticket_title: r.ticket_title,
+      ticket_status: r.ticket_status,
+    }));
 
     const clauseCoverage = clauses.map((clause) =>
       this.buildClauseCoverage(
@@ -82,7 +94,8 @@ export class SpecCoverageService {
       status: spec.status,
       scope_node_id: spec.scope_node_id,
       clauses: clauseCoverage,
-      rollup: rollup(clauseCoverage),
+      rollup: rollup(clauseCoverage, danglingAcs.length),
+      dangling_acs: danglingAcs,
       gate_enabled: this.gateEnabled(),
     };
   }
@@ -121,13 +134,14 @@ export class SpecCoverageService {
   }
 }
 
-/** Spec-level rollup: covered/total, satisfied/total, and the orphan clause ids. */
-function rollup(clauses: readonly ClauseCoverage[]): SpecCoverage["rollup"] {
+/** Spec-level rollup: covered/total, satisfied/total, orphan clause ids + dangling count. */
+function rollup(clauses: readonly ClauseCoverage[], danglingCount: number): SpecCoverage["rollup"] {
   return {
     total: clauses.length,
     covered: clauses.filter((c) => c.covered).length,
     satisfied: clauses.filter((c) => c.satisfied).length,
     orphans: clauses.filter((c) => c.orphan).map((c) => c.clause_id),
+    dangling: danglingCount,
   };
 }
 

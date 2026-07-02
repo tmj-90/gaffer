@@ -309,6 +309,94 @@ console.log("== AC5: injection payload inside a clause stays quarantined ==");
   );
 }
 
+// --- AC6: an unknown/injected clauseRef is DROPPED (provenance validation, #4) ----
+console.log("== AC6: a clauseRef not in the spec is dropped (never persisted) ==");
+{
+  // Direct: with the spec's clause-id set supplied, a bogus ref collapses the AC back
+  // to a plain string (provenance dropped) while valid refs pass through untouched.
+  const ids = new Set(SPEC.map((c) => c.clause_id)); // r1, r2, n1, d1
+  const plan = {
+    phase: "plan",
+    plan: {
+      epic: { name: "Password reset", description: "spec-driven" },
+      tickets: [
+        {
+          title: "Bootstrap",
+          acceptanceCriteria: ["scaffold + commit"],
+          bootstrap: true,
+          repo: "auth",
+          dependsOn: [],
+        },
+        {
+          title: "Reset flow",
+          acceptanceCriteria: [
+            { text: "email reset works", clauseRef: "r1" }, // valid → kept
+            { text: "hallucinated ref", clauseRef: "ghost" }, // unknown → dropped
+            { text: "injected clause", clauseRef: "c999" }, // unknown → dropped
+          ],
+          repo: "auth",
+          dependsOn: [0],
+        },
+      ],
+    },
+  };
+  const r = validateResult(plan, 20, "", false, ids);
+  if (r.phase !== "plan") {
+    fail(`clauseRef-validated plan should validate (got ${JSON.stringify(r)})`);
+  } else {
+    const acs = r.plan.tickets[1].acceptanceCriteria;
+    eq("a valid clauseRef survives", acs[0], { text: "email reset works", clauseRef: "r1" });
+    eq("an unknown clauseRef is dropped to a bare string", acs[1], "hallucinated ref");
+    eq("an injected clause id is dropped to a bare string", acs[2], "injected clause");
+  }
+
+  // NEGATIVE CONTROL: with NO clauseIds supplied, refs are NOT validated (back-compat).
+  const r2 = validateResult(plan, 20);
+  eq(
+    "without a clause-id set, an unknown clauseRef is left intact (no validation)",
+    r2.plan.tickets[1].acceptanceCriteria[1],
+    { text: "hallucinated ref", clauseRef: "ghost" },
+  );
+
+  // End-to-end (--dry-run): main() derives the clause-id set from `spec`, so a bogus
+  // ref is stripped from the emitted plan while valid refs remain.
+  const e2ePlan = {
+    phase: "plan",
+    plan: {
+      epic: { name: "Password reset", description: "spec-driven" },
+      tickets: [
+        {
+          title: "Bootstrap auth repo",
+          acceptanceCriteria: ["scaffold + first commit"],
+          bootstrap: true,
+          repo: "auth",
+          dependsOn: [],
+        },
+        {
+          title: "Email reset flow",
+          acceptanceCriteria: [
+            { text: "user resets password by email", clauseRef: "r1" },
+            { text: "smuggled provenance", clauseRef: "not-a-real-clause" },
+          ],
+          repo: "auth",
+          dependsOn: [0],
+        },
+      ],
+    },
+  };
+  const e2e = runCli({ brief: "add password reset", spec: SPEC, mockOutput: fencePlan(e2ePlan) });
+  if (e2e.code === 0 && e2e.out && e2e.out.phase === "plan") {
+    const acs = e2e.out.plan.tickets[1].acceptanceCriteria;
+    eq("end-to-end: the valid clauseRef is kept", acs[0], {
+      text: "user resets password by email",
+      clauseRef: "r1",
+    });
+    eq("end-to-end: the bogus clauseRef is dropped to a bare string", acs[1], "smuggled provenance");
+  } else {
+    fail(`clauseRef-drop e2e should emit a plan (code=${e2e.code}, out=${JSON.stringify(e2e.out)})`);
+  }
+}
+
 console.log();
 if (failures.length === 0) {
   console.log(`PASS — ${passed} checks passed (helper: ${HELPER})`);

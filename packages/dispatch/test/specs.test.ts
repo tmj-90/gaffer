@@ -55,12 +55,14 @@ describe("Spec-Driven Development (Phase 1a): createSpec", () => {
     expect(clauses[1]?.rationale).toBe("Out of scope for v1");
   });
 
-  it("preserves a supplied clause_id (ids are stable)", () => {
+  it("namespaces a supplied clause_id under the spec (ids are stable + globally unique)", () => {
     const spec = wg.createSpec(
       { title: "Spec", clauses: [{ clause_id: "R-1", kind: "requirement", text: "Do X" }] },
       human,
     );
-    expect(parseSpecClauses(spec.clauses_json)[0]?.clause_id).toBe("R-1");
+    // The supplied base id is preserved but namespaced under the spec id so two
+    // specs' identical positional/supplied ids can never collide downstream.
+    expect(parseSpecClauses(spec.clauses_json)[0]?.clause_id).toBe(`${spec.id}:R-1`);
   });
 
   it("allows a spec with no clauses (drafted then filled in)", () => {
@@ -101,7 +103,10 @@ describe("Spec-Driven Development (Phase 1a): freeze + immutability", () => {
   });
 
   it("freezes a draft spec (draft→frozen) and stamps frozen_at", () => {
-    const draft = wg.createSpec({ title: "Spec", clauses: [] }, human);
+    const draft = wg.createSpec(
+      { title: "Spec", clauses: [{ kind: "requirement", text: "Do X" }] },
+      human,
+    );
     clock.advanceSeconds(60);
     const frozen = wg.freezeSpec(draft.id, human);
 
@@ -148,13 +153,33 @@ describe("Spec-Driven Development (Phase 1a): freeze + immutability", () => {
   });
 
   it("rejects re-freezing an already-frozen spec (draft→frozen only)", () => {
-    const draft = wg.createSpec({ title: "Spec" }, human);
+    const draft = wg.createSpec(
+      { title: "Spec", clauses: [{ kind: "requirement", text: "Do X" }] },
+      human,
+    );
     wg.freezeSpec(draft.id, human);
     expect(() => wg.freezeSpec(draft.id, human)).toThrow(DispatchError);
   });
 
+  it("rejects freezing a spec with no clauses (a freeze must capture intent)", () => {
+    const draft = wg.createSpec({ title: "Empty" }, human);
+    expect(parseSpecClauses(draft.clauses_json)).toHaveLength(0);
+    try {
+      wg.freezeSpec(draft.id, human);
+      throw new Error("expected a throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DispatchError);
+      expect((err as DispatchError).code).toBe("STATE_CONFLICT");
+    }
+    // The spec is left a draft — the rejected freeze changed nothing.
+    expect(wg.getSpec(draft.id).status).toBe("draft");
+  });
+
   it("surfaces STATE_CONFLICT when mutating a non-draft spec", () => {
-    const draft = wg.createSpec({ title: "Spec" }, human);
+    const draft = wg.createSpec(
+      { title: "Spec", clauses: [{ kind: "requirement", text: "Do X" }] },
+      human,
+    );
     wg.freezeSpec(draft.id, human);
     try {
       wg.freezeSpec(draft.id, human);
@@ -177,7 +202,10 @@ describe("Spec-Driven Development (Phase 1a): listSpecs", () => {
   it("lists specs newest-first and filters by status", () => {
     const clock = new TestClock();
     const wg = freshWg(clock);
-    const a = wg.createSpec({ title: "First" }, human);
+    const a = wg.createSpec(
+      { title: "First", clauses: [{ kind: "requirement", text: "Do X" }] },
+      human,
+    );
     clock.advanceSeconds(1);
     const b = wg.createSpec({ title: "Second" }, human);
     clock.advanceSeconds(1);

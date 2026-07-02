@@ -53,15 +53,20 @@ status_of()    { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 
 ac_status_of() { wg ticket show "$1" 2>/dev/null | jget "d['acceptanceCriteria'][0]['status']" 2>/dev/null || echo ''; }
 ac_id_of()     { wg ticket show "$1" 2>/dev/null | jget "d['acceptanceCriteria'][0]['id']" 2>/dev/null || echo ''; }
 
+# Clause ids are NAMESPACED under the spec on create (`<specId>:R-green`) so they
+# stay globally unique across specs. The test author supplies BASE names (R-green);
+# these helpers match a clause whose stored id equals the base OR ends with `:<base>`,
+# mirroring the real flow where decompose reads the namespaced ids off the frozen spec.
+#
 # Read a single clause's coverage field from `spec coverage <id>` JSON. The output
 # shape is { clauses:[{clause_id, covered, satisfied, orphan, bounce_count, ...}],
-# rollup:{...} }. `clause_field <specId> <clauseId> <field>` prints that field.
+# rollup:{...} }. `clause_field <specId> <baseClauseId> <field>` prints that field.
 clause_field() {
   wg spec coverage "$1" 2>/dev/null | python3 -c "
 import sys,json
 sid,cid,field=sys.argv[1],sys.argv[2],sys.argv[3]
 d=json.load(sys.stdin)
-c=next((x for x in d['clauses'] if x['clause_id']==cid),None)
+c=next((x for x in d['clauses'] if x['clause_id']==cid or x['clause_id'].endswith(':'+cid)),None)
 print('' if c is None else c[field])
 " "$1" "$2" "$3"
 }
@@ -71,7 +76,19 @@ rollup_field() {
 orphan_has() {
   wg spec coverage "$1" 2>/dev/null | python3 -c "
 import sys,json
-print('yes' if sys.argv[1] in json.load(sys.stdin)['rollup']['orphans'] else 'no')
+cid=sys.argv[1]
+orphans=json.load(sys.stdin)['rollup']['orphans']
+print('yes' if any(o==cid or o.endswith(':'+cid) for o in orphans) else 'no')
+" "$2"
+}
+# Resolve a BASE clause name to its full namespaced id off the frozen spec's coverage
+# — this is exactly the namespaced id an AC must reference to join back to the clause.
+nsid() {
+  wg spec coverage "$1" 2>/dev/null | python3 -c "
+import sys,json
+cid=sys.argv[1]
+c=next((x['clause_id'] for x in json.load(sys.stdin)['clauses'] if x['clause_id']==cid or x['clause_id'].endswith(':'+cid)),'')
+print(c)
 " "$2"
 }
 
@@ -127,11 +144,15 @@ echo "== BASELINE: before any ticket, every clause is an orphan (gap report) =="
 
 echo "== TICKETS: create two tickets whose ACs carry clause provenance =="
 # T1 → R-green (will be delivered GREEN). T2 → R-open (delivery rejected → OPEN).
+# The ACs reference the NAMESPACED clause ids (as decompose's clauseRef would), so
+# coverage can join them back to the frozen spec's clauses.
+NS_GREEN="$(nsid "$SPEC_ID" R-green)"
+NS_OPEN="$(nsid "$SPEC_ID" R-open)"
 NUM1="$(wg ticket create -t "Saved-card payment" --description "pay with a saved card" --policy team_light --risk low 2>/dev/null | jget "d['ticket']['number']")"
-wg ac add "$NUM1" -t "pays with saved card" --clause R-green >/dev/null 2>&1
+wg ac add "$NUM1" -t "pays with saved card" --clause "$NS_GREEN" >/dev/null 2>&1
 wg ticket repo-access set "$NUM1" demo --access write --relation confirmed >/dev/null 2>&1
 NUM2="$(wg ticket create -t "Refund worker" --description "process refunds" --policy team_light --risk low 2>/dev/null | jget "d['ticket']['number']")"
-wg ac add "$NUM2" -t "refund within 24h" --clause R-open >/dev/null 2>&1
+wg ac add "$NUM2" -t "refund within 24h" --clause "$NS_OPEN" >/dev/null 2>&1
 wg ticket repo-access set "$NUM2" demo --access write --relation confirmed >/dev/null 2>&1
 [ -n "$NUM1" ] && [ -n "$NUM2" ] && ok "created #$NUM1 (→R-green) and #$NUM2 (→R-open)" || fail "ticket/AC setup failed"
 

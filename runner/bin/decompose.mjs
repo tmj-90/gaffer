@@ -296,6 +296,9 @@ function lastBalancedObject(text) {
  * `forcePlan` enforces the "build the tickets now" contract: a clarify result is a
  * contract violation under force-plan (the model was told to plan and disobeyed),
  * so it is rejected rather than passed back as a clarify turn.
+ *
+ * `clauseIds` (a Set of the driving spec's clause ids, or null) validates each AC's
+ * `clauseRef` provenance — an unknown ref is dropped (see {@link normalizeAc}).
  */
 /**
  * SPEC-DRIVEN (Phase 2a): normalise ONE acceptance criterion. An AC arrives as
@@ -306,19 +309,29 @@ function lastBalancedObject(text) {
  *   - null for an empty/blank AC (dropped by the caller).
  * Keeping the string case a string means a non-spec-driven plan is unchanged and
  * `create_epic` (which accepts string | {text, clauseRef}) stays compatible.
+ *
+ * PROVENANCE VALIDATION (#4): when `clauseIds` is a non-null Set, a `clauseRef` is
+ * only carried through when it names a REAL clause of the driving spec. A ref the
+ * model hallucinated (or one smuggled in via an injected clause) points at nothing,
+ * so it is DROPPED — the AC survives as plain work rather than persisting a false
+ * `spec_clause_id`. This mirrors how `dependsOn` is validated against the plan's own
+ * ticket set. `clauseIds === null` disables the check (a non-spec-driven decompose,
+ * and the back-compat default for existing callers/tests).
  */
-export function normalizeAc(a) {
+export function normalizeAc(a, clauseIds = null) {
   if (a && typeof a === "object" && !Array.isArray(a)) {
     const text = String(a.text ?? "").trim();
     if (!text) return null;
-    const clauseRef = a.clauseRef != null ? String(a.clauseRef).trim() : "";
+    let clauseRef = a.clauseRef != null ? String(a.clauseRef).trim() : "";
+    // Drop a clauseRef that names no real clause of the spec (unknown / injected).
+    if (clauseRef && clauseIds && !clauseIds.has(clauseRef)) clauseRef = "";
     return clauseRef ? { text, clauseRef } : text;
   }
   const text = String(a ?? "").trim();
   return text ? text : null;
 }
 
-export function validateResult(obj, maxTickets, targetRepo = "", forcePlan = false) {
+export function validateResult(obj, maxTickets, targetRepo = "", forcePlan = false, clauseIds = null) {
   const repo = String(targetRepo ?? "").trim();
   const brownfield = repo.length > 0;
   if (!obj || typeof obj !== "object")
@@ -364,7 +377,7 @@ export function validateResult(obj, maxTickets, targetRepo = "", forcePlan = fal
       // keeps a plain AC a string (unchanged output) and only emits { text, clauseRef }
       // when a clause id is present, so create_epic stays compatible.
       const acs = Array.isArray(t.acceptanceCriteria)
-        ? t.acceptanceCriteria.map(normalizeAc).filter((a) => a !== null)
+        ? t.acceptanceCriteria.map((a) => normalizeAc(a, clauseIds)).filter((a) => a !== null)
         : [];
       if (acs.length === 0)
         return { phase: "error", error: `ticket ${i} ("${title}") has no acceptance criteria` };
@@ -1040,8 +1053,21 @@ function main() {
     output = run.stdout;
   }
 
+  // SPEC-DRIVEN (#4): the driving spec's clause ids are the ONLY valid clauseRef
+  // provenance. Build that set so validateResult can drop any AC clauseRef the model
+  // hallucinated (or an injected clause smuggled in). Null when no spec drives the
+  // plan, which disables the check (a plain decompose is unchanged).
+  const specClauseIds = Array.isArray(req.spec)
+    ? new Set(
+        req.spec
+          .map((c) => String(c?.clause_id ?? "").trim())
+          .filter(Boolean),
+      )
+    : null;
+  const clauseIds = specClauseIds && specClauseIds.size > 0 ? specClauseIds : null;
+
   const parsed = extractLastJsonBlock(output);
-  const result = validateResult(parsed, opts.maxTickets, targetRepo, forcePlan);
+  const result = validateResult(parsed, opts.maxTickets, targetRepo, forcePlan, clauseIds);
   emit(result, result.phase === "error" ? 1 : 0);
 }
 

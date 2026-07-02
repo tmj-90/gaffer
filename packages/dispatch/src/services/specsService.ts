@@ -57,9 +57,13 @@ export class SpecsService {
   createSpec(raw: unknown, actor: Actor): Spec {
     const input = createSpecInput.parse(raw);
     const now = this.clock.now();
-    const clauses = this.assignClauseIds(input.clauses);
+    // The spec id is minted FIRST so clause ids can be namespaced under it (see
+    // {@link assignClauseIds}) — the namespace is what keeps clause ids globally
+    // unique across specs, so two specs' `c1`s can never cross-contaminate.
+    const id = newId();
+    const clauses = this.assignClauseIds(input.clauses, id);
     const spec: Spec = {
-      id: newId(),
+      id,
       title: input.title,
       brief: input.brief,
       clauses_json: JSON.stringify(clauses),
@@ -106,7 +110,7 @@ export class SpecsService {
       const spec = this.specs.findById(id);
       if (!spec) throw notFound("spec", id);
       this.assertDraft(spec);
-      const clauses = this.assignClauseIds(input.clauses);
+      const clauses = this.assignClauseIds(input.clauses, spec.id);
       this.specs.updateClauses(id, JSON.stringify(clauses), this.clock.now());
       writeEvent(this.db, {
         entity_type: "spec",
@@ -130,6 +134,18 @@ export class SpecsService {
       const spec = this.specs.findById(id);
       if (!spec) throw notFound("spec", id);
       this.assertDraft(spec);
+      // A frozen spec is the AUTHORITATIVE, immutable source of intent that drives
+      // decompose + coverage. Freezing an EMPTY spec would produce a spec that
+      // asserts nothing — every downstream coverage rollup would be vacuously
+      // satisfied. Require at least one clause so a freeze always captures intent.
+      if (parseSpecClauses(spec.clauses_json).length === 0) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `Spec ${spec.id} has no clauses — a spec must have at least one clause before it ` +
+            `can be frozen.`,
+          { spec_id: spec.id },
+        );
+      }
       this.specs.freeze(id, this.clock.now());
       writeEvent(this.db, {
         entity_type: "spec",
@@ -170,18 +186,40 @@ export class SpecsService {
 
   /**
    * Mint a stable `clause_id` for every clause that lacks one, preserving any
-   * supplied id. Stability matters: Phase 3 references a clause by this id, so once
-   * assigned it must not change.
+   * supplied id, and NAMESPACE every id under the owning `specId` as
+   * `<specId>:<base>`. Stability matters: Phase 3 references a clause by this id,
+   * so once assigned it must not change.
+   *
+   * Namespacing is the correctness fix for cross-spec id collision: the spec-author
+   * emits POSITIONAL ids (`c1`, `c2`, …), so two independent spec-driven builds both
+   * carry `c1`. Coverage joins ACs to clauses by `spec_clause_id IN (…)` with no
+   * per-spec scoping, so bare positional ids let one spec's ACs inflate another's
+   * coverage/bounce counts. Prefixing every id with the spec's own (globally-unique)
+   * id makes the id itself globally unique, so the same match can only ever pick up
+   * ONE spec's ACs. The namespaced id is what flows onward — into decompose's
+   * `clauseRef`, the AC's `spec_clause_id` provenance, and the lore seeder — so the
+   * whole chain stays internally consistent.
    */
-  private assignClauseIds(clauses: readonly SpecClauseInput[]): SpecClause[] {
+  private assignClauseIds(clauses: readonly SpecClauseInput[], specId: string): SpecClause[] {
     return clauses.map((c) => {
       const clause: SpecClause = {
-        clause_id: c.clause_id ?? newId(),
+        clause_id: this.namespaceClauseId(specId, c.clause_id ?? newId()),
         kind: c.kind,
         text: c.text,
       };
       if (c.rationale !== undefined) clause.rationale = c.rationale;
       return clause;
     });
+  }
+
+  /**
+   * Namespace a clause id under its spec as `<specId>:<base>`. IDEMPOTENT: a base
+   * that already carries this spec's prefix is returned unchanged, so re-editing a
+   * draft (which round-trips already-namespaced ids back in) never double-prefixes
+   * and clause ids stay stable across edits.
+   */
+  private namespaceClauseId(specId: string, base: string): string {
+    const prefix = `${specId}:`;
+    return base.startsWith(prefix) ? base : `${prefix}${base}`;
   }
 }

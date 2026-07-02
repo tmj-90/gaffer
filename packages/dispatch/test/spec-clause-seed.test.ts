@@ -81,14 +81,14 @@ describe("freeze → clause seeding (dispatch side)", () => {
     expect(spec.id.length).toBeGreaterThan(0);
   });
 
-  it("seeds nothing for a clause-less spec but still freezes", () => {
+  it("refuses to freeze a clause-less spec, so the seeder is never invoked", () => {
     const seeder = new RecordingSeeder();
     const { svc } = svcWith(seeder);
     const draft = svc.createSpec({ title: "Empty" }, human);
-    const frozen = svc.freezeSpec(draft.id, human);
-    expect(frozen.status).toBe("frozen");
-    expect(seeder.calls).toHaveLength(1);
-    expect(seeder.calls[0]!.clauses).toHaveLength(0);
+    // A freeze must capture intent — an empty spec is rejected before seeding.
+    expect(() => svc.freezeSpec(draft.id, human)).toThrow();
+    expect(seeder.calls).toHaveLength(0);
+    expect(svc.getSpec(draft.id).status).toBe("draft");
   });
 
   // NEGATIVE CONTROL: a Memory failure must not block or roll back the freeze.

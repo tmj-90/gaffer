@@ -1105,6 +1105,23 @@ export interface ClauseCoverage {
   lore_status: SpecLoreStatus;
 }
 
+/**
+ * A DANGLING acceptance criterion: an AC that claims a clause in this spec's
+ * namespace which no longer exists on the spec (a broken provenance link). The
+ * ticket-side complement of an orphan clause — reported so a stale reference can't
+ * hide.
+ */
+export interface DanglingAc {
+  ac_id: string;
+  ac_text: string;
+  /** The dead `spec_clause_id` this AC still references (in the spec's namespace). */
+  spec_clause_id: string;
+  ticket_id: string;
+  ticket_number: number | null;
+  ticket_title: string;
+  ticket_status: string;
+}
+
 /** Spec-level rollup: covered/total, satisfied/total, and the orphan clause ids. */
 export interface SpecCoverageRollup {
   total: number;
@@ -1112,6 +1129,8 @@ export interface SpecCoverageRollup {
   satisfied: number;
   /** Clause ids with no covering AC — the gap report. */
   orphans: string[];
+  /** Count of dangling ACs (broken provenance links) — see {@link SpecCoverage.dangling_acs}. */
+  dangling: number;
 }
 
 /**
@@ -1127,6 +1146,11 @@ export interface SpecCoverage {
   scope_node_id: string | null;
   clauses: ClauseCoverage[];
   rollup: SpecCoverageRollup;
+  /**
+   * ACs that reference a now-dead clause in this spec's namespace (broken
+   * provenance). Empty in the healthy case; the ticket-side gap report.
+   */
+  dangling_acs: DanglingAc[];
   /** The spec-coverage DoD gate flag — non-enforcing today, surfaced for visibility. */
   gate_enabled: boolean;
 }

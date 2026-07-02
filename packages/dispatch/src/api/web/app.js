@@ -822,6 +822,50 @@ function buildChrome() {
   bottomnav.hidden = false;
 
   startLiveTick();
+  startAutoRefresh();
+}
+
+// Hot-refresh: read-mostly views quietly re-fetch on an interval so the board,
+// overview and review reflect what the factory is doing without a manual reload
+// (fixes the stale-board bug — there was no polling or server push). It never
+// fights the operator: skipped while typing, while dragging, when the tab is
+// hidden, or if the route changed mid-fetch — and it preserves scroll so a
+// background refresh is invisible. Forms (create/settings) and ticket detail are
+// deliberately excluded so in-flight input is never clobbered.
+const AUTO_REFRESH_MS = 9000;
+const AUTO_REFRESHABLE = new Set(["overview", "work", "review", "epics", "memory"]);
+let autoRefreshTimer;
+function busyEditing() {
+  const a = document.activeElement;
+  return !!(
+    a &&
+    (a.tagName === "INPUT" ||
+      a.tagName === "TEXTAREA" ||
+      a.tagName === "SELECT" ||
+      a.isContentEditable)
+  );
+}
+function startAutoRefresh() {
+  if (autoRefreshTimer) return;
+  autoRefreshTimer = setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    if (busyEditing()) return;
+    // don't yank a card mid-drag or a menu/sheet out from under a click
+    if (document.querySelector(".dragging, .is-dragging, .sheet, .menu-open")) return;
+    const { view, param } = parseHash();
+    if (!AUTO_REFRESHABLE.has(view)) return;
+    const render = VIEWS[view];
+    if (!render) return;
+    const y = app.scrollTop;
+    guard(async () => {
+      const content = await render(param);
+      // bail if the operator navigated or started interacting during the fetch
+      if (parseHash().view !== view || busyEditing()) return;
+      clear(app);
+      app.appendChild(content);
+      app.scrollTop = y;
+    });
+  }, AUTO_REFRESH_MS);
 }
 
 // Live heartbeat — the tick counter breathes in the bar so the room reads

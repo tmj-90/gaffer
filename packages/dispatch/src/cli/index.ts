@@ -14,7 +14,7 @@ import { isNotifyKind } from "../notify/types.js";
 import { DispatchError } from "../util/errors.js";
 import { resolveDbPath } from "../util/paths.js";
 import { VERSION } from "../version.js";
-import { computeStats, renderDoctor, renderStats, runDoctor } from "./ops.js";
+import { computeStats, renderDoctor, renderHumanQueue, renderStats, runDoctor } from "./ops.js";
 
 /** The human running the CLI is the actor for events. */
 function cliActor(): Actor {
@@ -1319,6 +1319,27 @@ program
       const stats = computeStats(wg.db);
       if (opts.json) printJson(stats);
       else process.stdout.write(`${renderStats(stats)}\n`);
+    } finally {
+      wg.db.close();
+    }
+  });
+
+program
+  .command("human-queue")
+  .description(
+    "What the HUMAN owns: pending decisions (with reasons), review sign-offs, and " +
+      "regulated ready-approvals / reviewer assignments — the operator's queue.",
+  )
+  .option("--json", "emit machine-readable JSON", false)
+  .action((opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    try {
+      const queue = wg.humanQueue();
+      if (opts.json) {
+        printJson(queue);
+      } else {
+        process.stdout.write(`${renderHumanQueue(queue)}\n`);
+      }
     } finally {
       wg.db.close();
     }

@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 
 import type { Db } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
+import type { HumanQueue } from "../services/humanQueueService.js";
 import { VERSION } from "../version.js";
 
 /**
@@ -234,5 +235,43 @@ export function renderStats(stats: StatsReport): string {
   lines.push(`Open decisions:  ${stats.openDecisions}`);
   lines.push(`Active claims:   ${stats.activeClaims}`);
   lines.push(`Stale claims:    ${stats.staleClaims}`);
+  return lines.join("\n");
+}
+
+// ── human queue ────────────────────────────────────────────────────────────
+
+/** Round a millisecond wait to a compact age string (e.g. "3h", "2d", "5m"). */
+function humanAge(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+/**
+ * Render the human-owned queue for the terminal — the operator's "What I own":
+ * each pending decision/review/approval WITH its reason and how long it's waited.
+ * The reason is the whole point (why the agent needs a human), so it is always
+ * shown, not just a count.
+ */
+export function renderHumanQueue(queue: HumanQueue): string {
+  const lines: string[] = ["what you own"];
+  if (queue.items.length === 0) {
+    lines.push("  (nothing waiting on you)");
+    return lines.join("\n");
+  }
+  for (const item of queue.items) {
+    const ref =
+      item.ticket && item.ticket.number !== null
+        ? `#${item.ticket.number}`
+        : item.ticket
+          ? item.ticket.id.slice(0, 8)
+          : "—";
+    lines.push(`  [${item.label}] ${ref}  (${humanAge(item.waitedMs)})`);
+    lines.push(`     why: ${item.reason}`);
+  }
   return lines.join("\n");
 }

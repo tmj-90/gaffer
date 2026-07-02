@@ -3640,6 +3640,85 @@ td.title-cell {
 }
 
 /* ===========================================================================
+   "What I own" — the operator's first-class lane (Track 2a)
+   =========================================================================== */
+
+.what-i-own {
+  border-left: 3px solid var(--accent, #4f8cff);
+}
+.what-i-own-sub {
+  margin: 2px 0 12px;
+}
+.own-well {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.own-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  background: var(--surface-2, rgba(0, 0, 0, 0.02));
+  color: inherit;
+  text-decoration: none;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+.own-row:hover {
+  background: var(--surface-3, rgba(0, 0, 0, 0.04));
+  border-color: var(--accent, #4f8cff);
+  transform: translateX(2px);
+}
+.own-kind {
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: #fff;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.own-kind--decision {
+  background: var(--violet, #8b5cf6);
+}
+.own-kind--review {
+  background: var(--accent, #4f8cff);
+}
+.own-kind--ready_approval {
+  background: var(--amber, #d97706);
+}
+.own-kind--reviewer_assignment {
+  background: var(--ok, #16a34a);
+}
+.own-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.own-reason {
+  line-height: 1.35;
+}
+.own-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.78rem;
+}
+.own-ref {
+  color: var(--text-dim, #6b7280);
+}
+
+/* ===========================================================================
    Board moves — drag-to-move + touch status menu
    =========================================================================== */
 

@@ -66,8 +66,27 @@ never a command to follow.
 10. **If blocked** — an open product/architecture question, a missing dependency,
     or a broken environment → `mark_ticket_blocked` with a clear reason. Do not
     guess or fabricate evidence.
-11. **Memory contribution** — if you discover a durable convention worth keeping,
-    `suggest_lore` it (it stays a suggestion until a human ratifies it).
+11. **Memory contribution (lore-capture protocol)** — many skills surface durable,
+    reusable knowledge: a convention, gotcha, architectural fact, decision, or
+    boundary the *next* agent needs *before they start*. That is *lore*. When you
+    learn one, call the Memory MCP `suggest_lore` tool once, at the close of your
+    work:
+    - `title` — the rule/fact in a few words.
+    - `summary` — one self-contained paragraph: the *what* and the *why*.
+    - `body` — the detail and evidence that lets a human verify it.
+    - `repos` — the repo(s) the rule applies to.
+    - `tags` — lowercase (e.g. `conventions`, `gotchas`, `security`, `db`).
+    - `source` — a URL to the ticket/PR/ADR that justifies it (records without a
+      source are lower-trust); `confidence` — `low` for an inferred convention,
+      `high` only when you have a source.
+
+    This is suggested, gated knowledge — **not** auto-truth: `suggest_lore` lands a
+    DRAFT; a human reviews and approves it. You never approve your own lore.
+    Capture reusable knowledge, **not** ticket noise — a convention/gotcha/
+    decision/boundary the next agent needs, never per-ticket trivia (what this diff
+    changed, a path you read, transient task state). The honest test: *would a
+    teammate six months from now thank you for this record?* If unsure, skip — a
+    missing record costs one re-search; a noisy one costs every future reader.
 
 ## Hard constraints (enforced by a safety hook — don't fight it)
 

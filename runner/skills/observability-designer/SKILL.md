@@ -50,9 +50,7 @@ Golden signals to define first: **latency, traffic, errors, saturation** — cov
 
 ## Capture lore
 
-Observability decisions are permanent choices that cost every future agent a re-search if undocumented. When you learn the repo's APM tooling, dashboard naming conventions, alert-channel routing, or on-call rotation policy, call `suggest_lore` once:
-
-- `title` — the fact in a few words.
-- `summary` — what it is and why it was decided.
-- `tags` — `observability`, `alerting`, `monitoring`.
-- `confidence` — `high` only with a source (ADR, PR, doc link).
+**The repo's APM tooling, dashboard naming conventions, alert-channel routing, or on-call rotation policy — observability decisions are permanent and cost every future agent a re-search if undocumented.** That kind of fact is *lore*. Capture it via the **lore-capture
+protocol in your brief** (`CLAUDE.factory.md`, step 11 "Memory contribution"):
+call the Memory MCP `suggest_lore` once at the close of your work — reusable
+conventions, gotchas, decisions, and boundaries only, never per-ticket trivia.

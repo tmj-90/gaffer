@@ -125,22 +125,7 @@ The full matrices for button/input/card/badge/alert/dialog/table live in
 
 ## Capture lore
 
-A repo's token architecture is exactly the kind of fact the *next* agent needs before they
-start — the layer split, the naming convention, the dark-mode seam, a "never reference a
-primitive in a component" rule. That is **lore**: it would have saved you time had the
-previous agent recorded it, and it will save the next one.
-
-When you learn something durable about this repo's design system, call the Memory MCP
-`suggest_lore` tool once, at the close of your work:
-
-- `title` — the rule/fact in a few words.
-- `summary` — one self-contained paragraph: the *what* and the *why*.
-- `body` — the detail and evidence that lets a human verify it.
-- `repos` — the repo(s) the rule applies to.
-- `tags` — lowercase (e.g. `conventions`, `design-system`, `tokens`).
-- `source` — a URL to the ticket/PR/ADR that justifies it; `confidence` — `low` for an
-  inferred convention, `high` only with a source.
-
-**This is suggested, gated knowledge — not auto-truth.** `suggest_lore` lands a DRAFT; a
-human reviews and approves it. You never approve your own lore. Capture reusable knowledge
-(a convention, gotcha, decision, boundary), never per-ticket trivia.
+**A repo's token architecture — the layer split, the naming convention, the dark-mode seam, or a "never reference a primitive in a component" rule — is exactly the fact the next agent needs before they start.** That kind of fact is *lore*. Capture it via the **lore-capture
+protocol in your brief** (`CLAUDE.factory.md`, step 11 "Memory contribution"):
+call the Memory MCP `suggest_lore` once at the close of your work — reusable
+conventions, gotchas, decisions, and boundaries only, never per-ticket trivia.

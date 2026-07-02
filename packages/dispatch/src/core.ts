@@ -455,6 +455,11 @@ export class Dispatch {
     return this.ticketSvc.createTicket(raw, actor);
   }
 
+  /** TRACK-3a: set or clear a ticket's per-ticket delivery-budget ceiling (USD). */
+  setDeliveryBudget(raw: unknown, actor: Actor): Ticket {
+    return this.ticketSvc.setDeliveryBudget(raw, actor);
+  }
+
   addAcceptanceCriterion(raw: unknown, actor: Actor): { ac: AcceptanceCriterion; eventId: string } {
     return this.ticketSvc.addAcceptanceCriterion(raw, actor);
   }

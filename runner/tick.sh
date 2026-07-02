@@ -1372,12 +1372,25 @@ $real
     # rework spend has reached the per-ticket ceiling, even when attempts remain. No
     # unbounded token burn on one stubborn ticket.
     local _cost_exhausted=0
-    if [ -n "${GAFFER_REWORK_BUDGET_USD:-}" ] \
-       && awk "BEGIN{exit !(${GAFFER_REWORK_BUDGET_USD:-0}+0 > 0)}" 2>/dev/null; then
+    # TRACK-3a: the FIRST-CLASS per-ticket delivery budget (tickets.delivery_budget_usd,
+    # inherited from the epic) is the ceiling when set; else the factory-wide env
+    # default (GAFFER_REWORK_BUDGET_USD). A per-ticket budget lets an operator cap one
+    # expensive ticket without touching the global default.
+    local _ticket_budget _eff_ceiling
+    _ticket_budget="$(printf '%s' "${SHOW:-}" | jget "d['ticket'].get('delivery_budget_usd')" 2>/dev/null || true)"
+    case "$_ticket_budget" in ""|None|null) _ticket_budget="" ;; esac
+    if [ -n "$_ticket_budget" ] && awk "BEGIN{exit !(${_ticket_budget:-0}+0 > 0)}" 2>/dev/null; then
+      _eff_ceiling="$_ticket_budget"
+    else
+      _eff_ceiling="${GAFFER_REWORK_BUDGET_USD:-}"
+    fi
+    if [ -n "$_eff_ceiling" ] \
+       && awk "BEGIN{exit !(${_eff_ceiling:-0}+0 > 0)}" 2>/dev/null; then
       local _spent; _spent="$(gaffer_ticket_rework_spend "$NUM" 2>/dev/null || echo 0)"
-      if awk "BEGIN{exit !(${_spent:-0}+0 >= ${GAFFER_REWORK_BUDGET_USD}+0)}" 2>/dev/null; then
+      if awk "BEGIN{exit !(${_spent:-0}+0 >= ${_eff_ceiling}+0)}" 2>/dev/null; then
         _cost_exhausted=1
-        log "REWORK: #$NUM hit the per-ticket cost ceiling (spent \$${_spent} ≥ \$${GAFFER_REWORK_BUDGET_USD}) on attempt $_DELIV_ATTEMPT — parking to blocked (no unbounded burn)"
+        local _src="factory default"; [ -n "$_ticket_budget" ] && _src="per-ticket budget"
+        log "REWORK: #$NUM hit the ${_src} cost ceiling (spent \$${_spent} ≥ \$${_eff_ceiling}) on attempt $_DELIV_ATTEMPT — parking to blocked (no unbounded burn)"
       fi
     fi
 

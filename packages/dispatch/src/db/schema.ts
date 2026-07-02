@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -68,6 +68,17 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- connection.ts for an existing DB; the default below (NULL) mirrors the backfill —
   -- pre-v14 tickets are all agent-shaped.
   human_owner   TEXT,
+  -- TRACK-3a (schema_version 15): the per-ticket DELIVERY BUDGET ceiling in USD.
+  -- NULL ⇒ no per-ticket ceiling (the factory-wide GAFFER_REWORK_BUDGET_USD /
+  -- GAFFER_BUDGET_USD env defaults apply). NON-NULL ⇒ this ticket's cumulative
+  -- measured delivery spend is capped here: the runner parks it to 'blocked'
+  -- (rework_exhausted) once its ledger spend reaches this figure, even when retry
+  -- attempts remain — a first-class extension of the rework loop's per-ticket cost
+  -- ceiling. An epic stamps its budget onto each child ticket at creation (the
+  -- per-epic budget, inherited). Added by an idempotent ALTER in connection.ts for
+  -- an existing DB; the default below (NULL) mirrors the backfill — pre-v15 tickets
+  -- carry no per-ticket budget.
+  delivery_budget_usd REAL,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

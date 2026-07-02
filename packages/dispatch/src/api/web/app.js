@@ -3427,6 +3427,10 @@ async function renderTicket(id) {
       riskBadge(t.risk_level),
       badge(t.policy_pack, "no-dot"),
       badge(`priority ${t.priority}`, "no-dot"),
+      // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
+      t.delivery_budget_usd != null
+        ? badge(`budget $${Number(t.delivery_budget_usd).toFixed(2)}`, "no-dot")
+        : null,
     ]),
     el("div", { style: "margin:10px 0 14px" }, pipelineDots(t.status)),
     t.description

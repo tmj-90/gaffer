@@ -102,6 +102,7 @@ ticket
   .option("--risk <level>", "risk level", "medium")
   .option("--priority <n>", "priority", (v) => Number(v), 0)
   .option("--bootstrap", "mark as a greenfield (create-a-repo) bootstrap ticket", false)
+  .option("--budget <usd>", "per-ticket delivery budget ceiling in USD", (v) => Number(v))
   .action((opts, cmd) => {
     const wg = open(cmd.optsWithGlobals());
     const t = wg.createTicket(
@@ -112,12 +113,42 @@ ticket
         risk_level: opts.risk,
         priority: opts.priority,
         bootstrap: opts.bootstrap,
+        ...(opts.budget !== undefined ? { delivery_budget_usd: opts.budget } : {}),
       },
       cliActor(),
     );
     printJson({
       ok: true,
-      ticket: { number: t.number, id: t.id, status: t.status, bootstrap: t.bootstrap === 1 },
+      ticket: {
+        number: t.number,
+        id: t.id,
+        status: t.status,
+        bootstrap: t.bootstrap === 1,
+        delivery_budget_usd: t.delivery_budget_usd,
+      },
+    });
+    wg.db.close();
+  });
+
+ticket
+  .command("budget <ref>")
+  .description("Set (or clear) a ticket's per-ticket delivery budget ceiling (USD)")
+  .option("--usd <amount>", "USD ceiling for this ticket's cumulative delivery spend", (v) =>
+    Number(v),
+  )
+  .option("--clear", "clear the per-ticket budget (fall back to the factory-wide budget)", false)
+  .action((ref, opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const value = opts.clear ? null : opts.usd;
+    if (value === undefined) {
+      printJson({ ok: false, error: "provide --usd <amount> or --clear" });
+      wg.db.close();
+      return;
+    }
+    const t = wg.setDeliveryBudget({ ticket: ref, delivery_budget_usd: value }, cliActor());
+    printJson({
+      ok: true,
+      ticket: { number: t.number, id: t.id, delivery_budget_usd: t.delivery_budget_usd },
     });
     wg.db.close();
   });

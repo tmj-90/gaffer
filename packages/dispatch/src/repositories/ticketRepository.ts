@@ -20,12 +20,12 @@ export class TicketRepository {
           (id, number, title, description, status, priority, risk_level, policy_pack,
            source, created_by, reviewer, branch_name, pr_url, attempt_count, row_version,
            scheduled_after, due_at, bootstrap, last_review_feedback, can_be_tested,
-           test_contract, human_owner, created_at, updated_at)
+           test_contract, human_owner, delivery_budget_usd, created_at, updated_at)
          VALUES
           (@id, @number, @title, @description, @status, @priority, @risk_level, @policy_pack,
            @source, @created_by, @reviewer, @branch_name, @pr_url, @attempt_count, @row_version,
            @scheduled_after, @due_at, @bootstrap, @last_review_feedback, @can_be_tested,
-           @test_contract, @human_owner, @created_at, @updated_at)`,
+           @test_contract, @human_owner, @delivery_budget_usd, @created_at, @updated_at)`,
       )
       .run(ticket);
   }
@@ -105,6 +105,17 @@ export class TicketRepository {
    */
   setHumanOwner(id: string, value: string | null): void {
     this.db.prepare(`UPDATE tickets SET human_owner = @value WHERE id = @id`).run({ id, value });
+  }
+
+  /**
+   * TRACK-3a: set (or, with `null`, clear) the ticket's per-ticket delivery-budget
+   * ceiling in USD. A plain write — no row_version bump — since the budget is
+   * independent of the status machine (it only bounds cumulative delivery spend).
+   */
+  setDeliveryBudget(id: string, value: number | null, nowIso: string): void {
+    this.db
+      .prepare(`UPDATE tickets SET delivery_budget_usd = @value, updated_at = @now WHERE id = @id`)
+      .run({ id, value, now: nowIso });
   }
 
   /** True when the ticket currently has any active claim (TRACK-2b reuse guard). */

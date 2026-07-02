@@ -207,6 +207,83 @@ for (const [tool, p] of [
   else failures.push(`DENY expected: ${tool} ${p} (real token-family secret)`);
 }
 
+// --- Token-family CODE-vs-DATA split (finding-7 regression re-close) ----------
+// Finding-7's exemption set was too broad: it exempted DATA extensions like
+// `.json`, so credential files read straight through. `design-tokens.json` and
+// `access-token.json` are structurally identical (`*-token(s).json`) and cannot
+// be separated by extension alone. The principled split: a `*-token` file with a
+// CODE extension is source (allow); with a DATA extension / no extension it can
+// hold a credential (BLOCK) — UNLESS it is the design-token / W3C convention.
+//
+// MUST BLOCK — credential-class `*[-_]token(s)?` on a DATA extension or none,
+// across Read, Write, and a bash `cat` referencing the path.
+const TOKEN_CREDENTIAL_FILES = [
+  "access-token.json",
+  "refresh-token.json",
+  "api_token.json",
+  "api-token.json",
+  "client-token.json",
+  "gitlab-ci-token.json",
+  "bearer-token.json",
+  "id-token.json",
+  "oauth-token.json",
+  "access-token", // bare, no extension
+  "refresh-token", // bare, no extension
+  "secret.token", // `.token` singular extension
+];
+for (const p of TOKEN_CREDENTIAL_FILES) {
+  if (runFileTool("Read", p) === 2) passed += 1;
+  else failures.push(`DENY expected: Read ${p} (credential token, data ext)`);
+  if (runFileTool("Write", p) === 2) passed += 1;
+  else failures.push(`DENY expected: Write ${p} (credential token, data ext)`);
+  denied(`cat a credential token file (${p})`, `cat ${p}`);
+}
+
+// MUST ALLOW — code-extension token files + the design-token / W3C convention,
+// across Read, Write, and a bash `cat`.
+const TOKEN_SOURCE_FILES = [
+  "design-tokens.json", // design-system convention (.json, but design-named)
+  "design-token.json", // design-system convention, singular
+  "theme.tokens.json", // W3C design-tokens file convention
+  "src/theme/design-tokens.json", // nested design tokens
+  "csrf_token.ts",
+  "auth-token.js",
+  "refresh-token.ts", // code ext — favour code rule over credential-sounding name
+  "access-token.tsx",
+  "tokens.css",
+];
+for (const p of TOKEN_SOURCE_FILES) {
+  if (runFileTool("Read", p) === 0) passed += 1;
+  else failures.push(`ALLOW expected: Read ${p} (code/design token file)`);
+  if (runFileTool("Write", p) === 0) passed += 1;
+  else failures.push(`ALLOW expected: Write ${p} (code/design token file)`);
+  allowed(`cat a code/design token file (${p})`, `cat ${p}`);
+}
+// The design-token exemption respects the single-terminal-extension rule: a
+// double-extension exfil disguise is NOT a design file.
+denied("design-tokens double-extension stays blocked", "cat access-tokens.json"); // hyphen-plural credential
+denied("W3C plural only via dot-separator, not hyphen", "cat oauth-tokens.json");
+
+// --- MCP runtime file read-block (claim-token boundary) ----------------------
+// `$GAFFER_DATA/mcp-runtime.<pid>.json` (and base `mcp-runtime.json`) carries the
+// substituted GAFFER_CLAIM_TOKEN. A rogue agent that reads it recovers the claim
+// token and presents it to `submit_ticket_for_review`, re-opening the strand
+// wave-1 closed. Block agent reads on EVERY vector; the runtime JSON only — a
+// source path with an `mcp-runtime` DIRECTORY component stays readable.
+if (runFileTool("Read", ".gaffer/mcp-runtime.4242.json") === 2) passed += 1;
+else failures.push("DENY expected: Read mcp-runtime.<pid>.json");
+if (runFileTool("Read", ".gaffer/mcp-runtime.json") === 2) passed += 1;
+else failures.push("DENY expected: Read mcp-runtime.json");
+denied("cat mcp-runtime.<pid>.json", "cat $GAFFER_DATA/mcp-runtime.4242.json");
+denied("cat mcp-runtime.json", "cat $GAFFER_DATA/mcp-runtime.json");
+denied("redirect-read mcp-runtime.<pid>.json", "read -r T < $GAFFER_DATA/mcp-runtime.4242.json");
+denied("source mcp-runtime.json", "source $GAFFER_DATA/mcp-runtime.json");
+denied("glob mcp-runtime.*.json", "cat $GAFFER_DATA/mcp-runtime.*.json");
+// A source file inside an `mcp-runtime/` directory is code — stays READABLE.
+if (runFileTool("Read", "src/mcp-runtime/index.ts") === 0) passed += 1;
+else failures.push("ALLOW expected: Read src/mcp-runtime/index.ts (source file)");
+allowed("cat an mcp-runtime source file", "cat src/mcp-runtime/index.ts");
+
 // --- Pre-existing denials must STILL fire (no regression) --------------------
 denied("force push", "git push --force origin feature");
 denied("push to protected branch", "git push origin main");

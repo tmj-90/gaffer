@@ -271,31 +271,75 @@ function classifyRootAccess(absPath, { writeRoots, readRoots }) {
 // `[._-]tokens?` join requires a real separator before `token`, so a bare word
 // like `TOKEN` in an unrelated position is not a path match here.
 //
-// TOKEN-FAMILY PRECISION GUARD: a token-NAMED file whose name ends in a clear
-// SOURCE-CODE extension is source code, not a credential store —
-// `design-tokens.json` (the standard W3C design-tokens convention),
-// `csrf_token.ts`, `auth-token.js`. Blocking those parks every delivery
-// attempt of a routine frontend ticket in a design-tokens repo. This negative
-// lookahead exempts the token FAMILY only when the name is immediately
-// followed by ONE terminal source-code extension — the trailing (?![\w.])
-// means `x-token.ts.bak` / `x-tokens.json.b64` are NOT exempt. Everything
-// else stays blocked: extensionless token files (`api-token`, `deploy_token`),
-// `.token`-extension files (`foo.token`), credential-ish extensions
-// (`auth-token.txt`, `client-token.pem`), and the exact `dashboard-token`
-// file — which is matched by its own dedicated alternative in every rule, so
-// this guard can never weaken it. The guard applies to the PATH-POSITION
-// rules only (SECRET_PATH, SECRET_PATH_FRAGMENT, SECRET_ASSIGNMENT); the
-// data-flow-hiding vectors (SECRET_GLOB, REDIRECT_READ, SOURCE_SECRET) keep
-// over-blocking the whole token family by policy — a glob resolves at
-// runtime, and redirect/source consume contents in a position no legitimate
-// source-file workflow needs.
-const TOKEN_SOURCE_EXT_GUARD = String.raw`(?!\.(?:ts|tsx|js|jsx|mjs|cjs|json|css|scss|less|html|vue|svelte|md)(?![\w.]))`;
+// TOKEN-FAMILY PRECISION GUARD (finding 7, re-hardened): a `*[-_.]token(s)?`
+// file is a CREDENTIAL by default. The split that keeps legit files readable is
+// CODE-extension vs DATA-extension, NOT "has an extension":
+//   * a token-named file with a CODE extension is source code (safe to read):
+//     `csrf_token.ts`, `auth-token.js`, `refresh-token.ts`, `access-token.tsx`.
+//   * a token-named file with a DATA extension (`.json`/`.yaml`/`.txt`/`.env`/…)
+//     or NO extension can hold a credential and stays BLOCKED:
+//     `access-token.json`, `api_token.json`, `client-token.json`, a bare
+//     `access-token`, `secret.token`, `client-token.pem`. `design-tokens.json`
+//     and `access-token.json` are structurally identical (`*-token(s).json`) and
+//     CANNOT be separated by extension alone — so `.json` MUST NOT be exempt.
+// The design-token convention is instead exempted EXPLICITLY, regardless of
+// extension: a basename carrying `design[-_.]token(s)` (`design-tokens.json`,
+// `design-token.json`, `src/theme/design-tokens.json`), and the W3C
+// design-tokens file convention (`*.tokens.json`, `*.tokens`, e.g.
+// `theme.tokens.json`).
+//
+// Implemented as ONE zero-width negative lookahead placed immediately after the
+// matched `tokens?`. It fires (exempts → reads through) for exactly three
+// TERMINAL forms; each ends in `(?![\w.])`, so only a SINGLE terminal extension
+// is exempt and double-extension exfil disguises stay blocked
+// (`design-tokens.json.b64`, `x-token.ts.bak`):
+//   1. `…token(s)?.<CODE-EXT>`         → a source file
+//   2. `…design[-_.]token(s)?[.ext]`   → a design-system token file
+//   3. `….tokens[.json]`               → the W3C design-tokens convention
+// The design/W3C branches use lookbehind on the just-matched name, so the guard
+// stays a drop-in string interpolated identically into every PATH-POSITION rule
+// (SECRET_PATH, SECRET_PATH_FRAGMENT, SECRET_ASSIGNMENT) — no per-rule drift.
+// UNDECIDABLE-BY-FILENAME (`client-token.js` — code ext but credential-sounding):
+// we FAVOUR the code-ext rule and treat it as code. A stored credential is
+// virtually never a `.js`/`.ts` file, and the outbound-network / exfil guards
+// backstop it. DESIGN NOTE (why this rule stays SMALL): classifying arbitrary
+// target-repo `*-token` files by NAME is heuristic defence-in-depth, not a
+// guarantee — filename ≠ secret. We block the obvious credential conventions,
+// exempt the design-token + code-extension conventions, and STOP; this guard is
+// deliberately NOT grown into an ever-larger qualifier chain chasing
+// completeness (that churn already produced two OPPOSITE findings on this rule —
+// over-block then under-block). When the credential-vs-design call is close we
+// PREFER the smaller rule (a novel credential filename slipping is covered by
+// the exfil guard; over-blocking design files is the worse product outcome). The
+// load-bearing, 100%-reliable blocks are the factory's OWN fixed-name secrets —
+// `dashboard-token` and `mcp-runtime.*.json` — each carried by its own
+// guard-free alternative in every rule. The data-flow-hiding vectors (SECRET_GLOB, REDIRECT_READ,
+// SOURCE_SECRET) carry NO guard and keep over-blocking the whole token family —
+// a glob resolves at runtime, and redirect/source consume contents in a
+// position no legitimate source-file workflow needs. The exact `dashboard-token`
+// file has its own guard-free alternative in every rule, so this guard can
+// never weaken it.
+const TOKEN_CODE_EXT = String.raw`tsx|ts|jsx|js|mjs|cjs|css|scss|sass|less|vue|svelte`;
+const TOKEN_SOURCE_EXT_GUARD = String.raw`(?!(?:\.(?:${TOKEN_CODE_EXT})|(?<=design[._-]tokens?)(?:\.[\w-]+)?|(?<=\.tokens)(?:\.json)?)(?![\w.]))`;
 // NOTE: `dashboard-token(\.[\w-]+)?` — the exact token file keeps its own
 // alternative WITH an optional extension so `dashboard-token.json` (previously
 // caught by the family rule) stays blocked now that the family exempts
-// source-code extensions.
+// source-code / design-token names.
+//
+// MCP RUNTIME FILE (claim-token boundary): the factory writes the substituted
+// GAFFER_CLAIM_TOKEN into `$GAFFER_DATA/mcp-runtime.<pid>.json` (and the base
+// `mcp-runtime.json`). `$GAFFER_DATA` is in the delivery agent's READ allowlist,
+// so a rogue agent that reads this file recovers the claim token and can present
+// it EXPLICITLY to `submit_ticket_for_review` — re-opening the strand wave-1
+// closed by removing the env fallback. So the runtime JSON is a secret path on
+// EVERY read vector. Anchored to the `.json` runtime file only: a SOURCE path
+// with an `mcp-runtime` DIRECTORY component (`src/mcp-runtime/index.ts`, which
+// finding-11 made pass the hygiene rule) is code and stays READABLE. (This is
+// the READ rule; the separate hygiene forbidden-fragment `mcp-runtime.` is a
+// different rule and stays as finding-7 tightened it.)
+const MCP_RUNTIME_FILE = String.raw`mcp-runtime(?:\.\w+)*\.json`;
 const SECRET_PATH = new RegExp(
-  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt)|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
   "i",
 );
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
@@ -341,7 +385,7 @@ const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
 // (`npx prettier --write src/design-tokens.json`) is not flagged; the exact
 // `dashboard-token` alternative is guard-free and always fires.
 const SECRET_PATH_FRAGMENT = new RegExp(
-  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -351,7 +395,7 @@ const SECRET_PATH_FRAGMENT = new RegExp(
 // `*credential*`, `*secret*`). We match the wildcard form specifically so
 // an ordinary glob like `*.ts` or `src/*` is not flagged.
 const SECRET_GLOB =
-  /(\.e[*?]|\.en[*?]|\.env[*?]|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?]|[*?][\w./-]*token|token[\w./-]*[*?]|dashboard-token[*?])/i;
+  /(\.e[*?]|\.en[*?]|\.env[*?]|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?]|[*?][\w./-]*token|token[\w./-]*[*?]|dashboard-token[*?]|mcp-runtime[\w.-]*[*?])/i;
 
 // Shell read/redirect/source positions that consume a file's CONTENTS
 // without naming a "reader" binary:
@@ -359,9 +403,9 @@ const SECRET_GLOB =
 //   `source .env` / `. .env`   load secrets into the environment
 //   `read ... < .env` / `mapfile < .env`  (the `<` rule catches these too)
 const REDIRECT_READ =
-  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|dashboard-token|[._-]tokens?)/i;
+  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|dashboard-token|[._-]tokens?)/i;
 const SOURCE_SECRET =
-  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|dashboard-token|[._-]tokens?)/i;
+  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|dashboard-token|[._-]tokens?)/i;
 
 // Command-substitution / pipe / xargs constructs that decouple the tool
 // from the path it operates on, hiding the data flow from static analysis.
@@ -391,7 +435,7 @@ const FILE_READ_PRIMITIVE =
 // SOURCE file is legitimate; `f=.gaffer/dashboard-token` and extensionless
 // token files stay denied.
 const SECRET_ASSIGNMENT = new RegExp(
-  String.raw`\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 

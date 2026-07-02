@@ -759,7 +759,10 @@ EOF
     rm -f "$B_USAGE_JSON"
     log "bootstrap delivery for #$NUM finished (rc=$brc)"
     if [ "$brc" -ne 0 ]; then
-      gaffer_release_delivery refining "bootstrap failed (rc=$brc) — scaffold left at $B_DIR for inspection"
+      # FINDING-12: park bootstrap failures to the VISIBLE `blocked` column (event +
+      # attention count in status.sh / the human queue) — `refining` hid them from
+      # selection, clarify, status and the human queue.
+      gaffer_release_delivery blocked "bootstrap failed (rc=$brc) — scaffold left at $B_DIR for inspection" bootstrap_failed
       gaffer_skip_ticket "$NUM"
       log "BOOTSTRAP FAILED for #$NUM (rc=$brc) — leaving $B_DIR for inspection; not onboarding"
       result error; exit 0
@@ -771,7 +774,8 @@ EOF
       log "BOOTSTRAP #$NUM produced no commit — parking (no scaffold to onboard)"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED: bootstrap produced no initial commit — needs clarification" >/dev/null 2>&1 || true
-      gaffer_release_delivery refining "bootstrap produced no initial commit"
+      # FINDING-12: VISIBLE park (see the rc-failure park above).
+      gaffer_release_delivery blocked "bootstrap produced no initial commit" bootstrap_failed
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
 
@@ -797,7 +801,8 @@ EOF
       if [ "${HYGIENE_ENFORCE:-1}" = "1" ]; then
         wg attach-evidence "$NUM" --type manual_note \
           --summary "PARKED: bootstrap hygiene violation (not onboarded):"$'\n'"$B_HYGIENE" >/dev/null 2>&1 || true
-        gaffer_release_delivery refining "bootstrap hygiene: $(printf '%s' "$B_HYGIENE" | tr '\n' ' ')"
+        # FINDING-12: VISIBLE park (see the rc-failure park above).
+        gaffer_release_delivery blocked "bootstrap hygiene: $(printf '%s' "$B_HYGIENE" | tr '\n' ' ')" bootstrap_failed
         gaffer_skip_ticket "$NUM"
         log "BOOTSTRAP FAILED for #$NUM — hygiene violation; not onboarding"
         result error; exit 0
@@ -830,7 +835,8 @@ print(hits[0] if hits else '')
         log "BOOTSTRAP MINIMALISM: #$NUM has NO smallest-change note — failing ($_BMZ_FILES files / $_BMZ_LINES lines)"
         wg attach-evidence "$NUM" --type manual_note \
           --summary "PARKED: bootstrap minimalism — missing smallest-change note (${_BMZ_FILES} files / ${_BMZ_LINES} lines)" >/dev/null 2>&1 || true
-        gaffer_release_delivery refining "bootstrap minimalism: missing smallest-change note"
+        # FINDING-12: VISIBLE park (see the rc-failure park above).
+        gaffer_release_delivery blocked "bootstrap minimalism: missing smallest-change note" bootstrap_failed
         gaffer_skip_ticket "$NUM"; result error; exit 0
       else
         log "MINIMALISM_ENFORCE=0 — #$NUM bootstrap missing smallest-change note, flagging not failing"

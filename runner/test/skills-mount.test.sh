@@ -36,6 +36,16 @@ for u in $GAFFER_UNIVERSAL_SKILLS; do
   [ -f "$DEST/.claude/skills/$u/SKILL.md" ] || { echo "    missing universal: $u"; umiss=1; }
 done
 [ "$umiss" = 0 ] && ok "all universal skills mounted" || fail "a universal skill was not mounted"
+# FINDING 16: the prompt MANDATES prepare-digest-delta, so it must be in the
+# universal DEFAULT set (it was dropped on the select-skills fallback before) —
+# assert both the default list and the actual mount carry it.
+case " $GAFFER_UNIVERSAL_SKILLS " in
+  *" prepare-digest-delta "*) ok "prepare-digest-delta is in the universal default set" ;;
+  *) fail "prepare-digest-delta missing from GAFFER_UNIVERSAL_SKILLS" ;;
+esac
+[ -f "$DEST/.claude/skills/prepare-digest-delta/SKILL.md" ] \
+  && ok "prepare-digest-delta is mounted for the agent" \
+  || fail "prepare-digest-delta not mounted"
 
 echo "== AC3: a selected stack skill is mounted; an unselected one is NOT =="
 [ -e "$DEST/.claude/skills/typescript-conventions" ] \

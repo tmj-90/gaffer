@@ -117,7 +117,6 @@ export class CliSpecLoreReader implements SpecLoreReader {
 
   constructor(config: CliSpecLoreReaderConfig) {
     this.run = config.runner ?? makeSpawnRunner(config.cliBin, config.db);
-    // eslint-disable-next-line no-console
     this.log = config.log ?? ((m) => console.warn(m));
   }
 

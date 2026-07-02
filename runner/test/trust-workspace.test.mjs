@@ -191,7 +191,7 @@ console.log("== 4) committed .claude/settings.local.json neutralized ==");
   symlinkSync(secret, link);
   const r2 = runTrust(target2, { home: home2, root: wtBase2 });
   assert("trust succeeds with a symlinked local settings", r2.status === 0);
-  let stillLink = false;
+  let stillLink;
   try {
     stillLink = lstatSync(link).isSymbolicLink();
   } catch {

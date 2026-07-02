@@ -161,7 +161,6 @@ export class CliSpecClauseSeeder implements SpecClauseSeeder {
   constructor(config: CliSpecClauseSeederConfig) {
     this.run = config.runner ?? makeSpawnRunner(config.cliBin, config.db);
     this.autoApprove = config.autoApprove;
-    // eslint-disable-next-line no-console
     this.log = config.log ?? ((m) => console.warn(m));
   }
 

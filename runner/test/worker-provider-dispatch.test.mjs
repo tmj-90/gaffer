@@ -16,7 +16,7 @@
 //
 // Zero deps beyond node. Run: node test/worker-provider-dispatch.test.mjs
 // =====================================================================
-import { existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";

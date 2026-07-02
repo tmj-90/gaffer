@@ -22,6 +22,9 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/coverage/**",
       "**/*.tsbuildinfo",
+      // Runtime factory worktrees (delivery scratch + vendored/generated code
+      // from delivered repos, e.g. jacoco resources). Gitignored, never source.
+      ".gaffer/**",
       // Vendored browser SPA — plain ES module, not part of the TS program.
       // Linted with browser globals in the dedicated override below.
     ],

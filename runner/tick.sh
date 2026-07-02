@@ -532,9 +532,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # ── Stabilisation gate 0: per-repo BACKPRESSURE (skip new claims) ───────────
   # Walk ready candidates (least-recently-failed first) and pick the FIRST whose
   # target repo is NOT in backpressure. A repo is in backpressure once its
-  # outstanding work (unmerged gaffer/* branches + in_review tickets + active
-  # claims) hits ANY per-repo cap; we then SKIP new claims for it this tick so the
-  # loop never piles up more than the cap. Backpressured repos are recorded in a
+  # ACTIVE outstanding work (unmerged gaffer/* branches — excluding branches
+  # preserved by parked blocked/refining tickets and the candidate's own branch —
+  # + in_review tickets + active claims) hits ANY per-repo cap; we then SKIP new
+  # claims for it this tick so the loop never piles up more than the cap.
+  # Backpressured repos are recorded in a
   # per-run file (cleared by loop.sh) for the run-summary report. With every ready
   # repo backpressured, the tick yields no_work and the loop prioritises
   # review/merge/cleanup elsewhere instead of claiming more.
@@ -564,10 +566,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
     _cdef="$(echo "$_cshow" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'" 2>/dev/null)"
     _cname="$(echo "$_cshow" | jget "(d['repositories'][0]['name'] if d['repositories'] else '') or ''" 2>/dev/null)"
     if [ -n "$_crepo" ] && git -C "$_crepo" rev-parse --git-dir >/dev/null 2>&1; then
-      # Sweep abandoned branches (rejected/parked tickets) first so they don't
-      # count against the cap, then measure pressure.
+      # Sweep genuinely-abandoned branches (POSITIVELY cancelled tickets with no
+      # delivery record) first so they don't count against the cap. Parked
+      # (blocked/refining) tickets' branches are PRESERVED by the sweep and are
+      # instead excluded from the pressure count itself, and the candidate's own
+      # preserved branch is bypassed (it gets reused, not added) — so parked work
+      # never starves the repo. Then measure pressure.
       gaffer_sweep_abandoned_branches "$_crepo" "${_cdef:-main}" >/dev/null 2>&1 || true
-      read -r _pb _pr _pc <<< "$(gaffer_repo_pressure "$_crepo" "${_cdef:-main}" "$_cname")"
+      read -r _pb _pr _pc <<< "$(gaffer_repo_pressure "$_crepo" "${_cdef:-main}" "$_cname" "$_cand")"
       if gaffer_repo_in_backpressure "${_pb:-0}" "${_pr:-0}" "${_pc:-0}"; then
         _gaffer_locked .bp.lock _gaffer_bp_record "$BP_FILE" "${_cname:-$_crepo}" "$_pb/$_pr/$_pc" "$GAFFER_BACKPRESSURE_REASON"
         log "BACKPRESSURE: skipping ready #$_cand — repo '${_cname:-$_crepo}' at/over cap ($GAFFER_BACKPRESSURE_REASON)"

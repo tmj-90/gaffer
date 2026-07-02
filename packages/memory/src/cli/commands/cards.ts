@@ -16,12 +16,12 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import {
-  cardKeysForRepoName,
   deleteFileCard,
   diagnoseRepoKeyMismatch,
   getFileCard,
   getWatermark,
   markCardReviewFailed,
+  movableLegacyKeys,
   rekeyRepo,
   repoKey,
   searchFileCards,
@@ -780,8 +780,9 @@ export async function cmdCardsRekey(args: ReturnType<typeof parseArgs>): Promise
   try {
     const newKey = repoKey(resolved.canonical);
     const canonical = canonicalizeRepo(resolved.canonical);
-    const before = cardKeysForRepoName(db, resolved.repo);
-    const fromKeys = before.filter((k) => k.repoKey !== newKey);
+    // Scoped by PROVABLE legacy identity (not display name) so the dry-run
+    // report matches exactly what a real run would migrate. See rekeyRepo.
+    const fromKeys = movableLegacyKeys(db, resolved.repo, resolved.canonical);
 
     if (dryRun) {
       const wouldMove = fromKeys.reduce((a, b) => a + b.count, 0);

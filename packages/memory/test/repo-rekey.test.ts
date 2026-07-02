@@ -198,4 +198,129 @@ describe("rekeyRepo — legacy migration", () => {
     expect(result.cardsRekeyed).toBe(2);
     expect(cardKeysForRepoName(db, REPO)).toEqual([{ repoKey: repoKey(HTTPS), count: 2 }]);
   });
+
+  it("does NOT re-key legacy rows whose key is not a provable form of this canonical", () => {
+    const db = newDb();
+    // A legacy row keyed off some OTHER (non-derivable) identity for the same
+    // display name — e.g. a symlinked pwd that differs from realpath. Its key is
+    // NOT reconstructable from this canonical, so it must be left alone (loudly
+    // diagnosable) rather than blindly claimed.
+    const unrelatedKey = createHash("sha256").update("/some/other/symlinked/widget").digest("hex");
+    upsertFileCard(db, baseCard({ repoKey: unrelatedKey, canonical: undefined, path: "x.ts" }));
+
+    const result = rekeyRepo(db, REPO, HTTPS);
+    expect(result.noop).toBe(true);
+    expect(result.cardsRekeyed).toBe(0);
+    // The row is untouched under its original key.
+    expect(countActiveCards(db, unrelatedKey)).toBe(1);
+    expect(countActiveCards(db, repoKey(HTTPS))).toBe(0);
+  });
+});
+
+// ── B1 (blocking): cross-repo isolation — a shared display name must NEVER let
+// onboarding one repo re-key/corrupt another repo's cards. ──────────────────
+describe("rekeyRepo — cross-repo isolation (B1)", () => {
+  // Two DISTINCT repos that happen to share the display name "api" (extremely
+  // common: every org has an `api`/`web`/`utils`). Their canonicals — hence
+  // their keys — differ. Onboarding one must not touch the other's rows.
+  const SHARED = "api";
+  const ORG_A_SSH = "git@github.com:orgA/api.git";
+  const ORG_B_SSH = "git@gitlab.com:orgB/api.git";
+  const ORG_A_LEGACY = createHash("sha256").update(ORG_A_SSH).digest("hex");
+  const ORG_B_LEGACY = createHash("sha256").update(ORG_B_SSH).digest("hex");
+
+  function apiCard(over: Partial<Parameters<typeof upsertFileCard>[1]> = {}) {
+    return {
+      repoKey: repoKey(ORG_A_SSH),
+      canonical: ORG_A_SSH,
+      repo: SHARED,
+      path: "src/server.ts",
+      contentHash: "b".repeat(64),
+      loc: 10,
+      symbols: ["serve"],
+      source: "onboard",
+      tldr: "the api server",
+      modelStatus: "active" as const,
+      ...over,
+    };
+  }
+
+  it("onboarding orgB does NOT re-key orgA's legacy cards (no display-name match)", () => {
+    const db = newDb();
+    // orgA has a legacy card under its OWN legacy key, display name "api".
+    upsertFileCard(db, apiCard({ repoKey: ORG_A_LEGACY, canonical: undefined, tldr: "ORG-A" }));
+
+    // orgB onboards (same display name, DIFFERENT canonical).
+    const result = rekeyRepo(db, SHARED, ORG_B_SSH);
+
+    // orgB found nothing of its own to migrate — and critically did NOT steal
+    // orgA's row (the old display-name match would have re-keyed it onto orgB).
+    expect(result.cardsRekeyed).toBe(0);
+    expect(result.noop).toBe(true);
+
+    // orgA's card is intact under orgA's key; orgB's key holds nothing.
+    expect(countActiveCards(db, ORG_A_LEGACY)).toBe(1);
+    expect(getFileCard(db, ORG_A_LEGACY, "src/server.ts")?.tldr).toBe("ORG-A");
+    expect(countActiveCards(db, repoKey(ORG_B_SSH))).toBe(0);
+  });
+
+  it("migrates ONLY the onboarding repo's own rows, leaving the namesake untouched", () => {
+    const db = newDb();
+    // Both repos have a legacy card, same display name, same path.
+    upsertFileCard(db, apiCard({ repoKey: ORG_A_LEGACY, canonical: undefined, tldr: "ORG-A" }));
+    upsertFileCard(db, apiCard({ repoKey: ORG_B_LEGACY, canonical: undefined, tldr: "ORG-B" }));
+
+    const result = rekeyRepo(db, SHARED, ORG_B_SSH);
+
+    // Exactly orgB's one row migrated onto orgB's normalised key.
+    expect(result.cardsRekeyed).toBe(1);
+    expect(getFileCard(db, repoKey(ORG_B_SSH), "src/server.ts")?.tldr).toBe("ORG-B");
+
+    // orgA's row is exactly where it was — NOT moved, NOT dropped, NOT polluted.
+    expect(countActiveCards(db, ORG_A_LEGACY)).toBe(1);
+    expect(getFileCard(db, ORG_A_LEGACY, "src/server.ts")?.tldr).toBe("ORG-A");
+    // And orgB's key does NOT contain orgA's card.
+    expect(countActiveCards(db, repoKey(ORG_B_SSH))).toBe(1);
+  });
+
+  it("isolates the watermark too — orgB's onboard leaves orgA's watermark intact", () => {
+    const db = newDb();
+    setWatermark(db, ORG_A_LEGACY, SHARED, "aaaaaaa");
+    upsertFileCard(db, apiCard({ repoKey: ORG_A_LEGACY, canonical: undefined }));
+
+    rekeyRepo(db, SHARED, ORG_B_SSH);
+
+    // orgA's legacy watermark is not stolen/dropped by orgB's rekey.
+    expect(getWatermark(db, ORG_A_LEGACY)?.syncedCommit).toBe("aaaaaaa");
+    expect(getWatermark(db, repoKey(ORG_B_SSH))).toBeNull();
+  });
+});
+
+// ── N1: on a multi-key same-path collision the NEWEST card must win. ─────────
+describe("rekeyRepo — newest-wins on multi-key same-path collision (N1)", () => {
+  it("keeps the most recently updated card when two legacy keys share a path", () => {
+    const db = newDb();
+    const otherLegacy = createHash("sha256").update(HTTPS).digest("hex");
+    // Two legacy rows for the SAME repo + SAME path under different legacy keys.
+    upsertFileCard(db, baseCard({ repoKey: LEGACY_KEY, canonical: undefined, tldr: "OLDER" }));
+    upsertFileCard(db, baseCard({ repoKey: otherLegacy, canonical: undefined, tldr: "NEWER" }));
+    // Make the ordering deterministic and unambiguous.
+    db.prepare("UPDATE file_card SET updated_at = ? WHERE repo_key = ?").run(
+      "2020-01-01T00:00:00.000Z",
+      LEGACY_KEY,
+    );
+    db.prepare("UPDATE file_card SET updated_at = ? WHERE repo_key = ?").run(
+      "2024-06-01T00:00:00.000Z",
+      otherLegacy,
+    );
+
+    const result = rekeyRepo(db, REPO, HTTPS);
+    // One migrated, one dropped as the stale duplicate.
+    expect(result.cardsRekeyed).toBe(1);
+    expect(result.collisionsDropped).toBe(1);
+
+    // Exactly one active card survives — the NEWER one.
+    expect(countActiveCards(db, repoKey(HTTPS))).toBe(1);
+    expect(getFileCard(db, repoKey(HTTPS), "src/api/price.ts")?.tldr).toBe("NEWER");
+  });
 });

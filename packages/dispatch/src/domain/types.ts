@@ -192,6 +192,15 @@ export interface Ticket {
    * surfacing it.
    */
   test_contract: string | null;
+  /**
+   * TRACK-2b: the HUMAN-CLAIM marker. `null` ⇒ agent-shaped work the factory may
+   * claim as normal. A non-null value (the human actor's id/name) ⇒ a human took the
+   * ticket "by hand": it sits `in_progress` OWNED BY THE HUMAN, the agent selection
+   * loop structurally skips it (the candidate queries filter `human_owner IS NULL`),
+   * and the board renders it in a distinct "by hand" lane. Cleared when the ticket
+   * leaves `in_progress` (hand-back to `ready`, submit to review, block, cancel …).
+   */
+  human_owner: string | null;
   created_at: string;
   updated_at: string;
 }

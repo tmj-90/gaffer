@@ -148,6 +148,7 @@ export class TicketService {
         last_review_feedback: null,
         can_be_tested: 0,
         test_contract: null,
+        human_owner: null,
         created_at: now,
         updated_at: now,
       };

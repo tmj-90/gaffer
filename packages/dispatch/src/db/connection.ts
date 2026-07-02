@@ -186,6 +186,13 @@ export function migrate(db: Db): void {
   // FAILURE-DIAGNOSIS (v12→v13): the `rework_attempts` failure-trail table. A
   // brand-new standalone table (FK to tickets, CASCADE) created idempotently by
   // SCHEMA_SQL's CREATE TABLE IF NOT EXISTS — no ADD COLUMN migration needed.
+  //
+  // TRACK-2b (v13→v14): add the `human_owner` column to an EXISTING tickets table.
+  // CREATE TABLE IF NOT EXISTS won't add a column, so it must be ALTERed in. No CHECK
+  // widening is needed (it is a free TEXT marker), so this is a plain additive ALTER —
+  // no table rebuild. No-op on a fresh DB (table absent — SCHEMA_SQL creates it). Runs
+  // AFTER every prior tickets rebuild so the rebuilt table is backfilled too.
+  alterTicketsAddHumanOwner(db);
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +
@@ -263,6 +270,24 @@ function alterTicketsAddLastReviewFeedback(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("last_review_feedback")) {
     db.exec("ALTER TABLE tickets ADD COLUMN last_review_feedback TEXT");
+  }
+}
+
+/**
+ * TRACK-2b additive migration (v13→v14): add the `human_owner` column to an
+ * EXISTING `tickets` table. `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL is a no-op
+ * for an existing table, so the column must be added here. Idempotent: skipped when
+ * the column already exists (detected via `PRAGMA table_info`). Existing rows inherit
+ * the default (NULL ⇒ agent-shaped work), which is exactly the backfill — pre-v14
+ * tickets are all claimable by the factory. On a fresh DB `tickets` doesn't exist yet,
+ * so this is a no-op and SCHEMA_SQL creates the column.
+ */
+function alterTicketsAddHumanOwner(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("human_owner")) {
+    db.exec("ALTER TABLE tickets ADD COLUMN human_owner TEXT");
   }
 }
 

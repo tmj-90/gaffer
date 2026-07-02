@@ -20,12 +20,12 @@ export class TicketRepository {
           (id, number, title, description, status, priority, risk_level, policy_pack,
            source, created_by, reviewer, branch_name, pr_url, attempt_count, row_version,
            scheduled_after, due_at, bootstrap, last_review_feedback, can_be_tested,
-           test_contract, created_at, updated_at)
+           test_contract, human_owner, created_at, updated_at)
          VALUES
           (@id, @number, @title, @description, @status, @priority, @risk_level, @policy_pack,
            @source, @created_by, @reviewer, @branch_name, @pr_url, @attempt_count, @row_version,
            @scheduled_after, @due_at, @bootstrap, @last_review_feedback, @can_be_tested,
-           @test_contract, @created_at, @updated_at)`,
+           @test_contract, @human_owner, @created_at, @updated_at)`,
       )
       .run(ticket);
   }
@@ -94,6 +94,25 @@ export class TicketRepository {
     this.db
       .prepare(`UPDATE tickets SET last_review_feedback = @value WHERE id = @id`)
       .run({ id, value });
+  }
+
+  /**
+   * TRACK-2b: set (or, with `null`, clear) the ticket's `human_owner` marker. A
+   * plain write — no row_version bump — since callers run it inside the same
+   * transaction as the guarded status change it accompanies (the human-claim path
+   * stamps it right after `ready -> in_progress`; the transition service clears it
+   * whenever a human-owned ticket leaves `in_progress`).
+   */
+  setHumanOwner(id: string, value: string | null): void {
+    this.db.prepare(`UPDATE tickets SET human_owner = @value WHERE id = @id`).run({ id, value });
+  }
+
+  /** True when the ticket currently has any active claim (TRACK-2b reuse guard). */
+  hasActiveClaim(id: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM ticket_claims WHERE ticket_id = ? AND status = 'active' LIMIT 1`)
+      .get(id);
+    return row !== undefined;
   }
 
   /**

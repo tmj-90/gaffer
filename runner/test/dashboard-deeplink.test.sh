@@ -74,12 +74,32 @@ else
   fail "--lan did not export a http://<host>:8787 deep-link base (got '$url_lan')"
 fi
 
+# BUG #6: --lan must PERSIST that LAN base to $GAFFER_DATA/dashboard-url so the
+# SEPARATE factory loop process (which only sees factory.config.sh's loopback
+# default) deep-links its AFK ping to the reachable LAN url, not 127.0.0.1.
+if [ -s "$WORK/data-lan/dashboard-url" ] \
+   && grep -Eq '^http://.+:8787$' "$WORK/data-lan/dashboard-url"; then
+  ok "--lan persists the LAN deep-link base to \$GAFFER_DATA/dashboard-url (loop reads it)"
+else
+  fail "--lan did not persist a LAN url to dashboard-url (got '$(cat "$WORK/data-lan/dashboard-url" 2>/dev/null)')"
+fi
+
 echo "== AC2: loopback dashboard exports the 127.0.0.1 base =="
+# Pre-seed a stale persisted LAN url so the degrade assertion is meaningful.
+mkdir -p "$WORK/data-local"; printf 'http://10.0.0.9:8787\n' > "$WORK/data-local/dashboard-url"
 url_local="$(run_gaffer "$WORK/data-local")"
 if [ "$url_local" = "http://127.0.0.1:8787" ]; then
   ok "loopback server env carried $url_local"
 else
   fail "loopback did not export http://127.0.0.1:8787 (got '$url_local')"
+fi
+
+# BUG #6 (degrade): a non-lan dashboard is loopback-only, so it must drop any stale
+# persisted LAN url — else the loop would keep deep-linking to an unserved address.
+if [ -e "$WORK/data-local/dashboard-url" ]; then
+  fail "loopback dashboard left a stale persisted LAN url (should be removed)"
+else
+  ok "loopback dashboard removes any stale persisted LAN url (degrades to loopback)"
 fi
 
 # PROOF (static): the front door builds the var in both dashboard paths.

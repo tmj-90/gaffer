@@ -25,10 +25,11 @@ mkdir -p "$GAFFER_DATA"
 # The literal walk-away → get-pinged payoff. At the END of a run, fire ONE closing
 # idle notification through the SAME wired dispatch notify sink the factory's
 # ticket/decision pings use (the GAFFER_NOTIFY_* sinks, via `notify emit`), summing
-# up what's waiting for the operator: "N awaiting review, M decisions". Counts come
-# from the SAME sources the runner already trusts — `stats --json`
-# (ticketsByStatus.in_review) and `human-queue --json` (kind=="decision") — the
-# very sources status.sh reads.
+# up what's waiting for the operator: "N awaiting review, B blocked, M decisions".
+# Counts come from the SAME sources the runner already trusts — `stats --json`
+# (ticketsByStatus.in_review + ticketsByStatus.blocked) and `human-queue --json`
+# (kind=="decision") — the very sources status.sh reads, and the SAME attention set
+# status.sh gates on (in_review + blocked) so a `blocked` park is never missed.
 #
 # Negative control: when NOTHING is awaiting a human, we stay silent (no outbound
 # ping) so a clean, fully-drained run never wakes the operator.
@@ -42,7 +43,7 @@ gaffer_loop_end_ping() {
   : "${LOOP_HQ_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB human-queue --json}"
   : "${LOOP_NOTIFY_EMIT_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB notify emit}"
 
-  local stats_json hq_json review decisions
+  local stats_json hq_json review blocked decisions
   # argv-array invocation (no eval): mirrors status.sh's seam contract.
   local -a _sc _hc _nc
   read -ra _sc <<<"$LOOP_STATS_CMD"; stats_json="$("${_sc[@]}" 2>/dev/null)"
@@ -52,20 +53,30 @@ gaffer_loop_end_ping() {
 try: q=json.load(sys.stdin)
 except Exception: print(0); raise SystemExit
 print(int((q.get('ticketsByStatus',{}) or {}).get('in_review',0) or 0))" 2>/dev/null || echo 0)"
+  # BUG #5: a walk-away run that parks a ticket to `blocked` (the canonical
+  # needs-a-human case) MUST wake the operator. status.sh already counts
+  # `blocked` toward its attention total (attention = in_review + blocked); the
+  # loop-end ping used to ignore it and fall silent, so the two disagreed. Read
+  # the SAME `blocked` count here so both agree on what needs a human.
+  blocked="$(printf '%s' "$stats_json" | python3 -c "import sys,json
+try: q=json.load(sys.stdin)
+except Exception: print(0); raise SystemExit
+print(int((q.get('ticketsByStatus',{}) or {}).get('blocked',0) or 0))" 2>/dev/null || echo 0)"
   decisions="$(printf '%s' "$hq_json" | python3 -c "import sys,json
 try: q=json.load(sys.stdin)
 except Exception: print(0); raise SystemExit
 print(sum(1 for i in (q.get('items') or []) if i.get('kind')=='decision'))" 2>/dev/null || echo 0)"
   # Coerce to integers; any non-numeric parse degrades to 0 (stay silent, never crash).
   [ "$review" -eq "$review" ] 2>/dev/null || review=0
+  [ "$blocked" -eq "$blocked" ] 2>/dev/null || blocked=0
   [ "$decisions" -eq "$decisions" ] 2>/dev/null || decisions=0
 
-  if [ "$review" -eq 0 ] && [ "$decisions" -eq 0 ]; then
+  if [ "$review" -eq 0 ] && [ "$blocked" -eq 0 ] && [ "$decisions" -eq 0 ]; then
     echo "gaffer factory: all clear — nothing awaiting a human; no closing ping."
     return 0
   fi
 
-  local detail="$review awaiting review, $decisions decisions"
+  local detail="$review awaiting review, $blocked blocked, $decisions decisions"
   echo "gaffer factory: $detail — sending closing ping."
   read -ra _nc <<<"$LOOP_NOTIFY_EMIT_CMD"
   "${_nc[@]}" --kind review_needed --detail "$detail" \

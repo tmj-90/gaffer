@@ -477,8 +477,24 @@ export GAFFER_PAUSE_ON_CAP
 # the per-tick resume work so a backlog of Continue presses doesn't starve new claims.
 : "${GAFFER_MAX_RESUMES_PER_TICK:=1}"
 export GAFFER_MAX_RESUMES_PER_TICK
-# Dashboard base URL embedded in the cap-hit / park notify so the operator can
-# click straight through to the ticket. Defaults to the local dashboard.
+# Dashboard base URL embedded in the cap-hit / park / loop-end notify so the operator
+# can click straight through to the ticket from their phone.
+#
+# BUG #6: the loop runs as a SEPARATE process from the dashboard, so it never sees
+# the `--lan` (http://<LAN>:<port>) URL the dashboard computes + exports only inside
+# its own process — the loop-end ping would deep-link to loopback, unreachable from a
+# phone. `gaffer dashboard --lan` now PERSISTS the reachable base to
+# $GAFFER_DATA/dashboard-url; read it here so the loop (and status.sh) deep-link to
+# the SAME URL the dashboard serves. Precedence: an explicit env override always wins;
+# else the persisted LAN url; else the loopback default (the degrade path when not
+# running under --lan — `gaffer dashboard` without --lan removes the persisted file).
+if [ -z "${GAFFER_DASHBOARD_URL:-}" ] && [ -s "$GAFFER_DATA/dashboard-url" ]; then
+  _gaffer_persisted_url="$(head -1 "$GAFFER_DATA/dashboard-url" 2>/dev/null | tr -d ' \t\r\n')"
+  case "$_gaffer_persisted_url" in
+    http://*|https://*) GAFFER_DASHBOARD_URL="$_gaffer_persisted_url" ;;
+  esac
+  unset _gaffer_persisted_url
+fi
 : "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"
 export GAFFER_DASHBOARD_URL
 

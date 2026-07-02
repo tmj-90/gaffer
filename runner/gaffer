@@ -109,6 +109,12 @@ dashboard)
     # it emitDecisionGate/ticketUrl produce no link. Export so the server env picks
     # it up and persist for any child that reads it.
     export GAFFER_DASHBOARD_URL="http://$LAN:$DASH_PORT"
+    # BUG #6: the factory LOOP runs as a separate process and only sees the loopback
+    # default from factory.config.sh — so its loop-end AFK ping would deep-link to
+    # 127.0.0.1, unreachable from a phone. Persist the reachable LAN base where the
+    # loop (and status.sh) read it back, so every notify deep-links to the SAME URL
+    # the dashboard serves under --lan. (factory.config.sh reads this file.)
+    ( umask 077; printf '%s\n' "$GAFFER_DASHBOARD_URL" > "$GAFFER_DATA/dashboard-url" ) 2>/dev/null || true
     nohup env -u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" DISPATCH_API_TOKEN="$TOK" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host 0.0.0.0 >"$GAFFER_DATA/dashboard.log" 2>&1 &
     gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
     if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/healthz" >/dev/null 2>&1; then
@@ -130,6 +136,10 @@ dashboard)
   # AFK-LOOP P1: local loopback base so notification deep-links resolve even for
   # the non-LAN (desktop) dashboard. --lan overrides this with the LAN address.
   export GAFFER_DASHBOARD_URL="http://127.0.0.1:$DASH_PORT"
+  # BUG #6 (degrade path): a plain (non-lan) dashboard is loopback-only, so drop any
+  # stale persisted LAN url — the loop then falls back to the loopback default rather
+  # than deep-linking to a LAN address that is no longer being served.
+  rm -f "$GAFFER_DATA/dashboard-url" 2>/dev/null || true
   nohup env -u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" >"$GAFFER_DATA/dashboard.log" 2>&1 &
   gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
   if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/api/dashboard" >/dev/null 2>&1; then

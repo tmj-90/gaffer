@@ -204,6 +204,20 @@ _gaffer_locked() {
 }
 _gaffer_log_line() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" | tee -a "$GAFFER_LOG" >&2; }
 log() { _gaffer_locked .log.lock _gaffer_log_line "$*"; }
+# Mark a delivery worktree as a TRUSTED Claude Code workspace so the headless
+# `claude -p` agent HONOURS the installed .claude/settings.json permission
+# allowlist instead of hanging on a tool-permission prompt no one can answer
+# (Claude Code ignores project settings in an untrusted directory, and every
+# delivery runs in a fresh, never-trusted worktree). Best-effort: the PreToolUse
+# safety-hook is the real boundary, so a failure here only risks the OLD
+# prompt-hang behaviour — never a safety regression. Operator-endorsed fix
+# (configure ~/.claude.json) rather than --dangerously-skip-permissions.
+gaffer_trust_workspace() {
+  local dir="$1"
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
+    || log "TRUST: could not pre-trust $dir (headless agent may hang on an MCP tool prompt)"
+}
 # Append a ticket number to the per-run skip-file under .skip.lock so concurrent
 # workers never lose or corrupt an entry (the skip-file stops one bad ticket
 # starving the queue; a lost entry would let it be re-claimed forever).
@@ -706,6 +720,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Fail-soft: falls back to the whole library on any error (see skills-mount.sh).
     gaffer_skills_mount "$B_DIR" "$B_SKILLS" "bootstrap-$NUM"
     sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$B_DIR/.claude/settings.json"
+    gaffer_trust_workspace "$B_DIR"
     MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
     gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"; result error; exit 1; }
     # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
@@ -1547,6 +1562,9 @@ EOF
       rm -f "$PRIMARY_REPO/.claude/settings.json"   # an unwired settings file must not survive
       log "SAFETY: $PRIMARY_REPO/.claude/settings.json lacks the PreToolUse safety-hook wiring (fail closed)"; return 1
     fi
+    # Trust the worktree so the allowlist just written is HONOURED headless — else
+    # the agent hangs on the first MCP tool-permission prompt (untrusted-dir gate).
+    gaffer_trust_workspace "$PRIMARY_REPO"
     if ! cp -f "$HERE/claude/CLAUDE.md" "$PRIMARY_REPO/CLAUDE.factory.md" 2>/dev/null; then
       log "SAFETY: could not install the CLAUDE.factory.md brief into $PRIMARY_REPO (fail closed)"; return 1
     fi
@@ -2613,6 +2631,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # Mount only the review-relevant + universal skill subset (not all ~66).
       gaffer_skills_mount "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$WT/.claude/settings.json"
+      gaffer_trust_workspace "$WT"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
@@ -2744,6 +2763,7 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # Mount only the clarify-relevant + universal skill subset (not all ~66).
       gaffer_skills_mount "$CREPO" "clarify, record-evidence" "clarify-$CNUM"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$CREPO/.claude/settings.json"
+      gaffer_trust_workspace "$CREPO"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is

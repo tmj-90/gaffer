@@ -256,6 +256,83 @@ describe("runner-owned bookkeeping", () => {
     );
   });
 
+  // FINDING-2 (runner-owned submit): the runner injects GAFFER_CLAIM_TOKEN into the
+  // agent's MCP server env for the agent's LEGITIMATE token-gated writes (evidence,
+  // block). submit_ticket_for_review must NOT resolve that env fallback — otherwise a
+  // disobedient agent that ignores "do NOT submit" submits successfully, COMPLETES the
+  // claim, and the runner's subsequent release runs with a now-void token: the branch
+  // is dropped and the ticket strands in in_review with an empty diff (un-approvable —
+  // PR_OR_DIFF_REQUIRED can never pass).
+  describe("FINDING-2: submit is runner-owned — the agent mount cannot self-submit", () => {
+    it("submit_ticket_for_review does NOT resolve the env token — a tokenless agent self-submit is refused", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const { ticketId, token } = seedReadyClaimedTicket(wg);
+      const h = makeHandlers(wg, agentActor);
+
+      const prev = process.env.GAFFER_CLAIM_TOKEN;
+      // Exactly the agent's MCP mount: the runner-held token sits in the server env.
+      process.env.GAFFER_CLAIM_TOKEN = token;
+      try {
+        const res = h.submit_ticket_for_review({ ticket_id: ticketId });
+        expect(res.isError).toBe(true);
+        const error = res.structuredContent.error as { code: string };
+        expect(error.code).toBe("VALIDATION_ERROR");
+      } finally {
+        if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prev;
+      }
+      // The claim was NOT completed: the ticket stays claimed, awaiting the runner.
+      expect(wg.view(ticketId).ticket.status).toBe("claimed");
+    });
+
+    it("no strand: after a refused self-submit the runner's park still releases with its STILL-VALID token", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const { ticketId, token } = seedReadyClaimedTicket(wg);
+      const h = makeHandlers(wg, agentActor);
+
+      // 1) The disobedient agent tries to submit through its mount — refused.
+      const prev = process.env.GAFFER_CLAIM_TOKEN;
+      process.env.GAFFER_CLAIM_TOKEN = token;
+      try {
+        expect(h.submit_ticket_for_review({ ticket_id: ticketId }).isError).toBe(true);
+      } finally {
+        if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prev;
+      }
+
+      // 2) The runner's empty-delivery gate parks with the token it holds. Because the
+      // claim was never completed, the token is still valid — no CLAIM_INVALID
+      // soft-warn, no drift.
+      const res = wg.runnerRelease(
+        { ticket_id: ticketId, to: "refining", claimToken: token, reason: "empty delivery" },
+        systemActor,
+      );
+      expect(res.status).toBe("refining");
+      // The strand signature (in_review + no delivery diff) never materialises.
+      expect(wg.view(ticketId).ticket.status).not.toBe("in_review");
+    });
+
+    it("submit_ticket_for_review still works with an EXPLICIT claim_token (legitimate holder)", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const { ticketId, token } = seedReadyClaimedTicket(wg);
+      const h = makeHandlers(wg, agentActor);
+
+      // No env token in play — the caller actually holds the token (non-factory use).
+      const prev = process.env.GAFFER_CLAIM_TOKEN;
+      delete process.env.GAFFER_CLAIM_TOKEN;
+      try {
+        const res = structured(
+          h.submit_ticket_for_review({ ticket_id: ticketId, claim_token: token }),
+        );
+        expect(res.status).toBe("in_review");
+      } finally {
+        if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prev;
+      }
+      expect(wg.view(ticketId).ticket.status).toBe("in_review");
+    });
+  });
+
   it("a claim token scoped to ticket A cannot evidence ticket B (CLAIM_INVALID)", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     // Ticket A: claimed by the runner, token in hand.

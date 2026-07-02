@@ -784,10 +784,12 @@ EOF
     # BUG 3 fix: previously used HYGIENE_FORBIDDEN_PATHS='.crew/ *.events.jsonl'
     # which silently exempted .claude/, CLAUDE.factory.md, .mcp.json and
     # mcp-runtime. Now we build the relaxed list by taking the full default
-    # and removing only the node_modules fragment. (The `mcp-runtime` substring
-    # also covers the per-tick `mcp-runtime.<pid>.json` files.)
+    # and removing only the node_modules fragment. (The `mcp-runtime.` fragment —
+    # trailing dot, finding 11 — covers the generated `mcp-runtime.json` /
+    # per-tick `mcp-runtime.<pid>.json` files without rejecting a legit
+    # `src/mcp-runtime/` source dir.)
     EMPTY_TREE="$(git -C "$B_DIR" hash-object -t tree /dev/null 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)"
-    _BOOTSTRAP_HYGIENE_PATHS="$(printf '%s\n' ${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime} | grep -v '^node_modules$' | tr '\n' ' ')"
+    _BOOTSTRAP_HYGIENE_PATHS="$(printf '%s\n' ${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.} | grep -v '^node_modules$' | tr '\n' ' ')"
     B_HYGIENE="$(HYGIENE_FORBIDDEN_PATHS="$_BOOTSTRAP_HYGIENE_PATHS" \
                  gaffer_assert_clean_delivery "$B_DIR" "$EMPTY_TREE" 2>/dev/null)" || true
     if [ -n "$B_HYGIENE" ]; then

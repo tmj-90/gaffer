@@ -89,7 +89,12 @@ program
             `(delete it to rotate).\n`,
         );
       } else {
-        process.stdout.write(`dispatch-api: using DISPATCH_API_TOKEN from the environment.\n`);
+        // An operator-SET token switches auth to the strict posture (see
+        // isRequestAuthorized): loopback reads are gated too, so say so.
+        process.stdout.write(
+          `dispatch-api: using DISPATCH_API_TOKEN from the environment ` +
+            `(strict auth: every request, including loopback reads, requires the token).\n`,
+        );
       }
     });
 

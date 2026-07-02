@@ -83,7 +83,9 @@ import {
  * Enforcement is method-aware (see {@link isRequestAuthorized}): EVERY mutating /
  * state-changing request (review approve/reject, merge, board moves, every write)
  * must present the token, while read-only GET/HEAD requests stay open on a
- * loopback bind to preserve local dashboard UX. This is what structurally stops
+ * loopback bind to preserve local dashboard UX — for the AUTO-provisioned token
+ * only; an operator-SET `DISPATCH_API_TOKEN` gates every request, loopback reads
+ * included (see auth.ts isOperatorSetToken). This is what structurally stops
  * the delivery agent — whose child env the runner scrubs of the token — from
  * self-approving its own work over REST. What is NOT here yet is *role*
  * enforcement: per-role RBAC is deferred, so an authenticated caller acts as a
@@ -597,7 +599,8 @@ async function route(
     // API requires a bearer token (DISPATCH_API_TOKEN — auto-provisioned at
     // startup by the dispatch-api entrypoint, so a token is present by default).
     // Read-only requests stay open on a loopback bind to preserve local dashboard
-    // UX; EVERY mutating/state-changing request must present the token, as must a
+    // UX — auto-provisioned token only; an operator-SET token gates everything.
+    // EVERY mutating/state-changing request must present the token, as must a
     // read of a privileged secret-bearing path (e.g. /api/settings) even on
     // loopback. No-op only when auth is fully disabled (no token configured —
     // embedder/test posture).

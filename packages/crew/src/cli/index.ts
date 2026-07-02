@@ -293,9 +293,18 @@ repo
     printJson({ ok: true, suggestions, flushed });
   });
 
+// SEAL (Track 1c): this `run` command wires `MockAgentRuntime` — see the
+// `runtime:` field below. It does NOT invoke a real agent and writes NO files;
+// it exercises the loop's orchestration/bookkeeping (claim → packet → branch →
+// evidence → submit) against a scripted runtime. The LIVE production delivery
+// path is the bash runner (`runner/tick.sh` → `claude -p`). Any NEW production
+// delivery feature (context assembly, close-path harvesting, what the agent
+// actually receives) MUST also land in `runner/tick.sh` / `runner/lib` until a
+// real `ClaudeAgentRuntime` is wired here — a feature added only to this loop
+// silently misses the live agent. See runner/CLAUDE.md.
 program
   .command("run")
-  .description("Run one implementation-loop tick")
+  .description("Run one implementation-loop tick (MOCK runtime — not the live agent)")
   .requiredOption("-a, --agent <id>", "agent id")
   .option("--dry-run", "do not perform real git mutations", false)
   .action(async (opts, cmd) => {

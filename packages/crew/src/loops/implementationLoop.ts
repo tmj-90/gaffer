@@ -1,3 +1,18 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// SEAL (Track 1c) — MOCK-ONLY TODAY, NOT THE LIVE DELIVERY PATH.
+//
+// This implementation loop runs ONLY `MockAgentRuntime` (see runtime/agentRuntime.ts
+// and the crew `run` CLI command). It is a documented FUTURE seam plus the
+// `--dry-run` test harness every crew test drives — it does NOT invoke a real
+// agent and writes no files. The LIVE production delivery path is the bash runner:
+// `runner/tick.sh` → `claude -p`, with context assembled in `runner/lib/*`.
+//
+// RULE: any NEW production delivery feature — context/prompt assembly, the close
+// path, what the agent actually receives — MUST ALSO land in `runner/tick.sh`
+// (and `runner/lib`) until a real `ClaudeAgentRuntime` is wired here. A feature
+// added only to this loop silently misses the live agent (that is exactly the
+// Track-1c stranding this seal exists to prevent). See runner/CLAUDE.md.
+// ─────────────────────────────────────────────────────────────────────────────
 import { checkBranchPolicy } from "../safety/branchPolicy.js";
 import { checkPostConditions, summarisePostConditionFailures } from "../safety/postconditions.js";
 import { classifyRootAccess, type RootSet } from "../safety/rootAccess.js";

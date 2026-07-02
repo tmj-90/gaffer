@@ -1,6 +1,6 @@
 ---
 name: review-ticket
-description: Use as a reviewer agent to review another agent's `in_review` ticket — never your own. Reads the ticket's acceptance criteria and recorded evidence, inspects the delivered branch's diff, and judges whether each AC is genuinely met and the change is sound. Records an ADVISORY verdict (per-AC evidence + an overall RECOMMEND APPROVE / RECOMMEND CHANGES line) via the scoped Dispatch MCP, then leaves the ticket in `in_review` for a HUMAN to make the final approve/reject decision. An agent review is NOT a human approval and must never mint one or merge. Invoke whenever a ticket is in `in_review` and you are a different agent than the one who delivered it.
+description: Use as a reviewer agent to review another agent's `in_review` ticket — never your own. Judge whether each acceptance criterion is genuinely met and the change is sound, then record an ADVISORY verdict (per-AC evidence + an overall RECOMMEND APPROVE / RECOMMEND CHANGES line) via the scoped Dispatch MCP, leaving the ticket `in_review` for a HUMAN to make the final approve/reject decision. An agent review is NOT a human approval and must never mint one or merge. Invoke whenever a ticket is in `in_review` and you are a different agent than the one who delivered it.
 stack: []
 area: review
 ---

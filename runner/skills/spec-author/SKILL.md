@@ -1,6 +1,6 @@
 ---
 name: spec-author
-description: Use to turn a brief into a structured product SPEC — a set of testable CLAUSES, each exactly one statement, tagged requirement / non-goal / decision — that a human edits and freezes before it feeds the decompose engine. Clarify genuine load-bearing ambiguity first (scope, target user, what "done" means), then draft. Requirements are what the product MUST do; non-goals are what is explicitly OUT of scope; decisions are settled design/scope calls others must follow. Invoke whenever someone describes an app or feature and wants the intent captured as a crisp, testable, traceable spec before any tickets exist. Proposes only — it never writes, freezes, or persists a spec; it emits a create_spec-shaped draft as structured output the spec-author helper parses.
+description: Use to turn a brief into a structured product SPEC — a set of testable CLAUSES, each exactly one statement, tagged requirement / non-goal / decision — that a human edits and freezes before it feeds the decompose engine. Clarify genuine load-bearing ambiguity first, then draft. Invoke whenever someone describes an app or feature and wants the intent captured as a crisp, testable, traceable spec before any tickets exist. Proposes only — it never writes, freezes, or persists a spec; it emits a create_spec-shaped draft the spec-author helper parses.
 stack: []
 area: planning
 ---

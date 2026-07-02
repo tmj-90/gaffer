@@ -146,6 +146,13 @@ export interface HealthAggregateOptions {
 
 // ---- Helpers ----------------------------------------------------------------
 
+/**
+ * The ledger `kind` for a delivery run — the ONLY kind that repeats on rework
+ * (decompose/review each run once). Cost-of-rework is attributed from this spend
+ * only. Must match the `--kind delivery` the runner writes to the usage ledger.
+ */
+const DELIVERY_KIND = "delivery";
+
 /** Coerce a raw value to a finite non-negative number, or 0. */
 function numOrZero(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
@@ -246,10 +253,13 @@ export function readHealthRows(ledgerPath: string): HealthRow[] {
 /**
  * Aggregate the health/ROI view from a set of ledger rows.
  *
- * cost-of-rework: for a ticket delivered after N rework attempts, N+1 delivery
- * runs were paid for and N of them were redo. We therefore attribute
- * `ticket_cost * N/(N+1)` of that ticket's spend to rework — a bounded, honest
- * share that can never exceed the ticket's own cost.
+ * cost-of-rework: for a ticket delivered after N rework attempts, N+1 DELIVERY
+ * runs were paid for and N of them were redo. Only the delivery run repeats on
+ * rework — decompose/review each ran once — so we attribute `delivery_cost * N/(N+1)`
+ * (the delivery-kind spend only), NOT the ticket's full cross-kind spend. Attributing
+ * the full ticket cost overstated the rework share by dragging in one-shot
+ * decompose/review dollars that were never redone. The share stays bounded and can
+ * never exceed the ticket's delivery spend.
  */
 export function aggregateHealthRows(
   rows: HealthRow[],
@@ -264,7 +274,8 @@ export function aggregateHealthRows(
   let measuredCalls = 0;
   let lastRecordAt: string | null = null;
 
-  const byTicket = new Map<number, number>(); // ticket → cost
+  const byTicket = new Map<number, number>(); // ticket → total cross-kind cost
+  const byTicketDelivery = new Map<number, number>(); // ticket → delivery-kind cost only
   const byKind = new Map<string, { cost: number; count: number }>();
   const byModel = new Map<string, ModelUsage>();
   const byDay = new Map<string, number>(); // yyyy-mm-dd → cost
@@ -281,6 +292,14 @@ export function aggregateHealthRows(
 
     if (row.ticket !== null) {
       byTicket.set(row.ticket, (byTicket.get(row.ticket) ?? 0) + row.total_cost_usd);
+      // Delivery is the only kind that repeats on rework — track it separately so the
+      // rework attribution never charges one-shot decompose/review spend as redo.
+      if (row.kind === DELIVERY_KIND) {
+        byTicketDelivery.set(
+          row.ticket,
+          (byTicketDelivery.get(row.ticket) ?? 0) + row.total_cost_usd,
+        );
+      }
     }
 
     const kind = row.kind ?? "(unattributed)";
@@ -333,7 +352,11 @@ export function aggregateHealthRows(
   for (const [ticket, cost] of byTicket.entries()) {
     const rc = Math.max(0, Math.trunc(resolveRework(ticket)));
     if (rc <= 0) continue;
-    const reworkCost = round6((cost * rc) / (rc + 1));
+    // Attribute rework from the DELIVERY spend only (the kind that actually repeats),
+    // not the ticket's full cross-kind cost. `ticket_cost_usd` still reports the full
+    // ticket spend for context.
+    const deliveryCost = byTicketDelivery.get(ticket) ?? 0;
+    const reworkCost = round6((deliveryCost * rc) / (rc + 1));
     totalReworkCost += reworkCost;
     reworkByTicket.push({
       ticket,

@@ -393,6 +393,19 @@ export class ReviewGateService {
    * MERGE-COMPLETE: `ready_for_merge -> done`. SYSTEM/admin only.
    * The markMerged:true flag is required by TransitionService — a board-drag
    * or agent can never trigger this path.
+   *
+   * GRADUATED-AUTONOMY (Spec 2, Phase 1, merge-time correction): `approved_unchanged`
+   * is first stamped at APPROVE time, but with the testing lane on a tester can amend
+   * the branch AFTER approval — so the approve-time value can overstate what actually
+   * landed. We RE-RESOLVE the delivery-vs-merged-head signal here (the resolver reads
+   * the branch head fresh, which is now the merged head) and emit the CORRECTED value
+   * on this transition, so the signal reaching `autonomyRecommendationService` (via
+   * {@link EventRepository.reviewDecisions}, which prefers this merge-time value)
+   * reflects the merged state. Behaviour is preserved when there was no post-approval
+   * amend: the merged head still equals the delivery SHA, so the value is identical to
+   * approve time. The key is only emitted when the signal is DEFINITE (`true`/`false`);
+   * an unknown (`null`) resolution is omitted, leaving the merge payload byte-for-byte
+   * as before so it never clobbers a known approve-time value downstream.
    */
   markMerged(ref: string, actor: Actor): TransitionResult {
     if (actor.type !== "system" && actor.type !== "admin") {
@@ -403,6 +416,7 @@ export class ReviewGateService {
       );
     }
     const ticket = this.ticketSvc.resolveTicket(ref);
+    const approvedUnchanged = this.computeApprovedUnchanged(ticket);
     return this.transitions.transition({
       ticketId: ticket.id,
       actor,
@@ -410,6 +424,9 @@ export class ReviewGateService {
       reason: "merge_completed",
       expectedFromStatus: "ready_for_merge",
       markMerged: true,
+      // Only carry a DEFINITE merge-time signal; omit an unknown so the payload stays
+      // byte-for-byte identical to today and never overrides a known approve-time value.
+      ...(approvedUnchanged !== null ? { approvedUnchanged } : {}),
     });
   }
 

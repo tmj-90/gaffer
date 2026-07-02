@@ -265,6 +265,42 @@ describe("aggregateHealthRows — cost-of-rework", () => {
     // 0.6 of 1.4 total ≈ 42.9%
     expect(agg.rework.rework_cost_share_pct).toBeCloseTo(42.9, 1);
   });
+
+  it("attributes rework from DELIVERY spend only — decompose/review ran once", () => {
+    // Ticket 1 crossed all three kinds; only the delivery run repeats on rework.
+    // decompose=0.2 + delivery=0.6 + review=0.2 = 1.0 full ticket cost, but with
+    // N=2 reworks the rework share must derive from delivery (0.6) only:
+    //   0.6 * 2/3 = 0.4  — NOT 1.0 * 2/3 = 0.667 (the pre-fix overstatement).
+    const rows = [
+      makeRow({ ticket: 1, kind: "decompose", total_cost_usd: 0.2 }),
+      makeRow({ ticket: 1, kind: "delivery", total_cost_usd: 0.6 }),
+      makeRow({ ticket: 1, kind: "review", total_cost_usd: 0.2 }),
+    ];
+    const resolveRework = (n: number) => (n === 1 ? 2 : 0);
+    const agg = aggregateHealthRows(rows, { shippedCount: 1, resolveRework });
+
+    expect(agg.rework.by_ticket).toHaveLength(1);
+    const entry = agg.rework.by_ticket[0]!;
+    expect(entry.ticket).toBe(1);
+    expect(entry.rework_count).toBe(2);
+    // Full ticket spend still reported for context…
+    expect(entry.ticket_cost_usd).toBeCloseTo(1.0);
+    // …but rework derives from the delivery portion only.
+    expect(entry.rework_cost_usd).toBeCloseTo(0.4);
+    expect(agg.rework.total_rework_cost_usd).toBeCloseTo(0.4);
+  });
+
+  it("a zero-rework ticket contributes 0 rework cost [negative control]", () => {
+    const rows = [
+      makeRow({ ticket: 1, kind: "decompose", total_cost_usd: 0.3 }),
+      makeRow({ ticket: 1, kind: "delivery", total_cost_usd: 0.7 }),
+    ];
+    // No rework for any ticket.
+    const agg = aggregateHealthRows(rows, { shippedCount: 1, resolveRework: () => 0 });
+    expect(agg.rework.by_ticket).toEqual([]);
+    expect(agg.rework.total_rework_cost_usd).toBe(0);
+    expect(agg.rework.rework_cost_share_pct).toBe(0);
+  });
 });
 
 describe("aggregateHealthRows — NEGATIVE CONTROL", () => {

@@ -195,17 +195,32 @@ export class EventRepository {
 
   /**
    * GRADUATED-AUTONOMY (Spec 2, Phase 2): every review-lane `ticket.transitioned`
-   * event fanned out to each WRITE repo of its ticket, carrying the enum status
-   * fields, the actor type, and the Phase-1 `approved_unchanged` boolean. Powers the
-   * read-only per-repo/per-risk recommendation service.
+   * event scoped to the PRIMARY write repo of its ticket, carrying the enum status
+   * fields, the actor type, and the (merge-corrected) `approved_unchanged` boolean.
+   * Powers the read-only per-repo/per-risk recommendation service.
+   *
+   * ONE TICKET = ONE SAMPLE (correctness): the `ticket_repos` join is pinned to
+   * `role='primary'` (the single delivery repo), NOT fanned out across every
+   * `access='write'` repo. Fanning out over all write repos made one human approval
+   * accrue a sample in EVERY write-repo's bucket — a secondary repo would borrow the
+   * primary's approvals, clear MIN_SAMPLES, and earn an autonomy recommendation it
+   * never independently earned (and Phase-3 enforcement would then snapshot that
+   * borrowed signal as confirmed evidence). Attributing each decision to the primary
+   * repo alone keeps one approval = one sample.
+   *
+   * MERGE-TIME CORRECTION (correctness): `approved_unchanged` is captured at APPROVE
+   * time, but with the testing lane on a tester can amend the branch AFTER approval,
+   * so the approve-time value overstates what actually landed. We therefore prefer the
+   * value re-resolved at the merge trigger (the `merge_completed` transition, which
+   * compares the delivery SHA against the truly-merged head) via COALESCE, falling
+   * back to the approve-time value only when no definite merge-time signal exists.
    *
    * SAFETY: like {@link stateTransitions}/{@link deliveredSince}, this reads only the
    * ENUM `$.from`/`$.to` and the BOOLEAN `$.approved_unchanged` out of payload_json —
    * plus `$.reason`, which CAN be free text. `reason` is used ONLY to classify
    * approvals (it equals a fixed `review_approved*` constant on that path) and is
    * NEVER surfaced by the recommendation service (which emits aggregate rates only),
-   * so no free text leaves this layer. The fan-out over `ticket_repos` (write access)
-   * scopes each decision to the repos the ticket actually delivers into.
+   * so no free text leaves this layer.
    */
   reviewDecisions(): ReviewDecisionRow[] {
     const rows = this.db
@@ -217,10 +232,21 @@ export class EventRepository {
                 json_extract(e.payload_json, '$.from')        AS from_status,
                 json_extract(e.payload_json, '$.to')          AS to_status,
                 json_extract(e.payload_json, '$.reason')      AS reason,
-                json_extract(e.payload_json, '$.approved_unchanged') AS approved_unchanged
+                COALESCE(
+                  (SELECT json_extract(m.payload_json, '$.approved_unchanged')
+                     FROM work_events m
+                    WHERE m.entity_type = 'ticket'
+                      AND m.entity_id   = e.entity_id
+                      AND m.event_type  = 'ticket.transitioned'
+                      AND json_extract(m.payload_json, '$.reason') = 'merge_completed'
+                      AND json_extract(m.payload_json, '$.approved_unchanged') IS NOT NULL
+                    ORDER BY m.rowid DESC
+                    LIMIT 1),
+                  json_extract(e.payload_json, '$.approved_unchanged')
+                )                                             AS approved_unchanged
          FROM work_events e
          JOIN tickets t       ON t.id = e.entity_id
-         JOIN ticket_repos tr ON tr.ticket_id = t.id AND tr.access = 'write'
+         JOIN ticket_repos tr ON tr.ticket_id = t.id AND tr.access = 'write' AND tr.role = 'primary'
          JOIN repositories r  ON r.id = tr.repo_id
          WHERE e.entity_type = 'ticket'
            AND e.event_type  = 'ticket.transitioned'

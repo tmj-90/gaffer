@@ -136,7 +136,7 @@ const UNIVERSAL_AREAS = new Set(["quality", "testing", "review", "workflow", "se
  *     (e.g. `--area frontend` pulls the frontend pack onto a web ticket).
  *   - DOMAIN area + stack-only query (how tick.sh usually calls this) → opt-in:
  *     included only if the skill is ALSO stack-tagged, so `frontend-design` /
- *     `landing-page-generator` still route by stack, but marketing/product/meta
+ *     `design-system` still route by stack, but marketing/product/meta
  *     area-only packs don't leak onto every backend ticket.
  */
 export function skillMatches(skill, { stacks = [], area = "" } = {}) {

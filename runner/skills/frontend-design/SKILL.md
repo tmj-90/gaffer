@@ -1,7 +1,7 @@
 ---
 name: frontend-design
 description: Use when a ticket builds or reworks a user-facing frontend surface — a hero, landing page, dashboard, marketing section, or any screen where the *visual quality* matters, not just the markup. Produces distinctive, intentional, production-grade UI that avoids generic template aesthetics. Invoke for "build the landing page", "make this look premium / less templatey", "design the X section", or as the design pack for any high-visibility frontend work.
-stack: [typescript, javascript, react]
+stack: [react, web]
 area: frontend
 ---
 

@@ -7,6 +7,14 @@
  * returns nothing; real wiring lands later.
  */
 
+/**
+ * Product-intent classifier mirrored from Memory's `LoreKind`. Crew keeps its
+ * own copy so it never has to reach across the boundary into Memory internals.
+ * 'decision' | 'requirement' | 'non-goal' carry product intent (the "why");
+ * 'convention' | 'gotcha' are the "how"; 'other' is the fallback.
+ */
+export type LoreKind = "decision" | "requirement" | "non-goal" | "convention" | "gotcha" | "other";
+
 export interface LoreRecord {
   id: string;
   title: string;
@@ -26,6 +34,8 @@ export interface LoreSuggestionInput {
   title: string;
   summary: string;
   tags?: string[];
+  /** Product-intent classifier for the drafted record; defaults to 'other'. */
+  kind?: LoreKind;
   sourceTicketId?: string;
 }
 

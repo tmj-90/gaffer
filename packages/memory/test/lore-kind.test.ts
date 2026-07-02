@@ -12,7 +12,16 @@ import BetterSqlite3 from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "better-sqlite3";
 
-import { addLore, getLore, searchLore, suggestLore, updateLore } from "../src/core/lore.js";
+import {
+  addLore,
+  getLore,
+  searchLore,
+  suggestLore,
+  updateLore,
+  upsertLoreFromImport,
+} from "../src/core/lore.js";
+import type { ImportLoreInput } from "../src/core/lore.js";
+import type { LoreKind } from "../src/db/types.js";
 import { MIGRATIONS, runMigrations } from "../src/db/migrations.js";
 import { LORE_KINDS, PRODUCT_INTENT_KINDS } from "../src/db/types.js";
 
@@ -123,5 +132,75 @@ describe("migration 009 — back-fill kind from existing tags", () => {
     expect(kindOf(db, "eeee5555")).toBe("gotcha");
     expect(kindOf(db, "ffff6666")).toBe("other");
     expect(kindOf(db, "gggg7777")).toBe("decision");
+  });
+});
+
+describe("upsertLoreFromImport — kind preservation (mirrors updateLore)", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newInMemoryDb();
+  });
+
+  /** Minimal import payload re-upserting an existing record by id. */
+  function importInput(id: string, overrides: Partial<ImportLoreInput> = {}): ImportLoreInput {
+    return {
+      id,
+      title: "t-imported",
+      summary: "s",
+      body: "b",
+      status: "active",
+      ...overrides,
+    };
+  }
+
+  it("preserves an existing meaningful kind when the incoming record omits kind", () => {
+    const lore = addLore(db, { title: "t", summary: "s", body: "b", kind: "decision" });
+    const result = upsertLoreFromImport(db, importInput(lore.id));
+    expect(result.created).toBe(false);
+    const after = getLore(db, lore.id)!;
+    expect(after.kind).toBe("decision");
+    // The rest of the import still lands — kind is the only field preserved.
+    expect(after.title).toBe("t-imported");
+  });
+
+  it("preserves an existing meaningful kind when the incoming record says kind: 'other'", () => {
+    const lore = addLore(db, { title: "t", summary: "s", body: "b", kind: "requirement" });
+    upsertLoreFromImport(db, importInput(lore.id, { kind: "other" }));
+    expect(getLore(db, lore.id)!.kind).toBe("requirement");
+  });
+
+  it("preserves an existing meaningful kind when the incoming kind is an empty string", () => {
+    const lore = addLore(db, { title: "t", summary: "s", body: "b", kind: "gotcha" });
+    // Empty string is not a LoreKind at the type level, but a hand-edited
+    // frontmatter file can produce it — treat it like "missing".
+    upsertLoreFromImport(db, importInput(lore.id, { kind: "" as unknown as LoreKind }));
+    expect(getLore(db, lore.id)!.kind).toBe("gotcha");
+  });
+
+  it("overwrites the existing kind when the incoming record names a meaningful kind", () => {
+    const lore = addLore(db, { title: "t", summary: "s", body: "b", kind: "decision" });
+    upsertLoreFromImport(db, importInput(lore.id, { kind: "convention" }));
+    expect(getLore(db, lore.id)!.kind).toBe("convention");
+  });
+
+  it("leaves 'other' as 'other' when neither side has a meaningful kind", () => {
+    const lore = addLore(db, { title: "t", summary: "s", body: "b" });
+    upsertLoreFromImport(db, importInput(lore.id));
+    expect(getLore(db, lore.id)!.kind).toBe("other");
+  });
+
+  it("creates new records with the incoming kind (or 'other' when absent)", () => {
+    upsertLoreFromImport(db, importInput("aaaa2222", { kind: "non-goal" }));
+    expect(getLore(db, "aaaa2222")!.kind).toBe("non-goal");
+    upsertLoreFromImport(db, importInput("bbbb3333"));
+    expect(getLore(db, "bbbb3333")!.kind).toBe("other");
+  });
+
+  it("still rejects a kind outside the closed enum", () => {
+    const lore = addLore(db, { title: "t", summary: "s", body: "b" });
+    expect(() =>
+      // @ts-expect-error — deliberately invalid kind
+      upsertLoreFromImport(db, importInput(lore.id, { kind: "epic" })),
+    ).toThrow(/kind/);
   });
 });

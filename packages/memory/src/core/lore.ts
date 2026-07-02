@@ -402,6 +402,10 @@ export interface ImportResult {
  * source; no `high` on a draft). FTS is reindexed. The events row uses
  * `imported` so the audit trail distinguishes sync from interactive
  * authorship.
+ *
+ * One exception to "updates every field": `kind`. When the incoming file
+ * lacks a meaningful kind (missing, empty, or 'other') and the existing
+ * row has one, the existing kind is preserved — see the inline note below.
  */
 export function upsertLoreFromImport(db: Database, input: ImportLoreInput): ImportResult {
   assertIsoDate(input.reviewAfter, "reviewAfter");
@@ -413,15 +417,33 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
   const repos = Array.from(new Set((input.repos ?? []).map(normaliseRepo).filter(Boolean))).sort();
   const tags = Array.from(new Set((input.tags ?? []).map(normaliseTag).filter(Boolean))).sort();
   const confidence = clampConfidence(input.confidence, !!input.source, input.status);
-  const kind = normaliseKind(input.kind);
   const nowTs = nowIso();
   const createdAt = input.createdAt ?? nowTs;
   const updatedAt = input.updatedAt ?? nowTs;
 
-  const existing = db.prepare("SELECT rowid FROM lore WHERE id = ?").get(input.id) as
-    | { rowid: number }
+  const existing = db.prepare("SELECT rowid, kind FROM lore WHERE id = ?").get(input.id) as
+    | { rowid: number; kind: string | null }
     | undefined;
   const isCreate = !existing;
+
+  // Kind preservation — mirrors updateLore's "no kind supplied → keep the
+  // current row's kind" rule. A file that carries no MEANINGFUL kind
+  // (missing, empty, or the 'other' default) must not reset an existing
+  // record's kind: exports written before migration 009 added `kind` would
+  // otherwise re-upsert on an equal timestamp and silently demote
+  // backfilled records to 'other', dropping them from the product-context
+  // block (which filters by kind). A file that names a real kind still
+  // wins — import semantics are otherwise unchanged.
+  const incomingKindRaw: string | undefined = input.kind;
+  const incomingKind = normaliseKind(
+    incomingKindRaw === "" ? undefined : (incomingKindRaw as LoreKind | undefined),
+  );
+  const existingKind: LoreKind | undefined =
+    existing?.kind && LORE_KIND_SET.has(existing.kind) ? (existing.kind as LoreKind) : undefined;
+  const kind =
+    incomingKind === "other" && existingKind !== undefined && existingKind !== "other"
+      ? existingKind
+      : incomingKind;
 
   const conflictsWith =
     input.conflictsWith && input.conflictsWith.length > 0

@@ -1511,17 +1511,50 @@ EOF
   # Fail CLOSED: the safety hook is THE deterministic boundary. If it's missing,
   # never run a live agent — Claude Code would otherwise run with no boundary.
   [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs — refusing live run (fail closed)"; result error; exit 1; }
-  # Install the project-local config into the PRIMARY write repo (the agent's cwd).
-  # In single-repo mode PRIMARY_REPO == REPO_PATH, so this is identical to today.
-  # Mount ONLY this ticket's selected skills (SKILLS, from select-skills.mjs) + the
-  # always-on quality LENSES + the universal delivery-mechanics set — NOT the whole
-  # library — so headless Claude auto-loads only skills it might use (~5k fewer
-  # tokens/call). Fail-soft: whole-library fallback on any error (skills-mount.sh).
-  gaffer_skills_mount "$PRIMARY_REPO" "$SKILLS, $LENSES" "delivery-$NUM"
-  # Substitute the hook path so the boundary resolves on ANY checkout root.
-  # settings.json ships a ${RUNNER_DIR} placeholder; copying it verbatim would point
-  # at the author's machine and the hook would FAIL OPEN elsewhere.
-  sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$PRIMARY_REPO/.claude/settings.json"
+
+  # ── Agent-environment install (runs before EVERY attempt's launch) ──────────
+  # Installs the project-local agent environment into the PRIMARY write worktree
+  # (the agent's cwd; in single-repo mode PRIMARY_REPO == the one delivery worktree):
+  #   • the ticket's skill mount — ONLY the selected SKILLS + quality LENSES + the
+  #     universal delivery-mechanics set, not the whole library (~5k fewer
+  #     tokens/call). Fail-soft inside: whole-library fallback (skills-mount.sh);
+  #   • .claude/settings.json — wires runner/safety-hook.mjs as the PreToolUse
+  #     hook, THE deterministic containment boundary. The template ships a
+  #     ${RUNNER_DIR} placeholder; copying it verbatim would point at the
+  #     author's machine and the hook would FAIL OPEN elsewhere — substitute it;
+  #   • CLAUDE.factory.md — the factory brief;
+  #   • the git exclude that keeps all of the above off the delivery branch.
+  # WHY per-attempt, not once: the rework retry path (GUARD B) tears the
+  # worktree down between attempts (gaffer_cleanup_worktrees) and re-adds a
+  # FRESH checkout of the preserved branch. All of this config is untracked and
+  # git-excluded, so the fresh checkout contains NONE of it — a retry launched
+  # without a re-install would run WITHOUT the safety hook wired (uncontained).
+  # FAIL-CLOSED: returns non-zero unless the written settings verifiably wire
+  # the hook; callers must NOT launch the agent for that attempt on failure —
+  # launching without the hook is the one unacceptable outcome.
+  gaffer_install_agent_env() {
+    [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs — refusing to prepare the agent env (fail closed)"; return 1; }
+    gaffer_skills_mount "$PRIMARY_REPO" "$SKILLS, $LENSES" "delivery-$NUM"
+    mkdir -p "$PRIMARY_REPO/.claude" 2>/dev/null || true
+    if ! sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$PRIMARY_REPO/.claude/settings.json" 2>/dev/null; then
+      rm -f "$PRIMARY_REPO/.claude/settings.json"   # never leave a truncated half-write behind
+      log "SAFETY: could not write $PRIMARY_REPO/.claude/settings.json from $CLAUDE_SETTINGS (fail closed)"; return 1
+    fi
+    # Verify the WIRING, not just the write: the settings the agent will load
+    # must reference the resolved hook path as a PreToolUse hook.
+    if ! grep -q '"PreToolUse"' "$PRIMARY_REPO/.claude/settings.json" 2>/dev/null \
+       || ! grep -qF "$RUNNER_DIR/safety-hook.mjs" "$PRIMARY_REPO/.claude/settings.json" 2>/dev/null; then
+      rm -f "$PRIMARY_REPO/.claude/settings.json"   # an unwired settings file must not survive
+      log "SAFETY: $PRIMARY_REPO/.claude/settings.json lacks the PreToolUse safety-hook wiring (fail closed)"; return 1
+    fi
+    if ! cp -f "$HERE/claude/CLAUDE.md" "$PRIMARY_REPO/CLAUDE.factory.md" 2>/dev/null; then
+      log "SAFETY: could not install the CLAUDE.factory.md brief into $PRIMARY_REPO (fail closed)"; return 1
+    fi
+    gaffer_exclude_runner_config "$PRIMARY_REPO"   # keep runner config out of `git add -A`
+    return 0
+  }
+  # Attempt 1's install (the retry loop re-runs it for every later attempt).
+  gaffer_install_agent_env || { log "SAFETY: agent-env install failed for #$NUM — refusing live run (fail closed)"; result error; exit 1; }
   # Substitute the real DB paths into a RUNTIME copy OUTSIDE the repo. Writing into
   # $PRIMARY_REPO/.mcp.json breaks when the target repo IS the runner itself (source
   # == destination → the redirect truncates the file → "Invalid MCP configuration").
@@ -1534,8 +1567,6 @@ EOF
   # "no token" (the resume agent's evidence writes are best-effort, as before).
   sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" -e "s#\${GAFFER_CLAIM_TOKEN}#${CLAIM_TOKEN}#g" \
       "$MCP_CONFIG" > "$MCP_RUNTIME"
-  cp -f "$HERE/claude/CLAUDE.md" "$PRIMARY_REPO/CLAUDE.factory.md"
-  gaffer_exclude_runner_config "$PRIMARY_REPO"   # keep runner config out of `git add -A`
   # Repo-access boundary (FG-007): tell the runtime safety hook the exact set of
   # repos this run may WRITE to (GAFFER_WRITE_ROOTS) and additionally READ from
   # (GAFFER_READ_ROOTS). The hook then deterministically blocks writes/branches
@@ -1774,6 +1805,17 @@ $_trail_q
         mkdir -p "$(dirname "$rwt/$_rel")" 2>/dev/null && ln -sfn "$_nm" "$rwt/$_rel"
       done < <(find "$rpath" -maxdepth 3 -name node_modules -type d 2>/dev/null)
     done <<< "$WT_ROWS"
+    # RE-INSTALL the agent environment into the FRESH worktree. The rework
+    # teardown destroyed the untracked runner config with the old worktree — a
+    # fresh checkout has NO .claude/settings.json (the safety-hook wiring!),
+    # no skills mount and no brief. FAIL-CLOSED: never launch an attempt
+    # uncontained — an install failure is THIS attempt's failure (retry with
+    # the reason, or park when the bounds are spent); the agent is NOT run.
+    if ! gaffer_install_agent_env; then
+      _recover_or_park "agent-env-install" "could not install the agent environment (safety-hook settings, skills mount, brief) into the retry worktree — the agent was NOT launched for this attempt (fail closed)"
+      [ "$_DELIV_OUTCOME" = "retry" ] && continue
+      result error; exit 0
+    fi
   fi
   # USAGE LEDGER: switch to --output-format json and CAPTURE stdout (the JSON
   # result object) to a temp file so we can ledger the real usage, WITHOUT

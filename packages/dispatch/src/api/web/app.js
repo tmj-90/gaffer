@@ -16,6 +16,31 @@ const setAuthToken = (t) => localStorage.setItem(TOKEN_KEY, t);
 const clearAuthToken = () => localStorage.removeItem(TOKEN_KEY);
 
 /**
+ * One-scan phone access (AFK-LOOP P3). `gaffer dashboard --lan` prints a QR of
+ * `http://LAN:PORT/?token=…`; when a scan lands here with that param we adopt
+ * the token and immediately scrub it from the URL (history + query) so it never
+ * lingers in browser history. A malformed URL must never block boot — the login
+ * gate is always the safe fallback.
+ */
+function adoptTokenFromUrl() {
+  try {
+    const params = new URLSearchParams(location.search || "");
+    const t = params.get("token");
+    if (!t) return;
+    setAuthToken(t.trim());
+    params.delete("token");
+    const qs = params.toString();
+    history.replaceState(
+      null,
+      "",
+      location.pathname + (qs ? `?${qs}` : "") + (location.hash || ""),
+    );
+  } catch {
+    // Ignore — fall through to the normal (paste-a-token) login gate.
+  }
+}
+
+/**
  * Call the Dispatch REST API. Resolves to the parsed JSON body on 2xx.
  * On a non-2xx response it throws an Error carrying the API error envelope
  * ({ error: { code, message } }) so callers can surface it to the user.
@@ -5780,6 +5805,119 @@ function reviewEvidenceList(evidence, acList) {
   ]);
 }
 
+// Preset quick-reject reasons. Tapping a chip fills the reason so an operator
+// can reject one-handed on a phone without summoning a keyboard; the free-text
+// field stays as a fallback for anything the chips don't cover.
+const REJECT_REASON_PRESETS = [
+  "Doesn't meet the spec",
+  "Tests missing or failing",
+  "Wrong approach",
+  "Scope creep",
+  "Needs cleanup first",
+];
+
+/**
+ * Modal reject-reason picker that replaces `window.prompt` (a blocking dialog
+ * footgun in automation, and a keyboard-only flow on mobile). Presents preset
+ * reason chips + a free-text fallback and resolves the trimmed reason via
+ * `onConfirm`. The submit control is HELD DISABLED until a reason exists (chip
+ * tapped or text typed) and the confirm handler re-checks — preserving the
+ * invariant that a reject reason is REQUIRED. Resolves nothing (dialog just
+ * closes) on cancel/escape/scrim.
+ */
+function openRejectDialog({ verb, onConfirm }) {
+  const input = el("input", {
+    class: "reject-reason-input",
+    type: "text",
+    placeholder: "Reason…",
+    "aria-label": "Reject reason",
+  });
+
+  const chipRow = el(
+    "div",
+    { class: "reject-chips" },
+    REJECT_REASON_PRESETS.map((reason) =>
+      el(
+        "button",
+        {
+          class: "chip reject-chip",
+          type: "button",
+          onclick: () => selectChip(reason),
+        },
+        reason,
+      ),
+    ),
+  );
+
+  const submitBtn = el(
+    "button",
+    { class: "btn danger", type: "button", disabled: "", onclick: confirm },
+    "Reject",
+  );
+
+  const dialog = el(
+    "div",
+    { class: "reject-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Reject reason" },
+    [
+      el("h2", { class: "reject-dialog-title" }, `Reason for ${verb}`),
+      el("p", { class: "reject-dialog-hint" }, "Tap a reason or type your own."),
+      chipRow,
+      input,
+      el("div", { class: "reject-dialog-actions btn-row" }, [
+        el("button", { class: "btn", type: "button", onclick: close }, "Cancel"),
+        submitBtn,
+      ]),
+    ],
+  );
+
+  const scrim = el("div", { class: "reject-scrim open" }, [dialog]);
+  dialog.addEventListener("click", (e) => e.stopPropagation());
+  scrim.addEventListener("click", close);
+
+  function reason() {
+    return input.value.trim();
+  }
+  function syncSubmit() {
+    if (reason()) submitBtn.removeAttribute("disabled");
+    else submitBtn.setAttribute("disabled", "");
+  }
+  function selectChip(text) {
+    input.value = text;
+    chipRow.querySelectorAll(".reject-chip").forEach((c) => {
+      c.classList.toggle("chip-active", c.textContent === text);
+    });
+    syncSubmit();
+  }
+  function close() {
+    document.removeEventListener("keydown", onKey);
+    scrim.remove();
+  }
+  function confirm() {
+    const value = reason();
+    // Backstop the invariant even if the disabled state were bypassed.
+    if (!value) {
+      toast("A reason is required", {});
+      return;
+    }
+    close();
+    onConfirm(value);
+  }
+  function onKey(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    } else if (e.key === "Enter" && document.activeElement === input) {
+      e.preventDefault();
+      confirm();
+    }
+  }
+
+  input.addEventListener("input", syncSubmit);
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(scrim);
+  input.focus();
+}
+
 async function renderReview() {
   const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
   const wrap = el("div", { class: "view" });
@@ -5872,18 +6010,18 @@ async function renderReview() {
     // Reject offers a choice: send back for rework (-> refining, a human triages
     // first) or abandon to the won't-do bucket (-> cancelled). Either way the
     // backend resets the ticket's ACs to not-satisfied.
-    const reject = (to) =>
-      guard(async () => {
-        const verb = to === "cancelled" ? "abandoning (won't do)" : `rejecting to ${to}`;
-        const reason = window.prompt(`Reason for ${verb}?`);
-        if (reason == null || reason.trim() === "") {
-          toast("Reject cancelled — a reason is required", {});
-          return;
-        }
-        await api("POST", `/tickets/${t.id}/review/reject`, { to, reason: reason.trim() });
-        toast(to === "cancelled" ? "Marked won't do" : `Rejected to ${to}`, { ok: true });
-        router();
+    const reject = (to) => {
+      const verb = to === "cancelled" ? "abandoning (won't do)" : `rejecting to ${to}`;
+      openRejectDialog({
+        verb,
+        onConfirm: (reason) =>
+          guard(async () => {
+            await api("POST", `/tickets/${t.id}/review/reject`, { to, reason });
+            toast(to === "cancelled" ? "Marked won't do" : `Rejected to ${to}`, { ok: true });
+            router();
+          }),
       });
+    };
 
     // The diff-unavailable banner + the Approve button are held by reference so the
     // async diff load (fix 4) can toggle them once it settles.
@@ -9826,6 +9964,7 @@ if (!prefersReducedMotion()) {
   setTimeout(() => document.documentElement.classList.remove("booting"), 1600);
 }
 
+adoptTokenFromUrl(); // one-scan token pickup (QR) before the first authed call
 buildChrome();
 window.addEventListener("hashchange", router);
 router();

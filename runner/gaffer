@@ -114,6 +114,15 @@ dashboard)
     if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/healthz" >/dev/null 2>&1; then
       ok "dashboard up on your LAN (token-protected)"
       printf "    open:   ${c_cya}http://%s:%s${c_off}\n    token:  ${c_cya}%s${c_off}  (paste at the login prompt)\n" "$LAN" "$DASH_PORT" "$TOK"
+      # AFK-LOOP P3: one-scan phone access. The QR encodes the URL WITH the token
+      # (the dashboard adopts ?token=… and scrubs it from history), so scanning
+      # logs you straight in — no copy-paste of the token. Optional dependency:
+      # if qrencode is absent we degrade to the plain URL+token printed above.
+      if command -v qrencode >/dev/null 2>&1; then
+        printf "    scan to open on your phone (token embedded):\n"
+        qrencode -t ANSIUTF8 "http://$LAN:$DASH_PORT/?token=$TOK" 2>/dev/null \
+          || printf "    (qr render failed — use the URL + token above)\n"
+      fi
     else warn "dashboard failed to start — see $GAFFER_DATA/dashboard.log"; fi
     exit 0
   fi

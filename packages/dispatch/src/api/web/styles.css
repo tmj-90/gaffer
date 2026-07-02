@@ -4572,6 +4572,81 @@ td.title-cell {
 .palette-scrim.open .palette {
   transform: translateY(0) scale(1);
 }
+
+/* --- Reject-reason dialog (mobile one-handed reject) -----------------------
+   Replaces window.prompt on the review gate: preset reason chips + a free-text
+   fallback so an operator can reject without a keyboard. Reuses the palette
+   scrim treatment for a consistent phosphor-modal feel. */
+.reject-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 72;
+  background: rgba(6, 8, 11, 0.62);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: clamp(var(--s-5), 12vh, 140px) var(--s-4) var(--s-4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--fast) var(--ease);
+}
+.reject-scrim.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.reject-dialog {
+  width: min(460px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-lg), var(--glow);
+  padding: var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.reject-dialog-title {
+  font-size: var(--step-1);
+  margin: 0;
+}
+.reject-dialog-hint {
+  margin: 0;
+  font-size: var(--step--1);
+  color: var(--text-faint);
+}
+.reject-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.reject-chip {
+  padding: 8px 14px;
+  cursor: pointer;
+  color: var(--text-dim);
+  transition:
+    border-color var(--fast) var(--ease),
+    color var(--fast) var(--ease),
+    background var(--fast) var(--ease);
+}
+.reject-chip:hover,
+.reject-chip:focus-visible {
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+.reject-chip.chip-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: var(--glow);
+}
+.reject-reason-input {
+  width: 100%;
+}
+.reject-dialog-actions {
+  justify-content: flex-end;
+}
 .palette-input-wrap {
   display: flex;
   align-items: center;
@@ -8074,6 +8149,13 @@ body {
   font-size: 0.62rem;
   color: var(--text-faint);
   margin-right: 6px;
+}
+/* The j/k/a/r queue hints are meaningless without a physical keyboard — hide
+   them on touch/coarse-pointer devices where the reject chips carry the flow. */
+@media (hover: none) and (pointer: coarse) {
+  .gate-keys {
+    display: none;
+  }
 }
 
 /* --- "Running now" panel (RUN-ACTIVITY) ------------------------------------

@@ -38,6 +38,14 @@ fi
 : "${MEMORY_DB:=$GAFFER_DATA/memory.sqlite}"
 : "${CREW_CONFIG:=$GAFFER_DATA/crew.yaml}"
 
+# Shared usage-ledger READER (lib/estimate.mjs parseLedger). Every inline-node
+# consumer of the JSONL ledger imports this ONE parser instead of hand-rolling a
+# per-call-site parse loop. Exported because gaffer_ticket_rework_spend is
+# `export -f`'d and must resolve the module in child shells where RUNNER_DIR
+# (deliberately unexported) is absent.
+: "${GAFFER_ESTIMATE_LIB:=$RUNNER_DIR/lib/estimate.mjs}"
+export GAFFER_ESTIMATE_LIB
+
 # Claude Code wiring
 : "${MCP_CONFIG:=$RUNNER_DIR/.mcp.json}"
 : "${CLAUDE_SETTINGS:=$RUNNER_DIR/claude/settings.json}"
@@ -101,24 +109,27 @@ export GAFFER_BUDGET_USD
 # per tick at source-time in tick.sh / loop.sh).
 if [ -n "${GAFFER_BUDGET_USD:-}" ] && command -v node >/dev/null 2>&1 \
    && [ -n "${GAFFER_USAGE_LEDGER:-}${GAFFER_DATA:-}" ]; then
-  _gaffer_budget_remaining="$(node - <<'__BUDGET_JS__' 2>/dev/null || true
-const fs = require('fs');
-const path = require('path');
+  _gaffer_budget_remaining="$(node --input-type=module - <<'__BUDGET_JS__' 2>/dev/null || true
+// JSONL parsing is delegated to the ONE shared ledger reader (lib/estimate.mjs
+// parseLedger — same tolerant semantics: blank lines skipped, a corrupt line
+// dropped, never an abort). The COST SUMMATION stays HERE: the honesty
+// contract of estimate.mjs forbids it from ever reading total_cost_usd.
+// NOTE: keep quotes BALANCED in this heredoc — bash 3.2 (/bin/bash on macOS,
+// used by the env-scrub tests) cannot parse an odd quote count inside $(…).
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
 const ledger = process.env.GAFFER_USAGE_LEDGER ||
-  (process.env.GAFFER_DATA ? path.join(process.env.GAFFER_DATA, 'usage-ledger.jsonl') : '');
+  (process.env.GAFFER_DATA ? join(process.env.GAFFER_DATA, 'usage-ledger.jsonl') : '');
 if (!ledger) { process.stdout.write(''); process.exit(0); }
+let text = '';
+try { text = readFileSync(ledger, 'utf8'); } catch { /* missing ledger = 0 spend */ }
 let spend = 0;
-try {
-  const lines = fs.readFileSync(ledger, 'utf8').split('\n');
-  for (const ln of lines) {
-    const t = ln.trim(); if (!t) continue;
-    try {
-      const r = JSON.parse(t);
-      const c = r.total_cost_usd;
-      if (typeof c === 'number' && Number.isFinite(c) && c >= 0) spend += c;
-    } catch { /* skip malformed */ }
-  }
-} catch { /* missing ledger = 0 spend */ }
+for (const r of parseLedger(text)) {
+  const c = r.total_cost_usd;
+  if (typeof c === 'number' && Number.isFinite(c) && c >= 0) spend += c;
+}
 const budget = parseFloat(process.env.GAFFER_BUDGET_USD || '0');
 if (budget <= 0) { process.stdout.write(''); process.exit(0); }
 const remaining = Math.max(0, budget - spend);
@@ -389,20 +400,25 @@ gaffer_ticket_rework_spend() {
   command -v node >/dev/null 2>&1 || { printf '0'; return 0; }
   local ledger="${GAFFER_USAGE_LEDGER:-${GAFFER_DATA:+$GAFFER_DATA/usage-ledger.jsonl}}"
   [ -n "$ledger" ] && [ -f "$ledger" ] || { printf '0'; return 0; }
-  GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" node -e '
-    const fs=require("fs");
+  # JSONL parsing via the ONE shared ledger reader (lib/estimate.mjs parseLedger);
+  # the cost summation stays here — estimate.mjs's honesty contract forbids it
+  # from reading total_cost_usd. Degrade path unchanged: any node/module failure
+  # prints 0 (we never invent a cost).
+  [ -f "${GAFFER_ESTIMATE_LIB:-}" ] || { printf '0'; return 0; }
+  GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    import { pathToFileURL } from "node:url";
+    const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
     const want=String(process.env.GAFFER_RW_TICKET);
+    let text="";
+    try { text=readFileSync(process.env.GAFFER_RW_LEDGER,"utf8"); } catch {}
     let spend=0;
-    try {
-      for (const ln of fs.readFileSync(process.env.GAFFER_RW_LEDGER,"utf8").split("\n")) {
-        const t=ln.trim(); if(!t) continue;
-        let r; try { r=JSON.parse(t); } catch { continue; }
-        if (r.kind!=="delivery") continue;
-        if (String(r.ticket)!==want) continue;
-        const c=r.total_cost_usd;
-        if (typeof c==="number" && Number.isFinite(c) && c>=0) spend+=c;
-      }
-    } catch {}
+    for (const r of parseLedger(text)) {
+      if (r.kind!=="delivery") continue;
+      if (String(r.ticket)!==want) continue;
+      const c=r.total_cost_usd;
+      if (typeof c==="number" && Number.isFinite(c) && c>=0) spend+=c;
+    }
     process.stdout.write(spend.toFixed(6));
   ' 2>/dev/null || printf '0'
 }

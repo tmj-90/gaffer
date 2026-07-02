@@ -29,6 +29,11 @@
  *      imply the work was free.
  */
 
+// JSONL→records parsing is delegated to lib/estimate.mjs's parseLedger — the
+// single shared usage-ledger reader (same tolerant semantics: blank lines
+// skipped, one corrupt line dropped rather than aborting the whole read).
+import { parseLedger } from "./estimate.mjs";
+
 export const UNKNOWN = "unknown";
 
 /** API-equivalent cost label — the only place a $ figure may surface, relayed. */
@@ -178,13 +183,8 @@ function collapseLine(text, maxLen) {
  */
 export function indexUsageByTicket(ledgerText) {
   const byTicket = new Map();
-  if (typeof ledgerText !== "string" || !ledgerText.trim()) return byTicket;
 
-  for (const line of ledgerText.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const rec = safeJsonParse(trimmed, null);
-    if (!rec || typeof rec !== "object") continue;
+  for (const rec of parseLedger(ledgerText)) {
     if (rec.ticket == null) continue;
     const key = String(rec.ticket);
 
@@ -238,12 +238,9 @@ function addNum(obj, key, v) {
  */
 export function indexBlocksByTicket(blocksText) {
   const byTicket = new Map();
-  if (typeof blocksText !== "string" || !blocksText.trim()) return byTicket;
-  for (const line of blocksText.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const rec = safeJsonParse(trimmed, null);
-    if (!rec || typeof rec !== "object" || rec.ticket == null) continue;
+  // Same JSONL shape as the usage ledger — reuse the shared reader.
+  for (const rec of parseLedger(blocksText)) {
+    if (rec.ticket == null) continue;
     const key = String(rec.ticket);
     const cat = typeof rec.category === "string" && rec.category ? rec.category : "other";
     const list = byTicket.get(key) || [];

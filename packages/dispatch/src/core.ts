@@ -18,6 +18,8 @@ import {
   type PlanSession,
   type Run,
   type RunKind,
+  type Spec,
+  type SpecStatus,
   type TestContract,
   type Ticket,
   type TicketDependencyView,
@@ -41,6 +43,7 @@ import { PausedDeliveryRepository } from "./repositories/pausedDeliveryRepositor
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
 import { ReworkAttemptRepository } from "./repositories/reworkAttemptRepository.js";
+import { SpecRepository } from "./repositories/specRepository.js";
 import { RunRepository, type RunListResult } from "./repositories/runRepository.js";
 import {
   PlanSessionRepository,
@@ -89,6 +92,7 @@ import {
   type WorkPacketRepos,
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
+import { SpecsService } from "./services/specsService.js";
 import {
   BoardService,
   resolveMoveTarget,
@@ -246,6 +250,7 @@ export class Dispatch {
   readonly planSessions: PlanSessionRepository;
   readonly reworkAttempts: ReworkAttemptRepository;
   readonly pausedDeliveries: PausedDeliveryRepository;
+  readonly specsRepo: SpecRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -254,6 +259,7 @@ export class Dispatch {
   readonly ticketSvc: TicketService;
   readonly repoSvc: RepoService;
   readonly epicsSvc: EpicsService;
+  readonly specsSvc: SpecsService;
   readonly boardSvc: BoardService;
   readonly reviewGateSvc: ReviewGateService;
   readonly pauseSvc: PauseService;
@@ -319,6 +325,7 @@ export class Dispatch {
     this.planSessions = new PlanSessionRepository(db);
     this.reworkAttempts = new ReworkAttemptRepository(db);
     this.pausedDeliveries = new PausedDeliveryRepository(db);
+    this.specsRepo = new SpecRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -374,6 +381,11 @@ export class Dispatch {
       scope: this.scope,
       tickets: this.ticketSvc,
       repos: this.repoSvc,
+    });
+    this.specsSvc = new SpecsService({
+      db,
+      clock: this.clock,
+      specs: this.specsRepo,
     });
     this.boardSvc = new BoardService({
       db,
@@ -501,6 +513,44 @@ export class Dispatch {
    */
   createEpic(raw: unknown, actor: Actor): CreateEpicResult {
     return this.epicsSvc.createEpic(raw, actor);
+  }
+
+  // --- Specs (Spec-Driven Development, Phase 1a) ---------------------------
+
+  /**
+   * Create a spec (always `draft`): a title, brief, and an ordered set of clauses
+   * (each a testable requirement / non-goal / decision). Clause ids are minted
+   * server-side when absent and preserved thereafter, so a later phase can thread
+   * provenance from a clause down to acceptance criteria.
+   */
+  createSpec(raw: unknown, actor: Actor): Spec {
+    return this.specsSvc.createSpec(raw, actor);
+  }
+
+  /** Fetch a spec by id (throws NOT_FOUND when absent). */
+  getSpec(id: string): Spec {
+    return this.specsSvc.getSpec(id);
+  }
+
+  /** List specs newest-first, optionally filtered by status. */
+  listSpecs(status?: SpecStatus): Spec[] {
+    return this.specsSvc.listSpecs(status);
+  }
+
+  /**
+   * Replace a DRAFT spec's clauses. Rejected on a non-draft (frozen/superseded)
+   * spec — a frozen spec is immutable.
+   */
+  updateSpecClauses(id: string, raw: unknown, actor: Actor): Spec {
+    return this.specsSvc.updateSpecClauses(id, raw, actor);
+  }
+
+  /**
+   * Freeze a spec (draft→frozen). INVARIANT: a frozen spec is immutable — only a
+   * `draft` spec can be frozen; freezing a non-draft spec is rejected.
+   */
+  freezeSpec(id: string, actor: Actor): Spec {
+    return this.specsSvc.freezeSpec(id, actor);
   }
 
   // --- Repositories --------------------------------------------------------

@@ -65,6 +65,9 @@ import {
   setTestableBody,
   setTestContractBody,
   setTicketRepoAccessBody,
+  createSpecBody,
+  updateSpecClausesBody,
+  specListQuery,
   stopPausedBody,
   suggestReposBody,
   testerVerdictBody,
@@ -631,6 +634,51 @@ async function route(
       const result = wg.createEpic(body, API_ACTOR);
       sendJson(res, 201, { epic_node_id: result.epicNodeId, ticket_numbers: result.ticketNumbers });
       return;
+    }
+    // --- Specs (Spec-Driven Development, Phase 1a) -------------------------
+    // POST /specs        — create a draft spec (title, brief, clauses).
+    // GET  /specs         — list specs newest-first (?status= filter).
+    if (segments.length === 1 && segments[0] === "specs") {
+      if (method === "POST") {
+        const body = createSpecBody.parse(await readJsonBody(req));
+        const spec = wg.createSpec(body, API_ACTOR);
+        sendJson(res, 201, { spec });
+        return;
+      }
+      if (method === "GET") {
+        const query = specListQuery.parse(Object.fromEntries(url.searchParams));
+        const specs = query.status !== undefined ? wg.listSpecs(query.status) : wg.listSpecs();
+        sendJson(res, 200, { specs });
+        return;
+      }
+      return methodNotAllowed(res);
+    }
+    // POST /specs/:id/freeze — freeze a draft spec (draft→frozen; immutable after).
+    if (
+      segments.length === 3 &&
+      segments[0] === "specs" &&
+      segments[2] === "freeze"
+    ) {
+      if (method !== "POST") return methodNotAllowed(res);
+      const spec = wg.freezeSpec(segments[1] as string, API_ACTOR);
+      sendJson(res, 200, { spec });
+      return;
+    }
+    // GET   /specs/:id  — fetch one spec.
+    // PATCH /specs/:id  — replace a DRAFT spec's clauses (rejected once frozen).
+    if (segments.length === 2 && segments[0] === "specs") {
+      if (method === "GET") {
+        const spec = wg.getSpec(segments[1] as string);
+        sendJson(res, 200, { spec });
+        return;
+      }
+      if (method === "PATCH") {
+        const body = updateSpecClausesBody.parse(await readJsonBody(req));
+        const spec = wg.updateSpecClauses(segments[1] as string, body, API_ACTOR);
+        sendJson(res, 200, { spec });
+        return;
+      }
+      return methodNotAllowed(res);
     }
     if (segments.length === 1 && segments[0] === "agents" && method === "GET") {
       sendJson(res, 200, { agents: wg.listAgents() });

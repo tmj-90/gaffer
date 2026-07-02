@@ -940,3 +940,98 @@ export interface PlanSession {
   created_at: string;
   updated_at: string;
 }
+
+// ============================================================================
+// Specs (Spec-Driven Development, Phase 1a).
+//
+// A spec is an AI-drafted, human-edited, then FROZEN statement of product intent
+// that sits in front of the decompose engine. Each spec owns an ordered set of
+// clauses — one testable statement each — with a STABLE clause_id so a later
+// phase can thread provenance down to acceptance criteria.
+// ============================================================================
+
+/** Lifecycle status of a {@link Spec}. Mirrors the specs.status CHECK. */
+export const SPEC_STATUSES = ["draft", "frozen", "superseded"] as const;
+export type SpecStatus = (typeof SPEC_STATUSES)[number];
+
+/**
+ * The kind of a {@link SpecClause}. A `requirement` is something the system MUST
+ * do; a `non-goal` is something it deliberately will NOT do; a `decision` records
+ * a settled product/technical choice. These three map onto the durable
+ * product-intent lore kinds (`requirement`/`non-goal`/`decision`) a later phase
+ * seeds from a frozen spec.
+ */
+export const SPEC_CLAUSE_KINDS = ["requirement", "non-goal", "decision"] as const;
+export type SpecClauseKind = (typeof SPEC_CLAUSE_KINDS)[number];
+
+/**
+ * One clause of a spec: a single testable statement of intent. `clause_id` is
+ * STABLE — assigned server-side at create/edit time when absent and preserved
+ * thereafter — so Phase 3 traceability can reference a clause even across edits
+ * (before a freeze) and forever after a freeze.
+ */
+export interface SpecClause {
+  /** Stable identifier for this clause (assigned server-side when absent). */
+  clause_id: string;
+  kind: SpecClauseKind;
+  /** The clause text — one testable statement of intent. */
+  text: string;
+  /** Optional rationale explaining WHY this clause exists. */
+  rationale?: string;
+}
+
+/**
+ * A spec row. `clauses_json` is the JSON-encoded {@link SpecClause}[] (parse with
+ * {@link parseSpecClauses}). `status` walks draft → frozen (an immutable snapshot,
+ * frozen_at stamped) → superseded. `target_repo`/`scope_node_id` are OPTIONAL soft
+ * references (by name / id) to where the spec's work will land.
+ */
+export interface Spec {
+  id: string;
+  title: string;
+  brief: string;
+  /** JSON-encoded array of {@link SpecClause} objects. */
+  clauses_json: string;
+  status: SpecStatus;
+  target_repo: string | null;
+  scope_node_id: string | null;
+  created_at: string;
+  updated_at: string;
+  /** When the spec was frozen (draft→frozen), or null while still a draft. */
+  frozen_at: string | null;
+}
+
+/**
+ * Parse the `specs.clauses_json` column into a {@link SpecClause}[]. Returns `[]`
+ * for an absent or malformed value, and coerces each entry to its expected shape
+ * so a corrupt row can never throw on a read path. An entry with a missing/unknown
+ * `kind` or empty `text` is dropped rather than rejecting the whole record.
+ */
+export function parseSpecClauses(raw: string | null): SpecClause[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const kinds = new Set<string>(SPEC_CLAUSE_KINDS);
+    const out: SpecClause[] = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const e = entry as Partial<SpecClause>;
+      if (typeof e.clause_id !== "string" || e.clause_id.length === 0) continue;
+      if (typeof e.kind !== "string" || !kinds.has(e.kind)) continue;
+      if (typeof e.text !== "string" || e.text.length === 0) continue;
+      const clause: SpecClause = {
+        clause_id: e.clause_id,
+        kind: e.kind as SpecClauseKind,
+        text: e.text,
+      };
+      if (typeof e.rationale === "string" && e.rationale.length > 0) {
+        clause.rationale = e.rationale;
+      }
+      out.push(clause);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}

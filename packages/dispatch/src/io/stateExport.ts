@@ -61,6 +61,10 @@ export const EXPORT_TABLES = [
   "decisions",
   "agents",
   "scope_nodes",
+  // Spec-Driven Development: frozen statements of product intent. Standalone (no
+  // FK — target_repo/scope_node_id are soft references), and a durable, portable
+  // asset the operator carries between machines, so it IS part of the bundle.
+  "specs",
   // First-level children.
   "acceptance_criteria",
   "ticket_required_capabilities",
@@ -98,6 +102,7 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   decisions: "id",
   agents: "id",
   scope_nodes: "id",
+  specs: "id",
   acceptance_criteria: "id",
   ticket_required_capabilities: "ticket_id, capability",
   agent_capabilities: "agent_id, capability",

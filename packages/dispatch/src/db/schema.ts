@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -558,4 +558,38 @@ CREATE INDEX IF NOT EXISTS idx_rework_attempts_ticket
   ON rework_attempts(ticket_id, attempt ASC);
 CREATE INDEX IF NOT EXISTS idx_rework_attempts_gate
   ON rework_attempts(gate);
+
+-- ============================================================================
+-- Specs (Spec-Driven Development, Phase 1a). Additive, schema_version 17.
+--
+-- A spec is an AI-drafted, human-edited, then FROZEN statement of product intent
+-- that sits IN FRONT OF the decompose engine (never forks it). Each spec carries
+-- an ordered set of clauses (clauses_json) — one testable statement each, tagged
+-- as a requirement / non-goal / decision — with a STABLE clause_id so a later
+-- phase can thread provenance down to acceptance criteria. status walks
+-- draft → frozen (immutable snapshot) → superseded.
+--
+-- INVARIANT: a frozen spec is immutable. Only a 'draft' spec may have its clauses
+-- edited or be frozen; 'frozen'/'superseded' reject every mutation (enforced in
+-- the service layer). frozen_at is stamped on the draft-to-frozen transition.
+--
+-- Standalone (no FKs — a spec outlives the repo/scope it references, and
+-- target_repo/scope_node_id are soft references by name/id), so it is created
+-- idempotently by CREATE TABLE IF NOT EXISTS with no ADD COLUMN migration needed
+-- (like runs / plan_sessions / rework_attempts).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS specs (
+  id            TEXT PRIMARY KEY,
+  title         TEXT NOT NULL,
+  brief         TEXT NOT NULL DEFAULT '',
+  clauses_json  TEXT NOT NULL DEFAULT '[]',
+  status        TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','frozen','superseded')),
+  target_repo   TEXT,
+  scope_node_id TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  frozen_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_specs_status ON specs(status, created_at DESC);
 `;

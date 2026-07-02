@@ -205,6 +205,11 @@ export function migrate(db: Db): void {
   // creates it) and idempotent on an already-migrated one. Runs AFTER every prior
   // tickets rebuild so the rebuilt table is backfilled too.
   alterTicketsAddHumanDelivered(db);
+  // Spec-Driven Development (v16→v17): the `specs` table. A brand-new standalone
+  // table (no FKs — a spec outlives the repo/scope it references) created
+  // idempotently by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS (like runs /
+  // plan_sessions / rework_attempts), so — adding no column to a pre-existing
+  // table — it needs no ADD COLUMN migration. No-op on a fresh DB.
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +

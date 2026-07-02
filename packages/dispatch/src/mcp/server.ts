@@ -223,6 +223,24 @@ const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "the plan is confirmed. The call is all-or-nothing: an out-of-range index, a " +
     "self-dependency or a cyclic plan rejects the entire epic. Returns the epic " +
     "node id and the created ticket numbers in plan order.",
+  create_spec:
+    "**Draft a spec — an AI-drafted, human-edited statement of product intent that " +
+    "sits in front of decompose.** Provide `title`, an optional `brief`, and " +
+    "`clauses[]` where each clause is ONE testable statement tagged `kind` " +
+    "(`requirement` = must do; `non-goal` = deliberately won't do; `decision` = a " +
+    "settled choice), with optional `rationale`. A spec is created as `draft` and is " +
+    "editable until frozen; clause ids are assigned for you (stable, so a clause can " +
+    "be traced later). Returns the spec with its clauses. Freeze it with `freeze_spec` " +
+    "once the intent is settled.",
+  get_spec:
+    "**Read a spec by id.** Returns its title, brief, status (draft/frozen/superseded) " +
+    "and the ordered clauses (each with its stable clause_id, kind, text and optional " +
+    "rationale). Read-only.",
+  freeze_spec:
+    "**Freeze a draft spec — take an immutable snapshot of the intent.** Pass " +
+    "`spec_id`. Only a `draft` spec can be frozen (draft→frozen); a frozen spec is " +
+    "IMMUTABLE — freezing or editing a spec that is already frozen or superseded is " +
+    "rejected. Freeze when the clauses are settled and ready to drive delivery.",
   list_scopes:
     "**Read the Factory Map: the product/system scope nodes and which repos sit " +
     "in each, with the default access (write/read/test/none) that scope grants.** " +

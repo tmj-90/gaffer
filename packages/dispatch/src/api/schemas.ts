@@ -12,6 +12,8 @@ import {
   SCOPE_NODE_TYPES,
   SCOPE_REPO_ACCESS,
   SCOPE_REPO_RELATIONS,
+  SPEC_CLAUSE_KINDS,
+  SPEC_STATUSES,
   TICKET_REPO_ACCESS,
   TICKET_REPO_RELATIONS,
   TICKET_REPO_DELIVERY_STATUSES,
@@ -460,6 +462,38 @@ export const createEpicBody = z.object({
   tickets: z.array(epicTicketBody).min(1).max(100),
 });
 export type CreateEpicBody = z.infer<typeof createEpicBody>;
+
+// --- Specs (Spec-Driven Development, Phase 1a) -----------------------------
+
+/** One clause in a POST /specs or PATCH /specs/:id body. `clause_id` is optional. */
+const specClauseBody = z.object({
+  clause_id: z.string().trim().min(1).max(100).optional(),
+  kind: z.enum(SPEC_CLAUSE_KINDS),
+  text: z.string().trim().min(1).max(4_000),
+  rationale: z.string().trim().min(1).max(4_000).optional(),
+});
+
+/** Body for POST /specs — create a draft spec. */
+export const createSpecBody = z.object({
+  title: z.string().trim().min(1).max(300),
+  brief: z.string().max(20_000).optional(),
+  clauses: z.array(specClauseBody).max(200).optional(),
+  target_repo: z.string().trim().min(1).max(200).nullable().optional(),
+  scope_node_id: z.string().trim().min(1).max(200).nullable().optional(),
+});
+export type CreateSpecBody = z.infer<typeof createSpecBody>;
+
+/** Body for PATCH /specs/:id — replace a draft spec's clauses. */
+export const updateSpecClausesBody = z.object({
+  clauses: z.array(specClauseBody).max(200),
+});
+export type UpdateSpecClausesBody = z.infer<typeof updateSpecClausesBody>;
+
+/** Query for GET /specs — optional status filter. */
+export const specListQuery = z.object({
+  status: z.enum(SPEC_STATUSES).optional(),
+});
+export type SpecListQuery = z.infer<typeof specListQuery>;
 
 // --- Plan a build (decompose chat panel) -----------------------------------
 

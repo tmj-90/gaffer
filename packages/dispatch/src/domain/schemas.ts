@@ -8,6 +8,7 @@ import {
   SCOPE_NODE_TYPES,
   SCOPE_REPO_ACCESS,
   SCOPE_REPO_RELATIONS,
+  SPEC_CLAUSE_KINDS,
   TICKET_REPO_ACCESS,
   TICKET_REPO_RELATIONS,
   TICKET_REPO_DELIVERY_STATUSES,
@@ -393,3 +394,45 @@ export const createEpicInput = z.object({
     .max(MAX_EPIC_TICKETS),
 });
 export type CreateEpicInput = z.infer<typeof createEpicInput>;
+
+// --- Specs (Spec-Driven Development, Phase 1a) -----------------------------
+
+/** Maximum clauses a single spec may carry (bounded guardrail). */
+export const MAX_SPEC_CLAUSES = 200;
+
+/**
+ * One clause of a spec: a single testable statement, tagged with its `kind`.
+ * `clause_id` is OPTIONAL on input — the service generates a stable id when it is
+ * absent (and preserves a supplied one), so Phase 3 traceability always has a
+ * stable reference.
+ */
+export const specClauseInput = z.object({
+  clause_id: z.string().trim().min(1).max(100).optional(),
+  kind: z.enum(SPEC_CLAUSE_KINDS),
+  text: z.string().trim().min(1, "clause text is required").max(4_000),
+  rationale: z.string().trim().min(1).max(4_000).optional(),
+});
+export type SpecClauseInput = z.infer<typeof specClauseInput>;
+
+/**
+ * Create a spec (always `draft`). `title` is required; `clauses` may be empty at
+ * create time (a spec is drafted then filled in). `target_repo`/`scope_node_id`
+ * are optional soft references to where the work will land.
+ */
+export const createSpecInput = z.object({
+  title: z.string().trim().min(1, "spec title is required").max(300),
+  brief: z.string().max(20_000).default(""),
+  clauses: z.array(specClauseInput).max(MAX_SPEC_CLAUSES).default([]),
+  target_repo: z.string().trim().min(1).max(200).nullable().optional(),
+  scope_node_id: z.string().trim().min(1).max(200).nullable().optional(),
+});
+export type CreateSpecInput = z.infer<typeof createSpecInput>;
+
+/**
+ * Replace a draft spec's clauses. The service rejects this on a non-draft (frozen
+ * or superseded) spec — a frozen spec is immutable.
+ */
+export const updateSpecClausesInput = z.object({
+  clauses: z.array(specClauseInput).max(MAX_SPEC_CLAUSES),
+});
+export type UpdateSpecClausesInput = z.infer<typeof updateSpecClausesInput>;

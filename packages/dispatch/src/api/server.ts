@@ -115,6 +115,57 @@ export function isLoopbackHost(host: string): boolean {
 }
 
 /**
+ * Extract the hostname from a `Host` (`host[:port]`) or `Origin`
+ * (`scheme://host[:port]`) header value, normalised for comparison. Returns
+ * `undefined` for an empty or unparseable value so the caller can treat it as
+ * disallowed.
+ */
+function headerHostname(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "") return undefined;
+  // Origin carries a scheme; a bare Host does not — synthesise one so the URL
+  // parser can split host from port (and reject a garbage value).
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  try {
+    return normaliseHost(new URL(withScheme).hostname);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * DNS-rebinding defense. A browser page served from an attacker origin that has
+ * rebound its DNS to 127.0.0.1 can reach the local API, but the browser still
+ * sends the attacker's own `Host`/`Origin`. We refuse any request whose `Host`
+ * (or, when present, `Origin`) names a host other than the bound host or a
+ * loopback alias — so a rebound foreign page can't read local control state even
+ * on the tokenless loopback read path. Non-browser clients (curl, the runner)
+ * that omit both headers are unaffected; the bearer token remains the real auth
+ * mechanism, this only closes the browser-rebinding hole.
+ */
+function isHostHeaderAllowed(req: IncomingMessage, bindHost: string): boolean {
+  const boundHostNormalised = normaliseHost(bindHost);
+  const allowed = (host: string | undefined): boolean =>
+    host !== undefined && (isLoopbackHost(host) || host === boundHostNormalised);
+
+  const rawHost = req.headers.host;
+  if (rawHost !== undefined) {
+    const hostValue = Array.isArray(rawHost) ? (rawHost[0] ?? "") : rawHost;
+    if (!allowed(headerHostname(hostValue))) return false;
+  }
+
+  const rawOrigin = req.headers.origin;
+  // A literal "null" Origin (sandboxed iframe, file://) carries no usable host —
+  // reject it like any other non-matching origin.
+  if (rawOrigin !== undefined) {
+    const originValue = Array.isArray(rawOrigin) ? (rawOrigin[0] ?? "") : rawOrigin;
+    if (!allowed(headerHostname(originValue))) return false;
+  }
+
+  return true;
+}
+
+/**
  * Guard against silently exposing the unauthenticated API on a public interface.
  *
  * The REST API has no authentication unless `DISPATCH_API_TOKEN` is set, and no
@@ -372,6 +423,7 @@ export function createApiHandler(
       memoryReader,
       onboardRunner,
       loopbackBind,
+      bindHost,
       req,
       res,
     ).catch((err: unknown) => {
@@ -472,6 +524,9 @@ async function route(
   // unauthenticated READ may pass: reads stay open on a loopback bind for the
   // local dashboard, but mutations always require the token.
   loopbackBind: boolean,
+  // The host the server is bound to — used for the Host/Origin DNS-rebinding
+  // check so a rebound foreign page can't read local control state.
+  bindHost: string,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -480,6 +535,16 @@ async function route(
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
 
   try {
+    // DNS-rebinding defense (runs before anything else, incl. static assets): a
+    // request whose Host/Origin names a foreign host is refused outright, so a
+    // rebound attacker page can't reach even the tokenless loopback read path.
+    if (!isHostHeaderAllowed(req, bindHost)) {
+      sendJson(res, 403, {
+        error: { code: "FORBIDDEN_HOST", message: "Host or Origin not permitted." },
+      });
+      return;
+    }
+
     // SPA static assets: only specific non-API GET paths. Everything else falls
     // through to the API router (and its JSON 404), so API 404s stay intact.
     if (method === "GET" && serveStatic(url.pathname, res)) {
@@ -495,9 +560,11 @@ async function route(
     // API requires a bearer token (DISPATCH_API_TOKEN — auto-provisioned at
     // startup by the dispatch-api entrypoint, so a token is present by default).
     // Read-only requests stay open on a loopback bind to preserve local dashboard
-    // UX; EVERY mutating/state-changing request must present the token. No-op only
-    // when auth is fully disabled (no token configured — embedder/test posture).
-    if (!isRequestAuthorized(req, loopbackBind)) {
+    // UX; EVERY mutating/state-changing request must present the token, as must a
+    // read of a privileged secret-bearing path (e.g. /api/settings) even on
+    // loopback. No-op only when auth is fully disabled (no token configured —
+    // embedder/test posture).
+    if (!isRequestAuthorized(req, loopbackBind, url.pathname)) {
       sendJson(res, 401, {
         error: { code: "UNAUTHORIZED", message: "Missing or invalid bearer token." },
       });

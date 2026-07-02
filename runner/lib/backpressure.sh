@@ -3,8 +3,14 @@
 #
 # Before claiming/delivering for a repo, count its OUTSTANDING work and refuse to
 # pile up more than the configured cap. Outstanding work for a repo =
-#   • unmerged gaffer/* branches in the REAL repo (delivery branches not yet merged
-#     into the default branch),
+#   • ACTIVE unmerged gaffer/* branches in the REAL repo (delivery branches not yet
+#     merged into the default branch). Branches preserved by PARKED tickets
+#     (blocked/refining — awaiting a human) are EXCLUDED: they are not in-flight
+#     work, and counting them would starve the repo for as long as the tickets sit
+#     parked (the resume re-claim is gated behind this same check). The claiming
+#     ticket's OWN preserved branch is also excluded — a re-claim reuses that
+#     branch, it adds nothing new. Fail SAFE: a branch whose ticket cannot be
+#     resolved (unmappable name, failed status lookup) always counts.
 #   • in_review tickets targeting the repo (the "open PR" equivalent), and
 #   • active (unexpired) claims targeting the repo (concurrent in-flight tickets).
 #
@@ -22,19 +28,81 @@
 # GAFFER_WG_SHOW_CMD (prints `ticket show <ref>` JSON). They default to the real
 # `wg` helper from factory.config.sh, but tests override them to run hermetically.
 
-# Count unmerged gaffer/* branches in a REAL repo: local branches matching gaffer/*
-# whose tip is NOT already contained in the default branch. `git branch --merged`
-# lists branches fully merged into <default>; the unmerged gaffer/ set is the
-# difference. A repo that is not on disk contributes 0 (cannot pressure it).
-#   gaffer_repo_unmerged_branches <repo-path> <default-branch>
-gaffer_repo_unmerged_branches() {
+# List unmerged gaffer/* branch NAMES in a REAL repo: local branches matching
+# gaffer/* whose tip is NOT already contained in the default branch. `git branch
+# --merged` lists branches fully merged into <default>; the unmerged gaffer/ set
+# is the difference. A repo that is not on disk contributes nothing.
+#   _gaffer_repo_unmerged_branch_names <repo-path> <default-branch>
+_gaffer_repo_unmerged_branch_names() {
   local repo="$1" def="${2:-main}"
-  git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || { echo 0; return 0; }
+  git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 0
   local all merged
   all="$(git -C "$repo" for-each-ref --format='%(refname:short)' 'refs/heads/gaffer/*' 2>/dev/null | sort -u)"
-  [ -n "$all" ] || { echo 0; return 0; }
+  [ -n "$all" ] || return 0
   merged="$(git -C "$repo" branch --format='%(refname:short)' --merged "$def" 2>/dev/null | grep -E '^gaffer/' | sort -u)"
-  comm -23 <(printf '%s\n' "$all") <(printf '%s\n' "$merged") | grep -c . || echo 0
+  comm -23 <(printf '%s\n' "$all") <(printf '%s\n' "$merged")
+}
+
+# Count ALL unmerged gaffer/* branches (raw, status-blind).
+#   gaffer_repo_unmerged_branches <repo-path> <default-branch>
+gaffer_repo_unmerged_branches() {
+  local n
+  n="$(_gaffer_repo_unmerged_branch_names "$1" "${2:-main}" | grep -c .)" || true
+  echo "${n:-0}"
+}
+
+# Print the ticket numbers of every PARKED ticket — parked = set aside for a
+# human (rework loop parks to `blocked`, other recovery paths to `refining`).
+# NOTE `paused` is deliberately NOT parked here: a paused delivery is live
+# in-flight work (worktree kept alive for one-click resume) and must keep
+# pressuring its repo. BATCHED: one `ticket list -s <status>` call per parked
+# status — never a per-branch `ticket show`. Fail SAFE: a failed/unparseable
+# list yields nothing for that status, so callers exclude nothing (branches keep
+# counting — a lookup failure throttles, never unthrottles). Never fatal.
+#   gaffer_parked_ticket_numbers
+gaffer_parked_ticket_numbers() {
+  local s
+  for s in blocked refining; do
+    _bp_wg_list "$s" 2>/dev/null | python3 -c "import sys,json
+try: d=json.load(sys.stdin)
+except Exception: d=[]
+for t in (d if isinstance(d, list) else []):
+    n=(t or {}).get('number')
+    if n is not None: print(n)" 2>/dev/null
+  done
+  return 0
+}
+
+# Count ACTIVE unmerged gaffer/* branches — the branch-pressure dimension.
+# Like gaffer_repo_unmerged_branches, but a branch is excluded when its ticket
+# (derived from the `gaffer/ticket-<n>-…` name, the same mapping the sweep uses)
+# is either:
+#   • PARKED (blocked/refining): the ticket is waiting on a HUMAN; its preserved
+#     branch is not in-flight work. Counting it would starve the repo for the
+#     whole parked lifetime — the parked ticket's own resumption re-claim is
+#     gated behind this same check, so nothing could ever relieve the pressure.
+#   • the CLAIMING ticket itself (<self-ticket>): a re-claim reuses/resets its
+#     own preserved branch (worktree add -B), adding no new branch, so it must
+#     not be starved by its own prior work.
+# Fail SAFE: a branch that embeds no ticket number, or whose parked-status
+# lookup failed (empty parked set), CANNOT be proven inactive and still counts.
+#   gaffer_repo_active_unmerged_branches <repo-path> <default-branch> [self-ticket]
+gaffer_repo_active_unmerged_branches() {
+  local repo="$1" def="${2:-main}" self="${3:-}"
+  local names parked b num count=0
+  names="$(_gaffer_repo_unmerged_branch_names "$repo" "$def")"
+  [ -n "$names" ] || { echo 0; return 0; }
+  parked="$(gaffer_parked_ticket_numbers)"
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    num="$(printf '%s' "$b" | sed -nE 's#^gaffer/ticket-([0-9]+).*#\1#p')"
+    if [ -n "$num" ]; then
+      [ -n "$self" ] && [ "$num" = "$self" ] && continue          # own branch: reused, not added
+      [ -n "$parked" ] && printf '%s\n' "$parked" | grep -qxF "$num" && continue  # parked: not in-flight
+    fi
+    count=$((count + 1))
+  done <<< "$names"
+  echo "$count"
 }
 
 # Delete ONLY genuinely-abandoned unmerged gaffer/* branches. A "genuinely
@@ -50,9 +118,13 @@ gaffer_repo_unmerged_branches() {
 #   ready · in_review · done · draft                     (other live tickets)
 # Anything we cannot POSITIVELY confirm abandoned — an unknown status, or a status
 # lookup that fails/returns empty (transient `wg` error) — is KEPT: losing
-# committed work is far worse than a branch lingering one extra tick against the
-# cap. Merged branches are left to the normal merged sweep. Echoes each deleted
-# branch name. Best-effort — never fatal.
+# committed work is far worse than a lingering branch. Keeping a PARKED branch is
+# cheap because the pressure count excludes parked (blocked/refining) tickets'
+# branches (gaffer_repo_active_unmerged_branches), so preservation never throttles
+# the repo; a branch kept because its status is UNRESOLVABLE, however, DOES keep
+# counting toward the cap (fail-safe) until the status resolves. Merged branches
+# are left to the normal merged sweep. Echoes each deleted branch name.
+# Best-effort — never fatal.
 #   gaffer_sweep_abandoned_branches <repo-path> <default-branch>
 gaffer_sweep_abandoned_branches() {
   local repo="$1" def="${2:-main}"
@@ -142,18 +214,23 @@ sys.exit(1)" "$target"; then
 
 # Compute a repo's pressure across all three dimensions and echo a single line:
 #   "<branches> <in_review> <claims>"
-# The active-claims count is the number of IN-FLIGHT tickets for the repo. An
-# in-flight delivery is `claimed` for essentially its whole lifetime — Dispatch
-# moves a ticket to `claimed` on claim and only flips it to `in_progress` for the
-# brief window inside submitForReview. Counting `in_progress` alone would leave the
-# cap inert during live delivery, so we count BOTH live statuses (claimed +
-# in_progress). If a future status name represents live work, extend the set here.
-#   gaffer_repo_pressure <repo-path> <default-branch> [repo-name]
+# The branch dimension counts ACTIVE branches only (parked blocked/refining
+# tickets' preserved branches and the claiming ticket's own branch are excluded —
+# see gaffer_repo_active_unmerged_branches). Pass the candidate ticket number as
+# <self-ticket> so a parked ticket re-claiming its own preserved branch is never
+# starved by it. The active-claims count is the number of IN-FLIGHT tickets for
+# the repo. An in-flight delivery is `claimed` for essentially its whole lifetime
+# — Dispatch moves a ticket to `claimed` on claim and only flips it to
+# `in_progress` for the brief window inside submitForReview. Counting
+# `in_progress` alone would leave the cap inert during live delivery, so we count
+# BOTH live statuses (claimed + in_progress). If a future status name represents
+# live work, extend the set here.
+#   gaffer_repo_pressure <repo-path> <default-branch> [repo-name] [self-ticket]
 gaffer_repo_pressure() {
-  local repo="$1" def="${2:-main}" name="${3:-}"
+  local repo="$1" def="${2:-main}" name="${3:-}" self="${4:-}"
   local key="$repo"
   local branches inreview claims
-  branches="$(gaffer_repo_unmerged_branches "$repo" "$def")"
+  branches="$(gaffer_repo_active_unmerged_branches "$repo" "$def" "$self")"
   inreview="$(gaffer_repo_tickets_in_status in_review "$key")"
   # Live work = claimed (the steady state of an in-flight delivery) + in_progress
   # (the brief submit-for-review window). Sum both so the cap throttles real work.

@@ -15,9 +15,12 @@
 # Universal delivery-mechanics skills mounted on EVERY agent regardless of
 # stack/area — the core delivery flow fires on every ticket (run the tests, the
 # linter and coverage; minimise + self/submit-review the diff; branch; record
-# evidence). Space-separated skill DIRECTORY names; override via env. Only names
-# that actually exist in $SKILLS_DIR are linked, so a trimmed library is safe.
-: "${GAFFER_UNIVERSAL_SKILLS:=run-tests run-lint run-coverage minimalism self-review submit-review record-evidence create-branch}"
+# evidence; record the digest delta the prompt mandates). Space-separated skill
+# DIRECTORY names; override via env. Only names that actually exist in
+# $SKILLS_DIR are linked, so a trimmed library is safe.
+# FINDING 16: prepare-digest-delta is part of the universal set — the delivery
+# prompt MANDATES it, so it must survive the select-skills fallback too.
+: "${GAFFER_UNIVERSAL_SKILLS:=run-tests run-lint run-coverage minimalism self-review submit-review record-evidence create-branch prepare-digest-delta}"
 
 # Root under which per-agent mounts live. Factory state (never the target repo),
 # so leaving a mount in place between ticks is harmless; each build rebuilds its

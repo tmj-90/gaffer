@@ -31,8 +31,21 @@
 //     "history": [                                             // optional, prior turns
 //       { "role": "assistant", "questions": ["web or mobile?"] },
 //       { "role": "user",      "answer": "web" }
+//     ],
+//     "spec": [                                                // optional — see SPEC-DRIVEN
+//       { "clause_id": "c1", "kind": "requirement", "text": "...", "rationale": "..." },
+//       { "clause_id": "c2", "kind": "non-goal",    "text": "..." },
+//       { "clause_id": "c3", "kind": "decision",    "text": "..." }
 //     ]
 //   }
+//
+// SPEC-DRIVEN (a frozen spec drives the plan): when `spec` is a non-empty array of
+// frozen clauses ({clause_id, kind:requirement|non-goal|decision, text, rationale?}),
+// they are rendered in a QUARANTINED <untrusted-spec> block the model must satisfy
+// (requirements) / honour (non-goals) / respect (decisions). A spec DEFAULTS to
+// force-plan (the clauses already answer the clarifying questions) unless the request
+// sets forcePlan:false. The planner emits an OPTIONAL `clauseRef` (a clause_id) on each
+// acceptance criterion, threading provenance from the clause down to the AC.
 //
 // FORCE-PLAN ("build the tickets now" escape hatch): when `forcePlan` is set on
 // stdin (or --force-plan / GAFFER_DECOMPOSE_FORCE_PLAN=1), the decomposer STOPS
@@ -61,10 +74,13 @@
 //                 "epic": { "name":"...", "description":"..." },
 //                 "tickets": [ {
 //                    "title":"...", "description":"...",
-//                    "acceptanceCriteria":[ "..." ],
+//                    "acceptanceCriteria":[ "..." | { "text":"...", "clauseRef":"<clause_id>" } ],
 //                    "priority": <int>, "repo":"<new-repo-name>",
 //                    "bootstrap": <bool>, "dependsOn":[ <ticket-index>, ... ]
 //                 }, ... ] } }
+//   (SPEC-DRIVEN: an AC is a bare string as before, OR — when the planner mapped it to
+//    a spec clause — an object { text, clauseRef } carrying that clause_id. create_epic
+//    accepts both, persisting clauseRef as the AC's spec_clause_id provenance.)
 //   error:    { "phase":"error", "error":"<reason>" }   (exit 1)
 //
 // The `plan.tickets` shape is exactly what dispatch `epic create` accepts
@@ -211,6 +227,13 @@ function readRequest(opts) {
   // tickets now" button). OR it into opts so the CLI flag / env and the per-request
   // field all converge on a single force flag the rest of main() reads.
   if (req.forcePlan === true) opts.forcePlan = true;
+  // SPEC-DRIVEN (Phase 2a): a frozen spec's clauses already answer the clarifying
+  // questions, so a spec-driven decompose DEFAULTS to force-plan (skip clarify, emit
+  // the plan now). Still overridable — an explicit `forcePlan:false` on the request
+  // opts back into the normal clarify flow even with a spec attached.
+  if (Array.isArray(req.spec) && req.spec.length > 0 && req.forcePlan !== false) {
+    opts.forcePlan = true;
+  }
   return req;
 }
 
@@ -274,6 +297,27 @@ function lastBalancedObject(text) {
  * contract violation under force-plan (the model was told to plan and disobeyed),
  * so it is rejected rather than passed back as a clarify turn.
  */
+/**
+ * SPEC-DRIVEN (Phase 2a): normalise ONE acceptance criterion. An AC arrives as
+ * EITHER a bare string (the unchanged shape) OR an object `{ text, clauseRef? }`
+ * where `clauseRef` is the frozen-spec clause_id this AC satisfies. Returns:
+ *   - a trimmed STRING when there is no clauseRef (output byte-for-byte unchanged),
+ *   - `{ text, clauseRef }` when a clauseRef is present (provenance preserved),
+ *   - null for an empty/blank AC (dropped by the caller).
+ * Keeping the string case a string means a non-spec-driven plan is unchanged and
+ * `create_epic` (which accepts string | {text, clauseRef}) stays compatible.
+ */
+export function normalizeAc(a) {
+  if (a && typeof a === "object" && !Array.isArray(a)) {
+    const text = String(a.text ?? "").trim();
+    if (!text) return null;
+    const clauseRef = a.clauseRef != null ? String(a.clauseRef).trim() : "";
+    return clauseRef ? { text, clauseRef } : text;
+  }
+  const text = String(a ?? "").trim();
+  return text ? text : null;
+}
+
 export function validateResult(obj, maxTickets, targetRepo = "", forcePlan = false) {
   const repo = String(targetRepo ?? "").trim();
   const brownfield = repo.length > 0;
@@ -316,8 +360,11 @@ export function validateResult(obj, maxTickets, targetRepo = "", forcePlan = fal
       const t = tickets[i] ?? {};
       const title = String(t.title ?? "").trim();
       if (!title) return { phase: "error", error: `ticket ${i} has no title` };
+      // SPEC-DRIVEN (Phase 2a): each AC may carry an optional `clauseRef`. normalizeAc
+      // keeps a plain AC a string (unchanged output) and only emits { text, clauseRef }
+      // when a clause id is present, so create_epic stays compatible.
       const acs = Array.isArray(t.acceptanceCriteria)
-        ? t.acceptanceCriteria.map((a) => String(a).trim()).filter(Boolean)
+        ? t.acceptanceCriteria.map(normalizeAc).filter((a) => a !== null)
         : [];
       if (acs.length === 0)
         return { phase: "error", error: `ticket ${i} ("${title}") has no acceptance criteria` };
@@ -426,6 +473,50 @@ function resolveRepoPath(name) {
 }
 
 /**
+ * SPEC-DRIVEN (Phase 2a): render the frozen spec's clauses as a QUARANTINED
+ * `<untrusted-spec>` block for the prompt. The clause text/rationale are untrusted
+ * (human-edited, possibly carrying an injection payload), so the WHOLE listing is
+ * wrapped in a single `quarantine("spec", …)` envelope — the same helper the brief
+ * and brownfield blocks use — while the surrounding instructions (satisfy every
+ * requirement, honour every non-goal, respect every decision, emit a `clauseRef`)
+ * stay OUTSIDE the envelope as trusted steer. Clauses are grouped by kind and each
+ * line prefixes the stable `clause_id` in square brackets so the model can quote it
+ * back as the AC's `clauseRef`. Returns "" when no valid clauses are present.
+ */
+export function buildSpecBlock(spec) {
+  const clauses = Array.isArray(spec) ? spec.filter((c) => c && typeof c === "object") : [];
+  if (clauses.length === 0) return "";
+  const groups = [
+    ["requirement", "REQUIREMENTS — you MUST satisfy every one"],
+    ["non-goal", "NON-GOALS — you MUST NOT build these"],
+    ["decision", "DECISIONS — you MUST respect every one"],
+  ];
+  const body = [];
+  for (const [kind, label] of groups) {
+    const items = clauses.filter((c) => String(c.kind ?? "").trim() === kind);
+    if (items.length === 0) continue;
+    body.push(`${label}:`);
+    for (const c of items) {
+      const id = String(c.clause_id ?? "").trim();
+      const text = String(c.text ?? "").trim();
+      const rationale = c.rationale ? ` (rationale: ${String(c.rationale).trim()})` : "";
+      body.push(`  - [${id}] ${text}${rationale}`);
+    }
+  }
+  if (body.length === 0) return "";
+  return [
+    "",
+    "FROZEN SPEC: a human-approved specification is the AUTHORITATIVE source of",
+    "intent for this build. You MUST satisfy EVERY requirement, honour EVERY",
+    "non-goal (do NOT build them), and respect EVERY decision below. On each",
+    'acceptance criterion you generate, set an OPTIONAL "clauseRef" field to the',
+    "clause_id (the value in square brackets) of the spec clause that AC satisfies;",
+    "omit clauseRef for an AC that maps to no clause.",
+    quarantine("spec", body.join("\n")),
+  ].join("\n");
+}
+
+/**
  * Build the prompt fed to `claude -p` (uses the plan-build skill).
  *
  * `forcePlan` (the UI's "Build the tickets now" escape, or the advisory turn-cap
@@ -522,6 +613,10 @@ export function buildPrompt(req) {
           query: `${targetRepo} — existing repo overview and conventions for brownfield decomposition`,
         })
       : "";
+  // SPEC-DRIVEN (Phase 2a): when a frozen spec rides along, render its clauses in a
+  // quarantined <untrusted-spec> block the model must satisfy/honour/respect, and
+  // ask it to thread each clause id onto the ACs it generates. Empty ("") otherwise.
+  const specBlock = buildSpecBlock(req.spec);
   return [
     "Use the plan-build skill to decompose this app brief into a phased,",
     "dependency-ordered epic of tickets. Follow the skill's structured-output",
@@ -532,6 +627,7 @@ export function buildPrompt(req) {
     clarifyFirst,
     brownfieldBlock,
     cardContext,
+    specBlock,
     forcePlanBlock,
     "",
     `App brief: ${quarantine("app-brief", brief, { singleLine: true })}`,

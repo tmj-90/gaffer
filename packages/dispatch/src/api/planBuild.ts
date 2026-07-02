@@ -90,11 +90,30 @@ export interface PlanBuildContext {
   readonly repo?: string | undefined;
 }
 
+/**
+ * Spec-Driven Development (Phase 2a): one clause of a FROZEN spec forwarded to the
+ * decomposer. The `clause_id` is the stable provenance id threaded down to
+ * acceptance criteria; `text`/`rationale` are untrusted and ride the decomposer's
+ * `<untrusted-spec>` quarantine.
+ */
+export interface PlanBuildSpecClause {
+  readonly clause_id: string;
+  readonly kind: "requirement" | "non-goal" | "decision";
+  readonly text: string;
+  readonly rationale?: string | undefined;
+}
+
 export interface PlanBuildRequest {
   readonly brief: string;
   readonly history: readonly PlanBuildTurn[];
   /** Optional extend-existing target forwarded to the decomposer as context. */
   readonly context?: PlanBuildContext | undefined;
+  /**
+   * Spec-Driven Development (Phase 2a): the frozen spec's clauses. When present the
+   * decomposer renders them in a quarantined `<untrusted-spec>` block, defaults to
+   * force-plan, and threads clause ids onto the acceptance criteria it generates.
+   */
+  readonly spec?: readonly PlanBuildSpecClause[] | undefined;
   /**
    * "Build the tickets now" escape: when true, the decomposer is told to STOP
    * asking clarifying questions and produce the best phased plan it can from the
@@ -176,6 +195,10 @@ export function createPlanBuildRunner(
         // Forward the "build the tickets now" escape only when set, so a normal
         // (clarifying) turn's stdin shape is byte-for-byte unchanged.
         ...(input.forcePlan === true ? { forcePlan: true } : {}),
+        // Spec-Driven Development (Phase 2a): forward the frozen spec's clauses only
+        // when present so a non-spec-driven request's stdin shape is unchanged. The
+        // decomposer quarantines the clause text and threads clause ids onto the ACs.
+        ...(input.spec !== undefined ? { spec: input.spec } : {}),
       });
 
       return new Promise<PlanBuildResult>((resolve) => {

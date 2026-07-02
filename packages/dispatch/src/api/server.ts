@@ -823,6 +823,11 @@ async function route(
         // user is never stuck clarifying. Forwarded only when set so a normal turn
         // is unchanged; the decomposer then returns a plan (never a clarify).
         ...(body.forcePlan === true ? { forcePlan: true } : {}),
+        // Spec-Driven Development (Phase 2a): a FROZEN spec drives the decompose.
+        // Forwarded only when present so a non-spec-driven turn is unchanged; the
+        // decomposer quarantines the clauses, defaults to force-plan, and threads
+        // each clause id onto the acceptance criteria it satisfies.
+        ...(body.spec !== undefined ? { spec: body.spec } : {}),
       });
       // The helper's own `error` phase is a normal, expected turn (bad brief,
       // refusal, etc.), so it rides back as a 200 envelope the chat can render.

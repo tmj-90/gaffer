@@ -78,6 +78,12 @@ export const addAcInput = z.object({
   text: z.string().trim().min(1, "AC text is required").max(2_000),
   verification_method: z.string().max(500).optional(),
   evidence_required: z.boolean().default(false),
+  /**
+   * Spec-Driven Development (Phase 2a): OPTIONAL frozen-spec clause id this AC
+   * satisfies (SpecClause.clause_id). Persisted to `spec_clause_id`; NULL when
+   * absent (an AC authored outside a spec-driven build).
+   */
+  spec_clause_id: z.string().trim().min(1).max(100).optional(),
 });
 export type AddAcInput = z.infer<typeof addAcInput>;
 
@@ -355,10 +361,26 @@ export const MAX_EPIC_TICKETS = 100;
  * a registered repo with an access boundary; `bootstrap` marks a greenfield
  * ticket. Tickets are always created as `draft`.
  */
+/**
+ * One acceptance criterion in an epic plan. Back-compat: a bare string (the
+ * unchanged shape) OR an object carrying the AC text plus an OPTIONAL `clauseRef`
+ * — the frozen-spec clause id this AC satisfies (Spec-Driven Development Phase 2a).
+ * The decomposer emits the object form only when the planner threaded a clauseRef,
+ * so a plain (non-spec-driven) plan's AC shape is byte-for-byte unchanged.
+ */
+export const epicAcInput = z.union([
+  z.string().trim().min(1).max(2_000),
+  z.object({
+    text: z.string().trim().min(1).max(2_000),
+    clauseRef: z.string().trim().min(1).max(100).optional(),
+  }),
+]);
+export type EpicAcInput = z.infer<typeof epicAcInput>;
+
 export const epicTicketInput = z.object({
   title: z.string().trim().min(1, "ticket title is required").max(300),
   description: z.string().max(20_000).default(""),
-  acceptanceCriteria: z.array(z.string().trim().min(1).max(2_000)).max(50).default([]),
+  acceptanceCriteria: z.array(epicAcInput).max(50).default([]),
   priority: z.number().int().min(0).max(1_000).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
   policy_pack: z.enum(POLICY_PACKS).optional(),

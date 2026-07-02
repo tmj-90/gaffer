@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -165,6 +165,11 @@ CREATE TABLE IF NOT EXISTS acceptance_criteria (
   evidence_required  INTEGER NOT NULL DEFAULT 0,
   verified_by        TEXT,
   verified_at        TEXT,
+  -- Spec-Driven Development (Phase 2a): OPTIONAL provenance link to the frozen
+  -- spec clause this AC satisfies (SpecClause.clause_id). NULL for ACs authored
+  -- outside a spec-driven build. One clause can back many ACs (1→N); a join
+  -- table would only be needed for a many-to-many link later.
+  spec_clause_id     TEXT,
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

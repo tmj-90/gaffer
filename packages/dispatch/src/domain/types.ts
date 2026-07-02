@@ -517,6 +517,12 @@ export interface AcceptanceCriterion {
   evidence_required: number;
   verified_by: string | null;
   verified_at: string | null;
+  /**
+   * Spec-Driven Development (Phase 2a): OPTIONAL provenance link to the frozen
+   * spec clause this AC satisfies ({@link SpecClause.clause_id}). NULL when the AC
+   * was authored outside a spec-driven build. One clause can back many ACs.
+   */
+  spec_clause_id: string | null;
   created_at: string;
   updated_at: string;
 }

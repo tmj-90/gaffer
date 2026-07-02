@@ -439,11 +439,24 @@ export type AddTicketDependencyBody = z.infer<typeof addTicketDependencyBody>;
 
 // --- Epics (EP-001) --------------------------------------------------------
 
+/**
+ * One acceptance criterion in a POST /epics plan. Back-compat: a bare string (the
+ * unchanged shape) OR an object carrying the AC text plus an OPTIONAL `clauseRef`
+ * — the frozen-spec clause id this AC satisfies (Spec-Driven Development Phase 2a).
+ */
+const epicAcBody = z.union([
+  z.string().trim().min(1).max(2_000),
+  z.object({
+    text: z.string().trim().min(1).max(2_000),
+    clauseRef: z.string().trim().min(1).max(100).optional(),
+  }),
+]);
+
 /** One ticket within a POST /epics plan. `dependsOn` indexes other plan tickets. */
 const epicTicketBody = z.object({
   title: z.string().trim().min(1).max(300),
   description: z.string().max(20_000).optional(),
-  acceptanceCriteria: z.array(z.string().trim().min(1).max(2_000)).max(50).optional(),
+  acceptanceCriteria: z.array(epicAcBody).max(50).optional(),
   priority: z.number().int().min(0).max(1_000).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
   policy_pack: z.enum(["solo_loose", "team_light", "factory_strict", "regulated"]).optional(),
@@ -532,11 +545,34 @@ export type PlanBuildContext = z.infer<typeof planBuildContext>;
  * told to STOP clarifying and emit the best plan it can from the brief + history
  * so far (it returns a plan, never a clarify). The panel can send it at any point.
  */
+/**
+ * Spec-Driven Development (Phase 2a): one clause of a FROZEN spec forwarded to the
+ * decomposer to drive the plan. Unlike {@link specClauseBody} (spec authoring, where
+ * clause_id is minted server-side and thus optional), a frozen clause ALWAYS carries
+ * its stable `clause_id` — that id is the provenance threaded down to acceptance
+ * criteria — so it is required here. The text/rationale are untrusted and ride the
+ * decomposer's `<untrusted-spec>` quarantine.
+ */
+const planBuildSpecClause = z.object({
+  clause_id: z.string().trim().min(1).max(100),
+  kind: z.enum(SPEC_CLAUSE_KINDS),
+  text: z.string().trim().min(1).max(4_000),
+  rationale: z.string().trim().min(1).max(4_000).optional(),
+});
+export type PlanBuildSpecClause = z.infer<typeof planBuildSpecClause>;
+
 export const planBuildBody = z.object({
   brief: z.string().trim().min(1).max(4_000),
   history: z.array(planBuildTurn).max(40).optional().default([]),
   context: planBuildContext.optional(),
   forcePlan: z.boolean().optional(),
+  /**
+   * Spec-Driven Development (Phase 2a): the frozen spec's clauses. When present the
+   * decomposer renders them in a quarantined `<untrusted-spec>` block and defaults
+   * to force-plan (the spec already answers the clarifying questions). The planner
+   * then threads each clause id onto the acceptance criteria it satisfies.
+   */
+  spec: z.array(planBuildSpecClause).max(200).optional(),
 });
 export type PlanBuildBody = z.infer<typeof planBuildBody>;
 

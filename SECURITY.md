@@ -33,4 +33,4 @@ You are trusting an LLM agent with a shell. The agent's *inputs* (ticket text, r
 
 ## Reporting
 
-This is run-at-your-own-risk software (see [`LICENSE`](LICENSE) — Apache-2.0, no warranty). If you find a vulnerability, please open a security advisory / private issue on the project rather than a public issue, with a reproduction and the host/OS context.
+This is run-at-your-own-risk software (see [`LICENSE`](LICENSE) — Apache-2.0, no warranty). If you find a vulnerability, please report it privately through **GitHub's private vulnerability reporting** — open the repository's **Security** tab and choose **"Report a vulnerability"** (Security → Advisories → Report a vulnerability) — rather than filing a public issue. Include a reproduction and the host/OS context. Private reporting keeps the details embargoed until a fix is available.

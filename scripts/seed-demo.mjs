@@ -29,7 +29,7 @@ const GAFFER_HOME = resolve(__dirname, "..");
 const DEMO_DIR = process.env.DEMO_DIR ?? "/tmp/gaffer-demo-seed";
 const DISPATCH_DB = `${DEMO_DIR}/dispatch.sqlite`;
 const MEMORY_DB = `${DEMO_DIR}/memory.sqlite`;
-const SQLITE3 = "/Users/tmj/Library/Android/sdk/platform-tools/sqlite3";
+const SQLITE3 = process.env.SQLITE3 ?? "sqlite3";
 
 const DISPATCH_DIR = `${GAFFER_HOME}/packages/dispatch`;
 const MEMORY_DIR = `${GAFFER_HOME}/packages/memory`;

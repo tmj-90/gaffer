@@ -8,7 +8,7 @@ A clean machine to a running factory with your repos onboarded, in three steps.
 
 ## 0. Prerequisites
 
-- **Node ≥ 20**, **pnpm**, **git** — required.
+- **Node ≥ 22**, **pnpm**, **git** — required.
 - **Claude Code CLI** (`claude`) — only needed to run the *live* factory (not for setup/dashboard).
 - macOS or Linux. (Optional strict-mode containment is macOS-only — see `STRICT_MODE.md`.)
 

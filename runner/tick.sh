@@ -498,8 +498,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Install the project-local config (skills, settings+hook, CLAUDE brief, MCP)
     # into the NEW repo — identical mechanics to normal delivery, just rooted at
     # the fresh dir (which IS the single write-root for this run).
-    mkdir -p "$B_DIR/.claude"
-    ln -sfn "$SKILLS_DIR" "$B_DIR/.claude/skills"
+    # Mount ONLY the selected (B_SKILLS) + universal skill subset — not the whole
+    # library — so Claude Code doesn't auto-load all ~66 frontmatter blocks.
+    # Fail-soft: falls back to the whole library on any error (see skills-mount.sh).
+    gaffer_skills_mount "$B_DIR" "$B_SKILLS" "bootstrap-$NUM"
     sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$B_DIR/.claude/settings.json"
     MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
     gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"; result error; exit 1; }
@@ -1263,8 +1265,11 @@ EOF
   [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs — refusing live run (fail closed)"; result error; exit 1; }
   # Install the project-local config into the PRIMARY write repo (the agent's cwd).
   # In single-repo mode PRIMARY_REPO == REPO_PATH, so this is identical to today.
-  mkdir -p "$PRIMARY_REPO/.claude"
-  ln -sfn "$SKILLS_DIR" "$PRIMARY_REPO/.claude/skills"
+  # Mount ONLY this ticket's selected skills (SKILLS, from select-skills.mjs) + the
+  # always-on quality LENSES + the universal delivery-mechanics set — NOT the whole
+  # library — so headless Claude auto-loads only skills it might use (~5k fewer
+  # tokens/call). Fail-soft: whole-library fallback on any error (skills-mount.sh).
+  gaffer_skills_mount "$PRIMARY_REPO" "$SKILLS, $LENSES" "delivery-$NUM"
   # Substitute the hook path so the boundary resolves on ANY checkout root.
   # settings.json ships a ${RUNNER_DIR} placeholder; copying it verbatim would point
   # at the author's machine and the hook would FAIL OPEN elsewhere.
@@ -1542,6 +1547,11 @@ $_trail_q
          "$CLAUDE_BIN" -p "$PROMPT$_REWORK_BLOCK" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $_ATTEMPT_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
   ) >"$USAGE_JSON" 2>>"$GAFFER_LOG"
   rc=$?
+  # SKILL TELEMETRY: record which skills were SELECTED for this delivery (and,
+  # best-effort, which were APPLIED — detected from the agent's output JSON) so a
+  # LATER data-driven prune of the generic skills isn't blind. Fail-soft; captured
+  # here before the ledger removes $USAGE_JSON on either the pause or normal path.
+  gaffer_record_skill_usage "$NUM" delivery "$STACK" "$SKILLS, $LENSES" "$USAGE_JSON"
   # ── GUARD C: PAUSE-ON-CAP detection (BEFORE the ledger removes the JSON) ─────
   # If the agent hit the TURN cap (num_turns at/over the cap, or a max-turns stop
   # reason) OR the BUDGET cap (GAFFER_BUDGET_REMAINING exhausted) mid-delivery AND it
@@ -2258,6 +2268,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
           git -C "$RREPO" worktree remove --force "$WT" 2>/dev/null || true
           git -C "$RREPO" worktree prune 2>/dev/null || true
         fi
+        gaffer_skills_mount_cleanup "review-$RNUM"
       }
       # BLOCKING 2 fix: install review-scoped EXIT + signal traps so
       # _review_cleanup fires under INT/TERM as well as on a normal exit.
@@ -2291,7 +2302,8 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
         log "REVIEW-ERROR: failed to create review worktree for branch '$RBRANCH' in $RREPO — refusing review of #$RNUM (fail closed; branch may be missing or corrupt)"
         result error; exit 1
       fi
-      mkdir -p "$WT/.claude"; ln -sfn "$SKILLS_DIR" "$WT/.claude/skills"
+      # Mount only the review-relevant + universal skill subset (not all ~66).
+      gaffer_skills_mount "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$WT/.claude/settings.json"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
@@ -2418,9 +2430,11 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
         rm -f "$CREPO/.claude/settings.json"
         rm -f "$CREPO/.claude/skills"
         rmdir "$CREPO/.claude" 2>/dev/null || true
+        gaffer_skills_mount_cleanup "clarify-$CNUM"
       }
       trap '_clarify_cleanup; trap - EXIT' EXIT
-      mkdir -p "$CREPO/.claude"; ln -sfn "$SKILLS_DIR" "$CREPO/.claude/skills"
+      # Mount only the clarify-relevant + universal skill subset (not all ~66).
+      gaffer_skills_mount "$CREPO" "clarify, record-evidence" "clarify-$CNUM"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$CREPO/.claude/settings.json"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }

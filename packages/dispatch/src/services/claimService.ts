@@ -378,6 +378,104 @@ export class ClaimService {
     };
   }
 
+  // --- Human claim / hand-back (TRACK-2b) ----------------------------------
+
+  /**
+   * A HUMAN takes a ready ticket "by hand". This is the first-class representation
+   * of the operator's own in-flight work: the ticket moves `ready -> in_progress`
+   * OWNED BY THE HUMAN (marked via `tickets.human_owner`) rather than being claimed
+   * by an agent. It reuses the same atomic invariant as an agent claim — a ticket is
+   * takeable only while `ready` with NO active claim — but records the ownership as a
+   * marker on the ticket rather than a `ticket_claims` row (a human is not an agent).
+   * Once marked, the agent selection loop structurally skips it (the candidate queries
+   * filter `human_owner IS NULL`), so the agent stays out of the human's way.
+   *
+   * Throws `TICKET_NOT_CLAIMABLE` when the ticket is not `ready` (already claimed,
+   * in-flight, done, …) or already carries an active claim — never silently taking
+   * a ticket in another state.
+   */
+  humanClaimTicket(
+    input: { ticketId: string },
+    actor: Actor,
+  ): { ticketId: string; number: number } {
+    return inTransaction(this.db, () => {
+      const ticket = this.tickets.findById(input.ticketId);
+      if (!ticket) throw notFound("ticket", input.ticketId);
+
+      // Reuse the atomic invariant: a ticket is takeable only while `ready` with no
+      // active claim. A `ready` ticket can never hold an active claim (claims attach
+      // at `ready -> claimed`), but the explicit check keeps the invariant honest.
+      if (ticket.status !== "ready" || this.tickets.hasActiveClaim(ticket.id)) {
+        throw new DispatchError(
+          "TICKET_NOT_CLAIMABLE",
+          `Ticket '${ticket.number ?? ticket.id}' cannot be taken by hand (status '${ticket.status}').`,
+          { ticket_id: ticket.id, status: ticket.status },
+        );
+      }
+
+      this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "in_progress",
+        reason: "human_claim",
+        expectedFromStatus: "ready",
+        humanClaim: true,
+      });
+      // Stamp the owner AFTER the transition (its from-status `ready` has no marker,
+      // so the transition service's clear-on-leave rule never fights this write).
+      this.tickets.setHumanOwner(ticket.id, actor.id ?? "human");
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.human_claimed",
+        payload: { owner: actor.id ?? "human" },
+      });
+      return { ticketId: ticket.id, number: ticket.number ?? 0 };
+    });
+  }
+
+  /**
+   * A human hands their by-hand ticket back to the queue: `in_progress -> ready`,
+   * clearing the `human_owner` marker so the agent selection loop can pick it up
+   * again. Only a HUMAN-OWNED in-flight ticket can be handed back this way — an
+   * agent-claimed `in_progress` delivery (no `human_owner`) is rejected, so this can
+   * never yank work out from under a running agent. The marker is cleared centrally
+   * by the transition service on the way out of `in_progress`.
+   */
+  humanReleaseTicket(
+    input: { ticketId: string },
+    actor: Actor,
+  ): { ticketId: string; status: string; eventId: string } {
+    return inTransaction(this.db, () => {
+      const ticket = this.tickets.findById(input.ticketId);
+      if (!ticket) throw notFound("ticket", input.ticketId);
+      if (ticket.status !== "in_progress" || ticket.human_owner === null) {
+        throw new DispatchError(
+          "TICKET_NOT_HUMAN_OWNED",
+          `Ticket '${ticket.number ?? ticket.id}' is not human-owned in-flight work; nothing to hand back.`,
+          { ticket_id: ticket.id, status: ticket.status, human_owner: ticket.human_owner },
+        );
+      }
+      const result = this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "ready",
+        reason: "human_release",
+        expectedFromStatus: "in_progress",
+        humanRelease: true,
+      });
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.human_released",
+        payload: { returned_to: "ready" },
+      });
+      return { ticketId: ticket.id, status: result.ticket.status, eventId };
+    });
+  }
+
   heartbeat(claimToken: string): { expiresAt: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {

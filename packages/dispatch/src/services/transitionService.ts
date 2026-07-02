@@ -34,6 +34,12 @@ const ALLOWED: ReadonlySet<string> = new Set([
   "draft->ready",
   "refining->ready",
   "ready->claimed",
+  // TRACK-2b (human + agent in parallel): a human takes a ready ticket "by hand".
+  // It moves to `in_progress` OWNED BY THE HUMAN (marked via tickets.human_owner)
+  // rather than being claimed by an agent — the agent selection loop structurally
+  // skips human-owned tickets. Guarded by the `humanClaim` flag so a stray board
+  // drag can never conjure it; only Dispatch.humanClaimTicket sets it.
+  "ready->in_progress",
   "claimed->in_progress",
   "claimed->ready",
   "claimed->blocked",
@@ -244,6 +250,22 @@ export interface TransitionInput {
    * Same guarded-flag pattern as {@link wontDo} / {@link pauseDelivery}.
    */
   runnerRelease?: boolean;
+  /**
+   * TRACK-2b opt-in flag the human-claim path (`ready -> in_progress`) MUST set.
+   * A human taking a ticket "by hand" is a deliberate action taken only by
+   * {@link Dispatch.humanClaimTicket}; without this flag `ready -> in_progress` is
+   * rejected as ILLEGAL_TRANSITION even though it is in the ALLOWED set, so a stray
+   * board drag can never move a ready ticket straight into in-flight work.
+   */
+  humanClaim?: boolean;
+  /**
+   * TRACK-2b opt-in flag the human hand-back path (`in_progress -> ready`) MUST set
+   * when the release is a HUMAN handing their by-hand ticket back (as opposed to the
+   * runner releasing a delivery claim, which sets {@link runnerRelease}). Either flag
+   * legalises `in_progress -> ready`; both are guarded so an ordinary board drag can
+   * never re-route in-flight work. Set only by {@link Dispatch.humanReleaseTicket}.
+   */
+  humanRelease?: boolean;
 }
 
 export interface TransitionResult {
@@ -414,19 +436,38 @@ export class TransitionService {
         );
       }
 
+      // TRACK-2b: a human takes a ready ticket "by hand" (`ready -> in_progress`).
+      // Reachable ONLY through Dispatch.humanClaimTicket (which sets `humanClaim`);
+      // reject any other route so a stray board drag can never push a ready ticket
+      // straight into in-flight human-owned work.
+      if (key === "ready->in_progress" && !input.humanClaim) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A ready ticket can only be taken by hand via the human-claim path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
       // RUNNER-OWNED-BOOKKEEPING: releasing/parking a runner-held delivery claim
-      // (`claimed->refining`, `in_progress->ready`, `in_progress->refining`) is
-      // reachable only through the runner-release path. Reject any other route so a
+      // (`claimed->refining`, `in_progress->refining`) is reachable only through the
+      // runner-release path. `in_progress->ready` is the shared hand-back route: the
+      // runner releasing a delivery claim (`runnerRelease`) OR a human handing back a
+      // by-hand ticket (`humanRelease`) legalises it. Reject any other route so a
       // stray board-drag can never re-route an in-flight delivery.
       if (
-        (key === "claimed->refining" ||
-          key === "in_progress->ready" ||
-          key === "in_progress->refining") &&
+        (key === "claimed->refining" || key === "in_progress->refining") &&
         !input.runnerRelease
       ) {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
           "An in-flight delivery can only be released/parked via the runner-release path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+      if (key === "in_progress->ready" && !input.runnerRelease && !input.humanRelease) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "An in-flight delivery can only be released/parked to ready via the runner-release path (or human hand-back).",
           { from: ticket.status, to: input.toStatus },
         );
       }
@@ -474,6 +515,16 @@ export class TransitionService {
       // current. Covers every route in (submit, reopen-for-review, conflict reopen).
       if (input.toStatus === "in_review") {
         this.tickets.setReviewFeedback(ticket.id, null);
+      }
+
+      // TRACK-2b: the human-owned marker only means "a human is working this IN
+      // PLACE (in_progress)". The instant the ticket leaves in_progress — hand-back
+      // to `ready`, submit to `in_review`, block, cancel, … — it is no longer the
+      // human's in-flight work, so clear the marker centrally on EVERY exit route.
+      // (The human-claim path stamps it AFTER its `ready -> in_progress` transition,
+      // whose from-status is `ready` with no marker, so this never fights that.)
+      if (ticket.human_owner !== null && input.toStatus !== "in_progress") {
+        this.tickets.setHumanOwner(ticket.id, null);
       }
 
       const eventId = writeEvent(this.db, {

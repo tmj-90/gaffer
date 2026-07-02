@@ -79,6 +79,7 @@ export {
   getFileCard,
   getWatermark,
   listCardsForPaths,
+  movableLegacyKeys,
   rekeyRepo,
   repoKey,
   searchFileCards,
@@ -86,7 +87,7 @@ export {
   upsertFileCard,
 } from "./core/fileCards.js";
 export type { RekeyResult, RepoKeyPresence, UpsertFileCardInput } from "./core/fileCards.js";
-export { canonicalizeRepo } from "./core/repoIdentity.js";
+export { canonicalizeRepo, legacyRepoIdentityForms } from "./core/repoIdentity.js";
 export { validateMechanical, validateModel, sha256 } from "./core/cardValidation.js";
 export type {
   MechanicalValidationInput,

@@ -123,3 +123,61 @@ export function canonicalizeRepo(raw: string): string {
   // lowercase — an unrecognised opaque string might be a case-sensitive path.
   return stripTrailingSlash(input.replace(/\.git$/i, ""));
 }
+
+/**
+ * The set of PRE-CANONICALISATION identity strings that could have produced a
+ * LEGACY repo_key for the SAME repository as `canonicalRaw`.
+ *
+ * WHY: cards onboarded before canonicalisation were keyed as `sha256(rawForm)`,
+ * where `rawForm` was whatever spelling of the repo identity was passed at the
+ * time (an ssh remote, an https remote, a pwd/realpath path, …). Their key can
+ * NOT be reversed from the hash. The rekey migration therefore proves a legacy
+ * row belongs to THIS repo by checking its stored repo_key against
+ * `sha256(form)` for every `form` returned here. This replaces the unsafe
+ * "match by display name" heuristic, which re-keyed rows of a DIFFERENT repo
+ * that merely shared a display name (e.g. `orgA/api` vs `orgB/api`).
+ *
+ * We only emit forms that are DERIVABLE from the canonical:
+ *   - remotes: the ssh / https / http / ssh:// / git:// spellings (± ".git"),
+ *     the bare `host/owner/repo`, and the raw input as given.
+ *   - local paths: the path as given / canonicalised (± a trailing slash).
+ * Forms we cannot recover (e.g. a symlinked pwd that differs from its realpath)
+ * are intentionally NOT guessed: leaving a legacy row un-migrated (and loudly
+ * diagnosable) is safe; claiming another repo's rows is data corruption.
+ */
+export function legacyRepoIdentityForms(canonicalRaw: string): string[] {
+  const raw = (canonicalRaw ?? "").trim();
+  if (!raw) return [];
+  const canonical = canonicalizeRepo(raw);
+  const forms = new Set<string>();
+  const add = (s: string): void => {
+    const t = (s ?? "").trim();
+    if (t) forms.add(t);
+  };
+
+  add(raw);
+  add(canonical);
+
+  if (isLocalPath(raw)) {
+    add(stripTrailingSlash(raw));
+    add(`${stripTrailingSlash(canonical)}/`);
+    return [...forms];
+  }
+
+  // Remote: canonical === host/owner/repo… → split host from the owner/repo.
+  const slash = canonical.indexOf("/");
+  if (slash <= 0) return [...forms]; // no owner/repo path to reconstruct
+
+  const host = canonical.slice(0, slash);
+  const path = canonical.slice(slash + 1);
+  for (const body of [path, `${path}.git`]) {
+    add(`git@${host}:${body}`);
+    add(`https://${host}/${body}`);
+    add(`http://${host}/${body}`);
+    add(`ssh://git@${host}/${body}`);
+    add(`ssh://${host}/${body}`);
+    add(`git://${host}/${body}`);
+    add(`${host}/${body}`);
+  }
+  return [...forms];
+}

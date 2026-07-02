@@ -32,7 +32,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "better-sqlite3";
 
 import { newLoreId } from "./ids.js";
-import { canonicalizeRepo } from "./repoIdentity.js";
+import { canonicalizeRepo, legacyRepoIdentityForms } from "./repoIdentity.js";
 import type {
   CardStatus,
   FileCard,
@@ -692,7 +692,8 @@ export interface RekeyResult {
   readonly canonical: string;
   /** The target key = repoKey(canonical). */
   readonly newKey: string;
-  /** Old keys (with counts) that were found for this display name. */
+  /** Provable legacy keys (with counts) migrated for this repo — scoped by
+   *  computable legacy identity, never by display name. */
   readonly fromKeys: readonly RepoKeyPresence[];
   /** Number of file_card rows moved to newKey. */
   readonly cardsRekeyed: number;
@@ -709,22 +710,79 @@ export interface RekeyResult {
 }
 
 /**
- * Re-key every row for a repo (matched by DISPLAY NAME) onto the normalised
- * `repoKey(canonical)`. This is the migration path for cards that were
- * onboarded before canonicalisation existed: their repo_key is an
- * sha256 of an un-normalised URL/path and can't be reversed from the hash
- * alone, so we re-key from the available signal — the `repo` display name.
+ * The COMPUTABLE legacy repo_keys for a repo's canonical, excluding the
+ * normalised `newKey` itself. Legacy rows were keyed as `sha256(rawForm)`
+ * (see `legacyRepoIdentityForms`), so we hash every reconstructable form and
+ * return the resulting keys. A stored row whose repo_key is in this set
+ * PROVABLY belongs to this repo — it can only match if its onboard-time
+ * identity canonicalises to the same repo.
+ */
+function legacyRepoKeys(canonicalRaw: string, newKey: string): string[] {
+  const keys = new Set<string>();
+  for (const form of legacyRepoIdentityForms(canonicalRaw)) {
+    keys.add(createHash("sha256").update(form).digest("hex"));
+  }
+  keys.delete(newKey); // already-normalised rows are handled separately
+  return [...keys];
+}
+
+/**
+ * The legacy keys that are ACTUALLY present in the store for this repo and
+ * would be migrated by `rekeyRepo` — i.e. un-migrated rows (`canonical IS
+ * NULL`) whose repo_key is a provable legacy form of `canonicalRaw`. Used by
+ * the `--dry-run` path so its report matches exactly what a real run moves.
+ * Scoped by legacy key, NOT by display name.
+ */
+export function movableLegacyKeys(
+  db: Database,
+  repoName: string,
+  canonicalRaw: string,
+): RepoKeyPresence[] {
+  const repo = normaliseRepo(repoName);
+  const newKey = repoKey(canonicalRaw);
+  const legacy = legacyRepoKeys(canonicalRaw, newKey);
+  if (legacy.length === 0) return [];
+  const placeholders = legacy.map(() => "?").join(", ");
+  const rows = db
+    .prepare(
+      `SELECT repo_key, count(*) AS n
+         FROM file_card
+        WHERE repo = ? AND card_status = 'active'
+          AND canonical IS NULL AND repo_key IN (${placeholders})
+        GROUP BY repo_key
+        ORDER BY n DESC`,
+    )
+    .all(repo, ...legacy) as Array<{ repo_key: string; n: number }>;
+  return rows.map((r) => ({ repoKey: r.repo_key, count: r.n }));
+}
+
+/**
+ * Re-key a repo's LEGACY rows onto the normalised `repoKey(canonical)`. This
+ * is the migration path for cards onboarded before canonicalisation existed:
+ * their repo_key is an sha256 of an un-normalised URL/path that can't be
+ * reversed from the hash alone.
+ *
+ * OWNERSHIP IS PROVEN, NEVER GUESSED (data-corruption guard):
+ *   A row is migrated ONLY when it is un-migrated (`canonical IS NULL`) AND its
+ *   repo_key equals `sha256(form)` for a form that canonicalises to THIS repo
+ *   (see `legacyRepoIdentityForms`). We do NOT match by display name — two
+ *   distinct repos can share one (`orgA/api` vs `orgB/api`), and matching by
+ *   name re-keyed one repo's cards onto the other's key: silent cross-repo
+ *   corruption. The legacy-key match cannot collide across distinct repos
+ *   because the key is a hash of the repo's own identity.
  *
  * Guarantees:
  *   - ONE transaction — either the whole repo re-keys or none of it does.
  *   - FTS stays intact: repo_key is not an FTS column, so moving it needs
  *     no FTS change; the only FTS writes here are deletes for collision-
  *     dropped duplicates (their card row is removed too).
- *   - Path collisions under newKey are resolved by dropping the OLD row
- *     (newKey is authoritative) and counted in `collisionsDropped`.
+ *   - Path collisions under newKey are resolved by dropping the OLDER row —
+ *     rows are processed newest-first (`ORDER BY updated_at DESC`), so the
+ *     most recently updated card for a path survives; counted in
+ *     `collisionsDropped`.
  *   - The `canonical` column is backfilled on every touched row.
  *
- * A repo whose rows are already all under newKey is a no-op (noop=true).
+ * A repo with no un-migrated legacy rows is a no-op (noop=true).
  */
 export function rekeyRepo(db: Database, repoName: string, canonicalRaw: string): RekeyResult {
   const repo = normaliseRepo(repoName);
@@ -733,17 +791,28 @@ export function rekeyRepo(db: Database, repoName: string, canonicalRaw: string):
   const canonical = canonicalizeRepo(canonicalRaw);
   const newKey = repoKey(canonicalRaw);
 
-  const fromKeys = cardKeysForRepoName(db, repo).filter((k) => k.repoKey !== newKey);
+  const legacy = legacyRepoKeys(canonicalRaw, newKey);
+  const fromKeys = movableLegacyKeys(db, repo, canonicalRaw);
 
   let cardsRekeyed = 0;
   let collisionsDropped = 0;
   let syncRekeyed = false;
 
   const tx = db.transaction(() => {
-    // ── file_card rows under any OTHER key for this display name ──
-    const oldRows = db
-      .prepare("SELECT rowid, path FROM file_card WHERE repo = ? AND repo_key != ?")
-      .all(repo, newKey) as Array<{ rowid: number; path: string }>;
+    // ── un-migrated file_card rows whose repo_key PROVABLY belongs to this
+    // repo (a computable legacy form). Newest-first so a path collision under
+    // newKey keeps the most recently updated card. NEVER matched by name. ──
+    const legacyPlaceholders = legacy.map(() => "?").join(", ");
+    const oldRows =
+      legacy.length === 0
+        ? []
+        : (db
+            .prepare(
+              `SELECT rowid, path FROM file_card
+                WHERE repo = ? AND canonical IS NULL AND repo_key IN (${legacyPlaceholders})
+                ORDER BY updated_at DESC`,
+            )
+            .all(repo, ...legacy) as Array<{ rowid: number; path: string }>);
 
     const clashStmt = db.prepare("SELECT rowid FROM file_card WHERE repo_key = ? AND path = ?");
     for (const r of oldRows) {
@@ -768,19 +837,28 @@ export function rekeyRepo(db: Database, repoName: string, canonicalRaw: string):
       "UPDATE file_card SET canonical = ? WHERE repo = ? AND repo_key = ? AND (canonical IS NULL OR canonical != ?)",
     ).run(canonical, repo, newKey, canonical);
 
-    // ── repo_sync watermark (repo_key is PRIMARY KEY) ──
+    // ── repo_sync watermark (repo_key is PRIMARY KEY). Same ownership rule as
+    // cards: only migrate/drop watermarks under a PROVABLE legacy key, never by
+    // display name (a shared name across repos would clobber the wrong one). ──
     const syncHasNew = db.prepare("SELECT 1 FROM repo_sync WHERE repo_key = ?").get(newKey) as
       | { 1: number }
       | undefined;
-    const oldSync = db
-      .prepare(
-        "SELECT repo_key FROM repo_sync WHERE repo = ? AND repo_key != ? ORDER BY updated_at DESC",
-      )
-      .all(repo, newKey) as Array<{ repo_key: string }>;
+    const oldSync =
+      legacy.length === 0
+        ? []
+        : (db
+            .prepare(
+              `SELECT repo_key FROM repo_sync
+                WHERE repo = ? AND canonical IS NULL AND repo_key IN (${legacyPlaceholders})
+                ORDER BY updated_at DESC`,
+            )
+            .all(repo, ...legacy) as Array<{ repo_key: string }>);
     if (oldSync.length > 0) {
       if (syncHasNew) {
-        // Keep the newKey watermark; drop the stale ones.
-        db.prepare("DELETE FROM repo_sync WHERE repo = ? AND repo_key != ?").run(repo, newKey);
+        // Keep the newKey watermark; drop the stale LEGACY ones only.
+        for (const s of oldSync) {
+          db.prepare("DELETE FROM repo_sync WHERE repo_key = ?").run(s.repo_key);
+        }
       } else {
         // Move the most recent old watermark to newKey; drop the rest.
         const keep = oldSync[0]!.repo_key;

@@ -3350,9 +3350,7 @@ async function renderTicket(id) {
     (async () => {
       try {
         const runs = await api("GET", "/api/runs?active=1");
-        const run = (runs.active || []).find(
-          (r) => r.ticket_number === t.number || String(r.ticket) === String(t.id),
-        );
+        const run = (runs.active || []).find((r) => r.ticket_number === t.number);
         clear(deliveringBanner);
         if (run) {
           deliveringBanner.append(
@@ -5918,6 +5916,33 @@ function openRejectDialog({ verb, onConfirm }) {
   input.focus();
 }
 
+/**
+ * Single source of truth for "is a blocking modal open right now?".
+ *
+ * The review gate's global j/k/a/r shortcuts (and any future global key
+ * shortcut) MUST bail when this is true. Without it, a keystroke aimed at an
+ * open dialog leaks through to the review queue underneath — the reject-reason
+ * dialog is appended to `document.body` (NOT the app/view container the review
+ * MutationObserver watches), so the gate's key handler never detaches while a
+ * reject is in progress. Pressing `a` after tapping a reason chip would then
+ * approve+merge `cards[cursor]` — potentially a DIFFERENT ticket than the one
+ * being rejected. That is a reject-to-approve path through the exact human gate
+ * this product exists to protect.
+ *
+ * Keyed on each modal's real open-signal so it can't leak or go stale:
+ *   - reject dialog + move-menu are removed from the DOM on close → presence == open;
+ *   - command palette + detail sheet persist and toggle an `.open` class.
+ * Any modal added later should follow one of those two conventions (or be added
+ * to this selector) so global shortcuts stay suppressed underneath it.
+ */
+function isModalOpen() {
+  return Boolean(
+    document.querySelector(
+      ".reject-scrim, .movemenu-scrim, .palette-scrim.open, .sheet-scrim.open",
+    ),
+  );
+}
+
 async function renderReview() {
   const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
   const wrap = el("div", { class: "view" });
@@ -6115,6 +6140,12 @@ async function renderReview() {
     cards.forEach((c, i) => c.classList.toggle("card-accent", i === cursor));
   };
   const onKey = (e) => {
+    // A modal (reject dialog, command palette, detail sheet, move-menu) owns the
+    // keyboard while open — never let a queue shortcut fire underneath it. The
+    // reject dialog in particular lives on document.body, so this observer's
+    // detach never runs for it; without this guard `a`/`r` on a focused reject
+    // chip would approve/reject the wrong ticket. Must precede the j/k/a/r branch.
+    if (isModalOpen()) return;
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
     if (e.key === "j") {
       e.preventDefault();
@@ -9500,12 +9531,44 @@ function renderSpecCard(spec) {
 
 async function renderSpecDetail(specId) {
   const res = await api("GET", `/specs/${encodeURIComponent(specId)}/coverage`);
-  const cov = res.coverage;
+  const cov = res && res.coverage;
 
   const wrap = el("div", { class: "view", dataset: { view: "specs" } });
-  const r = cov.rollup;
+
+  // Defensive: a missing / empty / malformed coverage payload must render a
+  // clean empty state, not blank the whole spec view (an unguarded `cov.rollup`
+  // would throw, leaving the router's skeleton stuck on screen). Guard on shape
+  // rather than exact fields — other work may extend this payload.
+  if (!cov || typeof cov !== "object") {
+    wrap.appendChild(
+      viewHead("Spec", "Coverage", [
+        el("button", { class: "btn", type: "button", onclick: () => navigate("#/specs") }, [
+          icon("arrow"),
+          el("span", {}, "All specs"),
+        ]),
+      ]),
+    );
+    wrap.appendChild(
+      emptyState(
+        "Coverage unavailable",
+        "This spec's coverage report could not be loaded. It may have been removed, or the report is still being built.",
+        "specs",
+      ),
+    );
+    return wrap;
+  }
+
+  const rollupSrc = cov.rollup && typeof cov.rollup === "object" ? cov.rollup : {};
+  const orphans = Array.isArray(rollupSrc.orphans) ? rollupSrc.orphans : [];
+  const r = {
+    total: Number(rollupSrc.total) || 0,
+    covered: Number(rollupSrc.covered) || 0,
+    satisfied: Number(rollupSrc.satisfied) || 0,
+    orphans,
+  };
+  const clauses = Array.isArray(cov.clauses) ? cov.clauses : [];
   wrap.appendChild(
-    viewHead(cov.title, `Spec · ${SPEC_STATUS_LABEL[cov.status] || cov.status}`, [
+    viewHead(cov.title || "Spec", `Spec · ${SPEC_STATUS_LABEL[cov.status] || cov.status || "—"}`, [
       el("button", { class: "btn", type: "button", onclick: () => navigate("#/specs") }, [
         icon("arrow"),
         el("span", {}, "All specs"),
@@ -9536,7 +9599,7 @@ async function renderSpecDetail(specId) {
 
   // Coverage gaps: orphan clauses (no covering AC) called out first.
   if (r.orphans.length > 0) {
-    const orphanClauses = cov.clauses.filter((c) => c.orphan);
+    const orphanClauses = clauses.filter((c) => c.orphan);
     wrap.appendChild(
       el("div", { class: "coverage-gaps", dataset: { count: String(orphanClauses.length) } }, [
         el("div", { class: "coverage-gaps-head" }, [
@@ -9564,7 +9627,7 @@ async function renderSpecDetail(specId) {
 
   // The trace: one block per clause → covering ACs → satisfied/open.
   const trace = el("div", { class: "spec-trace" });
-  for (const clause of cov.clauses) trace.appendChild(renderClauseTrace(clause));
+  for (const clause of clauses) trace.appendChild(renderClauseTrace(clause));
   wrap.appendChild(trace);
 
   if (cov.gate_enabled) {
@@ -9645,7 +9708,7 @@ function renderClauseTrace(clause) {
   const acs = el(
     "div",
     { class: "spec-clause-acs" },
-    clause.covering_acs.map((ac) =>
+    (Array.isArray(clause.covering_acs) ? clause.covering_acs : []).map((ac) =>
       el("div", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
         badge(ac.satisfied ? "satisfied" : ac.ac_status, `ac-${ac.satisfied ? "satisfied" : "pending"}`),
         el("span", { class: "spec-ac-text" }, ac.ac_text),

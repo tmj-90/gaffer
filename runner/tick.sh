@@ -281,6 +281,85 @@ gaffer_release_delivery() {
   GAFFER_CLAIM_RESOLVED=1
 }
 
+# ── FINDING-3: CROSS-RUN no-commit failure counter ───────────────────────────
+# A per-ticket counter that survives runs (the skip-file is per-run only), kept
+# as one small file per ticket under $GAFFER_DATA — the same durability domain
+# as the usage ledger the cost bound reads. Dispatch's rework-attempt records
+# only cover the in-delivery recoverable loop (wg runner-rework), and this
+# failure path must keep working even when the dispatch call itself is what
+# failed — so the runner owns this counter locally. Increment is taken under
+# the same lock helper as the skip-file so concurrent workers never lose a count.
+gaffer_nocommit_file() { printf '%s/.nocommit-failures/%s' "$GAFFER_DATA" "$1"; }
+gaffer_nocommit_count() { local _f _n; _f="$(gaffer_nocommit_file "$1")"; _n="$(cat "$_f" 2>/dev/null || echo 0)"; case "$_n" in ''|*[!0-9]*) _n=0 ;; esac; printf '%s' "$_n"; }
+_gaffer_nocommit_record_unlocked() { local _f _n; _f="$(gaffer_nocommit_file "$1")"; mkdir -p "${_f%/*}" 2>/dev/null; _n="$(gaffer_nocommit_count "$1")"; _n=$((_n + 1)); printf '%s' "$_n" > "$_f"; printf '%s' "$_n"; }
+gaffer_nocommit_record() { _gaffer_locked .nocommit.lock _gaffer_nocommit_record_unlocked "$1"; }
+gaffer_nocommit_clear() { rm -f "$(gaffer_nocommit_file "$1")" 2>/dev/null || true; }
+
+# FINDING-3: bounded release for the no-commit / wrong-branch failure paths.
+# These paths drop the branch and used to release the claim straight back to
+# `ready` — but the skip-file that stops a re-pick is per-RUN, and the per-ticket
+# cost ceiling lives in _recover_or_park behind gaffer_any_branch_has_commits,
+# which a no-commit crash never reaches. Net: a deterministically-crashing agent
+# burned one full `claude -p` per run, forever, at ESCALATING cost (accumulated
+# ledger spend feeds the difficulty router). This wrapper applies the SAME
+# double-bound as the in-delivery rework loop, but ACROSS runs:
+#   • counter < GAFFER_MAX_NOCOMMIT_FAILURES AND spend < the per-ticket ceiling
+#     → release to `ready` exactly as before (the recoverable path stays
+#     recoverable); the durable counter records the failure;
+#   • bound hit (either side) → park VISIBLY to `blocked` via the same
+#     rework_exhausted machinery _recover_or_park uses (reason-code on the card,
+#     ticket.blocked event, memory demotion) so a human is paged the same way.
+# The counter clears here on park, on a successful submit, and on any park out
+# of the delivery pipeline — a flaky-then-fixed ticket is never poisoned.
+gaffer_release_or_park_nocommit() {
+  local reason="$1"
+  # DRY_RUN never claims → never releases and never counts; keep it side-effect-free.
+  if [ "${DRY_RUN:-0}" = "1" ]; then gaffer_release_delivery ready "$reason"; return 0; fi
+  local _max="${GAFFER_MAX_NOCOMMIT_FAILURES:-${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}}"
+  [ "$_max" -ge 1 ] 2>/dev/null || _max=3
+  local _n; _n="$(gaffer_nocommit_record "$NUM" 2>/dev/null || echo 1)"
+  case "$_n" in ''|*[!0-9]*) _n=1 ;; esac
+  # Cost side of the double-bound: the SAME effective ceiling _recover_or_park
+  # resolves — the ticket's own delivery_budget_usd (TRACK-3a) when set, else the
+  # factory-wide GAFFER_REWORK_BUDGET_USD — against the ticket's cumulative
+  # MEASURED ledger spend. A crash-looping ticket with real spend past the
+  # ceiling parks immediately, even with counter headroom left.
+  local _cost_exhausted=0 _ticket_budget _eff_ceiling _spent=0
+  _ticket_budget="$(printf '%s' "${SHOW:-}" | jget "d['ticket'].get('delivery_budget_usd')" 2>/dev/null || true)"
+  case "$_ticket_budget" in ""|None|null) _ticket_budget="" ;; esac
+  if [ -n "$_ticket_budget" ] && awk "BEGIN{exit !(${_ticket_budget:-0}+0 > 0)}" 2>/dev/null; then
+    _eff_ceiling="$_ticket_budget"
+  else
+    _eff_ceiling="${GAFFER_REWORK_BUDGET_USD:-}"
+  fi
+  if [ -n "$_eff_ceiling" ] && awk "BEGIN{exit !(${_eff_ceiling:-0}+0 > 0)}" 2>/dev/null; then
+    _spent="$(gaffer_ticket_rework_spend "$NUM" 2>/dev/null || echo 0)"
+    if awk "BEGIN{exit !(${_spent:-0}+0 >= ${_eff_ceiling}+0)}" 2>/dev/null; then
+      _cost_exhausted=1
+      log "NOCOMMIT: #$NUM hit the per-ticket cost ceiling (spent \$${_spent} ≥ \$${_eff_ceiling}) with no committed work — parking to blocked (no unbounded cross-run burn)"
+    fi
+  fi
+  if [ "$_n" -lt "$_max" ] && [ "$_cost_exhausted" -eq 0 ]; then
+    gaffer_release_delivery ready "$reason (no-commit failure $_n/$_max across runs)"
+    return 0
+  fi
+  local _why="$_max no-commit failures across runs"
+  [ "$_cost_exhausted" -eq 1 ] && _why="the per-ticket cost ceiling (spent \$${_spent} ≥ \$${_eff_ceiling}) with no committed work"
+  # Terminal park — same VISIBLE machinery as _recover_or_park's rework_exhausted:
+  # the reason-code lands on the board card (last_review_feedback) and the
+  # ticket.blocked event pages a human; the durable note records the trail.
+  wg attach-evidence "$NUM" --type manual_note \
+    --summary "PARKED (rework_exhausted): $reason — after $_why; the agent produced no commits, needs a human" >/dev/null 2>&1 || true
+  gaffer_release_delivery blocked "$reason — parked after $_why; needs a human" rework_exhausted "$_n" "$_max"
+  # MEMORY FEEDBACK LOOP: served knowledge did not help this ticket — demote + flag.
+  gaffer_recall_feedback blocked
+  # Reset the cross-run counter: the ticket has left the delivery pipeline; when a
+  # human unblocks it the retry budget starts fresh (never permanently poisoned).
+  gaffer_nocommit_clear "$NUM"
+  log "NOCOMMIT: parked #$NUM (→ blocked, rework_exhausted) after $_why — VISIBLE on the board; cross-run counter cleared for the post-human retry"
+  return 0
+}
+
 # Submit a passed delivery for review (RUNNER-OWNED-BOOKKEEPING). With a runner-held
 # token (normal delivery) it uses the claim-gated submit (claimed → in_review,
 # completing the claim); a resumed delivery (no token, already in_progress) is moved
@@ -1792,8 +1871,11 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
     gaffer_cleanup_worktrees drop-branch
     # RUNNER-OWNED-BOOKKEEPING: nothing was produced — release the runner-held claim
     # back to `ready` so a later tick can retry cleanly (skip-file prevents a re-pick
-    # THIS run). Replaces the old "agent didn't submit" move-or-block fallback.
-    gaffer_release_delivery ready "delivery failed: agent exited non-zero (rc=$rc) with no commits; branch dropped for retry"
+    # THIS run), BOUNDED across runs (FINDING-3): after GAFFER_MAX_NOCOMMIT_FAILURES
+    # such failures (or once the per-ticket cost ceiling is spent) the wrapper parks
+    # to `blocked` (rework_exhausted) instead — a deterministic agent crash can no
+    # longer burn one full agent call per run forever.
+    gaffer_release_or_park_nocommit "delivery failed: agent exited non-zero (rc=$rc) with no commits; branch dropped for retry"
     gaffer_skip_ticket "$NUM"
     log "delivery FAILED for #$NUM (rc=$rc) — no commits produced; removed worktrees + branch $WORK_BRANCH; skipping it for the rest of this run"
     result error; exit 0
@@ -1814,14 +1896,14 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
     case "$HEAD_BRANCH" in
       "$rbase"|"")
         gaffer_cleanup_worktrees drop-branch
-        gaffer_release_delivery ready "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch); branch dropped"
+        gaffer_release_or_park_nocommit "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch); branch dropped"
         gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD is '$HEAD_BRANCH' (expected a gaffer/ branch, not the default '$rbase'); removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;
       gaffer/*) : ;;  # on the runner-owned branch as expected
       *)
         gaffer_cleanup_worktrees drop-branch
-        gaffer_release_delivery ready "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch; branch dropped"
+        gaffer_release_or_park_nocommit "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch; branch dropped"
         gaffer_skip_ticket "$NUM"
         log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD '$HEAD_BRANCH' is not a gaffer/ branch; removed worktrees + branch, not recording delivery"
         result error; exit 0 ;;
@@ -1876,6 +1958,9 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
     wg attach-evidence "$NUM" --type manual_note \
       --summary "PARKED: empty delivery (no diff produced) — routing to refinement, not retrying blindly" >/dev/null 2>&1 || true
     gaffer_release_delivery refining "empty delivery: agent produced no change — needs clarification/refinement"
+    # FINDING-3: the ticket leaves the delivery pipeline (human triage) — reset the
+    # cross-run no-commit counter so the post-refinement retry budget starts fresh.
+    gaffer_nocommit_clear "$NUM"
     gaffer_cleanup_worktrees drop-branch
     gaffer_skip_ticket "$NUM"
     log "delivery PARKED for #$NUM — empty; removed worktrees + branch $WORK_BRANCH"
@@ -1920,6 +2005,8 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED: delivery hygiene violation (not submitted):"$'\n'"$HYGIENE_REASONS" >/dev/null 2>&1 || true
       gaffer_release_delivery refining "delivery hygiene violation: $_HY_FLAT"
+      # FINDING-3: leaves the delivery pipeline — reset the cross-run no-commit counter.
+      gaffer_nocommit_clear "$NUM"
       gaffer_cleanup_worktrees drop-branch
       gaffer_skip_ticket "$NUM"
       log "delivery FAILED for #$NUM — hygiene violation, no commits; parked, removed worktrees + branch $WORK_BRANCH, not recording delivery"
@@ -2179,6 +2266,9 @@ for r in d.get("repositories", []) or []:
   # ordering) keeps the done-gate's PR/diff evidence attached to an in_review ticket.
   if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
     log "submitted #$NUM for review (→ in_review) — runner-owned submit"
+    # FINDING-3: this delivery attempt SUCCEEDED — reset the cross-run no-commit
+    # failure counter so a flaky-then-fixed ticket is never permanently poisoned.
+    gaffer_nocommit_clear "$NUM"
     # MEMORY FEEDBACK LOOP: the delivery shipped for review. Reward the served
     # knowledge when it shipped CLEAN (first attempt, no prior review rejection);
     # otherwise it shipped only after rework — a weaker signal, so demote + flag.
@@ -2206,6 +2296,8 @@ for r in d.get("repositories", []) or []:
     # worktree and never the review-worthy branch.
     GAFFER_KEEP_DELIVERY_BRANCH=1
     gaffer_release_delivery refining "runner submit failed — needs manual review handoff"
+    # FINDING-3: leaves the delivery pipeline — reset the cross-run no-commit counter.
+    gaffer_nocommit_clear "$NUM"
     gaffer_skip_ticket "$NUM"
     log "WARNING — submit FAILED for #$NUM; parked → refining (branch $WORK_BRANCH PRESERVED), NOT recording delivery — needs a human / claim-recovery"
     result error; exit 0

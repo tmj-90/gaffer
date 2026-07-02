@@ -125,7 +125,10 @@ for c in cards:
     tier = order.get(c.get("path"), "fts")
     head = "  - [%s] %s" % (tier, sanitize(c.get("path", "")))
     if c.get("tldr"):
-        head += " \xe2\x80\x94 " + sanitize(c["tldr"]).strip()
+        # FINDING 14: "—" is the em dash as a real CODEPOINT. The old
+        # "\xe2\x80\x94" escape was UTF-8 BYTES written as codepoints (U+00E2
+        # U+0080 U+0094), which re-encoded to the mojibake "â€”" in every card line.
+        head += " — " + sanitize(c["tldr"]).strip()
     lines.append(head)
     syms = c.get("symbols") or []
     if syms:
@@ -215,7 +218,9 @@ for r in rows:
     summ = sanitize(r.get("summary", "")).strip()
     head = "  - [%s] %s" % (kind, title)
     if summ:
-        head += " \xe2\x80\x94 " + summ
+        # FINDING 14: real em-dash codepoint, not the "\xe2\x80\x94" byte-escape
+        # mojibake (see gaffer_prime_context_block above).
+        head += " — " + summ
     lines.append(head)
 if not lines:
     sys.exit(0)

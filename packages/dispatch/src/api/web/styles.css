@@ -7923,6 +7923,21 @@ textarea:focus-visible,
   }
 }
 
+/* review gate — the "you hold the gate" hero reads as an armed console */
+.gate-title {
+  color: var(--accent);
+  text-shadow: 0 0 14px var(--accent-glow);
+}
+.gate-console {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 44px -22px var(--accent-glow);
+}
+/* diff wells sink into the console; adds/dels are phosphor green/red already */
+.diff-box,
+.diff-pre {
+  background: var(--bg-3);
+}
+
 /* terminal prompt line (the old footer) */
 .footer {
   font-family: var(--mono);

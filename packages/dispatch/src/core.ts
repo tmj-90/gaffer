@@ -96,6 +96,7 @@ import {
   type DashboardSummary,
 } from "./services/boardService.js";
 import { PauseService, type PauseInput } from "./services/pauseService.js";
+import { HumanQueueService, type HumanQueue } from "./services/humanQueueService.js";
 import { ReviewGateService } from "./services/reviewGateService.js";
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
@@ -191,6 +192,15 @@ export type {
 /** Input for resolving a decision via the human surface. */
 export type { ResolveDecisionInput } from "./services/decisionService.js";
 
+/** The human-owned queue read model (Track 2a — "What I own"). */
+export type {
+  HumanQueue,
+  HumanQueueItem,
+  HumanQueueKind,
+  HumanQueueCounts,
+  HumanQueueTicketRef,
+} from "./services/humanQueueService.js";
+
 /**
  * Delivery evidence attached by a SYSTEM/factory actor *without* a claim token.
  */
@@ -247,6 +257,7 @@ export class Dispatch {
   readonly boardSvc: BoardService;
   readonly reviewGateSvc: ReviewGateService;
   readonly pauseSvc: PauseService;
+  readonly humanQueueSvc: HumanQueueService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -399,6 +410,12 @@ export class Dispatch {
       onTicketPaused: (ticket, detail) => {
         this.emitGate("ticket_parked", ticket, { status: "paused", detail });
       },
+    });
+    this.humanQueueSvc = new HumanQueueService({
+      clock: this.clock,
+      decisions: this.decisions,
+      tickets: this.tickets,
+      events: this.events,
     });
   }
 
@@ -1370,5 +1387,17 @@ export class Dispatch {
 
   dashboard(): DashboardSummary {
     return this.boardSvc.dashboard();
+  }
+
+  /**
+   * The HUMAN's queue (Track 2a): everything the operator owns — pending
+   * decisions the agent delegated (WITH reasons), tickets awaiting review
+   * sign-off, and regulated tickets awaiting ready-approval / reviewer
+   * assignment — each with what it is, which ticket, the reason and how long it
+   * has waited. A read model only: EXCLUDES agent-owned `blocked`/rework churn,
+   * changes no semantics and adds no gate. Read-only.
+   */
+  humanQueue(): HumanQueue {
+    return this.humanQueueSvc.build();
   }
 }

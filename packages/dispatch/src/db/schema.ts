@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -59,10 +59,22 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- migration backfill — pre-v9 tickets are not testable and carry no contract.
   can_be_tested INTEGER NOT NULL DEFAULT 0,
   test_contract TEXT,
+  -- TRACK-2b (schema_version 14): the HUMAN-CLAIM marker. NULL ⇒ agent-shaped work
+  -- (claimable by the factory as normal). NON-NULL ⇒ a human took this ticket "by
+  -- hand" (the actor id/name); it moves to in_progress OWNED BY THE HUMAN and the
+  -- agent selection loop MUST skip it (the candidate queries filter human_owner IS
+  -- NULL). Cleared automatically when the ticket leaves in_progress (hand-back to
+  -- ready, submit to review, block, cancel …). Added by an idempotent ALTER in
+  -- connection.ts for an existing DB; the default below (NULL) mirrors the backfill —
+  -- pre-v14 tickets are all agent-shaped.
+  human_owner   TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tickets_status_priority ON tickets(status, priority DESC, created_at ASC);
+-- TRACK-2b: partial index over human-owned in-flight work — the board's "by hand"
+-- lane and the agent-skip guard both filter on human_owner, so index the non-null set.
+CREATE INDEX IF NOT EXISTS idx_tickets_human_owner ON tickets(human_owner) WHERE human_owner IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level);
 CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack);
 

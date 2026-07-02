@@ -322,6 +322,75 @@ gaffer_recall_feedback() {
   fi
 }
 
+# TICKET → LORE DISTILLATION AT CLOSE (Track 1c, live-path backport).
+# A ticket's title + acceptance criteria carry the REAL product intent — WHY the
+# work exists. At close that intent evaporates: the ticket is marked done and
+# nothing durable captures it. This harvests it into a REQUIREMENT DRAFT lore
+# record so the "why" survives the ticket. DRAFT ONLY (human-gated via the
+# memory suggest boundary) — never auto-promoted. Conservative like the crew
+# mirror (packages/crew/src/context/ticketIntent.ts::distillTicketIntent): a
+# ticket with NO acceptance criteria has nothing durable to harvest, so it is a
+# no-op rather than drafting noise. (The optional DECISION draft the mirror can
+# emit needs recorded decisions/reject-reasons, which the live close path does
+# not carry — matching crew's own live call, which passes only title + AC.)
+# Best-effort + logged: a distill error NEVER affects delivery (already
+# submitted). No-op under DRY_RUN, without the memory CLI, or with no ticket/repo
+# in scope.
+gaffer_distill_ticket_intent() {
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  [ -n "${NUM:-}" ] && [ -n "${RECALL_REPO_NAME:-}" ] || return 0
+  declare -f lg >/dev/null 2>&1 || return 0
+  [ -n "${SHOW:-}" ] || return 0
+
+  # Build the requirement draft's {title, summary} from the ticket's title + AC.
+  # python3 emits ONE JSON line (or nothing when there is no AC). Fail-soft.
+  local _distill
+  _distill="$(SHOW="$SHOW" DTITLE="${TITLE:-}" DREPO="$RECALL_REPO_NAME" DNUM="$NUM" python3 - <<'PY' 2>/dev/null || true
+import os, json, sys
+MAX_TITLE = 190
+MAX_SUMMARY = 780
+try:
+    d = json.loads(os.environ.get("SHOW", "") or "{}")
+except Exception:
+    sys.exit(0)
+acs = d.get("acceptanceCriteria") or []
+lines = ["- " + (a.get("text") or "").strip() for a in acs if (a.get("text") or "").strip()]
+if not lines:
+    sys.exit(0)  # no acceptance criteria ⇒ no durable intent to harvest
+repo = os.environ.get("DREPO", "")
+num = os.environ.get("DNUM", "")
+title = os.environ.get("DTITLE", "")
+t = ("Requirement from #%s: %s" % (num, title))[:MAX_TITLE]
+body = (
+    "Why '%s' ticket #%s (\"%s\") was built — the requirement it served "
+    "(distilled at close for ratification; not auto-promoted):\n%s"
+    % (repo, num, title, "\n".join(lines))
+)
+if len(body) > MAX_SUMMARY:
+    body = body[: MAX_SUMMARY - 1] + "…"
+print(json.dumps({"title": t, "summary": body}))
+PY
+)"
+  [ -n "$_distill" ] || return 0
+
+  local _dt _ds
+  _dt="$(printf '%s' "$_distill" | jget "d['title']" 2>/dev/null)" || return 0
+  _ds="$(printf '%s' "$_distill" | jget "d['summary']" 2>/dev/null)" || return 0
+  [ -n "$_dt" ] || return 0
+
+  # --title/--summary/--body all supplied ⇒ `suggest` never drops into an
+  # interactive prompt. Draft (suggest, not add) with an explicit kind so recall
+  # can later aim at the "why"; tags carry ticket provenance (ticket-<n>).
+  if lg suggest --title "$_dt" --summary "$_ds" --body "$_ds" \
+      --repo "$RECALL_REPO_NAME" --kind requirement \
+      --tag ticket-intent --tag requirement --tag "ticket-$NUM" \
+      --author gaffer-distill >/dev/null 2>&1; then
+    log "memory: distilled requirement DRAFT from #$NUM (human-gated; not auto-promoted)"
+  else
+    log "memory: distill #$NUM skipped/failed — non-fatal, delivery unaffected"
+  fi
+}
+
 # ── PAUSE-ON-CAP: resume-requested paused tickets take priority ──────────────
 # A human pressed Continue on a paused (cap-hit) delivery: re-enter delivery IN THE
 # EXISTING worktree (no new worktree, no re-clone, no lost context). The factory loop
@@ -1009,6 +1078,30 @@ $_RF_Q
     } 2>/dev/null || true
   fi
 
+  # ── PRODUCT CONTEXT (why this work exists) — via gaffer_product_context_block ─
+  # Aim recall at the "why": pull the repo's durable product-intent lore
+  # (decisions / requirements / non-goals) and inject it AFTER the file cards so
+  # the agent starts from intent, not just structure. QUARANTINED like the cards.
+  # FAIL-SOFT: none / memory unavailable → empty block, delivery proceeds unchanged.
+  PRODUCT_CONTEXT_BLOCK="$(gaffer_product_context_block "$_CARD_REPO_NAME" 2>/dev/null || true)"
+  if [ -n "$PRODUCT_CONTEXT_BLOCK" ]; then
+    log "product-context: primed delivery #$NUM with product-intent lore"
+  fi
+
+  # ── LORE-REFLECTION NUDGE (Track 1c) — appended to the delivery brief ─────────
+  # The live-agent counterpart of crew's CaptureLoreReflectionHook: prompt the
+  # agent, before it stops, to capture any durable INTENT (decision / requirement
+  # / non-goal) this ticket established via the gated `suggest_lore` boundary —
+  # not per-ticket trivia. Advisory only; it records nothing itself.
+  read -r -d '' LORE_REFLECTION_NUDGE <<'EOF' || true
+BEFORE STOPPING, reflect on WHY this was built this way. If this ticket established a
+durable DECISION (why this approach over the alternatives), a REQUIREMENT (what it
+needed), or a NON-GOAL (what it deliberately did NOT do), call the Memory `suggest_lore`
+tool ONCE with an explicit `kind` (decision / requirement / non-goal). Capture only
+intent the NEXT agent should start from — skip per-ticket trivia. This lands a gated
+DRAFT a human approves; nothing is auto-applied.
+EOF
+
   TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
   if [ "$_RESUMING" = "1" ]; then
     # PAUSE-ON-CAP continuation prompt: the prior progress is ALREADY in this worktree
@@ -1025,6 +1118,7 @@ Recommended skills (pick the ONE whose description matches this ticket): $SKILLS
 ALWAYS-APPLY lenses (mandatory on EVERY change): $LENSES
 $REVIEW_FEEDBACK_BLOCK
 $FILE_CARDS_BLOCK
+$PRODUCT_CONTEXT_BLOCK
 YOU PREVIOUSLY WORKED ON THIS TICKET IN THIS WORKTREE — the prior progress is committed
 and/or present as working changes here. Do NOT start over and do NOT re-scaffold. First
 run \`get_ticket\` and \`git log --oneline\` + \`git status\` to see what is already done,
@@ -1034,6 +1128,7 @@ run: git add -A && git commit -m "deliver #$NUM: <summary>". An uncommitted edit
 delivery. Then use the record-evidence skill to evidence each AC and the prepare-digest-delta
 skill, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the gates,
 records the delivery, and submits. Never self-approve.
+$LORE_REFLECTION_NUDGE
 If blocked, mark_ticket_blocked with a reason.
 
 REPO ACCESS BOUNDARY (enforced by the safety hook — not just guidance):
@@ -1060,6 +1155,7 @@ ALWAYS-APPLY lenses (mandatory on EVERY change, not optional): $LENSES
   its SKILL.md and apply it as you implement and again in self-review.
 $REVIEW_FEEDBACK_BLOCK
 $FILE_CARDS_BLOCK
+$PRODUCT_CONTEXT_BLOCK
 Follow your brief (CLAUDE.factory.md): this ticket (#$NUM) is ALREADY CLAIMED for you by
 the runner — do NOT claim it (no claim_ticket / claim_next_ticket). Start with get_ticket;
 then
@@ -1073,6 +1169,7 @@ record-evidence skill to evidence each AC, then the prepare-digest-delta skill t
 (INERT, applied post-review by the merge) how the Repo Digest should move + which feature
 this ships, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the
 gates, records the delivery, pushes/opens the PR, and submits. Never self-approve.
+$LORE_REFLECTION_NUDGE
 If blocked, mark_ticket_blocked with a reason.
 
 REPO ACCESS BOUNDARY (enforced by the safety hook — not just guidance):
@@ -2092,6 +2189,10 @@ for r in d.get("repositories", []) or []:
     else
       gaffer_recall_feedback clean
     fi
+    # TICKET → LORE DISTILLATION (Track 1c): harvest the closed ticket's product
+    # intent (title + AC) into a human-gated REQUIREMENT DRAFT so the "why"
+    # survives the ticket. Additive + fail-soft; the delivery is already submitted.
+    gaffer_distill_ticket_intent
   else
     # M1 (data-loss path): the submit FAILED. We must NOT fall through to record the
     # delivery artifacts and exit "worked" — that leaves the ticket `claimed` with

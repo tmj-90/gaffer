@@ -1393,12 +1393,15 @@ export class Dispatch {
   private emitDecisionGate(decision: Decision): void {
     if (!this.notifier.enabled) return;
     try {
+      const url = this.decisionUrl(decision);
       this.notifier.notify({
         kind: "decision_pending",
         title: decision.title,
         status: decision.status,
         at: this.clock.now(),
         ...(decision.question ? { detail: decision.question } : {}),
+        // AFK-LOOP P1: mirror ticketUrl so a decision ping is one-tap actionable.
+        ...(url !== undefined ? { url } : {}),
       });
     } catch {
       // See emitGate — never let a notification break the caller.
@@ -1440,6 +1443,19 @@ export class Dispatch {
     const base = (process.env.GAFFER_DASHBOARD_URL ?? "").trim();
     if (base === "" || ticket.number === null) return undefined;
     return `${base.replace(/\/+$/, "")}/tickets/${ticket.number}`;
+  }
+
+  /**
+   * Build a clickable dashboard link for a raised decision when
+   * `GAFFER_DASHBOARD_URL` is set — the decision-gate analogue of
+   * {@link ticketUrl}. Decisions surface on the overview, so the link deep-links
+   * to the decision by id there. Optional — undefined when the base is
+   * unconfigured (degrades gracefully to a URL-less notification).
+   */
+  private decisionUrl(decision: Decision): string | undefined {
+    const base = (process.env.GAFFER_DASHBOARD_URL ?? "").trim();
+    if (base === "") return undefined;
+    return `${base.replace(/\/+$/, "")}/decisions/${decision.id}`;
   }
 
   // --- Reads ---------------------------------------------------------------

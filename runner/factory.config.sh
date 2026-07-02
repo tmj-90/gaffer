@@ -208,7 +208,11 @@ gaffer_route_model() {
   if [ -n "$worktree" ] && [ -d "$worktree/.git" -o -f "$worktree/.git" ] \
      && command -v git >/dev/null 2>&1; then
     local _db _fc
-    _db="$(git -C "$worktree" diff --stat=10000 HEAD 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
+    # Measure the REAL diff SIZE in bytes — the raw patch, NOT a `--stat` summary. A
+    # `--stat` line is a handful of bytes whatever the change ("file | 500 +++---"),
+    # so a 40 KB diff measured that way reads as ~60 B and NEVER crosses the
+    # HIGH_DIFF_BYTES difficulty mark — "big diff → route stronger" would never fire.
+    _db="$(git -C "$worktree" diff HEAD 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
     _fc="$(git -C "$worktree" diff --name-only HEAD 2>/dev/null | grep -c . || echo 0)"
     [ "${_db:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--diff-bytes "$_db")
     [ "${_fc:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--file-count "$_fc")

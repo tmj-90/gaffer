@@ -312,10 +312,13 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
     }
   }
 
-  // 5) Budget-aware downgrade (H1 seam). When the remaining budget is low, bias
-  //    one tier CHEAPER and LOG the trade-off so the cost decision is auditable.
-  //    H1 (the real budget feed) isn't built yet, so budgetRemaining is unlimited
-  //    by default and this never fires in practice — the seam is wired + tested.
+  // 5) Budget-aware downgrade (Track 3a — now LIVE). When the remaining budget is
+  //    low, bias one tier CHEAPER and LOG the trade-off so the cost decision is
+  //    auditable. The real budget feed IS wired: factory.config.sh recomputes
+  //    GAFFER_BUDGET_REMAINING from the usage ledger each tick and passes it in, so
+  //    this fires for real once an operator sets GAFFER_BUDGET_USD (+ a low
+  //    threshold). With no budget configured, budgetRemaining stays unlimited and the
+  //    downgrade is inert — the default, not a stub.
   const BUDGET_LOW_THRESHOLD = budgetLowThreshold();
   if (budgetRemaining < BUDGET_LOW_THRESHOLD && idx > 0) {
     idx = clampIndex(idx - 1, order);
@@ -362,15 +365,16 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
 /**
  * The "budget is low" threshold. Read from GAFFER_BUDGET_LOW_THRESHOLD when set;
  * default 0 means the downgrade only fires when an explicit budgetRemaining is
- * BELOW 0 — i.e. never under today's unlimited default. This keeps the seam inert
- * until H1 supplies a real budget AND an operator sets a threshold.
+ * BELOW 0 — i.e. never under the unlimited default. factory.config.sh derives a real
+ * threshold (a fraction of GAFFER_BUDGET_USD) once a budget is configured, so the
+ * downgrade is inert only when no budget is set — not because the feed is missing.
  */
 function budgetLowThreshold() {
   const v = Number(process.env.GAFFER_BUDGET_LOW_THRESHOLD);
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-/** Parse the runner's env-driven budget seam (H1 not built → unlimited default). */
+/** Parse the runner's env-driven budget seam (unset budget → unlimited default). */
 export function budgetRemainingFromEnv(env = process.env) {
   const raw = env.GAFFER_BUDGET_REMAINING;
   if (raw === undefined || raw === "") return Infinity;

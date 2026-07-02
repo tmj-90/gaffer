@@ -34,12 +34,28 @@ const ALLOWED: ReadonlySet<string> = new Set([
   "draft->ready",
   "refining->ready",
   "ready->claimed",
+  // TRACK-2b (human + agent in parallel): a human takes a ready ticket "by hand".
+  // It moves to `in_progress` OWNED BY THE HUMAN (marked via tickets.human_owner)
+  // rather than being claimed by an agent — the agent selection loop structurally
+  // skips human-owned tickets. Guarded by the `humanClaim` flag so a stray board
+  // drag can never conjure it; only Dispatch.humanClaimTicket sets it.
+  "ready->in_progress",
   "claimed->in_progress",
   "claimed->ready",
   "claimed->blocked",
   "in_progress->blocked",
   "in_progress->in_review",
   "in_progress->failed",
+  // RUNNER-OWNED-BOOKKEEPING: the factory runner now holds the delivery claim and
+  // is the authority that releases/parks it when a delivery fails or exhausts its
+  // retries. On FAILURE it returns the ticket to `ready` (blind-requeue safe); on
+  // PARK it routes to `refining` (needs triage, branch preserved). A resumed
+  // delivery is `in_progress`, so both source states must be reachable. These are
+  // guarded by the `runnerRelease` flag below so a stray board-drag can never use
+  // them — only Dispatch.runnerRelease sets it.
+  "claimed->refining",
+  "in_progress->ready",
+  "in_progress->refining",
   "blocked->ready",
   "blocked->refining",
   // Approve takes a delivery to `ready_for_merge` (NOT `done`): the human has
@@ -139,6 +155,21 @@ const ALLOWED: ReadonlySet<string> = new Set([
   "paused->refining",
 ]);
 
+/**
+ * TRACK-2b: the review lane — the statuses across which the durable
+ * `human_delivered` marker stays meaningful once a hand delivery has been
+ * submitted for review. The moment a ticket moves to any status OUTSIDE this set
+ * it has re-entered the delivery pipeline (rework, hand-back, park, abandon …),
+ * so the marker is cleared: whatever is delivered NEXT must earn the done-gate on
+ * its own terms (a later agent redelivery is never exempted by a stale marker).
+ */
+const REVIEW_LANE_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
+  "in_review",
+  "in_testing",
+  "ready_for_merge",
+  "done",
+]);
+
 /** Which gated transitions trigger a policy evaluation. */
 function gateFor(to: TicketStatus): PolicyGate | null {
   if (to === "ready") return "ready";
@@ -224,6 +255,32 @@ export interface TransitionInput {
    * fake a resume of paused work.
    */
   resumeDelivery?: boolean;
+  /**
+   * RUNNER-OWNED-BOOKKEEPING opt-in flag the runner-release/park paths
+   * (`claimed->refining`, `in_progress->ready`, `in_progress->refining`) MUST set.
+   * Releasing or parking a runner-held delivery claim is a deliberate factory
+   * action taken only by {@link Dispatch.runnerRelease}; without this flag those
+   * transitions are rejected as ILLEGAL_TRANSITION even though they are in the
+   * ALLOWED set, so a stray board-drag can never re-route an in-flight delivery.
+   * Same guarded-flag pattern as {@link wontDo} / {@link pauseDelivery}.
+   */
+  runnerRelease?: boolean;
+  /**
+   * TRACK-2b opt-in flag the human-claim path (`ready -> in_progress`) MUST set.
+   * A human taking a ticket "by hand" is a deliberate action taken only by
+   * {@link Dispatch.humanClaimTicket}; without this flag `ready -> in_progress` is
+   * rejected as ILLEGAL_TRANSITION even though it is in the ALLOWED set, so a stray
+   * board drag can never move a ready ticket straight into in-flight work.
+   */
+  humanClaim?: boolean;
+  /**
+   * TRACK-2b opt-in flag the human hand-back path (`in_progress -> ready`) MUST set
+   * when the release is a HUMAN handing their by-hand ticket back (as opposed to the
+   * runner releasing a delivery claim, which sets {@link runnerRelease}). Either flag
+   * legalises `in_progress -> ready`; both are guarded so an ordinary board drag can
+   * never re-route in-flight work. Set only by {@link Dispatch.humanReleaseTicket}.
+   */
+  humanRelease?: boolean;
 }
 
 export interface TransitionResult {
@@ -394,6 +451,42 @@ export class TransitionService {
         );
       }
 
+      // TRACK-2b: a human takes a ready ticket "by hand" (`ready -> in_progress`).
+      // Reachable ONLY through Dispatch.humanClaimTicket (which sets `humanClaim`);
+      // reject any other route so a stray board drag can never push a ready ticket
+      // straight into in-flight human-owned work.
+      if (key === "ready->in_progress" && !input.humanClaim) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A ready ticket can only be taken by hand via the human-claim path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
+      // RUNNER-OWNED-BOOKKEEPING: releasing/parking a runner-held delivery claim
+      // (`claimed->refining`, `in_progress->refining`) is reachable only through the
+      // runner-release path. `in_progress->ready` is the shared hand-back route: the
+      // runner releasing a delivery claim (`runnerRelease`) OR a human handing back a
+      // by-hand ticket (`humanRelease`) legalises it. Reject any other route so a
+      // stray board-drag can never re-route an in-flight delivery.
+      if (
+        (key === "claimed->refining" || key === "in_progress->refining") &&
+        !input.runnerRelease
+      ) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "An in-flight delivery can only be released/parked via the runner-release path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+      if (key === "in_progress->ready" && !input.runnerRelease && !input.humanRelease) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "An in-flight delivery can only be released/parked to ready via the runner-release path (or human hand-back).",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
       // Won't-do (`* -> cancelled`) is a deliberate terminal abandon. Reject it on
       // any route that did not opt in via the won't-do path so a stray board-drag
       // onto a "Won't do" column can never silently swallow a ticket.
@@ -439,6 +532,32 @@ export class TransitionService {
         this.tickets.setReviewFeedback(ticket.id, null);
       }
 
+      // TRACK-2b: the human-owned marker only means "a human is working this IN
+      // PLACE (in_progress)". The instant the ticket leaves in_progress — hand-back
+      // to `ready`, submit to `in_review`, block, cancel, … — it is no longer the
+      // human's in-flight work, so clear the marker centrally on EVERY exit route.
+      // (The human-claim path stamps it AFTER its `ready -> in_progress` transition,
+      // whose from-status is `ready` with no marker, so this never fights that.)
+      if (ticket.human_owner !== null && input.toStatus !== "in_progress") {
+        this.tickets.setHumanOwner(ticket.id, null);
+        // A HUMAN-OWNED ticket submitting for review is a hand delivery: stamp the
+        // DURABLE delivered-by-hand marker (it survives the human_owner clear
+        // above) so the done-gate can exempt it from the server-recomputed-diff
+        // requirement it structurally can never meet — no delivery branch/repo row
+        // is ever recorded for by-hand work.
+        if (input.toStatus === "in_review") {
+          this.tickets.setHumanDelivered(ticket.id, ticket.human_owner);
+        }
+      }
+      // The delivered-by-hand marker only describes the CURRENT review submission.
+      // Any move that re-enters the delivery pipeline (rework to ready/refining,
+      // park, abandon, a fresh claim …) invalidates it, so a later agent
+      // redelivery is never exempted by a stale marker. (Setting + clearing can't
+      // collide: the set above targets `in_review`, which is inside the lane.)
+      if (ticket.human_delivered !== null && !REVIEW_LANE_STATUSES.has(input.toStatus)) {
+        this.tickets.setHumanDelivered(ticket.id, null);
+      }
+
       const eventId = writeEvent(this.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
@@ -477,6 +596,7 @@ export class TransitionService {
       hasUnresolvedHumanRequired: this.decisions.hasUnresolvedHumanRequired(ticket.id),
       evidenceCountByAc: this.evidence.countByAc(ticket.id),
       hasPrOrDiff: this.hasRealDeliveryDiff(ticket),
+      humanDelivered: ticket.human_delivered !== null,
       hasReviewer: ticket.reviewer !== null && ticket.reviewer !== "",
       humanApprovedReady: this.hasReadyApproval(ticket.id),
       scopeRepo: this.scopeRepoContext(ticket.id),

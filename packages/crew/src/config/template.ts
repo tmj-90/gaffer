@@ -222,6 +222,7 @@ loops:
 context:
   lore_limit: 8 # max ratified lore records pulled into a packet
   max_skills: 12 # max skills selected after stack filtering
+  product_context_limit: 6 # max product-intent lore (decisions/requirements/non-goals) in the productContext section
   token_budget: null # e.g. 4000; soft budget, packets over it are flagged
 
 # GitHub issue ingest: the on-ramp so teammates can file Dispatch work by

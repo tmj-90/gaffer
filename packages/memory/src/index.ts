@@ -32,6 +32,19 @@ export {
   verifyLore,
 } from "./core/lore.js";
 export { newLoreId } from "./core/ids.js";
+export { logRecall, recallFeedback, listFlaggedForReview } from "./core/recallFeedback.js";
+export type {
+  FlaggedCard,
+  FlaggedItem,
+  FlaggedLore,
+  ListFlaggedOptions,
+  LogRecallInput,
+  LogRecallResult,
+  RecallFeedbackInput,
+  RecallFeedbackResult,
+  RecallItemType,
+  RecallOutcome,
+} from "./core/recallFeedback.js";
 export {
   addBoundary,
   approveBoundary,
@@ -60,15 +73,21 @@ export type {
   UpsertDigestInput,
 } from "./core/repoUnderstanding.js";
 export {
+  cardKeysForRepoName,
+  countActiveCards,
+  diagnoseRepoKeyMismatch,
   getFileCard,
   getWatermark,
   listCardsForPaths,
+  movableLegacyKeys,
+  rekeyRepo,
   repoKey,
   searchFileCards,
   setWatermark,
   upsertFileCard,
 } from "./core/fileCards.js";
-export type { UpsertFileCardInput } from "./core/fileCards.js";
+export type { RekeyResult, RepoKeyPresence, UpsertFileCardInput } from "./core/fileCards.js";
+export { canonicalizeRepo, legacyRepoIdentityForms } from "./core/repoIdentity.js";
 export { validateMechanical, validateModel, sha256 } from "./core/cardValidation.js";
 export type {
   MechanicalValidationInput,

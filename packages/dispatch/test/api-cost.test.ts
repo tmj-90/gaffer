@@ -281,17 +281,34 @@ describe("GET /api/cost", () => {
     }
   });
 
-  it("returns 401 when auth is configured and no token is provided", async () => {
+  it("leaves the read-only cost endpoint open on loopback but gates mutations behind the token", async () => {
     // Temporarily set a token (will be restored in close())
     const savedToken = process.env.DISPATCH_API_TOKEN;
     process.env.DISPATCH_API_TOKEN = "secret-token-for-test";
     const h = await startHarness({});
     try {
+      // Read-only GET stays open on a loopback bind even with a token configured
+      // (dashboard UX) — never a 401, with or without a bearer.
       const { status } = await get(h.baseUrl, "/api/cost");
-      expect(status).toBe(401);
-      // With token it works
+      expect(status).toBe(200);
       const { status: ok } = await get(h.baseUrl, "/api/cost", "secret-token-for-test");
       expect(ok).toBe(200);
+      // A mutating request without the token is refused; with it, permitted.
+      const noToken = await fetch(`${h.baseUrl}/tickets`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "x" }),
+      });
+      expect(noToken.status).toBe(401);
+      const withToken = await fetch(`${h.baseUrl}/tickets`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer secret-token-for-test",
+        },
+        body: JSON.stringify({ title: "x" }),
+      });
+      expect(withToken.status).toBe(201);
     } finally {
       await h.close();
       process.env.DISPATCH_API_TOKEN = savedToken;

@@ -4,13 +4,31 @@ import type {
   AddLoreInput,
   Lore,
   LoreConfidence,
+  LoreKind,
   LoreRow,
   LoreStatus,
   LoreSummary,
   SearchOptions,
   UpdateLoreInput,
 } from "../db/types.js";
+import { LORE_KINDS } from "../db/types.js";
 import { newLoreId } from "./ids.js";
+
+const LORE_KIND_SET = new Set<string>(LORE_KINDS);
+
+/**
+ * Validate a caller-supplied lore `kind` at the write boundary. Returns the
+ * default ('other') when omitted; throws on any value outside the closed enum
+ * so an invalid kind fails fast with a typed message rather than tripping the
+ * SQLite CHECK constraint deep in native code.
+ */
+function normaliseKind(kind: LoreKind | undefined): LoreKind {
+  if (kind === undefined) return "other";
+  if (!LORE_KIND_SET.has(kind)) {
+    throw new Error(`kind: '${kind}' is not one of ${LORE_KINDS.join(", ")}`);
+  }
+  return kind;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -100,6 +118,7 @@ function rowToLore(row: LoreRow, repos: string[], tags: string[]): Lore {
     author: row.author ?? undefined,
     team: row.team ?? undefined,
     status: row.status,
+    kind: row.kind ?? "other",
     source: row.source ?? undefined,
     reviewAfter: row.review_after ?? undefined,
     confidence: row.confidence,
@@ -155,6 +174,7 @@ function rowToSummary(row: LoreRow, repos: string[], tags: string[], score?: num
     author: row.author ?? undefined,
     team: row.team ?? undefined,
     status: row.status,
+    kind: row.kind ?? "other",
     source: row.source ?? undefined,
     confidence: row.confidence,
     restricted: row.restricted === 1,
@@ -266,6 +286,7 @@ function insertLore(db: Database, input: AddLoreInput, status: LoreStatus): Lore
   const repos = Array.from(new Set((input.repos ?? []).map(normaliseRepo).filter(Boolean))).sort();
   const tags = Array.from(new Set((input.tags ?? []).map(normaliseTag).filter(Boolean))).sort();
   const confidence = clampConfidence(input.confidence, !!input.source, status);
+  const kind = normaliseKind(input.kind);
   assertIsoDate(input.reviewAfter, "reviewAfter");
   assertHttpUrl(input.source, "source");
   const tx = db.transaction(() => {
@@ -273,10 +294,10 @@ function insertLore(db: Database, input: AddLoreInput, status: LoreStatus): Lore
       .prepare(
         `INSERT INTO lore (
           id, title, summary, body, author, team,
-          status, source, review_after, confidence,
+          status, kind, source, review_after, confidence,
           superseded_by, restricted,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -286,6 +307,7 @@ function insertLore(db: Database, input: AddLoreInput, status: LoreStatus): Lore
         input.author ?? null,
         input.team ?? null,
         status,
+        kind,
         input.source ?? null,
         input.reviewAfter ?? null,
         confidence,
@@ -343,6 +365,7 @@ export interface ImportLoreInput {
   readonly status: LoreStatus;
   readonly author?: string;
   readonly team?: string;
+  readonly kind?: LoreKind;
   readonly source?: string;
   readonly reviewAfter?: string;
   readonly confidence?: LoreConfidence;
@@ -379,6 +402,10 @@ export interface ImportResult {
  * source; no `high` on a draft). FTS is reindexed. The events row uses
  * `imported` so the audit trail distinguishes sync from interactive
  * authorship.
+ *
+ * One exception to "updates every field": `kind`. When the incoming file
+ * lacks a meaningful kind (missing, empty, or 'other') and the existing
+ * row has one, the existing kind is preserved — see the inline note below.
  */
 export function upsertLoreFromImport(db: Database, input: ImportLoreInput): ImportResult {
   assertIsoDate(input.reviewAfter, "reviewAfter");
@@ -394,10 +421,29 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
   const createdAt = input.createdAt ?? nowTs;
   const updatedAt = input.updatedAt ?? nowTs;
 
-  const existing = db.prepare("SELECT rowid FROM lore WHERE id = ?").get(input.id) as
-    | { rowid: number }
+  const existing = db.prepare("SELECT rowid, kind FROM lore WHERE id = ?").get(input.id) as
+    | { rowid: number; kind: string | null }
     | undefined;
   const isCreate = !existing;
+
+  // Kind preservation — mirrors updateLore's "no kind supplied → keep the
+  // current row's kind" rule. A file that carries no MEANINGFUL kind
+  // (missing, empty, or the 'other' default) must not reset an existing
+  // record's kind: exports written before migration 009 added `kind` would
+  // otherwise re-upsert on an equal timestamp and silently demote
+  // backfilled records to 'other', dropping them from the product-context
+  // block (which filters by kind). A file that names a real kind still
+  // wins — import semantics are otherwise unchanged.
+  const incomingKindRaw: string | undefined = input.kind;
+  const incomingKind = normaliseKind(
+    incomingKindRaw === "" ? undefined : (incomingKindRaw as LoreKind | undefined),
+  );
+  const existingKind: LoreKind | undefined =
+    existing?.kind && LORE_KIND_SET.has(existing.kind) ? (existing.kind as LoreKind) : undefined;
+  const kind =
+    incomingKind === "other" && existingKind !== undefined && existingKind !== "other"
+      ? existingKind
+      : incomingKind;
 
   const conflictsWith =
     input.conflictsWith && input.conflictsWith.length > 0
@@ -409,11 +455,11 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
         .prepare(
           `INSERT INTO lore (
             id, title, summary, body, author, team,
-            status, source, review_after, confidence,
+            status, kind, source, review_after, confidence,
             superseded_by, restricted,
             created_at, updated_at, last_verified_at,
             conflicts_with
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -423,6 +469,7 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
           input.author ?? null,
           input.team ?? null,
           input.status,
+          kind,
           input.source ?? null,
           input.reviewAfter ?? null,
           confidence,
@@ -444,7 +491,7 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
       db.prepare(
         `UPDATE lore SET
            title = ?, summary = ?, body = ?,
-           author = ?, team = ?, status = ?,
+           author = ?, team = ?, status = ?, kind = ?,
            source = ?, review_after = ?, confidence = ?,
            superseded_by = ?, restricted = ?,
            updated_at = ?, last_verified_at = ?,
@@ -457,6 +504,7 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
         input.author ?? null,
         input.team ?? null,
         input.status,
+        kind,
         input.source ?? null,
         input.reviewAfter ?? null,
         confidence,
@@ -832,6 +880,7 @@ export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lo
         : current.review_after;
   const restricted =
     input.restricted !== undefined ? (input.restricted ? 1 : 0) : current.restricted;
+  const kind = input.kind !== undefined ? normaliseKind(input.kind) : (current.kind ?? "other");
   // Confidence: caller's claim, but re-clamped given (possibly new) source + current status.
   const confidence = clampConfidence(
     input.confidence ?? current.confidence,
@@ -846,9 +895,22 @@ export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lo
         title = ?, summary = ?, body = ?,
         author = ?, team = ?, source = ?,
         review_after = ?, confidence = ?, restricted = ?,
-        updated_at = ?
+        kind = ?, updated_at = ?
        WHERE id = ?`,
-    ).run(title, summary, body, author, team, source, reviewAfter, confidence, restricted, ts, id);
+    ).run(
+      title,
+      summary,
+      body,
+      author,
+      team,
+      source,
+      reviewAfter,
+      confidence,
+      restricted,
+      kind,
+      ts,
+      id,
+    );
     // If any of title/summary/body changed, reindex FTS for this row.
     if (input.title !== undefined || input.summary !== undefined || input.body !== undefined) {
       // Need the rowid for FTS — fetch via a join since `lore.id` is a
@@ -1083,6 +1145,17 @@ function buildSearchClauses(opts: SearchOptions): {
   if (opts.updatedAfter) {
     filters.push("l.updated_at >= ?");
     params.push(opts.updatedAfter);
+  }
+  if (opts.kind !== undefined) {
+    const kindList = Array.isArray(opts.kind) ? opts.kind : [opts.kind];
+    const kinds = Array.from(new Set(kindList.filter(Boolean)));
+    if (kinds.length === 1) {
+      filters.push("l.kind = ?");
+      params.push(kinds[0]!);
+    } else if (kinds.length > 1) {
+      filters.push(`l.kind IN (${kinds.map(() => "?").join(",")})`);
+      params.push(...kinds);
+    }
   }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   return { from, where, params, hasFts };

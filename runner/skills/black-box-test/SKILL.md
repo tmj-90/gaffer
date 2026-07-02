@@ -157,23 +157,7 @@ EXTEND the existing suite:
 
 ## Capture lore
 
-When you learn something future agents on this repo should know *before they start* — a
-harness gotcha, a surface that needs a specific fixture, a flaky dependency, a behaviour
-the contract under-specified — call the Memory MCP `suggest_lore` tool once, at the close
-of your work:
-
-- `title` — the rule/fact in a few words.
-- `summary` — one self-contained paragraph: the *what* and the *why*.
-- `body` — the detail and evidence that lets a human verify it.
-- `repos` — the repo(s) the rule applies to.
-- `tags` — lowercase (e.g. `testing`, `harness`, `gotchas`, `db`).
-- `source` — a URL to the ticket/PR that justifies it; `confidence` — `low` for an
-  inferred convention, `high` only when you have a source.
-
-**This is suggested, gated knowledge — not auto-truth.** `suggest_lore` lands a DRAFT; a
-human reviews and approves it. You never approve your own lore.
-
-**Capture reusable knowledge, not ticket noise.** Lore is a convention, gotcha, or
-boundary the *next* tester needs — never per-ticket trivia (which assertion you wrote, a
-path you happened to read). The honest test: *would a teammate six months from now thank
-you for this record?* If unsure, skip.
+**A test-harness gotcha, a surface that needs a specific fixture, a flaky dependency, or a behaviour the contract under-specified.** That kind of fact is *lore*. Capture it via the **lore-capture
+protocol in your brief** (`CLAUDE.factory.md`, step 11 "Memory contribution"):
+call the Memory MCP `suggest_lore` once at the close of your work — reusable
+conventions, gotchas, decisions, and boundaries only, never per-ticket trivia.

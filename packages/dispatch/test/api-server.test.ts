@@ -6,6 +6,7 @@ import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { createApiServer } from "../src/api/server.js";
 import { TestClock } from "../src/util/clock.js";
+import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 
@@ -19,7 +20,10 @@ interface Harness {
 /** Start an in-memory Dispatch behind the API on an ephemeral port. */
 async function startHarness(): Promise<Harness> {
   const clock = new TestClock();
-  const wg = Dispatch.open(":memory:", clock);
+  // Inject a git runner that yields a non-empty diff so the (now universal,
+  // solo_loose included) recomputed-diff done-gate can be satisfied by tests
+  // that set up a real delivery via giveTicketRealDelivery.
+  const wg = Dispatch.open(":memory:", clock, nonEmptyDiffRunner);
   const server = createApiServer(wg);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
@@ -98,6 +102,11 @@ describe("API: human REST surface", () => {
     expect((list.body.tickets as unknown[]).length).toBe(1);
     const filteredOut = await call(h.baseUrl, "GET", "/tickets?status=done");
     expect((filteredOut.body.tickets as unknown[]).length).toBe(0);
+
+    // Give the ticket a real, on-disk write repo + delivery branch so the
+    // recomputed-diff done-gate (now enforced for solo_loose too) is satisfied
+    // by genuine git output rather than agent prose.
+    giveTicketRealDelivery(h.wg, ticket.id, human);
 
     // Drive to in_review via the facade (claim flow isn't exposed over HTTP).
     const agent = h.wg.registerAgent({ display_name: "claude" }, human);

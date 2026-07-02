@@ -14,6 +14,42 @@
 export type LoreStatus = "draft" | "active" | "deprecated" | "superseded";
 export type LoreConfidence = "low" | "medium" | "high";
 
+/**
+ * What KIND of knowledge a record captures — the product-intent classifier
+ * that lets recall be aimed at "why" (decisions / requirements / non-goals)
+ * versus "how" (conventions / gotchas). A closed enum, not free text, so a
+ * consumer (e.g. the context packet's productContext section) can filter on
+ * it deterministically:
+ *
+ *   - "decision"    — a durable choice + its rationale (why we built it this way).
+ *   - "requirement" — a product need / must-hold behaviour the work exists to serve.
+ *   - "non-goal"    — something deliberately OUT of scope (guards against scope creep).
+ *   - "convention"  — a "how we do it here" pattern not obvious from the code.
+ *   - "gotcha"      — a trap that wasted time and is likely to bite again.
+ *   - "other"       — the fallback for records that predate the enum or don't fit.
+ *
+ * `decision | requirement | non-goal` are the PRODUCT-INTENT kinds; the
+ * productContext packet section surfaces those specifically.
+ */
+export type LoreKind = "decision" | "requirement" | "non-goal" | "convention" | "gotcha" | "other";
+
+/** Runtime-checkable list of every valid {@link LoreKind}. */
+export const LORE_KINDS: readonly LoreKind[] = [
+  "decision",
+  "requirement",
+  "non-goal",
+  "convention",
+  "gotcha",
+  "other",
+] as const;
+
+/** The subset of kinds that carry PRODUCT INTENT (the "why", not the "how"). */
+export const PRODUCT_INTENT_KINDS: readonly LoreKind[] = [
+  "decision",
+  "requirement",
+  "non-goal",
+] as const;
+
 export interface LoreRow {
   readonly id: string;
   readonly title: string;
@@ -22,6 +58,8 @@ export interface LoreRow {
   readonly author: string | null;
   readonly team: string | null;
   readonly status: LoreStatus;
+  /** Product-intent classifier (migration 009). Defaults to 'other'. */
+  readonly kind: LoreKind;
   readonly source: string | null;
   readonly review_after: string | null;
   readonly confidence: LoreConfidence;
@@ -51,6 +89,8 @@ export interface Lore {
   readonly author?: string;
   readonly team?: string;
   readonly status: LoreStatus;
+  /** Product-intent classifier (see {@link LoreKind}). */
+  readonly kind: LoreKind;
   readonly source?: string;
   readonly reviewAfter?: string;
   readonly confidence: LoreConfidence;
@@ -88,6 +128,8 @@ export interface LoreSummary {
   readonly author?: string;
   readonly team?: string;
   readonly status: LoreStatus;
+  /** Product-intent classifier (see {@link LoreKind}). */
+  readonly kind: LoreKind;
   readonly source?: string;
   readonly confidence: LoreConfidence;
   readonly restricted: boolean;
@@ -127,6 +169,12 @@ export interface SearchOptions {
    * deferred — most callers want "show me anything tagged X or Y".)
    */
   readonly tag?: string | ReadonlyArray<string>;
+  /**
+   * Restrict to one or more product-intent classifiers (LoreKind). A single
+   * kind or a list; ANY-of semantics. Undefined imposes no kind constraint.
+   * Used to AIM recall at the "why" — e.g. decision/requirement/non-goal.
+   */
+  readonly kind?: LoreKind | ReadonlyArray<LoreKind>;
   /** ISO timestamp; only lore updated on/after this is returned. */
   readonly updatedAfter?: string;
   /** Default false. */
@@ -158,6 +206,8 @@ export interface AddLoreInput {
   readonly body: string;
   readonly author?: string;
   readonly team?: string;
+  /** Product-intent classifier; defaults to 'other' when omitted. */
+  readonly kind?: LoreKind;
   readonly source?: string;
   readonly reviewAfter?: string;
   readonly confidence?: LoreConfidence;
@@ -178,6 +228,8 @@ export interface UpdateLoreInput {
   readonly body?: string;
   readonly author?: string;
   readonly team?: string;
+  /** Product-intent classifier; when set, re-classifies the record. */
+  readonly kind?: LoreKind;
   readonly source?: string;
   readonly reviewAfter?: string | null;
   readonly confidence?: LoreConfidence;
@@ -376,6 +428,8 @@ export type ModelStatus = "active" | "failed_validation" | "absent";
 export interface FileCardRow {
   readonly id: string;
   readonly repo_key: string;
+  /** Normalised canonical (host/owner/repo or path) — migration 007. Null on pre-007 rows. */
+  readonly canonical: string | null;
   readonly repo: string;
   readonly path: string;
   readonly content_hash: string;
@@ -396,6 +450,8 @@ export interface FileCardRow {
   readonly prompt_version: string | null;
   readonly created_at: string;
   readonly updated_at: string;
+  /** Recall-feedback flag (0/1). Set when a served card led to rework. */
+  readonly flagged_for_review: number;
 }
 
 /**
@@ -409,6 +465,8 @@ export interface FileCardRow {
 export interface FileCard {
   readonly id: string;
   readonly repoKey: string;
+  /** Normalised canonical the key was derived from (migration 007). Undefined on pre-007 rows. */
+  readonly canonical?: string;
   readonly repo: string;
   readonly path: string;
   readonly contentHash: string;
@@ -435,11 +493,20 @@ export interface FileCard {
   readonly promptVersion?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /**
+   * True when recall-feedback flagged this card for review — it was served into
+   * a ticket that subsequently needed rework, so it should NOT be trusted as a
+   * top signal unchanged. `cardsForScope` reads this to rank flagged cards below
+   * unflagged peers within the same selection tier.
+   */
+  readonly flaggedForReview: boolean;
 }
 
 /** Raw DB row for repo_sync. */
 export interface RepoSyncRow {
   readonly repo_key: string;
+  /** Normalised canonical — migration 007. Null on pre-007 rows. */
+  readonly canonical: string | null;
   readonly repo: string;
   readonly synced_commit: string;
   readonly updated_at: string;
@@ -452,6 +519,8 @@ export interface RepoSyncRow {
  */
 export interface RepoSync {
   readonly repoKey: string;
+  /** Normalised canonical (migration 007). Undefined on pre-007 rows. */
+  readonly canonical?: string;
   readonly repo: string;
   readonly syncedCommit: string;
   readonly updatedAt: string;

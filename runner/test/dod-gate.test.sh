@@ -17,11 +17,16 @@
 #     A6  GAFFER_DOD=0 (off) → gaffer_dod_enabled is false (today's behaviour);
 #     A7  the evidence summary carries a parseable JSON line + the failing tail.
 #
-#   PART B  INTEGRATION (the REAL dispatch CLI): a DoD FAILURE on an in_review
-#     ticket review-rejects it (in_review → refining) AND records the failing
-#     checklist as evidence — proving the delivery never reaches the human lane.
+#   PART B  INTEGRATION (the REAL dispatch CLI): an EXHAUSTED DoD rework parks a
+#     CLAIMED delivery to the VISIBLE `blocked` column (rework_exhausted) via
+#     `wg runner-release`, releasing the claim + recording the structured feedback
+#     and a ticket.blocked event — proving the ticket is never lost to a human.
 #
-#   PART C  the tick.sh enforcement wiring is present (parks, never submits).
+#   PART C  the tick.sh enforcement + escalation/real-feedback wiring is present.
+#
+#   PART E  REAL-FEEDBACK extraction: the distiller keeps the actual failing test +
+#     assertion (vitest + maven), drops the summary/count line, and falls back to a
+#     tail when no framework signal matches; the extractor round-trips it.
 #
 # Zero non-dispatch deps. Run: bash test/dod-gate.test.sh
 # =====================================================================
@@ -147,7 +152,12 @@ assert any(g['gate']=='tests' and g['status']=='FAIL' for g in d['gates']), d
   || fail "A8 expected a parseable fallback JSON line ($EV8)"
 
 # ---------------------------------------------------------------------
-echo "== PART B: a DoD failure auto-rejects an in_review ticket (real dispatch) =="
+echo "== PART B: an exhausted DoD rework parks a CLAIMED delivery to VISIBLE blocked (real dispatch) =="
+# RUNNER-OWNED-BOOKKEEPING + REWORK LOOP: the runner holds the claim and never submits
+# a failing delivery for review. When the rework loop exhausts, tick.sh parks the
+# runner-held claim to the VISIBLE `blocked` column (rework_exhausted) via
+# `wg runner-release`, preserving the branch — a human always sees the parked ticket
+# (never the invisible `refining`/draft column). This exercises that exact path.
 if [ ! -f "$WG_CLI" ]; then
   echo "  SKIP: dispatch CLI not built at $WG_CLI — skipping the integration part"
 else
@@ -163,19 +173,19 @@ else
   TNUM="$(WG ticket create -t "DoD integration ticket" -p solo_loose --risk low 2>&1 \
     | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['number'])")"
   WG repo link "$TNUM" repo >/dev/null 2>&1
+  WG ac add "$TNUM" -t "DoD integration AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
   WG ticket ready "$TNUM" >/dev/null 2>&1
-  # Drive it to in_review the way a delivery would: register an agent, claim the
-  # chosen ticket → submit for review with the claim token.
+  # The runner claims the ticket at selection and HOLDS the token for the whole
+  # delivery (it never submits a failing one). Drive to that state.
   AGENT="$(WG agent register -n dod-agent --max-risk high 2>/dev/null \
     | python3 -c "import sys,json;print(json.load(sys.stdin)['agent']['id'])" 2>/dev/null || echo '')"
   CLAIM="$(WG claim-ticket "$TNUM" -a "$AGENT" 2>&1 \
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('claimToken',''))" 2>/dev/null || echo '')"
-  WG submit "$TNUM" --token "$CLAIM" >/dev/null 2>&1 || true
   CUR="$(WG ticket show "$TNUM" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['status'])" 2>/dev/null || echo '')"
-  if [ "$CUR" != "in_review" ]; then
-    echo "  SKIP: could not drive #$TNUM to in_review (got '$CUR') — skipping the reject assertions"
+  if [ "$CUR" != "claimed" ] || [ -z "$CLAIM" ]; then
+    echo "  SKIP: could not drive #$TNUM to claimed (got '$CUR') — skipping the park assertions"
   else
-    ok "B fixture: #$TNUM is in_review (delivery would await the human gate)"
+    ok "B fixture: #$TNUM is claimed (the runner holds the delivery claim)"
 
     # Run the DoD gate for this repo against a non-empty delivery worktree.
     WTB="$WORK/wt-b"; mkdir -p "$WTB"
@@ -185,34 +195,108 @@ else
     [ "$B_RC" -ne 0 ] && ok "B the DoD gate FAILS for the repo whose test_command fails" \
       || fail "B expected the DoD gate to fail for a failing test_command"
 
-    # The EXACT failure-handling tick.sh runs: record evidence, then review-reject.
-    SUM="$(gaffer_dod_summary_line "$RESB")"
+    # The EXACT failure-handling tick.sh runs when rework EXHAUSTS: record evidence,
+    # then park the runner-held claim to the VISIBLE blocked column (rework_exhausted).
     EVB="$(gaffer_dod_evidence_summary "$RESB" FAIL)"
     WG attach-evidence "$TNUM" --type test_output --summary "$EVB" >/dev/null 2>&1 \
       && ok "B recorded the FAIL checklist as evidence on #$TNUM" \
       || fail "B could not record DoD evidence on #$TNUM"
-    WG review reject "$TNUM" --to refining --reviewer factory-dod \
-      --reason "Definition of Done failed: $SUM" >/dev/null 2>&1 \
-      && ok "B review-rejected #$TNUM (the auto-reject path)" \
-      || fail "B could not review-reject #$TNUM to refining"
+    WG runner-release "$TNUM" --to blocked --token "$CLAIM" \
+      --reason "Definition of Done failed after 3 attempts (branch preserved)" \
+      --reason-code rework_exhausted --attempt 3 --max 3 >/dev/null 2>&1 \
+      && ok "B parked #$TNUM to blocked via runner-release (the exhausted-rework path)" \
+      || fail "B could not park #$TNUM to blocked via runner-release"
 
     NEW="$(WG ticket show "$TNUM" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['status'])" 2>/dev/null || echo '')"
-    [ "$NEW" = "refining" ] && ok "B #$TNUM moved in_review → refining (never reached the human lane)" \
-      || fail "B expected #$TNUM in refining after the DoD reject (got '$NEW')"
-    [ "$NEW" != "in_review" ] && ok "B #$TNUM is NOT awaiting human review after the DoD failure" \
-      || fail "B #$TNUM is still in_review — the DoD reject did not take"
+    [ "$NEW" = "blocked" ] && ok "B #$TNUM moved claimed → blocked (VISIBLE column, never invisible refining)" \
+      || fail "B expected #$TNUM in blocked after the exhausted-rework park (got '$NEW')"
 
-    # The evidence is durably attached + parseable for the next attempt / the board.
-    EVCOUNT="$(WG ticket show "$TNUM" 2>/dev/null | python3 -c "
+    # The structured rework_exhausted feedback surfaces on the card, and the claim is
+    # released (no dangling claim on a parked ticket).
+    WG ticket show "$TNUM" 2>/dev/null | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-ev = [e for e in (d.get('evidence') or []) if str(e.get('summary') or '').startswith('DoD: ')]
-print(len(ev))
-" 2>/dev/null || echo 0)"
-    [ "${EVCOUNT:-0}" -ge 1 ] && ok "B the DoD evidence row is durably attached to #$TNUM" \
-      || fail "B expected a 'DoD: …' evidence row on #$TNUM (found $EVCOUNT)"
+t = d['ticket']
+fb = t.get('last_review_feedback')
+fb = json.loads(fb) if isinstance(fb, str) and fb.strip() else (fb or {})
+assert fb.get('code') == 'rework_exhausted', fb
+assert fb.get('attempt') == 3 and fb.get('maxAttempts') == 3, fb
+# the runner-held claim is released as part of the park (claim.released event)
+rel = [e for e in (d.get('events') or []) if e.get('event_type') == 'claim.released']
+assert rel, 'expected a claim.released event on the parked ticket (no dangling claim)'
+" 2>/dev/null \
+      && ok "B the card carries rework_exhausted (attempt 3/3) and the claim is released" \
+      || fail "B expected rework_exhausted feedback + released claim on #$TNUM"
+
+    # A ticket.blocked event is on the activity trail (the human-unblock gate).
+    WG ticket show "$TNUM" 2>/dev/null | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+evs = [e for e in (d.get('events') or []) if e.get('event_type') == 'ticket.blocked']
+assert evs, 'no ticket.blocked event on the trail'
+" 2>/dev/null \
+      && ok "B a ticket.blocked event is recorded (activity trail + unblock gate)" \
+      || fail "B expected a ticket.blocked event on #$TNUM"
   fi
 fi
+
+# ---------------------------------------------------------------------
+echo "== PART E: REAL-FEEDBACK extraction (distiller + extractor) =="
+# The crux of (b): the next attempt must see the ACTUAL failing test + assertion,
+# not the count/summary line or a blind tail. Cover vitest AND mvn.
+VITEST_OUT="$WORK/vitest.out"
+cat > "$VITEST_OUT" <<'VEOF'
+ RUN  v1.6.0
+ ❯ src/sum.test.ts (1 test | 1 failed)
+   ✕ adds numbers
+ FAIL  src/sum.test.ts > adds numbers
+AssertionError: expected 3 to be 4
+ ❯ src/sum.test.ts:5:23
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+VEOF
+V_DISTILLED="$(gaffer_dod_distill_output "$VITEST_OUT" 40)"
+printf '%s' "$V_DISTILLED" | grep -q 'AssertionError: expected 3 to be 4' \
+  && ok "E vitest: the distiller keeps the real assertion (expected 3 to be 4)" \
+  || fail "E vitest: distiller lost the assertion ($V_DISTILLED)"
+printf '%s' "$V_DISTILLED" | grep -q 'adds numbers' \
+  && ok "E vitest: the distiller keeps the failing test name" \
+  || fail "E vitest: distiller lost the failing test name ($V_DISTILLED)"
+printf '%s' "$V_DISTILLED" | grep -q 'Test Files  1 failed' \
+  && fail "E vitest: distiller kept the summary COUNT line (should drop it)" \
+  || ok "E vitest: the distiller DROPS the summary count line (not a blind tail)"
+
+MVN_OUT="$WORK/mvn.out"
+cat > "$MVN_OUT" <<'MEOF'
+[INFO] Running com.example.CalcTest
+[ERROR] Tests run: 1, Failures: 1 <<< FAILURE!
+org.opentest4j.AssertionFailedError: expected: <4> but was: <3>
+	at com.example.CalcTest.testAdd(CalcTest.java:12)
+MEOF
+M_DISTILLED="$(gaffer_dod_distill_output "$MVN_OUT" 40)"
+printf '%s' "$M_DISTILLED" | grep -q 'expected: <4> but was: <3>' \
+  && ok "E maven: the distiller keeps the real assertion (expected <4> but was <3>)" \
+  || fail "E maven: distiller lost the assertion ($M_DISTILLED)"
+
+# The extractor round-trips a framed results block back to feedback text.
+RESE="$WORK/e.results"
+printf 'repo\t%s\t1\t0\t0\tsh -c "echo AssertionError: boom; echo \\"  at f.ts:1:2\\"; exit 1"\t-\t-\n' "$WT" \
+  | gaffer_run_dod_gates "$RESE" || true
+E_FB="$(gaffer_dod_extract_failure "$RESE")"
+printf '%s' "$E_FB" | grep -q 'AssertionError: boom' \
+  && ok "E the extractor pulls the distilled real failure out of the results file" \
+  || fail "E extractor lost the failure ($E_FB)"
+printf '%s' "$E_FB" | grep -q 'failing gate: tests@repo' \
+  && ok "E the extracted feedback names the failing gate" \
+  || fail "E extractor did not name the failing gate ($E_FB)"
+
+# Fallback: output with NO framework signal still yields the tail (never empty).
+NOSIG="$WORK/nosig.out"
+printf 'random line one\nrandom line two\n' > "$NOSIG"
+N_DISTILLED="$(gaffer_dod_distill_output "$NOSIG" 40)"
+printf '%s' "$N_DISTILLED" | grep -q 'random line two' \
+  && ok "E no-signal output falls back to the tail (a failure is never lost)" \
+  || fail "E fallback tail lost the output ($N_DISTILLED)"
 
 # ---------------------------------------------------------------------
 echo "== PART C: tick.sh enforcement wiring is present =="
@@ -222,9 +306,34 @@ grep -q 'Stabilisation gate 2.5: DEFINITION OF DONE' "$RUNNER_DIR/tick.sh" \
 grep -q 'gaffer_run_dod_gates' "$RUNNER_DIR/tick.sh" \
   && ok "C tick.sh invokes gaffer_run_dod_gates (runner-run, not the agent)" \
   || fail "C tick.sh does not call gaffer_run_dod_gates"
-grep -q 'reviewer factory-dod' "$RUNNER_DIR/tick.sh" \
-  && ok "C a DoD failure review-rejects to refining (auto-reject, not the human)" \
-  || fail "C tick.sh missing the DoD review-reject path"
+# RUNNER-OWNED-BOOKKEEPING + REWORK LOOP: a DoD failure no longer review-rejects an
+# in_review ticket (the runner holds the claim and has NOT submitted). It routes
+# through _recover_or_park, which retries (staying VISIBLY in_progress) then parks the
+# held claim to the VISIBLE `blocked` column (rework_exhausted) via the runner-release
+# path — the branch is preserved, and a human always sees the parked ticket.
+grep -q '_recover_or_park "definition-of-done"' "$RUNNER_DIR/tick.sh" \
+  && ok "C a DoD failure reworks via _recover_or_park (auto-reject, not the human)" \
+  || fail "C tick.sh missing the DoD _recover_or_park path"
+perl -0777 -ne 'exit 0 if /Cap OR per-ticket cost ceiling hit.*?gaffer_release_delivery blocked "\$_reason" rework_exhausted/ms; exit 1' "$RUNNER_DIR/tick.sh" \
+  && ok "C an exhausted-rework park releases the held claim to the VISIBLE blocked column (rework_exhausted)" \
+  || fail "C _recover_or_park does not park the runner-held claim to blocked/rework_exhausted"
+# The rework path must NOT route to refining (invisible draft column) — it stays
+# in_progress while reworking (runner-rework) and lands in blocked when exhausted.
+# Scope the check to the _recover_or_park function BODY (other tick.sh park paths —
+# submit-failed, bootstrap — legitimately still use refining and are out of scope).
+perl -0777 -ne 'if (/_recover_or_park\(\) \{(.*?)\n  \}/ms) { exit(($1 =~ /gaffer_release_delivery refining/) ? 0 : 1) } exit 1' "$RUNNER_DIR/tick.sh" \
+  && fail "C the rework park path still routes to refining (should be blocked — invisible to a human)" \
+  || ok "C the rework park path does NOT route to refining (retired for visibility)"
+grep -q 'wg runner-rework "\$NUM"' "$RUNNER_DIR/tick.sh" \
+  && ok "C a retry surfaces the rework attempt on the card (runner-rework, stays in_progress)" \
+  || fail "C tick.sh does not surface the rework attempt via runner-rework"
+# The re-invocation must feed the DISTILLED real failure (not just the gate summary).
+grep -q 'gaffer_dod_extract_failure "\$DOD_RESULTS"' "$RUNNER_DIR/tick.sh" \
+  && ok "C a DoD failure extracts the REAL failure (assertion) to feed the next attempt" \
+  || fail "C tick.sh does not extract the real DoD failure for the next attempt"
+grep -q 'PROMPT\$_REWORK_BLOCK' "$RUNNER_DIR/tick.sh" \
+  && ok "C the re-invoked agent gets the real-failure REVIEW FEEDBACK block appended to its prompt" \
+  || fail "C tick.sh does not append the rework feedback block to the re-invocation prompt"
 # Fail-CLOSED on an unresolvable config: an unparseable dispatch payload must NOT
 # pretend "no commands" and ship unverified work — it parks instead.
 grep -q '@@DOD_PARSE_OK@@' "$RUNNER_DIR/tick.sh" \

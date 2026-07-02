@@ -22,7 +22,7 @@
  * containment of a determined exfil needs an OS sandbox / permission boundary.
  */
 import { spawnSync } from "node:child_process";
-import { appendFileSync, realpathSync } from "node:fs";
+import { appendFileSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 // Canonical dangerous-command deny list — the SINGLE source of truth shared with
@@ -30,19 +30,50 @@ import { basename, dirname, join, resolve } from "node:path";
 // the extra parity metadata on each rule is inert here. See the module header.
 import { DANGEROUS_COMMANDS as DENY_COMMANDS } from "./lib/dangerous-commands.mjs";
 
+// Hard bounds so a pathological/deep path can NEVER blow the call stack. An
+// unbounded recursion here throws RangeError, and an uncaught throw would exit
+// the hook non-2 → Claude Code ALLOWS (fail-open). Both bounds THROW on breach;
+// the top-level decision guard turns that throw into a BLOCK (fail-closed).
+const MAX_PATH_LEN = 4096; // ~PATH_MAX; anything longer is pathological, not real
+const MAX_CANON_DEPTH = 512; // ancestor-walk + symlink-follow recursion ceiling
+
 /**
  * Canonicalise a path symlink-safely, even when it doesn't exist yet (a file
  * about to be written): realpath the longest existing ancestor, then re-append
  * the not-yet-created tail. Fixes false "outside repo" blocks under symlinked
  * roots like macOS /tmp -> /private/tmp.
+ *
+ * SYMLINK-ESCAPE HARDENING: when the path does not fully exist, we still FOLLOW a
+ * final component that is itself a symlink — including a DANGLING one whose target
+ * does not exist yet. A write "through" such a link lands at the link's TARGET,
+ * which may sit outside the write-root; resolving the target (not re-appending the
+ * link's own name) is what makes the out-of-root destination visible to the
+ * boundary check. Without this, `ln -s /outside ./link` then a write to `./link`
+ * resolved to the in-root `./link` and was allowed while the bytes escaped.
  */
-function canonicalize(p) {
+function canonicalize(p, depth = 0) {
+  if (typeof p !== "string" || p.length > MAX_PATH_LEN || depth > MAX_CANON_DEPTH) {
+    // Refuse to resolve a path we cannot bound safely — fail CLOSED via throw.
+    throw new Error("canonicalize: path too long or too deeply nested to resolve safely");
+  }
   try {
+    // realpathSync resolves ALL symlinks when the whole path exists.
     return realpathSync(p);
   } catch {
+    // p does not fully exist yet. If its FINAL component is a symlink (including a
+    // dangling one), follow the link to its target and canonicalise THAT so an
+    // out-of-root target is exposed to the boundary check.
+    try {
+      if (lstatSync(p).isSymbolicLink()) {
+        const target = readlinkSync(p);
+        return canonicalize(resolve(dirname(p), target), depth + 1);
+      }
+    } catch {
+      /* not a symlink / cannot lstat — fall through to the ancestor walk */
+    }
     const parent = dirname(p);
     if (parent === p) return p;
-    return resolve(canonicalize(parent), basename(p));
+    return resolve(canonicalize(parent, depth + 1), basename(p));
   }
 }
 
@@ -230,8 +261,87 @@ function classifyRootAccess(absPath, { writeRoots, readRoots }) {
 // Secret-bearing / sensitive paths — never written, never read (keeps secrets
 // out of the model's context window too). Anchored to end-of-path for the
 // Read/Write file checks below.
-const SECRET_PATH =
-  /(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt))$/i;
+//
+// TOKEN FILES (dashboard-token boundary): the Dispatch REST auth token is
+// persisted to `$GAFFER_DATA/dashboard-token`. `$GAFFER_DATA` sits in the
+// delivery agent's READ allowlist, so without this a same-user agent could read
+// the token off disk and self-approve its own work over the API, defeating the
+// env-scrub. We treat the token file — and the general credential-token family
+// (`*-token`, `*.token`, `*_token`, `*-token.<ext>`) — as a secret path. The
+// `[._-]tokens?` join requires a real separator before `token`, so a bare word
+// like `TOKEN` in an unrelated position is not a path match here.
+//
+// TOKEN-FAMILY PRECISION GUARD (finding 7, re-hardened): a `*[-_.]token(s)?`
+// file is a CREDENTIAL by default. The split that keeps legit files readable is
+// CODE-extension vs DATA-extension, NOT "has an extension":
+//   * a token-named file with a CODE extension is source code (safe to read):
+//     `csrf_token.ts`, `auth-token.js`, `refresh-token.ts`, `access-token.tsx`.
+//   * a token-named file with a DATA extension (`.json`/`.yaml`/`.txt`/`.env`/…)
+//     or NO extension can hold a credential and stays BLOCKED:
+//     `access-token.json`, `api_token.json`, `client-token.json`, a bare
+//     `access-token`, `secret.token`, `client-token.pem`. `design-tokens.json`
+//     and `access-token.json` are structurally identical (`*-token(s).json`) and
+//     CANNOT be separated by extension alone — so `.json` MUST NOT be exempt.
+// The design-token convention is instead exempted EXPLICITLY, regardless of
+// extension: a basename carrying `design[-_.]token(s)` (`design-tokens.json`,
+// `design-token.json`, `src/theme/design-tokens.json`), and the W3C
+// design-tokens file convention (`*.tokens.json`, `*.tokens`, e.g.
+// `theme.tokens.json`).
+//
+// Implemented as ONE zero-width negative lookahead placed immediately after the
+// matched `tokens?`. It fires (exempts → reads through) for exactly three
+// TERMINAL forms; each ends in `(?![\w.])`, so only a SINGLE terminal extension
+// is exempt and double-extension exfil disguises stay blocked
+// (`design-tokens.json.b64`, `x-token.ts.bak`):
+//   1. `…token(s)?.<CODE-EXT>`         → a source file
+//   2. `…design[-_.]token(s)?[.ext]`   → a design-system token file
+//   3. `….tokens[.json]`               → the W3C design-tokens convention
+// The design/W3C branches use lookbehind on the just-matched name, so the guard
+// stays a drop-in string interpolated identically into every PATH-POSITION rule
+// (SECRET_PATH, SECRET_PATH_FRAGMENT, SECRET_ASSIGNMENT) — no per-rule drift.
+// UNDECIDABLE-BY-FILENAME (`client-token.js` — code ext but credential-sounding):
+// we FAVOUR the code-ext rule and treat it as code. A stored credential is
+// virtually never a `.js`/`.ts` file, and the outbound-network / exfil guards
+// backstop it. DESIGN NOTE (why this rule stays SMALL): classifying arbitrary
+// target-repo `*-token` files by NAME is heuristic defence-in-depth, not a
+// guarantee — filename ≠ secret. We block the obvious credential conventions,
+// exempt the design-token + code-extension conventions, and STOP; this guard is
+// deliberately NOT grown into an ever-larger qualifier chain chasing
+// completeness (that churn already produced two OPPOSITE findings on this rule —
+// over-block then under-block). When the credential-vs-design call is close we
+// PREFER the smaller rule (a novel credential filename slipping is covered by
+// the exfil guard; over-blocking design files is the worse product outcome). The
+// load-bearing, 100%-reliable blocks are the factory's OWN fixed-name secrets —
+// `dashboard-token` and `mcp-runtime.*.json` — each carried by its own
+// guard-free alternative in every rule. The data-flow-hiding vectors (SECRET_GLOB, REDIRECT_READ,
+// SOURCE_SECRET) carry NO guard and keep over-blocking the whole token family —
+// a glob resolves at runtime, and redirect/source consume contents in a
+// position no legitimate source-file workflow needs. The exact `dashboard-token`
+// file has its own guard-free alternative in every rule, so this guard can
+// never weaken it.
+const TOKEN_CODE_EXT = String.raw`tsx|ts|jsx|js|mjs|cjs|css|scss|sass|less|vue|svelte`;
+const TOKEN_SOURCE_EXT_GUARD = String.raw`(?!(?:\.(?:${TOKEN_CODE_EXT})|(?<=design[._-]tokens?)(?:\.[\w-]+)?|(?<=\.tokens)(?:\.json)?)(?![\w.]))`;
+// NOTE: `dashboard-token(\.[\w-]+)?` — the exact token file keeps its own
+// alternative WITH an optional extension so `dashboard-token.json` (previously
+// caught by the family rule) stays blocked now that the family exempts
+// source-code / design-token names.
+//
+// MCP RUNTIME FILE (claim-token boundary): the factory writes the substituted
+// GAFFER_CLAIM_TOKEN into `$GAFFER_DATA/mcp-runtime.<pid>.json` (and the base
+// `mcp-runtime.json`). `$GAFFER_DATA` is in the delivery agent's READ allowlist,
+// so a rogue agent that reads this file recovers the claim token and can present
+// it EXPLICITLY to `submit_ticket_for_review` — re-opening the strand wave-1
+// closed by removing the env fallback. So the runtime JSON is a secret path on
+// EVERY read vector. Anchored to the `.json` runtime file only: a SOURCE path
+// with an `mcp-runtime` DIRECTORY component (`src/mcp-runtime/index.ts`, which
+// finding-11 made pass the hygiene rule) is code and stays READABLE. (This is
+// the READ rule; the separate hygiene forbidden-fragment `mcp-runtime.` is a
+// different rule and stays as finding-7 tightened it.)
+const MCP_RUNTIME_FILE = String.raw`mcp-runtime(?:\.\w+)*\.json`;
+const SECRET_PATH = new RegExp(
+  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  "i",
+);
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
 
 // =====================================================================
@@ -266,8 +376,18 @@ const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
 // string (not anchored to end-of-path — a command can reference the path
 // mid-line, in quotes, as an argument, etc.). Covers the same families as
 // SECRET_PATH plus directory-style markers (.ssh/, .aws/).
-const SECRET_PATH_FRAGMENT =
-  /(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b)/i;
+// The `dashboard-token`/`*-token` fragments require a `[._-]` separator directly
+// before `token` (or match the literal `dashboard-token`), so an unrelated bare
+// word like `TOKEN` used as a grep pattern is NOT flagged — only real token-file
+// references (`.gaffer/dashboard-token`, `api.token`, `foo_token`) are. The
+// token family carries TOKEN_SOURCE_EXT_GUARD so a token-named SOURCE file
+// (`src/design-tokens.json`, `csrf_token.ts`) in an ordinary command position
+// (`npx prettier --write src/design-tokens.json`) is not flagged; the exact
+// `dashboard-token` alternative is guard-free and always fires.
+const SECRET_PATH_FRAGMENT = new RegExp(
+  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  "i",
+);
 
 // Glob/wildcard tokens whose literal part overlaps a secret family. These
 // resolve to secret paths at runtime even though no full secret name is
@@ -275,7 +395,7 @@ const SECRET_PATH_FRAGMENT =
 // `*credential*`, `*secret*`). We match the wildcard form specifically so
 // an ordinary glob like `*.ts` or `src/*` is not flagged.
 const SECRET_GLOB =
-  /(\.e[*?]|\.en[*?]|\.env[*?]|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?])/i;
+  /(\.e[*?]|\.en[*?]|\.env[*?]|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?]|[*?][\w./-]*token|token[\w./-]*[*?]|dashboard-token[*?]|mcp-runtime[\w.-]*[*?])/i;
 
 // Shell read/redirect/source positions that consume a file's CONTENTS
 // without naming a "reader" binary:
@@ -283,9 +403,9 @@ const SECRET_GLOB =
 //   `source .env` / `. .env`   load secrets into the environment
 //   `read ... < .env` / `mapfile < .env`  (the `<` rule catches these too)
 const REDIRECT_READ =
-  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?)/i;
+  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|dashboard-token|[._-]tokens?)/i;
 const SOURCE_SECRET =
-  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?)/i;
+  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|dashboard-token|[._-]tokens?)/i;
 
 // Command-substitution / pipe / xargs constructs that decouple the tool
 // from the path it operates on, hiding the data flow from static analysis.
@@ -310,8 +430,14 @@ const FILE_READ_PRIMITIVE =
 // path to a variable, which a later command then dereferences via `$f`.
 // We can't follow the dataflow, so any secret-path assignment is treated
 // as a read boundary unless the whole command is a single safe governed op.
-const SECRET_ASSIGNMENT =
-  /\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b)/i;
+// The token family carries TOKEN_SOURCE_EXT_GUARD (path-position rule): a
+// build-style `FILE=src/design-tokens.json …` assignment of a token-named
+// SOURCE file is legitimate; `f=.gaffer/dashboard-token` and extensionless
+// token files stay denied.
+const SECRET_ASSIGNMENT = new RegExp(
+  String.raw`\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  "i",
+);
 
 // =====================================================================
 // INLINE-INTERPRETER FILESYSTEM BOUNDARY (FG-007, P0/P1)
@@ -1513,6 +1639,23 @@ function checkCommand(cmd) {
   // Repo-access boundary for bash write ops and branch creation.
   const roots = resolveRoots();
   for (const target of extractBashWriteTargets(cmd)) {
+    // BASH-vs-WRITE PARITY: a bash write op must obey the SAME `.git` protection
+    // the Write tool applies in checkWrite — not just the write-root boundary. A
+    // `.git/…` write (e.g. `echo … > .git/hooks/post-commit`, `cp evil
+    // .git/hooks/post-commit`) was previously ALLOWED whenever the resolved
+    // target sat inside the write-root, because only the root check ran here —
+    // planting a git hook is arbitrary code execution on the next git operation.
+    // (UNVERIFIABLE_TARGET is a sentinel, not a real path — only the root check
+    // is meaningful for it, and it always classifies "outside".) Secret-file
+    // CONTENT writes via bash (`echo … > .env`, `cp x .env`, `tee .env`) are
+    // already denied by secretBoundaryReason above, so we do not re-check
+    // SECRET_PATH here — doing so would wrongly block a bare `rm .env.local`
+    // DELETION, which is intentionally allowed (a deletion is not an exfil).
+    if (target !== UNVERIFIABLE_TARGET && GIT_INTERNAL.test(target)) {
+      block(
+        `bash write inside .git (hooks / exec-hijack surface): ${target} — "${cmd.slice(0, 120)}"`,
+      );
+    }
     const access = classifyRootAccess(target, roots);
     if (access !== "write") {
       block(
@@ -1586,37 +1729,70 @@ function checkRead(filePath) {
   allow();
 }
 
+// FAIL-CLOSED GLOBAL GUARD: Claude Code treats ONLY exit 2 as blocking — ANY
+// other exit (including the exit 1 an uncaught exception produces) ALLOWS the
+// tool, voiding the entire hook. So ANY error we do not otherwise handle must
+// still BLOCK. We deliberately do NOT route this through block() (which touches
+// the telemetry ledger and could itself throw); we write stderr and exit 2
+// directly, the minimal fail-closed action.
+process.on("uncaughtException", (err) => {
+  try {
+    process.stderr.write(
+      `BLOCKED by gaffer safety hook: internal error — failing closed: ${err && err.message ? err.message : err}\n`,
+    );
+  } catch {
+    /* stderr write must never itself prevent the exit-2 fail-closed */
+  }
+  process.exit(2);
+});
+
 let raw = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => (raw += c));
 process.stdin.on("end", () => {
-  let payload = {};
+  // Wrap the WHOLE decision so any thrown error (e.g. canonicalize tripping its
+  // depth/length guard on a pathological path) fails CLOSED with exit 2 rather
+  // than escaping as exit 1 → ALLOW. block()/allow() call process.exit(), which
+  // terminates without throwing, so the normal decision path is unaffected.
   try {
-    payload = raw.trim() ? JSON.parse(raw) : {};
-  } catch {
-    // If we can't parse the hook payload, fail safe-open for non-mutating tools
-    // but the matchers below only route mutating tools here, so allow.
-    allow();
-  }
-  const tool = payload.tool_name ?? payload.toolName ?? "";
-  const input = payload.tool_input ?? payload.toolInput ?? {};
-  CURRENT_TOOL = tool;
-  CURRENT_TARGET =
-    input.command ?? input.file_path ?? input.filePath ?? input.notebook_path ?? null;
-  // Chunk 2b metric: record every observed tool call (telemetry only — this runs
-  // BEFORE dispatch and never influences the allow/block outcome below).
-  logToolCall(tool, CURRENT_TARGET);
-  switch (tool) {
-    case "Bash":
-      return checkCommand(String(input.command ?? ""));
-    case "Write":
-    case "Edit":
-    case "MultiEdit":
-    case "NotebookEdit":
-      return checkWrite(String(input.file_path ?? input.filePath ?? input.notebook_path ?? ""));
-    case "Read":
-      return checkRead(String(input.file_path ?? input.filePath ?? ""));
-    default:
-      return allow();
+    let payload = {};
+    let parsed = true;
+    try {
+      payload = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      parsed = false;
+    }
+    if (!parsed) {
+      // If we can't parse the hook payload, fail safe-open for non-mutating tools
+      // but the matchers below only route mutating tools here, so allow.
+      allow();
+      return;
+    }
+    const tool = payload.tool_name ?? payload.toolName ?? "";
+    const input = payload.tool_input ?? payload.toolInput ?? {};
+    CURRENT_TOOL = tool;
+    CURRENT_TARGET =
+      input.command ?? input.file_path ?? input.filePath ?? input.notebook_path ?? null;
+    // Chunk 2b metric: record every observed tool call (telemetry only — this runs
+    // BEFORE dispatch and never influences the allow/block outcome below).
+    logToolCall(tool, CURRENT_TARGET);
+    switch (tool) {
+      case "Bash":
+        return checkCommand(String(input.command ?? ""));
+      case "Write":
+      case "Edit":
+      case "MultiEdit":
+      case "NotebookEdit":
+        return checkWrite(String(input.file_path ?? input.filePath ?? input.notebook_path ?? ""));
+      case "Read":
+        return checkRead(String(input.file_path ?? input.filePath ?? ""));
+      default:
+        return allow();
+    }
+  } catch (err) {
+    // FAIL CLOSED: a crash while deciding must BLOCK, never exit 1/allow.
+    block(
+      `safety hook crashed while deciding — failing closed: ${err && err.message ? err.message : err}`,
+    );
   }
 });

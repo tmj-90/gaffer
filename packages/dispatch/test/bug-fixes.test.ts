@@ -30,6 +30,8 @@ import {
 } from "../src/api/schemas.js";
 import { z } from "zod";
 
+import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+
 const human: Actor = { type: "human", id: "tom" };
 const agentActor: Actor = { type: "agent", id: "runner" };
 
@@ -173,10 +175,14 @@ describe("Fix 7: review approve with agent actor", () => {
     const old = process.env.DISPATCH_ALLOW_AGENT_APPROVE;
     process.env.DISPATCH_ALLOW_AGENT_APPROVE = "1";
     try {
-      const wg = freshWg();
+      // A non-empty-diff runner + real delivery so the recomputed-diff done-gate
+      // (now enforced for solo_loose too) is satisfied — this test is about the
+      // agent-approve env gate, not the diff gate.
+      const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner);
       const t = wg.createTicket({ title: "T", policy_pack: "solo_loose" }, human);
       wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human);
       wg.markReady(t.id, human);
+      giveTicketRealDelivery(wg, t.id, human);
       const agent = wg.registerAgent({ display_name: "a" }, human);
       const claim = wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 300 }, agentActor)!;
       wg.submitForReview({ claimToken: claim.claimToken, ticket_id: t.id }, agentActor);

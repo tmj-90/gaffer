@@ -437,14 +437,30 @@ describe("RUN-DETAIL REST: GET /api/runs/:id", () => {
 // ── Auth gate ─────────────────────────────────────────────────────────────────
 
 describe("RUN-DETAIL REST: auth gate", () => {
-  it("returns 401 when DISPATCH_API_TOKEN is set and no bearer is sent", async () => {
+  it("keeps read-only run detail open on loopback but gates mutations behind the token", async () => {
     const original = process.env.DISPATCH_API_TOKEN;
     process.env.DISPATCH_API_TOKEN = "secret-tok";
     let h: Harness | null = null;
     try {
       h = await startHarness();
-      const res = await fetch(`${h.baseUrl}/api/runs/any-id`);
-      expect(res.status).toBe(401);
+      // Read-only GET stays open on a loopback bind even with a token configured
+      // (dashboard UX) — never a 401. (any-id doesn't exist, so 404 is expected.)
+      const read = await fetch(`${h.baseUrl}/api/runs/any-id`);
+      expect(read.status).not.toBe(401);
+      // A mutating request without the token is refused.
+      const noToken = await fetch(`${h.baseUrl}/tickets`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "x" }),
+      });
+      expect(noToken.status).toBe(401);
+      // ...and permitted with the correct bearer token (the operator path).
+      const withToken = await fetch(`${h.baseUrl}/tickets`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer secret-tok" },
+        body: JSON.stringify({ title: "x" }),
+      });
+      expect(withToken.status).toBe(201);
     } finally {
       if (original === undefined) delete process.env.DISPATCH_API_TOKEN;
       else process.env.DISPATCH_API_TOKEN = original;

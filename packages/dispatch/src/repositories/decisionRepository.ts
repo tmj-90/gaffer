@@ -1,5 +1,18 @@
 import type { Db } from "../db/connection.js";
-import type { Decision } from "../domain/types.js";
+import type { Decision, TicketStatus } from "../domain/types.js";
+
+/**
+ * A pending decision joined to the ticket it concerns (when it blocks/informs
+ * one). The decision is a genuine unmade decision the agent delegated to a
+ * human; the joined ticket columns are null for a decision raised with no
+ * ticket link. Powers the human-queue read model.
+ */
+export interface PendingDecisionWithTicket extends Decision {
+  ticket_id: string | null;
+  ticket_number: number | null;
+  ticket_title: string | null;
+  ticket_status: TicketStatus | null;
+}
 
 /** Data access for decisions and their ticket links. */
 export class DecisionRepository {
@@ -76,6 +89,35 @@ export class DecisionRepository {
          ORDER BY created_at ASC`,
       )
       .all() as Decision[];
+  }
+
+  /**
+   * Pending decisions (awaiting a human) LEFT-joined to the ticket each one
+   * blocks/informs — oldest first. A decision may block multiple tickets or none;
+   * we surface the first linked ticket (by link creation order) so the human queue
+   * can point at a ticket without fanning a decision into N rows. The `question`
+   * carried on each row is the REASON the agent needs a human.
+   */
+  listPendingWithTicket(): PendingDecisionWithTicket[] {
+    return this.db
+      .prepare(
+        `SELECT d.*,
+                t.id     AS ticket_id,
+                t.number AS ticket_number,
+                t.title  AS ticket_title,
+                t.status AS ticket_status
+         FROM decisions d
+         LEFT JOIN (
+           SELECT decision_id, MIN(rowid) AS first_link
+           FROM ticket_decisions
+           GROUP BY decision_id
+         ) fl ON fl.decision_id = d.id
+         LEFT JOIN ticket_decisions td ON td.rowid = fl.first_link
+         LEFT JOIN tickets t ON t.id = td.ticket_id
+         WHERE d.status IN ('requested','agent_proposed','human_required')
+         ORDER BY d.created_at ASC`,
+      )
+      .all() as PendingDecisionWithTicket[];
   }
 
   /**

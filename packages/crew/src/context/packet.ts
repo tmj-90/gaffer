@@ -88,6 +88,37 @@ export interface PacketLore extends LoreRecord {
   priority: LorePriority;
 }
 
+/**
+ * A single PRODUCT-INTENT record surfaced in the packet's productContext
+ * section — a decision, requirement, or non-goal explaining WHY the work
+ * exists, as opposed to the code-structure "how" the other lore sections carry.
+ */
+export interface PacketProductIntent {
+  id: string;
+  title: string;
+  summary: string;
+  /** The product-intent kind: 'decision' | 'requirement' | 'non-goal'. */
+  kind: string;
+  /** Why this intent record is in scope for the ticket. */
+  reason: string;
+}
+
+/**
+ * The packet's product-intent section (Track 1c). Recall normally surfaces code
+ * structure + generic lore; this section AIMS recall at the "why" — the durable
+ * decisions/requirements/non-goals for the ticket's scope — so an agent starts
+ * from intent, not just structure. Budget-capped like the other lore sections.
+ */
+export interface PacketProductContext {
+  /** Intent lore for the scope, highest-relevance first, capped by budget. */
+  intent: PacketProductIntent[];
+  /** Plain-language framing so the agent reads this as product intent. */
+  guidance: string[];
+}
+
+/** The lore kinds that carry PRODUCT INTENT (the "why"), surfaced in productContext. */
+const PRODUCT_INTENT_KINDS = new Set<string>(["decision", "requirement", "non-goal"]);
+
 export interface ContextPacket {
   factory: { name: string; mode: string };
   /** Tech stacks derived from the ticket's repos, used to pre-filter skills + lore. */
@@ -101,6 +132,8 @@ export interface ContextPacket {
   relevantLore: LoreRecord[];
   /** Lore selected by repo AND scope AND tags, each annotated with its reason (FG-006). */
   scopedLore: PacketLore[];
+  /** Product-intent lore (decisions/requirements/non-goals) for the ticket's scope. */
+  productContext: PacketProductContext;
   /** Skills pre-filtered to the ticket's stack(s), capped by config. */
   skills: PacketSkill[];
   forbiddenActions: string[];
@@ -364,6 +397,59 @@ function buildScopedLore(work: WorkPacket, deps: BuildPacketDeps): PacketLore[] 
 }
 
 /**
+ * Assemble the packet's productContext section by AIMING recall at the "why":
+ * the already-selected lore is filtered to the PRODUCT-INTENT kinds (decision /
+ * requirement / non-goal), de-duplicated by id, and capped by
+ * `context.product_context_limit`. Scoped lore is drawn first (it carries a
+ * concrete inclusion reason and priority ordering), then repo-tag-relevant lore
+ * as a fallback. Summaries are already secret-redacted upstream; the section is
+ * always present (with framing guidance) so the agent reads it as intent, not
+ * implementation detail. Empty `intent` is a valid, honest "no captured intent
+ * for this scope yet".
+ */
+function buildProductContext(
+  scopedLore: PacketLore[],
+  relevantLore: LoreRecord[],
+  limit: number,
+): PacketProductContext {
+  const byId = new Map<string, PacketProductIntent>();
+
+  const consider = (rec: LoreRecord, reason: string): void => {
+    if (byId.size >= limit) return;
+    if (!PRODUCT_INTENT_KINDS.has(rec.recordType)) return;
+    if (byId.has(rec.id)) return;
+    byId.set(rec.id, {
+      id: rec.id,
+      title: rec.title,
+      summary: rec.summary,
+      kind: rec.recordType,
+      reason,
+    });
+  };
+
+  for (const rec of scopedLore) consider(rec, rec.reason);
+  for (const rec of relevantLore) {
+    consider(rec, "Product-intent lore relevant to this ticket's repos/area.");
+  }
+
+  const intent = [...byId.values()];
+  const guidance =
+    intent.length > 0
+      ? [
+          "These records capture WHY this work exists — durable decisions, " +
+            "requirements, and non-goals for this scope. Honour them: they are " +
+            "product intent, not implementation detail. If your change contradicts " +
+            "one, stop and raise it rather than silently overriding it.",
+        ]
+      : [
+          "No product-intent lore (decisions/requirements/non-goals) is captured " +
+            "for this scope yet. If this ticket establishes intent worth keeping, " +
+            "suggest it as durable lore at close.",
+        ];
+  return { intent, guidance };
+}
+
+/**
  * Assemble the context packet for a claimed ticket. Combines ticket + AC,
  * resolved repo paths/commands, branch policy, forbidden actions and relevant
  * Memory records — and runs every free-text field through secret redaction so
@@ -399,6 +485,18 @@ export function buildContextPacket(ticketRef: string, deps: BuildPacketDeps): Co
   // FG-006: lore selected by repo AND scope AND tags, each annotated with why.
   const scopedLore = buildScopedLore(work, deps);
 
+  // Track 1c: aim recall at the "why". Filter the already-selected lore to the
+  // product-intent kinds (decision/requirement/non-goal), budgeted separately.
+  const relevantLoreRedacted = relevantLore.map((rec) => ({
+    ...rec,
+    summary: stripSecrets(rec.summary),
+  }));
+  const productContext = buildProductContext(
+    scopedLore,
+    relevantLoreRedacted,
+    deps.config.context.product_context_limit,
+  );
+
   const verification = {
     testCommands: dedupe(repositories.map((r) => r.testCommand)),
     lintCommands: dedupe(repositories.map((r) => r.lintCommand)),
@@ -433,8 +531,9 @@ export function buildContextPacket(ticketRef: string, deps: BuildPacketDeps): Co
     repositories,
     workScope,
     verification,
-    relevantLore: relevantLore.map((rec) => ({ ...rec, summary: stripSecrets(rec.summary) })),
+    relevantLore: relevantLoreRedacted,
     scopedLore,
+    productContext,
     skills,
     forbiddenActions: forbiddenActions(deps.policy),
     constraints,

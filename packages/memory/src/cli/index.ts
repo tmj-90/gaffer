@@ -22,9 +22,11 @@ import {
 } from "./commands/knowledge.js";
 import {
   cmdCard,
+  cmdCards,
   cmdCardsForScope,
   cmdDeleteFileCard,
   cmdGetCardWatermark,
+  cmdRepoCanonical,
 } from "./commands/cards.js";
 import {
   cmdAbsent,
@@ -36,6 +38,7 @@ import {
   cmdSetup,
   cmdStats,
 } from "./commands/setup.js";
+import { cmdFlagged, cmdRecallFeedback } from "./commands/recall.js";
 import { cmdSync } from "./commands/sync.js";
 import { renderClaudeInstructions } from "./instructions.js";
 import { VERSION } from "../version.js";
@@ -242,15 +245,44 @@ COMMANDS
                             Read the repo's card-set watermark (synced_commit).
                             The CLI seam the Runner uses to fetch the watermark
                             instead of reading Memory's DB directly.
+  repo-canonical (--repo-root <abs> | --canonical <url-or-path>) [--json]
+                            Print the NORMALISED canonical (host/owner/repo,
+                            lowercased — or the path fallback for no-remote
+                            repos). The seam bash callers use so read/write
+                            identity derivation can't drift. --json also
+                            prints the derived repo_key.
+  cards rekey --canonical <c> --repo <r> [--dry-run] [--json]
+                            Re-key every card + watermark for display name <r>
+                            onto repoKey(normalised canonical), in ONE
+                            transaction (FTS stays intact). Migration for cards
+                            onboarded before canonicalisation whose repo_key is
+                            an sha256 of an un-normalised URL. --dry-run reports
+                            what would move without writing.
   cards-for-scope --canonical <c> --repo <r> --query <q>
       [--paths p1 --paths p2] [--important-paths p3]
-      [--max-cards N] [--max-tokens N] [--per-card-max-tokens N] [--json]
+      [--max-cards N] [--max-tokens N] [--per-card-max-tokens N]
+      [--ticket <id>] [--json]
                             Assemble a budgeted scope packet: prioritised
                             file cards (path-first, then FTS) + repo digest
                             + top lore. Use at the start of a task to
                             orient an agent. --json outputs machine-readable
                             JSON; human-readable by default.
                             Cards are retrieval aids — not authoritative.
+                            --ticket logs which items were SERVED into that
+                            ticket's context (the feedback-loop read-event edge).
+
+  recall-feedback --repo <r> --ticket <id>
+      --outcome <clean|reworked|blocked> [--json]
+                            MEMORY FEEDBACK LOOP. Adjust the confidence of the
+                            items served into a ticket's context by how the
+                            ticket turned out: clean → bounded confidence bump
+                            + verify; reworked/blocked → bounded demote + flag
+                            for review. Bounded (one rung/outcome) and
+                            idempotent (per repo+ticket+outcome). The runner
+                            calls this at ticket outcome.
+  flagged [--repo <r>] [--json]
+                            List lore + file cards flagged for review — knowledge
+                            that was in context for a reworked/blocked ticket.
   hooks install [--project] [--dry-run]
                             Wire the Claude Code Stop-hook for
                             session-end review nudges. Writes
@@ -363,12 +395,20 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdFeatures(parsed);
       case "card":
         return await cmdCard(parsed);
+      case "cards":
+        return await cmdCards(parsed);
+      case "repo-canonical":
+        return await cmdRepoCanonical(parsed);
       case "delete-file-card":
         return await cmdDeleteFileCard(parsed);
       case "get-card-watermark":
         return await cmdGetCardWatermark(parsed);
       case "cards-for-scope":
         return await cmdCardsForScope(parsed);
+      case "recall-feedback":
+        return await cmdRecallFeedback(parsed);
+      case "flagged":
+        return await cmdFlagged(parsed);
       case "hooks":
         return await cmdHooks(parsed);
       case "doctor":

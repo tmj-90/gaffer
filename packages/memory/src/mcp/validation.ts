@@ -23,6 +23,51 @@ export const LENGTH_CAPS = {
 
 export type LengthCappedField = keyof typeof LENGTH_CAPS;
 
+/**
+ * Write-time length bounds for the AGENT-WRITABLE, direct-apply Repo
+ * Understanding records (repo digest + feature ledger). Unlike lore, these
+ * are NOT gated behind human review, so an unbounded MCP write is a
+ * memory-poisoning vector: the digest feeds every future agent's
+ * orientation. Bounding the content (here) + serving it inside the
+ * quarantine envelope (see quarantine.ts) closes the vector without a human
+ * gate. Onboard's rollup writes the digest via the CLI, NOT these MCP tools,
+ * so these caps never truncate the factory's own post-merge reflection.
+ */
+export const DIGEST_CAPS = {
+  overview: 4000,
+  structure: 4000,
+  conventions: 4000,
+  stack: 500,
+} as const;
+
+export const FEATURE_CAPS = {
+  name: 200,
+  summary: 1000,
+  area: 500,
+  provenance: 500,
+} as const;
+
+/**
+ * Generic over-cap check for an arbitrary named field. Returns `null` when
+ * the value fits, or a structured, agent-correctable error otherwise —
+ * mirroring `checkLength` but without the lore-specific hint text, so it can
+ * bound digest / feature fields too. `value.length === max` PASSES.
+ */
+export function checkMaxLen(
+  field: string,
+  value: string,
+  max: number,
+): { error: string; provided: number; max: number; suggested_cut: string; hint: string } | null {
+  if (value.length <= max) return null;
+  return {
+    error: `${field}_too_long`,
+    provided: value.length,
+    max,
+    suggested_cut: value.slice(0, max - 1) + "…",
+    hint: `Retry with a shorter ${field} (≤ ${max} chars).`,
+  };
+}
+
 export interface TooLongError {
   readonly error: `${LengthCappedField}_too_long`;
   readonly provided: number;

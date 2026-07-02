@@ -21,8 +21,13 @@
 # Whitespace-split the configured forbidden-path fragments into an array. Each is
 # a substring/suffix tested against an added/deleted diff path. Empty config →
 # the built-in defaults so the guard is never silently disabled by an unset var.
+# FINDING 11: the fragment is `mcp-runtime.` (trailing dot), NOT the bare
+# `mcp-runtime` substring — the artifacts this rule protects against are the
+# generated `mcp-runtime.json` / `mcp-runtime.<pid>.json` runtime configs, and a
+# bare-substring match hard-rejected a legit delivered source dir such as
+# `src/mcp-runtime/index.ts`. Keep in sync with factory.config.sh's default.
 _hygiene_forbidden_fragments() {
-  local raw="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.json}"
+  local raw="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.}"
   printf '%s\n' $raw
 }
 
@@ -44,7 +49,7 @@ gaffer_exclude_runner_config() {
     [ -f "$excl" ] || : > "$excl" 2>/dev/null || exit 0
     grep -qsxF '# gaffer non-deliverables — never commit (added by gaffer_exclude_runner_config)' "$excl" 2>/dev/null \
       || printf '%s\n' '# gaffer non-deliverables — never commit (added by gaffer_exclude_runner_config)' >> "$excl" 2>/dev/null
-    for entry in '.claude/' 'CLAUDE.factory.md' '.mcp.json' 'mcp-runtime.json' \
+    for entry in '.claude/' 'CLAUDE.factory.md' '.mcp.json' 'mcp-runtime*.json' \
                  'node_modules' 'dist/' 'build/' '.next/' 'coverage/' '.turbo/'; do
       grep -qsxF "$entry" "$excl" 2>/dev/null || printf '%s\n' "$entry" >> "$excl" 2>/dev/null
     done

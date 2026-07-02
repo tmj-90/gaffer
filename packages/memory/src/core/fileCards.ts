@@ -32,6 +32,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "better-sqlite3";
 
 import { newLoreId } from "./ids.js";
+import { canonicalizeRepo, legacyRepoIdentityForms } from "./repoIdentity.js";
 import type {
   CardStatus,
   FileCard,
@@ -63,12 +64,16 @@ function normaliseRepo(r: string): string {
  *   - a local path and its remote origin produce distinct keys (correct:
  *     they could diverge)
  *
- * `canonical` should be the normalised absolute path (for local repos) or
- * the remote origin URL (for remote repos). Callers are responsible for
- * canonicalising before calling.
+ * `canonical` may be passed in ANY form — a remote origin URL (ssh, https,
+ * git://, scp-like) or a local path. It is run through `canonicalizeRepo`
+ * here, at the single chokepoint, so every equivalent form of the same repo
+ * produces the SAME key. This is what makes read (search / scope) and write
+ * (onboard) agree: both go through this function, so neither can drift.
+ * `canonicalizeRepo` is idempotent, so re-passing an already-normalised
+ * canonical is safe.
  */
 export function repoKey(canonical: string): string {
-  return createHash("sha256").update(canonical).digest("hex");
+  return createHash("sha256").update(canonicalizeRepo(canonical)).digest("hex");
 }
 
 // ── FTS helpers ───────────────────────────────────────────────────────
@@ -136,6 +141,7 @@ function rowToFileCard(row: FileCardRow): FileCard {
   return {
     id: row.id,
     repoKey: row.repo_key,
+    canonical: row.canonical ?? undefined,
     repo: row.repo,
     path: row.path,
     contentHash: row.content_hash,
@@ -155,12 +161,18 @@ function rowToFileCard(row: FileCardRow): FileCard {
     promptVersion: row.prompt_version ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // Recall-feedback signal (migration): set when this card was served into a
+    // ticket that then needed rework. Read by cardsForScope to de-prioritise a
+    // card that previously mis-led an agent. `?? 0` tolerates pre-migration /
+    // partially-selected rows that don't carry the column.
+    flaggedForReview: (row.flagged_for_review ?? 0) === 1,
   };
 }
 
 function rowToRepoSync(row: RepoSyncRow): RepoSync {
   return {
     repoKey: row.repo_key,
+    canonical: row.canonical ?? undefined,
     repo: row.repo,
     syncedCommit: row.synced_commit,
     updatedAt: row.updated_at,
@@ -171,6 +183,13 @@ function rowToRepoSync(row: RepoSyncRow): RepoSync {
 
 export interface UpsertFileCardInput {
   readonly repoKey: string;
+  /**
+   * The repo's canonical identity (remote URL or path, any form). Stored —
+   * after normalisation via `canonicalizeRepo` — in the `canonical` column so
+   * a row can later be reverse-mapped / re-keyed. The `repoKey` above must be
+   * `repoKey(canonical)`; the two are kept in sync by the CLI caller.
+   */
+  readonly canonical?: string;
   /** Display name for the repo (not used as a key). */
   readonly repo: string;
   readonly path: string;
@@ -212,6 +231,10 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
   if (!input.contentHash) throw new Error("upsertFileCard: contentHash must be non-empty");
   if (!input.source.trim()) throw new Error("upsertFileCard: source must be non-empty");
 
+  const canonical =
+    input.canonical !== undefined && input.canonical.trim()
+      ? canonicalizeRepo(input.canonical)
+      : null;
   const symbolsJson = JSON.stringify(input.symbols ?? []);
   const symbolsFts = symbolsToFts(input.symbols ?? []);
   const roleTagsJson = input.roleTags !== undefined ? JSON.stringify(input.roleTags) : null;
@@ -232,7 +255,8 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
     if (existingRow) {
       db.prepare(
         `UPDATE file_card SET
-           repo = ?, content_hash = ?, loc = ?, symbols = ?,
+           repo = ?, canonical = COALESCE(?, canonical), content_hash = ?,
+           loc = ?, symbols = ?,
            synced_commit = ?, source = ?, tldr = ?, role_primary = ?,
            role_tags = ?, card_status = ?, model_status = ?,
            validated_at = ?, validation_error = ?, model = ?,
@@ -240,6 +264,7 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
          WHERE repo_key = ? AND path = ?`,
       ).run(
         repo,
+        canonical,
         input.contentHash,
         input.loc,
         symbolsJson,
@@ -267,15 +292,16 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
       const info = db
         .prepare(
           `INSERT INTO file_card
-             (id, repo_key, repo, path, content_hash, loc, symbols,
+             (id, repo_key, canonical, repo, path, content_hash, loc, symbols,
               synced_commit, source, tldr, role_primary, role_tags,
               card_status, model_status, validated_at, validation_error,
               model, prompt_version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           newId,
           rk,
+          canonical,
           repo,
           path,
           input.contentHash,
@@ -501,22 +527,30 @@ export function getWatermark(db: Database, rk: string): RepoSync | null {
  * Wrapped in a transaction to stay consistent with the event log pattern
  * used by digest writes (upsertDigest in repoUnderstanding.ts).
  */
-export function setWatermark(db: Database, rk: string, repo: string, commit: string): RepoSync {
+export function setWatermark(
+  db: Database,
+  rk: string,
+  repo: string,
+  commit: string,
+  canonical?: string,
+): RepoSync {
   const normRepo = normaliseRepo(repo);
   if (!rk) throw new Error("setWatermark: repoKey must be non-empty");
   if (!normRepo) throw new Error("setWatermark: repo must be non-empty");
   if (!commit.trim()) throw new Error("setWatermark: commit must be non-empty");
 
+  const canon = canonical !== undefined && canonical.trim() ? canonicalizeRepo(canonical) : null;
   const ts = nowIso();
   const tx = db.transaction(() => {
     db.prepare(
-      `INSERT INTO repo_sync (repo_key, repo, synced_commit, updated_at)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO repo_sync (repo_key, canonical, repo, synced_commit, updated_at)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(repo_key) DO UPDATE SET
+         canonical = COALESCE(excluded.canonical, repo_sync.canonical),
          repo = excluded.repo,
          synced_commit = excluded.synced_commit,
          updated_at = excluded.updated_at`,
-    ).run(rk, normRepo, commit, ts);
+    ).run(rk, canon, normRepo, commit, ts);
     db.prepare(
       "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'repo_sync_updated', ?, ?)",
     ).run(rk, ts, JSON.stringify({ repoKey: rk, repo: normRepo, syncedCommit: commit }));
@@ -593,4 +627,288 @@ export function markCardReviewFailed(
   });
   tx();
   return changed;
+}
+
+// ── Fail-loud diagnostics (repo_key mismatch) ─────────────────────────
+
+/** Active-card count under an exact repo_key. */
+export function countActiveCards(db: Database, rk: string): number {
+  const row = db
+    .prepare("SELECT count(*) AS n FROM file_card WHERE repo_key = ? AND card_status = 'active'")
+    .get(rk) as { n: number };
+  return row.n;
+}
+
+/** A repo_key present in the store together with how many active cards it holds. */
+export interface RepoKeyPresence {
+  readonly repoKey: string;
+  readonly count: number;
+}
+
+/**
+ * Active-card counts grouped by repo_key for a given display name. Used to
+ * detect the "silent 0 cards" trap: cards exist for the repo but under a
+ * DIFFERENT key than the one the query resolved to.
+ */
+export function cardKeysForRepoName(db: Database, repo: string): RepoKeyPresence[] {
+  const rows = db
+    .prepare(
+      `SELECT repo_key, count(*) AS n
+         FROM file_card
+        WHERE repo = ? AND card_status = 'active'
+        GROUP BY repo_key
+        ORDER BY n DESC`,
+    )
+    .all(normaliseRepo(repo)) as Array<{ repo_key: string; n: number }>;
+  return rows.map((r) => ({ repoKey: r.repo_key, count: r.n }));
+}
+
+/**
+ * FAIL LOUD, don't return an empty result silently. When the resolved
+ * `rk` yields zero active cards but the store DOES hold cards for the same
+ * display name under other keys, return a WARN string describing the
+ * mismatch (and how to fix it). Returns null when there is genuinely
+ * nothing to warn about (the key has cards, or the repo has none anywhere).
+ */
+export function diagnoseRepoKeyMismatch(
+  db: Database,
+  rk: string,
+  repo: string,
+  canonical: string,
+): string | null {
+  if (countActiveCards(db, rk) > 0) return null;
+  const others = cardKeysForRepoName(db, repo).filter((k) => k.repoKey !== rk);
+  if (others.length === 0) return null;
+  const total = others.reduce((a, b) => a + b.count, 0);
+  const keyList = others.map((o) => `${o.repoKey.slice(0, 12)}…(${o.count})`).join(", ");
+  return (
+    `0 cards for canonical '${canonicalizeRepo(canonical)}' (key ${rk.slice(0, 12)}…) — ` +
+    `store has ${total} active card(s) for repo '${normaliseRepo(repo)}' under key(s) ${keyList}; ` +
+    `canonical/key mismatch. Re-key with: ` +
+    `memory cards rekey --canonical <this-canonical> --repo ${normaliseRepo(repo)}`
+  );
+}
+
+// ── Migration: re-key a repo's rows to the normalised key ─────────────
+
+export interface RekeyResult {
+  readonly repo: string;
+  /** The normalised canonical the rows are re-keyed to. */
+  readonly canonical: string;
+  /** The target key = repoKey(canonical). */
+  readonly newKey: string;
+  /** Provable legacy keys (with counts) migrated for this repo — scoped by
+   *  computable legacy identity, never by display name. */
+  readonly fromKeys: readonly RepoKeyPresence[];
+  /** Number of file_card rows moved to newKey. */
+  readonly cardsRekeyed: number;
+  /**
+   * Old rows dropped because newKey already held a card for that same path
+   * (a partial re-onboard collision). The newKey row is authoritative; the
+   * stale duplicate (and its FTS entry) is removed. Logged, never orphaned.
+   */
+  readonly collisionsDropped: number;
+  /** Whether a repo_sync watermark row was moved to newKey. */
+  readonly syncRekeyed: boolean;
+  /** True when nothing needed moving (already on the normalised key). */
+  readonly noop: boolean;
+}
+
+/**
+ * The COMPUTABLE legacy repo_keys for a repo's canonical, excluding the
+ * normalised `newKey` itself. Legacy rows were keyed as `sha256(rawForm)`
+ * (see `legacyRepoIdentityForms`), so we hash every reconstructable form and
+ * return the resulting keys. A stored row whose repo_key is in this set
+ * PROVABLY belongs to this repo — it can only match if its onboard-time
+ * identity canonicalises to the same repo.
+ */
+function legacyRepoKeys(canonicalRaw: string, newKey: string): string[] {
+  const keys = new Set<string>();
+  for (const form of legacyRepoIdentityForms(canonicalRaw)) {
+    keys.add(createHash("sha256").update(form).digest("hex"));
+  }
+  keys.delete(newKey); // already-normalised rows are handled separately
+  return [...keys];
+}
+
+/**
+ * The legacy keys that are ACTUALLY present in the store for this repo and
+ * would be migrated by `rekeyRepo` — i.e. un-migrated rows (`canonical IS
+ * NULL`) whose repo_key is a provable legacy form of `canonicalRaw`. Used by
+ * the `--dry-run` path so its report matches exactly what a real run moves.
+ * Scoped by legacy key, NOT by display name.
+ */
+export function movableLegacyKeys(
+  db: Database,
+  repoName: string,
+  canonicalRaw: string,
+): RepoKeyPresence[] {
+  const repo = normaliseRepo(repoName);
+  const newKey = repoKey(canonicalRaw);
+  const legacy = legacyRepoKeys(canonicalRaw, newKey);
+  if (legacy.length === 0) return [];
+  const placeholders = legacy.map(() => "?").join(", ");
+  const rows = db
+    .prepare(
+      `SELECT repo_key, count(*) AS n
+         FROM file_card
+        WHERE repo = ? AND card_status = 'active'
+          AND canonical IS NULL AND repo_key IN (${placeholders})
+        GROUP BY repo_key
+        ORDER BY n DESC`,
+    )
+    .all(repo, ...legacy) as Array<{ repo_key: string; n: number }>;
+  return rows.map((r) => ({ repoKey: r.repo_key, count: r.n }));
+}
+
+/**
+ * Re-key a repo's LEGACY rows onto the normalised `repoKey(canonical)`. This
+ * is the migration path for cards onboarded before canonicalisation existed:
+ * their repo_key is an sha256 of an un-normalised URL/path that can't be
+ * reversed from the hash alone.
+ *
+ * OWNERSHIP IS PROVEN, NEVER GUESSED (data-corruption guard):
+ *   A row is migrated ONLY when it is un-migrated (`canonical IS NULL`) AND its
+ *   repo_key equals `sha256(form)` for a form that canonicalises to THIS repo
+ *   (see `legacyRepoIdentityForms`). We do NOT match by display name — two
+ *   distinct repos can share one (`orgA/api` vs `orgB/api`), and matching by
+ *   name re-keyed one repo's cards onto the other's key: silent cross-repo
+ *   corruption. The legacy-key match cannot collide across distinct repos
+ *   because the key is a hash of the repo's own identity.
+ *
+ * Guarantees:
+ *   - ONE transaction — either the whole repo re-keys or none of it does.
+ *   - FTS stays intact: repo_key is not an FTS column, so moving it needs
+ *     no FTS change; the only FTS writes here are deletes for collision-
+ *     dropped duplicates (their card row is removed too).
+ *   - Path collisions under newKey are resolved by dropping the OLDER row —
+ *     rows are processed newest-first (`ORDER BY updated_at DESC`), so the
+ *     most recently updated card for a path survives; counted in
+ *     `collisionsDropped`.
+ *   - The `canonical` column is backfilled on every touched row.
+ *
+ * A repo with no un-migrated legacy rows is a no-op (noop=true).
+ */
+export function rekeyRepo(db: Database, repoName: string, canonicalRaw: string): RekeyResult {
+  const repo = normaliseRepo(repoName);
+  if (!repo) throw new Error("rekeyRepo: repo must be non-empty");
+  if (!canonicalRaw.trim()) throw new Error("rekeyRepo: canonical must be non-empty");
+  const canonical = canonicalizeRepo(canonicalRaw);
+  const newKey = repoKey(canonicalRaw);
+
+  const legacy = legacyRepoKeys(canonicalRaw, newKey);
+  const fromKeys = movableLegacyKeys(db, repo, canonicalRaw);
+
+  let cardsRekeyed = 0;
+  let collisionsDropped = 0;
+  let syncRekeyed = false;
+
+  const tx = db.transaction(() => {
+    // ── un-migrated file_card rows whose repo_key PROVABLY belongs to this
+    // repo (a computable legacy form). Newest-first so a path collision under
+    // newKey keeps the most recently updated card. NEVER matched by name. ──
+    const legacyPlaceholders = legacy.map(() => "?").join(", ");
+    const oldRows =
+      legacy.length === 0
+        ? []
+        : (db
+            .prepare(
+              `SELECT rowid, path FROM file_card
+                WHERE repo = ? AND canonical IS NULL AND repo_key IN (${legacyPlaceholders})
+                ORDER BY updated_at DESC`,
+            )
+            .all(repo, ...legacy) as Array<{ rowid: number; path: string }>);
+
+    const clashStmt = db.prepare("SELECT rowid FROM file_card WHERE repo_key = ? AND path = ?");
+    for (const r of oldRows) {
+      const clash = clashStmt.get(newKey, r.path) as { rowid: number } | undefined;
+      if (clash) {
+        // newKey already owns this path — drop the stale duplicate + its FTS.
+        db.prepare("DELETE FROM file_card_fts WHERE rowid = ?").run(r.rowid);
+        db.prepare("DELETE FROM file_card WHERE rowid = ?").run(r.rowid);
+        collisionsDropped++;
+      } else {
+        db.prepare("UPDATE file_card SET repo_key = ?, canonical = ? WHERE rowid = ?").run(
+          newKey,
+          canonical,
+          r.rowid,
+        );
+        cardsRekeyed++;
+      }
+    }
+
+    // Backfill canonical on rows already under newKey.
+    db.prepare(
+      "UPDATE file_card SET canonical = ? WHERE repo = ? AND repo_key = ? AND (canonical IS NULL OR canonical != ?)",
+    ).run(canonical, repo, newKey, canonical);
+
+    // ── repo_sync watermark (repo_key is PRIMARY KEY). Same ownership rule as
+    // cards: only migrate/drop watermarks under a PROVABLE legacy key, never by
+    // display name (a shared name across repos would clobber the wrong one). ──
+    const syncHasNew = db.prepare("SELECT 1 FROM repo_sync WHERE repo_key = ?").get(newKey) as
+      | { 1: number }
+      | undefined;
+    const oldSync =
+      legacy.length === 0
+        ? []
+        : (db
+            .prepare(
+              `SELECT repo_key FROM repo_sync
+                WHERE repo = ? AND canonical IS NULL AND repo_key IN (${legacyPlaceholders})
+                ORDER BY updated_at DESC`,
+            )
+            .all(repo, ...legacy) as Array<{ repo_key: string }>);
+    if (oldSync.length > 0) {
+      if (syncHasNew) {
+        // Keep the newKey watermark; drop the stale LEGACY ones only.
+        for (const s of oldSync) {
+          db.prepare("DELETE FROM repo_sync WHERE repo_key = ?").run(s.repo_key);
+        }
+      } else {
+        // Move the most recent old watermark to newKey; drop the rest.
+        const keep = oldSync[0]!.repo_key;
+        for (const s of oldSync.slice(1)) {
+          db.prepare("DELETE FROM repo_sync WHERE repo_key = ?").run(s.repo_key);
+        }
+        db.prepare("UPDATE repo_sync SET repo_key = ?, canonical = ? WHERE repo_key = ?").run(
+          newKey,
+          canonical,
+          keep,
+        );
+        syncRekeyed = true;
+      }
+    }
+    // Backfill canonical on the (possibly pre-existing) newKey watermark.
+    db.prepare("UPDATE repo_sync SET canonical = ? WHERE repo_key = ?").run(canonical, newKey);
+
+    if (cardsRekeyed > 0 || collisionsDropped > 0 || syncRekeyed) {
+      db.prepare(
+        "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'repo_rekeyed', ?, ?)",
+      ).run(
+        newKey,
+        nowIso(),
+        JSON.stringify({
+          repo,
+          canonical,
+          newKey,
+          fromKeys: fromKeys.map((k) => k.repoKey),
+          cardsRekeyed,
+          collisionsDropped,
+          syncRekeyed,
+        }),
+      );
+    }
+  });
+  tx();
+
+  return {
+    repo,
+    canonical,
+    newKey,
+    fromKeys,
+    cardsRekeyed,
+    collisionsDropped,
+    syncRekeyed,
+    noop: cardsRekeyed === 0 && collisionsDropped === 0 && !syncRekeyed,
+  };
 }

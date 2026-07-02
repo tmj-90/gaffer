@@ -102,6 +102,31 @@ review="$(read_count in_review)"; blocked="$(read_count blocked)"; ready="$(read
 printf "\n  ${c_dim}work${c_off}\n"
 printf "    needs review: %s    blocked: %s    ready: %s\n" "$review" "$blocked" "$ready"
 
+# What the HUMAN owns: pending decisions the agent delegated, WITH their reasons
+# (why the agent needs a human) — not just a count. Env-overridable seam
+# (HUMAN_QUEUE_CMD) so this stays testable without the real CLI/DB; it degrades
+# to nothing when the queue is empty or the source is unavailable.
+: "${HUMAN_QUEUE_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB human-queue --json}"
+read -ra _hq_c <<<"$HUMAN_QUEUE_CMD"; HUMAN_QUEUE_JSON="$("${_hq_c[@]}" 2>/dev/null)"
+hq_lines="$(printf '%s' "$HUMAN_QUEUE_JSON" | python3 -c '
+import sys, json
+try:
+    q = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for i in (q.get("items") or []):
+    if i.get("kind") != "decision":
+        continue
+    t = i.get("ticket")
+    ref = ("#%s" % t["number"]) if t and t.get("number") is not None else "-"
+    reason = " ".join((i.get("reason") or "").split())
+    print("    %s  %s" % (ref, reason))
+' 2>/dev/null)"
+if [ -n "$hq_lines" ]; then
+  printf "\n  ${c_dim}decisions awaiting you${c_off}\n"
+  printf '%s\n' "$hq_lines"
+fi
+
 printf "\n  ${c_dim}recent ticks${c_off}\n"
 ticks="$(grep -hE 'delivering #|delivery tick for #' "$GAFFER_LOG" 2>/dev/null | tail -n "$STATUS_TICKS")"
 if [ -n "$ticks" ]; then printf '%s\n' "$ticks" | sed 's/^/    /'

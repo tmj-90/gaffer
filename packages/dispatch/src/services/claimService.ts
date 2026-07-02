@@ -16,6 +16,7 @@ import { AgentRepository } from "../repositories/agentRepository.js";
 import { ClaimRepository } from "../repositories/claimRepository.js";
 import { DecisionRepository } from "../repositories/decisionRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
+import { ReworkAttemptRepository } from "../repositories/reworkAttemptRepository.js";
 import { TicketDependencyRepository } from "../repositories/ticketDependencyRepository.js";
 import { TicketRepository } from "../repositories/ticketRepository.js";
 import type { TransitionService } from "./transitionService.js";
@@ -136,6 +137,7 @@ export class ClaimService {
   private readonly evidence: EvidenceRepository;
   private readonly decisions: DecisionRepository;
   private readonly dependencies: TicketDependencyRepository;
+  private readonly reworkAttempts: ReworkAttemptRepository;
 
   constructor(
     private readonly db: Db,
@@ -149,6 +151,7 @@ export class ClaimService {
     this.evidence = new EvidenceRepository(db);
     this.decisions = new DecisionRepository(db);
     this.dependencies = new TicketDependencyRepository(db);
+    this.reworkAttempts = new ReworkAttemptRepository(db);
   }
 
   // --- Agents --------------------------------------------------------------
@@ -375,6 +378,104 @@ export class ClaimService {
     };
   }
 
+  // --- Human claim / hand-back (TRACK-2b) ----------------------------------
+
+  /**
+   * A HUMAN takes a ready ticket "by hand". This is the first-class representation
+   * of the operator's own in-flight work: the ticket moves `ready -> in_progress`
+   * OWNED BY THE HUMAN (marked via `tickets.human_owner`) rather than being claimed
+   * by an agent. It reuses the same atomic invariant as an agent claim — a ticket is
+   * takeable only while `ready` with NO active claim — but records the ownership as a
+   * marker on the ticket rather than a `ticket_claims` row (a human is not an agent).
+   * Once marked, the agent selection loop structurally skips it (the candidate queries
+   * filter `human_owner IS NULL`), so the agent stays out of the human's way.
+   *
+   * Throws `TICKET_NOT_CLAIMABLE` when the ticket is not `ready` (already claimed,
+   * in-flight, done, …) or already carries an active claim — never silently taking
+   * a ticket in another state.
+   */
+  humanClaimTicket(
+    input: { ticketId: string },
+    actor: Actor,
+  ): { ticketId: string; number: number } {
+    return inTransaction(this.db, () => {
+      const ticket = this.tickets.findById(input.ticketId);
+      if (!ticket) throw notFound("ticket", input.ticketId);
+
+      // Reuse the atomic invariant: a ticket is takeable only while `ready` with no
+      // active claim. A `ready` ticket can never hold an active claim (claims attach
+      // at `ready -> claimed`), but the explicit check keeps the invariant honest.
+      if (ticket.status !== "ready" || this.tickets.hasActiveClaim(ticket.id)) {
+        throw new DispatchError(
+          "TICKET_NOT_CLAIMABLE",
+          `Ticket '${ticket.number ?? ticket.id}' cannot be taken by hand (status '${ticket.status}').`,
+          { ticket_id: ticket.id, status: ticket.status },
+        );
+      }
+
+      this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "in_progress",
+        reason: "human_claim",
+        expectedFromStatus: "ready",
+        humanClaim: true,
+      });
+      // Stamp the owner AFTER the transition (its from-status `ready` has no marker,
+      // so the transition service's clear-on-leave rule never fights this write).
+      this.tickets.setHumanOwner(ticket.id, actor.id ?? "human");
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.human_claimed",
+        payload: { owner: actor.id ?? "human" },
+      });
+      return { ticketId: ticket.id, number: ticket.number ?? 0 };
+    });
+  }
+
+  /**
+   * A human hands their by-hand ticket back to the queue: `in_progress -> ready`,
+   * clearing the `human_owner` marker so the agent selection loop can pick it up
+   * again. Only a HUMAN-OWNED in-flight ticket can be handed back this way — an
+   * agent-claimed `in_progress` delivery (no `human_owner`) is rejected, so this can
+   * never yank work out from under a running agent. The marker is cleared centrally
+   * by the transition service on the way out of `in_progress`.
+   */
+  humanReleaseTicket(
+    input: { ticketId: string },
+    actor: Actor,
+  ): { ticketId: string; status: string; eventId: string } {
+    return inTransaction(this.db, () => {
+      const ticket = this.tickets.findById(input.ticketId);
+      if (!ticket) throw notFound("ticket", input.ticketId);
+      if (ticket.status !== "in_progress" || ticket.human_owner === null) {
+        throw new DispatchError(
+          "TICKET_NOT_HUMAN_OWNED",
+          `Ticket '${ticket.number ?? ticket.id}' is not human-owned in-flight work; nothing to hand back.`,
+          { ticket_id: ticket.id, status: ticket.status, human_owner: ticket.human_owner },
+        );
+      }
+      const result = this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "ready",
+        reason: "human_release",
+        expectedFromStatus: "in_progress",
+        humanRelease: true,
+      });
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.human_released",
+        payload: { returned_to: "ready" },
+      });
+      return { ticketId: ticket.id, status: result.ticket.status, eventId };
+    });
+  }
+
   heartbeat(claimToken: string): { expiresAt: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
@@ -558,6 +659,163 @@ export class ClaimService {
         event_type: "claim.released",
         payload: { claim_id: claim.id },
       });
+    });
+  }
+
+  /**
+   * RUNNER-OWNED-BOOKKEEPING: the factory runner holds the delivery claim and is
+   * the authority that releases/parks it when a delivery fails or exhausts its
+   * retries. On FAILURE the ticket returns to `ready` (blind-requeue safe); on
+   * PARK it routes to `refining` (legacy triage) or, when the rework loop exhausts
+   * its attempt/cost budget, to the VISIBLE `blocked` column with a structured
+   * `rework_exhausted` reason so a human never wonders where the ticket went. A
+   * resumed delivery is `in_progress` and carries no runner-held token, so
+   * `claimToken` is OPTIONAL — when present the matching active claim is released so
+   * the ticket carries no dangling claim; when absent (resume) the ticket is simply
+   * transitioned. The guarded `runnerRelease` transitions make the otherwise
+   * board-unreachable `claimed->{refining,blocked}` / `in_progress->{ready,refining,
+   * blocked}` routes legal for exactly this path.
+   *
+   * When parking (`refining`/`blocked`) the latest failure feedback is written to
+   * `last_review_feedback` (with the optional `reasonCode`/`attempt`/`maxAttempts`)
+   * so the board card surfaces WHY the ticket bounced and, for `blocked`, a
+   * `ticket.blocked` event is appended for the activity trail + the human-unblock gate.
+   */
+  runnerRelease(
+    input: {
+      ticket_id: string;
+      to: "ready" | "refining" | "blocked";
+      claimToken?: string;
+      reason?: string;
+      reasonCode?: string;
+      attempt?: number;
+      maxAttempts?: number;
+    },
+    actor: Actor,
+  ): { status: string; eventId: string } {
+    const now = this.clock.now();
+    return inTransaction(this.db, () => {
+      const ticket = this.tickets.findById(input.ticket_id);
+      if (!ticket) throw notFound("ticket", input.ticket_id);
+      if (input.claimToken) {
+        const claim = this.activeClaimForToken(input.claimToken, now);
+        if (claim.ticket_id !== ticket.id) {
+          throw new DispatchError(
+            "CLAIM_INVALID",
+            "Claim token does not match an active claim on this ticket.",
+          );
+        }
+        this.claims.setStatus(claim.id, "released", now);
+        writeEvent(this.db, {
+          entity_type: "ticket",
+          entity_id: ticket.id,
+          actor,
+          event_type: "claim.released",
+          payload: { claim_id: claim.id },
+        });
+      }
+      const reason = input.reason ?? `runner_release_${input.to}`;
+      const result = this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: input.to,
+        reason,
+        systemOverride: true,
+        runnerRelease: true,
+      });
+      // Parking (not a blind requeue to `ready`) preserves salvageable work and
+      // needs a human eye — surface the failure on the card via last_review_feedback.
+      if (input.to === "refining" || input.to === "blocked") {
+        const feedback: ReviewFeedback = { reason, reviewer: actor.id ?? null, at: now };
+        if (input.reasonCode) feedback.code = input.reasonCode;
+        if (typeof input.attempt === "number") feedback.attempt = input.attempt;
+        if (typeof input.maxAttempts === "number") feedback.maxAttempts = input.maxAttempts;
+        this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
+      }
+      if (input.to === "blocked") {
+        writeEvent(this.db, {
+          entity_type: "ticket",
+          entity_id: ticket.id,
+          actor,
+          event_type: "ticket.blocked",
+          payload: { reason, reason_code: input.reasonCode ?? null },
+        });
+      }
+      return { status: result.ticket.status, eventId: result.eventId };
+    });
+  }
+
+  /**
+   * RUNNER-OWNED-BOOKKEEPING + FAILURE-DIAGNOSIS: record a live rework attempt
+   * WITHOUT changing status. While the runner re-invokes the agent between failed
+   * delivery attempts the ticket stays visibly `in_progress` (it IS being worked,
+   * not gone). This does two things:
+   *  - overwrites `last_review_feedback` with the latest failure + attempt counter
+   *    so the board card renders "reworking · attempt N/M" (the LATEST, as before);
+   *  - APPENDS a row to the `rework_attempts` failure trail so the FULL ordered
+   *    history survives, not just the latest — the surface an operator returns to
+   *    when triaging. The trail row keeps the full DISTILLED failure (`distilledFailure`,
+   *    the real failing test + assertion/stack) rather than the truncated board
+   *    summary in `reason`; when the runner omits it, `reason` is used as a fallback.
+   *
+   * It NEVER transitions the ticket and is a no-op-safe read on any status.
+   * Best-effort from the runner's perspective; a failure here never aborts a
+   * delivery (the runner wraps the call fail-soft).
+   */
+  recordReworkAttempt(
+    input: {
+      ticket_id: string;
+      attempt: number;
+      maxAttempts: number;
+      reason: string;
+      /** The gate that failed (e.g. `tests`, `definition-of-done`). Persisted on the trail. */
+      gate?: string;
+      /** The full distilled failing test + assertion/stack. Falls back to `reason`. */
+      distilledFailure?: string;
+      /** The AC being worked toward when known. */
+      acId?: string;
+    },
+    actor: Actor,
+  ): { eventId: string } {
+    const now = this.clock.now();
+    return inTransaction(this.db, () => {
+      const ticket = this.tickets.findById(input.ticket_id);
+      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const feedback: ReviewFeedback = {
+        reason: input.reason,
+        reviewer: actor.id ?? null,
+        at: now,
+        code: "reworking",
+        attempt: input.attempt,
+        maxAttempts: input.maxAttempts,
+      };
+      this.tickets.setReviewFeedback(ticket.id, JSON.stringify(feedback));
+      // APPEND the full distilled failure to the durable trail (never overwrites a
+      // prior attempt). Keep the full block — the operator needs the real assertion,
+      // not the one-line board summary.
+      this.reworkAttempts.insert({
+        id: newId(),
+        ticket_id: ticket.id,
+        attempt: input.attempt,
+        max_attempts: input.maxAttempts,
+        gate: input.gate ?? null,
+        distilled_failure: input.distilledFailure ?? input.reason,
+        ac_id: input.acId ?? null,
+        created_at: now,
+      });
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.reworking",
+        payload: {
+          attempt: input.attempt,
+          max_attempts: input.maxAttempts,
+          reason: input.reason,
+          gate: input.gate ?? null,
+        },
+      });
+      return { eventId };
     });
   }
 

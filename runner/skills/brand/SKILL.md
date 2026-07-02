@@ -73,9 +73,10 @@ the `design-system` pack; the *visual execution* of surfaces lives in `frontend-
    lore seed, `suggest_lore` the brand *with the open questions named* — a human resolves
    them. Guessing a strategy is worse than naming the gap.
 6. **Land it.** As a **delivery skill**: you came in via `create-branch`, so commit, then
-   use `record-evidence` and `submit-review` (the `BRAND.md` diff + the checklist is your
-   evidence) — never self-approve. As a **lore seed**: `suggest_lore` (Memory MCP) the
-   brand so future tickets inherit it; it stays a suggestion until a human ratifies it.
+   use `record-evidence` (the `BRAND.md` diff + the checklist is your evidence) and STOP —
+   the runner records the delivery and submits for review; never self-approve. As a **lore
+   seed**: `suggest_lore` (Memory MCP) the brand so future tickets inherit it; it stays a
+   suggestion until a human ratifies it.
 
 ## Required qualities (the bar to clear)
 

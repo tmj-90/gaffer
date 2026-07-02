@@ -38,6 +38,14 @@ fi
 : "${MEMORY_DB:=$GAFFER_DATA/memory.sqlite}"
 : "${CREW_CONFIG:=$GAFFER_DATA/crew.yaml}"
 
+# Shared usage-ledger READER (lib/estimate.mjs parseLedger). Every inline-node
+# consumer of the JSONL ledger imports this ONE parser instead of hand-rolling a
+# per-call-site parse loop. Exported because gaffer_ticket_rework_spend is
+# `export -f`'d and must resolve the module in child shells where RUNNER_DIR
+# (deliberately unexported) is absent.
+: "${GAFFER_ESTIMATE_LIB:=$RUNNER_DIR/lib/estimate.mjs}"
+export GAFFER_ESTIMATE_LIB
+
 # Claude Code wiring
 : "${MCP_CONFIG:=$RUNNER_DIR/.mcp.json}"
 : "${CLAUDE_SETTINGS:=$RUNNER_DIR/claude/settings.json}"
@@ -91,6 +99,18 @@ GAFFER_IMPL_MODEL_FLAG=""; [ -n "${GAFFER_IMPL_MODEL:-}" ] && GAFFER_IMPL_MODEL_
 # GAFFER_BUDGET_USD — operator spending ceiling in USD for the factory's total
 #   spend (summed from the usage-ledger). Unset or 0 = unlimited (the default).
 #   Example: GAFFER_BUDGET_USD=5.00 (stop routing to expensive models at $5).
+#
+#   TECH DEBT: this is a CUMULATIVE LIFETIME cap (total ledger spend), not per-run
+#   or per-ticket — GAFFER_BUDGET_REMAINING = GAFFER_BUDGET_USD - lifetime_ledger.
+#   So on a .gaffer that already has prior spend, a value below the lifetime total
+#   leaves $0 headroom and pauses the NEXT delivery on budget_cap immediately
+#   (observed: a $3 cap paused a $0.43 delivery mid-flight). It conflates two
+#   different jobs: a lifetime governor (fine here) vs. "don't let ONE delivery
+#   run away". The mid-delivery pause-on-cap should instead key off a PER-TICKET
+#   budget (~$10 default, reusing the per-ticket delivery_budget_usd field),
+#   independent of lifetime total. Tracked as tech debt — do NOT set a low
+#   GAFFER_BUDGET_USD on an existing factory expecting per-delivery semantics.
+#   (On a Max/Pro plan the $ figure is an API-equivalent estimate, not a charge.)
 : "${GAFFER_BUDGET_USD:=}"
 export GAFFER_BUDGET_USD
 
@@ -101,24 +121,27 @@ export GAFFER_BUDGET_USD
 # per tick at source-time in tick.sh / loop.sh).
 if [ -n "${GAFFER_BUDGET_USD:-}" ] && command -v node >/dev/null 2>&1 \
    && [ -n "${GAFFER_USAGE_LEDGER:-}${GAFFER_DATA:-}" ]; then
-  _gaffer_budget_remaining="$(node - <<'__BUDGET_JS__' 2>/dev/null || true
-const fs = require('fs');
-const path = require('path');
+  _gaffer_budget_remaining="$(node --input-type=module - <<'__BUDGET_JS__' 2>/dev/null || true
+// JSONL parsing is delegated to the ONE shared ledger reader (lib/estimate.mjs
+// parseLedger — same tolerant semantics: blank lines skipped, a corrupt line
+// dropped, never an abort). The COST SUMMATION stays HERE: the honesty
+// contract of estimate.mjs forbids it from ever reading total_cost_usd.
+// NOTE: keep quotes BALANCED in this heredoc — bash 3.2 (/bin/bash on macOS,
+// used by the env-scrub tests) cannot parse an odd quote count inside $(…).
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
 const ledger = process.env.GAFFER_USAGE_LEDGER ||
-  (process.env.GAFFER_DATA ? path.join(process.env.GAFFER_DATA, 'usage-ledger.jsonl') : '');
+  (process.env.GAFFER_DATA ? join(process.env.GAFFER_DATA, 'usage-ledger.jsonl') : '');
 if (!ledger) { process.stdout.write(''); process.exit(0); }
+let text = '';
+try { text = readFileSync(ledger, 'utf8'); } catch { /* missing ledger = 0 spend */ }
 let spend = 0;
-try {
-  const lines = fs.readFileSync(ledger, 'utf8').split('\n');
-  for (const ln of lines) {
-    const t = ln.trim(); if (!t) continue;
-    try {
-      const r = JSON.parse(t);
-      const c = r.total_cost_usd;
-      if (typeof c === 'number' && Number.isFinite(c) && c >= 0) spend += c;
-    } catch { /* skip malformed */ }
-  }
-} catch { /* missing ledger = 0 spend */ }
+for (const r of parseLedger(text)) {
+  const c = r.total_cost_usd;
+  if (typeof c === 'number' && Number.isFinite(c) && c >= 0) spend += c;
+}
 const budget = parseFloat(process.env.GAFFER_BUDGET_USD || '0');
 if (budget <= 0) { process.stdout.write(''); process.exit(0); }
 const remaining = Math.max(0, budget - spend);
@@ -131,10 +154,33 @@ else
   # No budget configured or node unavailable → unlimited (the pre-H1 default).
   : "${GAFFER_BUDGET_REMAINING:=}"
 fi
+# GAFFER_BUDGET_LOW_THRESHOLD — the USD headroom at/under which the router biases
+# one tier CHEAPER (the "cost-as-control" downgrade). Promoting cost to a real
+# CONTROL (not just an observed number): when a budget IS configured but no explicit
+# threshold is set, DERIVE one as a fraction of the budget so the downgrade actually
+# fires as the factory approaches its ceiling — spend then steers routing instead of
+# only being reported. Unset budget → 0 (inert, the pre-H1 default). An explicit
+# operator value always wins.
+if [ -z "${GAFFER_BUDGET_LOW_THRESHOLD:-}" ] && [ -n "${GAFFER_BUDGET_USD:-}" ] \
+   && command -v awk >/dev/null 2>&1; then
+  # Default: bias cheaper once headroom drops below 20% of the configured budget.
+  GAFFER_BUDGET_LOW_THRESHOLD="$(awk "BEGIN{b=${GAFFER_BUDGET_USD}+0; if(b>0) printf \"%.6f\", b*${GAFFER_BUDGET_LOW_FRACTION:-0.20}; else print 0}" 2>/dev/null || echo 0)"
+fi
 : "${GAFFER_BUDGET_LOW_THRESHOLD:=0}"
-export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD
+# GAFFER_CHEAP_PHASES — cost-as-control class knob (Settings). A comma/space list of
+# PHASES whose work the operator wants biased toward the cheap tier. The router
+# (route-model.mjs cheapClassFromEnv) reads this and biases one tier cheaper for a
+# matching phase — but never overrides a high/critical-risk escalation. Empty
+# (default) = no class is force-cheapened.
+# HONEST SCOPE (finding 13): today ONLY the `implement` phase is routed through
+# gaffer_route_model (tick.sh's delivery call) — so `implement` is the only value
+# that has any effect (e.g. "implement"). Other phases (self-review, test,
+# onboarding, decompose…) use static model flags and do NOT consult the router yet;
+# listing them here is inert until those call sites are routed.
+: "${GAFFER_CHEAP_PHASES:=}"
+export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD GAFFER_CHEAP_PHASES
 
-# gaffer_route_model <phase> <risk> <ac_count> <stack> <attempt> [ticket]
+# gaffer_route_model <phase> <risk> <ac_count> <stack> <attempt> [ticket] [worktree] [repo] [branch] [base]
 # Deterministic per-phase model routing. Echoes the resolved MODEL ID on stdout
 # (empty → no model id; caller falls back to the Claude default), and LOGS one
 # auditable "ROUTE #<ticket> …" line with the inputs + chosen tier/model/reasons.
@@ -145,7 +191,7 @@ export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD
 # or the router is somehow unavailable the function echoes the matching static tier
 # and never aborts the tick.
 gaffer_route_model() {
-  local phase="${1:-implement}" risk="${2:-}" ac="${3:-0}" stack="${4:-}" attempt="${5:-1}" ticket="${6:-}"
+  local phase="${1:-implement}" risk="${2:-}" ac="${3:-0}" stack="${4:-}" attempt="${5:-1}" ticket="${6:-}" worktree="${7:-}" repo="${8:-}" branch="${9:-}" base="${10:-main}"
   # Backward-compatible EXPLICIT overrides (the two knobs that exist today). They
   # win ONLY when the operator set them in the environment — NOT when they hold the
   # config's own opus/sonnet defaults (those are the registry-equivalent baseline,
@@ -172,13 +218,55 @@ gaffer_route_model() {
     esac
     return 0
   fi
+  # DIFFICULTY signals (3b): feed the router the MEASURED difficulty of this ticket so
+  # a hard one routes stronger FROM THE START (not only after an attempt fails). The
+  # always-available signal is this ticket's accumulated measured spend (a costly area
+  # is a hard area); when a delivery worktree with commits exists (rework), we ALSO
+  # measure the accumulated diff size + file count. All best-effort — a missing signal
+  # simply doesn't vote (scoreDifficulty reads "medium").
+  local _diff_args=()
+  if [ -n "$ticket" ]; then
+    # Only a POSITIVE measured spend is a difficulty signal — $0 means "no history
+    # yet" (a fresh ticket), which must read as unknown/medium, never as "easy".
+    local _hist; _hist="$(gaffer_ticket_rework_spend "$ticket" 2>/dev/null || echo 0)"
+    if [ -n "$_hist" ] && awk "BEGIN{exit !(${_hist:-0}+0 > 0)}" 2>/dev/null; then
+      _diff_args+=(--historical-cost "$_hist")
+    fi
+  fi
+  local _db="" _fc=""
+  if [ -n "$worktree" ] && [ -d "$worktree/.git" -o -f "$worktree/.git" ] \
+     && command -v git >/dev/null 2>&1; then
+    # Measure the REAL diff SIZE in bytes — the raw patch, NOT a `--stat` summary. A
+    # `--stat` line is a handful of bytes whatever the change ("file | 500 +++---"),
+    # so a 40 KB diff measured that way reads as ~60 B and NEVER crosses the
+    # HIGH_DIFF_BYTES difficulty mark — "big diff → route stronger" would never fire.
+    _db="$(git -C "$worktree" diff HEAD 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
+    _fc="$(git -C "$worktree" diff --name-only HEAD 2>/dev/null | grep -c . || echo 0)"
+  fi
+  # FINDING-9: on a REWORK attempt the worktree does not exist yet at routing time
+  # (tick.sh routes BEFORE worktree creation) — and even when it does, `git diff HEAD`
+  # only sees UNCOMMITTED work, never the COMMITTED rework accumulated on the
+  # preserved branch. When the worktree gave no signal, measure the ACCUMULATED
+  # rework diff from the real repo instead: `git diff base...branch` (merge-base
+  # semantics) over the preserved gaffer/ branch. Best-effort — a missing repo,
+  # branch, or base simply yields no signal.
+  if ! [ "${_db:-0}" -gt 0 ] 2>/dev/null && [ -n "$repo" ] && [ -n "$branch" ] \
+     && command -v git >/dev/null 2>&1 \
+     && git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1; then
+    _db="$(git -C "$repo" diff "$base...$branch" -- 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
+    _fc="$(git -C "$repo" diff --name-only "$base...$branch" -- 2>/dev/null | grep -c . || echo 0)"
+  fi
+  [ "${_db:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--diff-bytes "$_db")
+  [ "${_fc:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--file-count "$_fc")
   local json
   json="$(GAFFER_MODEL_REGISTRY="$GAFFER_MODEL_REGISTRY" \
           GAFFER_BUDGET_REMAINING="${GAFFER_BUDGET_REMAINING:-}" \
           GAFFER_BUDGET_LOW_THRESHOLD="${GAFFER_BUDGET_LOW_THRESHOLD:-0}" \
+          GAFFER_CHEAP_PHASES="${GAFFER_CHEAP_PHASES:-}" \
           "$node_bin" "$RUNNER_DIR/bin/route-model.mjs" \
             --phase "$phase" --risk "$risk" --ac-count "$ac" \
-            --stack "$stack" --attempt "$attempt" --json 2>/dev/null || true)"
+            --stack "$stack" --attempt "$attempt" \
+            ${_diff_args[@]+"${_diff_args[@]}"} --json 2>/dev/null || true)"
   if [ -z "$json" ]; then
     # Router crashed/empty → fall back to the static tier, never break the tick.
     case "$phase" in
@@ -239,17 +327,114 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 
+# RUNNER-OWNED-BOOKKEEPING: the runner (not the agent) claims the delivery ticket at
+# selection and holds the claim for the whole delivery. The lease TTL must therefore
+# cover EVERY attempt of one delivery (up to GAFFER_MAX_DELIVERY_ATTEMPTS agent runs,
+# each bounded by GAFFER_TICK_TIMEOUT) plus the runner's own gate/record/submit time —
+# so a normal delivery never needs a heartbeat. The runner ALSO heartbeats the claim
+# at the start of each retry attempt (belt-and-braces), so even a mis-sized TTL can't
+# let the lease lapse mid-delivery. Default: attempts × timeout + 5 min margin.
+#
+# Default is 3 (was 2) to give the ESCALATION LADDER room to work: attempt 1 delivers
+# with the routed model + the real failure fed back; attempt 2 RETHINKS the approach
+# (re-plan, optionally narrower scope); attempt 3 escalates to a STRONGER model
+# (GAFFER_REWORK_STRONG_MODEL) with the full feedback history. Set to 1 to disable
+# rework entirely (one attempt, then park to `blocked`).
+: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"
+: "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
+export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
+
+# FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around
+# the WHOLE tick.sh. It must mirror the claim-TTL math above, NOT the single-call
+# cap: one tick may legitimately run the whole rework ladder (up to
+# GAFFER_MAX_DELIVERY_ATTEMPTS agent calls, EACH individually bounded by
+# GAFFER_TICK_TIMEOUT). The old GAFFER_TICK_TIMEOUT + 60 sizing forbade the ladder
+# — whenever attempt 1 used most of one window, attempts 2..N (including the
+# strong-model FINAL attempt) were killed mid-run. Sized attempts × timeout + 2 min:
+# the margin covers the runner's own gate/record/submit time while staying safely
+# BELOW GAFFER_CLAIM_TTL (+300), so when this bound DOES fire the crash-trap
+# claim-release (given GAFFER_REAP_GRACE below) still lands on a live lease. The
+# inner per-call caps remain the fine-grained defense; this is only the backstop
+# for a tick wedged OUTSIDE an agent call.
+: "${GAFFER_TICK_OUTER_TIMEOUT:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))}"
+export GAFFER_TICK_OUTER_TIMEOUT
+
+# ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning
+# for the hardest cases before a human is pulled in). Empty → keep the routed model
+# (no escalation). Defaults to the plan tier (opus) so the last attempt reasons as
+# hard as the planner does.
+: "${GAFFER_REWORK_STRONG_MODEL:=${GAFFER_PLAN_MODEL:-opus}}"
+export GAFFER_REWORK_STRONG_MODEL
+
+# DOUBLE-BOUND: a per-ticket rework COST ceiling (USD). The rework loop stops at
+# whichever hits FIRST — the attempt cap (above) OR this cumulative per-ticket spend
+# — then parks to `blocked` (rework_exhausted). Prevents unbounded token burn on one
+# stubborn ticket even when attempts remain. Defaults to the factory-wide
+# GAFFER_BUDGET_USD (a single ticket may not consume the whole budget on rework);
+# empty/0 → no per-ticket ceiling (attempt cap alone bounds it).
+: "${GAFFER_REWORK_BUDGET_USD:=${GAFFER_BUDGET_USD:-}}"
+export GAFFER_REWORK_BUDGET_USD
+
+# FINDING-3: the CROSS-RUN bound on no-commit / wrong-branch delivery failures.
+# The per-run skip-file only stops a re-pick WITHIN one run; a ticket whose agent
+# deterministically crashes before committing was released back to `ready` and
+# re-picked every run — one full `claude -p` burned per run, forever, at
+# ESCALATING cost (the accumulated ledger spend feeds the difficulty router).
+# tick.sh counts these failures durably (per-ticket, under $GAFFER_DATA) and
+# after this many parks the ticket VISIBLY to `blocked` (rework_exhausted) —
+# the same double-bound shape as the in-delivery rework loop, so it defaults to
+# (and stays aligned with) GAFFER_MAX_DELIVERY_ATTEMPTS. ≥1; the counter resets
+# on a successful submit or on any park out of the delivery pipeline.
+: "${GAFFER_MAX_NOCOMMIT_FAILURES:=${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}}"
+export GAFFER_MAX_NOCOMMIT_FAILURES
+
 # --- Recoverable-delivery guard (GUARD B) ------------------------------------
 # When the agent produced ≥1 commit but a DOWNSTREAM gate (DoD / hygiene /
 # minimalism / empty-but-committed) failed, the delivery is RECOVERABLE: the
 # branch holds salvageable work, so the failure path PRESERVES the branch
 # (tears down only the disposable worktree), attaches the gate output to the
 # ticket as a rework note, and RE-INVOKES the delivery agent on the SAME branch
-# with that feedback — bounded by this cap. Only after the attempts are
-# exhausted is the ticket parked to `refining` WITH the branch + feedback (never
-# silently discarded). Set to 1 to disable retry (one attempt, then park).
-: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=2}"   # total delivery attempts per tick (≥1)
-export GAFFER_MAX_DELIVERY_ATTEMPTS
+# with that feedback — bounded by this cap. Only after the attempts (OR the
+# per-ticket rework budget, GAFFER_REWORK_BUDGET_USD) are exhausted is the ticket
+# parked to the VISIBLE `blocked` column WITH the branch + full feedback trail (a
+# structured `rework_exhausted` reason) — never silently discarded, never lost to
+# the board. Set to 1 to disable retry (one attempt, then park). The cap itself
+# (GAFFER_MAX_DELIVERY_ATTEMPTS, total attempts per tick, ≥1) is defined + exported
+# once above, alongside the claim TTL it feeds — this guard only consumes it.
+
+# gaffer_ticket_rework_spend <ticket>
+# Sum this ticket's measured delivery spend (total_cost_usd) from the usage ledger
+# — the DOUBLE-BOUND's cost side. Prints a decimal USD figure (0 when unmeasured or
+# no ledger). Unmeasured ("unknown") records contribute 0 (honest: we never invent
+# a cost), so the ceiling is only ever tripped by REAL measured spend.
+gaffer_ticket_rework_spend() {
+  local ticket="$1"
+  command -v node >/dev/null 2>&1 || { printf '0'; return 0; }
+  local ledger="${GAFFER_USAGE_LEDGER:-${GAFFER_DATA:+$GAFFER_DATA/usage-ledger.jsonl}}"
+  [ -n "$ledger" ] && [ -f "$ledger" ] || { printf '0'; return 0; }
+  # JSONL parsing via the ONE shared ledger reader (lib/estimate.mjs parseLedger);
+  # the cost summation stays here — estimate.mjs's honesty contract forbids it
+  # from reading total_cost_usd. Degrade path unchanged: any node/module failure
+  # prints 0 (we never invent a cost).
+  [ -f "${GAFFER_ESTIMATE_LIB:-}" ] || { printf '0'; return 0; }
+  GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    import { pathToFileURL } from "node:url";
+    const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
+    const want=String(process.env.GAFFER_RW_TICKET);
+    let text="";
+    try { text=readFileSync(process.env.GAFFER_RW_LEDGER,"utf8"); } catch {}
+    let spend=0;
+    for (const r of parseLedger(text)) {
+      if (r.kind!=="delivery") continue;
+      if (String(r.ticket)!==want) continue;
+      const c=r.total_cost_usd;
+      if (typeof c==="number" && Number.isFinite(c) && c>=0) spend+=c;
+    }
+    process.stdout.write(spend.toFixed(6));
+  ' 2>/dev/null || printf '0'
+}
+export -f gaffer_ticket_rework_spend 2>/dev/null || true
 
 # --- Ask-on-cap guard (GUARD C) ----------------------------------------------
 # When a mid-delivery agent call HITS a cap rather than failing a gate — it ran
@@ -280,29 +465,90 @@ export GAFFER_MAX_RESUMES_PER_TICK
 : "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"
 export GAFFER_DASHBOARD_URL
 
+# FINDING-6 (b): TERM->KILL grace (seconds) for gaffer_timeout's process-group
+# reaper. On a timeout/kill the reaper TERMs the child group first so tick.sh's
+# crash trap can run its cleanup — crucially the claim-release `wg` call (node
+# startup + a local HTTP round-trip) plus worktree teardown — and only KILLs the
+# group once this grace expires. The old hardcoded ~2s grace realistically
+# SIGKILLed that release mid-flight, stranding the ticket `claimed` for the rest
+# of its lease. 30s comfortably covers release + teardown while still bounding a
+# TERM-ignoring runaway; keep it well under the claim-TTL headroom
+# (GAFFER_CLAIM_TTL − GAFFER_TICK_OUTER_TIMEOUT, 180s at defaults).
+: "${GAFFER_REAP_GRACE:=30}"
+export GAFFER_REAP_GRACE
+
 # Portable wall-clock timeout. Usage: gaffer_timeout <seconds> <command> [args...]
 # Exit 124 on timeout (matching GNU timeout's convention) so callers can detect it.
 gaffer_timeout() {
   local secs="$1"; shift
   if [ -z "$secs" ] || [ "$secs" -le 0 ] 2>/dev/null; then "$@"; return $?; fi
   if command -v perl >/dev/null 2>&1; then
-    # perl alarm() + fork: the child exec's the command; the parent arms alarm($t)
-    # and waits. On SIGALRM the parent kills the child's process group and exits
-    # 124 (GNU timeout's convention); otherwise it relays the child's exit status.
+    # perl alarm() + fork: the child does setpgrp() (its own process group, so a
+    # spawned `claude -p` AND all its MCP/child processes share the child's PGID)
+    # then exec's the command; the parent arms alarm($t) and waits.
+    #
+    # ORPHAN-REAP (wallet-drain fix): a timed-out or killed agent must never leave
+    # an orphaned `claude -p` burning tokens. On ANY teardown path — SIGALRM
+    # (timeout), or the parent itself receiving SIGTERM/SIGINT (the tick's crash
+    # trap, or the outer per-tick timeout) — we tear down the WHOLE child process
+    # group and ESCALATE TERM -> KILL after a short grace, so a signal-ignoring
+    # agent cannot survive. Forwarding on TERM/INT is what stops the child being
+    # orphaned when the PARENT is killed (perl's default SIGTERM would just die and
+    # leave the child group running). Optionally records the child PGID to
+    # $GAFFER_TIMEOUT_PGID_FILE so a belt-and-braces tick-exit trap can reap a
+    # survivor; the file is removed on normal completion so it never goes stale.
     perl -e '
+      use POSIX ":sys_wait_h";
       my $t = shift;
       my $pid = fork();
       die "fork: $!" unless defined $pid;
       if ($pid == 0) { setpgrp(0,0); exec @ARGV or exit 127; }
-      $SIG{ALRM} = sub { kill "TERM", -$pid; kill "TERM", $pid; exit 124 };
+      my $pf = $ENV{GAFFER_TIMEOUT_PGID_FILE};
+      if ($pf) { if (open(my $fh, ">", $pf)) { print $fh $pid; close $fh; } }
+      my $clear = sub { unlink $pf if $pf; };
+      # FINDING-6 (b): the TERM->KILL grace is GAFFER_REAP_GRACE (default 30s),
+      # not a hardcoded ~2s. The TERMed tick runs its crash trap — claim-release
+      # (a node/HTTP wg call) + worktree teardown — and must be allowed to finish
+      # before the group KILL; the wait polls every 0.1s so a fast exit still
+      # reaps immediately (no fixed-cost stall). A non-numeric/zero override
+      # falls back to 30s — the grace may be tuned, never disabled.
+      my $grace = $ENV{GAFFER_REAP_GRACE} // "";
+      $grace = 30 unless $grace =~ /^[0-9]+$/ && $grace > 0;
+      my $reap = sub {
+        my ($code) = @_;
+        kill "TERM", -$pid; kill "TERM", $pid;
+        my $gone = 0;
+        for (1..($grace * 10)) { if (waitpid($pid, WNOHANG) == $pid) { $gone = 1; last } select(undef,undef,undef,0.1); }
+        # ALWAYS escalate the whole process GROUP to KILL after the grace — even when
+        # the foreground child ($pid) has ALREADY exited on TERM. A claude -p that dies
+        # cleanly can leave a GRANDCHILD (its MCP server) still alive in the same group;
+        # gating the KILL on the direct child being reaped ($gone) is the exact
+        # wallet-drain — that lingering MCP grandchild would survive and keep burning
+        # tokens. Sweeping the GROUP with KILL reaps EVERY descendant regardless of how
+        # the foreground child died (a KILL to an already-empty group is a harmless
+        # ESRCH no-op). Only the direct-PID KILL stays gated — redundant once reaped.
+        kill "KILL", -$pid;
+        kill "KILL", $pid unless $gone;
+        $clear->();
+        exit $code;
+      };
+      $SIG{ALRM} = sub { $reap->(124) };
+      $SIG{TERM} = sub { $reap->(143) };
+      $SIG{INT}  = sub { $reap->(130) };
       alarm $t;
       waitpid($pid, 0);
-      exit($? >> 8 ? $? >> 8 : ($? & 127 ? 128 + ($? & 127) : 0));
+      my $st = $?;
+      $clear->();
+      exit($st >> 8 ? $st >> 8 : ($st & 127 ? 128 + ($st & 127) : 0));
     ' "$secs" "$@"
     return $?
   fi
-  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
-  if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
+  # GNU/BSD timeout fallbacks: `-s TERM -k <grace>` escalates to SIGKILL after the
+  # grace if the command ignores TERM, so a runaway agent is still reaped. Same
+  # configurable grace as the perl path (FINDING-6 (b)) so the tick's crash-trap
+  # claim-release gets to finish on this path too.
+  if command -v timeout >/dev/null 2>&1; then timeout -s TERM -k "$GAFFER_REAP_GRACE" "$secs" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout -s TERM -k "$GAFFER_REAP_GRACE" "$secs" "$@"; return $?; fi
   # FAIL CLOSED (R-10): no timeout primitive (perl / timeout / gtimeout) is
   # available. Running the command unbounded here is the denial-of-wallet hole —
   # a runaway `claude -p` could burn unbounded wall-clock and tokens. Refuse to
@@ -658,15 +904,15 @@ gaffer_is_self_target() {
 # value as the backpressure "claims" cap, so the two stay consistent by
 # construction.
 #
-# HONESTY (best-effort under concurrency): the cap is read at candidate-SELECTION
-# time, but the actual claim is deferred to the agent's own `claim_ticket` call. So
-# under GAFFER_CONCURRENCY>1 two ticks can each select a candidate for the same
-# under-cap repo before either has claimed, and the cap can be exceeded by up to the
-# in-flight count. The HARD guarantee here is only the per-ticket double-claim
-# invariant (a ticket is claimed at most once, enforced transactionally in
-# Dispatch); this per-repo cap is a throttle, not a transactional bound.
-# NOTE(follow-up): claiming in tick.sh BEFORE handing off to the agent (so
-# selection and claim are one atomic step) would make the per-repo cap exact.
+# CONCURRENCY (RUNNER-OWNED-BOOKKEEPING): selection AND claim are now one atomic step —
+# the runner claims the chosen candidate in tick.sh (via `wg claim-ticket`) BEFORE any
+# worktree or agent, and skips to the next candidate if the claim loses the race. The
+# per-ticket double-claim invariant is enforced transactionally in Dispatch (a ticket is
+# claimed at most once), so a ticket is never worked by two ticks. The per-repo cap here
+# is still read at selection time (a throttle, not a transactional bound): under
+# GAFFER_CONCURRENCY>1 two ticks can each pass the pressure probe for the same under-cap
+# repo before either claims, so the cap can be momentarily exceeded by up to the in-flight
+# count — but each ticket is still claimed at most once.
 : "${MAX_CONCURRENT_TICKETS_PER_REPO:=1}"
 # Upper bound on how many ready candidates a single tick scans before giving up
 # and yielding no_work. Bounds the per-tick candidate walk (each candidate costs a
@@ -797,9 +1043,12 @@ gaffer_usage_record() {
 #   *.events.jsonl      — any leaked events log
 #   .claude/            — project-local Claude config injected per worktree (never deliver)
 #   CLAUDE.factory.md   — the factory's own agent brief (never deliver)
-#   .mcp.json / mcp-runtime.json — runtime MCP wiring (never deliver)
+#   .mcp.json / mcp-runtime. — runtime MCP wiring (never deliver). The
+#     `mcp-runtime.` fragment (note the trailing dot) covers the generated
+#     `mcp-runtime.json` / per-tick `mcp-runtime.<pid>.json` files WITHOUT
+#     false-positiving on a legit source dir like `src/mcp-runtime/` (finding 11).
 # MUST match the library fallback in lib/hygiene.sh — keep the two in sync.
-: "${HYGIENE_FORBIDDEN_PATHS:=node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.json}"
+: "${HYGIENE_FORBIDDEN_PATHS:=node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.}"
 
 # (2) MINIMALISM hard post-condition. Every completed delivery MUST record a
 # smallest-change note (+ files/lines counts computed from the diff, why-each-file,
@@ -906,6 +1155,13 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # Minimalism post-condition (defines gaffer_diff_stats / gaffer_check_minimalism).
 # shellcheck source=lib/minimalism.sh
 [ -f "$RUNNER_DIR/lib/minimalism.sh" ] && source "$RUNNER_DIR/lib/minimalism.sh"
+
+# Per-agent SKILL mount + skill-selection telemetry (defines gaffer_skills_mount /
+# gaffer_skills_mount_cleanup / gaffer_record_skill_usage). Mounts ONLY the
+# selected + universal skill subset into an agent's .claude/skills instead of the
+# whole library, so Claude Code doesn't auto-load all ~66 frontmatter blocks.
+# shellcheck source=lib/skills-mount.sh
+[ -f "$RUNNER_DIR/lib/skills-mount.sh" ] && source "$RUNNER_DIR/lib/skills-mount.sh"
 
 # Shared file-card context primer (defines gaffer_prime_context_block).
 # Sourced after the config above so it can use lg / MEMORY_CLI_BIN / MEMORY_DB.

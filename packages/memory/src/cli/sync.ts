@@ -29,12 +29,15 @@ import type {
   BoundaryRole,
   BoundaryStatus,
   Lore,
+  LoreKind,
   LoreStatus,
   LoreConfidence,
 } from "../db/types.js";
+import { LORE_KINDS } from "../db/types.js";
 
 const ALLOWED_STATUS = new Set<LoreStatus>(["draft", "active", "deprecated", "superseded"]);
 const ALLOWED_CONFIDENCE = new Set<LoreConfidence>(["low", "medium", "high"]);
+const ALLOWED_KIND = new Set<LoreKind>([...LORE_KINDS]);
 
 /**
  * Lore ids are 8 lowercase chars from the Crockford-style alphabet
@@ -132,6 +135,7 @@ export function renderLoreMarkdown(lore: Lore): string {
   lines.push(`title: ${yamlScalar(lore.title)}`);
   lines.push(`summary: ${yamlScalar(lore.summary)}`);
   lines.push(`status: ${lore.status}`);
+  lines.push(`kind: ${lore.kind}`);
   lines.push(`confidence: ${lore.confidence}`);
   lines.push(`restricted: ${lore.restricted}`);
   if (lore.author !== undefined) lines.push(`author: ${yamlScalar(lore.author)}`);
@@ -538,6 +542,18 @@ export function importFromDir(
       continue;
     }
     const confidence = confidenceRaw as LoreConfidence | undefined;
+    const kindRaw = fm["kind"];
+    if (
+      kindRaw !== undefined &&
+      (typeof kindRaw !== "string" || !ALLOWED_KIND.has(kindRaw as LoreKind))
+    ) {
+      skipped.push({
+        file,
+        reason: `invalid kind ${JSON.stringify(kindRaw)} (expected ${[...ALLOWED_KIND].join("|")})`,
+      });
+      continue;
+    }
+    const kind = kindRaw as LoreKind | undefined;
     const supersededByRaw = fm["supersededBy"];
     if (
       supersededByRaw !== undefined &&
@@ -618,6 +634,7 @@ export function importFromDir(
       status: status as LoreStatus,
       author: typeof fm["author"] === "string" ? (fm["author"] as string) : undefined,
       team: typeof fm["team"] === "string" ? (fm["team"] as string) : undefined,
+      kind,
       source: typeof fm["source"] === "string" ? (fm["source"] as string) : undefined,
       reviewAfter:
         typeof fm["reviewAfter"] === "string" ? (fm["reviewAfter"] as string) : undefined,

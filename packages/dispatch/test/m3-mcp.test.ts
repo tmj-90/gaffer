@@ -166,17 +166,30 @@ describe("M3: MCP tool layer", () => {
     expect(error.code).toBe("CLAIM_INVALID");
   });
 
-  it("mark_ticket_blocked rejects a missing claim_token (P0-3 schema)", () => {
-    const wg = Dispatch.open(":memory:", new TestClock());
-    const h = makeHandlers(wg, agentActor);
-    const ticketId = structured(h.create_ticket({ title: "Blockable", policy_pack: "solo_loose" }))
-      .ticket_id as string;
-    h.mark_ticket_ready({ ticket_id: ticketId });
+  it("mark_ticket_blocked rejects a tokenless agent block (P0-3)", () => {
+    // RUNNER-OWNED-BOOKKEEPING: the token is now OPTIONAL on the MCP wire (the
+    // factory runner injects it via GAFFER_CLAIM_TOKEN). The P0-3 security property
+    // is unchanged — an agent with NO token (arg or env) still cannot block a
+    // ticket — but the rejection now surfaces from the service layer
+    // (CLAIM_REQUIRED) rather than the schema (VALIDATION_ERROR).
+    const prevEnv = process.env.GAFFER_CLAIM_TOKEN;
+    delete process.env.GAFFER_CLAIM_TOKEN;
+    try {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const h = makeHandlers(wg, agentActor);
+      const ticketId = structured(
+        h.create_ticket({ title: "Blockable", policy_pack: "solo_loose" }),
+      ).ticket_id as string;
+      h.mark_ticket_ready({ ticket_id: ticketId });
 
-    const result = h.mark_ticket_blocked({ ticket_id: ticketId, reason: "no token" });
-    expect(result.isError).toBe(true);
-    const error = result.structuredContent.error as { code: string };
-    expect(error.code).toBe("VALIDATION_ERROR");
+      const result = h.mark_ticket_blocked({ ticket_id: ticketId, reason: "no token" });
+      expect(result.isError).toBe(true);
+      const error = result.structuredContent.error as { code: string };
+      expect(error.code).toBe("CLAIM_REQUIRED");
+    } finally {
+      if (prevEnv === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+      else process.env.GAFFER_CLAIM_TOKEN = prevEnv;
+    }
   });
 
   it("release_claim accepts snake_case claim_token (and back-compat claimToken)", () => {

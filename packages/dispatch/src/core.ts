@@ -4,10 +4,12 @@ import {
   type AcceptanceCriterion,
   type Actor,
   type Agent,
+  type BouncingTicket,
   type Decision,
   type DecisionSeverity,
   type Evidence,
   type PausedDelivery,
+  type ReworkAttempt,
   type Repository,
   type ScopeEdge,
   type ScopeNode,
@@ -38,6 +40,7 @@ import { EvidenceRepository } from "./repositories/evidenceRepository.js";
 import { PausedDeliveryRepository } from "./repositories/pausedDeliveryRepository.js";
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
+import { ReworkAttemptRepository } from "./repositories/reworkAttemptRepository.js";
 import { RunRepository, type RunListResult } from "./repositories/runRepository.js";
 import {
   PlanSessionRepository,
@@ -93,6 +96,7 @@ import {
   type DashboardSummary,
 } from "./services/boardService.js";
 import { PauseService, type PauseInput } from "./services/pauseService.js";
+import { HumanQueueService, type HumanQueue } from "./services/humanQueueService.js";
 import { ReviewGateService } from "./services/reviewGateService.js";
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
@@ -147,6 +151,12 @@ export interface TicketView {
    * so CLI callers and the API never receive a JSON-in-JSON string.
    */
   testContract: TestContract | null;
+  /**
+   * FAILURE-DIAGNOSIS: the full ordered rework failure trail (attempt 1 → 2 → …),
+   * each with the distilled failing test + assertion/stack. Empty for a ticket that
+   * never bounced. Powers the ticket-detail "why did #N fail" history.
+   */
+  reworkTrail: ReworkAttempt[];
 }
 
 /**
@@ -181,6 +191,15 @@ export type {
 
 /** Input for resolving a decision via the human surface. */
 export type { ResolveDecisionInput } from "./services/decisionService.js";
+
+/** The human-owned queue read model (Track 2a — "What I own"). */
+export type {
+  HumanQueue,
+  HumanQueueItem,
+  HumanQueueKind,
+  HumanQueueCounts,
+  HumanQueueTicketRef,
+} from "./services/humanQueueService.js";
 
 /**
  * Delivery evidence attached by a SYSTEM/factory actor *without* a claim token.
@@ -225,6 +244,7 @@ export class Dispatch {
   readonly ticketDependencies: TicketDependencyRepository;
   readonly runs: RunRepository;
   readonly planSessions: PlanSessionRepository;
+  readonly reworkAttempts: ReworkAttemptRepository;
   readonly pausedDeliveries: PausedDeliveryRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
@@ -237,6 +257,7 @@ export class Dispatch {
   readonly boardSvc: BoardService;
   readonly reviewGateSvc: ReviewGateService;
   readonly pauseSvc: PauseService;
+  readonly humanQueueSvc: HumanQueueService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -296,6 +317,7 @@ export class Dispatch {
     this.ticketDependencies = new TicketDependencyRepository(db);
     this.runs = new RunRepository(db);
     this.planSessions = new PlanSessionRepository(db);
+    this.reworkAttempts = new ReworkAttemptRepository(db);
     this.pausedDeliveries = new PausedDeliveryRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
@@ -389,6 +411,12 @@ export class Dispatch {
         this.emitGate("ticket_parked", ticket, { status: "paused", detail });
       },
     });
+    this.humanQueueSvc = new HumanQueueService({
+      clock: this.clock,
+      decisions: this.decisions,
+      tickets: this.tickets,
+      events: this.events,
+    });
   }
 
   /** Open a Dispatch instance against a SQLite file (or ":memory:"). */
@@ -425,6 +453,11 @@ export class Dispatch {
 
   createTicket(raw: unknown, actor: Actor): Ticket {
     return this.ticketSvc.createTicket(raw, actor);
+  }
+
+  /** TRACK-3a: set or clear a ticket's per-ticket delivery-budget ceiling (USD). */
+  setDeliveryBudget(raw: unknown, actor: Actor): Ticket {
+    return this.ticketSvc.setDeliveryBudget(raw, actor);
   }
 
   addAcceptanceCriterion(raw: unknown, actor: Actor): { ac: AcceptanceCriterion; eventId: string } {
@@ -825,6 +858,32 @@ export class Dispatch {
   }
 
   /**
+   * TRACK-2b: a HUMAN takes a ready ticket "by hand" ("I'll do this myself"). The
+   * ticket moves `ready -> in_progress` owned by the human; the agent selection loop
+   * structurally skips it thereafter. Resolves a ticket number/id ref, then delegates
+   * to {@link ClaimService.humanClaimTicket} (reuses the atomic ready-and-unclaimed
+   * invariant). Throws `TICKET_NOT_CLAIMABLE` when the ticket isn't takeable.
+   */
+  humanClaimTicket(ref: string, actor: Actor): { ticketId: string; number: number } {
+    const ticket = this.resolveTicket(ref);
+    return this.claims.humanClaimTicket({ ticketId: ticket.id }, actor);
+  }
+
+  /**
+   * TRACK-2b: a human hands their by-hand ticket back to the queue
+   * (`in_progress -> ready`), clearing the ownership marker so agents can pick it up.
+   * Only a human-owned in-flight ticket is releasable this way — an agent's live
+   * delivery is never touched. See {@link ClaimService.humanReleaseTicket}.
+   */
+  humanReleaseTicket(
+    ref: string,
+    actor: Actor,
+  ): { ticketId: string; status: string; eventId: string } {
+    const ticket = this.resolveTicket(ref);
+    return this.claims.humanReleaseTicket({ ticketId: ticket.id }, actor);
+  }
+
+  /**
    * Record where a ticket was delivered: persist `branch_name`/`pr_url` onto the
    * ticket and emit a `ticket.delivery_recorded` event carrying optional
    * `commit`/`diff_summary`. Claim-scoped for agents — a token matching the
@@ -898,6 +957,75 @@ export class Dispatch {
     const ticket = this.tickets.findById(input.ticket_id);
     if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
     return result;
+  }
+
+  /**
+   * RUNNER-OWNED-BOOKKEEPING: release/park a runner-held delivery claim. Failure
+   * routes the ticket to `ready` (retry); park routes to `refining` (triage,
+   * branch preserved). `claimToken` is optional so a tokenless resumed
+   * (`in_progress`) delivery can be parked too. See ClaimService.runnerRelease.
+   */
+  runnerRelease(
+    input: {
+      ticket_id: string;
+      to: "ready" | "refining" | "blocked";
+      claimToken?: string;
+      reason?: string;
+      reasonCode?: string;
+      attempt?: number;
+      maxAttempts?: number;
+    },
+    actor: Actor,
+  ): { status: string; eventId: string } {
+    const result = this.claims.runnerRelease(input, actor);
+    // Parking to the VISIBLE `blocked` column needs a human to unblock it — fire the
+    // gate AFTER the claim transaction commits, best-effort (mirrors markBlocked).
+    if (result.status === "blocked") {
+      const ticket = this.tickets.findById(input.ticket_id);
+      if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+    }
+    return result;
+  }
+
+  /**
+   * RUNNER-OWNED-BOOKKEEPING + FAILURE-DIAGNOSIS: record a live rework attempt on an
+   * in-flight delivery so the board shows "reworking · attempt N/M" + the latest
+   * failure while the runner re-invokes the agent, AND append the full distilled
+   * failure to the durable trail. Does NOT change status. See
+   * {@link ClaimService.recordReworkAttempt}.
+   */
+  recordReworkAttempt(
+    input: {
+      ticket_id: string;
+      attempt: number;
+      maxAttempts: number;
+      reason: string;
+      gate?: string;
+      distilledFailure?: string;
+      acId?: string;
+    },
+    actor: Actor,
+  ): { eventId: string } {
+    return this.claims.recordReworkAttempt(input, actor);
+  }
+
+  /**
+   * FAILURE-DIAGNOSIS: the "why did #N fail" read model — the full ordered rework
+   * failure trail for one ticket (attempt 1 → 2 → …), each with the distilled
+   * failing test + assertion/stack. Resolves by ticket id or number.
+   */
+  reworkTrail(ref: string): ReworkAttempt[] {
+    const ticket = this.resolveTicket(ref);
+    return this.reworkAttempts.listForTicket(ticket.id);
+  }
+
+  /**
+   * FAILURE-DIAGNOSIS: the cross-ticket "these keep bouncing" signal — tickets with
+   * a rework trail at or above the floor, ranked worst-first (repeated same-gate
+   * failures lead). The operator's key quality signal.
+   */
+  bouncingTickets(options: { minReworks?: number; limit?: number } = {}): BouncingTicket[] {
+    return this.reworkAttempts.bouncing(options);
   }
 
   releaseClaim(claimToken: string, actor: Actor): void {
@@ -1078,6 +1206,8 @@ export class Dispatch {
       // BBT-001: parse the JSON-encoded test_contract to a structured object so
       // consumers (CLI, API) never receive a JSON-in-JSON string.
       testContract: parseTestContract(ticket.test_contract),
+      // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
+      reworkTrail: this.reworkAttempts.listForTicket(ticket.id),
     };
   }
 
@@ -1288,5 +1418,17 @@ export class Dispatch {
 
   dashboard(): DashboardSummary {
     return this.boardSvc.dashboard();
+  }
+
+  /**
+   * The HUMAN's queue (Track 2a): everything the operator owns — pending
+   * decisions the agent delegated (WITH reasons), tickets awaiting review
+   * sign-off, and regulated tickets awaiting ready-approval / reviewer
+   * assignment — each with what it is, which ticket, the reason and how long it
+   * has waited. A read model only: EXCLUDES agent-owned `blocked`/rework churn,
+   * changes no semantics and adds no gate. Read-only.
+   */
+  humanQueue(): HumanQueue {
+    return this.humanQueueSvc.build();
   }
 }

@@ -438,6 +438,65 @@ describe("cli/sync — export/import round-trip against the filesystem", () => {
     // Nothing was actually persisted.
     expect(fresh.prepare("SELECT COUNT(*) AS n FROM lore").get()).toEqual({ n: 0 });
   });
+
+  /**
+   * Regression: a pre-branch export (written before migration 009 added
+   * `kind` to the frontmatter) re-imported over an equal timestamp used to
+   * reset a backfilled kind to 'other' — silently dropping the record from
+   * the product-context block, which filters by kind.
+   */
+  it("equal-timestamp import of a pre-kind file preserves a backfilled kind", () => {
+    const a = addLore(db, { title: "ADR-14", summary: "s", body: "B", kind: "decision" });
+    const full = getLore(db, a.id)!;
+    // Hand-write the file a pre-009 binary would have exported: identical
+    // updatedAt (so safe-import re-upserts idempotently), no `kind:` line.
+    const md =
+      "---\n" +
+      `id: ${a.id}\n` +
+      "title: ADR-14 (from disk)\n" +
+      "summary: s\n" +
+      "status: active\n" +
+      `confidence: ${full.confidence}\n` +
+      "restricted: false\n" +
+      `createdAt: ${full.createdAt}\n` +
+      `updatedAt: ${full.updatedAt}\n` +
+      "---\n" +
+      "\n" +
+      "B\n";
+    writeFileSync(join(dir, `${a.id}.md`), md);
+
+    const result = importFromDir(db, dir);
+    // Equal timestamps fall through and re-upsert (idempotent re-import)…
+    expect(result.updated).toBe(1);
+    expect(result.skippedNewer).toBe(0);
+    const after = getLore(db, a.id)!;
+    expect(after.title).toBe("ADR-14 (from disk)");
+    // …but the backfilled kind survives.
+    expect(after.kind).toBe("decision");
+  });
+
+  it("an import file that names a meaningful kind still overwrites the local kind", () => {
+    const a = addLore(db, { title: "t", summary: "s", body: "B", kind: "decision" });
+    const full = getLore(db, a.id)!;
+    const md =
+      "---\n" +
+      `id: ${a.id}\n` +
+      "title: t\n" +
+      "summary: s\n" +
+      "status: active\n" +
+      "kind: gotcha\n" +
+      "restricted: false\n" +
+      `createdAt: ${full.createdAt}\n` +
+      `updatedAt: ${full.updatedAt}\n` +
+      "---\n" +
+      "\n" +
+      "B\n";
+    writeFileSync(join(dir, `${a.id}.md`), md);
+
+    const result = importFromDir(db, dir);
+    expect(result.updated).toBe(1);
+    expect(getLore(db, a.id)!.kind).toBe("gotcha");
+  });
 });
 
 describe("findMemoryDirs — cross-repo discovery (`sync pull`)", () => {

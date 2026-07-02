@@ -45,6 +45,9 @@ export const FALLBACK_REGISTRY = Object.freeze({
 /** Risk ladder, weakest → strongest. An unknown/missing risk reads as "medium". */
 const RISK_ORDER = ["low", "medium", "high", "critical"];
 
+/** Difficulty ladder, easiest → hardest. An unknown/missing signal reads as "medium". */
+export const DIFFICULTY_ORDER = ["low", "medium", "high"];
+
 /** Phases where a trivial ticket may be routed down to the cheapest tier. */
 const TRIVIAL_DOWNGRADE_PHASES = new Set(["implement", "test"]);
 
@@ -55,6 +58,88 @@ const TRIVIAL_DOWNGRADE_PHASES = new Set(["implement", "test"]);
  */
 const HIGH_AC = 5;
 const TRIVIAL_AC = 1;
+
+/**
+ * DIFFICULTY thresholds (audit item 3b). A ticket's *difficulty* is a measured,
+ * pre-model signal distinct from AC count / risk: how big is the change likely to
+ * be, and how costly has this area been historically. Any signal crossing its HIGH
+ * mark makes the ticket "high" (route a stronger tier FROM THE START — escalation
+ * is no longer only attempt-driven); a ticket whose every provided signal is at/under
+ * its LOW mark is "low" (stay cheap). Named constants — no magic numbers.
+ *
+ *   diffBytes           — size of the (accumulated) diff in bytes (0/absent on a
+ *                         first attempt, non-zero on rework once a branch has commits).
+ *   fileCount           — number of files the change touches.
+ *   historicalCostUsd   — measured spend already booked to this ticket's area
+ *                         (repo) in the usage-ledger — a costly area is a hard area.
+ */
+const DIFFICULTY = Object.freeze({
+  HIGH_DIFF_BYTES: 40000,
+  HIGH_FILE_COUNT: 8,
+  HIGH_HISTORICAL_USD: 1.5,
+  LOW_DIFF_BYTES: 2000,
+  LOW_FILE_COUNT: 2,
+  LOW_HISTORICAL_USD: 0.15,
+});
+
+/**
+ * Turn raw, MEASURED difficulty signals into a difficulty label. Pure + defensive:
+ * a missing/NaN/negative signal simply doesn't vote. Returns the label plus the
+ * signals that fired so the routing audit trail can explain *why* a ticket is hard.
+ *
+ * Policy: any signal at/over its HIGH mark ⇒ "high". Otherwise, when at least one
+ * signal is present and EVERY present signal is at/under its LOW mark ⇒ "low".
+ * Anything in between (or no signals at all) ⇒ "medium".
+ *
+ * @param {object} [signals]
+ * @param {number} [signals.diffBytes]
+ * @param {number} [signals.fileCount]
+ * @param {number} [signals.historicalCostUsd]
+ * @returns {{label:string, reasons:string[]}}
+ */
+export function scoreDifficulty(signals = {}) {
+  const present = [];
+  const highHits = [];
+  const lowHits = [];
+  const consider = (name, value, highMark, lowMark, unit) => {
+    // A value of 0 (no diff / no files / no booked spend) is ABSENT, not "easy" — a
+    // fresh ticket has no history, so it must not vote "low". Only a positive,
+    // finite measurement counts as a signal.
+    if (!(typeof value === "number" && Number.isFinite(value) && value > 0)) return;
+    present.push(name);
+    if (value >= highMark) highHits.push(`${name} ${value}${unit} ≥ ${highMark}${unit}`);
+    else if (value <= lowMark) lowHits.push(`${name} ${value}${unit} ≤ ${lowMark}${unit}`);
+  };
+  consider(
+    "diffBytes",
+    signals.diffBytes,
+    DIFFICULTY.HIGH_DIFF_BYTES,
+    DIFFICULTY.LOW_DIFF_BYTES,
+    "B",
+  );
+  consider(
+    "fileCount",
+    signals.fileCount,
+    DIFFICULTY.HIGH_FILE_COUNT,
+    DIFFICULTY.LOW_FILE_COUNT,
+    "",
+  );
+  consider(
+    "historicalCostUsd",
+    signals.historicalCostUsd,
+    DIFFICULTY.HIGH_HISTORICAL_USD,
+    DIFFICULTY.LOW_HISTORICAL_USD,
+    "$",
+  );
+
+  if (highHits.length > 0) {
+    return { label: "high", reasons: highHits };
+  }
+  if (present.length > 0 && lowHits.length === present.length) {
+    return { label: "low", reasons: lowHits };
+  }
+  return { label: "medium", reasons: [] };
+}
 
 /** Load + validate the registry. A bad file falls back; it never throws. */
 export function loadRegistry(
@@ -120,7 +205,11 @@ function tierIndex(tier, order) {
  * @param {number} [ctx.acCount]    acceptance-criteria count (default 0)
  * @param {string} [ctx.stack]      repo stack label — plumbed through; no rule keys on it yet
  * @param {number} [ctx.attempt]    delivery attempt (1 = first; >1 = a prior rejection → escalate)
- * @param {number} [ctx.budgetRemaining]  budget seam; undefined/<0 = unlimited (H1 not built)
+ * @param {number} [ctx.budgetRemaining]  live USD headroom from the ledger; undefined/<0 = unlimited
+ * @param {string} [ctx.difficulty] measured difficulty label low|medium|high (default medium) —
+ *                                  a hard ticket routes stronger FROM THE START (3b)
+ * @param {boolean} [ctx.cheapClass] Settings routed this CLASS of work to the cheap tier (3a) —
+ *                                  biases the decision one tier cheaper (never below cheapest)
  * @param {object} [registry]       a loaded/normalised registry (defaults to loadRegistry())
  * @returns {{model:string, tier:string, planDebate:boolean, reasons:string[], inputs:object}}
  */
@@ -134,6 +223,8 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
   const acCount = Number.isFinite(ctx.acCount) && ctx.acCount > 0 ? Math.floor(ctx.acCount) : 0;
   const stack = typeof ctx.stack === "string" ? ctx.stack : "";
   const attempt = Number.isFinite(ctx.attempt) && ctx.attempt > 0 ? Math.floor(ctx.attempt) : 1;
+  const difficulty = DIFFICULTY_ORDER.includes(ctx.difficulty) ? ctx.difficulty : "medium";
+  const cheapClass = ctx.cheapClass === true;
   const budgetRemaining =
     Number.isFinite(ctx.budgetRemaining) && ctx.budgetRemaining >= 0
       ? ctx.budgetRemaining
@@ -169,6 +260,11 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
   const riskRank = RISK_ORDER.indexOf(risk);
   const highRisk = riskRank >= RISK_ORDER.indexOf("high");
   const largeAc = acCount >= HIGH_AC;
+  const highDifficulty = difficulty === "high";
+  const lowDifficulty = difficulty === "low";
+  // A trivial ticket is low-risk + tiny AC; a low-difficulty ticket (small change,
+  // cheap area) is also a downgrade candidate on the same phases. Either qualifies
+  // for the cheapest tier, but NEVER when risk/AC/difficulty say the work is hard.
   const trivial = riskRank <= RISK_ORDER.indexOf("low") && acCount <= TRIVIAL_AC;
 
   if (highRisk) {
@@ -179,9 +275,26 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
     idx = clampIndex(idx + 1, order);
     reasons.push(`acCount ${acCount} ≥ ${HIGH_AC} (large) → +1 tier`);
   }
-  if (trivial && TRIVIAL_DOWNGRADE_PHASES.has(phase) && !highRisk && !largeAc) {
+  // DIFFICULTY (3b): a measured-hard ticket escalates from the START — escalation is
+  // no longer only attempt-count driven. A big diff / many files / a historically
+  // costly area routes one tier stronger up front so we don't burn a cheap-then-fail
+  // attempt on work we already know is hard.
+  if (highDifficulty) {
+    idx = clampIndex(idx + 1, order);
+    reasons.push(`difficulty 'high' (big diff / many files / costly area) → +1 tier`);
+  }
+  if (
+    (trivial || lowDifficulty) &&
+    TRIVIAL_DOWNGRADE_PHASES.has(phase) &&
+    !highRisk &&
+    !largeAc &&
+    !highDifficulty
+  ) {
     idx = 0;
-    reasons.push(`trivial (risk '${risk}', acCount ${acCount}) on '${phase}' → cheapest tier`);
+    const why = trivial
+      ? `trivial (risk '${risk}', acCount ${acCount})`
+      : `difficulty 'low' (small diff / few files / cheap area)`;
+    reasons.push(`${why} on '${phase}' → cheapest tier`);
   }
 
   // 4) Failure-escalation ladder. A prior rejection/failure (attempt > 1) means
@@ -199,10 +312,13 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
     }
   }
 
-  // 5) Budget-aware downgrade (H1 seam). When the remaining budget is low, bias
-  //    one tier CHEAPER and LOG the trade-off so the cost decision is auditable.
-  //    H1 (the real budget feed) isn't built yet, so budgetRemaining is unlimited
-  //    by default and this never fires in practice — the seam is wired + tested.
+  // 5) Budget-aware downgrade (Track 3a — now LIVE). When the remaining budget is
+  //    low, bias one tier CHEAPER and LOG the trade-off so the cost decision is
+  //    auditable. The real budget feed IS wired: factory.config.sh recomputes
+  //    GAFFER_BUDGET_REMAINING from the usage ledger each tick and passes it in, so
+  //    this fires for real once an operator sets GAFFER_BUDGET_USD (+ a low
+  //    threshold). With no budget configured, budgetRemaining stays unlimited and the
+  //    downgrade is inert — the default, not a stub.
   const BUDGET_LOW_THRESHOLD = budgetLowThreshold();
   if (budgetRemaining < BUDGET_LOW_THRESHOLD && idx > 0) {
     idx = clampIndex(idx - 1, order);
@@ -211,7 +327,16 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
     );
   }
 
-  // 6) Stack is plumbed through for a FUTURE stack-aware rule; today it only
+  // 6) Cost-as-control class knob (3a). Settings can route a CLASS of work to the
+  //    cheap tier (e.g. onboarding/self-review/test phases). When this ticket's
+  //    class is flagged cheap, bias one tier CHEAPER and LOG the trade-off — but
+  //    never override a high/critical-risk escalation (safety wins over thrift).
+  if (cheapClass && idx > 0 && !highRisk) {
+    idx = clampIndex(idx - 1, order);
+    reasons.push(`Settings routed this class to cheap → -1 tier (cost bias)`);
+  }
+
+  // 7) Stack is plumbed through for a FUTURE stack-aware rule; today it only
   //    annotates the audit trail (skill-pack selection stays in select-skills.mjs).
   if (stack) reasons.push(`stack '${stack}' (informational; no stack rule yet)`);
 
@@ -228,6 +353,8 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
       acCount,
       stack,
       attempt,
+      difficulty,
+      cheapClass,
       // Serialise Infinity as a readable token so the JSON audit line is honest
       // (JSON.stringify turns Infinity into null, which reads as "0/unknown").
       budgetRemaining: budgetRemaining === Infinity ? "unlimited" : budgetRemaining,
@@ -238,15 +365,16 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
 /**
  * The "budget is low" threshold. Read from GAFFER_BUDGET_LOW_THRESHOLD when set;
  * default 0 means the downgrade only fires when an explicit budgetRemaining is
- * BELOW 0 — i.e. never under today's unlimited default. This keeps the seam inert
- * until H1 supplies a real budget AND an operator sets a threshold.
+ * BELOW 0 — i.e. never under the unlimited default. factory.config.sh derives a real
+ * threshold (a fraction of GAFFER_BUDGET_USD) once a budget is configured, so the
+ * downgrade is inert only when no budget is set — not because the feed is missing.
  */
 function budgetLowThreshold() {
   const v = Number(process.env.GAFFER_BUDGET_LOW_THRESHOLD);
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-/** Parse the runner's env-driven budget seam (H1 not built → unlimited default). */
+/** Parse the runner's env-driven budget seam (unset budget → unlimited default). */
 export function budgetRemainingFromEnv(env = process.env) {
   const raw = env.GAFFER_BUDGET_REMAINING;
   if (raw === undefined || raw === "") return Infinity;
@@ -255,7 +383,15 @@ export function budgetRemainingFromEnv(env = process.env) {
 }
 
 function parseArgs(argv) {
-  const opts = { phase: "implement", risk: "", acCount: 0, stack: "", attempt: 1, json: false };
+  const opts = {
+    phase: "implement",
+    risk: "",
+    acCount: 0,
+    stack: "",
+    attempt: 1,
+    difficulty: "",
+    json: false,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => argv[(i += 1)];
@@ -278,6 +414,24 @@ function parseArgs(argv) {
       case "--budget-remaining":
         opts.budgetRemaining = Number(next() ?? "");
         break;
+      // Difficulty (3b): either an explicit label, or raw measured signals the
+      // router scores itself via scoreDifficulty (diff size / files / area cost).
+      case "--difficulty":
+        opts.difficulty = next() ?? "";
+        break;
+      case "--diff-bytes":
+        opts.diffBytes = Number(next() ?? "");
+        break;
+      case "--file-count":
+        opts.fileCount = Number(next() ?? "");
+        break;
+      case "--historical-cost":
+        opts.historicalCostUsd = Number(next() ?? "");
+        break;
+      // Cost-as-control (3a): Settings flagged this class of work as cheap.
+      case "--cheap-class":
+        opts.cheapClass = true;
+        break;
       case "--json":
         opts.json = true;
         break;
@@ -286,6 +440,41 @@ function parseArgs(argv) {
     }
   }
   return opts;
+}
+
+/**
+ * Resolve the CLI's difficulty input: an explicit --difficulty label wins;
+ * otherwise score the raw --diff-bytes/--file-count/--historical-cost signals.
+ * Returns "" when neither is supplied (→ router default 'medium').
+ */
+function resolveDifficulty(opts) {
+  if (DIFFICULTY_ORDER.includes(opts.difficulty)) return opts.difficulty;
+  const hasRaw =
+    Number.isFinite(opts.diffBytes) ||
+    Number.isFinite(opts.fileCount) ||
+    Number.isFinite(opts.historicalCostUsd);
+  if (!hasRaw) return "";
+  return scoreDifficulty({
+    diffBytes: opts.diffBytes,
+    fileCount: opts.fileCount,
+    historicalCostUsd: opts.historicalCostUsd,
+  }).label;
+}
+
+/**
+ * Resolve whether this CLASS of work is Settings-flagged cheap (3a). Either an
+ * explicit --cheap-class flag, or the current phase appears in the operator's
+ * GAFFER_CHEAP_PHASES allow-list (comma/space separated). Read from env here so the
+ * pure router stays env-free and unit-testable.
+ */
+export function cheapClassFromEnv(phase, env = process.env) {
+  const raw = env.GAFFER_CHEAP_PHASES;
+  if (typeof raw !== "string" || !raw.trim()) return false;
+  const phases = raw
+    .split(/[,\s]+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return phases.includes(phase);
 }
 
 // CLI: resolve a routing decision and print it. tick.sh calls this per phase to
@@ -305,6 +494,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       acCount: opts.acCount,
       stack: opts.stack,
       attempt: opts.attempt,
+      difficulty: resolveDifficulty(opts),
+      cheapClass: opts.cheapClass === true || cheapClassFromEnv(opts.phase),
       budgetRemaining,
     },
     loadRegistry(),

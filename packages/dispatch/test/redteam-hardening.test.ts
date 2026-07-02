@@ -18,13 +18,17 @@ const systemActor: Actor = { type: "system" };
  * git diff for it is whatever the injected runner returns. The AC is satisfied so
  * only the PR/diff requirement is in play. Returns the ticket id.
  */
-function inReviewWithWriteRepo(wg: Dispatch, branch = "feat/delivery"): string {
+function inReviewWithWriteRepo(
+  wg: Dispatch,
+  branch = "feat/delivery",
+  pack: "solo_loose" | "team_light" | "factory_strict" | "regulated" = "team_light",
+): string {
   const repo = wg.registerRepository(
     { name: "svc", default_branch: "main", local_path: process.cwd() },
     human,
   );
   const t = wg.createTicket(
-    { title: "Ship it", description: "deliver the thing", policy_pack: "team_light" },
+    { title: "Ship it", description: "deliver the thing", policy_pack: pack },
     human,
   );
   wg.setTicketRepoAccess(
@@ -203,6 +207,47 @@ describe("P0 fix 1: done-gate is backed by real git, not a diff_summary row", ()
     );
 
     expect(wg.approveReview(t.id, reviewer).ticket.status).toBe("ready_for_merge");
+    wg.db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2b (P0): solo_loose — the DEFAULT pack — now runs the recomputed-diff
+// done-gate too. Previously it ran an EMPTY done-gate, so the real-git diff
+// verification never fired for the default pack and agent prose / a fake pr_url
+// could satisfy sign-off with no real change.
+// ---------------------------------------------------------------------------
+describe("P0 fix 2b: solo_loose runs the recomputed-diff done-gate", () => {
+  it("an EMPTY real diff fails the solo_loose done-gate (agent prose cannot rescue it)", () => {
+    const wg = Dispatch.open(":memory:", new TestClock(), emptyDiffRunner);
+    const ticketId = inReviewWithWriteRepo(wg, "feat/delivery", "solo_loose");
+    // Attach the same agent-style prose a red-team would rely on.
+    wg.attachDeliveryEvidence(
+      ticketId,
+      { evidenceType: "diff_summary", summary: "+500 -0 (trust me, real work)" },
+      systemActor,
+    );
+
+    try {
+      wg.approveReview(ticketId, reviewer);
+      throw new Error("an empty real diff must NOT satisfy the solo_loose done-gate");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DispatchError);
+      const policy = (
+        (err as DispatchError).details as { policy: { failures: Array<{ code: string }> } }
+      ).policy;
+      expect(policy.failures.map((f) => f.code)).toContain("PR_OR_DIFF_REQUIRED");
+    }
+    // The ticket did not move — no sign-off crossed on faked evidence.
+    expect(wg.view(ticketId).ticket.status).toBe("in_review");
+    wg.db.close();
+  });
+
+  it("a real NON-EMPTY branch diff satisfies the solo_loose done-gate (legitimate path)", () => {
+    const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner);
+    const ticketId = inReviewWithWriteRepo(wg, "feat/delivery", "solo_loose");
+    // The REAL git diff alone carries the gate — no prose attached.
+    expect(wg.approveReview(ticketId, reviewer).ticket.status).toBe("ready_for_merge");
     wg.db.close();
   });
 });

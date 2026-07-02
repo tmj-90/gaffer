@@ -24,6 +24,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { repoKey, searchFileCards, upsertFileCard } from "../src/core/fileCards.js";
+import { addLore, searchLore } from "../src/core/lore.js";
 import { cardsForScope } from "../src/core/scopePacket.js";
 import { buildMcpServer } from "../src/mcp/server.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -644,5 +645,115 @@ describe("module isolation", () => {
         query: "foo",
       }),
     ).toThrow(/repo/);
+  });
+});
+
+describe("recall-feedback demotion — flagged cards rank below unflagged peers", () => {
+  // Directly set the recall-feedback flag on a card (the same column
+  // recallFeedback.ts writes). Bypasses the outcome pipeline so the test
+  // pins ONLY the read-side ranking contract of cardsForScope.
+  function flag(db: Database, path: string): void {
+    db.prepare("UPDATE file_card SET flagged_for_review = 1 WHERE repo_key = ? AND path = ?").run(
+      RK,
+      path,
+    );
+  }
+
+  it("baseline (neither flagged): exact-path tier keeps natural path order", () => {
+    const db = newDb();
+    makeCard(db, "aaa.ts");
+    makeCard(db, "bbb.ts");
+    const packet = cardsForScope(db, {
+      repoCanonical: CANONICAL,
+      repo: REPO,
+      query: "",
+      paths: ["aaa.ts", "bbb.ts"],
+    });
+    expect(packet.cards.map((c) => c.path)).toEqual(["aaa.ts", "bbb.ts"]);
+    expect(packet.cards.every((c) => c.flaggedForReview === false)).toBe(true);
+  });
+
+  it("a flagged card is demoted below its unflagged peer within the same tier", () => {
+    const db = newDb();
+    makeCard(db, "aaa.ts"); // would sort FIRST by path…
+    makeCard(db, "bbb.ts");
+    flag(db, "aaa.ts"); // …but it caused rework, so it must rank last.
+
+    const packet = cardsForScope(db, {
+      repoCanonical: CANONICAL,
+      repo: REPO,
+      query: "",
+      paths: ["aaa.ts", "bbb.ts"],
+    });
+
+    // Unflagged peer now leads; the flagged card is served last, not as top signal.
+    expect(packet.cards.map((c) => c.path)).toEqual(["bbb.ts", "aaa.ts"]);
+    expect(packet.selectionOrder.map((e) => e.path)).toEqual(["bbb.ts", "aaa.ts"]);
+    // The flag is READ and exposed on the served card (annotation path).
+    const flagged = packet.cards.find((c) => c.path === "aaa.ts");
+    const unflagged = packet.cards.find((c) => c.path === "bbb.ts");
+    expect(flagged?.flaggedForReview).toBe(true);
+    expect(unflagged?.flaggedForReview).toBe(false);
+  });
+
+  it("under a maxCards budget of 1, the unflagged peer wins the single slot", () => {
+    const db = newDb();
+    makeCard(db, "aaa.ts");
+    makeCard(db, "bbb.ts");
+    flag(db, "aaa.ts");
+
+    const packet = cardsForScope(db, {
+      repoCanonical: CANONICAL,
+      repo: REPO,
+      query: "",
+      paths: ["aaa.ts", "bbb.ts"],
+      maxCards: 1,
+    });
+
+    // Demotion runs BEFORE the budget cut, so the flagged card is the one omitted.
+    expect(packet.cards.map((c) => c.path)).toEqual(["bbb.ts"]);
+    expect(packet.omitted.map((o) => o.path)).toContain("aaa.ts");
+  });
+});
+
+describe("searchLore kind filter (product-intent recall)", () => {
+  it("restricts results to the requested product-intent kinds", () => {
+    const db = newDb();
+    // Two intent records + one non-intent 'convention' in the same repo.
+    addLore(db, {
+      title: "Decision: event-sourced ledger",
+      summary: "why we chose event sourcing",
+      body: "b",
+      repos: [REPO],
+      kind: "decision",
+    });
+    addLore(db, {
+      title: "Requirement: audit trail",
+      summary: "must retain an immutable audit trail",
+      body: "b",
+      repos: [REPO],
+      kind: "requirement",
+    });
+    addLore(db, {
+      title: "Convention: tabs not spaces",
+      summary: "formatting convention",
+      body: "b",
+      repos: [REPO],
+      kind: "convention",
+    });
+
+    const intent = searchLore(db, {
+      repo: REPO,
+      kind: ["decision", "requirement", "non-goal"],
+      limit: 10,
+    });
+    const kinds = new Set(intent.map((r) => r.kind));
+    expect(kinds).toEqual(new Set(["decision", "requirement"]));
+    expect(intent.some((r) => r.kind === "convention")).toBe(false);
+
+    // A single-kind filter is honoured too.
+    const decisionsOnly = searchLore(db, { repo: REPO, kind: "decision", limit: 10 });
+    expect(decisionsOnly).toHaveLength(1);
+    expect(decisionsOnly[0]!.kind).toBe("decision");
   });
 });

@@ -14,6 +14,8 @@ import {
   searchLoreCount,
 } from "../../core/lore.js";
 import { openDb } from "../../db/index.js";
+import { LORE_KINDS } from "../../db/types.js";
+import type { LoreKind } from "../../db/types.js";
 import { getBool, getString, getStringArray } from "../args.js";
 import type { parseArgs } from "../args.js";
 import { renderFull, renderSummary } from "../format.js";
@@ -25,6 +27,27 @@ function parseLimit(v: string | undefined): number | undefined {
     throw new Error(`invalid --limit: ${v} (must be an integer between 1 and 50)`);
   }
   return n;
+}
+
+const LORE_KIND_SET = new Set<string>(LORE_KINDS);
+
+/**
+ * Parse a repeatable/comma-separated `--kind` filter into a validated
+ * {@link LoreKind} list. `--kind decision,requirement` and `--kind decision
+ * --kind requirement` are equivalent. An unknown kind fails fast with a typed
+ * message rather than silently matching nothing. Returns undefined when the
+ * flag is absent (no kind constraint).
+ */
+function parseKinds(args: ReturnType<typeof parseArgs>): LoreKind[] | undefined {
+  const raw = getStringArray(args.flags, "kind").flatMap((v) => v.split(","));
+  const kinds = Array.from(new Set(raw.map((k) => k.trim()).filter(Boolean)));
+  if (kinds.length === 0) return undefined;
+  for (const k of kinds) {
+    if (!LORE_KIND_SET.has(k)) {
+      throw new Error(`invalid --kind: ${k} (must be one of ${LORE_KINDS.join(", ")})`);
+    }
+  }
+  return kinds as LoreKind[];
 }
 
 export async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<number> {
@@ -43,12 +66,15 @@ export async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<num
   const includeSuperseded = getBool(args.flags, "include-superseded");
   const includeRestricted = getBool(args.flags, "include-restricted");
   const prefix = getBool(args.flags, "prefix");
+  const kind = parseKinds(args);
+  const json = getBool(args.flags, "json");
   const db = openDb();
   try {
     const searchOpts = {
       query,
       repo,
       tag,
+      ...(kind ? { kind } : {}),
       prefix,
       updatedAfter,
       limit,
@@ -58,6 +84,25 @@ export async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<num
       includeRestricted,
     };
     const hits = searchLore(db, searchOpts);
+    // --json: emit a compact, machine-readable array (id/title/summary/kind +
+    // trust metadata). Always valid JSON — an empty result is `[]`, never a
+    // human-facing "no matches" string — so programmatic callers (e.g. the
+    // runner's product-context primer) can parse fail-soft.
+    if (json) {
+      process.stdout.write(
+        JSON.stringify(
+          hits.map((h) => ({
+            id: h.id,
+            title: h.title,
+            summary: h.summary,
+            kind: h.kind,
+            confidence: h.confidence,
+            stale: h.stale,
+          })),
+        ) + "\n",
+      );
+      return 0;
+    }
     if (hits.length === 0) {
       process.stdout.write("memory: no matches\n");
       return 0;

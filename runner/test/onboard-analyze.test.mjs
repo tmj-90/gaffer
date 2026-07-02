@@ -55,6 +55,7 @@ const {
   validateCardBatch,
   emitFileCards,
   refreshFileCards,
+  runCardReviewSample,
   INFRA_NOT_FEATURES_RULE,
   MEMORY_ONBOARD_RULE,
   INDUCTION_TAG,
@@ -1425,6 +1426,95 @@ console.log("== refreshFileCards: watermark HELD when a tombstone hard-fails =="
     "card sync was NOT called (watermark not advanced)",
     !calls.some((c) => c[0] === "card" && c[1] === "sync"),
   );
+}
+
+console.log(
+  "== card-review downgrade FAILS CLOSED when the mark-failed CLI errors (secondary-CLI failure) ==",
+);
+{
+  const { readFileSync: readFS } = await import("node:fs");
+  // A fake memory CLI where the DOWNGRADE mechanism (`card mark-failed`) ERRORS,
+  // but a mechanical-only re-upsert (`card upsert` with NO model fields) succeeds.
+  // A rejected card must therefore still end up mechanical-only (fail-closed) —
+  // never left trusting its (possibly poisoned) model text just because the primary
+  // downgrade verb was unavailable.
+  const mkCli = (upsertOk) => {
+    const dir = mkdtempSync(resolve(tmpdir(), "card-review-failclosed-cli-"));
+    const cliBin = join(dir, "fake-lg.mjs");
+    const logFile = join(dir, "calls.log");
+    writeFileSync(
+      cliBin,
+      [
+        "import { appendFileSync } from 'node:fs';",
+        "const argv = process.argv.slice(2);",
+        "appendFileSync(process.env.CLI_LOG, JSON.stringify(argv) + '\\n');",
+        "if (argv[0] === 'card' && argv[1] === 'mark-failed') { process.stderr.write('boom: mark-failed unavailable\\n'); process.exit(1); }",
+        `if (argv[0] === 'card' && argv[1] === 'upsert') { process.stdout.write('{}\\n'); process.exit(${upsertOk ? 0 : 3}); }`,
+        "process.exit(0);",
+      ].join("\n"),
+    );
+    return { cfg: { cliBin, db: join(dir, "lore.sqlite") }, logFile };
+  };
+
+  const candidate = {
+    rel: "src/poisoned.ts",
+    fileType: "ts",
+    structure: "export function evil()",
+    snippet: "export function evil(){return 'x';}",
+    fields: { tldr: "Does a thing.", rolePrimary: "util", roleTags: [] },
+  };
+  const runReviewTurn = () => ({ verdict: "reject", reason: "hallucinated behaviour" });
+
+  // Case 1: mark-failed errors, mechanical-only strip succeeds → still downgraded.
+  {
+    const { cfg, logFile } = mkCli(true);
+    const env = { ...process.env, CLI_LOG: logFile, GAFFER_CARD_REVIEW_SAMPLE: "5" };
+    const stats = runCardReviewSample([candidate], {
+      cfg,
+      canonical: "file:///tmp/repo",
+      repo: "demo",
+      repoRoot: "/tmp/repo",
+      head: "deadbeef",
+      env,
+      runReviewTurn,
+    });
+    const calls = readFS(logFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const upsert = calls.find((c) => c[0] === "card" && c[1] === "upsert");
+    assert("mark-failed error still counts as downgraded (fail-closed)", stats.downgraded === 1);
+    assert(
+      "mark-failed was attempted first",
+      calls.some((c) => c[0] === "card" && c[1] === "mark-failed"),
+    );
+    assert(
+      "fail-closed: fell back to a mechanical-only re-upsert (fields stripped)",
+      !!upsert && !upsert.includes("--tldr") && !upsert.includes("--model"),
+    );
+  }
+
+  // Case 2: BOTH mark-failed AND the strip fail → NOT counted as safely downgraded
+  // (surfaced loudly rather than silently trusted).
+  {
+    const { cfg, logFile } = mkCli(false);
+    const env = { ...process.env, CLI_LOG: logFile, GAFFER_CARD_REVIEW_SAMPLE: "5" };
+    let logged = "";
+    const stats = runCardReviewSample([candidate], {
+      cfg,
+      canonical: "file:///tmp/repo",
+      repo: "demo",
+      repoRoot: "/tmp/repo",
+      head: "deadbeef",
+      env,
+      runReviewTurn,
+      log: (m) => {
+        logged += `${m}\n`;
+      },
+    });
+    assert("both CLIs failing → not counted downgraded", stats.downgraded === 0);
+    assert("the un-enforceable downgrade is surfaced loudly", /could NOT downgrade/.test(logged));
+  }
 }
 
 console.log("");

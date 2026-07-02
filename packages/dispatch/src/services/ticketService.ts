@@ -7,6 +7,7 @@ import {
   recordRepoDeliveryInput,
   setRequiredCapabilitiesInput,
   setTestContractInput,
+  setTicketBudgetInput,
 } from "../domain/schemas.js";
 import {
   parseTestContract,
@@ -148,6 +149,9 @@ export class TicketService {
         last_review_feedback: null,
         can_be_tested: 0,
         test_contract: null,
+        human_owner: null,
+        human_delivered: null,
+        delivery_budget_usd: input.delivery_budget_usd ?? null,
         created_at: now,
         updated_at: now,
       };
@@ -721,6 +725,30 @@ export class TicketService {
   }
 
   // --- Internal helpers ----------------------------------------------------
+
+  /**
+   * TRACK-3a: set (or clear) a ticket's per-ticket delivery-budget ceiling in USD.
+   * A positive figure caps the ticket's cumulative measured delivery spend; `null`
+   * clears it (the factory-wide env budget then applies). Returns the updated ticket.
+   */
+  setDeliveryBudget(raw: unknown, actor: Actor): Ticket {
+    const input = setTicketBudgetInput.parse(raw);
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(String(input.ticket));
+      const now = this.clock.now();
+      this.tickets.setDeliveryBudget(ticket.id, input.delivery_budget_usd, now);
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.budget_set",
+        payload: { delivery_budget_usd: input.delivery_budget_usd },
+      });
+      const updated = this.tickets.findById(ticket.id);
+      if (!updated) throw notFound("ticket", ticket.id);
+      return updated;
+    });
+  }
 
   resolveTicket(ref: string): Ticket {
     const byId = this.tickets.findById(ref);

@@ -51,9 +51,9 @@ self-approve is a red flag to surface — never a reason to lower the gate.
    changed hunks. Loop until the diff is one you would approve.
 7. **Only then proceed.** When every AC is pointed-to-and-proven, scope is clean, the
    smallest-change check is recorded, and you'd approve the diff yourself, hand off to
-   `record-evidence` / `submit-review`. If the review surfaced something you genuinely can't
-   resolve, `mark_ticket_blocked` with the reason rather than submitting a diff you don't
-   stand behind.
+   `record-evidence`, then STOP — the runner records the delivery and submits for review.
+   If the review surfaced something you genuinely can't resolve, `mark_ticket_blocked`
+   with the reason rather than leaving a diff you don't stand behind.
 
 ## Rules
 
@@ -75,27 +75,7 @@ self-approve is a red flag to surface — never a reason to lower the gate.
 ## Capture lore
 
 This skill is one of the places durable, reusable knowledge naturally surfaces:
-**A convention or gotcha you had to rediscover to get the diff right — the kind of thing the next agent should have known before they started.** That kind of fact is *lore* — it would have saved you time had the
-previous agent recorded it, and it will save the next one. Capture it.
-
-When you learn something that future agents on this repo should know *before they
-start* — a convention, a gotcha, an architectural fact, a decision, a boundary —
-call the Memory MCP `suggest_lore` tool once, at the close of your work:
-
-- `title` — the rule/fact in a few words.
-- `summary` — one self-contained paragraph: the *what* and the *why*.
-- `body` — the detail and evidence that lets a human verify it.
-- `repos` — the repo(s) the rule applies to.
-- `tags` — lowercase (e.g. `conventions`, `gotchas`, `security`, `db`).
-- `source` — a URL to the ticket/PR/ADR that justifies it (records without a
-  source are lower-trust); `confidence` — `low` for an inferred convention,
-  `high` only when you have a source.
-
-**This is suggested, gated knowledge — not auto-truth.** `suggest_lore` lands a
-DRAFT; a human reviews and approves it. You never approve your own lore.
-
-**Capture reusable knowledge, not ticket noise.** Lore is a convention, gotcha,
-decision, or boundary the *next* agent needs — never per-ticket trivia (what this
-diff changed, a path you happened to read, transient task state). The honest test:
-*would a teammate six months from now thank you for this record?* If unsure, skip —
-a missing record costs one re-search; a noisy one costs every future reader.
+**A convention or gotcha you had to rediscover to get the diff right — the kind of thing the next agent should have known before they started.** That kind of fact is *lore*. Capture it via the **lore-capture
+protocol in your brief** (`CLAUDE.factory.md`, step 11 "Memory contribution"):
+call the Memory MCP `suggest_lore` once at the close of your work — reusable
+conventions, gotchas, decisions, and boundaries only, never per-ticket trivia.

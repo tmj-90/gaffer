@@ -22,9 +22,11 @@
 # unquoted expansions ($wrap, $model_flag, $CLAUDE_FLAGS, $GAFFER_MAX_TURNS_FLAG)
 # preserve the original word-splitting semantics verbatim.
 #
-# Phase 2 (a follow-on) moves the Claude-JSON result PARSER behind this same seam;
-# Phase 1 deliberately leaves the usage-ledger / cap-detection parsing at the call
-# sites (they still read $out_json + $? exactly as before).
+# Phase 2 (done) moved the Claude-JSON result PARSER behind the worker seam too:
+# lib/worker.mjs owns parseResult, and the bash cap/spend guards in
+# lib/delivery-recovery.sh read it via `node worker.mjs parse-result …`. This
+# invocation seam still only produces $out_json + $?; the parsing of that capture
+# now flows through the ONE worker-owned parser instead of open-coded node scripts.
 #
 # INTERFACE  {prompt, model, env, mcpConfig, cwd, timeout, maxTurns}
 #   $1 cwd        interface: cwd       — run the agent in this directory
@@ -47,8 +49,9 @@
 #   stderr                                        → appended to $GAFFER_LOG
 #   return status                                 → the invocation's exit code; the
 #                                                   caller reads $? exactly as before
-#     (resultText / usage / capHit / stopReason are still DERIVED from $out_json by
-#      the existing helpers at the call site — Phase 2 moves that behind this seam).
+#     (resultText / usage / capHit / stopReason are DERIVED from $out_json by
+#      lib/worker.mjs's parseResult — the ONE Phase-2 parser seam; the bash guards
+#      call its `parse-result` CLI rather than re-parsing the envelope themselves).
 worker_deliver() {
   local cwd="$1" prompt="$2" model_flag="$3" mcp_config="$4" out_json="$5" wrap="${6:-}"
   # C1/M2: strip ambient credentials from the live agent's env (allowlist via env -i).

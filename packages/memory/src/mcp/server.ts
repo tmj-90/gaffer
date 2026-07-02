@@ -548,6 +548,16 @@ export function buildMcpServer(db: Database): McpServer {
             "How sure are you? Default 'medium'. Use 'low' for inferred " +
               "conventions; 'high' only when you have a source link.",
           ),
+        kind: z
+          .enum(["decision", "requirement", "non-goal", "convention", "gotcha", "other"])
+          .optional()
+          .describe(
+            "What KIND of knowledge is this? 'decision' (a durable choice + " +
+              "why), 'requirement' (a product need the work serves), 'non-goal' " +
+              "(deliberately out of scope), 'convention' (how-we-do-it-here), " +
+              "'gotcha' (a trap that bit). Product intent → decision/requirement/" +
+              "non-goal. Defaults to 'other'.",
+          ),
         team: z.string().optional().describe("Owning team, if known."),
       },
     },
@@ -565,6 +575,7 @@ export function buildMcpServer(db: Database): McpServer {
         tags: args.tags,
         source: args.source,
         confidence: args.confidence,
+        kind: args.kind,
         team: args.team,
       };
       // Length guards — check title first, then summary. Return the
@@ -609,6 +620,7 @@ export function buildMcpServer(db: Database): McpServer {
             tags: args.tags,
             source: args.source,
             confidence: args.confidence,
+            kind: args.kind,
             team: args.team,
             author: "agent",
           },

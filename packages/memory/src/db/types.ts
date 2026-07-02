@@ -14,6 +14,42 @@
 export type LoreStatus = "draft" | "active" | "deprecated" | "superseded";
 export type LoreConfidence = "low" | "medium" | "high";
 
+/**
+ * What KIND of knowledge a record captures — the product-intent classifier
+ * that lets recall be aimed at "why" (decisions / requirements / non-goals)
+ * versus "how" (conventions / gotchas). A closed enum, not free text, so a
+ * consumer (e.g. the context packet's productContext section) can filter on
+ * it deterministically:
+ *
+ *   - "decision"    — a durable choice + its rationale (why we built it this way).
+ *   - "requirement" — a product need / must-hold behaviour the work exists to serve.
+ *   - "non-goal"    — something deliberately OUT of scope (guards against scope creep).
+ *   - "convention"  — a "how we do it here" pattern not obvious from the code.
+ *   - "gotcha"      — a trap that wasted time and is likely to bite again.
+ *   - "other"       — the fallback for records that predate the enum or don't fit.
+ *
+ * `decision | requirement | non-goal` are the PRODUCT-INTENT kinds; the
+ * productContext packet section surfaces those specifically.
+ */
+export type LoreKind = "decision" | "requirement" | "non-goal" | "convention" | "gotcha" | "other";
+
+/** Runtime-checkable list of every valid {@link LoreKind}. */
+export const LORE_KINDS: readonly LoreKind[] = [
+  "decision",
+  "requirement",
+  "non-goal",
+  "convention",
+  "gotcha",
+  "other",
+] as const;
+
+/** The subset of kinds that carry PRODUCT INTENT (the "why", not the "how"). */
+export const PRODUCT_INTENT_KINDS: readonly LoreKind[] = [
+  "decision",
+  "requirement",
+  "non-goal",
+] as const;
+
 export interface LoreRow {
   readonly id: string;
   readonly title: string;
@@ -22,6 +58,8 @@ export interface LoreRow {
   readonly author: string | null;
   readonly team: string | null;
   readonly status: LoreStatus;
+  /** Product-intent classifier (migration 009). Defaults to 'other'. */
+  readonly kind: LoreKind;
   readonly source: string | null;
   readonly review_after: string | null;
   readonly confidence: LoreConfidence;
@@ -51,6 +89,8 @@ export interface Lore {
   readonly author?: string;
   readonly team?: string;
   readonly status: LoreStatus;
+  /** Product-intent classifier (see {@link LoreKind}). */
+  readonly kind: LoreKind;
   readonly source?: string;
   readonly reviewAfter?: string;
   readonly confidence: LoreConfidence;
@@ -88,6 +128,8 @@ export interface LoreSummary {
   readonly author?: string;
   readonly team?: string;
   readonly status: LoreStatus;
+  /** Product-intent classifier (see {@link LoreKind}). */
+  readonly kind: LoreKind;
   readonly source?: string;
   readonly confidence: LoreConfidence;
   readonly restricted: boolean;
@@ -158,6 +200,8 @@ export interface AddLoreInput {
   readonly body: string;
   readonly author?: string;
   readonly team?: string;
+  /** Product-intent classifier; defaults to 'other' when omitted. */
+  readonly kind?: LoreKind;
   readonly source?: string;
   readonly reviewAfter?: string;
   readonly confidence?: LoreConfidence;
@@ -178,6 +222,8 @@ export interface UpdateLoreInput {
   readonly body?: string;
   readonly author?: string;
   readonly team?: string;
+  /** Product-intent classifier; when set, re-classifies the record. */
+  readonly kind?: LoreKind;
   readonly source?: string;
   readonly reviewAfter?: string | null;
   readonly confidence?: LoreConfidence;

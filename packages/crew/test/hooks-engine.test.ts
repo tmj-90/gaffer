@@ -146,9 +146,11 @@ describe("CaptureLoreReflectionHook", () => {
     // Advisory only — never a veto, never a policy override.
     expect(out.status).toBe("ok");
     expect(out.policy_overrides_requested).toHaveLength(0);
-    // Names the gated tool and the reusable-knowledge bar.
+    // Names the gated tool and aims the reflection at product intent (the WHY:
+    // decision / requirement / non-goal), with an explicit lore `kind`.
     expect(out.warnings.join(" ")).toMatch(/suggest_lore/);
-    expect(out.warnings.join(" ")).toMatch(/reusable/i);
+    expect(out.warnings.join(" ")).toMatch(/why/i);
+    expect(out.warnings.join(" ")).toMatch(/decision|requirement|non-goal/i);
     expect(out.events[0]?.type).toBe("hook_capture_lore_prompted");
     expect(out.events[0]?.payload).toMatchObject({ ticketNumber: 7 });
   });

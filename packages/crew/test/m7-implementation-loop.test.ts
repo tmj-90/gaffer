@@ -250,10 +250,18 @@ describe("implementation loop", () => {
       }),
     };
     runImplementationLoop({ agentId: "a", dryRun: true }, withLore);
-    expect(lore.suggestions).toHaveLength(1);
+    // The agent's own suggestion is forwarded first, verbatim…
     expect(lore.suggestions[0]!.title).toBe("Use argon2id");
-    // Suggestions are drafts only — never auto-approved.
-    const result = lore.suggestLore(lore.suggestions[0]!);
-    expect(result.status).toBe("draft");
+    // …and the loop ALSO distills the ticket's product intent (Track 1c): a
+    // requirement draft harvested from the ticket's AC, so the "why" survives
+    // close. Both are drafts — never auto-approved.
+    const distilled = lore.suggestions.find((s) => s.kind === "requirement");
+    expect(distilled).toBeDefined();
+    expect(distilled!.tags).toContain("ticket-intent");
+    // Snapshot before re-suggesting: the stub appends to `suggestions`, so
+    // iterate a copy. Every record entered the gated draft flow (never approved).
+    for (const suggestion of [...lore.suggestions]) {
+      expect(lore.suggestLore(suggestion).status).toBe("draft");
+    }
   });
 });

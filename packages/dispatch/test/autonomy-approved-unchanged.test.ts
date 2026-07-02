@@ -192,7 +192,7 @@ function mutableHeadRunner(getHead: () => string): GitRunner {
 }
 
 /** The (merge-corrected) approvedUnchanged the recommendation would read for a ticket. */
-function decisionUnchangedOf(d: Dispatch, ticketId: string): boolean | null | undefined {
+function decisionUnchangedOf(d: Dispatch, _ticketId: string): boolean | null | undefined {
   const approval = d.events.reviewDecisions().find((r) => r.reason === "review_approved");
   return approval?.approvedUnchanged;
 }

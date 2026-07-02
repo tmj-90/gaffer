@@ -55,8 +55,22 @@ export const createTicketInput = z.object({
   created_by: z.string().max(200).optional(),
   /** EP-001 greenfield marker — true ⇒ a bootstrap (create-a-repo) ticket. */
   bootstrap: z.boolean().default(false),
+  /**
+   * TRACK-3a: optional per-ticket delivery-budget ceiling in USD. A positive figure
+   * caps this ticket's cumulative measured delivery spend; omitted/null ⇒ the
+   * factory-wide env budget applies.
+   */
+  delivery_budget_usd: z.number().positive().nullable().optional(),
 });
 export type CreateTicketInput = z.infer<typeof createTicketInput>;
+
+/** TRACK-3a: set or clear a ticket's per-ticket delivery-budget ceiling. */
+export const setTicketBudgetInput = z.object({
+  ticket: z.union([z.number().int().positive(), z.string().min(1)]),
+  /** A positive USD ceiling, or null to clear the per-ticket budget. */
+  delivery_budget_usd: z.number().positive().nullable(),
+});
+export type SetTicketBudgetInput = z.infer<typeof setTicketBudgetInput>;
 
 export const addAcInput = z.object({
   ticket_id: z.string().min(1),
@@ -350,6 +364,8 @@ export const epicTicketInput = z.object({
   repo: z.string().min(1).max(200).optional(),
   access: z.enum(TICKET_REPO_ACCESS).optional(),
   bootstrap: z.boolean().optional(),
+  /** TRACK-3a: per-ticket delivery budget; overrides the epic-level default below. */
+  delivery_budget_usd: z.number().positive().nullable().optional(),
   dependsOn: z.array(z.number().int().nonnegative()).max(MAX_EPIC_TICKETS).default([]),
 });
 export type EpicTicketInput = z.infer<typeof epicTicketInput>;
@@ -364,6 +380,12 @@ export const createEpicInput = z.object({
   epic: z.object({
     name: z.string().trim().min(1, "epic name is required").max(200),
     description: z.string().max(20_000).optional(),
+    /**
+     * TRACK-3a: a per-EPIC delivery budget in USD. When set, it is stamped onto each
+     * child ticket that doesn't declare its own `delivery_budget_usd` — the per-epic
+     * budget is inherited by its tickets (each ticket then carries + enforces it).
+     */
+    delivery_budget_usd: z.number().positive().nullable().optional(),
   }),
   tickets: z
     .array(epicTicketInput)

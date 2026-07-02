@@ -201,6 +201,15 @@ export interface Ticket {
    * leaves `in_progress` (hand-back to `ready`, submit to review, block, cancel …).
    */
   human_owner: string | null;
+  /**
+   * TRACK-3a: the per-ticket DELIVERY BUDGET ceiling in USD, or `null` for no
+   * per-ticket ceiling (the factory-wide env budget applies). A first-class
+   * extension of the rework loop's per-ticket cost ceiling: the runner parks the
+   * ticket to `blocked` once its cumulative MEASURED delivery spend (from the
+   * usage-ledger) reaches this figure, even when retry attempts remain. An epic
+   * stamps its budget onto each child ticket at creation (per-epic, inherited).
+   */
+  delivery_budget_usd: number | null;
   created_at: string;
   updated_at: string;
 }

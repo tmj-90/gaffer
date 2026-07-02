@@ -193,6 +193,11 @@ export function migrate(db: Db): void {
   // no table rebuild. No-op on a fresh DB (table absent — SCHEMA_SQL creates it). Runs
   // AFTER every prior tickets rebuild so the rebuilt table is backfilled too.
   alterTicketsAddHumanOwner(db);
+  // TRACK-3a (v14→v15): add the per-ticket `delivery_budget_usd` column to an
+  // EXISTING tickets table. A plain additive ALTER (no CHECK to widen). No-op on a
+  // fresh DB (SCHEMA_SQL creates it) and idempotent on an already-migrated one. Runs
+  // AFTER every prior tickets rebuild so the rebuilt table is backfilled too.
+  alterTicketsAddDeliveryBudget(db);
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +
@@ -288,6 +293,24 @@ function alterTicketsAddHumanOwner(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("human_owner")) {
     db.exec("ALTER TABLE tickets ADD COLUMN human_owner TEXT");
+  }
+}
+
+/**
+ * TRACK-3a additive migration (v14→v15): add the `delivery_budget_usd` column to an
+ * EXISTING `tickets` table (the per-ticket USD delivery-budget ceiling). Like
+ * `human_owner`, `CREATE TABLE IF NOT EXISTS` won't add a column to an existing
+ * table, so it must be ALTERed in. Idempotent (skipped when the column already
+ * exists). Existing rows inherit the default (NULL ⇒ no per-ticket ceiling), which
+ * is the backfill — pre-v15 tickets fall back to the factory-wide env budget. No
+ * CHECK to widen, so this is a plain additive ALTER — no table rebuild.
+ */
+function alterTicketsAddDeliveryBudget(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("delivery_budget_usd")) {
+    db.exec("ALTER TABLE tickets ADD COLUMN delivery_budget_usd REAL");
   }
 }
 

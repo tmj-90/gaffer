@@ -365,6 +365,9 @@ export const loopsSchema = z
  * context so the packet stays lean and pre-filtered to the ticket's stack/area:
  *  - `lore_limit` — max ratified lore records pulled into a packet.
  *  - `max_skills` — max skills selected for the packet after stack filtering.
+ *  - `product_context_limit` — max product-intent lore records (decisions /
+ *    requirements / non-goals) surfaced in the packet's `productContext`
+ *    section, budgeted separately so recall can be aimed at "why".
  *  - `token_budget` — optional soft budget; when set, packets over it are
  *    flagged (never silently truncated) so an operator can tighten the caps.
  */
@@ -372,6 +375,7 @@ export const contextSchema = z
   .object({
     lore_limit: z.number().int().positive().default(8),
     max_skills: z.number().int().positive().default(12),
+    product_context_limit: z.number().int().positive().default(6),
     token_budget: z.number().int().positive().nullable().default(null),
   })
   .default({});

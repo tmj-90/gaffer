@@ -13,6 +13,7 @@ import {
   type PausedDelivery,
   type ReworkAttempt,
   type Repository,
+  type RiskLevel,
   type ScopeEdge,
   type ScopeNode,
   type ScopeRepo,
@@ -114,6 +115,14 @@ import {
   AutonomyRecommendationService,
   type AutonomyRecommendation,
 } from "./services/autonomyRecommendationService.js";
+import {
+  AutonomyPolicyRepository,
+  type AutonomyPolicyGate,
+  type AutonomyPolicyRow,
+  type AutonomyPolicyView,
+  type AutonomyMode,
+} from "./repositories/autonomyPolicyRepository.js";
+import { isAutonomyAllowed, policyGrantsAuto } from "./services/autonomyPolicyService.js";
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
@@ -264,6 +273,8 @@ export class Dispatch {
   readonly pausedDeliveries: PausedDeliveryRepository;
   readonly specsRepo: SpecRepository;
   readonly specCoverageRepo: SpecCoverageRepository;
+  /** GRADUATED-AUTONOMY (Spec 2, Phase 3): the per-(repo × risk × gate) enablement store. */
+  readonly autonomyPolicy: AutonomyPolicyRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -342,6 +353,7 @@ export class Dispatch {
     this.pausedDeliveries = new PausedDeliveryRepository(db);
     this.specsRepo = new SpecRepository(db);
     this.specCoverageRepo = new SpecCoverageRepository(db);
+    this.autonomyPolicy = new AutonomyPolicyRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -439,6 +451,16 @@ export class Dispatch {
       // GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve delivery-vs-merge SHAs so the
       // approve path can emit `approved_unchanged`. Pure read; degrades to unknown.
       approvalShaResolver: (ticket) => this.resolveApprovalShas(ticket),
+      // GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate the P0 gate
+      // ORs with the env flag — true iff a mode='auto' approve policy covers every
+      // write repo at this ticket's risk. NO env read here (that stays in the gate).
+      policyAllowsAgentApprove: (ticket) =>
+        policyGrantsAuto(
+          this.autonomyPolicy,
+          this.writeRepoIdsForTicket(ticket),
+          ticket.risk_level,
+          "approve",
+        ),
     });
     this.autonomyRecommendations = new AutonomyRecommendationService({
       reviewDecisions: () => this.events.reviewDecisions(),
@@ -536,6 +558,107 @@ export class Dispatch {
     if (edited) return edited; // a real edited pair → helper returns false.
     if (pairs.some((p) => !known(p))) return { deliverySha: null, mergeSha: null }; // unknown.
     return pairs[0] ?? null; // all known-and-equal → an unchanged pair.
+  }
+
+  // --- Graduated Autonomy policy (Spec 2, Phase 3) -------------------------
+
+  /**
+   * The repo ids a ticket actually WRITES to (active relation + write access) — the
+   * set the autonomy policy must cover for an auto grant. Mirrors the write-repo
+   * filter used by {@link resolveApprovalShas}. A ticket with no write repo yields an
+   * empty set, which the enforcement treats as "never auto" (fail-closed).
+   */
+  private writeRepoIdsForTicket(ticket: Ticket): string[] {
+    return this.repos
+      .accessLinksForTicket(ticket.id)
+      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write")
+      .map((l) => l.id);
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 3): the MERGE chokepoint decision — may the
+   * auto-merge fire for this approved ticket? Reads a mode='auto' merge policy across
+   * the ticket's write repos, ELSE falls back to the env default (true — today's
+   * merge always fires post-approve; the mergeRunner still enforces DISPATCH_MERGE_CMD,
+   * unchanged). So with no policy row this is byte-identical to today; a mode='auto'
+   * merge policy is an additional, explicit, evidence-backed allow-path.
+   */
+  autonomyMergeAllowed(ticket: Ticket): boolean {
+    return isAutonomyAllowed(
+      this.autonomyPolicy,
+      this.writeRepoIdsForTicket(ticket),
+      ticket.risk_level,
+      "merge",
+    );
+  }
+
+  /** Every stored autonomy policy joined to its repo name (Settings surface). */
+  listAutonomyPolicies(): AutonomyPolicyView[] {
+    return this.autonomyPolicy.list();
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 3): enable/disable an autonomy policy for
+   * (repo × risk × gate). Enabling (mode !== 'off') is the trust-boundary action and
+   * requires an EXPLICIT confirm (LOCKED posture: the operator confirms with the
+   * evidence shown) — on enable we SNAPSHOT the current recommendation evidence into
+   * `evidence_json` so there is an audit trail of WHY auto was granted. Reversible:
+   * mode='off' clears the enablement (and re-gates via the env fallback). Idempotent
+   * upsert keyed on (repo, risk, gate).
+   */
+  setAutonomyPolicy(
+    input: {
+      repoId: string;
+      riskLevel: RiskLevel;
+      gate: AutonomyPolicyGate;
+      mode: AutonomyMode;
+      confirm?: boolean;
+    },
+    actor: Actor,
+  ): AutonomyPolicyRow {
+    const repo = this.repos.findById(input.repoId);
+    if (!repo) throw notFound("repository", input.repoId);
+    // Trust boundary: enabling any non-off mode demands an explicit confirmation that
+    // the operator saw the evidence. Disabling (off) is always allowed (fail-safe).
+    if (input.mode !== "off" && input.confirm !== true) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "Enabling an autonomy policy requires an explicit confirmation (confirm: true) that the evidence was reviewed.",
+        { gate: input.gate, mode: input.mode },
+      );
+    }
+    const now = this.clock.now();
+    const actorRef = actor.id ?? actor.type;
+    const enabling = input.mode !== "off";
+    // Snapshot the recommendation evidence shown at enable time (audit trail). The
+    // recommendation service only speaks to approve/merge; a memory gate (or a repo
+    // with no live recommendation) snapshots a null recommendation, which is honest.
+    let evidenceJson: string | null = null;
+    if (enabling) {
+      const rec =
+        this.autonomyRecommendationsList().find(
+          (r) =>
+            r.repoId === input.repoId &&
+            r.riskLevel === input.riskLevel &&
+            r.gate === (input.gate as typeof r.gate),
+        ) ?? null;
+      evidenceJson = JSON.stringify({
+        snapshot_at: now,
+        confirmed_by: actorRef,
+        recommendation: rec,
+      });
+    }
+    return this.autonomyPolicy.upsert({
+      id: newId(),
+      repoId: input.repoId,
+      riskLevel: input.riskLevel,
+      gate: input.gate,
+      mode: input.mode,
+      enabledBy: enabling ? actorRef : null,
+      enabledAt: enabling ? now : null,
+      evidenceJson,
+      now,
+    });
   }
 
   // --- Tickets -------------------------------------------------------------

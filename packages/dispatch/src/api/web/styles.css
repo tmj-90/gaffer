@@ -7935,6 +7935,59 @@ body {
   line-height: 1.5;
 }
 
+/* GRADUATED-AUTONOMY (Spec 2, Phase 3): the enable action + explicit-confirm flow. */
+.ar-action {
+  margin-top: var(--s-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.ar-confirm {
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border: 1px dashed var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+}
+.ar-confirm-note {
+  margin: 0 0 var(--s-2);
+  font-size: 0.75rem;
+  color: var(--text);
+}
+.ar-enabled-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--ok, var(--accent-line));
+  color: var(--ok, var(--accent));
+  background: var(--accent-soft);
+}
+/* The active-autonomy panel: enabled chokepoints with a reversible OFF. */
+.autonomy-policies {
+  margin-top: var(--s-4);
+}
+.autonomy-policies .ar-item {
+  border-left-color: var(--ok, var(--accent));
+}
+.ap-mode {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--ok, var(--accent-line));
+  color: var(--ok, var(--accent));
+  background: var(--accent-soft);
+}
+
 /* ===========================================================================
    REVIEW — the gate console header
    =========================================================================== */

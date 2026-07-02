@@ -52,6 +52,7 @@ import {
   planSessionArchiveBody,
   planSessionListQuery,
   planSessionTurnBody,
+  autonomyPolicyBody,
   recordDeliveryArtifactBody,
   recordRepoDeliveryBody,
   rejectReviewBody,
@@ -1029,6 +1030,46 @@ async function route(
       }
       return methodNotAllowed(res);
     }
+    // GRADUATED-AUTONOMY (Spec 2, Phase 3): the enablement control plane.
+    //   GET  /api/autonomy/policies — the active policies (repo × risk × gate, mode,
+    //        who enabled, evidence snapshot) for the Settings "active policies" surface.
+    //   POST /api/autonomy/policy   — enable/disable a policy. Enabling (mode !== 'off')
+    //        requires `confirm:true` (the explicit-confirm trust boundary) and snapshots
+    //        the current recommendation evidence into the row. Mutation ⇒ token-gated
+    //        (checked above). SECURITY: a policy is only ever an ADDITIONAL allow-path —
+    //        the enforcement (reviewGateService / merge site) falls back to the env flag,
+    //        so this endpoint can never loosen the default below today's posture.
+    if (
+      segments.length === 3 &&
+      segments[0] === "api" &&
+      segments[1] === "autonomy" &&
+      segments[2] === "policies"
+    ) {
+      if (method !== "GET") return methodNotAllowed(res);
+      sendJson(res, 200, { policies: wg.listAutonomyPolicies() });
+      return;
+    }
+    if (
+      segments.length === 3 &&
+      segments[0] === "api" &&
+      segments[1] === "autonomy" &&
+      segments[2] === "policy"
+    ) {
+      if (method !== "POST") return methodNotAllowed(res);
+      const body = autonomyPolicyBody.parse(await readJsonBody(req));
+      const policy = wg.setAutonomyPolicy(
+        {
+          repoId: body.repo_id,
+          riskLevel: body.risk_level,
+          gate: body.gate,
+          mode: body.mode,
+          confirm: body.confirm,
+        },
+        API_ACTOR,
+      );
+      sendJson(res, 200, { policy });
+      return;
+    }
     if (segments[0] === "api") {
       routeReadModels(wg, memoryReader, method, segments, url, res);
       return;
@@ -1240,7 +1281,12 @@ async function routeTickets(
       // (ready_for_merge -> done). Skips silently when unconfigured.
       let merge: { triggered: boolean; pid: number | null; skipped?: string } | undefined;
       const number = result.ticket.number;
-      if (number !== null) {
+      // GRADUATED-AUTONOMY (Spec 2, Phase 3): the MERGE chokepoint. autonomyMergeAllowed
+      // falls back to today's merge default (fire post-approve; the mergeRunner still
+      // enforces DISPATCH_MERGE_CMD, unchanged), so with NO policy row this is
+      // byte-identical — a human REST approval always auto-merges as before. A
+      // mode='auto' merge policy is an additional, explicit allow-path, never a loosening.
+      if (number !== null && wg.autonomyMergeAllowed(result.ticket)) {
         merge = mergeRunner.trigger({ ticketNumber: number });
       }
       sendJson(res, 200, {

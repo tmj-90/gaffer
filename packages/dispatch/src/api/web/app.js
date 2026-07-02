@@ -4582,15 +4582,18 @@ async function renderSettings() {
   // Load the env-override settings plus the crew idle-loop config + the repos and
   // scope nodes the idle-loop target picker needs. Best-effort on the extras: a
   // failure there must not blank the whole Settings page.
-  const [{ settings }, idleLoopsRes, reposRes, nodesRes, autonomyRecRes] = await Promise.all([
-    api("GET", "/api/settings"),
-    api("GET", "/api/idle-loops").catch(() => null),
-    api("GET", "/repositories").catch(() => ({ repositories: [] })),
-    api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
-    // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
-    // blank the page if the endpoint is unavailable.
-    api("GET", "/api/autonomy/recommendations").catch(() => null),
-  ]);
+  const [{ settings }, idleLoopsRes, reposRes, nodesRes, autonomyRecRes, autonomyPolRes] =
+    await Promise.all([
+      api("GET", "/api/settings"),
+      api("GET", "/api/idle-loops").catch(() => null),
+      api("GET", "/repositories").catch(() => ({ repositories: [] })),
+      api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
+      // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
+      // blank the page if the endpoint is unavailable.
+      api("GET", "/api/autonomy/recommendations").catch(() => null),
+      // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies.
+      api("GET", "/api/autonomy/policies").catch(() => null),
+    ]);
   const all = Array.isArray(settings) ? settings : [];
   const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
   const repos = reposRes.repositories || [];
@@ -4599,6 +4602,8 @@ async function renderSettings() {
     autonomyRecRes && Array.isArray(autonomyRecRes.recommendations)
       ? autonomyRecRes.recommendations
       : [];
+  const autonomyPolicies =
+    autonomyPolRes && Array.isArray(autonomyPolRes.policies) ? autonomyPolRes.policies : [];
 
   const wrap = el("div", { class: "view settings-view" });
   wrap.appendChild(viewHead("Settings", all.length ? `${all.length}` : null));
@@ -4624,9 +4629,15 @@ async function renderSettings() {
   // Autonomy dial — the headline: how many human gates are open right now.
   wrap.appendChild(autonomyDial(all));
 
-  // GRADUATED-AUTONOMY (Spec 2, Phase 2): advisory recommendations backed by the
-  // review track record. Read-only — no enable action yet (Phase 3 adds it).
-  const recPanel = autonomyRecommendationsPanel(autonomyRecs);
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies, each with a
+  // one-click reversible OFF. Rendered above the suggestions so the active posture is
+  // the first thing an operator sees.
+  const polPanel = autonomyPoliciesPanel(autonomyPolicies);
+  if (polPanel) wrap.appendChild(polPanel);
+
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations backed by the review
+  // track record — each is now an ENABLE action (evidence + explicit confirm → POST).
+  const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies);
   if (recPanel) wrap.appendChild(recPanel);
 
   // edit registry: key → { def, read() } for non-locked inputs, so Save collects
@@ -4729,18 +4740,53 @@ function autonomyDial(all) {
   ]);
 }
 
+/** Human label for an autonomy gate. */
+function autonomyGateLabel(g) {
+  if (g === "merge") return "Auto-merge";
+  if (g === "memory") return "Auto-memory";
+  return "Auto-approve";
+}
+
+/** Is (repo × risk × gate) already enabled as auto? Used to hide a redundant Enable. */
+function isPolicyActive(policies, repoId, riskLevel, gate) {
+  return (
+    Array.isArray(policies) &&
+    policies.some(
+      (p) =>
+        p.repo_id === repoId &&
+        p.risk_level === riskLevel &&
+        p.gate === gate &&
+        p.mode === "auto",
+    )
+  );
+}
+
 /**
- * GRADUATED-AUTONOMY (Spec 2, Phase 2): advisory recommendations panel.
- *
- * Read-only: it surfaces "you've approved N of M low-risk deliveries in api-repo
- * unchanged — consider auto-merge for risk=low" backed by the real review track
- * record. NO enable action yet — Phase 3 adds the explicit-confirm enablement + the
- * policy table. Returns null when there's nothing worth recommending (below the
- * sample floor / rate threshold), so the panel simply doesn't appear.
+ * POST an autonomy policy change and re-render the Settings view from the server's
+ * fresh state (so the active-policies list + suggestions reflect reality). Security:
+ * the server re-checks the explicit confirm on enable; this is just the transport.
  */
-function autonomyRecommendationsPanel(recs) {
+function submitAutonomyPolicy(btn, busyLabel, body, okMsg) {
+  runAsyncAction(btn, busyLabel, async () => {
+    await api("POST", "/api/autonomy/policy", body);
+    toast(okMsg, { ok: true });
+    router();
+  });
+}
+
+/**
+ * GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations panel — now with an
+ * ENABLE action per item.
+ *
+ * Each suggestion surfaces "you've approved N of M low-risk deliveries in api-repo
+ * unchanged — consider auto-merge for risk=low" backed by the real review track
+ * record. Clicking Enable reveals the evidence (already shown) + an EXPLICIT CONFIRM
+ * step (the LOCKED trust-boundary posture), then POSTs the policy with confirm:true.
+ * An item already enabled as auto shows an "Enabled" chip instead of the action.
+ * Returns null when there's nothing to recommend, so the panel simply doesn't appear.
+ */
+function autonomyRecommendationsPanel(recs, policies) {
   if (!Array.isArray(recs) || recs.length === 0) return null;
-  const gateLabel = (g) => (g === "merge" ? "Auto-merge" : "Auto-approve");
   return el("div", { class: "card panel autonomy-recs" }, [
     el("div", { class: "ar-head" }, [
       icon("spark", "ar-ico"),
@@ -4749,31 +4795,142 @@ function autonomyRecommendationsPanel(recs) {
         el(
           "p",
           { class: "section-note dim" },
-          "Based on your review track record. Advisory only — nothing changes until you enable it.",
+          "Based on your review track record. Advisory only — nothing changes until you explicitly enable it.",
         ),
       ]),
     ]),
     el(
       "ul",
       { class: "ar-list" },
-      recs.map((r) => {
-        const confPct = Math.round((Number(r.confidence) || 0) * 100);
-        const reasons = Array.isArray(r.reasons) ? r.reasons : [];
-        return el("li", { class: "ar-item" }, [
+      recs.map((r) => autonomyRecItem(r, policies)),
+    ),
+  ]);
+}
+
+/** One recommendation row with its inline evidence + explicit enable/confirm flow. */
+function autonomyRecItem(r, policies) {
+  const confPct = Math.round((Number(r.confidence) || 0) * 100);
+  const reasons = Array.isArray(r.reasons) ? r.reasons : [];
+  const active = isPolicyActive(policies, r.repoId, r.riskLevel, r.gate);
+
+  // The action zone toggles between [Enable] and an inline confirm panel so the
+  // operator must take a deliberate second step, with the evidence still on screen.
+  const action = el("div", { class: "ar-action" });
+  const renderEnable = () => {
+    action.textContent = "";
+    const enableBtn = el("button", { class: "btn small", type: "button" }, [
+      icon("check"),
+      el("span", {}, `Enable ${autonomyGateLabel(r.gate).toLowerCase()}`),
+    ]);
+    enableBtn.addEventListener("click", renderConfirm);
+    action.appendChild(enableBtn);
+  };
+  const renderConfirm = () => {
+    action.textContent = "";
+    const confirmBtn = el("button", { class: "btn small primary", type: "button" }, [
+      icon("check"),
+      el("span", {}, "Confirm — I've reviewed the evidence"),
+    ]);
+    const cancelBtn = el("button", { class: "btn small ghost", type: "button" }, "Cancel");
+    cancelBtn.addEventListener("click", renderEnable);
+    confirmBtn.addEventListener("click", () =>
+      submitAutonomyPolicy(
+        confirmBtn,
+        "Enabling…",
+        {
+          repo_id: r.repoId,
+          risk_level: r.riskLevel,
+          gate: r.gate,
+          mode: "auto",
+          confirm: true,
+        },
+        `Enabled ${autonomyGateLabel(r.gate).toLowerCase()} for risk=${r.riskLevel} in ${r.repoName || "repo"}.`,
+      ),
+    );
+    action.appendChild(
+      el("div", { class: "ar-confirm" }, [
+        el(
+          "p",
+          { class: "ar-confirm-note" },
+          `This grants ${autonomyGateLabel(r.gate).toLowerCase()} for risk=${r.riskLevel} in ${r.repoName || "this repo"}. Reversible any time.`,
+        ),
+        el("div", { class: "btn-row" }, [confirmBtn, cancelBtn]),
+      ]),
+    );
+  };
+  if (active) {
+    action.appendChild(el("span", { class: "ar-enabled-chip" }, [icon("check"), "Enabled"]));
+  } else {
+    renderEnable();
+  }
+
+  return el("li", { class: "ar-item" }, [
+    el("div", { class: "ar-item-head" }, [
+      el("span", { class: `ar-gate ar-gate-${r.gate}` }, autonomyGateLabel(r.gate)),
+      el("span", { class: "ar-risk" }, `risk=${r.riskLevel}`),
+      el("span", { class: "ar-repo" }, r.repoName || ""),
+      el("span", { class: "ar-conf dim tabnum", title: "confidence" }, `${confPct}%`),
+    ]),
+    el("p", { class: "ar-headline" }, r.headline || ""),
+    reasons.length
+      ? el(
+          "ul",
+          { class: "ar-reasons dim" },
+          reasons.map((reason) => el("li", {}, reason)),
+        )
+      : null,
+    action,
+  ]);
+}
+
+/**
+ * GRADUATED-AUTONOMY (Spec 2, Phase 3): the active-policies panel — every enabled
+ * (mode=auto) autonomy policy with a one-click, reversible OFF. Returns null when
+ * nothing is enabled, so the panel only appears once the operator has opted in.
+ */
+function autonomyPoliciesPanel(policies) {
+  const active = (Array.isArray(policies) ? policies : []).filter((p) => p.mode === "auto");
+  if (active.length === 0) return null;
+  return el("div", { class: "card panel autonomy-policies" }, [
+    el("div", { class: "ar-head" }, [
+      icon("lock", "ar-ico"),
+      el("div", {}, [
+        el("h2", { class: "ar-title" }, "Active autonomy"),
+        el(
+          "p",
+          { class: "section-note dim" },
+          "The factory acts without you at these chokepoints. Turn any off to re-gate it immediately.",
+        ),
+      ]),
+    ]),
+    el(
+      "ul",
+      { class: "ar-list" },
+      active.map((p) => {
+        const offBtn = el("button", { class: "btn small ghost", type: "button" }, el("span", {}, "Turn off"));
+        offBtn.addEventListener("click", () =>
+          submitAutonomyPolicy(
+            offBtn,
+            "Turning off…",
+            { repo_id: p.repo_id, risk_level: p.risk_level, gate: p.gate, mode: "off" },
+            `Turned off ${autonomyGateLabel(p.gate).toLowerCase()} for risk=${p.risk_level} in ${p.repo_name || "repo"}.`,
+          ),
+        );
+        return el("li", { class: "ar-item ap-item" }, [
           el("div", { class: "ar-item-head" }, [
-            el("span", { class: `ar-gate ar-gate-${r.gate}` }, gateLabel(r.gate)),
-            el("span", { class: "ar-risk" }, `risk=${r.riskLevel}`),
-            el("span", { class: "ar-repo" }, r.repoName || ""),
-            el("span", { class: "ar-conf dim tabnum", title: "confidence" }, `${confPct}%`),
+            el("span", { class: `ar-gate ar-gate-${p.gate}` }, autonomyGateLabel(p.gate)),
+            el("span", { class: "ar-risk" }, `risk=${p.risk_level}`),
+            el("span", { class: "ar-repo" }, p.repo_name || ""),
+            el("span", { class: "ap-mode" }, "auto"),
           ]),
-          el("p", { class: "ar-headline" }, r.headline || ""),
-          reasons.length
+          p.enabled_by
             ? el(
-                "ul",
+                "p",
                 { class: "ar-reasons dim" },
-                reasons.map((reason) => el("li", {}, reason)),
+                `enabled by ${p.enabled_by}${p.enabled_at ? ` · ${p.enabled_at.slice(0, 10)}` : ""}`,
               )
             : null,
+          el("div", { class: "ar-action" }, [offBtn]),
         ]);
       }),
     ),

@@ -708,3 +708,22 @@ export const runsQuery = z.object({
     .default(RUNS_DEFAULT_LIMIT),
 });
 export type RunsQuery = z.infer<typeof runsQuery>;
+
+// --- Graduated Autonomy policy (Spec 2, Phase 3) ---------------------------
+
+/**
+ * Body for POST /api/autonomy/policy — enable/disable a per-(repo × risk × gate)
+ * autonomy policy (SECURITY-CRITICAL). `repo_id` names the target repo; `risk_level`
+ * and `gate` scope the chokepoint; `mode` is off | recommend | auto. `confirm` is the
+ * operator's EXPLICIT acknowledgement that they reviewed the evidence — REQUIRED to
+ * enable (mode !== 'off'); the service re-checks it (the trust boundary). Disabling
+ * (mode='off') is always permitted (fail-safe reversal).
+ */
+export const autonomyPolicyBody = z.object({
+  repo_id: z.string().min(1).max(200),
+  risk_level: z.enum(RISK_LEVELS),
+  gate: z.enum(["approve", "merge", "memory"]),
+  mode: z.enum(["off", "recommend", "auto"]),
+  confirm: z.boolean().default(false),
+});
+export type AutonomyPolicyBody = z.infer<typeof autonomyPolicyBody>;

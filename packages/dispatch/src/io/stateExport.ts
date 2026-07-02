@@ -87,6 +87,11 @@ export const EXPORT_TABLES = [
   // board diagnostics — the "why did #N fail" history is exactly the kind of asset
   // the README promises you carry between machines, so it IS part of the bundle.
   "rework_attempts",
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): the per-(repo × risk × gate) autonomy
+  // enablement + its evidence snapshot (FK to repositories, so it sorts after that
+  // root). A durable, security-relevant operator decision worth carrying between
+  // machines (and auditable), so it IS part of the bundle.
+  "autonomy_policy",
 ] as const;
 
 export type ExportTable = (typeof EXPORT_TABLES)[number];
@@ -118,6 +123,7 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   external_refs: "id",
   ticket_dependencies: "ticket_id, depends_on_ticket_id",
   rework_attempts: "id",
+  autonomy_policy: "id",
 };
 
 /** A single table's rows, each row a column→value map (SQLite scalar values). */

@@ -111,6 +111,15 @@ export interface ReviewGateServiceDeps {
    * blocks an approval.
    */
   readonly approvalShaResolver?: ApprovalShaResolver;
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate that answers
+   * "does an explicit mode='auto' approve policy cover this ticket (its risk × ALL
+   * its write repos)?" NO env read here — the P0 check below ORs it with the env
+   * flag, so the policy is only ever an ADDITIONAL allow-path. `undefined` (the
+   * default) means "no policy layer wired" ⇒ the gate is exactly the pre-Phase-3
+   * pure env-flag check. See services/autonomyPolicyService.ts.
+   */
+  readonly policyAllowsAgentApprove?: (ticket: Ticket) => boolean;
 }
 
 export class ReviewGateService {
@@ -127,6 +136,7 @@ export class ReviewGateService {
     | ((ticket: import("../domain/types.js").Ticket, detail: string) => void)
     | undefined;
   private readonly approvalShaResolver: ApprovalShaResolver | undefined;
+  private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
 
   constructor(deps: ReviewGateServiceDeps) {
     this.db = deps.db;
@@ -140,6 +150,7 @@ export class ReviewGateService {
     this.testingEnabledOverride = deps.testingEnabledOverride;
     this.onTicketParked = deps.onTicketParked;
     this.approvalShaResolver = deps.approvalShaResolver;
+    this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
   }
 
   // ---------------------------------------------------------------------------
@@ -155,9 +166,16 @@ export class ReviewGateService {
    * removes this gate (their machine, their call).
    */
   approveReview(ticketRef: string, actor: Actor): TransitionResult {
-    // P0 authz — do NOT weaken or remove this check.
+    // P0 authz — do NOT weaken or remove this check. An agent may approve ONLY when
+    // the operator opted in via DISPATCH_ALLOW_AGENT_APPROVE=1 (the pre-Phase-3 flag,
+    // FIRST and unchanged) OR — Graduated Autonomy (Spec 2, Phase 3) — an EXPLICIT
+    // mode='auto' approve policy covers this ticket's risk × every write repo. The
+    // policy is only ever an ADDITIONAL allow-path: with no policy row this reduces to
+    // exactly the pure env-flag gate (byte-identical to today). system is never permitted.
     const agentApproveAllowed =
-      actor.type === "agent" && process.env.DISPATCH_ALLOW_AGENT_APPROVE === "1";
+      actor.type === "agent" &&
+      (process.env.DISPATCH_ALLOW_AGENT_APPROVE === "1" ||
+        this.policyGrantsAgentApprove(ticketRef));
     if (actor.type !== "human" && actor.type !== "admin" && !agentApproveAllowed) {
       throw new DispatchError(
         "ACTOR_NOT_PERMITTED",
@@ -216,6 +234,23 @@ export class ReviewGateService {
       return approvalUnchanged(shas.deliverySha, shas.mergeSha);
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 3): does an explicit mode='auto' approve policy
+   * cover this ticket (its risk × ALL its write repos)? Pure policy check — NO env
+   * read (the P0 gate ORs this with the env flag). FAIL-CLOSED: an absent predicate,
+   * an unresolvable ticket, or ANY throw yields false, so a policy-probe failure can
+   * never grant an approval it shouldn't.
+   */
+  private policyGrantsAgentApprove(ticketRef: string): boolean {
+    if (!this.policyAllowsAgentApprove) return false;
+    try {
+      const ticket = this.ticketSvc.resolveTicket(ticketRef);
+      return this.policyAllowsAgentApprove(ticket);
+    } catch {
+      return false;
     }
   }
 

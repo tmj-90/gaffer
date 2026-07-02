@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -597,4 +597,46 @@ CREATE TABLE IF NOT EXISTS specs (
   frozen_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_specs_status ON specs(status, created_at DESC);
+
+-- ============================================================================
+-- Graduated Autonomy policy (Spec 2, Phase 3). Additive, schema_version 19.
+--
+-- SECURITY-CRITICAL. One row per (repo x risk_level x gate) records the operator's
+-- EXPLICIT, EVIDENCE-BACKED decision about how much the factory may do without a
+-- human at that chokepoint. The gate is the enforcement point (approve = agent may
+-- self-approve a review; merge = auto-merge on approve; memory = deferred). The mode
+-- is off | recommend | auto.
+--
+-- INVARIANT (fail-closed): a row NEVER loosens the default. Enforcement (see
+-- services/autonomyPolicyService.ts) treats ONLY a mode=auto row as an ADDITIONAL
+-- allow-path layered on top of the existing env flag; a missing row, or a
+-- mode=off/recommend row, falls through to the env flag -- so with NO policy row
+-- the behaviour is byte-identical to the pre-Phase-3 pure-env-flag gate. mode=off
+-- is the reversible disable (flip a row back to off to re-gate).
+--
+-- evidence_json snapshots the recommendation evidence (reasons + sample counts) that
+-- was shown to the operator at enable time -- the audit trail for WHY auto was granted.
+-- enabled_by / enabled_at stamp who confirmed it and when.
+--
+-- repo_id FK CASCADEs so a deleted repo takes its policies with it. UNIQUE
+-- (repo_id, risk_level, gate) makes the upsert idempotent. A brand-new standalone
+-- table created idempotently by CREATE TABLE IF NOT EXISTS — no ADD COLUMN migration
+-- needed (like specs / runs / plan_sessions).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS autonomy_policy (
+  id            TEXT PRIMARY KEY,
+  repo_id       TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+  risk_level    TEXT NOT NULL CHECK (risk_level IN ('low','medium','high','critical')),
+  gate          TEXT NOT NULL CHECK (gate IN ('approve','merge','memory')),
+  mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off','recommend','auto')),
+  enabled_by    TEXT,
+  enabled_at    TEXT,
+  evidence_json TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (repo_id, risk_level, gate)
+);
+CREATE INDEX IF NOT EXISTS idx_autonomy_policy_lookup
+  ON autonomy_policy(repo_id, risk_level, gate);
 `;

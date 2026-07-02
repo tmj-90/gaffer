@@ -219,6 +219,13 @@ export function migrate(db: Db): void {
   // column) and idempotent on an already-migrated one. Existing rows inherit NULL
   // (⇒ authored outside a spec-driven build), which is exactly the backfill.
   alterAcAddSpecClauseId(db);
+  // Graduated Autonomy Phase 3 (v18→v19): the `autonomy_policy` table — the
+  // per-(repo × risk × gate) enablement store that gates agent self-approve / merge.
+  // A brand-new standalone table (FK to repositories, CASCADE) created idempotently
+  // by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS (like specs / runs / plan_sessions),
+  // so — adding no column to a pre-existing table — it needs no ADD COLUMN migration.
+  // No-op on a fresh DB. SECURITY: an absent table/row means the enforcement falls
+  // back to the existing env flag, so a not-yet-migrated DB is byte-identical to today.
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +

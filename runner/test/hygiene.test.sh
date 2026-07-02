@@ -187,7 +187,7 @@ mkdir -p "$(dirname "$EXCL")"
 printf 'node_modules\n' > "$EXCL"   # repo already excludes node_modules for its own reasons
 ( cd "$REPO" && gaffer_exclude_runner_config "$REPO" )
 missing=""
-for e in '.claude/' 'CLAUDE.factory.md' '.mcp.json' 'mcp-runtime.json' 'dist/' 'coverage/'; do
+for e in '.claude/' 'CLAUDE.factory.md' '.mcp.json' 'mcp-runtime*.json' 'dist/' 'coverage/'; do
   grep -qxF "$e" "$EXCL" || missing="$missing $e"
 done
 [ -z "$missing" ] && ok "exclude helper adds every entry even when node_modules pre-present" \

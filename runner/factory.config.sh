@@ -325,9 +325,9 @@ export GAFFER_REWORK_BUDGET_USD
 # per-ticket rework budget, GAFFER_REWORK_BUDGET_USD) are exhausted is the ticket
 # parked to the VISIBLE `blocked` column WITH the branch + full feedback trail (a
 # structured `rework_exhausted` reason) — never silently discarded, never lost to
-# the board. Set to 1 to disable retry (one attempt, then park).
-: "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"   # total delivery attempts per tick (≥1)
-export GAFFER_MAX_DELIVERY_ATTEMPTS
+# the board. Set to 1 to disable retry (one attempt, then park). The cap itself
+# (GAFFER_MAX_DELIVERY_ATTEMPTS, total attempts per tick, ≥1) is defined + exported
+# once above, alongside the claim TTL it feeds — this guard only consumes it.
 
 # gaffer_ticket_rework_spend <ticket>
 # Sum this ticket's measured delivery spend (total_cost_usd) from the usage ledger
@@ -934,9 +934,10 @@ gaffer_usage_record() {
 #   *.events.jsonl      — any leaked events log
 #   .claude/            — project-local Claude config injected per worktree (never deliver)
 #   CLAUDE.factory.md   — the factory's own agent brief (never deliver)
-#   .mcp.json / mcp-runtime.json — runtime MCP wiring (never deliver)
+#   .mcp.json / mcp-runtime — runtime MCP wiring (never deliver). The
+#     `mcp-runtime` substring covers the per-tick `mcp-runtime.<pid>.json` files.
 # MUST match the library fallback in lib/hygiene.sh — keep the two in sync.
-: "${HYGIENE_FORBIDDEN_PATHS:=node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.json}"
+: "${HYGIENE_FORBIDDEN_PATHS:=node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime}"
 
 # (2) MINIMALISM hard post-condition. Every completed delivery MUST record a
 # smallest-change note (+ files/lines counts computed from the diff, why-each-file,

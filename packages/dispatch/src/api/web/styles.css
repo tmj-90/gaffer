@@ -15,57 +15,57 @@
      Single source of truth for tokens — no raw hex outside :root.
      =========================================================================== */
 
-  /* --- surfaces: warm editorial paper → barely-there panels --------------- */
-  --bg: #f6f4ef; /* the page — warm paper */
-  --bg-2: #f1eee7;
-  --bg-3: #ece8df;
-  --surface: #fcfbf7; /* a panel is a whisper above the paper */
-  --surface-2: #ffffff;
-  --surface-3: #f1eee7;
-  --surface-4: #ece8df;
-  --line: rgba(22, 20, 15, 0.14); /* ink hairline — structure lives here */
-  --line-strong: rgba(22, 20, 15, 0.26);
-  --line-soft: rgba(22, 20, 15, 0.1);
-  --line-hair: rgba(22, 20, 15, 0.06);
-  --grid-line: rgba(22, 20, 15, 0.022); /* faint drafting underlay */
-  --grid-line-2: rgba(22, 20, 15, 0.038);
+  /* --- surfaces: warm near-black instrument panels ------------------------ */
+  --bg: #0b0a07; /* the console — warm near-black */
+  --bg-2: #0d0b08;
+  --bg-3: #080705; /* recessed wells (charts, code, terminals) */
+  --surface: #0f0d09; /* a panel — a whisper above the ink */
+  --surface-2: #12100b;
+  --surface-3: #1a160e;
+  --surface-4: #221d13;
+  --line: rgba(237, 230, 211, 0.12); /* phosphor hairline — structure lives here */
+  --line-strong: rgba(237, 230, 211, 0.2);
+  --line-soft: rgba(237, 230, 211, 0.07);
+  --line-hair: rgba(237, 230, 211, 0.045);
+  --grid-line: rgba(237, 230, 211, 0.028); /* oscilloscope graticule underlay */
+  --grid-line-2: rgba(237, 230, 211, 0.05);
 
-  /* --- brand: surgical editorial red (system) + warm ochre (LIVE / now) --- */
-  --accent: #e5371f; /* editorial red — the system signal, used sparingly */
-  --accent-bright: #f0573f;
-  --accent-press: #b72712;
-  --accent-soft: rgba(229, 55, 31, 0.08);
-  --accent-line: rgba(229, 55, 31, 0.32);
-  --accent-glow: rgba(229, 55, 31, 0.28);
-  --amber: #b26a00; /* warm ochre — the live lamp / "now / attention" */
-  --amber-bright: #d98a1e;
-  --amber-soft: rgba(178, 106, 0, 0.12);
-  --amber-line: rgba(178, 106, 0, 0.4);
-  --amber-glow: rgba(178, 106, 0, 0.3);
+  /* --- signal: amber IS the action; everything else is status ------------- */
+  --accent: #ffb224; /* amber phosphor — your action / focus (one per view) */
+  --accent-bright: #ffd37a;
+  --accent-press: #e09410;
+  --accent-soft: rgba(255, 178, 36, 0.12);
+  --accent-line: rgba(255, 178, 36, 0.4);
+  --accent-glow: rgba(255, 178, 36, 0.5);
+  --amber: #ffb224; /* the LIVE lamp / "now / attention" */
+  --amber-bright: #ffd37a;
+  --amber-soft: rgba(255, 178, 36, 0.12);
+  --amber-line: rgba(255, 178, 36, 0.4);
+  --amber-glow: rgba(255, 178, 36, 0.5);
 
-  /* --- text: warm near-black ink ------------------------------------------ */
-  --text: #16140f;
-  --text-dim: #4a463d;
-  --text-faint: #7c766a;
-  --text-ghost: #a39c8e;
-  --on-accent: #fdf6f3;
-  --white: #ffffff;
+  /* --- text: warm cream on ink (AAA — fixes the old faint-on-paper bug) ---- */
+  --text: #ede6d3;
+  --text-dim: #b9b09a;
+  --text-faint: #8c8372; /* ~5:1 on ink; was ~2.3:1 on paper */
+  --text-ghost: #6e6553;
+  --on-accent: #1c1305; /* ink text sitting on amber */
+  --white: #f4eee0;
 
   /* --- status ------------------------------------------------------------- */
-  --ok: #2f6b4f;
-  --ok-soft: rgba(47, 107, 79, 0.1);
-  --warn: #b26a00;
-  --warn-soft: rgba(178, 106, 0, 0.12);
-  --danger: #c0341a;
-  --danger-soft: rgba(192, 52, 26, 0.1);
-  --info: #3c6e8f;
-  --info-soft: rgba(60, 110, 143, 0.1);
-  --violet: #6e5a8c;
-  --violet-soft: rgba(110, 90, 140, 0.12);
+  --ok: #7ed08a;
+  --ok-soft: rgba(126, 208, 138, 0.12);
+  --warn: #ffb224;
+  --warn-soft: rgba(255, 178, 36, 0.12);
+  --danger: #ff6a54;
+  --danger-soft: rgba(255, 106, 84, 0.12);
+  --info: #6fd3d0;
+  --info-soft: rgba(111, 211, 208, 0.12);
+  --violet: #c7a6ff;
+  --violet-soft: rgba(199, 166, 255, 0.14);
 
-  /* --- type: Fraunces editorial display · Inter body · JetBrains Mono telemetry */
-  --display: "Fraunces", Georgia, "Times New Roman", serif;
-  --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* --- type: Space Grotesk display · JetBrains Mono for everything else ---- */
+  --display: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --sans: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --step--1: 0.82rem;
   --step-0: 0.94rem;
@@ -93,26 +93,26 @@
   --s-8: 64px;
 
   /* --- shape: crisp editorial — square-ish, structure from rules --------- */
-  --r: 6px;
-  --r-sm: 4px;
-  --r-lg: 10px;
+  --r: 4px;
+  --r-sm: 3px;
+  --r-lg: 6px;
   --r-pill: 999px;
 
   /* --- depth: ink-on-paper — minimal lift, hairlines do the work --------- */
   --bevel: none;
-  --shadow: 0 1px 2px rgba(22, 20, 15, 0.05);
-  --shadow-lg: 0 12px 40px -22px rgba(22, 20, 15, 0.22);
-  --elev-0: 0 1px 1px rgba(22, 20, 15, 0.04);
-  --elev-1: 0 1px 2px rgba(22, 20, 15, 0.06), 0 8px 24px -18px rgba(22, 20, 15, 0.18);
-  --elev-2: 0 16px 48px -24px rgba(22, 20, 15, 0.24);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 30px 80px -30px rgba(0, 0, 0, 0.8);
+  --elev-0: 0 0 0 1px rgba(237, 230, 211, 0.04);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 32px -22px rgba(0, 0, 0, 0.7);
+  --elev-2: 0 30px 70px -30px rgba(0, 0, 0, 0.8);
   --ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
   --glow: 0 0 0 1px var(--accent-line);
   --glow-amber: 0 0 0 1px var(--amber-line);
 
   /* --- motion: cinematic, instrument-grade ------------------------------- */
   --ease: cubic-bezier(0.16, 1, 0.3, 1); /* expressive ease-out */
-  --ease-io: cubic-bezier(0.65, 0, 0.35, 1); /* camera ease-in-out */
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* slight overshoot */
+  --ease-io: cubic-bezier(0.5, 1.5, 0.5, 1); /* rail fly-through */
+  --ease-spring: cubic-bezier(0.34, 1.42, 0.5, 1); /* overshoot — entrances */
   --fast: 140ms;
   --med: 240ms;
   --slow: 420ms;

@@ -99,8 +99,8 @@ grep -q 'SIG{INT}  = sub { $reap->(130) }' "$cfg" \
 grep -q 'kill "KILL", -$pid' "$cfg" \
   && ok "reap escalates TERM -> KILL on the process group" \
   || fail "reap does not escalate to SIGKILL"
-grep -Eq 'timeout -s TERM -k 10' "$cfg" \
-  && ok "GNU/BSD timeout fallbacks escalate with -k" \
+grep -Eq 'timeout -s TERM -k "\$GAFFER_REAP_GRACE"' "$cfg" \
+  && ok "GNU/BSD timeout fallbacks escalate with -k (configurable grace)" \
   || fail "timeout fallbacks missing -k escalation"
 
 echo "== AC5: tick.sh wires the exit-trap reaper =="

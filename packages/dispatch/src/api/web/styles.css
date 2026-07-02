@@ -7938,6 +7938,41 @@ textarea:focus-visible,
   background: var(--bg-3);
 }
 
+/* mobile top bar: declutter so the wordmark isn't truncated. Nav lives in the
+   bottom bar on phones, so drop the ⌘K search chip and shrink the LIVE pill to
+   a compact dot + label (no border, no tick counter). */
+@media (max-width: 639px) {
+  .appbar {
+    gap: var(--s-2);
+  }
+  .appbar .brand {
+    flex: 0 0 auto;
+    min-width: auto;
+    margin-right: var(--s-2);
+    padding-right: 0;
+    border-right: none;
+  }
+  .appbar .brand-name {
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .appbar .cmdk-trigger {
+    display: none;
+  }
+  .appbar .rail-status {
+    border: none;
+    background: transparent;
+    padding: 2px 4px;
+    gap: 6px;
+  }
+  .appbar .rail-status-meta {
+    display: none;
+  }
+  .appbar .logout-btn {
+    padding: 6px 9px;
+  }
+}
+
 /* terminal prompt line (the old footer) */
 .footer {
   font-family: var(--mono);

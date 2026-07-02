@@ -882,7 +882,7 @@ function startLiveTick() {
     if (prefersReducedMotion()) return;
     t.classList.add("tick-flash");
     setTimeout(() => t.classList.remove("tick-flash"), 200);
-  }, 1700);
+  }, 6000);
 }
 
 function syncNav() {

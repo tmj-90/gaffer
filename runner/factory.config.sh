@@ -99,6 +99,18 @@ GAFFER_IMPL_MODEL_FLAG=""; [ -n "${GAFFER_IMPL_MODEL:-}" ] && GAFFER_IMPL_MODEL_
 # GAFFER_BUDGET_USD — operator spending ceiling in USD for the factory's total
 #   spend (summed from the usage-ledger). Unset or 0 = unlimited (the default).
 #   Example: GAFFER_BUDGET_USD=5.00 (stop routing to expensive models at $5).
+#
+#   TECH DEBT: this is a CUMULATIVE LIFETIME cap (total ledger spend), not per-run
+#   or per-ticket — GAFFER_BUDGET_REMAINING = GAFFER_BUDGET_USD - lifetime_ledger.
+#   So on a .gaffer that already has prior spend, a value below the lifetime total
+#   leaves $0 headroom and pauses the NEXT delivery on budget_cap immediately
+#   (observed: a $3 cap paused a $0.43 delivery mid-flight). It conflates two
+#   different jobs: a lifetime governor (fine here) vs. "don't let ONE delivery
+#   run away". The mid-delivery pause-on-cap should instead key off a PER-TICKET
+#   budget (~$10 default, reusing the per-ticket delivery_budget_usd field),
+#   independent of lifetime total. Tracked as tech debt — do NOT set a low
+#   GAFFER_BUDGET_USD on an existing factory expecting per-delivery semantics.
+#   (On a Max/Pro plan the $ figure is an API-equivalent estimate, not a charge.)
 : "${GAFFER_BUDGET_USD:=}"
 export GAFFER_BUDGET_USD
 

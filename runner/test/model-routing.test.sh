@@ -159,6 +159,37 @@ else
   fi
 fi
 
+echo "== AC11: diff SIZE is measured from the real patch, not a --stat summary =="
+# A delivery worktree with a LARGE uncommitted diff must route STRONGER (diffBytes
+# high → difficulty high → +1 tier); a tiny diff must NOT escalate. This proves the
+# #4 fix: the old `git diff --stat=10000 | wc -c` measured the STAT SUMMARY (~60 B for
+# any change), so a 40 KB diff never crossed HIGH_DIFF_BYTES and "big diff → stronger"
+# never fired. gaffer_route_model takes the worktree as its 7th positional arg.
+if command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  DIFF_WT="$WORK/diff-wt"
+  git init -q -b main "$DIFF_WT"
+  git -C "$DIFF_WT" config user.email gaffer@test; git -C "$DIFF_WT" config user.name gaffer-test
+  printf 'base\n' > "$DIFF_WT/f.txt"
+  git -C "$DIFF_WT" add -A && git -C "$DIFF_WT" commit -q -m base
+  # >40 KB working-tree change vs HEAD (crosses HIGH_DIFF_BYTES=40000).
+  node -e 'process.stdout.write("a large line of accumulated change\n".repeat(2000))' > "$DIFF_WT/f.txt"
+  BIG_BYTES="$(git -C "$DIFF_WT" diff HEAD | wc -c | tr -d ' ')"
+  BIG="$(route implement medium 3 typescript 1 900 "$DIFF_WT")"
+  if [ "${BIG_BYTES:-0}" -gt 40000 ] && [ "$BIG" = opus ]; then
+    ok "large diff (${BIG_BYTES} B) → diffBytes high → routes stronger (opus)"
+  else
+    fail "large diff must route stronger (bytes=$BIG_BYTES model=$BIG; a --stat summary measures ~60 B)"
+  fi
+  # A tiny change carries no high signal → it must NOT escalate to the strong tier.
+  printf 'base2\n' > "$DIFF_WT/f.txt"
+  SMALL="$(route implement medium 3 typescript 1 900 "$DIFF_WT")"
+  [ "$SMALL" != opus ] \
+    && ok "small diff stays cheap — does NOT escalate to opus (got $SMALL)" \
+    || fail "small diff must not route stronger (got $SMALL)"
+else
+  ok "SKIP AC11 — git/node unavailable"
+fi
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"; exit 0

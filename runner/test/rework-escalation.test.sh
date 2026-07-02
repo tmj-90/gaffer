@@ -92,6 +92,10 @@ SPEND_SRC="$(extract_fn "$CFG" "gaffer_ticket_rework_spend" "}")"
 [ -n "$SPEND_SRC" ] && ok "B extracted gaffer_ticket_rework_spend from factory.config.sh (real source)" \
   || fail "B could not extract gaffer_ticket_rework_spend"
 eval "$SPEND_SRC"
+# The runtime exports this before the function can exist (factory.config.sh sets
+# it at source time); the extracted-function harness must mirror that contract.
+# The function parses the ledger via the ONE shared reader (lib/estimate.mjs).
+export GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/rework-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT

@@ -3,6 +3,7 @@ import { checkPostConditions, summarisePostConditionFailures } from "../safety/p
 import { classifyRootAccess, type RootSet } from "../safety/rootAccess.js";
 import { CrewError } from "../util/errors.js";
 import { buildContextPacket, type ContextPacket, type PacketWorkRepo } from "../context/packet.js";
+import { distillTicketIntent } from "../context/ticketIntent.js";
 import type { GitAdapter } from "../adapters/gitAdapter.js";
 import type { CrewConfig } from "../config/schema.js";
 import type { EventLog } from "../events/eventLog.js";
@@ -584,6 +585,39 @@ function runImplementationLoopInner(
         sourceTicketId: claim.ticketId,
       });
       events.record("lore_suggested", { ticketId: claim.ticketId, title: suggestion.title });
+    }
+  }
+
+  // Ticket → lore distillation (Track 1c). The ticket's product intent — WHY it
+  // was built, distilled from its title + AC — evaporates at close otherwise.
+  // Harvest a decision/requirement DRAFT so the "why" survives the ticket. Draft
+  // only (human-gated via `suggest_lore`); never auto-promoted. Runs regardless
+  // of whether the agent surfaced its own suggestions.
+  if (deps.config.memory.enabled) {
+    const repoName = packet.repositories[0]?.name ?? factory.name;
+    const distilled = distillTicketIntent(repoName, {
+      number: packet.ticket.number,
+      title: packet.ticket.title,
+      description: packet.ticket.description,
+      acceptanceCriteria: packet.acceptanceCriteria.map((ac) => ({
+        text: ac.text,
+        status: ac.status,
+      })),
+      ...(result.summary ? { outcomeSummary: result.summary } : {}),
+    });
+    for (const suggestion of distilled) {
+      deps.memory.suggestLore({
+        title: suggestion.title,
+        summary: suggestion.summary,
+        ...(suggestion.tags ? { tags: suggestion.tags } : {}),
+        ...(suggestion.kind ? { kind: suggestion.kind } : {}),
+        sourceTicketId: claim.ticketId,
+      });
+      events.record("ticket_intent_distilled", {
+        ticketId: claim.ticketId,
+        title: suggestion.title,
+        kind: suggestion.kind,
+      });
     }
   }
 

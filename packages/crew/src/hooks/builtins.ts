@@ -100,17 +100,21 @@ export class NotifyOnBlockedHook implements Hook {
 }
 
 /**
- * Prompts the agent to capture durable lore at the natural close of a unit of
- * work (`after_ticket_done`). Most knowledge an agent accrues — conventions,
- * gotchas, architectural facts, boundaries — never gets recorded because nothing
- * in the normal plan→build→test→review flow asks for it; the Memory views stay
- * empty as a result. This hook closes that gap by surfacing a once-per-ticket
- * reminder to call the Memory `suggest_lore` tool for any REUSABLE finding.
+ * Prompts the agent to harvest the ticket's PRODUCT INTENT — the "why" — at the
+ * natural close of a unit of work (`after_ticket_done`). A ticket's title, AC,
+ * decisions and reject-reasons carry the real reason the work exists and was
+ * built the way it was; that intent evaporates at close because nothing in the
+ * normal plan→build→test→review flow asks for it. The loop already distills a
+ * decision/requirement DRAFT from the ticket signals (see distillTicketIntent);
+ * this hook is the agent-facing nudge to add anything the distillation can't see
+ * (a rejected alternative, a constraint the human stated verbally) via the
+ * Memory `suggest_lore` tool — with an explicit `kind` (decision / requirement /
+ * non-goal for intent; convention / gotcha for the "how").
  *
  * It is advisory and gated: it only emits a warning + event (the agent decides
  * whether anything durable surfaced, and `suggest_lore` itself lands a DRAFT a
  * human approves). It never records lore directly and never blocks — honesty and
- * the gate are preserved. Reusable knowledge only: per-ticket trivia is noise.
+ * the gate are preserved. Capture WHY, not per-ticket trivia.
  */
 export class CaptureLoreReflectionHook implements Hook {
   readonly name = "builtin:capture-lore-reflection";
@@ -119,11 +123,13 @@ export class CaptureLoreReflectionHook implements Hook {
   run(input: HookInput): HookOutput {
     return normalizeHookOutput({
       warnings: [
-        "Reflect: did you learn a reusable convention, gotcha, decision, or " +
-          "boundary on this ticket? If so, call the Memory `suggest_lore` tool " +
-          "once (with repo, tags, a source URL, and confidence) so it enters the " +
-          "gated lore draft flow. Skip per-ticket trivia — capture only what the " +
-          "next agent should know before they start.",
+        "Reflect on WHY this was built this way: a decision + its rationale, a " +
+          "requirement it served, a non-goal it respected, or a rejected " +
+          "alternative. If any is durable and not already obvious from the " +
+          "ticket, call the Memory `suggest_lore` tool once with an explicit " +
+          "`kind` (decision/requirement/non-goal for intent; convention/gotcha " +
+          "for the how) so it enters the gated lore draft flow. Skip per-ticket " +
+          "trivia — capture only intent the next agent should start from.",
       ],
       events: [
         {

@@ -1083,16 +1083,16 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, ticketsRes, decisionsRes, costRes, bouncingRes] = await Promise.all(
-    [
+  const [{ summary }, activity, ticketsRes, decisionsRes, costRes, bouncingRes, humanQueueRes] =
+    await Promise.all([
       api("GET", "/api/dashboard"),
       api("GET", "/api/activity?limit=200"),
       api("GET", "/tickets").catch(() => ({ tickets: [] })),
       api("GET", "/decisions").catch(() => ({ decisions: [] })),
       api("GET", "/api/cost").catch(() => null),
       api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
-    ],
-  );
+      api("GET", "/api/human-queue").catch(() => ({ items: [], counts: { total: 0 } })),
+    ]);
 
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
@@ -1266,6 +1266,12 @@ async function renderOverview() {
     );
   }
 
+  // --- "What I own" — the operator's FIRST-CLASS lane (Track 2a) ------------
+  // Everything the HUMAN owns: decisions the agent delegated (WITH reasons),
+  // review sign-offs, and regulated ready-approvals / reviewer assignments —
+  // distinct from what the agent is churning (blocked/rework never appears here).
+  wrap.appendChild(whatIOwnPanel(humanQueueRes));
+
   // --- Development flow + Needs your attention (2-up) -----------------------
   wrap.appendChild(
     el("div", { class: "ov-grid ov-2" }, [
@@ -1338,6 +1344,60 @@ async function renderOverview() {
   );
 
   return wrap;
+}
+
+/**
+ * Track 2a "What I own": the operator's first-class lane. Surfaces the HUMAN's
+ * queue — the decisions/approvals the agent delegated to them — so the operator
+ * sees at a glance what is waiting on THEM, distinct from the board (what the
+ * agent is churning). Each row: what it is, the reason, its ticket, how long it
+ * has waited. A quiet, reassuring empty state when nothing is owed.
+ */
+function whatIOwnPanel(queue) {
+  const items = (queue && queue.items) || [];
+  const total = (queue && queue.counts && queue.counts.total) || items.length;
+  const card = el("div", { class: "card what-i-own", id: "what-i-own" }, [
+    el("div", { class: "panel-head" }, [
+      el("span", { class: "panel-title" }, [icon("lock"), "What I own"]),
+      el("span", { class: "panel-aux mono" }, String(total)),
+    ]),
+    el(
+      "p",
+      { class: "dim what-i-own-sub" },
+      "Decisions and approvals waiting on you — distinct from what the agent is churning.",
+    ),
+  ]);
+  if (!items.length) {
+    card.appendChild(el("div", { class: "empty-state" }, "Nothing is waiting on you right now."));
+    return card;
+  }
+  const well = el("div", { class: "own-well" });
+  items.forEach((it) => well.appendChild(renderOwnedItem(it)));
+  card.appendChild(well);
+  return card;
+}
+
+/** One "What I own" row: kind chip · reason · ticket ref · how long it waited. */
+function renderOwnedItem(it) {
+  const t = it.ticket;
+  const ref = t ? (t.number != null ? `#${t.number}` : t.id.slice(0, 8)) : "—";
+  // Link each item to its ticket; a decision with no ticket links to the
+  // decisions well on the overview so it can still be actioned.
+  const href = t ? `#/ticket/${t.id}` : "#/overview";
+  return el("a", { class: `own-row own-row--${it.kind}`, href }, [
+    el("span", { class: `own-kind own-kind--${it.kind}` }, it.label),
+    el("span", { class: "own-body" }, [
+      el("span", { class: "own-reason" }, it.reason || "(no reason given)"),
+      el("span", { class: "own-meta" }, [
+        el("span", { class: "own-ref mono" }, ref),
+        el(
+          "span",
+          { class: "own-age dim tabnum", title: `Waiting since ${it.since}` },
+          `waited ${fmtDuration(it.waitedMs)}`,
+        ),
+      ]),
+    ]),
+  ]);
 }
 
 /**

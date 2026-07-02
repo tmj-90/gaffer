@@ -169,6 +169,12 @@ export interface SearchOptions {
    * deferred — most callers want "show me anything tagged X or Y".)
    */
   readonly tag?: string | ReadonlyArray<string>;
+  /**
+   * Restrict to one or more product-intent classifiers (LoreKind). A single
+   * kind or a list; ANY-of semantics. Undefined imposes no kind constraint.
+   * Used to AIM recall at the "why" — e.g. decision/requirement/non-goal.
+   */
+  readonly kind?: LoreKind | ReadonlyArray<LoreKind>;
   /** ISO timestamp; only lore updated on/after this is returned. */
   readonly updatedAfter?: string;
   /** Default false. */
@@ -444,6 +450,8 @@ export interface FileCardRow {
   readonly prompt_version: string | null;
   readonly created_at: string;
   readonly updated_at: string;
+  /** Recall-feedback flag (0/1). Set when a served card led to rework. */
+  readonly flagged_for_review: number;
 }
 
 /**
@@ -485,6 +493,13 @@ export interface FileCard {
   readonly promptVersion?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /**
+   * True when recall-feedback flagged this card for review — it was served into
+   * a ticket that subsequently needed rework, so it should NOT be trusted as a
+   * top signal unchanged. `cardsForScope` reads this to rank flagged cards below
+   * unflagged peers within the same selection tier.
+   */
+  readonly flaggedForReview: boolean;
 }
 
 /** Raw DB row for repo_sync. */

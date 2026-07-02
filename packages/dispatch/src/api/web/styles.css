@@ -7987,6 +7987,53 @@ textarea:focus-visible,
   font-size: 0.82em;
 }
 
+/* live-delivery banner on the ticket detail — surfaces the running agent + a
+   one-click jump to the streaming run log (or flags a stuck/orphaned claim) */
+.delivering-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: var(--s-3) 0;
+  padding: 10px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+  font-size: var(--step--1);
+  color: var(--text);
+}
+.delivering-banner.is-warn {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.delivering-banner .run-viewlog {
+  margin-left: auto;
+}
+.delivering-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+  animation: deliver-pulse 1.4s ease-in-out infinite;
+  flex: 0 0 auto;
+}
+.delivering-dot.is-warn {
+  background: var(--danger);
+  box-shadow: 0 0 8px var(--danger);
+  animation: none;
+}
+@keyframes deliver-pulse {
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .delivering-dot {
+    animation: none;
+  }
+}
+
 /* mobile performance: on phones the appbar's backdrop-blur and the transform-
    heavy route "camera step" are the two big jank sources when switching tabs.
    Drop the blur and swap to a light cross-fade. */

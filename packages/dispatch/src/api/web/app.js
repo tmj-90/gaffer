@@ -3281,6 +3281,57 @@ async function renderTicket(id) {
     ),
   );
 
+  // Live-delivery log surface: when the factory is actively delivering this
+  // ticket, link straight to the streaming run log so a stuck/hung agent is never
+  // invisible (exactly what was missing when #88 deadlocked on a permission
+  // prompt). Best-effort — never blocks the ticket render.
+  const DELIVERING_STATUSES = new Set(["in_progress", "claimed", "in_testing"]);
+  if (DELIVERING_STATUSES.has(t.status)) {
+    const deliveringBanner = el("div", { class: "delivering-banner" }, [
+      el("span", { class: "delivering-dot" }),
+      el("span", {}, "Delivering…"),
+    ]);
+    wrap.appendChild(deliveringBanner);
+    (async () => {
+      try {
+        const runs = await api("GET", "/api/runs?active=1");
+        const run = (runs.active || []).find(
+          (r) => r.ticket_number === t.number || String(r.ticket) === String(t.id),
+        );
+        clear(deliveringBanner);
+        if (run) {
+          deliveringBanner.append(
+            el("span", { class: "delivering-dot" }),
+            el("span", {}, `Delivering — ${runKindLabel(run.kind)}`),
+            el(
+              "button",
+              {
+                class: "btn small run-viewlog",
+                type: "button",
+                onclick: () => viewRunDetail(run.id, runKindLabel(run.kind)),
+              },
+              "View live log →",
+            ),
+          );
+        } else {
+          // Marked delivering but no live run attached ⇒ likely a hung/orphaned
+          // claim (the #88 case). Say so plainly instead of a silent "in progress".
+          deliveringBanner.classList.add("is-warn");
+          deliveringBanner.append(
+            el("span", { class: "delivering-dot is-warn" }),
+            el(
+              "span",
+              {},
+              "Marked delivering, but no live run is attached — it may be stuck or already ended.",
+            ),
+          );
+        }
+      } catch {
+        clear(deliveringBanner);
+      }
+    })();
+  }
+
   const policyBox = el("div");
 
   // The action bar is driven OFF the single TICKET_ACTION_KEYS map (same map the

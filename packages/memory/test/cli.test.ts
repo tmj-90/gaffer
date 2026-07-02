@@ -1005,4 +1005,50 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
     expect(await run("flagged", "--repo", REPO)).toBe(0);
     expect(out).toMatch(/No items flagged for review/);
   });
+
+  it("recall-stats reports a zero-state when nothing has been recorded", async () => {
+    out = "";
+    expect(await run("recall-stats", "--json")).toBe(0);
+    const stats = JSON.parse(out);
+    expect(stats.total).toBe(0);
+    expect(stats.effectiveness_pct).toBeNull();
+    expect(stats.by_day).toEqual([]);
+  });
+
+  it("recall-stats rolls up outcomes after a served ticket is scored", async () => {
+    const id = await seedLore();
+    // Serve the lore into ticket 7, then score it clean.
+    expect(
+      await run(
+        "cards-for-scope",
+        "--canonical",
+        CANONICAL,
+        "--repo",
+        REPO,
+        "--query",
+        "zorptastic",
+        "--ticket",
+        "7",
+        "--json",
+      ),
+    ).toBe(0);
+    expect(
+      await run("recall-feedback", "--repo", REPO, "--ticket", "7", "--outcome", "clean"),
+    ).toBe(0);
+
+    out = "";
+    expect(await run("recall-stats", "--repo", REPO, "--json")).toBe(0);
+    const stats = JSON.parse(out);
+    expect(stats.total).toBe(1);
+    expect(stats.clean).toBe(1);
+    expect(stats.effectiveness_pct).toBe(100);
+    expect(stats.by_day.length).toBe(1);
+
+    // Human (non-JSON) form renders a readable summary.
+    out = "";
+    expect(await run("recall-stats", "--repo", REPO)).toBe(0);
+    expect(out).toMatch(/RECALL EFFECTIVENESS/);
+    expect(out).toMatch(/effectiveness: 100% clean/);
+    void id;
+  });
 });

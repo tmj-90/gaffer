@@ -81,6 +81,33 @@ export interface LoreSummary {
   readonly stale: boolean;
 }
 
+/** One calendar-day (UTC) recall-outcome roll-up, from `memory recall-stats`. */
+export interface RecallDayStat {
+  readonly date: string;
+  readonly clean: number;
+  readonly reworked: number;
+  readonly blocked: number;
+  readonly total: number;
+  readonly effectiveness_pct: number;
+}
+
+/**
+ * Recall-effectiveness roll-up: of the knowledge Memory served into tickets, how
+ * often did it lead to a CLEAN outcome vs rework/block, overall and per-day. The
+ * Factory Health surface reads this for its recall trend.
+ */
+export interface RecallEffectiveness {
+  readonly total: number;
+  readonly clean: number;
+  readonly reworked: number;
+  readonly blocked: number;
+  /** clean/total as a 0–100 number, or null when nothing has been recorded. */
+  readonly effectiveness_pct: number | null;
+  readonly items_adjusted: number;
+  readonly by_day: readonly RecallDayStat[];
+  readonly last_applied_at: string | null;
+}
+
 /** A read that may be unavailable. `T` carries the parsed payload when present. */
 export type MemoryResult<T> = ({ available: true } & T) | { available: false; reason: string };
 
@@ -91,6 +118,11 @@ export interface MemoryReader {
     opts?: { status?: string; node?: string },
   ): MemoryResult<{ features: MemoryFeature[] }>;
   lore(): MemoryResult<{ lore: LoreSummary[] }>;
+  /**
+   * Recall-effectiveness trend for the Health surface. Best-effort like every
+   * other read: `{ available:false, reason }` when Memory isn't wired / errors.
+   */
+  recallEffectiveness(opts?: { repo?: string }): MemoryResult<{ recall: RecallEffectiveness }>;
 }
 
 /** Build the structured "memory unavailable" result every failure path returns. */
@@ -336,6 +368,54 @@ export function parseLore(stdout: string): LoreSummary[] {
   return out;
 }
 
+/** Coerce a raw value to a finite number, or 0. */
+function numOr0(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * Parse `memory recall-stats --json` output. Unlike the other read verbs this one
+ * emits JSON, so parsing is a defensive `JSON.parse` + coercion — a malformed
+ * payload yields a zero-state (null effectiveness) rather than throwing.
+ */
+export function parseRecallStats(stdout: string): RecallEffectiveness {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout.trim() || "{}");
+  } catch {
+    raw = {};
+  }
+  const p = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+
+  const by_day: RecallDayStat[] = Array.isArray(p.by_day)
+    ? p.by_day
+        .filter((d): d is Record<string, unknown> => !!d && typeof d === "object")
+        .filter((d) => typeof d.date === "string")
+        .map((d) => ({
+          date: d.date as string,
+          clean: numOr0(d.clean),
+          reworked: numOr0(d.reworked),
+          blocked: numOr0(d.blocked),
+          total: numOr0(d.total),
+          effectiveness_pct: numOr0(d.effectiveness_pct),
+        }))
+    : [];
+
+  return {
+    total: numOr0(p.total),
+    clean: numOr0(p.clean),
+    reworked: numOr0(p.reworked),
+    blocked: numOr0(p.blocked),
+    effectiveness_pct:
+      typeof p.effectiveness_pct === "number" && Number.isFinite(p.effectiveness_pct)
+        ? p.effectiveness_pct
+        : null,
+    items_adjusted: numOr0(p.items_adjusted),
+    by_day,
+    last_applied_at: typeof p.last_applied_at === "string" ? p.last_applied_at : null,
+  };
+}
+
 /**
  * Build the default memory reader. It spawns the configured memory CLI for each
  * read verb and parses the text output. Every method degrades gracefully — a
@@ -361,6 +441,13 @@ export function createMemoryReader(env: NodeJS.ProcessEnv = process.env): Memory
       const outcome = runCli(env, ["list"]);
       if (!outcome.ok) return unavailable(outcome.reason);
       return { available: true, lore: parseLore(outcome.stdout) };
+    },
+    recallEffectiveness(opts = {}) {
+      const args = ["recall-stats", "--json"];
+      if (opts.repo) args.push("--repo", opts.repo);
+      const outcome = runCli(env, args);
+      if (!outcome.ok) return unavailable(outcome.reason);
+      return { available: true, recall: parseRecallStats(outcome.stdout) };
     },
   };
 }

@@ -109,7 +109,13 @@ describe("GET /api/health", () => {
   });
 
   it("returns a zero-state envelope when no ledger and no tickets exist", async () => {
-    const h = await startHarness({ GAFFER_DATA: undefined, GAFFER_USAGE_LEDGER: undefined });
+    const h = await startHarness({
+      GAFFER_DATA: undefined,
+      GAFFER_USAGE_LEDGER: undefined,
+      GAFFER_SKILL_TELEMETRY: undefined,
+      MEMORY_CLI_BIN: undefined,
+      MEMORY_DB: undefined,
+    });
     try {
       const { status, body } = await get(h.baseUrl, "/api/health");
       expect(status).toBe(200);
@@ -121,6 +127,20 @@ describe("GET /api/health", () => {
       expect(body.by_model).toEqual([]);
       expect(body.daily_spend).toEqual([]);
       expect(body.last_record_at).toBeNull();
+
+      // The two newly-wired sources degrade gracefully in the zero-state:
+      // skill telemetry is a zero-state (null overall hit-rate); recall is
+      // unavailable (Memory not wired) but NEVER breaks the endpoint.
+      const skills = body.skills as {
+        total_records: number;
+        overall_hit_rate_pct: number | null;
+        by_skill: unknown[];
+      };
+      expect(skills.total_records).toBe(0);
+      expect(skills.overall_hit_rate_pct).toBeNull();
+      expect(skills.by_skill).toEqual([]);
+      const recall = body.recall as { available: boolean };
+      expect(recall.available).toBe(false);
       // Delivery flow is always present (ticket-derived, not ledger-derived).
       const cycle = body.cycle_time as { median_days: number; series: number[] };
       const thr = body.throughput as { last7: number; prev7: number; series: number[] };
@@ -229,6 +249,46 @@ describe("GET /api/health", () => {
       expect(coverage.measured_count).toBe(1);
       expect(coverage.total_count).toBe(2);
       expect(coverage.coverage_pct).toBe(50);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("surfaces the skill selected-vs-applied hit-rate from the telemetry file", async () => {
+    const telemetry = join(tmpDir, "skills-telemetry.jsonl");
+    writeFileSync(
+      telemetry,
+      [
+        JSON.stringify({
+          ts: "2025-01-10T10:00:00Z",
+          selected: ["run-tests", "frontend-component"],
+          applied: ["run-tests"],
+        }),
+        JSON.stringify({ ts: "2025-01-11T10:00:00Z", selected: ["run-tests"], applied: ["run-tests"] }),
+        "garbage line that must be skipped",
+      ].join("\n"),
+    );
+    const h = await startHarness({
+      GAFFER_SKILL_TELEMETRY: telemetry,
+      GAFFER_DATA: undefined,
+      GAFFER_USAGE_LEDGER: undefined,
+    });
+    try {
+      const { status, body } = await get(h.baseUrl, "/api/health");
+      expect(status).toBe(200);
+      const skills = body.skills as {
+        total_records: number;
+        overall_hit_rate_pct: number;
+        by_skill: Array<{ skill: string; selected: number; applied: number; hit_rate_pct: number }>;
+      };
+      // 2 valid rows; run-tests selected 2/applied 2, frontend selected 1/applied 0.
+      expect(skills.total_records).toBe(2);
+      // 2 applied of 3 selections = 66.7%.
+      expect(skills.overall_hit_rate_pct).toBeCloseTo(66.7);
+      const runTests = skills.by_skill.find((s) => s.skill === "run-tests")!;
+      expect(runTests.hit_rate_pct).toBe(100);
+      const frontend = skills.by_skill.find((s) => s.skill === "frontend-component")!;
+      expect(frontend.hit_rate_pct).toBe(0);
     } finally {
       await h.close();
     }

@@ -2440,6 +2440,82 @@ html::after {
   background: var(--amber-soft);
 }
 
+/* --- health / ROI surface --- */
+/* name · value · progress-bar rows; reuses .df-bar for the bar itself. */
+.hlist {
+  display: flex;
+  flex-direction: column;
+}
+.hrow {
+  --st: var(--accent);
+  display: grid;
+  grid-template-columns: 1fr 92px 120px;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 9px 0;
+  border-top: 1px solid var(--line-hair);
+}
+.hrow:first-child {
+  border-top: none;
+}
+.hrow.tone-ok {
+  --st: var(--ok);
+}
+.hrow.tone-amber {
+  --st: var(--amber);
+}
+.hrow.tone-danger {
+  --st: var(--danger);
+}
+.hrow-name {
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hrow-val {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 0.72rem;
+  color: var(--text);
+  text-align: right;
+}
+.recall-figures {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--s-3);
+  margin-bottom: var(--s-3);
+}
+.recall-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.recall-stat-val {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: var(--step-1);
+  color: var(--text);
+}
+.recall-stat-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.health-spark {
+  height: 46px;
+  color: var(--accent);
+  margin: var(--s-3) -4px -4px;
+}
+.health-degraded {
+  padding: var(--s-3) 0;
+}
+
 /* --- progress by repository --- */
 .repo-prog {
   display: flex;

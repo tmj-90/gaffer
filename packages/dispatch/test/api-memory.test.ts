@@ -9,6 +9,7 @@ import {
   parseDigest,
   parseFeatures,
   parseLore,
+  parseRecallStats,
   type MemoryReader,
 } from "../src/api/memoryReader.js";
 
@@ -58,6 +59,21 @@ Prefer server components (lore-2)
   Default to RSC unless interactivity is required.
   [draft]  conf=medium  ⚠ stale  onboard  tags=react
 `;
+
+// `memory recall-stats --json` output (the only JSON-emitting read verb).
+const RECALL_OUT = JSON.stringify({
+  total: 4,
+  clean: 3,
+  reworked: 1,
+  blocked: 0,
+  effectiveness_pct: 75,
+  items_adjusted: 9,
+  by_day: [
+    { date: "2025-01-10", clean: 2, reworked: 0, blocked: 0, total: 2, effectiveness_pct: 100 },
+    { date: "2025-01-11", clean: 1, reworked: 1, blocked: 0, total: 2, effectiveness_pct: 50 },
+  ],
+  last_applied_at: "2025-01-11T10:00:00Z",
+});
 
 describe("memoryReader parsers", () => {
   it("parses a repo digest into its four sections + freshness + caveat", () => {
@@ -113,6 +129,25 @@ describe("memoryReader parsers", () => {
   it("returns an empty lore list when nothing is recorded", () => {
     expect(parseLore("memory: nothing here yet — try `memory add`.\n")).toEqual([]);
   });
+
+  it("parses recall-stats JSON (totals + per-day trend)", () => {
+    const r = parseRecallStats(RECALL_OUT);
+    expect(r.total).toBe(4);
+    expect(r.clean).toBe(3);
+    expect(r.effectiveness_pct).toBe(75);
+    expect(r.items_adjusted).toBe(9);
+    expect(r.by_day).toHaveLength(2);
+    expect(r.by_day[1]!.effectiveness_pct).toBe(50);
+    expect(r.last_applied_at).toBe("2025-01-11T10:00:00Z");
+  });
+
+  it("coerces a malformed recall-stats payload to a zero-state (null effectiveness, no throw)", () => {
+    expect(parseRecallStats("not json").effectiveness_pct).toBeNull();
+    const partial = parseRecallStats(JSON.stringify({ total: 2, by_day: "nope" }));
+    expect(partial.total).toBe(2);
+    expect(partial.by_day).toEqual([]);
+    expect(partial.effectiveness_pct).toBeNull();
+  });
 });
 
 // --- Stub CLI: a tiny node script that echoes canned output per verb ---------
@@ -130,9 +165,11 @@ const verb = process.argv[2];
 const digest = ${JSON.stringify(DIGEST_OUT)};
 const features = ${JSON.stringify(FEATURES_OUT)};
 const lore = ${JSON.stringify(LORE_OUT)};
+const recall = ${JSON.stringify(RECALL_OUT)};
 if (verb === "digest") process.stdout.write(digest);
 else if (verb === "features") process.stdout.write(features);
 else if (verb === "list") process.stdout.write(lore);
+else if (verb === "recall-stats") process.stdout.write(recall);
 else { process.stderr.write("unknown verb\\n"); process.exit(2); }
 `;
   writeFileSync(cli, script);
@@ -157,11 +194,23 @@ describe("createMemoryReader (stubbed CLI)", () => {
     const lore = reader.lore();
     expect(lore.available).toBe(true);
     if (lore.available) expect(lore.lore).toHaveLength(2);
+
+    const recall = reader.recallEffectiveness();
+    expect(recall.available).toBe(true);
+    if (recall.available) {
+      expect(recall.recall.effectiveness_pct).toBe(75);
+      expect(recall.recall.by_day).toHaveLength(2);
+    }
   });
 
   it("degrades gracefully when the CLI is NOT configured (available:false, no throw)", () => {
     const reader = createMemoryReader({}); // no MEMORY_CLI_BIN
-    for (const res of [reader.digest("x"), reader.features("x"), reader.lore()]) {
+    for (const res of [
+      reader.digest("x"),
+      reader.features("x"),
+      reader.lore(),
+      reader.recallEffectiveness(),
+    ]) {
       expect(res.available).toBe(false);
       if (!res.available) expect(res.reason).toMatch(/not configured|MEMORY_CLI_BIN/i);
     }

@@ -14,6 +14,7 @@ import {
 } from "../cost/costAggregator.js";
 import { deliveryFlow, type FlowTicket } from "../health/deliveryFlow.js";
 import { aggregateHealth, type ReworkResolver } from "../health/healthAggregator.js";
+import { aggregateSkillTelemetry } from "../health/skillsTelemetryAggregator.js";
 import { buildRunDetail } from "./runDetail.js";
 import { hasValidBearer, isRequestAuthorized } from "./auth.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
@@ -2026,6 +2027,15 @@ function routeReadModels(
     const health = aggregateHealth(process.env, { shippedCount, resolveRework });
     const flow = deliveryFlow(flowTickets, Date.parse(wg.clock.now()) || Date.now());
 
+    // Two previously-DEAD data sources, surfaced best-effort (a missing source
+    // degrades to a null/available:false cell, NEVER breaks the endpoint):
+    //   - skills telemetry: selected-vs-applied skill hit-rate (JSONL, zero-state
+    //     when the trail is absent);
+    //   - recall effectiveness: served-knowledge → clean/rework outcome trend,
+    //     read via Memory's own CLI (standalone product; unavailable when unwired).
+    const skills = aggregateSkillTelemetry(process.env);
+    const recallRead = memoryReader.recallEffectiveness();
+
     sendJson(res, 200, {
       total_usd: health.total_usd,
       ticket_count: health.ticket_count,
@@ -2043,6 +2053,19 @@ function routeReadModels(
       duration: health.duration,
       cycle_time: flow.cycle_time,
       throughput: flow.throughput,
+      // Skill hit-rate (selected-vs-applied). Zero-state when no telemetry.
+      skills: {
+        total_records: skills.total_records,
+        total_selected: skills.total_selected,
+        total_applied: skills.total_applied,
+        overall_hit_rate_pct: skills.overall_hit_rate_pct,
+        by_skill: skills.by_skill.slice(0, TOP_N),
+        last_record_at: skills.last_record_at,
+      },
+      // Recall-effectiveness trend. available:false when Memory isn't wired.
+      recall: recallRead.available
+        ? { available: true, ...recallRead.recall }
+        : { available: false, reason: recallRead.reason },
       last_record_at: health.last_record_at,
     });
     return;

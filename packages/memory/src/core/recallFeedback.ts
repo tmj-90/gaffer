@@ -387,3 +387,122 @@ export function listFlaggedForReview(db: Database, opts: ListFlaggedOptions = {}
 
   return [...lore, ...cards];
 }
+
+// ── Recall effectiveness (the read-back trend) ────────────────────────
+
+/** One calendar-day (UTC) roll-up of recall outcomes. */
+export interface RecallDayStat {
+  readonly date: string;
+  readonly clean: number;
+  readonly reworked: number;
+  readonly blocked: number;
+  readonly total: number;
+  /** clean/total as a 0–100 number (0 when the day has no outcomes). */
+  readonly effectiveness_pct: number;
+}
+
+/**
+ * Aggregate view over the `recall_feedback` ledger: how often the knowledge
+ * memory served into tickets led to a CLEAN outcome vs rework/block. This is the
+ * read-back counterpart to {@link recallFeedback} — the loop writes outcomes, this
+ * reads their trend. Advisory only; it never mutates.
+ */
+export interface RecallEffectiveness {
+  readonly total: number;
+  readonly clean: number;
+  readonly reworked: number;
+  readonly blocked: number;
+  /** clean/total as a 0–100 number, or null when nothing has been recorded. */
+  readonly effectiveness_pct: number | null;
+  /** Sum of items adjusted across every recorded outcome. */
+  readonly items_adjusted: number;
+  readonly by_day: readonly RecallDayStat[];
+  readonly last_applied_at: string | null;
+}
+
+export interface RecallEffectivenessOptions {
+  /** Restrict the roll-up to a single repo display name. */
+  readonly repo?: string;
+}
+
+/** clean/total as a 0–100 number rounded to 0.1; 0 when total is 0. */
+function pctOf(clean: number, total: number): number {
+  return total > 0 ? Math.round((clean / total) * 1000) / 10 : 0;
+}
+
+/**
+ * Roll up the recall-feedback ledger into an effectiveness view (overall +
+ * per-day trend). Pure read — never writes. The `outcome` CHECK constraint on
+ * `recall_feedback` guarantees only the three known outcomes are counted, so a
+ * malformed value can never sneak into the totals.
+ */
+export function recallEffectiveness(
+  db: Database,
+  opts: RecallEffectivenessOptions = {},
+): RecallEffectiveness {
+  const repo = opts.repo?.trim();
+  const rows = (
+    repo
+      ? db
+          .prepare(
+            "SELECT outcome, items_adjusted, applied_at FROM recall_feedback WHERE repo = ? ORDER BY applied_at, id",
+          )
+          .all(repo)
+      : db
+          .prepare(
+            "SELECT outcome, items_adjusted, applied_at FROM recall_feedback ORDER BY applied_at, id",
+          )
+          .all()
+  ) as Array<{ outcome: RecallOutcome; items_adjusted: number; applied_at: string }>;
+
+  let clean = 0;
+  let reworked = 0;
+  let blocked = 0;
+  let itemsAdjusted = 0;
+  let lastAppliedAt: string | null = null;
+  const byDay = new Map<string, { clean: number; reworked: number; blocked: number }>();
+
+  for (const r of rows) {
+    if (r.outcome === "clean") clean += 1;
+    else if (r.outcome === "reworked") reworked += 1;
+    else if (r.outcome === "blocked") blocked += 1;
+
+    if (typeof r.items_adjusted === "number" && Number.isFinite(r.items_adjusted)) {
+      itemsAdjusted += r.items_adjusted;
+    }
+    if (lastAppliedAt === null || r.applied_at > lastAppliedAt) lastAppliedAt = r.applied_at;
+
+    const day = String(r.applied_at).slice(0, 10);
+    const d = byDay.get(day) ?? { clean: 0, reworked: 0, blocked: 0 };
+    if (r.outcome === "clean") d.clean += 1;
+    else if (r.outcome === "reworked") d.reworked += 1;
+    else if (r.outcome === "blocked") d.blocked += 1;
+    byDay.set(day, d);
+  }
+
+  const total = clean + reworked + blocked;
+  const by_day: RecallDayStat[] = Array.from(byDay.entries())
+    .map(([date, d]) => {
+      const t = d.clean + d.reworked + d.blocked;
+      return {
+        date,
+        clean: d.clean,
+        reworked: d.reworked,
+        blocked: d.blocked,
+        total: t,
+        effectiveness_pct: pctOf(d.clean, t),
+      };
+    })
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  return {
+    total,
+    clean,
+    reworked,
+    blocked,
+    effectiveness_pct: total > 0 ? pctOf(clean, total) : null,
+    items_adjusted: itemsAdjusted,
+    by_day,
+    last_applied_at: lastAppliedAt,
+  };
+}

@@ -38,7 +38,7 @@ import {
   cmdSetup,
   cmdStats,
 } from "./commands/setup.js";
-import { cmdFlagged, cmdRecallFeedback } from "./commands/recall.js";
+import { cmdFlagged, cmdRecallFeedback, cmdRecallStats } from "./commands/recall.js";
 import { cmdSync } from "./commands/sync.js";
 import { renderClaudeInstructions } from "./instructions.js";
 import { VERSION } from "../version.js";
@@ -280,6 +280,12 @@ COMMANDS
                             for review. Bounded (one rung/outcome) and
                             idempotent (per repo+ticket+outcome). The runner
                             calls this at ticket outcome.
+  recall-stats [--repo <r>] [--json]
+                            Read-back view of the feedback loop: outcome counts
+                            (clean/reworked/blocked), overall effectiveness
+                            (clean / total) and a per-day trend. Read-only —
+                            never mutates. The dispatch Health surface reads
+                            this via CLI for its recall-effectiveness signal.
   flagged [--repo <r>] [--json]
                             List lore + file cards flagged for review — knowledge
                             that was in context for a reworked/blocked ticket.
@@ -407,6 +413,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdCardsForScope(parsed);
       case "recall-feedback":
         return await cmdRecallFeedback(parsed);
+      case "recall-stats":
+        return await cmdRecallStats(parsed);
       case "flagged":
         return await cmdFlagged(parsed);
       case "hooks":

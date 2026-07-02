@@ -123,6 +123,8 @@ const ICONS = {
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   specs:
     '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M9 13l1.5 1.5L13 12M9 17h5"/>',
+  health:
+    '<path d="M20.8 4.6a5.5 5.5 0 0 0-8 0L12 5.4l-.8-.8a5.5 5.5 0 1 0-7.8 7.8l.8.8L12 21l7.8-8 .8-.8a5.5 5.5 0 0 0 .2-7.6Z"/><path d="M3 12.5h4l1.5-4 3 8 1.5-4H17"/>',
 };
 function icon(name, cls) {
   const ns = "http://www.w3.org/2000/svg";
@@ -536,6 +538,7 @@ function sheetKeydown(e) {
 
 const VIEWS = {
   overview: renderOverview,
+  health: renderHealth,
   work: renderWork,
   review: renderReview,
   factory: renderFactory,
@@ -563,6 +566,7 @@ const VIEW_ALIASES = {
 // Primary nav entries (order = bottom-nav + desktop rail order).
 const NAV = [
   { id: "overview", label: "Overview", icon: "overview" },
+  { id: "health", label: "Health", icon: "health" },
   { id: "work", label: "Work", icon: "work" },
   { id: "review", label: "Review", icon: "review" },
   { id: "epics", label: "Epics", icon: "epics" },
@@ -598,7 +602,17 @@ function navigate(hash) {
 // Navigation order — used to decide which way the "camera" steps so a forward
 // move (Overview → Settings) and a back move read differently. This is what
 // makes navigating feel like walking through a plan rather than a page reload.
-const NAV_ORDER = ["overview", "work", "review", "epics", "specs", "factory", "memory", "settings"];
+const NAV_ORDER = [
+  "overview",
+  "health",
+  "work",
+  "review",
+  "epics",
+  "specs",
+  "factory",
+  "memory",
+  "settings",
+];
 let lastAreaIndex = 0;
 
 let activeArea = "overview";
@@ -4366,6 +4380,203 @@ const SETTINGS_GROUPS = [
     note: "Multi-model plan critique before decomposing.",
   },
 ];
+
+// --- Health / ROI view ------------------------------------------------------
+
+/** One labelled figure in the recall-effectiveness panel. */
+function recallStat(label, value) {
+  return el("div", { class: "recall-stat" }, [
+    el("span", { class: "recall-stat-val tabnum" }, value),
+    el("span", { class: "recall-stat-label" }, label),
+  ]);
+}
+
+/** A generic name · value · progress-bar row (reused for kinds + skills). */
+function healthBarRow(name, valueText, ratio, tone) {
+  const pct = Math.max(2, Math.min(100, (Number.isFinite(ratio) ? ratio : 0) * 100));
+  return el("div", { class: `hrow tone-${tone || "accent"}` }, [
+    el("span", { class: "hrow-name", title: name }, name),
+    el("span", { class: "hrow-val tabnum" }, valueText),
+    el("span", { class: "df-bar" }, el("i", { style: `width:${pct}%` })),
+  ]);
+}
+
+/**
+ * Factory Health / ROI surface. Reads the ONE authoritative /api/health envelope
+ * and renders the ROI KPI row (cost/feature, skill hit-rate, spend-by-kind,
+ * rework-cost share, measured-coverage %) plus the two newly-wired dead sources:
+ * the skill selected-vs-applied hit-rate detail and the recall-effectiveness
+ * trend. Every source degrades gracefully — a missing one renders a clean "—" /
+ * "not wired" cell rather than a broken card.
+ */
+async function renderHealth() {
+  const health = await api("GET", "/api/health").catch(() => null);
+
+  const wrap = el("div", { class: "view health-view" });
+  wrap.appendChild(viewHead("Health", "ROI & factory honesty"));
+
+  if (!health) {
+    wrap.appendChild(
+      emptyState(
+        "Health data unavailable",
+        "The health API did not respond. The usage ledger may be unconfigured.",
+        "alert",
+      ),
+    );
+    return wrap;
+  }
+
+  const fmtUsd = (v) => (typeof v === "number" && Number.isFinite(v) ? `$${v.toFixed(4)}` : "—");
+  const skills = health.skills || {};
+  const recall = health.recall || { available: false };
+  const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
+  const skillList = Array.isArray(skills.by_skill) ? skills.by_skill : [];
+  const dailySpend = Array.isArray(health.daily_spend) ? health.daily_spend : [];
+  const totalUsd = typeof health.total_usd === "number" ? health.total_usd : 0;
+
+  // --- ROI KPI row ----------------------------------------------------------
+  const costPerFeature = health.cost_per_shipped_usd; // ticket-level (epic deferred)
+  const hitRate =
+    typeof skills.overall_hit_rate_pct === "number" ? skills.overall_hit_rate_pct : null;
+  const topKind = byKind[0] || null;
+  const kindShare =
+    topKind && totalUsd > 0 ? Math.round(((topKind.total_cost_usd || 0) / totalUsd) * 100) : 0;
+  const reworkShare =
+    health.rework && typeof health.rework.rework_cost_share_pct === "number"
+      ? health.rework.rework_cost_share_pct
+      : 0;
+  const coveragePct =
+    health.coverage && typeof health.coverage.coverage_pct === "number"
+      ? health.coverage.coverage_pct
+      : 0;
+
+  const spendSeries = dailySpend.map((d) => d.total_cost_usd || 0);
+  const skillSeries = skillList.map((s) => s.hit_rate_pct || 0);
+  const kindSeries = byKind.map((k) => k.total_cost_usd || 0);
+  const recallSeries =
+    recall.available && Array.isArray(recall.by_day) ? recall.by_day.map((d) => d.effectiveness_pct || 0) : [];
+
+  wrap.appendChild(
+    el("div", { class: "kpi-row" }, [
+      kpiCard({
+        label: "Cost / feature",
+        value: costPerFeature == null ? "—" : `$${costPerFeature.toFixed(3)}`,
+        unit: "per shipped",
+        tone: "accent",
+        delta: 0,
+        goodWhenDown: true,
+        series: spendSeries.length ? spendSeries : [0],
+      }),
+      kpiCard({
+        label: "Skill hit-rate",
+        value: hitRate == null ? "—" : String(hitRate),
+        unit: hitRate == null ? "not wired" : "%",
+        tone: "ok",
+        delta: 0,
+        series: skillSeries.length ? skillSeries : [0],
+      }),
+      kpiCard({
+        label: "Spend by kind",
+        value: topKind ? String(kindShare) : "—",
+        unit: topKind ? `% ${topKind.kind}` : "no spend",
+        tone: "amber",
+        delta: 0,
+        series: kindSeries.length ? kindSeries : [0],
+      }),
+      kpiCard({
+        label: "Rework cost",
+        value: String(reworkShare),
+        unit: "% of spend",
+        tone: "danger",
+        delta: 0,
+        goodWhenDown: true,
+        series: [reworkShare],
+      }),
+      kpiCard({
+        label: "Measured coverage",
+        value: String(coveragePct),
+        unit: "%",
+        tone: "accent",
+        delta: 0,
+        series: [coveragePct],
+      }),
+    ]),
+  );
+
+  // --- Detail panels: spend-by-kind · skill hit-rate · recall trend ---------
+  const maxKind = Math.max(1, ...kindSeries);
+  const kindPanel = el("div", { class: "card panel" }, [
+    panelHead("Spend by kind", "usage ledger"),
+    byKind.length
+      ? el(
+          "div",
+          { class: "hlist" },
+          byKind.map((k) =>
+            healthBarRow(k.kind, fmtUsd(k.total_cost_usd), (k.total_cost_usd || 0) / maxKind, "amber"),
+          ),
+        )
+      : el("p", { class: "section-note dim" }, "No spend recorded yet."),
+  ]);
+
+  const skillPanel = el("div", { class: "card panel" }, [
+    panelHead("Skill hit-rate", skills.total_records ? `${skills.total_records} deliveries` : "no telemetry"),
+    skillList.length
+      ? el(
+          "div",
+          { class: "hlist" },
+          skillList.map((s) =>
+            healthBarRow(
+              s.skill,
+              `${s.applied}/${s.selected} · ${s.hit_rate_pct}%`,
+              (s.hit_rate_pct || 0) / 100,
+              s.hit_rate_pct >= 50 ? "ok" : "amber",
+            ),
+          ),
+        )
+      : el(
+          "p",
+          { class: "section-note dim" },
+          "No skill telemetry yet — selected-vs-applied hit-rate appears once deliveries mount skills.",
+        ),
+  ]);
+
+  const recallPanel = el(
+    "div",
+    { class: "card panel" },
+    recall.available
+      ? [
+          panelHead("Recall effectiveness", "memory feedback"),
+          el("div", { class: "recall-figures" }, [
+            recallStat(
+              "Effectiveness",
+              recall.effectiveness_pct == null ? "—" : `${recall.effectiveness_pct}%`,
+            ),
+            recallStat("Clean", String(recall.clean || 0)),
+            recallStat("Reworked", String(recall.reworked || 0)),
+            recallStat("Blocked", String(recall.blocked || 0)),
+          ]),
+          recallSeries.length
+            ? el("div", { class: "health-spark", html: svgSpark(recallSeries) })
+            : el("p", { class: "section-note dim" }, "No recall outcomes recorded yet."),
+        ]
+      : [
+          panelHead("Recall effectiveness", "not wired"),
+          el(
+            "div",
+            { class: "health-degraded" },
+            el(
+              "p",
+              { class: "section-note dim" },
+              recall.reason || "Memory is not wired — recall effectiveness is unavailable.",
+            ),
+          ),
+        ],
+  );
+
+  wrap.appendChild(el("div", { class: "ov-grid ov-3" }, [kindPanel, skillPanel, recallPanel]));
+
+  return wrap;
+}
 
 async function renderSettings() {
   // Load the env-override settings plus the crew idle-loop config + the repos and

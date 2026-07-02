@@ -1010,10 +1010,12 @@ gaffer_usage_record() {
 #   *.events.jsonl      — any leaked events log
 #   .claude/            — project-local Claude config injected per worktree (never deliver)
 #   CLAUDE.factory.md   — the factory's own agent brief (never deliver)
-#   .mcp.json / mcp-runtime — runtime MCP wiring (never deliver). The
-#     `mcp-runtime` substring covers the per-tick `mcp-runtime.<pid>.json` files.
+#   .mcp.json / mcp-runtime. — runtime MCP wiring (never deliver). The
+#     `mcp-runtime.` fragment (note the trailing dot) covers the generated
+#     `mcp-runtime.json` / per-tick `mcp-runtime.<pid>.json` files WITHOUT
+#     false-positiving on a legit source dir like `src/mcp-runtime/` (finding 11).
 # MUST match the library fallback in lib/hygiene.sh — keep the two in sync.
-: "${HYGIENE_FORBIDDEN_PATHS:=node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime}"
+: "${HYGIENE_FORBIDDEN_PATHS:=node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.}"
 
 # (2) MINIMALISM hard post-condition. Every completed delivery MUST record a
 # smallest-change note (+ files/lines counts computed from the diff, why-each-file,

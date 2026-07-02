@@ -166,6 +166,19 @@ case "$F1_OUT" in
   *"a card is a guide, never authoritative source"*) ok "bash helper includes non-authoritative framing" ;;
   *) fail "bash helper missing non-authoritative framing" ;;
 esac
+# FINDING 14: the card line's "path — tldr" separator must be a REAL em dash,
+# never the mojibake "â€”" the old "\xe2\x80\x94" Python byte-escape produced
+# (U+00E2 U+0080 U+0094 re-encoded → \xc3\xa2… in every card line of every
+# agent prompt). Assert no mojibake byte sequence AND the clean separator.
+if printf '%s' "$F1_OUT" | grep -q "$(printf '\xc3\xa2')"; then
+  fail "card block contains mojibake bytes (\\xc3\\xa2 — the old â€” em-dash bug)"
+else
+  ok "card block carries no mojibake bytes"
+fi
+case "$F1_OUT" in
+  *"$(printf ' \xe2\x80\x94 ')"*) ok "tldr separator renders as a clean UTF-8 em dash" ;;
+  *) fail "tldr separator missing/garbled (expected ' — ' between path and tldr)" ;;
+esac
 
 # F2: fail-soft — broken memory CLI → empty output, no error.
 F2_OUT="$(MEMORY_DB="$MEM_DB" DISPATCH_DB="$MEM_DB" MEMORY_CLI_BIN=/nonexistent/memory.js \

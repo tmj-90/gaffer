@@ -112,6 +112,19 @@ else
     *) fail "block does not surface the seeded record" ;;
   esac
 
+  # FINDING 14: the "[kind] title — summary" separator must be a REAL em dash,
+  # never the mojibake "â€”" the old "\xe2\x80\x94" Python byte-escape produced
+  # in every product-intent line injected into agent prompts.
+  if printf '%s' "$BLOCK" | grep -q "$(printf '\xc3\xa2')"; then
+    fail "product-context block contains mojibake bytes (\\xc3\\xa2 — the old â€” em-dash bug)"
+  else
+    ok "product-context block carries no mojibake bytes"
+  fi
+  case "$BLOCK" in
+    *"$(printf ' \xe2\x80\x94 ')"*) ok "summary separator renders as a clean UTF-8 em dash" ;;
+    *) fail "summary separator missing/garbled (expected ' — ' between title and summary)" ;;
+  esac
+
   # Empty / fail-soft: a repo with no intent yields an EMPTY block, not an error.
   EMPTY="$(gaffer_product_context_block no-intent-repo 2>/dev/null || true)"
   [ -z "$EMPTY" ] \

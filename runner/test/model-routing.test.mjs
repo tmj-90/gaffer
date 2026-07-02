@@ -26,6 +26,8 @@ import {
   routeModel,
   loadRegistry,
   normaliseRegistry,
+  scoreDifficulty,
+  cheapClassFromEnv,
   FALLBACK_REGISTRY,
   DEFAULT_REGISTRY_PATH,
 } from "../bin/route-model.mjs";
@@ -208,6 +210,81 @@ check("normal medium-risk 3-AC ticket: plan=opus, implement=sonnet (unchanged)",
   const impl = routeModel({ phase: "implement", risk: "medium", acCount: 3, attempt: 1 }, reg);
   assert.equal(plan.model, "opus", "plan must stay opus for a normal ticket");
   assert.equal(impl.model, "sonnet", "implement must stay sonnet for a normal ticket");
+});
+
+console.log("== 9: DIFFICULTY-AWARE routing (3b) — hard routes stronger from the start ==");
+check("scoreDifficulty: a big diff alone → 'high'", () => {
+  const d = scoreDifficulty({ diffBytes: 60000, fileCount: 1, historicalCostUsd: 0.01 });
+  assert.equal(d.label, "high");
+  assert.ok(d.reasons.some((r) => /diffBytes/.test(r)));
+});
+check("scoreDifficulty: many files → 'high'", () => {
+  assert.equal(scoreDifficulty({ fileCount: 12 }).label, "high");
+});
+check("scoreDifficulty: a historically costly area → 'high'", () => {
+  assert.equal(scoreDifficulty({ historicalCostUsd: 3.2 }).label, "high");
+});
+check("scoreDifficulty: all-small signals → 'low'", () => {
+  assert.equal(
+    scoreDifficulty({ diffBytes: 500, fileCount: 1, historicalCostUsd: 0.02 }).label,
+    "low",
+  );
+});
+check("scoreDifficulty: no signals → 'medium' (unknown, not a guess)", () => {
+  assert.equal(scoreDifficulty({}).label, "medium");
+  assert.equal(scoreDifficulty({ diffBytes: NaN, fileCount: -1 }).label, "medium");
+});
+check("scoreDifficulty: zero signals are ABSENT, not 'low' (a fresh ticket)", () => {
+  // $0 spend / 0 bytes / 0 files = no history yet — must not be mistaken for 'easy'.
+  assert.equal(
+    scoreDifficulty({ historicalCostUsd: 0, diffBytes: 0, fileCount: 0 }).label,
+    "medium",
+  );
+});
+check("high difficulty routes a normal implement ticket STRONGER from attempt 1", () => {
+  const base = routeModel({ phase: "implement", risk: "medium", acCount: 3, attempt: 1 }, reg);
+  const hard = routeModel(
+    { phase: "implement", risk: "medium", acCount: 3, attempt: 1, difficulty: "high" },
+    reg,
+  );
+  assert.equal(base.tier, "mid", "baseline is mid");
+  assert.equal(hard.tier, "strong", "a hard ticket escalates up front, not on retry");
+  assert.ok(hard.reasons.some((r) => /difficulty 'high'/.test(r)));
+});
+check("low difficulty keeps an implement ticket cheap (even at 2 ACs)", () => {
+  const easy = routeModel(
+    { phase: "implement", risk: "medium", acCount: 2, difficulty: "low" },
+    reg,
+  );
+  assert.equal(easy.tier, "cheap");
+  assert.ok(easy.reasons.some((r) => /difficulty 'low'/.test(r)));
+});
+check("high risk still wins over low difficulty (safety over thrift)", () => {
+  const d = routeModel({ phase: "implement", risk: "high", acCount: 1, difficulty: "low" }, reg);
+  assert.equal(d.tier, "strong");
+});
+check("difficulty surfaces in the audit inputs", () => {
+  const d = routeModel({ phase: "implement", difficulty: "high" }, reg);
+  assert.equal(d.inputs.difficulty, "high");
+});
+
+console.log("== 10: COST-AS-CONTROL class knob (3a) — Settings biases a class cheap ==");
+check("cheapClass biases a mid ticket one tier down", () => {
+  const d = routeModel({ phase: "implement", risk: "medium", acCount: 3, cheapClass: true }, reg);
+  assert.equal(d.tier, "cheap");
+  assert.ok(d.reasons.some((r) => /Settings routed this class to cheap/.test(r)));
+});
+check("cheapClass NEVER overrides a high-risk escalation (safety wins)", () => {
+  const d = routeModel({ phase: "implement", risk: "high", acCount: 2, cheapClass: true }, reg);
+  assert.equal(d.tier, "strong");
+});
+check("cheapClass reflected in the audit inputs", () => {
+  assert.equal(routeModel({ phase: "plan", cheapClass: true }, reg).inputs.cheapClass, true);
+});
+check("cheapClassFromEnv reads GAFFER_CHEAP_PHASES allow-list", () => {
+  assert.equal(cheapClassFromEnv("test", { GAFFER_CHEAP_PHASES: "test, self-review" }), true);
+  assert.equal(cheapClassFromEnv("implement", { GAFFER_CHEAP_PHASES: "test,self-review" }), false);
+  assert.equal(cheapClassFromEnv("test", {}), false);
 });
 
 console.log();

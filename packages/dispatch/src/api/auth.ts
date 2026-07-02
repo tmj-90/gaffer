@@ -3,14 +3,22 @@
 // Always-on by default: the `dispatch-api` entrypoint auto-provisions a token at
 // startup via {@link ensureApiToken} when the operator hasn't set one, so a token
 // is present in normal operation and every non-public request must carry
-// `Authorization: Bearer <token>`. Read-only GET/HEAD requests stay open on a
-// loopback bind so the local dashboard works without wiring the token into the
-// SPA — EXCEPT privileged paths that expose secrets (webhook/notify URLs), which
-// require the token even on loopback (see {@link isPrivilegedPath}). Only when NO
-// token is configured (embedders/tests that construct the server directly) is
-// auth disabled entirely — the historical loopback-only dev behaviour, kept for
-// backwards compatibility. A configured token also satisfies the safe-bind guard:
-// an authenticated API is safe to expose beyond loopback.
+// `Authorization: Bearer <token>`. HOW the token was obtained decides the READ
+// posture (captured once at startup — see {@link recordApiTokenSource}):
+//
+//  - AUTO-PROVISIONED (generated, or reused from the persisted token file):
+//    read-only GET/HEAD requests stay open on a loopback bind so the local
+//    dashboard works without wiring the token into the SPA — EXCEPT privileged
+//    paths that expose secrets (webhook/notify URLs), which require the token
+//    even on loopback (see {@link isPrivilegedPath}).
+//  - OPERATOR-SET (`DISPATCH_API_TOKEN` present in the startup environment):
+//    the operator explicitly asked for auth, so EVERY request — loopback reads
+//    included — must present the token (the original strict posture).
+//
+// Only when NO token is configured (embedders/tests that construct the server
+// directly) is auth disabled entirely — the historical loopback-only dev
+// behaviour, kept for backwards compatibility. A configured token also satisfies
+// the safe-bind guard: an authenticated API is safe to expose beyond loopback.
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -38,6 +46,38 @@ export function resolveDashboardTokenPath(env: NodeJS.ProcessEnv = process.env):
 /** How the effective API token was obtained (for operator-facing startup logs). */
 export type ApiTokenSource = "env" | "file" | "generated";
 
+/**
+ * How the effective token was resolved at STARTUP. Captured once (by
+ * {@link ensureApiToken}, or explicitly via {@link recordApiTokenSource}) rather
+ * than re-derived from the environment per request, so tests and embedders
+ * control the auth posture deterministically. `null` means the provenance was
+ * never recorded (an embedder constructed the server directly) — the relaxed
+ * posture, matching that path's historical behaviour.
+ */
+let resolvedTokenSource: ApiTokenSource | null = null;
+
+/**
+ * Record how the API token was resolved at startup. The `dispatch-api`
+ * entrypoint gets this for free via {@link ensureApiToken}; embedders that
+ * construct the server directly may call it to opt into the strict operator-set
+ * posture (`"env"`). Pass `null` to reset to the unknown/relaxed default
+ * (primarily for test isolation).
+ */
+export function recordApiTokenSource(source: ApiTokenSource | null): void {
+  resolvedTokenSource = source;
+}
+
+/**
+ * True when the operator EXPLICITLY configured `DISPATCH_API_TOKEN` (the token
+ * source recorded at startup was the environment). An operator-set token means
+ * the operator asked for auth on purpose, so {@link isRequestAuthorized} gates
+ * ALL requests — loopback reads included — instead of the relaxed loopback-read
+ * UX granted to the auto-provisioned dashboard token.
+ */
+export function isOperatorSetToken(): boolean {
+  return resolvedTokenSource === "env";
+}
+
 export interface EnsuredApiToken {
   token: string;
   source: ApiTokenSource;
@@ -61,16 +101,24 @@ export interface EnsuredApiToken {
  * safe-bind guard pick it up with no further wiring. This is what stops the
  * delivery agent — whose child env is token-scrubbed by the runner and which
  * therefore cannot present the token — from reaching any mutating endpoint.
+ *
+ * The resolved source is also recorded (see {@link recordApiTokenSource}): an
+ * operator-set token (case 1) switches {@link isRequestAuthorized} to the strict
+ * posture where even loopback reads require the token.
  */
 export function ensureApiToken(env: NodeJS.ProcessEnv = process.env): EnsuredApiToken {
   const existing = (env.DISPATCH_API_TOKEN ?? "").trim();
-  if (existing.length > 0) return { token: existing, source: "env" };
+  if (existing.length > 0) {
+    recordApiTokenSource("env");
+    return { token: existing, source: "env" };
+  }
 
   const path = resolveDashboardTokenPath(env);
   try {
     const persisted = readFileSync(path, "utf8").trim();
     if (persisted.length > 0) {
       env.DISPATCH_API_TOKEN = persisted;
+      recordApiTokenSource("file");
       return { token: persisted, source: "file", path };
     }
   } catch {
@@ -84,6 +132,7 @@ export function ensureApiToken(env: NodeJS.ProcessEnv = process.env): EnsuredApi
   // mode is only applied on creation).
   chmodSync(path, 0o600);
   env.DISPATCH_API_TOKEN = token;
+  recordApiTokenSource("generated");
   return { token, source: "generated", path };
 }
 
@@ -172,7 +221,11 @@ export function isPrivilegedPath(pathname: string): boolean {
  *   {@link ensureApiToken}, so this branch is only reached by embedders that
  *   construct the server directly (e.g. tests).
  * - Token configured + correct bearer → allowed.
- * - Token configured with a missing/invalid bearer:
+ * - OPERATOR-SET token (see {@link isOperatorSetToken}) with a missing/invalid
+ *   bearer → refused, ALWAYS — the operator explicitly configured
+ *   `DISPATCH_API_TOKEN`, so the strict posture applies: loopback reads
+ *   (plan-session transcripts, run detail, human queue, cost) are gated too.
+ * - Auto-provisioned token with a missing/invalid bearer:
  *     - a READ-ONLY request (GET/HEAD) on a LOOPBACK bind is allowed, so the
  *       local dashboard keeps working without the operator wiring the token into
  *       the SPA — UNLESS `pathname` is a privileged secret-bearing path (see
@@ -191,6 +244,9 @@ export function isRequestAuthorized(
   pathname = "",
 ): boolean {
   if (isAuthorized(req)) return true;
+  // Operator-set token → the strict posture: no tokenless access at all, not
+  // even a loopback read. The relaxed branches below are auto-token-only UX.
+  if (isOperatorSetToken()) return false;
   // Secret-bearing endpoints require the token even for a loopback read.
   if (isPrivilegedPath(pathname)) return false;
   const method = (req.method ?? "GET").toUpperCase();

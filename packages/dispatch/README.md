@@ -106,13 +106,26 @@ gate apart from an unexpected failure. Disable with `DISPATCH_AUDIT_OFF=1`. See
 dashboard`) serves the local HTTP control surface — a JSON REST API plus a
 graphite **control-room** single-page app — over the same facade the CLI and MCP
 server use. The SPA is a framework-free ES-module app (no build step) under a
-self-only CSP. It binds `127.0.0.1` by default; there is **no authentication or
-RBAC yet** (every caller acts as one human actor), so do not expose it beyond
-localhost. `DISPATCH_API_TOKEN` adds an optional bearer token; `--unsafe-bind` /
-`DISPATCH_UNSAFE_BIND=1` is required to bind anything but loopback. Tokenless
-requests pass a DNS-rebinding Host/Origin check (`/healthz` is exempt; a valid
-bearer token bypasses it); when fronting the API with a reverse proxy or DNS
-name, allowlist those hostnames via `DISPATCH_ALLOWED_HOSTS` (comma-separated).
+self-only CSP. It binds `127.0.0.1` by default; there is **no RBAC yet** (every
+authenticated caller acts as one human actor), so do not expose it beyond
+localhost. Auth is a bearer token with two postures, decided by how the token
+was obtained at startup:
+
+- **Auto-provisioned** (`DISPATCH_API_TOKEN` unset): `dispatch-api` generates a
+  token (persisted 0600 to `$GAFFER_DATA/dashboard-token`) and, on a loopback
+  bind, keeps read-only GET/HEAD requests open so the local dashboard works
+  tokenless — except secret-bearing paths such as `/api/settings`, which always
+  require the token. Every mutating request requires the token.
+- **Operator-set** (`DISPATCH_API_TOKEN` set in the environment): you asked for
+  auth explicitly, so the strict posture applies — **every** request, including
+  read-only loopback requests (board, run detail, plan-session transcripts,
+  human queue, cost), must present `Authorization: Bearer <token>`.
+
+`--unsafe-bind` / `DISPATCH_UNSAFE_BIND=1` is required to bind anything but
+loopback. Tokenless requests pass a DNS-rebinding Host/Origin check (`/healthz`
+is exempt; a valid bearer token bypasses it); when fronting the API with a
+reverse proxy or DNS name, allowlist those hostnames via
+`DISPATCH_ALLOWED_HOSTS` (comma-separated).
 
 ```bash
 node dist/api/bin.js --port 8787          # or DISPATCH_API_PORT / --host

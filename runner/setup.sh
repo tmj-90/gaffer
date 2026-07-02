@@ -8,7 +8,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/factory.config.sh"
 
 command -v pnpm >/dev/null || { echo "pnpm is required (https://pnpm.io)"; exit 1; }
-command -v node >/dev/null || { echo "node is required (>= 20)"; exit 1; }
+command -v node >/dev/null || { echo "node is required (>= 22)"; exit 1; }
 
 echo "Gaffer factory setup"
 # Workspace install + build: one root `pnpm install` resolves the whole
@@ -40,6 +40,6 @@ echo "  $HERE/gaffer onboard /path/to/your/repo   # add a repo (registers + scan
 echo "  $HERE/gaffer dashboard                    # open the web UI (http://127.0.0.1:8787)"
 echo "  $HERE/gaffer demo                         # watch the whole loop (dry-run)"
 echo "  $HERE/gaffer status                       # what's registered + running"
-echo "  $HERE/gaffer skills install --user        # (optional) add the 31 skills to your own Claude Code"
+echo "  $HERE/gaffer skills install --user        # (optional) add the 66 skills to your own Claude Code"
 echo
 echo "  go live when ready:  DRY_RUN=0 bash $HERE/loop.sh   (review preflight.sh first)"

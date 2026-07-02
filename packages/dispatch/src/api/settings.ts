@@ -150,6 +150,35 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Max turns / agent",
     help: "Cap on agent turns within one ticket.",
   },
+  // --- Cost-as-control (Track 3a): spend steers routing, not just reporting ---
+  {
+    key: "GAFFER_BUDGET_USD",
+    type: "string",
+    group: "budget",
+    label: "Budget ceiling (USD)",
+    help:
+      "Total factory spend ceiling in USD (summed from the usage-ledger). As " +
+      "headroom runs low the router biases cheaper; at $0 headroom in-flight work " +
+      "pauses. Empty = unlimited.",
+  },
+  {
+    key: "GAFFER_BUDGET_LOW_THRESHOLD",
+    type: "string",
+    group: "budget",
+    label: "Budget-low threshold (USD)",
+    help:
+      "USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives " +
+      "~20% of the budget ceiling; set explicitly to override.",
+  },
+  {
+    key: "GAFFER_CHEAP_PHASES",
+    type: "csv",
+    group: "budget",
+    label: "Cheap-tier phases",
+    help:
+      "Comma-separated phases whose work is biased to the cheap model tier " +
+      "(e.g. self-review, test, onboarding). High/critical-risk work is never cheapened.",
+  },
 
   // --- Planning debate: multi-model plan critique ---
   {

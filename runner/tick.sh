@@ -1066,7 +1066,10 @@ EOF
   # so a prior rejection (attempt_count≥1) escalates. Default 0 if absent.
   ROUTE_ATTEMPT_RAW="$(echo "$SHOW" | jget "int(d['ticket'].get('attempt_count',0) or 0)" 2>/dev/null || echo 0)"
   ROUTE_ATTEMPT=$(( ${ROUTE_ATTEMPT_RAW:-0} + 1 ))
-  DELIVERY_MODEL="$(gaffer_route_model implement "$ROUTE_RISK" "$ROUTE_AC" "$STACK" "$ROUTE_ATTEMPT" "$NUM")"
+  # Pass the primary worktree so the router can measure diff size / file count when a
+  # branch with commits exists (rework); on a first attempt no worktree exists yet, so
+  # the difficulty signal is the ticket's accumulated measured spend (historical cost).
+  DELIVERY_MODEL="$(gaffer_route_model implement "$ROUTE_RISK" "$ROUTE_AC" "$STACK" "$ROUTE_ATTEMPT" "$NUM" "$PRIMARY_REPO")"
   # Per-tick implement flag: the router's model, or empty (→ Claude default) when
   # the registry/override resolves to none. Falls back to the static flag only if
   # routing yielded nothing AND the static tier is set.

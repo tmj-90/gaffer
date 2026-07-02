@@ -131,8 +131,26 @@ else
   # No budget configured or node unavailable → unlimited (the pre-H1 default).
   : "${GAFFER_BUDGET_REMAINING:=}"
 fi
+# GAFFER_BUDGET_LOW_THRESHOLD — the USD headroom at/under which the router biases
+# one tier CHEAPER (the "cost-as-control" downgrade). Promoting cost to a real
+# CONTROL (not just an observed number): when a budget IS configured but no explicit
+# threshold is set, DERIVE one as a fraction of the budget so the downgrade actually
+# fires as the factory approaches its ceiling — spend then steers routing instead of
+# only being reported. Unset budget → 0 (inert, the pre-H1 default). An explicit
+# operator value always wins.
+if [ -z "${GAFFER_BUDGET_LOW_THRESHOLD:-}" ] && [ -n "${GAFFER_BUDGET_USD:-}" ] \
+   && command -v awk >/dev/null 2>&1; then
+  # Default: bias cheaper once headroom drops below 20% of the configured budget.
+  GAFFER_BUDGET_LOW_THRESHOLD="$(awk "BEGIN{b=${GAFFER_BUDGET_USD}+0; if(b>0) printf \"%.6f\", b*${GAFFER_BUDGET_LOW_FRACTION:-0.20}; else print 0}" 2>/dev/null || echo 0)"
+fi
 : "${GAFFER_BUDGET_LOW_THRESHOLD:=0}"
-export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD
+# GAFFER_CHEAP_PHASES — cost-as-control class knob (Settings). A comma/space list of
+# PHASES whose work the operator wants biased toward the cheap tier (e.g.
+# "self-review,test,onboarding"). The router (route-model.mjs cheapClassFromEnv)
+# reads this and biases one tier cheaper for a matching phase — but never overrides a
+# high/critical-risk escalation. Empty (default) = no class is force-cheapened.
+: "${GAFFER_CHEAP_PHASES:=}"
+export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD GAFFER_CHEAP_PHASES
 
 # gaffer_route_model <phase> <risk> <ac_count> <stack> <attempt> [ticket]
 # Deterministic per-phase model routing. Echoes the resolved MODEL ID on stdout
@@ -145,7 +163,7 @@ export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD
 # or the router is somehow unavailable the function echoes the matching static tier
 # and never aborts the tick.
 gaffer_route_model() {
-  local phase="${1:-implement}" risk="${2:-}" ac="${3:-0}" stack="${4:-}" attempt="${5:-1}" ticket="${6:-}"
+  local phase="${1:-implement}" risk="${2:-}" ac="${3:-0}" stack="${4:-}" attempt="${5:-1}" ticket="${6:-}" worktree="${7:-}"
   # Backward-compatible EXPLICIT overrides (the two knobs that exist today). They
   # win ONLY when the operator set them in the environment — NOT when they hold the
   # config's own opus/sonnet defaults (those are the registry-equivalent baseline,
@@ -172,13 +190,38 @@ gaffer_route_model() {
     esac
     return 0
   fi
+  # DIFFICULTY signals (3b): feed the router the MEASURED difficulty of this ticket so
+  # a hard one routes stronger FROM THE START (not only after an attempt fails). The
+  # always-available signal is this ticket's accumulated measured spend (a costly area
+  # is a hard area); when a delivery worktree with commits exists (rework), we ALSO
+  # measure the accumulated diff size + file count. All best-effort — a missing signal
+  # simply doesn't vote (scoreDifficulty reads "medium").
+  local _diff_args=()
+  if [ -n "$ticket" ]; then
+    # Only a POSITIVE measured spend is a difficulty signal — $0 means "no history
+    # yet" (a fresh ticket), which must read as unknown/medium, never as "easy".
+    local _hist; _hist="$(gaffer_ticket_rework_spend "$ticket" 2>/dev/null || echo 0)"
+    if [ -n "$_hist" ] && awk "BEGIN{exit !(${_hist:-0}+0 > 0)}" 2>/dev/null; then
+      _diff_args+=(--historical-cost "$_hist")
+    fi
+  fi
+  if [ -n "$worktree" ] && [ -d "$worktree/.git" -o -f "$worktree/.git" ] \
+     && command -v git >/dev/null 2>&1; then
+    local _db _fc
+    _db="$(git -C "$worktree" diff --stat=10000 HEAD 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
+    _fc="$(git -C "$worktree" diff --name-only HEAD 2>/dev/null | grep -c . || echo 0)"
+    [ "${_db:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--diff-bytes "$_db")
+    [ "${_fc:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--file-count "$_fc")
+  fi
   local json
   json="$(GAFFER_MODEL_REGISTRY="$GAFFER_MODEL_REGISTRY" \
           GAFFER_BUDGET_REMAINING="${GAFFER_BUDGET_REMAINING:-}" \
           GAFFER_BUDGET_LOW_THRESHOLD="${GAFFER_BUDGET_LOW_THRESHOLD:-0}" \
+          GAFFER_CHEAP_PHASES="${GAFFER_CHEAP_PHASES:-}" \
           "$node_bin" "$RUNNER_DIR/bin/route-model.mjs" \
             --phase "$phase" --risk "$risk" --ac-count "$ac" \
-            --stack "$stack" --attempt "$attempt" --json 2>/dev/null || true)"
+            --stack "$stack" --attempt "$attempt" \
+            ${_diff_args[@]+"${_diff_args[@]}"} --json 2>/dev/null || true)"
   if [ -z "$json" ]; then
     # Router crashed/empty → fall back to the static tier, never break the tick.
     case "$phase" in

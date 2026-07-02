@@ -118,6 +118,16 @@ gaffer_crash_cleanup() {
   # the crash-cleanup must never tear it down. This is the load-bearing PAUSE-ON-CAP
   # invariant: a paused worktree survives the tick's exit.
   if [ "${GAFFER_PAUSE_KEEP_WORKTREE:-0}" = "1" ]; then return 0; fi
+  # CLEANUP: remove this ticket's per-agent skill-mount dirs (delivery-N /
+  # bootstrap-N) — factory state that otherwise accumulates one dir per delivered
+  # ticket forever. Placed AFTER the pause guard (a paused delivery's preserved
+  # worktree keeps its .claude/skills symlink pointing at the mount for the resume)
+  # and BEFORE the delivery-complete return so completed deliveries clean up too.
+  # The review-N / clarify-N mounts have their own scoped cleanups.
+  if [ -n "${NUM:-}" ] && declare -F gaffer_skills_mount_cleanup >/dev/null 2>&1; then
+    gaffer_skills_mount_cleanup "delivery-$NUM"
+    gaffer_skills_mount_cleanup "bootstrap-$NUM"
+  fi
   # A successfully-delivered branch is intentionally kept for review/merge; only tear
   # down on an INCOMPLETE delivery (a crash/signal before the success point).
   if [ "${GAFFER_DELIVERY_COMPLETE:-0}" = "1" ]; then return 0; fi
@@ -1606,10 +1616,11 @@ EOF
 $real
 "
     _REWORK_HISTORY="$(printf '%s' "$_REWORK_HISTORY" | tail -c "${GAFFER_REWORK_HISTORY_BYTES:-8000}")"
-    # Durable rework note (activity trail + get_ticket) so the board + audit show WHY
-    # it bounced. Best-effort; never fatal.
-    wg attach-evidence "$NUM" --type manual_note \
-      --summary "REWORK ($gate, attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS): $real" >/dev/null 2>&1 || true
+    # NOTE (dedupe): the failure text used to ALSO be attached here as a manual_note
+    # evidence record — persisting it twice per attempt. The durable persistence now
+    # lives in exactly one place per outcome: the retry path's `wg runner-rework
+    # --failure` (appends the full block to the ticket's rework trail + event) and
+    # the park path's release reason (last_review_feedback + ticket.blocked event).
 
     # DOUBLE-BOUND — cost side: stop the loop if this ticket's cumulative measured
     # rework spend has reached the per-ticket ceiling, even when attempts remain. No

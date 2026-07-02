@@ -425,7 +425,16 @@ gaffer_timeout() {
         kill "TERM", -$pid; kill "TERM", $pid;
         my $gone = 0;
         for (1..20) { if (waitpid($pid, WNOHANG) == $pid) { $gone = 1; last } select(undef,undef,undef,0.1); }
-        unless ($gone) { kill "KILL", -$pid; kill "KILL", $pid; }
+        # ALWAYS escalate the whole process GROUP to KILL after the grace — even when
+        # the foreground child ($pid) has ALREADY exited on TERM. A claude -p that dies
+        # cleanly can leave a GRANDCHILD (its MCP server) still alive in the same group;
+        # gating the KILL on the direct child being reaped ($gone) is the exact
+        # wallet-drain — that lingering MCP grandchild would survive and keep burning
+        # tokens. Sweeping the GROUP with KILL reaps EVERY descendant regardless of how
+        # the foreground child died (a KILL to an already-empty group is a harmless
+        # ESRCH no-op). Only the direct-PID KILL stays gated — redundant once reaped.
+        kill "KILL", -$pid;
+        kill "KILL", $pid unless $gone;
         $clear->();
         exit $code;
       };

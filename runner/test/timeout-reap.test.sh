@@ -36,24 +36,38 @@ source "$RUNNER_DIR/factory.config.sh"
 
 command -v perl >/dev/null 2>&1 || { echo "SKIP: perl not available"; exit 0; }
 
-echo "== AC1/AC3: a timed-out command's whole process group is reaped =="
-export CHILD_PIDFILE="$WORK/child.pid"; : > "$CHILD_PIDFILE"
+echo "== AC1/AC3: a timed-out agent leaves NO surviving descendant (a GRANDCHILD too) =="
+export CHILD_PIDFILE="$WORK/grandchild.pid"; : > "$CHILD_PIDFILE"
 export GAFFER_TIMEOUT_PGID_FILE="$WORK/agent.pgid"
-# The wrapped command backgrounds a 60s sleep (stand-in for an orphan-prone
-# `claude -p` child) and waits. gaffer_timeout must kill the sleep too, not just
-# the foreground bash.
-gaffer_timeout 1 bash -c 'sleep 60 & echo $! > "$CHILD_PIDFILE"; wait' ; rc=$?
+# DETERMINISTIC wallet-drain repro. The wrapped foreground child spawns a GRANDCHILD
+# (a stand-in for the lingering MCP server) that IGNORES SIGTERM, then `wait`s on it.
+# On timeout the reap TERMs the whole group: the foreground child dies on TERM (so the
+# direct-child wait completes and `$gone` is set), but the grandchild ignores TERM and
+# would SURVIVE unless the KILL escalation sweeps the whole GROUP. Gating the KILL on
+# the foreground child being reaped is the exact orphan-drain bug — this reproduces the
+# survivor deterministically (only the group-scoped SIGKILL can reap it).
+GRANDCHILD_SH="$WORK/grandchild.sh"
+cat > "$GRANDCHILD_SH" <<'GC'
+#!/usr/bin/env bash
+trap '' TERM                       # ignore SIGTERM — only SIGKILL can reap this
+echo $$ > "$CHILD_PIDFILE"
+# Block on a construct with no child that TERM would reap out from under us: bash
+# ignores TERM, so this loops until the group KILL takes the whole process group down.
+while true; do sleep 60; done
+GC
+chmod +x "$GRANDCHILD_SH"; export GRANDCHILD_SH
+gaffer_timeout 1 bash -c 'bash "$GRANDCHILD_SH" & wait' ; rc=$?
 [ "$rc" = "124" ] && ok "gaffer_timeout returns 124 on timeout" || fail "expected 124 (got $rc)"
-# Give the reap's TERM->KILL escalation its grace window.
+# Give the reap's TERM->KILL group escalation its grace window.
 sleep 1
 CHILD_PID="$(cat "$CHILD_PIDFILE" 2>/dev/null || true)"
 if [ -z "$CHILD_PID" ]; then
-  fail "the wrapped child never recorded its PID (test setup)"
+  fail "the grandchild never recorded its PID (test setup)"
 elif kill -0 "$CHILD_PID" 2>/dev/null; then
-  fail "ORPHAN: background child $CHILD_PID survived the timeout"
-  kill -KILL "$CHILD_PID" 2>/dev/null || true
+  fail "ORPHAN: TERM-ignoring grandchild (MCP-server stand-in) $CHILD_PID survived the timeout"
+  kill -KILL "-$CHILD_PID" 2>/dev/null; kill -KILL "$CHILD_PID" 2>/dev/null || true
 else
-  ok "background child (claude -p stand-in) reaped with its process group"
+  ok "TERM-ignoring grandchild reaped via the whole-group KILL escalation (zero survivors)"
 fi
 [ -f "$GAFFER_TIMEOUT_PGID_FILE" ] \
   && fail "PGID record lingered after timeout" \

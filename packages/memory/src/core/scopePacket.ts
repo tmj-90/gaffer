@@ -37,6 +37,7 @@
 import type { Database } from "better-sqlite3";
 
 import {
+  diagnoseRepoKeyMismatch,
   listCardsForPathPrefixes,
   listCardsForPaths,
   repoKey as computeRepoKey,
@@ -117,6 +118,14 @@ export interface ScopePacket {
    * debugging selection decisions.
    */
   readonly selectionBasis: string;
+  /**
+   * FAIL-LOUD diagnostics. Present (non-empty) when the packet came back
+   * empty BUT the store demonstrably holds cards for this repo under a
+   * different repo_key — i.e. a canonical/key mismatch. Callers (CLI, runner
+   * prime path) MUST surface these to a log/stderr — never silently return an
+   * empty result when cards exist. Omitted when there is nothing to warn about.
+   */
+  readonly diagnostics?: readonly string[];
 }
 
 // ── Input ─────────────────────────────────────────────────────────────
@@ -203,6 +212,24 @@ function applyPerCardBudget(card: FileCard, perCardMaxTokens: number): FileCard 
 }
 
 // ── Selection helpers ─────────────────────────────────────────────────
+
+/**
+ * Recall-feedback demotion: within a single selection tier, order unflagged
+ * cards before cards flagged-for-review. A card gets flagged when it was served
+ * into a ticket that then needed rework (see recallFeedback.ts); serving it as a
+ * top signal unchanged would repeat the mistake. This is a STABLE partition, so
+ * a tier's original order (bm25 for FTS, path for exact/prefix) is preserved
+ * within each group — a flagged card is only ever demoted RELATIVE TO its
+ * unflagged peers in the SAME tier, never promoted above a higher tier. Under
+ * budget pressure a flagged card may therefore be omitted in favour of an
+ * unflagged peer, which is exactly the intent.
+ */
+function demoteFlagged(cards: readonly FileCard[]): FileCard[] {
+  const unflagged: FileCard[] = [];
+  const flagged: FileCard[] = [];
+  for (const card of cards) (card.flaggedForReview ? flagged : unflagged).push(card);
+  return [...unflagged, ...flagged];
+}
 
 /**
  * Build a human-readable description of what drove card selection.
@@ -302,9 +329,13 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
     cumulativeTokens += cardTokens;
   }
 
+  // Each tier below applies `demoteFlagged` so a card flagged by recall-feedback
+  // is considered AFTER its unflagged peers in the same tier — it ranks lower and,
+  // under budget pressure, may be omitted in its peer's favour.
+
   // ── Tier 1: exact path matches ─────────────────────────────────────
   if (paths.length > 0) {
-    const tier1 = listCardsForPaths(db, rk, paths);
+    const tier1 = demoteFlagged(listCardsForPaths(db, rk, paths));
     for (const card of tier1) {
       tryAddCard(card, "exact-path");
     }
@@ -312,7 +343,7 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
 
   // ── Tier 2: path-prefix matches ────────────────────────────────────
   if (paths.length > 0) {
-    const tier2 = listCardsForPathPrefixes(db, rk, paths);
+    const tier2 = demoteFlagged(listCardsForPathPrefixes(db, rk, paths));
     for (const card of tier2) {
       if (!seen.has(card.path)) {
         tryAddCard(card, "path-prefix");
@@ -322,13 +353,13 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
 
   // ── Tier 3: important paths (exact + prefix) ───────────────────────
   if (importantPaths.length > 0) {
-    const tier3Exact = listCardsForPaths(db, rk, importantPaths);
+    const tier3Exact = demoteFlagged(listCardsForPaths(db, rk, importantPaths));
     for (const card of tier3Exact) {
       if (!seen.has(card.path)) {
         tryAddCard(card, "important-path");
       }
     }
-    const tier3Prefix = listCardsForPathPrefixes(db, rk, importantPaths);
+    const tier3Prefix = demoteFlagged(listCardsForPathPrefixes(db, rk, importantPaths));
     for (const card of tier3Prefix) {
       if (!seen.has(card.path)) {
         tryAddCard(card, "important-prefix");
@@ -340,7 +371,7 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
   if (query.trim()) {
     // Request more than maxCards so we have candidates to fill remaining slots.
     const ftsLimit = Math.min(maxCards * 2, 50);
-    const tier4 = searchFileCards(db, rk, query, ftsLimit);
+    const tier4 = demoteFlagged(searchFileCards(db, rk, query, ftsLimit));
     for (const card of tier4) {
       if (!seen.has(card.path)) {
         tryAddCard(card, "fts");
@@ -387,6 +418,16 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
 
   const selectionBasis = buildSelectionBasis(paths, importantPaths, query);
 
+  // FAIL LOUD: if we're about to hand back an empty card set, check whether
+  // the store actually HAS cards for this repo under a different key (the
+  // canonical/key-mismatch trap). If so, attach a diagnostic rather than
+  // silently returning nothing.
+  const diagnostics: string[] = [];
+  if (selectedCards.length === 0) {
+    const warn = diagnoseRepoKeyMismatch(db, rk, input.repo, input.repoCanonical);
+    if (warn) diagnostics.push(warn);
+  }
+
   return {
     cards: selectedCards,
     digest,
@@ -400,5 +441,6 @@ export function cardsForScope(db: Database, input: CardsForScopeInput): ScopePac
       missing,
     },
     selectionBasis,
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
 }

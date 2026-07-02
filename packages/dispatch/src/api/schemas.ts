@@ -143,6 +143,15 @@ export type WontDoBody = z.infer<typeof wontDoBody>;
 export const continuePausedBody = z.object({}).strip();
 export type ContinuePausedBody = z.infer<typeof continuePausedBody>;
 
+/**
+ * TRACK-2b bodies. POST /tickets/:id/human-claim ("I'll do this by hand") and
+ * /tickets/:id/human-release (hand back) both take no fields — the ticket id in the
+ * path plus the API's human actor are all that's needed. Shared empty (stripping)
+ * schema so unexpected fields are dropped rather than 422'ing the action.
+ */
+export const humanClaimBody = z.object({}).strip();
+export type HumanClaimBody = z.infer<typeof humanClaimBody>;
+
 export const stopPausedBody = z.object({
   reason: z.string().trim().min(1).max(20_000).optional(),
 });

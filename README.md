@@ -201,3 +201,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - **[Matt Pocock's skills](https://github.com/mattpocock/skills)** (MIT) — caveman ultra-compressed communication pattern (voice preserved per his repo's note).
 
 The full MIT licence text and copyright notice for each adapted source is retained in [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
+
+## Trademarks & non-affiliation
+
+Gaffer is an independent, community-driven open-source project. It is **not affiliated with, sponsored by, or endorsed by Anthropic PBC**. "Claude" and "Claude Code" are trademarks of Anthropic PBC; Gaffer uses them only to describe interoperability with the Claude Code CLI you supply and authenticate yourself. All other product names, logos, and trademarks are the property of their respective owners.

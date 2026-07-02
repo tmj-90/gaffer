@@ -115,6 +115,12 @@ export function primeContextBlock({ realRepoPath, repo, query, paths = [], env =
     for (const p of paths) {
       argv.push("--paths", p);
     }
+    // MEMORY FEEDBACK LOOP: forward GAFFER_RECALL_TICKET (set by the delivery
+    // prime) as --ticket so memory logs which items it served into this ticket's
+    // context. Fail-soft: unset ⇒ no logging, identical to before.
+    if (env.GAFFER_RECALL_TICKET) {
+      argv.push("--ticket", String(env.GAFFER_RECALL_TICKET));
+    }
     argv.push("--json");
 
     const res = spawnSync(process.execPath, argv, {

@@ -320,6 +320,120 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // Persist the NORMALISED canonical (host/owner/repo or path) that a row's
+    // repo_key was derived from. Before this, only the sha256(repo_key) was
+    // stored — which can't be reversed — so a repo onboarded via one URL form
+    // (ssh) and searched via another (https) produced different keys and
+    // SILENTLY returned 0 cards. `repoKey` now normalises via canonicalizeRepo
+    // at the single chokepoint, and this column records the canonical so
+    // existing rows can be re-keyed (see rekeyRepo / `memory cards rekey`) and
+    // future rows carry their identity for debugging. Nullable: pre-007 rows
+    // have no stored canonical until they are re-keyed or re-onboarded.
+    id: "007-repo-canonical-column",
+    up(db) {
+      db.exec(`
+        ALTER TABLE file_card ADD COLUMN canonical TEXT;
+        ALTER TABLE repo_sync ADD COLUMN canonical TEXT;
+      `);
+    },
+  },
+  {
+    // Memory Feedback Loop — close the loop between WHAT knowledge was served
+    // into a ticket's context and HOW that ticket turned out, so memory gets
+    // smarter, not just bigger.
+    //
+    // recall_event — the read-event EDGE the feedback loop learns from. Each
+    // row records that a memory item (lore or file card) was SERVED into a
+    // given ticket's context during a recall (the runner's cards-for-scope
+    // prime). Keyed by (repo, ticket): the served SET per ticket. The
+    // (repo, ticket, item_type, item_id) UNIQUE makes re-priming the same
+    // ticket idempotent (the served edge is a set, not a stream) — the older,
+    // untyped `events(kind='read')` log stays as-is for the audit trail; this
+    // table adds the ticket dimension the loop needs.
+    //
+    // recall_feedback — the idempotency + audit ledger. Exactly one row per
+    // (repo, ticket, outcome): applying the same outcome twice is a no-op, so
+    // a re-run (or a retried runner call) can never double-adjust. Records how
+    // many items were adjusted for the audit trail.
+    //
+    // flagged_for_review (on lore + file_card) — the surfaced signal. Set when
+    // an item was in context for a reworked/blocked ticket: "this knowledge led
+    // to rework, a human should look." Cleared on a clean outcome. Additive
+    // column, DEFAULT 0, so every existing row reads back as not-flagged.
+    //
+    // ISOLATION (non-negotiable): none of this reads the dispatch DB. Memory
+    // learns from its OWN read-event log + an outcome the runner PASSES in.
+    id: "008-recall-feedback",
+    up(db) {
+      db.exec(`
+        CREATE TABLE recall_event (
+          id          TEXT PRIMARY KEY,
+          repo        TEXT NOT NULL,
+          ticket      TEXT NOT NULL,
+          item_type   TEXT NOT NULL
+            CHECK (item_type IN ('lore','card')),
+          item_id     TEXT NOT NULL,
+          served_at   TEXT NOT NULL,
+          UNIQUE (repo, ticket, item_type, item_id)
+        );
+        CREATE INDEX idx_recall_event_ticket ON recall_event(repo, ticket);
+
+        CREATE TABLE recall_feedback (
+          id             TEXT PRIMARY KEY,
+          repo           TEXT NOT NULL,
+          ticket         TEXT NOT NULL,
+          outcome        TEXT NOT NULL
+            CHECK (outcome IN ('clean','reworked','blocked')),
+          items_adjusted INTEGER NOT NULL,
+          applied_at     TEXT NOT NULL,
+          UNIQUE (repo, ticket, outcome)
+        );
+
+        ALTER TABLE lore ADD COLUMN flagged_for_review INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE file_card ADD COLUMN flagged_for_review INTEGER NOT NULL DEFAULT 0;
+      `);
+    },
+  },
+  {
+    // Product-intent classifier for lore. Before this, "what KIND of knowledge
+    // is this" lived only implicitly in free-text tags ('decision', 'gotcha',
+    // …), so recall could not be AIMED at product intent (the "why") vs
+    // structure (the "how"). This adds a closed enum column so the context
+    // packet's productContext section can filter decisions / requirements /
+    // non-goals deterministically.
+    //
+    // CHECK-constrained to the six LoreKind values. SQLite does not re-validate
+    // a CHECK against existing rows on ADD COLUMN, and NOT NULL needs a non-NULL
+    // default, so every pre-009 row lands 'other' first. The best-effort pass
+    // below then migrates rows whose tags ALREADY name a kind to the closest
+    // enum value (the only "free-text kind" signal that existed) — highest-intent
+    // tag wins; everything else stays 'other'. Append-only — never rewrite.
+    id: "009-lore-kind",
+    up(db) {
+      db.exec(`
+        ALTER TABLE lore ADD COLUMN kind TEXT NOT NULL DEFAULT 'other'
+          CHECK (kind IN ('decision','requirement','non-goal','convention','gotcha','other'));
+      `);
+      // Highest product-intent first; each pass only claims rows still 'other',
+      // so a record tagged both 'decision' and 'convention' resolves to 'decision'.
+      const kindTags: ReadonlyArray<readonly [string, readonly string[]]> = [
+        ["decision", ["decision", "decisions", "adr"]],
+        ["requirement", ["requirement", "requirements"]],
+        ["non-goal", ["non-goal", "nongoal", "non-goals"]],
+        ["convention", ["convention", "conventions"]],
+        ["gotcha", ["gotcha", "gotchas"]],
+      ];
+      for (const [kind, tags] of kindTags) {
+        const placeholders = tags.map(() => "?").join(",");
+        db.prepare(
+          `UPDATE lore SET kind = ?
+             WHERE kind = 'other'
+               AND id IN (SELECT lore_id FROM lore_tags WHERE tag IN (${placeholders}))`,
+        ).run(kind, ...tags);
+      }
+    },
+  },
 ];
 
 /**

@@ -59,7 +59,11 @@ export MEMORY_DB="$MEM_DB"
 
 echo "== A. emitFileCards writes ≥1 validated card (real memory CLI, stub turn) =="
 # GAFFER_CARD_BATCH=1 exercises the safe one-file-per-call path with the single-turn stub.
-EMIT_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB" GAFFER_PLAN_MODEL="test-model" GAFFER_CARD_BATCH=1 \
+# GAFFER_CARD_REVIEW_SAMPLE=0 disables the semantic review gate: this section tests
+# generation + serving, not review. Without it, the real (uninjected) review turn returns
+# null in CI (no `claude`), which now FAILS CLOSED and would downgrade the card — that
+# fail-closed behaviour is proven directly in section F.
+EMIT_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB" GAFFER_PLAN_MODEL="test-model" GAFFER_CARD_BATCH=1 GAFFER_CARD_REVIEW_SAMPLE=0 \
   node --input-type=module -e '
 import { emitFileCards, repoCanonical } from "'"$RUNNER_DIR"'/lib/onboard-analyze.mjs";
 const stub = () => ({ tldr: "Math helpers: add() plus the PI constant.", rolePrimary: "util", roleTags: ["math"] });
@@ -161,6 +165,19 @@ esac
 case "$F1_OUT" in
   *"a card is a guide, never authoritative source"*) ok "bash helper includes non-authoritative framing" ;;
   *) fail "bash helper missing non-authoritative framing" ;;
+esac
+# FINDING 14: the card line's "path — tldr" separator must be a REAL em dash,
+# never the mojibake "â€”" the old "\xe2\x80\x94" Python byte-escape produced
+# (U+00E2 U+0080 U+0094 re-encoded → \xc3\xa2… in every card line of every
+# agent prompt). Assert no mojibake byte sequence AND the clean separator.
+if printf '%s' "$F1_OUT" | grep -q "$(printf '\xc3\xa2')"; then
+  fail "card block contains mojibake bytes (\\xc3\\xa2 — the old â€” em-dash bug)"
+else
+  ok "card block carries no mojibake bytes"
+fi
+case "$F1_OUT" in
+  *"$(printf ' \xe2\x80\x94 ')"*) ok "tldr separator renders as a clean UTF-8 em dash" ;;
+  *) fail "tldr separator missing/garbled (expected ' — ' between path and tldr)" ;;
 esac
 
 # F2: fail-soft — broken memory CLI → empty output, no error.
@@ -446,6 +463,42 @@ DOWNGRADED="$(printf '%s\n' "$REVIEW_OUT" | grep -c '"downgraded":' || true)"
 [ "${DOWNGRADED:-0}" -ge 1 ] \
   && ok "review stats report at least one downgrade" \
   || fail "review stats did not report any downgrade"
+
+echo "== F. review gate FAILS CLOSED: an unparseable verdict downgrades the card =="
+MEM_DB_FAILCLOSED="$TMP/memory_failclosed.sqlite"
+# The review turn returns null (no parseable verdict — e.g. the model timed out
+# or emitted no JSON block). Fail-closed: the card could not be vouched for, so
+# its model fields must NOT be trusted — it is downgraded to mechanical-only.
+FAILCLOSED_OUT="$(MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$MEM_DB_FAILCLOSED" GAFFER_PLAN_MODEL="test-model" GAFFER_CARD_BATCH=1 \
+  node --input-type=module -e '
+import { emitFileCards } from "'"$RUNNER_DIR"'/lib/onboard-analyze.mjs";
+// Generation stub: a plausible tldr so the card is model-active (a review candidate).
+const genTurn = () => ({ tldr: "Math helpers.", rolePrimary: "util", roleTags: ["math"] });
+// Review stub: returns null → simulates an unparseable / missing verdict.
+const nullReview = () => null;
+const stats = emitFileCards("'"$REPO"'", { repoId: "demo", name: "demo" }, {
+  env: process.env,
+  runTurn: genTurn,
+  runReviewTurn: nullReview,
+});
+process.stdout.write("FAILCLOSED_STATS=" + JSON.stringify(stats) + "\n");
+' 2>&1)"
+echo "$FAILCLOSED_OUT" | sed 's/^/    /'
+CANONICAL_FC="$(cd "$REPO" && pwd -P)"
+FC_SEARCH="$(MEMORY_DB="$MEM_DB_FAILCLOSED" node "$MEMORY_CLI" card search \
+  --canonical "$CANONICAL_FC" --repo demo --query math --json 2>/dev/null || true)"
+case "$FC_SEARCH" in
+  *'"modelStatus": "failed_validation"'*)
+    ok "fail-closed: unparseable verdict downgraded card → model_status=failed_validation" ;;
+  *'"modelStatus": "active"'*)
+    fail "fail-closed BROKEN: unparseable verdict left model fields active (failed OPEN)" ;;
+  *)
+    fail "fail-closed: no card / unexpected search result (got: ${FC_SEARCH:0:200})" ;;
+esac
+FC_DOWNGRADED="$(printf '%s\n' "$FAILCLOSED_OUT" | sed -n 's/.*"downgraded":\([0-9]*\).*/\1/p' | head -1)"
+[ "${FC_DOWNGRADED:-0}" -ge 1 ] \
+  && ok "fail-closed: review stats report the downgrade" \
+  || fail "fail-closed: review stats did not report a downgrade"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

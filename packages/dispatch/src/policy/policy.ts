@@ -46,6 +46,15 @@ export interface PolicyContext {
   /** ac_id -> count of linked evidence rows (for done evaluation). */
   evidenceCountByAc: Map<string, number>;
   hasPrOrDiff: boolean;
+  /**
+   * TRACK-2b: true when the CURRENT review submission was DELIVERED BY HAND (the
+   * durable `tickets.human_delivered` marker, stamped when a human-owned ticket
+   * submits `in_progress -> in_review` and cleared whenever the ticket re-enters
+   * the delivery pipeline). A hand delivery records no branch/repo row, so the
+   * server-recomputed diff can structurally never exist — the done-gate exempts
+   * it from PR_OR_DIFF_REQUIRED. Never true for an agent-delivered submission.
+   */
+  humanDelivered: boolean;
   hasReviewer: boolean;
   humanApprovedReady: boolean;
   /** Scope/repo confirmation state for the WG-003 readiness gate. */
@@ -195,15 +204,30 @@ export function evaluatePolicy(
 
   // ---- Review → done ------------------------------------------------------
   if (gate === "done") {
+    // Recomputed-diff verification applies to EVERY delivery-bound pack —
+    // solo_loose (the DEFAULT pack) included. `done` must correspond to a REAL,
+    // server-recomputed `git diff base...delivery-branch` on the recorded branch
+    // (see transitionService.hasRealDeliveryDiff); agent prose (a `diff_summary`
+    // row) or an unvalidated `pr_url` never satisfies it. Previously solo_loose
+    // ran an EMPTY done-gate, so this check never fired for the default pack and
+    // agent-authored review evidence could satisfy sign-off with no real change.
+    //
+    // TRACK-2b exemption: a DELIVERED-BY-HAND submission (durable
+    // `human_delivered` marker — see PolicyContext.humanDelivered) records no
+    // delivery branch/repo row, so the recomputed diff can structurally never
+    // exist; without this exemption the human lane dead-ends at approval. The
+    // marker is stamped only by the guarded human-claim path and cleared the
+    // moment the ticket re-enters the pipeline, so the agent lane's
+    // recomputed-diff requirement is never weakened.
+    if (!ctx.hasPrOrDiff && !ctx.humanDelivered) {
+      failures.push(fail("PR_OR_DIFF_REQUIRED", "A PR or diff summary is required."));
+    }
     if (pack === "team_light" || pack === "factory_strict" || pack === "regulated") {
       const unresolved = ac.filter((c) => c.status === "pending" || c.status === "failed");
       if (unresolved.length > 0) {
         failures.push(
           fail("AC_UNRESOLVED", `${unresolved.length} acceptance criteria are unresolved.`),
         );
-      }
-      if (!ctx.hasPrOrDiff) {
-        failures.push(fail("PR_OR_DIFF_REQUIRED", "A PR or diff summary is required."));
       }
     }
     if (pack === "factory_strict" || pack === "regulated") {

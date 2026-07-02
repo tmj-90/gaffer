@@ -489,6 +489,9 @@ code,
 }
 .cmdk-trigger .kbd {
   margin-left: 4px;
+  /* A ⌘K hint is meaningless on touch — collapse the trigger to just the icon
+     on phones; the label + shortcut return at ≥600px. */
+  display: none;
 }
 .cmdk-trigger .cmdk-label {
   display: none;
@@ -496,6 +499,9 @@ code,
 @media (min-width: 600px) {
   .cmdk-trigger .cmdk-label {
     display: inline;
+  }
+  .cmdk-trigger .kbd {
+    display: inline-flex;
   }
 }
 
@@ -986,20 +992,16 @@ html::after {
   inset: auto 0 0 0;
   z-index: 45;
   display: flex;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scroll-snap-type: x proximity;
+  /* Tabs flex to share the width evenly — everything fits, no scroll, no clip. */
+  overflow-x: hidden;
   scrollbar-width: none;
   gap: 2px;
-  padding: 6px 6px calc(6px + var(--safe-b));
+  padding: 6px 4px calc(6px + var(--safe-b));
   background: linear-gradient(0deg, rgba(10, 12, 15, 0.97), rgba(16, 20, 26, 0.9));
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-top: 1px solid var(--line);
   box-shadow: 0 -10px 30px -18px rgba(0, 0, 0, 0.8);
-  /* Right-edge fade hints there's more to scroll (the nav holds >6 tabs). */
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
 }
 .bottomnav::-webkit-scrollbar {
   display: none;
@@ -1016,9 +1018,9 @@ html::after {
   justify-content: center;
   gap: 3px;
   min-height: 48px;
-  flex: 0 0 auto;
-  min-width: 62px;
-  scroll-snap-align: start;
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
   border-radius: var(--r-sm);
   padding: 4px 0;
   font-size: 0.64rem;
@@ -2313,7 +2315,9 @@ html::after {
 .kpi-spark {
   height: 38px;
   color: var(--st);
-  margin: 2px -4px -4px;
+  /* margin-top:auto pins the sparkline to the card bottom, so every KPI's spark
+     lands on the same baseline no matter how tall its label/number block is. */
+  margin: auto -4px -4px;
 }
 .spark-svg {
   width: 100%;
@@ -3504,6 +3508,49 @@ td.title-cell {
   box-shadow: none;
 }
 
+/* TRACK-2b: the operator's own in-flight work ("by hand"). A distinct blue marker
+   (vs the amber agent claim) so a human's WIP reads apart from the agent's. */
+.card-human-owned {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--info);
+  font-weight: 600;
+}
+.human-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--info);
+  box-shadow: 0 0 8px -1px var(--info);
+}
+/* The by-hand claim / hand-back affordance on a board card. */
+.card-human-btn {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 3px 9px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid var(--info);
+  color: var(--info);
+  background: var(--info-soft);
+  cursor: pointer;
+}
+.card-human-btn:hover {
+  background: var(--info);
+  color: var(--bg);
+}
+.card-human-btn.hand-back {
+  border-color: var(--text-dim);
+  color: var(--text-dim);
+  background: transparent;
+}
+.card-human-btn.hand-back:hover {
+  background: var(--text-dim);
+  color: var(--bg);
+}
+
 /* WG-049: the reviewer's rejection reason on a rework card. */
 .card-reject {
   margin-top: 8px;
@@ -3522,6 +3569,196 @@ td.title-cell {
 .card-reject-label {
   color: var(--danger);
   font-weight: 700;
+}
+
+/* ===========================================================================
+   FAILURE-DIAGNOSIS — the "why did #N fail" trail + "these keep bouncing" panel
+   =========================================================================== */
+
+.failure-history h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.failure-history-sub {
+  margin: -4px 0 10px;
+  font-size: 0.8rem;
+}
+.failure-trail {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.failure-attempt {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-left: 3px solid var(--danger);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--danger-soft);
+}
+.failure-attempt-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+}
+.failure-attempt-num {
+  font-weight: 700;
+  color: var(--danger);
+}
+.failure-gate {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+}
+.failure-attempt-time {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+.failure-detail {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface, #fff);
+  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+  max-height: 260px;
+  overflow: auto;
+}
+
+.bouncing-sub {
+  margin: 4px 0 10px;
+  font-size: 0.8rem;
+}
+.bouncing-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.bounce-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+  color: inherit;
+  text-decoration: none;
+}
+.bounce-row:hover {
+  background: var(--danger-soft);
+}
+.bounce-num {
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.bounce-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bounce-count {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--danger);
+}
+.bounce-samegate {
+  flex: 0 0 auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.7rem;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ===========================================================================
+   "What I own" — the operator's first-class lane (Track 2a)
+   =========================================================================== */
+
+.what-i-own {
+  border-left: 3px solid var(--accent, #4f8cff);
+}
+.what-i-own-sub {
+  margin: 2px 0 12px;
+}
+.own-well {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.own-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  background: var(--surface-2, rgba(0, 0, 0, 0.02));
+  color: inherit;
+  text-decoration: none;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+.own-row:hover {
+  background: var(--surface-3, rgba(0, 0, 0, 0.04));
+  border-color: var(--accent, #4f8cff);
+  transform: translateX(2px);
+}
+.own-kind {
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: #fff;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.own-kind--decision {
+  background: var(--violet, #8b5cf6);
+}
+.own-kind--review {
+  background: var(--accent, #4f8cff);
+}
+.own-kind--ready_approval {
+  background: var(--amber, #d97706);
+}
+.own-kind--reviewer_assignment {
+  background: var(--ok, #16a34a);
+}
+.own-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.own-reason {
+  line-height: 1.35;
+}
+.own-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.78rem;
+}
+.own-ref {
+  color: var(--text-dim, #6b7280);
 }
 
 /* ===========================================================================

@@ -150,4 +150,40 @@ export class EventRepository {
       )
       .all() as TransitionRow[];
   }
+
+  /**
+   * The most recent transition of `ticketId` INTO `status`: when it entered the
+   * state and the transition's optional free-text reason. Reads the `$.to` enum
+   * and `$.reason` from the `ticket.transitioned` payload. Returns null when the
+   * ticket never transitioned into that state (e.g. seeded directly). Powers the
+   * human-queue "how long has this waited" + "why" for `in_review` tickets.
+   */
+  enteredStatusAt(ticketId: string, status: string): { at: string; reason: string | null } | null {
+    const row = this.db
+      .prepare(
+        `SELECT created_at                            AS at,
+                json_extract(payload_json, '$.reason') AS reason
+         FROM work_events
+         WHERE entity_type = 'ticket'
+           AND entity_id = @ticketId
+           AND event_type = 'ticket.transitioned'
+           AND json_extract(payload_json, '$.to') = @status
+         ORDER BY rowid DESC
+         LIMIT 1`,
+      )
+      .get({ ticketId, status }) as { at: string; reason: string | null } | undefined;
+    return row ?? null;
+  }
+
+  /** True when the ticket has at least one work-event of the given type. */
+  hasTicketEvent(ticketId: string, eventType: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM work_events
+         WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = ?
+         LIMIT 1`,
+      )
+      .get(ticketId, eventType);
+    return row !== undefined;
+  }
 }

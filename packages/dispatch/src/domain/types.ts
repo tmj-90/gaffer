@@ -192,6 +192,35 @@ export interface Ticket {
    * surfacing it.
    */
   test_contract: string | null;
+  /**
+   * TRACK-2b: the HUMAN-CLAIM marker. `null` ⇒ agent-shaped work the factory may
+   * claim as normal. A non-null value (the human actor's id/name) ⇒ a human took the
+   * ticket "by hand": it sits `in_progress` OWNED BY THE HUMAN, the agent selection
+   * loop structurally skips it (the candidate queries filter `human_owner IS NULL`),
+   * and the board renders it in a distinct "by hand" lane. Cleared when the ticket
+   * leaves `in_progress` (hand-back to `ready`, submit to review, block, cancel …).
+   */
+  human_owner: string | null;
+  /**
+   * TRACK-2b: the durable DELIVERED-BY-HAND marker. {@link human_owner} is cleared
+   * the instant the ticket leaves `in_progress`, so this separate marker records
+   * that the work CURRENTLY under review was delivered by hand — set (to the human
+   * actor's id/name) when a human-owned ticket submits `in_progress -> in_review`,
+   * cleared whenever the ticket re-enters the delivery pipeline (any move out of
+   * the review lane). The done-gate consults it to exempt a hand delivery from the
+   * server-recomputed-diff requirement (PR_OR_DIFF_REQUIRED) it can structurally
+   * never meet; a later agent redelivery is never exempted.
+   */
+  human_delivered: string | null;
+  /**
+   * TRACK-3a: the per-ticket DELIVERY BUDGET ceiling in USD, or `null` for no
+   * per-ticket ceiling (the factory-wide env budget applies). A first-class
+   * extension of the rework loop's per-ticket cost ceiling: the runner parks the
+   * ticket to `blocked` once its cumulative MEASURED delivery spend (from the
+   * usage-ledger) reaches this figure, even when retry attempts remain. An epic
+   * stamps its budget onto each child ticket at creation (per-epic, inherited).
+   */
+  delivery_budget_usd: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -387,6 +416,21 @@ export interface ReviewFeedback {
   reason: string;
   reviewer: string | null;
   at: string;
+  /**
+   * Structured machine code for WHY the ticket bounced, so the board and the next
+   * attempt can key off it rather than parsing free text. `rework_exhausted` marks
+   * a delivery parked to `blocked` after the runner's rework loop hit its attempt
+   * or per-ticket cost ceiling. Absent for ordinary human review rejections.
+   */
+  code?: string;
+  /**
+   * The runner's live rework attempt (1-based) while a ticket is being reworked in
+   * place (`in_progress`), so the board can render "reworking · attempt N/M". Set by
+   * the runner between delivery retries; absent for a human review rejection.
+   */
+  attempt?: number;
+  /** The rework attempt ceiling (GAFFER_MAX_DELIVERY_ATTEMPTS) paired with {@link attempt}. */
+  maxAttempts?: number;
 }
 
 /**
@@ -399,14 +443,68 @@ export function parseReviewFeedback(raw: string | null): ReviewFeedback | null {
   try {
     const parsed = JSON.parse(raw) as Partial<ReviewFeedback>;
     if (typeof parsed.reason !== "string" || typeof parsed.at !== "string") return null;
-    return {
+    const out: ReviewFeedback = {
       reason: parsed.reason,
       reviewer: typeof parsed.reviewer === "string" ? parsed.reviewer : null,
       at: parsed.at,
     };
+    if (typeof parsed.code === "string" && parsed.code.length > 0) out.code = parsed.code;
+    if (typeof parsed.attempt === "number" && Number.isFinite(parsed.attempt)) {
+      out.attempt = parsed.attempt;
+    }
+    if (typeof parsed.maxAttempts === "number" && Number.isFinite(parsed.maxAttempts)) {
+      out.maxAttempts = parsed.maxAttempts;
+    }
+    return out;
   } catch {
     return null;
   }
+}
+
+/**
+ * FAILURE-DIAGNOSIS: one persisted rework attempt in a ticket's failure trail.
+ * Unlike {@link ReviewFeedback} (which keeps only the LATEST attempt on the card),
+ * these APPEND — the full ordered history of why a ticket kept failing. Each row
+ * carries the DISTILLED failure the runner's DoD distiller produced (the real
+ * failing test + assertion/stack), not a gate-name summary.
+ */
+export interface ReworkAttempt {
+  id: string;
+  ticket_id: string;
+  /** 1-based attempt counter for this rework loop. */
+  attempt: number;
+  /** The attempt ceiling in force when this row was recorded (may be null). */
+  max_attempts: number | null;
+  /** The gate that failed (e.g. `tests`, `definition-of-done`, `lint`). */
+  gate: string | null;
+  /** The full distilled failing test + assertion/stack — the crux of the trail. */
+  distilled_failure: string;
+  /** The acceptance criterion being worked toward when known (else null). */
+  ac_id: string | null;
+  created_at: string;
+}
+
+/**
+ * FAILURE-DIAGNOSIS: the cross-ticket "these keep bouncing" aggregate. One row per
+ * ticket with a rework trail, ranked so the operator sees the worst quality
+ * offenders first — especially tickets that repeatedly fail the SAME gate
+ * ({@link top_gate_count}), the strongest signal of a stuck ticket.
+ */
+export interface BouncingTicket {
+  ticket_id: string;
+  number: number | null;
+  title: string;
+  status: string;
+  /** Total rework attempts recorded across the ticket's trail. */
+  rework_count: number;
+  /** How many DISTINCT gates the ticket failed. */
+  distinct_gates: number;
+  /** The single gate the ticket failed most often (null when no gate was recorded). */
+  top_gate: string | null;
+  /** How many times {@link top_gate} failed — the same-gate repeat signal. */
+  top_gate_count: number;
+  /** Timestamp of the most recent attempt in the trail. */
+  last_attempt_at: string;
 }
 
 export interface AcceptanceCriterion {

@@ -1,6 +1,6 @@
 ---
 name: prepare-digest-delta
-description: Use right after a ticket is implemented and evidenced — while you still hold the diff in context — to PREPARE the Repo Digest delta and the feature note as a recorded evidence row, so the merge step can apply them deterministically WITHOUT spending a fresh agent call. Invoke once your change is committed and its ACs are evidenced, before submit-review. It only PREPARES (records inert evidence); the merge APPLIES it post-review, so a rejected delivery never touches the digest.
+description: Use right after a ticket is implemented and evidenced — while you still hold the diff in context — to PREPARE the Repo Digest delta and the feature note as a recorded evidence row, so the merge step can apply them deterministically WITHOUT spending a fresh agent call. Invoke once your change is committed and its ACs are evidenced, as the last thing you do before you stop (the runner submits for review). It only PREPARES (records inert evidence); the merge APPLIES it post-review, so a rejected delivery never touches the digest.
 stack: []
 area: workflow
 ---
@@ -43,8 +43,9 @@ win. Keep it cheap: you are summarising a diff you already have, not re-deriving
    - Record at most one such row per ticket. If you record more than one, the merge
      uses the LAST — so re-record a corrected full payload rather than a partial patch.
 4. **Stop.** Do not call any digest or feature tool yourself — applying is the merge's
-   job, and only the merge's, so a rejected delivery is never applied. Proceed to
-   `submit-review`.
+   job, and only the merge's, so a rejected delivery is never applied. Once this and
+   your AC evidence are recorded you are done — the runner records the delivery and
+   submits for review.
 
 ## Rules
 

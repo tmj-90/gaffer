@@ -37,27 +37,7 @@ assistive tech, and tolerant of user preferences — proven, not assumed.
 ## Capture lore
 
 This skill is one of the places durable, reusable knowledge naturally surfaces:
-**An accessibility pattern or boundary this repo standardises on — a focus-management rule, a semantics convention, or an a11y check that must pass.** That kind of fact is *lore* — it would have saved you time had the
-previous agent recorded it, and it will save the next one. Capture it.
-
-When you learn something that future agents on this repo should know *before they
-start* — a convention, a gotcha, an architectural fact, a decision, a boundary —
-call the Memory MCP `suggest_lore` tool once, at the close of your work:
-
-- `title` — the rule/fact in a few words.
-- `summary` — one self-contained paragraph: the *what* and the *why*.
-- `body` — the detail and evidence that lets a human verify it.
-- `repos` — the repo(s) the rule applies to.
-- `tags` — lowercase (e.g. `conventions`, `gotchas`, `security`, `db`).
-- `source` — a URL to the ticket/PR/ADR that justifies it (records without a
-  source are lower-trust); `confidence` — `low` for an inferred convention,
-  `high` only when you have a source.
-
-**This is suggested, gated knowledge — not auto-truth.** `suggest_lore` lands a
-DRAFT; a human reviews and approves it. You never approve your own lore.
-
-**Capture reusable knowledge, not ticket noise.** Lore is a convention, gotcha,
-decision, or boundary the *next* agent needs — never per-ticket trivia (what this
-diff changed, a path you happened to read, transient task state). The honest test:
-*would a teammate six months from now thank you for this record?* If unsure, skip —
-a missing record costs one re-search; a noisy one costs every future reader.
+**An accessibility pattern or boundary this repo standardises on — a focus-management rule, a semantics convention, or an a11y check that must pass.** That kind of fact is *lore*. Capture it via the **lore-capture
+protocol in your brief** (`CLAUDE.factory.md`, step 11 "Memory contribution"):
+call the Memory MCP `suggest_lore` once at the close of your work — reusable
+conventions, gotchas, decisions, and boundaries only, never per-ticket trivia.

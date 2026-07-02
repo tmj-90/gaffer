@@ -24,6 +24,8 @@ import {
 } from "../../core/lore.js";
 import { openDb } from "../../db/index.js";
 import type { LoreConfidence } from "../../db/types.js";
+import { LORE_KINDS } from "../../db/types.js";
+import type { LoreKind } from "../../db/types.js";
 import { getBool, getString, getStringArray } from "../args.js";
 import type { parseArgs } from "../args.js";
 import { renderFull, renderSummary } from "../format.js";
@@ -34,6 +36,22 @@ function parseConfidence(v: string | undefined): LoreConfidence | undefined {
   if (v === undefined) return undefined;
   if (v === "low" || v === "medium" || v === "high") return v;
   throw new Error(`invalid --confidence: ${v} (must be low | medium | high)`);
+}
+
+const LORE_KIND_SET = new Set<string>(LORE_KINDS);
+
+/**
+ * Validate a caller-supplied `--kind` for a lore draft. Returns undefined when
+ * absent (core defaults it to 'other'); throws a typed error on an unknown
+ * kind so a distiller passing a bad classifier fails fast.
+ */
+function parseKind(v: string | undefined): LoreKind | undefined {
+  if (v === undefined) return undefined;
+  const k = v.trim();
+  if (!LORE_KIND_SET.has(k)) {
+    throw new Error(`invalid --kind: ${v} (must be one of ${LORE_KINDS.join(", ")})`);
+  }
+  return k as LoreKind;
 }
 
 /**
@@ -98,6 +116,7 @@ export async function cmdAdd(
   const reviewAfter = getString(args.flags, "review-after");
   const confidence = parseConfidence(getString(args.flags, "confidence"));
   const restricted = getBool(args.flags, "restricted");
+  const kind = parseKind(getString(args.flags, "kind"));
 
   const db = openDb();
   try {
@@ -114,6 +133,7 @@ export async function cmdAdd(
       reviewAfter,
       confidence,
       restricted,
+      ...(kind ? { kind } : {}),
     });
     process.stdout.write(
       `memory: ${asDraft ? "suggested" : "added"} ${lore.id} (${lore.status})\n`,

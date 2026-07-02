@@ -13,7 +13,7 @@ import {
   todaySpend,
 } from "../cost/costAggregator.js";
 import { buildRunDetail } from "./runDetail.js";
-import { isAuthorized } from "./auth.js";
+import { hasValidBearer, isRequestAuthorized } from "./auth.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
 import { createMergeRunner, type MergeRunner } from "./mergeRunner.js";
@@ -42,6 +42,7 @@ import {
   createTicketBody,
   linkTicketScopeBody,
   continuePausedBody,
+  humanClaimBody,
   moveTicketBody,
   planBuildBody,
   planSessionArchiveBody,
@@ -76,11 +77,19 @@ import {
 /**
  * Human REST API for Dispatch — a thin HTTP control surface over the facade.
  *
- * AUTH: a single bearer token gates the API when `DISPATCH_API_TOKEN` is set —
- * every non-public request must then present it (this is what makes a non-loopback
- * bind safe; see {@link assertSafeBind}). What is NOT here yet is *role* enforcement:
- * the docs describe PM/Engineer/Tech-lead/Admin roles, but per-role RBAC is deferred,
- * so an authenticated caller currently acts as a single human actor with full rights.
+ * AUTH: a bearer token (`DISPATCH_API_TOKEN`) gates the control plane. The
+ * `dispatch-api` entrypoint auto-provisions one at startup when the operator has
+ * not set it (see {@link ensureApiToken}), so a token is present by default.
+ * Enforcement is method-aware (see {@link isRequestAuthorized}): EVERY mutating /
+ * state-changing request (review approve/reject, merge, board moves, every write)
+ * must present the token, while read-only GET/HEAD requests stay open on a
+ * loopback bind to preserve local dashboard UX — for the AUTO-provisioned token
+ * only; an operator-SET `DISPATCH_API_TOKEN` gates every request, loopback reads
+ * included (see auth.ts isOperatorSetToken). This is what structurally stops
+ * the delivery agent — whose child env the runner scrubs of the token — from
+ * self-approving its own work over REST. What is NOT here yet is *role*
+ * enforcement: per-role RBAC is deferred, so an authenticated caller acts as a
+ * single human actor with full rights.
  */
 
 /** Default port; overridden by DISPATCH_API_PORT / --port at the bin layer. */
@@ -105,6 +114,86 @@ function normaliseHost(host: string): string {
 /** True when `host` is a loopback address the API may bind to without opt-in. */
 export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.has(normaliseHost(host));
+}
+
+/**
+ * Extract the hostname from a `Host` (`host[:port]`) or `Origin`
+ * (`scheme://host[:port]`) header value, normalised for comparison. Returns
+ * `undefined` for an empty or unparseable value so the caller can treat it as
+ * disallowed.
+ */
+function headerHostname(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "") return undefined;
+  // Origin carries a scheme; a bare Host does not — synthesise one so the URL
+  // parser can split host from port (and reject a garbage value).
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  try {
+    return normaliseHost(new URL(withScheme).hostname);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Extra hostnames the Host/Origin check accepts, from `DISPATCH_ALLOWED_HOSTS`
+ * (comma-separated). For deployments fronted by a reverse proxy or a DNS name,
+ * where the original `Host` the client sent never byte-equals the bind host.
+ * Parsed defensively: entries are trimmed, normalised via {@link normaliseHost}
+ * (lowercase, `[]`/`%zone` stripped, a `:port` suffix dropped via
+ * {@link headerHostname}), and empties ignored. Read per request — consistent
+ * with how the bearer token is resolved — so tests and embedders can adjust it
+ * without rebuilding the handler.
+ */
+function allowedHostsFromEnv(env: NodeJS.ProcessEnv = process.env): ReadonlySet<string> {
+  const raw = (env.DISPATCH_ALLOWED_HOSTS ?? "").trim();
+  if (raw === "") return new Set();
+  const hosts = raw
+    .split(",")
+    .map((entry) => headerHostname(entry) ?? "")
+    .filter((h) => h !== "");
+  return new Set(hosts);
+}
+
+/**
+ * DNS-rebinding defense for TOKENLESS requests. A browser page served from an
+ * attacker origin that has rebound its DNS to 127.0.0.1 can reach the local
+ * API, but the browser still sends the attacker's own `Host`/`Origin`. We
+ * refuse any request whose `Host` (or, when present, `Origin`) names a host
+ * other than the bound host, a loopback alias, or an operator-allowlisted
+ * hostname (`DISPATCH_ALLOWED_HOSTS`, for proxy/DNS fronting) — so a rebound
+ * foreign page can't read local control state on the tokenless loopback read
+ * path. Non-browser clients (curl, the runner) that omit both headers are
+ * unaffected.
+ *
+ * The route layer only consults this check for requests WITHOUT a valid bearer
+ * token, and exempts `/healthz`: a browser cannot attach the bearer token
+ * cross-origin, so a valid token proves the caller is legitimate (and health
+ * probes carry arbitrary `Host` headers and expose no state). The bearer token
+ * remains the real auth mechanism; this only closes the browser-rebinding hole.
+ */
+function isHostHeaderAllowed(req: IncomingMessage, bindHost: string): boolean {
+  const boundHostNormalised = normaliseHost(bindHost);
+  const extraAllowed = allowedHostsFromEnv();
+  const allowed = (host: string | undefined): boolean =>
+    host !== undefined &&
+    (isLoopbackHost(host) || host === boundHostNormalised || extraAllowed.has(host));
+
+  const rawHost = req.headers.host;
+  if (rawHost !== undefined) {
+    const hostValue = Array.isArray(rawHost) ? (rawHost[0] ?? "") : rawHost;
+    if (!allowed(headerHostname(hostValue))) return false;
+  }
+
+  const rawOrigin = req.headers.origin;
+  // A literal "null" Origin (sandboxed iframe, file://) carries no usable host —
+  // reject it like any other non-matching origin.
+  if (rawOrigin !== undefined) {
+    const originValue = Array.isArray(rawOrigin) ? (rawOrigin[0] ?? "") : rawOrigin;
+    if (!allowed(headerHostname(originValue))) return false;
+  }
+
+  return true;
 }
 
 /**
@@ -209,6 +298,7 @@ function statusForCode(code: string): number {
     case "CLAIM_INVALID":
     case "CLAIM_REQUIRED":
     case "TICKET_NOT_CLAIMABLE":
+    case "TICKET_NOT_HUMAN_OWNED":
     case "DEPENDENCY_BLOCKED":
     case "AGENT_NOT_ELIGIBLE":
     case "SCOPE_NODE_IN_USE":
@@ -363,6 +453,8 @@ export function createApiHandler(
       pollWorkRunner,
       memoryReader,
       onboardRunner,
+      loopbackBind,
+      bindHost,
       req,
       res,
     ).catch((err: unknown) => {
@@ -417,8 +509,13 @@ const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
   READY: "ready",
   MOVE: "move",
+  // TRACK-2b: "I'll do this by hand" (human-claim a ready ticket) + hand-back.
+  HUMAN_CLAIM: "human-claim",
+  HUMAN_RELEASE: "human-release",
   READY_APPROVAL: "ready-approval",
   EVENTS: "events",
+  // FAILURE-DIAGNOSIS: the ordered "why did #N fail" rework trail.
+  REWORK_TRAIL: "rework-trail",
   REVIEW: "review",
   MARK_MERGED: "mark-merged",
   DIFF: "diff",
@@ -454,6 +551,13 @@ async function route(
   pollWorkRunner: PollWorkRunner,
   memoryReader: MemoryReader,
   onboardRunner: OnboardRunner,
+  // Resolved once from the bind host (see createApiHandler). Controls whether an
+  // unauthenticated READ may pass: reads stay open on a loopback bind for the
+  // local dashboard, but mutations always require the token.
+  loopbackBind: boolean,
+  // The host the server is bound to — used for the Host/Origin DNS-rebinding
+  // check so a rebound foreign page can't read local control state.
+  bindHost: string,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -462,21 +566,45 @@ async function route(
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
 
   try {
+    // /healthz is exempt from the Host/Origin check below: health probes (load
+    // balancers, k8s, uptime monitors) legitimately arrive with arbitrary Host
+    // headers, and the response carries no control-plane state to protect.
+    if (segments.length === 1 && segments[0] === "healthz" && method === "GET") {
+      sendJson(res, 200, { status: "ok" });
+      return;
+    }
+
+    // DNS-rebinding defense (before static assets + the API router): a TOKENLESS
+    // request whose Host/Origin names a foreign host is refused outright, so a
+    // rebound attacker page can't reach the tokenless loopback read path. A
+    // VALID bearer token bypasses the check — a browser can't attach the token
+    // cross-origin, so holding it proves the caller is legitimate (this is what
+    // lets a tokened client reach a `--host 0.0.0.0` or proxy-fronted deploy
+    // whose Host header never matches the bind host). NOTE: hasValidBearer, not
+    // header presence — a wrong token gets no bypass.
+    if (!hasValidBearer(req) && !isHostHeaderAllowed(req, bindHost)) {
+      sendJson(res, 403, {
+        error: { code: "FORBIDDEN_HOST", message: "Host or Origin not permitted." },
+      });
+      return;
+    }
+
     // SPA static assets: only specific non-API GET paths. Everything else falls
     // through to the API router (and its JSON 404), so API 404s stay intact.
     if (method === "GET" && serveStatic(url.pathname, res)) {
       return;
     }
 
-    if (segments.length === 1 && segments[0] === "healthz" && method === "GET") {
-      sendJson(res, 200, { status: "ok" });
-      return;
-    }
-
-    // Auth gate: static assets + /healthz above are public; everything else
-    // (the whole control-plane API) requires a bearer token when one is
-    // configured (DISPATCH_API_TOKEN). No-op when auth is disabled.
-    if (!isAuthorized(req)) {
+    // Auth gate: static assets + /healthz above are public. The control-plane
+    // API requires a bearer token (DISPATCH_API_TOKEN — auto-provisioned at
+    // startup by the dispatch-api entrypoint, so a token is present by default).
+    // Read-only requests stay open on a loopback bind to preserve local dashboard
+    // UX — auto-provisioned token only; an operator-SET token gates everything.
+    // EVERY mutating/state-changing request must present the token, as must a
+    // read of a privileged secret-bearing path (e.g. /api/settings) even on
+    // loopback. No-op only when auth is fully disabled (no token configured —
+    // embedder/test posture).
+    if (!isRequestAuthorized(req, loopbackBind, url.pathname)) {
       sendJson(res, 401, {
         error: { code: "UNAUTHORIZED", message: "Missing or invalid bearer token." },
       });
@@ -906,6 +1034,8 @@ async function routeTickets(
         dependencies: view.dependencies,
         evidence: view.evidence,
         events: view.events,
+        // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
+        rework_trail: view.reworkTrail,
       });
       return;
     }
@@ -951,9 +1081,44 @@ async function routeTickets(
     return;
   }
 
+  // TRACK-2b: /tickets/:id/human-claim — the operator takes a ready ticket "by
+  // hand" ("I'll do this myself"). Moves it ready -> in_progress owned by the human;
+  // the agent selection loop structurally skips it thereafter. 409 when the ticket
+  // isn't a claimable `ready` ticket.
+  if (segments.length === 3 && sub === TICKET_SUB.HUMAN_CLAIM && method === "POST") {
+    humanClaimBody.parse(await readJsonBody(req));
+    const ticket = wg.resolveTicket(id);
+    const result = wg.humanClaimTicket(ticket.id, API_ACTOR);
+    sendJson(res, 200, { ticket_id: result.ticketId, number: result.number, human_owned: true });
+    return;
+  }
+
+  // TRACK-2b: /tickets/:id/human-release — the operator hands a by-hand ticket back
+  // to the queue (in_progress -> ready, clearing the ownership marker). 409 when the
+  // ticket isn't human-owned in-flight work.
+  if (segments.length === 3 && sub === TICKET_SUB.HUMAN_RELEASE && method === "POST") {
+    humanClaimBody.parse(await readJsonBody(req));
+    const ticket = wg.resolveTicket(id);
+    const result = wg.humanReleaseTicket(ticket.id, API_ACTOR);
+    sendJson(res, 200, {
+      ticket_id: result.ticketId,
+      status: result.status,
+      event_id: result.eventId,
+    });
+    return;
+  }
+
   // /tickets/:id/events
   if (segments.length === 3 && sub === TICKET_SUB.EVENTS && method === "GET") {
     sendJson(res, 200, { events: wg.listTicketEvents(id) });
+    return;
+  }
+
+  // FAILURE-DIAGNOSIS: /tickets/:id/rework-trail — the full ordered "why did #N
+  // fail" history (attempt 1 → 2 → …), each with the distilled failing test +
+  // assertion. Distinct from the board's latest-only rework chip.
+  if (segments.length === 3 && sub === TICKET_SUB.REWORK_TRAIL && method === "GET") {
+    sendJson(res, 200, { rework_trail: wg.reworkTrail(id) });
     return;
   }
 
@@ -1604,6 +1769,15 @@ function routeReadModels(
     return;
   }
 
+  // /api/human-queue — Track 2a "What I own": the HUMAN-owned queue (pending
+  // decisions with reasons, review sign-offs, regulated ready-approvals/reviewer
+  // assignments), each with what/which-ticket/why/how-long. Read-only.
+  if (segments.length === 2 && segments[1] === "human-queue") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, wg.humanQueue());
+    return;
+  }
+
   // /api/activity?limit=&offset= — newest-first cross-ticket event feed.
   if (segments.length === 2 && segments[1] === "activity") {
     if (method !== "GET") return methodNotAllowed(res);
@@ -1618,6 +1792,24 @@ function routeReadModels(
       limit: q.limit,
       offset: q.offset,
     });
+    return;
+  }
+
+  // FAILURE-DIAGNOSIS: GET /api/rework/bouncing?min=&limit= — the cross-ticket
+  // "these keep bouncing" signal: tickets with a rework trail, ranked worst-first
+  // (repeated same-gate failures lead). The operator's key quality signal.
+  if (segments.length === 3 && segments[1] === "rework" && segments[2] === "bouncing") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const parseCap = (raw: string | null, fallback: number): number => {
+      if (raw === null) return fallback;
+      const n = Number.parseInt(raw, 10);
+      return Number.isInteger(n) && n > 0 ? n : fallback;
+    };
+    const bouncing = wg.bouncingTickets({
+      minReworks: parseCap(url.searchParams.get("min"), 2),
+      limit: parseCap(url.searchParams.get("limit"), 20),
+    });
+    sendJson(res, 200, { bouncing });
     return;
   }
 

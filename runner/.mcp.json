@@ -1,10 +1,10 @@
 {
-  "_comment": "Claude Code MCP config for the Gaffer factory: the two data-plane MCP servers the agent delivers through. tick.sh renders a runtime copy, substituting ${DISPATCH_DB}/${MEMORY_DB} (runtime DB copies) and ${DISPATCH_MCP_BIN}/${MEMORY_MCP_BIN} (the built dist bins, resolved from factory.config.sh). Build the workspace first: pnpm -r build.",
+  "_comment": "Claude Code MCP config for the Gaffer factory: the two data-plane MCP servers the agent delivers through. tick.sh renders a runtime copy, substituting ${DISPATCH_DB}/${MEMORY_DB} (runtime DB copies), ${DISPATCH_MCP_BIN}/${MEMORY_MCP_BIN} (the built dist bins), and ${GAFFER_CLAIM_TOKEN} (RUNNER-OWNED-BOOKKEEPING: the runner-held delivery claim token, so the agent's token-gated evidence writes resolve it from the server env — the agent never handles the token). Build the workspace first: pnpm -r build.",
   "mcpServers": {
     "dispatch": {
       "command": "node",
       "args": ["${DISPATCH_MCP_BIN}"],
-      "env": { "DISPATCH_DB": "${DISPATCH_DB}" }
+      "env": { "DISPATCH_DB": "${DISPATCH_DB}", "GAFFER_CLAIM_TOKEN": "${GAFFER_CLAIM_TOKEN}" }
     },
     "memory": {
       "command": "node",

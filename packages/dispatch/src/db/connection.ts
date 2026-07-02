@@ -182,6 +182,29 @@ export function migrate(db: Db): void {
   // H9 (v10→v11): the `plan_sessions` durable plan-build chat table. Also a
   // brand-new standalone table with no FKs to other tables, created idempotently
   // by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS — no ADD COLUMN migration needed.
+  //
+  // FAILURE-DIAGNOSIS (v12→v13): the `rework_attempts` failure-trail table. A
+  // brand-new standalone table (FK to tickets, CASCADE) created idempotently by
+  // SCHEMA_SQL's CREATE TABLE IF NOT EXISTS — no ADD COLUMN migration needed.
+  //
+  // TRACK-2b (v13→v14): add the `human_owner` column to an EXISTING tickets table.
+  // CREATE TABLE IF NOT EXISTS won't add a column, so it must be ALTERed in. No CHECK
+  // widening is needed (it is a free TEXT marker), so this is a plain additive ALTER —
+  // no table rebuild. No-op on a fresh DB (table absent — SCHEMA_SQL creates it). Runs
+  // AFTER every prior tickets rebuild so the rebuilt table is backfilled too.
+  alterTicketsAddHumanOwner(db);
+  // TRACK-3a (v14→v15): add the per-ticket `delivery_budget_usd` column to an
+  // EXISTING tickets table. A plain additive ALTER (no CHECK to widen). No-op on a
+  // fresh DB (SCHEMA_SQL creates it) and idempotent on an already-migrated one. Runs
+  // AFTER every prior tickets rebuild so the rebuilt table is backfilled too.
+  alterTicketsAddDeliveryBudget(db);
+  // TRACK-2b (v15→v16): add the durable `human_delivered` column to an EXISTING
+  // tickets table (the delivered-by-hand marker the done-gate consults to exempt a
+  // hand delivery from the server-recomputed-diff requirement). A plain additive
+  // ALTER (free TEXT marker, no CHECK to widen). No-op on a fresh DB (SCHEMA_SQL
+  // creates it) and idempotent on an already-migrated one. Runs AFTER every prior
+  // tickets rebuild so the rebuilt table is backfilled too.
+  alterTicketsAddHumanDelivered(db);
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +
@@ -259,6 +282,63 @@ function alterTicketsAddLastReviewFeedback(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("last_review_feedback")) {
     db.exec("ALTER TABLE tickets ADD COLUMN last_review_feedback TEXT");
+  }
+}
+
+/**
+ * TRACK-2b additive migration (v13→v14): add the `human_owner` column to an
+ * EXISTING `tickets` table. `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL is a no-op
+ * for an existing table, so the column must be added here. Idempotent: skipped when
+ * the column already exists (detected via `PRAGMA table_info`). Existing rows inherit
+ * the default (NULL ⇒ agent-shaped work), which is exactly the backfill — pre-v14
+ * tickets are all claimable by the factory. On a fresh DB `tickets` doesn't exist yet,
+ * so this is a no-op and SCHEMA_SQL creates the column.
+ */
+function alterTicketsAddHumanOwner(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("human_owner")) {
+    db.exec("ALTER TABLE tickets ADD COLUMN human_owner TEXT");
+  }
+}
+
+/**
+ * TRACK-3a additive migration (v14→v15): add the `delivery_budget_usd` column to an
+ * EXISTING `tickets` table (the per-ticket USD delivery-budget ceiling). Like
+ * `human_owner`, `CREATE TABLE IF NOT EXISTS` won't add a column to an existing
+ * table, so it must be ALTERed in. Idempotent (skipped when the column already
+ * exists). Existing rows inherit the default (NULL ⇒ no per-ticket ceiling), which
+ * is the backfill — pre-v15 tickets fall back to the factory-wide env budget. No
+ * CHECK to widen, so this is a plain additive ALTER — no table rebuild.
+ */
+function alterTicketsAddDeliveryBudget(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("delivery_budget_usd")) {
+    db.exec("ALTER TABLE tickets ADD COLUMN delivery_budget_usd REAL");
+  }
+}
+
+/**
+ * TRACK-2b additive migration (v15→v16): add the `human_delivered` column to an
+ * EXISTING `tickets` table — the durable delivered-by-hand marker. `human_owner`
+ * is cleared the moment a ticket leaves `in_progress`, so the done-gate needs this
+ * separate marker to know the work under review was delivered by hand (and exempt
+ * it from the server-recomputed-diff requirement it can structurally never meet).
+ * Like `human_owner`, `CREATE TABLE IF NOT EXISTS` won't add a column to an
+ * existing table, so it must be ALTERed in. Idempotent (skipped when the column
+ * already exists). Existing rows inherit the default (NULL ⇒ agent-delivered),
+ * which is exactly the backfill — pre-v16 review submissions all came from the
+ * factory. No CHECK to widen, so this is a plain additive ALTER — no table rebuild.
+ */
+function alterTicketsAddHumanDelivered(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("human_delivered")) {
+    db.exec("ALTER TABLE tickets ADD COLUMN human_delivered TEXT");
   }
 }
 
@@ -728,8 +808,26 @@ function widenTicketStatusCheckForPaused(db: Db): void {
   }
 }
 
-/** Run `fn` inside an immediate transaction. */
+/**
+ * Run `fn` inside an IMMEDIATE transaction (`BEGIN IMMEDIATE`).
+ *
+ * better-sqlite3's `db.transaction(fn)` defaults to a DEFERRED transaction,
+ * which acquires no write lock until the first write statement runs. Under
+ * `GAFFER_CONCURRENCY>1`, two worker processes can both open a read snapshot,
+ * then race to UPGRADE to a write lock. SQLite does NOT run the `busy_timeout`
+ * busy handler on a deferred write-lock upgrade — it fails the upgrade
+ * immediately with `SQLITE_BUSY_SNAPSHOT` ("database is locked") rather than
+ * waiting, because waiting could deadlock. The result is spurious
+ * `SQLITE_BUSY` throws from otherwise-correct read-modify-write bookkeeping.
+ *
+ * `.immediate()` issues `BEGIN IMMEDIATE`, which acquires the write lock up
+ * front. Because there is no snapshot to invalidate, `busy_timeout` DOES apply:
+ * a concurrent writer waits for the lock (up to {@link BUSY_TIMEOUT_MS}) instead
+ * of failing. The transaction still rolls back atomically on any error, so the
+ * fail-safe guarantee (no partial or cross-ticket write) is preserved.
+ */
 export function inTransaction<T>(db: Db, fn: () => T): T {
-  const tx = db.transaction(fn);
-  return tx();
+  // `.immediate` is the IMMEDIATE-mode variant of the transaction function;
+  // invoking it BEGINs IMMEDIATE and runs `fn` to completion, returning its value.
+  return db.transaction(fn).immediate();
 }

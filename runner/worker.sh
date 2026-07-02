@@ -15,8 +15,9 @@
 # delivery and defeat the point. It only relies on the fine-grained locks tick.sh
 # already takes around the specific shared-state mutations.
 #
-# Each tick runs under the SAME per-call wall-clock cap loop.sh uses for the serial
-# path, so a wedged tick in one worker can't burn unbounded wall-clock.
+# Each tick runs under the SAME outer wall-clock cap loop.sh uses for the serial
+# path (GAFFER_TICK_OUTER_TIMEOUT — sized for the whole rework ladder), so a
+# wedged tick in one worker can't burn unbounded wall-clock.
 #
 # Usage: worker.sh <worker-id>
 #   Writes "<worked> <reviewed> <clarified> <idle> <nowork> <error> <ticks>" to
@@ -55,9 +56,12 @@ while [ "$ticks" -lt "$W_MAX_TICKS" ]; do
   fi
   ticks=$((ticks + 1))
 
-  # Same per-call wall-clock cap as loop.sh's serial path: a runaway tick in this
-  # worker is reaped, not left to burn wall-clock.
-  out="$(gaffer_timeout "$((GAFFER_TICK_TIMEOUT + 60))" bash "$HERE/tick.sh")"
+  # Same outer wall-clock cap as loop.sh's serial path: a wedged tick in this
+  # worker is reaped, not left to burn wall-clock. FINDING-6 (a): sized for the
+  # whole rework ladder (attempts × GAFFER_TICK_TIMEOUT + margin), matching the
+  # claim-TTL math — the inner per-call GAFFER_TICK_TIMEOUT still bounds each
+  # individual claude -p first.
+  out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"
 
   # Each tick spends (invokes claude -p), so it counts against the shared per-day
   # ledger. gaffer_bump_day_count is lock-serialised (budget.sh) so concurrent

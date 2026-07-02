@@ -175,6 +175,47 @@ else
   fail "release config should reject .claude/ + CLAUDE.factory.md (rc=$RC, out=$(printf '%s' "$OUT" | head -1))"
 fi
 
+echo "== AC10: FINDING-11 — a legit src/mcp-runtime/ source dir PASSES; the generated mcp-runtime.*.json artifacts still REJECT =="
+# The forbidden fragment is `mcp-runtime.` (trailing dot): it targets the runner's
+# generated runtime configs (mcp-runtime.json / mcp-runtime.<pid>.json), NOT any
+# path merely containing the substring. A delivered source dir named mcp-runtime/
+# must not hard-fail hygiene.
+# (a) legit source dir with normal files → PASS, under the built-in DEFAULTS.
+OUT="$( set +u; unset HYGIENE_FORBIDDEN_PATHS
+        source "$RUNNER_DIR/lib/hygiene.sh"
+        REPO="$WORK/mcp-dir"
+        git init -q -b main "$REPO"
+        git -C "$REPO" config user.email gaffer@test; git -C "$REPO" config user.name gaffer-test
+        mkdir -p "$REPO/src"; printf 'base\n' > "$REPO/src/index.ts"
+        git -C "$REPO" add -A && git -C "$REPO" commit -q -m base
+        git -C "$REPO" checkout -q -b gaffer/ticket-11-x
+        mkdir -p "$REPO/src/mcp-runtime"
+        printf 'export const runtime = 1;\n' > "$REPO/src/mcp-runtime/index.ts"
+        git -C "$REPO" add -A && git -C "$REPO" commit -q -m "add mcp-runtime module"
+        gaffer_assert_clean_delivery "$REPO" main 2>&1 )"; RC=$?
+[ "$RC" -eq 0 ] \
+  && ok "src/mcp-runtime/index.ts delivered → PASSES (no bare-substring false positive)" \
+  || fail "legit mcp-runtime/ source dir was rejected (rc=$RC, out=$(printf '%s' "$OUT" | head -1))"
+# (b) the REAL generated artifacts still reject: mcp-runtime.<pid>.json + mcp-runtime.json.
+OUT="$( set +u; unset HYGIENE_FORBIDDEN_PATHS
+        source "$RUNNER_DIR/lib/hygiene.sh"
+        REPO="$WORK/mcp-artifact"
+        git init -q -b main "$REPO"
+        git -C "$REPO" config user.email gaffer@test; git -C "$REPO" config user.name gaffer-test
+        mkdir -p "$REPO/src"; printf 'base\n' > "$REPO/src/index.ts"
+        git -C "$REPO" add -A && git -C "$REPO" commit -q -m base
+        git -C "$REPO" checkout -q -b gaffer/ticket-11-y
+        printf '{}\n' > "$REPO/mcp-runtime.12345.json"
+        printf '{}\n' > "$REPO/mcp-runtime.json"
+        git -C "$REPO" add -A && git -C "$REPO" commit -q -m "leak runtime configs"
+        gaffer_assert_clean_delivery "$REPO" main 2>&1 )"; RC=$?
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'mcp-runtime.12345.json' \
+   && printf '%s' "$OUT" | grep -q 'forbidden path in delivery diff: mcp-runtime.json'; then
+  ok "generated mcp-runtime.<pid>.json + mcp-runtime.json still rejected"
+else
+  fail "generated mcp-runtime artifacts must still be rejected (rc=$RC, out=$OUT)"
+fi
+
 # --- gaffer_exclude_runner_config: append EACH entry independently -------------
 # Regression: the helper used to early-exit if `node_modules` was already excluded,
 # so a repo that excluded node_modules for its OWN reasons never got .claude/,
@@ -187,7 +228,7 @@ mkdir -p "$(dirname "$EXCL")"
 printf 'node_modules\n' > "$EXCL"   # repo already excludes node_modules for its own reasons
 ( cd "$REPO" && gaffer_exclude_runner_config "$REPO" )
 missing=""
-for e in '.claude/' 'CLAUDE.factory.md' '.mcp.json' 'mcp-runtime.json' 'dist/' 'coverage/'; do
+for e in '.claude/' 'CLAUDE.factory.md' '.mcp.json' 'mcp-runtime*.json' 'dist/' 'coverage/'; do
   grep -qxF "$e" "$EXCL" || missing="$missing $e"
 done
 [ -z "$missing" ] && ok "exclude helper adds every entry even when node_modules pre-present" \

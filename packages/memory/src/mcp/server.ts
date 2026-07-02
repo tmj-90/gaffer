@@ -6,7 +6,12 @@ import { z } from "zod";
 import { audit } from "../core/audit.js";
 import { findActiveAbsence, recordAbsence } from "../core/absence.js";
 import { findDependents, suggestBoundary } from "../core/boundaries.js";
-import { getFileCard, repoKey, searchFileCards } from "../core/fileCards.js";
+import {
+  diagnoseRepoKeyMismatch,
+  getFileCard,
+  repoKey,
+  searchFileCards,
+} from "../core/fileCards.js";
 import {
   addFeature,
   advanceFeature,
@@ -37,7 +42,22 @@ import {
   shouldRefuseConflictAgainstRestricted,
   stripPossibleConflicts,
 } from "./redact.js";
-import { auditMessageForTooLong, checkLength, LENGTH_CAPS } from "./validation.js";
+import {
+  auditMessageForTooLong,
+  checkLength,
+  checkMaxLen,
+  DIGEST_CAPS,
+  FEATURE_CAPS,
+  LENGTH_CAPS,
+} from "./validation.js";
+import {
+  quarantineCard,
+  quarantineDigest,
+  quarantineFeature,
+  quarantineLore,
+  QUARANTINE_NOTICE,
+  stripEnvelopeTokens,
+} from "./quarantine.js";
 import type { Boundary, Feature } from "../db/types.js";
 import { VERSION } from "../version.js";
 
@@ -65,7 +85,11 @@ function boundaryForMcp(b: Boundary): Record<string, unknown> {
  * timestamps to keep the agent's context lean.
  */
 function featureForMcp(f: Feature): Record<string, unknown> {
-  return {
+  // Agent-derived free text (name / summary / area / provenance) is wrapped in
+  // the quarantine envelope so it reaches a future agent as DATA, never as
+  // instructions. Mechanical fields (id / repo / scope_node / status) are
+  // trusted identifiers and stay raw.
+  return quarantineFeature({
     id: f.id,
     repo: f.repo,
     ...(f.scopeNode ? { scope_node: f.scopeNode } : {}),
@@ -74,7 +98,7 @@ function featureForMcp(f: Feature): Record<string, unknown> {
     status: f.status,
     ...(f.area ? { area: f.area } : {}),
     ...(f.provenance ? { provenance: f.provenance } : {}),
-  };
+  });
 }
 
 /**
@@ -295,7 +319,7 @@ export function buildMcpServer(db: Database): McpServer {
         });
         // possibleConflicts is a CLI-only heuristic for human triage —
         // see stripPossibleConflicts for the rationale.
-        const mcpHits = stripPossibleConflicts(hits);
+        const mcpHits = stripPossibleConflicts(hits).map((h) => quarantineLore(h));
         // Verified-absence: when there are no hits AND the agent
         // explicitly searched (not a blank "list recent" call), surface
         // any active marker so the next agent knows "we checked, known
@@ -318,6 +342,9 @@ export function buildMcpServer(db: Database): McpServer {
           absenceMarker,
           totalMatches,
         });
+        // Standing instruction so the agent treats the <untrusted-lore> spans
+        // in each result as data, not instructions.
+        responseBody["security"] = QUARANTINE_NOTICE;
         return {
           content: [
             {
@@ -407,14 +434,21 @@ export function buildMcpServer(db: Database): McpServer {
             structuredContent: notFound,
           };
         }
+        // Agent-derived free text (title / summary / body) is wrapped in the
+        // quarantine envelope; the record's trust metadata (status / source /
+        // confidence / repos / tags) stays raw so the agent can still judge it.
+        const loreOut = {
+          ...quarantineLore(lore as unknown as Record<string, unknown>),
+          security: QUARANTINE_NOTICE,
+        };
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(lore, null, 2),
+              text: JSON.stringify(loreOut, null, 2),
             },
           ],
-          structuredContent: lore as unknown as Record<string, unknown>,
+          structuredContent: loreOut,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -514,6 +548,16 @@ export function buildMcpServer(db: Database): McpServer {
             "How sure are you? Default 'medium'. Use 'low' for inferred " +
               "conventions; 'high' only when you have a source link.",
           ),
+        kind: z
+          .enum(["decision", "requirement", "non-goal", "convention", "gotcha", "other"])
+          .optional()
+          .describe(
+            "What KIND of knowledge is this? 'decision' (a durable choice + " +
+              "why), 'requirement' (a product need the work serves), 'non-goal' " +
+              "(deliberately out of scope), 'convention' (how-we-do-it-here), " +
+              "'gotcha' (a trap that bit). Product intent → decision/requirement/" +
+              "non-goal. Defaults to 'other'.",
+          ),
         team: z.string().optional().describe("Owning team, if known."),
       },
     },
@@ -531,6 +575,7 @@ export function buildMcpServer(db: Database): McpServer {
         tags: args.tags,
         source: args.source,
         confidence: args.confidence,
+        kind: args.kind,
         team: args.team,
       };
       // Length guards — check title first, then summary. Return the
@@ -575,6 +620,7 @@ export function buildMcpServer(db: Database): McpServer {
             tags: args.tags,
             source: args.source,
             confidence: args.confidence,
+            kind: args.kind,
             team: args.team,
             author: "agent",
           },
@@ -1152,13 +1198,20 @@ export function buildMcpServer(db: Database): McpServer {
         });
         const out = digest
           ? {
-              repo: digest.repo,
-              overview: digest.overview,
-              structure: digest.structure,
-              conventions: digest.conventions,
-              stack: digest.stack,
-              updated_at: digest.updatedAt,
-              source: digest.source,
+              // Model-derived free text (overview / structure / conventions /
+              // stack) is wrapped in the quarantine envelope so it reaches a
+              // future agent as DATA, never as instructions. repo / source /
+              // updated_at are trusted metadata and stay raw.
+              ...quarantineDigest({
+                repo: digest.repo,
+                overview: digest.overview,
+                structure: digest.structure,
+                conventions: digest.conventions,
+                stack: digest.stack,
+                updated_at: digest.updatedAt,
+                source: digest.source,
+              }),
+              security: QUARANTINE_NOTICE,
               caveat:
                 "This digest is a summary. For high-stakes work, verify it " +
                 "against the actual code — it may be stale or incomplete.",
@@ -1224,13 +1277,33 @@ export function buildMcpServer(db: Database): McpServer {
       },
     },
     async (args) => {
+      // Length-bound + sanitize BEFORE applying. The digest applies directly
+      // (no human gate) and feeds every future agent's orientation, so it is
+      // the top memory-poisoning target. Reject an over-cap field (structured,
+      // agent-correctable error) and strip any embedded <untrusted-*> delimiter
+      // tokens so stored text can't break out of the serve-time quarantine
+      // envelope. Onboard writes the digest via the CLI, not this MCP tool, so
+      // these caps never truncate the factory's own post-merge reflection.
+      for (const field of ["overview", "structure", "conventions", "stack"] as const) {
+        const err = checkMaxLen(field, args[field], DIGEST_CAPS[field]);
+        if (err) {
+          audit({
+            tool: "update_repo_digest",
+            request: { repo: args.repo, source: args.source },
+            error: `${err.error}: ${err.provided} > ${err.max}`,
+          });
+          return {
+            content: [{ type: "text", text: JSON.stringify(err, null, 2) }],
+          };
+        }
+      }
       try {
         const digest = upsertDigest(db, {
           repo: args.repo,
-          overview: args.overview,
-          structure: args.structure,
-          conventions: args.conventions,
-          stack: args.stack,
+          overview: stripEnvelopeTokens(args.overview),
+          structure: stripEnvelopeTokens(args.structure),
+          conventions: stripEnvelopeTokens(args.conventions),
+          stack: stripEnvelopeTokens(args.stack),
           source: args.source,
         });
         audit({
@@ -1383,15 +1456,39 @@ export function buildMcpServer(db: Database): McpServer {
       },
     },
     async (args) => {
+      // Length-bound + sanitize BEFORE applying. add_feature applies directly
+      // (no human gate); bound the free-text fields and strip embedded
+      // <untrusted-*> delimiter tokens so stored text can't break out of the
+      // serve-time quarantine envelope. (name is also zod-capped at 200.)
+      for (const [field, value] of [
+        ["name", args.name],
+        ["summary", args.summary],
+        ["area", args.area],
+        ["provenance", args.provenance],
+      ] as const) {
+        if (value === undefined) continue;
+        const err = checkMaxLen(field, value, FEATURE_CAPS[field]);
+        if (err) {
+          audit({
+            tool: "add_feature",
+            request: { repo: args.repo, scope_node: args.scope_node },
+            error: `${err.error}: ${err.provided} > ${err.max}`,
+          });
+          return {
+            content: [{ type: "text", text: JSON.stringify(err, null, 2) }],
+          };
+        }
+      }
       try {
         const feature = addFeature(db, {
           repo: args.repo,
           scopeNode: args.scope_node,
-          name: args.name,
-          summary: args.summary,
+          name: stripEnvelopeTokens(args.name),
+          summary: stripEnvelopeTokens(args.summary),
           status: args.status,
-          area: args.area,
-          provenance: args.provenance,
+          area: args.area === undefined ? undefined : stripEnvelopeTokens(args.area),
+          provenance:
+            args.provenance === undefined ? undefined : stripEnvelopeTokens(args.provenance),
         });
         audit({
           tool: "add_feature",
@@ -1529,7 +1626,11 @@ export function buildMcpServer(db: Database): McpServer {
         const out = card
           ? {
               found: true,
-              card,
+              // Model-derived text (tldr / role_primary) is wrapped in the
+              // quarantine envelope so it arrives as DATA, not instructions.
+              // Mechanical fields (path, symbols, loc) stay raw.
+              card: quarantineCard(card as unknown as Record<string, unknown>),
+              security: QUARANTINE_NOTICE,
               caveat:
                 "This card is a retrieval aid — verify against the actual file " +
                 "before making changes. Model fields (tldr, role) are only present " +
@@ -1597,6 +1698,16 @@ export function buildMcpServer(db: Database): McpServer {
         const rk = repoKey(args.repoCanonical);
         const limit = Math.min(args.limit ?? 20, 50);
         const cards = searchFileCards(db, rk, args.query, limit);
+        // FAIL LOUD but OUT-OF-BAND: an empty result while cards exist under a
+        // different key is a canonical/key mismatch, not "no cards". Surface it
+        // to stderr (operator log), NOT into the agent-facing result — the
+        // diagnostic names other repos' keys and is untrusted context noise.
+        // Consistent with every other diagnostic path (logs go to stderr).
+        const diagnostic =
+          cards.length === 0
+            ? diagnoseRepoKeyMismatch(db, rk, args.repo, args.repoCanonical)
+            : null;
+        if (diagnostic) process.stderr.write(`memory-mcp: ${diagnostic}\n`);
         audit({
           tool: "search_file_cards",
           request: {
@@ -1612,7 +1723,10 @@ export function buildMcpServer(db: Database): McpServer {
           query: args.query,
           repo: args.repo,
           count: cards.length,
-          cards,
+          // Model-derived text on each card is wrapped in the quarantine
+          // envelope so it arrives as DATA, not instructions.
+          cards: cards.map((c) => quarantineCard(c as unknown as Record<string, unknown>)),
+          security: QUARANTINE_NOTICE,
           caveat:
             "Cards are retrieval aids — use them to choose files to read, not " +
             "as a substitute for reading the code. Model fields (tldr, role) " +
@@ -1753,8 +1867,26 @@ export function buildMcpServer(db: Database): McpServer {
           resultCount: packet.cards.length,
           resultIds: packet.cards.map((c) => c.id),
         });
+        // A canonical/key mismatch diagnostic is an operator concern — log it
+        // to stderr, never into the agent-facing packet (it names other repos'
+        // keys and is untrusted noise). Consistent with search_file_cards.
+        const { diagnostics, ...packetRest } = packet;
+        if (diagnostics?.length) {
+          for (const d of diagnostics) process.stderr.write(`memory-mcp: ${d}\n`);
+        }
+        // Wrap every agent-facing free-text span in the packet — cards, the
+        // repo digest, and the lore hits — in the quarantine envelope. This
+        // packet is the START-OF-TASK orientation context, the single biggest
+        // poisoning surface, so all three record kinds arrive as DATA, never
+        // instructions. Selection metadata / paths / coverage stay raw.
         const out = {
-          ...packet,
+          ...packetRest,
+          cards: packet.cards.map((c) => quarantineCard(c as unknown as Record<string, unknown>)),
+          digest: packet.digest
+            ? quarantineDigest(packet.digest as unknown as Record<string, unknown>)
+            : packet.digest,
+          lore: packet.lore.map((l) => quarantineLore(l as unknown as Record<string, unknown>)),
+          security: QUARANTINE_NOTICE,
           caveat:
             "File cards are retrieval aids — use them to choose what to read, " +
             "not as a substitute for reading the actual code. Before editing any " +

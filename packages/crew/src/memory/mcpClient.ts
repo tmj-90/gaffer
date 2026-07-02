@@ -96,6 +96,9 @@ const loreRecordSchema = z
     recordType: z.string().optional(),
     // Memory may use snake_case; accept and remap.
     record_type: z.string().optional(),
+    // The product-intent classifier (LoreKind) memory attaches to every
+    // record. It's the authoritative record type; prefer it over recordType.
+    kind: z.string().optional(),
   })
   .passthrough();
 
@@ -199,7 +202,11 @@ function normaliseRecord(raw: z.infer<typeof loreRecordSchema>, index: number): 
     title: raw.title ?? "",
     summary: raw.summary ?? "",
     tags: raw.tags ?? [],
-    recordType: raw.recordType ?? raw.record_type ?? "unknown",
+    // `kind` is memory's authoritative product-intent classifier; fall back to
+    // the legacy recordType/record_type shapes, then "unknown". This is the seam
+    // that lets the packet's productContext section aim recall at decisions /
+    // requirements / non-goals.
+    recordType: raw.kind ?? raw.recordType ?? raw.record_type ?? "unknown",
   };
 }
 
@@ -296,6 +303,7 @@ export class McpMemoryClient implements AsyncMemoryClient {
       body,
     };
     if (input.tags) args.tags = input.tags;
+    if (input.kind) args.kind = input.kind;
 
     const raw = await this.callTool("suggest_lore", args);
     const parsed = suggestResultSchema.safeParse(payloadFrom(raw));

@@ -7,13 +7,16 @@ import { SCHEMA_VERSION } from "../src/db/schema.js";
 import type { Actor } from "../src/domain/types.js";
 import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
+import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 const agentActor: Actor = { type: "agent", id: "agent-runner" };
 const systemActor: Actor = { type: "system" };
 
 function freshWg(clock = new TestClock()): Dispatch {
-  return Dispatch.open(":memory:", clock);
+  // Inject a non-empty-diff git runner so driveToDone's real delivery satisfies
+  // the recomputed-diff done-gate (now enforced for solo_loose too).
+  return Dispatch.open(":memory:", clock, nonEmptyDiffRunner);
 }
 
 /** Create a ready (claimable) ticket; returns its id. */
@@ -30,7 +33,10 @@ function driveToDone(wg: Dispatch, ticketId: string, agentId: string): void {
     { ticket_id: ticketId, agent_id: agentId, ttl_seconds: 300 },
     agentActor,
   );
-  // No ACs / solo_loose: the done-gate is permissive, but a PR/diff is expected.
+  // solo_loose now runs the recomputed-diff done-gate: register a real on-disk
+  // write repo + delivery branch so the gate sees genuine git output. The repo
+  // name is per-ticket so driving several tickets to done can't collide.
+  giveTicketRealDelivery(wg, ticketId, human, { repoName: `delivery-${ticketId}` });
   wg.recordDeliveryArtifact(
     { claim_token: claim.claimToken, ticket_id: ticketId, branch_name: "feat/x" },
     agentActor,

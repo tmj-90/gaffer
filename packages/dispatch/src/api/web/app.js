@@ -1083,13 +1083,16 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, ticketsRes, decisionsRes, costRes] = await Promise.all([
-    api("GET", "/api/dashboard"),
-    api("GET", "/api/activity?limit=200"),
-    api("GET", "/tickets").catch(() => ({ tickets: [] })),
-    api("GET", "/decisions").catch(() => ({ decisions: [] })),
-    api("GET", "/api/cost").catch(() => null),
-  ]);
+  const [{ summary }, activity, ticketsRes, decisionsRes, costRes, bouncingRes, humanQueueRes] =
+    await Promise.all([
+      api("GET", "/api/dashboard"),
+      api("GET", "/api/activity?limit=200"),
+      api("GET", "/tickets").catch(() => ({ tickets: [] })),
+      api("GET", "/decisions").catch(() => ({ decisions: [] })),
+      api("GET", "/api/cost").catch(() => null),
+      api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
+      api("GET", "/api/human-queue").catch(() => ({ items: [], counts: { total: 0 } })),
+    ]);
 
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
@@ -1263,6 +1266,12 @@ async function renderOverview() {
     );
   }
 
+  // --- "What I own" — the operator's FIRST-CLASS lane (Track 2a) ------------
+  // Everything the HUMAN owns: decisions the agent delegated (WITH reasons),
+  // review sign-offs, and regulated ready-approvals / reviewer assignments —
+  // distinct from what the agent is churning (blocked/rework never appears here).
+  wrap.appendChild(whatIOwnPanel(humanQueueRes));
+
   // --- Development flow + Needs your attention (2-up) -----------------------
   wrap.appendChild(
     el("div", { class: "ov-grid ov-2" }, [
@@ -1315,6 +1324,15 @@ async function renderOverview() {
     wrap.appendChild(decCard);
   }
 
+  // --- FAILURE-DIAGNOSIS: "these keep bouncing" quality signal --------------
+  // Cross-ticket read model: tickets whose rework trail keeps growing, ranked so
+  // the ones repeatedly failing the SAME gate lead. Only shown when something is
+  // actually bouncing (a quiet factory shows no panel).
+  const bouncing = (bouncingRes && bouncingRes.bouncing) || [];
+  if (bouncing.length) {
+    wrap.appendChild(renderBouncingPanel(bouncing));
+  }
+
   // --- Live activity --------------------------------------------------------
   wrap.appendChild(
     el("div", { class: "card panel" }, [
@@ -1326,6 +1344,106 @@ async function renderOverview() {
   );
 
   return wrap;
+}
+
+/**
+ * Track 2a "What I own": the operator's first-class lane. Surfaces the HUMAN's
+ * queue — the decisions/approvals the agent delegated to them — so the operator
+ * sees at a glance what is waiting on THEM, distinct from the board (what the
+ * agent is churning). Each row: what it is, the reason, its ticket, how long it
+ * has waited. A quiet, reassuring empty state when nothing is owed.
+ */
+function whatIOwnPanel(queue) {
+  const items = (queue && queue.items) || [];
+  const total = (queue && queue.counts && queue.counts.total) || items.length;
+  const card = el("div", { class: "card what-i-own", id: "what-i-own" }, [
+    el("div", { class: "panel-head" }, [
+      el("span", { class: "panel-title" }, [icon("lock"), "What I own"]),
+      el("span", { class: "panel-aux mono" }, String(total)),
+    ]),
+    el(
+      "p",
+      { class: "dim what-i-own-sub" },
+      "Decisions and approvals waiting on you — distinct from what the agent is churning.",
+    ),
+  ]);
+  if (!items.length) {
+    card.appendChild(el("div", { class: "empty-state" }, "Nothing is waiting on you right now."));
+    return card;
+  }
+  const well = el("div", { class: "own-well" });
+  items.forEach((it) => well.appendChild(renderOwnedItem(it)));
+  card.appendChild(well);
+  return card;
+}
+
+/** One "What I own" row: kind chip · reason · ticket ref · how long it waited. */
+function renderOwnedItem(it) {
+  const t = it.ticket;
+  const ref = t ? (t.number != null ? `#${t.number}` : t.id.slice(0, 8)) : "—";
+  // Link each item to its ticket; a decision with no ticket links to the
+  // decisions well on the overview so it can still be actioned.
+  const href = t ? `#/ticket/${t.id}` : "#/overview";
+  return el("a", { class: `own-row own-row--${it.kind}`, href }, [
+    el("span", { class: `own-kind own-kind--${it.kind}` }, it.label),
+    el("span", { class: "own-body" }, [
+      el("span", { class: "own-reason" }, it.reason || "(no reason given)"),
+      el("span", { class: "own-meta" }, [
+        el("span", { class: "own-ref mono" }, ref),
+        el(
+          "span",
+          { class: "own-age dim tabnum", title: `Waiting since ${it.since}` },
+          `waited ${fmtDuration(it.waitedMs)}`,
+        ),
+      ]),
+    ]),
+  ]);
+}
+
+/**
+ * FAILURE-DIAGNOSIS: the cross-ticket "these keep bouncing" panel. Each row is a
+ * ticket with a growing rework trail; the "same gate ×N" chip is the key signal —
+ * a ticket stuck failing one gate repeatedly is the operator's cue to intervene.
+ */
+function renderBouncingPanel(bouncing) {
+  return el("div", { class: "card panel bouncing-panel" }, [
+    panelHead("Repeatedly bouncing", `${bouncing.length}`),
+    el(
+      "p",
+      { class: "dim bouncing-sub" },
+      "Tickets reworking the most — those stuck on the same gate need a human.",
+    ),
+    el(
+      "ul",
+      { class: "bouncing-list" },
+      bouncing.map((b) => {
+        const ref = b.number != null ? `#${b.number}` : b.ticket_id.slice(0, 8);
+        const sameGate =
+          b.top_gate && b.top_gate_count > 1
+            ? el(
+                "span",
+                {
+                  class: "bounce-samegate",
+                  title: `Failed the ${b.top_gate} gate ${b.top_gate_count} times`,
+                },
+                `${b.top_gate} ×${b.top_gate_count}`,
+              )
+            : null;
+        return el(
+          "li",
+          {},
+          el("a", { class: "bounce-row", href: `#/ticket/${b.ticket_id}` }, [
+            el("span", { class: "bounce-num mono" }, ref),
+            el("span", { class: "bounce-title" }, b.title || "(untitled)"),
+            el("span", { class: "bounce-count", title: "Total rework attempts" }, [
+              `${b.rework_count}×`,
+            ]),
+            sameGate,
+          ]),
+        );
+      }),
+    ),
+  ]);
 }
 
 /** Overview header: title + supporting line + a right-aligned freshness stamp. */
@@ -2750,6 +2868,59 @@ let draggingCard = null;
 let draggingEl = null;
 
 /** A keyboard-reachable kanban card → ticket detail; carries pipeline-dots. */
+/**
+ * TRACK-2b: the human WIP lane's per-card action. A `ready` card gets an "I'll do
+ * this by hand" button (human-claim → in_progress owned by you, so the agent loop
+ * skips it); a human-owned in_progress card gets a "Hand back" button (release →
+ * ready). Both POST the dedicated endpoints and re-render on success. Returns null
+ * for cards with no human-lane action (agent-claimed / other states).
+ */
+function humanLaneAction(card) {
+  const post = async (path, verb) => {
+    try {
+      await api("POST", `/tickets/${card.id}/${path}`, {});
+      toast(verb, { ok: true });
+      router();
+    } catch (e) {
+      toast(e.message || "Action rejected", { code: e.code });
+    }
+  };
+  if (card.humanOwner) {
+    return el(
+      "button",
+      {
+        class: "card-human-btn hand-back",
+        type: "button",
+        title: "Hand this ticket back to the queue so an agent can pick it up",
+        onclick: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          guard(() => post("human-release", "Handed back to the queue"));
+        },
+      },
+      "Hand back",
+    );
+  }
+  // Only a genuinely-claimable ready ticket (no agent claim) can be taken by hand.
+  if (card.status === "ready" && !card.claim) {
+    return el(
+      "button",
+      {
+        class: "card-human-btn take-myself",
+        type: "button",
+        title: "Take this ticket by hand — the agent will stay out of it",
+        onclick: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          guard(() => post("human-claim", "You're on it — taken by hand"));
+        },
+      },
+      "I'll do this by hand",
+    );
+  }
+  return null;
+}
+
 function renderBoardCard(card) {
   const chips = el("div", { class: "card-chips" }, [
     riskBadge(card.risk_level),
@@ -2762,9 +2933,17 @@ function renderBoardCard(card) {
     acText = `${card.acEvidenced}/${card.acEvidenceRequired} evidenced`;
   else if (card.acTotal > 0) acText = `${card.acSatisfied}/${card.acTotal} satisfied`;
 
-  const meta = el("div", { class: "card-meta" }, [
-    acText ? el("span", { class: "ac-progress" }, acText) : el("span", { class: "dim" }, "no AC"),
-    card.claim
+  // TRACK-2b: a ticket the operator took "by hand" is THEIR in-flight work, not the
+  // agent's. Render it distinctly (a "By hand" marker with the human-owner) so the
+  // human WIP lane reads apart from an agent claim. This branch wins over the agent
+  // claim/pipeline-dots — a human-owned ticket never carries an agent claim.
+  const ownerMarker = card.humanOwner
+    ? el(
+        "span",
+        { class: "card-human-owned", title: `You're working this by hand (${card.humanOwner})` },
+        [el("span", { class: "human-dot" }), "By hand", ` · ${card.humanOwner}`],
+      )
+    : card.claim
       ? el(
           "span",
           {
@@ -2777,11 +2956,20 @@ function renderBoardCard(card) {
             card.claim.stale ? " · stale" : "",
           ],
         )
-      : pipelineDots(card.status),
+      : pipelineDots(card.status);
+
+  const meta = el("div", { class: "card-meta" }, [
+    acText ? el("span", { class: "ac-progress" }, acText) : el("span", { class: "dim" }, "no AC"),
+    ownerMarker,
   ]);
 
   const go = () => navigate(`#/ticket/${card.id}`);
   const movable = cardIsMovable(card);
+
+  // TRACK-2b dashboard actions: a READY card offers "I'll do this by hand" (human-
+  // claim); a human-owned in_progress card offers "Hand back" (release to the queue).
+  // Both POST the dedicated endpoints and re-render the board on success.
+  const humanLaneBtn = humanLaneAction(card);
 
   // Touch/keyboard fallback: a small "move" affordance opens a status menu, so
   // the same moves work one-handed on phones where drag is unreliable.
@@ -2803,22 +2991,39 @@ function renderBoardCard(card) {
       )
     : null;
 
-  // WG-049: a ticket bounced back from review carries the reviewer's reason, so a
-  // human triaging the board sees WHY it's in rework without opening the ticket.
-  const reject = card.lastReviewFeedback
-    ? el(
-        "div",
-        {
-          class: "card-reject",
-          title: `Rejected by ${card.lastReviewFeedback.reviewer || "reviewer"}`,
-        },
-        [
-          el("span", { class: "card-reject-label" }, "Rejected:"),
-          " ",
-          card.lastReviewFeedback.reason,
-        ],
-      )
-    : null;
+  // WG-049 + rework loop: a ticket bounced back from review OR being reworked in
+  // place carries a reason, so a human triaging the board sees WHAT is happening
+  // without opening the ticket. Three shapes, keyed off the structured feedback code:
+  //   • reworking        → the runner is re-invoking the agent right now (in_progress):
+  //                        "Reworking · attempt N/M" so the ticket never looks "gone".
+  //   • rework_exhausted → the rework loop hit its attempt/cost ceiling and parked to
+  //                        the VISIBLE blocked column: "Rework exhausted".
+  //   • (none)           → an ordinary human review rejection: "Rejected".
+  const reject = (() => {
+    const fb = card.lastReviewFeedback;
+    if (!fb) return null;
+    const attemptSuffix =
+      typeof fb.attempt === "number" && typeof fb.maxAttempts === "number"
+        ? ` · attempt ${fb.attempt}/${fb.maxAttempts}`
+        : "";
+    let label = "Rejected:";
+    let cls = "card-reject";
+    let title = `Rejected by ${fb.reviewer || "reviewer"}`;
+    if (fb.code === "reworking") {
+      label = `Reworking${attemptSuffix}:`;
+      cls = "card-reject card-reworking";
+      title = "Runner is re-invoking the agent";
+    } else if (fb.code === "rework_exhausted") {
+      label = `Rework exhausted${attemptSuffix}:`;
+      cls = "card-reject card-rework-exhausted";
+      title = "Rework loop hit its attempt/cost ceiling — needs a human";
+    }
+    return el("div", { class: cls, title }, [
+      el("span", { class: "card-reject-label" }, label),
+      " ",
+      fb.reason,
+    ]);
+  })();
 
   const node = el(
     "a",
@@ -2842,6 +3047,7 @@ function renderBoardCard(card) {
       chips,
       reject,
       meta,
+      humanLaneBtn,
       moveBtn,
     ],
   );
@@ -3221,6 +3427,10 @@ async function renderTicket(id) {
       riskBadge(t.risk_level),
       badge(t.policy_pack, "no-dot"),
       badge(`priority ${t.priority}`, "no-dot"),
+      // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
+      t.delivery_budget_usd != null
+        ? badge(`budget $${Number(t.delivery_budget_usd).toFixed(2)}`, "no-dot")
+        : null,
     ]),
     el("div", { style: "margin:10px 0 14px" }, pipelineDots(t.status)),
     t.description
@@ -3365,13 +3575,56 @@ async function renderTicket(id) {
   // contract ahead of time; the contract surfaces/render the same way in_testing.
   const testingCard = renderTestingCard(t, view.evidence || []);
 
+  // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
+  // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
+  // Distinct from the board's latest-only rework chip: this is the trail an
+  // operator returns to when triaging why a ticket kept bouncing.
+  const failureHistory = renderFailureHistory(view.rework_trail || []);
+
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, sideRepos, diffCard, acCard, testingCard, timeline]),
+      el("div", {}, [head, sideRepos, diffCard, failureHistory, acCard, testingCard, timeline]),
       el("div", {}, [sideFields, sideBlockers]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * FAILURE-DIAGNOSIS: render a ticket's full ordered rework failure trail (the "why
+ * did #N fail" history). Each attempt shows its gate + the DISTILLED failing test +
+ * assertion/stack the runner captured — not a one-line summary. Returns null when
+ * the ticket never bounced, so a clean ticket shows no card.
+ */
+function renderFailureHistory(trail) {
+  if (!Array.isArray(trail) || trail.length === 0) return null;
+  const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
+  return el("div", { class: "card failure-history" }, [
+    el("h2", {}, [icon("alert"), `Failure history (${attemptsLabel})`]),
+    el(
+      "p",
+      { class: "dim failure-history-sub" },
+      "Every rework attempt the runner recorded, oldest first — the real failing test + assertion for each.",
+    ),
+    el(
+      "ol",
+      { class: "failure-trail" },
+      trail.map((a) => {
+        const max =
+          typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
+        return el("li", { class: "failure-attempt" }, [
+          el("div", { class: "failure-attempt-head" }, [
+            el("span", { class: "failure-attempt-num" }, `Attempt ${a.attempt}${max}`),
+            a.gate ? el("span", { class: "failure-gate" }, a.gate) : null,
+            el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
+          ]),
+          // The distilled failure is untrusted captured tool output — render it as a
+          // text node inside <pre> (never innerHTML) so it can't inject markup.
+          el("pre", { class: "failure-detail" }, a.distilled_failure || "(no detail captured)"),
+        ]);
+      }),
+    ),
+  ]);
 }
 
 /**

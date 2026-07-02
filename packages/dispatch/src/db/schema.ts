@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 16;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -59,10 +59,47 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- migration backfill — pre-v9 tickets are not testable and carry no contract.
   can_be_tested INTEGER NOT NULL DEFAULT 0,
   test_contract TEXT,
+  -- TRACK-2b (schema_version 14): the HUMAN-CLAIM marker. NULL ⇒ agent-shaped work
+  -- (claimable by the factory as normal). NON-NULL ⇒ a human took this ticket "by
+  -- hand" (the actor id/name); it moves to in_progress OWNED BY THE HUMAN and the
+  -- agent selection loop MUST skip it (the candidate queries filter human_owner IS
+  -- NULL). Cleared automatically when the ticket leaves in_progress (hand-back to
+  -- ready, submit to review, block, cancel …). Added by an idempotent ALTER in
+  -- connection.ts for an existing DB; the default below (NULL) mirrors the backfill —
+  -- pre-v14 tickets are all agent-shaped.
+  human_owner   TEXT,
+  -- TRACK-2b (schema_version 16): the durable DELIVERED-BY-HAND marker. human_owner
+  -- above is cleared the instant the ticket leaves in_progress, so by approve time
+  -- nothing distinguished a hand delivery — and the done-gate's server-recomputed
+  -- diff requirement (PR_OR_DIFF_REQUIRED) structurally can never be met by work a
+  -- human did outside the factory (no delivery branch/repo row is recorded). NULL ⇒
+  -- the current review submission is agent-delivered (the recomputed-diff gate
+  -- applies in full). NON-NULL (the human actor's id/name) ⇒ the work under review
+  -- was delivered by hand: set by the transition service when a HUMAN-OWNED ticket
+  -- submits in_progress -> in_review, and cleared whenever the ticket re-enters the
+  -- delivery pipeline (any move out of the review lane in_review/in_testing/
+  -- ready_for_merge/done), so a later agent redelivery is never exempted. Added by
+  -- an idempotent ALTER in connection.ts for an existing DB; the default below
+  -- (NULL) mirrors the backfill — pre-v16 review submissions are agent-shaped.
+  human_delivered TEXT,
+  -- TRACK-3a (schema_version 15): the per-ticket DELIVERY BUDGET ceiling in USD.
+  -- NULL ⇒ no per-ticket ceiling (the factory-wide GAFFER_REWORK_BUDGET_USD /
+  -- GAFFER_BUDGET_USD env defaults apply). NON-NULL ⇒ this ticket's cumulative
+  -- measured delivery spend is capped here: the runner parks it to 'blocked'
+  -- (rework_exhausted) once its ledger spend reaches this figure, even when retry
+  -- attempts remain — a first-class extension of the rework loop's per-ticket cost
+  -- ceiling. An epic stamps its budget onto each child ticket at creation (the
+  -- per-epic budget, inherited). Added by an idempotent ALTER in connection.ts for
+  -- an existing DB; the default below (NULL) mirrors the backfill — pre-v15 tickets
+  -- carry no per-ticket budget.
+  delivery_budget_usd REAL,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tickets_status_priority ON tickets(status, priority DESC, created_at ASC);
+-- TRACK-2b: partial index over human-owned in-flight work — the board's "by hand"
+-- lane and the agent-skip guard both filter on human_owner, so index the non-null set.
+CREATE INDEX IF NOT EXISTS idx_tickets_human_owner ON tickets(human_owner) WHERE human_owner IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level);
 CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack);
 
@@ -488,4 +525,37 @@ CREATE TABLE IF NOT EXISTS paused_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_paused_deliveries_resume
   ON paused_deliveries(resume_requested, created_at ASC);
+
+-- ============================================================================
+-- Failure-diagnosis trail (FAILURE-DIAGNOSIS). Additive, schema_version 13.
+--
+-- One row per rework ATTEMPT the runner records between failed delivery retries.
+-- Where tickets.last_review_feedback keeps only the LATEST attempt (overwritten
+-- each retry, for the board chip), this table APPENDS every attempt so the full
+-- ordered failure history survives — the surface an operator returns to when
+-- triaging an async engine. Each row carries the DISTILLED failure the runner's
+-- DoD distiller produced (the real failing test + assertion/stack, NOT a
+-- gate-name summary), the gate that failed, the attempt counter, and the AC it
+-- was working toward when known. Powers the per-ticket "why did #N fail" view and
+-- the cross-ticket "these keep bouncing" signal (repeated same-gate failures).
+--
+-- Keyed by ticket_id (FK CASCADE so the trail vanishes with its ticket). A
+-- brand-new standalone table created idempotently by CREATE TABLE IF NOT EXISTS —
+-- no ADD COLUMN migration needed.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS rework_attempts (
+  id                TEXT PRIMARY KEY,
+  ticket_id         TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  attempt           INTEGER NOT NULL,
+  max_attempts      INTEGER,
+  gate              TEXT,
+  distilled_failure TEXT NOT NULL,
+  ac_id             TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rework_attempts_ticket
+  ON rework_attempts(ticket_id, attempt ASC);
+CREATE INDEX IF NOT EXISTS idx_rework_attempts_gate
+  ON rework_attempts(gate);
 `;

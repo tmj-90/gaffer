@@ -36,6 +36,7 @@ export type PacketSection =
   | "verification"
   | "relevantLore"
   | "scopedLore"
+  | "productContext"
   | "skills"
   | "forbiddenActions"
   | "constraints"
@@ -56,6 +57,7 @@ export function measurePacket(packet: ContextPacket): PacketTokenReport {
     verification: estimateTokens(packet.verification),
     relevantLore: estimateTokens(packet.relevantLore),
     scopedLore: estimateTokens(packet.scopedLore),
+    productContext: estimateTokens(packet.productContext),
     skills: estimateTokens(packet.skills),
     forbiddenActions: estimateTokens(packet.forbiddenActions),
     constraints: estimateTokens(packet.constraints),
@@ -81,6 +83,7 @@ export function packetFingerprint(packet: ContextPacket): string {
     verification: packet.verification,
     relevantLore: packet.relevantLore,
     scopedLore: packet.scopedLore,
+    productContext: packet.productContext,
     skills: packet.skills,
     forbiddenActions: packet.forbiddenActions,
     constraints: packet.constraints,

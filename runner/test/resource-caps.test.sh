@@ -75,7 +75,9 @@ grep -q 'npm_config_ignore_scripts=true' "$RUNNER_DIR/tick.sh" \
   || fail "tick.sh should export npm_config_ignore_scripts=true in the bootstrap env"
 
 echo "== loop.sh wraps the whole tick =="
-grep -qE 'gaffer_timeout "\$\(\(GAFFER_TICK_TIMEOUT \+ [0-9]+\)\)" bash "\$HERE/tick.sh"' "$RUNNER_DIR/loop.sh" \
+# FINDING-6: the outer bound is GAFFER_TICK_OUTER_TIMEOUT (attempts × timeout +
+# margin), not the old single-call cap + slack — see tick-outer-timeout.test.sh.
+grep -qE 'gaffer_timeout "\$GAFFER_TICK_OUTER_TIMEOUT" bash "\$HERE/tick.sh"' "$RUNNER_DIR/loop.sh" \
   && ok "loop.sh runs tick.sh under gaffer_timeout" \
   || fail "loop.sh should wrap tick.sh in gaffer_timeout"
 

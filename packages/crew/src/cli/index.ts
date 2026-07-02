@@ -162,12 +162,13 @@ repo
       { store, dispatch, git: systemGitAdapter },
     );
 
-    // Onboarding NO LONGER auto-emits the generic clarifying-question decision batch
-    // (the "floods the review queue" anti-pattern the memory-onboard skill warns
-    // against). `onboardClarifications` is the single seam enforcing that — it raises
-    // NO decisions; the grounded, model-backed analysis (runner/lib/onboard-
-    // analyze.mjs) proposes CITED DRAFT lore in its place, triaged via `memory
-    // review`. The `clarify-capture` command below is kept for the human-driven flow.
+    // Onboarding captures product intent again — RE-ENABLED, BATCHED (Track 1c).
+    // `onboardClarifications` no longer raises one `human_required` decision PER
+    // question (the "floods the review queue" anti-pattern); instead it raises a
+    // SINGLE bundled decision listing every authored question, so the review queue
+    // gains ONE item, not one-per-question, while the product's "why"/non-goals/key
+    // decisions are still asked and captured. Answers land as DRAFT lore (human-gated)
+    // alongside the grounded model-backed analysis (runner/lib/onboard-analyze.mjs).
     const clarifications: RaisedClarification[] = onboardClarifications(
       result.scan,
       { repoId: result.repoId, name: result.name },
@@ -200,8 +201,9 @@ repo
     printJson({
       ok: true,
       onboarded: result,
-      // Always empty now — onboarding no longer auto-emits clarifying-question
-      // decisions. The key is retained for output-shape stability.
+      // The raised onboarding clarifications (Track 1c): every authored question,
+      // each pointing at the ONE bundled human-required decision. Empty only when the
+      // scan authors no questions.
       clarifications,
       ...(understandingFlush ? { understanding: understandingFlush } : {}),
     });
@@ -291,9 +293,18 @@ repo
     printJson({ ok: true, suggestions, flushed });
   });
 
+// SEAL (Track 1c): this `run` command wires `MockAgentRuntime` — see the
+// `runtime:` field below. It does NOT invoke a real agent and writes NO files;
+// it exercises the loop's orchestration/bookkeeping (claim → packet → branch →
+// evidence → submit) against a scripted runtime. The LIVE production delivery
+// path is the bash runner (`runner/tick.sh` → `claude -p`). Any NEW production
+// delivery feature (context assembly, close-path harvesting, what the agent
+// actually receives) MUST also land in `runner/tick.sh` / `runner/lib` until a
+// real `ClaudeAgentRuntime` is wired here — a feature added only to this loop
+// silently misses the live agent. See runner/CLAUDE.md.
 program
   .command("run")
-  .description("Run one implementation-loop tick")
+  .description("Run one implementation-loop tick (MOCK runtime — not the live agent)")
   .requiredOption("-a, --agent <id>", "agent id")
   .option("--dry-run", "do not perform real git mutations", false)
   .action(async (opts, cmd) => {

@@ -110,9 +110,15 @@ echo "== AC9: tick.sh wires the routed flag into the delivery call =="
 grep -q 'ROUTE_IMPL_FLAG="--model \$DELIVERY_MODEL"' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh builds ROUTE_IMPL_FLAG from the routed model" \
   || fail "tick.sh should build ROUTE_IMPL_FLAG from \$DELIVERY_MODEL"
-grep -q 'CLAUDE_FLAGS \$ROUTE_IMPL_FLAG \$GAFFER_MAX_TURNS_FLAG' "$RUNNER_DIR/tick.sh" \
-  && ok "the delivery call uses \$ROUTE_IMPL_FLAG (not the static flag)" \
-  || fail "the delivery call should splice in \$ROUTE_IMPL_FLAG"
+# The delivery call now splices in the PER-ATTEMPT implement flag ($_ATTEMPT_IMPL_FLAG),
+# which the escalation ladder initialises to the routed $ROUTE_IMPL_FLAG on attempt 1
+# and escalates to the stronger model on the final rework attempt.
+grep -q 'CLAUDE_FLAGS \$_ATTEMPT_IMPL_FLAG \$GAFFER_MAX_TURNS_FLAG' "$RUNNER_DIR/tick.sh" \
+  && ok "the delivery call uses \$_ATTEMPT_IMPL_FLAG (routed model by default, escalates on the final attempt)" \
+  || fail "the delivery call should splice in \$_ATTEMPT_IMPL_FLAG"
+grep -q '_ATTEMPT_IMPL_FLAG="\$ROUTE_IMPL_FLAG"' "$RUNNER_DIR/tick.sh" \
+  && ok "the per-attempt flag defaults to the routed \$ROUTE_IMPL_FLAG (attempt 1)" \
+  || fail "the per-attempt flag should default to \$ROUTE_IMPL_FLAG"
 grep -q 'gaffer_route_model implement' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh calls gaffer_route_model for the implement phase" \
   || fail "tick.sh should call gaffer_route_model implement"
@@ -152,6 +158,90 @@ else
     fi
   fi
 fi
+
+echo "== AC11: diff SIZE is measured from the real patch, not a --stat summary =="
+# A delivery worktree with a LARGE uncommitted diff must route STRONGER (diffBytes
+# high → difficulty high → +1 tier); a tiny diff must NOT escalate. This proves the
+# #4 fix: the old `git diff --stat=10000 | wc -c` measured the STAT SUMMARY (~60 B for
+# any change), so a 40 KB diff never crossed HIGH_DIFF_BYTES and "big diff → stronger"
+# never fired. gaffer_route_model takes the worktree as its 7th positional arg.
+if command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  DIFF_WT="$WORK/diff-wt"
+  git init -q -b main "$DIFF_WT"
+  git -C "$DIFF_WT" config user.email gaffer@test; git -C "$DIFF_WT" config user.name gaffer-test
+  printf 'base\n' > "$DIFF_WT/f.txt"
+  git -C "$DIFF_WT" add -A && git -C "$DIFF_WT" commit -q -m base
+  # >40 KB working-tree change vs HEAD (crosses HIGH_DIFF_BYTES=40000).
+  node -e 'process.stdout.write("a large line of accumulated change\n".repeat(2000))' > "$DIFF_WT/f.txt"
+  BIG_BYTES="$(git -C "$DIFF_WT" diff HEAD | wc -c | tr -d ' ')"
+  BIG="$(route implement medium 3 typescript 1 900 "$DIFF_WT")"
+  if [ "${BIG_BYTES:-0}" -gt 40000 ] && [ "$BIG" = opus ]; then
+    ok "large diff (${BIG_BYTES} B) → diffBytes high → routes stronger (opus)"
+  else
+    fail "large diff must route stronger (bytes=$BIG_BYTES model=$BIG; a --stat summary measures ~60 B)"
+  fi
+  # A tiny change carries no high signal → it must NOT escalate to the strong tier.
+  printf 'base2\n' > "$DIFF_WT/f.txt"
+  SMALL="$(route implement medium 3 typescript 1 900 "$DIFF_WT")"
+  [ "$SMALL" != opus ] \
+    && ok "small diff stays cheap — does NOT escalate to opus (got $SMALL)" \
+    || fail "small diff must not route stronger (got $SMALL)"
+else
+  ok "SKIP AC11 — git/node unavailable"
+fi
+
+echo "== AC12: FINDING-9 — worktree ABSENT + COMMITTED rework on a preserved branch feeds the router =="
+# The REAL call path: tick.sh routes BEFORE any worktree exists, and a rework
+# attempt's accumulated work is COMMITTED on the preserved gaffer/ branch — so a
+# worktree `git diff HEAD` can never see it (AC11's hand-built worktree with an
+# UNCOMMITTED diff masked exactly this). gaffer_route_model's args 8-10
+# (<repo> <branch> <base>) let it measure the ACCUMULATED rework diff from the
+# repo itself (git diff base...branch) when the worktree gives no signal.
+if command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  RW_REPO="$WORK/rework-repo"
+  git init -q -b main "$RW_REPO"
+  git -C "$RW_REPO" config user.email gaffer@test; git -C "$RW_REPO" config user.name gaffer-test
+  printf 'base\n' > "$RW_REPO/f.txt"
+  git -C "$RW_REPO" add -A && git -C "$RW_REPO" commit -q -m base
+  # Preserved rework branch with a >40 KB COMMITTED diff vs main (crosses
+  # HIGH_DIFF_BYTES=40000); the repo checkout returns to main, exactly like a
+  # real repo between rework attempts (branch preserved, worktree torn down).
+  git -C "$RW_REPO" checkout -q -b gaffer/ticket-901-rework
+  node -e 'process.stdout.write("a large line of accumulated rework\n".repeat(2000))' > "$RW_REPO/f.txt"
+  git -C "$RW_REPO" add -A && git -C "$RW_REPO" commit -q -m "rework attempt 1"
+  git -C "$RW_REPO" checkout -q main
+  ACC_BYTES="$(git -C "$RW_REPO" diff main...gaffer/ticket-901-rework | wc -c | tr -d ' ')"
+  MISSING_WT="$WORK/worktrees/ticket-901/primary"   # deliberately NOT created
+  : > "$GAFFER_LOG"
+  RW="$(route implement medium 3 typescript 1 901 "$MISSING_WT" "$RW_REPO" gaffer/ticket-901-rework main)"
+  if [ "${ACC_BYTES:-0}" -gt 40000 ] && [ "$RW" = opus ] && grep -q "ROUTE #901 .*difficulty 'high'" "$GAFFER_LOG"; then
+    ok "committed rework (${ACC_BYTES} B, worktree absent) → accumulated-diff signal → routes stronger (opus)"
+  else
+    fail "committed rework on a preserved branch must reach the router (bytes=$ACC_BYTES model=$RW log='$(tail -1 "$GAFFER_LOG")')"
+  fi
+  # A SMALL committed rework must not escalate — no false high signal from the
+  # repo-side measurement.
+  git -C "$RW_REPO" checkout -q -b gaffer/ticket-902-small main
+  printf 'tiny\n' >> "$RW_REPO/f.txt"
+  git -C "$RW_REPO" add -A && git -C "$RW_REPO" commit -q -m small
+  git -C "$RW_REPO" checkout -q main
+  SMALL_RW="$(route implement medium 3 typescript 1 902 "$MISSING_WT" "$RW_REPO" gaffer/ticket-902-small main)"
+  [ "$SMALL_RW" != opus ] \
+    && ok "small committed rework does NOT escalate (got $SMALL_RW)" \
+    || fail "small committed rework must not route stronger (got $SMALL_RW)"
+  # A missing branch (first attempt — nothing preserved) yields no signal, no crash.
+  NOBR="$(route implement medium 3 typescript 1 903 "$MISSING_WT" "$RW_REPO" gaffer/ticket-903-none main)"
+  [ "$NOBR" = sonnet ] \
+    && ok "missing preserved branch → no signal, normal route (sonnet), no crash" \
+    || fail "missing branch should route normally (got $NOBR)"
+else
+  ok "SKIP AC12 — git/node unavailable"
+fi
+
+echo "== AC13: tick.sh wires the repo/branch/base rework-diff args into the route call =="
+grep -q 'gaffer_route_model implement .*"\$ROUTE_REPO" "\$WORK_BRANCH" "\$ROUTE_BASE"' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh passes the real repo + preserved branch + base to gaffer_route_model" \
+  || fail "tick.sh should pass \$ROUTE_REPO \$WORK_BRANCH \$ROUTE_BASE to gaffer_route_model"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

@@ -1950,8 +1950,11 @@ const CARD_REVIEW_VERDICTS = new Set(["pass", "revise", "reject"]);
 /**
  * Parse + sanitise the model's card-review verdict. Returns
  * { verdict, reason } or null when the output is unusable.
- * An unusable review verdict is treated as "pass" by the caller
- * (fail-safe: reviews that can't be parsed don't downgrade cards).
+ * An unusable/unparseable review verdict is treated as FAIL-CLOSED by the
+ * caller: the card could not be vouched for, so its model fields are NOT
+ * trusted — the card is downgraded to mechanical-only, matching the
+ * trust-split. (Historically this failed OPEN — treated as "pass" — which
+ * let a poisoned card survive a review the model silently failed to parse.)
  */
 export function validateCardReviewResult(obj) {
   if (!obj || typeof obj !== "object") return null;
@@ -2059,7 +2062,15 @@ function markFailedCli(cfg, { canonical, repo, rel, reason }, env = process.env)
  * Sampled semantic review gate. Takes a list of review candidates (model-active
  * cards with their generation context), samples up to maxReviews, runs the
  * card-review skill prompt for each, and downgrades any card the reviewer
- * flags as wrong. Best-effort: any failure logs + continues; never throws.
+ * flags as wrong. Never throws.
+ *
+ * FAIL-CLOSED: a review that returns no parseable verdict, or whose turn throws,
+ * means the card could NOT be vouched for — its model fields are downgraded to
+ * mechanical-only (mark-failed), matching the trust-split. A card is only left
+ * with its model fields intact when a review explicitly returns `verdict: pass`.
+ * (The prior behaviour failed OPEN — an unparseable/errored review was treated
+ * as a pass — so a poisoned card could survive a review the model silently
+ * failed to produce.)
  *
  * maxReviews defaults to CARD_REVIEW_SAMPLE_DEFAULT (env: GAFFER_CARD_REVIEW_SAMPLE).
  * Set to 0 to disable. The sample is taken from the front of the list (the
@@ -2069,7 +2080,7 @@ function markFailedCli(cfg, { canonical, repo, rel, reason }, env = process.env)
  */
 export function runCardReviewSample(
   candidates,
-  { cfg, canonical, repo, env = process.env, log = () => {}, runReviewTurn },
+  { cfg, canonical, repo, repoRoot, head, env = process.env, log = () => {}, runReviewTurn },
 ) {
   const rawCap = parseInt(env.GAFFER_CARD_REVIEW_SAMPLE ?? "", 10);
   const maxReviews = Number.isFinite(rawCap) && rawCap >= 0 ? rawCap : CARD_REVIEW_SAMPLE_DEFAULT;
@@ -2082,12 +2093,63 @@ export function runCardReviewSample(
   let reviewed = 0;
   let downgraded = 0;
 
+  // Downgrade one card's model fields to mechanical-only. Returns true when the
+  // card ended up mechanical-only.
+  //
+  // FAIL-CLOSED (consistent with the primary generation path, which writes a
+  // mechanical-only card on ANY model failure): the preferred mechanism is the
+  // `card mark-failed` verb, but if that SECONDARY CLI errors we must NOT leave the
+  // card trusting its (possibly poisoned) model fields. We fall back to re-upserting
+  // the card mechanical-only (fields stripped), which forcibly overwrites the model
+  // text. Only when BOTH the mark-failed AND the strip fail — a genuinely unwritable
+  // store — do we surface loudly and return false; that is the one case we cannot
+  // enforce, so it is reported rather than silently trusted.
+  const downgrade = (rel, reason) => {
+    const mfRes = markFailedCli(cfg, { canonical, repo, rel, reason }, env);
+    if (!mfRes.error && (mfRes.status ?? 0) === 0) return true;
+    const mfWhy = mfRes.error?.message ?? mfRes.stderr?.trim() ?? `exit ${mfRes.status}`;
+    // Fail closed: strip the model fields via a mechanical-only re-upsert so an
+    // unverified / rejected card can never keep its model text when mark-failed is
+    // unavailable. `fields: null` upserts with NO --tldr/--role/--model.
+    const stripRes = upsertCardCli(
+      cfg,
+      { canonical, repo, repoRoot, rel, head, fields: null },
+      env,
+    );
+    if (!stripRes.error && (stripRes.status ?? 0) === 0) {
+      log(
+        `review: mark-failed for ${rel} errored (${mfWhy}) — stripped model fields via ` +
+          `mechanical-only re-upsert (fail-closed)`,
+      );
+      return true;
+    }
+    const stripWhy =
+      stripRes.error?.message ?? stripRes.stderr?.trim() ?? `exit ${stripRes.status}`;
+    log(
+      `review: could NOT downgrade ${rel} — mark-failed AND mechanical-only strip both ` +
+        `failed; card may retain model fields: mark-failed=${mfWhy} strip=${stripWhy}`,
+    );
+    return false;
+  };
+
   for (const c of sample) {
     try {
       const prompt = buildCardReviewPrompt(c.rel, c.fileType, c.structure, c.snippet, c.fields);
       const result = runReviewTurn(prompt);
+      // FAIL-CLOSED: no parseable verdict → the card is unverified, so its model
+      // fields are NOT trusted. Downgrade to mechanical-only rather than
+      // letting an unreviewable (possibly poisoned) card keep its model text.
       if (!result) {
-        log(`review: no parseable verdict for ${c.rel} — treating as pass`);
+        reviewed += 1;
+        if (
+          downgrade(
+            c.rel,
+            "semantic-review(unverified): no parseable verdict — model fields untrusted (fail-closed)",
+          )
+        ) {
+          downgraded += 1;
+          log(`review: ${c.rel} → unverified verdict — downgraded (fail-closed)`);
+        }
         continue;
       }
       reviewed += 1;
@@ -2096,23 +2158,24 @@ export function runCardReviewSample(
         log(`review: ${c.rel} → pass`);
         continue;
       }
-      // Downgrade the card.
-      const mfRes = markFailedCli(
-        cfg,
-        { canonical, repo, rel: c.rel, reason: `semantic-review(${verdict}): ${reason}` },
-        env,
-      );
-      if (mfRes.error || (mfRes.status ?? 0) !== 0) {
-        log(
-          `review: mark-failed for ${c.rel} failed — card remains active: ` +
-            `${mfRes.error?.message ?? mfRes.stderr?.trim() ?? `exit ${mfRes.status}`}`,
-        );
-      } else {
+      // Explicit revise/reject → downgrade the card.
+      if (downgrade(c.rel, `semantic-review(${verdict}): ${reason}`)) {
         downgraded += 1;
         log(`review: ${c.rel} → ${verdict} (downgraded): ${reason}`);
       }
     } catch (err) {
-      log(`review: turn failed for ${c.rel} (${err?.message ?? err}) — treating as pass`);
+      // FAIL-CLOSED: a review turn that threw is an unverified card — downgrade
+      // it too rather than treating the error as an implicit pass.
+      reviewed += 1;
+      if (
+        downgrade(
+          c.rel,
+          `semantic-review(errored): ${err?.message ?? err} — model fields untrusted (fail-closed)`,
+        )
+      ) {
+        downgraded += 1;
+        log(`review: turn failed for ${c.rel} (${err?.message ?? err}) — downgraded (fail-closed)`);
+      }
     }
   }
 
@@ -2169,6 +2232,34 @@ export function emitFileCards(
   const caps = cardCaps(env);
   const canonical = repoCanonical(repoPath);
   const head = headCommit(repoPath);
+
+  // SELF-HEAL: re-key any cards this repo already has under an un-normalised
+  // repo_key (onboarded before canonicalisation) onto the normalised key so
+  // this pass adds to — rather than orphaning beside — the existing set. A
+  // no-op when the cards are already on the normalised key. Fail-soft.
+  const rekeyRes = runMemoryCli(
+    resolvedCfg,
+    ["cards", "rekey", "--canonical", canonical, "--repo", repo, "--json"],
+    env,
+  );
+  if (rekeyRes.error || (rekeyRes.status ?? 0) !== 0) {
+    log(
+      `cards rekey skipped: ${rekeyRes.error?.message ?? rekeyRes.stderr?.trim() ?? `exit ${rekeyRes.status}`}`,
+    );
+  } else {
+    try {
+      const r = JSON.parse(String(rekeyRes.stdout ?? "{}"));
+      if (r && !r.noop && (r.cardsRekeyed || r.collisionsDropped || r.syncRekeyed)) {
+        log(
+          `cards rekey: re-keyed ${r.cardsRekeyed ?? 0} card(s) to normalised key ` +
+            `(dropped ${r.collisionsDropped ?? 0} duplicate(s))`,
+        );
+      }
+    } catch {
+      /* non-JSON output — ignore, self-heal is best-effort */
+    }
+  }
+
   const { files, capsHit } = enumerateSourceFiles(repoPath, caps);
   stats.enumerated = files.length;
   stats.capsHit = capsHit;
@@ -2381,6 +2472,8 @@ export function emitFileCards(
         cfg: resolvedCfg,
         canonical,
         repo,
+        repoRoot: repoPath,
+        head,
         env,
         log: (m) => log(`review: ${m}`),
         runReviewTurn,

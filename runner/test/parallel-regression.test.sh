@@ -45,7 +45,10 @@ echo "== AC3: the serial loop body is the canonical pre-A-1 shape =="
 # strictly behind GAFFER_CONCURRENCY>1.
 grep -Eq 'if \[ "\$\{GAFFER_CONCURRENCY:-1\}" -gt 1 \]' "$RUNNER_DIR/loop.sh" \
   && ok "pool is gated behind GAFFER_CONCURRENCY>1" || fail "pool gate not found"
-grep -q 'out="$(gaffer_timeout "$((GAFFER_TICK_TIMEOUT + 60))" bash "$HERE/tick.sh")"' "$RUNNER_DIR/loop.sh" \
+# FINDING-6: the wrapper is now the ladder-sized GAFFER_TICK_OUTER_TIMEOUT (see
+# tick-outer-timeout.test.sh) — the load-bearing shape here is that the serial
+# path still drives ONE gaffer_timeout-wrapped tick.
+grep -q 'out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"' "$RUNNER_DIR/loop.sh" \
   && ok "serial path still runs the gaffer_timeout-wrapped single tick" || fail "serial tick invocation changed"
 grep -q 'echo "tick $ticks/$MAX_TICKS → ${res:-unknown}"' "$RUNNER_DIR/loop.sh" \
   && ok "serial path still prints the canonical per-tick line" || fail "serial per-tick output changed"

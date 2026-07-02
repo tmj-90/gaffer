@@ -395,6 +395,45 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // Product-intent classifier for lore. Before this, "what KIND of knowledge
+    // is this" lived only implicitly in free-text tags ('decision', 'gotcha',
+    // …), so recall could not be AIMED at product intent (the "why") vs
+    // structure (the "how"). This adds a closed enum column so the context
+    // packet's productContext section can filter decisions / requirements /
+    // non-goals deterministically.
+    //
+    // CHECK-constrained to the six LoreKind values. SQLite does not re-validate
+    // a CHECK against existing rows on ADD COLUMN, and NOT NULL needs a non-NULL
+    // default, so every pre-009 row lands 'other' first. The best-effort pass
+    // below then migrates rows whose tags ALREADY name a kind to the closest
+    // enum value (the only "free-text kind" signal that existed) — highest-intent
+    // tag wins; everything else stays 'other'. Append-only — never rewrite.
+    id: "009-lore-kind",
+    up(db) {
+      db.exec(`
+        ALTER TABLE lore ADD COLUMN kind TEXT NOT NULL DEFAULT 'other'
+          CHECK (kind IN ('decision','requirement','non-goal','convention','gotcha','other'));
+      `);
+      // Highest product-intent first; each pass only claims rows still 'other',
+      // so a record tagged both 'decision' and 'convention' resolves to 'decision'.
+      const kindTags: ReadonlyArray<readonly [string, readonly string[]]> = [
+        ["decision", ["decision", "decisions", "adr"]],
+        ["requirement", ["requirement", "requirements"]],
+        ["non-goal", ["non-goal", "nongoal", "non-goals"]],
+        ["convention", ["convention", "conventions"]],
+        ["gotcha", ["gotcha", "gotchas"]],
+      ];
+      for (const [kind, tags] of kindTags) {
+        const placeholders = tags.map(() => "?").join(",");
+        db.prepare(
+          `UPDATE lore SET kind = ?
+             WHERE kind = 'other'
+               AND id IN (SELECT lore_id FROM lore_tags WHERE tag IN (${placeholders}))`,
+        ).run(kind, ...tags);
+      }
+    },
+  },
 ];
 
 /**

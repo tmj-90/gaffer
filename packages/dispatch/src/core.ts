@@ -853,6 +853,32 @@ export class Dispatch {
   }
 
   /**
+   * TRACK-2b: a HUMAN takes a ready ticket "by hand" ("I'll do this myself"). The
+   * ticket moves `ready -> in_progress` owned by the human; the agent selection loop
+   * structurally skips it thereafter. Resolves a ticket number/id ref, then delegates
+   * to {@link ClaimService.humanClaimTicket} (reuses the atomic ready-and-unclaimed
+   * invariant). Throws `TICKET_NOT_CLAIMABLE` when the ticket isn't takeable.
+   */
+  humanClaimTicket(ref: string, actor: Actor): { ticketId: string; number: number } {
+    const ticket = this.resolveTicket(ref);
+    return this.claims.humanClaimTicket({ ticketId: ticket.id }, actor);
+  }
+
+  /**
+   * TRACK-2b: a human hands their by-hand ticket back to the queue
+   * (`in_progress -> ready`), clearing the ownership marker so agents can pick it up.
+   * Only a human-owned in-flight ticket is releasable this way — an agent's live
+   * delivery is never touched. See {@link ClaimService.humanReleaseTicket}.
+   */
+  humanReleaseTicket(
+    ref: string,
+    actor: Actor,
+  ): { ticketId: string; status: string; eventId: string } {
+    const ticket = this.resolveTicket(ref);
+    return this.claims.humanReleaseTicket({ ticketId: ticket.id }, actor);
+  }
+
+  /**
    * Record where a ticket was delivered: persist `branch_name`/`pr_url` onto the
    * ticket and emit a `ticket.delivery_recorded` event carrying optional
    * `commit`/`diff_summary`. Claim-scoped for agents — a token matching the

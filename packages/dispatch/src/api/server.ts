@@ -42,6 +42,7 @@ import {
   createTicketBody,
   linkTicketScopeBody,
   continuePausedBody,
+  humanClaimBody,
   moveTicketBody,
   planBuildBody,
   planSessionArchiveBody,
@@ -215,6 +216,7 @@ function statusForCode(code: string): number {
     case "CLAIM_INVALID":
     case "CLAIM_REQUIRED":
     case "TICKET_NOT_CLAIMABLE":
+    case "TICKET_NOT_HUMAN_OWNED":
     case "DEPENDENCY_BLOCKED":
     case "AGENT_NOT_ELIGIBLE":
     case "SCOPE_NODE_IN_USE":
@@ -424,6 +426,9 @@ const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
   READY: "ready",
   MOVE: "move",
+  // TRACK-2b: "I'll do this by hand" (human-claim a ready ticket) + hand-back.
+  HUMAN_CLAIM: "human-claim",
+  HUMAN_RELEASE: "human-release",
   READY_APPROVAL: "ready-approval",
   EVENTS: "events",
   // FAILURE-DIAGNOSIS: the ordered "why did #N fail" rework trail.
@@ -966,6 +971,33 @@ async function routeTickets(
     const body = moveTicketBody.parse(await readJsonBody(req));
     const result = wg.moveTicket(ticket.id, body.to, API_ACTOR);
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
+    return;
+  }
+
+  // TRACK-2b: /tickets/:id/human-claim — the operator takes a ready ticket "by
+  // hand" ("I'll do this myself"). Moves it ready -> in_progress owned by the human;
+  // the agent selection loop structurally skips it thereafter. 409 when the ticket
+  // isn't a claimable `ready` ticket.
+  if (segments.length === 3 && sub === TICKET_SUB.HUMAN_CLAIM && method === "POST") {
+    humanClaimBody.parse(await readJsonBody(req));
+    const ticket = wg.resolveTicket(id);
+    const result = wg.humanClaimTicket(ticket.id, API_ACTOR);
+    sendJson(res, 200, { ticket_id: result.ticketId, number: result.number, human_owned: true });
+    return;
+  }
+
+  // TRACK-2b: /tickets/:id/human-release — the operator hands a by-hand ticket back
+  // to the queue (in_progress -> ready, clearing the ownership marker). 409 when the
+  // ticket isn't human-owned in-flight work.
+  if (segments.length === 3 && sub === TICKET_SUB.HUMAN_RELEASE && method === "POST") {
+    humanClaimBody.parse(await readJsonBody(req));
+    const ticket = wg.resolveTicket(id);
+    const result = wg.humanReleaseTicket(ticket.id, API_ACTOR);
+    sendJson(res, 200, {
+      ticket_id: result.ticketId,
+      status: result.status,
+      event_id: result.eventId,
+    });
     return;
   }
 

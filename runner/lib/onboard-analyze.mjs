@@ -2080,7 +2080,7 @@ function markFailedCli(cfg, { canonical, repo, rel, reason }, env = process.env)
  */
 export function runCardReviewSample(
   candidates,
-  { cfg, canonical, repo, env = process.env, log = () => {}, runReviewTurn },
+  { cfg, canonical, repo, repoRoot, head, env = process.env, log = () => {}, runReviewTurn },
 ) {
   const rawCap = parseInt(env.GAFFER_CARD_REVIEW_SAMPLE ?? "", 10);
   const maxReviews = Number.isFinite(rawCap) && rawCap >= 0 ? rawCap : CARD_REVIEW_SAMPLE_DEFAULT;
@@ -2094,18 +2094,42 @@ export function runCardReviewSample(
   let downgraded = 0;
 
   // Downgrade one card's model fields to mechanical-only. Returns true when the
-  // mark-failed CLI succeeded. A failed mark-failed is logged and leaves the
-  // card active — a secondary CLI failure we can't do better than surface.
+  // card ended up mechanical-only.
+  //
+  // FAIL-CLOSED (consistent with the primary generation path, which writes a
+  // mechanical-only card on ANY model failure): the preferred mechanism is the
+  // `card mark-failed` verb, but if that SECONDARY CLI errors we must NOT leave the
+  // card trusting its (possibly poisoned) model fields. We fall back to re-upserting
+  // the card mechanical-only (fields stripped), which forcibly overwrites the model
+  // text. Only when BOTH the mark-failed AND the strip fail — a genuinely unwritable
+  // store — do we surface loudly and return false; that is the one case we cannot
+  // enforce, so it is reported rather than silently trusted.
   const downgrade = (rel, reason) => {
     const mfRes = markFailedCli(cfg, { canonical, repo, rel, reason }, env);
-    if (mfRes.error || (mfRes.status ?? 0) !== 0) {
+    if (!mfRes.error && (mfRes.status ?? 0) === 0) return true;
+    const mfWhy = mfRes.error?.message ?? mfRes.stderr?.trim() ?? `exit ${mfRes.status}`;
+    // Fail closed: strip the model fields via a mechanical-only re-upsert so an
+    // unverified / rejected card can never keep its model text when mark-failed is
+    // unavailable. `fields: null` upserts with NO --tldr/--role/--model.
+    const stripRes = upsertCardCli(
+      cfg,
+      { canonical, repo, repoRoot, rel, head, fields: null },
+      env,
+    );
+    if (!stripRes.error && (stripRes.status ?? 0) === 0) {
       log(
-        `review: mark-failed for ${rel} failed — card remains active: ` +
-          `${mfRes.error?.message ?? mfRes.stderr?.trim() ?? `exit ${mfRes.status}`}`,
+        `review: mark-failed for ${rel} errored (${mfWhy}) — stripped model fields via ` +
+          `mechanical-only re-upsert (fail-closed)`,
       );
-      return false;
+      return true;
     }
-    return true;
+    const stripWhy =
+      stripRes.error?.message ?? stripRes.stderr?.trim() ?? `exit ${stripRes.status}`;
+    log(
+      `review: could NOT downgrade ${rel} — mark-failed AND mechanical-only strip both ` +
+        `failed; card may retain model fields: mark-failed=${mfWhy} strip=${stripWhy}`,
+    );
+    return false;
   };
 
   for (const c of sample) {
@@ -2448,6 +2472,8 @@ export function emitFileCards(
         cfg: resolvedCfg,
         canonical,
         repo,
+        repoRoot: repoPath,
+        head,
         env,
         log: (m) => log(`review: ${m}`),
         runReviewTurn,

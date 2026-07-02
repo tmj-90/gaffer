@@ -13,7 +13,7 @@ import {
   todaySpend,
 } from "../cost/costAggregator.js";
 import { buildRunDetail } from "./runDetail.js";
-import { isRequestAuthorized } from "./auth.js";
+import { hasValidBearer, isRequestAuthorized } from "./auth.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
 import { createMergeRunner, type MergeRunner } from "./mergeRunner.js";
@@ -134,19 +134,48 @@ function headerHostname(value: string): string | undefined {
 }
 
 /**
- * DNS-rebinding defense. A browser page served from an attacker origin that has
- * rebound its DNS to 127.0.0.1 can reach the local API, but the browser still
- * sends the attacker's own `Host`/`Origin`. We refuse any request whose `Host`
- * (or, when present, `Origin`) names a host other than the bound host or a
- * loopback alias — so a rebound foreign page can't read local control state even
- * on the tokenless loopback read path. Non-browser clients (curl, the runner)
- * that omit both headers are unaffected; the bearer token remains the real auth
- * mechanism, this only closes the browser-rebinding hole.
+ * Extra hostnames the Host/Origin check accepts, from `DISPATCH_ALLOWED_HOSTS`
+ * (comma-separated). For deployments fronted by a reverse proxy or a DNS name,
+ * where the original `Host` the client sent never byte-equals the bind host.
+ * Parsed defensively: entries are trimmed, normalised via {@link normaliseHost}
+ * (lowercase, `[]`/`%zone` stripped, a `:port` suffix dropped via
+ * {@link headerHostname}), and empties ignored. Read per request — consistent
+ * with how the bearer token is resolved — so tests and embedders can adjust it
+ * without rebuilding the handler.
+ */
+function allowedHostsFromEnv(env: NodeJS.ProcessEnv = process.env): ReadonlySet<string> {
+  const raw = (env.DISPATCH_ALLOWED_HOSTS ?? "").trim();
+  if (raw === "") return new Set();
+  const hosts = raw
+    .split(",")
+    .map((entry) => headerHostname(entry) ?? "")
+    .filter((h) => h !== "");
+  return new Set(hosts);
+}
+
+/**
+ * DNS-rebinding defense for TOKENLESS requests. A browser page served from an
+ * attacker origin that has rebound its DNS to 127.0.0.1 can reach the local
+ * API, but the browser still sends the attacker's own `Host`/`Origin`. We
+ * refuse any request whose `Host` (or, when present, `Origin`) names a host
+ * other than the bound host, a loopback alias, or an operator-allowlisted
+ * hostname (`DISPATCH_ALLOWED_HOSTS`, for proxy/DNS fronting) — so a rebound
+ * foreign page can't read local control state on the tokenless loopback read
+ * path. Non-browser clients (curl, the runner) that omit both headers are
+ * unaffected.
+ *
+ * The route layer only consults this check for requests WITHOUT a valid bearer
+ * token, and exempts `/healthz`: a browser cannot attach the bearer token
+ * cross-origin, so a valid token proves the caller is legitimate (and health
+ * probes carry arbitrary `Host` headers and expose no state). The bearer token
+ * remains the real auth mechanism; this only closes the browser-rebinding hole.
  */
 function isHostHeaderAllowed(req: IncomingMessage, bindHost: string): boolean {
   const boundHostNormalised = normaliseHost(bindHost);
+  const extraAllowed = allowedHostsFromEnv();
   const allowed = (host: string | undefined): boolean =>
-    host !== undefined && (isLoopbackHost(host) || host === boundHostNormalised);
+    host !== undefined &&
+    (isLoopbackHost(host) || host === boundHostNormalised || extraAllowed.has(host));
 
   const rawHost = req.headers.host;
   if (rawHost !== undefined) {
@@ -535,10 +564,23 @@ async function route(
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
 
   try {
-    // DNS-rebinding defense (runs before anything else, incl. static assets): a
+    // /healthz is exempt from the Host/Origin check below: health probes (load
+    // balancers, k8s, uptime monitors) legitimately arrive with arbitrary Host
+    // headers, and the response carries no control-plane state to protect.
+    if (segments.length === 1 && segments[0] === "healthz" && method === "GET") {
+      sendJson(res, 200, { status: "ok" });
+      return;
+    }
+
+    // DNS-rebinding defense (before static assets + the API router): a TOKENLESS
     // request whose Host/Origin names a foreign host is refused outright, so a
-    // rebound attacker page can't reach even the tokenless loopback read path.
-    if (!isHostHeaderAllowed(req, bindHost)) {
+    // rebound attacker page can't reach the tokenless loopback read path. A
+    // VALID bearer token bypasses the check — a browser can't attach the token
+    // cross-origin, so holding it proves the caller is legitimate (this is what
+    // lets a tokened client reach a `--host 0.0.0.0` or proxy-fronted deploy
+    // whose Host header never matches the bind host). NOTE: hasValidBearer, not
+    // header presence — a wrong token gets no bypass.
+    if (!hasValidBearer(req) && !isHostHeaderAllowed(req, bindHost)) {
       sendJson(res, 403, {
         error: { code: "FORBIDDEN_HOST", message: "Host or Origin not permitted." },
       });
@@ -548,11 +590,6 @@ async function route(
     // SPA static assets: only specific non-API GET paths. Everything else falls
     // through to the API router (and its JSON 404), so API 404s stay intact.
     if (method === "GET" && serveStatic(url.pathname, res)) {
-      return;
-    }
-
-    if (segments.length === 1 && segments[0] === "healthz" && method === "GET") {
-      sendJson(res, 200, { status: "ok" });
       return;
     }
 

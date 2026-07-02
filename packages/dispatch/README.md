@@ -109,7 +109,10 @@ server use. The SPA is a framework-free ES-module app (no build step) under a
 self-only CSP. It binds `127.0.0.1` by default; there is **no authentication or
 RBAC yet** (every caller acts as one human actor), so do not expose it beyond
 localhost. `DISPATCH_API_TOKEN` adds an optional bearer token; `--unsafe-bind` /
-`DISPATCH_UNSAFE_BIND=1` is required to bind anything but loopback.
+`DISPATCH_UNSAFE_BIND=1` is required to bind anything but loopback. Tokenless
+requests pass a DNS-rebinding Host/Origin check (`/healthz` is exempt; a valid
+bearer token bypasses it); when fronting the API with a reverse proxy or DNS
+name, allowlist those hostnames via `DISPATCH_ALLOWED_HOSTS` (comma-separated).
 
 ```bash
 node dist/api/bin.js --port 8787          # or DISPATCH_API_PORT / --host

@@ -111,14 +111,26 @@ function bearer(req: IncomingMessage): string {
 }
 
 /**
+ * True ONLY when the request carries a CORRECT `Authorization: Bearer <token>`.
+ * Unlike {@link isAuthorized} this never returns true merely because auth is
+ * disabled — it proves the caller actually holds the credential. Used by the
+ * Host/Origin DNS-rebinding check to let a token-bearing caller through: a
+ * browser cannot attach the bearer token cross-origin, so a valid token is
+ * proof the request is not a rebound attacker page.
+ */
+export function hasValidBearer(req: IncomingMessage): boolean {
+  const expected = apiToken();
+  if (!expected) return false;
+  const provided = bearer(req);
+  return provided.length > 0 && tokenMatches(provided, expected);
+}
+
+/**
  * True when the request may proceed: either auth is disabled (no token
  * configured), or a correct `Authorization: Bearer <token>` is present.
  */
 export function isAuthorized(req: IncomingMessage): boolean {
-  const expected = apiToken();
-  if (!expected) return true;
-  const provided = bearer(req);
-  return provided.length > 0 && tokenMatches(provided, expected);
+  return apiToken().length === 0 || hasValidBearer(req);
 }
 
 /** True for HTTP methods that do not change state (safe to leave open locally). */

@@ -139,7 +139,11 @@ const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "review cycle. Use the optional `reason` to summarise what you changed and " +
     "where the evidence lives, so the reviewer can verify quickly. If review " +
     "is rejected the ticket returns to you; read the feedback rather than " +
-    "resubmitting unchanged.",
+    "resubmitting unchanged.\n\n" +
+    "An EXPLICIT `claim_token` is required: unlike evidence recording, submit " +
+    "never resolves the server-injected token. In the Gaffer factory the " +
+    "RUNNER owns submission — if your instructions say the runner submits " +
+    "after its gates pass, do NOT call this tool; a tokenless call is refused.",
   record_repo_delivery:
     "**Record WHERE one repo's slice of a multi-repo ticket was delivered — its " +
     "branch, commit, PR and a delivery `status`.** Pass the `ticket_id`, the " +

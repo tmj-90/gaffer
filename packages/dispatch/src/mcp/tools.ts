@@ -144,6 +144,11 @@ export const toolSchemas = {
     reason: z.string().min(1),
   },
   submit_ticket_for_review: {
+    // Optional on the wire only so the handler can return a structured, coaching
+    // VALIDATION_ERROR. Unlike evidence/block, submit NEVER falls back to the
+    // server-env token (GAFFER_CLAIM_TOKEN): submit is runner-owned, and the
+    // delivery agent — which never handles the token string — must not be able
+    // to complete its own claim (FINDING-2).
     claim_token: z.string().min(1).optional(),
     ticket_id: z.string().min(1),
     reason: z.string().optional(),
@@ -251,10 +256,11 @@ type Args = Record<string, unknown>;
 export function makeHandlers(wg: Dispatch, actor: Actor) {
   // RUNNER-OWNED-BOOKKEEPING: the factory runner claims the ticket and injects the
   // claim token into this MCP server's env (GAFFER_CLAIM_TOKEN). The agent's
-  // legitimate token-gated writes (record_ac_evidence, mark_ticket_blocked, and the
-  // now-runner-owned submit) resolve the token from the tool arg first, then the
-  // env, so the agent never has to handle the token string. Outside the factory the
-  // env var is unset and the explicit tool arg is used exactly as before.
+  // legitimate token-gated writes (record_ac_evidence, mark_ticket_blocked) resolve
+  // the token from the tool arg first, then the env, so the agent never has to
+  // handle the token string. submit_ticket_for_review is deliberately EXCLUDED from
+  // this fallback — submit is runner-owned (see the handler). Outside the factory
+  // the env var is unset and the explicit tool arg is used exactly as before.
   const claimTokenFor = (explicit?: string): string | undefined => {
     // An empty substituted env value (e.g. a resumed delivery the runner holds no
     // token for) must resolve to undefined, not "", so token-gated writes fail with
@@ -507,11 +513,22 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     submit_ticket_for_review: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.submit_ticket_for_review).parse(args);
-        const token = claimTokenFor(a.claim_token);
+        // RUNNER-OWNED-BOOKKEEPING (FINDING-2): submit deliberately does NOT
+        // resolve the GAFFER_CLAIM_TOKEN env fallback. That env token exists for
+        // the agent's legitimate token-gated writes (evidence, block); if submit
+        // could resolve it, a disobedient agent that ignores "do NOT submit"
+        // would submit successfully, COMPLETE the claim, and void the runner's
+        // held token — the runner's release then soft-fails (CLAIM_INVALID), the
+        // branch is dropped, and the ticket strands in in_review with an empty
+        // diff (un-approvable: PR_OR_DIFF_REQUIRED can never pass). Only a
+        // caller that actually HOLDS the token (the runner via CLI/REST, or a
+        // non-factory operator) may submit — and they pass it explicitly.
+        const token = a.claim_token;
         if (!token) {
           throw new DispatchError(
             "VALIDATION_ERROR",
-            "claim_token is required to submit for review.",
+            "submit is runner-owned: an explicit claim_token is required to submit for review " +
+              "(the server-env claim token is not accepted for submit).",
           );
         }
         const res = wg.submitForReview(

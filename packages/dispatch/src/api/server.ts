@@ -1630,6 +1630,15 @@ function routeReadModels(
     return;
   }
 
+  // /api/human-queue — Track 2a "What I own": the HUMAN-owned queue (pending
+  // decisions with reasons, review sign-offs, regulated ready-approvals/reviewer
+  // assignments), each with what/which-ticket/why/how-long. Read-only.
+  if (segments.length === 2 && segments[1] === "human-queue") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, wg.humanQueue());
+    return;
+  }
+
   // /api/activity?limit=&offset= — newest-first cross-ticket event feed.
   if (segments.length === 2 && segments[1] === "activity") {
     if (method !== "GET") return methodNotAllowed(res);

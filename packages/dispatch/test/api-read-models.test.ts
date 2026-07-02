@@ -301,6 +301,24 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
     expect(draft.id).toBeTruthy();
   });
 
+  it("GET /api/human-queue surfaces the human-owned queue with reasons", async () => {
+    const t = makeTicket(h.wg, "Needs a call");
+    h.wg.createDecision(
+      { title: "Pick a DB", question: "Postgres or SQLite?", ticketId: t.id },
+      human,
+    );
+
+    const res = await call(h.baseUrl, "GET", "/api/human-queue");
+    expect(res.status).toBe(200);
+    const items = res.body.items as Array<Record<string, unknown>>;
+    const counts = res.body.counts as Record<string, number>;
+    expect(counts.total).toBe(1);
+    expect(counts.decisions).toBe(1);
+    expect(items[0]!.kind).toBe("decision");
+    expect(items[0]!.reason).toBe("Postgres or SQLite?");
+    expect((items[0]!.ticket as { id: string }).id).toBe(t.id);
+  });
+
   it("dashboard counts stale claims once their lease passes expiry", async () => {
     const t = makeTicket(h.wg, "Will go stale");
     h.wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready

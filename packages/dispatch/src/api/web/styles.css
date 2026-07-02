@@ -7973,6 +7973,49 @@ textarea:focus-visible,
   }
 }
 
+/* plan-build failure — a persistent error bubble in the chat (not a toast that
+   vanishes and leaves the typing dots looking abandoned) */
+.pb-error-msg {
+  border-left: 2px solid var(--danger);
+  background: var(--danger-soft);
+}
+.pb-error-msg .pb-bot-label {
+  color: var(--danger);
+}
+.pb-error-hint {
+  margin-top: 6px;
+  font-size: 0.82em;
+}
+
+/* mobile performance: on phones the appbar's backdrop-blur and the transform-
+   heavy route "camera step" are the two big jank sources when switching tabs.
+   Drop the blur and swap to a light cross-fade. */
+@media (max-width: 639px) {
+  .appbar {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--bg-2);
+  }
+  ::view-transition-old(root),
+  :root[data-step="back"]::view-transition-old(root) {
+    animation: g-mfade-out 140ms ease both;
+  }
+  ::view-transition-new(root),
+  :root[data-step="back"]::view-transition-new(root) {
+    animation: g-mfade-in 190ms ease both;
+  }
+}
+@keyframes g-mfade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes g-mfade-in {
+  from {
+    opacity: 0;
+  }
+}
+
 /* terminal prompt line (the old footer) */
 .footer {
   font-family: var(--mono);

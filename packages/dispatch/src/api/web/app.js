@@ -7398,6 +7398,18 @@ function renderPlanBuildLog() {
           ),
         ]),
       );
+    } else if (turn.role === "assistant" && turn.error) {
+      log.appendChild(
+        el("div", { class: "pb-msg pb-bot pb-error-msg" }, [
+          el("div", { class: "pb-bot-label" }, "Couldn't build the plan"),
+          el("div", {}, turn.error),
+          el(
+            "div",
+            { class: "pb-error-hint dim" },
+            'Edit your brief and try again, or press "Build the tickets".',
+          ),
+        ]),
+      );
     }
   }
 
@@ -7921,37 +7933,44 @@ async function submitPlanBuildTurn(opts = {}) {
   sendBtn.appendChild(el("span", { class: "pb-send-label" }, "Planning…"));
   renderPlanBuildLog();
 
-  await guard(async () => {
-    // Send the brief + the answered turns; the helper treats answered Qs as settled.
-    // On a force-plan turn the decomposer is told to stop clarifying and return a
-    // plan now from what it has — so the user is never trapped in an endless chat.
+  // Send the brief + the answered turns; the helper treats answered Qs as settled.
+  // On a force-plan turn the decomposer is told to stop clarifying and return a
+  // plan now from what it has — so the user is never trapped in an endless chat.
+  // NOTE: we handle errors explicitly (not via guard) so a failed turn leaves a
+  // PERSISTENT error message in the chat + clears the thinking bubble, rather than
+  // hanging on the typing dots with only a transient toast.
+  let failure = null;
+  try {
     const res = await api("POST", "/plan-build", {
       brief: planBuildState.brief,
-      history: planBuildState.history.map((t) =>
-        t.role === "user" && t.brief ? { role: "user", answer: t.brief } : t,
-      ),
+      history: planBuildState.history
+        .filter((t) => !(t.role === "assistant" && t.error)) // never resend a failed turn
+        .map((t) => (t.role === "user" && t.brief ? { role: "user", answer: t.brief } : t)),
       ...(context !== undefined ? { context } : {}),
       ...(forcePlan ? { forcePlan: true } : {}),
     });
-    planBuildState.busy = false;
     if (res.phase === "clarify") {
       planBuildState.history.push({ role: "assistant", questions: res.questions || [] });
-      // Persist the assistant clarify turn server-side (best-effort).
       persistPlanBuildTurn("assistant", JSON.stringify(res)).catch(() => {});
     } else if (res.phase === "plan") {
       planBuildState.plan = res.plan || null;
-      // Persist the plan turn with the plan payload so reload can restore it.
       persistPlanBuildTurn("assistant", JSON.stringify(res), { plan: res.plan || null }).catch(
         () => {},
       );
     } else {
-      toast(res.error || "Planning failed", { code: "PLAN_BUILD" });
-      // Persist error turns for audit (best-effort).
+      failure = res.error || "The planner returned no result.";
       persistPlanBuildTurn("assistant", JSON.stringify(res)).catch(() => {});
     }
-    renderPlanBuildLog();
-  });
+  } catch (e) {
+    failure = e && e.message ? e.message : "The request errored before a plan came back.";
+  }
+
+  // Always land the UI in a resolved state — bubble cleared, composer usable.
   planBuildState.busy = false;
+  if (failure) {
+    planBuildState.history.push({ role: "assistant", error: failure });
+    toast(failure, { code: "PLAN_BUILD" });
+  }
   sendBtn.disabled = false;
   sendBtn.classList.remove("is-running");
   sendBtn.removeAttribute("aria-busy");

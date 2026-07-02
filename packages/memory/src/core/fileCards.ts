@@ -161,6 +161,11 @@ function rowToFileCard(row: FileCardRow): FileCard {
     promptVersion: row.prompt_version ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // Recall-feedback signal (migration): set when this card was served into a
+    // ticket that then needed rework. Read by cardsForScope to de-prioritise a
+    // card that previously mis-led an agent. `?? 0` tolerates pre-migration /
+    // partially-selected rows that don't carry the column.
+    flaggedForReview: (row.flagged_for_review ?? 0) === 1,
   };
 }
 

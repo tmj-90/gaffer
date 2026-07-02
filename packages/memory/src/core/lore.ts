@@ -1124,6 +1124,17 @@ function buildSearchClauses(opts: SearchOptions): {
     filters.push("l.updated_at >= ?");
     params.push(opts.updatedAfter);
   }
+  if (opts.kind !== undefined) {
+    const kindList = Array.isArray(opts.kind) ? opts.kind : [opts.kind];
+    const kinds = Array.from(new Set(kindList.filter(Boolean)));
+    if (kinds.length === 1) {
+      filters.push("l.kind = ?");
+      params.push(kinds[0]!);
+    } else if (kinds.length > 1) {
+      filters.push(`l.kind IN (${kinds.map(() => "?").join(",")})`);
+      params.push(...kinds);
+    }
+  }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   return { from, where, params, hasFts };
 }

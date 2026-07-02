@@ -878,6 +878,30 @@ program
   });
 
 program
+  .command("human-claim <ref>")
+  .description(
+    'TRACK-2b: take a ready ticket "by hand" (I\'ll do this myself). Moves it ready -> in_progress owned by you; the factory selection loop then structurally skips it.',
+  )
+  .action((ref, _opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const res = wg.humanClaimTicket(ref, cliActor());
+    printJson({ ok: true, ...res, human_owned: true });
+    wg.db.close();
+  });
+
+program
+  .command("human-release <ref>")
+  .description(
+    "TRACK-2b: hand a by-hand ticket back to the queue (in_progress -> ready, clearing your ownership marker so agents can pick it up).",
+  )
+  .action((ref, _opts, cmd) => {
+    const wg = open(cmd.optsWithGlobals());
+    const res = wg.humanReleaseTicket(ref, cliActor());
+    printJson({ ok: true, ...res });
+    wg.db.close();
+  });
+
+program
   .command("heartbeat <token>")
   .description("Extend an active claim lease")
   .action((token, _opts, cmd) => {

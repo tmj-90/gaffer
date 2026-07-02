@@ -1698,12 +1698,16 @@ export function buildMcpServer(db: Database): McpServer {
         const rk = repoKey(args.repoCanonical);
         const limit = Math.min(args.limit ?? 20, 50);
         const cards = searchFileCards(db, rk, args.query, limit);
-        // FAIL LOUD: empty result while cards exist under a different key is a
-        // canonical/key mismatch, not "no cards" — surface it, don't hide it.
+        // FAIL LOUD but OUT-OF-BAND: an empty result while cards exist under a
+        // different key is a canonical/key mismatch, not "no cards". Surface it
+        // to stderr (operator log), NOT into the agent-facing result — the
+        // diagnostic names other repos' keys and is untrusted context noise.
+        // Consistent with every other diagnostic path (logs go to stderr).
         const diagnostic =
           cards.length === 0
             ? diagnoseRepoKeyMismatch(db, rk, args.repo, args.repoCanonical)
             : null;
+        if (diagnostic) process.stderr.write(`memory-mcp: ${diagnostic}\n`);
         audit({
           tool: "search_file_cards",
           request: {
@@ -1723,7 +1727,6 @@ export function buildMcpServer(db: Database): McpServer {
           // envelope so it arrives as DATA, not instructions.
           cards: cards.map((c) => quarantineCard(c as unknown as Record<string, unknown>)),
           security: QUARANTINE_NOTICE,
-          ...(diagnostic ? { diagnostics: [diagnostic] } : {}),
           caveat:
             "Cards are retrieval aids — use them to choose files to read, not " +
             "as a substitute for reading the code. Model fields (tldr, role) " +
@@ -1864,13 +1867,20 @@ export function buildMcpServer(db: Database): McpServer {
           resultCount: packet.cards.length,
           resultIds: packet.cards.map((c) => c.id),
         });
+        // A canonical/key mismatch diagnostic is an operator concern — log it
+        // to stderr, never into the agent-facing packet (it names other repos'
+        // keys and is untrusted noise). Consistent with search_file_cards.
+        const { diagnostics, ...packetRest } = packet;
+        if (diagnostics?.length) {
+          for (const d of diagnostics) process.stderr.write(`memory-mcp: ${d}\n`);
+        }
         // Wrap every agent-facing free-text span in the packet — cards, the
         // repo digest, and the lore hits — in the quarantine envelope. This
         // packet is the START-OF-TASK orientation context, the single biggest
         // poisoning surface, so all three record kinds arrive as DATA, never
         // instructions. Selection metadata / paths / coverage stay raw.
         const out = {
-          ...packet,
+          ...packetRest,
           cards: packet.cards.map((c) => quarantineCard(c as unknown as Record<string, unknown>)),
           digest: packet.digest
             ? quarantineDigest(packet.digest as unknown as Record<string, unknown>)

@@ -18,9 +18,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { createHash } from "node:crypto";
+
 import { addBoundary } from "../src/core/boundaries.js";
 import { addLore } from "../src/core/lore.js";
 import { recordAbsence } from "../src/core/absence.js";
+import { upsertFileCard } from "../src/core/fileCards.js";
 import { buildMcpServer } from "../src/mcp/server.js";
 import { runMigrations } from "../src/db/migrations.js";
 import type { Database } from "better-sqlite3";
@@ -724,5 +727,87 @@ describe("MCP — find_dependents + declare_boundary", () => {
     });
     expect(isError).toBe(true);
     expect(text).toContain("validation");
+  });
+});
+
+// ── N2: the repo-key mismatch diagnostic is an OPERATOR concern and must go to
+// stderr — never into the agent-facing MCP result (it names other repos' keys
+// and is untrusted context noise). ─────────────────────────────────────────
+describe("MCP — repo-key mismatch diagnostic stays out of agent context (N2)", () => {
+  const SSH = "git@github.com:acme/widget.git";
+  const HTTPS = "https://github.com/acme/widget.git";
+  const REPO = "widget";
+  const LEGACY_KEY = createHash("sha256").update(SSH).digest("hex");
+
+  /** Seed a legacy card under the un-normalised key so the normalised query
+   *  resolves to 0 cards while cards DO exist under another key. */
+  function seedLegacyCard(): void {
+    upsertFileCard(db, {
+      repoKey: LEGACY_KEY,
+      canonical: undefined,
+      repo: REPO,
+      path: "src/api/price.ts",
+      contentHash: "a".repeat(64),
+      loc: 42,
+      symbols: ["getPrice"],
+      source: "onboard",
+      tldr: "price lookup",
+      modelStatus: "active",
+    });
+  }
+
+  /** Capture everything written to process.stderr while `fn` runs. */
+  async function withCapturedStderr(fn: () => Promise<void>): Promise<string> {
+    const chunks: string[] = [];
+    const original = process.stderr.write.bind(process.stderr);
+
+    (process.stderr as any).write = (chunk: any, ...rest: any[]): boolean => {
+      chunks.push(String(chunk));
+      // Swallow — don't spam the test reporter with the operator log line.
+      if (typeof rest[rest.length - 1] === "function") rest[rest.length - 1]();
+      return true;
+    };
+    try {
+      await fn();
+    } finally {
+      process.stderr.write = original;
+    }
+    return chunks.join("");
+  }
+
+  it("search_file_cards on a mismatch returns 0 cards WITHOUT a diagnostics field", async () => {
+    seedLegacyCard();
+    client = await connectClient(db);
+    let json: any;
+    const err = await withCapturedStderr(async () => {
+      ({ json } = await callJson(client, "search_file_cards", {
+        repoCanonical: HTTPS,
+        repo: REPO,
+        query: "price",
+      }));
+    });
+    // The result the agent sees carries NO diagnostic leak.
+    expect(json.count).toBe(0);
+    expect(json).not.toHaveProperty("diagnostics");
+    expect(JSON.stringify(json)).not.toContain("mismatch");
+    // But the operator DOES get told, on stderr.
+    expect(err).toContain("mismatch");
+  });
+
+  it("cards_for_scope on a mismatch omits diagnostics from the packet too", async () => {
+    seedLegacyCard();
+    client = await connectClient(db);
+    let json: any;
+    const err = await withCapturedStderr(async () => {
+      ({ json } = await callJson(client, "cards_for_scope", {
+        repoCanonical: HTTPS,
+        repo: REPO,
+        query: "price",
+      }));
+    });
+    expect(json.cards).toHaveLength(0);
+    expect(json).not.toHaveProperty("diagnostics");
+    expect(JSON.stringify(json)).not.toContain("mismatch");
+    expect(err).toContain("mismatch");
   });
 });

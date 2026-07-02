@@ -152,7 +152,7 @@ fi
 : "${GAFFER_CHEAP_PHASES:=}"
 export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD GAFFER_CHEAP_PHASES
 
-# gaffer_route_model <phase> <risk> <ac_count> <stack> <attempt> [ticket]
+# gaffer_route_model <phase> <risk> <ac_count> <stack> <attempt> [ticket] [worktree] [repo] [branch] [base]
 # Deterministic per-phase model routing. Echoes the resolved MODEL ID on stdout
 # (empty → no model id; caller falls back to the Claude default), and LOGS one
 # auditable "ROUTE #<ticket> …" line with the inputs + chosen tier/model/reasons.
@@ -163,7 +163,7 @@ export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD
 # or the router is somehow unavailable the function echoes the matching static tier
 # and never aborts the tick.
 gaffer_route_model() {
-  local phase="${1:-implement}" risk="${2:-}" ac="${3:-0}" stack="${4:-}" attempt="${5:-1}" ticket="${6:-}" worktree="${7:-}"
+  local phase="${1:-implement}" risk="${2:-}" ac="${3:-0}" stack="${4:-}" attempt="${5:-1}" ticket="${6:-}" worktree="${7:-}" repo="${8:-}" branch="${9:-}" base="${10:-main}"
   # Backward-compatible EXPLICIT overrides (the two knobs that exist today). They
   # win ONLY when the operator set them in the environment — NOT when they hold the
   # config's own opus/sonnet defaults (those are the registry-equivalent baseline,
@@ -205,18 +205,31 @@ gaffer_route_model() {
       _diff_args+=(--historical-cost "$_hist")
     fi
   fi
+  local _db="" _fc=""
   if [ -n "$worktree" ] && [ -d "$worktree/.git" -o -f "$worktree/.git" ] \
      && command -v git >/dev/null 2>&1; then
-    local _db _fc
     # Measure the REAL diff SIZE in bytes — the raw patch, NOT a `--stat` summary. A
     # `--stat` line is a handful of bytes whatever the change ("file | 500 +++---"),
     # so a 40 KB diff measured that way reads as ~60 B and NEVER crosses the
     # HIGH_DIFF_BYTES difficulty mark — "big diff → route stronger" would never fire.
     _db="$(git -C "$worktree" diff HEAD 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
     _fc="$(git -C "$worktree" diff --name-only HEAD 2>/dev/null | grep -c . || echo 0)"
-    [ "${_db:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--diff-bytes "$_db")
-    [ "${_fc:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--file-count "$_fc")
   fi
+  # FINDING-9: on a REWORK attempt the worktree does not exist yet at routing time
+  # (tick.sh routes BEFORE worktree creation) — and even when it does, `git diff HEAD`
+  # only sees UNCOMMITTED work, never the COMMITTED rework accumulated on the
+  # preserved branch. When the worktree gave no signal, measure the ACCUMULATED
+  # rework diff from the real repo instead: `git diff base...branch` (merge-base
+  # semantics) over the preserved gaffer/ branch. Best-effort — a missing repo,
+  # branch, or base simply yields no signal.
+  if ! [ "${_db:-0}" -gt 0 ] 2>/dev/null && [ -n "$repo" ] && [ -n "$branch" ] \
+     && command -v git >/dev/null 2>&1 \
+     && git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1; then
+    _db="$(git -C "$repo" diff "$base...$branch" -- 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
+    _fc="$(git -C "$repo" diff --name-only "$base...$branch" -- 2>/dev/null | grep -c . || echo 0)"
+  fi
+  [ "${_db:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--diff-bytes "$_db")
+  [ "${_fc:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--file-count "$_fc")
   local json
   json="$(GAFFER_MODEL_REGISTRY="$GAFFER_MODEL_REGISTRY" \
           GAFFER_BUDGET_REMAINING="${GAFFER_BUDGET_REMAINING:-}" \

@@ -1044,6 +1044,13 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # shellcheck source=lib/minimalism.sh
 [ -f "$RUNNER_DIR/lib/minimalism.sh" ] && source "$RUNNER_DIR/lib/minimalism.sh"
 
+# Per-agent SKILL mount + skill-selection telemetry (defines gaffer_skills_mount /
+# gaffer_skills_mount_cleanup / gaffer_record_skill_usage). Mounts ONLY the
+# selected + universal skill subset into an agent's .claude/skills instead of the
+# whole library, so Claude Code doesn't auto-load all ~66 frontmatter blocks.
+# shellcheck source=lib/skills-mount.sh
+[ -f "$RUNNER_DIR/lib/skills-mount.sh" ] && source "$RUNNER_DIR/lib/skills-mount.sh"
+
 # Shared file-card context primer (defines gaffer_prime_context_block).
 # Sourced after the config above so it can use lg / MEMORY_CLI_BIN / MEMORY_DB.
 # shellcheck source=lib/context-primer.sh

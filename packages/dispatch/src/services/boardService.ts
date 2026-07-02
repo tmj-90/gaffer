@@ -83,6 +83,13 @@ export interface BoardCard {
   /** Active claim holder, when the ticket is claimed/in_progress. */
   claim: BoardCardClaim | null;
   /**
+   * TRACK-2b: the human who took this ticket "by hand" (the operator's own in-flight
+   * work), or `null` for agent-shaped work. When set, the ticket is `in_progress`
+   * owned by the human (never agent-claimed) and the board renders it distinctly in a
+   * "by hand" lane — the operator sees their own WIP apart from the agent's.
+   */
+  humanOwner: string | null;
+  /**
    * Latest review-rejection feedback (WG-049), so a human triaging the board sees
    * WHY a ticket in `refining`/rework was sent back. `null` when there is none.
    */
@@ -388,6 +395,7 @@ export class BoardService {
       acEvidenceRequired: evidenceRequired.length,
       blockingCount,
       claim: claimCard,
+      humanOwner: ticket.human_owner,
       lastReviewFeedback: parseReviewFeedback(ticket.last_review_feedback),
     };
   }

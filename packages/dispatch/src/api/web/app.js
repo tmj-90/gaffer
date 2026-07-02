@@ -2868,6 +2868,59 @@ let draggingCard = null;
 let draggingEl = null;
 
 /** A keyboard-reachable kanban card → ticket detail; carries pipeline-dots. */
+/**
+ * TRACK-2b: the human WIP lane's per-card action. A `ready` card gets an "I'll do
+ * this by hand" button (human-claim → in_progress owned by you, so the agent loop
+ * skips it); a human-owned in_progress card gets a "Hand back" button (release →
+ * ready). Both POST the dedicated endpoints and re-render on success. Returns null
+ * for cards with no human-lane action (agent-claimed / other states).
+ */
+function humanLaneAction(card) {
+  const post = async (path, verb) => {
+    try {
+      await api("POST", `/tickets/${card.id}/${path}`, {});
+      toast(verb, { ok: true });
+      router();
+    } catch (e) {
+      toast(e.message || "Action rejected", { code: e.code });
+    }
+  };
+  if (card.humanOwner) {
+    return el(
+      "button",
+      {
+        class: "card-human-btn hand-back",
+        type: "button",
+        title: "Hand this ticket back to the queue so an agent can pick it up",
+        onclick: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          guard(() => post("human-release", "Handed back to the queue"));
+        },
+      },
+      "Hand back",
+    );
+  }
+  // Only a genuinely-claimable ready ticket (no agent claim) can be taken by hand.
+  if (card.status === "ready" && !card.claim) {
+    return el(
+      "button",
+      {
+        class: "card-human-btn take-myself",
+        type: "button",
+        title: "Take this ticket by hand — the agent will stay out of it",
+        onclick: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          guard(() => post("human-claim", "You're on it — taken by hand"));
+        },
+      },
+      "I'll do this by hand",
+    );
+  }
+  return null;
+}
+
 function renderBoardCard(card) {
   const chips = el("div", { class: "card-chips" }, [
     riskBadge(card.risk_level),
@@ -2880,9 +2933,17 @@ function renderBoardCard(card) {
     acText = `${card.acEvidenced}/${card.acEvidenceRequired} evidenced`;
   else if (card.acTotal > 0) acText = `${card.acSatisfied}/${card.acTotal} satisfied`;
 
-  const meta = el("div", { class: "card-meta" }, [
-    acText ? el("span", { class: "ac-progress" }, acText) : el("span", { class: "dim" }, "no AC"),
-    card.claim
+  // TRACK-2b: a ticket the operator took "by hand" is THEIR in-flight work, not the
+  // agent's. Render it distinctly (a "By hand" marker with the human-owner) so the
+  // human WIP lane reads apart from an agent claim. This branch wins over the agent
+  // claim/pipeline-dots — a human-owned ticket never carries an agent claim.
+  const ownerMarker = card.humanOwner
+    ? el(
+        "span",
+        { class: "card-human-owned", title: `You're working this by hand (${card.humanOwner})` },
+        [el("span", { class: "human-dot" }), "By hand", ` · ${card.humanOwner}`],
+      )
+    : card.claim
       ? el(
           "span",
           {
@@ -2895,11 +2956,20 @@ function renderBoardCard(card) {
             card.claim.stale ? " · stale" : "",
           ],
         )
-      : pipelineDots(card.status),
+      : pipelineDots(card.status);
+
+  const meta = el("div", { class: "card-meta" }, [
+    acText ? el("span", { class: "ac-progress" }, acText) : el("span", { class: "dim" }, "no AC"),
+    ownerMarker,
   ]);
 
   const go = () => navigate(`#/ticket/${card.id}`);
   const movable = cardIsMovable(card);
+
+  // TRACK-2b dashboard actions: a READY card offers "I'll do this by hand" (human-
+  // claim); a human-owned in_progress card offers "Hand back" (release to the queue).
+  // Both POST the dedicated endpoints and re-render the board on success.
+  const humanLaneBtn = humanLaneAction(card);
 
   // Touch/keyboard fallback: a small "move" affordance opens a status menu, so
   // the same moves work one-handed on phones where drag is unreliable.
@@ -2977,6 +3047,7 @@ function renderBoardCard(card) {
       chips,
       reject,
       meta,
+      humanLaneBtn,
       moveBtn,
     ],
   );

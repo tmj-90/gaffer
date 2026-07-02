@@ -28,6 +28,25 @@
 # invocation seam still only produces $out_json + $?; the parsing of that capture
 # now flows through the ONE worker-owned parser instead of open-coded node scripts.
 #
+# Phase 3 (this file) — PROVIDER DISPATCH (SEAM ONLY, honest fail-closed stubs).
+# ------------------------------------------------------------------------------
+# worker_deliver now dispatches on $GAFFER_WORKER_PROVIDER exactly the way
+# lib/sandbox.sh dispatches on $SANDBOX_PROVIDER: a `case` with one real branch
+# and honest stubs for the rest. The default provider is `claude-code`, whose
+# branch is BYTE-IDENTICAL to the pre-Phase-3 invocation (the correctness
+# invariant the delivery/e2e/decompose suites pin). Any OTHER provider
+# (`codex`, `local`, …) is a stub that FAILS CLOSED: it refuses to run, returns
+# non-zero, and writes NO envelope — it never spawns an agent.
+#
+# WHY FAIL CLOSED rather than degrade (the load-bearing safety reason): the
+# PreToolUse containment hook is Claude-Code-native (safety-hook.mjs runs
+# in-process inside `claude -p`). A non-Claude worker has NO equivalent
+# in-process boundary, so running one would put an agent with a shell on the host
+# with no containment. Until a real OS-sandbox provider exists we refuse rather
+# than run blind. sandbox.sh can degrade to "no extra OS wrapping" because the
+# safety hook still applies there; the WORKER seam cannot, because the missing
+# piece IS the safety hook. See SECURITY.md ("worker provider containment").
+#
 # INTERFACE  {prompt, model, env, mcpConfig, cwd, timeout, maxTurns}
 #   $1 cwd        interface: cwd       — run the agent in this directory
 #   $2 prompt     interface: prompt    — the `-p` argument (quoted; may contain spaces/newlines)
@@ -52,15 +71,37 @@
 #     (resultText / usage / capHit / stopReason are DERIVED from $out_json by
 #      lib/worker.mjs's parseResult — the ONE Phase-2 parser seam; the bash guards
 #      call its `parse-result` CLI rather than re-parsing the envelope themselves).
+# The honest fail-closed message a non-Claude provider stub emits. Shared word-for-word
+# with the mjs seam (lib/worker.mjs unsupportedProviderMessage) so both runtimes speak
+# with one voice; the provider-stub tests pin this string.
+_gaffer_worker_unsupported_msg() {
+  printf 'worker provider %s not yet supported; safety-hook containment unavailable\n' "$1"
+}
+
 worker_deliver() {
   local cwd="$1" prompt="$2" model_flag="$3" mcp_config="$4" out_json="$5" wrap="${6:-}"
-  # C1/M2: strip ambient credentials from the live agent's env (allowlist via env -i).
-  # Populated here so the scrub is byte-identical for every site (each site called
-  # gaffer_agent_env immediately before its invocation previously).
-  gaffer_agent_env
-  ( cd "$cwd" \
-    && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
-       env -i "${GAFFER_AGENT_ENV[@]}" "${WORKER_CALL_ENV[@]}" \
-         "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$mcp_config" $CLAUDE_FLAGS $model_flag $GAFFER_MAX_TURNS_FLAG \
-  ) >"$out_json" 2>>"$GAFFER_LOG"
+  case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
+    claude-code)
+      # ── The real provider — BYTE-IDENTICAL to the pre-Phase-3 invocation. ──
+      # C1/M2: strip ambient credentials from the live agent's env (allowlist via env -i).
+      # Populated here so the scrub is byte-identical for every site (each site called
+      # gaffer_agent_env immediately before its invocation previously).
+      gaffer_agent_env
+      ( cd "$cwd" \
+        && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
+           env -i "${GAFFER_AGENT_ENV[@]}" "${WORKER_CALL_ENV[@]}" \
+             "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$mcp_config" $CLAUDE_FLAGS $model_flag $GAFFER_MAX_TURNS_FLAG \
+      ) >"$out_json" 2>>"$GAFFER_LOG"
+      ;;
+    *)
+      # ── codex / local / any non-Claude provider — honest stub, FAIL CLOSED. ──
+      # No execution: a non-Claude worker has no in-process safety hook, so we
+      # refuse rather than run an agent with a shell and no containment. Write NO
+      # envelope (empty capture → parseResult reads "unknown", never a fake 0) and
+      # return non-zero so the caller's existing error path treats it as a failure.
+      : > "$out_json"
+      _gaffer_worker_unsupported_msg "${GAFFER_WORKER_PROVIDER:-}" >&2
+      return 70
+      ;;
+  esac
 }

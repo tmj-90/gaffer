@@ -49,7 +49,48 @@ import { readFileSync } from "node:fs";
 
 export const UNKNOWN = "unknown";
 
+// ── PROVIDER DISPATCH (Spec 3 / Phase 3 — SEAM ONLY, honest fail-closed stubs) ──
+// The mjs runners (decompose, product-owner) pick their worker backend the same
+// way the bash seam (worker.sh) and the sandbox seam (sandbox.sh) do: on an env
+// var, defaulting to the one real provider. `claude-code` is BYTE-IDENTICAL to the
+// historical spawn; any other provider FAILS CLOSED (no spawn) because the
+// PreToolUse containment hook is Claude-Code-native — a non-Claude worker has no
+// in-process boundary. See worker.sh's header and SECURITY.md for the full reason.
+export const DEFAULT_WORKER_PROVIDER = "claude-code";
+
+/** The selected worker provider (trimmed), defaulting to claude-code. */
+export function workerProvider(env = process.env) {
+  const raw = env && typeof env.GAFFER_WORKER_PROVIDER === "string" ? env.GAFFER_WORKER_PROVIDER.trim() : "";
+  return raw || DEFAULT_WORKER_PROVIDER;
+}
+
+/** The honest fail-closed message — word-for-word identical to the bash seam. */
+export function unsupportedProviderMessage(provider) {
+  return `worker provider ${provider} not yet supported; safety-hook containment unavailable`;
+}
+
+// A spawnSync-shaped result for the fail-closed path so callers' existing
+// `res.error` / `res.status` handling treats it as a failed spawn — WITHOUT ever
+// spawning. status 70 == EX_SOFTWARE-style "we refused"; error carries the message.
+function failClosedResult(message) {
+  return {
+    pid: -1,
+    status: 70,
+    signal: null,
+    stdout: "",
+    stderr: message,
+    output: [null, "", message],
+    error: new Error(message),
+  };
+}
+
 export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env }) {
+  const provider = workerProvider(process.env);
+  if (provider !== DEFAULT_WORKER_PROVIDER) {
+    // codex / local / any non-Claude provider — honest stub, FAIL CLOSED. No spawn.
+    return failClosedResult(unsupportedProviderMessage(provider));
+  }
+  // claude-code — the current path, byte-identical.
   return spawnSync(bin, argv, {
     cwd,
     encoding: "utf8",
@@ -251,7 +292,7 @@ export function parseResult(text) {
   };
 }
 
-export const Worker = { deliver, parseResult };
+export const Worker = { deliver, parseResult, workerProvider, unsupportedProviderMessage };
 
 // =====================================================================
 // CLI — the bash worker (delivery-recovery.sh) reads cap/spend through this so the

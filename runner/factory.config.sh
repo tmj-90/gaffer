@@ -303,6 +303,21 @@ export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 : "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
 export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
 
+# FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around
+# the WHOLE tick.sh. It must mirror the claim-TTL math above, NOT the single-call
+# cap: one tick may legitimately run the whole rework ladder (up to
+# GAFFER_MAX_DELIVERY_ATTEMPTS agent calls, EACH individually bounded by
+# GAFFER_TICK_TIMEOUT). The old GAFFER_TICK_TIMEOUT + 60 sizing forbade the ladder
+# — whenever attempt 1 used most of one window, attempts 2..N (including the
+# strong-model FINAL attempt) were killed mid-run. Sized attempts × timeout + 2 min:
+# the margin covers the runner's own gate/record/submit time while staying safely
+# BELOW GAFFER_CLAIM_TTL (+300), so when this bound DOES fire the crash-trap
+# claim-release (given GAFFER_REAP_GRACE below) still lands on a live lease. The
+# inner per-call caps remain the fine-grained defense; this is only the backstop
+# for a tick wedged OUTSIDE an agent call.
+: "${GAFFER_TICK_OUTER_TIMEOUT:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))}"
+export GAFFER_TICK_OUTER_TIMEOUT
+
 # ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning
 # for the hardest cases before a human is pulled in). Empty → keep the routed model
 # (no escalation). Defaults to the plan tier (opus) so the last attempt reasons as
@@ -391,6 +406,18 @@ export GAFFER_MAX_RESUMES_PER_TICK
 : "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"
 export GAFFER_DASHBOARD_URL
 
+# FINDING-6 (b): TERM->KILL grace (seconds) for gaffer_timeout's process-group
+# reaper. On a timeout/kill the reaper TERMs the child group first so tick.sh's
+# crash trap can run its cleanup — crucially the claim-release `wg` call (node
+# startup + a local HTTP round-trip) plus worktree teardown — and only KILLs the
+# group once this grace expires. The old hardcoded ~2s grace realistically
+# SIGKILLed that release mid-flight, stranding the ticket `claimed` for the rest
+# of its lease. 30s comfortably covers release + teardown while still bounding a
+# TERM-ignoring runaway; keep it well under the claim-TTL headroom
+# (GAFFER_CLAIM_TTL − GAFFER_TICK_OUTER_TIMEOUT, 180s at defaults).
+: "${GAFFER_REAP_GRACE:=30}"
+export GAFFER_REAP_GRACE
+
 # Portable wall-clock timeout. Usage: gaffer_timeout <seconds> <command> [args...]
 # Exit 124 on timeout (matching GNU timeout's convention) so callers can detect it.
 gaffer_timeout() {
@@ -420,11 +447,19 @@ gaffer_timeout() {
       my $pf = $ENV{GAFFER_TIMEOUT_PGID_FILE};
       if ($pf) { if (open(my $fh, ">", $pf)) { print $fh $pid; close $fh; } }
       my $clear = sub { unlink $pf if $pf; };
+      # FINDING-6 (b): the TERM->KILL grace is GAFFER_REAP_GRACE (default 30s),
+      # not a hardcoded ~2s. The TERMed tick runs its crash trap — claim-release
+      # (a node/HTTP wg call) + worktree teardown — and must be allowed to finish
+      # before the group KILL; the wait polls every 0.1s so a fast exit still
+      # reaps immediately (no fixed-cost stall). A non-numeric/zero override
+      # falls back to 30s — the grace may be tuned, never disabled.
+      my $grace = $ENV{GAFFER_REAP_GRACE} // "";
+      $grace = 30 unless $grace =~ /^[0-9]+$/ && $grace > 0;
       my $reap = sub {
         my ($code) = @_;
         kill "TERM", -$pid; kill "TERM", $pid;
         my $gone = 0;
-        for (1..20) { if (waitpid($pid, WNOHANG) == $pid) { $gone = 1; last } select(undef,undef,undef,0.1); }
+        for (1..($grace * 10)) { if (waitpid($pid, WNOHANG) == $pid) { $gone = 1; last } select(undef,undef,undef,0.1); }
         # ALWAYS escalate the whole process GROUP to KILL after the grace — even when
         # the foreground child ($pid) has ALREADY exited on TERM. A claude -p that dies
         # cleanly can leave a GRANDCHILD (its MCP server) still alive in the same group;
@@ -450,9 +485,11 @@ gaffer_timeout() {
     return $?
   fi
   # GNU/BSD timeout fallbacks: `-s TERM -k <grace>` escalates to SIGKILL after the
-  # grace if the command ignores TERM, so a runaway agent is still reaped.
-  if command -v timeout >/dev/null 2>&1; then timeout -s TERM -k 10 "$secs" "$@"; return $?; fi
-  if command -v gtimeout >/dev/null 2>&1; then gtimeout -s TERM -k 10 "$secs" "$@"; return $?; fi
+  # grace if the command ignores TERM, so a runaway agent is still reaped. Same
+  # configurable grace as the perl path (FINDING-6 (b)) so the tick's crash-trap
+  # claim-release gets to finish on this path too.
+  if command -v timeout >/dev/null 2>&1; then timeout -s TERM -k "$GAFFER_REAP_GRACE" "$secs" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout -s TERM -k "$GAFFER_REAP_GRACE" "$secs" "$@"; return $?; fi
   # FAIL CLOSED (R-10): no timeout primitive (perl / timeout / gtimeout) is
   # available. Running the command unbounded here is the denial-of-wallet hole —
   # a runaway `claude -p` could burn unbounded wall-clock and tokens. Refuse to

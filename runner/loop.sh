@@ -124,11 +124,14 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
     break
   fi
   ticks=$((ticks + 1))
-  # Wrap the whole tick in the same per-call wall-clock cap so a runaway claude -p
-  # (or a tick wedged anywhere) can't burn unbounded wall-clock. A small slack is
-  # added over GAFFER_TICK_TIMEOUT so the inner per-call timeout fires first (and is
-  # logged with context) before this outer guard reaps the tick.
-  out="$(gaffer_timeout "$((GAFFER_TICK_TIMEOUT + 60))" bash "$HERE/tick.sh")"
+  # Wrap the whole tick in an outer wall-clock cap so a tick wedged anywhere can't
+  # burn unbounded wall-clock. FINDING-6 (a): the bound is GAFFER_TICK_OUTER_TIMEOUT
+  # (attempts × GAFFER_TICK_TIMEOUT + margin — the claim-TTL math), NOT the old
+  # single-call cap + 60: one tick may legitimately run the whole rework ladder,
+  # and each inner claude -p already carries its own GAFFER_TICK_TIMEOUT, so the
+  # inner per-call timeouts still fire first (and are logged with context) before
+  # this outer backstop reaps the tick.
+  out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"
   # R-1 (counting): this tick has spent (every tick invokes claude -p). Persist the
   # per-day count NOW — it is the denial-of-wallet guard's only ledger. If the bump
   # silently failed, the day cap would never advance and an overnight run could

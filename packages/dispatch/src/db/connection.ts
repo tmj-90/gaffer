@@ -780,8 +780,26 @@ function widenTicketStatusCheckForPaused(db: Db): void {
   }
 }
 
-/** Run `fn` inside an immediate transaction. */
+/**
+ * Run `fn` inside an IMMEDIATE transaction (`BEGIN IMMEDIATE`).
+ *
+ * better-sqlite3's `db.transaction(fn)` defaults to a DEFERRED transaction,
+ * which acquires no write lock until the first write statement runs. Under
+ * `GAFFER_CONCURRENCY>1`, two worker processes can both open a read snapshot,
+ * then race to UPGRADE to a write lock. SQLite does NOT run the `busy_timeout`
+ * busy handler on a deferred write-lock upgrade — it fails the upgrade
+ * immediately with `SQLITE_BUSY_SNAPSHOT` ("database is locked") rather than
+ * waiting, because waiting could deadlock. The result is spurious
+ * `SQLITE_BUSY` throws from otherwise-correct read-modify-write bookkeeping.
+ *
+ * `.immediate()` issues `BEGIN IMMEDIATE`, which acquires the write lock up
+ * front. Because there is no snapshot to invalidate, `busy_timeout` DOES apply:
+ * a concurrent writer waits for the lock (up to {@link BUSY_TIMEOUT_MS}) instead
+ * of failing. The transaction still rolls back atomically on any error, so the
+ * fail-safe guarantee (no partial or cross-ticket write) is preserved.
+ */
 export function inTransaction<T>(db: Db, fn: () => T): T {
-  const tx = db.transaction(fn);
-  return tx();
+  // `.immediate` is the IMMEDIATE-mode variant of the transaction function;
+  // invoking it BEGINs IMMEDIATE and runs `fn` to completion, returning its value.
+  return db.transaction(fn).immediate();
 }

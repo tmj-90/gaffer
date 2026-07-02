@@ -29,21 +29,22 @@
 #     limitation this exercises (a REPORTED bug), and why the delivery helper
 #     retries a transient lock.
 #
-# NOTE — REPORTED BUG (dispatch `inTransaction` uses a DEFERRED transaction):
-#   packages/dispatch/src/db/connection.ts `inTransaction` wraps writes in
-#   `db.transaction(fn)` (DEFERRED) though its JSDoc says "immediate". Two worker
+# NOTE — the DEFERRED-transaction bug this test surfaced is now FIXED:
+#   packages/dispatch/src/db/connection.ts `inTransaction` previously wrapped writes
+#   in `db.transaction(fn)` (DEFERRED) though its JSDoc said "immediate". Two worker
 #   PROCESSES sharing one SQLite DB then intermittently hit
 #   `SQLITE_BUSY: database is locked` on a concurrent read-modify-write (evidence /
 #   submit / transition) EVEN WITH busy_timeout=5000ms, because SQLite does not run
 #   the busy handler when a deferred txn must UPGRADE its read lock to a write lock
-#   (SQLITE_BUSY_SNAPSHOT). It fails SAFE — the txn rolls back, so no partial or
-#   cross-ticket write lands and the ticket stays cleanly claimed + retryable — but
-#   it causes spurious delivery failures / wasted rework under GAFFER_CONCURRENCY>1.
-#   Fix (production, out of scope for this additive test): `.immediate()` on the
-#   transaction. This test therefore asserts the guarantees the system ACTUALLY
-#   makes under parallelism — isolation + fail-closed + recover-on-retry — and its
-#   delivery helper retries the transient lock exactly as the runner's repeated
-#   ticks / park-and-retry would. It never retries a REAL rejection (wrong token).
+#   (SQLITE_BUSY_SNAPSHOT). It failed SAFE — the txn rolled back, so no partial or
+#   cross-ticket write landed and the ticket stayed cleanly claimed + retryable — but
+#   it caused spurious delivery failures / wasted rework under GAFFER_CONCURRENCY>1.
+#   The fix: `db.transaction(fn).immediate()` (BEGIN IMMEDIATE), which acquires the
+#   write lock up front so busy_timeout applies and a concurrent writer WAITS.
+#   PART C keeps its transient-lock retry as belt-and-suspenders (a slow machine
+#   could still exceed busy_timeout); PART D below now asserts the fix directly:
+#   parallel deliveries WITHOUT any retry complete with ZERO SQLITE_BUSY. Neither
+#   part ever retries a REAL rejection (wrong token) — that is not a lock.
 #
 # Requires the dispatch CLI to be built. SKIPs (exit 0) if it isn't.
 # Run: bash test/concurrency-bookkeeping.test.sh
@@ -250,6 +251,47 @@ EXPECT_AFTER=$((BEFORE_ACTIVE - 2))
 [ "$(claims_active_total)" = "$EXPECT_AFTER" ] \
   && ok "C5: both claims completed on submit — active-claim count fell by exactly 2 ($BEFORE_ACTIVE → $EXPECT_AFTER)" \
   || fail "C5: active-claim count is $(claims_active_total), expected $EXPECT_AFTER"
+
+echo "== PART D: BEGIN IMMEDIATE fix — parallel deliveries need NO retry, ZERO SQLITE_BUSY =="
+# The direct regression guard for the .immediate() fix: run two concurrent
+# record-evidence → submit sequences with NO lock retry at all. Pre-fix (DEFERRED
+# txn) a concurrent write-lock upgrade could throw SQLITE_BUSY_SNAPSHOT despite
+# busy_timeout; post-fix BEGIN IMMEDIATE takes the write lock up front so the loser
+# WAITS (busy_timeout) and both complete cleanly. Any SQLITE_BUSY here — or any
+# non-completion — is a regression.
+NE="$(wg ticket create -t "dlv-E" --risk low | jget "d['ticket']['number']")"
+ACE="$(wg ac add "$NE" -t "E works" | jget "d['ac_id']")"; wg ticket ready "$NE" >/dev/null
+NF="$(wg ticket create -t "dlv-F" --risk low | jget "d['ticket']['number']")"
+ACF="$(wg ac add "$NF" -t "F works" | jget "d['ac_id']")"; wg ticket ready "$NF" >/dev/null
+TOKE="$(runner_claim "$NE" "$A1")"
+TOKF="$(runner_claim "$NF" "$A2")"
+
+# Deliver ITS OWN ticket with NO retry; captures all output so we can scan for a
+# transient lock afterwards. Writes "ok" on clean success, else "err".
+deliver_no_retry() {  # $1 num, $2 token, $3 acId, $4 tag, $5 result-file, $6 log-file
+  local num="$1" tok="$2" ac="$3" tag="$4" out="$5" log="$6"
+  : > "$log"
+  wg evidence "$num" --token "$tok" --type test_output --summary "$tag" --ac "$ac" >>"$log" 2>&1 || { echo err > "$out"; return 0; }
+  wg submit "$num" --token "$tok" --reason "done $num" >>"$log" 2>&1 || { echo err > "$out"; return 0; }
+  echo ok > "$out"
+}
+deliver_no_retry "$NE" "$TOKE" "$ACE" "OWN-E" "$WORK/dlv.E" "$WORK/log.E" &
+pE=$!
+deliver_no_retry "$NF" "$TOKF" "$ACF" "OWN-F" "$WORK/dlv.F" "$WORK/log.F" &
+pF=$!
+wait "$pE"; wait "$pF"
+
+{ [ "$(cat "$WORK/dlv.E")" = ok ] && [ "$(cat "$WORK/dlv.F")" = ok ]; } \
+  && ok "D1: both parallel deliveries completed with NO retry (BEGIN IMMEDIATE serialised them)" \
+  || fail "D1: a no-retry parallel delivery failed (E=$(cat "$WORK/dlv.E" 2>/dev/null) F=$(cat "$WORK/dlv.F" 2>/dev/null))"
+if grep -qi "SQLITE_BUSY\|database is locked" "$WORK/log.E" "$WORK/log.F" 2>/dev/null; then
+  fail "D2: a spurious SQLITE_BUSY was thrown under parallelism — the .immediate() fix regressed"
+else
+  ok "D2: ZERO SQLITE_BUSY across both concurrent deliveries (deferred-upgrade race is fixed)"
+fi
+{ [ "$(status_of "$NE")" = in_review ] && [ "$(status_of "$NF")" = in_review ]; } \
+  && ok "D3: both tickets reached in_review — fail-safe isolation preserved with the fix" \
+  || fail "D3: expected both in_review (E=$(status_of "$NE") F=$(status_of "$NF"))"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

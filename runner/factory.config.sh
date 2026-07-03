@@ -12,18 +12,17 @@
 
 # UI-editable settings. The dashboard Settings panel persists a flat {"KEY":"value"}
 # map to $GAFFER_DATA/settings.json. Apply them as defaults HERE — before the config
-# defaults below — with `:=` so a real env var ALWAYS overrides the file (env wins).
-# Keys are validated to env-var-name shape so a tampered file can't inject anything;
-# values are bash vars (never eval'd), tabs/newlines stripped.
+# defaults below — so a real env var ALWAYS overrides the file (env wins).
+# SECURITY: do NOT eval. eval re-parses the whole string, so BOTH a crafted key and a
+# crafted value are command-injection vectors — the old `case "$_sk" in [A-Z_][A-Z0-9_]*`
+# glob pinned only the first two chars ('*' swallows `}; cmd; :`), and a value with a `}`
+# closes the `${...}` early and runs the trailing text. Instead: FULLY anchor the key to
+# a shell identifier, then test-and-assign with indirect expansion (`${!_sk}`) + `printf
+# -v`, neither of which re-parses $_sk or $_sv as a command.
 if [ -f "$GAFFER_DATA/settings.json" ] && command -v node >/dev/null 2>&1; then
   while IFS=$'\t' read -r _sk _sv; do
-    # eval KEPT: this is a dynamic-NAME `:=` default assignment (env always wins),
-    # not a command seam. The key is shape-validated above; the value is only ever
-    # *assigned* to that var, never re-parsed as a command. No argv form expresses
-    # "assign-if-unset to a variable whose name is in $_sk".
-    case "$_sk" in
-      [A-Z_][A-Z0-9_]*) eval ": \${$_sk:=\$_sv}" ;;
-    esac
+    [[ "$_sk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # whole-key anchor (^…$)
+    if [ -z "${!_sk:-}" ]; then printf -v "$_sk" '%s' "$_sv"; fi   # assign-if-unset, no eval
   done < <(node -e 'try{const s=require(process.argv[1]);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")}catch{}' "$GAFFER_DATA/settings.json")
   unset _sk _sv
 fi

@@ -1119,7 +1119,9 @@ export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
   // injection in an (untrusted) onboarded-repo file can't write into factory source
   // (denying only the edit tools is defeated by a Bash `>` fallback). Read/Grep/Glob + MCP
   // stay available for the file inspection the analysis needs.
-  flags.push("--disallowedTools", "Write", "Edit", "NotebookEdit", "Bash");
+  // MUST enumerate the COMPLETE write/exec set — MultiEdit is a write tool too; a denylist
+  // silently permits any write tool it omits.
+  flags.push("--disallowedTools", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash");
   if (caps.model) flags.unshift("--model", caps.model);
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   if (caps.maxTurns > 0) args.push("--max-turns", String(caps.maxTurns));

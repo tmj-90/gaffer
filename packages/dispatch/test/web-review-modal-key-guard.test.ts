@@ -135,9 +135,28 @@ describe("web review gate: global j/k/a/r shortcuts are suppressed while a modal
     await tick();
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
-    document.querySelectorAll(".reject-scrim, .palette-scrim, .sheet-scrim").forEach((n) =>
+    document.querySelectorAll(".reject-scrim, .palette-scrim, .sheet-scrim, .pb-scrim").forEach((n) =>
       n.remove(),
     );
+  });
+
+  it("HARD GATE: `a` fires NO approve while a Plan-a-build / Author-a-spec panel is open", async () => {
+    await bootReview();
+
+    // The plan-build AND spec-build panels share `.pb-scrim` — both were omitted from the
+    // isModalOpen() source of truth, so the same reject-to-approve leak could fire through
+    // them (press `a` meaning "send this brief" → approve+merge the queued review ticket).
+    const scrim = document.createElement("div");
+    scrim.className = "pb-scrim open";
+    document.body.appendChild(scrim);
+
+    pressKey("a");
+    await tick();
+
+    expect(
+      approveCalls(),
+      "`a` must not approve/merge while a plan-build/spec-build panel is open",
+    ).toHaveLength(0);
   });
 
   it("HARD GATE: `a`/`r` on a focused reject-reason chip fire NO approve/reject POST", async () => {

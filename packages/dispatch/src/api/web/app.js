@@ -958,8 +958,10 @@ function startAutoRefresh() {
   autoRefreshTimer = setInterval(() => {
     if (document.visibilityState !== "visible") return;
     if (busyEditing()) return;
-    // don't yank a card mid-drag or a menu/sheet out from under a click
-    if (document.querySelector(".dragging, .is-dragging, .sheet, .menu-open")) return;
+    // don't yank a card mid-drag or a menu/sheet out from under a click. Match `.sheet.open`
+    // (an OPEN sheet), not `.sheet` — the latter is the always-present container, so it would
+    // pause auto-refresh permanently after the first sheet ever opens.
+    if (document.querySelector(".dragging, .is-dragging, .sheet.open, .menu-open")) return;
     const { view, param } = parseHash();
     if (!AUTO_REFRESHABLE.has(view)) return;
     const render = VIEWS[view];
@@ -6030,9 +6032,12 @@ function openRejectDialog({ verb, onConfirm }) {
  * to this selector) so global shortcuts stay suppressed underneath it.
  */
 function isModalOpen() {
+  // Single source of truth for "a modal owns the keyboard" — must list EVERY modal scrim,
+  // or the review hotkeys (a = approve+merge) leak through the ones it omits. `.pb-scrim`
+  // covers both the Plan-a-build and Author-a-spec panels (they share the class).
   return Boolean(
     document.querySelector(
-      ".reject-scrim, .movemenu-scrim, .palette-scrim.open, .sheet-scrim.open",
+      ".reject-scrim, .movemenu-scrim, .palette-scrim.open, .sheet-scrim.open, .pb-scrim.open",
     ),
   );
 }

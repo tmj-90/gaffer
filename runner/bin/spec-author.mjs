@@ -466,7 +466,9 @@ function runClaudeTurn(prompt, opts) {
   // tool UNCONDITIONALLY (even under a CLAUDE_FLAGS override) so a prompt-injected clause
   // can't write into factory source (denying only the edit tools is defeated by a Bash `>`
   // fallback). Read/Grep/Glob + MCP stay available.
-  flags.push("--disallowedTools", "Write", "Edit", "NotebookEdit", "Bash");
+  // MUST enumerate the COMPLETE write/exec set — MultiEdit is a write tool too; a denylist
+  // silently permits any write tool it omits.
+  flags.push("--disallowedTools", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash");
   // Spec authoring is a PLAN step — run it on GAFFER_PLAN_MODEL when set, else the
   // Claude default (no --model flag).
   const turnModel = String(process.env.GAFFER_PLAN_MODEL ?? "").trim();

@@ -931,7 +931,11 @@ function runClaudeTurn(prompt, opts, model) {
   // safety-hook.mjs / tick.sh (verified: denying only the edit tools is defeated by a Bash
   // `>` fallback). Run the agent READ-ONLY: deny every write/exec tool UNCONDITIONALLY
   // (even under a CLAUDE_FLAGS override). Read/Grep/Glob + MCP stay available.
-  flags.push("--disallowedTools", "Write", "Edit", "NotebookEdit", "Bash");
+  // NOTE: this MUST enumerate the COMPLETE write/exec tool set — MultiEdit is a write tool
+  // too, and a denylist silently permits any write tool it omits. (An allowlist of
+  // Read/Grep/Glob would be robust against a future write tool, but would sever this agent's
+  // MCP tools — it connects via --mcp-config above — so we deny the full known set instead.)
+  flags.push("--disallowedTools", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash");
   // Decomposition is a PLAN step — run it on the chosen model when set. The
   // explicit per-turn `model` wins (debate roles); else fall back to the strong
   // planning model GAFFER_PLAN_MODEL; else the Claude default.

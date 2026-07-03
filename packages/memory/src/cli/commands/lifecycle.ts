@@ -125,8 +125,7 @@ export async function cmdAdd(
 
   const db = openDb();
   try {
-    const fn = asDraft ? suggestLore : addLore;
-    const lore = fn(db, {
+    const loreInput = {
       title,
       summary,
       body,
@@ -141,7 +140,18 @@ export async function cmdAdd(
       ...(kind ? { kind } : {}),
       ...(specId ? { specId } : {}),
       ...(clauseId ? { clauseId } : {}),
-    });
+    };
+    // AUTO-APPROVE: the CLI suggest path now honours MEMORY_AUTO_APPROVE=1 too — the SAME
+    // env the MCP suggest_lore already respects (mcp/server.ts). When set, a suggested
+    // draft lands `active` immediately (an operator opting into unattended lore, e.g. the
+    // runner's close-time product-intent distiller). `add` is already active.
+    const lore = asDraft
+      ? suggestLore(
+          db,
+          loreInput,
+          process.env["MEMORY_AUTO_APPROVE"] === "1" ? { autoApprove: true } : undefined,
+        )
+      : addLore(db, loreInput);
     process.stdout.write(
       `memory: ${asDraft ? "suggested" : "added"} ${lore.id} (${lore.status})\n`,
     );

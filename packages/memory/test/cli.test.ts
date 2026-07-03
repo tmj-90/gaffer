@@ -171,6 +171,23 @@ describe("CLI — draft review flow", () => {
     expect(out).toContain("Draft rule");
   });
 
+  it("MEMORY_AUTO_APPROVE=1 makes suggest land ACTIVE immediately (no approve step)", async () => {
+    // Mirrors the MCP suggest_lore gate for the CLI path — the runner's close-time
+    // product-intent distiller relies on this to prime future agents unattended.
+    const saved = process.env["MEMORY_AUTO_APPROVE"];
+    process.env["MEMORY_AUTO_APPROVE"] = "1";
+    try {
+      await run("suggest", "--title", "Auto rule", "--summary", "s", "--body", "b");
+      out = "";
+      // Active with NO approve step → default search finds it (drafts are hidden).
+      await run("search", "Auto rule");
+      expect(out).toContain("Auto rule");
+    } finally {
+      if (saved === undefined) delete process.env["MEMORY_AUTO_APPROVE"];
+      else process.env["MEMORY_AUTO_APPROVE"] = saved;
+    }
+  });
+
   it("reject refuses a non-draft (active) record, exits 1", async () => {
     await run("add", "--title", "Active rec", "--summary", "s", "--body", "b");
     const id = firstId(out);

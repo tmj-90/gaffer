@@ -199,6 +199,6 @@ describe("web review gate: global j/k/a/r shortcuts are suppressed while a modal
 
     const approved = approveCalls();
     expect(approved, "`a` should approve the queued ticket when no modal is open").toHaveLength(1);
-    expect(approved[0].url).toContain(`/tickets/${TICKET.id}/review/approve`);
+    expect(approved[0]!.url).toContain(`/tickets/${TICKET.id}/review/approve`);
   });
 });

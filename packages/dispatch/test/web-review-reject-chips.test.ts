@@ -169,8 +169,8 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
 
     const sent = rejectCalls();
     expect(sent).toHaveLength(1);
-    expect(sent[0].url).toContain(`/tickets/${TICKET.id}/review/reject`);
-    expect(sent[0].body).toMatchObject({ to: "refining", reason: chipText });
+    expect(sent[0]!.url).toContain(`/tickets/${TICKET.id}/review/reject`);
+    expect(sent[0]!.body).toMatchObject({ to: "refining", reason: chipText });
     // Dialog closes after a successful reject.
     expect(rejectDialog()).toBeNull();
   });
@@ -190,7 +190,7 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
 
     const sent = rejectCalls();
     expect(sent).toHaveLength(1);
-    expect(sent[0].body).toMatchObject({
+    expect(sent[0]!.body).toMatchObject({
       to: "cancelled",
       reason: "Superseded by a newer ticket",
     });

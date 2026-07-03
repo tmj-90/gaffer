@@ -841,7 +841,10 @@ gaffer_agent_env() {
     # they ARE the worker's auth. This membership test is the provider-indirected
     # form of the former hard-coded `ANTHROPIC_*) : ;;` exception.
     local keep_forced=0 kd
-    for kd in "${keep_despite_deny[@]}"; do [ "$name" = "$kd" ] && { keep_forced=1; break; }; done
+    # `${arr[@]+"${arr[@]}"}` — NOT a bare `"${arr[@]}"`: under `set -u`, bash 3.2 (macOS CI)
+    # treats an EMPTY array expansion as an unbound variable and aborts. This list is empty for
+    # every provider except claude-code, so the bare form crashes gaffer_agent_env there.
+    for kd in ${keep_despite_deny[@]+"${keep_despite_deny[@]}"}; do [ "$name" = "$kd" ] && { keep_forced=1; break; }; done
     if [ "$keep_forced" -eq 0 ]; then
       case "$name" in
         # Credential-shaped vars — never reach the agent:

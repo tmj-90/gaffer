@@ -103,11 +103,7 @@ const KIND_LABEL: Record<SpecClause["kind"], string> = {
  * Build the Memory CLI argv that seeds ONE clause. Exported for unit tests so the
  * exact command shape (verb, kind, provenance flags) is asserted without a spawn.
  */
-export function buildSeedArgs(
-  spec: Spec,
-  clause: SpecClause,
-  verb: "suggest" | "add",
-): string[] {
+export function buildSeedArgs(spec: Spec, clause: SpecClause, verb: "suggest" | "add"): string[] {
   const label = KIND_LABEL[clause.kind];
   const title = clamp(`${label} — ${spec.title}: ${clause.text}`, MAX_TITLE);
   const summaryParts = [clause.text];
@@ -233,8 +229,6 @@ function makeSpawnRunner(cliBin: string, db: string): CliRunner {
  * Memory is configured in the environment, else a no-op. Keeps the env-read out
  * of the service so freeze stays testable with an injected stub.
  */
-export function resolveSpecClauseSeeder(
-  env: NodeJS.ProcessEnv = process.env,
-): SpecClauseSeeder {
+export function resolveSpecClauseSeeder(env: NodeJS.ProcessEnv = process.env): SpecClauseSeeder {
   return CliSpecClauseSeeder.fromEnv(env) ?? new NullSpecClauseSeeder();
 }

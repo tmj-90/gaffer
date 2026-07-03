@@ -89,7 +89,10 @@ function run(stdin) {
       return;
 
     case "echo-force":
-      out({ phase: "clarify", questions: [JSON.stringify({ forcePlan: input.forcePlan ?? null })] });
+      out({
+        phase: "clarify",
+        questions: [JSON.stringify({ forcePlan: input.forcePlan ?? null })],
+      });
       return;
 
     case "echo-token":

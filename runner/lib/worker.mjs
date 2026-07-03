@@ -60,7 +60,8 @@ export const DEFAULT_WORKER_PROVIDER = "claude-code";
 
 /** The selected worker provider (trimmed), defaulting to claude-code. */
 export function workerProvider(env = process.env) {
-  const raw = env && typeof env.GAFFER_WORKER_PROVIDER === "string" ? env.GAFFER_WORKER_PROVIDER.trim() : "";
+  const raw =
+    env && typeof env.GAFFER_WORKER_PROVIDER === "string" ? env.GAFFER_WORKER_PROVIDER.trim() : "";
   return raw || DEFAULT_WORKER_PROVIDER;
 }
 

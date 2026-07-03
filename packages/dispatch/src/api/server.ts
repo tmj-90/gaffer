@@ -704,11 +704,7 @@ async function route(
       return methodNotAllowed(res);
     }
     // POST /specs/:id/freeze — freeze a draft spec (draft→frozen; immutable after).
-    if (
-      segments.length === 3 &&
-      segments[0] === "specs" &&
-      segments[2] === "freeze"
-    ) {
+    if (segments.length === 3 && segments[0] === "specs" && segments[2] === "freeze") {
       if (method !== "POST") return methodNotAllowed(res);
       const spec = wg.freezeSpec(segments[1] as string, API_ACTOR);
       sendJson(res, 200, { spec });
@@ -717,11 +713,7 @@ async function route(
     // GET /specs/:id/coverage — the Phase-3 traceability read model: per clause,
     // its covering ACs (satisfied vs open), covered / satisfied / orphan (the gap
     // report), and the bounce count; plus a spec-level rollup. Pure read.
-    if (
-      segments.length === 3 &&
-      segments[0] === "specs" &&
-      segments[2] === "coverage"
-    ) {
+    if (segments.length === 3 && segments[0] === "specs" && segments[2] === "coverage") {
       if (method !== "GET") return methodNotAllowed(res);
       const coverage = wg.specCoverage(segments[1] as string);
       sendJson(res, 200, { coverage });

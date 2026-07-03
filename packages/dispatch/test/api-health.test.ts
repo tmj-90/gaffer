@@ -90,13 +90,11 @@ function makeDoneTicket(
   doneMsAgo: number,
 ): void {
   const t = wg.createTicket({ title }, human);
-  wg.db
-    .prepare(`UPDATE tickets SET status='done', created_at=@c, updated_at=@u WHERE id=@id`)
-    .run({
-      id: t.id,
-      c: new Date(nowMs - createdMsAgo).toISOString(),
-      u: new Date(nowMs - doneMsAgo).toISOString(),
-    });
+  wg.db.prepare(`UPDATE tickets SET status='done', created_at=@c, updated_at=@u WHERE id=@id`).run({
+    id: t.id,
+    c: new Date(nowMs - createdMsAgo).toISOString(),
+    u: new Date(nowMs - doneMsAgo).toISOString(),
+  });
 }
 
 describe("GET /api/health", () => {
@@ -166,7 +164,9 @@ describe("GET /api/health", () => {
           measured: true,
           total_cost_usd: 0.6,
           duration_ms: 10000,
-          models: { opus: { input: 100, output: 50, cache_read: 0, cache_create: 0, cost_usd: 0.6 } },
+          models: {
+            opus: { input: 100, output: 50, cache_read: 0, cache_create: 0, cost_usd: 0.6 },
+          },
         }),
         JSON.stringify({
           ts: `${today}T11:00:00Z`,
@@ -217,7 +217,12 @@ describe("GET /api/health", () => {
     const ledger = join(tmpDir, "usage-ledger.jsonl");
     writeFileSync(
       ledger,
-      JSON.stringify({ ts: "2025-01-15T10:00:00Z", ticket: 1, measured: true, total_cost_usd: 2.0 }),
+      JSON.stringify({
+        ts: "2025-01-15T10:00:00Z",
+        ticket: 1,
+        measured: true,
+        total_cost_usd: 2.0,
+      }),
     );
     const h = await startHarness({ GAFFER_USAGE_LEDGER: ledger, GAFFER_DATA: undefined });
     try {
@@ -237,7 +242,12 @@ describe("GET /api/health", () => {
     writeFileSync(
       ledger,
       [
-        JSON.stringify({ ts: "2025-01-15T10:00:00Z", ticket: 1, measured: true, total_cost_usd: 0.5 }),
+        JSON.stringify({
+          ts: "2025-01-15T10:00:00Z",
+          ticket: 1,
+          measured: true,
+          total_cost_usd: 0.5,
+        }),
         JSON.stringify({ ts: "2025-01-15T11:00:00Z", ticket: 2, measured: false }),
       ].join("\n"),
     );
@@ -245,7 +255,11 @@ describe("GET /api/health", () => {
     try {
       const { status, body } = await get(h.baseUrl, "/api/health");
       expect(status).toBe(200);
-      const coverage = body.coverage as { measured_count: number; total_count: number; coverage_pct: number };
+      const coverage = body.coverage as {
+        measured_count: number;
+        total_count: number;
+        coverage_pct: number;
+      };
       expect(coverage.measured_count).toBe(1);
       expect(coverage.total_count).toBe(2);
       expect(coverage.coverage_pct).toBe(50);
@@ -264,7 +278,11 @@ describe("GET /api/health", () => {
           selected: ["run-tests", "frontend-component"],
           applied: ["run-tests"],
         }),
-        JSON.stringify({ ts: "2025-01-11T10:00:00Z", selected: ["run-tests"], applied: ["run-tests"] }),
+        JSON.stringify({
+          ts: "2025-01-11T10:00:00Z",
+          selected: ["run-tests"],
+          applied: ["run-tests"],
+        }),
         "garbage line that must be skipped",
       ].join("\n"),
     );

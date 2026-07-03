@@ -97,7 +97,10 @@ console.log("== AC1: spec renders a quarantined <untrusted-spec> block ==");
   assert("groups non-goals", /NON-GOALS/.test(prompt));
   assert("groups decisions", /DECISIONS/.test(prompt));
   for (const c of SPEC) {
-    assert(`clause id [${c.clause_id}] is quoted for clauseRef`, prompt.includes(`[${c.clause_id}]`));
+    assert(
+      `clause id [${c.clause_id}] is quoted for clauseRef`,
+      prompt.includes(`[${c.clause_id}]`),
+    );
   }
   assert("rationale is rendered when present", prompt.includes("limit the phishing window"));
   assert("asks the planner to emit clauseRef", /clauseRef/.test(prompt));
@@ -178,15 +181,11 @@ console.log("== AC3: validateResult threads clauseRef; string AC stays a string 
       "scaffold + commit",
     ]);
     const acs = r.plan.tickets[1].acceptanceCriteria;
-    eq(
-      "clauseRef-carrying ACs keep their clause ids",
-      acs.slice(0, 3),
-      [
-        { text: "email reset works", clauseRef: "r1" },
-        { text: "link expires in 30m", clauseRef: "r2" },
-        { text: "SMTP reused", clauseRef: "d1" },
-      ],
-    );
+    eq("clauseRef-carrying ACs keep their clause ids", acs.slice(0, 3), [
+      { text: "email reset works", clauseRef: "r1" },
+      { text: "link expires in 30m", clauseRef: "r2" },
+      { text: "SMTP reused", clauseRef: "d1" },
+    ]);
     eq("a mixed plain string AC stays a string", acs[3], "extra AC with no clause");
   }
 }
@@ -266,7 +265,11 @@ console.log("== NEGATIVE CONTROL: a plan that DROPS a required clause fails cove
       ],
     },
   };
-  const bad = runCli({ brief: "add password reset", spec: SPEC, mockOutput: fencePlan(droppedPlan) });
+  const bad = runCli({
+    brief: "add password reset",
+    spec: SPEC,
+    mockOutput: fencePlan(droppedPlan),
+  });
   // The plan itself is structurally valid (it emits) — but the COVERAGE assertion
   // must FAIL, proving the coverage check bites when a requirement is dropped.
   if (bad.code === 0 && bad.out && bad.out.phase === "plan") {
@@ -275,7 +278,9 @@ console.log("== NEGATIVE CONTROL: a plan that DROPS a required clause fails cove
     assert("coverage assertion FAILS when a required clause (r2) is dropped", allCovered === false);
     assert("the missing requirement is specifically r2", !covered.has("r2"));
   } else {
-    fail(`dropped-clause plan should still emit (code=${bad.code}, out=${JSON.stringify(bad.out)})`);
+    fail(
+      `dropped-clause plan should still emit (code=${bad.code}, out=${JSON.stringify(bad.out)})`,
+    );
   }
 }
 
@@ -391,9 +396,15 @@ console.log("== AC6: a clauseRef not in the spec is dropped (never persisted) ==
       text: "user resets password by email",
       clauseRef: "r1",
     });
-    eq("end-to-end: the bogus clauseRef is dropped to a bare string", acs[1], "smuggled provenance");
+    eq(
+      "end-to-end: the bogus clauseRef is dropped to a bare string",
+      acs[1],
+      "smuggled provenance",
+    );
   } else {
-    fail(`clauseRef-drop e2e should emit a plan (code=${e2e.code}, out=${JSON.stringify(e2e.out)})`);
+    fail(
+      `clauseRef-drop e2e should emit a plan (code=${e2e.code}, out=${JSON.stringify(e2e.out)})`,
+    );
   }
 }
 

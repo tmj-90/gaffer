@@ -135,9 +135,9 @@ describe("web review gate: global j/k/a/r shortcuts are suppressed while a modal
     await tick();
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
-    document.querySelectorAll(".reject-scrim, .palette-scrim, .sheet-scrim, .pb-scrim").forEach((n) =>
-      n.remove(),
-    );
+    document
+      .querySelectorAll(".reject-scrim, .palette-scrim, .sheet-scrim, .pb-scrim")
+      .forEach((n) => n.remove());
   });
 
   it("HARD GATE: `a` fires NO approve while a Plan-a-build / Author-a-spec panel is open", async () => {
@@ -176,15 +176,17 @@ describe("web review gate: global j/k/a/r shortcuts are suppressed while a modal
     pressKey("r");
     await tick();
 
-    expect(approveCalls(), "`a` must not approve/merge while the reject dialog is open").toHaveLength(
-      0,
-    );
+    expect(
+      approveCalls(),
+      "`a` must not approve/merge while the reject dialog is open",
+    ).toHaveLength(0);
     // No reject POST either — the reason was never confirmed, so the reject flow
     // stays the ONLY reachable action (dialog still open, exactly one instance).
     expect(rejectCalls()).toHaveLength(0);
-    expect(document.querySelectorAll(".reject-dialog"), "`r` must not open a second dialog").toHaveLength(
-      1,
-    );
+    expect(
+      document.querySelectorAll(".reject-dialog"),
+      "`r` must not open a second dialog",
+    ).toHaveLength(1);
   });
 
   it("NEGATIVE CONTROL: with no modal open, `a` approves+merges the queued ticket as designed", async () => {

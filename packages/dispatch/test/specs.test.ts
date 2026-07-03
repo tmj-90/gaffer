@@ -128,7 +128,12 @@ describe("Spec-Driven Development (Phase 1a): freeze + immutability", () => {
     );
     const updated = wg.updateSpecClauses(
       draft.id,
-      { clauses: [{ kind: "requirement", text: "Do Y" }, { kind: "non-goal", text: "Not Z" }] },
+      {
+        clauses: [
+          { kind: "requirement", text: "Do Y" },
+          { kind: "non-goal", text: "Not Z" },
+        ],
+      },
       human,
     );
     const clauses = parseSpecClauses(updated.clauses_json);
@@ -313,7 +318,9 @@ describe("Spec-Driven Development (Phase 1a): additive migration (v16 → v17)",
       );
     `);
     db.prepare("INSERT INTO schema_meta(key,value) VALUES ('schema_version','16')").run();
-    db.prepare("INSERT INTO tickets (id, number, title, status) VALUES ('t1', 1, 'old', 'draft')").run();
+    db.prepare(
+      "INSERT INTO tickets (id, number, title, status) VALUES ('t1', 1, 'old', 'draft')",
+    ).run();
 
     migrate(db);
 

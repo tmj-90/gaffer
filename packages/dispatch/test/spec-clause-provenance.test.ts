@@ -53,9 +53,11 @@ describe("Phase 2a: acceptance_criteria.spec_clause_id migration (v17 → v18)",
     migrate(db);
 
     // The column now exists and the pre-existing row is intact with a NULL backfill.
-    const cols = (db.prepare("PRAGMA table_info(acceptance_criteria)").all() as Array<{
-      name: string;
-    }>).map((c) => c.name);
+    const cols = (
+      db.prepare("PRAGMA table_info(acceptance_criteria)").all() as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name);
     expect(cols).toContain("spec_clause_id");
     const row = db.prepare("SELECT * FROM acceptance_criteria WHERE id = 'a1'").get() as {
       text: string;

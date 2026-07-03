@@ -39,9 +39,7 @@ export class SpecRepository {
   /** Replace a spec's clauses. The service gates this to `draft` specs only. */
   updateClauses(id: string, clausesJson: string, nowIso: string): void {
     this.db
-      .prepare(
-        `UPDATE specs SET clauses_json = @clauses_json, updated_at = @now WHERE id = @id`,
-      )
+      .prepare(`UPDATE specs SET clauses_json = @clauses_json, updated_at = @now WHERE id = @id`)
       .run({ id, clauses_json: clausesJson, now: nowIso });
   }
 

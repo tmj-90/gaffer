@@ -202,7 +202,11 @@ describe("markMerged corrects approved_unchanged at merge time", () => {
     const deliverySha = "1".repeat(40);
     const amendedSha = "2".repeat(40);
     let head = deliverySha;
-    const d = Dispatch.open(":memory:", undefined, mutableHeadRunner(() => head));
+    const d = Dispatch.open(
+      ":memory:",
+      undefined,
+      mutableHeadRunner(() => head),
+    );
     const ticketId = buildInReview(d, { commitSha: deliverySha });
 
     d.approveReview(ticketId, human); // approve-time: head === delivery → unchanged=true.

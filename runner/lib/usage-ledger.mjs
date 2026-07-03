@@ -101,8 +101,13 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     return unknownRecord({ ts, ticket, kind, reason: reason || "no parseable result JSON" });
   }
   // Numeric extraction is the SHARED worker seam (parity with parseResult).
-  const { models, topLevelUsage: usage, totalCostUsd: totalCost, numTurns, durationMs } =
-    extractUsage(json);
+  const {
+    models,
+    topLevelUsage: usage,
+    totalCostUsd: totalCost,
+    numTurns,
+    durationMs,
+  } = extractUsage(json);
 
   // No usage signal whatsoever → treat as unmeasured (honesty rule 3): do not
   // emit an all-zero record that would read as a free call.

@@ -53,7 +53,9 @@ async function req(
 ): Promise<{ status: number; body: any }> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
-    ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+    ...(body
+      ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+      : {}),
   });
   const text = await res.text();
   return { status: res.status, body: text ? JSON.parse(text) : {} };

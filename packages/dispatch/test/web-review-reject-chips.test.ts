@@ -99,9 +99,7 @@ function rejectDialog(): HTMLElement | null {
   return document.querySelector(".reject-dialog");
 }
 function submitButton(): HTMLButtonElement | null {
-  return document.querySelector(
-    ".reject-dialog-actions .btn.danger",
-  ) as HTMLButtonElement | null;
+  return document.querySelector(".reject-dialog-actions .btn.danger") as HTMLButtonElement | null;
 }
 function rejectCalls(): Call[] {
   return calls.filter((c) => c.method === "POST" && c.url.includes("/review/reject"));

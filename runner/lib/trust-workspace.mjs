@@ -56,10 +56,14 @@ const BAK = CONF + ".gaffer-bak";
 
 // Lock spin bounds — env-tunable so tests can force fast contention. Defaults keep
 // the historical ~3s ceiling (60 × 50ms).
-const LOCK_TRIES = Number(process.env.GAFFER_TRUST_LOCK_TRIES) > 0
-  ? Number(process.env.GAFFER_TRUST_LOCK_TRIES) : 60;
-const LOCK_SLEEP_MS = Number(process.env.GAFFER_TRUST_LOCK_SLEEP_MS) > 0
-  ? Number(process.env.GAFFER_TRUST_LOCK_SLEEP_MS) : 50;
+const LOCK_TRIES =
+  Number(process.env.GAFFER_TRUST_LOCK_TRIES) > 0
+    ? Number(process.env.GAFFER_TRUST_LOCK_TRIES)
+    : 60;
+const LOCK_SLEEP_MS =
+  Number(process.env.GAFFER_TRUST_LOCK_SLEEP_MS) > 0
+    ? Number(process.env.GAFFER_TRUST_LOCK_SLEEP_MS)
+    : 50;
 
 /**
  * The roots under which a path is allowed to be trusted. An explicit
@@ -191,9 +195,7 @@ function neutralizeCommittedLocalSettings(dir) {
       /* backup is best-effort */
     }
     writeFileSync(localSettings, "{}\n");
-    console.error(
-      `trust-workspace: neutralized committed .claude/settings.local.json in ${dir}`,
-    );
+    console.error(`trust-workspace: neutralized committed .claude/settings.local.json in ${dir}`);
   } catch {
     /* neutralization is best-effort — a failure must not block trusting */
   }

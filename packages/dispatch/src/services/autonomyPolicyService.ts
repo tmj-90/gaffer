@@ -1,7 +1,4 @@
-import type {
-  AutonomyMode,
-  AutonomyPolicyGate,
-} from "../repositories/autonomyPolicyRepository.js";
+import type { AutonomyMode, AutonomyPolicyGate } from "../repositories/autonomyPolicyRepository.js";
 
 /**
  * GRADUATED-AUTONOMY (Spec 2, Phase 3) — ENFORCEMENT DECISION (SECURITY-CRITICAL).
@@ -30,11 +27,7 @@ import type {
 
 /** The point lookup the enforcement needs — satisfied by AutonomyPolicyRepository. */
 export interface PolicyLookup {
-  get(
-    repoId: string,
-    riskLevel: string,
-    gate: string,
-  ): { mode: AutonomyMode } | undefined;
+  get(repoId: string, riskLevel: string, gate: string): { mode: AutonomyMode } | undefined;
 }
 
 /**

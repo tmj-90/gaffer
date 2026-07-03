@@ -116,9 +116,9 @@ describe("skillsTelemetryAggregator: file + path resolution", () => {
   });
 
   it("GAFFER_SKILL_TELEMETRY wins; else GAFFER_DATA/skills-telemetry.jsonl; else null", () => {
-    expect(resolveTelemetryPath({ GAFFER_SKILL_TELEMETRY: "/x/t.jsonl" } as NodeJS.ProcessEnv)).toBe(
-      "/x/t.jsonl",
-    );
+    expect(
+      resolveTelemetryPath({ GAFFER_SKILL_TELEMETRY: "/x/t.jsonl" } as NodeJS.ProcessEnv),
+    ).toBe("/x/t.jsonl");
     expect(resolveTelemetryPath({ GAFFER_DATA: "/data" } as NodeJS.ProcessEnv)).toBe(
       join("/data", "skills-telemetry.jsonl"),
     );
@@ -130,7 +130,11 @@ describe("skillsTelemetryAggregator: file + path resolution", () => {
     writeFileSync(
       file,
       [
-        JSON.stringify({ ts: "2025-01-10T10:00:00Z", selected: ["run-tests"], applied: ["run-tests"] }),
+        JSON.stringify({
+          ts: "2025-01-10T10:00:00Z",
+          selected: ["run-tests"],
+          applied: ["run-tests"],
+        }),
         "this is not json",
         JSON.stringify({ selected: ["run-tests"], applied: [] }),
       ].join("\n"),

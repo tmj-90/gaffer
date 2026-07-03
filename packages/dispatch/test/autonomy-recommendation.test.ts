@@ -168,7 +168,9 @@ describe("computeRecommendations — ground truth + bucketing", () => {
   });
 
   it("buckets per repo × risk independently", () => {
-    const lowRepoA = times(10, () => approval({ repoId: "a", repoName: "repo-a", riskLevel: "low" }));
+    const lowRepoA = times(10, () =>
+      approval({ repoId: "a", repoName: "repo-a", riskLevel: "low" }),
+    );
     const highRepoA = times(3, () =>
       approval({ repoId: "a", repoName: "repo-a", riskLevel: "high" }),
     );

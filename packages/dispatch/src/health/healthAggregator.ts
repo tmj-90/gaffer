@@ -369,8 +369,7 @@ export function aggregateHealthRows(
   totalReworkCost = round6(totalReworkCost);
 
   const total_usd = round6(totalUsd);
-  const coverage_pct =
-    rows.length > 0 ? Math.round((measuredCount / rows.length) * 1000) / 10 : 0;
+  const coverage_pct = rows.length > 0 ? Math.round((measuredCount / rows.length) * 1000) / 10 : 0;
 
   return {
     total_usd,

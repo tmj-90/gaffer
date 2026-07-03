@@ -13,7 +13,11 @@
  * ISOLATION: no imports from dispatch or crew. Memory adjusts its OWN items
  * from its OWN read-event log + the outcome passed in.
  */
-import { listFlaggedForReview, recallEffectiveness, recallFeedback } from "../../core/recallFeedback.js";
+import {
+  listFlaggedForReview,
+  recallEffectiveness,
+  recallFeedback,
+} from "../../core/recallFeedback.js";
 import type { RecallOutcome } from "../../core/recallFeedback.js";
 import { openDb } from "../../db/index.js";
 import { getBool, getString } from "../args.js";

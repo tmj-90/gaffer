@@ -29,7 +29,12 @@ function seedCoverageFixture(): {
     { clause_id: "C-green", kind: "requirement", text: "User can pay with a saved card" },
     { clause_id: "C-partial", kind: "requirement", text: "Receipt is emailed after payment" },
     { clause_id: "C-open", kind: "requirement", text: "Refunds are processed within 24h" },
-    { clause_id: "C-gap", kind: "non-goal", text: "No crypto payments", rationale: "Out of scope for v1" },
+    {
+      clause_id: "C-gap",
+      kind: "non-goal",
+      text: "No crypto payments",
+      rationale: "Out of scope for v1",
+    },
   ];
   const spec = wg.createSpec({ title: "Checkout", brief: "Rework checkout", clauses }, human);
   // Freeze so the fixture matches the real (frozen-spec) coverage path.
@@ -41,10 +46,20 @@ function seedCoverageFixture(): {
   const stored = parseSpecClauses(wg.getSpec(spec.id).clauses_json);
   const nid = (base: string): string =>
     stored.find((c) => c.clause_id === `${spec.id}:${base}`)!.clause_id;
-  const ids = { green: nid("C-green"), partial: nid("C-partial"), open: nid("C-open"), gap: nid("C-gap") };
+  const ids = {
+    green: nid("C-green"),
+    partial: nid("C-partial"),
+    open: nid("C-open"),
+    gap: nid("C-gap"),
+  };
 
   const now = new TestClock().now();
-  const addAc = (ticketId: string, text: string, clauseId: string | undefined, satisfied: boolean): string => {
+  const addAc = (
+    ticketId: string,
+    text: string,
+    clauseId: string | undefined,
+    satisfied: boolean,
+  ): string => {
     const { ac } = wg.addAcceptanceCriterion(
       { ticket_id: ticketId, text, ...(clauseId ? { spec_clause_id: clauseId } : {}) },
       human,
@@ -80,16 +95,34 @@ function seedCoverageFixture(): {
   // Bounce trail: two rework attempts on the C-green ticket (join via its AC's
   // ticket) + one on the C-open ticket. The gap/partial clauses have none.
   wg.reworkAttempts.insert({
-    id: "rw-1", ticket_id: t1.id, attempt: 1, max_attempts: 3, gate: "tests",
-    distilled_failure: "assert failed", ac_id: null, created_at: "2026-06-20T10:00:00.000Z",
+    id: "rw-1",
+    ticket_id: t1.id,
+    attempt: 1,
+    max_attempts: 3,
+    gate: "tests",
+    distilled_failure: "assert failed",
+    ac_id: null,
+    created_at: "2026-06-20T10:00:00.000Z",
   });
   wg.reworkAttempts.insert({
-    id: "rw-2", ticket_id: t1.id, attempt: 2, max_attempts: 3, gate: "definition-of-done",
-    distilled_failure: "dod failed", ac_id: null, created_at: "2026-06-20T11:00:00.000Z",
+    id: "rw-2",
+    ticket_id: t1.id,
+    attempt: 2,
+    max_attempts: 3,
+    gate: "definition-of-done",
+    distilled_failure: "dod failed",
+    ac_id: null,
+    created_at: "2026-06-20T11:00:00.000Z",
   });
   wg.reworkAttempts.insert({
-    id: "rw-3", ticket_id: t4.id, attempt: 1, max_attempts: 3, gate: "lint",
-    distilled_failure: "lint failed", ac_id: openAc, created_at: "2026-06-20T12:00:00.000Z",
+    id: "rw-3",
+    ticket_id: t4.id,
+    attempt: 1,
+    max_attempts: 3,
+    gate: "lint",
+    distilled_failure: "lint failed",
+    ac_id: openAc,
+    created_at: "2026-06-20T12:00:00.000Z",
   });
 
   return { wg, specId: spec.id, ids };
@@ -170,7 +203,10 @@ describe("Spec-Driven Development (Phase 3): coverage read model", () => {
     const { wg, specId, ids } = seedCoverageFixture();
     const cov = wg.specCoverage(specId);
     expect(cov.clauses.map((c) => c.clause_id)).toEqual([
-      ids.green, ids.partial, ids.open, ids.gap,
+      ids.green,
+      ids.partial,
+      ids.open,
+      ids.gap,
     ]);
     const gap = cov.clauses.find((c) => c.clause_id === ids.gap)!;
     expect(gap.kind).toBe("non-goal");
@@ -245,20 +281,29 @@ describe("Spec-Driven Development (Phase 3): cross-spec coverage isolation", () 
     );
     wg.acs.setStatus(aAc.id, "satisfied", "tester", now);
     wg.reworkAttempts.insert({
-      id: "a-rw-1", ticket_id: ta.id, attempt: 1, max_attempts: 3, gate: "tests",
-      distilled_failure: "x", ac_id: null, created_at: "2026-06-20T10:00:00.000Z",
+      id: "a-rw-1",
+      ticket_id: ta.id,
+      attempt: 1,
+      max_attempts: 3,
+      gate: "tests",
+      distilled_failure: "x",
+      ac_id: null,
+      created_at: "2026-06-20T10:00:00.000Z",
     });
     wg.reworkAttempts.insert({
-      id: "a-rw-2", ticket_id: ta.id, attempt: 2, max_attempts: 3, gate: "lint",
-      distilled_failure: "y", ac_id: null, created_at: "2026-06-20T11:00:00.000Z",
+      id: "a-rw-2",
+      ticket_id: ta.id,
+      attempt: 2,
+      max_attempts: 3,
+      gate: "lint",
+      distilled_failure: "y",
+      ac_id: null,
+      created_at: "2026-06-20T11:00:00.000Z",
     });
 
     // Spec B: one ticket covering B.c1 (PENDING), zero bounces.
     const tb = wg.createTicket({ title: "B work" }, human);
-    wg.addAcceptanceCriterion(
-      { ticket_id: tb.id, text: "does B", spec_clause_id: B.c1 },
-      human,
-    );
+    wg.addAcceptanceCriterion({ ticket_id: tb.id, text: "does B", spec_clause_id: B.c1 }, human);
 
     // Spec A sees ONLY its own AC + its own bounces.
     const covA = wg.specCoverage(A.id);
@@ -292,7 +337,10 @@ describe("Spec-Driven Development (Phase 3): dangling-AC reporting", () => {
 
     // A healthy AC covering the live clause.
     const t1 = wg.createTicket({ title: "Good" }, human);
-    wg.addAcceptanceCriterion({ ticket_id: t1.id, text: "covers c1", spec_clause_id: liveId }, human);
+    wg.addAcceptanceCriterion(
+      { ticket_id: t1.id, text: "covers c1", spec_clause_id: liveId },
+      human,
+    );
 
     // A DANGLING AC: it claims a clause in THIS spec's namespace that no longer
     // exists (e.g. a clause removed while drafting). It must surface in the report.
@@ -326,7 +374,10 @@ describe("Spec-Driven Development (Phase 3): dangling-AC reporting", () => {
     const liveId = parseSpecClauses(wg.getSpec(spec.id).clauses_json)[0]!.clause_id;
 
     const t = wg.createTicket({ title: "T" }, human);
-    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "covers c1", spec_clause_id: liveId }, human);
+    wg.addAcceptanceCriterion(
+      { ticket_id: t.id, text: "covers c1", spec_clause_id: liveId },
+      human,
+    );
     // A bare id belonging to no spec namespace, and a different spec's namespaced id.
     wg.addAcceptanceCriterion({ ticket_id: t.id, text: "bare", spec_clause_id: "c1" }, human);
     wg.addAcceptanceCriterion(
@@ -351,10 +402,7 @@ describe("Spec-Driven Development (Phase 3): lore status + DoD gate seam", () =>
     const reader: SpecLoreReader = {
       statusFor: (_spec, clauses) =>
         new Map(
-          clauses.map((c, i) => [
-            c.clause_id,
-            i === 0 ? "active" : i === 1 ? "draft" : "absent",
-          ]),
+          clauses.map((c, i) => [c.clause_id, i === 0 ? "active" : i === 1 ? "draft" : "absent"]),
         ),
     };
     const svc = new SpecCoverageService({

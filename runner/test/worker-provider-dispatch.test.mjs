@@ -137,7 +137,8 @@ for (const prov of ["codex", "local", "made-up"]) {
 }
 
 console.log("== Worker.* namespace re-exports the seam ==");
-typeof Worker.workerProvider === "function" && typeof Worker.unsupportedProviderMessage === "function"
+typeof Worker.workerProvider === "function" &&
+typeof Worker.unsupportedProviderMessage === "function"
   ? ok("Worker exposes workerProvider + unsupportedProviderMessage")
   : bad("Worker should re-export the provider helpers");
 

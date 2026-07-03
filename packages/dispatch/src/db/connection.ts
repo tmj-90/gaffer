@@ -376,7 +376,9 @@ function alterTicketsAddHumanDelivered(db: Db): void {
  * creates the table with the column.
  */
 function alterAcAddSpecClauseId(db: Db): void {
-  const info = db.prepare("PRAGMA table_info(acceptance_criteria)").all() as Array<{ name: string }>;
+  const info = db.prepare("PRAGMA table_info(acceptance_criteria)").all() as Array<{
+    name: string;
+  }>;
   if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("spec_clause_id")) {

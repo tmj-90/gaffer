@@ -21,7 +21,12 @@
  */
 
 import { type Db, inTransaction } from "../db/connection.js";
-import { type Actor, type ReviewFeedback, type Ticket, type TicketStatus } from "../domain/types.js";
+import {
+  type Actor,
+  type ReviewFeedback,
+  type Ticket,
+  type TicketStatus,
+} from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";

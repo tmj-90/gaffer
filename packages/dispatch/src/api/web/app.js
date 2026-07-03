@@ -163,7 +163,8 @@ const ICONS = {
   // --- spec scanner-frame line icons (keyword-matched by title) ------------
   globe:
     '<circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5a15 15 0 0 1 0 19a15 15 0 0 1 0-19Z"/>',
-  gauge: '<path d="m12 13 3.5-3.5"/><path d="M4 18.5a10 10 0 1 1 16 0"/><circle cx="12" cy="19" r="1"/>',
+  gauge:
+    '<path d="m12 13 3.5-3.5"/><path d="M4 18.5a10 10 0 1 1 16 0"/><circle cx="12" cy="19" r="1"/>',
   doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/>',
 };
 function icon(name, cls) {
@@ -1323,7 +1324,9 @@ async function renderOverview() {
   const flowThr = health.throughput || {};
   const zeroSeries = () => days.map(() => 0);
   const cycleLine =
-    Array.isArray(flowCycle.series) && flowCycle.series.length === N ? flowCycle.series : zeroSeries();
+    Array.isArray(flowCycle.series) && flowCycle.series.length === N
+      ? flowCycle.series
+      : zeroSeries();
   const doneByDay =
     Array.isArray(flowThr.series) && flowThr.series.length === N ? flowThr.series : zeroSeries();
 
@@ -1456,21 +1459,22 @@ async function renderOverview() {
             "API-equivalent estimate from Claude Code usage — NOT real charges on a Max/Pro subscription (there the marginal cost is the flat fee). Killed/timed-out calls report as unknown and count as $0.",
         },
         [
-        el("span", { class: "cost-item" }, [
-          el("span", { class: "cost-label" }, "All-time (API-equiv)"),
-          el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
-        ]),
-        el("span", { class: "cost-sep" }, "·"),
-        el("span", { class: "cost-item" }, [
-          el("span", { class: "cost-label" }, "Today"),
-          el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
-        ]),
-        el("span", { class: "cost-sep" }, "·"),
-        el("span", { class: "cost-item" }, [
-          el("span", { class: "cost-label" }, "Tickets costed"),
-          el("span", { class: "cost-val tabnum" }, String(costRes.ticket_count)),
-        ]),
-      ]),
+          el("span", { class: "cost-item" }, [
+            el("span", { class: "cost-label" }, "All-time (API-equiv)"),
+            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
+          ]),
+          el("span", { class: "cost-sep" }, "·"),
+          el("span", { class: "cost-item" }, [
+            el("span", { class: "cost-label" }, "Today"),
+            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
+          ]),
+          el("span", { class: "cost-sep" }, "·"),
+          el("span", { class: "cost-item" }, [
+            el("span", { class: "cost-label" }, "Tickets costed"),
+            el("span", { class: "cost-val tabnum" }, String(costRes.ticket_count)),
+          ]),
+        ],
+      ),
     );
   }
 
@@ -1691,7 +1695,12 @@ function kpiCard({ label, value, unit, tone, delta, series, goodWhenDown = false
  * compatibility but counts come from the aggregate `byStatus`.
  */
 const PIPELINE_STAGES = [
-  { label: "Plan", icon: "gitbranch", statuses: ["draft", "refining"], href: "#/work?status=draft" },
+  {
+    label: "Plan",
+    icon: "gitbranch",
+    statuses: ["draft", "refining"],
+    href: "#/work?status=draft",
+  },
   { label: "Ready", icon: "inbox", statuses: ["ready"], href: "#/work?status=ready" },
   {
     label: "Build",
@@ -1813,7 +1822,10 @@ function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
                 el("span", { class: "ni-title" }, n.title),
                 el("span", { class: "ni-sub" }, n.sub),
               ]),
-              el("span", { class: "ni-action" }, [n.action, el("span", { class: "ni-arrow" }, "→")]),
+              el("span", { class: "ni-action" }, [
+                n.action,
+                el("span", { class: "ni-arrow" }, "→"),
+              ]),
             ]),
           ),
         ),
@@ -4573,7 +4585,9 @@ async function renderHealth() {
   const skillSeries = skillList.map((s) => s.hit_rate_pct || 0);
   const kindSeries = byKind.map((k) => k.total_cost_usd || 0);
   const recallSeries =
-    recall.available && Array.isArray(recall.by_day) ? recall.by_day.map((d) => d.effectiveness_pct || 0) : [];
+    recall.available && Array.isArray(recall.by_day)
+      ? recall.by_day.map((d) => d.effectiveness_pct || 0)
+      : [];
 
   wrap.appendChild(
     el("div", { class: "kpi-row" }, [
@@ -4631,14 +4645,22 @@ async function renderHealth() {
           "div",
           { class: "hlist" },
           byKind.map((k) =>
-            healthBarRow(k.kind, fmtUsd(k.total_cost_usd), (k.total_cost_usd || 0) / maxKind, "amber"),
+            healthBarRow(
+              k.kind,
+              fmtUsd(k.total_cost_usd),
+              (k.total_cost_usd || 0) / maxKind,
+              "amber",
+            ),
           ),
         )
       : el("p", { class: "section-note dim" }, "No spend recorded yet."),
   ]);
 
   const skillPanel = el("div", { class: "card panel" }, [
-    panelHead("Skill hit-rate", skills.total_records ? `${skills.total_records} deliveries` : "no telemetry"),
+    panelHead(
+      "Skill hit-rate",
+      skills.total_records ? `${skills.total_records} deliveries` : "no telemetry",
+    ),
     skillList.length
       ? el(
           "div",
@@ -4872,10 +4894,7 @@ function isPolicyActive(policies, repoId, riskLevel, gate) {
     Array.isArray(policies) &&
     policies.some(
       (p) =>
-        p.repo_id === repoId &&
-        p.risk_level === riskLevel &&
-        p.gate === gate &&
-        p.mode === "auto",
+        p.repo_id === repoId && p.risk_level === riskLevel && p.gate === gate && p.mode === "auto",
     )
   );
 }
@@ -5026,7 +5045,11 @@ function autonomyPoliciesPanel(policies) {
       "ul",
       { class: "ar-list" },
       active.map((p) => {
-        const offBtn = el("button", { class: "btn small ghost", type: "button" }, el("span", {}, "Turn off"));
+        const offBtn = el(
+          "button",
+          { class: "btn small ghost", type: "button" },
+          el("span", {}, "Turn off"),
+        );
         offBtn.addEventListener("click", () =>
           submitAutonomyPolicy(
             offBtn,
@@ -9104,7 +9127,9 @@ function renderSpecDraft(draft) {
     specBuildState.title = titleInput.value;
     updateSpecCreateEnabled();
   });
-  wrap.appendChild(el("div", { class: "field sb-title-field" }, [el("label", {}, "Title"), titleInput]));
+  wrap.appendChild(
+    el("div", { class: "field sb-title-field" }, [el("label", {}, "Title"), titleInput]),
+  );
 
   const list = el("ol", { class: "pb-tickets sb-clauses" });
   clauses.forEach((clause, i) => list.appendChild(renderSpecClauseRow(clause, i, !!created)));
@@ -9265,7 +9290,8 @@ function updateSpecCreateEnabled() {
   const btn = specBuildEls.panel.querySelector(".sb-create");
   if (!btn) return;
   const clauses = (specBuildState.draft && specBuildState.draft.clauses) || [];
-  const ok = (specBuildState.title || "").trim().length > 0 && clauses.some((c) => (c.text || "").trim());
+  const ok =
+    (specBuildState.title || "").trim().length > 0 && clauses.some((c) => (c.text || "").trim());
   btn.disabled = !ok || specBuildState.busy;
 }
 
@@ -9445,7 +9471,10 @@ function buildFromFrozenSpec() {
     }));
   if (!clauses.length) return;
   const brief =
-    (specBuildState && specBuildState.brief) || spec.brief || spec.title || "Build from the frozen spec.";
+    (specBuildState && specBuildState.brief) ||
+    spec.brief ||
+    spec.title ||
+    "Build from the frozen spec.";
   closeSpecBuild();
   openPlanBuild({ spec: clauses, brief });
 }
@@ -9595,8 +9624,17 @@ function onboardButton(repos, presetRepo, opts) {
 // --- Specs (Spec-Driven Development, Phase 3: coverage & traceability) -------
 
 const SPEC_STATUS_LABEL = { draft: "Draft", frozen: "Frozen", superseded: "Superseded" };
-const CLAUSE_KIND_LABEL = { requirement: "Requirement", "non-goal": "Non-goal", decision: "Decision" };
-const LORE_STATUS_LABEL = { active: "reaching agents", draft: "unratified", absent: "not seeded", unknown: "" };
+const CLAUSE_KIND_LABEL = {
+  requirement: "Requirement",
+  "non-goal": "Non-goal",
+  decision: "Decision",
+};
+const LORE_STATUS_LABEL = {
+  active: "reaching agents",
+  draft: "unratified",
+  absent: "not seeded",
+  unknown: "",
+};
 
 /** Count clauses on a spec row without throwing on a malformed clauses_json. */
 function specClauseCount(spec) {
@@ -9685,7 +9723,8 @@ async function renderSpecList() {
 
 /** A rollup {total,covered,orphans} from a coverage payload, defensively read. */
 function specCoverageRollup(coverage) {
-  const src = coverage && coverage.rollup && typeof coverage.rollup === "object" ? coverage.rollup : null;
+  const src =
+    coverage && coverage.rollup && typeof coverage.rollup === "object" ? coverage.rollup : null;
   if (!src) return null;
   const total = Number(src.total) || 0;
   const covered = Number(src.covered) || 0;
@@ -9799,9 +9838,15 @@ function renderSpecCard(spec, { coverage, isPrimary = false } = {}) {
           el("span", {}, `${count} clause${count === 1 ? "" : "s"}`),
           spec.target_repo ? el("span", { class: "tag-chip" }, spec.target_repo) : null,
           rollup && rollup.total > 0
-            ? el("span", { class: "spec-card-cov mono" }, `${Math.round((rollup.covered / rollup.total) * 100)}% covered`)
+            ? el(
+                "span",
+                { class: "spec-card-cov mono" },
+                `${Math.round((rollup.covered / rollup.total) * 100)}% covered`,
+              )
             : null,
-          spec.updated_at ? el("span", { class: "spec-card-updated" }, fmtRelative(spec.updated_at)) : null,
+          spec.updated_at
+            ? el("span", { class: "spec-card-updated" }, fmtRelative(spec.updated_at))
+            : null,
         ]),
       ]),
       icon("chevron", "spec-card-chevron"),
@@ -9990,7 +10035,10 @@ function renderClauseTrace(clause) {
     { class: "spec-clause-acs" },
     (Array.isArray(clause.covering_acs) ? clause.covering_acs : []).map((ac) =>
       el("div", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
-        badge(ac.satisfied ? "satisfied" : ac.ac_status, `ac-${ac.satisfied ? "satisfied" : "pending"}`),
+        badge(
+          ac.satisfied ? "satisfied" : ac.ac_status,
+          `ac-${ac.satisfied ? "satisfied" : "pending"}`,
+        ),
         el("span", { class: "spec-ac-text" }, ac.ac_text),
         el(
           "a",

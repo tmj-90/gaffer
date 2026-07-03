@@ -343,7 +343,12 @@ describe("readHealthRows / aggregateHealth", () => {
     writeFileSync(
       ledger,
       [
-        JSON.stringify({ ts: "2025-01-15T10:00:00Z", ticket: 1, measured: true, total_cost_usd: 0.1 }),
+        JSON.stringify({
+          ts: "2025-01-15T10:00:00Z",
+          ticket: 1,
+          measured: true,
+          total_cost_usd: 0.1,
+        }),
         "GARBAGE",
         "",
         JSON.stringify({ ts: "2025-01-15T11:00:00Z", ticket: 2, measured: false }),

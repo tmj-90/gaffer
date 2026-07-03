@@ -94,14 +94,7 @@ function norm(text: string): string {
  * is how the reader distinguishes draft from active with the same tag.
  */
 export function buildSearchArgs(spec: Spec, includeDrafts: boolean): string[] {
-  const args = [
-    "search",
-    "--tag",
-    `spec-${spec.id}`,
-    "--json",
-    "--limit",
-    String(SEARCH_LIMIT),
-  ];
+  const args = ["search", "--tag", `spec-${spec.id}`, "--json", "--limit", String(SEARCH_LIMIT)];
   if (includeDrafts) args.push("--include-drafts");
   return args;
 }
@@ -174,7 +167,10 @@ export class CliSpecLoreReader implements SpecLoreReader {
       const parsed = JSON.parse(res.stdout.trim() || "[]") as unknown;
       return Array.isArray(parsed) ? (parsed as LoreSearchHit[]) : [];
     } catch (err) {
-      this.logFailure(spec, `unparseable JSON: ${err instanceof Error ? err.message : String(err)}`);
+      this.logFailure(
+        spec,
+        `unparseable JSON: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return null;
     }
   }
@@ -212,8 +208,6 @@ function makeSpawnRunner(cliBin: string, db: string): CliRunner {
  * Resolve the reader to wire into the coverage service: a live CLI reader when
  * Memory is configured in the environment, else a no-op that reports `unknown`.
  */
-export function resolveSpecLoreReader(
-  env: NodeJS.ProcessEnv = process.env,
-): SpecLoreReader {
+export function resolveSpecLoreReader(env: NodeJS.ProcessEnv = process.env): SpecLoreReader {
   return CliSpecLoreReader.fromEnv(env) ?? new NullSpecLoreReader();
 }

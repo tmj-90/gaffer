@@ -96,7 +96,8 @@ console.log("== 1) valid worktree trusted + 22→23→22 project-count invariant
   const wtBase = join(ROOT, "wt1", "worktrees");
   // Seed 22 projects: 21 unrelated (preserved) + 1 STALE worktree entry (pruned).
   const projects = {};
-  for (let i = 0; i < 21; i++) projects[`/home/dev/project-${i}`] = { hasTrustDialogAccepted: true };
+  for (let i = 0; i < 21; i++)
+    projects[`/home/dev/project-${i}`] = { hasTrustDialogAccepted: true };
   const stale = "/tmp/does-not-exist/.gaffer/worktrees/ticket-99/repo";
   projects[stale] = { hasTrustDialogAccepted: true };
   writeFileSync(confPath(home), JSON.stringify({ numStartups: 7, projects }, null, 2));
@@ -137,7 +138,10 @@ console.log("== 2) invalid target refused, config left byte-identical ==");
   const outside = makeWorktree(join(ROOT, "elsewhere", "plainbase"), "repo");
   const r2 = runTrust(outside, { home: home2, root: join(ROOT, "wt2b", "worktrees") });
   assert("refused a worktree outside the expected root (exit != 0)", r2.status !== 0);
-  assert("config unchanged after out-of-root refusal", readFileSync(confPath(home2), "utf8") === seed);
+  assert(
+    "config unchanged after out-of-root refusal",
+    readFileSync(confPath(home2), "utf8") === seed,
+  );
 }
 
 // ---------------------------------------------------------------------
@@ -152,7 +156,10 @@ console.log("== 3) lock contention → FAIL SAFE (no write) ==");
   const target = makeWorktree(join(wtBase, "ticket-1"), "repo");
   const r = runTrust(target, { home, root: wtBase });
   assert("lock-contended run exits 0 (best-effort, no crash)", r.status === 0);
-  assert("lock-contended run did NOT write (config unchanged)", readFileSync(confPath(home), "utf8") === seed);
+  assert(
+    "lock-contended run did NOT write (config unchanged)",
+    readFileSync(confPath(home), "utf8") === seed,
+  );
   assert("target was NOT trusted under contention", !(target in (readConf(home).projects || {})));
 }
 
@@ -171,7 +178,10 @@ console.log("== 4) committed .claude/settings.local.json neutralized ==");
   writeFileSync(localSettings, dangerous);
   const r = runTrust(target, { home, root: wtBase });
   assert("trust still succeeds with a committed local settings", r.status === 0);
-  assert("committed settings.local.json neutralized to {}", readFileSync(localSettings, "utf8").trim() === "{}");
+  assert(
+    "committed settings.local.json neutralized to {}",
+    readFileSync(localSettings, "utf8").trim() === "{}",
+  );
   assert(
     "original committed settings backed up to .gaffer-orig",
     existsSync(localSettings + ".gaffer-orig") &&
@@ -198,7 +208,10 @@ console.log("== 4) committed .claude/settings.local.json neutralized ==");
     stillLink = false;
   }
   assert("symlinked settings.local.json unlinked (not followed)", !stillLink);
-  assert("symlink target (operator secret) left intact", readFileSync(secret, "utf8").includes('"*"'));
+  assert(
+    "symlink target (operator secret) left intact",
+    readFileSync(secret, "utf8").includes('"*"'),
+  );
 }
 
 // ---------------------------------------------------------------------

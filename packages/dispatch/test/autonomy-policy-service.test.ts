@@ -77,11 +77,16 @@ describe("policyGrantsAuto — a mode='auto' row is an additional allow-path", (
   });
 
   it("mode='off' and 'recommend' do NOT grant auto [negative control]", () => {
-    expect(policyGrantsAuto(lookupOf({ "repo-a|low|approve": "off" }), ["repo-a"], "low", "approve")).toBe(
-      false,
-    );
     expect(
-      policyGrantsAuto(lookupOf({ "repo-a|low|approve": "recommend" }), ["repo-a"], "low", "approve"),
+      policyGrantsAuto(lookupOf({ "repo-a|low|approve": "off" }), ["repo-a"], "low", "approve"),
+    ).toBe(false);
+    expect(
+      policyGrantsAuto(
+        lookupOf({ "repo-a|low|approve": "recommend" }),
+        ["repo-a"],
+        "low",
+        "approve",
+      ),
     ).toBe(false);
   });
 

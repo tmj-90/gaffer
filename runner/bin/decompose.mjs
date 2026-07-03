@@ -331,7 +331,13 @@ export function normalizeAc(a, clauseIds = null) {
   return text ? text : null;
 }
 
-export function validateResult(obj, maxTickets, targetRepo = "", forcePlan = false, clauseIds = null) {
+export function validateResult(
+  obj,
+  maxTickets,
+  targetRepo = "",
+  forcePlan = false,
+  clauseIds = null,
+) {
   const repo = String(targetRepo ?? "").trim();
   const brownfield = repo.length > 0;
   if (!obj || typeof obj !== "object")
@@ -1071,11 +1077,7 @@ function main() {
   // hallucinated (or an injected clause smuggled in). Null when no spec drives the
   // plan, which disables the check (a plain decompose is unchanged).
   const specClauseIds = Array.isArray(req.spec)
-    ? new Set(
-        req.spec
-          .map((c) => String(c?.clause_id ?? "").trim())
-          .filter(Boolean),
-      )
+    ? new Set(req.spec.map((c) => String(c?.clause_id ?? "").trim()).filter(Boolean))
     : null;
   const clauseIds = specClauseIds && specClauseIds.size > 0 ? specClauseIds : null;
 

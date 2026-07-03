@@ -46,7 +46,9 @@ function stubFetch(): void {
       if (url.includes("/api/human-queue")) return json({ items: [], counts: { total: 0 } });
       if (url.includes("/api/runs")) return json({ active: [], recent: [] });
       if (url.includes("/api/dashboard"))
-        return json({ summary: { ticketsByStatus, blocked: 1, openDecisions: 0, stuckTickets: [] } });
+        return json({
+          summary: { ticketsByStatus, blocked: 1, openDecisions: 0, stuckTickets: [] },
+        });
       if (url.includes("/api/activity")) return json({ events: [], total: 0 });
       if (url.includes("/api/cost")) return json(null);
       if (url.includes("/api/rework/bouncing")) return json({ bouncing: [] });

@@ -128,10 +128,18 @@ console.log("== cap-hit envelopes: turn count AND max-turns stop reason ==");
   assert("cap: end_turn is not a max-turns stop", overCap.capHit.stopReasonIsMaxTurns === false);
 
   const reason = parseResult(JSON.stringify({ subtype: "error_max_turns", num_turns: 3 }));
-  assert("cap: subtype error_max_turns detected as max-turns", reason.capHit.stopReasonIsMaxTurns === true);
+  assert(
+    "cap: subtype error_max_turns detected as max-turns",
+    reason.capHit.stopReasonIsMaxTurns === true,
+  );
 
-  const nested = parseResult(JSON.stringify({ error: { message: "hit max-turns limit" }, num_turns: 2 }));
-  assert("cap: nested error.message max-turns detected", nested.capHit.stopReasonIsMaxTurns === true);
+  const nested = parseResult(
+    JSON.stringify({ error: { message: "hit max-turns limit" }, num_turns: 2 }),
+  );
+  assert(
+    "cap: nested error.message max-turns detected",
+    nested.capHit.stopReasonIsMaxTurns === true,
+  );
 }
 
 console.log("== error envelope: is_error / error-shaped result ==");
@@ -167,7 +175,10 @@ console.log("== negative control: MALFORMED envelope → degraded path, never a 
   assert("malformed → json null", p.json === null);
   assert("malformed → resultText ''", p.resultText === "");
   assert("malformed → cost UNKNOWN (not 0)", p.usage.totalCostUsd === UNKNOWN);
-  assert("malformed → no cap invented", p.capHit.numTurns === null && p.capHit.stopReasonIsMaxTurns === false);
+  assert(
+    "malformed → no cap invented",
+    p.capHit.numTurns === null && p.capHit.stopReasonIsMaxTurns === false,
+  );
   // Empty / non-string inputs degrade the same way.
   assert("empty string degrades cleanly", parseResult("").json === null);
   assert("undefined input degrades cleanly", parseResult(undefined).usage.numTurns === UNKNOWN);
@@ -197,7 +208,10 @@ console.log("== parse-result CLI: the bash cap/spend guards' entrypoint (exact f
     const nt = run("num-turns", measuredFile);
     assert("CLI num-turns prints the integer", nt.status === 0 && nt.stdout === "7");
     const ntMissing = run("num-turns", garbageFile);
-    assert("CLI num-turns empty on unparseable (exit 0)", ntMissing.status === 0 && ntMissing.stdout === "");
+    assert(
+      "CLI num-turns empty on unparseable (exit 0)",
+      ntMissing.status === 0 && ntMissing.stdout === "",
+    );
 
     // spend: "$x.xxxx" or "unknown".
     const sp = run("spend", underFile);

@@ -129,13 +129,21 @@ env_has ANTHROPIC_API_KEY && fail "codex must NOT inherit ANTHROPIC_API_KEY (cro
   || ok "negative control: codex drops ANTHROPIC_API_KEY (provider-scoped auth surface)"
 
 echo "== PARITY: the safety-hook precondition still HARD-GATES the Claude path =="
-# The invariant this seam must never weaken: tick.sh refuses to run a live agent
-# when the deterministic PreToolUse safety hook is missing. Structural (grep) proof,
-# matching the worker-seam-routing test's style — the four live-turn gates persist.
+# The invariant this seam must never weaken: tick.sh refuses to run a live agent when the
+# deterministic PreToolUse safety hook is missing. The check is now CENTRALISED in
+# gaffer_assert_safety_hook() (fail-closes on BOTH the hook file AND its deny-list) and CALLED
+# to hard-gate every live-agent entry point. Structural (grep) proof of the gate + call sites.
 TICK="$RUNNER_DIR/tick.sh"
-GATES="$(grep -cE '\[ -f "\$RUNNER_DIR/safety-hook\.mjs" \] \|\| \{ log "SAFETY: hook missing' "$TICK" || true)"
-[ "$GATES" -ge 4 ] && ok "tick.sh still fail-closes on a missing safety hook at $GATES live sites (>=4)" \
-  || fail "safety-hook hard-gate weakened: expected >=4 fail-closed sites in tick.sh (got $GATES)"
+# 1) the centralised assertion exists and fail-closes on a missing hook…
+grep -qE '^gaffer_assert_safety_hook\(\)' "$TICK" \
+  && grep -qE '\[ -f "\$RUNNER_DIR/safety-hook\.mjs" \]' "$TICK" \
+  && ok "gaffer_assert_safety_hook() centralises the fail-closed hook precondition" \
+  || fail "the centralised safety-hook precondition is gone — containment gate lost"
+# 2) …and it HARD-GATES the live path at >=3 call sites (bootstrap / live run / agent-env prep),
+#    each refusing to proceed (exit/return) when the assertion fails.
+GATES="$(grep -cE 'gaffer_assert_safety_hook \|\| \{' "$TICK" || true)"
+[ "$GATES" -ge 3 ] && ok "tick.sh fail-closes on a missing safety hook at $GATES live gate sites (>=3)" \
+  || fail "safety-hook hard-gate weakened: expected >=3 gaffer_assert_safety_hook call sites (got $GATES)"
 # And worker_deliver's Claude branch STILL runs under the env -i allowlist scrub +
 # gaffer_timeout (the containment wrapper is inside the provider dispatch, unchanged).
 WSH="$RUNNER_DIR/lib/worker.sh"

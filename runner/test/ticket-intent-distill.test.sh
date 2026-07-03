@@ -9,8 +9,9 @@
 #   A. WIRING (static): tick.sh defines a fail-soft gaffer_distill_ticket_intent
 #      helper and CALLS it in the submit-success path (right after recall-feedback).
 #   B. BEHAVIOURAL (live, needs memory built): driving the helper on a ticket that
-#      HAS acceptance criteria lands exactly one REQUIREMENT lore DRAFT
-#      (kind=requirement, human-gated) — NOT an active record, NOT auto-promoted.
+#      HAS acceptance criteria lands exactly one REQUIREMENT lore record. By DEFAULT it
+#      is auto-promoted ACTIVE (so it primes future agents on unattended runs — audit
+#      fix 3109af6); GAFFER_MEMORY_AUTO_PROMOTE=0 keeps it a human-gated DRAFT.
 #   C. BEHAVIOURAL: a ticket with NO acceptance criteria is a no-op (nothing durable).
 #
 # Run:  perl -e 'alarm 120; exec @ARGV' /bin/bash runner/test/ticket-intent-distill.test.sh
@@ -83,23 +84,26 @@ else
     SHOW='{"ticket":{"title":"Add password rotation"},"acceptanceCriteria":[{"text":"Passwords rotate every 90 days","status":"pending"},{"text":"Rotation is auditable","status":"pending"}]}'
     gaffer_distill_ticket_intent
 
-    # Human-gated: the draft is INVISIBLE to a normal (active-only) search…
+    # Default (GAFFER_MEMORY_AUTO_PROMOTE=1): the distilled requirement is auto-promoted
+    # ACTIVE so it primes future agents on UNATTENDED runs (audit tier-2 fix 3109af6) —
+    # otherwise the priming block stays permanently empty when no human ever reviews it.
     ACTIVE="$(lg search --repo app --kind requirement --json 2>/dev/null || echo '[]')"
-    if [ "$(printf '%s' "$ACTIVE" | jget 'len(d)')" = "0" ]; then
-      ok "distilled record is NOT active (human-gated, not auto-promoted)"
-    else
-      fail "distilled record leaked as active (should be a draft)"
-    fi
-
-    # …but present as a DRAFT of kind=requirement, titled from the ticket.
-    DRAFTS="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null || echo '[]')"
-    DN="$(printf '%s' "$DRAFTS" | jget 'len(d)' 2>/dev/null || echo 0)"
-    if [ "$DN" = "1" ]; then ok "exactly one requirement DRAFT was distilled"; else fail "expected 1 requirement draft, got $DN"; fi
-    DT="$(printf '%s' "$DRAFTS" | jget "d[0]['title'] if d else ''" 2>/dev/null || echo '')"
-    case "$DT" in
-      "Requirement from #42:"*) ok "draft title carries the ticket provenance ($DT)" ;;
-      *) fail "draft title not derived from ticket (got: $DT)" ;;
+    AN="$(printf '%s' "$ACTIVE" | jget 'len(d)' 2>/dev/null || echo 0)"
+    if [ "$AN" = "1" ]; then ok "distilled requirement is auto-promoted ACTIVE (primes future agents)"; else fail "expected 1 active requirement (auto-promoted), got $AN"; fi
+    AT="$(printf '%s' "$ACTIVE" | jget "d[0]['title'] if d else ''" 2>/dev/null || echo '')"
+    case "$AT" in
+      "Requirement from #42:"*) ok "record title carries the ticket provenance ($AT)" ;;
+      *) fail "record title not derived from ticket (got: $AT)" ;;
     esac
+
+    # The human-gate is still honoured: GAFFER_MEMORY_AUTO_PROMOTE=0 keeps a distilled
+    # requirement a DRAFT (invisible to a normal active-only search) for review-first workflows.
+    NUM=52; TITLE="Add rate limiting"
+    SHOW='{"ticket":{"title":"Add rate limiting"},"acceptanceCriteria":[{"text":"429 on burst","status":"pending"}]}'
+    GAFFER_MEMORY_AUTO_PROMOTE=0 gaffer_distill_ticket_intent
+    G_ACTIVE="$(lg search --repo app --kind requirement --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #52' in r['title']])" 2>/dev/null || echo 0)"
+    G_DRAFT="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #52' in r['title']])" 2>/dev/null || echo 0)"
+    if [ "$G_ACTIVE" = "0" ] && [ "$G_DRAFT" = "1" ]; then ok "GAFFER_MEMORY_AUTO_PROMOTE=0 keeps the distilled requirement a human-gated DRAFT"; else fail "gate env should draft not promote (active=$G_ACTIVE draft=$G_DRAFT)"; fi
 
     # ── C: ticket with NO acceptance criteria is a no-op ──────────────────
     NUM=43

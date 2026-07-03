@@ -34,7 +34,11 @@ submit → bookkeeping. Done = it would catch the inert-feature cluster.
 ## C — Convert fixable "never works" → "works" (Depth + Offering)
 - [ ] C1 AFK loop on Linux: ship a systemd/cron/`gaffer run --daemon` unit.
 - [ ] C2 LAN QR 403: allow the initial tokenless SPA shell (gate the API, not the shell).
-- [ ] C3 budget cap: pre-spawn budget gate + count killed/timed-out calls as an estimate not $0.
+- [x] C3a pre-spawn budget gate: gaffer_budget_exhausted() parks BEFORE a spawn when cumulative
+      spend >= the effective ceiling (per-ticket delivery_budget_usd wins over GAFFER_REWORK_BUDGET_USD);
+      closes the cross-run gap the post-attempt bound couldn't. prespawn-budget-gate.test.sh (8, bash 3.2).
+- [ ] C3b: count killed/timed-out (unknown-cost) calls as an estimate not $0 in the spend total
+      (gaffer_ticket_rework_spend sums MEASURED only, so a repeatedly-killed runaway never accrues) — follow-up.
 - [~] C4 sandbox on Linux: sandbox.sh ALREADY warns to stderr + degrades honestly when
       sandbox-exec is absent (all Linux). REMAINING: a GAFFER_STRICT_REQUIRE hard-refuse for
       operators who demand containment; stretch: real docker provider (later).

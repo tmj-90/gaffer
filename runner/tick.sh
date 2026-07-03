@@ -400,6 +400,25 @@ gaffer_release_or_park_nocommit() {
   return 0
 }
 
+# PRE-SPAWN BUDGET GATE (C3). Returns 0 (true = EXHAUSTED → do NOT spawn) when the
+# ticket's cumulative MEASURED spend has reached its effective ceiling — the ticket's
+# own delivery_budget_usd (TRACK-3a) when set, else the factory-wide
+# GAFFER_REWORK_BUDGET_USD. No ceiling configured → return 1 (never gate). Sets
+# GAFFER_BUDGET_SPENT / GAFFER_BUDGET_CEIL for the caller's message. Mirrors the
+# post-attempt rework bound (tick.sh ~1722, kept inline there) but gates BEFORE the
+# spawn, closing the cross-run gap: a ticket that already burned its budget in a prior
+# run would otherwise spawn one more turn before the post-attempt bound caught it.
+gaffer_budget_exhausted() {
+  local _num="$1" _tb _ceil _spent
+  _tb="$(printf '%s' "${SHOW:-}" | jget "d['ticket'].get('delivery_budget_usd')" 2>/dev/null || true)"
+  case "$_tb" in ""|None|null) _tb="" ;; esac
+  if [ -n "$_tb" ] && awk "BEGIN{exit !(${_tb:-0}+0 > 0)}" 2>/dev/null; then _ceil="$_tb"; else _ceil="${GAFFER_REWORK_BUDGET_USD:-}"; fi
+  { [ -n "$_ceil" ] && awk "BEGIN{exit !(${_ceil:-0}+0 > 0)}" 2>/dev/null; } || return 1
+  _spent="$(gaffer_ticket_rework_spend "$_num" 2>/dev/null || echo 0)"
+  awk "BEGIN{exit !(${_spent:-0}+0 >= ${_ceil}+0)}" 2>/dev/null || return 1
+  GAFFER_BUDGET_SPENT="$_spent"; GAFFER_BUDGET_CEIL="$_ceil"; return 0
+}
+
 # Submit a passed delivery for review (RUNNER-OWNED-BOOKKEEPING). With a runner-held
 # token (normal delivery) it uses the claim-gated submit (claimed → in_review,
 # completing the claim); a resumed delivery (no token, already in_progress) is moved
@@ -1874,6 +1893,18 @@ $_trail_q
   # log is preserved. The agent's actual work is unaffected: it communicates via
   # the MCP servers, and the runner reads ticket state from `wg ticket show`, not
   # from this stdout (which was previously discarded into the log anyway).
+  # PRE-SPAWN BUDGET GATE (C3): a ticket whose cumulative measured spend has already
+  # reached its ceiling must NOT burn another agent turn — park BEFORE spawning. The
+  # post-attempt rework bound below only fires AFTER an attempt has run, so it can't
+  # stop the first spawn of a tick for a ticket that already overspent in a prior run.
+  if [ "${DRY_RUN:-0}" != "1" ] && gaffer_budget_exhausted "$NUM"; then
+    log "BUDGET: #$NUM reached its cost ceiling (spent \$${GAFFER_BUDGET_SPENT} ≥ \$${GAFFER_BUDGET_CEIL}) — NOT spawning another agent turn; parking to blocked (pre-spawn gate)"
+    wg attach-evidence "$NUM" --type manual_note \
+      --summary "PARKED (budget_exhausted): cumulative spend \$${GAFFER_BUDGET_SPENT} reached the ceiling \$${GAFFER_BUDGET_CEIL} before this attempt — needs a human" >/dev/null 2>&1 || true
+    gaffer_release_delivery blocked "cost ceiling reached (spent \$${GAFFER_BUDGET_SPENT} ≥ \$${GAFFER_BUDGET_CEIL}) before spawning — pre-spawn budget gate" budget_exhausted
+    gaffer_skip_ticket "$NUM"
+    result error; exit 0
+  fi
   USAGE_JSON="$GAFFER_DATA/.usage-$NUM.json"; : > "$USAGE_JSON"
   # C1/M2: scrub ambient credentials via an allowlist (env -i) inside worker_deliver.
   # The scrub sits INSIDE the optional OS-sandbox $WRAP so the sandbox still wraps the

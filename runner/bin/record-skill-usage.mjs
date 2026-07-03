@@ -34,16 +34,25 @@ export function parseList(value) {
 }
 
 /**
- * Best-effort "applied" detection: a SELECTED skill counts as applied when its
- * exact name appears anywhere in the agent's output text. Word-boundary matched
- * so `run-tests` doesn't spuriously match a longer token. Never throws.
+ * Best-effort "applied" detection: a SELECTED skill counts as applied when its name —
+ * as the slug (`run-tests`) OR its space-separated form (`run tests`) — appears in the
+ * agent's output, case-insensitively. The old slug-only, case-sensitive match near-never
+ * fired: agents narrate in prose ("ran the tests", "Self Review"), not skill slugs, so
+ * earning skills were mislabelled dead weight in the Health panel. Still a heuristic, and
+ * bounded to SELECTED (mounted) skills, so it can only mis-count among skills the agent
+ * actually had — never invent an unmounted one. Never throws.
  */
 export function detectApplied(selected, outputText) {
   const text = String(outputText ?? "");
   if (!text) return [];
   return selected.filter((name) => {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`(^|[^A-Za-z0-9_-])${escaped}([^A-Za-z0-9_-]|$)`).test(text);
+    const forms = new Set([name, name.replace(/-/g, " ")]);
+    return [...forms].some((form) => {
+      const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Hyphen-excluding boundary (as before) so the slug `run-tests` never matches a
+      // longer token like `run-tests-extra`; case-insensitive for prose capitalisation.
+      return new RegExp(`(^|[^A-Za-z0-9_-])${escaped}([^A-Za-z0-9_-]|$)`, "i").test(text);
+    });
   });
 }
 

@@ -103,6 +103,21 @@ describe("board move — core capability", () => {
     expect(wg.view(id).ticket.status).toBe("ready");
   });
 
+  it("REJECTS a board move into claimed (ghost claim — no lease row)", () => {
+    const wg = freshWg();
+    const id = readyTicket(wg);
+    // A claim is real only when a ticket_claims lease backs it (created by the claim
+    // path). A raw board drop to `claimed` must be rejected, never conjure a claimed
+    // ticket with no lease — an unrecoverable ghost the expiry sweeper can't see.
+    expect(() => wg.moveTicket(id, "claimed", human)).toThrowError(DispatchError);
+    try {
+      wg.moveTicket(id, "claimed", human);
+    } catch (e) {
+      expect((e as DispatchError).code).toBe("ILLEGAL_TRANSITION");
+    }
+    expect(wg.view(id).ticket.status).toBe("ready");
+  });
+
   it("rejects a no-op drop onto the same status", () => {
     const wg = freshWg();
     const id = readyTicket(wg);

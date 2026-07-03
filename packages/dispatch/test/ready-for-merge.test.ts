@@ -178,6 +178,27 @@ describe("reopen-for-review from ready_for_merge", () => {
     }
     expect(wg.view(ticketId).ticket.status).toBe("ready_for_merge");
   });
+
+  it("rejects a board-drag in_review -> ready_for_merge (skips tester + self-approve authz)", () => {
+    // Regression: in_review -> ready_for_merge had only a policy gate, so the raw board
+    // move approved-and-merged a ticket while skipping the mandatory testing lane and
+    // the approveReview agent-approve check. It must now go through the guarded approve
+    // path (reviewApprove flag) only.
+    const wg = freshWg();
+    const { ticketId } = approvableInReview(wg);
+    expect(wg.view(ticketId).ticket.status).toBe("in_review");
+    try {
+      wg.moveTicket(ticketId, "ready_for_merge", adminActor);
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DispatchError);
+      expect((err as DispatchError).code).toBe("ILLEGAL_TRANSITION");
+    }
+    expect(wg.view(ticketId).ticket.status).toBe("in_review");
+    // …but the guarded approve path still works.
+    wg.approveReview(ticketId, adminActor);
+    expect(wg.view(ticketId).ticket.status).toBe("ready_for_merge");
+  });
 });
 
 describe("rework / won't-do from ready_for_merge", () => {

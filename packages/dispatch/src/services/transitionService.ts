@@ -292,6 +292,27 @@ export interface TransitionInput {
    * transition, so their payload shape is byte-for-byte unchanged.
    */
   approvedUnchanged?: boolean | null;
+  /**
+   * CLAIM opt-in flag the agent-claim path (`ready -> claimed`) MUST set. A claim is
+   * real only when a `ticket_claims` lease row backs it — {@link
+   * import("./claimService.js").ClaimService} inserts that row THEN sets this flag.
+   * Without it `ready -> claimed` is rejected as ILLEGAL_TRANSITION even though it is
+   * in the ALLOWED set, so a raw board move can never CONJURE a claimed ticket with no
+   * lease (a "ghost claim" the expiry sweeper can't see, stranding the ticket forever).
+   * Same guarded-flag pattern as {@link wontDo}.
+   */
+  agentClaim?: boolean;
+  /**
+   * REVIEW-APPROVE opt-in flag the review-approval path (`in_review -> ready_for_merge`)
+   * MUST set. Approving a delivery for merge is reachable ONLY through {@link
+   * import("./reviewGateService.js").ReviewGateService.approveReview}, which routes a
+   * testable ticket through the independent tester first (GAFFER_TESTING + can_be_tested)
+   * and enforces the agent-approve authz check. Without this flag the raw board move
+   * `in_review -> ready_for_merge` is rejected as ILLEGAL_TRANSITION even though it is in
+   * the ALLOWED set, so a board drag can never approve-and-merge while skipping the tester
+   * or the "an agent can never approve its own work" invariant.
+   */
+  reviewApprove?: boolean;
 }
 
 export interface TransitionResult {
@@ -505,6 +526,33 @@ export class TransitionService {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
           "A ticket can only be abandoned via the won't-do path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
+      // GHOST-CLAIM guard: `ready -> claimed` is real only when a ticket_claims lease
+      // row backs it — the claim path inserts the row THEN sets `agentClaim`. Reject any
+      // other route so a raw board move can never set a ticket `claimed` with no lease
+      // (unrecoverable: the expiry sweeper only scans active claims, so the ghost is
+      // stranded forever and the ticket never re-enters the queue).
+      if (key === "ready->claimed" && !input.agentClaim) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A ticket can only be claimed via the claim path (which creates the lease).",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
+      // TESTING-LANE / SELF-APPROVE guard: `in_review -> ready_for_merge` is reachable
+      // only through ReviewGateService.approveReview, which routes a testable ticket
+      // through the independent tester first and enforces the agent-approve authz check.
+      // Reject any other route (the raw board move never sets this flag) so a board drag
+      // can never approve-and-merge while skipping the mandatory testing lane or the
+      // "an agent can never approve its own work" invariant.
+      if (key === "in_review->ready_for_merge" && !input.reviewApprove) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A ticket can only be approved for merge via the review-approve path.",
           { from: ticket.status, to: input.toStatus },
         );
       }

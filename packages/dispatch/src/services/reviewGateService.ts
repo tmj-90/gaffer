@@ -217,6 +217,7 @@ export class ReviewGateService {
       reason: "review_approved",
       expectedFromStatus: "in_review",
       approvedUnchanged,
+      reviewApprove: true, // reached the merge-ready state through the guarded approve path
     });
   }
 

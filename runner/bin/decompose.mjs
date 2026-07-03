@@ -923,6 +923,15 @@ function runClaudeTurn(prompt, opts, model) {
   const flags = (process.env.CLAUDE_FLAGS || "--permission-mode acceptEdits")
     .split(/\s+/)
     .filter(Boolean);
+  // CONTAINMENT (audit blocker): decomposition PROPOSES a plan and returns it as TEXT
+  // (--output-format json → .result); it reasons from the prompt and never edits files or
+  // runs commands. This spawn runs with cwd = RUNNER_DIR (the factory's own source),
+  // acceptEdits auto-accepts edits, and the project hook does not load in an untrusted dir
+  // — so without this a prompt injection in the (untrusted) brief could write into
+  // safety-hook.mjs / tick.sh (verified: denying only the edit tools is defeated by a Bash
+  // `>` fallback). Run the agent READ-ONLY: deny every write/exec tool UNCONDITIONALLY
+  // (even under a CLAUDE_FLAGS override). Read/Grep/Glob + MCP stay available.
+  flags.push("--disallowedTools", "Write", "Edit", "NotebookEdit", "Bash");
   // Decomposition is a PLAN step — run it on the chosen model when set. The
   // explicit per-turn `model` wins (debate roles); else fall back to the strong
   // planning model GAFFER_PLAN_MODEL; else the Claude default.

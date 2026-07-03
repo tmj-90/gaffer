@@ -455,11 +455,18 @@ export function agentChildEnv(base = process.env) {
  */
 function runClaudeTurn(prompt, opts) {
   const claudeBin = process.env.CLAUDE_BIN || "claude";
-  // Reuse decompose/tick.sh's flags; the project-local safety hook/settings still
-  // apply when run inside a configured checkout.
+  // Reuse decompose/tick.sh's flags.
   const flags = (process.env.CLAUDE_FLAGS || "--permission-mode acceptEdits")
     .split(/\s+/)
     .filter(Boolean);
+  // CONTAINMENT (audit blocker): spec authoring reasons from the (untrusted) brief and
+  // returns the spec as TEXT (--output-format json → .result) — it never edits files or
+  // runs commands. This spawn runs with cwd = RUNNER_DIR + acceptEdits and the project hook
+  // does not load in an untrusted dir, so run the agent READ-ONLY: deny every write/exec
+  // tool UNCONDITIONALLY (even under a CLAUDE_FLAGS override) so a prompt-injected clause
+  // can't write into factory source (denying only the edit tools is defeated by a Bash `>`
+  // fallback). Read/Grep/Glob + MCP stay available.
+  flags.push("--disallowedTools", "Write", "Edit", "NotebookEdit", "Bash");
   // Spec authoring is a PLAN step — run it on GAFFER_PLAN_MODEL when set, else the
   // Claude default (no --model flag).
   const turnModel = String(process.env.GAFFER_PLAN_MODEL ?? "").trim();

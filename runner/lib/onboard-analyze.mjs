@@ -1111,6 +1111,15 @@ export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
   const caps = analysisCaps(env);
   const claudeBin = env.CLAUDE_BIN || "claude";
   const flags = (env.CLAUDE_FLAGS || "--permission-mode acceptEdits").split(/\s+/).filter(Boolean);
+  // CONTAINMENT (audit blocker): repo analysis READS the target repo and returns cards as
+  // TEXT (--output-format json → .result); the parent persists them to the DB. The agent's
+  // own brief says "no shell" — it never edits files or runs commands. This spawn runs with
+  // cwd = RUNNER_DIR + acceptEdits and the project hook does not load in an untrusted dir,
+  // so run the agent READ-ONLY: deny every write/exec tool UNCONDITIONALLY — a prompt
+  // injection in an (untrusted) onboarded-repo file can't write into factory source
+  // (denying only the edit tools is defeated by a Bash `>` fallback). Read/Grep/Glob + MCP
+  // stay available for the file inspection the analysis needs.
+  flags.push("--disallowedTools", "Write", "Edit", "NotebookEdit", "Bash");
   if (caps.model) flags.unshift("--model", caps.model);
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   if (caps.maxTurns > 0) args.push("--max-turns", String(caps.maxTurns));

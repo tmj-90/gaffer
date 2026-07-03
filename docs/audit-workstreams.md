@@ -35,8 +35,9 @@ submit → bookkeeping. Done = it would catch the inert-feature cluster.
 - [ ] C1 AFK loop on Linux: ship a systemd/cron/`gaffer run --daemon` unit.
 - [ ] C2 LAN QR 403: allow the initial tokenless SPA shell (gate the API, not the shell).
 - [ ] C3 budget cap: pre-spawn budget gate + count killed/timed-out calls as an estimate not $0.
-- [ ] C4 sandbox on Linux: STRICT_MODE=1 loudly refuses/warns on non-macOS (cheap+honest);
-      stretch: real docker provider (later).
+- [~] C4 sandbox on Linux: sandbox.sh ALREADY warns to stderr + degrades honestly when
+      sandbox-exec is absent (all Linux). REMAINING: a GAFFER_STRICT_REQUIRE hard-refuse for
+      operators who demand containment; stretch: real docker provider (later).
 
 ## E — Publish gates (binary, before public)
 - [x] Email history rewrite (git filter-repo over merged main) — DONE this session.

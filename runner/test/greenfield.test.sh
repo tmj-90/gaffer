@@ -93,6 +93,25 @@ HEADREF="$(git -C "$NEW" symbolic-ref --short HEAD 2>/dev/null || echo '')"
 # Idempotent: a second init on the same dir is a no-op success.
 gaffer_bootstrap_init "$NEW" >/dev/null 2>&1 && ok "re-init is idempotent (no-op success)" || fail "re-init should succeed"
 
+echo "== AC6b: bootstrap default-branch capture is clean on an UNBORN repo (E2E regression) =="
+# REGRESSION: tick.sh captures B_DEFAULT_BRANCH BEFORE the agent's first commit — i.e.
+# on an UNBORN repo. There `git rev-parse --abbrev-ref HEAD` prints "HEAD" to stdout AND
+# exits non-zero, so `… || echo main` APPENDS, yielding the newline-joined garbage
+# "HEAD\nmain". That fails 'repo add's git-ref-safe branch validation, so the whole
+# greenfield onboard reports FAILED and the sibling tickets never get wired. The fix is
+# `git symbolic-ref --short HEAD`, which returns a clean "main" for unborn + committed.
+UNB="$WORK/git/unborn-repo"; mkdir -p "$UNB"; git -C "$UNB" init -q 2>/dev/null
+_newbr="$(git -C "$UNB" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+[ "$_newbr" = "main" ] \
+  && ok "symbolic-ref yields a clean 'main' on an unborn repo" \
+  || fail "symbolic-ref should yield 'main' on unborn (got '$(printf %q "$_newbr")')"
+[ "$(printf '%s' "$_newbr" | wc -l | tr -d ' ')" = "0" ] \
+  && ok "captured branch has no embedded newline (the exact failure signature)" \
+  || fail "captured branch must be single-line (got '$(printf %q "$_newbr")')"
+grep -q 'B_DEFAULT_BRANCH="\$(git -C "\$B_DIR" symbolic-ref --short HEAD' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh captures B_DEFAULT_BRANCH via symbolic-ref (fix guarded in place)" \
+  || fail "tick.sh must use symbolic-ref for B_DEFAULT_BRANCH (regression guard)"
+
 echo "== AC7: bootstrap config keys present + commented =="
 grep -Eq '^: "\$\{GAFFER_BOOTSTRAP_ROOT:=' "$RUNNER_DIR/factory.config.sh" \
   && ok "GAFFER_BOOTSTRAP_ROOT default present in factory.config.sh" \

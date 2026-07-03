@@ -2440,10 +2440,15 @@ for r in d.get("repositories", []) or []:
     R_CUR="$(git -C "$rwt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
     [ -n "$R_CUR" ] && [ "$R_CUR" != "$rbase" ] || continue
     R_DIFFSTAT="$(git -C "$rwt" diff "$rbase"...HEAD --stat 2>/dev/null | tail -15)"
+    # GRADUATED AUTONOMY: record the delivery HEAD sha so the review-approve path can
+    # compute an honest `approved_unchanged` (delivery sha vs the branch head at approval).
+    # Without it the signal was permanently null and the auto-merge half never fired.
+    R_SHA="$(git -C "$rwt" rev-parse HEAD 2>/dev/null || echo '')"
+    R_SHA_ARG=""; [ -n "$R_SHA" ] && R_SHA_ARG="--commit $R_SHA"  # sha is a single token → safe to word-split
     # repoRef accepts the repo id OR name; prefer the stable id, fall back to name.
     R_REF="${rid:-$rname}"
     if [ -n "$R_REF" ]; then
-      if wg ticket repo-delivery record "$NUM" "$R_REF" --branch "$R_CUR" --status review_ready >/dev/null 2>&1; then
+      if wg ticket repo-delivery record "$NUM" "$R_REF" --branch "$R_CUR" $R_SHA_ARG --status review_ready >/dev/null 2>&1; then
         log "recorded per-repo delivery for #$NUM: ${rname:-repo} → $R_CUR (branch lives in $rpath)"
       else
         log "per-repo delivery for #$NUM (${rname:-repo}) did not record (non-fatal)"

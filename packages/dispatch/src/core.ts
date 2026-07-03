@@ -81,7 +81,12 @@ import {
   type RegisterAgentInput,
   type SubmitForReviewInput,
 } from "./services/claimService.js";
-import { computeTicketDiff, type GitRunner, type TicketDiff } from "./services/diffService.js";
+import {
+  computeTicketDiff,
+  defaultGitRunner,
+  type GitRunner,
+  type TicketDiff,
+} from "./services/diffService.js";
 import { DecisionService, type ResolveDecisionInput } from "./services/decisionService.js";
 import { ScopeService, type ScopeNodeView } from "./services/scopeService.js";
 import {
@@ -530,8 +535,12 @@ export class Dispatch {
    * Pure read; a missing git runner or no write repos yields `null` (unknown).
    */
   private resolveApprovalShas(ticket: Ticket): ApprovalShas | null {
-    if (!this.gitRunner) return null;
-    const runGit = this.gitRunner;
+    // Fall back to a real `git` spawn when no runner was injected — EVERY production
+    // entrypoint (api/bin, cli, mcp/server) opens Dispatch without one, so gating this on
+    // an injected runner made `approved_unchanged` ALWAYS null in prod (the merge half of
+    // graduated autonomy could never fire). Mirrors computeTicketDiff's defaultGitRunner
+    // fallback. Indeterminate repos still yield an unknown pair below (never overstate).
+    const runGit = this.gitRunner ?? defaultGitRunner;
     const links = this.repos.accessLinksForTicket(ticket.id);
     const writeRepos = links.filter(
       (l) => isActiveTicketRepoRelation(l.relation) && l.access === "write",

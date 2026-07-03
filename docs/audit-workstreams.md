@@ -12,14 +12,16 @@ Sequenced by bang-for-buck. Updated as the loop makes progress.
 - [x] Autonomy is supervised-by-default, hands-off is opt-in (README "You hold the gate").
 - [ ] Final sweep: re-grep UI/comments for any residual unqualified claim; gate at point of use.
 
-## A — Hermetic live-path e2e (Depth keystone) — IN PROGRESS
+## A — Hermetic live-path e2e (Depth keystone) — DONE
 Gap: `e2e-lifecycle.test.sh` hand-orchestrates the pieces (claim, worktree, stub, gate); it
 never drives `tick.sh` → `worker_deliver`. Build a test that runs `DRY_RUN=0 bash tick.sh`
 with the `claude -p` spawn replaced by a real stub (writes a file, emits the `{result}`
 envelope) so the PRODUCTION path runs: worker_deliver → real worktree → gate on a real diff →
 submit → bookkeeping. Done = it would catch the inert-feature cluster.
-- [ ] `runner/test/e2e-tick-live.test.sh` — stub `claude` via CLAUDE_BIN, drive one live tick.
-- [ ] Assert: ticket claimed→delivered via worker_deliver, real branch+diff, gate ran, evidence.
+- [x] `runner/test/e2e-tick-live.test.sh` — drives the REAL worker_deliver seam (env-i claude
+      spawn) with a stub agent; 8 checks; green bash 5 + bash 3.2.
+- [x] Asserts: worker_deliver ran the agent in the worktree (real committed diff), envelope
+      captured, REAL DoD+hygiene gates on the diff, REAL token-gated submit → in_review, claim done.
 - [ ] (later) convert grep-of-source "wiring" tests to behavioural over time.
 
 ## B — Prove the already-wired differentiators (Breadth) — VERIFY

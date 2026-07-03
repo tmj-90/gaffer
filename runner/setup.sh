@@ -9,6 +9,12 @@ source "$HERE/factory.config.sh"
 
 command -v pnpm >/dev/null || { echo "pnpm is required (https://pnpm.io)"; exit 1; }
 command -v node >/dev/null || { echo "node is required (>= 22)"; exit 1; }
+# The `claude` CLI is REQUIRED for any LIVE run (the factory spawns `claude -p` for
+# planning, delivery, and onboarding). Not fatal for setup — dry-run/demo work without
+# it — but warn loudly so a first live run doesn't silently spawn, fail, and park every
+# ticket with no obvious cause.
+command -v claude >/dev/null 2>&1 \
+  || echo "  ⚠ 'claude' CLI not found — install + authenticate it (https://docs.anthropic.com/claude-code) before a live run; dry-run/demo still work."
 
 echo "Gaffer factory setup"
 # Workspace install + build: one root `pnpm install` resolves the whole
@@ -36,8 +42,9 @@ echo "  ✓ databases + crew.yaml ready (dispatch db: $DISPATCH_DB)"
 
 echo
 echo "Setup complete. From here:"
-echo "  $HERE/gaffer onboard /path/to/your/repo   # add a repo (registers + scans, one step)"
+echo "  $HERE/gaffer onboard /path/to/your/repo   # add an EXISTING repo (registers + scans)"
 echo "  $HERE/gaffer dashboard                    # open the web UI (http://127.0.0.1:8787)"
+echo "                                            #   → 'Plan a build' turns one line into a NEW app (greenfield)"
 echo "  $HERE/gaffer demo                         # watch the whole loop (dry-run)"
 echo "  $HERE/gaffer status                       # what's registered + running"
 echo "  $HERE/gaffer skills install --user        # (optional) add the 66 skills to your own Claude Code"

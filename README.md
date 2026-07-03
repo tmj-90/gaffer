@@ -37,6 +37,8 @@ It works in two directions:
 - **Greenfield** — no target repo: the plan opens with a single bootstrap ticket (`git init` + scaffold) that every other ticket depends on, so a one-liner becomes a brand-new, properly-structured repo.
 - **Brownfield** — an existing repo or scope: zero bootstrap, every ticket stamped onto the target repo, so the plan *extends* what's already there instead of rebuilding it.
 
+> **Greenfield delivery has a couple of honest first-run steps** — the brand-new repo's dependencies must be present for the test gate, and hands-off delivery is opt-in. See [**Build a whole new app from one line**](quickstart.md#5-build-a-whole-new-app-from-one-line-greenfield) in the quickstart before your first run.
+
 <p align="center">
   <img src="docs/img/plan-build.png" alt="The Plan-a-build chat that decomposes a one-line brief into a dependency-ordered epic" width="900">
   <br><sub><em>Plan a build — the decompose sheet: greenfield or extend-existing, a one-line brief in, a phased, dependency-ordered epic out. Proposes only; nothing runs until you confirm, and confirmed tickets land as draft. (Demo data.)</em></sub>

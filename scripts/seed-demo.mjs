@@ -101,11 +101,11 @@ const webRepoPath = `${DEMO_DIR}/taskflow-web`;
 mkdirSync(apiRepoPath);
 mkdirSync(webRepoPath);
 execSync(
-  `git init -q && git -c user.email=demo@taskflow.example -c user.name="TaskFlow" commit -q --allow-empty -m init`,
+  `git init -q -b main && git -c user.email=demo@taskflow.example -c user.name="TaskFlow" commit -q --allow-empty -m init`,
   { cwd: apiRepoPath },
 );
 execSync(
-  `git init -q && git -c user.email=demo@taskflow.example -c user.name="TaskFlow" commit -q --allow-empty -m init`,
+  `git init -q -b main && git -c user.email=demo@taskflow.example -c user.name="TaskFlow" commit -q --allow-empty -m init`,
   { cwd: webRepoPath },
 );
 
@@ -465,6 +465,100 @@ try {
   lg("demo", "--force");
 } catch (e) {
   log(`Memory seed warning (non-fatal): ${e.message}`);
+}
+
+// ─── 7b. Repo digest + feature ledger — so the Memory view renders a real digest
+//         and feature ledger instead of the "no digest yet" empty state ────────
+log("Seeding repo digest + feature ledger");
+try {
+  lg("digest", "set", "taskflow-api",
+    "--overview", "TaskFlow API — a Fastify + TypeScript service: task CRUD, recurring-task scheduling, and OAuth session auth over a Postgres data model.",
+    "--structure", "src/routes (HTTP handlers) · src/db (migrations + repositories) · src/auth (OAuth + sessions) · src/scheduler (recurring expansion) · test (vitest).",
+    "--conventions", "TypeScript strict · Zod request validation · repository pattern over the DB · every route carries a vitest integration test.",
+    "--stack", "TypeScript · Fastify · Postgres · Zod · vitest",
+    "--source", "onboard");
+  lg("digest", "set", "taskflow-web",
+    "--overview", "TaskFlow web — a React + Vite SPA for tasks, recurring schedules, and the daily digest view.",
+    "--structure", "src/components · src/routes · src/api (typed client) · src/hooks · test.",
+    "--conventions", "Functional components + hooks · TanStack Query for server state · co-located component tests.",
+    "--stack", "TypeScript · React · Vite · TanStack Query",
+    "--source", "onboard");
+  const feat = (repo, name, summary, status) =>
+    lg("feature", "add", repo, "--name", name, "--summary", summary, "--status", status);
+  feat("taskflow-api", "Task CRUD API", "Create, read, update, delete tasks over REST.", "shipped");
+  feat("taskflow-api", "OAuth session auth", "Google + GitHub OAuth issuing signed session cookies.", "building");
+  feat("taskflow-api", "Recurring task scheduler", "Expand recurring rules into concrete task instances.", "building");
+  feat("taskflow-api", "Daily digest email", "Email each user their due + upcoming tasks.", "backlog");
+  feat("taskflow-web", "Task board UI", "Drag-and-drop board grouped by status.", "shipped");
+  feat("taskflow-web", "Recurring task controls", "Define and preview recurrence rules in the UI.", "backlog");
+} catch (e) {
+  log(`digest/feature seed warning (non-fatal): ${e.message}`);
+}
+
+// ─── 7c. A real delivery branch for the in-review ticket (#3), so the Review view
+//         renders a server-computed `git diff main...<branch>` instead of the
+//         empty "no delivery branch recorded" state ──────────────────────────
+log("Seeding a review diff for #3 (OAuth login)");
+try {
+  const gitc = `git -c user.email=demo@taskflow.example -c user.name="TaskFlow"`;
+  mkdirSync(`${apiRepoPath}/src/auth`, { recursive: true });
+  writeFileSync(
+    `${apiRepoPath}/src/auth/oauth.ts`,
+    `import { OAuth2Client } from "../lib/oauth2.js";
+import type { FastifyInstance } from "fastify";
+
+// Google + GitHub OAuth → a signed session cookie. Ticket #3.
+export function registerOAuthRoutes(app: FastifyInstance) {
+  const google = new OAuth2Client("google");
+  const github = new OAuth2Client("github");
+
+  app.get("/auth/:provider/start", async (req, reply) => {
+    const provider = req.params.provider === "github" ? github : google;
+    reply.redirect(provider.authorizeUrl({ scope: ["email"] }));
+  });
+
+  app.get("/auth/:provider/callback", async (req, reply) => {
+    const provider = req.params.provider === "github" ? github : google;
+    const { email } = await provider.exchange(req.query.code);
+    const session = await app.sessions.issue(email);
+    reply.setCookie("sid", session.token, { httpOnly: true, sameSite: "lax" });
+    return { ok: true, email };
+  });
+}
+`,
+  );
+  execSync(
+    `${gitc} checkout -q -b feat/oauth-login && ${gitc} add -A && ${gitc} commit -q -m "feat(auth): OAuth login (Google + GitHub) issuing session cookies"`,
+    { cwd: apiRepoPath },
+  );
+  execSync(`${gitc} checkout -q main`, { cwd: apiRepoPath });
+  wg("delivery-artifact", "3", "--branch", "feat/oauth-login", "--diff", "1 file changed, 24 insertions(+)", "--as", "system");
+
+  // #11 — Recurring task data model: its own branch off main (a migration).
+  mkdirSync(`${apiRepoPath}/src/db/migrations`, { recursive: true });
+  writeFileSync(
+    `${apiRepoPath}/src/db/migrations/002_recurring.sql`,
+    `-- Recurring task rules: attach a recurrence to a task. Ticket #11.
+CREATE TABLE recurrence_rule (
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id    uuid NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  freq       text NOT NULL CHECK (freq IN ('daily', 'weekly', 'monthly')),
+  interval   int  NOT NULL DEFAULT 1,
+  by_weekday int[],
+  until      timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX recurrence_rule_task_id_idx ON recurrence_rule (task_id);
+`,
+  );
+  execSync(
+    `${gitc} checkout -q -b feat/recurring-data-model && ${gitc} add -A && ${gitc} commit -q -m "feat(db): recurrence_rule table + index for recurring tasks"`,
+    { cwd: apiRepoPath },
+  );
+  execSync(`${gitc} checkout -q main`, { cwd: apiRepoPath });
+  wg("delivery-artifact", "11", "--branch", "feat/recurring-data-model", "--diff", "1 file changed, 12 insertions(+)", "--as", "system");
+} catch (e) {
+  log(`review-diff seed warning (non-fatal): ${e.message}`);
 }
 
 // ─── 8. Print env for caller ──────────────────────────────────────────────────

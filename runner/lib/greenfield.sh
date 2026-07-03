@@ -124,6 +124,30 @@ gaffer_bootstrap_init() {
   return 0
 }
 
+# Detect the test command for a freshly-created scaffold from its manifest, so the
+# onboarded repo is DELIVERABLE (the Definition-of-Done gate has a gate to run). Quiet
+# + best-effort: an undetectable stack echoes nothing and the caller leaves the repo's
+# test_command unset. Mirrors the stacks the factory bootstraps.
+#   node (pnpm/yarn/npm) → "<pm> test"   when package.json declares a "test" script
+#   python               → "pytest"      when pytest config / a tests/ dir is present
+#   go                   → "go test ./..."
+gaffer_bootstrap_detect_test_cmd() {
+  local dir="$1"
+  [ -d "$dir" ] || return 0
+  if [ -f "$dir/package.json" ] \
+     && node -e "process.exit(((require('$dir/package.json').scripts)||{}).test?0:1)" 2>/dev/null; then
+    if   [ -f "$dir/pnpm-lock.yaml" ] || [ -f "$dir/pnpm-workspace.yaml" ]; then echo "pnpm test"
+    elif [ -f "$dir/yarn.lock" ]; then echo "yarn test"
+    else echo "npm test"; fi
+    return 0
+  fi
+  if [ -f "$dir/pyproject.toml" ] || [ -f "$dir/pytest.ini" ] || [ -d "$dir/tests" ]; then
+    echo "pytest"; return 0
+  fi
+  [ -f "$dir/go.mod" ] && echo "go test ./..."
+  return 0
+}
+
 # Register + onboard the freshly-scaffolded repo into the factory so the now-done
 # bootstrap unblocks its dependent feature tickets (which target this repo via the
 # normal worktree flow). Two registrations, mirroring how a human onboards a repo:
@@ -144,6 +168,14 @@ gaffer_bootstrap_onboard() {
     local add_args=(repo add -n "$name" --path "$dir" --branch "$branch")
     [ -n "$stack" ]  && add_args+=(--stack "$stack")
     [ -n "$remote" ] && add_args+=(--remote "$remote")
+    # DELIVERABILITY: register a test command so the repo the factory JUST CREATED is
+    # actually deliverable. Without one, EVERY dependent feature ticket hard-fails the
+    # Definition-of-Done gate ("zero gates executed — no test_command configured") — the
+    # factory would build an epic it structurally cannot land. Detect the scaffold's own
+    # test runner from its manifest (best-effort; a stack with no detectable runner is
+    # left unset and relies on the DoD's no-gate handling).
+    local test_cmd; test_cmd="$(gaffer_bootstrap_detect_test_cmd "$dir")"
+    [ -n "$test_cmd" ] && add_args+=(--test "$test_cmd")
     local add_out add_rc
     add_out="$(wg "${add_args[@]}" 2>&1)"; add_rc=$?
     if [ "$add_rc" -eq 0 ]; then

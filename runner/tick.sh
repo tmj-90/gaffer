@@ -890,18 +890,16 @@ print(hits[0] if hits else '')
 " 2>/dev/null || echo '')"
     _BMZ_TRIM="$(printf '%s' "$_BMZ_NOTE" | tr -d '[:space:]')"
     if [ -z "$_BMZ_TRIM" ]; then
-      if [ "${MINIMALISM_ENFORCE:-1}" = "1" ]; then
-        log "BOOTSTRAP MINIMALISM: #$NUM has NO smallest-change note — failing ($_BMZ_FILES files / $_BMZ_LINES lines)"
-        wg attach-evidence "$NUM" --type manual_note \
-          --summary "PARKED: bootstrap minimalism — missing smallest-change note (${_BMZ_FILES} files / ${_BMZ_LINES} lines)" >/dev/null 2>&1 || true
-        # FINDING-12: VISIBLE park (see the rc-failure park above).
-        gaffer_release_delivery blocked "bootstrap minimalism: missing smallest-change note" bootstrap_failed
-        gaffer_skip_ticket "$NUM"; result error; exit 0
-      else
-        log "MINIMALISM_ENFORCE=0 — #$NUM bootstrap missing smallest-change note, flagging not failing"
-        wg attach-evidence "$NUM" --type manual_note \
-          --summary "needs_human_review: bootstrap missing smallest-change note" >/dev/null 2>&1 || true
-      fi
+      # A greenfield bootstrap creates a repo FROM THE EMPTY TREE — there is no
+      # pre-existing code to make a "smallest change" against, so a smallest-change note
+      # (a meaningful gate for FEATURE edits) is contradictory here, and being
+      # agent-authored it is flaky run-to-run (a valid scaffold otherwise gets parked on
+      # a missing note, stranding the whole epic). Consistent with the oversized
+      # exemption below — a fresh scaffold is legitimately large — FLAG a missing note
+      # for human review, never FAIL the bootstrap on it.
+      log "BOOTSTRAP MINIMALISM: #$NUM has no smallest-change note — EXEMPT (fresh scaffold); flagging not failing ($_BMZ_FILES files / $_BMZ_LINES lines)"
+      wg attach-evidence "$NUM" --type manual_note \
+        --summary "needs_human_review: bootstrap has no smallest-change note (${_BMZ_FILES} files / ${_BMZ_LINES} lines) — exempt from minimalism hard-fail (greenfield scaffold)" >/dev/null 2>&1 || true
     else
       # Note present. Oversized is EXEMPT for bootstrap — flag visibly, never fail.
       if { [ "${OVERSIZED_MAX_LINES:-400}" -gt 0 ] && [ "${_BMZ_LINES:-0}" -gt "${OVERSIZED_MAX_LINES:-400}" ]; } \

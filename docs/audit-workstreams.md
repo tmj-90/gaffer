@@ -39,9 +39,10 @@ submit → bookkeeping. Done = it would catch the inert-feature cluster.
       closes the cross-run gap the post-attempt bound couldn't. prespawn-budget-gate.test.sh (8, bash 3.2).
 - [ ] C3b: count killed/timed-out (unknown-cost) calls as an estimate not $0 in the spend total
       (gaffer_ticket_rework_spend sums MEASURED only, so a repeatedly-killed runaway never accrues) — follow-up.
-- [~] C4 sandbox on Linux: sandbox.sh ALREADY warns to stderr + degrades honestly when
-      sandbox-exec is absent (all Linux). REMAINING: a GAFFER_STRICT_REQUIRE hard-refuse for
-      operators who demand containment; stretch: real docker provider (later).
+- [x] C4 sandbox on Linux: GAFFER_STRICT_REQUIRE=1 makes sandbox_wrap_cmd FAIL CLOSED on every
+      no-OS-sandbox path (none/missing sandbox-exec/docker/unknown); tick.sh refuses to launch the
+      agent (parks strict_require_unavailable). Default still warns+degrades. strict-require.test.sh
+      (8, bash 3.2). Stretch: real docker provider (later).
 
 ## E — Publish gates (binary, before public)
 - [x] Email history rewrite (git filter-repo over merged main) — DONE this session.

@@ -1658,11 +1658,22 @@ EOF
   # leaves WRAP empty, so the invocation below is byte-for-byte as before.
   WRAP=""
   if [ "${STRICT_MODE:-0}" = "1" ]; then
-    WRAP="$(sandbox_wrap_cmd "$WRITE_ROOTS" "$READ_ROOTS" 2>>"$GAFFER_LOG")"
-    if [ -n "$WRAP" ]; then
-      log "STRICT_MODE active: wrapping live agent via provider '${SANDBOX_PROVIDER:-sandbox-exec}' ($WRAP)"
+    # C4: sandbox_wrap_cmd returns NON-ZERO only when GAFFER_STRICT_REQUIRE=1 and no OS
+    # sandbox provider is available — a hard fail-closed: the operator demanded OS
+    # containment this host can't supply, so we do NOT launch the agent uncontained.
+    if WRAP="$(sandbox_wrap_cmd "$WRITE_ROOTS" "$READ_ROOTS" 2>>"$GAFFER_LOG")"; then
+      if [ -n "$WRAP" ]; then
+        log "STRICT_MODE active: wrapping live agent via provider '${SANDBOX_PROVIDER:-sandbox-exec}' ($WRAP)"
+      else
+        log "STRICT_MODE active but provider '${SANDBOX_PROVIDER:-sandbox-exec}' added no OS sandbox — worktree isolation + safety hook still apply"
+      fi
     else
-      log "STRICT_MODE active but provider '${SANDBOX_PROVIDER:-sandbox-exec}' added no OS sandbox — worktree isolation + safety hook still apply"
+      log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)"
+      wg attach-evidence "$NUM" --type manual_note \
+        --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)" >/dev/null 2>&1 || true
+      gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available — fail closed, agent not launched" strict_require_unavailable
+      gaffer_skip_ticket "$NUM"
+      result error; exit 0
     fi
   fi
   # ── GUARD B: recoverable-delivery attempt loop ──────────────────────────────

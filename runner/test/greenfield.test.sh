@@ -100,7 +100,10 @@ echo "== AC6b: bootstrap default-branch capture is clean on an UNBORN repo (E2E 
 # "HEAD\nmain". That fails 'repo add's git-ref-safe branch validation, so the whole
 # greenfield onboard reports FAILED and the sibling tickets never get wired. The fix is
 # `git symbolic-ref --short HEAD`, which returns a clean "main" for unborn + committed.
-UNB="$WORK/git/unborn-repo"; mkdir -p "$UNB"; git -C "$UNB" init -q 2>/dev/null
+# `-b main` mirrors what gaffer_bootstrap_init does in production (greenfield.sh) — the
+# fixture must NOT inherit the operator's ambient `init.defaultBranch`, or this asserts
+# "main" locally (where it's set) yet gets "master" under a clean CI $HOME.
+UNB="$WORK/git/unborn-repo"; mkdir -p "$UNB"; git -C "$UNB" init -q -b main 2>/dev/null || git -C "$UNB" init -q 2>/dev/null
 _newbr="$(git -C "$UNB" symbolic-ref --short HEAD 2>/dev/null || echo main)"
 [ "$_newbr" = "main" ] \
   && ok "symbolic-ref yields a clean 'main' on an unborn repo" \

@@ -1194,8 +1194,10 @@ html::after {
 /* === Hero band ============================================================
    An atmospheric image header that melts into the OLED content below it. The
    asset carries a near-black LEFT and the amber focal on the RIGHT; a two-axis
-   scrim keeps real headline text AAA-legible on the left and fades the band
-   seamlessly into the view. Compositor-friendly: no layout-animating props. */
+   scrim darkens the left so headline text stays legible over it and fades the band
+   seamlessly into the view. (Contrast is not formally computed here — muted text
+   near the transparent edge is not guaranteed AAA.) Compositor-friendly: no
+   layout-animating props. */
 .view-hero {
   position: relative;
   isolation: isolate;

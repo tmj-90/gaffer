@@ -18,7 +18,7 @@ It isn't a chat assistant that writes code. It's a *factory*: a control plane, a
 
 Most coding agents are stateless renters: every run starts cold, the "memory" is a vendor black box, and the only proof a task passed is a log the agent wrote about itself. Gaffer inverts all three:
 
-- **It builds you an asset.** Every review verdict, every piece of evidence, every learned convention persists in a control plane (Dispatch) and a gated memory (Memory) that you own and can carry between repos. The factory's hit-rate, safety, and cost-efficiency improve the longer it runs.
+- **It builds you an asset.** Every review verdict, every piece of evidence, every learned convention persists in a control plane (Dispatch) and a gated memory (Memory) that you own and can carry between repos — so the more you run it, the more context (evidence, conventions, product intent) is there to prime the next delivery.
 - **It runs on your machine.** Local-first: the control plane, databases, repo state, worktrees, and evidence all live on your box — no per-seat cloud, fully auditable. Live agent runs use your configured Claude Code CLI, so prompts and selected repo context are sent to that model provider. Treat any connected model as part of your trust boundary.
 - **You hold the gate.** By default a human approves every merge and the agent *structurally cannot* ship its own work. Opt-in flags unlock full hands-off autonomy when you actually want it.
 
@@ -158,7 +158,7 @@ Gaffer runs shell-capable agents, so containment is first-class:
 
 - a **deterministic PreToolUse safety hook** scopes writes to the worktree, blocks secret reads, denies the control-plane CLI, and **fails closed** (see [SECURITY.md](SECURITY.md) for residual limits on dynamic paths);
 - every ticket runs in a **throwaway git worktree** — the real checkout is never touched;
-- an optional **OS sandbox** (sandbox-exec today; container/VM providers via a seam) adds a kernel-level write boundary;
+- an optional **OS sandbox** adds a kernel-level write boundary — **macOS only today** (`sandbox-exec`); on Linux it is a no-op until a container/VM provider is wired via the seam, so there the safety hook remains the boundary;
 - the **review gate is enforced server-side** — an agent can't approve or merge its own work, and the merge gate verifies the *real git diff*, not the agent's word for it.
 
 Opt-in autonomy, to be used deliberately: `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `MEMORY_AUTO_APPROVE`. Full threat model and honest residual limits: [`SECURITY.md`](SECURITY.md).

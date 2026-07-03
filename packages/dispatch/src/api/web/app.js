@@ -1380,7 +1380,7 @@ async function renderOverview() {
       title: "Ship better software, faster.",
       subtitle:
         "Real-time insight into your factory. Track flow, focus on what matters, and keep everything moving.",
-      status: "Factory online · All systems nominal",
+      status: "Factory online", // honest: the dashboard is up. 'All systems nominal' was a hardcoded literal, not a health signal.
       statusOk: true,
     }),
   );
@@ -1442,9 +1442,20 @@ async function renderOverview() {
   if (costRes && (costRes.total_usd > 0 || costRes.today_usd > 0 || costRes.ticket_count > 0)) {
     const fmtUsd = (v) => (typeof v === "number" ? `$${v.toFixed(4)}` : "—");
     wrap.appendChild(
-      el("div", { class: "cost-banner" }, [
+      el(
+        "div",
+        {
+          class: "cost-banner",
+          // HONESTY: this is an API-EQUIVALENT estimate from Claude Code usage, not real
+          // money — on a Max/Pro subscription the marginal cost is the flat fee, and a
+          // timed-out/killed call reports "unknown" and contributes $0. Labelled so the
+          // number is never read as a real bill.
+          title:
+            "API-equivalent estimate from Claude Code usage — NOT real charges on a Max/Pro subscription (there the marginal cost is the flat fee). Killed/timed-out calls report as unknown and count as $0.",
+        },
+        [
         el("span", { class: "cost-item" }, [
-          el("span", { class: "cost-label" }, "All-time spend"),
+          el("span", { class: "cost-label" }, "All-time (API-equiv)"),
           el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
         ]),
         el("span", { class: "cost-sep" }, "·"),

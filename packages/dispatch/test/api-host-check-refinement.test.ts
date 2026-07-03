@@ -100,6 +100,28 @@ describe("Host/Origin check refinement", () => {
     }
   });
 
+  describe("(c) LAN-QR: the static SPA shell is public, the API stays Host-gated", () => {
+    it("serves the shell (/) to a FOREIGN Host with NO token — a phone's first load isn't a 403", async () => {
+      h = await startHarness("0.0.0.0");
+      const res = await rawGet(h.port, "/", { Host: FOREIGN_HOST });
+      expect(res.status).toBe(200);
+      expect(res.body.toLowerCase()).toContain("html");
+    });
+
+    it("serves /app.js to a FOREIGN Host with NO token (public static, no data)", async () => {
+      h = await startHarness("0.0.0.0");
+      const res = await rawGet(h.port, "/app.js", { Host: FOREIGN_HOST });
+      expect(res.status).toBe(200);
+    });
+
+    it("NEGATIVE CONTROL: a tokenless API request with a foreign Host is STILL 403 (rebinding defense intact)", async () => {
+      h = await startHarness("0.0.0.0");
+      const res = await rawGet(h.port, "/api/board", { Host: FOREIGN_HOST });
+      expect(res.status).toBe(403);
+      expect(res.body).toContain("FORBIDDEN_HOST");
+    });
+  });
+
   describe("(b) a VALID bearer token bypasses the Host/Origin check", () => {
     it("allows a foreign Host on a 0.0.0.0-style non-loopback bind with the token", async () => {
       h = await startHarness("0.0.0.0");

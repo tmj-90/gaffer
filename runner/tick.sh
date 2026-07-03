@@ -758,7 +758,14 @@ Your working directory IS the new repo and the ONLY writable root: $B_DIR
 Do NOT write or read outside it. Do NOT branch — commit on the current branch.
 EOF
 
-    B_DEFAULT_BRANCH="$(git -C "$B_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+    # Capture the repo's default branch. NB: at this point the scaffold may still be
+    # UNBORN (git init done, the agent's first commit not yet made). On an unborn repo
+    # `git rev-parse --abbrev-ref HEAD` prints "HEAD" to stdout AND exits non-zero, so
+    # `… || echo main` yields the newline-joined garbage "HEAD\nmain" — which then fails
+    # `repo add`'s git-ref-safe branch validation and silently sinks the whole greenfield
+    # onboard. `symbolic-ref --short HEAD` returns the real branch ("main") cleanly for
+    # both unborn and committed repos.
+    B_DEFAULT_BRANCH="$(git -C "$B_DIR" symbolic-ref --short HEAD 2>/dev/null || echo main)"
     RUN_LOG_MARK="$(wc -l < "$GAFFER_LOG" 2>/dev/null || echo 0)"
     # The scoped install allowance: GAFFER_BOOTSTRAP_INSTALL=1 + GAFFER_BOOTSTRAP_DIR
     # are exported ONLY for this bootstrap invocation, so the safety hook permits

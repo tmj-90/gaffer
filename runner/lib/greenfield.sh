@@ -156,6 +156,12 @@ gaffer_bootstrap_onboard() {
       # epic stuck: repo registered, but dependents never linked/unblocked.
       wg_ok=0
     else
+      # A genuine registration failure (NOT already-registered). Surface WHY — the
+      # caller suppresses this with >/dev/null 2>&1, so without this the whole
+      # greenfield epic sinks with only a generic "FAILED" and no cause (e.g. a
+      # malformed --branch value failing git-ref validation).
+      type log >/dev/null 2>&1 \
+        && log "onboard: 'repo add $name' failed (rc=$add_rc): $(printf '%s' "$add_out" | head -c 200 | tr '\n' ' ')"
       wg_ok=1
     fi
   fi

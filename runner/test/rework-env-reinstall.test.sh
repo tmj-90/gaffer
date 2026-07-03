@@ -100,6 +100,11 @@ wg()  { return 0; }
 result() { :; }
 gaffer_skip_ticket() { :; }
 _recover_or_park() { printf '%s' "$1" > "$RECOVER_MARK"; _DELIV_OUTCOME="parked"; return 0; }
+# gaffer_install_agent_env now asserts the safety hook first (real tick.sh gate). Stub it to
+# the pass path — the hook + deny-list exist in the real $RUNNER_DIR this test points at, and
+# the assertion has its own coverage (safety-hook.test.mjs); this test is about env-reinstall
+# idempotency, so the precondition check is orthogonal.
+gaffer_assert_safety_hook() { return 0; }
 
 # Run tick.sh's verbatim retry block in a subshell. A `for` wrapper absorbs the
 # fail-closed `continue`; the subshell absorbs its `exit`.

@@ -163,6 +163,18 @@ const SANITISERS: Record<ToolName, Sanitiser> = {
       dependency_edge_count: dependencyEdges,
     });
   },
+  // Spec-Driven Development: record only the shape (title + clause count), never
+  // the clause text / brief (free-text intent bodies stay out of the audit).
+  create_spec: (a) =>
+    compact({
+      title: asString(a.title),
+      brief_chars: chars(a.brief),
+      clause_count: Array.isArray(a.clauses) ? a.clauses.length : undefined,
+      target_repo: asString(a.target_repo),
+      scope_node_id: asString(a.scope_node_id),
+    }),
+  get_spec: (a) => compact({ spec_id: asString(a.spec_id) }),
+  freeze_spec: (a) => compact({ spec_id: asString(a.spec_id) }),
   list_pending_decisions: () => ({}),
   request_decision: (a) =>
     compact({
@@ -188,7 +200,7 @@ export function sanitiseRequest(tool: ToolName, args: Args): Record<string, unkn
 /** Result-id extractor: pulls the entity id(s) a tool result references. */
 export function resultIdsFor(data: Record<string, unknown>): string[] {
   const ids: string[] = [];
-  for (const key of ["ticket_id", "ac_id", "evidence_id", "decision_id", "event_id"]) {
+  for (const key of ["ticket_id", "ac_id", "evidence_id", "decision_id", "event_id", "spec_id"]) {
     const v = data[key];
     if (typeof v === "string") ids.push(v);
   }

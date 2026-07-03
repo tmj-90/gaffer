@@ -1,7 +1,7 @@
 ---
 name: design-system
 description: Use when a ticket needs a *systematic* token + component foundation for a frontend — the three-layer token architecture (primitive → semantic → component), component specs with full state coverage, or a recommendation for which design system a product should have. Invoke for "set up design tokens", "define the component system", "we keep hardcoding colours — fix it", "what design system should this product use", or as the structural backbone that `frontend-design` and `brand` build distinctive UI on top of.
-stack: [typescript, javascript, react, web]
+stack: [react, web]
 area: frontend
 ---
 

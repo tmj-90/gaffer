@@ -56,6 +56,13 @@ check("detectApplied is word-boundary safe (no substring false positives)", () =
   // "run-tests-extra" must NOT match the selected "run-tests".
   eq(detectApplied(["run-tests"], "ran the run-tests-extra helper"), [], "no substring match");
 });
+check("detectApplied matches the space-separated form + is case-insensitive (prose)", () => {
+  // Agents narrate in prose, not slugs — the old slug-only, case-sensitive match missed these.
+  eq(detectApplied(["run-tests"], "I then run tests to verify"), ["run-tests"], "space form");
+  eq(detectApplied(["self-review"], "Did a Self Review pass"), ["self-review"], "capitalised");
+  // …but a longer hyphenated token still must not false-match the slug.
+  eq(detectApplied(["run-tests"], "run-tests-extra only"), [], "still boundary-safe");
+});
 check("detectApplied returns [] for empty output", () => {
   eq(detectApplied(["run-tests"], ""), [], "empty output");
 });

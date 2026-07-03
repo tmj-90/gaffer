@@ -130,6 +130,8 @@ function rowToLore(row: LoreRow, repos: string[], tags: string[]): Lore {
     updatedAt: row.updated_at,
     lastVerifiedAt: row.last_verified_at ?? undefined,
     conflictsWith: parseConflictsWith(row.conflicts_with),
+    specId: row.spec_id ?? undefined,
+    clauseId: row.clause_id ?? undefined,
   };
 }
 
@@ -295,9 +297,9 @@ function insertLore(db: Database, input: AddLoreInput, status: LoreStatus): Lore
         `INSERT INTO lore (
           id, title, summary, body, author, team,
           status, kind, source, review_after, confidence,
-          superseded_by, restricted,
+          superseded_by, restricted, spec_id, clause_id,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -313,6 +315,8 @@ function insertLore(db: Database, input: AddLoreInput, status: LoreStatus): Lore
         confidence,
         null,
         input.restricted ? 1 : 0,
+        input.specId ?? null,
+        input.clauseId ?? null,
         ts,
         ts,
       );

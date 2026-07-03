@@ -16,6 +16,31 @@ const setAuthToken = (t) => localStorage.setItem(TOKEN_KEY, t);
 const clearAuthToken = () => localStorage.removeItem(TOKEN_KEY);
 
 /**
+ * One-scan phone access (AFK-LOOP P3). `gaffer dashboard --lan` prints a QR of
+ * `http://LAN:PORT/?token=…`; when a scan lands here with that param we adopt
+ * the token and immediately scrub it from the URL (history + query) so it never
+ * lingers in browser history. A malformed URL must never block boot — the login
+ * gate is always the safe fallback.
+ */
+function adoptTokenFromUrl() {
+  try {
+    const params = new URLSearchParams(location.search || "");
+    const t = params.get("token");
+    if (!t) return;
+    setAuthToken(t.trim());
+    params.delete("token");
+    const qs = params.toString();
+    history.replaceState(
+      null,
+      "",
+      location.pathname + (qs ? `?${qs}` : "") + (location.hash || ""),
+    );
+  } catch {
+    // Ignore — fall through to the normal (paste-a-token) login gate.
+  }
+}
+
+/**
  * Call the Dispatch REST API. Resolves to the parsed JSON body on 2xx.
  * On a non-2xx response it throws an Error carrying the API error envelope
  * ({ error: { code, message } }) so callers can surface it to the user.
@@ -121,6 +146,26 @@ const ICONS = {
   settings:
     '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  specs:
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M9 13l1.5 1.5L13 12M9 17h5"/>',
+  health:
+    '<path d="M20.8 4.6a5.5 5.5 0 0 0-8 0L12 5.4l-.8-.8a5.5 5.5 0 1 0-7.8 7.8l.8.8L12 21l7.8-8 .8-.8a5.5 5.5 0 0 0 .2-7.6Z"/><path d="M3 12.5h4l1.5-4 3 8 1.5-4H17"/>',
+  // --- pipeline stage icons (Plan → Ready → Build → Review → Deploy) --------
+  gitbranch:
+    '<circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="7" r="2.6"/><path d="M6 8.6v6.8M18 9.6c0 3.2-4.4 3.4-6.4 5.6"/>',
+  inbox:
+    '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1Z"/>',
+  wrench:
+    '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.9 2.9-2-.5-.5-2 2.9-2.8Z"/>',
+  clipboardcheck:
+    '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/>',
+  diamond: '<path d="M12 2 22 12 12 22 2 12Z"/>',
+  // --- spec scanner-frame line icons (keyword-matched by title) ------------
+  globe:
+    '<circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5a15 15 0 0 1 0 19a15 15 0 0 1 0-19Z"/>',
+  gauge:
+    '<path d="m12 13 3.5-3.5"/><path d="M4 18.5a10 10 0 1 1 16 0"/><circle cx="12" cy="19" r="1"/>',
+  doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/>',
 };
 function icon(name, cls) {
   const ns = "http://www.w3.org/2000/svg";
@@ -164,6 +209,16 @@ function fmtDuration(ms) {
   if (hr < 24) return `${hr}h ${min % 60}m`;
   const day = Math.floor(hr / 24);
   return `${day}d ${hr % 24}h`;
+}
+
+/** Relative time from an ISO stamp, e.g. "3d ago" / "just now". */
+function fmtRelative(iso) {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const ms = Date.now() - t;
+  if (ms < 60_000) return "just now";
+  return `${fmtDuration(ms)} ago`;
 }
 
 /** Short, human-friendly timestamp. Falls back to the raw string. */
@@ -449,6 +504,46 @@ function viewHead(title, countText, actions) {
   ]);
 }
 
+/**
+ * Atmospheric hero band that sits at the very TOP of a view, below the nav.
+ * A dark sci-fi image carries the amber focal on its RIGHT; a two-axis scrim
+ * (see `.view-hero` in styles.css) darkens the LEFT and fades the band into the
+ * OLED content below, so real headline text stays legible at AAA contrast.
+ *
+ * The image is purely decorative background; all copy is live DOM text (screen
+ * readers get the eyebrow/title/subtitle/status verbatim). The leading ◆ / ●
+ * marks are rendered as decorative, aria-hidden spans — do not bake them into
+ * the passed strings.
+ *
+ * @param {object}  o
+ * @param {string}  o.image        asset path, e.g. "assets/bg/hero-city.jpg"
+ * @param {string} [o.eyebrow]     small mono caps line (amber ◆ prepended)
+ * @param {string}  o.title        editorial headline (Space Grotesk)
+ * @param {string} [o.subtitle]    muted supporting line(s)
+ * @param {string} [o.status]      status line text (● dot prepended)
+ * @param {boolean}[o.statusOk]    green dot + text when healthy (default true)
+ */
+function viewHero({ image, eyebrow, title, subtitle, status, statusOk = true }) {
+  return el("header", { class: "view-hero", style: `background-image:url("${image}")` }, [
+    el("div", { class: "view-hero-inner" }, [
+      eyebrow
+        ? el("div", { class: "view-hero-eyebrow mono" }, [
+            el("span", { class: "view-hero-diamond", "aria-hidden": "true" }, "◆"),
+            el("span", {}, eyebrow),
+          ])
+        : null,
+      el("h1", { class: "view-hero-title" }, title),
+      subtitle ? el("p", { class: "view-hero-sub" }, subtitle) : null,
+      status
+        ? el("div", { class: `view-hero-status${statusOk ? " ok" : ""}` }, [
+            el("span", { class: "view-hero-dot", "aria-hidden": "true" }),
+            el("span", {}, status),
+          ])
+        : null,
+    ]),
+  ]);
+}
+
 function emptyState(title, sub, iconName = "check") {
   return el("div", { class: "empty-state" }, [
     el("div", { class: "es-icon" }, icon(iconName)),
@@ -534,11 +629,13 @@ function sheetKeydown(e) {
 
 const VIEWS = {
   overview: renderOverview,
+  health: renderHealth,
   work: renderWork,
   review: renderReview,
   factory: renderFactory,
   memory: renderMemory,
   epics: renderEpics,
+  specs: renderSpecs,
   settings: renderSettings,
   create: renderCreate,
   ticket: renderTicket,
@@ -560,9 +657,11 @@ const VIEW_ALIASES = {
 // Primary nav entries (order = bottom-nav + desktop rail order).
 const NAV = [
   { id: "overview", label: "Overview", icon: "overview" },
+  { id: "health", label: "Health", icon: "health" },
   { id: "work", label: "Work", icon: "work" },
   { id: "review", label: "Review", icon: "review" },
   { id: "epics", label: "Epics", icon: "epics" },
+  { id: "specs", label: "Specs", icon: "specs" },
   { id: "factory", label: "Map", icon: "map" },
   { id: "memory", label: "Memory", icon: "memory" },
   { id: "settings", label: "Settings", icon: "settings" },
@@ -594,7 +693,17 @@ function navigate(hash) {
 // Navigation order — used to decide which way the "camera" steps so a forward
 // move (Overview → Settings) and a back move read differently. This is what
 // makes navigating feel like walking through a plan rather than a page reload.
-const NAV_ORDER = ["overview", "work", "review", "epics", "factory", "memory", "settings"];
+const NAV_ORDER = [
+  "overview",
+  "health",
+  "work",
+  "review",
+  "epics",
+  "specs",
+  "factory",
+  "memory",
+  "settings",
+];
 let lastAreaIndex = 0;
 
 let activeArea = "overview";
@@ -733,7 +842,7 @@ function buildChrome() {
   const live = el("div", { class: "rail-status", title: "Factory online" }, [
     el("span", { class: "live-lamp" }),
     el("span", { class: "rail-status-text" }, "LIVE"),
-    el("span", { class: "rail-status-meta mono" }, "on watch"),
+    el("span", { class: "rail-status-meta mono", id: "live-tick" }, "tick 001"),
   ]);
   const rail = el(
     "nav",
@@ -820,6 +929,71 @@ function buildChrome() {
     ),
   );
   bottomnav.hidden = false;
+
+  startLiveTick();
+  startAutoRefresh();
+}
+
+// Hot-refresh: read-mostly views quietly re-fetch on an interval so the board,
+// overview and review reflect what the factory is doing without a manual reload
+// (fixes the stale-board bug — there was no polling or server push). It never
+// fights the operator: skipped while typing, while dragging, when the tab is
+// hidden, or if the route changed mid-fetch — and it preserves scroll so a
+// background refresh is invisible. Forms (create/settings) and ticket detail are
+// deliberately excluded so in-flight input is never clobbered.
+const AUTO_REFRESH_MS = 9000;
+const AUTO_REFRESHABLE = new Set(["overview", "work", "review", "epics", "memory"]);
+let autoRefreshTimer;
+function busyEditing() {
+  const a = document.activeElement;
+  return !!(
+    a &&
+    (a.tagName === "INPUT" ||
+      a.tagName === "TEXTAREA" ||
+      a.tagName === "SELECT" ||
+      a.isContentEditable)
+  );
+}
+function startAutoRefresh() {
+  if (autoRefreshTimer) return;
+  autoRefreshTimer = setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    if (busyEditing()) return;
+    // don't yank a card mid-drag or a menu/sheet out from under a click. Match `.sheet.open`
+    // (an OPEN sheet), not `.sheet` — the latter is the always-present container, so it would
+    // pause auto-refresh permanently after the first sheet ever opens.
+    if (document.querySelector(".dragging, .is-dragging, .sheet.open, .menu-open")) return;
+    const { view, param } = parseHash();
+    if (!AUTO_REFRESHABLE.has(view)) return;
+    const render = VIEWS[view];
+    if (!render) return;
+    const y = app.scrollTop;
+    guard(async () => {
+      const content = await render(param);
+      // bail if the operator navigated or started interacting during the fetch
+      if (parseHash().view !== view || busyEditing()) return;
+      clear(app);
+      app.appendChild(content);
+      app.scrollTop = y;
+    });
+  }, AUTO_REFRESH_MS);
+}
+
+// Live heartbeat — the tick counter breathes in the bar so the room reads
+// "on watch". Purely cosmetic; the number is a monotonic tick, not real data.
+let liveTickTimer;
+function startLiveTick() {
+  if (liveTickTimer) return;
+  let n = 0;
+  liveTickTimer = setInterval(() => {
+    n++;
+    const t = document.getElementById("live-tick");
+    if (!t) return;
+    t.textContent = "tick " + String(n).padStart(3, "0");
+    if (prefersReducedMotion()) return;
+    t.classList.add("tick-flash");
+    setTimeout(() => t.classList.remove("tick-flash"), 200);
+  }, 6000);
 }
 
 function syncNav() {
@@ -921,6 +1095,13 @@ async function buildPaletteSources() {
       hint: "brief → epic of tickets",
       icon: "spark",
       run: () => openPlanBuild(),
+    },
+    {
+      group: "Create",
+      label: "Author a spec",
+      hint: "brief → editable clauses → freeze",
+      icon: "spark",
+      run: () => openSpecBuild(),
     },
     {
       group: "Create",
@@ -1083,16 +1264,25 @@ document.addEventListener("keydown", (e) => {
 // ===========================================================================
 
 async function renderOverview() {
-  const [{ summary }, activity, ticketsRes, decisionsRes, costRes, bouncingRes, humanQueueRes] =
-    await Promise.all([
-      api("GET", "/api/dashboard"),
-      api("GET", "/api/activity?limit=200"),
-      api("GET", "/tickets").catch(() => ({ tickets: [] })),
-      api("GET", "/decisions").catch(() => ({ decisions: [] })),
-      api("GET", "/api/cost").catch(() => null),
-      api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
-      api("GET", "/api/human-queue").catch(() => ({ items: [], counts: { total: 0 } })),
-    ]);
+  const [
+    { summary },
+    activity,
+    ticketsRes,
+    decisionsRes,
+    costRes,
+    bouncingRes,
+    humanQueueRes,
+    healthRes,
+  ] = await Promise.all([
+    api("GET", "/api/dashboard"),
+    api("GET", "/api/activity?limit=200"),
+    api("GET", "/tickets").catch(() => ({ tickets: [] })),
+    api("GET", "/decisions").catch(() => ({ decisions: [] })),
+    api("GET", "/api/cost").catch(() => null),
+    api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
+    api("GET", "/api/human-queue").catch(() => ({ items: [], counts: { total: 0 } })),
+    api("GET", "/api/health").catch(() => null),
+  ]);
 
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
@@ -1122,21 +1312,23 @@ async function renderOverview() {
     }
     return days.map((d) => m[d.key]);
   };
-  const doneByDay = bucket(doneTickets, (t) => t.updated_at);
   const actByDay = bucket(events, (e) => e.created_at);
-  // cycle time per completion day (avg days created→done), line carried forward
-  const cycleAgg = {};
-  for (const t of doneTickets) {
-    const k = String(t.updated_at).slice(0, 10);
-    const dys = (Date.parse(t.updated_at) - Date.parse(t.created_at)) / DAY;
-    if (dys >= 0) (cycleAgg[k] = cycleAgg[k] || []).push(dys);
-  }
-  let carry = null;
-  const cycleLine = days.map((d) => {
-    const a = cycleAgg[d.key];
-    if (a && a.length) carry = a.reduce((x, y) => x + y, 0) / a.length;
-    return carry == null ? 0 : +carry.toFixed(2);
-  });
+
+  // AUTHORITATIVE cycle-time / throughput: read the ONE server-side definition
+  // from /api/health (src/health/deliveryFlow.ts) instead of recomputing it here.
+  // The server reproduces the former client maths, so displayed numbers are
+  // unchanged. Falls back to a zeroed 14-day shape when the endpoint is
+  // unavailable, so the KPI cards still render.
+  const health = healthRes || {};
+  const flowCycle = health.cycle_time || {};
+  const flowThr = health.throughput || {};
+  const zeroSeries = () => days.map(() => 0);
+  const cycleLine =
+    Array.isArray(flowCycle.series) && flowCycle.series.length === N
+      ? flowCycle.series
+      : zeroSeries();
+  const doneByDay =
+    Array.isArray(flowThr.series) && flowThr.series.length === N ? flowThr.series : zeroSeries();
 
   // --- distinct, real per-metric daily series (each KPI gets its own shape) --
   const createdByDay = bucket(tickets, (t) => t.created_at);
@@ -1156,17 +1348,13 @@ async function renderOverview() {
     return opened > 0 ? Math.round((shipped / (shipped + opened)) * 100) : 0;
   });
 
-  // --- headline metrics (real) ---------------------------------------------
-  const med = (arr) => {
-    if (!arr.length) return 0;
-    const s = [...arr].sort((a, b) => a - b);
-    const m = Math.floor(s.length / 2);
-    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-  };
+  // --- headline metrics -----------------------------------------------------
+  // Cycle time + throughput are server-authoritative (from /api/health above).
+  // cycleVals is retained ONLY to derive the Lead-time percentile below.
   const cycleVals = doneTickets
     .map((t) => (Date.parse(t.updated_at) - Date.parse(t.created_at)) / DAY)
     .filter((x) => x >= 0);
-  const cycleTime = med(cycleVals);
+  const cycleTime = typeof flowCycle.median_days === "number" ? flowCycle.median_days : 0;
   const leadTime = cycleVals.length
     ? Math.max(
         ...cycleVals
@@ -1175,8 +1363,8 @@ async function renderOverview() {
           .slice(0, Math.ceil(cycleVals.length / 2)),
       ) || cycleTime
     : 0;
-  const last7 = doneByDay.slice(-7).reduce((a, b) => a + b, 0);
-  const prev7 = doneByDay.slice(-14, -7).reduce((a, b) => a + b, 0);
+  const last7 = typeof flowThr.last7 === "number" ? flowThr.last7 : 0;
+  const prev7 = typeof flowThr.prev7 === "number" ? flowThr.prev7 : 0;
   const flowEff = Math.round(
     ((byStatus.done || 0) /
       Math.max(1, (byStatus.done || 0) + inReview + blocked + inProgress + (byStatus.ready || 0))) *
@@ -1191,7 +1379,19 @@ async function renderOverview() {
   };
 
   const wrap = el("div", { class: "view" });
-  wrap.appendChild(overviewHead());
+  wrap.appendChild(
+    viewHero({
+      image: "assets/bg/hero-city.jpg",
+      title: "Ship better software, faster.",
+      subtitle:
+        "Real-time insight into your factory. Track flow, focus on what matters, and keep everything moving.",
+      status: "Factory online", // honest: the dashboard is up. 'All systems nominal' was a hardcoded literal, not a health signal.
+      statusOk: true,
+    }),
+  );
+
+  // Queue-first: what needs YOU leads the room, sitting above the metrics.
+  wrap.appendChild(whatIOwnPanel(humanQueueRes));
 
   // --- KPI row --------------------------------------------------------------
   wrap.appendChild(
@@ -1247,30 +1447,36 @@ async function renderOverview() {
   if (costRes && (costRes.total_usd > 0 || costRes.today_usd > 0 || costRes.ticket_count > 0)) {
     const fmtUsd = (v) => (typeof v === "number" ? `$${v.toFixed(4)}` : "—");
     wrap.appendChild(
-      el("div", { class: "cost-banner" }, [
-        el("span", { class: "cost-item" }, [
-          el("span", { class: "cost-label" }, "All-time spend"),
-          el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
-        ]),
-        el("span", { class: "cost-sep" }, "·"),
-        el("span", { class: "cost-item" }, [
-          el("span", { class: "cost-label" }, "Today"),
-          el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
-        ]),
-        el("span", { class: "cost-sep" }, "·"),
-        el("span", { class: "cost-item" }, [
-          el("span", { class: "cost-label" }, "Tickets costed"),
-          el("span", { class: "cost-val tabnum" }, String(costRes.ticket_count)),
-        ]),
-      ]),
+      el(
+        "div",
+        {
+          class: "cost-banner",
+          // HONESTY: this is an API-EQUIVALENT estimate from Claude Code usage, not real
+          // money — on a Max/Pro subscription the marginal cost is the flat fee, and a
+          // timed-out/killed call reports "unknown" and contributes $0. Labelled so the
+          // number is never read as a real bill.
+          title:
+            "API-equivalent estimate from Claude Code usage — NOT real charges on a Max/Pro subscription (there the marginal cost is the flat fee). Killed/timed-out calls report as unknown and count as $0.",
+        },
+        [
+          el("span", { class: "cost-item" }, [
+            el("span", { class: "cost-label" }, "All-time (API-equiv)"),
+            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
+          ]),
+          el("span", { class: "cost-sep" }, "·"),
+          el("span", { class: "cost-item" }, [
+            el("span", { class: "cost-label" }, "Today"),
+            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
+          ]),
+          el("span", { class: "cost-sep" }, "·"),
+          el("span", { class: "cost-item" }, [
+            el("span", { class: "cost-label" }, "Tickets costed"),
+            el("span", { class: "cost-val tabnum" }, String(costRes.ticket_count)),
+          ]),
+        ],
+      ),
     );
   }
-
-  // --- "What I own" — the operator's FIRST-CLASS lane (Track 2a) ------------
-  // Everything the HUMAN owns: decisions the agent delegated (WITH reasons),
-  // review sign-offs, and regulated ready-approvals / reviewer assignments —
-  // distinct from what the agent is churning (blocked/rework never appears here).
-  wrap.appendChild(whatIOwnPanel(humanQueueRes));
 
   // --- Development flow + Needs your attention (2-up) -----------------------
   wrap.appendChild(
@@ -1446,25 +1652,6 @@ function renderBouncingPanel(bouncing) {
   ]);
 }
 
-/** Overview header: title + supporting line + a right-aligned freshness stamp. */
-function overviewHead() {
-  const d = new Date();
-  const date = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-  return el("div", { class: "ov-head" }, [
-    el("div", {}, [
-      el("h1", { class: "ov-title" }, "Overview"),
-      el("p", { class: "ov-sub" }, "Track your development flow and keep the factory moving."),
-    ]),
-    el("div", { class: "ov-meta" }, [
-      el("span", { class: "ov-fresh" }, [
-        el("span", { class: "ov-fresh-dot" }),
-        "Updated just now",
-      ]),
-      el("span", { class: "ov-date mono" }, date),
-    ]),
-  ]);
-}
-
 /** A panel header: a title with an optional trailing meta/aux label. */
 function panelHead(title, aux, link) {
   return el("div", { class: "panel-head" }, [
@@ -1497,124 +1684,150 @@ function kpiCard({ label, value, unit, tone, delta, series, goodWhenDown = false
   ]);
 }
 
-/** Development flow: one row per stage — count, share bar, oldest item, health. */
-function devFlowPanel(tickets, byStatus, now) {
-  const DAY = 86_400_000;
-  const groups = [
-    { label: "Plan", statuses: ["draft", "refining"], tone: "idle" },
-    { label: "Ready", statuses: ["ready"], tone: "accent" },
-    { label: "Build", statuses: ["in_progress", "claimed"], tone: "accent" },
-    { label: "Review", statuses: ["in_review", "in_testing", "ready_for_merge"], tone: "amber" },
-    { label: "Shipped", statuses: ["done"], tone: "ok" },
-  ];
-  if ((byStatus.blocked || 0) > 0)
-    groups.splice(4, 0, { label: "Blocked", statuses: ["blocked"], tone: "danger" });
+/**
+ * Development flow as a horizontal NODE PIPELINE — the Overview's signature
+ * element. Five stage nodes (Plan → Ready → Build → Review → Deploy) mapped from
+ * the authoritative board counts (summary.ticketsByStatus). Each node is a
+ * circular icon disc + LABEL + COUNT; a node with work is "active" (amber ring +
+ * glow), an empty node is "dim". Discs are joined by a hairline connector; the
+ * segment leading into an active node tints amber. On mobile the row becomes a
+ * single horizontally-scrollable strip. `tickets` is retained for signature
+ * compatibility but counts come from the aggregate `byStatus`.
+ */
+const PIPELINE_STAGES = [
+  {
+    label: "Plan",
+    icon: "gitbranch",
+    statuses: ["draft", "refining"],
+    href: "#/work?status=draft",
+  },
+  { label: "Ready", icon: "inbox", statuses: ["ready"], href: "#/work?status=ready" },
+  {
+    label: "Build",
+    icon: "wrench",
+    statuses: ["in_progress", "claimed"],
+    href: "#/work?status=in_progress",
+  },
+  {
+    label: "Review",
+    icon: "clipboardcheck",
+    statuses: ["in_review", "in_testing", "ready_for_merge"],
+    href: "#/review",
+  },
+  { label: "Deploy", icon: "diamond", statuses: ["done", "shipped"], href: "#/work?status=done" },
+];
 
-  const rows = groups.map((g) => {
-    const items = tickets.filter((t) => g.statuses.includes(t.status));
-    const count = items.length;
-    const oldestMs = items.length
-      ? now - Math.min(...items.map((t) => Date.parse(t.updated_at)))
-      : 0;
-    const ageDays = oldestMs / DAY;
-    const terminal = g.label === "Shipped";
-    const warn = g.label === "Blocked" || (!terminal && count > 0 && ageDays >= 3);
-    return { ...g, count, oldestMs, warn, terminal };
-  });
-  const max = Math.max(1, ...rows.map((r) => r.count));
+function devFlowPanel(_tickets, byStatus, _now) {
+  const counts = byStatus || {};
+  const nodes = PIPELINE_STAGES.map((s) => ({
+    ...s,
+    count: s.statuses.reduce((sum, st) => sum + (counts[st] || 0), 0),
+  }));
 
-  return el("div", { class: "card panel" }, [
-    panelHead("Development flow", "live"),
+  return el("div", { class: "card panel pipeline-panel" }, [
+    el("div", { class: "panel-head" }, [
+      el("span", { class: "panel-title" }, "Development flow"),
+      el("span", { class: "pl-live" }, [el("span", { class: "pl-live-dot" }), "LIVE"]),
+    ]),
     el(
       "div",
-      { class: "devflow" },
-      rows.map((r) =>
-        el("a", { class: `df-row tone-${r.tone}`, href: "#/work" }, [
-          el("span", { class: "df-name" }, [el("span", { class: "df-dot" }), r.label]),
-          el("span", { class: "df-count tabnum" }, String(r.count)),
-          el(
-            "span",
-            { class: "df-bar" },
-            el("i", { style: `width:${r.count ? Math.max(4, (r.count / max) * 100) : 0}%` }),
-          ),
-          el(
-            "span",
-            { class: "df-age mono" },
-            r.count ? (r.terminal ? "—" : fmtDuration(r.oldestMs)) : "—",
-          ),
-          el(
-            "span",
-            { class: `df-status ${r.warn ? "warn" : "ok"}` },
-            r.warn ? "Attention" : "Healthy",
-          ),
-        ]),
-      ),
+      { class: "pipeline", role: "list", "aria-label": "Development flow stages" },
+      nodes.map((n) => {
+        const active = n.count > 0;
+        return el(
+          "a",
+          {
+            class: `pl-node ${active ? "active" : "dim"}`,
+            href: n.href,
+            role: "listitem",
+            "aria-label": `${n.label}: ${n.count}`,
+          },
+          [
+            el("span", { class: "pl-disc" }, icon(n.icon)),
+            el("span", { class: "pl-label" }, n.label),
+            el("span", { class: "pl-count tabnum" }, String(n.count)),
+          ],
+        );
+      }),
     ),
   ]);
 }
 
-/** Needs your attention: the human-gate queue as a tidy alert list. */
+/**
+ * Needs your attention: the human-gate queue as severity-coded alert rows. Each
+ * row carries a left status icon keyed to severity — a red diamond for a
+ * critical/failing condition (blocked work), an amber triangle for something
+ * waiting/overdue (review queue, open decisions, at-risk/stale tickets) — a bold
+ * title + a muted sub-line (the detail), and a right-aligned action link that
+ * routes to the relevant view. All items derive from real overview state; when
+ * nothing is owed the panel keeps its reassuring green all-clear row.
+ */
 function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
   const items = [];
   if (blocked > 0)
     items.push({
-      tone: "blocked",
-      icon: "alert",
-      count: blocked,
+      severity: "critical",
       title: `${blocked} blocked ${blocked === 1 ? "task" : "tasks"}`,
       sub: "waiting on a human to clear the path",
+      action: "View",
       href: "#/work?status=blocked",
     });
   if (inReview > 0)
     items.push({
-      tone: "review",
-      icon: "review",
-      count: inReview,
-      title: "Review queue",
+      severity: "waiting",
+      title: `Review queue · ${inReview}`,
       sub: "changes waiting on your sign-off",
+      action: "Review",
       href: "#/review",
     });
   if (openDecisions > 0)
     items.push({
-      tone: "decision",
-      icon: "question",
-      count: openDecisions,
+      severity: "waiting",
       title: `${openDecisions} open ${openDecisions === 1 ? "decision" : "decisions"}`,
       sub: "a question is waiting on you",
+      action: "Review",
       href: "#/overview",
     });
   if ((stuck || []).length)
     items.push({
-      tone: "stale",
-      icon: "clock",
-      count: stuck.length,
+      severity: "waiting",
       title: `${stuck.length} at risk`,
       sub: `held too long — oldest ${fmtDuration(stuck[0].stuckForMs)}`,
+      action: "View",
       href: "#/work",
     });
   if (staleClaims > 0)
     items.push({
-      tone: "stale",
-      icon: "clock",
-      count: staleClaims,
-      title: "Stale claims",
+      severity: "waiting",
+      title: `${staleClaims} stale ${staleClaims === 1 ? "claim" : "claims"}`,
       sub: "leases past expiry",
+      action: "View",
       href: "#/work",
     });
+
+  // red diamond = critical/failing · amber triangle = waiting/overdue
+  const sevIcon = (severity) => icon(severity === "critical" ? "diamond" : "alert");
 
   const body = items.length
     ? el(
         "ul",
         { class: "needs-list" },
         items.map((n) =>
-          el("a", { class: `needs-item tone-${n.tone}`, href: n.href }, [
-            el("span", { class: "ni-icon" }, icon(n.icon)),
-            el("span", { class: "ni-body" }, [
-              el("span", { class: "ni-title" }, n.title),
-              el("span", { class: "ni-sub" }, n.sub),
+          el(
+            "li",
+            { class: `needs-item`, dataset: { sev: n.severity } },
+            el("a", { class: "ni-link", href: n.href }, [
+              el("span", { class: "ni-icon" }, sevIcon(n.severity)),
+              el("span", { class: "ni-body" }, [
+                el("span", { class: "ni-title" }, n.title),
+                el("span", { class: "ni-sub" }, n.sub),
+              ]),
+              el("span", { class: "ni-action" }, [
+                n.action,
+                el("span", { class: "ni-arrow" }, "→"),
+              ]),
             ]),
-            el("span", { class: "ni-go" }, icon("chevron")),
-          ]),
+          ),
         ),
       )
     : el("div", { class: "needs-empty" }, [
@@ -2451,10 +2664,20 @@ async function renderWork() {
   ]);
 
   wrap.appendChild(
-    viewHead("Work", `${live} live · ${wontDo.length} won't do · ${closed.length} closed`, [
+    viewHero({
+      image: "assets/bg/hero-factory.jpg",
+      eyebrow: `${live} LIVE · ${wontDo.length} WON'T DO · ${closed.length} CLOSED`,
+      title: "Work",
+      subtitle: "Plan, prioritize and ship with confidence.",
+    }),
+  );
+  wrap.appendChild(
+    el("div", { class: "view-toolbar" }, [
       modeToggle,
-      pollWorkButton(),
-      suggestWorkButton(repos, nodes),
+      el("div", { class: "view-toolbar-actions" }, [
+        pollWorkButton(),
+        suggestWorkButton(repos, nodes),
+      ]),
     ]),
   );
   if (workState.mode === "board") wrap.appendChild(workFlowHeader(columns, closed.length));
@@ -3220,6 +3443,55 @@ async function renderTicket(id) {
       "← Back to Work",
     ),
   );
+
+  // Live-delivery log surface: when the factory is actively delivering this
+  // ticket, link straight to the streaming run log so a stuck/hung agent is never
+  // invisible (exactly what was missing when #88 deadlocked on a permission
+  // prompt). Best-effort — never blocks the ticket render.
+  const DELIVERING_STATUSES = new Set(["in_progress", "claimed", "in_testing"]);
+  if (DELIVERING_STATUSES.has(t.status)) {
+    const deliveringBanner = el("div", { class: "delivering-banner" }, [
+      el("span", { class: "delivering-dot" }),
+      el("span", {}, "Delivering…"),
+    ]);
+    wrap.appendChild(deliveringBanner);
+    (async () => {
+      try {
+        const runs = await api("GET", "/api/runs?active=1");
+        const run = (runs.active || []).find((r) => r.ticket_number === t.number);
+        clear(deliveringBanner);
+        if (run) {
+          deliveringBanner.append(
+            el("span", { class: "delivering-dot" }),
+            el("span", {}, `Delivering — ${runKindLabel(run.kind)}`),
+            el(
+              "button",
+              {
+                class: "btn small run-viewlog",
+                type: "button",
+                onclick: () => viewRunDetail(run.id, runKindLabel(run.kind)),
+              },
+              "View live log →",
+            ),
+          );
+        } else {
+          // Marked delivering but no live run attached ⇒ likely a hung/orphaned
+          // claim (the #88 case). Say so plainly instead of a silent "in progress".
+          deliveringBanner.classList.add("is-warn");
+          deliveringBanner.append(
+            el("span", { class: "delivering-dot is-warn" }),
+            el(
+              "span",
+              {},
+              "Marked delivering, but no live run is attached — it may be stuck or already ended.",
+            ),
+          );
+        }
+      } catch {
+        clear(deliveringBanner);
+      }
+    })();
+  }
 
   const policyBox = el("div");
 
@@ -4240,20 +4512,239 @@ const SETTINGS_GROUPS = [
   },
 ];
 
+// --- Health / ROI view ------------------------------------------------------
+
+/** One labelled figure in the recall-effectiveness panel. */
+function recallStat(label, value) {
+  return el("div", { class: "recall-stat" }, [
+    el("span", { class: "recall-stat-val tabnum" }, value),
+    el("span", { class: "recall-stat-label" }, label),
+  ]);
+}
+
+/** A generic name · value · progress-bar row (reused for kinds + skills). */
+function healthBarRow(name, valueText, ratio, tone) {
+  const pct = Math.max(2, Math.min(100, (Number.isFinite(ratio) ? ratio : 0) * 100));
+  return el("div", { class: `hrow tone-${tone || "accent"}` }, [
+    el("span", { class: "hrow-name", title: name }, name),
+    el("span", { class: "hrow-val tabnum" }, valueText),
+    el("span", { class: "df-bar" }, el("i", { style: `width:${pct}%` })),
+  ]);
+}
+
+/**
+ * Factory Health / ROI surface. Reads the ONE authoritative /api/health envelope
+ * and renders the ROI KPI row (cost/feature, skill hit-rate, spend-by-kind,
+ * rework-cost share, measured-coverage %) plus the two newly-wired dead sources:
+ * the skill selected-vs-applied hit-rate detail and the recall-effectiveness
+ * trend. Every source degrades gracefully — a missing one renders a clean "—" /
+ * "not wired" cell rather than a broken card.
+ */
+async function renderHealth() {
+  const health = await api("GET", "/api/health").catch(() => null);
+
+  const wrap = el("div", { class: "view health-view" });
+  wrap.appendChild(viewHead("Health", "ROI & factory honesty"));
+
+  if (!health) {
+    wrap.appendChild(
+      emptyState(
+        "Health data unavailable",
+        "The health API did not respond. The usage ledger may be unconfigured.",
+        "alert",
+      ),
+    );
+    return wrap;
+  }
+
+  const fmtUsd = (v) => (typeof v === "number" && Number.isFinite(v) ? `$${v.toFixed(4)}` : "—");
+  const skills = health.skills || {};
+  const recall = health.recall || { available: false };
+  const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
+  const skillList = Array.isArray(skills.by_skill) ? skills.by_skill : [];
+  const dailySpend = Array.isArray(health.daily_spend) ? health.daily_spend : [];
+  const totalUsd = typeof health.total_usd === "number" ? health.total_usd : 0;
+
+  // --- ROI KPI row ----------------------------------------------------------
+  const costPerFeature = health.cost_per_shipped_usd; // ticket-level (epic deferred)
+  const hitRate =
+    typeof skills.overall_hit_rate_pct === "number" ? skills.overall_hit_rate_pct : null;
+  const topKind = byKind[0] || null;
+  const kindShare =
+    topKind && totalUsd > 0 ? Math.round(((topKind.total_cost_usd || 0) / totalUsd) * 100) : 0;
+  const reworkShare =
+    health.rework && typeof health.rework.rework_cost_share_pct === "number"
+      ? health.rework.rework_cost_share_pct
+      : 0;
+  const coveragePct =
+    health.coverage && typeof health.coverage.coverage_pct === "number"
+      ? health.coverage.coverage_pct
+      : 0;
+
+  const spendSeries = dailySpend.map((d) => d.total_cost_usd || 0);
+  const skillSeries = skillList.map((s) => s.hit_rate_pct || 0);
+  const kindSeries = byKind.map((k) => k.total_cost_usd || 0);
+  const recallSeries =
+    recall.available && Array.isArray(recall.by_day)
+      ? recall.by_day.map((d) => d.effectiveness_pct || 0)
+      : [];
+
+  wrap.appendChild(
+    el("div", { class: "kpi-row" }, [
+      kpiCard({
+        label: "Cost / feature",
+        value: costPerFeature == null ? "—" : `$${costPerFeature.toFixed(3)}`,
+        unit: "per shipped",
+        tone: "accent",
+        delta: 0,
+        goodWhenDown: true,
+        series: spendSeries.length ? spendSeries : [0],
+      }),
+      kpiCard({
+        label: "Skill hit-rate",
+        value: hitRate == null ? "—" : String(hitRate),
+        unit: hitRate == null ? "not wired" : "%",
+        tone: "ok",
+        delta: 0,
+        series: skillSeries.length ? skillSeries : [0],
+      }),
+      kpiCard({
+        label: "Spend by kind",
+        value: topKind ? String(kindShare) : "—",
+        unit: topKind ? `% ${topKind.kind}` : "no spend",
+        tone: "amber",
+        delta: 0,
+        series: kindSeries.length ? kindSeries : [0],
+      }),
+      kpiCard({
+        label: "Rework cost",
+        value: String(reworkShare),
+        unit: "% of spend",
+        tone: "danger",
+        delta: 0,
+        goodWhenDown: true,
+        series: [reworkShare],
+      }),
+      kpiCard({
+        label: "Measured coverage",
+        value: String(coveragePct),
+        unit: "%",
+        tone: "accent",
+        delta: 0,
+        series: [coveragePct],
+      }),
+    ]),
+  );
+
+  // --- Detail panels: spend-by-kind · skill hit-rate · recall trend ---------
+  const maxKind = Math.max(1, ...kindSeries);
+  const kindPanel = el("div", { class: "card panel" }, [
+    panelHead("Spend by kind", "usage ledger"),
+    byKind.length
+      ? el(
+          "div",
+          { class: "hlist" },
+          byKind.map((k) =>
+            healthBarRow(
+              k.kind,
+              fmtUsd(k.total_cost_usd),
+              (k.total_cost_usd || 0) / maxKind,
+              "amber",
+            ),
+          ),
+        )
+      : el("p", { class: "section-note dim" }, "No spend recorded yet."),
+  ]);
+
+  const skillPanel = el("div", { class: "card panel" }, [
+    panelHead(
+      "Skill hit-rate",
+      skills.total_records ? `${skills.total_records} deliveries` : "no telemetry",
+    ),
+    skillList.length
+      ? el(
+          "div",
+          { class: "hlist" },
+          skillList.map((s) =>
+            healthBarRow(
+              s.skill,
+              `${s.applied}/${s.selected} · ${s.hit_rate_pct}%`,
+              (s.hit_rate_pct || 0) / 100,
+              s.hit_rate_pct >= 50 ? "ok" : "amber",
+            ),
+          ),
+        )
+      : el(
+          "p",
+          { class: "section-note dim" },
+          "No skill telemetry yet — selected-vs-applied hit-rate appears once deliveries mount skills.",
+        ),
+  ]);
+
+  const recallPanel = el(
+    "div",
+    { class: "card panel" },
+    recall.available
+      ? [
+          panelHead("Recall effectiveness", "memory feedback"),
+          el("div", { class: "recall-figures" }, [
+            recallStat(
+              "Effectiveness",
+              recall.effectiveness_pct == null ? "—" : `${recall.effectiveness_pct}%`,
+            ),
+            recallStat("Clean", String(recall.clean || 0)),
+            recallStat("Reworked", String(recall.reworked || 0)),
+            recallStat("Blocked", String(recall.blocked || 0)),
+          ]),
+          recallSeries.length
+            ? el("div", { class: "health-spark", html: svgSpark(recallSeries) })
+            : el("p", { class: "section-note dim" }, "No recall outcomes recorded yet."),
+        ]
+      : [
+          panelHead("Recall effectiveness", "not wired"),
+          el(
+            "div",
+            { class: "health-degraded" },
+            el(
+              "p",
+              { class: "section-note dim" },
+              recall.reason || "Memory is not wired — recall effectiveness is unavailable.",
+            ),
+          ),
+        ],
+  );
+
+  wrap.appendChild(el("div", { class: "ov-grid ov-3" }, [kindPanel, skillPanel, recallPanel]));
+
+  return wrap;
+}
+
 async function renderSettings() {
   // Load the env-override settings plus the crew idle-loop config + the repos and
   // scope nodes the idle-loop target picker needs. Best-effort on the extras: a
   // failure there must not blank the whole Settings page.
-  const [{ settings }, idleLoopsRes, reposRes, nodesRes] = await Promise.all([
-    api("GET", "/api/settings"),
-    api("GET", "/api/idle-loops").catch(() => null),
-    api("GET", "/repositories").catch(() => ({ repositories: [] })),
-    api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
-  ]);
+  const [{ settings }, idleLoopsRes, reposRes, nodesRes, autonomyRecRes, autonomyPolRes] =
+    await Promise.all([
+      api("GET", "/api/settings"),
+      api("GET", "/api/idle-loops").catch(() => null),
+      api("GET", "/repositories").catch(() => ({ repositories: [] })),
+      api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
+      // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
+      // blank the page if the endpoint is unavailable.
+      api("GET", "/api/autonomy/recommendations").catch(() => null),
+      // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies.
+      api("GET", "/api/autonomy/policies").catch(() => null),
+    ]);
   const all = Array.isArray(settings) ? settings : [];
   const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
   const repos = reposRes.repositories || [];
   const nodes = nodesRes.nodes || [];
+  const autonomyRecs =
+    autonomyRecRes && Array.isArray(autonomyRecRes.recommendations)
+      ? autonomyRecRes.recommendations
+      : [];
+  const autonomyPolicies =
+    autonomyPolRes && Array.isArray(autonomyPolRes.policies) ? autonomyPolRes.policies : [];
 
   const wrap = el("div", { class: "view settings-view" });
   wrap.appendChild(viewHead("Settings", all.length ? `${all.length}` : null));
@@ -4278,6 +4769,17 @@ async function renderSettings() {
 
   // Autonomy dial — the headline: how many human gates are open right now.
   wrap.appendChild(autonomyDial(all));
+
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies, each with a
+  // one-click reversible OFF. Rendered above the suggestions so the active posture is
+  // the first thing an operator sees.
+  const polPanel = autonomyPoliciesPanel(autonomyPolicies);
+  if (polPanel) wrap.appendChild(polPanel);
+
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations backed by the review
+  // track record — each is now an ENABLE action (evidence + explicit confirm → POST).
+  const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies);
+  if (recPanel) wrap.appendChild(recPanel);
 
   // edit registry: key → { def, read() } for non-locked inputs, so Save collects
   // only the values the operator can actually change.
@@ -4376,6 +4878,204 @@ function autonomyDial(all) {
         ),
       ),
     ]),
+  ]);
+}
+
+/** Human label for an autonomy gate. */
+function autonomyGateLabel(g) {
+  if (g === "merge") return "Auto-merge";
+  if (g === "memory") return "Auto-memory";
+  return "Auto-approve";
+}
+
+/** Is (repo × risk × gate) already enabled as auto? Used to hide a redundant Enable. */
+function isPolicyActive(policies, repoId, riskLevel, gate) {
+  return (
+    Array.isArray(policies) &&
+    policies.some(
+      (p) =>
+        p.repo_id === repoId && p.risk_level === riskLevel && p.gate === gate && p.mode === "auto",
+    )
+  );
+}
+
+/**
+ * POST an autonomy policy change and re-render the Settings view from the server's
+ * fresh state (so the active-policies list + suggestions reflect reality). Security:
+ * the server re-checks the explicit confirm on enable; this is just the transport.
+ */
+function submitAutonomyPolicy(btn, busyLabel, body, okMsg) {
+  runAsyncAction(btn, busyLabel, async () => {
+    await api("POST", "/api/autonomy/policy", body);
+    toast(okMsg, { ok: true });
+    router();
+  });
+}
+
+/**
+ * GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations panel — now with an
+ * ENABLE action per item.
+ *
+ * Each suggestion surfaces "you've approved N of M low-risk deliveries in api-repo
+ * unchanged — consider auto-merge for risk=low" backed by the real review track
+ * record. Clicking Enable reveals the evidence (already shown) + an EXPLICIT CONFIRM
+ * step (the LOCKED trust-boundary posture), then POSTs the policy with confirm:true.
+ * An item already enabled as auto shows an "Enabled" chip instead of the action.
+ * Returns null when there's nothing to recommend, so the panel simply doesn't appear.
+ */
+function autonomyRecommendationsPanel(recs, policies) {
+  if (!Array.isArray(recs) || recs.length === 0) return null;
+  return el("div", { class: "card panel autonomy-recs" }, [
+    el("div", { class: "ar-head" }, [
+      icon("spark", "ar-ico"),
+      el("div", {}, [
+        el("h2", { class: "ar-title" }, "Autonomy suggestions"),
+        el(
+          "p",
+          { class: "section-note dim" },
+          "Based on your review track record. Advisory only — nothing changes until you explicitly enable it.",
+        ),
+      ]),
+    ]),
+    el(
+      "ul",
+      { class: "ar-list" },
+      recs.map((r) => autonomyRecItem(r, policies)),
+    ),
+  ]);
+}
+
+/** One recommendation row with its inline evidence + explicit enable/confirm flow. */
+function autonomyRecItem(r, policies) {
+  const confPct = Math.round((Number(r.confidence) || 0) * 100);
+  const reasons = Array.isArray(r.reasons) ? r.reasons : [];
+  const active = isPolicyActive(policies, r.repoId, r.riskLevel, r.gate);
+
+  // The action zone toggles between [Enable] and an inline confirm panel so the
+  // operator must take a deliberate second step, with the evidence still on screen.
+  const action = el("div", { class: "ar-action" });
+  const renderEnable = () => {
+    action.textContent = "";
+    const enableBtn = el("button", { class: "btn small", type: "button" }, [
+      icon("check"),
+      el("span", {}, `Enable ${autonomyGateLabel(r.gate).toLowerCase()}`),
+    ]);
+    enableBtn.addEventListener("click", renderConfirm);
+    action.appendChild(enableBtn);
+  };
+  const renderConfirm = () => {
+    action.textContent = "";
+    const confirmBtn = el("button", { class: "btn small primary", type: "button" }, [
+      icon("check"),
+      el("span", {}, "Confirm — I've reviewed the evidence"),
+    ]);
+    const cancelBtn = el("button", { class: "btn small ghost", type: "button" }, "Cancel");
+    cancelBtn.addEventListener("click", renderEnable);
+    confirmBtn.addEventListener("click", () =>
+      submitAutonomyPolicy(
+        confirmBtn,
+        "Enabling…",
+        {
+          repo_id: r.repoId,
+          risk_level: r.riskLevel,
+          gate: r.gate,
+          mode: "auto",
+          confirm: true,
+        },
+        `Enabled ${autonomyGateLabel(r.gate).toLowerCase()} for risk=${r.riskLevel} in ${r.repoName || "repo"}.`,
+      ),
+    );
+    action.appendChild(
+      el("div", { class: "ar-confirm" }, [
+        el(
+          "p",
+          { class: "ar-confirm-note" },
+          `This grants ${autonomyGateLabel(r.gate).toLowerCase()} for risk=${r.riskLevel} in ${r.repoName || "this repo"}. Reversible any time.`,
+        ),
+        el("div", { class: "btn-row" }, [confirmBtn, cancelBtn]),
+      ]),
+    );
+  };
+  if (active) {
+    action.appendChild(el("span", { class: "ar-enabled-chip" }, [icon("check"), "Enabled"]));
+  } else {
+    renderEnable();
+  }
+
+  return el("li", { class: "ar-item" }, [
+    el("div", { class: "ar-item-head" }, [
+      el("span", { class: `ar-gate ar-gate-${r.gate}` }, autonomyGateLabel(r.gate)),
+      el("span", { class: "ar-risk" }, `risk=${r.riskLevel}`),
+      el("span", { class: "ar-repo" }, r.repoName || ""),
+      el("span", { class: "ar-conf dim tabnum", title: "confidence" }, `${confPct}%`),
+    ]),
+    el("p", { class: "ar-headline" }, r.headline || ""),
+    reasons.length
+      ? el(
+          "ul",
+          { class: "ar-reasons dim" },
+          reasons.map((reason) => el("li", {}, reason)),
+        )
+      : null,
+    action,
+  ]);
+}
+
+/**
+ * GRADUATED-AUTONOMY (Spec 2, Phase 3): the active-policies panel — every enabled
+ * (mode=auto) autonomy policy with a one-click, reversible OFF. Returns null when
+ * nothing is enabled, so the panel only appears once the operator has opted in.
+ */
+function autonomyPoliciesPanel(policies) {
+  const active = (Array.isArray(policies) ? policies : []).filter((p) => p.mode === "auto");
+  if (active.length === 0) return null;
+  return el("div", { class: "card panel autonomy-policies" }, [
+    el("div", { class: "ar-head" }, [
+      icon("lock", "ar-ico"),
+      el("div", {}, [
+        el("h2", { class: "ar-title" }, "Active autonomy"),
+        el(
+          "p",
+          { class: "section-note dim" },
+          "The factory acts without you at these chokepoints. Turn any off to re-gate it immediately.",
+        ),
+      ]),
+    ]),
+    el(
+      "ul",
+      { class: "ar-list" },
+      active.map((p) => {
+        const offBtn = el(
+          "button",
+          { class: "btn small ghost", type: "button" },
+          el("span", {}, "Turn off"),
+        );
+        offBtn.addEventListener("click", () =>
+          submitAutonomyPolicy(
+            offBtn,
+            "Turning off…",
+            { repo_id: p.repo_id, risk_level: p.risk_level, gate: p.gate, mode: "off" },
+            `Turned off ${autonomyGateLabel(p.gate).toLowerCase()} for risk=${p.risk_level} in ${p.repo_name || "repo"}.`,
+          ),
+        );
+        return el("li", { class: "ar-item ap-item" }, [
+          el("div", { class: "ar-item-head" }, [
+            el("span", { class: `ar-gate ar-gate-${p.gate}` }, autonomyGateLabel(p.gate)),
+            el("span", { class: "ar-risk" }, `risk=${p.risk_level}`),
+            el("span", { class: "ar-repo" }, p.repo_name || ""),
+            el("span", { class: "ap-mode" }, "auto"),
+          ]),
+          p.enabled_by
+            ? el(
+                "p",
+                { class: "ar-reasons dim" },
+                `enabled by ${p.enabled_by}${p.enabled_at ? ` · ${p.enabled_at.slice(0, 10)}` : ""}`,
+              )
+            : null,
+          el("div", { class: "ar-action" }, [offBtn]),
+        ]);
+      }),
+    ),
   ]);
 }
 
@@ -5222,6 +5922,149 @@ function reviewEvidenceList(evidence, acList) {
   ]);
 }
 
+// Preset quick-reject reasons. Tapping a chip fills the reason so an operator
+// can reject one-handed on a phone without summoning a keyboard; the free-text
+// field stays as a fallback for anything the chips don't cover.
+const REJECT_REASON_PRESETS = [
+  "Doesn't meet the spec",
+  "Tests missing or failing",
+  "Wrong approach",
+  "Scope creep",
+  "Needs cleanup first",
+];
+
+/**
+ * Modal reject-reason picker that replaces `window.prompt` (a blocking dialog
+ * footgun in automation, and a keyboard-only flow on mobile). Presents preset
+ * reason chips + a free-text fallback and resolves the trimmed reason via
+ * `onConfirm`. The submit control is HELD DISABLED until a reason exists (chip
+ * tapped or text typed) and the confirm handler re-checks — preserving the
+ * invariant that a reject reason is REQUIRED. Resolves nothing (dialog just
+ * closes) on cancel/escape/scrim.
+ */
+function openRejectDialog({ verb, onConfirm }) {
+  const input = el("input", {
+    class: "reject-reason-input",
+    type: "text",
+    placeholder: "Reason…",
+    "aria-label": "Reject reason",
+  });
+
+  const chipRow = el(
+    "div",
+    { class: "reject-chips" },
+    REJECT_REASON_PRESETS.map((reason) =>
+      el(
+        "button",
+        {
+          class: "chip reject-chip",
+          type: "button",
+          onclick: () => selectChip(reason),
+        },
+        reason,
+      ),
+    ),
+  );
+
+  const submitBtn = el(
+    "button",
+    { class: "btn danger", type: "button", disabled: "", onclick: confirm },
+    "Reject",
+  );
+
+  const dialog = el(
+    "div",
+    { class: "reject-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Reject reason" },
+    [
+      el("h2", { class: "reject-dialog-title" }, `Reason for ${verb}`),
+      el("p", { class: "reject-dialog-hint" }, "Tap a reason or type your own."),
+      chipRow,
+      input,
+      el("div", { class: "reject-dialog-actions btn-row" }, [
+        el("button", { class: "btn", type: "button", onclick: close }, "Cancel"),
+        submitBtn,
+      ]),
+    ],
+  );
+
+  const scrim = el("div", { class: "reject-scrim open" }, [dialog]);
+  dialog.addEventListener("click", (e) => e.stopPropagation());
+  scrim.addEventListener("click", close);
+
+  function reason() {
+    return input.value.trim();
+  }
+  function syncSubmit() {
+    if (reason()) submitBtn.removeAttribute("disabled");
+    else submitBtn.setAttribute("disabled", "");
+  }
+  function selectChip(text) {
+    input.value = text;
+    chipRow.querySelectorAll(".reject-chip").forEach((c) => {
+      c.classList.toggle("chip-active", c.textContent === text);
+    });
+    syncSubmit();
+  }
+  function close() {
+    document.removeEventListener("keydown", onKey);
+    scrim.remove();
+  }
+  function confirm() {
+    const value = reason();
+    // Backstop the invariant even if the disabled state were bypassed.
+    if (!value) {
+      toast("A reason is required", {});
+      return;
+    }
+    close();
+    onConfirm(value);
+  }
+  function onKey(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    } else if (e.key === "Enter" && document.activeElement === input) {
+      e.preventDefault();
+      confirm();
+    }
+  }
+
+  input.addEventListener("input", syncSubmit);
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(scrim);
+  input.focus();
+}
+
+/**
+ * Single source of truth for "is a blocking modal open right now?".
+ *
+ * The review gate's global j/k/a/r shortcuts (and any future global key
+ * shortcut) MUST bail when this is true. Without it, a keystroke aimed at an
+ * open dialog leaks through to the review queue underneath — the reject-reason
+ * dialog is appended to `document.body` (NOT the app/view container the review
+ * MutationObserver watches), so the gate's key handler never detaches while a
+ * reject is in progress. Pressing `a` after tapping a reason chip would then
+ * approve+merge `cards[cursor]` — potentially a DIFFERENT ticket than the one
+ * being rejected. That is a reject-to-approve path through the exact human gate
+ * this product exists to protect.
+ *
+ * Keyed on each modal's real open-signal so it can't leak or go stale:
+ *   - reject dialog + move-menu are removed from the DOM on close → presence == open;
+ *   - command palette + detail sheet persist and toggle an `.open` class.
+ * Any modal added later should follow one of those two conventions (or be added
+ * to this selector) so global shortcuts stay suppressed underneath it.
+ */
+function isModalOpen() {
+  // Single source of truth for "a modal owns the keyboard" — must list EVERY modal scrim,
+  // or the review hotkeys (a = approve+merge) leak through the ones it omits. `.pb-scrim`
+  // covers both the Plan-a-build and Author-a-spec panels (they share the class).
+  return Boolean(
+    document.querySelector(
+      ".reject-scrim, .movemenu-scrim, .palette-scrim.open, .sheet-scrim.open, .pb-scrim.open",
+    ),
+  );
+}
+
 async function renderReview() {
   const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
   const wrap = el("div", { class: "view" });
@@ -5314,18 +6157,18 @@ async function renderReview() {
     // Reject offers a choice: send back for rework (-> refining, a human triages
     // first) or abandon to the won't-do bucket (-> cancelled). Either way the
     // backend resets the ticket's ACs to not-satisfied.
-    const reject = (to) =>
-      guard(async () => {
-        const verb = to === "cancelled" ? "abandoning (won't do)" : `rejecting to ${to}`;
-        const reason = window.prompt(`Reason for ${verb}?`);
-        if (reason == null || reason.trim() === "") {
-          toast("Reject cancelled — a reason is required", {});
-          return;
-        }
-        await api("POST", `/tickets/${t.id}/review/reject`, { to, reason: reason.trim() });
-        toast(to === "cancelled" ? "Marked won't do" : `Rejected to ${to}`, { ok: true });
-        router();
+    const reject = (to) => {
+      const verb = to === "cancelled" ? "abandoning (won't do)" : `rejecting to ${to}`;
+      openRejectDialog({
+        verb,
+        onConfirm: (reason) =>
+          guard(async () => {
+            await api("POST", `/tickets/${t.id}/review/reject`, { to, reason });
+            toast(to === "cancelled" ? "Marked won't do" : `Rejected to ${to}`, { ok: true });
+            router();
+          }),
       });
+    };
 
     // The diff-unavailable banner + the Approve button are held by reference so the
     // async diff load (fix 4) can toggle them once it settles.
@@ -5419,6 +6262,12 @@ async function renderReview() {
     cards.forEach((c, i) => c.classList.toggle("card-accent", i === cursor));
   };
   const onKey = (e) => {
+    // A modal (reject dialog, command palette, detail sheet, move-menu) owns the
+    // keyboard while open — never let a queue shortcut fire underneath it. The
+    // reject dialog in particular lives on document.body, so this observer's
+    // detach never runs for it; without this guard `a`/`r` on a focused reject
+    // chip would approve/reject the wrong ticket. Must precede the j/k/a/r branch.
+    if (isModalOpen()) return;
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
     if (e.key === "j") {
       e.preventDefault();
@@ -6734,6 +7583,15 @@ async function renderEpics(param) {
       el(
         "button",
         {
+          class: "btn",
+          type: "button",
+          onclick: () => openSpecBuild(),
+        },
+        [icon("spark"), el("span", {}, "Author a spec")],
+      ),
+      el(
+        "button",
+        {
           class: "btn primary",
           type: "button",
           onclick: () => openPlanBuild(),
@@ -7198,27 +8056,34 @@ async function archivePlanBuildSession(status) {
   }
 }
 
-function openPlanBuild() {
+function openPlanBuild(opts = {}) {
   const { scrim, input } = ensurePlanBuild();
   // `mode` is the start toggle: "new" (greenfield app) vs "extend" (add tickets
   // to an existing scope node / epic). `target` holds the chosen extend node and
   // becomes the `context` sent to the decomposer on the first turn. `nodes` is
   // loaded lazily for the extend picker; an empty list just hides the option.
   // `sessionId` is the server-side session id (null when persistence unavailable).
+  // `spec` (SPEC-DRIVEN): when opened from a FROZEN spec via buildFromFrozenSpec(),
+  // its clauses ride along on every plan-build POST so the decomposer satisfies each
+  // clause and stamps spec_clause_id provenance on the ACs — without this the whole
+  // spec→plan→coverage traceability chain is dead (the spec never reaches decompose).
   planBuildState = {
     history: [],
     plan: null,
     busy: false,
-    brief: null,
+    brief: opts.brief || null,
     mode: "new",
     target: null,
     nodes: [],
     repos: [],
     sessionId: null,
+    spec: Array.isArray(opts.spec) && opts.spec.length ? opts.spec : null,
   };
   renderPlanBuildLog();
   scrim.classList.add("open");
   document.addEventListener("keydown", planBuildKeydown);
+  // Seeded from a spec: pre-fill the brief so the user can immediately "Build the tickets".
+  if (planBuildState.brief && input) input.value = planBuildState.brief;
   setTimeout(() => input.focus(), 50);
   // Best-effort: restore the in-progress session from the server, and populate
   // the "Extend existing" picker. Both are non-blocking; the panel works without them.
@@ -7229,8 +8094,12 @@ function openPlanBuild() {
       api("GET", "/repositories"),
     ]);
     if (!planBuildState) return; // panel was closed during the fetch
-    // Restore server session (if one exists and the panel hasn't been interacted with).
-    if (sessionRes && sessionRes.session && planBuildState.history.length === 0) {
+    // A spec-driven open is ALWAYS a fresh session — never restore an unrelated
+    // in-progress plan over the frozen-spec intent.
+    if (planBuildState.spec) {
+      await createPlanBuildSession();
+    } else if (sessionRes && sessionRes.session && planBuildState.history.length === 0) {
+      // Restore server session (if one exists and the panel hasn't been interacted with).
       restorePlanBuildSession(sessionRes.session);
     } else if (!sessionRes || !sessionRes.session) {
       // No active session on the server — create one (best-effort).
@@ -7262,6 +8131,7 @@ async function startNewPlanBuild() {
     nodes: planBuildState ? planBuildState.nodes : [],
     repos: planBuildState ? planBuildState.repos : [],
     sessionId: null,
+    spec: null, // "New plan" starts clean — any frozen-spec attachment is dropped
   };
   renderPlanBuildLog();
   // Create a fresh server-side session.
@@ -7335,6 +8205,18 @@ function renderPlanBuildLog() {
             "ul",
             { class: "pb-questions" },
             turn.questions.map((q) => el("li", {}, q)),
+          ),
+        ]),
+      );
+    } else if (turn.role === "assistant" && turn.error) {
+      log.appendChild(
+        el("div", { class: "pb-msg pb-bot pb-error-msg" }, [
+          el("div", { class: "pb-bot-label" }, "Couldn't build the plan"),
+          el("div", {}, turn.error),
+          el(
+            "div",
+            { class: "pb-error-hint dim" },
+            'Edit your brief and try again, or press "Build the tickets".',
           ),
         ]),
       );
@@ -7861,37 +8743,49 @@ async function submitPlanBuildTurn(opts = {}) {
   sendBtn.appendChild(el("span", { class: "pb-send-label" }, "Planning…"));
   renderPlanBuildLog();
 
-  await guard(async () => {
-    // Send the brief + the answered turns; the helper treats answered Qs as settled.
-    // On a force-plan turn the decomposer is told to stop clarifying and return a
-    // plan now from what it has — so the user is never trapped in an endless chat.
+  // Send the brief + the answered turns; the helper treats answered Qs as settled.
+  // On a force-plan turn the decomposer is told to stop clarifying and return a
+  // plan now from what it has — so the user is never trapped in an endless chat.
+  // NOTE: we handle errors explicitly (not via guard) so a failed turn leaves a
+  // PERSISTENT error message in the chat + clears the thinking bubble, rather than
+  // hanging on the typing dots with only a transient toast.
+  let failure = null;
+  try {
     const res = await api("POST", "/plan-build", {
       brief: planBuildState.brief,
-      history: planBuildState.history.map((t) =>
-        t.role === "user" && t.brief ? { role: "user", answer: t.brief } : t,
-      ),
+      history: planBuildState.history
+        .filter((t) => !(t.role === "assistant" && t.error)) // never resend a failed turn
+        .map((t) => (t.role === "user" && t.brief ? { role: "user", answer: t.brief } : t)),
       ...(context !== undefined ? { context } : {}),
       ...(forcePlan ? { forcePlan: true } : {}),
+      // SPEC-DRIVEN: thread the frozen spec's clauses so the decomposer satisfies each
+      // and stamps spec_clause_id provenance on the ACs (drives the coverage read model).
+      ...(Array.isArray(planBuildState.spec) && planBuildState.spec.length
+        ? { spec: planBuildState.spec }
+        : {}),
     });
-    planBuildState.busy = false;
     if (res.phase === "clarify") {
       planBuildState.history.push({ role: "assistant", questions: res.questions || [] });
-      // Persist the assistant clarify turn server-side (best-effort).
       persistPlanBuildTurn("assistant", JSON.stringify(res)).catch(() => {});
     } else if (res.phase === "plan") {
       planBuildState.plan = res.plan || null;
-      // Persist the plan turn with the plan payload so reload can restore it.
       persistPlanBuildTurn("assistant", JSON.stringify(res), { plan: res.plan || null }).catch(
         () => {},
       );
     } else {
-      toast(res.error || "Planning failed", { code: "PLAN_BUILD" });
-      // Persist error turns for audit (best-effort).
+      failure = res.error || "The planner returned no result.";
       persistPlanBuildTurn("assistant", JSON.stringify(res)).catch(() => {});
     }
-    renderPlanBuildLog();
-  });
+  } catch (e) {
+    failure = e && e.message ? e.message : "The request errored before a plan came back.";
+  }
+
+  // Always land the UI in a resolved state — bubble cleared, composer usable.
   planBuildState.busy = false;
+  if (failure) {
+    planBuildState.history.push({ role: "assistant", error: failure });
+    toast(failure, { code: "PLAN_BUILD" });
+  }
   sendBtn.disabled = false;
   sendBtn.classList.remove("is-running");
   sendBtn.removeAttribute("aria-busy");
@@ -7941,6 +8835,648 @@ async function confirmPlanBuild(plan) {
     // the hashchange when the param differs only — force a refresh to be safe.
     router();
   });
+}
+
+// ---------------------------------------------------------------------------
+//  Author a spec — the spec-author chat step (Spec-Driven Development, Phase 1c)
+// ---------------------------------------------------------------------------
+//
+// A sibling to "Plan a build": a one-line brief becomes an AI-drafted, EDITABLE
+// spec (clauses), which the human refines, then CREATES (POST /specs) and FREEZES
+// (POST /specs/:id/freeze). It PROPOSES ONLY — nothing is created until the human
+// presses "Create spec", and nothing is immutable until "Freeze". This flow is
+// entirely additive: the one-liner plan-build path above is untouched. It reuses
+// the pb-* panel styling (the spec panel is a second pb-panel instance) plus a few
+// spec-specific classes (sb-*) for the editable clause list.
+//
+// The chat half mirrors submitPlanBuildTurn: clarify turns show questions and let
+// the user continue; a "spec" turn hands its clauses to the editable draft. The
+// "Draft the spec now" (forcePlan) escape is always available so the user is never
+// stuck clarifying — exactly like plan-build's "Build the tickets".
+//
+// The three clause kinds match the dispatch/spec-author contract exactly.
+const SPEC_CLAUSE_KINDS = ["requirement", "non-goal", "decision"];
+
+let specBuildEls = null;
+let specBuildState = null;
+
+function ensureSpecBuild() {
+  if (specBuildEls) return specBuildEls;
+  const scrim = el("div", { class: "pb-scrim", onclick: closeSpecBuild });
+  const log = el("div", { class: "pb-log", role: "log", "aria-live": "polite" });
+  const input = el("textarea", {
+    class: "pb-input",
+    rows: "1",
+    placeholder: "Describe what the product must do, in one line…",
+    "aria-label": "Your message",
+  });
+  const sendBtn = el(
+    "button",
+    { class: "btn pb-send", type: "submit", "aria-label": "Send" },
+    icon("send"),
+  );
+  // "Draft the spec now" escape: forces the author to emit a spec from the brief +
+  // answers so far. Always visible so the user is NEVER stuck clarifying.
+  const forceBtn = el(
+    "button",
+    {
+      class: "btn primary pb-force",
+      type: "button",
+      "aria-label": "Draft the spec now from what you've told me",
+      onclick: () => submitSpecBuildTurn({ forcePlan: true }),
+    },
+    [icon("check"), el("span", {}, "Draft the spec")],
+  );
+  const actions = el("div", { class: "pb-actions" }, [forceBtn, sendBtn]);
+  const form = el("form", { class: "pb-composer" }, [input, actions]);
+  const panel = el(
+    "aside",
+    { class: "pb-panel", role: "dialog", "aria-modal": "true", "aria-label": "Author a spec" },
+    [
+      el("header", { class: "pb-head" }, [
+        el("div", { class: "pb-head-main" }, [
+          icon("spark", "pb-head-ico"),
+          el("div", {}, [
+            el("div", { class: "pb-title" }, "Author a spec"),
+            el("div", { class: "pb-sub dim" }, "Brief → editable clauses → freeze"),
+          ]),
+        ]),
+        el("div", { class: "pb-head-actions" }, [
+          el(
+            "button",
+            {
+              class: "btn pb-new-plan",
+              type: "button",
+              "aria-label": "Start a new spec (clears this conversation)",
+              onclick: startNewSpecBuild,
+            },
+            "New spec",
+          ),
+          el(
+            "button",
+            { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closeSpecBuild },
+            el("span", { html: "✕" }),
+          ),
+        ]),
+      ]),
+      el("div", { class: "pb-guardrail" }, [
+        icon("alert", "pb-guard-ico"),
+        el(
+          "span",
+          {},
+          "Proposes only. Nothing is created until you press Create spec — and nothing is locked until you Freeze.",
+        ),
+      ]),
+      log,
+      form,
+    ],
+  );
+  panel.addEventListener("click", (e) => e.stopPropagation());
+
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 140) + "px";
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    submitSpecBuildTurn();
+  });
+  scrim.appendChild(panel);
+  document.body.appendChild(scrim);
+
+  specBuildEls = { scrim, panel, log, input, sendBtn, forceBtn, form };
+  return specBuildEls;
+}
+
+function openSpecBuild() {
+  const { scrim, input } = ensureSpecBuild();
+  // `history` accumulates clarify turns; `draft` is the editable clause set once
+  // the author returns a spec; `createdSpec` is the persisted spec (with id) after
+  // Create; once `createdSpec` exists the flow shows the Freeze action.
+  specBuildState = {
+    history: [],
+    draft: null,
+    createdSpec: null,
+    busy: false,
+    brief: null,
+    title: "",
+  };
+  renderSpecBuildLog();
+  scrim.classList.add("open");
+  document.addEventListener("keydown", specBuildKeydown);
+  setTimeout(() => input.focus(), 50);
+}
+
+function startNewSpecBuild() {
+  if (!specBuildState || specBuildState.busy) return;
+  specBuildState = {
+    history: [],
+    draft: null,
+    createdSpec: null,
+    busy: false,
+    brief: null,
+    title: "",
+  };
+  renderSpecBuildLog();
+  if (specBuildEls) specBuildEls.input.focus();
+}
+
+function closeSpecBuild() {
+  if (!specBuildEls) return;
+  specBuildEls.scrim.classList.remove("open");
+  document.removeEventListener("keydown", specBuildKeydown);
+}
+function specBuildKeydown(e) {
+  if (e.key === "Escape") closeSpecBuild();
+}
+
+/** Repaint the spec conversation log from state (turns + the editable draft). */
+function renderSpecBuildLog() {
+  const { log } = specBuildEls;
+  clear(log);
+
+  if (specBuildState.history.length === 0 && !specBuildState.draft) {
+    log.appendChild(
+      el("div", { class: "pb-intro" }, [
+        el("p", {}, "Describe the product in one line and I'll draft a spec — for example:"),
+        el(
+          "ul",
+          { class: "pb-examples" },
+          ["a web app that tracks gym workouts", "an API that summarises PDFs"].map((ex) =>
+            el(
+              "li",
+              {},
+              el(
+                "button",
+                {
+                  class: "pb-example",
+                  type: "button",
+                  onclick: () => {
+                    specBuildEls.input.value = ex;
+                    specBuildEls.input.focus();
+                  },
+                },
+                ex,
+              ),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  for (const turn of specBuildState.history) {
+    if (turn.role === "user") {
+      log.appendChild(el("div", { class: "pb-msg pb-user" }, turn.answer || turn.brief || ""));
+    } else if (turn.role === "assistant" && turn.questions) {
+      log.appendChild(
+        el("div", { class: "pb-msg pb-bot" }, [
+          el("div", { class: "pb-bot-label dim" }, "Clarifying questions"),
+          el(
+            "ul",
+            { class: "pb-questions" },
+            turn.questions.map((q) => el("li", {}, q)),
+          ),
+        ]),
+      );
+    } else if (turn.role === "assistant" && turn.error) {
+      log.appendChild(
+        el("div", { class: "pb-msg pb-bot pb-error-msg" }, [
+          el("div", { class: "pb-bot-label" }, "Couldn't draft the spec"),
+          el("div", {}, turn.error),
+          el(
+            "div",
+            { class: "pb-error-hint dim" },
+            'Edit your brief and try again, or press "Draft the spec".',
+          ),
+        ]),
+      );
+    }
+  }
+
+  if (specBuildState.draft) {
+    log.appendChild(renderSpecDraft(specBuildState.draft));
+  }
+
+  if (specBuildState.busy) {
+    log.appendChild(
+      el("div", { class: "pb-msg pb-bot pb-thinking" }, [
+        el("span", { class: "pb-dot" }),
+        el("span", { class: "pb-dot" }),
+        el("span", { class: "pb-dot" }),
+      ]),
+    );
+  }
+
+  updateSpecBuildActions();
+  log.scrollTop = log.scrollHeight;
+}
+
+/**
+ * Composer state: the "Draft the spec" force button is always available so the
+ * user is never stuck clarifying. Once a draft is on screen the chat's job is done
+ * (edit/create takes over), so the whole composer is hidden.
+ */
+function updateSpecBuildActions() {
+  if (!specBuildEls) return;
+  const { forceBtn, form } = specBuildEls;
+  const turns = specBuildState.history.filter((t) => t.role === "user").length;
+  form.hidden = !!specBuildState.draft;
+  if (specBuildState.draft) return;
+  forceBtn.disabled = specBuildState.busy || turns === 0;
+}
+
+/**
+ * Render the editable clause draft. Each clause is a kind chip (select) + editable
+ * text + editable rationale, with a remove button; a footer allows adding a clause
+ * and — once at least one clause exists — Create spec. After Create, the row swaps
+ * to a Freeze action. All edits mutate the in-memory draft (the panel's UI state);
+ * the persisted spec is only written on Create / Freeze.
+ */
+function renderSpecDraft(draft) {
+  const clauses = draft.clauses || [];
+  const created = specBuildState.createdSpec;
+  const frozen = created && created.status === "frozen";
+  const wrap = el("div", { class: "pb-proposal sb-draft card card-amber" });
+
+  wrap.appendChild(
+    el("div", { class: "pb-proposal-head" }, [
+      badge(frozen ? "frozen" : created ? "created" : "draft", "no-dot"),
+      el("h3", { class: "pb-proposal-name" }, "Proposed spec"),
+    ]),
+  );
+
+  // Title field — required by create_spec; defaults to the brief. Editable until
+  // the spec is created (immutable server-side after that).
+  const titleInput = el("input", {
+    class: "sb-title",
+    type: "text",
+    value: specBuildState.title || "",
+    placeholder: "Spec title",
+    "aria-label": "Spec title",
+    maxlength: "300",
+    disabled: created ? "" : undefined,
+  });
+  titleInput.addEventListener("input", () => {
+    specBuildState.title = titleInput.value;
+    updateSpecCreateEnabled();
+  });
+  wrap.appendChild(
+    el("div", { class: "field sb-title-field" }, [el("label", {}, "Title"), titleInput]),
+  );
+
+  const list = el("ol", { class: "pb-tickets sb-clauses" });
+  clauses.forEach((clause, i) => list.appendChild(renderSpecClauseRow(clause, i, !!created)));
+  wrap.appendChild(list);
+
+  if (!created) {
+    wrap.appendChild(
+      el("div", { class: "sb-add-row" }, [
+        el(
+          "button",
+          {
+            class: "btn sb-add",
+            type: "button",
+            onclick: () => {
+              specBuildState.draft.clauses.push({ kind: "requirement", text: "", rationale: "" });
+              renderSpecBuildLog();
+            },
+          },
+          [icon("plus"), el("span", {}, "Add clause")],
+        ),
+      ]),
+    );
+  }
+
+  // Persistent error slot (not just a toast) — mirrors pb-error-msg styling.
+  if (specBuildState.actionError) {
+    wrap.appendChild(
+      el("div", { class: "pb-msg pb-bot pb-error-msg sb-action-error" }, [
+        el("div", { class: "pb-bot-label" }, "Action failed"),
+        el("div", {}, specBuildState.actionError),
+      ]),
+    );
+  }
+
+  const confirmRow = el("div", { class: "pb-confirm-row" });
+  if (!created) {
+    const createBtn = el(
+      "button",
+      {
+        class: "btn primary sb-create",
+        type: "button",
+        onclick: () => createSpecFromDraft(),
+      },
+      [icon("check"), el("span", {}, "Create spec")],
+    );
+    confirmRow.appendChild(
+      el(
+        "p",
+        { class: "pb-confirm-note dim" },
+        `${clauses.length} clause${clauses.length === 1 ? "" : "s"} — created as a draft spec you can freeze when ready.`,
+      ),
+    );
+    confirmRow.appendChild(createBtn);
+  } else if (!frozen) {
+    confirmRow.appendChild(
+      el(
+        "p",
+        { class: "pb-confirm-note dim" },
+        "Spec created as draft. Freeze to lock the clauses and seed product-intent lore.",
+      ),
+    );
+    confirmRow.appendChild(
+      el(
+        "button",
+        { class: "btn primary sb-freeze", type: "button", onclick: () => freezeCreatedSpec() },
+        [icon("check"), el("span", {}, "Freeze spec")],
+      ),
+    );
+  } else {
+    confirmRow.appendChild(
+      el(
+        "p",
+        { class: "pb-confirm-note dim" },
+        "Spec frozen — clauses are immutable. Build the tickets from it to carry clause provenance into the plan.",
+      ),
+    );
+    confirmRow.appendChild(
+      el(
+        "button",
+        { class: "btn primary sb-build", type: "button", onclick: () => buildFromFrozenSpec() },
+        [icon("check"), el("span", {}, "Build the tickets from this spec")],
+      ),
+    );
+  }
+  wrap.appendChild(confirmRow);
+  return wrap;
+}
+
+/** One editable clause row: kind chip + text + rationale + remove. */
+function renderSpecClauseRow(clause, i, locked) {
+  const kindSel = el(
+    "select",
+    {
+      class: "select sb-kind",
+      "aria-label": `Clause ${i + 1} kind`,
+      disabled: locked ? "" : undefined,
+    },
+    SPEC_CLAUSE_KINDS.map((k) =>
+      el("option", { value: k, selected: clause.kind === k ? "" : undefined }, k),
+    ),
+  );
+  kindSel.addEventListener("change", () => {
+    specBuildState.draft.clauses[i].kind = kindSel.value;
+  });
+
+  const textArea = el("textarea", {
+    class: "pb-input sb-clause-text",
+    rows: "2",
+    value: clause.text || "",
+    placeholder: "One testable statement…",
+    "aria-label": `Clause ${i + 1} text`,
+    disabled: locked ? "" : undefined,
+  });
+  textArea.value = clause.text || "";
+  textArea.addEventListener("input", () => {
+    specBuildState.draft.clauses[i].text = textArea.value;
+    updateSpecCreateEnabled();
+  });
+
+  const rationaleInput = el("input", {
+    class: "sb-clause-rationale",
+    type: "text",
+    value: clause.rationale || "",
+    placeholder: "Rationale (optional)",
+    "aria-label": `Clause ${i + 1} rationale`,
+    disabled: locked ? "" : undefined,
+  });
+  rationaleInput.addEventListener("input", () => {
+    specBuildState.draft.clauses[i].rationale = rationaleInput.value;
+  });
+
+  const top = el("div", { class: "pb-ticket-top sb-clause-top" }, [
+    el("span", { class: "pb-ticket-idx tabnum" }, `#${i + 1}`),
+    kindSel,
+    !locked
+      ? el(
+          "button",
+          {
+            class: "icon-btn sb-remove",
+            type: "button",
+            "aria-label": `Remove clause ${i + 1}`,
+            onclick: () => {
+              specBuildState.draft.clauses.splice(i, 1);
+              renderSpecBuildLog();
+            },
+          },
+          el("span", { html: "✕" }),
+        )
+      : null,
+  ]);
+
+  return el("li", { class: "pb-ticket sb-clause" }, [top, textArea, rationaleInput]);
+}
+
+/** Enable/disable the Create button live from title + at-least-one-non-empty-clause. */
+function updateSpecCreateEnabled() {
+  if (!specBuildEls) return;
+  const btn = specBuildEls.panel.querySelector(".sb-create");
+  if (!btn) return;
+  const clauses = (specBuildState.draft && specBuildState.draft.clauses) || [];
+  const ok =
+    (specBuildState.title || "").trim().length > 0 && clauses.some((c) => (c.text || "").trim());
+  btn.disabled = !ok || specBuildState.busy;
+}
+
+/**
+ * Send the next spec-author turn. Mirrors submitPlanBuildTurn: append the user
+ * message, POST /spec-build, fold the reply (clarify → questions; spec → editable
+ * draft; error → persistent in-chat error + toast). `forcePlan` drafts the spec now.
+ */
+async function submitSpecBuildTurn(opts = {}) {
+  const forcePlan = opts.forcePlan === true;
+  const { input, sendBtn } = specBuildEls;
+  const text = input.value.trim();
+  if (specBuildState.busy) return;
+  if (!forcePlan && !text) return;
+
+  const isFirst = specBuildState.history.length === 0;
+  if (forcePlan && isFirst && !text) {
+    toast("Tell me what to build first, then I can draft the spec.");
+    return;
+  }
+
+  if (text) {
+    if (isFirst) {
+      specBuildState.brief = text;
+      // Seed a sensible default title from the brief (editable in the draft view).
+      specBuildState.title = text.slice(0, 120);
+    }
+    specBuildState.history.push(
+      isFirst ? { role: "user", brief: text } : { role: "user", answer: text },
+    );
+    input.value = "";
+    input.style.height = "auto";
+  }
+
+  specBuildState.busy = true;
+  sendBtn.disabled = true;
+  sendBtn.classList.add("is-running");
+  sendBtn.setAttribute("aria-busy", "true");
+  clear(sendBtn);
+  sendBtn.appendChild(el("span", { class: "btn-spinner", "aria-hidden": "true" }));
+  sendBtn.appendChild(el("span", { class: "pb-send-label" }, "Drafting…"));
+  renderSpecBuildLog();
+
+  let failure = null;
+  try {
+    const res = await api("POST", "/spec-build", {
+      brief: specBuildState.brief,
+      history: specBuildState.history
+        .filter((t) => !(t.role === "assistant" && t.error))
+        .map((t) => (t.role === "user" && t.brief ? { role: "user", answer: t.brief } : t)),
+      ...(forcePlan ? { forcePlan: true } : {}),
+    });
+    if (res.phase === "clarify") {
+      specBuildState.history.push({ role: "assistant", questions: res.questions || [] });
+    } else if (res.phase === "spec") {
+      const clauses = (res.spec && Array.isArray(res.spec.clauses) ? res.spec.clauses : []).map(
+        (c) => ({
+          clause_id: c.clause_id,
+          kind: SPEC_CLAUSE_KINDS.includes(c.kind) ? c.kind : "requirement",
+          text: c.text || "",
+          rationale: c.rationale || "",
+        }),
+      );
+      specBuildState.draft = { clauses };
+    } else {
+      failure = res.error || "The spec author returned no result.";
+    }
+  } catch (e) {
+    failure = e && e.message ? e.message : "The request errored before a spec came back.";
+  }
+
+  specBuildState.busy = false;
+  if (failure) {
+    specBuildState.history.push({ role: "assistant", error: failure });
+    toast(failure, { code: "SPEC_BUILD" });
+  }
+  sendBtn.disabled = false;
+  sendBtn.classList.remove("is-running");
+  sendBtn.removeAttribute("aria-busy");
+  clear(sendBtn);
+  sendBtn.appendChild(icon("send"));
+  renderSpecBuildLog();
+}
+
+/** Human confirm → POST /specs. Clauses land as a draft spec, then Freeze appears. */
+async function createSpecFromDraft() {
+  if (!specBuildState || !specBuildState.draft || specBuildState.busy) return;
+  const title = (specBuildState.title || "").trim();
+  if (!title) {
+    toast("Give the spec a title first.");
+    return;
+  }
+  // Only send non-empty clauses; the server rejects blank text at its boundary.
+  const clauses = specBuildState.draft.clauses
+    .filter((c) => (c.text || "").trim())
+    .map((c) => ({
+      ...(c.clause_id ? { clause_id: c.clause_id } : {}),
+      kind: c.kind,
+      text: c.text.trim(),
+      ...(c.rationale && c.rationale.trim() ? { rationale: c.rationale.trim() } : {}),
+    }));
+  if (clauses.length === 0) {
+    toast("Add at least one clause with text before creating the spec.");
+    return;
+  }
+
+  specBuildState.busy = true;
+  specBuildState.actionError = null;
+  renderSpecBuildLog();
+  try {
+    const res = await api("POST", "/specs", {
+      title,
+      ...(specBuildState.brief ? { brief: specBuildState.brief } : {}),
+      clauses,
+    });
+    specBuildState.createdSpec = res.spec || null;
+    // Reflect the server-assigned clause ids/order back into the editable draft.
+    if (res.spec && Array.isArray(res.spec.clauses)) {
+      specBuildState.draft = {
+        clauses: res.spec.clauses.map((c) => ({
+          clause_id: c.clause_id,
+          kind: c.kind,
+          text: c.text,
+          rationale: c.rationale || "",
+        })),
+      };
+    }
+    toast("Spec created as draft — freeze it when ready.", { ok: true });
+  } catch (e) {
+    // Persistent error (rendered in the draft card), plus a toast for immediacy.
+    specBuildState.actionError = e && e.message ? e.message : "Could not create the spec.";
+    toast(specBuildState.actionError, { code: e && e.code });
+  } finally {
+    specBuildState.busy = false;
+    renderSpecBuildLog();
+  }
+}
+
+/** Freeze the created spec → immutable clauses + seeded product-intent lore. */
+async function freezeCreatedSpec() {
+  if (!specBuildState || !specBuildState.createdSpec || specBuildState.busy) return;
+  const id = specBuildState.createdSpec.id;
+  specBuildState.busy = true;
+  specBuildState.actionError = null;
+  renderSpecBuildLog();
+  try {
+    const res = await api("POST", `/specs/${id}/freeze`);
+    specBuildState.createdSpec = res.spec || specBuildState.createdSpec;
+    toast("Spec frozen — clauses are now immutable.", { ok: true });
+  } catch (e) {
+    specBuildState.actionError = e && e.message ? e.message : "Could not freeze the spec.";
+    toast(specBuildState.actionError, { code: e && e.code });
+  } finally {
+    specBuildState.busy = false;
+    renderSpecBuildLog();
+  }
+}
+
+/**
+ * Hand a FROZEN spec off to the "Plan a build" decomposer. Its clauses ride along on the
+ * plan-build POST so the decomposer satisfies each clause and stamps spec_clause_id
+ * provenance on the ACs — the coverage/traceability read model depends on this. Closes the
+ * spec panel and opens plan-build seeded with the clauses + a brief; the user then presses
+ * "Build the tickets". Without this handoff the frozen spec never reaches decompose and the
+ * Specs coverage view reads 0% for every spec even when the work fully delivers.
+ */
+function buildFromFrozenSpec() {
+  const spec = specBuildState && specBuildState.createdSpec;
+  if (!spec || spec.status !== "frozen") return;
+  const clauses = (Array.isArray(spec.clauses) ? spec.clauses : [])
+    .filter((c) => c && c.clause_id && c.kind && c.text)
+    .map((c) => ({
+      clause_id: c.clause_id,
+      kind: c.kind,
+      text: c.text,
+      ...(c.rationale ? { rationale: c.rationale } : {}),
+    }));
+  if (!clauses.length) return;
+  const brief =
+    (specBuildState && specBuildState.brief) ||
+    spec.brief ||
+    spec.title ||
+    "Build from the frozen spec.";
+  closeSpecBuild();
+  openPlanBuild({ spec: clauses, brief });
 }
 
 // --- View: Memory (Repo Digest · Feature ledger · Lore) ---------------------
@@ -8083,6 +9619,437 @@ function onboardButton(repos, presetRepo, opts) {
     [icon("plus"), el("span", {}, "Onboard a repo")],
   );
   return btn;
+}
+
+// --- Specs (Spec-Driven Development, Phase 3: coverage & traceability) -------
+
+const SPEC_STATUS_LABEL = { draft: "Draft", frozen: "Frozen", superseded: "Superseded" };
+const CLAUSE_KIND_LABEL = {
+  requirement: "Requirement",
+  "non-goal": "Non-goal",
+  decision: "Decision",
+};
+const LORE_STATUS_LABEL = {
+  active: "reaching agents",
+  draft: "unratified",
+  absent: "not seeded",
+  unknown: "",
+};
+
+/** Count clauses on a spec row without throwing on a malformed clauses_json. */
+function specClauseCount(spec) {
+  try {
+    const parsed = JSON.parse(spec.clauses_json || "[]");
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Specs view. Two surfaces on one route: a list of specs (#/specs) and, for a
+ * given spec (#/specs/:id), the coverage TRACE — each clause → its covering ACs
+ * (satisfied vs open), the coverage gaps (orphan clauses) called out, per-clause
+ * bounce counts, and the seeded-lore ratification status. Modelled on renderEpics.
+ */
+async function renderSpecs(param) {
+  const specId = param ? decodeURIComponent(param) : "";
+  return specId ? renderSpecDetail(specId) : renderSpecList();
+}
+
+async function renderSpecList() {
+  const res = await api("GET", "/specs");
+  const specs = res.specs || [];
+
+  const wrap = el("div", { class: "view", dataset: { view: "specs" } });
+  wrap.appendChild(
+    viewHero({
+      image: "assets/bg/hero-spec.jpg",
+      eyebrow: "SPEC LIBRARY",
+      title: "Specs define intent. Code delivers it.",
+      subtitle:
+        "Each spec is a frozen statement of product intent. Trace every clause through to acceptance criteria and see the coverage gaps.",
+    }),
+  );
+  wrap.appendChild(
+    el("div", { class: "view-toolbar" }, [
+      el("div", { class: "view-toolbar-actions" }, [
+        el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
+          icon("spark"),
+          el("span", {}, "Author a spec"),
+        ]),
+      ]),
+    ]),
+  );
+
+  if (specs.length === 0) {
+    wrap.appendChild(
+      emptyState(
+        "No specs yet",
+        "Author a spec from a brief — Dispatch drafts testable clauses you edit, then freeze.",
+        "specs",
+      ),
+    );
+    return wrap;
+  }
+
+  // Best-effort coverage: fetch each spec's coverage rollup in parallel so the
+  // stats row can report real covered% / gaps. A failed fetch just drops that
+  // spec from the coverage maths (the stat degrades to "—", never crashes).
+  const coverages = await Promise.all(
+    specs.map((s) =>
+      api("GET", `/specs/${encodeURIComponent(s.id)}/coverage`)
+        .then((r) => (r && r.coverage) || null)
+        .catch(() => null),
+    ),
+  );
+  const covById = new Map(specs.map((s, i) => [s.id, coverages[i]]));
+
+  wrap.appendChild(specStatsRow(specs, coverages));
+
+  // Newest spec (by updated_at) is the primary card — it gets the amber rail.
+  const newestId = specs
+    .slice()
+    .sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))[0]?.id;
+
+  const list = el("div", { class: "spec-list" });
+  for (const spec of specs)
+    list.appendChild(
+      renderSpecCard(spec, { coverage: covById.get(spec.id), isPrimary: spec.id === newestId }),
+    );
+  wrap.appendChild(list);
+  return wrap;
+}
+
+/** A rollup {total,covered,orphans} from a coverage payload, defensively read. */
+function specCoverageRollup(coverage) {
+  const src =
+    coverage && coverage.rollup && typeof coverage.rollup === "object" ? coverage.rollup : null;
+  if (!src) return null;
+  const total = Number(src.total) || 0;
+  const covered = Number(src.covered) || 0;
+  const orphans = Array.isArray(src.orphans) ? src.orphans.length : Number(src.orphans) || 0;
+  return { total, covered, orphans };
+}
+
+/** Stats row for the spec library: total specs · avg coverage · gaps · updated. */
+function specStatsRow(specs, coverages) {
+  const rollups = coverages.map(specCoverageRollup).filter(Boolean);
+  const withClauses = rollups.filter((r) => r.total > 0);
+  const covPcts = withClauses.map((r) => Math.round((r.covered / r.total) * 100));
+  const avgCoverage = covPcts.length
+    ? Math.round(covPcts.reduce((a, b) => a + b, 0) / covPcts.length)
+    : null;
+  const gaps = rollups.length ? rollups.reduce((a, r) => a + r.orphans, 0) : null;
+
+  const newest = specs
+    .slice()
+    .filter((s) => s.updated_at)
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0];
+
+  return el("div", { class: "spec-stats kpi-row" }, [
+    specStatCard({ label: "Total specs", value: String(specs.length), unit: "in library" }),
+    specStatCard({
+      label: "Coverage",
+      value: avgCoverage == null ? "—" : String(avgCoverage),
+      unit: avgCoverage == null ? "no data" : "% avg covered",
+      tone: "ok",
+      series: covPcts.length > 1 ? covPcts : null,
+    }),
+    specStatCard({
+      label: "Gaps",
+      value: gaps == null ? "—" : String(gaps),
+      unit: gaps == null ? "no data" : "orphan clauses",
+      tone: gaps ? "danger" : "ok",
+    }),
+    specStatCard({
+      label: "Last updated",
+      value: newest ? fmtRelative(newest.updated_at) : "—",
+      unit: newest && newest.target_repo ? newest.target_repo : "—",
+      tone: "amber",
+      small: true,
+    }),
+  ]);
+}
+
+/**
+ * A stat tile reusing the KPI card's visual language (label · big value · unit ·
+ * optional sparkline) but rendered as a non-navigating div — the spec library
+ * has no single "drill" target for an aggregate stat.
+ */
+function specStatCard({ label, value, unit, tone = "accent", series, small = false }) {
+  return el("div", { class: `kpi tone-${tone}${small ? " kpi-sm" : ""}` }, [
+    el("div", { class: "kpi-top" }, [el("span", { class: "kpi-label" }, label)]),
+    el("div", { class: "kpi-figure" }, [
+      el("span", { class: "kpi-val tabnum" }, value),
+      unit ? el("span", { class: "kpi-unit" }, unit) : null,
+    ]),
+    series && series.length > 1 ? el("div", { class: "kpi-spark", html: svgSpark(series) }) : null,
+  ]);
+}
+
+/** Keyword-match a spec title to a scanner-frame line icon. */
+function specThumbIcon(title) {
+  const t = (title || "").toLowerCase();
+  if (/\b(auth|password|login|sign[- ]?in|sign[- ]?up|credential|token|oauth|secur)/.test(t))
+    return "lock";
+  if (/\b(data|residency|storage|region|geo|locale|country|tenant|migrat)/.test(t)) return "globe";
+  if (/\b(rate|throttle|limit|quota|budget|throughput|latency|perf|speed)/.test(t)) return "gauge";
+  return "doc";
+}
+
+/** Four amber L-shaped corner brackets framing a spec thumbnail icon. */
+function specThumb(title) {
+  return el("span", { class: "spec-thumb" }, [
+    el("i", { class: "tc tl" }),
+    el("i", { class: "tc tr" }),
+    el("i", { class: "tc bl" }),
+    el("i", { class: "tc br" }),
+    icon(specThumbIcon(title), "spec-thumb-icon"),
+  ]);
+}
+
+/** One spec = a card linking to its coverage trace, with a scanner-frame thumb. */
+function renderSpecCard(spec, { coverage, isPrimary = false } = {}) {
+  const count = specClauseCount(spec);
+  // Status dot: frozen (reaching agents) = amber, draft (live/authoring) = green.
+  const statusLabel = SPEC_STATUS_LABEL[spec.status] || spec.status;
+  const rollup = specCoverageRollup(coverage);
+  return el(
+    "button",
+    {
+      class: `spec-card${isPrimary ? " spec-card--primary" : ""}`,
+      type: "button",
+      dataset: { specId: spec.id, status: spec.status },
+      onclick: () => navigate(`#/specs/${encodeURIComponent(spec.id)}`),
+    },
+    [
+      specThumb(spec.title),
+      el("div", { class: "spec-card-body" }, [
+        el("div", { class: "spec-card-head" }, [
+          el("span", { class: "spec-card-title" }, spec.title),
+          el("span", { class: `spec-card-status status-${spec.status}` }, [
+            el("span", { class: "scs-dot" }),
+            statusLabel,
+          ]),
+        ]),
+        spec.brief ? el("p", { class: "spec-card-brief dim" }, spec.brief) : null,
+        el("div", { class: "spec-card-meta dim" }, [
+          el("span", {}, `${count} clause${count === 1 ? "" : "s"}`),
+          spec.target_repo ? el("span", { class: "tag-chip" }, spec.target_repo) : null,
+          rollup && rollup.total > 0
+            ? el(
+                "span",
+                { class: "spec-card-cov mono" },
+                `${Math.round((rollup.covered / rollup.total) * 100)}% covered`,
+              )
+            : null,
+          spec.updated_at
+            ? el("span", { class: "spec-card-updated" }, fmtRelative(spec.updated_at))
+            : null,
+        ]),
+      ]),
+      icon("chevron", "spec-card-chevron"),
+    ],
+  );
+}
+
+async function renderSpecDetail(specId) {
+  const res = await api("GET", `/specs/${encodeURIComponent(specId)}/coverage`);
+  const cov = res && res.coverage;
+
+  const wrap = el("div", { class: "view", dataset: { view: "specs" } });
+
+  // Defensive: a missing / empty / malformed coverage payload must render a
+  // clean empty state, not blank the whole spec view (an unguarded `cov.rollup`
+  // would throw, leaving the router's skeleton stuck on screen). Guard on shape
+  // rather than exact fields — other work may extend this payload.
+  if (!cov || typeof cov !== "object") {
+    wrap.appendChild(
+      viewHead("Spec", "Coverage", [
+        el("button", { class: "btn", type: "button", onclick: () => navigate("#/specs") }, [
+          icon("arrow"),
+          el("span", {}, "All specs"),
+        ]),
+      ]),
+    );
+    wrap.appendChild(
+      emptyState(
+        "Coverage unavailable",
+        "This spec's coverage report could not be loaded. It may have been removed, or the report is still being built.",
+        "specs",
+      ),
+    );
+    return wrap;
+  }
+
+  const rollupSrc = cov.rollup && typeof cov.rollup === "object" ? cov.rollup : {};
+  const orphans = Array.isArray(rollupSrc.orphans) ? rollupSrc.orphans : [];
+  const r = {
+    total: Number(rollupSrc.total) || 0,
+    covered: Number(rollupSrc.covered) || 0,
+    satisfied: Number(rollupSrc.satisfied) || 0,
+    orphans,
+  };
+  const clauses = Array.isArray(cov.clauses) ? cov.clauses : [];
+  wrap.appendChild(
+    viewHead(cov.title || "Spec", `Spec · ${SPEC_STATUS_LABEL[cov.status] || cov.status || "—"}`, [
+      el("button", { class: "btn", type: "button", onclick: () => navigate("#/specs") }, [
+        icon("arrow"),
+        el("span", {}, "All specs"),
+      ]),
+      cov.scope_node_id
+        ? el(
+            "button",
+            {
+              class: "btn",
+              type: "button",
+              onclick: () => navigate(`#/epics/${encodeURIComponent(cov.scope_node_id)}`),
+            },
+            [icon("epics"), el("span", {}, "Open epic")],
+          )
+        : null,
+    ]),
+  );
+
+  // Rollup: covered / satisfied / orphans — the at-a-glance coverage health.
+  wrap.appendChild(
+    el("div", { class: "spec-rollup", dataset: { total: String(r.total) } }, [
+      specStat("Clauses", r.total, "total"),
+      specStat("Covered", `${r.covered}/${r.total}`, "covered"),
+      specStat("Satisfied", `${r.satisfied}/${r.total}`, "satisfied"),
+      specStat("Gaps", r.orphans.length, r.orphans.length > 0 ? "gap" : "ok"),
+    ]),
+  );
+
+  // Coverage gaps: orphan clauses (no covering AC) called out first.
+  if (r.orphans.length > 0) {
+    const orphanClauses = clauses.filter((c) => c.orphan);
+    wrap.appendChild(
+      el("div", { class: "coverage-gaps", dataset: { count: String(orphanClauses.length) } }, [
+        el("div", { class: "coverage-gaps-head" }, [
+          icon("alert"),
+          el(
+            "strong",
+            {},
+            `${orphanClauses.length} coverage gap${orphanClauses.length === 1 ? "" : "s"}`,
+          ),
+          el("span", { class: "dim" }, "— clauses with no acceptance criterion covering them"),
+        ]),
+        el(
+          "ul",
+          { class: "coverage-gaps-list" },
+          orphanClauses.map((c) =>
+            el("li", { dataset: { clauseId: c.clause_id } }, [
+              badge(CLAUSE_KIND_LABEL[c.kind] || c.kind, `clause-kind kind-${c.kind}`),
+              el("span", {}, c.text),
+            ]),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  // The trace: one block per clause → covering ACs → satisfied/open.
+  const trace = el("div", { class: "spec-trace" });
+  for (const clause of clauses) trace.appendChild(renderClauseTrace(clause));
+  wrap.appendChild(trace);
+
+  if (cov.gate_enabled) {
+    wrap.appendChild(
+      el(
+        "p",
+        { class: "dim section-note" },
+        "Spec-coverage DoD gate is ARMED (advisory): a clause with no satisfied AC will be flagged.",
+      ),
+    );
+  }
+  return wrap;
+}
+
+function specStat(label, value, tone) {
+  return el("div", { class: "spec-stat", dataset: { tone } }, [
+    el("span", { class: "spec-stat-value" }, String(value)),
+    el("span", { class: "spec-stat-label dim" }, label),
+  ]);
+}
+
+/** One clause's trace row: kind + text, coverage state, bounce count, its ACs. */
+function renderClauseTrace(clause) {
+  const state = clause.orphan ? "orphan" : clause.satisfied ? "satisfied" : "open";
+  const block = el("div", {
+    class: "spec-clause",
+    dataset: {
+      clauseId: clause.clause_id,
+      state,
+      covered: String(clause.covered),
+      orphan: String(clause.orphan),
+      satisfied: String(clause.satisfied),
+    },
+  });
+
+  const head = el("div", { class: "spec-clause-head" }, [
+    badge(CLAUSE_KIND_LABEL[clause.kind] || clause.kind, `clause-kind kind-${clause.kind}`),
+    el("span", { class: "spec-clause-text" }, clause.text),
+  ]);
+  const tags = el("div", { class: "spec-clause-tags" });
+  // Coverage state chip: green satisfied / amber open / red gap.
+  tags.appendChild(
+    clause.orphan
+      ? badge("Gap — no AC", "clause-state state-orphan")
+      : clause.satisfied
+        ? badge("Satisfied", "clause-state state-satisfied")
+        : badge("Open", "clause-state state-open"),
+  );
+  if (clause.bounce_count > 0) {
+    tags.appendChild(badge(`bounced ${clause.bounce_count}×`, "clause-bounce no-dot"));
+  }
+  if (clause.lore_status && clause.lore_status !== "unknown") {
+    const label = LORE_STATUS_LABEL[clause.lore_status] || clause.lore_status;
+    tags.appendChild(
+      badge(
+        `lore: ${clause.lore_status}${label ? ` (${label})` : ""}`,
+        `lore-${clause.lore_status === "active" ? "active" : "draft"} no-dot`,
+      ),
+    );
+  }
+  head.appendChild(tags);
+  block.appendChild(head);
+  if (clause.rationale) {
+    block.appendChild(el("p", { class: "spec-clause-rationale dim" }, clause.rationale));
+  }
+
+  if (clause.orphan) {
+    block.appendChild(
+      el(
+        "p",
+        { class: "spec-clause-empty dim" },
+        "No acceptance criterion covers this clause — it is a coverage gap.",
+      ),
+    );
+    return block;
+  }
+
+  const acs = el(
+    "div",
+    { class: "spec-clause-acs" },
+    (Array.isArray(clause.covering_acs) ? clause.covering_acs : []).map((ac) =>
+      el("div", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
+        badge(
+          ac.satisfied ? "satisfied" : ac.ac_status,
+          `ac-${ac.satisfied ? "satisfied" : "pending"}`,
+        ),
+        el("span", { class: "spec-ac-text" }, ac.ac_text),
+        el(
+          "a",
+          { class: "spec-ac-ticket", href: `#/ticket/${encodeURIComponent(ac.ticket_id)}` },
+          ac.ticket_number != null ? `#${ac.ticket_number}` : ac.ticket_title,
+        ),
+      ]),
+    ),
+  );
+  block.appendChild(acs);
+  return block;
 }
 
 async function renderMemory(param) {
@@ -8388,6 +10355,7 @@ if (!prefersReducedMotion()) {
   setTimeout(() => document.documentElement.classList.remove("booting"), 1600);
 }
 
+adoptTokenFromUrl(); // one-scan token pickup (QR) before the first authed call
 buildChrome();
 window.addEventListener("hashchange", router);
 router();

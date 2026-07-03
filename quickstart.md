@@ -104,6 +104,43 @@ DRY_RUN=0 bash runner/loop.sh         # go live — delivers tickets as branches
 
 ---
 
+## 5. Build a whole new app from one line (greenfield)
+
+You don't need an existing repo. From the dashboard, the **Plan a build** chat turns a
+one-line brief into a phased, dependency-ordered epic — including a **bootstrap** ticket
+that *creates a new repo* for the app, which the factory then onboards and delivers into.
+
+1. **Plan it (UI).** Command palette (`Jump to…`) → **Plan a build** → keep **New app —
+   greenfield** selected → type one line (e.g. *"a full-stack calculator: a backend HTTP
+   API that evaluates arithmetic expressions and a web front-end that calls it"*) → send.
+   Review the proposed phases → **Create these tickets** (they land as **draft**).
+2. **Ready them.** Move the epic's tickets `draft → ready` (drag on the board, or
+   `runner/gaffer` / the CLI). Phase 1 is the bootstrap; the rest are gated behind it.
+3. **Deliver.** Run the loop (`DRY_RUN=0 bash runner/loop.sh`). The bootstrap ticket
+   creates the new repo at `<repo-parent>/<slug>`, the factory registers + onboards it,
+   and the dependent tickets deliver into it in dependency order.
+
+> **The loop delivers to `in_review`; it does not merge.** Approve each ticket in the
+> **Review** view (or enable the opt-in autonomy flags below for hands-off runs). The
+> bootstrap ticket has no delivery branch — approving it marks it merged directly.
+
+### Greenfield gotchas (things you currently have to do)
+
+- **The DoD test gate needs the new repo's dependencies installed.** The factory sets the
+  bootstrapped repo's test command automatically, but a feature ticket runs that command
+  in a **fresh throwaway worktree that has no `node_modules`** — so the first deliveries
+  fail the Definition-of-Done gate ("tests couldn't run") until deps are present. For a
+  greenfield run today, either commit a vendored install or **set `GAFFER_ALLOW_NO_DOD=1`**
+  for the first pass to skip the test gate (honest trade-off: the tests are *written* but
+  not *enforced* on that delivery). Automating the worktree install is on the roadmap.
+- **Hands-off delivery is opt-in.** Without the autonomy flags, the loop stops at
+  `in_review` and waits for you. For an unattended greenfield run, set
+  `DISPATCH_ALLOW_AGENT_APPROVE=1` (and, if you want auto-merge, `AUTO_MERGE=1`).
+- **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
+  re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.
+
+---
+
 ## Safety (read before going live)
 
 Gaffer runs shell-capable agents, so containment is first-class — but it is **run-at-your-own-risk** software:

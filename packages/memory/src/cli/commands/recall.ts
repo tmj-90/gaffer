@@ -13,7 +13,11 @@
  * ISOLATION: no imports from dispatch or crew. Memory adjusts its OWN items
  * from its OWN read-event log + the outcome passed in.
  */
-import { listFlaggedForReview, recallFeedback } from "../../core/recallFeedback.js";
+import {
+  listFlaggedForReview,
+  recallEffectiveness,
+  recallFeedback,
+} from "../../core/recallFeedback.js";
 import type { RecallOutcome } from "../../core/recallFeedback.js";
 import { openDb } from "../../db/index.js";
 import { getBool, getString } from "../args.js";
@@ -72,6 +76,41 @@ export async function cmdRecallFeedback(args: ReturnType<typeof parseArgs>): Pro
       `recall-feedback: #${ticket} (${repo}) → ${outcomeRaw}\n` +
         `  served: ${result.served}  adjusted: ${adjusted} ` +
         `(lore ${result.loreAdjusted.length}, cards ${result.cardsAdjusted.length})\n`,
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `memory recall-stats [--repo <r>] [--json]` — read-back view of the feedback
+ * loop: how often served knowledge led to a clean outcome vs rework/block, plus
+ * a per-day trend. Read-only (never mutates); the dispatch Health surface shells
+ * out to this for its recall-effectiveness signal.
+ */
+export async function cmdRecallStats(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const repo = getString(args.flags, "repo");
+  const json = getBool(args.flags, "json");
+  const db = openDb();
+  try {
+    const stats = recallEffectiveness(db, repo && repo.trim() ? { repo: repo.trim() } : {});
+
+    if (json) {
+      process.stdout.write(JSON.stringify(stats, null, 2) + "\n");
+      return 0;
+    }
+
+    if (stats.total === 0) {
+      process.stdout.write(`No recall feedback recorded${repo ? ` for '${repo}'` : ""} yet.\n`);
+      return 0;
+    }
+
+    const eff = stats.effectiveness_pct == null ? "—" : `${stats.effectiveness_pct}%`;
+    process.stdout.write(
+      `RECALL EFFECTIVENESS${repo ? ` (${repo})` : ""}\n` +
+        `  outcomes: ${stats.total}  (clean ${stats.clean}, reworked ${stats.reworked}, blocked ${stats.blocked})\n` +
+        `  effectiveness: ${eff} clean  ·  items adjusted: ${stats.items_adjusted}\n`,
     );
     return 0;
   } finally {

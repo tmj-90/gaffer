@@ -15,57 +15,57 @@
      Single source of truth for tokens — no raw hex outside :root.
      =========================================================================== */
 
-  /* --- surfaces: warm editorial paper → barely-there panels --------------- */
-  --bg: #f6f4ef; /* the page — warm paper */
-  --bg-2: #f1eee7;
-  --bg-3: #ece8df;
-  --surface: #fcfbf7; /* a panel is a whisper above the paper */
-  --surface-2: #ffffff;
-  --surface-3: #f1eee7;
-  --surface-4: #ece8df;
-  --line: rgba(22, 20, 15, 0.14); /* ink hairline — structure lives here */
-  --line-strong: rgba(22, 20, 15, 0.26);
-  --line-soft: rgba(22, 20, 15, 0.1);
-  --line-hair: rgba(22, 20, 15, 0.06);
-  --grid-line: rgba(22, 20, 15, 0.022); /* faint drafting underlay */
-  --grid-line-2: rgba(22, 20, 15, 0.038);
+  /* --- surfaces: warm near-black instrument panels ------------------------ */
+  --bg: #0b0a07; /* the console — warm near-black */
+  --bg-2: #0d0b08;
+  --bg-3: #080705; /* recessed wells (charts, code, terminals) */
+  --surface: #0f0d09; /* a panel — a whisper above the ink */
+  --surface-2: #12100b;
+  --surface-3: #1a160e;
+  --surface-4: #221d13;
+  --line: rgba(237, 230, 211, 0.12); /* phosphor hairline — structure lives here */
+  --line-strong: rgba(237, 230, 211, 0.2);
+  --line-soft: rgba(237, 230, 211, 0.07);
+  --line-hair: rgba(237, 230, 211, 0.045);
+  --grid-line: rgba(237, 230, 211, 0.028); /* oscilloscope graticule underlay */
+  --grid-line-2: rgba(237, 230, 211, 0.05);
 
-  /* --- brand: surgical editorial red (system) + warm ochre (LIVE / now) --- */
-  --accent: #e5371f; /* editorial red — the system signal, used sparingly */
-  --accent-bright: #f0573f;
-  --accent-press: #b72712;
-  --accent-soft: rgba(229, 55, 31, 0.08);
-  --accent-line: rgba(229, 55, 31, 0.32);
-  --accent-glow: rgba(229, 55, 31, 0.28);
-  --amber: #b26a00; /* warm ochre — the live lamp / "now / attention" */
-  --amber-bright: #d98a1e;
-  --amber-soft: rgba(178, 106, 0, 0.12);
-  --amber-line: rgba(178, 106, 0, 0.4);
-  --amber-glow: rgba(178, 106, 0, 0.3);
+  /* --- signal: amber IS the action; everything else is status ------------- */
+  --accent: #ffb224; /* amber phosphor — your action / focus (one per view) */
+  --accent-bright: #ffd37a;
+  --accent-press: #e09410;
+  --accent-soft: rgba(255, 178, 36, 0.12);
+  --accent-line: rgba(255, 178, 36, 0.4);
+  --accent-glow: rgba(255, 178, 36, 0.5);
+  --amber: #ffb224; /* the LIVE lamp / "now / attention" */
+  --amber-bright: #ffd37a;
+  --amber-soft: rgba(255, 178, 36, 0.12);
+  --amber-line: rgba(255, 178, 36, 0.4);
+  --amber-glow: rgba(255, 178, 36, 0.5);
 
-  /* --- text: warm near-black ink ------------------------------------------ */
-  --text: #16140f;
-  --text-dim: #4a463d;
-  --text-faint: #7c766a;
-  --text-ghost: #a39c8e;
-  --on-accent: #fdf6f3;
-  --white: #ffffff;
+  /* --- text: warm cream on ink (AAA — fixes the old faint-on-paper bug) ---- */
+  --text: #ede6d3;
+  --text-dim: #b9b09a;
+  --text-faint: #8c8372; /* ~5:1 on ink; was ~2.3:1 on paper */
+  --text-ghost: #6e6553;
+  --on-accent: #1c1305; /* ink text sitting on amber */
+  --white: #f4eee0;
 
   /* --- status ------------------------------------------------------------- */
-  --ok: #2f6b4f;
-  --ok-soft: rgba(47, 107, 79, 0.1);
-  --warn: #b26a00;
-  --warn-soft: rgba(178, 106, 0, 0.12);
-  --danger: #c0341a;
-  --danger-soft: rgba(192, 52, 26, 0.1);
-  --info: #3c6e8f;
-  --info-soft: rgba(60, 110, 143, 0.1);
-  --violet: #6e5a8c;
-  --violet-soft: rgba(110, 90, 140, 0.12);
+  --ok: #7ed08a;
+  --ok-soft: rgba(126, 208, 138, 0.12);
+  --warn: #ffb224;
+  --warn-soft: rgba(255, 178, 36, 0.12);
+  --danger: #ff6a54;
+  --danger-soft: rgba(255, 106, 84, 0.12);
+  --info: #6fd3d0;
+  --info-soft: rgba(111, 211, 208, 0.12);
+  --violet: #c7a6ff;
+  --violet-soft: rgba(199, 166, 255, 0.14);
 
-  /* --- type: Fraunces editorial display · Inter body · JetBrains Mono telemetry */
-  --display: "Fraunces", Georgia, "Times New Roman", serif;
-  --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* --- type: Space Grotesk display · JetBrains Mono for everything else ---- */
+  --display: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --sans: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --step--1: 0.82rem;
   --step-0: 0.94rem;
@@ -93,26 +93,26 @@
   --s-8: 64px;
 
   /* --- shape: crisp editorial — square-ish, structure from rules --------- */
-  --r: 6px;
-  --r-sm: 4px;
-  --r-lg: 10px;
+  --r: 4px;
+  --r-sm: 3px;
+  --r-lg: 6px;
   --r-pill: 999px;
 
   /* --- depth: ink-on-paper — minimal lift, hairlines do the work --------- */
   --bevel: none;
-  --shadow: 0 1px 2px rgba(22, 20, 15, 0.05);
-  --shadow-lg: 0 12px 40px -22px rgba(22, 20, 15, 0.22);
-  --elev-0: 0 1px 1px rgba(22, 20, 15, 0.04);
-  --elev-1: 0 1px 2px rgba(22, 20, 15, 0.06), 0 8px 24px -18px rgba(22, 20, 15, 0.18);
-  --elev-2: 0 16px 48px -24px rgba(22, 20, 15, 0.24);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 30px 80px -30px rgba(0, 0, 0, 0.8);
+  --elev-0: 0 0 0 1px rgba(237, 230, 211, 0.04);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 32px -22px rgba(0, 0, 0, 0.7);
+  --elev-2: 0 30px 70px -30px rgba(0, 0, 0, 0.8);
   --ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
   --glow: 0 0 0 1px var(--accent-line);
   --glow-amber: 0 0 0 1px var(--amber-line);
 
   /* --- motion: cinematic, instrument-grade ------------------------------- */
   --ease: cubic-bezier(0.16, 1, 0.3, 1); /* expressive ease-out */
-  --ease-io: cubic-bezier(0.65, 0, 0.35, 1); /* camera ease-in-out */
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* slight overshoot */
+  --ease-io: cubic-bezier(0.5, 1.5, 0.5, 1); /* rail fly-through */
+  --ease-spring: cubic-bezier(0.34, 1.42, 0.5, 1); /* overshoot — entrances */
   --fast: 140ms;
   --med: 240ms;
   --slow: 420ms;
@@ -1189,6 +1189,160 @@ html::after {
   gap: var(--s-2);
   align-items: center;
   flex-wrap: wrap;
+}
+
+/* === Hero band ============================================================
+   An atmospheric image header that melts into the OLED content below it. The
+   asset carries a near-black LEFT and the amber focal on the RIGHT; a two-axis
+   scrim darkens the left so headline text stays legible over it and fades the band
+   seamlessly into the view. (Contrast is not formally computed here — muted text
+   near the transparent edge is not guaranteed AAA.) Compositor-friendly: no
+   layout-animating props. */
+.view-hero {
+  position: relative;
+  isolation: isolate;
+  min-height: clamp(300px, 40vh, 360px);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background-color: var(--bg);
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: right center;
+  display: flex;
+  align-items: center;
+}
+/* Scrim: (a) left→right --bg → transparent by ~62%, keeping the amber focal on
+   the right; (b) bottom→up transparent → --bg so the band dissolves into the
+   OLED content column directly beneath it. */
+.view-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      90deg,
+      var(--bg) 0%,
+      color-mix(in srgb, var(--bg) 72%, transparent) 34%,
+      transparent 62%
+    ),
+    linear-gradient(
+      0deg,
+      var(--bg) 0%,
+      color-mix(in srgb, var(--bg) 60%, transparent) 24%,
+      transparent 58%
+    );
+}
+.view-hero-inner {
+  position: relative;
+  z-index: 1;
+  max-width: 62ch;
+  padding: clamp(var(--s-5), 4vw, var(--s-7));
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.view-hero-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.view-hero-diamond {
+  color: var(--accent);
+  font-size: 0.72rem;
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+.view-hero-title {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: clamp(2rem, 6vw, 3.4rem);
+  line-height: 1.02;
+  letter-spacing: var(--track-tighter);
+  color: var(--text);
+  margin: 0;
+  max-width: 18ch;
+  text-wrap: balance;
+}
+.view-hero-sub {
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  line-height: 1.5;
+  color: var(--text-dim);
+  max-width: 46ch;
+  margin: 0;
+}
+.view-hero-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-1);
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  color: var(--text-dim);
+}
+.view-hero-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.view-hero-status.ok {
+  color: var(--ok);
+}
+.view-hero-status.ok .view-hero-dot {
+  background: var(--ok);
+  box-shadow: 0 0 8px -1px var(--ok);
+}
+
+/* Actions previously carried by the view-head, relocated below the hero. */
+.view-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+.view-toolbar-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* Mobile: shorter band, stronger scrim, headline scales down, amber focal on
+   the right stays visible (right-anchored image + scrim transparent past 78%). */
+@media (max-width: 639px) {
+  .view-hero {
+    min-height: 280px;
+  }
+  .view-hero::before {
+    background:
+      linear-gradient(
+        90deg,
+        var(--bg) 0%,
+        color-mix(in srgb, var(--bg) 82%, transparent) 42%,
+        transparent 78%
+      ),
+      linear-gradient(
+        0deg,
+        var(--bg) 0%,
+        color-mix(in srgb, var(--bg) 66%, transparent) 30%,
+        transparent 64%
+      );
+  }
+  .view-hero-inner {
+    max-width: 100%;
+    padding: var(--s-5) var(--s-4);
+  }
+  .view-hero-title {
+    font-size: clamp(1.7rem, 8vw, 2.3rem);
+  }
 }
 
 .section-title {
@@ -2341,103 +2495,227 @@ html::after {
   }
 }
 
-/* --- development flow table --- */
-.devflow {
-  display: flex;
-  flex-direction: column;
-}
-.df-row {
-  --st: var(--text-faint);
-  display: grid;
-  grid-template-columns: 96px 30px 1fr 58px 88px;
+/* --- development-flow NODE PIPELINE (Overview signature element) ---------- */
+.pipeline-panel .panel-head {
   align-items: center;
-  gap: var(--s-3);
-  padding: 11px 0;
-  border-top: 1px solid var(--line-hair);
-  text-decoration: none;
-  color: inherit;
 }
-.df-row:first-child {
-  border-top: none;
-}
-.df-row.tone-accent {
-  --st: var(--accent);
-}
-.df-row.tone-amber {
-  --st: var(--amber);
-}
-.df-row.tone-ok {
-  --st: var(--ok);
-}
-.df-row.tone-danger {
-  --st: var(--danger);
-}
-.df-row.tone-idle {
-  --st: var(--text-faint);
-}
-.df-name {
+.pl-live {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  font-size: var(--step--1);
-  font-weight: 600;
-  color: var(--text-dim);
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--amber);
 }
-.df-row:hover .df-name {
-  color: var(--text);
-}
-.df-dot {
+.pl-live-dot {
   width: 7px;
   height: 7px;
-  border-radius: 2px;
-  transform: rotate(45deg);
-  background: var(--st);
-  box-shadow: 0 0 8px -1px var(--st);
-  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow:
+    0 0 0 3px var(--amber-soft),
+    0 0 10px -1px var(--amber);
+  animation: needs-pulse 2.4s var(--ease) infinite;
 }
-.df-count {
+.pipeline {
+  display: flex;
+  align-items: flex-start;
+  margin-top: var(--s-2);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.pipeline::-webkit-scrollbar {
+  display: none;
+}
+.pl-node {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px 4px;
+  text-decoration: none;
+  color: inherit;
+  isolation: isolate;
+}
+/* Connector hairline: sits at disc-center, spanning from the previous disc. */
+.pl-node:not(:first-child)::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 28px;
+  right: 50%;
+  left: -50%;
+  height: 2px;
+  background: var(--line-hair);
+}
+.pl-node.active::before {
+  background: var(--accent-line);
+  box-shadow: 0 0 8px -2px var(--accent-glow);
+}
+.pl-disc {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--bg-3);
+  border: 1.5px solid var(--line);
+  color: var(--text-faint);
+  transition:
+    border-color var(--med) var(--ease),
+    color var(--med) var(--ease),
+    box-shadow var(--med) var(--ease),
+    transform var(--fast) var(--ease);
+}
+.pl-disc svg {
+  width: 24px;
+  height: 24px;
+}
+.pl-node.active .pl-disc {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  box-shadow:
+    0 0 0 3px var(--accent-soft),
+    0 0 18px -4px var(--accent-glow);
+}
+.pl-node.dim .pl-disc {
+  color: var(--text-faint);
+  border-color: var(--line-hair);
+}
+.pl-node:hover .pl-disc {
+  transform: translateY(-2px);
+  border-color: var(--accent-line);
+  color: var(--accent-bright);
+}
+.pl-node:focus-visible {
+  outline: none;
+}
+.pl-node:focus-visible .pl-disc {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.pl-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+}
+.pl-node.dim .pl-label {
+  color: var(--text-faint);
+}
+.pl-node:hover .pl-label {
+  color: var(--text);
+}
+.pl-count {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   font-weight: 700;
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--accent);
+}
+.pl-node.dim .pl-count {
+  color: var(--text-faint);
+}
+@media (max-width: 639px) {
+  .pl-node {
+    min-width: 84px;
+  }
+  .pl-disc {
+    width: 48px;
+    height: 48px;
+  }
+  .pl-disc svg {
+    width: 21px;
+    height: 21px;
+  }
+  .pl-node:not(:first-child)::before {
+    top: 24px;
+  }
+}
+
+/* --- health / ROI surface --- */
+/* name · value · progress-bar rows; reuses .df-bar for the bar itself. */
+.hlist {
+  display: flex;
+  flex-direction: column;
+}
+.hrow {
+  --st: var(--accent);
+  display: grid;
+  grid-template-columns: 1fr 92px 120px;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 9px 0;
+  border-top: 1px solid var(--line-hair);
+}
+.hrow:first-child {
+  border-top: none;
+}
+.hrow.tone-ok {
+  --st: var(--ok);
+}
+.hrow.tone-amber {
+  --st: var(--amber);
+}
+.hrow.tone-danger {
+  --st: var(--danger);
+}
+.hrow-name {
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hrow-val {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 0.72rem;
   color: var(--text);
   text-align: right;
 }
-.df-bar {
-  height: 6px;
-  border-radius: var(--r-pill);
-  background: rgba(255, 255, 255, 0.05);
-  overflow: hidden;
+.recall-figures {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--s-3);
+  margin-bottom: var(--s-3);
 }
-.df-bar i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--st);
-  box-shadow: 0 0 10px -1px var(--st);
-  transition: width var(--slow) var(--ease);
+.recall-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
-.df-age {
+.recall-stat-val {
   font-family: var(--mono);
-  font-size: 0.66rem;
-  color: var(--text-faint);
-  text-align: right;
-}
-.df-status {
-  justify-self: end;
-  font-size: 0.56rem;
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
+  font-size: var(--step-1);
+  color: var(--text);
+}
+.recall-stat-label {
+  font-size: 0.6rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 3px 9px;
-  border-radius: var(--r-pill);
+  color: var(--text-faint);
 }
-.df-status.ok {
-  color: var(--ok);
-  background: var(--ok-soft);
+.health-spark {
+  height: 46px;
+  color: var(--accent);
+  margin: var(--s-3) -4px -4px;
 }
-.df-status.warn {
-  color: var(--amber);
-  background: var(--amber-soft);
+.health-degraded {
+  padding: var(--s-3) 0;
 }
 
 /* --- progress by repository --- */
@@ -4186,12 +4464,18 @@ td.title-cell {
   }
 }
 .needs-item {
+  list-style: none;
+}
+/* severity-coded row: status icon · title + sub · right-aligned action link */
+.needs-item .ni-link {
+  --sev: var(--text-faint);
   display: flex;
   align-items: center;
   gap: var(--s-3);
   padding: var(--s-3);
   border-radius: var(--r-sm);
   border: 1px solid var(--line);
+  border-left: 3px solid var(--sev);
   background: var(--surface-2);
   text-decoration: none;
   color: inherit;
@@ -4200,10 +4484,21 @@ td.title-cell {
     border-color var(--fast) var(--ease),
     background var(--fast) var(--ease);
 }
-.needs-item:hover {
+.needs-item[data-sev="critical"] .ni-link {
+  --sev: var(--danger);
+}
+.needs-item[data-sev="waiting"] .ni-link {
+  --sev: var(--amber);
+}
+.needs-item .ni-link:hover {
   transform: translateX(2px);
   border-color: var(--accent-line);
+  border-left-color: var(--sev);
   background: var(--surface-3);
+}
+.needs-item .ni-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .needs-item .ni-icon {
   flex: 0 0 auto;
@@ -4213,26 +4508,12 @@ td.title-cell {
   display: grid;
   place-items: center;
   background: var(--bg);
+  color: var(--sev);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sev) 34%, transparent);
 }
 .needs-item .ni-icon svg {
   width: 18px;
   height: 18px;
-}
-.needs-item.tone-review .ni-icon {
-  color: var(--info);
-  box-shadow: inset 0 0 0 1px var(--accent-line);
-}
-.needs-item.tone-blocked .ni-icon {
-  color: var(--danger);
-  box-shadow: inset 0 0 0 1px rgba(255, 90, 106, 0.32);
-}
-.needs-item.tone-decision .ni-icon {
-  color: var(--amber);
-  box-shadow: inset 0 0 0 1px var(--amber-line);
-}
-.needs-item.tone-stale .ni-icon {
-  color: var(--danger);
-  box-shadow: inset 0 0 0 1px rgba(255, 90, 106, 0.32);
 }
 .needs-item .ni-body {
   flex: 1 1 auto;
@@ -4255,33 +4536,20 @@ td.title-cell {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.needs-item .ni-count {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  font-size: var(--step-2);
-  font-weight: 700;
+.needs-item .ni-action {
   flex: 0 0 auto;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.74rem;
+  font-weight: 650;
+  color: var(--sev);
 }
-.needs-item.tone-review .ni-count {
-  color: var(--info);
+.needs-item .ni-arrow {
+  transition: transform var(--fast) var(--ease);
 }
-.needs-item.tone-blocked .ni-count,
-.needs-item.tone-stale .ni-count {
-  color: var(--danger);
-}
-.needs-item.tone-decision .ni-count {
-  color: var(--amber);
-}
-.needs-item .ni-go {
-  color: var(--text-faint);
-  flex: 0 0 auto;
-  display: inline-grid;
-  place-items: center;
-}
-.needs-item .ni-go svg {
-  width: 16px;
-  height: 16px;
+.needs-item .ni-link:hover .ni-arrow {
+  transform: translateX(3px);
 }
 .needs-empty {
   display: flex;
@@ -4495,6 +4763,81 @@ td.title-cell {
 }
 .palette-scrim.open .palette {
   transform: translateY(0) scale(1);
+}
+
+/* --- Reject-reason dialog (mobile one-handed reject) -----------------------
+   Replaces window.prompt on the review gate: preset reason chips + a free-text
+   fallback so an operator can reject without a keyboard. Reuses the palette
+   scrim treatment for a consistent phosphor-modal feel. */
+.reject-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 72;
+  background: rgba(6, 8, 11, 0.62);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: clamp(var(--s-5), 12vh, 140px) var(--s-4) var(--s-4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--fast) var(--ease);
+}
+.reject-scrim.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.reject-dialog {
+  width: min(460px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-lg), var(--glow);
+  padding: var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.reject-dialog-title {
+  font-size: var(--step-1);
+  margin: 0;
+}
+.reject-dialog-hint {
+  margin: 0;
+  font-size: var(--step--1);
+  color: var(--text-faint);
+}
+.reject-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.reject-chip {
+  padding: 8px 14px;
+  cursor: pointer;
+  color: var(--text-dim);
+  transition:
+    border-color var(--fast) var(--ease),
+    color var(--fast) var(--ease),
+    background var(--fast) var(--ease);
+}
+.reject-chip:hover,
+.reject-chip:focus-visible {
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+.reject-chip.chip-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: var(--glow);
+}
+.reject-reason-input {
+  width: 100%;
+}
+.reject-dialog-actions {
+  justify-content: flex-end;
 }
 .palette-input-wrap {
   display: flex;
@@ -6419,6 +6762,63 @@ body {
   flex: 1 1 180px;
 }
 
+/* --- Author a spec: editable clause draft (Phase 1c) ---------------------- */
+.sb-title-field {
+  margin: 6px 0 12px;
+}
+.sb-title-field > label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.sb-title {
+  width: 100%;
+  font-weight: 600;
+}
+.sb-clauses {
+  gap: 10px;
+}
+.sb-clause-top {
+  justify-content: flex-start;
+}
+.sb-kind {
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  height: auto;
+  text-transform: lowercase;
+}
+.sb-remove {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+.sb-remove:hover {
+  color: var(--danger, var(--accent));
+}
+.sb-clause-text {
+  margin: 8px 0 6px;
+  min-height: 40px;
+}
+.sb-clause-rationale {
+  width: 100%;
+  font-size: 0.78rem;
+}
+.sb-add-row {
+  margin-top: 10px;
+}
+.sb-add {
+  width: 100%;
+  border-style: dashed;
+  color: var(--text-dim);
+}
+.sb-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.sb-action-error {
+  margin-top: 12px;
+}
+
 /* Stacked composer: the message box gets its own full-width row, then a separate
    actions row beneath it (escape on the left, send on the right) — rather than
    cramming textarea + both buttons inline. */
@@ -6963,6 +7363,396 @@ body {
   border-color: rgba(255, 90, 106, 0.3);
 }
 
+/* --- Specs view (Spec-Driven Development, Phase 3) ------------------------ */
+
+.spec-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.spec-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  text-align: left;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  color: inherit;
+  cursor: pointer;
+  transition:
+    border-color var(--fast) var(--ease),
+    transform var(--fast) var(--ease),
+    background var(--fast) var(--ease);
+}
+.spec-card--primary {
+  border-left: 2px solid var(--accent);
+}
+.spec-card:hover {
+  border-color: var(--accent-line);
+  background: var(--surface-3);
+  transform: translateY(-1px);
+}
+.spec-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* scanner-frame thumbnail: amber L-brackets framing a keyword-matched icon */
+.spec-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  background: var(--bg-3);
+  border-radius: var(--r-sm);
+}
+.spec-thumb-icon {
+  width: 30px;
+  height: 30px;
+  color: var(--accent);
+}
+.spec-thumb .tc {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 0 solid var(--accent);
+}
+.spec-thumb .tl {
+  top: 6px;
+  left: 6px;
+  border-top-width: 2px;
+  border-left-width: 2px;
+}
+.spec-thumb .tr {
+  top: 6px;
+  right: 6px;
+  border-top-width: 2px;
+  border-right-width: 2px;
+}
+.spec-thumb .bl {
+  bottom: 6px;
+  left: 6px;
+  border-bottom-width: 2px;
+  border-left-width: 2px;
+}
+.spec-thumb .br {
+  bottom: 6px;
+  right: 6px;
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+}
+.spec-card:hover .spec-thumb-icon {
+  color: var(--accent-bright);
+}
+
+.spec-card-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.spec-card-chevron {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  color: var(--text-faint);
+  margin-top: 2px;
+  transition: transform var(--fast) var(--ease);
+}
+.spec-card:hover .spec-card-chevron {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+.spec-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+}
+.spec-card-title {
+  font-weight: 640;
+  font-size: 0.98rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* status dot + label: frozen (reaching agents) amber · draft (live) green */
+.spec-card-status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.spec-card-status .scs-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.spec-card-status.status-frozen {
+  color: var(--accent);
+}
+.spec-card-status.status-frozen .scs-dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px -1px var(--accent-glow);
+}
+.spec-card-status.status-draft {
+  color: var(--ok);
+}
+.spec-card-status.status-draft .scs-dot {
+  background: var(--ok);
+  box-shadow: 0 0 8px -1px var(--ok);
+}
+.spec-card-brief {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.spec-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.75rem;
+}
+.spec-card-cov {
+  color: var(--ok);
+}
+.spec-card-updated {
+  color: var(--text-faint);
+  margin-left: auto;
+}
+
+/* spec-library stats row + compact KPI variant */
+.spec-stats {
+  margin-bottom: var(--s-4);
+}
+.kpi.kpi-sm .kpi-val {
+  font-size: var(--step-1);
+}
+@media (max-width: 639px) {
+  .spec-thumb {
+    width: 56px;
+    height: 56px;
+  }
+  .spec-thumb-icon {
+    width: 24px;
+    height: 24px;
+  }
+  .spec-thumb .tc {
+    width: 10px;
+    height: 10px;
+  }
+}
+
+/* status chips reuse the palette of the board's ticket-status badges */
+.badge.spec-status-draft {
+  color: var(--text-dim);
+  background: var(--surface-3);
+}
+.badge.spec-status-frozen {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.badge.spec-status-superseded {
+  color: var(--text-faint);
+  background: var(--surface-2);
+}
+
+/* Rollup: at-a-glance coverage health */
+.spec-rollup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+.spec-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 92px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface-2);
+}
+.spec-stat-value {
+  font-size: 1.35rem;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+}
+.spec-stat-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.spec-stat[data-tone="gap"] {
+  border-color: rgba(255, 90, 106, 0.4);
+}
+.spec-stat[data-tone="gap"] .spec-stat-value {
+  color: var(--danger);
+}
+.spec-stat[data-tone="satisfied"] .spec-stat-value {
+  color: var(--ok);
+}
+
+/* Coverage gaps callout */
+.coverage-gaps {
+  border: 1px solid rgba(255, 90, 106, 0.32);
+  background: var(--danger-soft);
+  border-radius: var(--r-card);
+  padding: 14px 16px;
+  margin-bottom: 18px;
+}
+.coverage-gaps-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+.coverage-gaps-head svg {
+  width: 18px;
+  height: 18px;
+}
+.coverage-gaps-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.coverage-gaps-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.86rem;
+}
+
+/* The trace */
+.spec-trace {
+  display: grid;
+  gap: 12px;
+}
+.spec-clause {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface-2);
+  padding: 14px 16px;
+}
+.spec-clause[data-state="satisfied"] {
+  border-left-color: var(--ok);
+}
+.spec-clause[data-state="open"] {
+  border-left-color: var(--amber);
+}
+.spec-clause[data-state="orphan"] {
+  border-left-color: var(--danger);
+}
+.spec-clause-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.spec-clause-text {
+  font-weight: 560;
+  font-size: 0.92rem;
+  flex: 1 1 240px;
+}
+.spec-clause-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+.spec-clause-rationale {
+  font-size: 0.8rem;
+  margin: 8px 0 0;
+}
+.spec-clause-empty {
+  font-size: 0.82rem;
+  margin: 10px 0 0;
+}
+.spec-clause-acs {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+.spec-ac {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+}
+.spec-ac-text {
+  flex: 1;
+}
+.spec-ac-ticket {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+}
+.spec-ac-ticket:hover {
+  text-decoration: underline;
+}
+
+/* clause-kind + coverage-state chips */
+.badge.clause-kind.kind-requirement {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.badge.clause-kind.kind-non-goal {
+  color: var(--violet);
+  background: var(--violet-soft);
+  border-color: rgba(157, 140, 255, 0.3);
+}
+.badge.clause-kind.kind-decision {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--amber-line);
+}
+.badge.clause-state.state-satisfied {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: rgba(47, 202, 168, 0.32);
+}
+.badge.clause-state.state-open {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--amber-line);
+}
+.badge.clause-state.state-orphan {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(255, 90, 106, 0.32);
+}
+.badge.clause-bounce {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(255, 90, 106, 0.3);
+}
+
 /* --- Settings panel (UI-editable factory config) ------------------------- */
 
 .settings-view {
@@ -7466,6 +8256,144 @@ body {
   box-shadow: 0 0 8px -1px var(--amber);
 }
 
+/* ---------------------------------------------------------------------------
+   GRADUATED-AUTONOMY (Spec 2) — advisory recommendations panel
+   Read-only track-record suggestions; no enable action yet (Phase 3 adds it).
+   --------------------------------------------------------------------------- */
+.autonomy-recs {
+  margin-top: var(--s-4);
+}
+.ar-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  margin-bottom: var(--s-3);
+}
+.ar-ico {
+  flex: 0 0 auto;
+  color: var(--accent);
+  filter: drop-shadow(0 0 6px var(--accent-glow));
+}
+.ar-title {
+  font-family: var(--display);
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.ar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.ar-item {
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.ar-item-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-bottom: 6px;
+}
+.ar-gate {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.ar-gate-approve {
+  color: var(--text-dim);
+  border-color: var(--line);
+  background: var(--surface-3);
+}
+.ar-risk {
+  font-size: 0.7rem;
+}
+.ar-repo {
+  font-weight: 600;
+  color: var(--text);
+}
+.ar-conf {
+  margin-left: auto;
+  font-size: 0.75rem;
+}
+.ar-headline {
+  color: var(--text);
+  font-size: var(--step--1);
+  margin: 0 0 4px;
+}
+.ar-reasons {
+  margin: 0;
+  padding-left: 1.1em;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+/* GRADUATED-AUTONOMY (Spec 2, Phase 3): the enable action + explicit-confirm flow. */
+.ar-action {
+  margin-top: var(--s-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.ar-confirm {
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border: 1px dashed var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+}
+.ar-confirm-note {
+  margin: 0 0 var(--s-2);
+  font-size: 0.75rem;
+  color: var(--text);
+}
+.ar-enabled-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--ok, var(--accent-line));
+  color: var(--ok, var(--accent));
+  background: var(--accent-soft);
+}
+/* The active-autonomy panel: enabled chokepoints with a reversible OFF. */
+.autonomy-policies {
+  margin-top: var(--s-4);
+}
+.autonomy-policies .ar-item {
+  border-left-color: var(--ok, var(--accent));
+}
+.ap-mode {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--ok, var(--accent-line));
+  color: var(--ok, var(--accent));
+  background: var(--accent-soft);
+}
+
 /* ===========================================================================
    REVIEW — the gate console header
    =========================================================================== */
@@ -7552,6 +8480,13 @@ body {
   font-size: 0.62rem;
   color: var(--text-faint);
   margin-right: 6px;
+}
+/* The j/k/a/r queue hints are meaningless without a physical keyboard — hide
+   them on touch/coarse-pointer devices where the reject chips carry the flow. */
+@media (hover: none) and (pointer: coarse) {
+  .gate-keys {
+    display: none;
+  }
 }
 
 /* --- "Running now" panel (RUN-ACTIVITY) ------------------------------------
@@ -7670,4 +8605,463 @@ body {
 .cost-sep {
   color: var(--line);
   user-select: none;
+}
+
+/* ===========================================================================
+   TERMINAL-TABS SHELL  (redesign layer — overrides the vertical rail)
+   The appbar stays a horizontal top bar at every width. Nav becomes terminal
+   tabs with a gliding amber underline (reusing the navmarker View-Transition),
+   the content runs full-width below and flies past on navigation. Phones keep
+   the bottom-nav.
+   =========================================================================== */
+
+/* tabs from tablet up; phones keep the bottom-nav */
+@media (min-width: 760px) {
+  .nav-rail {
+    display: flex !important;
+  }
+}
+
+/* retire the desktop vertical rail-lift — appbar is a sticky top bar */
+@media (min-width: 980px) {
+  .shell {
+    padding-left: 0;
+  }
+  .appbar {
+    position: sticky;
+    inset: auto;
+    top: 0;
+    width: auto;
+    height: auto;
+    min-height: calc(50px + var(--safe-t));
+    flex-direction: row;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--safe-t) clamp(var(--s-4), 3vw, var(--s-6)) 0;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--bg-2), rgba(11, 10, 7, 0.82));
+    box-shadow: none;
+    overflow: visible;
+  }
+  .appbar::after {
+    display: none;
+  }
+  .nav-rail {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 2px;
+    margin: 0 0 0 var(--s-4);
+  }
+  .app {
+    max-width: 1580px;
+  }
+  .appbar > .btn,
+  .appbar .logout-btn {
+    width: auto;
+    margin-top: 0;
+  }
+}
+
+/* order inside the bar: brand · tabs · [spacer] · live · ⌘K · new · logout */
+.appbar .brand {
+  order: 0;
+  margin-right: var(--s-4);
+  padding-right: var(--s-3);
+  border-right: 1px solid var(--line);
+  align-self: center;
+}
+/* a terminal wordmark is just the name — drop the "CONTROL ROOM" sub next to tabs */
+.appbar .brand-sub {
+  display: none;
+}
+.appbar .brand-icon,
+.appbar .brand-mark {
+  width: 24px;
+  height: 24px;
+}
+.appbar .brand-name {
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+}
+.appbar .nav-rail {
+  order: 1;
+  align-items: stretch;
+}
+.appbar .appbar-spacer {
+  order: 2;
+}
+.appbar .rail-status {
+  order: 3;
+}
+.appbar .cmdk-trigger {
+  order: 4;
+}
+.appbar > .btn {
+  order: 5;
+}
+.appbar .logout-btn {
+  order: 6;
+}
+
+/* the tabs */
+.nav-link {
+  position: relative;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+  text-transform: lowercase;
+  padding: 10px 15px 13px;
+  gap: 7px;
+}
+.nav-link .nav-ico {
+  width: 15px;
+  height: 15px;
+  opacity: 0.85;
+}
+.nav-link .nav-rule {
+  display: none;
+}
+.nav-link:hover {
+  color: var(--text-dim);
+  background: transparent;
+}
+.nav-link:hover .nav-ico {
+  transform: none;
+  opacity: 1;
+}
+.nav-link.active {
+  color: var(--accent);
+  text-shadow: 0 0 14px var(--accent-glow);
+  background: transparent;
+}
+.nav-link.active .nav-ico {
+  color: var(--accent);
+  opacity: 1;
+}
+/* slab → a gliding amber underline (keeps view-transition-name: navmarker) */
+.nav-link.active::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  top: auto;
+  height: 2px;
+  z-index: 1;
+  border: none;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+  box-shadow:
+    0 0 12px var(--accent-glow),
+    0 0 4px var(--accent);
+}
+.nav-count {
+  font-size: 0.56rem;
+  padding: 2px 5px;
+  min-width: 16px;
+}
+
+/* LIVE + tick, inline in the bar at every width; the dot goes green (mock) */
+.rail-status {
+  display: flex !important;
+  margin: 0;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  align-items: center;
+  gap: var(--s-2);
+}
+.rail-status .live-lamp {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+  animation: none;
+}
+.rail-status .live-lamp::after {
+  border-color: rgba(126, 208, 138, 0.5);
+  animation: none;
+}
+.rail-status-text {
+  color: var(--ok);
+}
+.rail-status-meta {
+  color: var(--text-dim);
+  text-transform: none;
+  letter-spacing: 0.06em;
+  transition: color 0.18s ease;
+}
+.rail-status-meta.tick-flash {
+  color: var(--accent);
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
+/* cap panel-title icons — an unsized inline SVG (the "What I own" lock) was
+   defaulting to ~150px. Panel-title glyphs are small inline marks. */
+.panel-title svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+.what-i-own .panel-title svg {
+  color: var(--accent);
+}
+
+/* --- action + a11y polish -------------------------------------------------
+   Primary actions read as "armed" (amber charge-up glow like the mock's
+   Approve); every interactive element gets a visible amber keyboard ring. */
+.btn.primary {
+  box-shadow: 0 0 24px -6px var(--accent-glow);
+  transition:
+    box-shadow var(--med) var(--ease),
+    transform var(--fast) var(--ease),
+    filter var(--fast) var(--ease);
+}
+.btn.primary:hover {
+  box-shadow:
+    0 0 34px -4px var(--accent-glow),
+    0 0 12px -2px var(--accent);
+  filter: brightness(1.04);
+}
+.btn.primary:active {
+  transform: translateY(1px) scale(0.99);
+}
+.btn.ok {
+  box-shadow: 0 0 22px -8px var(--ok);
+}
+
+a:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+.nav-link:focus-visible,
+.cmdk-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn.primary:active {
+    transform: none;
+  }
+}
+
+/* review gate — the "you hold the gate" hero reads as an armed console */
+.gate-title {
+  color: var(--accent);
+  text-shadow: 0 0 14px var(--accent-glow);
+}
+.gate-console {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 44px -22px var(--accent-glow);
+}
+/* diff wells sink into the console; adds/dels are phosphor green/red already */
+.diff-box,
+.diff-pre {
+  background: var(--bg-3);
+}
+
+/* mobile top bar: declutter so the wordmark isn't truncated. Nav lives in the
+   bottom bar on phones, so drop the ⌘K search chip and shrink the LIVE pill to
+   a compact dot + label (no border, no tick counter). */
+@media (max-width: 639px) {
+  .appbar {
+    gap: var(--s-2);
+  }
+  .appbar .brand {
+    flex: 0 0 auto;
+    min-width: auto;
+    margin-right: var(--s-2);
+    padding-right: 0;
+    border-right: none;
+  }
+  .appbar .brand-name {
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .appbar .cmdk-trigger {
+    display: none;
+  }
+  .appbar .rail-status {
+    border: none;
+    background: transparent;
+    padding: 2px 4px;
+    gap: 6px;
+  }
+  .appbar .rail-status-meta {
+    display: none;
+  }
+  .appbar .logout-btn {
+    padding: 6px 9px;
+  }
+}
+
+/* plan-build failure — a persistent error bubble in the chat (not a toast that
+   vanishes and leaves the typing dots looking abandoned) */
+.pb-error-msg {
+  border-left: 2px solid var(--danger);
+  background: var(--danger-soft);
+}
+.pb-error-msg .pb-bot-label {
+  color: var(--danger);
+}
+.pb-error-hint {
+  margin-top: 6px;
+  font-size: 0.82em;
+}
+
+/* live-delivery banner on the ticket detail — surfaces the running agent + a
+   one-click jump to the streaming run log (or flags a stuck/orphaned claim) */
+.delivering-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: var(--s-3) 0;
+  padding: 10px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+  font-size: var(--step--1);
+  color: var(--text);
+}
+.delivering-banner.is-warn {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.delivering-banner .run-viewlog {
+  margin-left: auto;
+}
+.delivering-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+  animation: deliver-pulse 1.4s ease-in-out infinite;
+  flex: 0 0 auto;
+}
+.delivering-dot.is-warn {
+  background: var(--danger);
+  box-shadow: 0 0 8px var(--danger);
+  animation: none;
+}
+@keyframes deliver-pulse {
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .delivering-dot {
+    animation: none;
+  }
+}
+
+/* mobile performance: on phones the appbar's backdrop-blur and the transform-
+   heavy route "camera step" are the two big jank sources when switching tabs.
+   Drop the blur and swap to a light cross-fade. */
+@media (max-width: 639px) {
+  .appbar {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--bg-2);
+  }
+  ::view-transition-old(root),
+  :root[data-step="back"]::view-transition-old(root) {
+    animation: g-mfade-out 140ms ease both;
+  }
+  ::view-transition-new(root),
+  :root[data-step="back"]::view-transition-new(root) {
+    animation: g-mfade-in 190ms ease both;
+  }
+}
+@keyframes g-mfade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes g-mfade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* terminal prompt line (the old footer) */
+.footer {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.footer .footer-ps {
+  color: var(--accent);
+  text-shadow: 0 0 8px var(--accent-glow);
+}
+.footer .footer-cur {
+  display: inline-block;
+  width: 7px;
+  height: 12px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: prompt-blink 0.9s steps(1) infinite;
+}
+@keyframes prompt-blink {
+  50% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .footer .footer-cur {
+    animation: none;
+  }
+}
+
+/* amp the content fly-through — bank + slide + a slight scale dip (running hot).
+   Redefining these keyframes (last definition wins) upgrades the calm drift. */
+@keyframes cam-out-fwd {
+  to {
+    opacity: 0;
+    transform: translateX(-6%) scale(0.985);
+  }
+}
+@keyframes cam-in-fwd {
+  0% {
+    opacity: 0;
+    transform: translateX(7%) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes cam-out-back {
+  to {
+    opacity: 0;
+    transform: translateX(6%) scale(0.985);
+  }
+}
+@keyframes cam-in-back {
+  0% {
+    opacity: 0;
+    transform: translateX(-7%) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
 }

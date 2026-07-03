@@ -1,7 +1,7 @@
 ---
 name: add-db-migration
 description: Use when a ticket requires a database schema change — a new table/column, an index, a constraint, or a backfill. Invoke for "add a migration for X", "alter the schema", or any change to the persisted data model. Schema changes are high-risk; treat them carefully.
-stack: []
+stack: [node, python, go, java, rust]
 area: backend
 ---
 

@@ -4,7 +4,13 @@ import { audit } from "../audit/audit.js";
 import { resultIdsFor, sanitiseRequest } from "../audit/redact.js";
 import type { Dispatch } from "../core.js";
 import { PR_URL_SAFE, PR_URL_SAFE_MESSAGE } from "../domain/schemas.js";
-import { DECISION_SEVERITIES, parseReviewFeedback, parseTestContract } from "../domain/types.js";
+import {
+  DECISION_SEVERITIES,
+  parseReviewFeedback,
+  parseSpecClauses,
+  parseTestContract,
+} from "../domain/types.js";
+import type { Spec } from "../domain/types.js";
 import type { Actor } from "../domain/types.js";
 import { DispatchError } from "../util/errors.js";
 
@@ -228,6 +234,28 @@ export const toolSchemas = {
       )
       .min(1),
   },
+  create_spec: {
+    title: z.string().min(1),
+    brief: z.string().optional(),
+    clauses: z
+      .array(
+        z.object({
+          clause_id: z.string().optional(),
+          kind: z.enum(["requirement", "non-goal", "decision"]),
+          text: z.string().min(1),
+          rationale: z.string().optional(),
+        }),
+      )
+      .optional(),
+    target_repo: z.string().optional(),
+    scope_node_id: z.string().optional(),
+  },
+  get_spec: {
+    spec_id: z.string().min(1),
+  },
+  freeze_spec: {
+    spec_id: z.string().min(1),
+  },
   list_pending_decisions: {},
   request_decision: {
     title: z.string().min(1),
@@ -247,6 +275,26 @@ export const toolSchemas = {
 // --- Handlers -------------------------------------------------------------
 
 type Args = Record<string, unknown>;
+
+/**
+ * Shape a {@link Spec} row for a tool result: expose the clauses as a structured
+ * array (parsed from clauses_json) rather than a JSON-in-JSON string, mirroring how
+ * get_ticket surfaces a parsed test_contract.
+ */
+function specResult(spec: Spec): Record<string, unknown> {
+  return {
+    spec_id: spec.id,
+    title: spec.title,
+    brief: spec.brief,
+    status: spec.status,
+    clauses: parseSpecClauses(spec.clauses_json),
+    target_repo: spec.target_repo,
+    scope_node_id: spec.scope_node_id,
+    created_at: spec.created_at,
+    updated_at: spec.updated_at,
+    frozen_at: spec.frozen_at,
+  };
+}
 
 /**
  * Pure tool handlers operating on the facade. Decoupled from the transport so
@@ -554,6 +602,25 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
         const a = z.object(toolSchemas.create_epic).parse(args);
         const res = wg.createEpic(a, actor);
         return { epic_node_id: res.epicNodeId, ticket_numbers: res.ticketNumbers };
+      }),
+
+    create_spec: (args: Args): ToolResult =>
+      guard(() => {
+        const a = z.object(toolSchemas.create_spec).parse(args);
+        const spec = wg.createSpec(a, actor);
+        return specResult(spec);
+      }),
+
+    get_spec: (args: Args): ToolResult =>
+      guard(() => {
+        const a = z.object(toolSchemas.get_spec).parse(args);
+        return specResult(wg.getSpec(a.spec_id));
+      }),
+
+    freeze_spec: (args: Args): ToolResult =>
+      guard(() => {
+        const a = z.object(toolSchemas.freeze_spec).parse(args);
+        return specResult(wg.freezeSpec(a.spec_id, actor));
       }),
 
     set_ticket_testable: (args: Args): ToolResult =>

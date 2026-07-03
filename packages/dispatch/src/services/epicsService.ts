@@ -103,8 +103,20 @@ export class EpicsService {
         createdIds.push(ticket.id);
         createdNumbers.push(ticket.number ?? 0);
 
-        for (const text of spec.acceptanceCriteria) {
-          this.tickets.addAcceptanceCriterion({ ticket_id: ticket.id, text }, actor);
+        for (const ac of spec.acceptanceCriteria) {
+          // Spec-Driven Development (Phase 2a): an AC is either a bare string
+          // (unchanged) or `{ text, clauseRef? }`. When a clauseRef is present it
+          // threads down as `spec_clause_id` provenance on the created AC.
+          const text = typeof ac === "string" ? ac : ac.text;
+          const clauseRef = typeof ac === "string" ? undefined : ac.clauseRef;
+          this.tickets.addAcceptanceCriterion(
+            {
+              ticket_id: ticket.id,
+              text,
+              ...(clauseRef !== undefined ? { spec_clause_id: clauseRef } : {}),
+            },
+            actor,
+          );
         }
 
         if (spec.repo) {

@@ -434,6 +434,24 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       }
     },
   },
+  {
+    // Structured provenance for spec-seeded lore (Spec-Driven Development,
+    // Phase 2b). When a Dispatch spec is FROZEN, each of its clauses is seeded
+    // as a gated draft lore record of the clause's kind (requirement / non-goal
+    // / decision). Before this, that link lived only as free-text tags, so a
+    // later phase could not JOIN a lore record back to the exact clause it came
+    // from. These two nullable columns carry the (spec_id, clause_id) linkage
+    // structurally — NULL on every record that did not originate from a spec
+    // clause (i.e. the entire standalone-product corpus). Mirrors the 009 ADD
+    // COLUMN pattern; append-only, never rewrite.
+    id: "010-lore-spec-link",
+    up(db) {
+      db.exec(`
+        ALTER TABLE lore ADD COLUMN spec_id TEXT;
+        ALTER TABLE lore ADD COLUMN clause_id TEXT;
+      `);
+    },
+  },
 ];
 
 /**

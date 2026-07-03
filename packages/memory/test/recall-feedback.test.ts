@@ -7,7 +7,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { addLore, getLore } from "../src/core/lore.js";
 import { repoKey, upsertFileCard } from "../src/core/fileCards.js";
-import { listFlaggedForReview, logRecall, recallFeedback } from "../src/core/recallFeedback.js";
+import {
+  listFlaggedForReview,
+  logRecall,
+  recallEffectiveness,
+  recallFeedback,
+} from "../src/core/recallFeedback.js";
 import { runMigrations } from "../src/db/migrations.js";
 import type { Database } from "better-sqlite3";
 import type { LoreConfidence } from "../src/db/types.js";
@@ -282,5 +287,79 @@ describe("core/recallFeedback", () => {
     const res = recallFeedback(db, { repo: "app", ticket: "1", outcome: "clean" });
     expect(res.served).toBe(1);
     expect(confOf(db, l.id)).toBe("medium");
+  });
+});
+
+describe("core/recallEffectiveness", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newInMemoryDb();
+    process.env["MEMORY_NO_TELEMETRY"] = "1";
+  });
+
+  /** Seed a recall_feedback ledger row directly (the read-back reads THIS table). */
+  function seedOutcome(
+    repo: string,
+    ticket: string,
+    outcome: "clean" | "reworked" | "blocked",
+    appliedAt: string,
+    itemsAdjusted = 1,
+  ): void {
+    db.prepare(
+      `INSERT INTO recall_feedback (id, repo, ticket, outcome, items_adjusted, applied_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(`fb-${repo}-${ticket}-${outcome}`, repo, ticket, outcome, itemsAdjusted, appliedAt);
+  }
+
+  it("returns a zero-state (null effectiveness) when nothing has been recorded", () => {
+    const stats = recallEffectiveness(db);
+    expect(stats.total).toBe(0);
+    expect(stats.effectiveness_pct).toBeNull(); // no divide-by-zero
+    expect(stats.by_day).toEqual([]);
+    expect(stats.last_applied_at).toBeNull();
+  });
+
+  it("computes clean-share effectiveness + a per-day trend across outcomes", () => {
+    seedOutcome("app", "1", "clean", "2025-01-10T09:00:00Z", 2);
+    seedOutcome("app", "2", "clean", "2025-01-10T10:00:00Z", 1);
+    seedOutcome("app", "3", "reworked", "2025-01-11T09:00:00Z", 3);
+    seedOutcome("app", "4", "blocked", "2025-01-11T10:00:00Z", 0);
+
+    const stats = recallEffectiveness(db);
+    expect(stats.total).toBe(4);
+    expect(stats.clean).toBe(2);
+    expect(stats.reworked).toBe(1);
+    expect(stats.blocked).toBe(1);
+    // clean / total = 2/4 = 50%.
+    expect(stats.effectiveness_pct).toBe(50);
+    expect(stats.items_adjusted).toBe(6);
+    expect(stats.last_applied_at).toBe("2025-01-11T10:00:00Z");
+
+    // Two calendar days, ascending, each with its own clean-share.
+    expect(stats.by_day.map((d) => d.date)).toEqual(["2025-01-10", "2025-01-11"]);
+    expect(stats.by_day[0]!.effectiveness_pct).toBe(100); // 2 clean of 2
+    expect(stats.by_day[1]!.effectiveness_pct).toBe(0); // 0 clean of 2
+  });
+
+  it("scopes to a single repo when --repo is given", () => {
+    seedOutcome("app", "1", "clean", "2025-01-10T09:00:00Z");
+    seedOutcome("other", "2", "reworked", "2025-01-10T10:00:00Z");
+
+    const scoped = recallEffectiveness(db, { repo: "app" });
+    expect(scoped.total).toBe(1);
+    expect(scoped.clean).toBe(1);
+    expect(scoped.effectiveness_pct).toBe(100);
+
+    const all = recallEffectiveness(db);
+    expect(all.total).toBe(2);
+  });
+
+  it("NEGATIVE CONTROL: an outcome for an unrelated repo does not count in a scoped roll-up", () => {
+    seedOutcome("app", "1", "clean", "2025-01-10T09:00:00Z");
+    seedOutcome("unrelated", "9", "clean", "2025-01-10T09:30:00Z");
+    // Scoped to a repo with NO outcomes → zero-state, not the global tally.
+    const empty = recallEffectiveness(db, { repo: "ghost" });
+    expect(empty.total).toBe(0);
+    expect(empty.effectiveness_pct).toBeNull();
   });
 });

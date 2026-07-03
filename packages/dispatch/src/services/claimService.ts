@@ -350,6 +350,7 @@ export class ClaimService {
         toStatus: "claimed",
         reason: "claim_next",
         expectedFromStatus: "ready",
+        agentClaim: true, // the ticket_claims lease was inserted above → a real claim
       });
     } catch (err) {
       this.claims.setStatus(claim.id, "released", now);

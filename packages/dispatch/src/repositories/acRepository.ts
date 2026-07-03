@@ -10,10 +10,10 @@ export class AcRepository {
       .prepare(
         `INSERT INTO acceptance_criteria
           (id, ticket_id, text, sort_order, status, verification_method, evidence_required,
-           verified_by, verified_at, created_at, updated_at)
+           verified_by, verified_at, spec_clause_id, created_at, updated_at)
          VALUES
           (@id, @ticket_id, @text, @sort_order, @status, @verification_method, @evidence_required,
-           @verified_by, @verified_at, @created_at, @updated_at)`,
+           @verified_by, @verified_at, @spec_clause_id, @created_at, @updated_at)`,
       )
       .run(ac);
   }

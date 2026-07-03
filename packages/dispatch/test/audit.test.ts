@@ -136,6 +136,15 @@ describe("audit redaction (pure)", () => {
         { title: SECRET_BODY, description: SECRET_BODY, acceptanceCriteria: [SECRET_BODY] },
       ],
     },
+    create_spec: {
+      // Spec clause text + brief ARE free-text intent bodies the redactor must
+      // drop (only title + counts survive).
+      title: "spec",
+      brief: SECRET_BODY,
+      clauses: [{ kind: "requirement", text: SECRET_BODY, rationale: SECRET_BODY }],
+    },
+    get_spec: { spec_id: "s1" },
+    freeze_spec: { spec_id: "s1" },
     list_pending_decisions: {},
     request_decision: { title: "tt", question: SECRET_BODY, severity: "human_required" },
     release_claim: { claimToken: SECRET_TOKEN },

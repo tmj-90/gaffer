@@ -17,6 +17,7 @@ import {
 } from "../policy/policy.js";
 import { computeTicketDiff, type GitRunner } from "./diffService.js";
 import { AcRepository } from "../repositories/acRepository.js";
+import { ClaimRepository } from "../repositories/claimRepository.js";
 import { DecisionRepository } from "../repositories/decisionRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
 import { PausedDeliveryRepository } from "../repositories/pausedDeliveryRepository.js";
@@ -170,6 +171,23 @@ const REVIEW_LANE_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
   "done",
 ]);
 
+/**
+ * States a ticket enters when it leaves active delivery back to the queue, or is
+ * parked/abandoned. Entering one RELEASES any active claim lease (see the release in
+ * {@link TransitionService.transition}) so a stale lease can never strand it — the
+ * claim candidate queries reject any ticket carrying an unexpired active claim, so a
+ * ticket dragged `blocked -> ready` (or otherwise re-queued while still leased) would
+ * otherwise be silently un-claimable until the TTL expired. Live-delivery states
+ * (`claimed`/`in_progress`) and the review/`paused` lane deliberately KEEP their lease.
+ */
+const REQUEUE_STATES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
+  "ready",
+  "draft",
+  "refining",
+  "blocked",
+  "cancelled",
+]);
+
 /** Which gated transitions trigger a policy evaluation. */
 function gateFor(to: TicketStatus): PolicyGate | null {
   if (to === "ready") return "ready";
@@ -281,6 +299,38 @@ export interface TransitionInput {
    * never re-route in-flight work. Set only by {@link Dispatch.humanReleaseTicket}.
    */
   humanRelease?: boolean;
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 1) signal: on a review APPROVAL, whether the
+   * delivery was approved UNCHANGED (`true`), edited before approval (`false`), or
+   * indeterminate (`null` — SHAs unknown, so we never overstate agreement). Set ONLY
+   * by {@link import("./reviewGateService.js").ReviewGateService.approveReview}; when
+   * provided (including `null`) it is emitted on the `ticket.transitioned` payload as
+   * `approved_unchanged` so the read-only recommendation service can compute an
+   * honest per-repo/per-risk "approved unchanged" rate. Absent on every non-approve
+   * transition, so their payload shape is byte-for-byte unchanged.
+   */
+  approvedUnchanged?: boolean | null;
+  /**
+   * CLAIM opt-in flag the agent-claim path (`ready -> claimed`) MUST set. A claim is
+   * real only when a `ticket_claims` lease row backs it — {@link
+   * import("./claimService.js").ClaimService} inserts that row THEN sets this flag.
+   * Without it `ready -> claimed` is rejected as ILLEGAL_TRANSITION even though it is
+   * in the ALLOWED set, so a raw board move can never CONJURE a claimed ticket with no
+   * lease (a "ghost claim" the expiry sweeper can't see, stranding the ticket forever).
+   * Same guarded-flag pattern as {@link wontDo}.
+   */
+  agentClaim?: boolean;
+  /**
+   * REVIEW-APPROVE opt-in flag the review-approval path (`in_review -> ready_for_merge`)
+   * MUST set. Approving a delivery for merge is reachable ONLY through {@link
+   * import("./reviewGateService.js").ReviewGateService.approveReview}, which routes a
+   * testable ticket through the independent tester first (GAFFER_TESTING + can_be_tested)
+   * and enforces the agent-approve authz check. Without this flag the raw board move
+   * `in_review -> ready_for_merge` is rejected as ILLEGAL_TRANSITION even though it is in
+   * the ALLOWED set, so a board drag can never approve-and-merge while skipping the tester
+   * or the "an agent can never approve its own work" invariant.
+   */
+  reviewApprove?: boolean;
 }
 
 export interface TransitionResult {
@@ -297,6 +347,7 @@ export interface TransitionResult {
 export class TransitionService {
   private readonly tickets: TicketRepository;
   private readonly acs: AcRepository;
+  private readonly claims: ClaimRepository;
   private readonly repos: RepoRepository;
   private readonly decisions: DecisionRepository;
   private readonly evidence: EvidenceRepository;
@@ -330,6 +381,7 @@ export class TransitionService {
     this.pausedDeliveries = pausedDeliveries;
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
+    this.claims = new ClaimRepository(db);
     this.repos = new RepoRepository(db);
     this.decisions = new DecisionRepository(db);
     this.evidence = new EvidenceRepository(db);
@@ -498,6 +550,33 @@ export class TransitionService {
         );
       }
 
+      // GHOST-CLAIM guard: `ready -> claimed` is real only when a ticket_claims lease
+      // row backs it — the claim path inserts the row THEN sets `agentClaim`. Reject any
+      // other route so a raw board move can never set a ticket `claimed` with no lease
+      // (unrecoverable: the expiry sweeper only scans active claims, so the ghost is
+      // stranded forever and the ticket never re-enters the queue).
+      if (key === "ready->claimed" && !input.agentClaim) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A ticket can only be claimed via the claim path (which creates the lease).",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
+      // TESTING-LANE / SELF-APPROVE guard: `in_review -> ready_for_merge` is reachable
+      // only through ReviewGateService.approveReview, which routes a testable ticket
+      // through the independent tester first and enforces the agent-approve authz check.
+      // Reject any other route (the raw board move never sets this flag) so a board drag
+      // can never approve-and-merge while skipping the mandatory testing lane or the
+      // "an agent can never approve its own work" invariant.
+      if (key === "in_review->ready_for_merge" && !input.reviewApprove) {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A ticket can only be approved for merge via the review-approve path.",
+          { from: ticket.status, to: input.toStatus },
+        );
+      }
+
       const gate = gateFor(input.toStatus);
       let policy: PolicyResult | undefined;
       if (gate && !input.systemOverride) {
@@ -523,6 +602,16 @@ export class TransitionService {
       );
       if (!ok) {
         throw new DispatchError("CONCURRENCY_CONFLICT", "Ticket changed concurrently; retry.");
+      }
+
+      // CLAIM SAFETY-NET: a ticket returning to a queue/parked state must not keep an
+      // active claim lease. The runner-release path releases explicitly, but a RAW BOARD
+      // MOVE (a human dragging `blocked -> ready`) does not — and the claim candidate
+      // queries reject any ticket with an unexpired active claim, so the ticket would be
+      // silently un-claimable until its TTL expired. Release here so EVERY path into a
+      // re-queue state clears the lease. Idempotent (no active claim → no rows changed).
+      if (REQUEUE_STATES.has(input.toStatus)) {
+        this.claims.releaseActiveForTicket(ticket.id, now);
       }
 
       // WG-049: entering `in_review` (re-)submits the work for a fresh read, so any
@@ -568,6 +657,12 @@ export class TransitionService {
           to: input.toStatus,
           reason: input.reason ?? null,
           patch: input.patch ?? null,
+          // GRADUATED-AUTONOMY: only the approve path sets this key, so a non-approve
+          // transition's payload stays byte-for-byte unchanged. `null` is meaningful
+          // (approved, but unchanged/edited couldn't be determined).
+          ...(input.approvedUnchanged !== undefined
+            ? { approved_unchanged: input.approvedUnchanged }
+            : {}),
         },
         ...(input.correlationId ? { correlation_id: input.correlationId } : {}),
       });

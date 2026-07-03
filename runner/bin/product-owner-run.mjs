@@ -50,7 +50,6 @@
 //   the (detached) log and exits non-zero.
 // =====================================================================
 
-import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -71,6 +70,7 @@ import {
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
+import { Worker } from "../lib/worker.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -529,12 +529,15 @@ function main() {
   const draftsBefore = countDraftTickets(CONFIG.dispatchDb, resolved.name);
 
   const argv = buildClaudeArgv({ prompt, mcpConfig: mcpRuntime, flags: CONFIG.claudeFlags });
-  const res = spawnSync(CONFIG.claudeBin, argv, {
-    // Run in the throwaway agent-home dir, NOT the registered repo. The agent
-    // writes only via the dispatch MCP; the repo is read-only (GAFFER_READ_ROOTS).
+  // Route through the ONE worker spawn seam (lib/worker.mjs). The argv (pinned by
+  // product-owner-run.test.mjs) and this run's credential-stripped env stay built
+  // here; only the spawn boundary is shared. Run in the throwaway agent-home dir,
+  // NOT the registered repo — the agent writes only via the dispatch MCP.
+  const res = Worker.deliver({
+    bin: CONFIG.claudeBin,
+    argv,
     cwd: agentHome,
-    encoding: "utf8",
-    timeout: opts.timeoutMs,
+    timeoutMs: opts.timeoutMs,
     maxBuffer: 32 * 1024 * 1024,
     env: {
       // P2-A/M3: start from a credential-and-endpoint-stripped copy of the

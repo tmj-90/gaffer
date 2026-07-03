@@ -3,17 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#f6f4ef" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b0a07" />
     <title>Gaffer — mission control</title>
     <link rel="icon" type="image/svg+xml" href="/gaffer-favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap"
     />
     <link rel="stylesheet" href="/styles.css" />
+    <!-- Default view (Overview) hero — preload only its one background image. -->
+    <link rel="preload" as="image" href="assets/bg/hero-city.jpg" />
   </head>
   <body>
     <!-- Dispatch shield mark — reused by app bar, login gate and nav via <use href="#wg-shield">. -->
@@ -113,7 +115,9 @@
       </main>
 
       <footer class="footer">
-        <span>Read the timeline. Trust the evidence. — Dispatch control surface</span>
+        <span class="footer-ps">gaffer ›</span>
+        <span>read the timeline · trust the evidence</span>
+        <span class="footer-cur" aria-hidden="true"></span>
       </footer>
 
       <!-- Mobile bottom tab bar, populated by app.js. -->

@@ -1,7 +1,7 @@
 ---
 name: kubernetes-operator
 description: Use when building a Kubernetes Operator — custom controllers that reconcile CRD state. Triggers on "build an operator", "CRD design", "reconcile loop", "controller-runtime", "kubebuilder", "operator-sdk", "custom resource", or "operator capability levels". NOT a generic k8s skill — specifically the Operator pattern.
-stack: [kubernetes, go]
+stack: [kubernetes]
 area: infra
 ---
 

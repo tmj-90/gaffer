@@ -104,16 +104,43 @@ dashboard)
       || { hostname -I 2>/dev/null | awk '{print $1}'; } \
       || { ip -4 route get 1 2>/dev/null | awk '{print $7; exit}'; } )"
     [ -n "$LAN" ] || LAN="0.0.0.0"
-    nohup env -u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" DISPATCH_API_TOKEN="$TOK" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host 0.0.0.0 >"$GAFFER_DATA/dashboard.log" 2>&1 &
+    # AFK-LOOP P1: the reachable base for push-notification deep-links (the ping
+    # says "decision pending" — this is where one-tap lands the operator). Without
+    # it emitDecisionGate/ticketUrl produce no link. Export so the server env picks
+    # it up and persist for any child that reads it.
+    export GAFFER_DASHBOARD_URL="http://$LAN:$DASH_PORT"
+    # BUG #6: the factory LOOP runs as a separate process and only sees the loopback
+    # default from factory.config.sh — so its loop-end AFK ping would deep-link to
+    # 127.0.0.1, unreachable from a phone. Persist the reachable LAN base where the
+    # loop (and status.sh) read it back, so every notify deep-links to the SAME URL
+    # the dashboard serves under --lan. (factory.config.sh reads this file.)
+    ( umask 077; printf '%s\n' "$GAFFER_DASHBOARD_URL" > "$GAFFER_DATA/dashboard-url" ) 2>/dev/null || true
+    nohup env -u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" DISPATCH_API_TOKEN="$TOK" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host 0.0.0.0 >"$GAFFER_DATA/dashboard.log" 2>&1 &
     gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
     if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/healthz" >/dev/null 2>&1; then
       ok "dashboard up on your LAN (token-protected)"
       printf "    open:   ${c_cya}http://%s:%s${c_off}\n    token:  ${c_cya}%s${c_off}  (paste at the login prompt)\n" "$LAN" "$DASH_PORT" "$TOK"
+      # AFK-LOOP P3: one-scan phone access. The QR encodes the URL WITH the token
+      # (the dashboard adopts ?token=… and scrubs it from history), so scanning
+      # logs you straight in — no copy-paste of the token. Optional dependency:
+      # if qrencode is absent we degrade to the plain URL+token printed above.
+      if command -v qrencode >/dev/null 2>&1; then
+        printf "    scan to open on your phone (token embedded):\n"
+        qrencode -t ANSIUTF8 "http://$LAN:$DASH_PORT/?token=$TOK" 2>/dev/null \
+          || printf "    (qr render failed — use the URL + token above)\n"
+      fi
     else warn "dashboard failed to start — see $GAFFER_DATA/dashboard.log"; fi
     exit 0
   fi
 
-  nohup env -u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" >"$GAFFER_DATA/dashboard.log" 2>&1 &
+  # AFK-LOOP P1: local loopback base so notification deep-links resolve even for
+  # the non-LAN (desktop) dashboard. --lan overrides this with the LAN address.
+  export GAFFER_DASHBOARD_URL="http://127.0.0.1:$DASH_PORT"
+  # BUG #6 (degrade path): a plain (non-lan) dashboard is loopback-only, so drop any
+  # stale persisted LAN url — the loop then falls back to the loopback default rather
+  # than deep-linking to a LAN address that is no longer being served.
+  rm -f "$GAFFER_DATA/dashboard-url" 2>/dev/null || true
+  nohup env -u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" >"$GAFFER_DATA/dashboard.log" 2>&1 &
   gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
   if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/api/dashboard" >/dev/null 2>&1; then
     ok "dashboard up → http://127.0.0.1:$DASH_PORT"

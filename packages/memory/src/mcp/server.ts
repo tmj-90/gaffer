@@ -559,6 +559,17 @@ export function buildMcpServer(db: Database): McpServer {
               "non-goal. Defaults to 'other'.",
           ),
         team: z.string().optional().describe("Owning team, if known."),
+        spec_id: z
+          .string()
+          .optional()
+          .describe(
+            "Structured provenance: id of the frozen spec this record was seeded " +
+              "from (Spec-Driven Development). Pair with clause_id. Omit for ordinary lore.",
+          ),
+        clause_id: z
+          .string()
+          .optional()
+          .describe("Structured provenance: stable clause id within spec_id. Pair with spec_id."),
       },
     },
     async (args) => {
@@ -577,6 +588,8 @@ export function buildMcpServer(db: Database): McpServer {
         confidence: args.confidence,
         kind: args.kind,
         team: args.team,
+        spec_id: args.spec_id,
+        clause_id: args.clause_id,
       };
       // Length guards — check title first, then summary. Return the
       // structured error to the agent (NOT isError: true — the response
@@ -623,6 +636,8 @@ export function buildMcpServer(db: Database): McpServer {
             kind: args.kind,
             team: args.team,
             author: "agent",
+            ...(args.spec_id ? { specId: args.spec_id } : {}),
+            ...(args.clause_id ? { clauseId: args.clause_id } : {}),
           },
           { autoApprove },
         );

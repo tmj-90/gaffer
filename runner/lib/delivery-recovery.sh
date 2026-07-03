@@ -58,64 +58,35 @@ gaffer_any_branch_has_commits() {
   return 1
 }
 
+# --- Result-parser seam (Spec 3 / Phase 2) -----------------------------------
+# The claude-JSON envelope schema is owned by lib/worker.mjs's parseResult. The cap
+# / spend helpers below are thin FORMATTERS over its `parse-result` CLI, so bash and
+# the mjs ledger read the SAME parse (no second JSON dialect). Resolve the seam
+# relative to THIS file so the helpers work whether sourced by factory.config.sh or
+# directly by a unit test; an operator/test override wins.
+_GAFFER_DR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+: "${GAFFER_WORKER_MJS:=$_GAFFER_DR_LIB/worker.mjs}"
+
 # gaffer_cap_num_turns <json-file>
 # Echo the integer num_turns from the captured claude JSON, or empty if absent /
-# unparseable. Reuses the usage-ledger's tolerant parser so the SAME ground-truth
-# field the ledger records drives cap detection (no second JSON dialect).
+# unparseable. Delegates to the worker seam's parseResult so the SAME ground-truth
+# field the ledger records drives cap detection.
 gaffer_cap_num_turns() {
   local jsonfile="$1"
   [ -f "$jsonfile" ] || return 0
-  node -e '
-    const fs = require("node:fs");
-    let raw = "";
-    try { raw = fs.readFileSync(process.argv[1], "utf8"); } catch { process.exit(0); }
-    // Tolerant: whole-string parse, else last balanced top-level {...} block.
-    function lastObj(t){let last=null,d=0,s=-1,inStr=false,esc=false;
-      for(let i=0;i<t.length;i++){const c=t[i];
-        if(inStr){if(esc)esc=false;else if(c==="\\")esc=true;else if(c==="\"")inStr=false;continue;}
-        if(c==="\"")inStr=true;else if(c==="{"){if(d===0)s=i;d++;}
-        else if(c==="}"){d--;if(d===0&&s>=0){last=t.slice(s,i+1);s=-1;}}}
-      return last;}
-    let obj=null;
-    try{obj=JSON.parse(raw);}catch{const c=lastObj(raw);if(c){try{obj=JSON.parse(c);}catch{}}}
-    if(obj&&typeof obj==="object"&&typeof obj.num_turns==="number"&&Number.isFinite(obj.num_turns)){
-      process.stdout.write(String(obj.num_turns));
-    }
-  ' "$jsonfile" 2>/dev/null || true
+  command -v node >/dev/null 2>&1 || return 0
+  node "$GAFFER_WORKER_MJS" parse-result num-turns --json-file "$jsonfile" 2>/dev/null || true
 }
 
 # gaffer_cap_stop_reason_is_maxturns <json-file>
-# True (exit 0) iff the captured JSON carries a stop/finish reason that signals
-# the turn cap was reached. Claude Code's `-p --output-format json` may surface
-# this as `stop_reason`, `subtype`, or a nested `*.stop_reason` — we scan a small
-# set of known shapes case-insensitively for a "max_turns"/"max-turns"/
-# "turn limit" marker. Absent/unparseable → not a max-turns stop (false).
+# True (exit 0) iff the captured JSON carries a stop/finish reason that signals the
+# turn cap was reached (max_turns / max-turns / turn limit across the known shapes).
+# Absent/unparseable → not a max-turns stop (false). Delegates to the worker seam.
 gaffer_cap_stop_reason_is_maxturns() {
   local jsonfile="$1"
   [ -f "$jsonfile" ] || return 1
-  node -e '
-    const fs = require("node:fs");
-    let raw = "";
-    try { raw = fs.readFileSync(process.argv[1], "utf8"); } catch { process.exit(1); }
-    function lastObj(t){let last=null,d=0,s=-1,inStr=false,esc=false;
-      for(let i=0;i<t.length;i++){const c=t[i];
-        if(inStr){if(esc)esc=false;else if(c==="\\")esc=true;else if(c==="\"")inStr=false;continue;}
-        if(c==="\"")inStr=true;else if(c==="{"){if(d===0)s=i;d++;}
-        else if(c==="}"){d--;if(d===0&&s>=0){last=t.slice(s,i+1);s=-1;}}}
-      return last;}
-    let obj=null;
-    try{obj=JSON.parse(raw);}catch{const c=lastObj(raw);if(c){try{obj=JSON.parse(c);}catch{}}}
-    if(!obj||typeof obj!=="object")process.exit(1);
-    const re=/max[_-]?turns|turn[_ -]?limit/i;
-    // Candidate fields where Claude Code may report the stop cause.
-    const cands=[obj.stop_reason,obj.subtype,obj.finish_reason,
-      obj.result&&obj.result.stop_reason,obj.error&&obj.error.message,
-      obj.permission_denials];
-    for(const v of cands){
-      if(typeof v==="string"&&re.test(v))process.exit(0);
-    }
-    process.exit(1);
-  ' "$jsonfile" 2>/dev/null
+  command -v node >/dev/null 2>&1 || return 1
+  node "$GAFFER_WORKER_MJS" parse-result stopreason-maxturns --json-file "$jsonfile" 2>/dev/null
 }
 
 # gaffer_is_cap_hit <json-file> <rc>
@@ -145,20 +116,6 @@ gaffer_is_cap_hit() {
 gaffer_delivery_spend() {
   local jsonfile="$1"
   [ -f "$jsonfile" ] || { printf 'unknown'; return 0; }
-  node -e '
-    const fs = require("node:fs");
-    let raw = "";
-    try { raw = fs.readFileSync(process.argv[1], "utf8"); } catch { process.stdout.write("unknown"); process.exit(0); }
-    function lastObj(t){let last=null,d=0,s=-1,inStr=false,esc=false;
-      for(let i=0;i<t.length;i++){const c=t[i];
-        if(inStr){if(esc)esc=false;else if(c==="\\")esc=true;else if(c==="\"")inStr=false;continue;}
-        if(c==="\"")inStr=true;else if(c==="{"){if(d===0)s=i;d++;}
-        else if(c==="}"){d--;if(d===0&&s>=0){last=t.slice(s,i+1);s=-1;}}}
-      return last;}
-    let obj=null;
-    try{obj=JSON.parse(raw);}catch{const c=lastObj(raw);if(c){try{obj=JSON.parse(c);}catch{}}}
-    if(obj&&typeof obj==="object"&&typeof obj.total_cost_usd==="number"&&Number.isFinite(obj.total_cost_usd)){
-      process.stdout.write("$"+obj.total_cost_usd.toFixed(4));
-    } else { process.stdout.write("unknown"); }
-  ' "$jsonfile" 2>/dev/null || printf 'unknown'
+  command -v node >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+  node "$GAFFER_WORKER_MJS" parse-result spend --json-file "$jsonfile" 2>/dev/null || printf 'unknown'
 }

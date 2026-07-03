@@ -204,6 +204,36 @@ _gaffer_locked() {
 }
 _gaffer_log_line() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" | tee -a "$GAFFER_LOG" >&2; }
 log() { _gaffer_locked .log.lock _gaffer_log_line "$*"; }
+# The safety hook AND its deny-list sibling must BOTH be present before we launch a
+# live agent: a missing lib/dangerous-commands.mjs would make the hook fail-closed at
+# runtime (blocking every tool call), but preflighting it here refuses the tick with a
+# clear cause instead. Returns 1 (logged) if either is absent. Callers apply their own
+# fail-closed action (exit 1 / return 1).
+gaffer_assert_safety_hook() {
+  [ -f "$RUNNER_DIR/safety-hook.mjs" ] \
+    || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs (fail closed)"; return 1; }
+  [ -f "$RUNNER_DIR/lib/dangerous-commands.mjs" ] \
+    || { log "SAFETY: deny-list missing at $RUNNER_DIR/lib/dangerous-commands.mjs — the hook cannot load its rules; refusing (fail closed)"; return 1; }
+  return 0
+}
+# Mark a delivery worktree as a TRUSTED Claude Code workspace so the headless
+# `claude -p` agent HONOURS the installed .claude/settings.json permission
+# allowlist instead of hanging on a tool-permission prompt no one can answer
+# (Claude Code ignores project settings in an untrusted directory, and every
+# delivery runs in a fresh, never-trusted worktree). Best-effort: the PreToolUse
+# safety-hook is the real boundary, so a failure here only risks the OLD
+# prompt-hang behaviour — never a safety regression. Operator-endorsed fix
+# (configure ~/.claude.json) rather than --dangerously-skip-permissions.
+gaffer_trust_workspace() {
+  local dir="$1"
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  # The factory only ever names paths IT controls (a linked delivery worktree, or a
+  # full repo it onboarded/created — PRIMARY_REPO, the clarify clone, the greenfield
+  # bootstrap). GAFFER_TRUST_ALLOW_REPO=1 vouches for the full-repo shapes; linked
+  # worktrees are still validated strictly (under the worktree root) regardless.
+  GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
+    || log "TRUST: could not pre-trust $dir (headless agent may hang on an MCP tool prompt)"
+}
 # Append a ticket number to the per-run skip-file under .skip.lock so concurrent
 # workers never lose or corrupt an entry (the skip-file stops one bad ticket
 # starving the queue; a lost entry would let it be re-claimed forever).
@@ -452,7 +482,7 @@ title = os.environ.get("DTITLE", "")
 t = ("Requirement from #%s: %s" % (num, title))[:MAX_TITLE]
 body = (
     "Why '%s' ticket #%s (\"%s\") was built — the requirement it served "
-    "(distilled at close for ratification; not auto-promoted):\n%s"
+    "(distilled at close from the delivered work):\n%s"
     % (repo, num, title, "\n".join(lines))
 )
 if len(body) > MAX_SUMMARY:
@@ -467,14 +497,27 @@ PY
   _ds="$(printf '%s' "$_distill" | jget "d['summary']" 2>/dev/null)" || return 0
   [ -n "$_dt" ] || return 0
 
-  # --title/--summary/--body all supplied ⇒ `suggest` never drops into an
-  # interactive prompt. Draft (suggest, not add) with an explicit kind so recall
-  # can later aim at the "why"; tags carry ticket provenance (ticket-<n>).
-  if lg suggest --title "$_dt" --summary "$_ds" --body "$_ds" \
+  # --title/--summary/--body all supplied ⇒ `suggest` never drops into an interactive
+  # prompt. Suggest (draft) with an explicit kind so recall can later aim at the "why";
+  # tags carry ticket provenance (ticket-<n>).
+  #
+  # AUTO-PROMOTE (operator decision): land the distilled product-intent ACTIVE by default
+  # (GAFFER_MEMORY_AUTO_PROMOTE=1) so it primes future agents on UNATTENDED runs — the
+  # PRODUCT CONTEXT primer surfaces only `active` lore, so a draft-only distiller left that
+  # block permanently empty. MEMORY_AUTO_APPROVE=1 makes `lg suggest` land active (the same
+  # env the MCP suggest_lore honours). Set GAFFER_MEMORY_AUTO_PROMOTE=0 to keep the draft
+  # human-ratification gate. The inline var applies only to this `lg` call.
+  local _promote="${GAFFER_MEMORY_AUTO_PROMOTE:-1}"
+  if MEMORY_AUTO_APPROVE="$([ "$_promote" = "1" ] && echo 1 || echo 0)" \
+      lg suggest --title "$_dt" --summary "$_ds" --body "$_ds" \
       --repo "$RECALL_REPO_NAME" --kind requirement \
       --tag ticket-intent --tag requirement --tag "ticket-$NUM" \
       --author gaffer-distill >/dev/null 2>&1; then
-    log "memory: distilled requirement DRAFT from #$NUM (human-gated; not auto-promoted)"
+    if [ "$_promote" = "1" ]; then
+      log "memory: distilled requirement from #$NUM → ACTIVE (auto-promoted; GAFFER_MEMORY_AUTO_PROMOTE=0 to gate)"
+    else
+      log "memory: distilled requirement DRAFT from #$NUM (human-gated)"
+    fi
   else
     log "memory: distill #$NUM skipped/failed — non-fatal, delivery unaffected"
   fi
@@ -690,7 +733,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     fi
 
     # Fail closed: never run a live agent without the deterministic safety hook.
-    [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs — refusing live bootstrap (fail closed)"; result error; exit 1; }
+    gaffer_assert_safety_hook || { log "SAFETY: refusing live bootstrap (fail closed)"; result error; exit 1; }
 
     # Create + init the new repo dir. A failure here leaves no half-made repo.
     if ! gaffer_bootstrap_init "$B_DIR"; then
@@ -706,6 +749,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Fail-soft: falls back to the whole library on any error (see skills-mount.sh).
     gaffer_skills_mount "$B_DIR" "$B_SKILLS" "bootstrap-$NUM"
     sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$B_DIR/.claude/settings.json"
+    gaffer_trust_workspace "$B_DIR"
     MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
     gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"; result error; exit 1; }
     # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
@@ -739,7 +783,14 @@ Your working directory IS the new repo and the ONLY writable root: $B_DIR
 Do NOT write or read outside it. Do NOT branch — commit on the current branch.
 EOF
 
-    B_DEFAULT_BRANCH="$(git -C "$B_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+    # Capture the repo's default branch. NB: at this point the scaffold may still be
+    # UNBORN (git init done, the agent's first commit not yet made). On an unborn repo
+    # `git rev-parse --abbrev-ref HEAD` prints "HEAD" to stdout AND exits non-zero, so
+    # `… || echo main` yields the newline-joined garbage "HEAD\nmain" — which then fails
+    # `repo add`'s git-ref-safe branch validation and silently sinks the whole greenfield
+    # onboard. `symbolic-ref --short HEAD` returns the real branch ("main") cleanly for
+    # both unborn and committed repos.
+    B_DEFAULT_BRANCH="$(git -C "$B_DIR" symbolic-ref --short HEAD 2>/dev/null || echo main)"
     RUN_LOG_MARK="$(wc -l < "$GAFFER_LOG" 2>/dev/null || echo 0)"
     # The scoped install allowance: GAFFER_BOOTSTRAP_INSTALL=1 + GAFFER_BOOTSTRAP_DIR
     # are exported ONLY for this bootstrap invocation, so the safety hook permits
@@ -753,17 +804,15 @@ EOF
     # log; agent's `.result` text appended to the log below (preserves the log).
     B_USAGE_JSON="$GAFFER_DATA/.usage-$NUM.json"; : > "$B_USAGE_JSON"
     # C1/M2: strip ambient credentials from the live agent's env (allowlist via
-    # env -i). The per-call boundary/install vars are layered on top so they win.
-    gaffer_agent_env
-    ( cd "$B_DIR" \
-      && gaffer_timeout "$GAFFER_TICK_TIMEOUT" \
-         env -i "${GAFFER_AGENT_ENV[@]}" \
-           GAFFER_WRITE_ROOTS="$B_DIR" GAFFER_READ_ROOTS="" \
-           GAFFER_BOOTSTRAP_INSTALL=1 GAFFER_BOOTSTRAP_DIR="$B_DIR" \
-           npm_config_ignore_scripts=true \
-           DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-           "$CLAUDE_BIN" -p "$B_PROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $GAFFER_IMPL_MODEL_FLAG $GAFFER_MAX_TURNS_FLAG \
-    ) >"$B_USAGE_JSON" 2>>"$GAFFER_LOG"
+    # env -i) — done inside worker_deliver. The per-call boundary/install vars in
+    # WORKER_CALL_ENV are layered on top of the allowlist so they win.
+    WORKER_CALL_ENV=(
+      "GAFFER_WRITE_ROOTS=$B_DIR" "GAFFER_READ_ROOTS="
+      "GAFFER_BOOTSTRAP_INSTALL=1" "GAFFER_BOOTSTRAP_DIR=$B_DIR"
+      "npm_config_ignore_scripts=true"
+      "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
+    )
+    worker_deliver "$B_DIR" "$B_PROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$B_USAGE_JSON"
     brc=$?
     gaffer_usage_record bootstrap "$NUM" "$brc" "$B_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
     rm -f "$B_USAGE_JSON"
@@ -841,18 +890,16 @@ print(hits[0] if hits else '')
 " 2>/dev/null || echo '')"
     _BMZ_TRIM="$(printf '%s' "$_BMZ_NOTE" | tr -d '[:space:]')"
     if [ -z "$_BMZ_TRIM" ]; then
-      if [ "${MINIMALISM_ENFORCE:-1}" = "1" ]; then
-        log "BOOTSTRAP MINIMALISM: #$NUM has NO smallest-change note — failing ($_BMZ_FILES files / $_BMZ_LINES lines)"
-        wg attach-evidence "$NUM" --type manual_note \
-          --summary "PARKED: bootstrap minimalism — missing smallest-change note (${_BMZ_FILES} files / ${_BMZ_LINES} lines)" >/dev/null 2>&1 || true
-        # FINDING-12: VISIBLE park (see the rc-failure park above).
-        gaffer_release_delivery blocked "bootstrap minimalism: missing smallest-change note" bootstrap_failed
-        gaffer_skip_ticket "$NUM"; result error; exit 0
-      else
-        log "MINIMALISM_ENFORCE=0 — #$NUM bootstrap missing smallest-change note, flagging not failing"
-        wg attach-evidence "$NUM" --type manual_note \
-          --summary "needs_human_review: bootstrap missing smallest-change note" >/dev/null 2>&1 || true
-      fi
+      # A greenfield bootstrap creates a repo FROM THE EMPTY TREE — there is no
+      # pre-existing code to make a "smallest change" against, so a smallest-change note
+      # (a meaningful gate for FEATURE edits) is contradictory here, and being
+      # agent-authored it is flaky run-to-run (a valid scaffold otherwise gets parked on
+      # a missing note, stranding the whole epic). Consistent with the oversized
+      # exemption below — a fresh scaffold is legitimately large — FLAG a missing note
+      # for human review, never FAIL the bootstrap on it.
+      log "BOOTSTRAP MINIMALISM: #$NUM has no smallest-change note — EXEMPT (fresh scaffold); flagging not failing ($_BMZ_FILES files / $_BMZ_LINES lines)"
+      wg attach-evidence "$NUM" --type manual_note \
+        --summary "needs_human_review: bootstrap has no smallest-change note (${_BMZ_FILES} files / ${_BMZ_LINES} lines) — exempt from minimalism hard-fail (greenfield scaffold)" >/dev/null 2>&1 || true
     else
       # Note present. Oversized is EXEMPT for bootstrap — flag visibly, never fail.
       if { [ "${OVERSIZED_MAX_LINES:-400}" -gt 0 ] && [ "${_BMZ_LINES:-0}" -gt "${OVERSIZED_MAX_LINES:-400}" ]; } \
@@ -1510,7 +1557,7 @@ EOF
   # PreToolUse hook is the safety boundary; env carries the two server DB paths.
   # Fail CLOSED: the safety hook is THE deterministic boundary. If it's missing,
   # never run a live agent — Claude Code would otherwise run with no boundary.
-  [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs — refusing live run (fail closed)"; result error; exit 1; }
+  gaffer_assert_safety_hook || { log "SAFETY: refusing live run (fail closed)"; result error; exit 1; }
 
   # ── Agent-environment install (runs before EVERY attempt's launch) ──────────
   # Installs the project-local agent environment into the PRIMARY write worktree
@@ -1533,7 +1580,7 @@ EOF
   # the hook; callers must NOT launch the agent for that attempt on failure —
   # launching without the hook is the one unacceptable outcome.
   gaffer_install_agent_env() {
-    [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs — refusing to prepare the agent env (fail closed)"; return 1; }
+    gaffer_assert_safety_hook || { log "SAFETY: refusing to prepare the agent env (fail closed)"; return 1; }
     gaffer_skills_mount "$PRIMARY_REPO" "$SKILLS, $LENSES" "delivery-$NUM"
     mkdir -p "$PRIMARY_REPO/.claude" 2>/dev/null || true
     if ! sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$PRIMARY_REPO/.claude/settings.json" 2>/dev/null; then
@@ -1547,6 +1594,9 @@ EOF
       rm -f "$PRIMARY_REPO/.claude/settings.json"   # an unwired settings file must not survive
       log "SAFETY: $PRIMARY_REPO/.claude/settings.json lacks the PreToolUse safety-hook wiring (fail closed)"; return 1
     fi
+    # Trust the worktree so the allowlist just written is HONOURED headless — else
+    # the agent hangs on the first MCP tool-permission prompt (untrusted-dir gate).
+    gaffer_trust_workspace "$PRIMARY_REPO"
     if ! cp -f "$HERE/claude/CLAUDE.md" "$PRIMARY_REPO/CLAUDE.factory.md" 2>/dev/null; then
       log "SAFETY: could not install the CLAUDE.factory.md brief into $PRIMARY_REPO (fail closed)"; return 1
     fi
@@ -1825,18 +1875,15 @@ $_trail_q
   # the MCP servers, and the runner reads ticket state from `wg ticket show`, not
   # from this stdout (which was previously discarded into the log anyway).
   USAGE_JSON="$GAFFER_DATA/.usage-$NUM.json"; : > "$USAGE_JSON"
-  # C1/M2: scrub ambient credentials from the live agent's env via an allowlist
-  # (env -i). It sits INSIDE the optional OS-sandbox $WRAP so the sandbox still
-  # wraps the whole agent; the per-call boundary vars are layered on top.
-  gaffer_agent_env
-  ( cd "$PRIMARY_REPO" \
-    && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $WRAP \
-       env -i "${GAFFER_AGENT_ENV[@]}" \
-         GAFFER_WRITE_ROOTS="$WRITE_ROOTS" GAFFER_READ_ROOTS="$READ_ROOTS" \
-         GAFFER_DATA="$GAFFER_DATA" GAFFER_TICKET="$NUM" \
-         DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-         "$CLAUDE_BIN" -p "$PROMPT$_REWORK_BLOCK" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $_ATTEMPT_IMPL_FLAG $GAFFER_MAX_TURNS_FLAG \
-  ) >"$USAGE_JSON" 2>>"$GAFFER_LOG"
+  # C1/M2: scrub ambient credentials via an allowlist (env -i) inside worker_deliver.
+  # The scrub sits INSIDE the optional OS-sandbox $WRAP so the sandbox still wraps the
+  # whole agent; the per-call boundary vars in WORKER_CALL_ENV are layered on top.
+  WORKER_CALL_ENV=(
+    "GAFFER_WRITE_ROOTS=$WRITE_ROOTS" "GAFFER_READ_ROOTS=$READ_ROOTS"
+    "GAFFER_DATA=$GAFFER_DATA" "GAFFER_TICKET=$NUM"
+    "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
+  )
+  worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP"
   rc=$?
   # SKILL TELEMETRY: record which skills were SELECTED for this delivery (and,
   # best-effort, which were APPLIED — detected from the agent's output JSON) so a
@@ -2404,10 +2451,15 @@ for r in d.get("repositories", []) or []:
     R_CUR="$(git -C "$rwt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
     [ -n "$R_CUR" ] && [ "$R_CUR" != "$rbase" ] || continue
     R_DIFFSTAT="$(git -C "$rwt" diff "$rbase"...HEAD --stat 2>/dev/null | tail -15)"
+    # GRADUATED AUTONOMY: record the delivery HEAD sha so the review-approve path can
+    # compute an honest `approved_unchanged` (delivery sha vs the branch head at approval).
+    # Without it the signal was permanently null and the auto-merge half never fired.
+    R_SHA="$(git -C "$rwt" rev-parse HEAD 2>/dev/null || echo '')"
+    R_SHA_ARG=""; [ -n "$R_SHA" ] && R_SHA_ARG="--commit $R_SHA"  # sha is a single token → safe to word-split
     # repoRef accepts the repo id OR name; prefer the stable id, fall back to name.
     R_REF="${rid:-$rname}"
     if [ -n "$R_REF" ]; then
-      if wg ticket repo-delivery record "$NUM" "$R_REF" --branch "$R_CUR" --status review_ready >/dev/null 2>&1; then
+      if wg ticket repo-delivery record "$NUM" "$R_REF" --branch "$R_CUR" $R_SHA_ARG --status review_ready >/dev/null 2>&1; then
         log "recorded per-repo delivery for #$NUM: ${rname:-repo} → $R_CUR (branch lives in $rpath)"
       else
         log "per-repo delivery for #$NUM (${rname:-repo}) did not record (non-fatal)"
@@ -2613,6 +2665,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # Mount only the review-relevant + universal skill subset (not all ~66).
       gaffer_skills_mount "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$WT/.claude/settings.json"
+      gaffer_trust_workspace "$WT"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
@@ -2651,14 +2704,13 @@ EOF
       # Repo-access boundary (FG-007): the reviewer works only in the throwaway
       # worktree ($WT). The registered repo's working tree is never a write root.
       R_USAGE_JSON="$GAFFER_DATA/.usage-$RNUM.json"; : > "$R_USAGE_JSON"
-      # C1/M2: scrub ambient credentials from the reviewer agent's env (allowlist).
-      gaffer_agent_env
-      ( cd "$WT" \
-          && gaffer_timeout "$GAFFER_TICK_TIMEOUT" \
-             env -i "${GAFFER_AGENT_ENV[@]}" \
-               GAFFER_WRITE_ROOTS="$WT" \
-               DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-               "$CLAUDE_BIN" -p "$RPROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $GAFFER_IMPL_MODEL_FLAG $GAFFER_MAX_TURNS_FLAG ) >"$R_USAGE_JSON" 2>>"$GAFFER_LOG"
+      # C1/M2: scrub ambient credentials from the reviewer agent's env (allowlist)
+      # inside worker_deliver; the per-call vars in WORKER_CALL_ENV layer on top.
+      WORKER_CALL_ENV=(
+        "GAFFER_WRITE_ROOTS=$WT"
+        "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
+      )
+      worker_deliver "$WT" "$RPROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       rm -f "$R_USAGE_JSON"
@@ -2744,6 +2796,7 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # Mount only the clarify-relevant + universal skill subset (not all ~66).
       gaffer_skills_mount "$CREPO" "clarify, record-evidence" "clarify-$CNUM"
       sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$CREPO/.claude/settings.json"
+      gaffer_trust_workspace "$CREPO"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
@@ -2768,14 +2821,13 @@ open question. Work only in: $CREPO
 EOF
       CPROMPT="${CPROMPT}${_CLARIFY_CARDS}"
       C_USAGE_JSON="$GAFFER_DATA/.usage-$CNUM.json"; : > "$C_USAGE_JSON"
-      # C1/M2: scrub ambient credentials from the clarify agent's env (allowlist).
-      gaffer_agent_env
-      ( cd "$CREPO" \
-          && gaffer_timeout "$GAFFER_TICK_TIMEOUT" \
-             env -i "${GAFFER_AGENT_ENV[@]}" \
-               GAFFER_WRITE_ROOTS="$CREPO" \
-               DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
-               "$CLAUDE_BIN" -p "$CPROMPT" --output-format json --mcp-config "$MCP_RUNTIME" $CLAUDE_FLAGS $GAFFER_PLAN_MODEL_FLAG $GAFFER_MAX_TURNS_FLAG ) >"$C_USAGE_JSON" 2>>"$GAFFER_LOG"
+      # C1/M2: scrub ambient credentials from the clarify agent's env (allowlist)
+      # inside worker_deliver; the per-call vars in WORKER_CALL_ENV layer on top.
+      WORKER_CALL_ENV=(
+        "GAFFER_WRITE_ROOTS=$CREPO"
+        "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
+      )
+      worker_deliver "$CREPO" "$CPROMPT" "$GAFFER_PLAN_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON"
       crc=$?
       gaffer_usage_record clarify "$CNUM" "$crc" "$C_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       rm -f "$C_USAGE_JSON"

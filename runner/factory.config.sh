@@ -12,18 +12,17 @@
 
 # UI-editable settings. The dashboard Settings panel persists a flat {"KEY":"value"}
 # map to $GAFFER_DATA/settings.json. Apply them as defaults HERE — before the config
-# defaults below — with `:=` so a real env var ALWAYS overrides the file (env wins).
-# Keys are validated to env-var-name shape so a tampered file can't inject anything;
-# values are bash vars (never eval'd), tabs/newlines stripped.
+# defaults below — so a real env var ALWAYS overrides the file (env wins).
+# SECURITY: do NOT eval. eval re-parses the whole string, so BOTH a crafted key and a
+# crafted value are command-injection vectors — the old `case "$_sk" in [A-Z_][A-Z0-9_]*`
+# glob pinned only the first two chars ('*' swallows `}; cmd; :`), and a value with a `}`
+# closes the `${...}` early and runs the trailing text. Instead: FULLY anchor the key to
+# a shell identifier, then test-and-assign with indirect expansion (`${!_sk}`) + `printf
+# -v`, neither of which re-parses $_sk or $_sv as a command.
 if [ -f "$GAFFER_DATA/settings.json" ] && command -v node >/dev/null 2>&1; then
   while IFS=$'\t' read -r _sk _sv; do
-    # eval KEPT: this is a dynamic-NAME `:=` default assignment (env always wins),
-    # not a command seam. The key is shape-validated above; the value is only ever
-    # *assigned* to that var, never re-parsed as a command. No argv form expresses
-    # "assign-if-unset to a variable whose name is in $_sk".
-    case "$_sk" in
-      [A-Z_][A-Z0-9_]*) eval ": \${$_sk:=\$_sv}" ;;
-    esac
+    [[ "$_sk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # whole-key anchor (^…$)
+    if [ -z "${!_sk:-}" ]; then printf -v "$_sk" '%s' "$_sv"; fi   # assign-if-unset, no eval
   done < <(node -e 'try{const s=require(process.argv[1]);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")}catch{}' "$GAFFER_DATA/settings.json")
   unset _sk _sv
 fi
@@ -74,8 +73,25 @@ export GAFFER_PLAN_MODEL_EXPLICIT GAFFER_IMPL_MODEL_EXPLICIT
 : "${GAFFER_PLAN_MODEL=opus}"
 : "${GAFFER_IMPL_MODEL=sonnet}"
 export GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL
-GAFFER_PLAN_MODEL_FLAG=""; [ -n "${GAFFER_PLAN_MODEL:-}" ] && GAFFER_PLAN_MODEL_FLAG="--model $GAFFER_PLAN_MODEL"
-GAFFER_IMPL_MODEL_FLAG=""; [ -n "${GAFFER_IMPL_MODEL:-}" ] && GAFFER_IMPL_MODEL_FLAG="--model $GAFFER_IMPL_MODEL"
+# Worker-provider-indirected model-FLAG emission (Spec 3 / Phase 3). The model
+# NAME is chosen by the registry-driven router (model-registry.json →
+# gaffer_route_model, below); this helper is the ONE place that turns a chosen name
+# into the worker CLI's model-selection FLAG SYNTAX. Splitting name-choice
+# (registry-indirected) from flag-emission (provider-indirected) is the seam: a
+# future non-Claude provider changes ONLY this `case`. `claude-code` emits
+# `--model <name>` — BYTE-IDENTICAL to the historical inline emission; an empty
+# name emits nothing (falls back to the worker's own default model).
+gaffer_model_flag() {
+  local model="${1:-}"
+  [ -n "$model" ] || return 0
+  case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
+    # claude-code (and the default until a provider proves otherwise): the Claude
+    # Code CLI selects a model with `--model <name>`.
+    claude-code|*) printf -- '--model %s' "$model" ;;
+  esac
+}
+GAFFER_PLAN_MODEL_FLAG="$(gaffer_model_flag "${GAFFER_PLAN_MODEL:-}")"
+GAFFER_IMPL_MODEL_FLAG="$(gaffer_model_flag "${GAFFER_IMPL_MODEL:-}")"
 
 # --- Intelligent, data-driven MODEL ROUTING (audit item I1) -------------------
 # The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket
@@ -460,8 +476,24 @@ export GAFFER_PAUSE_ON_CAP
 # the per-tick resume work so a backlog of Continue presses doesn't starve new claims.
 : "${GAFFER_MAX_RESUMES_PER_TICK:=1}"
 export GAFFER_MAX_RESUMES_PER_TICK
-# Dashboard base URL embedded in the cap-hit / park notify so the operator can
-# click straight through to the ticket. Defaults to the local dashboard.
+# Dashboard base URL embedded in the cap-hit / park / loop-end notify so the operator
+# can click straight through to the ticket from their phone.
+#
+# BUG #6: the loop runs as a SEPARATE process from the dashboard, so it never sees
+# the `--lan` (http://<LAN>:<port>) URL the dashboard computes + exports only inside
+# its own process — the loop-end ping would deep-link to loopback, unreachable from a
+# phone. `gaffer dashboard --lan` now PERSISTS the reachable base to
+# $GAFFER_DATA/dashboard-url; read it here so the loop (and status.sh) deep-link to
+# the SAME URL the dashboard serves. Precedence: an explicit env override always wins;
+# else the persisted LAN url; else the loopback default (the degrade path when not
+# running under --lan — `gaffer dashboard` without --lan removes the persisted file).
+if [ -z "${GAFFER_DASHBOARD_URL:-}" ] && [ -s "$GAFFER_DATA/dashboard-url" ]; then
+  _gaffer_persisted_url="$(head -1 "$GAFFER_DATA/dashboard-url" 2>/dev/null | tr -d ' \t\r\n')"
+  case "$_gaffer_persisted_url" in
+    http://*|https://*) GAFFER_DASHBOARD_URL="$_gaffer_persisted_url" ;;
+  esac
+  unset _gaffer_persisted_url
+fi
 : "${GAFFER_DASHBOARD_URL:=http://127.0.0.1:${DISPATCH_API_PORT:-8787}}"
 export GAFFER_DASHBOARD_URL
 
@@ -735,24 +767,66 @@ _gaffer_lock_age() {
 # keys/secrets/session tokens, DISPATCH_API_TOKEN, any *_TOKEN / *_SECRET /
 # *_KEY (besides ANTHROPIC_API_KEY) / *_PASSWORD, and the outbound-endpoint class
 # (GAFFER_NOTIFY_*, *_WEBHOOK*, *_SLACK*, *_URL — except ANTHROPIC_BASE_URL).
+# ── Worker-provider-indirected agent-env allowlist (Spec 3 / Phase 3) ─────────
+# The credential-stripping allowlist splits into a provider-AGNOSTIC base (the
+# working shell, locale, the MCP data-plane wiring, the GAFFER_*/npm_config_*
+# knobs — every worker needs these) and a provider-SPECIFIC AUTH/config surface
+# (which model-provider secrets + config the worker CLI reads). These three
+# functions ARE the seam: claude-code's contribution is BYTE-IDENTICAL to the set
+# this allowlist always carried (its union with the agnostic base == the historical
+# list), so the scrub is unchanged today; a future provider (codex/local) adds one
+# `case` branch naming ITS auth surface and nothing else moves. Each echoes
+# whitespace-separated tokens (empty for unknown providers — harmless, since a
+# non-Claude worker fails closed in worker_deliver before the scrub is even built).
+#
+# keep-exact: exact env-var names the provider's worker needs.
+gaffer_provider_env_keep_exact() {
+  case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
+    claude-code)
+      printf '%s\n' \
+        ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL \
+        AWS_REGION AWS_DEFAULT_REGION
+      ;;
+  esac
+}
+# keep-prefix: env-var prefixes whose whole namespace the provider's worker reads.
+#   CLAUDE_*  → claude -p config/auth (CLAUDE_BIN, CLAUDE_CODE_*, CLAUDE_FLAGS…).
+gaffer_provider_env_keep_prefix() {
+  case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
+    claude-code) printf '%s\n' CLAUDE_ ;;
+  esac
+}
+# keep-despite-deny: provider auth names that must survive the credential-shaped
+# deny patterns below (they LOOK like secrets because they ARE the worker's auth).
+#   claude-code → the ANTHROPIC auth trio (…_API_KEY / …_AUTH_TOKEN / …_BASE_URL).
+gaffer_provider_env_keep_despite_deny() {
+  case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
+    claude-code) printf '%s\n' ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ;;
+  esac
+}
+
 GAFFER_AGENT_ENV=()
 gaffer_agent_env() {
   GAFFER_AGENT_ENV=()
-  # Exact var names the agent legitimately needs. ANTHROPIC_API_KEY is listed
-  # explicitly so it survives despite ending in _KEY.
+  # Provider-AGNOSTIC base: the working shell, locale, MCP data-plane wiring, and
+  # the write/read-root boundary vars. Every worker provider needs these.
   local keep_exact=(
     PATH HOME SHELL USER LOGNAME TMPDIR TMP TEMP
     LANG LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC TERM TZ COLUMNS LINES
-    ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL
-    AWS_REGION AWS_DEFAULT_REGION
     MCP_CONFIG DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN
     GAFFER_WRITE_ROOTS GAFFER_READ_ROOTS
   )
-  # Prefixes whose whole namespace the agent (or its hooks/tools) may read.
-  # CLAUDE_*  → claude -p config/auth (CLAUDE_BIN, CLAUDE_CODE_*, CLAUDE_FLAGS…).
-  # GAFFER_*  → factory knobs (models, caps, skill/quarantine wiring, boundary).
-  # npm_config_* → the scoped, lifecycle-disabled bootstrap install knobs.
-  local keep_prefix=( CLAUDE_ GAFFER_ npm_config_ )
+  # Provider-agnostic prefixes:
+  #   GAFFER_*  → factory knobs (models, caps, skill/quarantine wiring, boundary).
+  #   npm_config_* → the scoped, lifecycle-disabled bootstrap install knobs.
+  local keep_prefix=( GAFFER_ npm_config_ )
+  # Layer the ACTIVE provider's auth/config surface on top (claude-code == the
+  # historical ANTHROPIC_*/CLAUDE_*/AWS-region set, so the union is byte-identical).
+  local extra
+  while IFS= read -r extra; do [ -n "$extra" ] && keep_exact+=( "$extra" ); done < <(gaffer_provider_env_keep_exact)
+  while IFS= read -r extra; do [ -n "$extra" ] && keep_prefix+=( "$extra" ); done < <(gaffer_provider_env_keep_prefix)
+  local keep_despite_deny=()
+  while IFS= read -r extra; do [ -n "$extra" ] && keep_despite_deny+=( "$extra" ); done < <(gaffer_provider_env_keep_despite_deny)
   local name val
   # compgen -e enumerates EXPORTED (i.e. environment) variable names, one per
   # line. Names can never contain a newline or '=', so line-reading is safe; the
@@ -762,17 +836,26 @@ gaffer_agent_env() {
     # Drop the credential-shaped AND outbound-endpoint vars even if a keep-prefix
     # would re-admit them. A prompt-injected agent must not be able to read the
     # runner's own exfiltration channels (notify webhooks, Slack URL, dashboard URL).
-    case "$name" in
-      # Explicitly kept despite matching deny patterns below — claude -p auth:
-      ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL) : ;;
-      # Credential-shaped vars — never reach the agent:
-      *_TOKEN|*_SECRET|*_KEY|*_PASSWORD|*_PASSWD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|DISPATCH_API_TOKEN)
-        continue ;;
-      # Outbound endpoint / notify config — runner-only; the agent must not read
-      # its own potential exfiltration channel:
-      GAFFER_NOTIFY_*|*_WEBHOOK*|*_SLACK*|*_URL)
-        continue ;;
-    esac
+    # EXCEPTION: the ACTIVE provider's own auth names (keep_despite_deny, e.g.
+    # claude-code's ANTHROPIC auth trio) survive — they look like secrets because
+    # they ARE the worker's auth. This membership test is the provider-indirected
+    # form of the former hard-coded `ANTHROPIC_*) : ;;` exception.
+    local keep_forced=0 kd
+    # `${arr[@]+"${arr[@]}"}` — NOT a bare `"${arr[@]}"`: under `set -u`, bash 3.2 (macOS CI)
+    # treats an EMPTY array expansion as an unbound variable and aborts. This list is empty for
+    # every provider except claude-code, so the bare form crashes gaffer_agent_env there.
+    for kd in ${keep_despite_deny[@]+"${keep_despite_deny[@]}"}; do [ "$name" = "$kd" ] && { keep_forced=1; break; }; done
+    if [ "$keep_forced" -eq 0 ]; then
+      case "$name" in
+        # Credential-shaped vars — never reach the agent:
+        *_TOKEN|*_SECRET|*_KEY|*_PASSWORD|*_PASSWD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|DISPATCH_API_TOKEN)
+          continue ;;
+        # Outbound endpoint / notify config — runner-only; the agent must not read
+        # its own potential exfiltration channel:
+        GAFFER_NOTIFY_*|*_WEBHOOK*|*_SLACK*|*_URL)
+          continue ;;
+      esac
+    fi
     local matched=0
     local k
     for k in "${keep_exact[@]}"; do [ "$name" = "$k" ] && { matched=1; break; }; done
@@ -1130,6 +1213,13 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # must not break the suite, but it ships in-tree so this is just defensive.
 # shellcheck source=lib/sandbox.sh
 [ -f "$RUNNER_DIR/lib/sandbox.sh" ] && source "$RUNNER_DIR/lib/sandbox.sh"
+
+# Worker seam (defines worker_deliver — the ONE headless `claude -p` invocation).
+# Sourced after sandbox.sh so worker_deliver can rely on gaffer_timeout /
+# gaffer_agent_env / CLAUDE_* being defined above. Mirrors the sandbox seam's
+# fail-soft source guard; it ships in-tree so this is just defensive.
+# shellcheck source=lib/worker.sh
+[ -f "$RUNNER_DIR/lib/worker.sh" ] && source "$RUNNER_DIR/lib/worker.sh"
 
 # Per-day cost guard helpers (gaffer_day_count / gaffer_bump_day_count /
 # gaffer_day_cap_ok). Sourced after the config above so they read MAX_TICKS_PER_DAY

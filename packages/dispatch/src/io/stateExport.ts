@@ -61,6 +61,10 @@ export const EXPORT_TABLES = [
   "decisions",
   "agents",
   "scope_nodes",
+  // Spec-Driven Development: frozen statements of product intent. Standalone (no
+  // FK — target_repo/scope_node_id are soft references), and a durable, portable
+  // asset the operator carries between machines, so it IS part of the bundle.
+  "specs",
   // First-level children.
   "acceptance_criteria",
   "ticket_required_capabilities",
@@ -83,6 +87,11 @@ export const EXPORT_TABLES = [
   // board diagnostics — the "why did #N fail" history is exactly the kind of asset
   // the README promises you carry between machines, so it IS part of the bundle.
   "rework_attempts",
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): the per-(repo × risk × gate) autonomy
+  // enablement + its evidence snapshot (FK to repositories, so it sorts after that
+  // root). A durable, security-relevant operator decision worth carrying between
+  // machines (and auditable), so it IS part of the bundle.
+  "autonomy_policy",
 ] as const;
 
 export type ExportTable = (typeof EXPORT_TABLES)[number];
@@ -98,6 +107,7 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   decisions: "id",
   agents: "id",
   scope_nodes: "id",
+  specs: "id",
   acceptance_criteria: "id",
   ticket_required_capabilities: "ticket_id, capability",
   agent_capabilities: "agent_id, capability",
@@ -113,6 +123,7 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   external_refs: "id",
   ticket_dependencies: "ticket_id, depends_on_ticket_id",
   rework_attempts: "id",
+  autonomy_policy: "id",
 };
 
 /** A single table's rows, each row a column→value map (SQLite scalar values). */

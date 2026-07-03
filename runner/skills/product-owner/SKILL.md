@@ -2,7 +2,7 @@
 name: product-owner
 description: Use to propose the next product work for a repo — on an idle factory tick (nothing ready to deliver) or when a human asks "what should we build next", for product ideas, a backlog, or PO mode. Consults Memory for product direction, inspects the repo, and files 3–5 high-leverage, anti-slop candidates into the Dispatch backlog as draft tickets with real acceptance criteria. Invoke whenever the factory needs new work proposed rather than delivered.
 stack: []
-area: workflow
+area: product
 ---
 
 # Propose product work into the backlog

@@ -219,6 +219,74 @@ describe("H2 facade gate notifications", () => {
   });
 });
 
+describe("AFK-LOOP P1 deep-links (GAFFER_DASHBOARD_URL)", () => {
+  afterEach(() => {
+    delete process.env.GAFFER_DASHBOARD_URL;
+  });
+
+  it("builds a ticket deep-link on review_needed when the base is set", () => {
+    process.env.GAFFER_DASHBOARD_URL = "http://192.168.1.5:8787";
+    const notifier = new FakeNotifier();
+    const wg = freshWg(notifier);
+
+    driveToInReview(wg);
+
+    const review = notifier.events.find((e) => e.kind === "review_needed");
+    expect(review).toBeDefined();
+    expect(review!.ticket_number).toBeTypeOf("number");
+    expect(review!.url).toBe(`http://192.168.1.5:8787/tickets/${review!.ticket_number}`);
+  });
+
+  it("builds a decision deep-link on decision_pending when the base is set", () => {
+    process.env.GAFFER_DASHBOARD_URL = "http://192.168.1.5:8787/"; // trailing slash trimmed
+    const notifier = new FakeNotifier();
+    const wg = freshWg(notifier);
+
+    const decision = wg.createDecision(
+      { title: "Which DB?", question: "Postgres or SQLite?", severity: "human_required" },
+      human,
+    );
+
+    const pending = notifier.events.find((e) => e.kind === "decision_pending");
+    expect(pending).toBeDefined();
+    expect(pending!.url).toBe(`http://192.168.1.5:8787/decisions/${decision.id}`);
+  });
+
+  it("negative control: NO url on either event when the base is unset", () => {
+    delete process.env.GAFFER_DASHBOARD_URL;
+    const notifier = new FakeNotifier();
+    const wg = freshWg(notifier);
+
+    driveToInReview(wg);
+    wg.createDecision(
+      { title: "Which DB?", question: "Postgres or SQLite?", severity: "human_required" },
+      human,
+    );
+
+    const review = notifier.events.find((e) => e.kind === "review_needed");
+    const pending = notifier.events.find((e) => e.kind === "decision_pending");
+    expect(review).toBeDefined();
+    expect(pending).toBeDefined();
+    expect(review!.url).toBeUndefined();
+    expect(pending!.url).toBeUndefined();
+  });
+
+  it("negative control: empty/whitespace base degrades to no url", () => {
+    process.env.GAFFER_DASHBOARD_URL = "   ";
+    const notifier = new FakeNotifier();
+    const wg = freshWg(notifier);
+
+    wg.createDecision(
+      { title: "Which DB?", question: "Postgres or SQLite?", severity: "human_required" },
+      human,
+    );
+
+    const pending = notifier.events.find((e) => e.kind === "decision_pending");
+    expect(pending).toBeDefined();
+    expect(pending!.url).toBeUndefined();
+  });
+});
+
 describe("CompositeNotifier failure isolation", () => {
   it("logs and swallows an async rejection, never propagating it", async () => {
     const warnings: string[] = [];

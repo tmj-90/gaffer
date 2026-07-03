@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 import { type Db, inTransaction, openDatabase } from "./db/connection.js";
 import { claimTicketInput } from "./domain/schemas.js";
 import {
@@ -11,6 +13,7 @@ import {
   type PausedDelivery,
   type ReworkAttempt,
   type Repository,
+  type RiskLevel,
   type ScopeEdge,
   type ScopeNode,
   type ScopeRepo,
@@ -18,12 +21,16 @@ import {
   type PlanSession,
   type Run,
   type RunKind,
+  type Spec,
+  type SpecCoverage,
+  type SpecStatus,
   type TestContract,
   type Ticket,
   type TicketDependencyView,
   type TicketScopeNode,
   type TicketStatus,
   type WorkEvent,
+  isActiveTicketRepoRelation,
   parseTestContract,
 } from "./domain/types.js";
 import { listEvents, writeEvent } from "./events/eventWriter.js";
@@ -41,6 +48,8 @@ import { PausedDeliveryRepository } from "./repositories/pausedDeliveryRepositor
 import { RepoRepository, type TicketRepoLink } from "./repositories/repoRepository.js";
 import { RequiredCapabilityRepository } from "./repositories/requiredCapabilityRepository.js";
 import { ReworkAttemptRepository } from "./repositories/reworkAttemptRepository.js";
+import { SpecCoverageRepository } from "./repositories/specCoverageRepository.js";
+import { SpecRepository } from "./repositories/specRepository.js";
 import { RunRepository, type RunListResult } from "./repositories/runRepository.js";
 import {
   PlanSessionRepository,
@@ -72,7 +81,12 @@ import {
   type RegisterAgentInput,
   type SubmitForReviewInput,
 } from "./services/claimService.js";
-import { computeTicketDiff, type GitRunner, type TicketDiff } from "./services/diffService.js";
+import {
+  computeTicketDiff,
+  defaultGitRunner,
+  type GitRunner,
+  type TicketDiff,
+} from "./services/diffService.js";
 import { DecisionService, type ResolveDecisionInput } from "./services/decisionService.js";
 import { ScopeService, type ScopeNodeView } from "./services/scopeService.js";
 import {
@@ -89,6 +103,10 @@ import {
   type WorkPacketRepos,
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
+import { SpecsService } from "./services/specsService.js";
+import { SpecCoverageService } from "./services/specCoverageService.js";
+import { resolveSpecClauseSeeder } from "./services/specClauseSeeder.js";
+import { resolveSpecLoreReader } from "./services/specLoreReader.js";
 import {
   BoardService,
   resolveMoveTarget,
@@ -97,7 +115,19 @@ import {
 } from "./services/boardService.js";
 import { PauseService, type PauseInput } from "./services/pauseService.js";
 import { HumanQueueService, type HumanQueue } from "./services/humanQueueService.js";
-import { ReviewGateService } from "./services/reviewGateService.js";
+import { ReviewGateService, type ApprovalShas } from "./services/reviewGateService.js";
+import {
+  AutonomyRecommendationService,
+  type AutonomyRecommendation,
+} from "./services/autonomyRecommendationService.js";
+import {
+  AutonomyPolicyRepository,
+  type AutonomyPolicyGate,
+  type AutonomyPolicyRow,
+  type AutonomyPolicyView,
+  type AutonomyMode,
+} from "./repositories/autonomyPolicyRepository.js";
+import { isAutonomyAllowed, policyGrantsAuto } from "./services/autonomyPolicyService.js";
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
@@ -246,6 +276,10 @@ export class Dispatch {
   readonly planSessions: PlanSessionRepository;
   readonly reworkAttempts: ReworkAttemptRepository;
   readonly pausedDeliveries: PausedDeliveryRepository;
+  readonly specsRepo: SpecRepository;
+  readonly specCoverageRepo: SpecCoverageRepository;
+  /** GRADUATED-AUTONOMY (Spec 2, Phase 3): the per-(repo × risk × gate) enablement store. */
+  readonly autonomyPolicy: AutonomyPolicyRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -254,8 +288,11 @@ export class Dispatch {
   readonly ticketSvc: TicketService;
   readonly repoSvc: RepoService;
   readonly epicsSvc: EpicsService;
+  readonly specsSvc: SpecsService;
+  readonly specCoverageSvc: SpecCoverageService;
   readonly boardSvc: BoardService;
   readonly reviewGateSvc: ReviewGateService;
+  readonly autonomyRecommendations: AutonomyRecommendationService;
   readonly pauseSvc: PauseService;
   readonly humanQueueSvc: HumanQueueService;
   /**
@@ -319,6 +356,9 @@ export class Dispatch {
     this.planSessions = new PlanSessionRepository(db);
     this.reworkAttempts = new ReworkAttemptRepository(db);
     this.pausedDeliveries = new PausedDeliveryRepository(db);
+    this.specsRepo = new SpecRepository(db);
+    this.specCoverageRepo = new SpecCoverageRepository(db);
+    this.autonomyPolicy = new AutonomyPolicyRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -375,6 +415,22 @@ export class Dispatch {
       tickets: this.ticketSvc,
       repos: this.repoSvc,
     });
+    this.specsSvc = new SpecsService({
+      db,
+      clock: this.clock,
+      specs: this.specsRepo,
+      // Freeze seeds each clause into Memory as gated draft lore (Phase 2b).
+      // Live when MEMORY_CLI_BIN + MEMORY_DB are set; a no-op otherwise, so the
+      // standalone/offline path and unit tests are unaffected.
+      clauseSeeder: resolveSpecClauseSeeder(),
+    });
+    this.specCoverageSvc = new SpecCoverageService({
+      specs: this.specsRepo,
+      coverage: this.specCoverageRepo,
+      // Best-effort seeded-lore status via the Memory CLI when wired; a no-op
+      // (`unknown` for every clause) otherwise, so the read never blocks.
+      loreReader: resolveSpecLoreReader(),
+    });
     this.boardSvc = new BoardService({
       db,
       clock: this.clock,
@@ -397,6 +453,22 @@ export class Dispatch {
       onTicketParked: (ticket, detail) => {
         this.emitGate("ticket_parked", ticket, { status: "blocked", detail });
       },
+      // GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve delivery-vs-merge SHAs so the
+      // approve path can emit `approved_unchanged`. Pure read; degrades to unknown.
+      approvalShaResolver: (ticket) => this.resolveApprovalShas(ticket),
+      // GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate the P0 gate
+      // ORs with the env flag — true iff a mode='auto' approve policy covers every
+      // write repo at this ticket's risk. NO env read here (that stays in the gate).
+      policyAllowsAgentApprove: (ticket) =>
+        policyGrantsAuto(
+          this.autonomyPolicy,
+          this.writeRepoIdsForTicket(ticket),
+          ticket.risk_level,
+          "approve",
+        ),
+    });
+    this.autonomyRecommendations = new AutonomyRecommendationService({
+      reviewDecisions: () => this.events.reviewDecisions(),
     });
     this.pauseSvc = new PauseService({
       db,
@@ -447,6 +519,155 @@ export class Dispatch {
       },
       ticket.id,
     );
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve the delivery-vs-merge SHAs for a
+   * ticket's WRITE repos so {@link ReviewGateService.approveReview} can emit an honest
+   * `approved_unchanged` signal. The delivery SHA is the recorded per-repo
+   * `commit_sha`; the merge SHA is the current head of the delivery branch
+   * (`git rev-parse <branch>`). Returns a representative pair the pure
+   * {@link approvalUnchanged} helper maps to unchanged/edited/unknown:
+   *   - any write repo edited (both SHAs known and differing) → an unequal pair;
+   *   - else every write repo known-and-unchanged → an equal pair;
+   *   - any repo indeterminate (no delivery SHA / branch / on-disk repo / git error)
+   *     → a null pair (unknown — never overstate agreement).
+   * Pure read; a missing git runner or no write repos yields `null` (unknown).
+   */
+  private resolveApprovalShas(ticket: Ticket): ApprovalShas | null {
+    // Fall back to a real `git` spawn when no runner was injected — EVERY production
+    // entrypoint (api/bin, cli, mcp/server) opens Dispatch without one, so gating this on
+    // an injected runner made `approved_unchanged` ALWAYS null in prod (the merge half of
+    // graduated autonomy could never fire). Mirrors computeTicketDiff's defaultGitRunner
+    // fallback. Indeterminate repos still yield an unknown pair below (never overstate).
+    const runGit = this.gitRunner ?? defaultGitRunner;
+    const links = this.repos.accessLinksForTicket(ticket.id);
+    const writeRepos = links.filter(
+      (l) => isActiveTicketRepoRelation(l.relation) && l.access === "write",
+    );
+    if (writeRepos.length === 0) return null;
+
+    const pairs: ApprovalShas[] = writeRepos.map((repo) => {
+      const delivery = this.repoDeliveries.find(ticket.id, repo.id);
+      const deliverySha = delivery?.commit_sha ?? null;
+      const branch =
+        delivery?.branch_name ??
+        this.repos.ticketRepoBranch(ticket.id, repo.id) ??
+        ticket.branch_name;
+      if (!deliverySha || !branch || !repo.local_path || !existsSync(repo.local_path)) {
+        return { deliverySha, mergeSha: null };
+      }
+      const res = runGit(repo.local_path, ["rev-parse", branch]);
+      const mergeSha = res.status === 0 ? res.stdout.trim() || null : null;
+      return { deliverySha, mergeSha };
+    });
+
+    const known = (p: ApprovalShas): boolean => p.deliverySha !== null && p.mergeSha !== null;
+    const edited = pairs.find((p) => known(p) && p.deliverySha !== p.mergeSha);
+    if (edited) return edited; // a real edited pair → helper returns false.
+    if (pairs.some((p) => !known(p))) return { deliverySha: null, mergeSha: null }; // unknown.
+    return pairs[0] ?? null; // all known-and-equal → an unchanged pair.
+  }
+
+  // --- Graduated Autonomy policy (Spec 2, Phase 3) -------------------------
+
+  /**
+   * The repo ids a ticket actually WRITES to (active relation + write access) — the
+   * set the autonomy policy must cover for an auto grant. Mirrors the write-repo
+   * filter used by {@link resolveApprovalShas}. A ticket with no write repo yields an
+   * empty set, which the enforcement treats as "never auto" (fail-closed).
+   */
+  private writeRepoIdsForTicket(ticket: Ticket): string[] {
+    return this.repos
+      .accessLinksForTicket(ticket.id)
+      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write")
+      .map((l) => l.id);
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 3): the MERGE chokepoint decision — may the
+   * auto-merge fire for this approved ticket? Reads a mode='auto' merge policy across
+   * the ticket's write repos, ELSE falls back to the env default (true — today's
+   * merge always fires post-approve; the mergeRunner still enforces DISPATCH_MERGE_CMD,
+   * unchanged). So with no policy row this is byte-identical to today; a mode='auto'
+   * merge policy is an additional, explicit, evidence-backed allow-path.
+   */
+  autonomyMergeAllowed(ticket: Ticket): boolean {
+    return isAutonomyAllowed(
+      this.autonomyPolicy,
+      this.writeRepoIdsForTicket(ticket),
+      ticket.risk_level,
+      "merge",
+    );
+  }
+
+  /** Every stored autonomy policy joined to its repo name (Settings surface). */
+  listAutonomyPolicies(): AutonomyPolicyView[] {
+    return this.autonomyPolicy.list();
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 3): enable/disable an autonomy policy for
+   * (repo × risk × gate). Enabling (mode !== 'off') is the trust-boundary action and
+   * requires an EXPLICIT confirm (LOCKED posture: the operator confirms with the
+   * evidence shown) — on enable we SNAPSHOT the current recommendation evidence into
+   * `evidence_json` so there is an audit trail of WHY auto was granted. Reversible:
+   * mode='off' clears the enablement (and re-gates via the env fallback). Idempotent
+   * upsert keyed on (repo, risk, gate).
+   */
+  setAutonomyPolicy(
+    input: {
+      repoId: string;
+      riskLevel: RiskLevel;
+      gate: AutonomyPolicyGate;
+      mode: AutonomyMode;
+      confirm?: boolean;
+    },
+    actor: Actor,
+  ): AutonomyPolicyRow {
+    const repo = this.repos.findById(input.repoId);
+    if (!repo) throw notFound("repository", input.repoId);
+    // Trust boundary: enabling any non-off mode demands an explicit confirmation that
+    // the operator saw the evidence. Disabling (off) is always allowed (fail-safe).
+    if (input.mode !== "off" && input.confirm !== true) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "Enabling an autonomy policy requires an explicit confirmation (confirm: true) that the evidence was reviewed.",
+        { gate: input.gate, mode: input.mode },
+      );
+    }
+    const now = this.clock.now();
+    const actorRef = actor.id ?? actor.type;
+    const enabling = input.mode !== "off";
+    // Snapshot the recommendation evidence shown at enable time (audit trail). The
+    // recommendation service only speaks to approve/merge; a memory gate (or a repo
+    // with no live recommendation) snapshots a null recommendation, which is honest.
+    let evidenceJson: string | null = null;
+    if (enabling) {
+      const rec =
+        this.autonomyRecommendationsList().find(
+          (r) =>
+            r.repoId === input.repoId &&
+            r.riskLevel === input.riskLevel &&
+            r.gate === (input.gate as typeof r.gate),
+        ) ?? null;
+      evidenceJson = JSON.stringify({
+        snapshot_at: now,
+        confirmed_by: actorRef,
+        recommendation: rec,
+      });
+    }
+    return this.autonomyPolicy.upsert({
+      id: newId(),
+      repoId: input.repoId,
+      riskLevel: input.riskLevel,
+      gate: input.gate,
+      mode: input.mode,
+      enabledBy: enabling ? actorRef : null,
+      enabledAt: enabling ? now : null,
+      evidenceJson,
+      now,
+    });
   }
 
   // --- Tickets -------------------------------------------------------------
@@ -501,6 +722,54 @@ export class Dispatch {
    */
   createEpic(raw: unknown, actor: Actor): CreateEpicResult {
     return this.epicsSvc.createEpic(raw, actor);
+  }
+
+  // --- Specs (Spec-Driven Development, Phase 1a) ---------------------------
+
+  /**
+   * Create a spec (always `draft`): a title, brief, and an ordered set of clauses
+   * (each a testable requirement / non-goal / decision). Clause ids are minted
+   * server-side when absent and preserved thereafter, so a later phase can thread
+   * provenance from a clause down to acceptance criteria.
+   */
+  createSpec(raw: unknown, actor: Actor): Spec {
+    return this.specsSvc.createSpec(raw, actor);
+  }
+
+  /** Fetch a spec by id (throws NOT_FOUND when absent). */
+  getSpec(id: string): Spec {
+    return this.specsSvc.getSpec(id);
+  }
+
+  /** List specs newest-first, optionally filtered by status. */
+  listSpecs(status?: SpecStatus): Spec[] {
+    return this.specsSvc.listSpecs(status);
+  }
+
+  /**
+   * Replace a DRAFT spec's clauses. Rejected on a non-draft (frozen/superseded)
+   * spec — a frozen spec is immutable.
+   */
+  updateSpecClauses(id: string, raw: unknown, actor: Actor): Spec {
+    return this.specsSvc.updateSpecClauses(id, raw, actor);
+  }
+
+  /**
+   * Freeze a spec (draft→frozen). INVARIANT: a frozen spec is immutable — only a
+   * `draft` spec can be frozen; freezing a non-draft spec is rejected.
+   */
+  freezeSpec(id: string, actor: Actor): Spec {
+    return this.specsSvc.freezeSpec(id, actor);
+  }
+
+  /**
+   * TRACEABILITY (Phase 3): the coverage read model for a spec — per clause, the
+   * covering ACs, whether it is covered / satisfied / an orphan (the gap report),
+   * and the bounce count from the rework trail, plus a spec-level rollup. Throws
+   * NOT_FOUND when the spec is absent. Pure read — never mutates the board.
+   */
+  specCoverage(id: string): SpecCoverage {
+    return this.specCoverageSvc.specCoverage(id);
   }
 
   // --- Repositories --------------------------------------------------------
@@ -1133,12 +1402,15 @@ export class Dispatch {
   private emitDecisionGate(decision: Decision): void {
     if (!this.notifier.enabled) return;
     try {
+      const url = this.decisionUrl(decision);
       this.notifier.notify({
         kind: "decision_pending",
         title: decision.title,
         status: decision.status,
         at: this.clock.now(),
         ...(decision.question ? { detail: decision.question } : {}),
+        // AFK-LOOP P1: mirror ticketUrl so a decision ping is one-tap actionable.
+        ...(url !== undefined ? { url } : {}),
       });
     } catch {
       // See emitGate — never let a notification break the caller.
@@ -1180,6 +1452,19 @@ export class Dispatch {
     const base = (process.env.GAFFER_DASHBOARD_URL ?? "").trim();
     if (base === "" || ticket.number === null) return undefined;
     return `${base.replace(/\/+$/, "")}/tickets/${ticket.number}`;
+  }
+
+  /**
+   * Build a clickable dashboard link for a raised decision when
+   * `GAFFER_DASHBOARD_URL` is set — the decision-gate analogue of
+   * {@link ticketUrl}. Decisions surface on the overview, so the link deep-links
+   * to the decision by id there. Optional — undefined when the base is
+   * unconfigured (degrades gracefully to a URL-less notification).
+   */
+  private decisionUrl(decision: Decision): string | undefined {
+    const base = (process.env.GAFFER_DASHBOARD_URL ?? "").trim();
+    if (base === "") return undefined;
+    return `${base.replace(/\/+$/, "")}/decisions/${decision.id}`;
   }
 
   // --- Reads ---------------------------------------------------------------
@@ -1410,6 +1695,15 @@ export class Dispatch {
    */
   board(repo?: string): BoardView {
     return this.boardSvc.board(repo);
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 2): read-only, advisory per-repo/per-risk/
+   * per-gate autonomy recommendations backed by the review track record. NEVER
+   * enables anything — the operator acts on it (Phase 3 adds the enable action).
+   */
+  autonomyRecommendationsList(): AutonomyRecommendation[] {
+    return this.autonomyRecommendations.recommend();
   }
 
   activity(query: ActivityQuery): { events: ActivityEvent[]; total: number } {

@@ -1,6 +1,6 @@
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { dirname, join } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
@@ -12,6 +12,9 @@ import {
   resolveLedgerPath,
   todaySpend,
 } from "../cost/costAggregator.js";
+import { deliveryFlow, type FlowTicket } from "../health/deliveryFlow.js";
+import { aggregateHealth, type ReworkResolver } from "../health/healthAggregator.js";
+import { aggregateSkillTelemetry } from "../health/skillsTelemetryAggregator.js";
 import { buildRunDetail } from "./runDetail.js";
 import { hasValidBearer, isRequestAuthorized } from "./auth.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "./idleLoops.js";
@@ -19,6 +22,7 @@ import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
 import { createMergeRunner, type MergeRunner } from "./mergeRunner.js";
 import { createOnboardRunner, type OnboardRunner } from "./onboard.js";
 import { createPlanBuildRunner, type PlanBuildRunner } from "./planBuild.js";
+import { createSpecAuthorRunner, type SpecAuthorRunner } from "./specAuthor.js";
 import { createPollWorkRunner, type PollWorkRunner } from "./pollWork.js";
 import {
   createProductOwnerRunner,
@@ -48,6 +52,7 @@ import {
   planSessionArchiveBody,
   planSessionListQuery,
   planSessionTurnBody,
+  autonomyPolicyBody,
   recordDeliveryArtifactBody,
   recordRepoDeliveryBody,
   rejectReviewBody,
@@ -65,6 +70,10 @@ import {
   setTestableBody,
   setTestContractBody,
   setTicketRepoAccessBody,
+  createSpecBody,
+  specBuildBody,
+  updateSpecClausesBody,
+  specListQuery,
   stopPausedBody,
   suggestReposBody,
   testerVerdictBody,
@@ -348,23 +357,56 @@ const STATIC_ROUTES: ReadonlyMap<string, { file: string; type: string }> = new M
   ["/gaffer-favicon.svg", { file: "gaffer-favicon.svg", type: "image/svg+xml" }],
 ]);
 
+/** Bundled media served under /assets/ (hero backgrounds, textures). */
+const ASSETS_DIR = join(WEB_DIR, "assets");
+const ASSET_MIME: ReadonlyMap<string, string> = new Map([
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+  [".svg", "image/svg+xml"],
+]);
+
 /** Serve a known static asset. Returns true if the path was handled. */
 function serveStatic(pathname: string, res: ServerResponse): boolean {
   const match = STATIC_ROUTES.get(pathname);
-  if (!match) return false;
-  try {
-    const body = readFileSync(join(WEB_DIR, match.file));
-    res.writeHead(200, {
-      "content-type": match.type,
-      "content-length": body.length,
-      // Dev dashboard: never serve a stale SPA — assets change on every build.
-      "cache-control": "no-store, must-revalidate",
-    });
-    res.end(body);
-  } catch {
-    sendJson(res, 500, errorBody("INTERNAL_ERROR", `Static asset missing: ${match.file}`));
+  if (match) {
+    try {
+      const body = readFileSync(join(WEB_DIR, match.file));
+      res.writeHead(200, {
+        "content-type": match.type,
+        "content-length": body.length,
+        // Dev dashboard: never serve a stale SPA — assets change on every build.
+        "cache-control": "no-store, must-revalidate",
+      });
+      res.end(body);
+    } catch {
+      sendJson(res, 500, errorBody("INTERNAL_ERROR", `Static asset missing: ${match.file}`));
+    }
+    return true;
   }
-  return true;
+  // Media under /assets/ — image extensions only, and the resolved path MUST stay
+  // inside WEB_DIR/assets (blocks ../ traversal). Anything else falls through to
+  // the JSON 404 so a genuine API 404 is never swallowed.
+  if (pathname.startsWith("/assets/")) {
+    const type = ASSET_MIME.get(extname(pathname).toLowerCase());
+    if (!type) return false;
+    const full = resolve(ASSETS_DIR, "." + pathname.slice("/assets".length));
+    if (full !== ASSETS_DIR && !full.startsWith(ASSETS_DIR + sep)) return false;
+    try {
+      const body = readFileSync(full);
+      res.writeHead(200, {
+        "content-type": type,
+        "content-length": body.length,
+        "cache-control": "public, max-age=3600",
+      });
+      res.end(body);
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -438,6 +480,10 @@ export function createApiHandler(
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
   onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
+  // SPEC-DRIVEN (Phase 1c): the spec-author seam. Spawns runner/bin/spec-author.mjs
+  // exactly the way planBuildRunner spawns decompose.mjs. Appended last so existing
+  // positional callers of createApiHandler/createApiServer keep their argument slots.
+  specAuthorRunner: SpecAuthorRunner = createSpecAuthorRunner(),
 ): (req: IncomingMessage, res: ServerResponse) => void {
   // Resolve the HSTS posture ONCE from the bind host (not per request), so a
   // spoofed Host header can't toggle Strict-Transport-Security on/off.
@@ -453,6 +499,7 @@ export function createApiHandler(
       pollWorkRunner,
       memoryReader,
       onboardRunner,
+      specAuthorRunner,
       loopbackBind,
       bindHost,
       req,
@@ -480,6 +527,9 @@ export function createApiServer(
   bindHost = "127.0.0.1",
   memoryReader: MemoryReader = createMemoryReader(),
   onboardRunner: OnboardRunner = createOnboardRunner(process.env, wg),
+  // SPEC-DRIVEN (Phase 1c): appended last (see createApiHandler) so positional
+  // callers of createApiServer keep their argument slots unchanged.
+  specAuthorRunner: SpecAuthorRunner = createSpecAuthorRunner(),
 ): Server {
   return createServer(
     createApiHandler(
@@ -491,6 +541,7 @@ export function createApiServer(
       bindHost,
       memoryReader,
       onboardRunner,
+      specAuthorRunner,
     ),
   );
 }
@@ -551,6 +602,8 @@ async function route(
   pollWorkRunner: PollWorkRunner,
   memoryReader: MemoryReader,
   onboardRunner: OnboardRunner,
+  // SPEC-DRIVEN (Phase 1c): the spec-author seam behind POST /spec-build.
+  specAuthorRunner: SpecAuthorRunner,
   // Resolved once from the bind host (see createApiHandler). Controls whether an
   // unauthenticated READ may pass: reads stay open on a loopback bind for the
   // local dashboard, but mutations always require the token.
@@ -631,6 +684,56 @@ async function route(
       const result = wg.createEpic(body, API_ACTOR);
       sendJson(res, 201, { epic_node_id: result.epicNodeId, ticket_numbers: result.ticketNumbers });
       return;
+    }
+    // --- Specs (Spec-Driven Development, Phase 1a) -------------------------
+    // POST /specs        — create a draft spec (title, brief, clauses).
+    // GET  /specs         — list specs newest-first (?status= filter).
+    if (segments.length === 1 && segments[0] === "specs") {
+      if (method === "POST") {
+        const body = createSpecBody.parse(await readJsonBody(req));
+        const spec = wg.createSpec(body, API_ACTOR);
+        sendJson(res, 201, { spec });
+        return;
+      }
+      if (method === "GET") {
+        const query = specListQuery.parse(Object.fromEntries(url.searchParams));
+        const specs = query.status !== undefined ? wg.listSpecs(query.status) : wg.listSpecs();
+        sendJson(res, 200, { specs });
+        return;
+      }
+      return methodNotAllowed(res);
+    }
+    // POST /specs/:id/freeze — freeze a draft spec (draft→frozen; immutable after).
+    if (segments.length === 3 && segments[0] === "specs" && segments[2] === "freeze") {
+      if (method !== "POST") return methodNotAllowed(res);
+      const spec = wg.freezeSpec(segments[1] as string, API_ACTOR);
+      sendJson(res, 200, { spec });
+      return;
+    }
+    // GET /specs/:id/coverage — the Phase-3 traceability read model: per clause,
+    // its covering ACs (satisfied vs open), covered / satisfied / orphan (the gap
+    // report), and the bounce count; plus a spec-level rollup. Pure read.
+    if (segments.length === 3 && segments[0] === "specs" && segments[2] === "coverage") {
+      if (method !== "GET") return methodNotAllowed(res);
+      const coverage = wg.specCoverage(segments[1] as string);
+      sendJson(res, 200, { coverage });
+      return;
+    }
+    // GET   /specs/:id  — fetch one spec.
+    // PATCH /specs/:id  — replace a DRAFT spec's clauses (rejected once frozen).
+    if (segments.length === 2 && segments[0] === "specs") {
+      if (method === "GET") {
+        const spec = wg.getSpec(segments[1] as string);
+        sendJson(res, 200, { spec });
+        return;
+      }
+      if (method === "PATCH") {
+        const body = updateSpecClausesBody.parse(await readJsonBody(req));
+        const spec = wg.updateSpecClauses(segments[1] as string, body, API_ACTOR);
+        sendJson(res, 200, { spec });
+        return;
+      }
+      return methodNotAllowed(res);
     }
     if (segments.length === 1 && segments[0] === "agents" && method === "GET") {
       sendJson(res, 200, { agents: wg.listAgents() });
@@ -761,6 +864,35 @@ async function route(
         // "Build the tickets now": the panel can force a plan at any point so the
         // user is never stuck clarifying. Forwarded only when set so a normal turn
         // is unchanged; the decomposer then returns a plan (never a clarify).
+        ...(body.forcePlan === true ? { forcePlan: true } : {}),
+        // Spec-Driven Development (Phase 2a): a FROZEN spec drives the decompose.
+        // Forwarded only when present so a non-spec-driven turn is unchanged; the
+        // decomposer quarantines the clauses, defaults to force-plan, and threads
+        // each clause id onto the acceptance criteria it satisfies.
+        ...(body.spec !== undefined ? { spec: body.spec } : {}),
+      });
+      // The helper's own `error` phase is a normal, expected turn (bad brief,
+      // refusal, etc.), so it rides back as a 200 envelope the chat can render.
+      sendJson(res, 200, result);
+      return;
+    }
+    // POST /spec-build — one turn of the "Author a spec" step (Phase 1c). Spawns
+    // the runner spec-author helper with {brief,history,context?,forcePlan?} on
+    // stdin and returns its {phase:"clarify"|"spec"|"error"} JSON. It PROPOSES ONLY
+    // — nothing is created here; the frontend edits the draft clauses and confirms
+    // via POST /specs (create_spec) then POST /specs/:id/freeze. Behind the same
+    // bearer-token gate as plan-build (checked above).
+    if (segments.length === 1 && segments[0] === "spec-build") {
+      if (method !== "POST") return methodNotAllowed(res);
+      const body = specBuildBody.parse(await readJsonBody(req));
+      const result = await specAuthorRunner.run({
+        brief: body.brief,
+        history: body.history,
+        // Optional free-text grounding — forwarded only when present so a request
+        // without context has a byte-for-byte unchanged stdin shape.
+        ...(body.context !== undefined ? { context: body.context } : {}),
+        // "Draft the spec now": force a spec at any point so the user is never
+        // stuck clarifying. Forwarded only when set so a normal turn is unchanged.
         ...(body.forcePlan === true ? { forcePlan: true } : {}),
       });
       // The helper's own `error` phase is a normal, expected turn (bad brief,
@@ -922,6 +1054,46 @@ async function route(
         return;
       }
       return methodNotAllowed(res);
+    }
+    // GRADUATED-AUTONOMY (Spec 2, Phase 3): the enablement control plane.
+    //   GET  /api/autonomy/policies — the active policies (repo × risk × gate, mode,
+    //        who enabled, evidence snapshot) for the Settings "active policies" surface.
+    //   POST /api/autonomy/policy   — enable/disable a policy. Enabling (mode !== 'off')
+    //        requires `confirm:true` (the explicit-confirm trust boundary) and snapshots
+    //        the current recommendation evidence into the row. Mutation ⇒ token-gated
+    //        (checked above). SECURITY: a policy is only ever an ADDITIONAL allow-path —
+    //        the enforcement (reviewGateService / merge site) falls back to the env flag,
+    //        so this endpoint can never loosen the default below today's posture.
+    if (
+      segments.length === 3 &&
+      segments[0] === "api" &&
+      segments[1] === "autonomy" &&
+      segments[2] === "policies"
+    ) {
+      if (method !== "GET") return methodNotAllowed(res);
+      sendJson(res, 200, { policies: wg.listAutonomyPolicies() });
+      return;
+    }
+    if (
+      segments.length === 3 &&
+      segments[0] === "api" &&
+      segments[1] === "autonomy" &&
+      segments[2] === "policy"
+    ) {
+      if (method !== "POST") return methodNotAllowed(res);
+      const body = autonomyPolicyBody.parse(await readJsonBody(req));
+      const policy = wg.setAutonomyPolicy(
+        {
+          repoId: body.repo_id,
+          riskLevel: body.risk_level,
+          gate: body.gate,
+          mode: body.mode,
+          confirm: body.confirm,
+        },
+        API_ACTOR,
+      );
+      sendJson(res, 200, { policy });
+      return;
     }
     if (segments[0] === "api") {
       routeReadModels(wg, memoryReader, method, segments, url, res);
@@ -1134,7 +1306,12 @@ async function routeTickets(
       // (ready_for_merge -> done). Skips silently when unconfigured.
       let merge: { triggered: boolean; pid: number | null; skipped?: string } | undefined;
       const number = result.ticket.number;
-      if (number !== null) {
+      // GRADUATED-AUTONOMY (Spec 2, Phase 3): the MERGE chokepoint. autonomyMergeAllowed
+      // falls back to today's merge default (fire post-approve; the mergeRunner still
+      // enforces DISPATCH_MERGE_CMD, unchanged), so with NO policy row this is
+      // byte-identical — a human REST approval always auto-merges as before. A
+      // mode='auto' merge policy is an additional, explicit allow-path, never a loosening.
+      if (number !== null && wg.autonomyMergeAllowed(result.ticket)) {
         merge = mergeRunner.trigger({ ticketNumber: number });
       }
       sendJson(res, 200, {
@@ -1881,6 +2058,98 @@ function routeReadModels(
       by_repo: agg.by_repo.slice(0, TOP_N),
       top_tickets: agg.by_ticket.slice(0, TOP_N),
     });
+    return;
+  }
+
+  // GET /api/health — factory-health / ROI synthesis. Two authoritative reads in
+  // one envelope, mirroring /api/cost's compose pattern:
+  //   1. ledger ROI (aggregateHealth) — cost-per-shipped, spend-by-kind, token
+  //      mix, measured-vs-unknown coverage, daily spend, cost-of-rework, latency;
+  //   2. delivery flow (deliveryFlow) — the ONE server-side cycle-time/throughput
+  //      definition the Overview now reads (was recomputed client-side).
+  // Defensive: zero-state safe when the ledger is absent; lists capped so a large
+  // ledger never bloats the response. Read-only, behind the same posture as /api.
+  if (segments.length === 2 && segments[1] === "health") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const TOP_N = 25;
+
+    // Shipped divisor + ticket list for delivery flow come from one ticket read.
+    const allTickets = wg.tickets.listFiltered({});
+    const shippedCount = allTickets.filter((t) => t.status === "done").length;
+    const flowTickets: FlowTicket[] = allTickets.map((t) => ({
+      status: t.status,
+      created_at: t.created_at,
+      updated_at: t.updated_at,
+    }));
+
+    // Rework resolver: ticket-number → rework-attempt count, one grouped query.
+    const reworkRows = wg.db
+      .prepare(
+        `SELECT t.number AS number, COUNT(*) AS c
+           FROM rework_attempts ra
+           JOIN tickets t ON t.id = ra.ticket_id
+          WHERE t.number IS NOT NULL
+          GROUP BY t.number`,
+      )
+      .all() as Array<{ number: number; c: number }>;
+    const reworkByNumber = new Map(reworkRows.map((r) => [r.number, r.c]));
+    const resolveRework: ReworkResolver = (n) => reworkByNumber.get(n) ?? 0;
+
+    const health = aggregateHealth(process.env, { shippedCount, resolveRework });
+    const flow = deliveryFlow(flowTickets, Date.parse(wg.clock.now()) || Date.now());
+
+    // Two previously-DEAD data sources, surfaced best-effort (a missing source
+    // degrades to a null/available:false cell, NEVER breaks the endpoint):
+    //   - skills telemetry: selected-vs-applied skill hit-rate (JSONL, zero-state
+    //     when the trail is absent);
+    //   - recall effectiveness: served-knowledge → clean/rework outcome trend,
+    //     read via Memory's own CLI (standalone product; unavailable when unwired).
+    const skills = aggregateSkillTelemetry(process.env);
+    const recallRead = memoryReader.recallEffectiveness();
+
+    sendJson(res, 200, {
+      total_usd: health.total_usd,
+      ticket_count: health.ticket_count,
+      shipped_count: health.shipped_count,
+      cost_per_shipped_usd: health.cost_per_shipped_usd,
+      coverage: health.coverage,
+      by_kind: health.by_kind.slice(0, TOP_N),
+      by_model: health.by_model.slice(0, TOP_N),
+      daily_spend: health.daily_spend,
+      rework: {
+        total_rework_cost_usd: health.rework.total_rework_cost_usd,
+        rework_cost_share_pct: health.rework.rework_cost_share_pct,
+        by_ticket: health.rework.by_ticket.slice(0, TOP_N),
+      },
+      duration: health.duration,
+      cycle_time: flow.cycle_time,
+      throughput: flow.throughput,
+      // Skill hit-rate (selected-vs-applied). Zero-state when no telemetry.
+      skills: {
+        total_records: skills.total_records,
+        total_selected: skills.total_selected,
+        total_applied: skills.total_applied,
+        overall_hit_rate_pct: skills.overall_hit_rate_pct,
+        by_skill: skills.by_skill.slice(0, TOP_N),
+        last_record_at: skills.last_record_at,
+      },
+      // Recall-effectiveness trend. available:false when Memory isn't wired.
+      recall: recallRead.available
+        ? { available: true, ...recallRead.recall }
+        : { available: false, reason: recallRead.reason },
+      last_record_at: health.last_record_at,
+    });
+    return;
+  }
+
+  // GRADUATED-AUTONOMY (Spec 2, Phase 2): GET /api/autonomy/recommendations — the
+  // read-only, advisory per-repo/per-risk/per-gate autonomy recommendations backed by
+  // the review track record. Never enables anything (Phase 3 adds the enable action);
+  // the Settings surface renders these as advisory text. Behind the same bearer gate
+  // as the rest of /api (checked in route()).
+  if (segments.length === 3 && segments[1] === "autonomy" && segments[2] === "recommendations") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, { recommendations: wg.autonomyRecommendationsList() });
     return;
   }
 

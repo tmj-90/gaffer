@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 19;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -165,6 +165,11 @@ CREATE TABLE IF NOT EXISTS acceptance_criteria (
   evidence_required  INTEGER NOT NULL DEFAULT 0,
   verified_by        TEXT,
   verified_at        TEXT,
+  -- Spec-Driven Development (Phase 2a): OPTIONAL provenance link to the frozen
+  -- spec clause this AC satisfies (SpecClause.clause_id). NULL for ACs authored
+  -- outside a spec-driven build. One clause can back many ACs (1→N); a join
+  -- table would only be needed for a many-to-many link later.
+  spec_clause_id     TEXT,
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -558,4 +563,80 @@ CREATE INDEX IF NOT EXISTS idx_rework_attempts_ticket
   ON rework_attempts(ticket_id, attempt ASC);
 CREATE INDEX IF NOT EXISTS idx_rework_attempts_gate
   ON rework_attempts(gate);
+
+-- ============================================================================
+-- Specs (Spec-Driven Development, Phase 1a). Additive, schema_version 17.
+--
+-- A spec is an AI-drafted, human-edited, then FROZEN statement of product intent
+-- that sits IN FRONT OF the decompose engine (never forks it). Each spec carries
+-- an ordered set of clauses (clauses_json) — one testable statement each, tagged
+-- as a requirement / non-goal / decision — with a STABLE clause_id so a later
+-- phase can thread provenance down to acceptance criteria. status walks
+-- draft → frozen (immutable snapshot) → superseded.
+--
+-- INVARIANT: a frozen spec is immutable. Only a 'draft' spec may have its clauses
+-- edited or be frozen; 'frozen'/'superseded' reject every mutation (enforced in
+-- the service layer). frozen_at is stamped on the draft-to-frozen transition.
+--
+-- Standalone (no FKs — a spec outlives the repo/scope it references, and
+-- target_repo/scope_node_id are soft references by name/id), so it is created
+-- idempotently by CREATE TABLE IF NOT EXISTS with no ADD COLUMN migration needed
+-- (like runs / plan_sessions / rework_attempts).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS specs (
+  id            TEXT PRIMARY KEY,
+  title         TEXT NOT NULL,
+  brief         TEXT NOT NULL DEFAULT '',
+  clauses_json  TEXT NOT NULL DEFAULT '[]',
+  status        TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','frozen','superseded')),
+  target_repo   TEXT,
+  scope_node_id TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  frozen_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_specs_status ON specs(status, created_at DESC);
+
+-- ============================================================================
+-- Graduated Autonomy policy (Spec 2, Phase 3). Additive, schema_version 19.
+--
+-- SECURITY-CRITICAL. One row per (repo x risk_level x gate) records the operator's
+-- EXPLICIT, EVIDENCE-BACKED decision about how much the factory may do without a
+-- human at that chokepoint. The gate is the enforcement point (approve = agent may
+-- self-approve a review; merge = auto-merge on approve; memory = deferred). The mode
+-- is off | recommend | auto.
+--
+-- INVARIANT (fail-closed): a row NEVER loosens the default. Enforcement (see
+-- services/autonomyPolicyService.ts) treats ONLY a mode=auto row as an ADDITIONAL
+-- allow-path layered on top of the existing env flag; a missing row, or a
+-- mode=off/recommend row, falls through to the env flag -- so with NO policy row
+-- the behaviour is byte-identical to the pre-Phase-3 pure-env-flag gate. mode=off
+-- is the reversible disable (flip a row back to off to re-gate).
+--
+-- evidence_json snapshots the recommendation evidence (reasons + sample counts) that
+-- was shown to the operator at enable time -- the audit trail for WHY auto was granted.
+-- enabled_by / enabled_at stamp who confirmed it and when.
+--
+-- repo_id FK CASCADEs so a deleted repo takes its policies with it. UNIQUE
+-- (repo_id, risk_level, gate) makes the upsert idempotent. A brand-new standalone
+-- table created idempotently by CREATE TABLE IF NOT EXISTS — no ADD COLUMN migration
+-- needed (like specs / runs / plan_sessions).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS autonomy_policy (
+  id            TEXT PRIMARY KEY,
+  repo_id       TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+  risk_level    TEXT NOT NULL CHECK (risk_level IN ('low','medium','high','critical')),
+  gate          TEXT NOT NULL CHECK (gate IN ('approve','merge','memory')),
+  mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off','recommend','auto')),
+  enabled_by    TEXT,
+  enabled_at    TEXT,
+  evidence_json TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (repo_id, risk_level, gate)
+);
+CREATE INDEX IF NOT EXISTS idx_autonomy_policy_lookup
+  ON autonomy_policy(repo_id, risk_level, gate);
 `;

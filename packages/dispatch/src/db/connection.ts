@@ -205,6 +205,27 @@ export function migrate(db: Db): void {
   // creates it) and idempotent on an already-migrated one. Runs AFTER every prior
   // tickets rebuild so the rebuilt table is backfilled too.
   alterTicketsAddHumanDelivered(db);
+  // Spec-Driven Development (v16→v17): the `specs` table. A brand-new standalone
+  // table (no FKs — a spec outlives the repo/scope it references) created
+  // idempotently by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS (like runs /
+  // plan_sessions / rework_attempts), so — adding no column to a pre-existing
+  // table — it needs no ADD COLUMN migration. No-op on a fresh DB.
+  //
+  // Spec-Driven Development Phase 2a (v17→v18): add the nullable `spec_clause_id`
+  // column to an EXISTING acceptance_criteria table — the provenance link from an
+  // AC back to the frozen spec clause it satisfies. CREATE TABLE IF NOT EXISTS
+  // won't add a column, so it must be ALTERed in. A plain additive ALTER (free
+  // nullable TEXT, no CHECK to widen). No-op on a fresh DB (SCHEMA_SQL creates the
+  // column) and idempotent on an already-migrated one. Existing rows inherit NULL
+  // (⇒ authored outside a spec-driven build), which is exactly the backfill.
+  alterAcAddSpecClauseId(db);
+  // Graduated Autonomy Phase 3 (v18→v19): the `autonomy_policy` table — the
+  // per-(repo × risk × gate) enablement store that gates agent self-approve / merge.
+  // A brand-new standalone table (FK to repositories, CASCADE) created idempotently
+  // by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS (like specs / runs / plan_sessions),
+  // so — adding no column to a pre-existing table — it needs no ADD COLUMN migration.
+  // No-op on a fresh DB. SECURITY: an absent table/row means the enforcement falls
+  // back to the existing env flag, so a not-yet-migrated DB is byte-identical to today.
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +
@@ -339,6 +360,29 @@ function alterTicketsAddHumanDelivered(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("human_delivered")) {
     db.exec("ALTER TABLE tickets ADD COLUMN human_delivered TEXT");
+  }
+}
+
+/**
+ * Spec-Driven Development Phase 2a additive migration (v17→v18): add the nullable
+ * `spec_clause_id` column to an EXISTING `acceptance_criteria` table — the
+ * traceability link from an acceptance criterion back to the frozen spec clause it
+ * satisfies (SpecClause.clause_id). `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL is a
+ * no-op for an existing table, so the column must be ALTERed in. A plain additive
+ * ALTER (free nullable TEXT — no CHECK to widen, no table rebuild). Idempotent
+ * (skipped when the column already exists). Existing rows inherit NULL (⇒ the AC was
+ * authored outside a spec-driven build), which is exactly the backfill. On a fresh
+ * DB `acceptance_criteria` doesn't exist yet, so this is a no-op and SCHEMA_SQL
+ * creates the table with the column.
+ */
+function alterAcAddSpecClauseId(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(acceptance_criteria)").all() as Array<{
+    name: string;
+  }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("spec_clause_id")) {
+    db.exec("ALTER TABLE acceptance_criteria ADD COLUMN spec_clause_id TEXT");
   }
 }
 

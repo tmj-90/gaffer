@@ -31,8 +31,21 @@
 //     "history": [                                             // optional, prior turns
 //       { "role": "assistant", "questions": ["web or mobile?"] },
 //       { "role": "user",      "answer": "web" }
+//     ],
+//     "spec": [                                                // optional — see SPEC-DRIVEN
+//       { "clause_id": "c1", "kind": "requirement", "text": "...", "rationale": "..." },
+//       { "clause_id": "c2", "kind": "non-goal",    "text": "..." },
+//       { "clause_id": "c3", "kind": "decision",    "text": "..." }
 //     ]
 //   }
+//
+// SPEC-DRIVEN (a frozen spec drives the plan): when `spec` is a non-empty array of
+// frozen clauses ({clause_id, kind:requirement|non-goal|decision, text, rationale?}),
+// they are rendered in a QUARANTINED <untrusted-spec> block the model must satisfy
+// (requirements) / honour (non-goals) / respect (decisions). A spec DEFAULTS to
+// force-plan (the clauses already answer the clarifying questions) unless the request
+// sets forcePlan:false. The planner emits an OPTIONAL `clauseRef` (a clause_id) on each
+// acceptance criterion, threading provenance from the clause down to the AC.
 //
 // FORCE-PLAN ("build the tickets now" escape hatch): when `forcePlan` is set on
 // stdin (or --force-plan / GAFFER_DECOMPOSE_FORCE_PLAN=1), the decomposer STOPS
@@ -61,10 +74,13 @@
 //                 "epic": { "name":"...", "description":"..." },
 //                 "tickets": [ {
 //                    "title":"...", "description":"...",
-//                    "acceptanceCriteria":[ "..." ],
+//                    "acceptanceCriteria":[ "..." | { "text":"...", "clauseRef":"<clause_id>" } ],
 //                    "priority": <int>, "repo":"<new-repo-name>",
 //                    "bootstrap": <bool>, "dependsOn":[ <ticket-index>, ... ]
 //                 }, ... ] } }
+//   (SPEC-DRIVEN: an AC is a bare string as before, OR — when the planner mapped it to
+//    a spec clause — an object { text, clauseRef } carrying that clause_id. create_epic
+//    accepts both, persisting clauseRef as the AC's spec_clause_id provenance.)
 //   error:    { "phase":"error", "error":"<reason>" }   (exit 1)
 //
 // The `plan.tickets` shape is exactly what dispatch `epic create` accepts
@@ -84,7 +100,6 @@
 // parse/validate path without a live model call.
 // =====================================================================
 
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -98,6 +113,7 @@ import {
 } from "../lib/usage-ledger.mjs";
 import { filterMeasured, parseLedger, summarise } from "../lib/estimate.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
+import { Worker } from "../lib/worker.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const _require = createRequire(import.meta.url);
@@ -211,6 +227,13 @@ function readRequest(opts) {
   // tickets now" button). OR it into opts so the CLI flag / env and the per-request
   // field all converge on a single force flag the rest of main() reads.
   if (req.forcePlan === true) opts.forcePlan = true;
+  // SPEC-DRIVEN (Phase 2a): a frozen spec's clauses already answer the clarifying
+  // questions, so a spec-driven decompose DEFAULTS to force-plan (skip clarify, emit
+  // the plan now). Still overridable — an explicit `forcePlan:false` on the request
+  // opts back into the normal clarify flow even with a spec attached.
+  if (Array.isArray(req.spec) && req.spec.length > 0 && req.forcePlan !== false) {
+    opts.forcePlan = true;
+  }
   return req;
 }
 
@@ -273,8 +296,48 @@ function lastBalancedObject(text) {
  * `forcePlan` enforces the "build the tickets now" contract: a clarify result is a
  * contract violation under force-plan (the model was told to plan and disobeyed),
  * so it is rejected rather than passed back as a clarify turn.
+ *
+ * `clauseIds` (a Set of the driving spec's clause ids, or null) validates each AC's
+ * `clauseRef` provenance — an unknown ref is dropped (see {@link normalizeAc}).
  */
-export function validateResult(obj, maxTickets, targetRepo = "", forcePlan = false) {
+/**
+ * SPEC-DRIVEN (Phase 2a): normalise ONE acceptance criterion. An AC arrives as
+ * EITHER a bare string (the unchanged shape) OR an object `{ text, clauseRef? }`
+ * where `clauseRef` is the frozen-spec clause_id this AC satisfies. Returns:
+ *   - a trimmed STRING when there is no clauseRef (output byte-for-byte unchanged),
+ *   - `{ text, clauseRef }` when a clauseRef is present (provenance preserved),
+ *   - null for an empty/blank AC (dropped by the caller).
+ * Keeping the string case a string means a non-spec-driven plan is unchanged and
+ * `create_epic` (which accepts string | {text, clauseRef}) stays compatible.
+ *
+ * PROVENANCE VALIDATION (#4): when `clauseIds` is a non-null Set, a `clauseRef` is
+ * only carried through when it names a REAL clause of the driving spec. A ref the
+ * model hallucinated (or one smuggled in via an injected clause) points at nothing,
+ * so it is DROPPED — the AC survives as plain work rather than persisting a false
+ * `spec_clause_id`. This mirrors how `dependsOn` is validated against the plan's own
+ * ticket set. `clauseIds === null` disables the check (a non-spec-driven decompose,
+ * and the back-compat default for existing callers/tests).
+ */
+export function normalizeAc(a, clauseIds = null) {
+  if (a && typeof a === "object" && !Array.isArray(a)) {
+    const text = String(a.text ?? "").trim();
+    if (!text) return null;
+    let clauseRef = a.clauseRef != null ? String(a.clauseRef).trim() : "";
+    // Drop a clauseRef that names no real clause of the spec (unknown / injected).
+    if (clauseRef && clauseIds && !clauseIds.has(clauseRef)) clauseRef = "";
+    return clauseRef ? { text, clauseRef } : text;
+  }
+  const text = String(a ?? "").trim();
+  return text ? text : null;
+}
+
+export function validateResult(
+  obj,
+  maxTickets,
+  targetRepo = "",
+  forcePlan = false,
+  clauseIds = null,
+) {
   const repo = String(targetRepo ?? "").trim();
   const brownfield = repo.length > 0;
   if (!obj || typeof obj !== "object")
@@ -316,8 +379,11 @@ export function validateResult(obj, maxTickets, targetRepo = "", forcePlan = fal
       const t = tickets[i] ?? {};
       const title = String(t.title ?? "").trim();
       if (!title) return { phase: "error", error: `ticket ${i} has no title` };
+      // SPEC-DRIVEN (Phase 2a): each AC may carry an optional `clauseRef`. normalizeAc
+      // keeps a plain AC a string (unchanged output) and only emits { text, clauseRef }
+      // when a clause id is present, so create_epic stays compatible.
       const acs = Array.isArray(t.acceptanceCriteria)
-        ? t.acceptanceCriteria.map((a) => String(a).trim()).filter(Boolean)
+        ? t.acceptanceCriteria.map((a) => normalizeAc(a, clauseIds)).filter((a) => a !== null)
         : [];
       if (acs.length === 0)
         return { phase: "error", error: `ticket ${i} ("${title}") has no acceptance criteria` };
@@ -426,6 +492,50 @@ function resolveRepoPath(name) {
 }
 
 /**
+ * SPEC-DRIVEN (Phase 2a): render the frozen spec's clauses as a QUARANTINED
+ * `<untrusted-spec>` block for the prompt. The clause text/rationale are untrusted
+ * (human-edited, possibly carrying an injection payload), so the WHOLE listing is
+ * wrapped in a single `quarantine("spec", …)` envelope — the same helper the brief
+ * and brownfield blocks use — while the surrounding instructions (satisfy every
+ * requirement, honour every non-goal, respect every decision, emit a `clauseRef`)
+ * stay OUTSIDE the envelope as trusted steer. Clauses are grouped by kind and each
+ * line prefixes the stable `clause_id` in square brackets so the model can quote it
+ * back as the AC's `clauseRef`. Returns "" when no valid clauses are present.
+ */
+export function buildSpecBlock(spec) {
+  const clauses = Array.isArray(spec) ? spec.filter((c) => c && typeof c === "object") : [];
+  if (clauses.length === 0) return "";
+  const groups = [
+    ["requirement", "REQUIREMENTS — you MUST satisfy every one"],
+    ["non-goal", "NON-GOALS — you MUST NOT build these"],
+    ["decision", "DECISIONS — you MUST respect every one"],
+  ];
+  const body = [];
+  for (const [kind, label] of groups) {
+    const items = clauses.filter((c) => String(c.kind ?? "").trim() === kind);
+    if (items.length === 0) continue;
+    body.push(`${label}:`);
+    for (const c of items) {
+      const id = String(c.clause_id ?? "").trim();
+      const text = String(c.text ?? "").trim();
+      const rationale = c.rationale ? ` (rationale: ${String(c.rationale).trim()})` : "";
+      body.push(`  - [${id}] ${text}${rationale}`);
+    }
+  }
+  if (body.length === 0) return "";
+  return [
+    "",
+    "FROZEN SPEC: a human-approved specification is the AUTHORITATIVE source of",
+    "intent for this build. You MUST satisfy EVERY requirement, honour EVERY",
+    "non-goal (do NOT build them), and respect EVERY decision below. On each",
+    'acceptance criterion you generate, set an OPTIONAL "clauseRef" field to the',
+    "clause_id (the value in square brackets) of the spec clause that AC satisfies;",
+    "omit clauseRef for an AC that maps to no clause.",
+    quarantine("spec", body.join("\n")),
+  ].join("\n");
+}
+
+/**
  * Build the prompt fed to `claude -p` (uses the plan-build skill).
  *
  * `forcePlan` (the UI's "Build the tickets now" escape, or the advisory turn-cap
@@ -522,6 +632,10 @@ export function buildPrompt(req) {
           query: `${targetRepo} — existing repo overview and conventions for brownfield decomposition`,
         })
       : "";
+  // SPEC-DRIVEN (Phase 2a): when a frozen spec rides along, render its clauses in a
+  // quarantined <untrusted-spec> block the model must satisfy/honour/respect, and
+  // ask it to thread each clause id onto the ACs it generates. Empty ("") otherwise.
+  const specBlock = buildSpecBlock(req.spec);
   return [
     "Use the plan-build skill to decompose this app brief into a phased,",
     "dependency-ordered epic of tickets. Follow the skill's structured-output",
@@ -532,6 +646,7 @@ export function buildPrompt(req) {
     clarifyFirst,
     brownfieldBlock,
     cardContext,
+    specBlock,
     forcePlanBlock,
     "",
     `App brief: ${quarantine("app-brief", brief, { singleLine: true })}`,
@@ -814,6 +929,19 @@ function runClaudeTurn(prompt, opts, model) {
   const flags = (process.env.CLAUDE_FLAGS || "--permission-mode acceptEdits")
     .split(/\s+/)
     .filter(Boolean);
+  // CONTAINMENT (audit blocker): decomposition PROPOSES a plan and returns it as TEXT
+  // (--output-format json → .result); it reasons from the prompt and never edits files or
+  // runs commands. This spawn runs with cwd = RUNNER_DIR (the factory's own source),
+  // acceptEdits auto-accepts edits, and the project hook does not load in an untrusted dir
+  // — so without this a prompt injection in the (untrusted) brief could write into
+  // safety-hook.mjs / tick.sh (verified: denying only the edit tools is defeated by a Bash
+  // `>` fallback). Run the agent READ-ONLY: deny every write/exec tool UNCONDITIONALLY
+  // (even under a CLAUDE_FLAGS override). Read/Grep/Glob + MCP stay available.
+  // NOTE: this MUST enumerate the COMPLETE write/exec tool set — MultiEdit is a write tool
+  // too, and a denylist silently permits any write tool it omits. (An allowlist of
+  // Read/Grep/Glob would be robust against a future write tool, but would sever this agent's
+  // MCP tools — it connects via --mcp-config above — so we deny the full known set instead.)
+  flags.push("--disallowedTools", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash");
   // Decomposition is a PLAN step — run it on the chosen model when set. The
   // explicit per-turn `model` wins (debate roles); else fall back to the strong
   // planning model GAFFER_PLAN_MODEL; else the Claude default.
@@ -826,19 +954,22 @@ function runClaudeTurn(prompt, opts, model) {
   // agent's text — just unwrapped from the JSON envelope first).
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (P1 denial-of-wallet): bound the agent's model round-trips
-  // in addition to the wall-clock timeout already passed to spawnSync below. Reuse
+  // in addition to the wall-clock timeout already passed to Worker.deliver below. Reuse
   // the same GAFFER_MAX_TURNS knob the bash call sites use, falling back to this
   // helper's own --max-turns (history bound) when the global knob isn't set.
   const maxTurns = parseInt(process.env.GAFFER_MAX_TURNS || "", 10) || opts.maxTurns;
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);
-  const res = spawnSync(claudeBin, args, {
+  // Route through the ONE worker spawn seam (lib/worker.mjs). argv + the
+  // credential-stripped env (P2-A: never hand the agent DISPATCH_API_TOKEN or any
+  // *_TOKEN/*_SECRET) stay built here; only the spawn boundary is shared.
+  const res = Worker.deliver({
+    bin: claudeBin,
+    argv: args,
     cwd: RUNNER_DIR,
-    encoding: "utf8",
-    timeout: opts.timeoutMs,
+    timeoutMs: opts.timeoutMs,
     maxBuffer: 16 * 1024 * 1024,
-    // P2-A: never hand the agent DISPATCH_API_TOKEN (or any *_TOKEN/*_SECRET).
     env: agentChildEnv(),
   });
   if (res.error) {
@@ -941,8 +1072,17 @@ function main() {
     output = run.stdout;
   }
 
+  // SPEC-DRIVEN (#4): the driving spec's clause ids are the ONLY valid clauseRef
+  // provenance. Build that set so validateResult can drop any AC clauseRef the model
+  // hallucinated (or an injected clause smuggled in). Null when no spec drives the
+  // plan, which disables the check (a plain decompose is unchanged).
+  const specClauseIds = Array.isArray(req.spec)
+    ? new Set(req.spec.map((c) => String(c?.clause_id ?? "").trim()).filter(Boolean))
+    : null;
+  const clauseIds = specClauseIds && specClauseIds.size > 0 ? specClauseIds : null;
+
   const parsed = extractLastJsonBlock(output);
-  const result = validateResult(parsed, opts.maxTickets, targetRepo, forcePlan);
+  const result = validateResult(parsed, opts.maxTickets, targetRepo, forcePlan, clauseIds);
   emit(result, result.phase === "error" ? 1 : 0);
 }
 

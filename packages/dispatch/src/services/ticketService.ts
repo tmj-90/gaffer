@@ -187,6 +187,9 @@ export class TicketService {
         evidence_required: input.evidence_required ? 1 : 0,
         verified_by: null,
         verified_at: null,
+        // Spec-Driven Development (Phase 2a): thread the frozen-spec clause id
+        // through as provenance; NULL when the AC maps to no clause.
+        spec_clause_id: input.spec_clause_id ?? null,
         created_at: now,
         updated_at: now,
       };

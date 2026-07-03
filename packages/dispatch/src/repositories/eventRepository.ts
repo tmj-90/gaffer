@@ -54,6 +54,24 @@ export interface TransitionRow {
 }
 
 /**
+ * One review-lane transition fanned out to a WRITE repo, reduced to the fields the
+ * GRADUATED-AUTONOMY recommendation service needs. `reason`/`fromStatus`/`toStatus`
+ * classify the decision (approve vs reject); `approvedUnchanged` is the Phase-1
+ * signal (null when the transition carried no such signal, e.g. a rejection or a
+ * pre-Phase-1 event).
+ */
+export interface ReviewDecisionRow {
+  repoId: string;
+  repoName: string;
+  riskLevel: string;
+  actorType: string;
+  fromStatus: string | null;
+  toStatus: string | null;
+  reason: string | null;
+  approvedUnchanged: boolean | null;
+}
+
+/**
  * Read-only access to the work_events log for the cross-ticket activity feed
  * and dashboard rollups. Append-only by convention elsewhere; nothing here
  * mutates.
@@ -173,6 +191,88 @@ export class EventRepository {
       )
       .get({ ticketId, status }) as { at: string; reason: string | null } | undefined;
     return row ?? null;
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 2): every review-lane `ticket.transitioned`
+   * event scoped to the PRIMARY write repo of its ticket, carrying the enum status
+   * fields, the actor type, and the (merge-corrected) `approved_unchanged` boolean.
+   * Powers the read-only per-repo/per-risk recommendation service.
+   *
+   * ONE TICKET = ONE SAMPLE (correctness): the `ticket_repos` join is pinned to
+   * `role='primary'` (the single delivery repo), NOT fanned out across every
+   * `access='write'` repo. Fanning out over all write repos made one human approval
+   * accrue a sample in EVERY write-repo's bucket — a secondary repo would borrow the
+   * primary's approvals, clear MIN_SAMPLES, and earn an autonomy recommendation it
+   * never independently earned (and Phase-3 enforcement would then snapshot that
+   * borrowed signal as confirmed evidence). Attributing each decision to the primary
+   * repo alone keeps one approval = one sample.
+   *
+   * MERGE-TIME CORRECTION (correctness): `approved_unchanged` is captured at APPROVE
+   * time, but with the testing lane on a tester can amend the branch AFTER approval,
+   * so the approve-time value overstates what actually landed. We therefore prefer the
+   * value re-resolved at the merge trigger (the `merge_completed` transition, which
+   * compares the delivery SHA against the truly-merged head) via COALESCE, falling
+   * back to the approve-time value only when no definite merge-time signal exists.
+   *
+   * SAFETY: like {@link stateTransitions}/{@link deliveredSince}, this reads only the
+   * ENUM `$.from`/`$.to` and the BOOLEAN `$.approved_unchanged` out of payload_json —
+   * plus `$.reason`, which CAN be free text. `reason` is used ONLY to classify
+   * approvals (it equals a fixed `review_approved*` constant on that path) and is
+   * NEVER surfaced by the recommendation service (which emits aggregate rates only),
+   * so no free text leaves this layer.
+   */
+  reviewDecisions(): ReviewDecisionRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.id                                          AS repo_id,
+                r.name                                        AS repo_name,
+                t.risk_level                                  AS risk_level,
+                e.actor_type                                  AS actor_type,
+                json_extract(e.payload_json, '$.from')        AS from_status,
+                json_extract(e.payload_json, '$.to')          AS to_status,
+                json_extract(e.payload_json, '$.reason')      AS reason,
+                COALESCE(
+                  (SELECT json_extract(m.payload_json, '$.approved_unchanged')
+                     FROM work_events m
+                    WHERE m.entity_type = 'ticket'
+                      AND m.entity_id   = e.entity_id
+                      AND m.event_type  = 'ticket.transitioned'
+                      AND json_extract(m.payload_json, '$.reason') = 'merge_completed'
+                      AND json_extract(m.payload_json, '$.approved_unchanged') IS NOT NULL
+                    ORDER BY m.rowid DESC
+                    LIMIT 1),
+                  json_extract(e.payload_json, '$.approved_unchanged')
+                )                                             AS approved_unchanged
+         FROM work_events e
+         JOIN tickets t       ON t.id = e.entity_id
+         JOIN ticket_repos tr ON tr.ticket_id = t.id AND tr.access = 'write' AND tr.role = 'primary'
+         JOIN repositories r  ON r.id = tr.repo_id
+         WHERE e.entity_type = 'ticket'
+           AND e.event_type  = 'ticket.transitioned'
+           AND json_extract(e.payload_json, '$.from') IN ('in_review', 'ready_for_merge')`,
+      )
+      .all() as Array<{
+      repo_id: string;
+      repo_name: string;
+      risk_level: string;
+      actor_type: string;
+      from_status: string | null;
+      to_status: string | null;
+      reason: string | null;
+      // SQLite yields a JSON boolean as 1/0, or null when the key is absent.
+      approved_unchanged: number | null;
+    }>;
+    return rows.map((r) => ({
+      repoId: r.repo_id,
+      repoName: r.repo_name,
+      riskLevel: r.risk_level,
+      actorType: r.actor_type,
+      fromStatus: r.from_status,
+      toStatus: r.to_status,
+      reason: r.reason,
+      approvedUnchanged: r.approved_unchanged === null ? null : r.approved_unchanged === 1,
+    }));
   }
 
   /** True when the ticket has at least one work-event of the given type. */

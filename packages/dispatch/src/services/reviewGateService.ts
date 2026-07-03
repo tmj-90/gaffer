@@ -21,7 +21,12 @@
  */
 
 import { type Db, inTransaction } from "../db/connection.js";
-import { type Actor, type ReviewFeedback, type TicketStatus } from "../domain/types.js";
+import {
+  type Actor,
+  type ReviewFeedback,
+  type Ticket,
+  type TicketStatus,
+} from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
@@ -55,6 +60,35 @@ export function capRetry(
 }
 
 // ---------------------------------------------------------------------------
+// GRADUATED-AUTONOMY (Spec 2, Phase 1): "approved unchanged vs edited" signal
+// ---------------------------------------------------------------------------
+
+/** The delivery SHA (what the agent shipped) vs the merge SHA (current branch head). */
+export interface ApprovalShas {
+  /** The recorded delivery commit SHA — what the reviewer was shown. */
+  deliverySha: string | null;
+  /** The SHA that would actually merge (current head of the delivery branch). */
+  mergeSha: string | null;
+}
+
+/** Resolves the delivery-vs-merge SHAs for a ticket at approve time (git + DB read). */
+export type ApprovalShaResolver = (ticket: Ticket) => ApprovalShas | null;
+
+/**
+ * Decide whether an approval was UNCHANGED (`true`), edited (`false`), or
+ * indeterminate (`null`). When either SHA is missing we return `null` — the signal
+ * is unknown, and the recommendation must NOT count an unknown as agreement (doing
+ * so would overstate how often the operator approves an agent's work verbatim).
+ */
+export function approvalUnchanged(
+  deliverySha: string | null | undefined,
+  mergeSha: string | null | undefined,
+): boolean | null {
+  if (!deliverySha || !mergeSha) return null;
+  return deliverySha === mergeSha;
+}
+
+// ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
 
@@ -74,6 +108,23 @@ export interface ReviewGateServiceDeps {
    * Best-effort — errors are swallowed so notifications never break callers.
    */
   readonly onTicketParked?: (ticket: import("../domain/types.js").Ticket, detail: string) => void;
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 1): resolves the delivery-vs-merge SHAs so
+   * `approveReview` can emit `approved_unchanged`. Injectable (the real one reads the
+   * per-repo delivery SHA + `git rev-parse` of the branch); `undefined` (the default)
+   * means the signal is emitted as `null` (unknown). Best-effort — a throw here never
+   * blocks an approval.
+   */
+  readonly approvalShaResolver?: ApprovalShaResolver;
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate that answers
+   * "does an explicit mode='auto' approve policy cover this ticket (its risk × ALL
+   * its write repos)?" NO env read here — the P0 check below ORs it with the env
+   * flag, so the policy is only ever an ADDITIONAL allow-path. `undefined` (the
+   * default) means "no policy layer wired" ⇒ the gate is exactly the pre-Phase-3
+   * pure env-flag check. See services/autonomyPolicyService.ts.
+   */
+  readonly policyAllowsAgentApprove?: (ticket: Ticket) => boolean;
 }
 
 export class ReviewGateService {
@@ -89,6 +140,8 @@ export class ReviewGateService {
   private readonly onTicketParked:
     | ((ticket: import("../domain/types.js").Ticket, detail: string) => void)
     | undefined;
+  private readonly approvalShaResolver: ApprovalShaResolver | undefined;
+  private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
 
   constructor(deps: ReviewGateServiceDeps) {
     this.db = deps.db;
@@ -101,6 +154,8 @@ export class ReviewGateService {
     this.maxAttempts = deps.maxAttempts;
     this.testingEnabledOverride = deps.testingEnabledOverride;
     this.onTicketParked = deps.onTicketParked;
+    this.approvalShaResolver = deps.approvalShaResolver;
+    this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
   }
 
   // ---------------------------------------------------------------------------
@@ -116,9 +171,16 @@ export class ReviewGateService {
    * removes this gate (their machine, their call).
    */
   approveReview(ticketRef: string, actor: Actor): TransitionResult {
-    // P0 authz — do NOT weaken or remove this check.
+    // P0 authz — do NOT weaken or remove this check. An agent may approve ONLY when
+    // the operator opted in via DISPATCH_ALLOW_AGENT_APPROVE=1 (the pre-Phase-3 flag,
+    // FIRST and unchanged) OR — Graduated Autonomy (Spec 2, Phase 3) — an EXPLICIT
+    // mode='auto' approve policy covers this ticket's risk × every write repo. The
+    // policy is only ever an ADDITIONAL allow-path: with no policy row this reduces to
+    // exactly the pure env-flag gate (byte-identical to today). system is never permitted.
     const agentApproveAllowed =
-      actor.type === "agent" && process.env.DISPATCH_ALLOW_AGENT_APPROVE === "1";
+      actor.type === "agent" &&
+      (process.env.DISPATCH_ALLOW_AGENT_APPROVE === "1" ||
+        this.policyGrantsAgentApprove(ticketRef));
     if (actor.type !== "human" && actor.type !== "admin" && !agentApproveAllowed) {
       throw new DispatchError(
         "ACTOR_NOT_PERMITTED",
@@ -127,6 +189,10 @@ export class ReviewGateService {
       );
     }
     const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    // GRADUATED-AUTONOMY (Spec 2, Phase 1): capture whether this delivery is being
+    // approved UNCHANGED vs edited, emitted on the transition below. Best-effort — a
+    // resolver throw or absence yields `null` (unknown) and never blocks the approve.
+    const approvedUnchanged = this.computeApprovedUnchanged(ticket);
     // BBT-001: when the testing lane is ON and this ticket is eligible, route
     // through the independent tester (`in_review -> in_testing`) instead of
     // straight to merge. testerVerdict:true guards this transition.
@@ -138,6 +204,7 @@ export class ReviewGateService {
         reason: "review_approved_to_testing",
         expectedFromStatus: "in_review",
         testerVerdict: true,
+        approvedUnchanged,
       });
       writeEvent(this.db, {
         entity_type: "ticket",
@@ -154,7 +221,43 @@ export class ReviewGateService {
       toStatus: "ready_for_merge",
       reason: "review_approved",
       expectedFromStatus: "in_review",
+      approvedUnchanged,
+      reviewApprove: true, // reached the merge-ready state through the guarded approve path
     });
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve the delivery-vs-merge SHAs and
+   * decide whether the approval is UNCHANGED (`true`), edited (`false`) or unknown
+   * (`null`). Wrapped so a resolver failure degrades to `null` — an approval must
+   * never fail because the (advisory) telemetry probe threw.
+   */
+  private computeApprovedUnchanged(ticket: Ticket): boolean | null {
+    if (!this.approvalShaResolver) return null;
+    try {
+      const shas = this.approvalShaResolver(ticket);
+      if (!shas) return null;
+      return approvalUnchanged(shas.deliverySha, shas.mergeSha);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * GRADUATED-AUTONOMY (Spec 2, Phase 3): does an explicit mode='auto' approve policy
+   * cover this ticket (its risk × ALL its write repos)? Pure policy check — NO env
+   * read (the P0 gate ORs this with the env flag). FAIL-CLOSED: an absent predicate,
+   * an unresolvable ticket, or ANY throw yields false, so a policy-probe failure can
+   * never grant an approval it shouldn't.
+   */
+  private policyGrantsAgentApprove(ticketRef: string): boolean {
+    if (!this.policyAllowsAgentApprove) return false;
+    try {
+      const ticket = this.ticketSvc.resolveTicket(ticketRef);
+      return this.policyAllowsAgentApprove(ticket);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -296,6 +399,19 @@ export class ReviewGateService {
    * MERGE-COMPLETE: `ready_for_merge -> done`. SYSTEM/admin only.
    * The markMerged:true flag is required by TransitionService — a board-drag
    * or agent can never trigger this path.
+   *
+   * GRADUATED-AUTONOMY (Spec 2, Phase 1, merge-time correction): `approved_unchanged`
+   * is first stamped at APPROVE time, but with the testing lane on a tester can amend
+   * the branch AFTER approval — so the approve-time value can overstate what actually
+   * landed. We RE-RESOLVE the delivery-vs-merged-head signal here (the resolver reads
+   * the branch head fresh, which is now the merged head) and emit the CORRECTED value
+   * on this transition, so the signal reaching `autonomyRecommendationService` (via
+   * {@link EventRepository.reviewDecisions}, which prefers this merge-time value)
+   * reflects the merged state. Behaviour is preserved when there was no post-approval
+   * amend: the merged head still equals the delivery SHA, so the value is identical to
+   * approve time. The key is only emitted when the signal is DEFINITE (`true`/`false`);
+   * an unknown (`null`) resolution is omitted, leaving the merge payload byte-for-byte
+   * as before so it never clobbers a known approve-time value downstream.
    */
   markMerged(ref: string, actor: Actor): TransitionResult {
     if (actor.type !== "system" && actor.type !== "admin") {
@@ -306,6 +422,7 @@ export class ReviewGateService {
       );
     }
     const ticket = this.ticketSvc.resolveTicket(ref);
+    const approvedUnchanged = this.computeApprovedUnchanged(ticket);
     return this.transitions.transition({
       ticketId: ticket.id,
       actor,
@@ -313,6 +430,9 @@ export class ReviewGateService {
       reason: "merge_completed",
       expectedFromStatus: "ready_for_merge",
       markMerged: true,
+      // Only carry a DEFINITE merge-time signal; omit an unknown so the payload stays
+      // byte-for-byte identical to today and never overrides a known approve-time value.
+      ...(approvedUnchanged !== null ? { approvedUnchanged } : {}),
     });
   }
 

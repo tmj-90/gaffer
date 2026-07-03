@@ -40,7 +40,20 @@ import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const UNKNOWN = "unknown";
+// Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
+// This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
+// numeric extraction come from lib/worker.mjs so a ledger row and the worker's
+// parseResult can never disagree. The public names below are RE-EXPORTED so existing
+// importers (tests, decompose.mjs, product-owner-run.mjs) are unchanged.
+import {
+  UNKNOWN,
+  extractResultText,
+  extractUsage,
+  numOrUnknown,
+  parseClaudeJson,
+} from "./worker.mjs";
+
+export { UNKNOWN, extractResultText, parseClaudeJson };
 export const LEDGER_FILENAME = "usage-ledger.jsonl";
 export const VALID_KINDS = new Set([
   "delivery",
@@ -52,113 +65,10 @@ export const VALID_KINDS = new Set([
   "onboard",
 ]);
 
-/**
- * Parse the captured stdout of `claude -p … --output-format json`.
- * Returns the result OBJECT, or null when the text is missing/unparseable.
- *
- * Tolerant by design: a JSON object may be the whole stdout, or be embedded in
- * other log noise (the bash sites capture only stdout, but be defensive). We try
- * a strict whole-string parse first, then fall back to the LAST balanced
- * top-level `{...}` block in the text (the final result object). Anything we
- * cannot parse → null → the caller records "unknown" (never 0).
- */
-export function parseClaudeJson(text) {
-  if (typeof text !== "string" || !text.trim()) return null;
-  const trimmed = text.trim();
-  try {
-    const obj = JSON.parse(trimmed);
-    if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
-  } catch {
-    /* fall through to embedded-object scan */
-  }
-  // Scan for the last balanced top-level { … } object in the text.
-  const candidate = lastBalancedObject(trimmed);
-  if (candidate) {
-    try {
-      const obj = JSON.parse(candidate);
-      if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
-    } catch {
-      /* not parseable — fall through to null */
-    }
-  }
-  return null;
-}
-
-/** Return the last top-level balanced {…} substring, or null. Quote/escape aware. */
-function lastBalancedObject(text) {
-  let last = null;
-  let depth = 0;
-  let start = -1;
-  let inStr = false;
-  let esc = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === "\\") esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') inStr = true;
-    else if (ch === "{") {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (ch === "}") {
-      depth--;
-      if (depth === 0 && start >= 0) {
-        last = text.slice(start, i + 1);
-        start = -1;
-      }
-    }
-  }
-  return last;
-}
-
-/** The agent's text output (`.result`), or "" when absent/unparseable. */
-export function extractResultText(json) {
-  if (json && typeof json === "object" && typeof json.result === "string") {
-    return json.result;
-  }
-  return "";
-}
-
-/**
- * A non-negative finite NUMBER, or UNKNOWN. We never coerce a missing/garbage
- * value to 0 — that would let an unmeasured call read as free. null/undefined/
- * NaN/non-number all become "unknown".
- */
-function numOrUnknown(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  return UNKNOWN;
-}
-
-/**
- * Build the per-model usage map from a parsed result object, honouring honesty
- * rule 1 (tokens verbatim) and rule 2 (cost relayed, never computed). Each model
- * entry carries input/output/cache_read/cache_create (from modelUsage's camelCase
- * fields) and cost_usd (Claude Code's own costUSD for that model). A field the
- * payload didn't carry is "unknown", not 0.
- *
- * Returns null when there is no usable modelUsage object (caller may still have
- * top-level usage to fall back on, but the per-model split is then unknown).
- */
-function buildModels(json) {
-  const mu = json && typeof json === "object" ? json.modelUsage : null;
-  if (!mu || typeof mu !== "object" || Array.isArray(mu)) return null;
-  const models = {};
-  for (const [model, u] of Object.entries(mu)) {
-    if (!u || typeof u !== "object") continue;
-    models[model] = {
-      input: numOrUnknown(u.inputTokens),
-      output: numOrUnknown(u.outputTokens),
-      cache_read: numOrUnknown(u.cacheReadInputTokens),
-      cache_create: numOrUnknown(u.cacheCreationInputTokens),
-      // RELAYED — Claude Code's own per-model figure. Never computed here.
-      cost_usd: numOrUnknown(u.costUSD),
-    };
-  }
-  return Object.keys(models).length ? models : null;
-}
+// parseClaudeJson / extractResultText / the numeric extractors (numOrUnknown,
+// buildModels, extractUsage) now live in lib/worker.mjs (the seam that owns the
+// claude-JSON schema — Spec 3 / Phase 2). They are imported + re-exported above;
+// buildUsageRecord below shapes extractUsage's output into a ledger row.
 
 /**
  * Construct a fully-"unknown" record — used when a call could not be measured
@@ -190,11 +100,14 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
   if (!json || typeof json !== "object") {
     return unknownRecord({ ts, ticket, kind, reason: reason || "no parseable result JSON" });
   }
-  const models = buildModels(json);
-  const usage = json.usage && typeof json.usage === "object" ? json.usage : null;
-  const totalCost = numOrUnknown(json.total_cost_usd);
-  const numTurns = numOrUnknown(json.num_turns);
-  const durationMs = numOrUnknown(json.duration_ms);
+  // Numeric extraction is the SHARED worker seam (parity with parseResult).
+  const {
+    models,
+    topLevelUsage: usage,
+    totalCostUsd: totalCost,
+    numTurns,
+    durationMs,
+  } = extractUsage(json);
 
   // No usage signal whatsoever → treat as unmeasured (honesty rule 3): do not
   // emit an all-zero record that would read as a free call.

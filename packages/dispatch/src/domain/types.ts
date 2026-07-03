@@ -517,6 +517,12 @@ export interface AcceptanceCriterion {
   evidence_required: number;
   verified_by: string | null;
   verified_at: string | null;
+  /**
+   * Spec-Driven Development (Phase 2a): OPTIONAL provenance link to the frozen
+   * spec clause this AC satisfies ({@link SpecClause.clause_id}). NULL when the AC
+   * was authored outside a spec-driven build. One clause can back many ACs.
+   */
+  spec_clause_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -939,4 +945,212 @@ export interface PlanSession {
   target_scope: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// ============================================================================
+// Specs (Spec-Driven Development, Phase 1a).
+//
+// A spec is an AI-drafted, human-edited, then FROZEN statement of product intent
+// that sits in front of the decompose engine. Each spec owns an ordered set of
+// clauses — one testable statement each — with a STABLE clause_id so a later
+// phase can thread provenance down to acceptance criteria.
+// ============================================================================
+
+/** Lifecycle status of a {@link Spec}. Mirrors the specs.status CHECK. */
+export const SPEC_STATUSES = ["draft", "frozen", "superseded"] as const;
+export type SpecStatus = (typeof SPEC_STATUSES)[number];
+
+/**
+ * The kind of a {@link SpecClause}. A `requirement` is something the system MUST
+ * do; a `non-goal` is something it deliberately will NOT do; a `decision` records
+ * a settled product/technical choice. These three map onto the durable
+ * product-intent lore kinds (`requirement`/`non-goal`/`decision`) a later phase
+ * seeds from a frozen spec.
+ */
+export const SPEC_CLAUSE_KINDS = ["requirement", "non-goal", "decision"] as const;
+export type SpecClauseKind = (typeof SPEC_CLAUSE_KINDS)[number];
+
+/**
+ * One clause of a spec: a single testable statement of intent. `clause_id` is
+ * STABLE — assigned server-side at create/edit time when absent and preserved
+ * thereafter — so Phase 3 traceability can reference a clause even across edits
+ * (before a freeze) and forever after a freeze.
+ */
+export interface SpecClause {
+  /** Stable identifier for this clause (assigned server-side when absent). */
+  clause_id: string;
+  kind: SpecClauseKind;
+  /** The clause text — one testable statement of intent. */
+  text: string;
+  /** Optional rationale explaining WHY this clause exists. */
+  rationale?: string;
+}
+
+/**
+ * A spec row. `clauses_json` is the JSON-encoded {@link SpecClause}[] (parse with
+ * {@link parseSpecClauses}). `status` walks draft → frozen (an immutable snapshot,
+ * frozen_at stamped) → superseded. `target_repo`/`scope_node_id` are OPTIONAL soft
+ * references (by name / id) to where the spec's work will land.
+ */
+export interface Spec {
+  id: string;
+  title: string;
+  brief: string;
+  /** JSON-encoded array of {@link SpecClause} objects. */
+  clauses_json: string;
+  status: SpecStatus;
+  target_repo: string | null;
+  scope_node_id: string | null;
+  created_at: string;
+  updated_at: string;
+  /** When the spec was frozen (draft→frozen), or null while still a draft. */
+  frozen_at: string | null;
+}
+
+/**
+ * Parse the `specs.clauses_json` column into a {@link SpecClause}[]. Returns `[]`
+ * for an absent or malformed value, and coerces each entry to its expected shape
+ * so a corrupt row can never throw on a read path. An entry with a missing/unknown
+ * `kind` or empty `text` is dropped rather than rejecting the whole record.
+ */
+export function parseSpecClauses(raw: string | null): SpecClause[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const kinds = new Set<string>(SPEC_CLAUSE_KINDS);
+    const out: SpecClause[] = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const e = entry as Partial<SpecClause>;
+      if (typeof e.clause_id !== "string" || e.clause_id.length === 0) continue;
+      if (typeof e.kind !== "string" || !kinds.has(e.kind)) continue;
+      if (typeof e.text !== "string" || e.text.length === 0) continue;
+      const clause: SpecClause = {
+        clause_id: e.clause_id,
+        kind: e.kind as SpecClauseKind,
+        text: e.text,
+      };
+      if (typeof e.rationale === "string" && e.rationale.length > 0) {
+        clause.rationale = e.rationale;
+      }
+      out.push(clause);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+// ============================================================================
+// Spec coverage & traceability (Spec-Driven Development, Phase 3).
+//
+// The coverage read model answers, for a frozen spec: which acceptance criteria
+// back each clause, whether the clause is COVERED (>=1 AC) / SATISFIED (>=1
+// satisfied AC) / an ORPHAN (no covering AC — the gap report), and how many
+// times the requirement BOUNCED (the rework/failure trail joined to the clause
+// via its ACs' tickets). It is a pure read model — it never mutates the board.
+// ============================================================================
+
+/**
+ * The seeded-lore ratification status attached (best-effort) to a clause. Mirrors
+ * Memory's lore lifecycle: `draft` = seeded but unratified, `active` = approved and
+ * reaching delivery agents. `absent` = Memory is wired but no record was seeded for
+ * this clause; `unknown` = Memory isn't wired / the read failed (never fatal).
+ */
+export const SPEC_LORE_STATUSES = ["draft", "active", "absent", "unknown"] as const;
+export type SpecLoreStatus = (typeof SPEC_LORE_STATUSES)[number];
+
+/**
+ * One acceptance criterion that covers a clause, with the ticket it belongs to.
+ * `satisfied` is the derived boolean the trace renders green.
+ */
+export interface CoveringAc {
+  ac_id: string;
+  ac_text: string;
+  /** The AC's raw status (pending | satisfied | failed | waived). */
+  ac_status: AcStatus;
+  /** True iff {@link ac_status} is `satisfied`. */
+  satisfied: boolean;
+  ticket_id: string;
+  ticket_number: number | null;
+  ticket_title: string;
+  ticket_status: string;
+}
+
+/**
+ * Coverage for a single clause: its covering ACs plus the derived signals the
+ * trace surfaces — covered / satisfied / orphan (the gap) and the bounce count.
+ */
+export interface ClauseCoverage {
+  clause_id: string;
+  kind: SpecClauseKind;
+  text: string;
+  rationale?: string;
+  /** ACs whose `spec_clause_id` references this clause (may be empty ⇒ orphan). */
+  covering_acs: CoveringAc[];
+  /** True iff at least one AC covers the clause. */
+  covered: boolean;
+  /** True iff at least one covering AC is satisfied. */
+  satisfied: boolean;
+  /** True iff NO AC covers the clause — the gap report entry. */
+  orphan: boolean;
+  /**
+   * How many rework/failure attempts landed on the tickets that cover this clause
+   * — "requirement X bounced N×". Joined SQL-side from the append-only
+   * `rework_attempts` trail via the clause's ACs' tickets.
+   */
+  bounce_count: number;
+  /** Seeded-lore ratification status (best-effort; `unknown` when Memory is unwired). */
+  lore_status: SpecLoreStatus;
+}
+
+/**
+ * A DANGLING acceptance criterion: an AC that claims a clause in this spec's
+ * namespace which no longer exists on the spec (a broken provenance link). The
+ * ticket-side complement of an orphan clause — reported so a stale reference can't
+ * hide.
+ */
+export interface DanglingAc {
+  ac_id: string;
+  ac_text: string;
+  /** The dead `spec_clause_id` this AC still references (in the spec's namespace). */
+  spec_clause_id: string;
+  ticket_id: string;
+  ticket_number: number | null;
+  ticket_title: string;
+  ticket_status: string;
+}
+
+/** Spec-level rollup: covered/total, satisfied/total, and the orphan clause ids. */
+export interface SpecCoverageRollup {
+  total: number;
+  covered: number;
+  satisfied: number;
+  /** Clause ids with no covering AC — the gap report. */
+  orphans: string[];
+  /** Count of dangling ACs (broken provenance links) — see {@link SpecCoverage.dangling_acs}. */
+  dangling: number;
+}
+
+/**
+ * The full coverage read model for one spec: the per-clause trace plus a rollup.
+ * `gate_enabled` reflects the (currently non-enforcing) spec-coverage DoD flag —
+ * wired for later, off by default (see {@link file://../policy/specCoverageGate.ts}).
+ */
+export interface SpecCoverage {
+  spec_id: string;
+  title: string;
+  status: SpecStatus;
+  /** Soft link to the epic/scope node this spec drives, when one is set. */
+  scope_node_id: string | null;
+  clauses: ClauseCoverage[];
+  rollup: SpecCoverageRollup;
+  /**
+   * ACs that reference a now-dead clause in this spec's namespace (broken
+   * provenance). Empty in the healthy case; the ticket-side gap report.
+   */
+  dangling_acs: DanglingAc[];
+  /** The spec-coverage DoD gate flag — non-enforcing today, surfaced for visibility. */
+  gate_enabled: boolean;
 }

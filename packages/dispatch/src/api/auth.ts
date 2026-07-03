@@ -195,22 +195,37 @@ function isReadOnlyMethod(method: string): boolean {
  * carve-out any local process (including a token-scrubbed, prompt-injected
  * delivery agent that can only reach loopback) could `GET /api/settings` and read
  * control-plane secrets. Matched case-sensitively against the normalised pathname
- * (a single trailing slash is tolerated). Kept as a set so more secret-bearing
- * endpoints can be added without touching the decision logic.
+ * (repeated + trailing slashes collapsed, see {@link normalisePath}). Kept as a set
+ * so more secret-bearing endpoints can be added without touching the decision logic.
  */
 const PRIVILEGED_PATHS: ReadonlySet<string> = new Set(["/api/settings"]);
 
-/** Strip a single trailing slash (but never from the root path). */
+/**
+ * Secret-bearing endpoints with a dynamic path segment (a run id), matched by
+ * pattern since {@link PRIVILEGED_PATHS} is exact-string. Run-log tails can carry
+ * raw delivery output — token required even on a loopback read.
+ */
+const PRIVILEGED_PATTERNS: readonly RegExp[] = [/^\/api\/runs\/[^/]+\/log$/];
+
+/**
+ * Normalise for the privileged-path check: collapse repeated slashes AND strip all
+ * trailing slashes. Express still routes `/api/settings//` and `/api//settings` to
+ * the settings handler, so a check that stripped only ONE trailing slash could be
+ * bypassed (`/api/settings//` → `/api/settings/` ∉ the set → tokenless secret leak).
+ * Never returns empty; the root stays "/".
+ */
 function normalisePath(pathname: string): string {
-  return pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  const collapsed = pathname.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
+  return collapsed.length > 0 ? collapsed : "/";
 }
 
 /**
  * True when `pathname` names a secret-bearing endpoint that requires the token
- * even for a loopback read (see {@link PRIVILEGED_PATHS}).
+ * even for a loopback read (see {@link PRIVILEGED_PATHS} / {@link PRIVILEGED_PATTERNS}).
  */
 export function isPrivilegedPath(pathname: string): boolean {
-  return PRIVILEGED_PATHS.has(normalisePath(pathname));
+  const p = normalisePath(pathname);
+  return PRIVILEGED_PATHS.has(p) || PRIVILEGED_PATTERNS.some((re) => re.test(p));
 }
 
 /**

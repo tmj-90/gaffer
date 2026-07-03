@@ -74,6 +74,13 @@ export interface LoreRow {
    * counter-record — never the empty array `"[]"`. See ADR-003.
    */
   readonly conflicts_with: string | null;
+  /**
+   * Provenance link to the frozen spec clause this record was seeded from
+   * (migration 010). NULL on every record not seeded from a spec clause.
+   */
+  readonly spec_id: string | null;
+  /** Stable clause id within {@link spec_id} this record was seeded from. NULL otherwise. */
+  readonly clause_id: string | null;
 }
 
 /**
@@ -110,6 +117,14 @@ export interface Lore {
    * overlap detection. See ADR-003.
    */
   readonly conflictsWith?: ReadonlyArray<string>;
+  /**
+   * Provenance link to the frozen spec clause this record was seeded from
+   * (Spec-Driven Development, Phase 2b). `undefined` on every record that did
+   * not originate from a spec clause. Paired with {@link clauseId}.
+   */
+  readonly specId?: string;
+  /** Stable clause id within {@link specId}; `undefined` when not spec-seeded. */
+  readonly clauseId?: string;
 }
 
 /**
@@ -214,6 +229,12 @@ export interface AddLoreInput {
   readonly repos?: ReadonlyArray<string>;
   readonly tags?: ReadonlyArray<string>;
   readonly restricted?: boolean;
+  /**
+   * Structured provenance: the frozen spec + clause this record is seeded from
+   * (Spec-Driven Development, Phase 2b). Both omitted for ordinary lore.
+   */
+  readonly specId?: string;
+  readonly clauseId?: string;
 }
 
 /**

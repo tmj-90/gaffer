@@ -61,6 +61,21 @@ describe("isPrivilegedPath / isRequestAuthorized", () => {
     expect(isPrivilegedPath("/")).toBe(false);
   });
 
+  it("closes the repeated-slash bypass (Express still routes // to the handler)", () => {
+    // Regression: normalisePath stripped only ONE trailing slash, so /api/settings//
+    // slipped past the privileged check and leaked notify/webhook secrets tokenless.
+    expect(isPrivilegedPath("/api/settings//")).toBe(true);
+    expect(isPrivilegedPath("/api/settings///")).toBe(true);
+    expect(isPrivilegedPath("/api//settings")).toBe(true);
+    expect(isPrivilegedPath("//api/settings")).toBe(true);
+  });
+
+  it("treats a run-log tail as privileged (raw delivery output requires the token)", () => {
+    expect(isPrivilegedPath("/api/runs/abc-123/log")).toBe(true);
+    expect(isPrivilegedPath("/api/runs/abc-123/log/")).toBe(true);
+    expect(isPrivilegedPath("/api/runs/abc-123")).toBe(false); // the run detail is not the log
+  });
+
   it("refuses a tokenless loopback READ of a privileged path but allows a board read", () => {
     const saved = process.env.DISPATCH_API_TOKEN;
     process.env.DISPATCH_API_TOKEN = "tok";

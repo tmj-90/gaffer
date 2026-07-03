@@ -131,6 +131,23 @@ describe("createPlanBuildRunner (spawns the decompose helper)", () => {
     }
   });
 
+  it("streams a FROZEN spec's clauses to the child over stdin (spec-driven build)", async () => {
+    // Regression: the spec→decompose chain was dead because the frozen spec never reached
+    // the runner. With the frontend now sending it, assert the runner threads it through.
+    const result = await runnerForMode("echo-spec").run({
+      brief: "build the spec",
+      history: [],
+      spec: [
+        { clause_id: "c1", kind: "requirement", text: "adds two numbers" },
+        { clause_id: "c2", kind: "non-goal", text: "no trigonometry" },
+      ],
+    });
+    expect(result.phase).toBe("clarify");
+    if (result.phase === "clarify") {
+      expect(JSON.parse(result.questions[0]!)).toEqual({ specClauseIds: ["c1", "c2"] });
+    }
+  });
+
   it("strips DISPATCH_API_TOKEN from the child env (defence-in-depth)", async () => {
     const runner = createPlanBuildRunner({
       GAFFER_DECOMPOSE_BIN: STUB,

@@ -12,6 +12,8 @@ import {
   SCOPE_NODE_TYPES,
   SCOPE_REPO_ACCESS,
   SCOPE_REPO_RELATIONS,
+  SPEC_CLAUSE_KINDS,
+  SPEC_STATUSES,
   TICKET_REPO_ACCESS,
   TICKET_REPO_RELATIONS,
   TICKET_REPO_DELIVERY_STATUSES,
@@ -437,11 +439,24 @@ export type AddTicketDependencyBody = z.infer<typeof addTicketDependencyBody>;
 
 // --- Epics (EP-001) --------------------------------------------------------
 
+/**
+ * One acceptance criterion in a POST /epics plan. Back-compat: a bare string (the
+ * unchanged shape) OR an object carrying the AC text plus an OPTIONAL `clauseRef`
+ * — the frozen-spec clause id this AC satisfies (Spec-Driven Development Phase 2a).
+ */
+const epicAcBody = z.union([
+  z.string().trim().min(1).max(2_000),
+  z.object({
+    text: z.string().trim().min(1).max(2_000),
+    clauseRef: z.string().trim().min(1).max(100).optional(),
+  }),
+]);
+
 /** One ticket within a POST /epics plan. `dependsOn` indexes other plan tickets. */
 const epicTicketBody = z.object({
   title: z.string().trim().min(1).max(300),
   description: z.string().max(20_000).optional(),
-  acceptanceCriteria: z.array(z.string().trim().min(1).max(2_000)).max(50).optional(),
+  acceptanceCriteria: z.array(epicAcBody).max(50).optional(),
   priority: z.number().int().min(0).max(1_000).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
   policy_pack: z.enum(["solo_loose", "team_light", "factory_strict", "regulated"]).optional(),
@@ -460,6 +475,38 @@ export const createEpicBody = z.object({
   tickets: z.array(epicTicketBody).min(1).max(100),
 });
 export type CreateEpicBody = z.infer<typeof createEpicBody>;
+
+// --- Specs (Spec-Driven Development, Phase 1a) -----------------------------
+
+/** One clause in a POST /specs or PATCH /specs/:id body. `clause_id` is optional. */
+const specClauseBody = z.object({
+  clause_id: z.string().trim().min(1).max(100).optional(),
+  kind: z.enum(SPEC_CLAUSE_KINDS),
+  text: z.string().trim().min(1).max(4_000),
+  rationale: z.string().trim().min(1).max(4_000).optional(),
+});
+
+/** Body for POST /specs — create a draft spec. */
+export const createSpecBody = z.object({
+  title: z.string().trim().min(1).max(300),
+  brief: z.string().max(20_000).optional(),
+  clauses: z.array(specClauseBody).max(200).optional(),
+  target_repo: z.string().trim().min(1).max(200).nullable().optional(),
+  scope_node_id: z.string().trim().min(1).max(200).nullable().optional(),
+});
+export type CreateSpecBody = z.infer<typeof createSpecBody>;
+
+/** Body for PATCH /specs/:id — replace a draft spec's clauses. */
+export const updateSpecClausesBody = z.object({
+  clauses: z.array(specClauseBody).max(200),
+});
+export type UpdateSpecClausesBody = z.infer<typeof updateSpecClausesBody>;
+
+/** Query for GET /specs — optional status filter. */
+export const specListQuery = z.object({
+  status: z.enum(SPEC_STATUSES).optional(),
+});
+export type SpecListQuery = z.infer<typeof specListQuery>;
 
 // --- Plan a build (decompose chat panel) -----------------------------------
 
@@ -498,13 +545,54 @@ export type PlanBuildContext = z.infer<typeof planBuildContext>;
  * told to STOP clarifying and emit the best plan it can from the brief + history
  * so far (it returns a plan, never a clarify). The panel can send it at any point.
  */
+/**
+ * Spec-Driven Development (Phase 2a): one clause of a FROZEN spec forwarded to the
+ * decomposer to drive the plan. Unlike {@link specClauseBody} (spec authoring, where
+ * clause_id is minted server-side and thus optional), a frozen clause ALWAYS carries
+ * its stable `clause_id` — that id is the provenance threaded down to acceptance
+ * criteria — so it is required here. The text/rationale are untrusted and ride the
+ * decomposer's `<untrusted-spec>` quarantine.
+ */
+const planBuildSpecClause = z.object({
+  clause_id: z.string().trim().min(1).max(100),
+  kind: z.enum(SPEC_CLAUSE_KINDS),
+  text: z.string().trim().min(1).max(4_000),
+  rationale: z.string().trim().min(1).max(4_000).optional(),
+});
+export type PlanBuildSpecClause = z.infer<typeof planBuildSpecClause>;
+
 export const planBuildBody = z.object({
   brief: z.string().trim().min(1).max(4_000),
   history: z.array(planBuildTurn).max(40).optional().default([]),
   context: planBuildContext.optional(),
   forcePlan: z.boolean().optional(),
+  /**
+   * Spec-Driven Development (Phase 2a): the frozen spec's clauses. When present the
+   * decomposer renders them in a quarantined `<untrusted-spec>` block and defaults
+   * to force-plan (the spec already answers the clarifying questions). The planner
+   * then threads each clause id onto the acceptance criteria it satisfies.
+   */
+  spec: z.array(planBuildSpecClause).max(200).optional(),
 });
 export type PlanBuildBody = z.infer<typeof planBuildBody>;
+
+// --- Author a spec (spec-author chat step) ---------------------------------
+
+/**
+ * Body for POST /spec-build — a one-line brief plus the conversation history the
+ * frontend accumulates, mirroring {@link planBuildBody}. Unlike plan-build,
+ * `context` here is optional free-text grounding (e.g. "existing repo uses Vite +
+ * React"), not a structured extend target. `forcePlan` is the "Draft the spec now"
+ * escape: when true the spec-author STOPS clarifying and emits the best spec it can
+ * (it returns a spec, never a clarify). The panel can send it at any point.
+ */
+export const specBuildBody = z.object({
+  brief: z.string().trim().min(1).max(4_000),
+  history: z.array(planBuildTurn).max(40).optional().default([]),
+  context: z.string().trim().min(1).max(20_000).optional(),
+  forcePlan: z.boolean().optional(),
+});
+export type SpecBuildBody = z.infer<typeof specBuildBody>;
 
 // --- Settings panel (UI-editable factory config) ---------------------------
 
@@ -620,3 +708,22 @@ export const runsQuery = z.object({
     .default(RUNS_DEFAULT_LIMIT),
 });
 export type RunsQuery = z.infer<typeof runsQuery>;
+
+// --- Graduated Autonomy policy (Spec 2, Phase 3) ---------------------------
+
+/**
+ * Body for POST /api/autonomy/policy — enable/disable a per-(repo × risk × gate)
+ * autonomy policy (SECURITY-CRITICAL). `repo_id` names the target repo; `risk_level`
+ * and `gate` scope the chokepoint; `mode` is off | recommend | auto. `confirm` is the
+ * operator's EXPLICIT acknowledgement that they reviewed the evidence — REQUIRED to
+ * enable (mode !== 'off'); the service re-checks it (the trust boundary). Disabling
+ * (mode='off') is always permitted (fail-safe reversal).
+ */
+export const autonomyPolicyBody = z.object({
+  repo_id: z.string().min(1).max(200),
+  risk_level: z.enum(RISK_LEVELS),
+  gate: z.enum(["approve", "merge", "memory"]),
+  mode: z.enum(["off", "recommend", "auto"]),
+  confirm: z.boolean().default(false),
+});
+export type AutonomyPolicyBody = z.infer<typeof autonomyPolicyBody>;

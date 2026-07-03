@@ -90,6 +90,28 @@ out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"r
 [ -s "$SINK" ] && fail "channel invoked when nothing needs a human" || ok "no notification when queue is clear"
 has "$out" "nothing needs a human" && ok "pane confirms nothing needs a human" || fail "missing clear-queue line"
 
+# --- 5b: UNIFIED sink — GAFFER_NOTIFY_* routes through the dispatch emit seam --
+# Proves the config unification: setting a MAIN dispatch notify var
+# (GAFFER_NOTIFY_WEBHOOK_URL) — not the legacy GAFFER_NOTIFY_CMD/SLACK_WEBHOOK —
+# makes status alerts fire through the SAME `notify emit` sink the runner's
+# ticket/decision pings use. No separate-config trap.
+EMIT_SINK="$WORK/emit.txt"; : > "$EMIT_SINK"
+cat > "$WORK/notify_emit.sh" <<'EOF'
+#!/usr/bin/env bash
+{ for a in "$@"; do printf '%s\n' "$a"; done; } >> "${EMIT_SINK:?}"
+EOF
+chmod +x "$WORK/notify_emit.sh"
+out="$(trap - EXIT; \
+  STATS_JSON_FIXTURE='{"ticketsByStatus":{"in_review":2,"blocked":0,"ready":1}}' \
+  WG_DOCTOR_CMD="$WORK/wg_doctor.sh" FG_DOCTOR_CMD="$WORK/fg_doctor.sh" \
+  LG_DOCTOR_CMD="$WORK/lg_doctor.sh" STATS_CMD="$WORK/stats.sh" GAFFER_LOG="$LOG" \
+  GAFFER_NOTIFY_WEBHOOK_URL="https://hooks.example.test/hook" \
+  EMIT_SINK="$EMIT_SINK" NOTIFY_EMIT_CMD="$WORK/notify_emit.sh" \
+  bash "$RUNNER_DIR/status.sh" 2>&1)"
+[ -s "$EMIT_SINK" ] && ok "unified GAFFER_NOTIFY_* routes through the dispatch emit sink" || fail "unified sink not invoked"
+has "$(cat "$EMIT_SINK")" "review_needed" && ok "unified emit carries the gate kind" || fail "unified emit missing kind"
+has "$out" "GAFFER_NOTIFY_* sink" && ok "pane reports the unified sink was used" || fail "pane did not name the unified sink"
+
 # --- 6: doctor health rolls up to warn / fail ----------------------
 out="$(trap - EXIT; STATS_JSON_FIXTURE='{"ticketsByStatus":{}}' \
        WG_DOCTOR_CMD="$WORK/wg_doctor.sh" FG_DOCTOR_CMD="$WORK/fg_doctor.sh" \

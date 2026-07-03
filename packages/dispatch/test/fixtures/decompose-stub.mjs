@@ -106,6 +106,21 @@ function run(stdin) {
       });
       return;
 
+    case "echo-spec":
+      // Echo back the frozen-spec clause ids that reached us on stdin, so the runner
+      // test can assert a SPEC-DRIVEN plan-build threads the spec through to decompose.
+      out({
+        phase: "clarify",
+        questions: [
+          JSON.stringify({
+            specClauseIds: Array.isArray(input.spec)
+              ? input.spec.map((c) => c && c.clause_id)
+              : null,
+          }),
+        ],
+      });
+      return;
+
     case "echo-token":
       // Report whether the parent's DISPATCH_API_TOKEN leaked into our env.
       out({ phase: "clarify", questions: [`token:${process.env.DISPATCH_API_TOKEN ?? "ABSENT"}`] });

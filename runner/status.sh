@@ -3,12 +3,20 @@
 # crew, memory), the factory's needs-review / blocked counts, and the
 # most recent ticks from factory.log into one screen. Non-mutating.
 #
-# When a ticket needs review or is blocked, it fires a notification through the
-# first configured channel:
+# When a ticket needs review or is blocked, it fires a notification through EVERY
+# configured channel. UNIFIED with the factory's notify sink: the primary channel
+# is the SAME dispatch notify sink the runner's ticket/decision pings use, driven by
+# the shared GAFFER_NOTIFY_* env vars — so configuring the dispatch notifier ALSO
+# covers these status alerts (no separate-config trap where you wire one and think
+# you're covered for both):
+#   GAFFER_NOTIFY_WEBHOOK_URL  POST every gate as JSON            (shared sink)
+#   GAFFER_NOTIFY_SLACK_URL    Slack incoming-webhook (text)      (shared sink)
+#   GAFFER_NOTIFY_DESKTOP=1    native desktop banner              (shared sink)
+# Two legacy channels are still honoured ADDITIVELY for back-compat:
 #   GAFFER_SLACK_WEBHOOK   Slack incoming-webhook URL  (POSTed a {"text":…})
 #   GAFFER_NOTIFY_CMD      any shell command fed the message on stdin (e.g. email:
 #                           export GAFFER_NOTIFY_CMD='mail -s gaffer you@example.com')
-# With neither set the alert still shows in the pane — it just isn't sent out.
+# With none set the alert still shows in the pane — it just isn't sent out.
 #
 # The doctor / stats commands are env-overridable (WG_DOCTOR_CMD, FG_DOCTOR_CMD,
 # LG_DOCTOR_CMD, STATS_CMD) so this view stays testable without the real CLIs.
@@ -56,18 +64,38 @@ roll_doctor() {
 # Pull the two human-attention counts (+ a little context) from stats JSON.
 read_count() { printf '%s' "$STATS_JSON" | python3 -c "import sys,json;print((json.load(sys.stdin).get('ticketsByStatus',{}) or {}).get('$1',0))" 2>/dev/null || echo 0; }
 
-# Send the alert through the first configured channel; always report what happened.
+# Send the alert through EVERY configured channel; always report what happened.
+# UNIFIED primary path = the same dispatch notify sink the runner's ticket/decision
+# pings use (buildNotifierFromEnv over GAFFER_NOTIFY_WEBHOOK_URL / _SLACK_URL /
+# _DESKTOP), so one config covers both. Legacy GAFFER_SLACK_WEBHOOK + GAFFER_NOTIFY_CMD
+# stay honoured additively (zero regression). Env-overridable emit seam keeps tests
+# hermetic. Every channel is best-effort — a send failure never changes the pane.
 notify() {
   local msg="$1" sent=""
+  # 1) UNIFIED dispatch notify sink (shared GAFFER_NOTIFY_* vars). Only shell out to
+  #    the CLI when at least one shared sink is configured; the emit is a no-op
+  #    ("enabled:false") otherwise. argv-array invocation (no eval), mirrors the
+  #    doctor/stats seams above.
+  : "${NOTIFY_EMIT_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB notify emit}"
+  if [ -n "${GAFFER_NOTIFY_WEBHOOK_URL:-}${GAFFER_NOTIFY_SLACK_URL:-}${GAFFER_NOTIFY_DESKTOP:-}" ]; then
+    local -a _ne; read -ra _ne <<<"$NOTIFY_EMIT_CMD"
+    if "${_ne[@]}" --kind review_needed --detail "$msg" \
+        ${GAFFER_DASHBOARD_URL:+--url "$GAFFER_DASHBOARD_URL"} >/dev/null 2>&1; then
+      sent="GAFFER_NOTIFY_* sink"
+    fi
+  fi
+  # 2) Legacy Slack incoming-webhook (back-compat).
   if [ -n "${GAFFER_SLACK_WEBHOOK:-}" ]; then
     curl -fsS -X POST -H 'Content-type: application/json' \
-      --data "$(printf '{"text":"%s"}' "$msg")" "$GAFFER_SLACK_WEBHOOK" >/dev/null 2>&1 && sent="Slack"
+      --data "$(printf '{"text":"%s"}' "$msg")" "$GAFFER_SLACK_WEBHOOK" >/dev/null 2>&1 \
+      && sent="${sent:+$sent + }GAFFER_SLACK_WEBHOOK"
   fi
+  # 3) Legacy local shell command (e.g. email).
   if [ -n "${GAFFER_NOTIFY_CMD:-}" ]; then
     printf '%s\n' "$msg" | sh -c "$GAFFER_NOTIFY_CMD" >/dev/null 2>&1 && sent="${sent:+$sent + }GAFFER_NOTIFY_CMD"
   fi
   if [ -n "$sent" ]; then warn "$msg — notified via $sent"
-  else warn "$msg — set GAFFER_SLACK_WEBHOOK or GAFFER_NOTIFY_CMD to be alerted"; fi
+  else warn "$msg — set GAFFER_NOTIFY_WEBHOOK_URL / GAFFER_NOTIFY_SLACK_URL / GAFFER_NOTIFY_DESKTOP (or legacy GAFFER_NOTIFY_CMD) to be alerted"; fi
 }
 
 say "factory status"

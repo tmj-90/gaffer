@@ -117,11 +117,15 @@ export async function cmdAdd(
   const confidence = parseConfidence(getString(args.flags, "confidence"));
   const restricted = getBool(args.flags, "restricted");
   const kind = parseKind(getString(args.flags, "kind"));
+  // Structured provenance (Spec-Driven Development, Phase 2b): when Dispatch
+  // seeds a frozen spec clause it stamps the (spec, clause) linkage so a later
+  // phase can JOIN the record back to the exact clause it came from.
+  const specId = getString(args.flags, "spec-id");
+  const clauseId = getString(args.flags, "clause-id");
 
   const db = openDb();
   try {
-    const fn = asDraft ? suggestLore : addLore;
-    const lore = fn(db, {
+    const loreInput = {
       title,
       summary,
       body,
@@ -134,7 +138,20 @@ export async function cmdAdd(
       confidence,
       restricted,
       ...(kind ? { kind } : {}),
-    });
+      ...(specId ? { specId } : {}),
+      ...(clauseId ? { clauseId } : {}),
+    };
+    // AUTO-APPROVE: the CLI suggest path now honours MEMORY_AUTO_APPROVE=1 too — the SAME
+    // env the MCP suggest_lore already respects (mcp/server.ts). When set, a suggested
+    // draft lands `active` immediately (an operator opting into unattended lore, e.g. the
+    // runner's close-time product-intent distiller). `add` is already active.
+    const lore = asDraft
+      ? suggestLore(
+          db,
+          loreInput,
+          process.env["MEMORY_AUTO_APPROVE"] === "1" ? { autoApprove: true } : undefined,
+        )
+      : addLore(db, loreInput);
     process.stdout.write(
       `memory: ${asDraft ? "suggested" : "added"} ${lore.id} (${lore.status})\n`,
     );

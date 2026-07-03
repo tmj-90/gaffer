@@ -1,7 +1,7 @@
 ---
 name: add-api-endpoint
 description: Use when a ticket asks to add or extend an HTTP/API endpoint — a new route, handler, or RPC method — with request validation and a defined response. Invoke for "add a POST /things endpoint", "expose a list API", or "add a field to the X response".
-stack: []
+stack: [node, python, go, java, rust]
 area: backend
 ---
 

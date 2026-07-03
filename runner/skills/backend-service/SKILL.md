@@ -1,7 +1,7 @@
 ---
 name: backend-service
 description: Use when a ticket asks for backend business logic that isn't itself an endpoint or a migration — a service/use-case, a domain operation, a background job, or orchestration across repositories. Invoke for "add a service to do X", "implement the use-case", or "extract the business logic out of the handler".
-stack: []
+stack: [node, python, go, java, rust]
 area: backend
 ---
 

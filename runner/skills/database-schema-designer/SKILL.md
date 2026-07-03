@@ -1,7 +1,7 @@
 ---
 name: database-schema-designer
 description: Use when designing new database tables from requirements, reviewing a schema for normalisation or performance issues, adding multi-tenancy, planning a breaking migration, or generating TypeScript/Python types from a schema. Triggers on "design the schema", "ERD", "table relationships", "schema migration", "normalise this", or "database model".
-stack: []
+stack: [node, python, go, java, rust]
 area: data
 ---
 

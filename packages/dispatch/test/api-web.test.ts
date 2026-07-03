@@ -81,4 +81,39 @@ describe("API: SPA static surface", () => {
     const body = (await res.json()) as { status: string };
     expect(body.status).toBe("ok");
   });
+
+  it("serves a hero background under /assets/ as an image", async () => {
+    const res = await fetch(`${h.baseUrl}/assets/bg/hero-city.jpg`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    const body = await res.arrayBuffer();
+    expect(body.byteLength).toBeGreaterThan(1000);
+  });
+
+  it("serves a split texture under /assets/ as a png", async () => {
+    const res = await fetch(`${h.baseUrl}/assets/bg/tex-01.png`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+  });
+
+  it("refuses a non-image extension under /assets/ (ext allowlist → JSON 404)", async () => {
+    const res = await fetch(`${h.baseUrl}/assets/bg/secret.json`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+  });
+
+  it("returns JSON 404 for a missing asset", async () => {
+    const res = await fetch(`${h.baseUrl}/assets/bg/does-not-exist.png`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+  });
+
+  it("does not leak source files via /assets/ traversal", async () => {
+    // Negative control: even after URL normalization, escaping the assets dir
+    // must never serve a source/config file.
+    for (const p of ["/assets/../server.js", "/assets/bg/%2e%2e/%2e%2e/server.js"]) {
+      const res = await fetch(`${h.baseUrl}${p}`);
+      expect(res.status).toBe(404);
+    }
+  });
 });

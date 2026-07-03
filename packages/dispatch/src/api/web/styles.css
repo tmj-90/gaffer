@@ -1191,6 +1191,158 @@ html::after {
   flex-wrap: wrap;
 }
 
+/* === Hero band ============================================================
+   An atmospheric image header that melts into the OLED content below it. The
+   asset carries a near-black LEFT and the amber focal on the RIGHT; a two-axis
+   scrim keeps real headline text AAA-legible on the left and fades the band
+   seamlessly into the view. Compositor-friendly: no layout-animating props. */
+.view-hero {
+  position: relative;
+  isolation: isolate;
+  min-height: clamp(300px, 40vh, 360px);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background-color: var(--bg);
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: right center;
+  display: flex;
+  align-items: center;
+}
+/* Scrim: (a) left→right --bg → transparent by ~62%, keeping the amber focal on
+   the right; (b) bottom→up transparent → --bg so the band dissolves into the
+   OLED content column directly beneath it. */
+.view-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      90deg,
+      var(--bg) 0%,
+      color-mix(in srgb, var(--bg) 72%, transparent) 34%,
+      transparent 62%
+    ),
+    linear-gradient(
+      0deg,
+      var(--bg) 0%,
+      color-mix(in srgb, var(--bg) 60%, transparent) 24%,
+      transparent 58%
+    );
+}
+.view-hero-inner {
+  position: relative;
+  z-index: 1;
+  max-width: 62ch;
+  padding: clamp(var(--s-5), 4vw, var(--s-7));
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.view-hero-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.view-hero-diamond {
+  color: var(--accent);
+  font-size: 0.72rem;
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+.view-hero-title {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: clamp(2rem, 6vw, 3.4rem);
+  line-height: 1.02;
+  letter-spacing: var(--track-tighter);
+  color: var(--text);
+  margin: 0;
+  max-width: 18ch;
+  text-wrap: balance;
+}
+.view-hero-sub {
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  line-height: 1.5;
+  color: var(--text-dim);
+  max-width: 46ch;
+  margin: 0;
+}
+.view-hero-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-1);
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  color: var(--text-dim);
+}
+.view-hero-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.view-hero-status.ok {
+  color: var(--ok);
+}
+.view-hero-status.ok .view-hero-dot {
+  background: var(--ok);
+  box-shadow: 0 0 8px -1px var(--ok);
+}
+
+/* Actions previously carried by the view-head, relocated below the hero. */
+.view-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+.view-toolbar-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* Mobile: shorter band, stronger scrim, headline scales down, amber focal on
+   the right stays visible (right-anchored image + scrim transparent past 78%). */
+@media (max-width: 639px) {
+  .view-hero {
+    min-height: 280px;
+  }
+  .view-hero::before {
+    background:
+      linear-gradient(
+        90deg,
+        var(--bg) 0%,
+        color-mix(in srgb, var(--bg) 82%, transparent) 42%,
+        transparent 78%
+      ),
+      linear-gradient(
+        0deg,
+        var(--bg) 0%,
+        color-mix(in srgb, var(--bg) 66%, transparent) 30%,
+        transparent 64%
+      );
+  }
+  .view-hero-inner {
+    max-width: 100%;
+    padding: var(--s-5) var(--s-4);
+  }
+  .view-hero-title {
+    font-size: clamp(1.7rem, 8vw, 2.3rem);
+  }
+}
+
 .section-title {
   display: flex;
   align-items: center;

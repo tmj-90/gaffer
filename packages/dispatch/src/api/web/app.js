@@ -478,6 +478,46 @@ function viewHead(title, countText, actions) {
   ]);
 }
 
+/**
+ * Atmospheric hero band that sits at the very TOP of a view, below the nav.
+ * A dark sci-fi image carries the amber focal on its RIGHT; a two-axis scrim
+ * (see `.view-hero` in styles.css) darkens the LEFT and fades the band into the
+ * OLED content below, so real headline text stays legible at AAA contrast.
+ *
+ * The image is purely decorative background; all copy is live DOM text (screen
+ * readers get the eyebrow/title/subtitle/status verbatim). The leading ◆ / ●
+ * marks are rendered as decorative, aria-hidden spans — do not bake them into
+ * the passed strings.
+ *
+ * @param {object}  o
+ * @param {string}  o.image        asset path, e.g. "assets/bg/hero-city.jpg"
+ * @param {string} [o.eyebrow]     small mono caps line (amber ◆ prepended)
+ * @param {string}  o.title        editorial headline (Space Grotesk)
+ * @param {string} [o.subtitle]    muted supporting line(s)
+ * @param {string} [o.status]      status line text (● dot prepended)
+ * @param {boolean}[o.statusOk]    green dot + text when healthy (default true)
+ */
+function viewHero({ image, eyebrow, title, subtitle, status, statusOk = true }) {
+  return el("header", { class: "view-hero", style: `background-image:url("${image}")` }, [
+    el("div", { class: "view-hero-inner" }, [
+      eyebrow
+        ? el("div", { class: "view-hero-eyebrow mono" }, [
+            el("span", { class: "view-hero-diamond", "aria-hidden": "true" }, "◆"),
+            el("span", {}, eyebrow),
+          ])
+        : null,
+      el("h1", { class: "view-hero-title" }, title),
+      subtitle ? el("p", { class: "view-hero-sub" }, subtitle) : null,
+      status
+        ? el("div", { class: `view-hero-status${statusOk ? " ok" : ""}` }, [
+            el("span", { class: "view-hero-dot", "aria-hidden": "true" }),
+            el("span", {}, status),
+          ])
+        : null,
+    ]),
+  ]);
+}
+
 function emptyState(title, sub, iconName = "check") {
   return el("div", { class: "empty-state" }, [
     el("div", { class: "es-icon" }, icon(iconName)),
@@ -1309,7 +1349,16 @@ async function renderOverview() {
   };
 
   const wrap = el("div", { class: "view" });
-  wrap.appendChild(overviewHead());
+  wrap.appendChild(
+    viewHero({
+      image: "assets/bg/hero-city.jpg",
+      title: "Ship better software, faster.",
+      subtitle:
+        "Real-time insight into your factory. Track flow, focus on what matters, and keep everything moving.",
+      status: "Factory online · All systems nominal",
+      statusOk: true,
+    }),
+  );
 
   // Queue-first: what needs YOU leads the room, sitting above the metrics.
   wrap.appendChild(whatIOwnPanel(humanQueueRes));
@@ -1558,25 +1607,6 @@ function renderBouncingPanel(bouncing) {
         );
       }),
     ),
-  ]);
-}
-
-/** Overview header: title + supporting line + a right-aligned freshness stamp. */
-function overviewHead() {
-  const d = new Date();
-  const date = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-  return el("div", { class: "ov-head" }, [
-    el("div", {}, [
-      el("h1", { class: "ov-title" }, "Overview"),
-      el("p", { class: "ov-sub" }, "Track your development flow and keep the factory moving."),
-    ]),
-    el("div", { class: "ov-meta" }, [
-      el("span", { class: "ov-fresh" }, [
-        el("span", { class: "ov-fresh-dot" }),
-        "Updated just now",
-      ]),
-      el("span", { class: "ov-date mono" }, date),
-    ]),
   ]);
 }
 
@@ -2566,10 +2596,20 @@ async function renderWork() {
   ]);
 
   wrap.appendChild(
-    viewHead("Work", `${live} live · ${wontDo.length} won't do · ${closed.length} closed`, [
+    viewHero({
+      image: "assets/bg/hero-factory.jpg",
+      eyebrow: `${live} LIVE · ${wontDo.length} WON'T DO · ${closed.length} CLOSED`,
+      title: "Work",
+      subtitle: "Plan, prioritize and ship with confidence.",
+    }),
+  );
+  wrap.appendChild(
+    el("div", { class: "view-toolbar" }, [
       modeToggle,
-      pollWorkButton(),
-      suggestWorkButton(repos, nodes),
+      el("div", { class: "view-toolbar-actions" }, [
+        pollWorkButton(),
+        suggestWorkButton(repos, nodes),
+      ]),
     ]),
   );
   if (workState.mode === "board") wrap.appendChild(workFlowHeader(columns, closed.length));
@@ -9472,19 +9512,23 @@ async function renderSpecList() {
 
   const wrap = el("div", { class: "view", dataset: { view: "specs" } });
   wrap.appendChild(
-    viewHead("Specs", `${specs.length} spec${specs.length === 1 ? "" : "s"}`, [
-      el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
-        icon("spark"),
-        el("span", {}, "Author a spec"),
-      ]),
-    ]),
+    viewHero({
+      image: "assets/bg/hero-spec.jpg",
+      eyebrow: "SPEC LIBRARY",
+      title: "Specs define intent. Code delivers it.",
+      subtitle:
+        "Each spec is a frozen statement of product intent. Trace every clause through to acceptance criteria and see the coverage gaps.",
+    }),
   );
   wrap.appendChild(
-    el(
-      "p",
-      { class: "epics-lede dim" },
-      "A spec is a frozen statement of product intent. Open one to trace each clause through to the acceptance criteria that satisfy it — and to see the coverage gaps.",
-    ),
+    el("div", { class: "view-toolbar" }, [
+      el("div", { class: "view-toolbar-actions" }, [
+        el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
+          icon("spark"),
+          el("span", {}, "Author a spec"),
+        ]),
+      ]),
+    ]),
   );
 
   if (specs.length === 0) {

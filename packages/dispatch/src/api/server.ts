@@ -1,6 +1,6 @@
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { dirname, join } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
@@ -357,23 +357,56 @@ const STATIC_ROUTES: ReadonlyMap<string, { file: string; type: string }> = new M
   ["/gaffer-favicon.svg", { file: "gaffer-favicon.svg", type: "image/svg+xml" }],
 ]);
 
+/** Bundled media served under /assets/ (hero backgrounds, textures). */
+const ASSETS_DIR = join(WEB_DIR, "assets");
+const ASSET_MIME: ReadonlyMap<string, string> = new Map([
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+  [".svg", "image/svg+xml"],
+]);
+
 /** Serve a known static asset. Returns true if the path was handled. */
 function serveStatic(pathname: string, res: ServerResponse): boolean {
   const match = STATIC_ROUTES.get(pathname);
-  if (!match) return false;
-  try {
-    const body = readFileSync(join(WEB_DIR, match.file));
-    res.writeHead(200, {
-      "content-type": match.type,
-      "content-length": body.length,
-      // Dev dashboard: never serve a stale SPA — assets change on every build.
-      "cache-control": "no-store, must-revalidate",
-    });
-    res.end(body);
-  } catch {
-    sendJson(res, 500, errorBody("INTERNAL_ERROR", `Static asset missing: ${match.file}`));
+  if (match) {
+    try {
+      const body = readFileSync(join(WEB_DIR, match.file));
+      res.writeHead(200, {
+        "content-type": match.type,
+        "content-length": body.length,
+        // Dev dashboard: never serve a stale SPA — assets change on every build.
+        "cache-control": "no-store, must-revalidate",
+      });
+      res.end(body);
+    } catch {
+      sendJson(res, 500, errorBody("INTERNAL_ERROR", `Static asset missing: ${match.file}`));
+    }
+    return true;
   }
-  return true;
+  // Media under /assets/ — image extensions only, and the resolved path MUST stay
+  // inside WEB_DIR/assets (blocks ../ traversal). Anything else falls through to
+  // the JSON 404 so a genuine API 404 is never swallowed.
+  if (pathname.startsWith("/assets/")) {
+    const type = ASSET_MIME.get(extname(pathname).toLowerCase());
+    if (!type) return false;
+    const full = resolve(ASSETS_DIR, "." + pathname.slice("/assets".length));
+    if (full !== ASSETS_DIR && !full.startsWith(ASSETS_DIR + sep)) return false;
+    try {
+      const body = readFileSync(full);
+      res.writeHead(200, {
+        "content-type": type,
+        "content-length": body.length,
+        "cache-control": "public, max-age=3600",
+      });
+      res.end(body);
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {

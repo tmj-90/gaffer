@@ -150,6 +150,21 @@ const ICONS = {
     '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M9 13l1.5 1.5L13 12M9 17h5"/>',
   health:
     '<path d="M20.8 4.6a5.5 5.5 0 0 0-8 0L12 5.4l-.8-.8a5.5 5.5 0 1 0-7.8 7.8l.8.8L12 21l7.8-8 .8-.8a5.5 5.5 0 0 0 .2-7.6Z"/><path d="M3 12.5h4l1.5-4 3 8 1.5-4H17"/>',
+  // --- pipeline stage icons (Plan → Ready → Build → Review → Deploy) --------
+  gitbranch:
+    '<circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="7" r="2.6"/><path d="M6 8.6v6.8M18 9.6c0 3.2-4.4 3.4-6.4 5.6"/>',
+  inbox:
+    '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1Z"/>',
+  wrench:
+    '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.9 2.9-2-.5-.5-2 2.9-2.8Z"/>',
+  clipboardcheck:
+    '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/>',
+  diamond: '<path d="M12 2 22 12 12 22 2 12Z"/>',
+  // --- spec scanner-frame line icons (keyword-matched by title) ------------
+  globe:
+    '<circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5a15 15 0 0 1 0 19a15 15 0 0 1 0-19Z"/>',
+  gauge: '<path d="m12 13 3.5-3.5"/><path d="M4 18.5a10 10 0 1 1 16 0"/><circle cx="12" cy="19" r="1"/>',
+  doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/>',
 };
 function icon(name, cls) {
   const ns = "http://www.w3.org/2000/svg";
@@ -193,6 +208,16 @@ function fmtDuration(ms) {
   if (hr < 24) return `${hr}h ${min % 60}m`;
   const day = Math.floor(hr / 24);
   return `${day}d ${hr % 24}h`;
+}
+
+/** Relative time from an ISO stamp, e.g. "3d ago" / "just now". */
+function fmtRelative(iso) {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const ms = Date.now() - t;
+  if (ms < 60_000) return "just now";
+  return `${fmtDuration(ms)} ago`;
 }
 
 /** Short, human-friendly timestamp. Falls back to the raw string. */
@@ -1642,124 +1667,142 @@ function kpiCard({ label, value, unit, tone, delta, series, goodWhenDown = false
   ]);
 }
 
-/** Development flow: one row per stage — count, share bar, oldest item, health. */
-function devFlowPanel(tickets, byStatus, now) {
-  const DAY = 86_400_000;
-  const groups = [
-    { label: "Plan", statuses: ["draft", "refining"], tone: "idle" },
-    { label: "Ready", statuses: ["ready"], tone: "accent" },
-    { label: "Build", statuses: ["in_progress", "claimed"], tone: "accent" },
-    { label: "Review", statuses: ["in_review", "in_testing", "ready_for_merge"], tone: "amber" },
-    { label: "Shipped", statuses: ["done"], tone: "ok" },
-  ];
-  if ((byStatus.blocked || 0) > 0)
-    groups.splice(4, 0, { label: "Blocked", statuses: ["blocked"], tone: "danger" });
+/**
+ * Development flow as a horizontal NODE PIPELINE — the Overview's signature
+ * element. Five stage nodes (Plan → Ready → Build → Review → Deploy) mapped from
+ * the authoritative board counts (summary.ticketsByStatus). Each node is a
+ * circular icon disc + LABEL + COUNT; a node with work is "active" (amber ring +
+ * glow), an empty node is "dim". Discs are joined by a hairline connector; the
+ * segment leading into an active node tints amber. On mobile the row becomes a
+ * single horizontally-scrollable strip. `tickets` is retained for signature
+ * compatibility but counts come from the aggregate `byStatus`.
+ */
+const PIPELINE_STAGES = [
+  { label: "Plan", icon: "gitbranch", statuses: ["draft", "refining"], href: "#/work?status=draft" },
+  { label: "Ready", icon: "inbox", statuses: ["ready"], href: "#/work?status=ready" },
+  {
+    label: "Build",
+    icon: "wrench",
+    statuses: ["in_progress", "claimed"],
+    href: "#/work?status=in_progress",
+  },
+  {
+    label: "Review",
+    icon: "clipboardcheck",
+    statuses: ["in_review", "in_testing", "ready_for_merge"],
+    href: "#/review",
+  },
+  { label: "Deploy", icon: "diamond", statuses: ["done", "shipped"], href: "#/work?status=done" },
+];
 
-  const rows = groups.map((g) => {
-    const items = tickets.filter((t) => g.statuses.includes(t.status));
-    const count = items.length;
-    const oldestMs = items.length
-      ? now - Math.min(...items.map((t) => Date.parse(t.updated_at)))
-      : 0;
-    const ageDays = oldestMs / DAY;
-    const terminal = g.label === "Shipped";
-    const warn = g.label === "Blocked" || (!terminal && count > 0 && ageDays >= 3);
-    return { ...g, count, oldestMs, warn, terminal };
-  });
-  const max = Math.max(1, ...rows.map((r) => r.count));
+function devFlowPanel(_tickets, byStatus, _now) {
+  const counts = byStatus || {};
+  const nodes = PIPELINE_STAGES.map((s) => ({
+    ...s,
+    count: s.statuses.reduce((sum, st) => sum + (counts[st] || 0), 0),
+  }));
 
-  return el("div", { class: "card panel" }, [
-    panelHead("Development flow", "live"),
+  return el("div", { class: "card panel pipeline-panel" }, [
+    el("div", { class: "panel-head" }, [
+      el("span", { class: "panel-title" }, "Development flow"),
+      el("span", { class: "pl-live" }, [el("span", { class: "pl-live-dot" }), "LIVE"]),
+    ]),
     el(
       "div",
-      { class: "devflow" },
-      rows.map((r) =>
-        el("a", { class: `df-row tone-${r.tone}`, href: "#/work" }, [
-          el("span", { class: "df-name" }, [el("span", { class: "df-dot" }), r.label]),
-          el("span", { class: "df-count tabnum" }, String(r.count)),
-          el(
-            "span",
-            { class: "df-bar" },
-            el("i", { style: `width:${r.count ? Math.max(4, (r.count / max) * 100) : 0}%` }),
-          ),
-          el(
-            "span",
-            { class: "df-age mono" },
-            r.count ? (r.terminal ? "—" : fmtDuration(r.oldestMs)) : "—",
-          ),
-          el(
-            "span",
-            { class: `df-status ${r.warn ? "warn" : "ok"}` },
-            r.warn ? "Attention" : "Healthy",
-          ),
-        ]),
-      ),
+      { class: "pipeline", role: "list", "aria-label": "Development flow stages" },
+      nodes.map((n) => {
+        const active = n.count > 0;
+        return el(
+          "a",
+          {
+            class: `pl-node ${active ? "active" : "dim"}`,
+            href: n.href,
+            role: "listitem",
+            "aria-label": `${n.label}: ${n.count}`,
+          },
+          [
+            el("span", { class: "pl-disc" }, icon(n.icon)),
+            el("span", { class: "pl-label" }, n.label),
+            el("span", { class: "pl-count tabnum" }, String(n.count)),
+          ],
+        );
+      }),
     ),
   ]);
 }
 
-/** Needs your attention: the human-gate queue as a tidy alert list. */
+/**
+ * Needs your attention: the human-gate queue as severity-coded alert rows. Each
+ * row carries a left status icon keyed to severity — a red diamond for a
+ * critical/failing condition (blocked work), an amber triangle for something
+ * waiting/overdue (review queue, open decisions, at-risk/stale tickets) — a bold
+ * title + a muted sub-line (the detail), and a right-aligned action link that
+ * routes to the relevant view. All items derive from real overview state; when
+ * nothing is owed the panel keeps its reassuring green all-clear row.
+ */
 function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
   const items = [];
   if (blocked > 0)
     items.push({
-      tone: "blocked",
-      icon: "alert",
-      count: blocked,
+      severity: "critical",
       title: `${blocked} blocked ${blocked === 1 ? "task" : "tasks"}`,
       sub: "waiting on a human to clear the path",
+      action: "View",
       href: "#/work?status=blocked",
     });
   if (inReview > 0)
     items.push({
-      tone: "review",
-      icon: "review",
-      count: inReview,
-      title: "Review queue",
+      severity: "waiting",
+      title: `Review queue · ${inReview}`,
       sub: "changes waiting on your sign-off",
+      action: "Review",
       href: "#/review",
     });
   if (openDecisions > 0)
     items.push({
-      tone: "decision",
-      icon: "question",
-      count: openDecisions,
+      severity: "waiting",
       title: `${openDecisions} open ${openDecisions === 1 ? "decision" : "decisions"}`,
       sub: "a question is waiting on you",
+      action: "Review",
       href: "#/overview",
     });
   if ((stuck || []).length)
     items.push({
-      tone: "stale",
-      icon: "clock",
-      count: stuck.length,
+      severity: "waiting",
       title: `${stuck.length} at risk`,
       sub: `held too long — oldest ${fmtDuration(stuck[0].stuckForMs)}`,
+      action: "View",
       href: "#/work",
     });
   if (staleClaims > 0)
     items.push({
-      tone: "stale",
-      icon: "clock",
-      count: staleClaims,
-      title: "Stale claims",
+      severity: "waiting",
+      title: `${staleClaims} stale ${staleClaims === 1 ? "claim" : "claims"}`,
       sub: "leases past expiry",
+      action: "View",
       href: "#/work",
     });
+
+  // red diamond = critical/failing · amber triangle = waiting/overdue
+  const sevIcon = (severity) => icon(severity === "critical" ? "diamond" : "alert");
 
   const body = items.length
     ? el(
         "ul",
         { class: "needs-list" },
         items.map((n) =>
-          el("a", { class: `needs-item tone-${n.tone}`, href: n.href }, [
-            el("span", { class: "ni-icon" }, icon(n.icon)),
-            el("span", { class: "ni-body" }, [
-              el("span", { class: "ni-title" }, n.title),
-              el("span", { class: "ni-sub" }, n.sub),
+          el(
+            "li",
+            { class: `needs-item`, dataset: { sev: n.severity } },
+            el("a", { class: "ni-link", href: n.href }, [
+              el("span", { class: "ni-icon" }, sevIcon(n.severity)),
+              el("span", { class: "ni-body" }, [
+                el("span", { class: "ni-title" }, n.title),
+                el("span", { class: "ni-sub" }, n.sub),
+              ]),
+              el("span", { class: "ni-action" }, [n.action, el("span", { class: "ni-arrow" }, "→")]),
             ]),
-            el("span", { class: "ni-go" }, icon("chevron")),
-          ]),
+          ),
         ),
       )
     : el("div", { class: "needs-empty" }, [
@@ -9542,33 +9585,156 @@ async function renderSpecList() {
     return wrap;
   }
 
+  // Best-effort coverage: fetch each spec's coverage rollup in parallel so the
+  // stats row can report real covered% / gaps. A failed fetch just drops that
+  // spec from the coverage maths (the stat degrades to "—", never crashes).
+  const coverages = await Promise.all(
+    specs.map((s) =>
+      api("GET", `/specs/${encodeURIComponent(s.id)}/coverage`)
+        .then((r) => (r && r.coverage) || null)
+        .catch(() => null),
+    ),
+  );
+  const covById = new Map(specs.map((s, i) => [s.id, coverages[i]]));
+
+  wrap.appendChild(specStatsRow(specs, coverages));
+
+  // Newest spec (by updated_at) is the primary card — it gets the amber rail.
+  const newestId = specs
+    .slice()
+    .sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))[0]?.id;
+
   const list = el("div", { class: "spec-list" });
-  for (const spec of specs) list.appendChild(renderSpecCard(spec));
+  for (const spec of specs)
+    list.appendChild(
+      renderSpecCard(spec, { coverage: covById.get(spec.id), isPrimary: spec.id === newestId }),
+    );
   wrap.appendChild(list);
   return wrap;
 }
 
-/** One spec = a card linking to its coverage trace. */
-function renderSpecCard(spec) {
+/** A rollup {total,covered,orphans} from a coverage payload, defensively read. */
+function specCoverageRollup(coverage) {
+  const src = coverage && coverage.rollup && typeof coverage.rollup === "object" ? coverage.rollup : null;
+  if (!src) return null;
+  const total = Number(src.total) || 0;
+  const covered = Number(src.covered) || 0;
+  const orphans = Array.isArray(src.orphans) ? src.orphans.length : Number(src.orphans) || 0;
+  return { total, covered, orphans };
+}
+
+/** Stats row for the spec library: total specs · avg coverage · gaps · updated. */
+function specStatsRow(specs, coverages) {
+  const rollups = coverages.map(specCoverageRollup).filter(Boolean);
+  const withClauses = rollups.filter((r) => r.total > 0);
+  const covPcts = withClauses.map((r) => Math.round((r.covered / r.total) * 100));
+  const avgCoverage = covPcts.length
+    ? Math.round(covPcts.reduce((a, b) => a + b, 0) / covPcts.length)
+    : null;
+  const gaps = rollups.length ? rollups.reduce((a, r) => a + r.orphans, 0) : null;
+
+  const newest = specs
+    .slice()
+    .filter((s) => s.updated_at)
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0];
+
+  return el("div", { class: "spec-stats kpi-row" }, [
+    specStatCard({ label: "Total specs", value: String(specs.length), unit: "in library" }),
+    specStatCard({
+      label: "Coverage",
+      value: avgCoverage == null ? "—" : String(avgCoverage),
+      unit: avgCoverage == null ? "no data" : "% avg covered",
+      tone: "ok",
+      series: covPcts.length > 1 ? covPcts : null,
+    }),
+    specStatCard({
+      label: "Gaps",
+      value: gaps == null ? "—" : String(gaps),
+      unit: gaps == null ? "no data" : "orphan clauses",
+      tone: gaps ? "danger" : "ok",
+    }),
+    specStatCard({
+      label: "Last updated",
+      value: newest ? fmtRelative(newest.updated_at) : "—",
+      unit: newest && newest.target_repo ? newest.target_repo : "—",
+      tone: "amber",
+      small: true,
+    }),
+  ]);
+}
+
+/**
+ * A stat tile reusing the KPI card's visual language (label · big value · unit ·
+ * optional sparkline) but rendered as a non-navigating div — the spec library
+ * has no single "drill" target for an aggregate stat.
+ */
+function specStatCard({ label, value, unit, tone = "accent", series, small = false }) {
+  return el("div", { class: `kpi tone-${tone}${small ? " kpi-sm" : ""}` }, [
+    el("div", { class: "kpi-top" }, [el("span", { class: "kpi-label" }, label)]),
+    el("div", { class: "kpi-figure" }, [
+      el("span", { class: "kpi-val tabnum" }, value),
+      unit ? el("span", { class: "kpi-unit" }, unit) : null,
+    ]),
+    series && series.length > 1 ? el("div", { class: "kpi-spark", html: svgSpark(series) }) : null,
+  ]);
+}
+
+/** Keyword-match a spec title to a scanner-frame line icon. */
+function specThumbIcon(title) {
+  const t = (title || "").toLowerCase();
+  if (/\b(auth|password|login|sign[- ]?in|sign[- ]?up|credential|token|oauth|secur)/.test(t))
+    return "lock";
+  if (/\b(data|residency|storage|region|geo|locale|country|tenant|migrat)/.test(t)) return "globe";
+  if (/\b(rate|throttle|limit|quota|budget|throughput|latency|perf|speed)/.test(t)) return "gauge";
+  return "doc";
+}
+
+/** Four amber L-shaped corner brackets framing a spec thumbnail icon. */
+function specThumb(title) {
+  return el("span", { class: "spec-thumb" }, [
+    el("i", { class: "tc tl" }),
+    el("i", { class: "tc tr" }),
+    el("i", { class: "tc bl" }),
+    el("i", { class: "tc br" }),
+    icon(specThumbIcon(title), "spec-thumb-icon"),
+  ]);
+}
+
+/** One spec = a card linking to its coverage trace, with a scanner-frame thumb. */
+function renderSpecCard(spec, { coverage, isPrimary = false } = {}) {
   const count = specClauseCount(spec);
+  // Status dot: frozen (reaching agents) = amber, draft (live/authoring) = green.
+  const statusLabel = SPEC_STATUS_LABEL[spec.status] || spec.status;
+  const rollup = specCoverageRollup(coverage);
   return el(
     "button",
     {
-      class: "spec-card",
+      class: `spec-card${isPrimary ? " spec-card--primary" : ""}`,
       type: "button",
       dataset: { specId: spec.id, status: spec.status },
       onclick: () => navigate(`#/specs/${encodeURIComponent(spec.id)}`),
     },
     [
-      el("div", { class: "spec-card-head" }, [
-        el("span", { class: "spec-card-title" }, spec.title),
-        badge(SPEC_STATUS_LABEL[spec.status] || spec.status, `spec-status-${spec.status}`),
+      specThumb(spec.title),
+      el("div", { class: "spec-card-body" }, [
+        el("div", { class: "spec-card-head" }, [
+          el("span", { class: "spec-card-title" }, spec.title),
+          el("span", { class: `spec-card-status status-${spec.status}` }, [
+            el("span", { class: "scs-dot" }),
+            statusLabel,
+          ]),
+        ]),
+        spec.brief ? el("p", { class: "spec-card-brief dim" }, spec.brief) : null,
+        el("div", { class: "spec-card-meta dim" }, [
+          el("span", {}, `${count} clause${count === 1 ? "" : "s"}`),
+          spec.target_repo ? el("span", { class: "tag-chip" }, spec.target_repo) : null,
+          rollup && rollup.total > 0
+            ? el("span", { class: "spec-card-cov mono" }, `${Math.round((rollup.covered / rollup.total) * 100)}% covered`)
+            : null,
+          spec.updated_at ? el("span", { class: "spec-card-updated" }, fmtRelative(spec.updated_at)) : null,
+        ]),
       ]),
-      spec.brief ? el("p", { class: "spec-card-brief dim" }, spec.brief) : null,
-      el("div", { class: "spec-card-meta dim" }, [
-        el("span", {}, `${count} clause${count === 1 ? "" : "s"}`),
-        spec.target_repo ? el("span", { class: "tag-chip" }, spec.target_repo) : null,
-      ]),
+      icon("chevron", "spec-card-chevron"),
     ],
   );
 }

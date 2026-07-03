@@ -164,6 +164,34 @@ describe("web: Specs view", () => {
     expect(card).not.toBeNull();
   });
 
+  it("renders a stats row and a scanner-frame thumbnail for each spec", async () => {
+    stubFetch();
+    mountShell("#/specs");
+    await boot();
+
+    // Stats row reuses KPI styling: total specs + coverage + gaps + updated.
+    const stats = document.querySelector(".spec-stats");
+    expect(stats).not.toBeNull();
+    const statText = stats!.textContent || "";
+    expect(statText).toContain("Total specs");
+    expect(statText).toContain("Coverage");
+    expect(statText).toContain("Gaps");
+    // COVERAGE = covered(2)/total(3) ≈ 67%; GAPS = 1 orphan (from COVERAGE rollup).
+    expect(statText).toContain("67");
+    expect(statText).toContain("1");
+
+    // Each card carries a scanner-frame thumbnail: four corner brackets + icon.
+    const thumb = document.querySelector(".spec-card .spec-thumb");
+    expect(thumb).not.toBeNull();
+    expect(thumb!.querySelectorAll(".tc").length).toBe(4);
+    expect(thumb!.querySelector(".spec-thumb-icon")).not.toBeNull();
+
+    // A status dot accompanies the (retained) status label.
+    expect(document.querySelector(".spec-card-status .scs-dot")).not.toBeNull();
+    // The newest spec is the primary card (amber rail).
+    expect(document.querySelector(".spec-card--primary")).not.toBeNull();
+  });
+
   it("renders an empty state when there are no specs", async () => {
     stubFetch({ specs: { specs: [] } });
     mountShell("#/specs");

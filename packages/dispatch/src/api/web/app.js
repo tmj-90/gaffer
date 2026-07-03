@@ -8017,27 +8017,34 @@ async function archivePlanBuildSession(status) {
   }
 }
 
-function openPlanBuild() {
+function openPlanBuild(opts = {}) {
   const { scrim, input } = ensurePlanBuild();
   // `mode` is the start toggle: "new" (greenfield app) vs "extend" (add tickets
   // to an existing scope node / epic). `target` holds the chosen extend node and
   // becomes the `context` sent to the decomposer on the first turn. `nodes` is
   // loaded lazily for the extend picker; an empty list just hides the option.
   // `sessionId` is the server-side session id (null when persistence unavailable).
+  // `spec` (SPEC-DRIVEN): when opened from a FROZEN spec via buildFromFrozenSpec(),
+  // its clauses ride along on every plan-build POST so the decomposer satisfies each
+  // clause and stamps spec_clause_id provenance on the ACs — without this the whole
+  // spec→plan→coverage traceability chain is dead (the spec never reaches decompose).
   planBuildState = {
     history: [],
     plan: null,
     busy: false,
-    brief: null,
+    brief: opts.brief || null,
     mode: "new",
     target: null,
     nodes: [],
     repos: [],
     sessionId: null,
+    spec: Array.isArray(opts.spec) && opts.spec.length ? opts.spec : null,
   };
   renderPlanBuildLog();
   scrim.classList.add("open");
   document.addEventListener("keydown", planBuildKeydown);
+  // Seeded from a spec: pre-fill the brief so the user can immediately "Build the tickets".
+  if (planBuildState.brief && input) input.value = planBuildState.brief;
   setTimeout(() => input.focus(), 50);
   // Best-effort: restore the in-progress session from the server, and populate
   // the "Extend existing" picker. Both are non-blocking; the panel works without them.
@@ -8048,8 +8055,12 @@ function openPlanBuild() {
       api("GET", "/repositories"),
     ]);
     if (!planBuildState) return; // panel was closed during the fetch
-    // Restore server session (if one exists and the panel hasn't been interacted with).
-    if (sessionRes && sessionRes.session && planBuildState.history.length === 0) {
+    // A spec-driven open is ALWAYS a fresh session — never restore an unrelated
+    // in-progress plan over the frozen-spec intent.
+    if (planBuildState.spec) {
+      await createPlanBuildSession();
+    } else if (sessionRes && sessionRes.session && planBuildState.history.length === 0) {
+      // Restore server session (if one exists and the panel hasn't been interacted with).
       restorePlanBuildSession(sessionRes.session);
     } else if (!sessionRes || !sessionRes.session) {
       // No active session on the server — create one (best-effort).
@@ -8081,6 +8092,7 @@ async function startNewPlanBuild() {
     nodes: planBuildState ? planBuildState.nodes : [],
     repos: planBuildState ? planBuildState.repos : [],
     sessionId: null,
+    spec: null, // "New plan" starts clean — any frozen-spec attachment is dropped
   };
   renderPlanBuildLog();
   // Create a fresh server-side session.
@@ -8707,6 +8719,11 @@ async function submitPlanBuildTurn(opts = {}) {
         .map((t) => (t.role === "user" && t.brief ? { role: "user", answer: t.brief } : t)),
       ...(context !== undefined ? { context } : {}),
       ...(forcePlan ? { forcePlan: true } : {}),
+      // SPEC-DRIVEN: thread the frozen spec's clauses so the decomposer satisfies each
+      // and stamps spec_clause_id provenance on the ACs (drives the coverage read model).
+      ...(Array.isArray(planBuildState.spec) && planBuildState.spec.length
+        ? { spec: planBuildState.spec }
+        : {}),
     });
     if (res.phase === "clarify") {
       planBuildState.history.push({ role: "assistant", questions: res.questions || [] });
@@ -9142,7 +9159,18 @@ function renderSpecDraft(draft) {
     );
   } else {
     confirmRow.appendChild(
-      el("p", { class: "pb-confirm-note dim" }, "Spec frozen — clauses are now immutable."),
+      el(
+        "p",
+        { class: "pb-confirm-note dim" },
+        "Spec frozen — clauses are immutable. Build the tickets from it to carry clause provenance into the plan.",
+      ),
+    );
+    confirmRow.appendChild(
+      el(
+        "button",
+        { class: "btn primary sb-build", type: "button", onclick: () => buildFromFrozenSpec() },
+        [icon("check"), el("span", {}, "Build the tickets from this spec")],
+      ),
     );
   }
   wrap.appendChild(confirmRow);
@@ -9378,6 +9406,32 @@ async function freezeCreatedSpec() {
     specBuildState.busy = false;
     renderSpecBuildLog();
   }
+}
+
+/**
+ * Hand a FROZEN spec off to the "Plan a build" decomposer. Its clauses ride along on the
+ * plan-build POST so the decomposer satisfies each clause and stamps spec_clause_id
+ * provenance on the ACs — the coverage/traceability read model depends on this. Closes the
+ * spec panel and opens plan-build seeded with the clauses + a brief; the user then presses
+ * "Build the tickets". Without this handoff the frozen spec never reaches decompose and the
+ * Specs coverage view reads 0% for every spec even when the work fully delivers.
+ */
+function buildFromFrozenSpec() {
+  const spec = specBuildState && specBuildState.createdSpec;
+  if (!spec || spec.status !== "frozen") return;
+  const clauses = (Array.isArray(spec.clauses) ? spec.clauses : [])
+    .filter((c) => c && c.clause_id && c.kind && c.text)
+    .map((c) => ({
+      clause_id: c.clause_id,
+      kind: c.kind,
+      text: c.text,
+      ...(c.rationale ? { rationale: c.rationale } : {}),
+    }));
+  if (!clauses.length) return;
+  const brief =
+    (specBuildState && specBuildState.brief) || spec.brief || spec.title || "Build from the frozen spec.";
+  closeSpecBuild();
+  openPlanBuild({ spec: clauses, brief });
 }
 
 // --- View: Memory (Repo Digest · Feature ledger · Lore) ---------------------

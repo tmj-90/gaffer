@@ -7,8 +7,10 @@
  * reason). This is the security boundary for unattended runs: the model proposes
  * actions, this hook decides — deterministically, not by trusting the model.
  *
- * Deny-by-default for the dangerous classes; everything else is allowed. Kept
- * self-contained (no imports) so a change elsewhere can never weaken it.
+ * Deny-by-default for the dangerous classes; everything else is allowed. The only
+ * external dependency is the dangerous-command deny-list, loaded via a guarded
+ * dynamic import that FAILS CLOSED (blocks) if the sibling is missing/broken — see
+ * below. Everything else is self-contained so a change elsewhere can't weaken it.
  *
  * Mirrors Crew's safety classifiers (git/fs/command) but is intentionally
  * duplicated here: a security control should not depend on another build.
@@ -28,7 +30,25 @@ import { basename, dirname, join, resolve } from "node:path";
 // Canonical dangerous-command deny list — the SINGLE source of truth shared with
 // the crew classifier's parity test (S-3). The hook consumes `{ re, why, install? }`;
 // the extra parity metadata on each rule is inert here. See the module header.
-import { DANGEROUS_COMMANDS as DENY_COMMANDS } from "./lib/dangerous-commands.mjs";
+//
+// FAIL CLOSED on a missing/broken deny-list. A STATIC `import` of this sibling would
+// crash the module at LOAD time if the file were deleted/renamed/corrupt — and a
+// load-time crash exits non-2, which Claude Code reads as ALLOW, silently disabling
+// the ENTIRE hook. So load it via a guarded dynamic import (top-level await resolves
+// before the stdin handlers below process anything) and BLOCK (exit 2) on any failure
+// or an empty/malformed list. tick.sh preflights this file's existence too.
+let DENY_COMMANDS;
+try {
+  ({ DANGEROUS_COMMANDS: DENY_COMMANDS } = await import("./lib/dangerous-commands.mjs"));
+  if (!Array.isArray(DENY_COMMANDS) || DENY_COMMANDS.length === 0) {
+    throw new Error("deny-list is empty or not an array");
+  }
+} catch (err) {
+  process.stderr.write(
+    `safety-hook: cannot load the dangerous-command deny-list (${err && err.message ? err.message : err}) — FAILING CLOSED (exit 2).\n`,
+  );
+  process.exit(2);
+}
 
 // Hard bounds so a pathological/deep path can NEVER blow the call stack. An
 // unbounded recursion here throws RangeError, and an uncaught throw would exit

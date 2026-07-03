@@ -204,6 +204,18 @@ _gaffer_locked() {
 }
 _gaffer_log_line() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" | tee -a "$GAFFER_LOG" >&2; }
 log() { _gaffer_locked .log.lock _gaffer_log_line "$*"; }
+# The safety hook AND its deny-list sibling must BOTH be present before we launch a
+# live agent: a missing lib/dangerous-commands.mjs would make the hook fail-closed at
+# runtime (blocking every tool call), but preflighting it here refuses the tick with a
+# clear cause instead. Returns 1 (logged) if either is absent. Callers apply their own
+# fail-closed action (exit 1 / return 1).
+gaffer_assert_safety_hook() {
+  [ -f "$RUNNER_DIR/safety-hook.mjs" ] \
+    || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs (fail closed)"; return 1; }
+  [ -f "$RUNNER_DIR/lib/dangerous-commands.mjs" ] \
+    || { log "SAFETY: deny-list missing at $RUNNER_DIR/lib/dangerous-commands.mjs — the hook cannot load its rules; refusing (fail closed)"; return 1; }
+  return 0
+}
 # Mark a delivery worktree as a TRUSTED Claude Code workspace so the headless
 # `claude -p` agent HONOURS the installed .claude/settings.json permission
 # allowlist instead of hanging on a tool-permission prompt no one can answer
@@ -708,7 +720,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     fi
 
     # Fail closed: never run a live agent without the deterministic safety hook.
-    [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs — refusing live bootstrap (fail closed)"; result error; exit 1; }
+    gaffer_assert_safety_hook || { log "SAFETY: refusing live bootstrap (fail closed)"; result error; exit 1; }
 
     # Create + init the new repo dir. A failure here leaves no half-made repo.
     if ! gaffer_bootstrap_init "$B_DIR"; then
@@ -1534,7 +1546,7 @@ EOF
   # PreToolUse hook is the safety boundary; env carries the two server DB paths.
   # Fail CLOSED: the safety hook is THE deterministic boundary. If it's missing,
   # never run a live agent — Claude Code would otherwise run with no boundary.
-  [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs — refusing live run (fail closed)"; result error; exit 1; }
+  gaffer_assert_safety_hook || { log "SAFETY: refusing live run (fail closed)"; result error; exit 1; }
 
   # ── Agent-environment install (runs before EVERY attempt's launch) ──────────
   # Installs the project-local agent environment into the PRIMARY write worktree
@@ -1557,7 +1569,7 @@ EOF
   # the hook; callers must NOT launch the agent for that attempt on failure —
   # launching without the hook is the one unacceptable outcome.
   gaffer_install_agent_env() {
-    [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs — refusing to prepare the agent env (fail closed)"; return 1; }
+    gaffer_assert_safety_hook || { log "SAFETY: refusing to prepare the agent env (fail closed)"; return 1; }
     gaffer_skills_mount "$PRIMARY_REPO" "$SKILLS, $LENSES" "delivery-$NUM"
     mkdir -p "$PRIMARY_REPO/.claude" 2>/dev/null || true
     if ! sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$PRIMARY_REPO/.claude/settings.json" 2>/dev/null; then

@@ -245,3 +245,26 @@ describe("M2: blocked + release + draft", () => {
     expect(wg.view(ticketId).ticket.policy_pack).toBe("solo_loose");
   });
 });
+
+describe("M2: a re-queue move releases the claim (ghost-claim safety net)", () => {
+  it("board-move out of the delivery lane (blocked→ready) leaves no stale claim; ticket stays claimable", () => {
+    const wg = freshWg();
+    const id = readyTicket(wg);
+    const a1 = wg.registerAgent({ display_name: "a1" }, human);
+    const claim = wg.claimNextTicket({ agentId: a1.id, ttlSeconds: 300 }, agentActor);
+    expect(claim).toBeTruthy();
+    expect(wg.view(id).ticket.status).toBe("claimed");
+    // A re-queue move must clear the lease. Regression: before this fix a claimed ticket
+    // moved back to a queue/parked state kept its (unexpired) claim, and the candidate
+    // queries reject any ticket with an unexpired active claim — so it was silently
+    // un-claimable until the TTL ran out. Here: claimed→blocked, then a raw board drag
+    // blocked→ready, then it MUST be immediately re-claimable by another agent.
+    wg.moveTicket(id, "blocked", human);
+    wg.moveTicket(id, "ready", human);
+    expect(wg.view(id).ticket.status).toBe("ready");
+    const a2 = wg.registerAgent({ display_name: "a2" }, human);
+    const reclaim = wg.claimNextTicket({ agentId: a2.id, ttlSeconds: 300 }, agentActor);
+    expect(reclaim).toBeTruthy();
+    expect(wg.view(id).ticket.status).toBe("claimed");
+  });
+});

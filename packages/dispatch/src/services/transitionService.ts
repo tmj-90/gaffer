@@ -17,6 +17,7 @@ import {
 } from "../policy/policy.js";
 import { computeTicketDiff, type GitRunner } from "./diffService.js";
 import { AcRepository } from "../repositories/acRepository.js";
+import { ClaimRepository } from "../repositories/claimRepository.js";
 import { DecisionRepository } from "../repositories/decisionRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
 import { PausedDeliveryRepository } from "../repositories/pausedDeliveryRepository.js";
@@ -168,6 +169,23 @@ const REVIEW_LANE_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
   "in_testing",
   "ready_for_merge",
   "done",
+]);
+
+/**
+ * States a ticket enters when it leaves active delivery back to the queue, or is
+ * parked/abandoned. Entering one RELEASES any active claim lease (see the release in
+ * {@link TransitionService.transition}) so a stale lease can never strand it — the
+ * claim candidate queries reject any ticket carrying an unexpired active claim, so a
+ * ticket dragged `blocked -> ready` (or otherwise re-queued while still leased) would
+ * otherwise be silently un-claimable until the TTL expired. Live-delivery states
+ * (`claimed`/`in_progress`) and the review/`paused` lane deliberately KEEP their lease.
+ */
+const REQUEUE_STATES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
+  "ready",
+  "draft",
+  "refining",
+  "blocked",
+  "cancelled",
 ]);
 
 /** Which gated transitions trigger a policy evaluation. */
@@ -329,6 +347,7 @@ export interface TransitionResult {
 export class TransitionService {
   private readonly tickets: TicketRepository;
   private readonly acs: AcRepository;
+  private readonly claims: ClaimRepository;
   private readonly repos: RepoRepository;
   private readonly decisions: DecisionRepository;
   private readonly evidence: EvidenceRepository;
@@ -362,6 +381,7 @@ export class TransitionService {
     this.pausedDeliveries = pausedDeliveries;
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
+    this.claims = new ClaimRepository(db);
     this.repos = new RepoRepository(db);
     this.decisions = new DecisionRepository(db);
     this.evidence = new EvidenceRepository(db);
@@ -582,6 +602,16 @@ export class TransitionService {
       );
       if (!ok) {
         throw new DispatchError("CONCURRENCY_CONFLICT", "Ticket changed concurrently; retry.");
+      }
+
+      // CLAIM SAFETY-NET: a ticket returning to a queue/parked state must not keep an
+      // active claim lease. The runner-release path releases explicitly, but a RAW BOARD
+      // MOVE (a human dragging `blocked -> ready`) does not — and the claim candidate
+      // queries reject any ticket with an unexpired active claim, so the ticket would be
+      // silently un-claimable until its TTL expired. Release here so EVERY path into a
+      // re-queue state clears the lease. Idempotent (no active claim → no rows changed).
+      if (REQUEUE_STATES.has(input.toStatus)) {
+        this.claims.releaseActiveForTicket(ticket.id, now);
       }
 
       // WG-049: entering `in_review` (re-)submits the work for a fresh read, so any

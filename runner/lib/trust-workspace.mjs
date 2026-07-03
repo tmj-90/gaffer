@@ -116,25 +116,49 @@ function isLinkedGitWorktree(dir) {
   return /^gitdir:\s*\S.*[/\\]\.git[/\\]worktrees[/\\]\S+/m.test(pointer.trim());
 }
 
-/** Validate the target before touching any config. Returns true when the path is a
- *  genuine factory worktree we are allowed to trust; logs + returns false otherwise. */
+/** True iff `dir` is a full git repository ROOT (a `.git` DIRECTORY) — as opposed to
+ *  a linked worktree (`.git` FILE). The factory's onboarded repos (PRIMARY_REPO, the
+ *  clarify clone) and greenfield bootstrap targets are these. */
+function isGitRepoRoot(dir) {
+  try {
+    return lstatSync(join(dir, ".git")).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Validate the target before touching any config. Returns true when the path is one
+ *  the factory is allowed to trust; logs + returns false otherwise. Two shapes pass:
+ *  (1) a LINKED delivery worktree strictly under the factory's worktree root (the
+ *  high-frequency path); (2) a FULL git repo the factory itself named and vouches for
+ *  via GAFFER_TRUST_ALLOW_REPO=1 (PRIMARY_REPO, the clarify clone, or a greenfield
+ *  bootstrap it just created) — never an arbitrary path. A committed
+ *  settings.local.json is neutralized (below) for either shape. */
 function validateTarget(dir) {
   const norm = resolve(dir);
   if (!existsSync(dir)) {
     console.error(`trust-workspace: refusing — ${dir} does not exist`);
     return false;
   }
-  if (!isUnderExpectedRoot(norm)) {
-    console.error(
-      `trust-workspace: refusing — ${dir} is not under an expected factory worktree root`,
-    );
-    return false;
+  // (1) linked delivery worktree — strictly under the factory's worktree root.
+  if (isLinkedGitWorktree(dir)) {
+    if (!isUnderExpectedRoot(norm)) {
+      console.error(
+        `trust-workspace: refusing — ${dir} is not under an expected factory worktree root`,
+      );
+      return false;
+    }
+    return true;
   }
-  if (!isLinkedGitWorktree(dir)) {
-    console.error(`trust-workspace: refusing — ${dir} is not a git worktree`);
-    return false;
+  // (2) full git repo the factory named + vouches for (PRIMARY_REPO / clarify clone /
+  // greenfield bootstrap). Only with the explicit vouch, and only a real git repo.
+  if (process.env.GAFFER_TRUST_ALLOW_REPO === "1" && isGitRepoRoot(dir)) {
+    return true;
   }
-  return true;
+  console.error(
+    `trust-workspace: refusing — ${dir} is neither a factory worktree nor a vouched git repo`,
+  );
+  return false;
 }
 
 /**

@@ -215,7 +215,11 @@ log() { _gaffer_locked .log.lock _gaffer_log_line "$*"; }
 gaffer_trust_workspace() {
   local dir="$1"
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
-  node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
+  # The factory only ever names paths IT controls (a linked delivery worktree, or a
+  # full repo it onboarded/created — PRIMARY_REPO, the clarify clone, the greenfield
+  # bootstrap). GAFFER_TRUST_ALLOW_REPO=1 vouches for the full-repo shapes; linked
+  # worktrees are still validated strictly (under the worktree root) regardless.
+  GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
     || log "TRUST: could not pre-trust $dir (headless agent may hang on an MCP tool prompt)"
 }
 # Append a ticket number to the per-run skip-file under .skip.lock so concurrent

@@ -144,7 +144,16 @@ gaffer_bootstrap_onboard() {
     local add_args=(repo add -n "$name" --path "$dir" --branch "$branch")
     [ -n "$stack" ]  && add_args+=(--stack "$stack")
     [ -n "$remote" ] && add_args+=(--remote "$remote")
-    if wg "${add_args[@]}" >/dev/null 2>&1; then
+    local add_out add_rc
+    add_out="$(wg "${add_args[@]}" 2>&1)"; add_rc=$?
+    if [ "$add_rc" -eq 0 ]; then
+      wg_ok=0
+    elif printf '%s' "$add_out" | grep -q '"code":"DUPLICATE"'; then
+      # Idempotent retry: a PRIOR (partial) bootstrap already registered this repo.
+      # The link target the dependent feature tickets need EXISTS — so this is a
+      # success, not a failure. Without this, a re-attempt (e.g. after an unrelated
+      # gate blocked the first run) would wrongly report FAILED and leave the whole
+      # epic stuck: repo registered, but dependents never linked/unblocked.
       wg_ok=0
     else
       wg_ok=1

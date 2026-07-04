@@ -193,7 +193,8 @@ else
 fi
 
 # Usage: what the headless agent calls actually cost this run. The honest signal
-# is NOT a single dollar number — it's (a) tokens as ground truth, (b) the
+# is NOT a single dollar number — it's (a) BILLED tokens as ground truth (incl.
+# cache-read, the real cost driver — headlined so $cost isn't read off in+out), (b) the
 # opus-plan vs sonnet-impl model split, (c) the API-EQUIVALENT cost relayed
 # straight from Claude Code's own figure (never computed from a price table), and
 # (d) "N ticks measured, M unknown" so a partial run can't read as cheap. Reads
@@ -210,6 +211,13 @@ UNKNOWN = "unknown"
 def as_num(v):
     """Token/cost value: a real number, or None when 'unknown' (never inferred as 0)."""
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+def hum(n):
+    """Human-readable token magnitude: 11442211 -> '11.4M', 4309 -> '4.3k', 800 -> '800'."""
+    n = float(n)
+    if n >= 1e6: return "%.1fM" % (n / 1e6)
+    if n >= 1e3: return "%.1fk" % (n / 1e3)
+    return "%d" % int(n)
 
 measured = unknown = 0
 tok_in = tok_out = tok_cache_r = tok_cache_c = 0.0          # summed measured tokens
@@ -268,9 +276,19 @@ else:
     if measured == 0:
         print("    nothing measurable %s — every agent call was unmeasured; no token/cost figure can be honestly reported" % scope)
     else:
-        # (a) tokens as ground truth.
-        print("    tokens: in=%d out=%d cache_read=%d cache_create=%d" % (
-            int(tok_in), int(tok_out), int(tok_cache_r), int(tok_cache_c)))
+        # (a) BILLED tokens as ground truth — LEAD with the real cost driver.
+        # Total billed INCLUDES cache: an agentic delivery re-sends its whole growing
+        # context every turn, so the unchanged prefix is re-billed at the cheap
+        # cache-read rate. That cache-read volume — not the tiny in+out — is what the
+        # dollar figure below actually reflects, so it must be the headline number.
+        tok_billed = tok_in + tok_out + tok_cache_r + tok_cache_c
+        print("    billed tokens: ~%s  (in %s · out %s · cache-read %s · cache-write %s)" % (
+            hum(tok_billed), hum(tok_in), hum(tok_out), hum(tok_cache_r), hum(tok_cache_c)))
+        # Name the driver so $cost never looks like it came from in+out alone.
+        if tok_billed > 0:
+            share_r = 100 * tok_cache_r / tok_billed
+            if share_r >= 50:
+                print("    \033[2mcost is dominated by cache-read (%d%% of billed): the agent re-reads its cached context each turn\033[0m" % round(share_r))
         # (b) opus-plan vs sonnet-impl split (by in+out token volume).
         tot_vol = sum(split.values()) or 1
         print("    model split (plan vs impl, by in+out tokens):")

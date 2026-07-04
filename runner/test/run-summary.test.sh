@@ -127,8 +127,11 @@ OUT3="$(trap - EXIT; env GAFFER_DATA="$WORK/.gaffer" DISPATCH_DB="$WORK/wg.sqlit
 printf '%s' "$OUT3" | grep -Eq '1 measured, 1 unknown' && ok "measured-vs-unknown shown (run-scoped: pre-run row excluded)" || fail "measured/unknown count wrong"
 # Honesty: 'unknown' must be labelled NOT zero.
 printf '%s' "$OUT3" | grep -qiE "unknown.*NOT zero" && ok "'unknown' explicitly labelled not-zero (partial run can't read as cheap)" || fail "unknown-not-zero label missing"
-# Tokens are the in-run row's verbatim values (pre-run 99999 row excluded by scoping).
-printf '%s' "$OUT3" | grep -Eq 'tokens: in=1500 out=800 cache_read=5000 cache_create=200' && ok "tokens summed from measured rows, verbatim (pre-run excluded)" || fail "token sum wrong"
+# Billed tokens headline INCLUDES cache (in 1.5k + out 800 + cache-read 5.0k + cache-write 200 = ~7.5k);
+# pre-run 99999 row excluded by scoping. This is the true cost driver, so it leads.
+printf '%s' "$OUT3" | grep -qF 'billed tokens: ~7.5k  (in 1.5k · out 800 · cache-read 5.0k · cache-write 200)' && ok "billed tokens headline incl. cache, human-readable (pre-run excluded)" || fail "billed tokens line wrong"
+# Cache-read (5000/7500 = 67%) is the majority, so the driver line must call it out.
+printf '%s' "$OUT3" | grep -qiE 'dominated by cache-read.*re-reads its cached context' && ok "cache-read driver explained (cost no longer looks like it came from in+out)" || fail "cache-read driver line missing"
 # opus-plan vs sonnet-impl split present.
 printf '%s' "$OUT3" | grep -Eq 'opus-plan +800 tokens' && ok "opus-plan split shown" || fail "opus-plan split missing"
 printf '%s' "$OUT3" | grep -Eq 'sonnet-impl +1500 tokens' && ok "sonnet-impl split shown" || fail "sonnet-impl split missing"
@@ -144,7 +147,7 @@ OUT4="$(trap - EXIT; env GAFFER_DATA="$WORK/.gaffer" DISPATCH_DB="$WORK/wg.sqlit
   SUMMARY_SINCE="2500-01-01T00:00:00.000Z" \
   bash "$RUNNER_DIR/run-summary.sh" 2>&1)"
 printf '%s' "$OUT4" | grep -qiE 'nothing measurable this run' && ok "all-unknown run → 'nothing measurable', no token/cost figure" || fail "all-unknown run still reported numbers"
-printf '%s' "$OUT4" | grep -Eq 'tokens: in=' && fail "all-unknown run wrongly printed a token figure" || ok "all-unknown run prints NO token figure (honest)"
+printf '%s' "$OUT4" | grep -Eq 'billed tokens' && fail "all-unknown run wrongly printed a token figure" || ok "all-unknown run prints NO token figure (honest)"
 grep -q 'GAFFER_USAGE_LEDGER' "$RUNNER_DIR/factory.config.sh" && ok "factory.config.sh defines GAFFER_USAGE_LEDGER knob (mirrors GAFFER_BLOCK_LEDGER)" || fail "GAFFER_USAGE_LEDGER knob missing"
 
 echo

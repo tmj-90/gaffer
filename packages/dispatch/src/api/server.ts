@@ -627,24 +627,30 @@ async function route(
       return;
     }
 
-    // DNS-rebinding defense (before static assets + the API router): a TOKENLESS
-    // request whose Host/Origin names a foreign host is refused outright, so a
-    // rebound attacker page can't reach the tokenless loopback read path. A
-    // VALID bearer token bypasses the check — a browser can't attach the token
-    // cross-origin, so holding it proves the caller is legitimate (this is what
-    // lets a tokened client reach a `--host 0.0.0.0` or proxy-fronted deploy
-    // whose Host header never matches the bind host). NOTE: hasValidBearer, not
-    // header presence — a wrong token gets no bypass.
+    // SPA static SHELL first — served to ANY Host, tokenless (C2 / LAN-QR fix).
+    // index.html + app.js + styles.css + /assets are PUBLIC static files with NO
+    // data: a phone loading the dashboard over the LAN (Host = the LAN IP, which
+    // need not match the bind host) MUST get the shell, which then prompts for the
+    // token. Safe because it exposes nothing — the DNS-rebinding defense and the auth
+    // gate below still guard EVERY API/data request, so a rebound attacker page gets
+    // only the empty shell and its subsequent API calls are refused (wrong Host, and
+    // it cannot attach the bearer token cross-origin). serveStatic only matches the
+    // known shell paths + traversal-safe /assets; everything else falls through.
+    if (method === "GET" && serveStatic(url.pathname, res)) {
+      return;
+    }
+
+    // DNS-rebinding defense (before the API router): a TOKENLESS request whose
+    // Host/Origin names a foreign host is refused outright, so a rebound attacker page
+    // can't reach the tokenless loopback read path. A VALID bearer token bypasses the
+    // check — a browser can't attach the token cross-origin, so holding it proves the
+    // caller is legitimate (this lets a tokened client reach a `--host 0.0.0.0` or
+    // proxy-fronted deploy whose Host header never matches the bind host). NOTE:
+    // hasValidBearer, not header presence — a wrong token gets no bypass.
     if (!hasValidBearer(req) && !isHostHeaderAllowed(req, bindHost)) {
       sendJson(res, 403, {
         error: { code: "FORBIDDEN_HOST", message: "Host or Origin not permitted." },
       });
-      return;
-    }
-
-    // SPA static assets: only specific non-API GET paths. Everything else falls
-    // through to the API router (and its JSON 404), so API 404s stay intact.
-    if (method === "GET" && serveStatic(url.pathname, res)) {
       return;
     }
 

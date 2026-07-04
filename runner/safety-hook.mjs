@@ -1241,7 +1241,7 @@ function effectiveVerbAfter(tokens) {
 // cannot resolve from the segment (e.g. an `xargs <verb>` target that comes
 // from STDIN). It is guaranteed to be outside every root, so classifying it
 // always yields "outside" and the boundary fails CLOSED.
-const UNVERIFIABLE_TARGET = " unverifiable ";
+const UNVERIFIABLE_TARGET = "\u0000unverifiable\u0000";
 
 // =====================================================================
 // QUOTE-AWARE TOKENIZATION + FAIL-CLOSED-ON-AMBIGUITY (S-1 / S-4)

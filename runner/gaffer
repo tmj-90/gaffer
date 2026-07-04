@@ -162,6 +162,28 @@ setup)
 
 demo) DRY_RUN="${DRY_RUN:-1}" bash "$HERE/demo.sh" ;;
 
+run)
+  # Live run. Without --daemon: ONE supervisor pass (drains the ready queue, honours
+  # the per-day cap, then exits). With --daemon: the portable AFK loop — re-run the pass
+  # every --interval seconds (default 30) until SIGINT/SIGTERM, which finish the CURRENT
+  # pass then exit cleanly. This is the "walk away and it keeps working" path on Linux,
+  # not just macOS. MAX_TICKS_PER_DAY still caps the day. (Read preflight.sh first.)
+  _daemon=0; _interval="${GAFFER_DAEMON_INTERVAL:-30}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --daemon) _daemon=1 ;;
+      --interval) shift; _interval="${1:-30}" ;;
+      --interval=*) _interval="${1#--interval=}" ;;
+    esac
+    shift || true
+  done
+  if [ "$_daemon" = 0 ]; then exec env DRY_RUN="${DRY_RUN:-0}" bash "$HERE/loop.sh"; fi
+  say "gaffer daemon: re-running the loop every ${_interval}s — SIGINT/SIGTERM stops cleanly (finishes the current pass); MAX_TICKS_PER_DAY caps the day"
+  # shellcheck source=lib/daemon.sh
+  source "$HERE/lib/daemon.sh"
+  GAFFER_LOOP_SH="$HERE/loop.sh" DRY_RUN="${DRY_RUN:-0}" gaffer_run_daemon "$_interval"
+  ;;
+
 skills)
   # The factory ALREADY loads every bundled skill for each ticket (tick.sh symlinks
   # $SKILLS_DIR into the agent's worktree). This command exposes the same library to

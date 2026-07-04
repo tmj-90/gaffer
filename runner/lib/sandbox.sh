@@ -123,18 +123,37 @@ EOF
 # ── The provider seam ────────────────────────────────────────────────────────
 # Dispatch on $SANDBOX_PROVIDER. A new provider == a new case; nothing else
 # changes. Echoes the wrapping command prefix to stdout; diagnostics to stderr.
+# STRICT-REQUIRE (C4). The provider paths below that cannot supply an OS sandbox
+# normally warn + DEGRADE (return 0 → run with worktree isolation + the safety hook,
+# no OS sandbox). When the operator sets GAFFER_STRICT_REQUIRE=1 they are asserting
+# "do NOT run without an OS sandbox" — so those paths FAIL CLOSED instead. This makes
+# the macOS-only OS sandbox HONEST on Linux: strict-require refuses to launch rather
+# than silently no-op-ing. Helper: true when strict containment is required.
+_sandbox_strict_required() {
+  case "${GAFFER_STRICT_REQUIRE:-0}" in 1 | true | yes | on) return 0 ;; *) return 1 ;; esac
+}
+
 sandbox_wrap_cmd() {
   local write_roots="${1:-}"
   local read_roots="${2:-}"   # accepted for symmetry; unused by sandbox-exec (reads broad)
 
   case "${SANDBOX_PROVIDER:-sandbox-exec}" in
     none)
-      # No OS-level wrapping. Worktree isolation + safety hook still apply.
+      # No OS-level wrapping. Worktree isolation + safety hook still apply — UNLESS
+      # the operator required an OS sandbox, in which case "none" is a contradiction.
+      if _sandbox_strict_required; then
+        printf 'strict-mode: SANDBOX_PROVIDER=none but GAFFER_STRICT_REQUIRE=1 demands an OS sandbox — refusing to run (fail closed)\n' >&2
+        return 1
+      fi
       return 0
       ;;
 
     sandbox-exec)
       if ! command -v sandbox-exec >/dev/null 2>&1; then
+        if _sandbox_strict_required; then
+          printf 'strict-mode: sandbox-exec not found (macOS-only) and GAFFER_STRICT_REQUIRE=1 — refusing to run without an OS sandbox (fail closed)\n' >&2
+          return 1
+        fi
         printf 'strict-mode: sandbox-exec not found on this host — falling back to no OS sandbox (worktree isolation + safety hook still apply)\n' >&2
         return 0
       fi
@@ -145,12 +164,20 @@ sandbox_wrap_cmd() {
       return 0
       ;;
 
-    docker|lima)
+    docker | lima)
+      if _sandbox_strict_required; then
+        printf "strict-mode: provider '%s' not yet supported and GAFFER_STRICT_REQUIRE=1 — refusing to run without an OS sandbox (fail closed)\n" "${SANDBOX_PROVIDER}" >&2
+        return 1
+      fi
       printf "strict-mode: provider '%s' not yet supported — falling back to no OS sandbox (worktree isolation still applies)\n" "${SANDBOX_PROVIDER}" >&2
       return 0
       ;;
 
     *)
+      if _sandbox_strict_required; then
+        printf "strict-mode: unknown provider '%s' and GAFFER_STRICT_REQUIRE=1 — refusing to run without an OS sandbox (fail closed)\n" "${SANDBOX_PROVIDER}" >&2
+        return 1
+      fi
       printf "strict-mode: unknown provider '%s' — falling back to no OS sandbox (worktree isolation still applies)\n" "${SANDBOX_PROVIDER}" >&2
       return 0
       ;;

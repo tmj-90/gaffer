@@ -160,7 +160,7 @@ Gaffer runs shell-capable agents, so containment is first-class:
 
 - a **deterministic PreToolUse safety hook** scopes writes to the worktree, blocks secret reads, denies the control-plane CLI, and **fails closed** (see [SECURITY.md](SECURITY.md) for residual limits on dynamic paths);
 - every ticket runs in a **throwaway git worktree** — the real checkout is never touched;
-- an optional **OS sandbox** adds a kernel-level write boundary — **macOS only today** (`sandbox-exec`); on Linux it is a no-op until a container/VM provider is wired via the seam, so there the safety hook remains the boundary;
+- an optional **OS sandbox** adds a kernel-level write boundary — **macOS only today** (`sandbox-exec`); on Linux it degrades to the safety hook as the boundary until a container/VM provider is wired via the seam, and `GAFFER_STRICT_REQUIRE=1` makes that degrade **fail closed** (refuse to launch rather than run without the OS sandbox);
 - the **review gate is enforced server-side** — an agent can't approve or merge its own work, and the merge gate verifies the *real git diff*, not the agent's word for it.
 
 Opt-in autonomy, to be used deliberately: `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `MEMORY_AUTO_APPROVE`. Full threat model and honest residual limits: [`SECURITY.md`](SECURITY.md).
@@ -186,7 +186,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Dispatch queue, tickets, epics, scopes, review gate (REST + MCP + CLI)
 - Crew MCP tool server (factory tools, hooks engine, idle loops, repo onboarding)
 - Memory embeddings, Repo Digest, feature ledger, gated lore
-- Runner factory loop with 66-skill library and model tiering
+- Runner factory loop with 66-skill library and model tiering — one pass with `runner/loop.sh`, or unattended on any platform with `runner/gaffer run --daemon` (re-runs the loop, honours the per-day cap, stops cleanly on a signal)
 - Deterministic safety hook (`runner/safety-hook.mjs`) — worktree isolation, fails closed
 - Web dashboard with all seven views: Overview, Work, Review, Epics, Map, Memory, Settings
 

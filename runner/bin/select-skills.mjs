@@ -135,7 +135,15 @@ const UNIVERSAL_AREAS = new Set(["quality", "testing", "review", "workflow", "se
  * here — they stay opt-in (stack-tagged or an explicit --area) so a feature ticket isn't
  * handed a slide-deck, SEO, or Terraform skill. See {@link skillMatches}.
  */
-const DELIVERY_AREAS = new Set(["language", "frontend", "mobile", "backend", "data", "refactor", "docs"]);
+const DELIVERY_AREAS = new Set([
+  "language",
+  "frontend",
+  "mobile",
+  "backend",
+  "data",
+  "refactor",
+  "docs",
+]);
 
 /**
  * A skill matches when it is in an always-eligible area (UNIVERSAL or DELIVERY), OR its
@@ -156,7 +164,10 @@ export function skillMatches(skill, { stacks = [], area = "" } = {}) {
     !skill.area || UNIVERSAL_AREAS.has(skill.area) || DELIVERY_AREAS.has(skill.area);
   const hasStackTag = skill.stack.length > 0;
   const stackOk =
-    alwaysEligible || !hasStackTag || stacks.length === 0 || skill.stack.some((s) => stacks.includes(s));
+    alwaysEligible ||
+    !hasStackTag ||
+    stacks.length === 0 ||
+    skill.stack.some((s) => stacks.includes(s));
   let areaOk;
   if (alwaysEligible) {
     // No area, a cross-cutting universal area, or a code-delivery area — every delivery.

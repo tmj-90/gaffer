@@ -349,13 +349,16 @@ check("go stack mounts go-conventions AND the other language packs (broad-inclus
   }
 });
 
-check("python stack mounts python-conventions AND the other language packs (broad-inclusion)", () => {
-  const names = conv("python");
-  assert(names.includes("python-conventions"), "python → python-conventions");
-  for (const pack of ALL_LANGUAGE_PACKS) {
-    assert(names.includes(pack), `broad-inclusion mounts ${pack} on a python stack`);
-  }
-});
+check(
+  "python stack mounts python-conventions AND the other language packs (broad-inclusion)",
+  () => {
+    const names = conv("python");
+    assert(names.includes("python-conventions"), "python → python-conventions");
+    for (const pack of ALL_LANGUAGE_PACKS) {
+      assert(names.includes(pack), `broad-inclusion mounts ${pack} on a python stack`);
+    }
+  },
+);
 
 check("plain node stack mounts language + frontend + mobile packs (broad-inclusion)", () => {
   const names = conv("node");
@@ -601,7 +604,10 @@ check("broad-inclusion: java-conventions IS selected for a python-only stack", (
 check("broad-inclusion: mobile-ui and brand are selected regardless of stack", () => {
   for (const stack of ["node", "python", "go", "java", "typescript-react"]) {
     const names = selectSkills({ stacks: [stack] }).map((s) => s.name);
-    assert(names.includes("mobile-ui"), `mobile-ui (area: mobile) must mount on the ${stack} stack`);
+    assert(
+      names.includes("mobile-ui"),
+      `mobile-ui (area: mobile) must mount on the ${stack} stack`,
+    );
     assert(names.includes("brand"), `brand (area: frontend) must mount on the ${stack} stack`);
   }
 });

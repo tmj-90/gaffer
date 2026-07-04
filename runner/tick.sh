@@ -2738,12 +2738,17 @@ for its acceptance criteria and recorded evidence; inspect the delivered change 
 \`git diff $RDEFAULT...HEAD\` in $WT; judge whether each AC is genuinely met and the
 change is sound (tests, scope, quality). Then RECORD YOUR VERDICT as evidence via the
 dispatch MCP record_ac_evidence (one entry per AC: PASS/FAIL + the specific reasoning),
-and finish with a one-line overall recommendation. Judge each AC against the ACTUAL diff and
-recorded evidence, CALIBRATED — not perfectionist: say "RECOMMEND APPROVE" when every AC is
-genuinely met and the change is sound (tests/scope/quality), and "RECOMMEND CHANGES" ONLY
-when a specific AC is unmet or the change is genuinely unsound — always with specific,
-actionable feedback naming the AC and the concrete fix (so a rework attempt can resolve it in
-one pass). Do NOT withhold approval for style nits, refactors, or wishes OUTSIDE the ACs.
+and finish with a one-line overall recommendation. Apply THIS BAR EXACTLY — never raise it:
+say "RECOMMEND APPROVE" when (a) every acceptance criterion is met in the diff, (b) the DoD
+gates pass / no tests are failing, and (c) the changed behaviour is tested where a test
+reasonably applies. That is the whole bar — if it is met, APPROVE.
+Say "RECOMMEND CHANGES" ONLY for a CONCRETE defect: a specific AC that is not met, a failing or
+missing test for an AC's OWN behaviour, or a genuine correctness/security bug — always naming
+the AC and the single concrete fix so a rework resolves it in one pass.
+You MUST NOT withhold approval for anything OUTSIDE the acceptance criteria: refactors,
+de-duplication, extra coverage beyond the ACs, naming, file structure, or maintainability
+wishes are OPTIONAL. You may list them prefixed "(optional)" but they are NEVER grounds for
+CHANGES. When in doubt and the ACs are met with tests passing, APPROVE.
 Leave the ticket in in_review — the operator (or, in autonomy mode, the runner acting
 deterministically on your verdict) crosses the final gate. Work only in: $WT
 EOF

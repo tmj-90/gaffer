@@ -32,7 +32,9 @@ submit → bookkeeping. Done = it would catch the inert-feature cluster.
       approve-without-changes-requested rate); re-scope MIN_SAMPLES (per-risk, cross-repo priors).
 
 ## C — Convert fixable "never works" → "works" (Depth + Offering)
-- [ ] C1 AFK loop on Linux: ship a systemd/cron/`gaffer run --daemon` unit.
+- [x] C1 AFK daemon: `gaffer run [--daemon]` (lib/daemon.sh gaffer_run_daemon) re-runs loop.sh
+      every --interval s on ANY platform, honours MAX_TICKS_PER_DAY, SIGINT/SIGTERM finishes the
+      current pass then exits. gaffer-run-daemon.test.sh (6, bash 3.2). quickstart updated.
 - [ ] C2 LAN QR 403: allow the initial tokenless SPA shell (gate the API, not the shell).
 - [x] C3a pre-spawn budget gate: gaffer_budget_exhausted() parks BEFORE a spawn when cumulative
       spend >= the effective ceiling (per-ticket delivery_budget_usd wins over GAFFER_REWORK_BUDGET_USD);

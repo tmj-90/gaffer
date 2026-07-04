@@ -99,7 +99,9 @@ When you're ready to let it deliver for real, read **`runner/preflight.sh`** fir
 
 ```bash
 bash runner/preflight.sh              # verify the environment
-DRY_RUN=0 bash runner/loop.sh         # go live — delivers tickets as branches/PRs with evidence
+DRY_RUN=0 bash runner/loop.sh         # go live — ONE pass: drains the ready queue, then exits
+runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (Linux + macOS),
+                                      #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
 ```
 
 ---

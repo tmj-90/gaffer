@@ -92,4 +92,4 @@ repos (no single repo at 10) now yield a cross-repo prior; (b) a strong same-rep
 suppresses the redundant cross-repo prior for that risk; (c) a merge bucket with unchanged=100%
 but agreement < threshold does NOT recommend merge.
 
-**Status: designed; implementation scheduled next.**
+**Status: DONE** — cross-repo per-risk prior implemented (autonomyRecommendationService.ts); 3 tests added (fires at solo volume, weaker than same-repo, suppressed when same-repo fires); 19 total. First-pass/bounce-free rate remains the documented follow-up (needs ticket_id+ordering on ReviewDecisionRow).

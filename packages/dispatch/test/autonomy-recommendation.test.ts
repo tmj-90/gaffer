@@ -203,3 +203,46 @@ describe("computeRecommendations — ground truth + bucketing", () => {
     expect(rec!.sample.unchangedKnown).toBe(20);
   });
 });
+
+// ── B3: cross-repo per-risk PRIOR (solo-scale re-scope) ──────────────────────
+describe("computeRecommendations — cross-repo per-risk prior (B3)", () => {
+  it("fires at solo volume: 12 low-risk approvals over 3 repos (none at MIN_SAMPLES) → a cross-repo prior", () => {
+    const rows = [
+      ...times(4, () => approval({ repoId: "r1", repoName: "svc-a" })),
+      ...times(4, () => approval({ repoId: "r2", repoName: "svc-b" })),
+      ...times(4, () => approval({ repoId: "r3", repoName: "svc-c" })),
+    ];
+    const recs = computeRecommendations(rows);
+    // No single repo cleared MIN_SAMPLES, so NO same-repo recommendation…
+    expect(recs.some((r) => r.repoId !== "*")).toBe(false);
+    // …but the aggregated per-risk prior does.
+    const prior = recs.find((r) => r.repoId === "*" && r.gate === "approve");
+    expect(prior).toBeDefined();
+    expect(prior!.repoName).toBe("all repos");
+    expect(prior!.headline).toContain("across all repos");
+    expect(prior!.sample.approvals).toBe(12);
+  });
+
+  it("a cross-repo prior is weaker than same-repo evidence (confidence scaled by the factor)", () => {
+    const solo = computeRecommendations(
+      times(12, () => approval({ repoId: "r1", repoName: "svc-a" })),
+    );
+    const same = solo.find((r) => r.repoId === "r1" && r.gate === "approve")!;
+    const spread = computeRecommendations([
+      ...times(4, () => approval({ repoId: "r1", repoName: "svc-a" })),
+      ...times(4, () => approval({ repoId: "r2", repoName: "svc-b" })),
+      ...times(4, () => approval({ repoId: "r3", repoName: "svc-c" })),
+    ]).find((r) => r.repoId === "*" && r.gate === "approve")!;
+    // Same evidence count, but the cross-repo prior is discounted.
+    expect(spread.confidence).toBeLessThan(same.confidence);
+  });
+
+  it("strong same-repo evidence SUPPRESSES the redundant cross-repo prior for that risk", () => {
+    const recs = computeRecommendations(
+      times(12, () => approval({ repoId: "r1", repoName: "svc-a" })),
+    );
+    expect(recs.some((r) => r.repoId === "r1" && r.gate === "approve")).toBe(true);
+    // low-risk already fired same-repo → no cross-repo prior for the same risk+gate.
+    expect(recs.some((r) => r.repoId === "*" && r.gate === "approve")).toBe(false);
+  });
+});

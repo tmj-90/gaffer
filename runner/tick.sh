@@ -2767,8 +2767,10 @@ EOF
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       # Capture the reviewer's advisory verdict (its final RECOMMEND line) from the result
       # JSON BEFORE deleting it — the signal the runner acts on in AFK mode. Default to
-      # "changes": an ambiguous or empty verdict must NEVER auto-approve.
-      R_RESULT="$(jget "d.get('result','')" < "$R_USAGE_JSON" 2>/dev/null || echo '')"
+      # "changes": an ambiguous or empty verdict must NEVER auto-approve. Read the file BY
+      # PATH (not stdin): the usage JSON must never be piped as stdin (prompt-injection
+      # guard, enforced by tick-prompt-wiring.test.sh) — parsing its result is output-read.
+      R_RESULT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('result',''))" "$R_USAGE_JSON" 2>/dev/null || echo '')"
       rm -f "$R_USAGE_JSON"
       R_VERDICT=changes
       printf '%s' "$R_RESULT" | grep -qiE "RECOMMEND[ _-]*APPROVE" && R_VERDICT=approve

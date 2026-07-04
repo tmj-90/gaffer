@@ -56,7 +56,7 @@ submit → bookkeeping. Done = it would catch the inert-feature cluster.
 - [ ] Make-real later (post-launch): A/B priming (un-primed control tickets) → real with/without
       memory delta. The only thing that proves the thesis. Not blocking launch.
 
-## Order: D (done) → A (keystone) → B (verify) → C (fixes) → E (allowlist) → B3 + memory-control.
+## Order: D → A → B → C → E → B3. ALL DONE (deferred: C3b, B3 first-pass, memory make-real).
 
 ---
 
@@ -93,3 +93,41 @@ suppresses the redundant cross-repo prior for that risk; (c) a merge bucket with
 but agreement < threshold does NOT recommend merge.
 
 **Status: DONE** — cross-repo per-risk prior implemented (autonomyRecommendationService.ts); 3 tests added (fires at solo volume, weaker than same-repo, suppressed when same-repo fires); 19 total. First-pass/bounce-free rate remains the documented follow-up (needs ticket_id+ordering on ReviewDecisionRow).
+
+---
+
+## PR summary — feat/audit-workstreams
+
+Executes the audit-driven push (Depth 6→7.5, Breadth 8→9, Offering 6.5→8) as a sequenced set
+of small, tested commits. All work is on `feat/audit-workstreams`; every change is green under
+bash 5 + bash 3.2 and the dispatch suite (1225).
+
+**A — hermetic live-path e2e (keystone).** `e2e-tick-live.test.sh` drives the REAL
+`worker_deliver` seam (the production `env -i $CLAUDE_BIN -p …` spawn) with a stub-but-real
+agent, then the real DoD+hygiene gates on the real diff and the real token-gated submit. No
+prior test drove the production worker path — this closes the "tested-but-not-real" gap.
+
+**C — fixable "never works" → works.**
+- C2 LAN-QR: serve the static SPA shell before the DNS-rebinding Host-check (public, no data), so
+  a phone's first LAN load isn't a 403; API stays Host+token gated (negative-control test).
+- C3a pre-spawn budget gate: park before burning a turn once cumulative spend ≥ the ceiling.
+- C4 `GAFFER_STRICT_REQUIRE=1`: fail closed when no OS sandbox is available (honest on Linux).
+- C1 `gaffer run --daemon`: portable AFK loop (re-run loop.sh, honour the day cap, graceful stop)
+  so the factory keeps working unattended on Linux, not just macOS.
+
+**B — differentiators.** B1 (spec→decompose) + B2 (product-context priming) verified green.
+B3: cross-repo per-risk prior so the autonomy engine isn't dormant at solo volume (same-repo
+evidence still wins; the prior is weaker + suppressed when same-repo fires).
+
+**D — honesty ledger.** Confirmed already softened in the prior pass (API-equiv cost caveat,
+"learns into" not "improves", macOS-only sandbox, supervised-by-default).
+
+**E — allowlist decision.** Documented in SECURITY.md: keep the complete write/exec denylist for
+the read-only planning agents (they connect MCP; an allowlist would sever it).
+
+**Deferred (documented follow-ups):** C3b (attribute an estimate to killed/timed-out calls);
+B3 first-pass/bounce-free rate (needs ticket_id+ordering on ReviewDecisionRow); the memory
+"improves over time" make-real (A/B priming, post-launch).
+
+**New tests:** e2e-tick-live, prespawn-budget-gate, strict-require, gaffer-run-daemon (bash);
++3 autonomy cross-repo, +3 host-check LAN-QR (dispatch). Full runner bash suite (75) green.

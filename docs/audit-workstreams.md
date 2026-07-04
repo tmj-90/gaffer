@@ -57,3 +57,39 @@ submit → bookkeeping. Done = it would catch the inert-feature cluster.
       memory delta. The only thing that proves the thesis. Not blocking launch.
 
 ## Order: D (done) → A (keystone) → B (verify) → C (fixes) → E (allowlist) → B3 + memory-control.
+
+---
+
+## B3 — autonomy signal redesign (DESIGN NOTE)
+
+**Problem (from the audit re-scan).** The graduated-autonomy recommendation engine
+(`packages/dispatch/src/services/autonomyRecommendationService.ts`) is effectively inert
+at solo volume, for two reasons:
+1. **MIN_SAMPLES=10 dormant.** Buckets are keyed **per-repo × per-risk** (`computeRecommendations`,
+   `${row.repoId} ${row.riskLevel}`). A solo operator never accrues 10 ground-truth decisions
+   in ANY single repo×risk bucket, so no bucket clears the floor → the engine never fires.
+2. **`approved_unchanged` ~always true.** The merge gate rests on the unchanged rate, but
+   there is no reviewer-edit-before-merge path, so every approval is "unchanged" → the signal
+   is degenerate (doesn't vary) and can't discriminate.
+
+**Decided approach.**
+- **Cross-repo per-risk prior (fixes dormancy).** In addition to per-repo×risk buckets, fold
+  the same ground-truth rows into a **per-RISK** bucket aggregated across all repos. Emit a
+  lower-confidence "cross-repo prior" (`repoId="*"`, "across all repos", confidence ×0.8) for a
+  (risk × gate) that clears MIN_SAMPLES at the risk level but did NOT already fire with stronger
+  same-repo evidence. This is the "re-scope MIN_SAMPLES to per-risk / cross-repo prior" the plan
+  names — same-repo evidence still wins; the prior only fills the solo-scale gap.
+- **Honest merge gate.** Require the merge gate to clear BOTH the unchanged rate AND the REAL,
+  varying approve-vs-reject **agreement rate** (`approvals/total`), so a degenerate unchanged=100%
+  cannot alone grant auto-merge. (The agreement rate == "approve-without-changes-requested rate";
+  it genuinely varies at solo scale because rejections happen.)
+- **First-pass / bounce-free rate (follow-up).** The strongest future signal — approvals NOT
+  preceded by a rejection of the *same ticket* — needs `ticket_id` + ordering added to
+  `ReviewDecisionRow` and its query (today it carries neither). Tracked as a follow-up, not this pass.
+
+**Test plan.** Extend `autonomy-recommendation.test.ts`: (a) 10 low-risk decisions spread over 3
+repos (no single repo at 10) now yield a cross-repo prior; (b) a strong same-repo bucket
+suppresses the redundant cross-repo prior for that risk; (c) a merge bucket with unchanged=100%
+but agreement < threshold does NOT recommend merge.
+
+**Status: designed; implementation scheduled next.**

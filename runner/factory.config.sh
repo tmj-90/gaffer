@@ -1266,6 +1266,11 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # shellcheck source=lib/context-primer.sh
 [ -f "$RUNNER_DIR/lib/context-primer.sh" ] && source "$RUNNER_DIR/lib/context-primer.sh"
 
+# shellcheck source=lib/card-refresh.sh
+# Memory FRESHNESS: write-through file-card refresh after a delivery merges (uses lg +
+# the canonical contract, so sourced after context-primer which sets them up).
+[ -f "$RUNNER_DIR/lib/card-refresh.sh" ] && source "$RUNNER_DIR/lib/card-refresh.sh"
+
 # Definition-of-Done gate (I3): defines gaffer_run_dod_gates / gaffer_dod_enabled /
 # gaffer_dod_run_one / gaffer_dod_summary_line / gaffer_dod_evidence_summary. The
 # enforced, runner-run gate (tests/typecheck/lint) every delivery clears BEFORE the

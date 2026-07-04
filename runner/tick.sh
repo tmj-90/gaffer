@@ -2784,12 +2784,20 @@ EOF
         if [ "$R_VERDICT" = "approve" ]; then
           if wg review approve "$RNUM" >/dev/null 2>&1; then
             log "AFK: runner approved #$RNUM on a clean agent verdict (→ ready_for_merge)"
+            # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an
+            # ancestor of RDEFAULT, so merge-base would collapse to RBRANCH (empty diff).
+            _CR_BASE="$(git -C "$RREPO" merge-base "$RBRANCH" "$RDEFAULT" 2>/dev/null || true)"
             gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; _mrc=$?
             case "$_mrc" in
               0)
                 wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
                   && log "AFK: #$RNUM merged ($RBRANCH → $RDEFAULT) and marked done" \
                   || log "AFK: #$RNUM merged but mark-merged failed — verify state"
+                # MEMORY FRESHNESS: write-through the delivered change into the file cards
+                # (refresh changed, add new, drop deleted, advance the watermark) so priming
+                # stays current instead of decaying. Fail-soft — never blocks the merge.
+                gaffer_refresh_cards "$RREPO" "$(basename "$RREPO")" "$_CR_BASE" "$RBRANCH" \
+                  "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
                 if [ "${GAFFER_AUTO_PUSH:-0}" = "1" ]; then
                   gaffer_auto_push "$RREPO" "$RDEFAULT" \
                     && log "AFK: pushed $RDEFAULT to origin" \
@@ -2809,8 +2817,8 @@ EOF
           # (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
           _rreason="$(printf '%s' "$R_RESULT" | tr '\n' ' ' | tail -c 480)"
           [ -n "${_rreason// /}" ] || _rreason="agent review recommended changes"
-          if wg review reject "$RNUM" --reason "$_rreason" >/dev/null 2>&1; then
-            log "AFK: #$RNUM → CHANGES; rejected to rework with reviewer feedback (retry loop)"
+          if wg review reject "$RNUM" --reason "$_rreason" --to ready >/dev/null 2>&1; then
+            log "AFK: #$RNUM → CHANGES; re-queued to ready for rework with reviewer feedback (retry-cap parks to blocked at the threshold)"
           else
             log "AFK: #$RNUM CHANGES but reject failed — left in_review"
             _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"

@@ -358,6 +358,26 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     help: "How many times a ticket may be re-worked after a rejected review before it parks to blocked.",
   },
   {
+    key: "GAFFER_MAX_NOCOMMIT_FAILURES",
+    type: "int",
+    group: "budget",
+    label: "Max no-commit failures",
+    help:
+      "Cross-run bound on deliveries that crash before committing. After this many " +
+      "no-commit/wrong-branch failures the ticket parks visibly to blocked instead of " +
+      "being re-picked (and re-billed) every run. Defaults to Max delivery attempts.",
+  },
+  {
+    key: "GAFFER_REWORK_BUDGET_USD",
+    type: "string",
+    group: "budget",
+    label: "Per-ticket rework budget (USD)",
+    help:
+      "Cumulative spend ceiling for one ticket's rework loop. Delivery stops at whichever " +
+      "hits first — this or Max delivery attempts — then parks to blocked. Defaults to the " +
+      "factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it).",
+  },
+  {
     key: "GAFFER_MAX_RESUMES_PER_TICK",
     type: "int",
     group: "budget",
@@ -460,6 +480,26 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "sandbox",
     label: "Allow network in sandbox",
     help: "When the strict sandbox is on, still permit outbound network (package installs, git, the model API).",
+  },
+  {
+    key: "SANDBOX_PROVIDER",
+    type: "string",
+    group: "sandbox",
+    label: "Sandbox provider",
+    help:
+      "Which OS-level containment backend the strict sandbox uses: sandbox-exec (macOS, " +
+      "proven today) · none (disable OS wrapping, keep the toggle). docker/lima/VM are " +
+      "future providers. Only consulted when the strict sandbox is on.",
+  },
+  {
+    key: "STRICT_ALLOW_HOME",
+    type: "string",
+    group: "sandbox",
+    label: "Sandbox writable HOME paths",
+    help:
+      "Space-separated HOME paths the strict sandbox may write to outside the worktree " +
+      "(Claude Code keeps state/cache here; denying them breaks legitimate runtime writes). " +
+      "Defaults to ~/.claude and ~/.cache.",
   },
 ] as const;
 

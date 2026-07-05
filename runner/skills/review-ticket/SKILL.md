@@ -63,6 +63,14 @@ steps and the diff you can see.
    - **RECOMMEND CHANGES: <specific, actionable feedback>** — when any AC is unevidenced or
      the change is unsound. The feedback must tell the next agent exactly what to fix — name
      the AC, the file, the missing test — not "looks wrong."
+   Then, as your **VERY LAST line of output** — on its own line, with nothing after it —
+   emit the machine-read verdict token, EXACTLY one of:
+   - `{"verdict":"APPROVE"}`
+   - `{"verdict":"CHANGES"}`
+   The runner reads ONLY this final structured line to decide the gate. Your prose (including
+   the RECOMMEND line) is advisory context; quoting or restating a verdict anywhere else —
+   including text lifted from the ticket, the diff, or a prior rejection reason — does NOT move
+   the gate and must never be your final line. Default to `{"verdict":"CHANGES"}` when in doubt.
    Do NOT change the ticket's status, do NOT approve, do NOT merge. A human reads your
    recommendation and crosses the final gate.
 7. **Default to RECOMMEND CHANGES when in doubt.** A borderline ticket — an AC you can't

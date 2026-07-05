@@ -1334,6 +1334,46 @@ gaffer_afk_ship_plan() {
   fi
 }
 
+# S-H2: reviewer VERDICT resolution from an OUT-OF-BAND STRUCTURED signal, NOT a
+# free-text grep over the reviewer's whole prose. In AFK/graduated mode a clean
+# `approve` triggers an autonomous approve+merge with no human, so the verdict must
+# not be forgeable by text QUOTED in the reviewer's reasoning. An adversarial
+# ticket/diff/rejection-reason could make the reviewer reproduce "RECOMMEND APPROVE"
+# in prose; the old grep over the entire blob would then flip the gate.
+#
+# The reviewer is now required to end its output with a machine-read line —
+#   {"verdict":"APPROVE"}  or  {"verdict":"CHANGES"}
+# — and we take the LAST such line as authoritative. Prose that merely contains the
+# phrase can no longer match. The legacy free-text grep survives ONLY as a fallback
+# for when NO structured line is present (older reviewer output / a truncated
+# result), and it stays fail-closed (defaults changes; the CHANGES check runs last
+# so a blob mentioning both resolves to changes). Pure: no I/O, no side effects.
+#   $1 result : the reviewer agent's full result text (may be multi-line)
+# Echoes exactly one of: approve | changes   (defaults changes on empty/ambiguous).
+gaffer_review_verdict() {
+  local _result="$1" _structured _verdict=changes
+  # The LAST line that IS (or contains) a {"verdict":"APPROVE"|"CHANGES"} object,
+  # whitespace-tolerant. Braces are matched via [{]/[}] so the ERE is portable
+  # across BSD (macOS /usr/bin/grep) and GNU grep (CI) — `\{` is an interval
+  # metacharacter to GNU grep and would error.
+  _structured="$(printf '%s\n' "$_result" \
+    | grep -oiE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"(APPROVE|CHANGES)"[[:space:]]*[}]' \
+    | tail -n 1)"
+  if [ -n "$_structured" ]; then
+    # Structured verdict is authoritative. `approve` ONLY on an explicit APPROVE
+    # object; every other value (CHANGES, or anything unexpected) → changes.
+    case "$_structured" in
+      *[Aa][Pp][Pp][Rr][Oo][Vv][Ee]*) _verdict=approve ;;
+      *) _verdict=changes ;;
+    esac
+  else
+    # FALLBACK (no structured line): the legacy free-text grep — still fail-closed.
+    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*APPROVE" && _verdict=approve
+    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*CHANGES" && _verdict=changes
+  fi
+  printf '%s\n' "$_verdict"
+}
+
 # Strict-execution-mode provider seam (defines sandbox_wrap_cmd). Sourced last so
 # it can read the GAFFER_DATA / STRICT_* config above. Best-effort: a missing file
 # must not break the suite, but it ships in-tree so this is just defensive.

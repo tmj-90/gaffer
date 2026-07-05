@@ -358,8 +358,19 @@ const TOKEN_SOURCE_EXT_GUARD = String.raw`(?!(?:\.(?:${TOKEN_CODE_EXT})|(?<=desi
 // the READ rule; the separate hygiene forbidden-fragment `mcp-runtime.` is a
 // different rule and stays as finding-7 tightened it.)
 const MCP_RUNTIME_FILE = String.raw`mcp-runtime(?:\.\w+)*\.json`;
+// PROC ENVIRON (S-H1, Linux claim-token exfil): `/proc/<pid>/environ` — and the
+// `/proc/self/environ`, thread `…/task/<tid>/environ`, and `/proc/*/environ` glob
+// forms — expose ANOTHER same-user process's environment, including the
+// dispatch-mcp process's GAFFER_CLAIM_TOKEN. Treated as a secret path on EVERY
+// read vector (Read tool, cat/redirect/source, glob, var-indirection, inline
+// interpreter), so no reader path can lift the token. The `proc/` prefix anchors
+// it: a plain file named `environ` (no `/proc/` ancestor) is NOT matched. The
+// macOS analogue (`ps` with the e/-E env flags) is blocked as a dangerous
+// command in lib/dangerous-commands.mjs instead. `[^\s'"]*` never crosses a
+// space/quote, so it cannot bleed across command boundaries.
+const PROC_ENVIRON = String.raw`proc\/[^\s'"]*\/environ`;
 const SECRET_PATH = new RegExp(
-  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
   "i",
 );
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
@@ -405,7 +416,7 @@ const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
 // (`npx prettier --write src/design-tokens.json`) is not flagged; the exact
 // `dashboard-token` alternative is guard-free and always fires.
 const SECRET_PATH_FRAGMENT = new RegExp(
-  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -423,9 +434,9 @@ const SECRET_GLOB =
 //   `source .env` / `. .env`   load secrets into the environment
 //   `read ... < .env` / `mapfile < .env`  (the `<` rule catches these too)
 const REDIRECT_READ =
-  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|dashboard-token|[._-]tokens?)/i;
+  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
 const SOURCE_SECRET =
-  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|dashboard-token|[._-]tokens?)/i;
+  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
 
 // Command-substitution / pipe / xargs constructs that decouple the tool
 // from the path it operates on, hiding the data flow from static analysis.
@@ -437,8 +448,12 @@ const PIPE_OR_XARGS = /\||\bxargs\b/;
 // belt-and-braces signal for "this segment moves file contents". Kept
 // broad on purpose (a denylist here only ADDS denials, never removes the
 // path-fragment denial that does the real work).
+// `ps` is included here (S-H1): it can print another process's environment
+// (`$(ps ewww)`), so it counts as a contents-moving/exfil tool for the
+// command-substitution over-block below. A bare `ps` command is separately
+// hard-blocked by the canonical dangerous-command deny list.
 const READISH_TOOL =
-  /\b(cat|head|tail|less|more|bat|sed|awk|nl|tac|cut|sort|uniq|column|fmt|paste|join|comm|expand|unexpand|fold|pr|rev|grep|egrep|fgrep|rg|ag|ack|strings|xxd|od|hexdump|base64|base32|xxencode|uuencode|openssl|ssh-keygen|gpg|cp|mv|scp|rsync|sftp|tar|cpio|dd|tee|curl|wget|nc|ncat|socat|mail|mailx|sendmail)\b/i;
+  /\b(cat|head|tail|less|more|bat|sed|awk|nl|tac|cut|sort|uniq|column|fmt|paste|join|comm|expand|unexpand|fold|pr|rev|grep|egrep|fgrep|rg|ag|ack|strings|xxd|od|hexdump|base64|base32|xxencode|uuencode|openssl|ssh-keygen|gpg|ps|cp|mv|scp|rsync|sftp|tar|cpio|dd|tee|curl|wget|nc|ncat|socat|mail|mailx|sendmail)\b/i;
 
 // Interpreters that can read a file via an inline program (-c / -e / -ne / -pe …).
 const INLINE_INTERPRETER =
@@ -455,7 +470,7 @@ const FILE_READ_PRIMITIVE =
 // SOURCE file is legitimate; `f=.gaffer/dashboard-token` and extensionless
 // token files stay denied.
 const SECRET_ASSIGNMENT = new RegExp(
-  String.raw`\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 

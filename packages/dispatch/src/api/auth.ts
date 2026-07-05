@@ -2,23 +2,23 @@
 //
 // Always-on by default: the `dispatch-api` entrypoint auto-provisions a token at
 // startup via {@link ensureApiToken} when the operator hasn't set one, so a token
-// is present in normal operation and every non-public request must carry
-// `Authorization: Bearer <token>`. HOW the token was obtained decides the READ
-// posture (captured once at startup — see {@link recordApiTokenSource}):
+// is present in normal operation and EVERY control-plane request must carry
+// `Authorization: Bearer <token>` (see {@link isRequestAuthorized}).
 //
-//  - AUTO-PROVISIONED (generated, or reused from the persisted token file):
-//    read-only GET/HEAD requests stay open on a loopback bind so the local
-//    dashboard works without wiring the token into the SPA — EXCEPT privileged
-//    paths that expose secrets (webhook/notify URLs), which require the token
-//    even on loopback (see {@link isPrivilegedPath}).
-//  - OPERATOR-SET (`DISPATCH_API_TOKEN` present in the startup environment):
-//    the operator explicitly asked for auth, so EVERY request — loopback reads
-//    included — must present the token (the original strict posture).
+// S-M1: a configured token is required for every DATA-returning endpoint — there
+// is NO tokenless loopback-read relaxation. The public bootstrap surface (the
+// static SPA shell + `/healthz`) is served earlier in the request pipeline
+// (server.ts), tokenless, so every request that reaches the auth gate returns
+// control-plane data and must present the token. This closes the hole where a
+// same-user process (e.g. a token-scrubbed, prompt-injected delivery agent) could
+// `GET http://127.0.0.1:<port>/api/tickets` on the loopback bind and read the whole
+// backlog. The dashboard is unaffected: the SPA sends the bearer on every call
+// (web/app.js `api()`), adopting it from the `?token=` URL or the login gate.
 //
 // Only when NO token is configured (embedders/tests that construct the server
-// directly) is auth disabled entirely — the historical loopback-only dev
-// behaviour, kept for backwards compatibility. A configured token also satisfies
-// the safe-bind guard: an authenticated API is safe to expose beyond loopback.
+// directly) is auth disabled entirely — the historical dev behaviour, kept for
+// backwards compatibility. A configured token also satisfies the safe-bind guard:
+// an authenticated API is safe to expose beyond loopback.
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -182,12 +182,6 @@ export function isAuthorized(req: IncomingMessage): boolean {
   return apiToken().length === 0 || hasValidBearer(req);
 }
 
-/** True for HTTP methods that do not change state (safe to leave open locally). */
-function isReadOnlyMethod(method: string): boolean {
-  const m = method.toUpperCase();
-  return m === "GET" || m === "HEAD";
-}
-
 /**
  * Request paths that require the bearer token EVEN for a read-only request on a
  * loopback bind, because their response body exposes secrets — notably
@@ -229,41 +223,27 @@ export function isPrivilegedPath(pathname: string): boolean {
 }
 
 /**
- * Full control-plane authorization decision.
+ * Full control-plane authorization decision (S-M1).
  *
  * - No token configured → always allowed (backwards-compatible dev posture). The
  *   standard `dispatch-api` entrypoint auto-provisions a token via
  *   {@link ensureApiToken}, so this branch is only reached by embedders that
  *   construct the server directly (e.g. tests).
  * - Token configured + correct bearer → allowed.
- * - OPERATOR-SET token (see {@link isOperatorSetToken}) with a missing/invalid
- *   bearer → refused, ALWAYS — the operator explicitly configured
- *   `DISPATCH_API_TOKEN`, so the strict posture applies: loopback reads
- *   (plan-session transcripts, run detail, human queue, cost) are gated too.
- * - Auto-provisioned token with a missing/invalid bearer:
- *     - a READ-ONLY request (GET/HEAD) on a LOOPBACK bind is allowed, so the
- *       local dashboard keeps working without the operator wiring the token into
- *       the SPA — UNLESS `pathname` is a privileged secret-bearing path (see
- *       {@link isPrivilegedPath}), which is refused even on a loopback read;
- *     - EVERY mutating/state-changing request (and any request on a non-loopback
- *       bind) is refused. This is the structural stop on the delivery agent —
- *       whose child env the runner scrubs of `DISPATCH_API_TOKEN` — self-approving
- *       its own work (or reading control-plane secrets) over the REST API.
+ * - Token configured + missing/invalid bearer → REFUSED, ALWAYS — including a
+ *   loopback GET/HEAD. Every request that reaches this gate is a DATA-returning
+ *   control-plane endpoint (the static SPA shell + `/healthz` are served earlier,
+ *   tokenless), so there is no tokenless read path to leak the board. This is the
+ *   structural stop on a same-user process — e.g. the delivery agent, whose child
+ *   env the runner scrubs of `DISPATCH_API_TOKEN` — reading `/api/tickets` (or
+ *   self-approving its work) over the REST API.
  *
- * `pathname` defaults to "" so existing callers that don't pass it keep the old
- * behaviour for non-privileged paths (the empty path is never privileged).
+ * The posture no longer varies by HTTP method, bind, or token provenance:
+ * auto-provisioned and operator-set tokens are gated identically. (The exported
+ * {@link isOperatorSetToken} / {@link isPrivilegedPath} predicates are retained as
+ * independently-tested markers of the token source and the secret-bearing paths;
+ * they no longer *relax* the decision — the token is required for all of them.)
  */
-export function isRequestAuthorized(
-  req: IncomingMessage,
-  loopbackBind: boolean,
-  pathname = "",
-): boolean {
-  if (isAuthorized(req)) return true;
-  // Operator-set token → the strict posture: no tokenless access at all, not
-  // even a loopback read. The relaxed branches below are auto-token-only UX.
-  if (isOperatorSetToken()) return false;
-  // Secret-bearing endpoints require the token even for a loopback read.
-  if (isPrivilegedPath(pathname)) return false;
-  const method = (req.method ?? "GET").toUpperCase();
-  return isReadOnlyMethod(method) && loopbackBind;
+export function isRequestAuthorized(req: IncomingMessage): boolean {
+  return isAuthorized(req);
 }

@@ -437,16 +437,20 @@ describe("RUN-DETAIL REST: GET /api/runs/:id", () => {
 // ── Auth gate ─────────────────────────────────────────────────────────────────
 
 describe("RUN-DETAIL REST: auth gate", () => {
-  it("keeps read-only run detail open on loopback but gates mutations behind the token", async () => {
+  it("S-M1: gates read-only run detail behind the token on loopback too", async () => {
     const original = process.env.DISPATCH_API_TOKEN;
     process.env.DISPATCH_API_TOKEN = "secret-tok";
     let h: Harness | null = null;
     try {
       h = await startHarness();
-      // Read-only GET stays open on a loopback bind even with a token configured
-      // (dashboard UX) — never a 401. (any-id doesn't exist, so 404 is expected.)
+      // S-M1: the run detail read now requires the token, loopback included.
       const read = await fetch(`${h.baseUrl}/api/runs/any-id`);
-      expect(read.status).not.toBe(401);
+      expect(read.status).toBe(401);
+      // With the token it passes the auth gate (404 since the id doesn't exist).
+      const readTok = await fetch(`${h.baseUrl}/api/runs/any-id`, {
+        headers: { authorization: "Bearer secret-tok" },
+      });
+      expect(readTok.status).not.toBe(401);
       // A mutating request without the token is refused.
       const noToken = await fetch(`${h.baseUrl}/tickets`, {
         method: "POST",

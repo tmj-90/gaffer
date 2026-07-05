@@ -89,16 +89,14 @@ import {
  * AUTH: a bearer token (`DISPATCH_API_TOKEN`) gates the control plane. The
  * `dispatch-api` entrypoint auto-provisions one at startup when the operator has
  * not set it (see {@link ensureApiToken}), so a token is present by default.
- * Enforcement is method-aware (see {@link isRequestAuthorized}): EVERY mutating /
- * state-changing request (review approve/reject, merge, board moves, every write)
- * must present the token, while read-only GET/HEAD requests stay open on a
- * loopback bind to preserve local dashboard UX — for the AUTO-provisioned token
- * only; an operator-SET `DISPATCH_API_TOKEN` gates every request, loopback reads
- * included (see auth.ts isOperatorSetToken). This is what structurally stops
- * the delivery agent — whose child env the runner scrubs of the token — from
- * self-approving its own work over REST. What is NOT here yet is *role*
- * enforcement: per-role RBAC is deferred, so an authenticated caller acts as a
- * single human actor with full rights.
+ * S-M1: EVERY control-plane request (reads AND writes — board/tickets/claims,
+ * review approve/reject, merge, board moves) must present the token, loopback
+ * included. Only the public bootstrap surface (the static SPA shell + `/healthz`,
+ * served before the auth gate) is tokenless. This is what structurally stops the
+ * delivery agent — whose child env the runner scrubs of the token — from reading
+ * the backlog or self-approving its own work over REST. What is NOT here yet is
+ * *role* enforcement: per-role RBAC is deferred, so an authenticated caller acts
+ * as a single human actor with full rights.
  */
 
 /** Default port; overridden by DISPATCH_API_PORT / --port at the bin layer. */
@@ -500,7 +498,6 @@ export function createApiHandler(
       memoryReader,
       onboardRunner,
       specAuthorRunner,
-      loopbackBind,
       bindHost,
       req,
       res,
@@ -604,10 +601,6 @@ async function route(
   onboardRunner: OnboardRunner,
   // SPEC-DRIVEN (Phase 1c): the spec-author seam behind POST /spec-build.
   specAuthorRunner: SpecAuthorRunner,
-  // Resolved once from the bind host (see createApiHandler). Controls whether an
-  // unauthenticated READ may pass: reads stay open on a loopback bind for the
-  // local dashboard, but mutations always require the token.
-  loopbackBind: boolean,
   // The host the server is bound to — used for the Host/Origin DNS-rebinding
   // check so a rebound foreign page can't read local control state.
   bindHost: string,
@@ -657,13 +650,11 @@ async function route(
     // Auth gate: static assets + /healthz above are public. The control-plane
     // API requires a bearer token (DISPATCH_API_TOKEN — auto-provisioned at
     // startup by the dispatch-api entrypoint, so a token is present by default).
-    // Read-only requests stay open on a loopback bind to preserve local dashboard
-    // UX — auto-provisioned token only; an operator-SET token gates everything.
-    // EVERY mutating/state-changing request must present the token, as must a
-    // read of a privileged secret-bearing path (e.g. /api/settings) even on
-    // loopback. No-op only when auth is fully disabled (no token configured —
-    // embedder/test posture).
-    if (!isRequestAuthorized(req, loopbackBind, url.pathname)) {
+    // S-M1: EVERY request reaching this gate is a DATA-returning endpoint and must
+    // present the token — loopback reads included. There is no tokenless loopback
+    // read path (the SPA sends the bearer on every call). No-op only when auth is
+    // fully disabled (no token configured — embedder/test posture).
+    if (!isRequestAuthorized(req)) {
       sendJson(res, 401, {
         error: { code: "UNAUTHORIZED", message: "Missing or invalid bearer token." },
       });

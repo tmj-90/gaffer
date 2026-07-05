@@ -322,13 +322,15 @@ describe("GET /api/health", () => {
     }
   });
 
-  it("leaves the read-only health endpoint open on loopback even with a token set", async () => {
+  it("S-M1: gates the /api/health data endpoint behind the token on loopback (distinct from public /healthz)", async () => {
     const savedToken = process.env.DISPATCH_API_TOKEN;
     process.env.DISPATCH_API_TOKEN = "secret-token-for-test";
     const h = await startHarness({});
     try {
+      // /api/health reports factory control data (runs/costs/health) — gated now.
+      // The public liveness probe is /healthz (served before the auth gate).
       const { status } = await get(h.baseUrl, "/api/health");
-      expect(status).toBe(200);
+      expect(status).toBe(401);
       const { status: ok } = await get(h.baseUrl, "/api/health", "secret-token-for-test");
       expect(ok).toBe(200);
     } finally {

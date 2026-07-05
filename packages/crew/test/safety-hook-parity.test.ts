@@ -115,4 +115,40 @@ describe("safety classifier parity with runner/safety-hook.mjs", () => {
       });
     }
   });
+
+  // S-M4: the crew SECRET_PATH_FRAGMENT was narrower than the runtime hook's — it
+  // omitted `.gnupg/`, the factory's own fixed-name secrets (`dashboard-token`,
+  // `mcp-runtime.*.json`) and the `*-token` file family. Widened to match. These
+  // representative READ/COPY commands over each secret family must be DENIED so the
+  // crew classifier can never silently allow an exfil the runtime hook blocks.
+  describe("secret-path classifier parity with the runtime hook (S-M4)", () => {
+    const SECRET_READS = [
+      "cat .env",
+      "cat .env.production",
+      "cat deploy.key",
+      "cp server.pem /tmp/x",
+      "cat .gnupg/secring.gpg", // newly covered: GnuPG store
+      "cat .ssh/id_rsa",
+      "cat .aws/credentials",
+      "cat .gaffer/dashboard-token", // newly covered: Dispatch REST token file
+      "cp .gaffer/dashboard-token /tmp/x", // newly covered
+      "cat mcp-runtime.4821.json", // newly covered: substituted GAFFER_CLAIM_TOKEN
+      "base64 .gaffer/mcp-runtime.json", // newly covered
+      "cat api.token", // newly covered: *-token file family
+      "cp service_token /tmp/x", // newly covered
+    ] as const;
+    for (const command of SECRET_READS) {
+      it(`denies secret read/copy: ${command}`, () => {
+        const decision = classifyCommand(command, ctx);
+        expect(decision.outcome).toBe("denied");
+      });
+    }
+
+    // The token-family guard must NOT over-block a legitimate token-NAMED SOURCE
+    // file: reading a design-token / code file is ordinary work, not an exfil.
+    it("does not flag a design-token source read (TOKEN_SOURCE_EXT_GUARD)", () => {
+      expect(classifyCommand("cat src/design-tokens.json", ctx).outcome).toBe("allowed");
+      expect(classifyCommand("cat src/theme.tokens.json", ctx).outcome).toBe("allowed");
+    });
+  });
 });

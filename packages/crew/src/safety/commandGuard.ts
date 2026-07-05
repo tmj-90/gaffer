@@ -58,10 +58,26 @@ const DANGEROUS_COMMAND_RULES: ReadonlyArray<{ re: RegExp; why: string; rule: st
 // Mirrors READ_COPY_TOOLS in safety-hook.mjs.
 const READ_COPY_TOOLS =
   /\b(cat|head|tail|less|more|bat|sed|awk|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|cp|mv|scp|rsync|tar|dd|nl|tac|cut|tee)\b/i;
-// Named secret-path fragment matched anywhere in a command. Mirrors
-// SECRET_PATH_FRAGMENT in safety-hook.mjs.
-const SECRET_PATH_FRAGMENT =
-  /(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b)/i;
+// Named secret-path fragment matched anywhere in a command. Kept in lock-step with
+// SECRET_PATH_FRAGMENT in runner/safety-hook.mjs (S-M4) — the two duplicated guards
+// must not drift, so this mirrors the hook's families INCLUDING the factory's own
+// fixed-name secrets (`dashboard-token`, `mcp-runtime.*.json`), `.gnupg/`, and the
+// `*-token` file family. `test/safety-hook-parity.test.ts` pins representative
+// secret-path commands against this classifier so a gap here fails the build.
+//
+// The two helper constants below are ported verbatim from the hook:
+//  - MCP_RUNTIME_FILE anchors the runtime JSON that carries the substituted
+//    GAFFER_CLAIM_TOKEN (a rogue read of it recovers the claim token).
+//  - TOKEN_SOURCE_EXT_GUARD exempts token-NAMED source/design files
+//    (`src/design-tokens.json`, `csrf_token.ts`) so an ordinary edit is not flagged,
+//    while `dashboard-token` keeps its own guard-free alternative and always fires.
+const MCP_RUNTIME_FILE = String.raw`mcp-runtime(?:\.\w+)*\.json`;
+const TOKEN_CODE_EXT = String.raw`tsx|ts|jsx|js|mjs|cjs|css|scss|sass|less|vue|svelte`;
+const TOKEN_SOURCE_EXT_GUARD = String.raw`(?!(?:\.(?:${TOKEN_CODE_EXT})|(?<=design[._-]tokens?)(?:\.[\w-]+)?|(?<=\.tokens)(?:\.json)?)(?![\w.]))`;
+const SECRET_PATH_FRAGMENT = new RegExp(
+  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  "i",
+);
 
 /** True when a command reads/copies a named secret path (e.g. `cat .env`). */
 function readsSecretFile(command: string): boolean {

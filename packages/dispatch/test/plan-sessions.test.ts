@@ -595,13 +595,13 @@ describe("Plan-sessions bearer 401", () => {
     else process.env.DISPATCH_API_TOKEN = originalToken;
   });
 
-  it("refuses MUTATING plan-session requests without a token; reads stay open on loopback", async () => {
+  it("S-M1: refuses plan-session requests (reads AND mutations) without a token; passes with it", async () => {
     process.env.DISPATCH_API_TOKEN = TOKEN;
     const h = await startHarness();
     try {
-      // Mutating / state-changing requests MUST present the token — refused (401)
-      // without it. This is the structural stop on a tokenless local caller (e.g.
-      // the delivery agent's shell) mutating the control plane.
+      // Every request MUST present the token — refused (401) without it. This is the
+      // structural stop on a tokenless local caller (e.g. the delivery agent's shell)
+      // reading plan-session transcripts or mutating the control plane.
       const mutating = await Promise.all([
         call(h.baseUrl, "POST", "/plan-sessions"),
         call(h.baseUrl, "POST", "/plan-sessions/some-id/turns", { role: "user", content: "x" }),
@@ -610,13 +610,20 @@ describe("Plan-sessions bearer 401", () => {
       for (const r of mutating) {
         expect(r.status).toBe(401);
       }
-      // Read-only requests stay open on a loopback bind so the local dashboard
-      // keeps working without wiring the token into the SPA.
+      // S-M1: reads are gated too — plan-session transcripts are control-plane data.
       const reads = await Promise.all([
         call(h.baseUrl, "GET", "/plan-sessions/active"),
         call(h.baseUrl, "GET", "/plan-sessions"),
       ]);
       for (const r of reads) {
+        expect(r.status).toBe(401);
+      }
+      // The same reads succeed with the token.
+      const tokened = await Promise.all([
+        call(h.baseUrl, "GET", "/plan-sessions/active", undefined, TOKEN),
+        call(h.baseUrl, "GET", "/plan-sessions", undefined, TOKEN),
+      ]);
+      for (const r of tokened) {
         expect(r.status).toBe(200);
       }
     } finally {

@@ -263,26 +263,107 @@ describe("runner-owned bookkeeping", () => {
   // claim, and the runner's subsequent release runs with a now-void token: the branch
   // is dropped and the ticket strands in in_review with an empty diff (un-approvable —
   // PR_OR_DIFF_REQUIRED can never pass).
-  describe("FINDING-2: submit is runner-owned — the agent mount cannot self-submit", () => {
-    it("submit_ticket_for_review does NOT resolve the env token — a tokenless agent self-submit is refused", () => {
+  describe("FINDING-2 / S-H1: submit is runner-owned — the agent mount cannot self-submit", () => {
+    it("a tokenless agent self-submit is refused in factory context (FACTORY_RUNNER_OWNED)", () => {
       const wg = Dispatch.open(":memory:", new TestClock());
       const { ticketId, token } = seedReadyClaimedTicket(wg);
       const h = makeHandlers(wg, agentActor);
 
       const prev = process.env.GAFFER_CLAIM_TOKEN;
-      // Exactly the agent's MCP mount: the runner-held token sits in the server env.
+      // Exactly the agent's MCP mount: the runner-held token sits in the server env
+      // (which also signals factory context).
       process.env.GAFFER_CLAIM_TOKEN = token;
       try {
         const res = h.submit_ticket_for_review({ ticket_id: ticketId });
         expect(res.isError).toBe(true);
         const error = res.structuredContent.error as { code: string };
-        expect(error.code).toBe("VALIDATION_ERROR");
+        expect(error.code).toBe("FACTORY_RUNNER_OWNED");
       } finally {
         if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
         else process.env.GAFFER_CLAIM_TOKEN = prev;
       }
       // The claim was NOT completed: the ticket stays claimed, awaiting the runner.
       expect(wg.view(ticketId).ticket.status).toBe("claimed");
+    });
+
+    it("S-H1: an EXPLICIT claim_token agent submit is ALSO refused in factory context", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const { ticketId, token } = seedReadyClaimedTicket(wg);
+      const h = makeHandlers(wg, agentActor);
+
+      const prev = process.env.GAFFER_CLAIM_TOKEN;
+      // Factory context is active. The agent lifts the real token (e.g. from `ps` or
+      // the mcp-runtime file) and passes it EXPLICITLY — it must STILL be refused.
+      process.env.GAFFER_CLAIM_TOKEN = token;
+      try {
+        const res = h.submit_ticket_for_review({ ticket_id: ticketId, claim_token: token });
+        expect(res.isError).toBe(true);
+        expect((res.structuredContent.error as { code: string }).code).toBe("FACTORY_RUNNER_OWNED");
+      } finally {
+        if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prev;
+      }
+      // The token is intact and the claim uncompleted — the runner can still submit/park.
+      expect(wg.view(ticketId).ticket.status).toBe("claimed");
+    });
+
+    it("S-H1: the GAFFER_FACTORY flag alone triggers the refusal (covers a mount with no claim token)", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const { ticketId, token } = seedReadyClaimedTicket(wg);
+      const h = makeHandlers(wg, agentActor);
+
+      const prevTok = process.env.GAFFER_CLAIM_TOKEN;
+      const prevFlag = process.env.GAFFER_FACTORY;
+      delete process.env.GAFFER_CLAIM_TOKEN; // no claim token on this mount (reviewer/clarify)
+      process.env.GAFFER_FACTORY = "1";
+      try {
+        const res = h.submit_ticket_for_review({ ticket_id: ticketId, claim_token: token });
+        expect(res.isError).toBe(true);
+        expect((res.structuredContent.error as { code: string }).code).toBe("FACTORY_RUNNER_OWNED");
+      } finally {
+        if (prevTok === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prevTok;
+        if (prevFlag === undefined) delete process.env.GAFFER_FACTORY;
+        else process.env.GAFFER_FACTORY = prevFlag;
+      }
+    });
+
+    it("S-H1: claim_next_ticket / claim_ticket are refused for the agent in factory context", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      // A ready, UNCLAIMED ticket the agent would try to grab-and-submit.
+      const h = makeHandlers(wg, agentActor);
+      const created = structured(
+        h.create_ticket({ title: "grabbable", policy_pack: "solo_loose" }),
+      );
+      const ticketId = created.ticket_id as string;
+      structured(h.add_acceptance_criterion({ ticket_id: ticketId, text: "does X" }));
+      h.mark_ticket_ready({ ticket_id: ticketId });
+      const agent = wg.registerAgent({ display_name: "claude" }, { type: "human", id: "tom" });
+
+      const prev = process.env.GAFFER_CLAIM_TOKEN;
+      process.env.GAFFER_CLAIM_TOKEN = "runner-held-token-for-another-ticket";
+      try {
+        const next = h.claim_next_ticket({ agent_id: agent.id, ttl_seconds: 600 });
+        expect(next.isError).toBe(true);
+        expect((next.structuredContent.error as { code: string }).code).toBe(
+          "FACTORY_RUNNER_OWNED",
+        );
+
+        const specific = h.claim_ticket({
+          ticket_id: ticketId,
+          agent_id: agent.id,
+          ttl_seconds: 600,
+        });
+        expect(specific.isError).toBe(true);
+        expect((specific.structuredContent.error as { code: string }).code).toBe(
+          "FACTORY_RUNNER_OWNED",
+        );
+      } finally {
+        if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prev;
+      }
+      // The ticket is untouched — still ready, never claimed by the agent.
+      expect(wg.view(ticketId).ticket.status).toBe("ready");
     });
 
     it("no strand: after a refused self-submit the runner's park still releases with its STILL-VALID token", () => {

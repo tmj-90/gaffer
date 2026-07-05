@@ -4,7 +4,11 @@
     "dispatch": {
       "command": "node",
       "args": ["${DISPATCH_MCP_BIN}"],
-      "env": { "DISPATCH_DB": "${DISPATCH_DB}", "GAFFER_CLAIM_TOKEN": "${GAFFER_CLAIM_TOKEN}" }
+      "env": {
+        "DISPATCH_DB": "${DISPATCH_DB}",
+        "GAFFER_CLAIM_TOKEN": "${GAFFER_CLAIM_TOKEN}",
+        "GAFFER_FACTORY": "1"
+      }
     },
     "memory": {
       "command": "node",

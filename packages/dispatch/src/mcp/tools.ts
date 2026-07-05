@@ -316,6 +316,45 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     const t = explicit && explicit.length > 0 ? explicit : process.env.GAFFER_CLAIM_TOKEN;
     return t && t.length > 0 ? t : undefined;
   };
+
+  // S-H1/S-M2: refuse AGENT-actor ticket MOVEMENT (submit / claim) when this MCP
+  // server is mounted by the Gaffer factory runner. In the factory the runner owns
+  // the whole claim→submit lifecycle: it claims the ticket via the CLI, injects the
+  // claim token into THIS server's env (GAFFER_CLAIM_TOKEN) for the agent's
+  // legitimate token-gated writes, runs the DoD gates, and submits via the CLI/human
+  // path. A disobedient (or prompt-injected) delivery agent must be STRUCTURALLY
+  // unable to move tickets — otherwise it could:
+  //   • submit its own claim (even with a claim_token lifted from `ps` / the
+  //     mcp-runtime file), completing the claim and stranding the ticket; or
+  //   • claim ANOTHER ready ticket and submit it, bypassing every runner gate.
+  // Detected from the SERVER env the runner controls (the agent cannot set its own
+  // MCP server env — the runner renders .mcp.json):
+  //   • GAFFER_FACTORY truthy → explicit factory-mode flag. The runner SHOULD set
+  //     this on every factory MCP mount (delivery AND reviewer/clarify), so even a
+  //     mount with no claim token (reviewer/clarify) is covered; OR
+  //   • GAFFER_CLAIM_TOKEN present → the delivery agent's mount always carries the
+  //     runner-held claim token, so its presence alone proves factory context.
+  // OUTSIDE the factory (standalone/operator MCP use) neither is set, so claim and
+  // explicit-token submit keep working exactly as before. The RUNNER's own submit
+  // path is the dispatch CLI (`wg submit --token`) → facade, which never routes
+  // through these handlers, so it is unaffected and stays byte-identical.
+  const inFactoryContext = (): boolean => {
+    const flag = (process.env.GAFFER_FACTORY ?? "").trim().toLowerCase();
+    if (flag === "1" || flag === "true" || flag === "yes") return true;
+    return (process.env.GAFFER_CLAIM_TOKEN ?? "").length > 0;
+  };
+  /** Throw the runner-owned refusal for an agent-actor move in factory context. */
+  const refuseIfFactoryAgentMove = (action: "submit" | "claim"): void => {
+    if (actor.type !== "agent" || !inFactoryContext()) return;
+    const detail =
+      action === "submit"
+        ? "submission is runner-owned in factory context: the delivery agent cannot submit " +
+          "for review (even with an explicit claim_token). The runner runs the DoD gates and " +
+          "submits via the CLI. Do NOT call this tool."
+        : "claiming is runner-owned in factory context: the runner claims and leases the ticket " +
+          "and injects the token into this MCP server's env; the delivery agent cannot claim.";
+    throw new DispatchError("FACTORY_RUNNER_OWNED", detail);
+  };
   const raw = {
     create_ticket: (args: Args): ToolResult =>
       guard(() => {
@@ -350,6 +389,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
 
     claim_next_ticket: (args: Args): ToolResult =>
       guard(() => {
+        refuseIfFactoryAgentMove("claim");
         const a = z.object(toolSchemas.claim_next_ticket).parse(args);
         const claim = wg.claimNextTicket(
           { agentId: a.agent_id, ttlSeconds: a.ttl_seconds, capabilities: a.capabilities },
@@ -369,6 +409,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
 
     claim_ticket: (args: Args): ToolResult =>
       guard(() => {
+        refuseIfFactoryAgentMove("claim");
         const a = z.object(toolSchemas.claim_ticket).parse(args);
         const claim = wg.claimTicket(
           {
@@ -560,6 +601,10 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
 
     submit_ticket_for_review: (args: Args): ToolResult =>
       guard(() => {
+        // S-H1/S-M2: in factory context an agent CANNOT submit — not even with an
+        // explicit claim_token lifted from `ps`/the mcp-runtime file. Checked BEFORE
+        // arg parsing so the refusal never depends on the token the agent supplies.
+        refuseIfFactoryAgentMove("submit");
         const a = z.object(toolSchemas.submit_ticket_for_review).parse(args);
         // RUNNER-OWNED-BOOKKEEPING (FINDING-2): submit deliberately does NOT
         // resolve the GAFFER_CLAIM_TOKEN env fallback. That env token exists for

@@ -377,6 +377,9 @@ async function runAsyncActionUntilDone(btn, running, fn) {
 function renderLogin(wasWrong) {
   const root = document.getElementById("app");
   if (!root) return;
+  // A write 401 can fire from the Plan-a-build sheet (body-level overlay); dismiss it
+  // so the token gate isn't stranded behind it — the CSS also covers it defensively.
+  closeSheet();
   if (appbar) appbar.hidden = true;
   if (bottomnav) bottomnav.hidden = true;
   root.classList.add("login-shell");

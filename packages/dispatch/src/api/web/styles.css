@@ -5095,6 +5095,15 @@ td.title-cell {
    =========================================================================== */
 
 .login-shell {
+  /* Full-viewport top layer. The token gate is triggered by a WRITE 401, which can
+     fire from a body-level overlay (the Plan-a-build sheet / command palette, appended
+     to <body> at z-index ~45-60). Those outrank #app's normal flow, so a plain grid
+     rendered the gate BEHIND the chat. Cover everything (max z-index in use is 1100)
+     with a solid backdrop so the prompt is never hidden. */
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: var(--bg);
   min-height: 100dvh;
   display: grid;
   place-items: center;

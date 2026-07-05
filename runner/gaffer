@@ -144,6 +144,15 @@ dashboard)
   gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
   if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/api/dashboard" >/dev/null 2>&1; then
     ok "dashboard up → http://127.0.0.1:$DASH_PORT"
+    # Reads work tokenless on loopback, but WRITES (onboard · plan a build · approve) need
+    # the auto-provisioned token — otherwise the first write 401s with no obvious cause.
+    # Hand it to the operator as a ?token= URL the SPA adopts (and scrubs from history).
+    # The delivery agent never gets it: the runner scrubs DISPATCH_API_TOKEN from its env,
+    # so an agent still cannot self-approve its own work over the REST API.
+    _tok="$(cat "$GAFFER_DATA/dashboard-token" 2>/dev/null)"
+    if [ -n "$_tok" ]; then
+      printf "    to make changes (onboard · plan · approve), open with your token:\n    ${c_cya}http://127.0.0.1:%s/?token=%s${c_off}\n" "$DASH_PORT" "$_tok"
+    fi
   else warn "dashboard failed to start — see $GAFFER_DATA/dashboard.log"; fi
   ;;
 

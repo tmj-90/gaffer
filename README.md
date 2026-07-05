@@ -89,7 +89,7 @@ Gaffer doesn't re-learn a repo from cold on every run. **Memory** keeps a living
 
 ### Control you opt into
 
-The factory is **supervised by default**: a human readies tickets, a human approves merges, memory drafts wait for review. **Settings** is where you loosen that — every autonomy flag is **off until you turn it on** (let an agent approve reviews, auto-merge on agent review, auto-approve memory). The same panel controls the idle loops that mine backlog work between tickets and the planning-debate depth.
+The factory is **supervised by default**: a human readies tickets, a human approves merges, memory drafts wait for review. **Settings** is where you loosen that — and it's the one place every operator knob lives, grouped: **autonomy** (every flag off until you turn it on — let an agent approve reviews, auto-merge on agent review, auto-approve memory), the **delivery** cycle (auto-merge · push · PR · require-CI), **execution** & concurrency, the **idle loops** that mine backlog work between tickets, **budget & caps**, the **planning debate**, the **quality gates**, the strict **sandbox**, and **notifications**. Anything also set as a real env var wins and renders read-only.
 
 <p align="center">
   <img src="docs/img/settings.png" alt="The Settings panel with the autonomy dial and opt-in flags" width="900">
@@ -106,7 +106,7 @@ Four components, one workspace:
 |---|---|
 | **Dispatch** · `packages/dispatch` | The control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard + CLI. |
 | **Crew** · `packages/crew` | The factory runtime — factory-level MCP tools, a hooks engine, and idle loops that draft work, ingest issues, and self-improve. |
-| **Runner** · `runner/` | The orchestrator — bash that spawns a `claude -p` agent per ticket, with a 66-skill library, a deterministic safety hook, git-worktree isolation, and model tiering (plan on a strong model, implement on a fast one). |
+| **Runner** · `runner/` | The orchestrator — bash that spawns a `claude -p` agent per ticket, with a 67-skill library, a deterministic safety hook, git-worktree isolation, and model tiering (plan on a strong model, implement on a fast one). |
 | **Memory** · `packages/memory` | The durable, human-gated memory the factory learns into — the lore knowledge base plus the Repo Understanding engine (digest + feature ledger). *(Also usable standalone — see [`packages/memory/README.md`](packages/memory/README.md).)* |
 
 ```
@@ -173,7 +173,7 @@ gaffer/
 │   ├── dispatch/    control plane  (REST + MCP + dashboard + CLI)
 │   ├── crew/   factory runtime (MCP + hooks + idle loops)
 │   └── memory/    durable gated memory + repo understanding (MCP)
-├── runner/           bash orchestrator, 66-skill library, safety hook
+├── runner/           bash orchestrator, 67-skill library, safety hook
 ├── pnpm-workspace.yaml
 └── package.json
 ```
@@ -186,7 +186,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Dispatch queue, tickets, epics, scopes, review gate (REST + MCP + CLI)
 - Crew MCP tool server (factory tools, hooks engine, idle loops, repo onboarding)
 - Memory embeddings, Repo Digest, feature ledger, gated lore
-- Runner factory loop with 66-skill library and model tiering — one pass with `runner/loop.sh`, or unattended on any platform with `runner/gaffer run --daemon` (re-runs the loop, honours the per-day cap, stops cleanly on a signal)
+- Runner factory loop with 67-skill library and model tiering — one pass with `runner/loop.sh`, or unattended on any platform with `runner/gaffer run --daemon` (re-runs the loop, honours the per-day cap, stops cleanly on a signal)
 - Deterministic safety hook (`runner/safety-hook.mjs`) — worktree isolation, fails closed
 - Web dashboard with all seven views: Overview, Work, Review, Epics, Map, Memory, Settings
 
@@ -194,7 +194,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Container sandbox is a stub — worktree isolation plus `sandbox-exec` (macOS only, Apple-deprecated) is the current boundary; no per-subprocess network isolation
 - No REST RBAC (the API token is shared; no per-user or per-scope permissions)
 - Safety hook is tested on macOS; non-macOS behaviour is best-effort and untested
-- No third-party skill *marketplace* yet. The 66 bundled skills are all mounted into the repo, but the factory injects only a **stack/area-relevant subset** per ticket — `tick.sh` calls `select-skills` to pick the skills matching the repo's stack (and any derived area), plus the always-on quality lenses. `gaffer skills install` adds the whole library to your own Claude Code. Authoring a new skill is still just dropping a `SKILL.md` into `runner/skills/`.
+- No third-party skill *marketplace* yet. The 67 bundled skills are all mounted into the repo, but the factory injects only a **stack/area-relevant subset** per ticket — `tick.sh` calls `select-skills` to pick the skills matching the repo's stack (and any derived area), plus the always-on quality lenses. `gaffer skills install` adds the whole library to your own Claude Code. Authoring a new skill is still just dropping a `SKILL.md` into `runner/skills/`.
 
 ## Credits / Inspired by
 

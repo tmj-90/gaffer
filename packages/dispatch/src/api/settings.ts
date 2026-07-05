@@ -88,7 +88,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
       "policy is the sole allow-path — set grants in the per-repo policy editor); " +
       "autonomous lets agents approve and auto-merges + pushes approved work; " +
-      "strict adds OS-level sandbox containment. Picking a mode prevents a " +
+      "strict adds OS-level sandbox containment on top of autonomous — but the only " +
+      "sandbox provider is sandbox-exec (macOS), so on a non-macOS host strict behaves " +
+      "EXACTLY like autonomous (the deterministic safety hook is the boundary). " +
+      "Picking a mode prevents a " +
       "half-configured autonomy posture. The individual knobs below still " +
       "override the mode — an explicitly-set flag always wins.",
   },

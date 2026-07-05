@@ -58,7 +58,7 @@ const GAFFER_DATA = process.env.GAFFER_DATA || resolve(GAFFER_HOME, ".gaffer");
 // Defaults mirror factory.config.sh so a bare invocation resolves the same wiring.
 const CONFIG = {
   dispatchDb: process.env.DISPATCH_DB || resolve(GAFFER_DATA, "dispatch.sqlite"),
-  crewDir: process.env.CREW_DIR || resolve(GAFFER_HOME, "crew"),
+  crewDir: process.env.CREW_DIR || resolve(GAFFER_HOME, "packages", "crew"),
   crewConfig: process.env.CREW_CONFIG || resolve(GAFFER_DATA, "crew.yaml"),
 };
 

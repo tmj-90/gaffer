@@ -4500,15 +4500,40 @@ const SETTINGS_GROUPS = [
     note: "How much the factory may do without a human in the loop.",
   },
   {
+    id: "delivery",
+    label: "Delivery",
+    note: "What happens once a ticket is approved — merge, push, PR, CI.",
+  },
+  {
+    id: "execution",
+    label: "Execution",
+    note: "How the loop schedules and paces work — concurrency, cadence, ceilings.",
+  },
+  {
     id: "idle-loops",
     label: "Idle loops",
     note: "Background loops that run between real work, and how far they go.",
   },
-  { id: "budget", label: "Budget & caps", note: "Hard limits on a run — ticks, timeouts, turns." },
+  {
+    id: "budget",
+    label: "Budget & caps",
+    note: "Hard limits on a run — ticks, timeouts, turns, retries, spend.",
+  },
   {
     id: "planning-debate",
     label: "Planning debate",
     note: "Multi-model plan critique before decomposing.",
+  },
+  {
+    id: "quality",
+    label: "Quality gates",
+    note: "The runner's definition-of-done guards on every delivery.",
+  },
+  { id: "sandbox", label: "Sandbox", note: "Optional OS-level execution confinement." },
+  {
+    id: "notifications",
+    label: "Notifications",
+    note: "Opt-in pings when the factory needs a human.",
   },
 ];
 

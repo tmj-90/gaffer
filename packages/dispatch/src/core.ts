@@ -605,12 +605,7 @@ export class Dispatch {
     write_repo_ids: string[];
   } {
     const writeRepoIds = this.writeRepoIdsForTicket(ticket);
-    const allowed = isAutonomyAllowed(
-      this.autonomyPolicy,
-      writeRepoIds,
-      ticket.risk_level,
-      gate,
-    );
+    const allowed = isAutonomyAllowed(this.autonomyPolicy, writeRepoIds, ticket.risk_level, gate);
     return {
       gate,
       decision: allowed ? "allow" : "deny",

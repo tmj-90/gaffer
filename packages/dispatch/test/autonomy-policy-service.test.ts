@@ -52,9 +52,9 @@ describe("envAllowsAuto — the per-gate env fallback (today's behaviour)", () =
     // The new blocking default — off unless BOTH flags are explicitly "1".
     expect(envAllowsAuto("merge", ENV_OFF)).toBe(false);
     expect(envAllowsAuto("merge", { [AUTO_MERGE_ENV]: "1" } as NodeJS.ProcessEnv)).toBe(false);
-    expect(
-      envAllowsAuto("merge", { [MERGE_ON_AGENT_REVIEW_ENV]: "1" } as NodeJS.ProcessEnv),
-    ).toBe(false);
+    expect(envAllowsAuto("merge", { [MERGE_ON_AGENT_REVIEW_ENV]: "1" } as NodeJS.ProcessEnv)).toBe(
+      false,
+    );
     // Only exactly "1" for BOTH opts in (the autonomous floor).
     expect(envAllowsAuto("merge", MERGE_ENV_ON)).toBe(true);
     expect(

@@ -51,13 +51,13 @@ These are safe (backward-compatible):
 
 ## Steps
 
-1. **Read the OpenAPI spec or code diff.** If no spec exists, write one from the implementation before reviewing — missing specs are a finding.
+1. **Read the OpenAPI spec or code diff.** If no spec exists, note the missing spec as a CONCERN and continue reviewing the code that exists — don't block the review on a spec that isn't there.
 2. **Check resource naming.** Plural nouns, no verbs in paths (except for actions), consistent casing.
 3. **Check HTTP method usage.** Every `GET` must be safe and idempotent. `POST` for creates and non-idempotent actions only.
 4. **Check status codes.** Map every response to the correct 2xx/4xx/5xx. 200 for errors is an automatic BLOCK.
 5. **Check for breaking changes.** Diff against the previous spec/version. List every breaking change and verify it's covered by a version bump.
 6. **Check error format.** Consistent envelope: `{ "error": { "code": "...", "message": "...", "details": [...] } }` — not ad-hoc per endpoint.
-7. **Check versioning.** Is there a version prefix (`/v1/`)? Is the version bump policy documented?
+7. **Check versioning.** Is the versioning strategy documented — a version prefix (`/v1/`), header-based versioning, or a deliberate no-version choice? A documented no-version API is fine; only an _undocumented_ or contradictory strategy is a finding.
 8. **Emit verdict.** BLOCK / CONCERNS / CLEAN with file/line evidence for each finding.
 
 ## Review checklist
@@ -74,4 +74,4 @@ These are safe (backward-compatible):
 
 - 200 for errors is a BLOCK finding, always.
 - Breaking changes without a version bump are a BLOCK finding.
-- An API without a spec is an incomplete review — write the spec first.
+- A missing spec is a CONCERN, not a blocker — record it and review the code that exists.

@@ -28,6 +28,19 @@ matching the repo's existing test framework and conventions, not introducing a n
    paths. Then use the `record-evidence` skill to record `test_output` against the
    AC and submit for review.
 
+## TypeScript specifics
+
+- **Async functions:** `await` the call and assert on the resolved value, or use
+  `await expect(fn()).rejects.toThrow(...)` for the failure path — never leave a
+  floating promise, or the test passes before the assertion runs.
+- **A meaningful assertion** pins the observable outcome: the returned value, a thrown
+  error, or a call made to a genuine collaborator with the expected arguments. Asserting
+  that a mock you fully control was called (`expect(mock).toHaveBeenCalled()` with no
+  argument or outcome check) tests the mock, not the unit — prefer a real return/throw
+  assertion over an empty mock check.
+- **Fake time and randomness** (`vi.useFakeTimers()` / seeded RNG) so timing- or
+  random-dependent behaviour is deterministic rather than flaky.
+
 ## Rules
 
 - Match existing conventions; do not add a new test framework or runner.

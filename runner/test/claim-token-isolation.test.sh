@@ -98,14 +98,15 @@ run_pair() {  # $1 mode → echoes "<mismatches> <distinct-runtime-files>"
 }
 
 echo "== 1. per-PID paths: each concurrent tick reads back ITS OWN token =="
-read -r mism files < <(run_pair perpid)
+# bash-3.2-safe capture of run_pair's "<mism> <files>" line (no `< <()` process sub).
+set -- $(run_pair perpid); mism="$1"; files="$2"
 [ "$mism" -eq 0 ] && ok "no token cross-read under concurrency (0 mismatches)" \
   || fail "per-PID isolation broken — $mism tick(s) read the wrong token"
 [ "$files" -ge 2 ] && ok "each tick wrote its own runtime file ($files distinct)" \
   || fail "expected ≥2 distinct per-PID runtime files, saw $files"
 
 echo "== 2. control: the OLD shared path DOES clobber (proves the test bites) =="
-read -r mism_fixed _ < <(run_pair fixed)
+set -- $(run_pair fixed); mism_fixed="$1"
 [ "$mism_fixed" -ge 1 ] && ok "shared fixed path clobbers a token ($mism_fixed mismatch) — bug reproduced" \
   || fail "shared-path clobber NOT reproduced — the isolation test would not catch a regression"
 

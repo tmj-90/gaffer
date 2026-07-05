@@ -20,7 +20,7 @@ Most coding agents are stateless renters: every run starts cold, the "memory" is
 
 - **It builds you an asset.** Every review verdict, every piece of evidence, every learned convention persists in a control plane (Dispatch) and a gated memory (Memory) that you own and can carry between repos — so the more you run it, the more context (evidence, conventions, product intent) is there to prime the next delivery.
 - **It runs on your machine.** Local-first: the control plane, databases, repo state, worktrees, and evidence all live on your box — no per-seat cloud, fully auditable. Live agent runs use your configured Claude Code CLI, so prompts and selected repo context are sent to that model provider. Treat any connected model as part of your trust boundary.
-- **You hold the gate.** By default a human approves every merge and the agent *structurally cannot* ship its own work. Opt-in flags unlock full hands-off autonomy when you actually want it.
+- **You hold the gate.** By default a human approves every merge and the agent *structurally cannot* ship its own work. Opt-in flags unlock full hands-off autonomy when you actually want it — for **unattended** runs against input you don't fully trust, pair it with the OS sandbox (`GAFFER_MODE=strict`), which is the containment boundary once the human gate is off. See [SECURITY.md](SECURITY.md#running-it-safely).
 
 ## What it does
 
@@ -106,7 +106,7 @@ Four components, one workspace:
 |---|---|
 | **Dispatch** · `packages/dispatch` | The control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard + CLI. |
 | **Crew** · `packages/crew` | The factory runtime — factory-level MCP tools, a hooks engine, and idle loops that draft work, ingest issues, and self-improve. |
-| **Runner** · `runner/` | The orchestrator — bash that spawns a `claude -p` agent per ticket, with a 67-skill library, a deterministic safety hook, git-worktree isolation, and model tiering (plan on a strong model, implement on a fast one). |
+| **Runner** · `runner/` | The orchestrator — bash that spawns a `claude -p` agent per ticket, with a curated skill library, a deterministic safety hook, git-worktree isolation, and model tiering (plan on a strong model, implement on a fast one). |
 | **Memory** · `packages/memory` | The durable, human-gated memory the factory learns into — the lore knowledge base plus the Repo Understanding engine (digest + feature ledger). *(Also usable standalone — see [`packages/memory/README.md`](packages/memory/README.md).)* |
 
 ```

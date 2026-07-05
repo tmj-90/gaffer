@@ -10,7 +10,7 @@
 #   gaffer_bootstrap_repo_name   <ticket-show-json>   → echoes the target repo name
 #   gaffer_bootstrap_repo_dir    <name>               → echoes <root>/<name> (the new path)
 #   gaffer_bootstrap_target_ok   <dir>                → 0 if usable, else 1 + a reason
-#   gaffer_bootstrap_init        <dir>                → mkdir + git init (idempotent)
+#   gaffer_bootstrap_init        <dir> [name] [intent] → mkdir + git init + baseline commit (idempotent)
 #   gaffer_bootstrap_onboard     <num> <name> <dir> <stack> → register+onboard the new repo
 #
 # The functions are deliberately small and side-effect-explicit so the tick can
@@ -72,8 +72,15 @@ gaffer_bootstrap_repo_dir() {
 _gaffer_bootstrap_is_resumable_scaffold() {
   local dir="$1"
   git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 1            # not git → real content
-  git -C "$dir" rev-parse --verify -q HEAD >/dev/null 2>&1 && return 1     # has commits → real work, leave it
-  local allow=" .git .claude CLAUDE.factory.md .mcp.json mcp-runtime.json .gitignore "
+  local allow=" .git .claude CLAUDE.factory.md .mcp.json mcp-runtime.json .gitignore README.md "
+  # A BORN HEAD is resumable ONLY when it is exactly our factory BASELINE commit — a
+  # tree of README.md alone (the seed gaffer_bootstrap_init writes so a bootstrap can
+  # branch off + diff against a real `main`). Any OTHER committed content (real source,
+  # or a leaked scaffold file such as a committed CLAUDE.factory.md) is real work →
+  # refuse. Unborn HEAD (init but no baseline yet) falls through to the entry check.
+  if git -C "$dir" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    [ "$(git -C "$dir" ls-tree -r --name-only HEAD 2>/dev/null)" = "README.md" ] || return 1
+  fi
   local e
   while IFS= read -r e; do
     [ -n "$e" ] || continue
@@ -109,17 +116,38 @@ gaffer_bootstrap_target_ok() {
   echo "bootstrap: target dir already exists and is non-empty: $dir"; return 1
 }
 
-# Create the new repo dir and `git init` it (idempotent: a re-run on an already
-# git-init'd empty dir is a no-op). Sets a deterministic default branch (main) so
-# the dependent feature tickets branch off a known base. Returns non-zero on any
-# failure so the caller can fail the bootstrap cleanly.
-#   gaffer_bootstrap_init <dir>
+# Create the new repo dir, `git init` it, and seed ONE minimal baseline commit on
+# `main` (idempotent: a re-run on an already-baselined dir is a no-op). The baseline
+# is what lets a bootstrap DELIVER LIKE EVERY OTHER TICKET: with a non-empty `main`
+# to branch from and diff against, the runner can scaffold on a `gaffer/ticket-N-…`
+# branch and the agent reviewer can diff branch-vs-`main` and auto-approve+merge —
+# instead of the old branchless commit-straight-onto-`main` that the reviewer refused
+# ("no delivery branch recorded → fail closed"), the one ticket that needed a human.
+# Sets a deterministic default branch (main) so dependent feature tickets branch off a
+# known base. Returns non-zero on any failure so the caller can fail cleanly.
+#   gaffer_bootstrap_init <dir> [display_name] [intent]
 gaffer_bootstrap_init() {
-  local dir="$1"
+  local dir="$1" name="${2:-}" intent="${3:-}"
   [ -n "$dir" ] || return 1
   mkdir -p "$dir" || return 1
   if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "$dir" init -q -b main >/dev/null 2>&1 || git -C "$dir" init -q >/dev/null 2>&1 || return 1
+  fi
+  # BASELINE COMMIT — only when HEAD is still unborn (first init; a resume re-enters
+  # with the baseline already present and skips this, staying idempotent). Written on
+  # whatever the init default branch is (main). Committed with an EXPLICIT -c identity
+  # + gpgsign=false so it works under a clean CI env (empty HOME / GIT_CONFIG_NOSYSTEM,
+  # no ambient git user) — the same reason demo.sh uses inline -c identity.
+  if ! git -C "$dir" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    [ -n "$name" ]   || name="$(basename "$dir")"
+    [ -n "$intent" ] || intent="Bootstrapped by the Gaffer factory."
+    printf '# %s\n\n%s\n' "$name" "$intent" > "$dir/README.md" || return 1
+    git -C "$dir" add README.md >/dev/null 2>&1 || return 1
+    git -C "$dir" \
+      -c user.name="${GAFFER_AGENT_NAME:-gaffer-factory}" \
+      -c user.email="${GAFFER_AGENT_EMAIL:-gaffer-factory@users.noreply.invalid}" \
+      -c commit.gpgsign=false \
+      commit -q -m "chore: initialise ${name}" >/dev/null 2>&1 || return 1
   fi
   return 0
 }

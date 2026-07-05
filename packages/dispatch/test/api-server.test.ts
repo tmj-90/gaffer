@@ -434,3 +434,65 @@ describe("API: human REST surface", () => {
     expect((byRisk.body.tickets as unknown[]).length).toBe(1);
   });
 });
+
+/**
+ * GRADUATED-AUTONOMY (Spec 2, Phase 3) — the HUMAN REST approve path MUST stay
+ * byte-identical after `envAllowsAuto('merge')` became a BLOCKING floor
+ * (AUTO_MERGE=1 && MERGE_ON_AGENT_REVIEW=1). The REST approve is the human/dashboard
+ * merge gate (API_ACTOR is human); a human approval has ALWAYS auto-fired the configured
+ * merge and must keep doing so REGARDLESS of the AFK env floor — that floor governs the
+ * unattended RUNNER, not a human's explicit approval. The `merge` field in the approve
+ * response is present iff the server invoked the merge trigger, so its presence pins that
+ * a human approve still fires the merge in BOTH postures (floor off AND floor on).
+ */
+describe("API: human REST approve auto-merge is byte-identical (merge floor is irrelevant to the human path)", () => {
+  const AFK_FLAGS = ["AUTO_MERGE", "MERGE_ON_AGENT_REVIEW"] as const;
+  const saved: Record<string, string | undefined> = {};
+  let h: Harness;
+
+  beforeEach(async () => {
+    for (const k of AFK_FLAGS) saved[k] = process.env[k];
+    h = await startHarness();
+  });
+  afterEach(async () => {
+    await h.close();
+    for (const k of AFK_FLAGS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  async function driveToInReviewAndApprove(): Promise<JsonResponse> {
+    const created = await call(h.baseUrl, "POST", "/tickets", {
+      title: "Human approve",
+      policy_pack: "solo_loose",
+    });
+    const ticket = created.body.ticket as { id: string };
+    await call(h.baseUrl, "POST", `/tickets/${ticket.id}/acceptance-criteria`, { text: "Works" });
+    await call(h.baseUrl, "POST", `/tickets/${ticket.id}/ready`);
+    giveTicketRealDelivery(h.wg, ticket.id, human);
+    const agent = h.wg.registerAgent({ display_name: "claude" }, human);
+    const claim = h.wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, human);
+    h.wg.submitForReview({ claimToken: claim!.claimToken, ticket_id: ticket.id }, human);
+    return call(h.baseUrl, "POST", `/tickets/${ticket.id}/review/approve`);
+  }
+
+  it("fires the merge trigger with the AFK merge floor OFF (the regression-risk case)", async () => {
+    // Supervised-equivalent env: neither flag set ⇒ envAllowsAuto('merge') === false.
+    for (const k of AFK_FLAGS) delete process.env[k];
+    const approved = await driveToInReviewAndApprove();
+    expect(approved.status).toBe(200);
+    expect((approved.body.ticket as { status: string }).status).toBe("ready_for_merge");
+    // The `merge` field's presence proves the server INVOKED the merge trigger for the
+    // human approve even with the floor off — byte-identical to pre-change (always fired).
+    expect(approved.body.merge).toBeDefined();
+  });
+
+  it("fires the merge trigger with the autonomous merge floor ON (unchanged)", async () => {
+    process.env.AUTO_MERGE = "1";
+    process.env.MERGE_ON_AGENT_REVIEW = "1";
+    const approved = await driveToInReviewAndApprove();
+    expect(approved.status).toBe(200);
+    expect(approved.body.merge).toBeDefined();
+  });
+});

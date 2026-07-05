@@ -76,6 +76,26 @@ export interface SettingView {
 export const SETTING_DEFS: readonly SettingDef[] = [
   // --- Autonomy: how much the factory may do without a human in the loop ---
   {
+    key: "GAFFER_MODE",
+    type: "string",
+    group: "autonomy",
+    label: "Autonomy mode",
+    help:
+      "Preset that sets the whole autonomy cluster at once (review mode, agent " +
+      "approval, auto-merge, auto-push, memory auto-approve): supervised · " +
+      "graduated · autonomous · strict. supervised (default) keeps a human on every " +
+      "merge; graduated ships what each repo has EARNED at its risk level and holds " +
+      "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
+      "policy is the sole allow-path — set grants in the per-repo policy editor); " +
+      "autonomous lets agents approve and auto-merges + pushes approved work; " +
+      "strict adds OS-level sandbox containment on top of autonomous — but the only " +
+      "sandbox provider is sandbox-exec (macOS), so on a non-macOS host strict behaves " +
+      "EXACTLY like autonomous (the deterministic safety hook is the boundary). " +
+      "Picking a mode prevents a " +
+      "half-configured autonomy posture. The individual knobs below still " +
+      "override the mode — an explicitly-set flag always wins.",
+  },
+  {
     key: "DISPATCH_ALLOW_AGENT_APPROVE",
     type: "boolean",
     group: "autonomy",
@@ -358,6 +378,26 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     help: "How many times a ticket may be re-worked after a rejected review before it parks to blocked.",
   },
   {
+    key: "GAFFER_MAX_NOCOMMIT_FAILURES",
+    type: "int",
+    group: "budget",
+    label: "Max no-commit failures",
+    help:
+      "Cross-run bound on deliveries that crash before committing. After this many " +
+      "no-commit/wrong-branch failures the ticket parks visibly to blocked instead of " +
+      "being re-picked (and re-billed) every run. Defaults to Max delivery attempts.",
+  },
+  {
+    key: "GAFFER_REWORK_BUDGET_USD",
+    type: "string",
+    group: "budget",
+    label: "Per-ticket rework budget (USD)",
+    help:
+      "Cumulative spend ceiling for one ticket's rework loop. Delivery stops at whichever " +
+      "hits first — this or Max delivery attempts — then parks to blocked. Defaults to the " +
+      "factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it).",
+  },
+  {
     key: "GAFFER_MAX_RESUMES_PER_TICK",
     type: "int",
     group: "budget",
@@ -460,6 +500,26 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "sandbox",
     label: "Allow network in sandbox",
     help: "When the strict sandbox is on, still permit outbound network (package installs, git, the model API).",
+  },
+  {
+    key: "SANDBOX_PROVIDER",
+    type: "string",
+    group: "sandbox",
+    label: "Sandbox provider",
+    help:
+      "Which OS-level containment backend the strict sandbox uses: sandbox-exec (macOS, " +
+      "proven today) · none (disable OS wrapping, keep the toggle). docker/lima/VM are " +
+      "future providers. Only consulted when the strict sandbox is on.",
+  },
+  {
+    key: "STRICT_ALLOW_HOME",
+    type: "string",
+    group: "sandbox",
+    label: "Sandbox writable HOME paths",
+    help:
+      "Space-separated HOME paths the strict sandbox may write to outside the worktree " +
+      "(Claude Code keeps state/cache here; denying them breaks legitimate runtime writes). " +
+      "Defaults to ~/.claude and ~/.cache.",
   },
 ] as const;
 

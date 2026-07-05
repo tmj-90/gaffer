@@ -585,20 +585,33 @@ export class Dispatch {
   }
 
   /**
-   * GRADUATED-AUTONOMY (Spec 2, Phase 3): the MERGE chokepoint decision — may the
-   * auto-merge fire for this approved ticket? Reads a mode='auto' merge policy across
-   * the ticket's write repos, ELSE falls back to the env default (true — today's
-   * merge always fires post-approve; the mergeRunner still enforces DISPATCH_MERGE_CMD,
-   * unchanged). So with no policy row this is byte-identical to today; a mode='auto'
-   * merge policy is an additional, explicit, evidence-backed allow-path.
+   * GRADUATED-AUTONOMY (Spec 2, Phase 3): the READ-ONLY ship-decision surface the AFK
+   * runner consults per ticket instead of the raw AUTO_MERGE/MERGE_ON_AGENT_REVIEW flags
+   * (`wg ticket auto-decision <N> --gate approve|merge`). Pure — reuses the SAME
+   * {@link isAutonomyAllowed} the approve/merge chokepoints use (env floor OR an `auto`
+   * policy covering this ticket's risk × EVERY write repo), so the runner adds NO policy
+   * logic and can never diverge from the enforced decision. No mutation, no side effects.
+   * FAIL-CLOSED by construction: an empty write-repo set ⇒ deny; any uncovered write repo
+   * ⇒ deny; risk/gate match exactly. Returns the decision plus the (repo, risk) context it
+   * was computed over so the runner can log WHY a ticket held.
    */
-  autonomyMergeAllowed(ticket: Ticket): boolean {
-    return isAutonomyAllowed(
-      this.autonomyPolicy,
-      this.writeRepoIdsForTicket(ticket),
-      ticket.risk_level,
-      "merge",
-    );
+  autonomyGateDecision(
+    ticket: Ticket,
+    gate: AutonomyPolicyGate,
+  ): {
+    gate: AutonomyPolicyGate;
+    decision: "allow" | "deny";
+    risk_level: string;
+    write_repo_ids: string[];
+  } {
+    const writeRepoIds = this.writeRepoIdsForTicket(ticket);
+    const allowed = isAutonomyAllowed(this.autonomyPolicy, writeRepoIds, ticket.risk_level, gate);
+    return {
+      gate,
+      decision: allowed ? "allow" : "deny",
+      risk_level: ticket.risk_level,
+      write_repo_ids: writeRepoIds,
+    };
   }
 
   /** Every stored autonomy policy joined to its repo name (Settings surface). */

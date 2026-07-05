@@ -8,6 +8,7 @@ import { Dispatch } from "../core.js";
 import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 import type { Actor } from "../domain/types.js";
 import { DECISION_SEVERITIES, SPEC_STATUSES, TICKET_STATUSES } from "../domain/types.js";
+import type { AutonomyPolicyGate } from "../repositories/autonomyPolicyRepository.js";
 import { exportState, importStateFromJson, serializeBundle } from "../io/stateExport.js";
 import { buildNotifierFromEnv } from "../notify/config.js";
 import { isNotifyKind } from "../notify/types.js";
@@ -182,6 +183,26 @@ ticket
   .action((ref, _opts, cmd) => {
     const wg = open(cmd.optsWithGlobals());
     printJson(wg.view(ref));
+    wg.db.close();
+  });
+
+ticket
+  .command("auto-decision <ref>")
+  .description(
+    "GRADUATED-AUTONOMY: read-only ship decision the AFK runner consults — is `auto` " +
+      "permitted for THIS ticket at --gate (approve|merge)? Reuses isAutonomyAllowed " +
+      "(env floor OR an earned per-repo/risk policy). Prints allow|deny. No mutation.",
+  )
+  .requiredOption("--gate <gate>", "approve | merge")
+  .action((ref, opts, cmd) => {
+    const gate = opts.gate as string;
+    if (gate !== "approve" && gate !== "merge") {
+      throw new DispatchError("VALIDATION_ERROR", "--gate must be 'approve' or 'merge'.", { gate });
+    }
+    const wg = open(cmd.optsWithGlobals());
+    const ticket = wg.resolveTicket(ref);
+    const decision = wg.autonomyGateDecision(ticket, gate as AutonomyPolicyGate);
+    printJson({ ok: true, number: ticket.number, ...decision });
     wg.db.close();
   });
 

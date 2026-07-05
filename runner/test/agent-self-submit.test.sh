@@ -110,7 +110,7 @@ wg init >/dev/null 2>&1
 AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget "d['agent']['id']")"
 [ -n "$AGENT" ] && ok "registered runner agent" || fail "setup: could not register agent"
 
-IFS=$'\t' read -r NUM TID CLAIM_TOKEN < <(seed_claimed "Disobedient delivery")
+seed_claimed "Disobedient delivery" > "$WORK/seed1"; IFS=$'\t' read -r NUM TID CLAIM_TOKEN < "$WORK/seed1"
 { [ -n "$NUM" ] && [ -n "$TID" ] && [ -n "$CLAIM_TOKEN" ]; } \
   && ok "seeded #$NUM: ready → runner-claimed (token held by the RUNNER)" \
   || fail "setup: could not seed a claimed ticket (num='$NUM' tid='$TID' token='${CLAIM_TOKEN:+set}')"
@@ -148,7 +148,7 @@ FINAL="$(status_of "$NUM")"
   || fail "#$NUM is in_review with no delivered diff — the un-approvable strand"
 
 echo "== PART C: the runner's OWN submit path keeps working (wg submit --token) =="
-IFS=$'\t' read -r NUM2 TID2 TOKEN2 < <(seed_claimed "Legit runner delivery")
+seed_claimed "Legit runner delivery" > "$WORK/seed2"; IFS=$'\t' read -r NUM2 TID2 TOKEN2 < "$WORK/seed2"
 if wg submit "$NUM2" --token "$TOKEN2" --reason "gates passed" >/dev/null 2>&1 \
    && [ "$(status_of "$NUM2")" = "in_review" ]; then
   ok "runner submit: #$NUM2 claimed → in_review with the runner-held token"
@@ -160,7 +160,7 @@ fi
   || fail "claim not completed by the runner submit (active=$(active_claims "$NUM2"))"
 
 echo "== PART D: an EXPLICIT claim_token still submits via MCP (legitimate holder) =="
-IFS=$'\t' read -r NUM3 TID3 TOKEN3 < <(seed_claimed "Explicit-token delivery")
+seed_claimed "Explicit-token delivery" > "$WORK/seed3"; IFS=$'\t' read -r NUM3 TID3 TOKEN3 < "$WORK/seed3"
 D_OUT="$(EXPLICIT_TOKEN="$TOKEN3" agent_mcp_submit "$TID3")"
 D_ERR="$(printf '%s' "$D_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
 if [ "$D_ERR" = "False" ] && [ "$(status_of "$NUM3")" = "in_review" ]; then

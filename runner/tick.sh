@@ -126,7 +126,14 @@ gaffer_crash_cleanup() {
   # The review-N / clarify-N mounts have their own scoped cleanups.
   if [ -n "${NUM:-}" ] && declare -F gaffer_skills_mount_cleanup >/dev/null 2>&1; then
     gaffer_skills_mount_cleanup "delivery-$NUM"
-    gaffer_skills_mount_cleanup "bootstrap-$NUM"
+    # BOOTSTRAP: pass the persistent new-repo dir so the mount's `.claude/skills`
+    # symlink is dropped from the REAL repo too (a bootstrap runs the agent directly
+    # in $B_DIR — there is no throwaway worktree whose `rm -rf` would take the link
+    # with it). Without this the link is left dangling and the post-teardown hygiene
+    # gate flags the delivery. `${B_DIR:-}` is empty (a safe no-op) for non-bootstrap
+    # ticks. The delivery-$NUM mount above lives in a throwaway worktree, so it needs
+    # no dest arg — the worktree purge removes the link with the whole checkout.
+    gaffer_skills_mount_cleanup "bootstrap-$NUM" "${B_DIR:-}"
   fi
   # A successfully-delivered branch is intentionally kept for review/merge; only tear
   # down on an INCOMPLETE delivery (a crash/signal before the success point).
@@ -425,6 +432,24 @@ gaffer_budget_exhausted() {
 # token (normal delivery) it uses the claim-gated submit (claimed → in_review,
 # completing the claim); a resumed delivery (no token, already in_progress) is moved
 # straight to in_review. $1 = reason. Returns non-zero (logged) on failure.
+# Derive the delivery-branch slug from a ticket title. SHARED by the normal delivery
+# path AND the greenfield bootstrap so both mint the identical `gaffer/ticket-N-<slug>`
+# branch shape the reviewer's fallback grep (`gaffer/ticket-$NUM-[a-z0-9-]*`) expects.
+# lowercase, non-alnum→'-', collapse repeats, trim, ≤6 words / ~50 chars; empty→'ticket'.
+gaffer_ticket_slug() {
+  local s
+  s="$(printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -c 'a-z0-9' '-' \
+    | tr -s '-' \
+    | sed -E 's/^-+//; s/-+$//' \
+    | cut -d- -f1-6 \
+    | cut -c1-50 \
+    | sed -E 's/-+$//')"
+  [ -n "$s" ] || s="ticket"
+  printf '%s' "$s"
+}
+
 gaffer_submit_delivery() {
   local reason="$1"
   local _rc
@@ -542,6 +567,262 @@ PY
   else
     log "memory: distill #$NUM skipped/failed — non-fatal, delivery unaffected"
   fi
+}
+
+# ── Agent-review pass (extracted) ────────────────────────────────────────────
+# The agent reviewer (REVIEW_MODE=agent|both) reviews an in_review ticket and,
+# under opt-in AFK auto-completion, approves→merges it. Extracted into a function
+# so it can be reached from TWO sites: the normal end-of-tick flow AND the
+# 'ready tickets exist but none are deliverable' no_work juncture — otherwise a
+# dependency chain (B blocked on an in_review A) deadlocks because the no_work
+# early-exit sits ~1900 lines before this block. In REVIEW_MODE=human the guard
+# below is false and the function returns immediately (supervised = no-op).
+_gaffer_agent_review_pass() {
+if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
+  REVIEWED_FILE="$GAFFER_DATA/.reviewed-tickets"; touch "$REVIEWED_FILE"
+  RJSON="$(wg ticket list -s in_review 2>/dev/null || echo '[]')"
+  RNUM="$(echo "$RJSON" | python3 -c "import sys,json; skip=set(open('$REVIEWED_FILE').read().split()); c=[str(t['number']) for t in json.load(sys.stdin) if str(t['number']) not in skip]; print(c[0] if c else '')" 2>/dev/null)"
+  if [ -n "$RNUM" ]; then
+    RSHOW="$(wg ticket show "$RNUM" 2>/dev/null)"
+    RREPO="$(echo "$RSHOW" | jget "(d['repositories'][0]['local_path'] if d['repositories'] else '') or ''" 2>/dev/null)"
+    if [ -n "$RREPO" ] && [ -d "$RREPO" ]; then
+      # Resolve the delivered branch from Dispatch (persisted by delivery-artifact)
+      # rather than grepping local git — the reviewer trusts the recorded branch_name.
+      # Fall back to the git-branch grep only if branch_name was never recorded.
+      RBRANCH="$(echo "$RSHOW" | jget "(d['ticket']['branch_name'] or '')" 2>/dev/null)"
+      [ -n "$RBRANCH" ] || RBRANCH="$(git -C "$RREPO" branch 2>/dev/null | grep -oE "gaffer/ticket-$RNUM-[a-z0-9-]*" | head -1)"
+      # The repo's default branch — used as the diff base in the reviewer prompt so
+      # we never hardcode 'main' for repos whose default is master/develop/etc.
+      RDEFAULT="$(echo "$RSHOW" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'")"
+      log "review_mode=$REVIEW_MODE → agent-reviewing in_review #$RNUM in $RREPO (branch ${RBRANCH:-unknown}, base $RDEFAULT)"
+      if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run a reviewer agent on #$RNUM (branch ${RBRANCH:-unknown})"; result reviewed; exit 0; fi
+      # BLOCKING 1 fix: run the reviewer in a THROWAWAY git worktree so the
+      # registered repo's working tree, HEAD, and any pre-existing .claude/ are
+      # NEVER touched. The worktree lives under $GAFFER_DATA and is torn down by
+      # _review_cleanup on ALL exit paths (EXIT, INT, TERM). Using a per-ticket
+      # path (review-wt-$RNUM) prevents collisions when GAFFER_CONCURRENCY>1.
+      WT="$GAFFER_DATA/review-wt-$RNUM"
+      _review_cleanup() {
+        if [ -n "${WT:-}" ] && [ -e "$WT" ]; then
+          git -C "$RREPO" worktree remove --force "$WT" 2>/dev/null || true
+          git -C "$RREPO" worktree prune 2>/dev/null || true
+        fi
+        gaffer_skills_mount_cleanup "review-$RNUM"
+      }
+      # BLOCKING 2 fix: install review-scoped EXIT + signal traps so
+      # _review_cleanup fires under INT/TERM as well as on a normal exit.
+      # Each handler clears ALL three traps first (matching the global idiom)
+      # to prevent re-entry, runs the worktree cleanup, then chains the global
+      # crash cleanup and exits with the correct status code. On the normal
+      # completion path the caller restores the global traps explicitly so
+      # subsequent code (result/exit) continues under the standard handlers.
+      _review_on_exit() {
+        local rc=$?
+        trap - EXIT INT TERM
+        _review_cleanup
+        gaffer_crash_cleanup
+        exit "$rc"
+      }
+      _review_on_int()  { trap - EXIT INT TERM; _review_cleanup; gaffer_crash_cleanup; exit 130; }
+      _review_on_term() { trap - EXIT INT TERM; _review_cleanup; gaffer_crash_cleanup; exit 143; }
+      trap _review_on_exit EXIT
+      trap _review_on_int  INT
+      trap _review_on_term TERM
+      [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing — refusing live review (fail closed)"; result error; exit 1; }
+      # Fail CLOSED if no branch is recorded — the reviewer must never operate
+      # on an unknown HEAD (mirrors the delivery-path fail-closed checkout guard).
+      if [ -z "${RBRANCH:-}" ]; then
+        log "REVIEW-ERROR: no delivery branch recorded for ticket #$RNUM — refusing review (fail closed)"
+        result error; exit 1
+      fi
+      # Fail CLOSED if the throwaway worktree can't be created — prevents the
+      # reviewer from operating on the wrong code.
+      if ! git -C "$RREPO" worktree add --force "$WT" "$RBRANCH" >/dev/null 2>&1; then
+        log "REVIEW-ERROR: failed to create review worktree for branch '$RBRANCH' in $RREPO — refusing review of #$RNUM (fail closed; branch may be missing or corrupt)"
+        result error; exit 1
+      fi
+      # Mount only the review-relevant + universal skill subset (not all ~66).
+      gaffer_skills_mount "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM"
+      sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$WT/.claude/settings.json"
+      gaffer_trust_workspace "$WT"
+      MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
+      gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
+      # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
+      # substituted EMPTY (the MCP server treats "" as "no token"). Substituting it
+      # strips the placeholder so the literal ${GAFFER_CLAIM_TOKEN} never leaks in.
+      sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" -e "s#\${GAFFER_CLAIM_TOKEN}#${CLAIM_TOKEN}#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
+      cp -f "$HERE/claude/CLAUDE.md" "$WT/CLAUDE.factory.md"
+      # File-card context for the reviewer — orients it on the repo's structure
+      # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.
+      # Cards are keyed off the REAL repo ($RREPO) canonical identity, not the
+      # throwaway worktree, so they match what onboard indexed.
+      _RSHOW_TITLE="$(echo "$RSHOW" | jget "d['ticket']['title']" 2>/dev/null || echo '')"
+      _RDESC="$(echo "$RSHOW" | jget "(d['ticket'].get('description') or '')[:400]" 2>/dev/null || echo '')"
+      _REVIEW_CARDS="$(gaffer_prime_context_block "$RREPO" "$(basename "$RREPO")" \
+        "$(printf '%s %s' "$_RSHOW_TITLE" "$_RDESC")" 2>/dev/null || true)"
+      read -r -d '' RPROMPT <<EOF || true
+You are a REVIEWER agent. You did NOT implement this ticket, so you may JUDGE it — but
+your verdict is ADVISORY ONLY: an agent review is NOT a human approval and MUST NOT
+mint one. A merge always requires a HUMAN to cross the final gate. Do NOT run
+\`dispatch review approve\`, \`wg review approve\`, \`mark-merged\`, or any privileged
+control-plane CLI — those are blocked for you and reaching for them is a bug, not the
+path. You record your verdict ONLY through the scoped dispatch MCP.
+$QUARANTINE_NOTICE
+Use the review-ticket skill to review in_review ticket #$RNUM: call get_ticket (dispatch)
+for its acceptance criteria and recorded evidence; inspect the delivered change with
+\`git diff $RDEFAULT...HEAD\` in $WT; judge whether each AC is genuinely met and the
+change is sound (tests, scope, quality). Then RECORD YOUR VERDICT as evidence via the
+dispatch MCP record_ac_evidence (one entry per AC: PASS/FAIL + the specific reasoning),
+and finish with a one-line overall recommendation. Apply THIS BAR EXACTLY — never raise it:
+say "RECOMMEND APPROVE" when (a) every acceptance criterion is met in the diff, (b) the DoD
+gates pass / no tests are failing, and (c) the changed behaviour is tested where a test
+reasonably applies. That is the whole bar — if it is met, APPROVE.
+Say "RECOMMEND CHANGES" ONLY for a CONCRETE defect: a specific AC that is not met, a failing or
+missing test for an AC's OWN behaviour, or a genuine correctness/security bug — always naming
+the AC and the single concrete fix so a rework resolves it in one pass.
+You MUST NOT withhold approval for anything OUTSIDE the acceptance criteria: refactors,
+de-duplication, extra coverage beyond the ACs, naming, file structure, or maintainability
+wishes are OPTIONAL. You may list them prefixed "(optional)" but they are NEVER grounds for
+CHANGES. When in doubt and the ACs are met with tests passing, APPROVE.
+Leave the ticket in in_review — the operator (or, in autonomy mode, the runner acting
+deterministically on your verdict) crosses the final gate. Work only in: $WT
+EOF
+      RPROMPT="${RPROMPT}${_REVIEW_CARDS}"
+      # Repo-access boundary (FG-007): the reviewer works only in the throwaway
+      # worktree ($WT). The registered repo's working tree is never a write root.
+      R_USAGE_JSON="$GAFFER_DATA/.usage-$RNUM.json"; : > "$R_USAGE_JSON"
+      # C1/M2: scrub ambient credentials from the reviewer agent's env (allowlist)
+      # inside worker_deliver; the per-call vars in WORKER_CALL_ENV layer on top.
+      WORKER_CALL_ENV=(
+        "GAFFER_WRITE_ROOTS=$WT"
+        "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
+      )
+      worker_deliver "$WT" "$RPROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON"
+      rrc=$?
+      gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+      # Capture the reviewer's advisory verdict (its final RECOMMEND line) from the result
+      # JSON BEFORE deleting it — the signal the runner acts on in AFK mode. Default to
+      # "changes": an ambiguous or empty verdict must NEVER auto-approve. Read the file BY
+      # PATH (not stdin): the usage JSON must never be piped as stdin (prompt-injection
+      # guard, enforced by tick-prompt-wiring.test.sh) — parsing its result is output-read.
+      R_RESULT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('result',''))" "$R_USAGE_JSON" 2>/dev/null || echo '')"
+      rm -f "$R_USAGE_JSON"
+      R_VERDICT=changes
+      printf '%s' "$R_RESULT" | grep -qiE "RECOMMEND[ _-]*APPROVE" && R_VERDICT=approve
+      printf '%s' "$R_RESULT" | grep -qiE "RECOMMEND[ _-]*CHANGES" && R_VERDICT=changes
+      NEWSTATUS="$(wg ticket show "$RNUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+
+      # ── AFK auto-completion — GRADUATED per-repo/risk autonomy ───────────────────
+      # By default an agent review is ADVISORY: the ticket stays in_review for a HUMAN,
+      # and the reviewer AGENT never approves itself (prompt forbids it, CLI blocked).
+      # Whether the RUNNER (deterministic + trusted, exactly like the DoD gates and the
+      # submit step) may act on the verdict is now decided PER TICKET by the graduated
+      # autonomy policy — NOT by the raw AUTO_MERGE/MERGE_ON_AGENT_REVIEW flags. The runner
+      # approves as an AGENT actor (honest provenance: the audit trail shows an autonomous
+      # approval, never a fake human one) so the SERVER re-enforces the exact same
+      # isAutonomyAllowed('approve') decision — defense-in-depth: the bash gate below and
+      # the dispatch core must BOTH agree, so a future runner bug can't silently ship.
+      # The runner asks dispatch (`wg ticket auto-decision`, which reuses isAutonomyAllowed
+      # = env FLOOR OR an earned per-repo/risk `auto` row); it adds no policy logic of its own:
+      #   • approve gate → may the runner cross the review gate for THIS ticket at all;
+      #   • merge   gate → may the earned change actually LAND on the default branch.
+      # So supervised (env floor off, no policy) HOLDS every ticket in_review for a human
+      # (byte-identical to before); autonomous (env floor on) SHIPS all (byte-identical);
+      # graduated (env floor off + policy) ships only what a repo has EARNED at its risk and
+      # holds the rest. On approve: a clean APPROVE is approved → (if the merge gate allows)
+      # safe-merged → optionally pushed → marked done, else held at ready_for_merge for a
+      # human; a CHANGES verdict is rejected back to rework WITH the reviewer's feedback so a
+      # cautious review is a RETRY (the rework budget cap eventually parks a stuck ticket).
+      # Ask the policy per gate (env FLOOR OR an earned per-repo/risk `auto` row), then map
+      # (verdict × approve-gate × merge-gate) to ONE action through the pure, unit-tested
+      # gaffer_afk_ship_plan — the single source of truth for the ship matrix. Fail-closed:
+      # the decisions default to deny and the plan defaults to `hold`.
+      _SHIP_APPROVE=deny; _SHIP_MERGE=deny; _SHIP_PLAN=hold
+      if [ "$NEWSTATUS" = "in_review" ] && [ -n "$RBRANCH" ]; then
+        _SHIP_APPROVE="$(gaffer_auto_decision "$RNUM" approve)"
+        _SHIP_MERGE="$(gaffer_auto_decision "$RNUM" merge)"
+        _SHIP_PLAN="$(gaffer_afk_ship_plan "$R_VERDICT" "$_SHIP_APPROVE" "$_SHIP_MERGE")"
+      fi
+      case "$_SHIP_PLAN" in
+        ship|approve_hold)
+          # Approve gate EARNED + clean APPROVE verdict → cross the review gate. Approve as
+          # the runner's AGENT actor (--as agent --reviewer "$AGENT"), NOT human: this keeps
+          # the audit provenance honest AND makes the server re-run isAutonomyAllowed('approve')
+          # (the redundant second gate). The approve env FLOOR is forwarded in a subshell (the
+          # flag is an UNexported shell var) so autonomous still passes; a graduated earned row
+          # passes via the DB policy with the floor off; an unearned ticket the server REFUSES.
+          if ( export DISPATCH_ALLOW_AGENT_APPROVE="${DISPATCH_ALLOW_AGENT_APPROVE:-0}"; \
+               wg review approve "$RNUM" --as agent --reviewer "$AGENT" >/dev/null 2>&1 ); then
+            log "AFK: runner (agent $AGENT) approved #$RNUM on a clean verdict + earned approve grant (→ ready_for_merge)"
+            if [ "$_SHIP_PLAN" = "ship" ]; then
+              # Merge gate ALSO earned → safe-merge the delivery branch into the default.
+              # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an
+              # ancestor of RDEFAULT, so merge-base would collapse to RBRANCH (empty diff).
+              _CR_BASE="$(git -C "$RREPO" merge-base "$RBRANCH" "$RDEFAULT" 2>/dev/null || true)"
+              gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; _mrc=$?
+              case "$_mrc" in
+                0)
+                  wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
+                    && log "AFK: #$RNUM merged ($RBRANCH → $RDEFAULT) and marked done" \
+                    || log "AFK: #$RNUM merged but mark-merged failed — verify state"
+                  # MEMORY FRESHNESS: write-through the delivered change into the file cards
+                  # (refresh changed, add new, drop deleted, advance the watermark) so priming
+                  # stays current instead of decaying. Fail-soft — never blocks the merge.
+                  gaffer_refresh_cards "$RREPO" "$(basename "$RREPO")" "$_CR_BASE" "$RBRANCH" \
+                    "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
+                  if [ "${GAFFER_AUTO_PUSH:-0}" = "1" ]; then
+                    gaffer_auto_push "$RREPO" "$RDEFAULT" \
+                      && log "AFK: pushed $RDEFAULT to origin" \
+                      || log "AFK: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push"
+                  fi
+                  ;;
+                3) log "AFK: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;
+                1) log "AFK: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human" ;;
+                *) log "AFK: #$RNUM approved but merge could not run (rc=$_mrc) — left in ready_for_merge for a human" ;;
+              esac
+            else
+              # Approve gate earned but the MERGE gate is HELD for this repo/risk (graduated:
+              # env floor off + no `auto` merge row). The ticket is approved and waits at
+              # ready_for_merge for a human to merge — "ship what you've earned, hold the rest".
+              log "AFK: #$RNUM approved but auto-merge NOT permitted by policy (merge gate held) — left in ready_for_merge for a human"
+              _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+            fi
+          else
+            log "AFK: runner could not approve #$RNUM (approve rejected) — left in_review"
+            _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+          fi
+          ;;
+        rework)
+          # CHANGES verdict on an EARNED ticket → reject to rework with the reviewer's reason.
+          # The feedback loop (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
+          _rreason="$(printf '%s' "$R_RESULT" | tr '\n' ' ' | tail -c 480)"
+          [ -n "${_rreason// /}" ] || _rreason="agent review recommended changes"
+          if wg review reject "$RNUM" --reason "$_rreason" --to ready >/dev/null 2>&1; then
+            log "AFK: #$RNUM → CHANGES; re-queued to ready for rework with reviewer feedback (retry-cap parks to blocked at the threshold)"
+          else
+            log "AFK: #$RNUM CHANGES but reject failed — left in_review"
+            _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+          fi
+          ;;
+        *)  # hold — advisory / policy-HELD (supervised env floor, or a graduated repo/risk
+            # that has NOT earned an `auto` approve grant). Leave for a human; mark
+            # reviewed-this-run so we don't loop. The verdict is recorded either way.
+          [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+          log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT, approve_gate=$_SHIP_APPROVE) — ADVISORY/HELD; awaiting HUMAN approval"
+          ;;
+      esac
+      # Restore the global traps now that the review block is complete. Run cleanup
+      # once explicitly here so the worktree is gone before the result line fires;
+      # trap - EXIT clears our review-scoped EXIT handler so gaffer_on_exit (the
+      # restored global) won't double-call _review_cleanup on the subsequent exit.
+      _review_cleanup
+      trap gaffer_on_exit EXIT
+      trap 'gaffer_on_signal 130' INT
+      trap 'gaffer_on_signal 143' TERM
+      result reviewed; exit 0
+    fi
+  fi
+fi
 }
 
 # ── PAUSE-ON-CAP: resume-requested paused tickets take priority ──────────────
@@ -683,6 +964,15 @@ if [ "$READY_COUNT" -gt 0 ]; then
     else
       log "all ready tickets failed delivery this run — nothing deliverable"
     fi
+    # BUGFIX (reviewer deadlock): ready tickets exist but none are deliverable
+    # (e.g. all blocked by an unmet dependency whose blocker is itself in_review).
+    # Run the agent-review pass here so the blocker can be approved/merged and the
+    # chain unblocks; if it resolves a ticket it does `result reviewed; exit 0`,
+    # otherwise control returns and the no_work exit below proceeds. No-op in
+    # REVIEW_MODE=human (the guarded call is skipped), so supervised is unchanged.
+    if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
+      _gaffer_agent_review_pass
+    fi
     result no_work; exit 0
   fi
   fi   # end: ready-candidate scan (skipped when _RESUMING=1)
@@ -747,18 +1037,39 @@ if [ "$READY_COUNT" -gt 0 ]; then
     [ -n "$B_SKILLS" ] || B_SKILLS="(scaffold the stack from the ticket's ACs)"
 
     if [ "$DRY_RUN" = "1" ]; then
-      log "DRY_RUN: BOOTSTRAP would mkdir + git init $B_DIR, then run the delivery agent there to scaffold the stack + initial commit"
+      log "DRY_RUN: BOOTSTRAP would mkdir + git init $B_DIR with a baseline README commit on main, then branch gaffer/ticket-$NUM-<slug> and run the delivery agent there to scaffold the stack ON THE BRANCH"
       log "DRY_RUN: BOOTSTRAP would export GAFFER_BOOTSTRAP_INSTALL=1 GAFFER_BOOTSTRAP_DIR=$B_DIR so the safety hook permits the FIRST install in the fresh dir only"
-      log "DRY_RUN: BOOTSTRAP would assert delivery hygiene (oversized minimalism EXEMPTED for a fresh scaffold), record the smallest-change note, then register+onboard $B_NAME into the factory"
+      log "DRY_RUN: BOOTSTRAP would assert delivery hygiene (oversized minimalism EXEMPTED for a fresh scaffold), record the smallest-change note, record the delivery branch_name, then register+onboard $B_NAME + submit via the NORMAL claim-gated lane (→ in_review)"
       result worked; exit 0
     fi
 
     # Fail closed: never run a live agent without the deterministic safety hook.
     gaffer_assert_safety_hook || { log "SAFETY: refusing live bootstrap (fail closed)"; result error; exit 1; }
 
-    # Create + init the new repo dir. A failure here leaves no half-made repo.
-    if ! gaffer_bootstrap_init "$B_DIR"; then
+    # Create + init the new repo dir WITH a baseline README commit on `main` (repo
+    # display name + the ticket's intent). A failure here leaves no half-made repo.
+    if ! gaffer_bootstrap_init "$B_DIR" "$B_NAME" "$TITLE"; then
       log "BOOTSTRAP: #$NUM could not mkdir/git-init $B_DIR — failing"
+      gaffer_skip_ticket "$NUM"; result error; exit 0
+    fi
+
+    # Capture the repo's DEFAULT branch (`main`, where the baseline lives) from the
+    # freshly-baselined repo — used as the onboard branch + the diff/review base.
+    # `symbolic-ref --short HEAD` returns a clean "main" (never the "HEAD\nmain" garbage
+    # `rev-parse --abbrev-ref … || echo main` yields on an unborn repo) — see the
+    # greenfield E2E regression test. Captured HERE, while HEAD is still `main`, BEFORE
+    # we branch off it below.
+    B_DEFAULT_BRANCH="$(git -C "$B_DIR" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+    # DELIVER LIKE EVERY OTHER TICKET: create + check out the SAME `gaffer/ticket-N-<slug>`
+    # branch shape a normal delivery uses (shared gaffer_ticket_slug), so the scaffold
+    # lands on a branch the agent reviewer can diff against `main` and auto-approve+merge
+    # — NOT straight onto `main` (which left the reviewer with no branch to review). -B is
+    # idempotent on a resume (re-points the branch at the baseline). The agent then commits
+    # on the current branch (its prompt already says "commit on the current branch").
+    B_SLUG="$(gaffer_ticket_slug "$TITLE")"
+    B_WORK_BRANCH="gaffer/ticket-$NUM-$B_SLUG"
+    if ! git -C "$B_DIR" checkout -B "$B_WORK_BRANCH" >/dev/null 2>&1; then
+      log "BOOTSTRAP: #$NUM could not create delivery branch $B_WORK_BRANCH — failing"
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
 
@@ -783,8 +1094,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
 
     B_TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
     read -r -d '' B_PROMPT <<EOF || true
-You are a GREENFIELD bootstrap agent. The repo does NOT exist yet beyond an empty
-git-initialised directory — your job is to SCAFFOLD it, then make the initial commit.
+You are a GREENFIELD bootstrap agent. The repo is a fresh git repo with only a
+baseline README commit, already checked out on your delivery branch — your job is to
+SCAFFOLD it, then commit the scaffold ON THE CURRENT BRANCH.
 $QUARANTINE_NOTICE
 Bootstrap ticket #$NUM, title: $B_TITLE_Q
 Recommended skills: $B_SKILLS
@@ -795,23 +1107,16 @@ for any org conventions; then scaffold the stack the ticket describes (package.j
 tsconfig / .gitignore / a minimal hello-world or app skeleton), satisfying every
 acceptance criterion. You MAY run the dependency install ONCE in this directory
 (it is permitted only here, for this bootstrap). Run the project's tests if the
-scaffold defines any. Make the initial commit on the current branch. Record the
+scaffold defines any. Commit the scaffold on the current branch. Record the
 smallest-change note (minimalism lens) describing the scaffold and evidence each AC
 via the record-evidence skill, then STOP. Do NOT submit for review, push, or open a
 PR — the runner runs the gates, records the delivery, and submits. Never self-approve.
 
 Your working directory IS the new repo and the ONLY writable root: $B_DIR
-Do NOT write or read outside it. Do NOT branch — commit on the current branch.
+Do NOT write or read outside it. Do NOT create your own branch and do NOT switch
+branches — you are already on the delivery branch; just commit on it.
 EOF
 
-    # Capture the repo's default branch. NB: at this point the scaffold may still be
-    # UNBORN (git init done, the agent's first commit not yet made). On an unborn repo
-    # `git rev-parse --abbrev-ref HEAD` prints "HEAD" to stdout AND exits non-zero, so
-    # `… || echo main` yields the newline-joined garbage "HEAD\nmain" — which then fails
-    # `repo add`'s git-ref-safe branch validation and silently sinks the whole greenfield
-    # onboard. `symbolic-ref --short HEAD` returns the real branch ("main") cleanly for
-    # both unborn and committed repos.
-    B_DEFAULT_BRANCH="$(git -C "$B_DIR" symbolic-ref --short HEAD 2>/dev/null || echo main)"
     RUN_LOG_MARK="$(wc -l < "$GAFFER_LOG" 2>/dev/null || echo 0)"
     # The scoped install allowance: GAFFER_BOOTSTRAP_INSTALL=1 + GAFFER_BOOTSTRAP_DIR
     # are exported ONLY for this bootstrap invocation, so the safety hook permits
@@ -848,12 +1153,13 @@ EOF
       result error; exit 0
     fi
 
-    # Empty delivery: a bootstrap that produced no commit is a failure (nothing to
-    # onboard). The new repo's HEAD must point at a commit.
-    if ! git -C "$B_DIR" rev-parse HEAD >/dev/null 2>&1; then
-      log "BOOTSTRAP #$NUM produced no commit — parking (no scaffold to onboard)"
+    # Empty delivery: the scaffold must add at least one commit ON TOP of the README
+    # baseline. The delivery branch HEAD identical to the baseline `main` ⇒ the agent
+    # produced nothing to onboard (a bare baseline is not a scaffold).
+    if [ "$(git -C "$B_DIR" rev-parse HEAD 2>/dev/null)" = "$(git -C "$B_DIR" rev-parse "$B_DEFAULT_BRANCH" 2>/dev/null)" ]; then
+      log "BOOTSTRAP #$NUM produced no scaffold commit (branch == baseline) — parking (no scaffold to onboard)"
       wg attach-evidence "$NUM" --type manual_note \
-        --summary "PARKED: bootstrap produced no initial commit — needs clarification" >/dev/null 2>&1 || true
+        --summary "PARKED: bootstrap produced no scaffold commit beyond the baseline — needs clarification" >/dev/null 2>&1 || true
       # FINDING-12: VISIBLE park (see the rc-failure park above).
       gaffer_release_delivery blocked "bootstrap produced no initial commit" bootstrap_failed
       gaffer_skip_ticket "$NUM"; result error; exit 0
@@ -937,13 +1243,33 @@ print(hits[0] if hits else '')
     # dependent feature tickets (which target it via the normal worktree flow).
     if gaffer_bootstrap_onboard "$NUM" "$B_NAME" "$B_DIR" "$STACK" "" "$B_DEFAULT_BRANCH"; then
       log "BOOTSTRAP: registered + onboarded new repo '$B_NAME' ($B_DIR) into the factory"
+      # FIX-BRANCH invariant: the delivery branch $B_WORK_BRANCH is about to become
+      # review-visible via the records below. Raise the branch-retention flag FIRST —
+      # strictly BEFORE any delivery record — so no later crash/signal can drop a
+      # review-worthy branch (matches the normal-delivery ordering). The bootstrap holds
+      # no throwaway worktree, so at runtime this is a no-op belt-and-braces.
+      GAFFER_KEEP_DELIVERY_BRANCH=1
       # Link the new repo to the bootstrap ticket + record the delivery so the
       # done-gate/reviewer can resolve it (best-effort, non-fatal).
       wg repo link "$NUM" "$B_NAME" >/dev/null 2>&1 || true
-      B_DIFFSTAT="$(git -C "$B_DIR" diff "$EMPTY_TREE"...HEAD --stat 2>/dev/null | tail -15)"
+      # Record the delivery on the NORMAL lane: the diff is the scaffold delta on TOP of
+      # the README baseline (main..branch — exactly what the reviewer diffs), and the
+      # persisted branch_name is the `gaffer/ticket-N-<slug>` DELIVERY branch (NOT `main`),
+      # so the reviewer resolves `d['ticket']['branch_name']`, worktrees the branch, diffs
+      # it vs `main`, and can auto-approve+merge — no more "no delivery branch recorded".
+      B_DIFFSTAT="$(git -C "$B_DIR" diff "$B_DEFAULT_BRANCH".."$B_WORK_BRANCH" --stat 2>/dev/null | tail -15)"
+      B_HEAD_SHA="$(git -C "$B_DIR" rev-parse "$B_WORK_BRANCH" 2>/dev/null || echo '')"
       wg attach-evidence "$NUM" --type diff_summary \
-        --summary "Bootstrapped new repo $B_NAME at $B_DIR on $B_DEFAULT_BRANCH"$'\n'"$B_DIFFSTAT" >/dev/null 2>&1 || true
-      wg delivery-artifact "$NUM" --branch "$B_DEFAULT_BRANCH" --diff "$B_DIFFSTAT" --as system >/dev/null 2>&1 || true
+        --summary "Bootstrapped new repo $B_NAME at $B_DIR — delivered on branch $B_WORK_BRANCH (base $B_DEFAULT_BRANCH)"$'\n'"$B_DIFFSTAT" >/dev/null 2>&1 || true
+      wg delivery-artifact "$NUM" --branch "$B_WORK_BRANCH" --diff "$B_DIFFSTAT" --as system >/dev/null 2>&1 || true
+      # Per-repo delivery record (WG-005 parity with the normal lane): the done-gate /
+      # reviewer see a review_ready delivery for the new repo on the delivery branch.
+      B_SHA_ARG=""; [ -n "$B_HEAD_SHA" ] && B_SHA_ARG="--commit $B_HEAD_SHA"
+      wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready >/dev/null 2>&1 || true
+      # Rest the new repo's PRIMARY working tree back on its default branch (`main`), so
+      # the delivery branch is a plain ref the reviewer's throwaway worktree can check out
+      # cleanly, and dependents branch off a tidy `main` after the scaffold merges.
+      git -C "$B_DIR" checkout "$B_DEFAULT_BRANCH" >/dev/null 2>&1 || true
       # Greenfield epics wire themselves up: link the new repo as a WRITE repo to
       # the epic's sibling feature tickets that still lack one, so they become
       # deliverable. Deterministic for the single-bootstrap epic; the planner
@@ -959,8 +1285,8 @@ print(hits[0] if hits else '')
     # RUNNER-OWNED-BOOKKEEPING: the runner (holding the claim) submits the bootstrap
     # ticket for review now that its gates passed and the delivery is recorded. The
     # agent no longer submits.
-    if gaffer_submit_delivery "bootstrapped new repo $B_NAME at $B_DIR on $B_DEFAULT_BRANCH"; then
-      log "BOOTSTRAP: submitted #$NUM for review (→ in_review)"
+    if gaffer_submit_delivery "bootstrapped new repo $B_NAME at $B_DIR — delivered on branch $B_WORK_BRANCH"; then
+      log "BOOTSTRAP: submitted #$NUM for review (→ in_review) on branch $B_WORK_BRANCH"
       result worked; exit 0
     fi
     # M1 (data-loss path): the submit FAILED. Do NOT exit "worked" leaving the ticket
@@ -1086,17 +1412,10 @@ print("\n".join(write_rows))
   PRIMARY_REPO="$(printf '%s\n' "$WRITE_ROOTS" | grep . | head -1)"
   [ -n "$PRIMARY_REPO" ] || PRIMARY_REPO="$REPO_PATH"
 
-  # Slug the title once (shared by every write repo's branch name): lowercase,
-  # non-alphanumerics → '-', collapse repeats, trim, ≤6 words / ~50 chars.
-  SLUG="$(printf '%s' "$TITLE" \
-    | tr '[:upper:]' '[:lower:]' \
-    | tr -c 'a-z0-9' '-' \
-    | tr -s '-' \
-    | sed -E 's/^-+//; s/-+$//' \
-    | cut -d- -f1-6 \
-    | cut -c1-50 \
-    | sed -E 's/-+$//')"
-  [ -n "$SLUG" ] || SLUG="ticket"
+  # Slug the title once (shared by every write repo's branch name). gaffer_ticket_slug
+  # is the SAME derivation the greenfield bootstrap uses, so both mint the identical
+  # branch shape the reviewer resolves against.
+  SLUG="$(gaffer_ticket_slug "$TITLE")"
   WORK_BRANCH="gaffer/ticket-$NUM-$SLUG"
 
   # ── SELF-OPERATION BAN (refuse to deliver to Gaffer's own source) ────────────
@@ -1453,7 +1772,15 @@ EOF
       [ -n "$_rpath" ] || continue
       git -C "$_rpath" rev-parse --git-dir >/dev/null 2>&1 || { [ -e "$_rwt" ] && rm -rf "$_rwt"; continue; }
       if [ -n "$_rwt" ] && [ -e "$_rwt" ]; then
-        git -C "$_rpath" worktree remove --force "$_rwt" >/dev/null 2>&1 || rm -rf "$_rwt"
+        # `git worktree remove --force` deregisters the worktree but REFUSES to
+        # delete untracked residue — notably the `.claude/` the skill-mount installs.
+        # Once gaffer_skills_mount_cleanup drops the mount target, that worktree's
+        # `.claude/skills` symlink is left DANGLING, and git leaves the whole
+        # `.claude/` dir behind — which then trips the post-teardown hygiene gate
+        # (broken symlink: .claude/skills). Always `rm -rf` the worktree path after
+        # the git remove so teardown leaves NOTHING behind, dangling links included.
+        git -C "$_rpath" worktree remove --force "$_rwt" >/dev/null 2>&1 || true
+        rm -rf "$_rwt" 2>/dev/null || true
       fi
       git -C "$_rpath" worktree prune >/dev/null 2>&1 || true
       if [ "$drop_branch" = "drop-branch" ]; then
@@ -2643,211 +2970,7 @@ fi
 # an in_review ticket and approves/rejects via the review CLI. Runs when nothing
 # is ready, so delivery is prioritised; a ticket the reviewer doesn't resolve is
 # skipped to avoid re-review loops (loop.sh clears the file each run).
-if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
-  REVIEWED_FILE="$GAFFER_DATA/.reviewed-tickets"; touch "$REVIEWED_FILE"
-  RJSON="$(wg ticket list -s in_review 2>/dev/null || echo '[]')"
-  RNUM="$(echo "$RJSON" | python3 -c "import sys,json; skip=set(open('$REVIEWED_FILE').read().split()); c=[str(t['number']) for t in json.load(sys.stdin) if str(t['number']) not in skip]; print(c[0] if c else '')" 2>/dev/null)"
-  if [ -n "$RNUM" ]; then
-    RSHOW="$(wg ticket show "$RNUM" 2>/dev/null)"
-    RREPO="$(echo "$RSHOW" | jget "(d['repositories'][0]['local_path'] if d['repositories'] else '') or ''" 2>/dev/null)"
-    if [ -n "$RREPO" ] && [ -d "$RREPO" ]; then
-      # Resolve the delivered branch from Dispatch (persisted by delivery-artifact)
-      # rather than grepping local git — the reviewer trusts the recorded branch_name.
-      # Fall back to the git-branch grep only if branch_name was never recorded.
-      RBRANCH="$(echo "$RSHOW" | jget "(d['ticket']['branch_name'] or '')" 2>/dev/null)"
-      [ -n "$RBRANCH" ] || RBRANCH="$(git -C "$RREPO" branch 2>/dev/null | grep -oE "gaffer/ticket-$RNUM-[a-z0-9-]*" | head -1)"
-      # The repo's default branch — used as the diff base in the reviewer prompt so
-      # we never hardcode 'main' for repos whose default is master/develop/etc.
-      RDEFAULT="$(echo "$RSHOW" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'")"
-      log "review_mode=$REVIEW_MODE → agent-reviewing in_review #$RNUM in $RREPO (branch ${RBRANCH:-unknown}, base $RDEFAULT)"
-      if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run a reviewer agent on #$RNUM (branch ${RBRANCH:-unknown})"; result reviewed; exit 0; fi
-      # BLOCKING 1 fix: run the reviewer in a THROWAWAY git worktree so the
-      # registered repo's working tree, HEAD, and any pre-existing .claude/ are
-      # NEVER touched. The worktree lives under $GAFFER_DATA and is torn down by
-      # _review_cleanup on ALL exit paths (EXIT, INT, TERM). Using a per-ticket
-      # path (review-wt-$RNUM) prevents collisions when GAFFER_CONCURRENCY>1.
-      WT="$GAFFER_DATA/review-wt-$RNUM"
-      _review_cleanup() {
-        if [ -n "${WT:-}" ] && [ -e "$WT" ]; then
-          git -C "$RREPO" worktree remove --force "$WT" 2>/dev/null || true
-          git -C "$RREPO" worktree prune 2>/dev/null || true
-        fi
-        gaffer_skills_mount_cleanup "review-$RNUM"
-      }
-      # BLOCKING 2 fix: install review-scoped EXIT + signal traps so
-      # _review_cleanup fires under INT/TERM as well as on a normal exit.
-      # Each handler clears ALL three traps first (matching the global idiom)
-      # to prevent re-entry, runs the worktree cleanup, then chains the global
-      # crash cleanup and exits with the correct status code. On the normal
-      # completion path the caller restores the global traps explicitly so
-      # subsequent code (result/exit) continues under the standard handlers.
-      _review_on_exit() {
-        local rc=$?
-        trap - EXIT INT TERM
-        _review_cleanup
-        gaffer_crash_cleanup
-        exit "$rc"
-      }
-      _review_on_int()  { trap - EXIT INT TERM; _review_cleanup; gaffer_crash_cleanup; exit 130; }
-      _review_on_term() { trap - EXIT INT TERM; _review_cleanup; gaffer_crash_cleanup; exit 143; }
-      trap _review_on_exit EXIT
-      trap _review_on_int  INT
-      trap _review_on_term TERM
-      [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { log "SAFETY: hook missing — refusing live review (fail closed)"; result error; exit 1; }
-      # Fail CLOSED if no branch is recorded — the reviewer must never operate
-      # on an unknown HEAD (mirrors the delivery-path fail-closed checkout guard).
-      if [ -z "${RBRANCH:-}" ]; then
-        log "REVIEW-ERROR: no delivery branch recorded for ticket #$RNUM — refusing review (fail closed)"
-        result error; exit 1
-      fi
-      # Fail CLOSED if the throwaway worktree can't be created — prevents the
-      # reviewer from operating on the wrong code.
-      if ! git -C "$RREPO" worktree add --force "$WT" "$RBRANCH" >/dev/null 2>&1; then
-        log "REVIEW-ERROR: failed to create review worktree for branch '$RBRANCH' in $RREPO — refusing review of #$RNUM (fail closed; branch may be missing or corrupt)"
-        result error; exit 1
-      fi
-      # Mount only the review-relevant + universal skill subset (not all ~66).
-      gaffer_skills_mount "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM"
-      sed "s#\${RUNNER_DIR}#$RUNNER_DIR#g" "$CLAUDE_SETTINGS" > "$WT/.claude/settings.json"
-      gaffer_trust_workspace "$WT"
-      MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
-      gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
-      # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
-      # substituted EMPTY (the MCP server treats "" as "no token"). Substituting it
-      # strips the placeholder so the literal ${GAFFER_CLAIM_TOKEN} never leaks in.
-      sed -e "s#\${DISPATCH_DB}#$DISPATCH_DB#g" -e "s#\${MEMORY_DB}#$MEMORY_DB#g" -e "s#\${DISPATCH_MCP_BIN}#$DISPATCH_MCP_BIN#g" -e "s#\${MEMORY_MCP_BIN}#$MEMORY_MCP_BIN#g" -e "s#\${GAFFER_CLAIM_TOKEN}#${CLAIM_TOKEN}#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
-      cp -f "$HERE/claude/CLAUDE.md" "$WT/CLAUDE.factory.md"
-      # File-card context for the reviewer — orients it on the repo's structure
-      # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.
-      # Cards are keyed off the REAL repo ($RREPO) canonical identity, not the
-      # throwaway worktree, so they match what onboard indexed.
-      _RSHOW_TITLE="$(echo "$RSHOW" | jget "d['ticket']['title']" 2>/dev/null || echo '')"
-      _RDESC="$(echo "$RSHOW" | jget "(d['ticket'].get('description') or '')[:400]" 2>/dev/null || echo '')"
-      _REVIEW_CARDS="$(gaffer_prime_context_block "$RREPO" "$(basename "$RREPO")" \
-        "$(printf '%s %s' "$_RSHOW_TITLE" "$_RDESC")" 2>/dev/null || true)"
-      read -r -d '' RPROMPT <<EOF || true
-You are a REVIEWER agent. You did NOT implement this ticket, so you may JUDGE it — but
-your verdict is ADVISORY ONLY: an agent review is NOT a human approval and MUST NOT
-mint one. A merge always requires a HUMAN to cross the final gate. Do NOT run
-\`dispatch review approve\`, \`wg review approve\`, \`mark-merged\`, or any privileged
-control-plane CLI — those are blocked for you and reaching for them is a bug, not the
-path. You record your verdict ONLY through the scoped dispatch MCP.
-$QUARANTINE_NOTICE
-Use the review-ticket skill to review in_review ticket #$RNUM: call get_ticket (dispatch)
-for its acceptance criteria and recorded evidence; inspect the delivered change with
-\`git diff $RDEFAULT...HEAD\` in $WT; judge whether each AC is genuinely met and the
-change is sound (tests, scope, quality). Then RECORD YOUR VERDICT as evidence via the
-dispatch MCP record_ac_evidence (one entry per AC: PASS/FAIL + the specific reasoning),
-and finish with a one-line overall recommendation. Apply THIS BAR EXACTLY — never raise it:
-say "RECOMMEND APPROVE" when (a) every acceptance criterion is met in the diff, (b) the DoD
-gates pass / no tests are failing, and (c) the changed behaviour is tested where a test
-reasonably applies. That is the whole bar — if it is met, APPROVE.
-Say "RECOMMEND CHANGES" ONLY for a CONCRETE defect: a specific AC that is not met, a failing or
-missing test for an AC's OWN behaviour, or a genuine correctness/security bug — always naming
-the AC and the single concrete fix so a rework resolves it in one pass.
-You MUST NOT withhold approval for anything OUTSIDE the acceptance criteria: refactors,
-de-duplication, extra coverage beyond the ACs, naming, file structure, or maintainability
-wishes are OPTIONAL. You may list them prefixed "(optional)" but they are NEVER grounds for
-CHANGES. When in doubt and the ACs are met with tests passing, APPROVE.
-Leave the ticket in in_review — the operator (or, in autonomy mode, the runner acting
-deterministically on your verdict) crosses the final gate. Work only in: $WT
-EOF
-      RPROMPT="${RPROMPT}${_REVIEW_CARDS}"
-      # Repo-access boundary (FG-007): the reviewer works only in the throwaway
-      # worktree ($WT). The registered repo's working tree is never a write root.
-      R_USAGE_JSON="$GAFFER_DATA/.usage-$RNUM.json"; : > "$R_USAGE_JSON"
-      # C1/M2: scrub ambient credentials from the reviewer agent's env (allowlist)
-      # inside worker_deliver; the per-call vars in WORKER_CALL_ENV layer on top.
-      WORKER_CALL_ENV=(
-        "GAFFER_WRITE_ROOTS=$WT"
-        "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
-      )
-      worker_deliver "$WT" "$RPROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON"
-      rrc=$?
-      gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
-      # Capture the reviewer's advisory verdict (its final RECOMMEND line) from the result
-      # JSON BEFORE deleting it — the signal the runner acts on in AFK mode. Default to
-      # "changes": an ambiguous or empty verdict must NEVER auto-approve. Read the file BY
-      # PATH (not stdin): the usage JSON must never be piped as stdin (prompt-injection
-      # guard, enforced by tick-prompt-wiring.test.sh) — parsing its result is output-read.
-      R_RESULT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('result',''))" "$R_USAGE_JSON" 2>/dev/null || echo '')"
-      rm -f "$R_USAGE_JSON"
-      R_VERDICT=changes
-      printf '%s' "$R_RESULT" | grep -qiE "RECOMMEND[ _-]*APPROVE" && R_VERDICT=approve
-      printf '%s' "$R_RESULT" | grep -qiE "RECOMMEND[ _-]*CHANGES" && R_VERDICT=changes
-      NEWSTATUS="$(wg ticket show "$RNUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-
-      # ── AFK auto-completion (opt-in; OFF by default) ─────────────────────────────
-      # By default an agent review is ADVISORY: the ticket stays in_review for a HUMAN,
-      # and the reviewer AGENT never approves itself (prompt forbids it, CLI blocked).
-      # When the operator has explicitly opted into unattended completion — AUTO_MERGE=1
-      # AND MERGE_ON_AGENT_REVIEW=1 — the RUNNER (deterministic + trusted, exactly like
-      # the DoD gates and the submit step) acts on the verdict on the operator's standing
-      # behalf: a clean APPROVE is approved → safe-merged → optionally pushed → marked
-      # done; a CHANGES verdict is rejected back to rework WITH the reviewer's feedback
-      # (which the delivery path surfaces into the next attempt), so a cautious review is
-      # a RETRY, not a block — the rework budget cap eventually parks a stuck ticket.
-      if [ "$NEWSTATUS" = "in_review" ] && [ "${AUTO_MERGE:-0}" = "1" ] && [ "${MERGE_ON_AGENT_REVIEW:-0}" = "1" ] && [ -n "$RBRANCH" ]; then
-        if [ "$R_VERDICT" = "approve" ]; then
-          if wg review approve "$RNUM" >/dev/null 2>&1; then
-            log "AFK: runner approved #$RNUM on a clean agent verdict (→ ready_for_merge)"
-            # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an
-            # ancestor of RDEFAULT, so merge-base would collapse to RBRANCH (empty diff).
-            _CR_BASE="$(git -C "$RREPO" merge-base "$RBRANCH" "$RDEFAULT" 2>/dev/null || true)"
-            gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; _mrc=$?
-            case "$_mrc" in
-              0)
-                wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
-                  && log "AFK: #$RNUM merged ($RBRANCH → $RDEFAULT) and marked done" \
-                  || log "AFK: #$RNUM merged but mark-merged failed — verify state"
-                # MEMORY FRESHNESS: write-through the delivered change into the file cards
-                # (refresh changed, add new, drop deleted, advance the watermark) so priming
-                # stays current instead of decaying. Fail-soft — never blocks the merge.
-                gaffer_refresh_cards "$RREPO" "$(basename "$RREPO")" "$_CR_BASE" "$RBRANCH" \
-                  "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
-                if [ "${GAFFER_AUTO_PUSH:-0}" = "1" ]; then
-                  gaffer_auto_push "$RREPO" "$RDEFAULT" \
-                    && log "AFK: pushed $RDEFAULT to origin" \
-                    || log "AFK: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push"
-                fi
-                ;;
-              3) log "AFK: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;
-              1) log "AFK: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human" ;;
-              *) log "AFK: #$RNUM approved but merge could not run (rc=$_mrc) — left in ready_for_merge for a human" ;;
-            esac
-          else
-            log "AFK: runner could not approve #$RNUM (approve rejected) — left in_review"
-            _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
-          fi
-        else
-          # CHANGES → reject to rework with the reviewer's reason. The feedback loop
-          # (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
-          _rreason="$(printf '%s' "$R_RESULT" | tr '\n' ' ' | tail -c 480)"
-          [ -n "${_rreason// /}" ] || _rreason="agent review recommended changes"
-          if wg review reject "$RNUM" --reason "$_rreason" --to ready >/dev/null 2>&1; then
-            log "AFK: #$RNUM → CHANGES; re-queued to ready for rework with reviewer feedback (retry-cap parks to blocked at the threshold)"
-          else
-            log "AFK: #$RNUM CHANGES but reject failed — left in_review"
-            _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
-          fi
-        fi
-      else
-        # Advisory-only (default): leave for a human; mark reviewed-this-run so we don't loop.
-        [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
-        log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT) — ADVISORY; awaiting HUMAN approval"
-      fi
-      # Restore the global traps now that the review block is complete. Run cleanup
-      # once explicitly here so the worktree is gone before the result line fires;
-      # trap - EXIT clears our review-scoped EXIT handler so gaffer_on_exit (the
-      # restored global) won't double-call _review_cleanup on the subsequent exit.
-      _review_cleanup
-      trap gaffer_on_exit EXIT
-      trap 'gaffer_on_signal 130' INT
-      trap 'gaffer_on_signal 143' TERM
-      result reviewed; exit 0
-    fi
-  fi
-fi
+_gaffer_agent_review_pass
 
 # ── Intake clarify gate ──────────────────────────────────────────────────────
 # The clarify skill turns an ambiguous DRAFT into well-specified work, but it

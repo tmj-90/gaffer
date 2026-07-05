@@ -47,6 +47,20 @@ OUT4="$(HOME="$WORK/home" bash -c "trap - EXIT; bash '$GAFFER' skills install --
 [ -d "$WORK/home/.claude/skills" ] && [ "$(ls "$WORK/home/.claude/skills" | wc -l | tr -d ' ')" = "$COUNT" ] \
   && ok "--user installs into \$HOME/.claude/skills" || fail "--user target wrong (out=$OUT4)"
 
+echo "== AC6: always-on quality lens (engineering-craft) + frontend floor =="
+grep -qiE '^area:[[:space:]]*quality' "$SKILLS_DIR/engineering-craft/SKILL.md" 2>/dev/null \
+  && ok "engineering-craft is area:quality (injected as a mandatory lens)" \
+  || fail "engineering-craft missing or not area:quality"
+grep -qiE '^area:[[:space:]]*frontend' "$SKILLS_DIR/frontend-foundations/SKILL.md" 2>/dev/null \
+  && ok "frontend-foundations is area:frontend (UI quality floor)" \
+  || fail "frontend-foundations missing or not area:frontend"
+# The mandatory-lens set is EVERY area:quality skill (tick.sh ~line 1399). Pin that
+# engineering-craft is in it so a future change can't silently drop the craft lens.
+LENS_SET="$(for _f in "$SKILLS_DIR"/*/SKILL.md; do grep -qiE '^area:[[:space:]]*quality' "$_f" 2>/dev/null && basename "$(dirname "$_f")"; done | paste -sd, -)"
+printf '%s' "$LENS_SET" | grep -q "engineering-craft" \
+  && ok "engineering-craft is in the mandatory-lens set" \
+  || fail "engineering-craft not in the mandatory-lens set ($LENS_SET)"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS: $PASS checks"; exit 0
 else echo "FAILED: ${#FAILURES[@]} of $((PASS + ${#FAILURES[@]}))"; for f in "${FAILURES[@]}"; do echo "  - $f"; done; exit 1; fi

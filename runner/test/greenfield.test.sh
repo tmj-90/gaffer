@@ -84,14 +84,44 @@ git -C "$SCAF" add -A >/dev/null 2>&1
 git -C "$SCAF" -c user.email=t@t -c user.name=t commit -qm scaffold >/dev/null 2>&1
 if gaffer_bootstrap_target_ok "$SCAF" >/dev/null 2>&1; then fail "committed repo should be refused"; else ok "committed repo (real work) refused"; fi
 
-echo "== AC6: gaffer_bootstrap_init mkdir + git init (idempotent) =="
+echo "== AC6: gaffer_bootstrap_init mkdir + git init + baseline commit (idempotent) =="
 NEW="$WORK/git/gym-tracker"
-gaffer_bootstrap_init "$NEW" >/dev/null 2>&1 \
+# A clean env (empty ambient git identity) must still land the baseline commit — the
+# helper supplies an explicit -c identity, so this proves the CI-safe path.
+( export GIT_CONFIG_NOSYSTEM=1 HOME="$WORK/nohome"; mkdir -p "$WORK/nohome"
+  gaffer_bootstrap_init "$NEW" "gym-tracker" "Track your gym sessions" >/dev/null 2>&1 ) \
   && [ -d "$NEW/.git" ] && ok "init created git repo at $NEW" || fail "init did not create a git repo"
 HEADREF="$(git -C "$NEW" symbolic-ref --short HEAD 2>/dev/null || echo '')"
 [ "$HEADREF" = "main" ] && ok "default branch is 'main'" || fail "default branch should be main (got '$HEADREF')"
-# Idempotent: a second init on the same dir is a no-op success.
-gaffer_bootstrap_init "$NEW" >/dev/null 2>&1 && ok "re-init is idempotent (no-op success)" || fail "re-init should succeed"
+# BASELINE: `main` is now BORN (non-empty) with a single README commit — this is what
+# lets a bootstrap branch off + diff against a real base (the core of the branch-delivery fix).
+git -C "$NEW" rev-parse --verify -q HEAD >/dev/null 2>&1 \
+  && ok "baseline commit exists on main (HEAD is born)" || fail "init must seed a baseline commit"
+[ "$(git -C "$NEW" ls-tree -r --name-only HEAD 2>/dev/null)" = "README.md" ] \
+  && ok "baseline tree is exactly README.md" || fail "baseline should commit README.md alone"
+grep -q '^# gym-tracker' "$NEW/README.md" 2>/dev/null \
+  && ok "README carries the repo display name" || fail "README should carry the display name"
+NCOMMITS_1="$(git -C "$NEW" rev-list --count HEAD 2>/dev/null || echo 0)"
+# Idempotent: a second init on the same dir is a no-op success — NO second commit.
+gaffer_bootstrap_init "$NEW" "gym-tracker" "Track your gym sessions" >/dev/null 2>&1 && ok "re-init is idempotent (no-op success)" || fail "re-init should succeed"
+NCOMMITS_2="$(git -C "$NEW" rev-list --count HEAD 2>/dev/null || echo 0)"
+[ "$NCOMMITS_1" = "1" ] && [ "$NCOMMITS_2" = "1" ] \
+  && ok "re-init did not add a second baseline commit (still 1)" \
+  || fail "re-init must not re-commit (got $NCOMMITS_1 then $NCOMMITS_2)"
+
+echo "== AC6c: gaffer_bootstrap_target_ok RESUMES a baseline-only repo (branch-delivery resume) =="
+# After the branch-delivery fix, a fresh bootstrap leaves a README-only baseline on main.
+# A resume must recognise THAT as our own resumable scaffold (tree == README.md), not
+# refuse it as "real work" — otherwise the ticket wedges on its own baseline.
+BASE="$WORK/git/baseline-resume"
+gaffer_bootstrap_init "$BASE" "baseline-resume" "seed" >/dev/null 2>&1
+gaffer_bootstrap_target_ok "$BASE" 2>/dev/null \
+  && ok "baseline-only repo (main == {README.md}) → resume in place" \
+  || fail "a baseline-only repo must be resumable"
+# But a real source file committed on top → real work → must refuse (never clobber).
+echo "console.log(1)" > "$BASE/index.js"; git -C "$BASE" add index.js >/dev/null 2>&1
+git -C "$BASE" -c user.email=t@t -c user.name=t commit -qm feat >/dev/null 2>&1
+if gaffer_bootstrap_target_ok "$BASE" >/dev/null 2>&1; then fail "baseline + real commit should be refused"; else ok "baseline + a real committed file refused"; fi
 
 echo "== AC6b: bootstrap default-branch capture is clean on an UNBORN repo (E2E regression) =="
 # REGRESSION: tick.sh captures B_DEFAULT_BRANCH BEFORE the agent's first commit — i.e.
@@ -139,6 +169,28 @@ grep -q 'GAFFER_BOOTSTRAP_INSTALL=1' "$RUNNER_DIR/tick.sh" \
 grep -q 'gaffer_inherit_repo' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh wires gaffer_inherit_repo after a successful onboard" \
   || fail "tick.sh does not call gaffer_inherit_repo"
+
+echo "== AC8b: tick.sh delivers the bootstrap ON A BRANCH via the normal review lane =="
+# The core fix: a bootstrap must NOT commit straight onto main and submit branchless
+# (the reviewer refused that: "no delivery branch recorded → fail closed"). Instead it
+# branches gaffer/ticket-N-<slug> off the README baseline, records THAT branch as the
+# delivery branch_name, and submits via the ordinary claim-gated lane.
+grep -q 'B_WORK_BRANCH="gaffer/ticket-\$NUM-\$B_SLUG"' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh mints the gaffer/ticket-N-<slug> delivery branch for the bootstrap" \
+  || fail "tick.sh does not create a gaffer/ticket-N delivery branch for the bootstrap"
+grep -q 'git -C "\$B_DIR" checkout -B "\$B_WORK_BRANCH"' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh checks out the delivery branch before the scaffold agent runs" \
+  || fail "tick.sh does not check out the bootstrap delivery branch"
+grep -q 'wg delivery-artifact "\$NUM" --branch "\$B_WORK_BRANCH"' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh records branch_name = the delivery branch (reviewer resolves it)" \
+  || fail "tick.sh must record delivery-artifact --branch \$B_WORK_BRANCH (not main)"
+grep -q 'gaffer_submit_delivery "bootstrapped new repo' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh submits the bootstrap via the ordinary gaffer_submit_delivery lane" \
+  || fail "tick.sh does not submit the bootstrap via the normal claim-gated lane"
+# The scaffold branches OFF the baseline; both slugs come from the shared helper.
+grep -q 'gaffer_ticket_slug()' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh defines the shared gaffer_ticket_slug branch-name helper" \
+  || fail "tick.sh must define gaffer_ticket_slug (shared by normal + bootstrap paths)"
 
 echo "== AC10: gaffer_inherit_repo applies the planner's links via the wg CLI =="
 # Stub `wg`, `node` (the planner), and `claude` so the bash plumbing is exercised
@@ -218,6 +270,91 @@ else
 fi
 
 rm -rf "$INH_WORK"
+
+echo "== AC11: bootstrap teardown purges the mount symlink from the PERSISTENT repo =="
+# A greenfield bootstrap runs the agent DIRECTLY in the new repo (no throwaway
+# worktree). gaffer_skills_mount installs a `.claude/skills` symlink there; on
+# teardown gaffer_skills_mount_cleanup drops the mount TARGET. Without passing the
+# repo dir, that symlink is left DANGLING in the real repo — which the post-teardown
+# hygiene gate correctly flags ("broken symlink in real repo: .claude/skills").
+# Prove the mechanism-level fix: cleanup WITH the dest arg leaves no dangling link,
+# and gaffer_assert_repo_clean passes.
+# shellcheck source=../lib/skills-mount.sh
+source "$RUNNER_DIR/lib/skills-mount.sh"
+# shellcheck source=../lib/hygiene.sh
+source "$RUNNER_DIR/lib/hygiene.sh"
+
+SM_WORK="$(mktemp -d "${TMPDIR:-/tmp}/skills-unmount-test.XXXXXX")"
+export GAFFER_DATA="$SM_WORK/data"; mkdir -p "$GAFFER_DATA"
+export SKILLS_DIR="$SM_WORK/skills"; mkdir -p "$SKILLS_DIR/demo-skill"
+printf '%s\n' '# demo' > "$SKILLS_DIR/demo-skill/SKILL.md"
+
+# The persistent bootstrap repo: a real git repo with a baseline commit (B_DIR).
+BREPO="$SM_WORK/newrepo"; mkdir -p "$BREPO"
+git -C "$BREPO" init -q -b main >/dev/null 2>&1 || git -C "$BREPO" init -q >/dev/null 2>&1
+: > "$BREPO/README.md"
+git -C "$BREPO" -c user.email=t@t -c user.name=t add -A >/dev/null 2>&1
+git -C "$BREPO" -c user.email=t@t -c user.name=t commit -qm baseline >/dev/null 2>&1
+
+# Mount exactly as the bootstrap block does, then git-exclude the runner config (as
+# gaffer_exclude_runner_config does in production) so `.claude/` can't surface as
+# untracked porcelain — isolating the dangling-symlink signal.
+gaffer_skills_mount "$BREPO" "demo-skill" "bootstrap-999"
+gaffer_exclude_runner_config "$BREPO"
+[ -L "$BREPO/.claude/skills" ] \
+  && ok "mount installed a .claude/skills symlink into the bootstrap repo" \
+  || fail "mount should install a .claude/skills symlink"
+
+# Reproduce the LEGACY bug first: cleanup WITHOUT the dest arg drops the mount target
+# but leaves the symlink dangling — the detector must fire, proving the gap was real.
+gaffer_skills_mount_cleanup "bootstrap-999"
+# Capture the detector output to a var BEFORE grepping: `grep -q` closes the pipe on
+# first match and, under `pipefail`, the SIGPIPE'd producer would flip the pipeline
+# status — capture-then-grep is the suite's deterministic idiom (afk-delivery-loop).
+if [ -L "$BREPO/.claude/skills" ] && [ ! -e "$BREPO/.claude/skills" ]; then
+  LEGACY_OUT="$(gaffer_assert_repo_clean "$BREPO" 2>&1 || true)"
+  printf '%s\n' "$LEGACY_OUT" | grep -q "broken symlink in real repo: .claude/skills" \
+    && ok "legacy path (no dest arg) leaves a dangling link the detector flags" \
+    || fail "expected the detector to flag the legacy dangling link (got: $LEGACY_OUT)"
+else
+  fail "legacy cleanup should have left a dangling .claude/skills (setup drift)"
+fi
+
+# Now the FIX: re-mount and tear down WITH the persistent dest → drops the mount AND
+# the symlink it left behind, so the real repo is clean.
+gaffer_skills_mount "$BREPO" "demo-skill" "bootstrap-999"
+gaffer_skills_mount_cleanup "bootstrap-999" "$BREPO"
+[ ! -L "$BREPO/.claude/skills" ] && [ ! -e "$BREPO/.claude/skills" ] \
+  && ok "teardown with dest left NO .claude/skills in the real repo" \
+  || fail "teardown left a .claude/skills entry behind: $(ls -la "$BREPO/.claude" 2>/dev/null | tr '\n' '|')"
+gaffer_assert_repo_clean "$BREPO" >/dev/null 2>&1 \
+  && ok "gaffer_assert_repo_clean passes after bootstrap teardown" \
+  || fail "real repo flagged unclean after teardown: $(gaffer_assert_repo_clean "$BREPO" 2>&1 | tr '\n' '|')"
+
+echo "== AC11b: the detector STILL fires on a genuine planted dangling symlink =="
+# Control: the fix must NOT weaken the detector. A hand-planted dangling .claude/skills
+# (the exact leak signature) must still be caught.
+mkdir -p "$BREPO/.claude"
+ln -s "$SM_WORK/does-not-exist" "$BREPO/.claude/skills"   # dangling: target absent
+CTRL="$(gaffer_assert_repo_clean "$BREPO" 2>&1 || true)"
+printf '%s\n' "$CTRL" | grep -q "broken symlink in real repo: .claude/skills" \
+  && ok "gaffer_assert_repo_clean STILL fires on a planted dangling .claude/skills" \
+  || fail "detector should still catch a genuine dangling symlink (got: $CTRL)"
+rm -rf "$BREPO/.claude"
+
+echo "== AC11c: teardown preserves agent-scaffolded .claude content =="
+# The unmount must remove ONLY the factory's own symlink/config — never a real
+# `.claude` directory or app files the agent legitimately scaffolded.
+mkdir -p "$BREPO/.claude/skills/my-app-skill"           # a REAL dir named skills
+printf '%s\n' '# app-owned' > "$BREPO/.claude/skills/my-app-skill/SKILL.md"
+printf '%s\n' '{}' > "$BREPO/.claude/app-config.json"   # app content beside it
+gaffer_skills_mount_cleanup "bootstrap-999" "$BREPO"    # must be a no-op on real content
+[ -d "$BREPO/.claude/skills/my-app-skill" ] && [ -f "$BREPO/.claude/app-config.json" ] \
+  && ok "agent-scaffolded .claude content is preserved (real skills/ dir untouched)" \
+  || fail "teardown wrongly deleted agent-scaffolded .claude content"
+
+unset GAFFER_DATA SKILLS_DIR
+rm -rf "$SM_WORK"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

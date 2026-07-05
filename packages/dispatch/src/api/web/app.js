@@ -377,6 +377,9 @@ async function runAsyncActionUntilDone(btn, running, fn) {
 function renderLogin(wasWrong) {
   const root = document.getElementById("app");
   if (!root) return;
+  // A write 401 can fire from the Plan-a-build sheet (body-level overlay); dismiss it
+  // so the token gate isn't stranded behind it — the CSS also covers it defensively.
+  closeSheet();
   if (appbar) appbar.hidden = true;
   if (bottomnav) bottomnav.hidden = true;
   root.classList.add("login-shell");
@@ -8678,17 +8681,28 @@ function renderPlanProposal(plan) {
       el(
         "p",
         { class: "pb-confirm-note dim" },
-        `${tickets.length} ticket${tickets.length === 1 ? "" : "s"} will be created as draft — nothing runs until you ready them.`,
+        `${tickets.length} ticket${tickets.length === 1 ? "" : "s"} — create as draft to review first, or create & ready to queue them for delivery now (the AC gate still applies per ticket).`,
       ),
-      el(
-        "button",
-        {
-          class: "btn primary",
-          type: "button",
-          onclick: () => confirmPlanBuild(plan),
-        },
-        [icon("check"), el("span", {}, "Create these tickets")],
-      ),
+      el("div", { class: "pb-confirm-actions" }, [
+        el(
+          "button",
+          {
+            class: "btn ghost",
+            type: "button",
+            onclick: () => confirmPlanBuild(plan),
+          },
+          [icon("check"), el("span", {}, "Create as draft")],
+        ),
+        el(
+          "button",
+          {
+            class: "btn primary",
+            type: "button",
+            onclick: () => confirmPlanBuild(plan, { ready: true }),
+          },
+          [icon("check"), el("span", {}, "Create & ready")],
+        ),
+      ]),
     ]),
   );
   return wrap;
@@ -8830,7 +8844,12 @@ async function submitPlanBuildTurn(opts = {}) {
  * later when the repo is onboarded. Everything else (ACs, deps, bootstrap,
  * priority) is preserved, so the draft epic still lands intact.
  */
-async function confirmPlanBuild(plan) {
+// `opts.ready` (the "Create & ready" button) readies the created tickets in the
+// same step so the human doesn't have to draft→ready each one by hand. It is
+// GATE-AWARE, never a blind status flip: it POSTs /ready per ticket and lets the
+// server's intake gate decide — a ticket with no acceptance criterion is refused
+// and simply stays draft, so "Create & ready" can never push slop past the AC gate.
+async function confirmPlanBuild(plan, opts = {}) {
   await guard(async () => {
     const known = new Set(
       ((await api("GET", "/repositories")).repositories || []).map((r) => r.name),
@@ -8847,13 +8866,37 @@ async function confirmPlanBuild(plan) {
     const res = await api("POST", "/epics", { epic: plan.epic, tickets });
     // Archive the session as confirmed now that the epic has been created.
     await archivePlanBuildSession("confirmed");
-    const count = (res.ticket_numbers || []).length;
+    const numbers = res.ticket_numbers || [];
+    const count = numbers.length;
     const note = deferred
       ? ` (${deferred} repo link${deferred === 1 ? "" : "s"} deferred to bootstrap)`
       : "";
-    toast(`Created ${count} draft ticket${count === 1 ? "" : "s"} — ready them when set${note}`, {
-      ok: true,
-    });
+
+    let readied = 0;
+    let heldDraft = 0;
+    if (opts.ready && count) {
+      // Resolve the just-created tickets by number, then let the server's ready
+      // gate decide per ticket. A refusal (missing AC, unmet precondition) is
+      // expected for some tickets — they stay draft, counted, never surfaced as an
+      // error. Bootstrap-gated tickets are readied too; the loop honours deps.
+      const all = (await api("GET", "/tickets")).tickets || [];
+      const mine = all.filter((t) => numbers.includes(t.number));
+      for (const t of mine) {
+        try {
+          await api("POST", `/tickets/${t.id}/ready`, {});
+          readied++;
+        } catch {
+          heldDraft++;
+        }
+      }
+    }
+
+    const msg = opts.ready
+      ? `Created ${count} ticket${count === 1 ? "" : "s"} — ${readied} readied` +
+        (heldDraft ? `, ${heldDraft} held as draft (add an acceptance criterion)` : "") +
+        note
+      : `Created ${count} draft ticket${count === 1 ? "" : "s"} — ready them when set${note}`;
+    toast(msg, { ok: true });
     closePlanBuild();
     navigate(`#/epics/${res.epic_node_id}`);
     // If already on the epics view, navigate() with the same view won't re-fire

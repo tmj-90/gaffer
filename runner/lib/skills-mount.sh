@@ -85,14 +85,64 @@ gaffer_skills_mount() {
   return 0
 }
 
-# gaffer_skills_mount_cleanup <mount_key> — remove a per-agent mount dir. Guarded
-# to the skills-mounts root so it can never rm anything outside factory state.
+# gaffer_skills_unmount <dest_dir> — drop the `.claude/skills` symlink (and the
+# factory `.claude/settings.json` written beside it) that gaffer_skills_mount
+# installed into <dest_dir>, so a PERSISTENT target dir isn't left holding a
+# now-dangling link once its mount target is removed.
+#
+# WHY: a normal delivery mounts into a THROWAWAY git worktree that the runner later
+# `rm -rf`s wholesale — the mounted `.claude/skills` symlink dies with it. A
+# GREENFIELD bootstrap, however, runs the agent DIRECTLY in the new repo dir, which
+# is NOT a throwaway worktree and is never `rm -rf`d. So once
+# gaffer_skills_mount_cleanup drops the mount TARGET, that repo's `.claude/skills`
+# is left a DANGLING symlink in the real repo — which the post-teardown hygiene
+# gate (gaffer_assert_repo_clean) correctly flags as "broken symlink in real repo".
+# This purges the factory's own mount residue so the detector stays firing on
+# genuine leaks, not on our own teardown litter.
+#
+# SAFETY: only ever removes the factory's OWN artifacts. `.claude/skills` is removed
+# ONLY when it is a SYMLINK whose target points into the factory skills-mount root
+# or at the skill library (the whole-library fallback) — never an agent-scaffolded
+# real `.claude/skills` directory/file. `.claude/settings.json` (the runner-config
+# the factory writes) is removed too, then `.claude/` is `rmdir`'d ONLY if empty, so
+# any genuine app content the agent created under `.claude/` is preserved intact.
+gaffer_skills_unmount() {
+  local dest="${1:-}" claude link target root ours=0
+  [ -n "$dest" ] || return 0
+  claude="$dest/.claude"
+  link="$claude/skills"
+  [ -L "$link" ] || return 0
+  target="$(readlink "$link" 2>/dev/null || true)"   # resolves even when dangling
+  [ -n "$target" ] || return 0
+  # Match the target against OUR two possible link destinations. Each prefix is
+  # guarded on its base var being non-empty so an unset var can never degrade into a
+  # match-everything glob (e.g. an empty SKILLS_DIR must not become "/*").
+  if [ -n "${GAFFER_DATA:-}" ]; then
+    root="$(_gaffer_skills_mount_root)"
+    case "$target" in "$root"|"$root"/*) ours=1 ;; esac
+  fi
+  if [ -n "${SKILLS_DIR:-}" ]; then
+    case "$target" in "$SKILLS_DIR"|"$SKILLS_DIR"/*) ours=1 ;; esac
+  fi
+  [ "$ours" = 1 ] || return 0
+  rm -f "$link" 2>/dev/null || true
+  rm -f "$claude/settings.json" 2>/dev/null || true
+  rmdir "$claude" 2>/dev/null || true              # no-op (fails safely) if not empty
+  return 0
+}
+
+# gaffer_skills_mount_cleanup <mount_key> [<dest_dir>] — remove a per-agent mount
+# dir. Guarded to the skills-mounts root so it can never rm anything outside factory
+# state. When <dest_dir> is given (a PERSISTENT target, i.e. a bootstrap repo that is
+# not a throwaway worktree), also drop the `.claude/skills` symlink this mount
+# installed there so it is not left dangling — see gaffer_skills_unmount.
 gaffer_skills_mount_cleanup() {
   local root key
-  [ -n "${GAFFER_DATA:-}" ] || return 0
+  [ -n "${GAFFER_DATA:-}" ] || { gaffer_skills_unmount "${2:-}"; return 0; }
   root="$(_gaffer_skills_mount_root)"
   key="$(_gaffer_skills_mount_key "${1:-}")"
   rm -rf "$root/$key" 2>/dev/null || true
+  gaffer_skills_unmount "${2:-}"
 }
 
 # gaffer_record_skill_usage <ticket> <role> <stack> <selected> [<scan_file>]

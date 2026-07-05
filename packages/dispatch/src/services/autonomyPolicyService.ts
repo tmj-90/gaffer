@@ -51,6 +51,16 @@ export function policyGrantsAuto(
 export const ALLOW_AGENT_APPROVE_ENV = "DISPATCH_ALLOW_AGENT_APPROVE";
 
 /**
+ * The two env flags that together form the `merge` gate's blocking floor. BOTH must be
+ * "1" for the env to permit an auto-merge — the same pair the runner's AFK ship posture
+ * (`autonomous`) sets, and the exact pair `graduated` leaves OFF so the policy is the
+ * sole allow-path. Kept as named constants so the CLI decision surface, the runner, and
+ * the mode config all name the identical floor.
+ */
+export const AUTO_MERGE_ENV = "AUTO_MERGE";
+export const MERGE_ON_AGENT_REVIEW_ENV = "MERGE_ON_AGENT_REVIEW";
+
+/**
  * Env var reserved for the deferred memory-auto-approve gate. Not yet wired to a
  * chokepoint (memory autonomy is a later phase); defined so the `memory` gate's
  * fallback is honest rather than magic.
@@ -62,15 +72,20 @@ export const MEMORY_AUTO_APPROVE_ENV = "MEMORY_AUTO_APPROVE";
  * that with no matching auto policy the decision is byte-identical to pre-Phase-3:
  *
  *   - approve → `DISPATCH_ALLOW_AGENT_APPROVE === "1"` (the exact pre-Phase-3 flag).
- *   - merge   → `true`. Today the auto-merge ALWAYS fires once a ticket is approved
- *               (the mergeRunner itself still enforces DISPATCH_MERGE_CMD being
- *               configured, unchanged), so the merge chokepoint has no blocking env
- *               flag to reproduce — its default is "fire". A mode='auto' merge policy
- *               is therefore a no-op today (already permitted) but records the
- *               operator's explicit, evidence-backed intent at the chokepoint and is
- *               ready to become load-bearing the moment a blocking default is added.
- *               Critically, this keeps the merge site byte-identical (never regresses
- *               a human REST approval, which always auto-merges today).
+ *   - merge   → `AUTO_MERGE === "1" && MERGE_ON_AGENT_REVIEW === "1"` — the BLOCKING
+ *               default the earlier revision anticipated ("ready to become load-bearing
+ *               the moment a blocking default is added"). This is the AFK env FLOOR for
+ *               the merge gate: with it OFF (and no `auto` merge policy row) the runner's
+ *               unattended merge is HELD, which is exactly what `graduated` needs so the
+ *               per-repo/risk policy becomes the sole allow-path. `autonomous` sets both
+ *               flags ⇒ the term stays true ⇒ ships as before. A mode='auto' merge policy
+ *               is an ADDITIONAL allow-path (env OR policy), never a subtraction.
+ *
+ *               SCOPE — this floor governs the AUTONOMOUS (runner/agent) merge, NOT a
+ *               human's explicit approval. A human REST/dashboard approve is the human
+ *               merge gate and STILL auto-merges byte-identically: the REST approve site
+ *               (api/server.ts) fires the merge for a human/admin actor regardless of
+ *               this floor, so tightening the floor never regresses the human path.
  *   - memory  → `MEMORY_AUTO_APPROVE === "1"` (deferred gate; wired for completeness).
  */
 export function envAllowsAuto(
@@ -81,7 +96,7 @@ export function envAllowsAuto(
     case "approve":
       return env[ALLOW_AGENT_APPROVE_ENV] === "1";
     case "merge":
-      return true;
+      return env[AUTO_MERGE_ENV] === "1" && env[MERGE_ON_AGENT_REVIEW_ENV] === "1";
     case "memory":
       return env[MEMORY_AUTO_APPROVE_ENV] === "1";
   }

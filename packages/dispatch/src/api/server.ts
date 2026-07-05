@@ -1312,12 +1312,16 @@ async function routeTickets(
       // (ready_for_merge -> done). Skips silently when unconfigured.
       let merge: { triggered: boolean; pid: number | null; skipped?: string } | undefined;
       const number = result.ticket.number;
-      // GRADUATED-AUTONOMY (Spec 2, Phase 3): the MERGE chokepoint. autonomyMergeAllowed
-      // falls back to today's merge default (fire post-approve; the mergeRunner still
-      // enforces DISPATCH_MERGE_CMD, unchanged), so with NO policy row this is
-      // byte-identical — a human REST approval always auto-merges as before. A
-      // mode='auto' merge policy is an additional, explicit allow-path, never a loosening.
-      if (number !== null && wg.autonomyMergeAllowed(result.ticket)) {
+      // GRADUATED-AUTONOMY (Spec 2, Phase 3): this REST approve is the HUMAN merge gate.
+      // API_ACTOR is the hardcoded human actor (the dashboard Approve action is the ONLY
+      // REST approver; the AFK runner approves through the CLI as an agent actor, never
+      // REST). A human approval has ALWAYS auto-fired the configured merge, and MUST stay
+      // byte-identical (Graduated-Autonomy invariant "human path byte-identical") even now
+      // that envAllowsAuto('merge') is a BLOCKING floor — that floor governs the RUNNER's
+      // unattended merge (runner/tick.sh, `wg ticket auto-decision --gate merge` + its own
+      // git merge), NOT a human's explicit approval. So the human approve merges here
+      // unconditionally, exactly as before. mergeRunner still enforces DISPATCH_MERGE_CMD.
+      if (number !== null) {
         merge = mergeRunner.trigger({ ticketNumber: number });
       }
       sendJson(res, 200, {

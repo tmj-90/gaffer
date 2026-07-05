@@ -84,14 +84,44 @@ git -C "$SCAF" add -A >/dev/null 2>&1
 git -C "$SCAF" -c user.email=t@t -c user.name=t commit -qm scaffold >/dev/null 2>&1
 if gaffer_bootstrap_target_ok "$SCAF" >/dev/null 2>&1; then fail "committed repo should be refused"; else ok "committed repo (real work) refused"; fi
 
-echo "== AC6: gaffer_bootstrap_init mkdir + git init (idempotent) =="
+echo "== AC6: gaffer_bootstrap_init mkdir + git init + baseline commit (idempotent) =="
 NEW="$WORK/git/gym-tracker"
-gaffer_bootstrap_init "$NEW" >/dev/null 2>&1 \
+# A clean env (empty ambient git identity) must still land the baseline commit — the
+# helper supplies an explicit -c identity, so this proves the CI-safe path.
+( export GIT_CONFIG_NOSYSTEM=1 HOME="$WORK/nohome"; mkdir -p "$WORK/nohome"
+  gaffer_bootstrap_init "$NEW" "gym-tracker" "Track your gym sessions" >/dev/null 2>&1 ) \
   && [ -d "$NEW/.git" ] && ok "init created git repo at $NEW" || fail "init did not create a git repo"
 HEADREF="$(git -C "$NEW" symbolic-ref --short HEAD 2>/dev/null || echo '')"
 [ "$HEADREF" = "main" ] && ok "default branch is 'main'" || fail "default branch should be main (got '$HEADREF')"
-# Idempotent: a second init on the same dir is a no-op success.
-gaffer_bootstrap_init "$NEW" >/dev/null 2>&1 && ok "re-init is idempotent (no-op success)" || fail "re-init should succeed"
+# BASELINE: `main` is now BORN (non-empty) with a single README commit — this is what
+# lets a bootstrap branch off + diff against a real base (the core of the branch-delivery fix).
+git -C "$NEW" rev-parse --verify -q HEAD >/dev/null 2>&1 \
+  && ok "baseline commit exists on main (HEAD is born)" || fail "init must seed a baseline commit"
+[ "$(git -C "$NEW" ls-tree -r --name-only HEAD 2>/dev/null)" = "README.md" ] \
+  && ok "baseline tree is exactly README.md" || fail "baseline should commit README.md alone"
+grep -q '^# gym-tracker' "$NEW/README.md" 2>/dev/null \
+  && ok "README carries the repo display name" || fail "README should carry the display name"
+NCOMMITS_1="$(git -C "$NEW" rev-list --count HEAD 2>/dev/null || echo 0)"
+# Idempotent: a second init on the same dir is a no-op success — NO second commit.
+gaffer_bootstrap_init "$NEW" "gym-tracker" "Track your gym sessions" >/dev/null 2>&1 && ok "re-init is idempotent (no-op success)" || fail "re-init should succeed"
+NCOMMITS_2="$(git -C "$NEW" rev-list --count HEAD 2>/dev/null || echo 0)"
+[ "$NCOMMITS_1" = "1" ] && [ "$NCOMMITS_2" = "1" ] \
+  && ok "re-init did not add a second baseline commit (still 1)" \
+  || fail "re-init must not re-commit (got $NCOMMITS_1 then $NCOMMITS_2)"
+
+echo "== AC6c: gaffer_bootstrap_target_ok RESUMES a baseline-only repo (branch-delivery resume) =="
+# After the branch-delivery fix, a fresh bootstrap leaves a README-only baseline on main.
+# A resume must recognise THAT as our own resumable scaffold (tree == README.md), not
+# refuse it as "real work" — otherwise the ticket wedges on its own baseline.
+BASE="$WORK/git/baseline-resume"
+gaffer_bootstrap_init "$BASE" "baseline-resume" "seed" >/dev/null 2>&1
+gaffer_bootstrap_target_ok "$BASE" 2>/dev/null \
+  && ok "baseline-only repo (main == {README.md}) → resume in place" \
+  || fail "a baseline-only repo must be resumable"
+# But a real source file committed on top → real work → must refuse (never clobber).
+echo "console.log(1)" > "$BASE/index.js"; git -C "$BASE" add index.js >/dev/null 2>&1
+git -C "$BASE" -c user.email=t@t -c user.name=t commit -qm feat >/dev/null 2>&1
+if gaffer_bootstrap_target_ok "$BASE" >/dev/null 2>&1; then fail "baseline + real commit should be refused"; else ok "baseline + a real committed file refused"; fi
 
 echo "== AC6b: bootstrap default-branch capture is clean on an UNBORN repo (E2E regression) =="
 # REGRESSION: tick.sh captures B_DEFAULT_BRANCH BEFORE the agent's first commit — i.e.
@@ -139,6 +169,28 @@ grep -q 'GAFFER_BOOTSTRAP_INSTALL=1' "$RUNNER_DIR/tick.sh" \
 grep -q 'gaffer_inherit_repo' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh wires gaffer_inherit_repo after a successful onboard" \
   || fail "tick.sh does not call gaffer_inherit_repo"
+
+echo "== AC8b: tick.sh delivers the bootstrap ON A BRANCH via the normal review lane =="
+# The core fix: a bootstrap must NOT commit straight onto main and submit branchless
+# (the reviewer refused that: "no delivery branch recorded → fail closed"). Instead it
+# branches gaffer/ticket-N-<slug> off the README baseline, records THAT branch as the
+# delivery branch_name, and submits via the ordinary claim-gated lane.
+grep -q 'B_WORK_BRANCH="gaffer/ticket-\$NUM-\$B_SLUG"' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh mints the gaffer/ticket-N-<slug> delivery branch for the bootstrap" \
+  || fail "tick.sh does not create a gaffer/ticket-N delivery branch for the bootstrap"
+grep -q 'git -C "\$B_DIR" checkout -B "\$B_WORK_BRANCH"' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh checks out the delivery branch before the scaffold agent runs" \
+  || fail "tick.sh does not check out the bootstrap delivery branch"
+grep -q 'wg delivery-artifact "\$NUM" --branch "\$B_WORK_BRANCH"' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh records branch_name = the delivery branch (reviewer resolves it)" \
+  || fail "tick.sh must record delivery-artifact --branch \$B_WORK_BRANCH (not main)"
+grep -q 'gaffer_submit_delivery "bootstrapped new repo' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh submits the bootstrap via the ordinary gaffer_submit_delivery lane" \
+  || fail "tick.sh does not submit the bootstrap via the normal claim-gated lane"
+# The scaffold branches OFF the baseline; both slugs come from the shared helper.
+grep -q 'gaffer_ticket_slug()' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh defines the shared gaffer_ticket_slug branch-name helper" \
+  || fail "tick.sh must define gaffer_ticket_slug (shared by normal + bootstrap paths)"
 
 echo "== AC10: gaffer_inherit_repo applies the planner's links via the wg CLI =="
 # Stub `wg`, `node` (the planner), and `claude` so the bash plumbing is exercised

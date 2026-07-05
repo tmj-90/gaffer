@@ -425,6 +425,24 @@ gaffer_budget_exhausted() {
 # token (normal delivery) it uses the claim-gated submit (claimed → in_review,
 # completing the claim); a resumed delivery (no token, already in_progress) is moved
 # straight to in_review. $1 = reason. Returns non-zero (logged) on failure.
+# Derive the delivery-branch slug from a ticket title. SHARED by the normal delivery
+# path AND the greenfield bootstrap so both mint the identical `gaffer/ticket-N-<slug>`
+# branch shape the reviewer's fallback grep (`gaffer/ticket-$NUM-[a-z0-9-]*`) expects.
+# lowercase, non-alnum→'-', collapse repeats, trim, ≤6 words / ~50 chars; empty→'ticket'.
+gaffer_ticket_slug() {
+  local s
+  s="$(printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -c 'a-z0-9' '-' \
+    | tr -s '-' \
+    | sed -E 's/^-+//; s/-+$//' \
+    | cut -d- -f1-6 \
+    | cut -c1-50 \
+    | sed -E 's/-+$//')"
+  [ -n "$s" ] || s="ticket"
+  printf '%s' "$s"
+}
+
 gaffer_submit_delivery() {
   local reason="$1"
   local _rc
@@ -972,18 +990,39 @@ if [ "$READY_COUNT" -gt 0 ]; then
     [ -n "$B_SKILLS" ] || B_SKILLS="(scaffold the stack from the ticket's ACs)"
 
     if [ "$DRY_RUN" = "1" ]; then
-      log "DRY_RUN: BOOTSTRAP would mkdir + git init $B_DIR, then run the delivery agent there to scaffold the stack + initial commit"
+      log "DRY_RUN: BOOTSTRAP would mkdir + git init $B_DIR with a baseline README commit on main, then branch gaffer/ticket-$NUM-<slug> and run the delivery agent there to scaffold the stack ON THE BRANCH"
       log "DRY_RUN: BOOTSTRAP would export GAFFER_BOOTSTRAP_INSTALL=1 GAFFER_BOOTSTRAP_DIR=$B_DIR so the safety hook permits the FIRST install in the fresh dir only"
-      log "DRY_RUN: BOOTSTRAP would assert delivery hygiene (oversized minimalism EXEMPTED for a fresh scaffold), record the smallest-change note, then register+onboard $B_NAME into the factory"
+      log "DRY_RUN: BOOTSTRAP would assert delivery hygiene (oversized minimalism EXEMPTED for a fresh scaffold), record the smallest-change note, record the delivery branch_name, then register+onboard $B_NAME + submit via the NORMAL claim-gated lane (→ in_review)"
       result worked; exit 0
     fi
 
     # Fail closed: never run a live agent without the deterministic safety hook.
     gaffer_assert_safety_hook || { log "SAFETY: refusing live bootstrap (fail closed)"; result error; exit 1; }
 
-    # Create + init the new repo dir. A failure here leaves no half-made repo.
-    if ! gaffer_bootstrap_init "$B_DIR"; then
+    # Create + init the new repo dir WITH a baseline README commit on `main` (repo
+    # display name + the ticket's intent). A failure here leaves no half-made repo.
+    if ! gaffer_bootstrap_init "$B_DIR" "$B_NAME" "$TITLE"; then
       log "BOOTSTRAP: #$NUM could not mkdir/git-init $B_DIR — failing"
+      gaffer_skip_ticket "$NUM"; result error; exit 0
+    fi
+
+    # Capture the repo's DEFAULT branch (`main`, where the baseline lives) from the
+    # freshly-baselined repo — used as the onboard branch + the diff/review base.
+    # `symbolic-ref --short HEAD` returns a clean "main" (never the "HEAD\nmain" garbage
+    # `rev-parse --abbrev-ref … || echo main` yields on an unborn repo) — see the
+    # greenfield E2E regression test. Captured HERE, while HEAD is still `main`, BEFORE
+    # we branch off it below.
+    B_DEFAULT_BRANCH="$(git -C "$B_DIR" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+    # DELIVER LIKE EVERY OTHER TICKET: create + check out the SAME `gaffer/ticket-N-<slug>`
+    # branch shape a normal delivery uses (shared gaffer_ticket_slug), so the scaffold
+    # lands on a branch the agent reviewer can diff against `main` and auto-approve+merge
+    # — NOT straight onto `main` (which left the reviewer with no branch to review). -B is
+    # idempotent on a resume (re-points the branch at the baseline). The agent then commits
+    # on the current branch (its prompt already says "commit on the current branch").
+    B_SLUG="$(gaffer_ticket_slug "$TITLE")"
+    B_WORK_BRANCH="gaffer/ticket-$NUM-$B_SLUG"
+    if ! git -C "$B_DIR" checkout -B "$B_WORK_BRANCH" >/dev/null 2>&1; then
+      log "BOOTSTRAP: #$NUM could not create delivery branch $B_WORK_BRANCH — failing"
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
 
@@ -1008,8 +1047,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
 
     B_TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
     read -r -d '' B_PROMPT <<EOF || true
-You are a GREENFIELD bootstrap agent. The repo does NOT exist yet beyond an empty
-git-initialised directory — your job is to SCAFFOLD it, then make the initial commit.
+You are a GREENFIELD bootstrap agent. The repo is a fresh git repo with only a
+baseline README commit, already checked out on your delivery branch — your job is to
+SCAFFOLD it, then commit the scaffold ON THE CURRENT BRANCH.
 $QUARANTINE_NOTICE
 Bootstrap ticket #$NUM, title: $B_TITLE_Q
 Recommended skills: $B_SKILLS
@@ -1020,23 +1060,16 @@ for any org conventions; then scaffold the stack the ticket describes (package.j
 tsconfig / .gitignore / a minimal hello-world or app skeleton), satisfying every
 acceptance criterion. You MAY run the dependency install ONCE in this directory
 (it is permitted only here, for this bootstrap). Run the project's tests if the
-scaffold defines any. Make the initial commit on the current branch. Record the
+scaffold defines any. Commit the scaffold on the current branch. Record the
 smallest-change note (minimalism lens) describing the scaffold and evidence each AC
 via the record-evidence skill, then STOP. Do NOT submit for review, push, or open a
 PR — the runner runs the gates, records the delivery, and submits. Never self-approve.
 
 Your working directory IS the new repo and the ONLY writable root: $B_DIR
-Do NOT write or read outside it. Do NOT branch — commit on the current branch.
+Do NOT write or read outside it. Do NOT create your own branch and do NOT switch
+branches — you are already on the delivery branch; just commit on it.
 EOF
 
-    # Capture the repo's default branch. NB: at this point the scaffold may still be
-    # UNBORN (git init done, the agent's first commit not yet made). On an unborn repo
-    # `git rev-parse --abbrev-ref HEAD` prints "HEAD" to stdout AND exits non-zero, so
-    # `… || echo main` yields the newline-joined garbage "HEAD\nmain" — which then fails
-    # `repo add`'s git-ref-safe branch validation and silently sinks the whole greenfield
-    # onboard. `symbolic-ref --short HEAD` returns the real branch ("main") cleanly for
-    # both unborn and committed repos.
-    B_DEFAULT_BRANCH="$(git -C "$B_DIR" symbolic-ref --short HEAD 2>/dev/null || echo main)"
     RUN_LOG_MARK="$(wc -l < "$GAFFER_LOG" 2>/dev/null || echo 0)"
     # The scoped install allowance: GAFFER_BOOTSTRAP_INSTALL=1 + GAFFER_BOOTSTRAP_DIR
     # are exported ONLY for this bootstrap invocation, so the safety hook permits
@@ -1073,12 +1106,13 @@ EOF
       result error; exit 0
     fi
 
-    # Empty delivery: a bootstrap that produced no commit is a failure (nothing to
-    # onboard). The new repo's HEAD must point at a commit.
-    if ! git -C "$B_DIR" rev-parse HEAD >/dev/null 2>&1; then
-      log "BOOTSTRAP #$NUM produced no commit — parking (no scaffold to onboard)"
+    # Empty delivery: the scaffold must add at least one commit ON TOP of the README
+    # baseline. The delivery branch HEAD identical to the baseline `main` ⇒ the agent
+    # produced nothing to onboard (a bare baseline is not a scaffold).
+    if [ "$(git -C "$B_DIR" rev-parse HEAD 2>/dev/null)" = "$(git -C "$B_DIR" rev-parse "$B_DEFAULT_BRANCH" 2>/dev/null)" ]; then
+      log "BOOTSTRAP #$NUM produced no scaffold commit (branch == baseline) — parking (no scaffold to onboard)"
       wg attach-evidence "$NUM" --type manual_note \
-        --summary "PARKED: bootstrap produced no initial commit — needs clarification" >/dev/null 2>&1 || true
+        --summary "PARKED: bootstrap produced no scaffold commit beyond the baseline — needs clarification" >/dev/null 2>&1 || true
       # FINDING-12: VISIBLE park (see the rc-failure park above).
       gaffer_release_delivery blocked "bootstrap produced no initial commit" bootstrap_failed
       gaffer_skip_ticket "$NUM"; result error; exit 0
@@ -1162,13 +1196,33 @@ print(hits[0] if hits else '')
     # dependent feature tickets (which target it via the normal worktree flow).
     if gaffer_bootstrap_onboard "$NUM" "$B_NAME" "$B_DIR" "$STACK" "" "$B_DEFAULT_BRANCH"; then
       log "BOOTSTRAP: registered + onboarded new repo '$B_NAME' ($B_DIR) into the factory"
+      # FIX-BRANCH invariant: the delivery branch $B_WORK_BRANCH is about to become
+      # review-visible via the records below. Raise the branch-retention flag FIRST —
+      # strictly BEFORE any delivery record — so no later crash/signal can drop a
+      # review-worthy branch (matches the normal-delivery ordering). The bootstrap holds
+      # no throwaway worktree, so at runtime this is a no-op belt-and-braces.
+      GAFFER_KEEP_DELIVERY_BRANCH=1
       # Link the new repo to the bootstrap ticket + record the delivery so the
       # done-gate/reviewer can resolve it (best-effort, non-fatal).
       wg repo link "$NUM" "$B_NAME" >/dev/null 2>&1 || true
-      B_DIFFSTAT="$(git -C "$B_DIR" diff "$EMPTY_TREE"...HEAD --stat 2>/dev/null | tail -15)"
+      # Record the delivery on the NORMAL lane: the diff is the scaffold delta on TOP of
+      # the README baseline (main..branch — exactly what the reviewer diffs), and the
+      # persisted branch_name is the `gaffer/ticket-N-<slug>` DELIVERY branch (NOT `main`),
+      # so the reviewer resolves `d['ticket']['branch_name']`, worktrees the branch, diffs
+      # it vs `main`, and can auto-approve+merge — no more "no delivery branch recorded".
+      B_DIFFSTAT="$(git -C "$B_DIR" diff "$B_DEFAULT_BRANCH".."$B_WORK_BRANCH" --stat 2>/dev/null | tail -15)"
+      B_HEAD_SHA="$(git -C "$B_DIR" rev-parse "$B_WORK_BRANCH" 2>/dev/null || echo '')"
       wg attach-evidence "$NUM" --type diff_summary \
-        --summary "Bootstrapped new repo $B_NAME at $B_DIR on $B_DEFAULT_BRANCH"$'\n'"$B_DIFFSTAT" >/dev/null 2>&1 || true
-      wg delivery-artifact "$NUM" --branch "$B_DEFAULT_BRANCH" --diff "$B_DIFFSTAT" --as system >/dev/null 2>&1 || true
+        --summary "Bootstrapped new repo $B_NAME at $B_DIR — delivered on branch $B_WORK_BRANCH (base $B_DEFAULT_BRANCH)"$'\n'"$B_DIFFSTAT" >/dev/null 2>&1 || true
+      wg delivery-artifact "$NUM" --branch "$B_WORK_BRANCH" --diff "$B_DIFFSTAT" --as system >/dev/null 2>&1 || true
+      # Per-repo delivery record (WG-005 parity with the normal lane): the done-gate /
+      # reviewer see a review_ready delivery for the new repo on the delivery branch.
+      B_SHA_ARG=""; [ -n "$B_HEAD_SHA" ] && B_SHA_ARG="--commit $B_HEAD_SHA"
+      wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready >/dev/null 2>&1 || true
+      # Rest the new repo's PRIMARY working tree back on its default branch (`main`), so
+      # the delivery branch is a plain ref the reviewer's throwaway worktree can check out
+      # cleanly, and dependents branch off a tidy `main` after the scaffold merges.
+      git -C "$B_DIR" checkout "$B_DEFAULT_BRANCH" >/dev/null 2>&1 || true
       # Greenfield epics wire themselves up: link the new repo as a WRITE repo to
       # the epic's sibling feature tickets that still lack one, so they become
       # deliverable. Deterministic for the single-bootstrap epic; the planner
@@ -1184,8 +1238,8 @@ print(hits[0] if hits else '')
     # RUNNER-OWNED-BOOKKEEPING: the runner (holding the claim) submits the bootstrap
     # ticket for review now that its gates passed and the delivery is recorded. The
     # agent no longer submits.
-    if gaffer_submit_delivery "bootstrapped new repo $B_NAME at $B_DIR on $B_DEFAULT_BRANCH"; then
-      log "BOOTSTRAP: submitted #$NUM for review (→ in_review)"
+    if gaffer_submit_delivery "bootstrapped new repo $B_NAME at $B_DIR — delivered on branch $B_WORK_BRANCH"; then
+      log "BOOTSTRAP: submitted #$NUM for review (→ in_review) on branch $B_WORK_BRANCH"
       result worked; exit 0
     fi
     # M1 (data-loss path): the submit FAILED. Do NOT exit "worked" leaving the ticket
@@ -1311,17 +1365,10 @@ print("\n".join(write_rows))
   PRIMARY_REPO="$(printf '%s\n' "$WRITE_ROOTS" | grep . | head -1)"
   [ -n "$PRIMARY_REPO" ] || PRIMARY_REPO="$REPO_PATH"
 
-  # Slug the title once (shared by every write repo's branch name): lowercase,
-  # non-alphanumerics → '-', collapse repeats, trim, ≤6 words / ~50 chars.
-  SLUG="$(printf '%s' "$TITLE" \
-    | tr '[:upper:]' '[:lower:]' \
-    | tr -c 'a-z0-9' '-' \
-    | tr -s '-' \
-    | sed -E 's/^-+//; s/-+$//' \
-    | cut -d- -f1-6 \
-    | cut -c1-50 \
-    | sed -E 's/-+$//')"
-  [ -n "$SLUG" ] || SLUG="ticket"
+  # Slug the title once (shared by every write repo's branch name). gaffer_ticket_slug
+  # is the SAME derivation the greenfield bootstrap uses, so both mint the identical
+  # branch shape the reviewer resolves against.
+  SLUG="$(gaffer_ticket_slug "$TITLE")"
   WORK_BRANCH="gaffer/ticket-$NUM-$SLUG"
 
   # ── SELF-OPERATION BAN (refuse to deliver to Gaffer's own source) ────────────

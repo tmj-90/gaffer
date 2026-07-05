@@ -271,6 +271,91 @@ fi
 
 rm -rf "$INH_WORK"
 
+echo "== AC11: bootstrap teardown purges the mount symlink from the PERSISTENT repo =="
+# A greenfield bootstrap runs the agent DIRECTLY in the new repo (no throwaway
+# worktree). gaffer_skills_mount installs a `.claude/skills` symlink there; on
+# teardown gaffer_skills_mount_cleanup drops the mount TARGET. Without passing the
+# repo dir, that symlink is left DANGLING in the real repo — which the post-teardown
+# hygiene gate correctly flags ("broken symlink in real repo: .claude/skills").
+# Prove the mechanism-level fix: cleanup WITH the dest arg leaves no dangling link,
+# and gaffer_assert_repo_clean passes.
+# shellcheck source=../lib/skills-mount.sh
+source "$RUNNER_DIR/lib/skills-mount.sh"
+# shellcheck source=../lib/hygiene.sh
+source "$RUNNER_DIR/lib/hygiene.sh"
+
+SM_WORK="$(mktemp -d "${TMPDIR:-/tmp}/skills-unmount-test.XXXXXX")"
+export GAFFER_DATA="$SM_WORK/data"; mkdir -p "$GAFFER_DATA"
+export SKILLS_DIR="$SM_WORK/skills"; mkdir -p "$SKILLS_DIR/demo-skill"
+printf '%s\n' '# demo' > "$SKILLS_DIR/demo-skill/SKILL.md"
+
+# The persistent bootstrap repo: a real git repo with a baseline commit (B_DIR).
+BREPO="$SM_WORK/newrepo"; mkdir -p "$BREPO"
+git -C "$BREPO" init -q -b main >/dev/null 2>&1 || git -C "$BREPO" init -q >/dev/null 2>&1
+: > "$BREPO/README.md"
+git -C "$BREPO" -c user.email=t@t -c user.name=t add -A >/dev/null 2>&1
+git -C "$BREPO" -c user.email=t@t -c user.name=t commit -qm baseline >/dev/null 2>&1
+
+# Mount exactly as the bootstrap block does, then git-exclude the runner config (as
+# gaffer_exclude_runner_config does in production) so `.claude/` can't surface as
+# untracked porcelain — isolating the dangling-symlink signal.
+gaffer_skills_mount "$BREPO" "demo-skill" "bootstrap-999"
+gaffer_exclude_runner_config "$BREPO"
+[ -L "$BREPO/.claude/skills" ] \
+  && ok "mount installed a .claude/skills symlink into the bootstrap repo" \
+  || fail "mount should install a .claude/skills symlink"
+
+# Reproduce the LEGACY bug first: cleanup WITHOUT the dest arg drops the mount target
+# but leaves the symlink dangling — the detector must fire, proving the gap was real.
+gaffer_skills_mount_cleanup "bootstrap-999"
+# Capture the detector output to a var BEFORE grepping: `grep -q` closes the pipe on
+# first match and, under `pipefail`, the SIGPIPE'd producer would flip the pipeline
+# status — capture-then-grep is the suite's deterministic idiom (afk-delivery-loop).
+if [ -L "$BREPO/.claude/skills" ] && [ ! -e "$BREPO/.claude/skills" ]; then
+  LEGACY_OUT="$(gaffer_assert_repo_clean "$BREPO" 2>&1 || true)"
+  printf '%s\n' "$LEGACY_OUT" | grep -q "broken symlink in real repo: .claude/skills" \
+    && ok "legacy path (no dest arg) leaves a dangling link the detector flags" \
+    || fail "expected the detector to flag the legacy dangling link (got: $LEGACY_OUT)"
+else
+  fail "legacy cleanup should have left a dangling .claude/skills (setup drift)"
+fi
+
+# Now the FIX: re-mount and tear down WITH the persistent dest → drops the mount AND
+# the symlink it left behind, so the real repo is clean.
+gaffer_skills_mount "$BREPO" "demo-skill" "bootstrap-999"
+gaffer_skills_mount_cleanup "bootstrap-999" "$BREPO"
+[ ! -L "$BREPO/.claude/skills" ] && [ ! -e "$BREPO/.claude/skills" ] \
+  && ok "teardown with dest left NO .claude/skills in the real repo" \
+  || fail "teardown left a .claude/skills entry behind: $(ls -la "$BREPO/.claude" 2>/dev/null | tr '\n' '|')"
+gaffer_assert_repo_clean "$BREPO" >/dev/null 2>&1 \
+  && ok "gaffer_assert_repo_clean passes after bootstrap teardown" \
+  || fail "real repo flagged unclean after teardown: $(gaffer_assert_repo_clean "$BREPO" 2>&1 | tr '\n' '|')"
+
+echo "== AC11b: the detector STILL fires on a genuine planted dangling symlink =="
+# Control: the fix must NOT weaken the detector. A hand-planted dangling .claude/skills
+# (the exact leak signature) must still be caught.
+mkdir -p "$BREPO/.claude"
+ln -s "$SM_WORK/does-not-exist" "$BREPO/.claude/skills"   # dangling: target absent
+CTRL="$(gaffer_assert_repo_clean "$BREPO" 2>&1 || true)"
+printf '%s\n' "$CTRL" | grep -q "broken symlink in real repo: .claude/skills" \
+  && ok "gaffer_assert_repo_clean STILL fires on a planted dangling .claude/skills" \
+  || fail "detector should still catch a genuine dangling symlink (got: $CTRL)"
+rm -rf "$BREPO/.claude"
+
+echo "== AC11c: teardown preserves agent-scaffolded .claude content =="
+# The unmount must remove ONLY the factory's own symlink/config — never a real
+# `.claude` directory or app files the agent legitimately scaffolded.
+mkdir -p "$BREPO/.claude/skills/my-app-skill"           # a REAL dir named skills
+printf '%s\n' '# app-owned' > "$BREPO/.claude/skills/my-app-skill/SKILL.md"
+printf '%s\n' '{}' > "$BREPO/.claude/app-config.json"   # app content beside it
+gaffer_skills_mount_cleanup "bootstrap-999" "$BREPO"    # must be a no-op on real content
+[ -d "$BREPO/.claude/skills/my-app-skill" ] && [ -f "$BREPO/.claude/app-config.json" ] \
+  && ok "agent-scaffolded .claude content is preserved (real skills/ dir untouched)" \
+  || fail "teardown wrongly deleted agent-scaffolded .claude content"
+
+unset GAFFER_DATA SKILLS_DIR
+rm -rf "$SM_WORK"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

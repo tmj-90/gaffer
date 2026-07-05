@@ -126,7 +126,14 @@ gaffer_crash_cleanup() {
   # The review-N / clarify-N mounts have their own scoped cleanups.
   if [ -n "${NUM:-}" ] && declare -F gaffer_skills_mount_cleanup >/dev/null 2>&1; then
     gaffer_skills_mount_cleanup "delivery-$NUM"
-    gaffer_skills_mount_cleanup "bootstrap-$NUM"
+    # BOOTSTRAP: pass the persistent new-repo dir so the mount's `.claude/skills`
+    # symlink is dropped from the REAL repo too (a bootstrap runs the agent directly
+    # in $B_DIR — there is no throwaway worktree whose `rm -rf` would take the link
+    # with it). Without this the link is left dangling and the post-teardown hygiene
+    # gate flags the delivery. `${B_DIR:-}` is empty (a safe no-op) for non-bootstrap
+    # ticks. The delivery-$NUM mount above lives in a throwaway worktree, so it needs
+    # no dest arg — the worktree purge removes the link with the whole checkout.
+    gaffer_skills_mount_cleanup "bootstrap-$NUM" "${B_DIR:-}"
   fi
   # A successfully-delivered branch is intentionally kept for review/merge; only tear
   # down on an INCOMPLETE delivery (a crash/signal before the success point).

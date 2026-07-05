@@ -458,3 +458,17 @@ export const updateSpecClausesInput = z.object({
   clauses: z.array(specClauseInput).max(MAX_SPEC_CLAUSES),
 });
 export type UpdateSpecClausesInput = z.infer<typeof updateSpecClausesInput>;
+
+/**
+ * Structural schema for a persisted {@link import("./types.js").PlanMessage}.
+ * Used to validate rows read back from `plan_sessions.messages_json`: a corrupt
+ * or partially-written row must not be trusted via a blind `as PlanMessage[]`
+ * cast (H5). Each entry is validated independently so a single malformed turn is
+ * dropped rather than the whole history being discarded.
+ */
+export const planMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  ts: z.string(),
+  content: z.string(),
+});
+export type PlanMessageSchema = z.infer<typeof planMessageSchema>;

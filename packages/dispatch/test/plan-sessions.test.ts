@@ -158,6 +158,41 @@ describe("PlanSessionRepository — appendMessage", () => {
     });
   });
 
+  // H5: a corrupt `messages_json` row must not be trusted via a blind cast.
+  it("recovers gracefully when messages_json is not valid JSON (drops the corrupt history)", () => {
+    const wg = freshWg();
+    const { id } = wg.createPlanSession();
+    // Simulate a corrupt row: non-JSON blob in messages_json.
+    wg.db.prepare("UPDATE plan_sessions SET messages_json = ? WHERE id = ?").run("{not json", id);
+
+    const updated = wg.appendPlanMessage(id, { role: "user", content: "after corruption" });
+    expect(updated).not.toBeNull();
+    const messages = JSON.parse(updated!.messages_json) as Array<{ role: string; content: string }>;
+    // Corrupt history is dropped, the new turn is preserved — no throw, no untyped data.
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.content).toBe("after corruption");
+  });
+
+  it("drops structurally-invalid entries but keeps the valid turns (H5)", () => {
+    const wg = freshWg();
+    const { id } = wg.createPlanSession();
+    // A JSON array mixing one valid message with garbage entries.
+    const mixed = JSON.stringify([
+      { role: "user", ts: "2026-01-01T00:00:00.000Z", content: "keep me" },
+      { role: "user" }, // missing ts + content
+      42, // not an object
+      { role: "villain", ts: "x", content: "bad role" },
+    ]);
+    wg.db.prepare("UPDATE plan_sessions SET messages_json = ? WHERE id = ?").run(mixed, id);
+
+    const updated = wg.appendPlanMessage(id, { role: "assistant", content: "new" });
+    const messages = JSON.parse(updated!.messages_json) as Array<{ role: string; content: string }>;
+    // Only the one valid entry survives, plus the freshly-appended message.
+    expect(messages).toHaveLength(2);
+    expect(messages[0]!.content).toBe("keep me");
+    expect(messages[1]!.content).toBe("new");
+  });
+
   it("stores plan_json when a plan is appended", () => {
     const wg = freshWg();
     const { id } = wg.createPlanSession();

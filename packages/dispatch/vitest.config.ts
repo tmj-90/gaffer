@@ -21,7 +21,7 @@ export default defineConfig({
       // Coverage FLOOR (CI gate). Measured baseline clears these comfortably
       // (lines ~82 / branches ~85 / functions ~95 / statements ~82), so the floor
       // catches regressions without blocking today's suite. Ratchet up over time.
-      thresholds: { lines: 70, functions: 70, branches: 60, statements: 70 },
+      thresholds: { lines: 82, functions: 92, branches: 84, statements: 82 },
     },
   },
 });

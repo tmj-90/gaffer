@@ -33,3 +33,6 @@ CLAUDE.factory.md
 .mcp.runtime.json
 mcp-runtime.json
 .crew/
+
+# runtime audit log — append-only, dirties the tree on every run (should never have been tracked)
+.dispatch/audit.jsonl

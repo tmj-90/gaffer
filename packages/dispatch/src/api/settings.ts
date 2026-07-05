@@ -76,6 +76,20 @@ export interface SettingView {
 export const SETTING_DEFS: readonly SettingDef[] = [
   // --- Autonomy: how much the factory may do without a human in the loop ---
   {
+    key: "GAFFER_MODE",
+    type: "string",
+    group: "autonomy",
+    label: "Autonomy mode",
+    help:
+      "Preset that sets the whole autonomy cluster at once (review mode, agent " +
+      "approval, auto-merge, auto-push, memory auto-approve): supervised · " +
+      "autonomous · strict. supervised (default) keeps a human on every merge; " +
+      "autonomous lets agents approve and auto-merges + pushes approved work; " +
+      "strict adds OS-level sandbox containment. Picking a mode prevents a " +
+      "half-configured autonomy posture. The individual knobs below still " +
+      "override the mode — an explicitly-set flag always wins.",
+  },
+  {
     key: "DISPATCH_ALLOW_AGENT_APPROVE",
     type: "boolean",
     group: "autonomy",

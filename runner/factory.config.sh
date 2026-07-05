@@ -1050,6 +1050,58 @@ gaffer_usage_record() {
   fi
 }
 
+# ── Autonomy MODE (single cluster selector) ──────────────────────────────────
+# GAFFER_MODE sets a whole GROUP of autonomy flags at once, so an operator can
+# never HALF-configure autonomy. (The classic footgun: flip AUTO_MERGE=1 but
+# leave REVIEW_MODE=human + MERGE_ON_AGENT_REVIEW=0 — approved agent work then
+# silently never merges, and the factory looks stalled.) One mode moves the
+# whole cluster together:
+#   supervised  (DEFAULT, safe)  — a human approves every merge
+#   autonomous  (walk-away / AFK) — agents approve; approved work auto-merges + pushes
+#   strict      (autonomous + OS-level sandbox containment)
+#
+# PRECEDENCE (highest wins):
+#   real env var  >  explicit settings.json key  >  mode default  >  config default
+# The mode only FILLS a flag the operator has not already pinned: every line is
+# `: "${K:=…}"`, a no-op when K is already set. Real env vars are exported into
+# this shell before the file runs; explicit settings.json keys were applied by
+# the loader ABOVE (both therefore win over the mode). Any flag a mode leaves
+# untouched falls through to its ORIGINAL default line further down — which still
+# carries the safety comments. Net effect: with GAFFER_MODE unset, the
+# 'supervised' cluster equals the historical hard defaults exactly, so existing
+# setups behave byte-identically.
+#
+# Parity note: these 6 flags are consumed the same way whether set here or via
+# settings.json — the 5 shell flags (REVIEW_MODE/AUTO_MERGE/MERGE_ON_AGENT_REVIEW/
+# GAFFER_AUTO_PUSH/STRICT_MODE) are read in-process by tick.sh; the 2 external
+# flags (DISPATCH_ALLOW_AGENT_APPROVE/MEMORY_AUTO_APPROVE) are read from the env
+# of the dispatch/memory processes. None are exported from here today, so the
+# mode sets plain (unexported) shell vars — identical wiring to a settings.json
+# value, no export/consumer change.
+: "${GAFFER_MODE:=supervised}"
+case "$GAFFER_MODE" in
+  autonomous|strict)
+    : "${REVIEW_MODE:=agent}"
+    : "${DISPATCH_ALLOW_AGENT_APPROVE:=1}"
+    : "${MERGE_ON_AGENT_REVIEW:=1}"
+    : "${AUTO_MERGE:=1}"
+    : "${GAFFER_AUTO_PUSH:=1}"
+    : "${MEMORY_AUTO_APPROVE:=1}"
+    ;;
+  *)   # supervised (default) — and any unrecognised value → safe posture
+    : "${REVIEW_MODE:=human}"
+    : "${DISPATCH_ALLOW_AGENT_APPROVE:=0}"
+    : "${MERGE_ON_AGENT_REVIEW:=0}"
+    : "${AUTO_MERGE:=0}"
+    : "${GAFFER_AUTO_PUSH:=0}"
+    : "${MEMORY_AUTO_APPROVE:=0}"
+    ;;
+esac
+# strict = the autonomous cluster PLUS OS-level sandbox containment.
+if [ "$GAFFER_MODE" = "strict" ]; then
+  : "${STRICT_MODE:=1}"
+fi
+
 # Who reviews in_review tickets before they can be approved to done:
 #   human → only a person approves (dispatch review approve, or the board)
 #   agent → a reviewer AGENT (≠ the implementer) reviews via the review-ticket skill

@@ -6770,6 +6770,11 @@ body {
   font-size: 0.74rem;
   flex: 1 1 180px;
 }
+.pb-confirm-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 
 /* --- Author a spec: editable clause draft (Phase 1c) ---------------------- */
 .sb-title-field {

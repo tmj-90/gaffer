@@ -17,14 +17,18 @@
 
 import { afterEach } from "vitest";
 
-type TimerHandle = ReturnType<typeof setTimeout>;
-
 const g = globalThis as typeof globalThis;
 
 const originalSetTimeout = g.setTimeout.bind(g);
 const originalSetInterval = g.setInterval.bind(g);
 const originalClearTimeout = g.clearTimeout.bind(g);
 const originalClearInterval = g.clearInterval.bind(g);
+
+// setTimeout/setInterval return NodeJS.Timeout under @types/node but a numeric id
+// under the DOM lib. typecheck:test runs under the jsdom test config where the calls
+// resolve to `number`, so type handles as number and tracking + clearing typecheck
+// cleanly (clearTimeout/clearInterval accept the numeric id).
+type TimerHandle = number;
 
 const pendingTimeouts = new Set<TimerHandle>();
 const pendingIntervals = new Set<TimerHandle>();
@@ -48,7 +52,7 @@ g.setTimeout = function trackedSetTimeout(
   const handle: TimerHandle = originalSetTimeout(wrapped as TimerHandler, timeout, ...args);
   pendingTimeouts.add(handle);
   return handle;
-} as typeof g.setTimeout;
+} as unknown as typeof g.setTimeout;
 
 g.setInterval = function trackedSetInterval(
   handler: TimerHandler,
@@ -58,17 +62,17 @@ g.setInterval = function trackedSetInterval(
   const handle = originalSetInterval(handler, timeout, ...args);
   pendingIntervals.add(handle);
   return handle;
-} as typeof g.setInterval;
+} as unknown as typeof g.setInterval;
 
 g.clearTimeout = function trackedClearTimeout(handle?: TimerHandle): void {
   if (handle !== undefined) pendingTimeouts.delete(handle);
   originalClearTimeout(handle);
-} as typeof g.clearTimeout;
+} as unknown as typeof g.clearTimeout;
 
 g.clearInterval = function trackedClearInterval(handle?: TimerHandle): void {
   if (handle !== undefined) pendingIntervals.delete(handle);
   originalClearInterval(handle);
-} as typeof g.clearInterval;
+} as unknown as typeof g.clearInterval;
 
 afterEach(() => {
   for (const handle of pendingIntervals) originalClearInterval(handle);

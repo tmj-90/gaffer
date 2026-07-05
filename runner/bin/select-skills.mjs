@@ -123,35 +123,60 @@ export function loadSkills(skillsDir = DEFAULT_SKILLS_DIR) {
 const UNIVERSAL_AREAS = new Set(["quality", "testing", "review", "workflow", "security"]);
 
 /**
- * A skill matches when its stack is unconstrained or intersects the wanted
- * stack(s), AND its area constraint is satisfied.
+ * DOMAIN areas that are relevant to ANY code delivery — mounted regardless of the repo's
+ * stack label. This is a deliberate BROAD-INCLUSION (denylist) model: the previous
+ * allowlist gated language/frontend/mobile packs on the stack string, which silently
+ * EXCLUDED `java-conventions` from a Java-backend ticket and `mobile-ui`/`brand` from a
+ * mobile app when the stack was mis-registered. Progressive disclosure means Claude Code
+ * only loads a skill's name+description (~one line) until the agent invokes it, so an
+ * unused mounted skill is nearly free — whereas a wrongly-EXCLUDED skill is invisible and
+ * costly. So every plausibly-relevant pack is mounted and the agent chooses. Off-domain
+ * packs (marketing / product / planning / devops / infra / meta / security-ops) are NOT
+ * here — they stay opt-in (stack-tagged or an explicit --area) so a feature ticket isn't
+ * handed a slide-deck, SEO, or Terraform skill. See {@link skillMatches}.
+ */
+const DELIVERY_AREAS = new Set([
+  "language",
+  "frontend",
+  "mobile",
+  "backend",
+  "data",
+  "refactor",
+  "docs",
+]);
+
+/**
+ * A skill matches when it is in an always-eligible area (UNIVERSAL or DELIVERY), OR its
+ * stack intersects the wanted stack(s) AND its area constraint is satisfied.
  *
- * Area handling (`area` is an OPT-IN constraint for DOMAIN packs only):
- *
- *   - No `area:`, or a UNIVERSAL area (see {@link UNIVERSAL_AREAS}) → always
- *     eligible (subject to stack). The core delivery flow — run-tests,
- *     run-lint, self-review, record-evidence, create-branch — fires on every
- *     ticket regardless of stack/domain.
- *   - DOMAIN area + explicit `area` query → must equal the requested area
- *     (e.g. `--area frontend` pulls the frontend pack onto a web ticket).
- *   - DOMAIN area + stack-only query (how tick.sh usually calls this) → opt-in:
- *     included only if the skill is ALSO stack-tagged, so `frontend-design` /
- *     `design-system` still route by stack, but marketing/product/meta
- *     area-only packs don't leak onto every backend ticket.
+ * Area handling:
+ *   - No `area:`, a UNIVERSAL area, or a DELIVERY area → always eligible, regardless of
+ *     stack. The core delivery flow plus every code-relevant pack (language conventions,
+ *     frontend/mobile/backend, refactor, docs) fires on every delivery so the agent is
+ *     never missing a skill it needs for the files in front of it.
+ *   - OFF-DOMAIN area (marketing/product/planning/devops/infra/meta/security-ops) +
+ *     explicit `area` query → must equal the requested area.
+ *   - OFF-DOMAIN area + stack-only query → opt-in: included only if ALSO stack-tagged, so
+ *     these packs don't leak onto a normal feature delivery.
  */
 export function skillMatches(skill, { stacks = [], area = "" } = {}) {
+  const alwaysEligible =
+    !skill.area || UNIVERSAL_AREAS.has(skill.area) || DELIVERY_AREAS.has(skill.area);
   const hasStackTag = skill.stack.length > 0;
   const stackOk =
-    !hasStackTag || stacks.length === 0 || skill.stack.some((s) => stacks.includes(s));
+    alwaysEligible ||
+    !hasStackTag ||
+    stacks.length === 0 ||
+    skill.stack.some((s) => stacks.includes(s));
   let areaOk;
-  if (!skill.area || UNIVERSAL_AREAS.has(skill.area)) {
-    // No area, or a cross-cutting universal area — applies to every delivery.
+  if (alwaysEligible) {
+    // No area, a cross-cutting universal area, or a code-delivery area — every delivery.
     areaOk = true;
   } else if (area) {
-    // Explicit area query: a domain-area skill must match the requested area.
+    // Explicit area query: an off-domain skill must match the requested area.
     areaOk = skill.area === area;
   } else {
-    // Stack-only query: a domain-area skill is opt-in unless stack-tagged.
+    // Stack-only query: an off-domain skill is opt-in unless stack-tagged.
     areaOk = hasStackTag;
   }
   return stackOk && areaOk;

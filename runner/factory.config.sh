@@ -1082,6 +1082,14 @@ gaffer_usage_record() {
 # every merge it performs under this flag.
 : "${MERGE_ON_AGENT_REVIEW:=0}"
 
+# GAFFER_AUTO_PUSH=1 — the final step of the AFK cycle. After the runner auto-approves and
+# safe-merges an agent-reviewed ticket into the default branch (AUTO_MERGE=1 +
+# MERGE_ON_AGENT_REVIEW=1), push that branch to origin. OFF by default; force-free (a plain
+# `git push`), and it runs in the RUNNER, not the agent, so it is a deliberate autonomy-mode
+# capability rather than an agent action. Leave OFF to keep the factory fully local (merges
+# accumulate on the default branch locally; you push when you choose).
+: "${GAFFER_AUTO_PUSH:=0}"
+
 # --- Strict execution mode (OPTIONAL OS-level containment) -------------------
 # Best-effort OS-level containment layered ON TOP OF the worktree isolation +
 # the deterministic safety hook. NOT a security guarantee — see STRICT_MODE.md.
@@ -1257,6 +1265,11 @@ jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # Sourced after the config above so it can use lg / MEMORY_CLI_BIN / MEMORY_DB.
 # shellcheck source=lib/context-primer.sh
 [ -f "$RUNNER_DIR/lib/context-primer.sh" ] && source "$RUNNER_DIR/lib/context-primer.sh"
+
+# shellcheck source=lib/card-refresh.sh
+# Memory FRESHNESS: write-through file-card refresh after a delivery merges (uses lg +
+# the canonical contract, so sourced after context-primer which sets them up).
+[ -f "$RUNNER_DIR/lib/card-refresh.sh" ] && source "$RUNNER_DIR/lib/card-refresh.sh"
 
 # Definition-of-Done gate (I3): defines gaffer_run_dod_gates / gaffer_dod_enabled /
 # gaffer_dod_run_one / gaffer_dod_summary_line / gaffer_dod_evidence_summary. The

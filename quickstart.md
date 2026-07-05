@@ -77,7 +77,7 @@ In the dashboard (seven views):
 - **Epics** — group and track tickets by epic.
 - **Map** — the Factory Map: repo registration, scope nodes, and unmapped repos.
 - **Memory** — pick your repo to read its digest, feature ledger, and lore. The **Onboard a repo** button does step 2 from the UI.
-- **Settings** — autonomy flags, idle loops, budget caps, the planning debate — all editable, persisted to `settings.json` (a real env var always wins).
+- **Settings** — every operator knob, grouped: **autonomy**, the **delivery** cycle (auto-merge · push · PR · require-CI), **execution** & concurrency, **idle loops**, **budget & caps**, the **planning debate**, **quality gates**, the strict **sandbox**, and **notifications** — all editable, persisted to `settings.json` (a real env var always wins, and shows read-only when set).
 
 ```bash
 runner/gaffer status     # what's registered + running

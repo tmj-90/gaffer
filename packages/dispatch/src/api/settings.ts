@@ -34,9 +34,13 @@ import { DispatchError } from "../util/errors.js";
 /** A logical grouping for the settings panel's sections. */
 export type SettingGroup =
   | "autonomy"
+  | "delivery"
+  | "execution"
   | "idle-loops"
   | "budget"
   | "planning-debate"
+  | "quality"
+  | "sandbox"
   | "notifications";
 
 /** The value type a setting carries, so the UI renders the right control. */
@@ -258,6 +262,204 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "and drop the free-text ticket title/detail. Use when the webhook/Slack " +
       "endpoint is outside your trust boundary — ticket text can be " +
       "prompt-injection-influenced.",
+  },
+
+  // --- Autonomy (cont.): who reviews a delivery ---
+  {
+    key: "REVIEW_MODE",
+    type: "string",
+    group: "autonomy",
+    label: "Review mode",
+    help:
+      "Who reviews a delivery before merge: human · agent · both. Agent reviews are " +
+      "ADVISORY — a human (or the AFK auto-approve chain) still owns the merge.",
+  },
+
+  // --- Delivery: what the factory does once a ticket is approved ---
+  {
+    key: "AUTO_MERGE",
+    type: "boolean",
+    group: "delivery",
+    label: "Auto-merge on approval",
+    help: "Safe-merge into the default branch on approval. Off → approved tickets wait at ready-for-merge for a human.",
+  },
+  {
+    key: "GAFFER_AUTO_PUSH",
+    type: "boolean",
+    group: "delivery",
+    label: "Push after merge",
+    help: "The final AFK step: push the default branch to origin after a successful auto-merge. Requires Auto-merge; off → merges stay local.",
+  },
+  {
+    key: "GAFFER_CREATE_PR",
+    type: "boolean",
+    group: "delivery",
+    label: "Deliver as a pull request",
+    help: "Open a GitHub PR with the delivery evidence instead of merging directly. Needs the gh CLI authenticated.",
+  },
+  {
+    key: "GAFFER_REQUIRE_CI",
+    type: "boolean",
+    group: "delivery",
+    label: "Require CI green before merge",
+    help: "Poll the branch's CI checks and only merge when they pass. Off → merge without waiting on CI.",
+  },
+  {
+    key: "GAFFER_ALLOW_SELF_DELIVERY",
+    type: "boolean",
+    group: "delivery",
+    label: "Allow self-delivery",
+    help: "Permit the factory to deliver into its OWN repo. Off (default) is the safe choice — it never edits itself by accident.",
+  },
+
+  // --- Execution: how the loop schedules and paces work ---
+  {
+    key: "GAFFER_CONCURRENCY",
+    type: "int",
+    group: "execution",
+    label: "Concurrent ticks",
+    help: "How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out.",
+  },
+  {
+    key: "TICK_SLEEP",
+    type: "int",
+    group: "execution",
+    label: "Pause between ticks (s)",
+    help: "Seconds the loop waits between ticks.",
+  },
+  {
+    key: "EMPTY_POLL_LIMIT",
+    type: "int",
+    group: "execution",
+    label: "Empty polls before idle",
+    help: "Consecutive empty polls (no ready work) before the run stops or drops into idle loops.",
+  },
+  {
+    key: "MAX_CONCURRENT_TICKETS_PER_REPO",
+    type: "int",
+    group: "execution",
+    label: "Max in-flight tickets / repo",
+    help: "Cap on tickets worked at once within one repo.",
+  },
+  {
+    key: "MAX_CANDIDATES",
+    type: "int",
+    group: "execution",
+    label: "Max candidates scanned",
+    help: "Upper bound on ready tickets the scheduler considers each tick.",
+  },
+
+  // --- Budget / caps (cont.): retries, CI polling, open-work ceilings ---
+  {
+    key: "GAFFER_MAX_DELIVERY_ATTEMPTS",
+    type: "int",
+    group: "budget",
+    label: "Max delivery attempts",
+    help: "How many times a ticket may be re-worked after a rejected review before it parks to blocked.",
+  },
+  {
+    key: "GAFFER_MAX_RESUMES_PER_TICK",
+    type: "int",
+    group: "budget",
+    label: "Max resumes / tick",
+    help: "How many times a tick may resume a timed-out agent before giving up.",
+  },
+  {
+    key: "GAFFER_PAUSE_ON_CAP",
+    type: "boolean",
+    group: "budget",
+    label: "Pause on budget cap",
+    help: "When the spend ceiling is hit, pause in-flight work instead of hard-stopping.",
+  },
+  {
+    key: "GAFFER_CI_POLL_ATTEMPTS",
+    type: "int",
+    group: "budget",
+    label: "CI poll attempts",
+    help: "How many times to poll CI checks (when Require-CI is on) before giving up.",
+  },
+  {
+    key: "GAFFER_CI_POLL_INTERVAL_SECS",
+    type: "int",
+    group: "budget",
+    label: "CI poll interval (s)",
+    help: "Seconds between CI check polls.",
+  },
+  {
+    key: "MAX_OPEN_AGENT_BRANCHES_PER_REPO",
+    type: "int",
+    group: "budget",
+    label: "Max open agent branches / repo",
+    help: "Ceiling on undelivered agent branches per repo — backpressure so work merges before more starts.",
+  },
+  {
+    key: "MAX_OPEN_AGENT_PRS_PER_REPO",
+    type: "int",
+    group: "budget",
+    label: "Max open agent PRs / repo",
+    help: "Ceiling on open agent-authored PRs per repo.",
+  },
+
+  // --- Idle loops (cont.): the other between-work loops ---
+  {
+    key: "CLARIFY_DRAFTS_WHEN_IDLE",
+    type: "boolean",
+    group: "idle-loops",
+    label: "Clarify vague drafts when idle",
+    help: "When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria.",
+  },
+  {
+    key: "IDLE_DRAFT_WHEN_IDLE",
+    type: "boolean",
+    group: "idle-loops",
+    label: "Draft new tickets when idle",
+    help: "When idle, let the product-owner loop propose new draft tickets from the repos it watches.",
+  },
+
+  // --- Quality gates: the runner's DoD guards on every delivery ---
+  {
+    key: "HYGIENE_ENFORCE",
+    type: "boolean",
+    group: "quality",
+    label: "Enforce repo hygiene",
+    help: "Reject deliveries that touch forbidden paths (node_modules, .claude/, factory internals). On by default.",
+  },
+  {
+    key: "MINIMALISM_ENFORCE",
+    type: "boolean",
+    group: "quality",
+    label: "Enforce minimal diffs",
+    help: "Flag oversized/sprawling diffs against the caps below, so a ticket ships a focused change.",
+  },
+  {
+    key: "OVERSIZED_MAX_FILES",
+    type: "int",
+    group: "quality",
+    label: "Oversized: max files",
+    help: "A diff touching more than this many files trips the minimalism check.",
+  },
+  {
+    key: "OVERSIZED_MAX_LINES",
+    type: "int",
+    group: "quality",
+    label: "Oversized: max lines",
+    help: "A diff changing more than this many lines trips the minimalism check.",
+  },
+
+  // --- Sandbox: optional OS-level execution confinement ---
+  {
+    key: "STRICT_MODE",
+    type: "boolean",
+    group: "sandbox",
+    label: "Strict execution sandbox",
+    help: "Wrap agent commands in the OS sandbox (sandbox-exec on macOS) for defence-in-depth. Off → the permission-hook guard only.",
+  },
+  {
+    key: "STRICT_ALLOW_NETWORK",
+    type: "boolean",
+    group: "sandbox",
+    label: "Allow network in sandbox",
+    help: "When the strict sandbox is on, still permit outbound network (package installs, git, the model API).",
   },
 ] as const;
 

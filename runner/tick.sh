@@ -255,8 +255,10 @@ result() { echo "TICK_RESULT=$1"; }
 # ticket-type that sets the area explicitly). Echoes the area or nothing.
 gaffer_area_for_stack() {
   case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
-    *react-native*|*expo*) ;; # mobile RN — frontend-design/mobile-ui already route by stack; no area
-    *react*|*frontend*|*web*) printf 'frontend' ;;
+    # Mobile RN/Expo is a frontend too. mobile-ui/frontend-design route by stack, but the
+    # area-only design packs (brand, frontend-a11y, frontend-responsive, frontend-component)
+    # only fire on area=frontend — a mobile app wants those as much as a web app does.
+    *react-native*|*expo*|*react*|*frontend*|*web*) printf 'frontend' ;;
     *) ;;
   esac
 }
@@ -2736,11 +2738,19 @@ for its acceptance criteria and recorded evidence; inspect the delivered change 
 \`git diff $RDEFAULT...HEAD\` in $WT; judge whether each AC is genuinely met and the
 change is sound (tests, scope, quality). Then RECORD YOUR VERDICT as evidence via the
 dispatch MCP record_ac_evidence (one entry per AC: PASS/FAIL + the specific reasoning),
-and finish with a one-line overall recommendation: "RECOMMEND APPROVE" only if every AC
-holds up, otherwise "RECOMMEND CHANGES" with specific, actionable feedback (default to
-RECOMMEND CHANGES if any AC isn't clearly evidenced). Leave the ticket in in_review — a
-human reads your recommendation and makes the final approve/reject decision. Work only
-in: $WT
+and finish with a one-line overall recommendation. Apply THIS BAR EXACTLY — never raise it:
+say "RECOMMEND APPROVE" when (a) every acceptance criterion is met in the diff, (b) the DoD
+gates pass / no tests are failing, and (c) the changed behaviour is tested where a test
+reasonably applies. That is the whole bar — if it is met, APPROVE.
+Say "RECOMMEND CHANGES" ONLY for a CONCRETE defect: a specific AC that is not met, a failing or
+missing test for an AC's OWN behaviour, or a genuine correctness/security bug — always naming
+the AC and the single concrete fix so a rework resolves it in one pass.
+You MUST NOT withhold approval for anything OUTSIDE the acceptance criteria: refactors,
+de-duplication, extra coverage beyond the ACs, naming, file structure, or maintainability
+wishes are OPTIONAL. You may list them prefixed "(optional)" but they are NEVER grounds for
+CHANGES. When in doubt and the ACs are met with tests passing, APPROVE.
+Leave the ticket in in_review — the operator (or, in autonomy mode, the runner acting
+deterministically on your verdict) crosses the final gate. Work only in: $WT
 EOF
       RPROMPT="${RPROMPT}${_REVIEW_CARDS}"
       # Repo-access boundary (FG-007): the reviewer works only in the throwaway
@@ -2755,32 +2765,76 @@ EOF
       worker_deliver "$WT" "$RPROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+      # Capture the reviewer's advisory verdict (its final RECOMMEND line) from the result
+      # JSON BEFORE deleting it — the signal the runner acts on in AFK mode. Default to
+      # "changes": an ambiguous or empty verdict must NEVER auto-approve. Read the file BY
+      # PATH (not stdin): the usage JSON must never be piped as stdin (prompt-injection
+      # guard, enforced by tick-prompt-wiring.test.sh) — parsing its result is output-read.
+      R_RESULT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('result',''))" "$R_USAGE_JSON" 2>/dev/null || echo '')"
       rm -f "$R_USAGE_JSON"
+      R_VERDICT=changes
+      printf '%s' "$R_RESULT" | grep -qiE "RECOMMEND[ _-]*APPROVE" && R_VERDICT=approve
+      printf '%s' "$R_RESULT" | grep -qiE "RECOMMEND[ _-]*CHANGES" && R_VERDICT=changes
       NEWSTATUS="$(wg ticket show "$RNUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
-      # The agent review is ADVISORY: the ticket is expected to STAY in_review (the
-      # reviewer records a verdict via MCP evidence, it does not approve). Mark it
-      # reviewed-this-run so we don't re-review it in a loop, then leave it for a
-      # human to cross the final gate.
-      [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
-      log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS) — ADVISORY verdict recorded; awaiting HUMAN approval"
-      # A MERGE REQUIRES A HUMAN APPROVAL. An agent review NEVER auto-merges by
-      # default: the branch is left in_review for a human to approve (the dashboard
-      # Approve action / a human `dispatch review approve` runs the merge).
-      # MERGE_ON_AGENT_REVIEW=1 is the ONLY (explicitly-unsafe, documented) opt-in
-      # that lets an agent-driven 'done' merge with no human — and even then ONLY if
-      # an out-of-band human/operator action moved the ticket to done. The default
-      # path here cannot reach gaffer_auto_merge.
-      if [ "$NEWSTATUS" = "done" ] && [ "${AUTO_MERGE:-0}" = "1" ] && [ -n "$RBRANCH" ]; then
-        if [ "${MERGE_ON_AGENT_REVIEW:-0}" = "1" ]; then
-          log "WARNING: MERGE_ON_AGENT_REVIEW=1 (NOT a safe unattended posture) — auto-merging #$RNUM with NO human gate"
-          if gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; then
-            log "auto-merged #$RNUM ($RBRANCH → $RDEFAULT) [MERGE_ON_AGENT_REVIEW=1]"
+
+      # ── AFK auto-completion (opt-in; OFF by default) ─────────────────────────────
+      # By default an agent review is ADVISORY: the ticket stays in_review for a HUMAN,
+      # and the reviewer AGENT never approves itself (prompt forbids it, CLI blocked).
+      # When the operator has explicitly opted into unattended completion — AUTO_MERGE=1
+      # AND MERGE_ON_AGENT_REVIEW=1 — the RUNNER (deterministic + trusted, exactly like
+      # the DoD gates and the submit step) acts on the verdict on the operator's standing
+      # behalf: a clean APPROVE is approved → safe-merged → optionally pushed → marked
+      # done; a CHANGES verdict is rejected back to rework WITH the reviewer's feedback
+      # (which the delivery path surfaces into the next attempt), so a cautious review is
+      # a RETRY, not a block — the rework budget cap eventually parks a stuck ticket.
+      if [ "$NEWSTATUS" = "in_review" ] && [ "${AUTO_MERGE:-0}" = "1" ] && [ "${MERGE_ON_AGENT_REVIEW:-0}" = "1" ] && [ -n "$RBRANCH" ]; then
+        if [ "$R_VERDICT" = "approve" ]; then
+          if wg review approve "$RNUM" >/dev/null 2>&1; then
+            log "AFK: runner approved #$RNUM on a clean agent verdict (→ ready_for_merge)"
+            # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an
+            # ancestor of RDEFAULT, so merge-base would collapse to RBRANCH (empty diff).
+            _CR_BASE="$(git -C "$RREPO" merge-base "$RBRANCH" "$RDEFAULT" 2>/dev/null || true)"
+            gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; _mrc=$?
+            case "$_mrc" in
+              0)
+                wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
+                  && log "AFK: #$RNUM merged ($RBRANCH → $RDEFAULT) and marked done" \
+                  || log "AFK: #$RNUM merged but mark-merged failed — verify state"
+                # MEMORY FRESHNESS: write-through the delivered change into the file cards
+                # (refresh changed, add new, drop deleted, advance the watermark) so priming
+                # stays current instead of decaying. Fail-soft — never blocks the merge.
+                gaffer_refresh_cards "$RREPO" "$(basename "$RREPO")" "$_CR_BASE" "$RBRANCH" \
+                  "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
+                if [ "${GAFFER_AUTO_PUSH:-0}" = "1" ]; then
+                  gaffer_auto_push "$RREPO" "$RDEFAULT" \
+                    && log "AFK: pushed $RDEFAULT to origin" \
+                    || log "AFK: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push"
+                fi
+                ;;
+              3) log "AFK: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;
+              1) log "AFK: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human" ;;
+              *) log "AFK: #$RNUM approved but merge could not run (rc=$_mrc) — left in ready_for_merge for a human" ;;
+            esac
           else
-            log "auto-merge of #$RNUM hit a conflict — left on $RBRANCH for a human"
+            log "AFK: runner could not approve #$RNUM (approve rejected) — left in_review"
+            _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
           fi
         else
-          log "#$RNUM is done but MERGE_ON_AGENT_REVIEW=0 — leaving $RBRANCH for HUMAN approval before merge"
+          # CHANGES → reject to rework with the reviewer's reason. The feedback loop
+          # (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
+          _rreason="$(printf '%s' "$R_RESULT" | tr '\n' ' ' | tail -c 480)"
+          [ -n "${_rreason// /}" ] || _rreason="agent review recommended changes"
+          if wg review reject "$RNUM" --reason "$_rreason" --to ready >/dev/null 2>&1; then
+            log "AFK: #$RNUM → CHANGES; re-queued to ready for rework with reviewer feedback (retry-cap parks to blocked at the threshold)"
+          else
+            log "AFK: #$RNUM CHANGES but reject failed — left in_review"
+            _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+          fi
         fi
+      else
+        # Advisory-only (default): leave for a human; mark reviewed-this-run so we don't loop.
+        [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+        log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT) — ADVISORY; awaiting HUMAN approval"
       fi
       # Restore the global traps now that the review block is complete. Run cleanup
       # once explicitly here so the worktree is gone before the result line fires;

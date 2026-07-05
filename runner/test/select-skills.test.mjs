@@ -61,11 +61,18 @@ check("empty skill stack matches any query stack (fully-unconstrained skill)", (
     skillMatches({ stack: [], area: "" }, { stacks: ["python"] }),
     "empty stack + empty area = no constraint (matches any stack)",
   );
-  // But an empty-stack skill that DOES carry an area is now opt-in (FIX-2): it
-  // no longer auto-fires on a stack-only query.
+  // Broad-inclusion: a DELIVERY-area skill (backend/language/frontend/mobile/…)
+  // is ALWAYS eligible regardless of stack, so it fires on a stack-only query
+  // even with an empty stack list — a mis-registered stack can never silently
+  // EXCLUDE a code-relevant pack.
   assert(
-    !skillMatches({ stack: [], area: "backend" }, { stacks: ["python"] }),
-    "area-tagged skill is opt-in: no longer matches a stack-only query",
+    skillMatches({ stack: [], area: "backend" }, { stacks: ["python"] }),
+    "delivery-area skill is always eligible on a stack-only query",
+  );
+  // Only OFF-DOMAIN areas stay opt-in: they do NOT auto-fire on a stack-only query.
+  assert(
+    !skillMatches({ stack: [], area: "marketing" }, { stacks: ["python"] }),
+    "off-domain area skill is opt-in: no match on a stack-only query",
   );
 });
 check("empty query stack matches any skill stack", () => {
@@ -74,14 +81,22 @@ check("empty query stack matches any skill stack", () => {
     "empty query = no constraint",
   );
 });
-check("non-empty stacks must intersect", () => {
+check("non-empty stacks must intersect (off-domain packs only)", () => {
+  // Stack gating now only applies to OFF-DOMAIN packs — a no-area or delivery
+  // skill is always eligible under broad-inclusion. Exercise the gate with an
+  // off-domain (infra) skill so the intersect/disjoint contract is meaningful.
   assert(
-    skillMatches({ stack: ["typescript", "node"], area: "" }, { stacks: ["node"] }),
-    "intersect matches",
+    skillMatches({ stack: ["terraform", "kubernetes"], area: "infra" }, { stacks: ["terraform"] }),
+    "off-domain stack-tagged skill matches when stacks intersect",
   );
   assert(
-    !skillMatches({ stack: ["typescript"], area: "" }, { stacks: ["python"] }),
-    "disjoint does not match",
+    !skillMatches({ stack: ["terraform"], area: "infra" }, { stacks: ["python"] }),
+    "off-domain stack-tagged skill does not match a disjoint stack",
+  );
+  // A no-area skill, by contrast, is always eligible even on a disjoint stack.
+  assert(
+    skillMatches({ stack: ["typescript"], area: "" }, { stacks: ["python"] }),
+    "no-area skill is always eligible regardless of stack",
   );
 });
 check("area must equal when both constrain (domain areas)", () => {
@@ -210,7 +225,13 @@ check("AC1: selection by stack picks the right skills", () => {
   const tsNames = selectSkills({ stacks: ["typescript"] }).map((s) => s.name);
   assert(tsNames.includes("typescript-conventions"), "typescript stack should select the TS pack");
   const pyNames = selectSkills({ stacks: ["python"] }).map((s) => s.name);
-  assert(!pyNames.includes("typescript-conventions"), "python stack must not select the TS pack");
+  assert(pyNames.includes("python-conventions"), "python stack selects the python pack");
+  // Broad-inclusion: language packs are DELIVERY-area, always eligible — the TS
+  // pack now rides a python-only ticket too (exclusion is the costlier error).
+  assert(
+    pyNames.includes("typescript-conventions"),
+    "python stack also mounts the TS language pack under broad-inclusion",
+  );
   // FIX-2 (corrected): the universal delivery areas (testing/review/workflow/
   // quality) always fire — run-tests (area: testing) auto-fires on every ticket.
   assert(
@@ -270,10 +291,11 @@ check("stack + area compose", () => {
       .includes("threat-detection"),
     "threat-detection resolves under area: security-ops",
   );
-  // No non-security packs appear
+  // Broad-inclusion: DELIVERY packs (language/frontend/…) are always eligible,
+  // so they ride along even under an explicit off-domain area query.
   assert(
-    !sel.includes("typescript-conventions"),
-    "security area must not pull typescript-conventions",
+    sel.includes("typescript-conventions"),
+    "explicit area query still mounts the always-eligible language pack",
   );
 });
 
@@ -300,52 +322,72 @@ const conv = (stack) =>
     .filter((n) => /-conventions$|^frontend-design$|^mobile-ui$/.test(n))
     .sort();
 
-check("java stack recommends java-conventions and no other language pack", () => {
+// Broad-inclusion: every language/frontend/mobile pack is a DELIVERY area and
+// therefore ALWAYS eligible. A stack still gets its own convention pack, but the
+// other language packs now ride along too — a mis-registered stack can never
+// silently EXCLUDE the pack the files in front of the agent actually need.
+const ALL_LANGUAGE_PACKS = [
+  "java-conventions",
+  "go-conventions",
+  "python-conventions",
+  "typescript-conventions",
+];
+
+check("java stack mounts java-conventions AND the other language packs (broad-inclusion)", () => {
   const names = conv("java");
   assert(names.includes("java-conventions"), "java → java-conventions");
-  assert(!names.includes("python-conventions"), "java must not pull python-conventions");
-  assert(!names.includes("go-conventions"), "java must not pull go-conventions");
-  assert(!names.includes("typescript-conventions"), "java must not pull typescript-conventions");
+  for (const pack of ALL_LANGUAGE_PACKS) {
+    assert(names.includes(pack), `broad-inclusion mounts ${pack} on a java stack`);
+  }
 });
 
-check("go stack recommends go-conventions and excludes the others", () => {
+check("go stack mounts go-conventions AND the other language packs (broad-inclusion)", () => {
   const names = conv("go");
   assert(names.includes("go-conventions"), "go → go-conventions");
-  assert(!names.includes("java-conventions"), "go must not pull java-conventions");
-  assert(!names.includes("python-conventions"), "go must not pull python-conventions");
+  for (const pack of ALL_LANGUAGE_PACKS) {
+    assert(names.includes(pack), `broad-inclusion mounts ${pack} on a go stack`);
+  }
 });
 
-check("python stack recommends python-conventions and excludes the others", () => {
-  const names = conv("python");
-  assert(names.includes("python-conventions"), "python → python-conventions");
-  assert(!names.includes("java-conventions"), "python must not pull java-conventions");
-  assert(!names.includes("go-conventions"), "python must not pull go-conventions");
-});
+check(
+  "python stack mounts python-conventions AND the other language packs (broad-inclusion)",
+  () => {
+    const names = conv("python");
+    assert(names.includes("python-conventions"), "python → python-conventions");
+    for (const pack of ALL_LANGUAGE_PACKS) {
+      assert(names.includes(pack), `broad-inclusion mounts ${pack} on a python stack`);
+    }
+  },
+);
 
-check("plain node stack recommends typescript-conventions but NOT frontend-design", () => {
+check("plain node stack mounts language + frontend + mobile packs (broad-inclusion)", () => {
   const names = conv("node");
   assert(names.includes("typescript-conventions"), "node → typescript-conventions");
-  assert(!names.includes("frontend-design"), "plain node (no react) must not pull frontend-design");
-  assert(!names.includes("mobile-ui"), "plain node must not pull mobile-ui");
+  // frontend-design (area: frontend) and mobile-ui (area: mobile) are DELIVERY
+  // areas — always eligible. They ride a plain node ticket so a mis-registered
+  // stack can't hide the UI pack the files actually need.
+  assert(names.includes("frontend-design"), "broad-inclusion mounts frontend-design on node");
+  assert(names.includes("mobile-ui"), "broad-inclusion mounts mobile-ui on node");
 });
 
-check("compound typescript-react routes the TS + frontend-design packs (web, not mobile)", () => {
+check("compound typescript-react mounts TS + frontend + mobile packs (broad-inclusion)", () => {
   const names = conv("typescript-react");
   assert(names.includes("typescript-conventions"), "typescript-react → typescript-conventions");
   assert(names.includes("frontend-design"), "typescript-react → frontend-design");
-  assert(!names.includes("mobile-ui"), "a web react app must NOT pull the mobile pack");
+  // mobile-ui now rides along too — broad-inclusion never excludes a delivery pack.
+  assert(names.includes("mobile-ui"), "broad-inclusion mounts mobile-ui alongside the web packs");
 });
 
-check("web/react stack routes the design-system pack (not plain node, not java)", () => {
+check("design-system (area: frontend) mounts on every stack under broad-inclusion", () => {
   const tsReact = selectSkills({ stacks: ["typescript-react"] }).map((s) => s.name);
   assert(tsReact.includes("design-system"), "typescript-react → design-system");
   assert(tsReact.includes("frontend-design"), "design-system routes alongside frontend-design");
-
+  // design-system is a DELIVERY (frontend) pack — always eligible — so it now
+  // mounts on a plain node or java stack too (exclusion is the costlier error).
   const node = selectSkills({ stacks: ["node"] }).map((s) => s.name);
-  assert(!node.includes("design-system"), "plain node (no react) must not pull design-system");
-
+  assert(node.includes("design-system"), "broad-inclusion mounts design-system on node");
   const java = selectSkills({ stacks: ["java"] }).map((s) => s.name);
-  assert(!java.includes("design-system"), "a java stack must not pull design-system");
+  assert(java.includes("design-system"), "broad-inclusion mounts design-system on java");
 });
 
 check("react-native / expo labels route the mobile pack (and not from plain web react)", () => {
@@ -539,13 +581,53 @@ check("FIX-2: a frontend (react) stack still gets frontend-design by stack", () 
   assert(!react.includes("aeo"), "react stack must not leak the marketing aeo pack");
 });
 
-check("FIX-2: explicit area query still composes (security area excludes language pack)", () => {
+check("explicit area query still mounts the always-eligible delivery packs", () => {
   const sel = selectSkills({ stacks: ["node"], area: "security" }).map((s) => s.name);
   assert(sel.includes("security-authz"), "explicit security area still selects the security pack");
+  // Broad-inclusion: DELIVERY/UNIVERSAL packs are always eligible and ride along
+  // even under an explicit area query — the language pack is no longer excluded.
   assert(
-    !sel.includes("typescript-conventions"),
-    "explicit security area still excludes the language pack",
+    sel.includes("typescript-conventions"),
+    "explicit area query still mounts the always-eligible language pack",
   );
+});
+
+// --- broad-inclusion / denylist model (locks the new contract) --------------
+
+check("broad-inclusion: java-conventions IS selected for a python-only stack", () => {
+  // Language packs are DELIVERY-area, always eligible — a python-only ticket
+  // still mounts java-conventions so a mis-registered stack can't hide it.
+  const py = selectSkills({ stacks: ["python"] }).map((s) => s.name);
+  assert(py.includes("java-conventions"), "python stack mounts java-conventions (broad-inclusion)");
+});
+
+check("broad-inclusion: mobile-ui and brand are selected regardless of stack", () => {
+  for (const stack of ["node", "python", "go", "java", "typescript-react"]) {
+    const names = selectSkills({ stacks: [stack] }).map((s) => s.name);
+    assert(
+      names.includes("mobile-ui"),
+      `mobile-ui (area: mobile) must mount on the ${stack} stack`,
+    );
+    assert(names.includes("brand"), `brand (area: frontend) must mount on the ${stack} stack`);
+  }
+});
+
+check("denylist: off-domain packs stay opt-in on a plain node stack", () => {
+  const node = selectSkills({ stacks: ["node"] }).map((s) => s.name);
+  // infra (kubernetes/terraform) + marketing (seo/copywriting) are off-domain —
+  // a plain node feature ticket must NOT be handed Terraform or SEO skills.
+  for (const optIn of ["kubernetes-operator", "terraform-patterns", "seo-audit", "copywriting"]) {
+    assert(!node.includes(optIn), `off-domain pack ${optIn} must stay opt-in on a node stack`);
+  }
+});
+
+check("denylist: an off-domain pack IS selected when its --area is explicitly requested", () => {
+  const marketing = selectSkills({ area: "marketing" }).map((s) => s.name);
+  assert(marketing.includes("seo-audit"), "seo-audit resolves under --area marketing");
+  assert(marketing.includes("copywriting"), "copywriting resolves under --area marketing");
+  const infra = selectSkills({ area: "infra" }).map((s) => s.name);
+  assert(infra.includes("kubernetes-operator"), "kubernetes-operator resolves under --area infra");
+  assert(infra.includes("terraform-patterns"), "terraform-patterns resolves under --area infra");
 });
 
 // --- report -----------------------------------------------------------------

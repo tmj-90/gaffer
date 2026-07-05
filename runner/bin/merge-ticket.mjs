@@ -348,7 +348,8 @@ const git = (cwd, ...args) => spawnSync("git", ["-C", cwd, ...args], { encoding:
 // Call the Dispatch CLI directly. `wg` is a bash FUNCTION (factory.config.sh), not a
 // binary on PATH, so it does NOT resolve inside this Node runner — spawn the CLI here.
 const DISPATCH_CLI =
-  process.env.DISPATCH_CLI || resolve(RUNNER_DIR, "..", "dispatch", "dist", "cli", "index.js");
+  process.env.DISPATCH_CLI ||
+  resolve(RUNNER_DIR, "..", "packages", "dispatch", "dist", "cli", "index.js");
 function runDispatch(args) {
   return spawnSync(process.execPath, [DISPATCH_CLI, "--db", CONFIG.dispatchDb, ...args], {
     encoding: "utf8",

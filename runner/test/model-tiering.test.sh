@@ -35,7 +35,7 @@ else fail "empty model should yield an empty flag"; fi
 echo "== AC3: tick.sh wires the per-step flags =="
 n=$(grep -c 'GAFFER_IMPL_MODEL_FLAG' "$RUNNER_DIR/tick.sh")
 [ "${n:-0}" -ge 3 ] && ok "tick.sh adds the IMPL flag to $n delivery call(s)" || fail "expected >=3 IMPL flag sites, got ${n:-0}"
-grep -q 'GAFFER_PLAN_MODEL_FLAG' "$RUNNER_DIR/tick.sh" && ok "tick.sh adds the PLAN flag to the clarify call" || fail "clarify call missing the PLAN flag"
+grep -q 'GAFFER_PLAN_MODEL_FLAG' "$RUNNER_DIR/lib/clarify.sh" && ok "clarify pass (lib/clarify.sh, B-H3) adds the PLAN flag to the clarify call" || fail "clarify call missing the PLAN flag"
 
 echo "== AC4: each .mjs PREPENDS --model from the matching step's model var =="
 # (asserted by source, not import — the .mjs self-execute main() on import)

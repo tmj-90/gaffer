@@ -60,9 +60,15 @@ WORKER="$RUNNER_DIR/lib/worker.sh"
 INLINE="$(grep -cE '"\$CLAUDE_BIN" -p' "$RUNNER_DIR/tick.sh" || true)"
 [ "$INLINE" = "0" ] && ok "tick.sh open-codes no claude -p launch (all via worker_deliver)" \
   || fail "expected 0 open-coded claude -p in tick.sh (got $INLINE)"
-ROUTED="$(grep -cE '^[[:space:]]*worker_deliver ' "$RUNNER_DIR/tick.sh" || true)"
-[ "$ROUTED" -ge 4 ] && ok "tick.sh routes $ROUTED turns through worker_deliver (>=4)" \
-  || fail "expected >=4 worker_deliver routes in tick.sh (got $ROUTED)"
+# B-H3: the review + clarify passes were extracted into lib/review.sh + lib/clarify.sh
+# (sourced by tick.sh), so two of the four worker_deliver routes now live there. The
+# invariant is unchanged — count across tick.sh + the two extracted passes.
+ROUTED=0
+for _rf in "$RUNNER_DIR/tick.sh" "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/clarify.sh"; do
+  ROUTED=$(( ROUTED + $(grep -cE '^[[:space:]]*worker_deliver ' "$_rf" 2>/dev/null || true) ))
+done
+[ "$ROUTED" -ge 4 ] && ok "tick.sh + review/clarify libs route $ROUTED turns through worker_deliver (>=4)" \
+  || fail "expected >=4 worker_deliver routes across tick.sh + review/clarify libs (got $ROUTED)"
 TOTAL="$(grep -cE '"\$CLAUDE_BIN" -p' "$WORKER" || true)"
 WRAPPED="$(grep -cE 'gaffer_timeout "\$GAFFER_TICK_TIMEOUT"' "$WORKER" || true)"
 SCRUBBED="$(grep -cE 'env -i "\$\{GAFFER_AGENT_ENV\[@\]\}"' "$WORKER" || true)"

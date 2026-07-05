@@ -28,7 +28,18 @@
 # `src/mcp-runtime/index.ts`. Keep in sync with factory.config.sh's default.
 _hygiene_forbidden_fragments() {
   local raw="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.}"
-  printf '%s\n' $raw
+  # FINDING B-H2: split on whitespace WITHOUT glob-expanding. An unquoted `$raw`
+  # both word-splits AND pathname-expands, so a fragment like `*.events.jsonl`
+  # would glob against the cwd — if a matching file exists it is replaced by that
+  # match (and if none exists but `nullglob` is on it vanishes), silently mangling
+  # the forbidden-fragment list and letting a forbidden path slip the gate. Disable
+  # globbing for the split, then restore the prior noglob state.
+  local _had_noglob=0
+  case "$-" in *f*) _had_noglob=1 ;; esac
+  set -f
+  local frag
+  for frag in $raw; do printf '%s\n' "$frag"; done
+  [ "$_had_noglob" = 1 ] || set +f
 }
 
 # Keep factory RUNTIME config out of any delivery. tick.sh writes .claude/settings,

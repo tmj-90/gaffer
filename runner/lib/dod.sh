@@ -49,11 +49,16 @@ gaffer_dod_enabled() {
 gaffer_dod_run_one() {
   local wt="$1" outfile="$2" cmd="$3"
   : > "$outfile"
-  # Run via `bash -lc` in a subshell pinned to the worktree so a relative command
-  # (e.g. "pnpm test") resolves against the delivery, not the runner cwd. stderr is
-  # folded into stdout so the evidence tail captures the real failure message.
+  # Run via `bash -c` (NOT a LOGIN shell) in a subshell pinned to the worktree so a
+  # relative command (e.g. "pnpm test") resolves against the delivery, not the runner
+  # cwd. stderr is folded into stdout so the evidence tail captures the real failure
+  # message. FINDING B-M3: a LOGIN shell (`bash -lc`) sources the user's profile
+  # (~/.bash_profile etc.), which re-admits nvm/rbenv PATH shims and profile-exported
+  # credentials that gaffer_agent_env deliberately scrubbed — making the DoD gate
+  # non-reproducible and re-leaking the ambient environment. `bash -c` runs the gate
+  # in the scrubbed env the runner already established.
   ( cd "$wt" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_TIMEOUT" bash -lc "$cmd" ) >"$outfile" 2>&1
+    gaffer_timeout "$GAFFER_DOD_TIMEOUT" bash -c "$cmd" ) >"$outfile" 2>&1
   return $?
 }
 

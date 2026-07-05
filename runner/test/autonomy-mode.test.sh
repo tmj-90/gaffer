@@ -77,6 +77,19 @@ expect "$OUT" GAFFER_AUTO_PUSH             1    "autonomous: auto-push on"
 expect "$OUT" MEMORY_AUTO_APPROVE          1    "autonomous: memory auto-approve on"
 expect "$OUT" STRICT_MODE                  0    "autonomous: sandbox still off"
 
+echo "== 2b: GAFFER_MODE=graduated → reviewer runs, but env floor stays SUPERVISED =="
+# The distinguishing posture: REVIEW_MODE=agent (a verdict exists to act on) while every
+# autonomy env flag stays at the supervised floor — so the per-repo/risk policy is the
+# ONLY allow-path and the runner ships only what a repo has EARNED.
+OUT="$(probe GAFFER_MODE=graduated)"
+expect "$OUT" REVIEW_MODE                 agent "graduated: agent review runs"
+expect "$OUT" DISPATCH_ALLOW_AGENT_APPROVE 0    "graduated: approve floor OFF (policy is the allow-path)"
+expect "$OUT" MERGE_ON_AGENT_REVIEW        0    "graduated: merge floor held"
+expect "$OUT" AUTO_MERGE                   0    "graduated: auto-merge floor held"
+expect "$OUT" GAFFER_AUTO_PUSH             0    "graduated: no auto-push (earned merges land locally)"
+expect "$OUT" MEMORY_AUTO_APPROVE          0    "graduated: memory auto-approve off"
+expect "$OUT" STRICT_MODE                  0    "graduated: no strict sandbox"
+
 echo "== 3: GAFFER_MODE=strict → autonomous cluster + STRICT_MODE=1 =="
 OUT="$(probe GAFFER_MODE=strict)"
 expect "$OUT" REVIEW_MODE                 agent "strict: agent review"

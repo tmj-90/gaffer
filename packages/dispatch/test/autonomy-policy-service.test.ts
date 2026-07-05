@@ -11,8 +11,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   ALLOW_AGENT_APPROVE_ENV,
+  AUTO_MERGE_ENV,
   envAllowsAuto,
   isAutonomyAllowed,
+  MERGE_ON_AGENT_REVIEW_ENV,
   policyGrantsAuto,
   type PolicyLookup,
 } from "../src/services/autonomyPolicyService.js";
@@ -31,6 +33,11 @@ function lookupOf(rows: Record<string, AutonomyMode>): PolicyLookup {
 const EMPTY = lookupOf({});
 const ENV_ON = { [ALLOW_AGENT_APPROVE_ENV]: "1" } as NodeJS.ProcessEnv;
 const ENV_OFF = {} as NodeJS.ProcessEnv;
+/** The autonomous merge FLOOR: both flags set (what GAFFER_MODE=autonomous sets). */
+const MERGE_ENV_ON = {
+  [AUTO_MERGE_ENV]: "1",
+  [MERGE_ON_AGENT_REVIEW_ENV]: "1",
+} as NodeJS.ProcessEnv;
 
 describe("envAllowsAuto — the per-gate env fallback (today's behaviour)", () => {
   it("approve gate follows DISPATCH_ALLOW_AGENT_APPROVE exactly", () => {
@@ -41,9 +48,23 @@ describe("envAllowsAuto — the per-gate env fallback (today's behaviour)", () =
     );
   });
 
-  it("merge gate defaults to true (today the auto-merge always fires post-approve)", () => {
-    expect(envAllowsAuto("merge", ENV_OFF)).toBe(true);
-    expect(envAllowsAuto("merge", ENV_ON)).toBe(true);
+  it("merge gate is a BLOCKING floor: needs AUTO_MERGE=1 AND MERGE_ON_AGENT_REVIEW=1", () => {
+    // The new blocking default — off unless BOTH flags are explicitly "1".
+    expect(envAllowsAuto("merge", ENV_OFF)).toBe(false);
+    expect(envAllowsAuto("merge", { [AUTO_MERGE_ENV]: "1" } as NodeJS.ProcessEnv)).toBe(false);
+    expect(
+      envAllowsAuto("merge", { [MERGE_ON_AGENT_REVIEW_ENV]: "1" } as NodeJS.ProcessEnv),
+    ).toBe(false);
+    // Only exactly "1" for BOTH opts in (the autonomous floor).
+    expect(envAllowsAuto("merge", MERGE_ENV_ON)).toBe(true);
+    expect(
+      envAllowsAuto("merge", {
+        [AUTO_MERGE_ENV]: "1",
+        [MERGE_ON_AGENT_REVIEW_ENV]: "0",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+    // The approve env flag does NOT bleed into the merge gate [negative control].
+    expect(envAllowsAuto("merge", ENV_ON)).toBe(false);
   });
 
   it("memory gate follows MEMORY_AUTO_APPROVE", () => {
@@ -122,5 +143,53 @@ describe("isAutonomyAllowed — policy OR env (the additional path never subtrac
   it("risk=low auto does NOT leak to a risk=high ticket even with the policy present [negative control]", () => {
     const lookup = lookupOf({ "repo-a|low|approve": "auto" });
     expect(isAutonomyAllowed(lookup, ["repo-a"], "high", "approve", ENV_OFF)).toBe(false);
+  });
+});
+
+describe("isAutonomyAllowed — the MERGE gate (blocking floor + graduated policy path)", () => {
+  it("autonomous floor (both flags) merges with NO policy row [byte-identical to today]", () => {
+    // GAFFER_MODE=autonomous sets both flags; the merge gate is permitted exactly as before.
+    expect(isAutonomyAllowed(EMPTY, ["repo-a"], "low", "merge", MERGE_ENV_ON)).toBe(true);
+    // ...and it still holds at ANY risk (the env floor is risk-agnostic, like today).
+    expect(isAutonomyAllowed(EMPTY, ["repo-a"], "high", "merge", MERGE_ENV_ON)).toBe(true);
+  });
+
+  it("supervised/graduated floor (flags off) HOLDS the merge with no policy row", () => {
+    expect(isAutonomyAllowed(EMPTY, ["repo-a"], "low", "merge", ENV_OFF)).toBe(false);
+  });
+
+  it("graduated: env floor OFF + a mode='auto' merge row ships that (repo × risk) ONLY", () => {
+    const lookup = lookupOf({ "repo-a|low|merge": "auto" });
+    // Earned: env off, but the merge policy grants this exact repo/risk.
+    expect(isAutonomyAllowed(lookup, ["repo-a"], "low", "merge", ENV_OFF)).toBe(true);
+    // Not earned at a higher risk [negative control].
+    expect(isAutonomyAllowed(lookup, ["repo-a"], "high", "merge", ENV_OFF)).toBe(false);
+    // Nor for a different repo [negative control].
+    expect(isAutonomyAllowed(lookup, ["repo-b"], "low", "merge", ENV_OFF)).toBe(false);
+    // An `approve` grant does NOT satisfy the merge gate [gate scoping is exact].
+    expect(
+      isAutonomyAllowed(
+        lookupOf({ "repo-a|low|approve": "auto" }),
+        ["repo-a"],
+        "low",
+        "merge",
+        ENV_OFF,
+      ),
+    ).toBe(false);
+  });
+
+  it("multi-write-repo merge: ONE uncovered repo denies the whole merge (fail-closed)", () => {
+    const partial = lookupOf({ "repo-a|low|merge": "auto" }); // repo-b uncovered.
+    expect(isAutonomyAllowed(partial, ["repo-a", "repo-b"], "low", "merge", ENV_OFF)).toBe(false);
+    const both = lookupOf({ "repo-a|low|merge": "auto", "repo-b|low|merge": "auto" });
+    expect(isAutonomyAllowed(both, ["repo-a", "repo-b"], "low", "merge", ENV_OFF)).toBe(true);
+  });
+
+  it("no write repo ⇒ merge denied even under the autonomous floor... via policy, but the env floor still allows", () => {
+    // policyGrantsAuto fails closed on an empty repo set, but the ENV floor is repo-agnostic:
+    // under the autonomous flags a no-write-repo ticket still merges (env OR policy).
+    expect(isAutonomyAllowed(EMPTY, [], "low", "merge", MERGE_ENV_ON)).toBe(true);
+    // With the floor OFF and no repos, there is no allow-path ⇒ deny.
+    expect(isAutonomyAllowed(EMPTY, [], "low", "merge", ENV_OFF)).toBe(false);
   });
 });

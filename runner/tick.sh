@@ -705,51 +705,89 @@ EOF
       printf '%s' "$R_RESULT" | grep -qiE "RECOMMEND[ _-]*CHANGES" && R_VERDICT=changes
       NEWSTATUS="$(wg ticket show "$RNUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
 
-      # ── AFK auto-completion (opt-in; OFF by default) ─────────────────────────────
+      # ── AFK auto-completion — GRADUATED per-repo/risk autonomy ───────────────────
       # By default an agent review is ADVISORY: the ticket stays in_review for a HUMAN,
       # and the reviewer AGENT never approves itself (prompt forbids it, CLI blocked).
-      # When the operator has explicitly opted into unattended completion — AUTO_MERGE=1
-      # AND MERGE_ON_AGENT_REVIEW=1 — the RUNNER (deterministic + trusted, exactly like
-      # the DoD gates and the submit step) acts on the verdict on the operator's standing
-      # behalf: a clean APPROVE is approved → safe-merged → optionally pushed → marked
-      # done; a CHANGES verdict is rejected back to rework WITH the reviewer's feedback
-      # (which the delivery path surfaces into the next attempt), so a cautious review is
-      # a RETRY, not a block — the rework budget cap eventually parks a stuck ticket.
-      if [ "$NEWSTATUS" = "in_review" ] && [ "${AUTO_MERGE:-0}" = "1" ] && [ "${MERGE_ON_AGENT_REVIEW:-0}" = "1" ] && [ -n "$RBRANCH" ]; then
-        if [ "$R_VERDICT" = "approve" ]; then
-          if wg review approve "$RNUM" >/dev/null 2>&1; then
-            log "AFK: runner approved #$RNUM on a clean agent verdict (→ ready_for_merge)"
-            # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an
-            # ancestor of RDEFAULT, so merge-base would collapse to RBRANCH (empty diff).
-            _CR_BASE="$(git -C "$RREPO" merge-base "$RBRANCH" "$RDEFAULT" 2>/dev/null || true)"
-            gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; _mrc=$?
-            case "$_mrc" in
-              0)
-                wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
-                  && log "AFK: #$RNUM merged ($RBRANCH → $RDEFAULT) and marked done" \
-                  || log "AFK: #$RNUM merged but mark-merged failed — verify state"
-                # MEMORY FRESHNESS: write-through the delivered change into the file cards
-                # (refresh changed, add new, drop deleted, advance the watermark) so priming
-                # stays current instead of decaying. Fail-soft — never blocks the merge.
-                gaffer_refresh_cards "$RREPO" "$(basename "$RREPO")" "$_CR_BASE" "$RBRANCH" \
-                  "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
-                if [ "${GAFFER_AUTO_PUSH:-0}" = "1" ]; then
-                  gaffer_auto_push "$RREPO" "$RDEFAULT" \
-                    && log "AFK: pushed $RDEFAULT to origin" \
-                    || log "AFK: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push"
-                fi
-                ;;
-              3) log "AFK: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;
-              1) log "AFK: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human" ;;
-              *) log "AFK: #$RNUM approved but merge could not run (rc=$_mrc) — left in ready_for_merge for a human" ;;
-            esac
+      # Whether the RUNNER (deterministic + trusted, exactly like the DoD gates and the
+      # submit step) may act on the verdict is now decided PER TICKET by the graduated
+      # autonomy policy — NOT by the raw AUTO_MERGE/MERGE_ON_AGENT_REVIEW flags. The runner
+      # approves as an AGENT actor (honest provenance: the audit trail shows an autonomous
+      # approval, never a fake human one) so the SERVER re-enforces the exact same
+      # isAutonomyAllowed('approve') decision — defense-in-depth: the bash gate below and
+      # the dispatch core must BOTH agree, so a future runner bug can't silently ship.
+      # The runner asks dispatch (`wg ticket auto-decision`, which reuses isAutonomyAllowed
+      # = env FLOOR OR an earned per-repo/risk `auto` row); it adds no policy logic of its own:
+      #   • approve gate → may the runner cross the review gate for THIS ticket at all;
+      #   • merge   gate → may the earned change actually LAND on the default branch.
+      # So supervised (env floor off, no policy) HOLDS every ticket in_review for a human
+      # (byte-identical to before); autonomous (env floor on) SHIPS all (byte-identical);
+      # graduated (env floor off + policy) ships only what a repo has EARNED at its risk and
+      # holds the rest. On approve: a clean APPROVE is approved → (if the merge gate allows)
+      # safe-merged → optionally pushed → marked done, else held at ready_for_merge for a
+      # human; a CHANGES verdict is rejected back to rework WITH the reviewer's feedback so a
+      # cautious review is a RETRY (the rework budget cap eventually parks a stuck ticket).
+      # Ask the policy per gate (env FLOOR OR an earned per-repo/risk `auto` row), then map
+      # (verdict × approve-gate × merge-gate) to ONE action through the pure, unit-tested
+      # gaffer_afk_ship_plan — the single source of truth for the ship matrix. Fail-closed:
+      # the decisions default to deny and the plan defaults to `hold`.
+      _SHIP_APPROVE=deny; _SHIP_MERGE=deny; _SHIP_PLAN=hold
+      if [ "$NEWSTATUS" = "in_review" ] && [ -n "$RBRANCH" ]; then
+        _SHIP_APPROVE="$(gaffer_auto_decision "$RNUM" approve)"
+        _SHIP_MERGE="$(gaffer_auto_decision "$RNUM" merge)"
+        _SHIP_PLAN="$(gaffer_afk_ship_plan "$R_VERDICT" "$_SHIP_APPROVE" "$_SHIP_MERGE")"
+      fi
+      case "$_SHIP_PLAN" in
+        ship|approve_hold)
+          # Approve gate EARNED + clean APPROVE verdict → cross the review gate. Approve as
+          # the runner's AGENT actor (--as agent --reviewer "$AGENT"), NOT human: this keeps
+          # the audit provenance honest AND makes the server re-run isAutonomyAllowed('approve')
+          # (the redundant second gate). The approve env FLOOR is forwarded in a subshell (the
+          # flag is an UNexported shell var) so autonomous still passes; a graduated earned row
+          # passes via the DB policy with the floor off; an unearned ticket the server REFUSES.
+          if ( export DISPATCH_ALLOW_AGENT_APPROVE="${DISPATCH_ALLOW_AGENT_APPROVE:-0}"; \
+               wg review approve "$RNUM" --as agent --reviewer "$AGENT" >/dev/null 2>&1 ); then
+            log "AFK: runner (agent $AGENT) approved #$RNUM on a clean verdict + earned approve grant (→ ready_for_merge)"
+            if [ "$_SHIP_PLAN" = "ship" ]; then
+              # Merge gate ALSO earned → safe-merge the delivery branch into the default.
+              # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an
+              # ancestor of RDEFAULT, so merge-base would collapse to RBRANCH (empty diff).
+              _CR_BASE="$(git -C "$RREPO" merge-base "$RBRANCH" "$RDEFAULT" 2>/dev/null || true)"
+              gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; _mrc=$?
+              case "$_mrc" in
+                0)
+                  wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
+                    && log "AFK: #$RNUM merged ($RBRANCH → $RDEFAULT) and marked done" \
+                    || log "AFK: #$RNUM merged but mark-merged failed — verify state"
+                  # MEMORY FRESHNESS: write-through the delivered change into the file cards
+                  # (refresh changed, add new, drop deleted, advance the watermark) so priming
+                  # stays current instead of decaying. Fail-soft — never blocks the merge.
+                  gaffer_refresh_cards "$RREPO" "$(basename "$RREPO")" "$_CR_BASE" "$RBRANCH" \
+                    "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
+                  if [ "${GAFFER_AUTO_PUSH:-0}" = "1" ]; then
+                    gaffer_auto_push "$RREPO" "$RDEFAULT" \
+                      && log "AFK: pushed $RDEFAULT to origin" \
+                      || log "AFK: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push"
+                  fi
+                  ;;
+                3) log "AFK: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;
+                1) log "AFK: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human" ;;
+                *) log "AFK: #$RNUM approved but merge could not run (rc=$_mrc) — left in ready_for_merge for a human" ;;
+              esac
+            else
+              # Approve gate earned but the MERGE gate is HELD for this repo/risk (graduated:
+              # env floor off + no `auto` merge row). The ticket is approved and waits at
+              # ready_for_merge for a human to merge — "ship what you've earned, hold the rest".
+              log "AFK: #$RNUM approved but auto-merge NOT permitted by policy (merge gate held) — left in ready_for_merge for a human"
+              _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+            fi
           else
             log "AFK: runner could not approve #$RNUM (approve rejected) — left in_review"
             _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
           fi
-        else
-          # CHANGES → reject to rework with the reviewer's reason. The feedback loop
-          # (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
+          ;;
+        rework)
+          # CHANGES verdict on an EARNED ticket → reject to rework with the reviewer's reason.
+          # The feedback loop (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
           _rreason="$(printf '%s' "$R_RESULT" | tr '\n' ' ' | tail -c 480)"
           [ -n "${_rreason// /}" ] || _rreason="agent review recommended changes"
           if wg review reject "$RNUM" --reason "$_rreason" --to ready >/dev/null 2>&1; then
@@ -758,12 +796,14 @@ EOF
             log "AFK: #$RNUM CHANGES but reject failed — left in_review"
             _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
           fi
-        fi
-      else
-        # Advisory-only (default): leave for a human; mark reviewed-this-run so we don't loop.
-        [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
-        log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT) — ADVISORY; awaiting HUMAN approval"
-      fi
+          ;;
+        *)  # hold — advisory / policy-HELD (supervised env floor, or a graduated repo/risk
+            # that has NOT earned an `auto` approve grant). Leave for a human; mark
+            # reviewed-this-run so we don't loop. The verdict is recorded either way.
+          [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+          log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT, approve_gate=$_SHIP_APPROVE) — ADVISORY/HELD; awaiting HUMAN approval"
+          ;;
+      esac
       # Restore the global traps now that the review block is complete. Run cleanup
       # once explicitly here so the worktree is gone before the result line fires;
       # trap - EXIT clears our review-scoped EXIT handler so gaffer_on_exit (the

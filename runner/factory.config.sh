@@ -1057,6 +1057,11 @@ gaffer_usage_record() {
 # silently never merges, and the factory looks stalled.) One mode moves the
 # whole cluster together:
 #   supervised  (DEFAULT, safe)  — a human approves every merge
+#   graduated   (earned trust)   — the reviewer agent runs, but the env autonomy floor
+#                                  stays at supervised (approve off, merge held): the
+#                                  per-repo/risk autonomy POLICY is the sole allow-path,
+#                                  so the runner ships only what each repo has EARNED at
+#                                  its risk level and holds everything else for a human.
 #   autonomous  (walk-away / AFK) — agents approve; approved work auto-merges + pushes
 #   strict      (autonomous + OS-level sandbox containment)
 #
@@ -1087,6 +1092,23 @@ case "$GAFFER_MODE" in
     : "${AUTO_MERGE:=1}"
     : "${GAFFER_AUTO_PUSH:=1}"
     : "${MEMORY_AUTO_APPROVE:=1}"
+    ;;
+  graduated)
+    # GRADUATED (earned trust). The reviewer AGENT runs (REVIEW_MODE=agent) so there is a
+    # verdict for the runner to act on — but the env autonomy FLOOR is identical to
+    # supervised (approve OFF, merge held, no push, no memory-auto): the per-repo/risk
+    # autonomy POLICY is the ONLY allow-path. The runner's AFK ship gate consults that
+    # policy per ticket (tick.sh → `wg ticket auto-decision`), so a ticket ships iff its
+    # write-repos+risk are EARNED (a mode='auto' approve AND merge row) and HOLDS for a
+    # human otherwise. Inert until the operator adds `auto` policy rows — ships dark + safe.
+    # (GAFFER_AUTO_PUSH stays 0: an earned merge lands on the local default branch and the
+    # operator pushes when they choose; opt in explicitly to auto-push earned merges.)
+    : "${REVIEW_MODE:=agent}"
+    : "${DISPATCH_ALLOW_AGENT_APPROVE:=0}"
+    : "${MERGE_ON_AGENT_REVIEW:=0}"
+    : "${AUTO_MERGE:=0}"
+    : "${GAFFER_AUTO_PUSH:=0}"
+    : "${MEMORY_AUTO_APPROVE:=0}"
     ;;
   *)   # supervised (default) — and any unrecognised value → safe posture
     : "${REVIEW_MODE:=human}"
@@ -1267,6 +1289,50 @@ lg() { gaffer_assert_db_vars || return 1; MEMORY_DB="$MEMORY_DB" node "$MEMORY_C
 
 # Tiny JSON field reader (python3): jget '<expr starting with d>' <<< "$json"
 jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
+
+# GRADUATED-AUTONOMY: the read-only ship decision the AFK gate consults per ticket —
+# "is `auto` permitted for ticket $1 at gate $2 (approve|merge)?" It reuses dispatch's
+# isAutonomyAllowed (env FLOOR OR an earned per-repo/risk `auto` policy) via the
+# `wg ticket auto-decision` CLI, so the runner adds NO policy logic of its own and can
+# never diverge from the enforced decision. The autonomy env flags are UNexported shell
+# vars (see the GAFFER_MODE cluster above), so the floor is passed EXPLICITLY into the
+# CLI's environment here — otherwise the child node process would see them unset. Echoes
+# exactly `allow` or `deny`. FAILS CLOSED: any error, missing DB, or non-`allow` → `deny`.
+gaffer_auto_decision() {
+  local _ref="$1" _gate="$2" _out _dec
+  _out="$(
+    export AUTO_MERGE="${AUTO_MERGE:-0}" \
+           MERGE_ON_AGENT_REVIEW="${MERGE_ON_AGENT_REVIEW:-0}" \
+           DISPATCH_ALLOW_AGENT_APPROVE="${DISPATCH_ALLOW_AGENT_APPROVE:-0}"
+    wg ticket auto-decision "$_ref" --gate "$_gate" 2>/dev/null
+  )" || _out=""
+  _dec="$(printf '%s' "$_out" | jget "d.get('decision','deny')" 2>/dev/null || echo deny)"
+  [ "$_dec" = "allow" ] && printf 'allow\n' || printf 'deny\n'
+}
+
+# GRADUATED-AUTONOMY: the PURE ship-decision matrix — the single source of truth mapping
+# (reviewer verdict × approve gate × merge gate) → one runner action, so the AFK block in
+# tick.sh just dispatches on the result and the logic is unit-testable in isolation. No I/O,
+# no side effects. FAIL-CLOSED: unless the approve gate is `allow` the plan is `hold`.
+#   $1 verdict         : approve | changes   (the reviewer's advisory verdict)
+#   $2 approve-decision: allow | deny         (gaffer_auto_decision <n> approve)
+#   $3 merge-decision  : allow | deny         (gaffer_auto_decision <n> merge)
+# Echoes exactly one of:
+#   hold          — the runner does NOT act; the ticket waits in_review for a human
+#                   (supervised env floor, or a graduated repo/risk not yet earned).
+#   rework        — approve earned + CHANGES verdict → reject to rework.
+#   ship          — approve AND merge earned + APPROVE verdict → approve then auto-merge.
+#   approve_hold  — approve earned + APPROVE verdict, but merge NOT earned → approve and
+#                   hold at ready_for_merge for a human to merge.
+gaffer_afk_ship_plan() {
+  local _verdict="$1" _approve="$2" _merge="$3"
+  if [ "$_approve" != "allow" ]; then printf 'hold\n'; return 0; fi
+  if [ "$_verdict" = "approve" ]; then
+    [ "$_merge" = "allow" ] && printf 'ship\n' || printf 'approve_hold\n'
+  else
+    printf 'rework\n'
+  fi
+}
 
 # Strict-execution-mode provider seam (defines sandbox_wrap_cmd). Sourced last so
 # it can read the GAFFER_DATA / STRICT_* config above. Best-effort: a missing file

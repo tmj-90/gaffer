@@ -83,7 +83,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     help:
       "Preset that sets the whole autonomy cluster at once (review mode, agent " +
       "approval, auto-merge, auto-push, memory auto-approve): supervised · " +
-      "autonomous · strict. supervised (default) keeps a human on every merge; " +
+      "graduated · autonomous · strict. supervised (default) keeps a human on every " +
+      "merge; graduated ships what each repo has EARNED at its risk level and holds " +
+      "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
+      "policy is the sole allow-path — set grants in the per-repo policy editor); " +
       "autonomous lets agents approve and auto-merges + pushes approved work; " +
       "strict adds OS-level sandbox containment. Picking a mode prevents a " +
       "half-configured autonomy posture. The individual knobs below still " +

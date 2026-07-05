@@ -174,3 +174,100 @@ describe("Graduated Autonomy — approve-gate enforcement (behavioral)", () => {
     expect(d.approveReview(ticketId, agentActor).ticket.status).toBe("ready_for_merge");
   });
 });
+
+/**
+ * The READ-ONLY ship-decision surface the AFK runner consults (`autonomyGateDecision`,
+ * exposed on the CLI as `wg ticket auto-decision`). It reuses the SAME isAutonomyAllowed
+ * as the chokepoints, so this proves the runner sees a decision that can never diverge
+ * from what the approve/merge sites enforce — for both gates, env floor + policy.
+ */
+describe("Graduated Autonomy — autonomyGateDecision (the runner's read-only surface)", () => {
+  let d: Dispatch;
+  beforeEach(() => {
+    d = Dispatch.open(":memory:", undefined, nonEmptyDiffRunner);
+    delete process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+    delete process.env.AUTO_MERGE;
+    delete process.env.MERGE_ON_AGENT_REVIEW;
+  });
+  afterEach(() => {
+    delete process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+    delete process.env.AUTO_MERGE;
+    delete process.env.MERGE_ON_AGENT_REVIEW;
+    d.db.close();
+  });
+
+  it("env floor off + no policy ⇒ BOTH gates deny, and report the (repo, risk) context", () => {
+    const { ticketId, repoId } = buildInReview(d, "svc", "low", 1);
+    const ticket = d.resolveTicket(ticketId);
+    const approve = d.autonomyGateDecision(ticket, "approve");
+    expect(approve).toMatchObject({ gate: "approve", decision: "deny", risk_level: "low" });
+    expect(approve.write_repo_ids).toContain(repoId);
+    expect(d.autonomyGateDecision(ticket, "merge").decision).toBe("deny");
+  });
+
+  it("graduated: a mode='auto' MERGE row flips ONLY the merge gate to allow at that risk", () => {
+    const { repoId } = buildInReview(d, "svc", "low", 1);
+    d.setAutonomyPolicy(
+      { repoId, riskLevel: "low", gate: "merge", mode: "auto", confirm: true },
+      human,
+    );
+    const low = d.resolveTicket(buildInReview(d, "svc", "low", 2).ticketId);
+    expect(d.autonomyGateDecision(low, "merge").decision).toBe("allow");
+    // The approve gate is NOT granted by a merge row [gate scoping is exact].
+    expect(d.autonomyGateDecision(low, "approve").decision).toBe("deny");
+    // A higher-risk ticket in the same repo is still held [risk scoping is exact].
+    const high = d.resolveTicket(buildInReview(d, "svc", "high", 3).ticketId);
+    expect(d.autonomyGateDecision(high, "merge").decision).toBe("deny");
+  });
+
+  it("autonomous floor (both flags) ⇒ merge gate allow with no policy [byte-identical]", () => {
+    process.env.AUTO_MERGE = "1";
+    process.env.MERGE_ON_AGENT_REVIEW = "1";
+    const ticket = d.resolveTicket(buildInReview(d, "svc", "low", 1).ticketId);
+    expect(d.autonomyGateDecision(ticket, "merge").decision).toBe("allow");
+  });
+});
+
+/**
+ * DEFENSE-IN-DEPTH — the runner now approves its unattended ships as an AGENT actor
+ * (`wg review approve --as agent`), so the SERVER re-runs isAutonomyAllowed('approve')
+ * over the SAME inputs the runner's bash gate used. This pins that the second gate is
+ * real across the three postures, so a runner-side bug can never silently ship an
+ * unearned approval — the core refuses it too. (The runner's approve actor is
+ * `{type:'agent'}`; the human dashboard/REST approve is unchanged and untested here.)
+ */
+describe("Graduated Autonomy — the runner's agent-approve is re-enforced server-side", () => {
+  let d: Dispatch;
+  beforeEach(() => {
+    d = Dispatch.open(":memory:", undefined, nonEmptyDiffRunner);
+    delete process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+  });
+  afterEach(() => {
+    delete process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+    d.db.close();
+  });
+
+  it("SUPERVISED-floor (env off, no policy) → the server REFUSES the agent approve", () => {
+    const { ticketId } = buildInReview(d, "svc", "low", 1);
+    expectBlocked(() => d.approveReview(ticketId, agentActor));
+  });
+
+  it("GRADUATED (env off) → an EARNED approve row lets the agent approve through", () => {
+    const { repoId } = buildInReview(d, "svc", "low", 1);
+    d.setAutonomyPolicy(
+      { repoId, riskLevel: "low", gate: "approve", mode: "auto", confirm: true },
+      human,
+    );
+    const { ticketId } = buildInReview(d, "svc", "low", 2);
+    expect(d.approveReview(ticketId, agentActor).ticket.status).toBe("ready_for_merge");
+    // ...but an UNEARNED risk in the same repo is still refused [negative control].
+    const { ticketId: highId } = buildInReview(d, "svc", "high", 3);
+    expectBlocked(() => d.approveReview(highId, agentActor));
+  });
+
+  it("AUTONOMOUS floor (DISPATCH_ALLOW_AGENT_APPROVE=1) → the agent approve passes", () => {
+    process.env.DISPATCH_ALLOW_AGENT_APPROVE = "1";
+    const { ticketId } = buildInReview(d, "svc", "low", 1);
+    expect(d.approveReview(ticketId, agentActor).ticket.status).toBe("ready_for_merge");
+  });
+});

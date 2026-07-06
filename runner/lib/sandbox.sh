@@ -164,12 +164,34 @@ sandbox_wrap_cmd() {
       return 0
       ;;
 
-    docker | lima)
+    docker)
+      # Mode 2: run the agent inside a container with read + egress isolation (see
+      # lib/sandbox-docker.sh + docs/vm-sandbox-provider.md). Unlike sandbox-exec this
+      # is a full execution context, not a syscall filter — so it wraps by emitting a
+      # prefix that runs the command in the container. Needs a live docker daemon.
+      if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+        if _sandbox_strict_required; then
+          printf 'strict-mode: docker provider selected but the docker daemon is unavailable and GAFFER_STRICT_REQUIRE=1 — refusing to run (fail closed)\n' >&2
+          return 1
+        fi
+        printf 'strict-mode: docker daemon unavailable — falling back to no OS sandbox (worktree isolation + safety hook still apply)\n' >&2
+        return 0
+      fi
+      mkdir -p "${GAFFER_DATA:-/tmp}" 2>/dev/null || true
+      # write/read roots can be multi-line — hand them to the wrapper via files.
+      local wrf="${GAFFER_DATA:-/tmp}/sandbox-write-roots" rrf="${GAFFER_DATA:-/tmp}/sandbox-read-roots"
+      printf '%s\n' "$write_roots" > "$wrf"
+      printf '%s\n' "$read_roots" > "$rrf"
+      printf 'bash %s/lib/sandbox-docker.sh %s %s --' "${RUNNER_DIR:-.}" "$wrf" "$rrf"
+      return 0
+      ;;
+
+    lima)
       if _sandbox_strict_required; then
-        printf "strict-mode: provider '%s' not yet supported and GAFFER_STRICT_REQUIRE=1 — refusing to run without an OS sandbox (fail closed)\n" "${SANDBOX_PROVIDER}" >&2
+        printf "strict-mode: provider 'lima' not yet supported and GAFFER_STRICT_REQUIRE=1 — refusing to run without an OS sandbox (fail closed)\n" >&2
         return 1
       fi
-      printf "strict-mode: provider '%s' not yet supported — falling back to no OS sandbox (worktree isolation still applies)\n" "${SANDBOX_PROVIDER}" >&2
+      printf "strict-mode: provider 'lima' not yet supported — falling back to no OS sandbox (worktree isolation still applies)\n" >&2
       return 0
       ;;
 

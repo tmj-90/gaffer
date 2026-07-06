@@ -1,0 +1,23 @@
+# Egress allowlist — one extended-regex per line, matched (case-insensitive) against
+# the destination host. Anything not matched is DENIED (FilterDefaultDeny Yes).
+# Keep this tight: it is the network half of the "no exfiltration" boundary. Package
+# registries are included because a delivery legitimately runs `npm ci` / `pip install`;
+# add more per your stack, but every entry widens the exfil surface — justify each.
+
+# --- the model endpoint (claude needs it) ---
+(^|\.)anthropic\.com$
+
+# --- JS / Node registries ---
+(^|\.)npmjs\.org$
+(^|\.)npmjs\.com$
+(^|\.)nodejs\.org$
+(^|\.)yarnpkg\.com$
+
+# --- Python registries ---
+(^|\.)pypi\.org$
+(^|\.)pythonhosted\.org$
+
+# --- source / package hosts commonly needed to fetch deps ---
+(^|\.)github\.com$
+(^|\.)githubusercontent\.com$
+(^|\.)ghcr\.io$

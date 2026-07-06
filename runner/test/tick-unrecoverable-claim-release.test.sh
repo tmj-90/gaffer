@@ -130,7 +130,9 @@ for reason in \
   "delivery failed: worktree HEAD was left on the default branch (no gaffer/ branch)" \
   "delivery failed: worktree HEAD is not a gaffer/ branch"; do
   i=$((i+1))
-  read -r NUM CLAIM_TOKEN < <(make_claimed_ticket "unrec-$i")
+  # bash-3.2-safe capture of "<num> <token>" (no `< <()` process sub). A failed
+  # claim yields only the number, so guard the token with ${2:-}.
+  set -- $(make_claimed_ticket "unrec-$i"); NUM="${1:-}"; CLAIM_TOKEN="${2:-}"
   [ -n "${CLAIM_TOKEN:-}" ] || { fail "setup: could not claim #$NUM (path $i)"; continue; }
   [ "$(status_of "$NUM")" = "claimed" ] || { fail "setup: #$NUM not claimed before release (path $i)"; continue; }
 
@@ -160,7 +162,7 @@ for reason in \
 done
 
 echo "== A6: release lands BEFORE skip — both effects are present =="
-read -r NUM CLAIM_TOKEN < <(make_claimed_ticket "order")
+set -- $(make_claimed_ticket "order"); NUM="${1:-}"; CLAIM_TOKEN="${2:-}"
 GAFFER_CLAIM_RESOLVED=0
 gaffer_release_delivery ready "delivery failed: no commits"
 DB_READY="$([ "$(status_of "$NUM")" = ready ] && echo yes || echo no)"   # released FIRST
@@ -170,7 +172,7 @@ gaffer_skip_ticket "$NUM"
   || fail "A6: release-before-skip not observed (ready-first=$DB_READY, skipped=$(grep -qx "$NUM" "$SKIP_FILE" && echo yes || echo no))"
 
 echo "== A7: NEGATIVE CONTROL — skipping WITHOUT releasing strands the ticket =="
-read -r NUM CLAIM_TOKEN < <(make_claimed_ticket "stranded")
+set -- $(make_claimed_ticket "stranded"); NUM="${1:-}"; CLAIM_TOKEN="${2:-}"
 # Simulate the OLD bug: only skip, never release the runner-held claim.
 gaffer_skip_ticket "$NUM"
 { [ "$(status_of "$NUM")" = "claimed" ] && [ "$(active_claims "$NUM")" = "1" ]; } \

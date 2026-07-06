@@ -1,6 +1,30 @@
 import { inTransaction } from "../db/connection.js";
 import type { Db } from "../db/connection.js";
+import { planMessageSchema } from "../domain/schemas.js";
 import type { PlanMessage, PlanSession, PlanSessionStatus } from "../domain/types.js";
+
+/**
+ * Parse a persisted `messages_json` blob into a typed history. Defensive on
+ * read (H5): a non-JSON or non-array value yields an empty history, and any
+ * individual entry that is not a structurally-valid {@link PlanMessage} is
+ * dropped rather than trusted via a blind cast. A partially-corrupt row thus
+ * keeps its still-valid turns instead of silently discarding the whole history.
+ */
+function parsePersistedMessages(raw: string): PlanMessage[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const messages: PlanMessage[] = [];
+  for (const entry of parsed) {
+    const result = planMessageSchema.safeParse(entry);
+    if (result.success) messages.push(result.data);
+  }
+  return messages;
+}
 
 /** Default cap on the list of recent sessions returned to the UI. */
 export const DEFAULT_SESSION_LIST_LIMIT = 20;
@@ -111,13 +135,9 @@ export class PlanSessionRepository {
       const session = this.getById(input.id);
       if (!session) return null;
 
-      // Parse existing messages, push new one, re-serialise.
-      let messages: PlanMessage[];
-      try {
-        messages = JSON.parse(session.messages_json) as PlanMessage[];
-      } catch {
-        messages = [];
-      }
+      // Parse existing messages, push new one, re-serialise. The read is
+      // structurally validated (H5) so a corrupt row can't inject untyped data.
+      const messages = parsePersistedMessages(session.messages_json);
       messages.push(input.message);
       const newMessagesJson = JSON.stringify(messages);
 

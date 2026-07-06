@@ -314,6 +314,13 @@ console.log("== AC4: --output-format json is wired into the consolidated invocat
   // each routed turn still ledgers via gaffer_usage_record.
   const tick = readFileSync(resolve(RUNNER_DIR, "tick.sh"), "utf8");
   const worker = readFileSync(resolve(RUNNER_DIR, "lib", "worker.sh"), "utf8");
+  // B-H3 (monolith paydown): the review + clarify agent turns were extracted from
+  // tick.sh into lib/review.sh + lib/clarify.sh (sourced by tick.sh). Count the
+  // routing/ledger wiring across tick.sh AND the two extracted passes — the runtime
+  // set of four agent turns is unchanged, only relocated.
+  const review = readFileSync(resolve(RUNNER_DIR, "lib", "review.sh"), "utf8");
+  const clarify = readFileSync(resolve(RUNNER_DIR, "lib", "clarify.sh"), "utf8");
+  const passes = tick + "\n" + review + "\n" + clarify;
   // No open-coded claude -p remains in tick.sh — it all flows through the seam.
   const inlineSites = tick.split("\n").filter((l) => /"\$CLAUDE_BIN"\s+-p\b/.test(l)).length;
   assert("tick.sh has no open-coded claude -p (moved to the worker seam)", inlineSites === 0);
@@ -324,12 +331,15 @@ console.log("== AC4: --output-format json is wired into the consolidated invocat
     .filter((l) => /"\$CLAUDE_BIN"\s+-p\b/.test(l) && /--output-format json/.test(l)).length;
   assert("lib/worker.sh has exactly 1 claude -p invocation site", workerSites === 1);
   assert("lib/worker.sh: the invocation uses --output-format json", workerJson === 1);
-  // tick.sh routes all 4 agent turns through the seam.
-  const routed = (tick.match(/^\s*worker_deliver /gm) || []).length;
-  assert("tick.sh routes exactly 4 turns through worker_deliver", routed === 4);
+  // tick.sh + the extracted review/clarify passes route all 4 agent turns through the seam.
+  const routed = (passes.match(/^\s*worker_deliver /gm) || []).length;
   assert(
-    "tick.sh: each routed turn ledgers via gaffer_usage_record",
-    (tick.match(/gaffer_usage_record/g) || []).length >= 4,
+    "tick.sh + review/clarify libs route exactly 4 turns through worker_deliver",
+    routed === 4,
+  );
+  assert(
+    "each routed turn ledgers via gaffer_usage_record (across tick.sh + review/clarify libs)",
+    (passes.match(/gaffer_usage_record/g) || []).length >= 4,
   );
   const dec = readFileSync(resolve(RUNNER_DIR, "bin", "decompose.mjs"), "utf8");
   assert(

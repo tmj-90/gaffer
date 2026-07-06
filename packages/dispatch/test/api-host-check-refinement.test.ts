@@ -178,10 +178,14 @@ describe("Host/Origin check refinement", () => {
   });
 
   describe("(c) DISPATCH_ALLOWED_HOSTS extends the host allowlist", () => {
-    it("allows a tokenless read with an allowlisted Host on loopback", async () => {
+    // S-M1: reads require the token, so these assert the HOST allowlist by sending
+    // the token (the host check runs before the auth gate; an allowlisted host +
+    // valid token → 200, proving the host was permitted).
+    const AUTH = { authorization: `Bearer ${TOKEN}` };
+    it("allows a tokened read with an allowlisted Host on loopback", async () => {
       process.env.DISPATCH_ALLOWED_HOSTS = "example.com";
       h = await startHarness();
-      const res = await rawGet(h.port, "/api/board", { Host: "example.com" });
+      const res = await rawGet(h.port, "/api/board", { Host: "example.com", ...AUTH });
       expect(res.status).toBe(200);
       expect(res.body).toContain("columns");
     });
@@ -189,16 +193,19 @@ describe("Host/Origin check refinement", () => {
     it("allows an allowlisted Origin too", async () => {
       process.env.DISPATCH_ALLOWED_HOSTS = "example.com";
       h = await startHarness();
-      const res = await rawGet(h.port, "/api/board", { Origin: "https://example.com" });
+      const res = await rawGet(h.port, "/api/board", { Origin: "https://example.com", ...AUTH });
       expect(res.status).toBe(200);
     });
 
     it("normalises entries: trims, lowercases, ignores empties", async () => {
       process.env.DISPATCH_ALLOWED_HOSTS = " , Example.COM:8080 ,, Proxy.Internal ";
       h = await startHarness();
-      const viaFirst = await rawGet(h.port, "/api/board", { Host: "example.com" });
+      const viaFirst = await rawGet(h.port, "/api/board", { Host: "example.com", ...AUTH });
       expect(viaFirst.status).toBe(200);
-      const viaSecond = await rawGet(h.port, "/api/board", { Host: "proxy.internal:9999" });
+      const viaSecond = await rawGet(h.port, "/api/board", {
+        Host: "proxy.internal:9999",
+        ...AUTH,
+      });
       expect(viaSecond.status).toBe(200);
     });
 
@@ -226,13 +233,18 @@ describe("Host/Origin check refinement", () => {
       expect(res.body).toContain("FORBIDDEN_HOST");
     });
 
-    it("still serves a tokenless loopback read with loopback Host/Origin (200)", async () => {
+    it("S-M1: a loopback Host/Origin passes the host check but a tokenless read is now 401", async () => {
       h = await startHarness();
-      const res = await rawGet(h.port, "/api/board", {
-        Host: `localhost:${h.port}`,
-        Origin: `http://127.0.0.1:${h.port}`,
+      const headers = { Host: `localhost:${h.port}`, Origin: `http://127.0.0.1:${h.port}` };
+      // Host check passes (loopback), but the auth gate now refuses the tokenless read.
+      const noToken = await rawGet(h.port, "/api/board", headers);
+      expect(noToken.status).toBe(401);
+      // With the token it serves — proving the loopback host was permitted.
+      const withToken = await rawGet(h.port, "/api/board", {
+        ...headers,
+        authorization: `Bearer ${TOKEN}`,
       });
-      expect(res.status).toBe(200);
+      expect(withToken.status).toBe(200);
     });
   });
 });

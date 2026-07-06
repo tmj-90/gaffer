@@ -281,16 +281,15 @@ describe("GET /api/cost", () => {
     }
   });
 
-  it("leaves the read-only cost endpoint open on loopback but gates mutations behind the token", async () => {
+  it("S-M1: gates the read-only cost endpoint behind the token on loopback too", async () => {
     // Temporarily set a token (will be restored in close())
     const savedToken = process.env.DISPATCH_API_TOKEN;
     process.env.DISPATCH_API_TOKEN = "secret-token-for-test";
     const h = await startHarness({});
     try {
-      // Read-only GET stays open on a loopback bind even with a token configured
-      // (dashboard UX) — never a 401, with or without a bearer.
+      // S-M1: the cost read (spend data) now requires the token, loopback included.
       const { status } = await get(h.baseUrl, "/api/cost");
-      expect(status).toBe(200);
+      expect(status).toBe(401);
       const { status: ok } = await get(h.baseUrl, "/api/cost", "secret-token-for-test");
       expect(ok).toBe(200);
       // A mutating request without the token is refused; with it, permitted.

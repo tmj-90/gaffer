@@ -36,13 +36,24 @@ export class WebhookSink implements NotifySink {
       this.transport(this.url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(event),
+        body: this.renderBody(event),
       }),
       this.timeoutMs,
     );
     if (!res.ok) {
       throw new Error(`webhook POST to ${redact(this.url)} returned ${res.status}`);
     }
+  }
+
+  /**
+   * Serialise the event into the POST body. The generic webhook posts the raw
+   * {@link NotifyEvent} as JSON; subclasses (e.g. {@link SlackSink}) override
+   * this to emit a provider-specific body built from the TYPED event — so the
+   * one POST/timeout/non-2xx path is shared without round-tripping the event
+   * through a JSON string (H6).
+   */
+  protected renderBody(event: NotifyEvent): string {
+    return JSON.stringify(event);
   }
 }
 

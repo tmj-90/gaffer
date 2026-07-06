@@ -70,14 +70,14 @@ export function quarantine(tag: string, value: string | null | undefined): strin
  * quarantine and callers rely on the trust-split nulls (e.g. a card's `tldr`
  * is null unless model_status='active').
  */
-function wrapField<T extends Record<string, unknown>>(obj: T, tag: string, field: keyof T): T {
+function wrapField<T extends object>(obj: T, tag: string, field: keyof T): T {
   const v = obj[field];
   if (typeof v !== "string") return obj;
   return { ...obj, [field]: quarantine(tag, v) };
 }
 
 /** Wrap several string fields on a shallow clone of `obj` under the same tag. */
-export function wrapFields<T extends Record<string, unknown>>(
+export function wrapFields<T extends object>(
   obj: T,
   tag: string,
   fields: ReadonlyArray<keyof T>,
@@ -102,21 +102,21 @@ const LORE_UNTRUSTED_FIELDS = ["title", "summary", "body"] as const;
  * on the OUTBOUND MCP shape (already projected), never on the DB row — the
  * core `getDigest`, the CLI, and the runner context-primer keep the raw text.
  */
-export function quarantineDigest<T extends Record<string, unknown>>(digestOut: T): T {
+export function quarantineDigest<T extends object>(digestOut: T): T {
   return wrapFields(digestOut, "repo-digest", [...DIGEST_UNTRUSTED_FIELDS] as (keyof T)[]);
 }
 
 /** Wrap a served file card's model-derived text fields (tldr, role_primary). */
-export function quarantineCard<T extends Record<string, unknown>>(card: T): T {
+export function quarantineCard<T extends object>(card: T): T {
   return wrapFields(card, "file-card", [...CARD_UNTRUSTED_FIELDS] as (keyof T)[]);
 }
 
 /** Wrap a served feature projection's agent-derived text fields. */
-export function quarantineFeature<T extends Record<string, unknown>>(feature: T): T {
+export function quarantineFeature<T extends object>(feature: T): T {
   return wrapFields(feature, "feature", [...FEATURE_UNTRUSTED_FIELDS] as (keyof T)[]);
 }
 
 /** Wrap a served lore record / summary's agent-derived text fields. */
-export function quarantineLore<T extends Record<string, unknown>>(lore: T): T {
+export function quarantineLore<T extends object>(lore: T): T {
   return wrapFields(lore, "lore", [...LORE_UNTRUSTED_FIELDS] as (keyof T)[]);
 }

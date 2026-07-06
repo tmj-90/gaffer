@@ -606,6 +606,17 @@ gaffer_timeout_preflight() {
   return 127
 }
 
+# --- Safe sed replacement escaping (B-M1) ------------------------------------
+# Escape a value for use as the REPLACEMENT half of a `sed s#…#REPL#g`. The three
+# characters that are special in a sed replacement are `\`, `&`, and the delimiter
+# itself (`#`). tick.sh templates .claude/settings.json and the MCP runtime config
+# by sed-substituting real filesystem PATHS (RUNNER_DIR, DISPATCH_DB, the MCP bins,
+# …) and the claim token into placeholders; a path containing `#` (a legal POSIX
+# filename byte) would otherwise prematurely close the substitution and corrupt the
+# generated config. Passing every value through this escaper makes the templating
+# robust regardless of what the path contains. Pure text-in/text-out.
+_gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
+
 # --- Portable file lock (A-1 parallel execution) -----------------------------
 # Serialise a critical section across concurrent worker.sh processes. Mirrors the
 # gaffer_timeout shim's discipline: prefer the best primitive, fall back portably,
@@ -622,23 +633,21 @@ gaffer_timeout_preflight() {
 : "${GAFFER_LOCK_TIMEOUT:=30}"     # max seconds to wait for a contended lock
 : "${GAFFER_LOCK_STALE:=120}"      # mkdir-lock older than this is treated as stale
 
-# True iff flock(1) is present AND bash supports dynamic fds ({fd}>>, bash >=4.1).
-# Both are required for the flock path; otherwise the portable mkdir path is used.
+# True iff flock(1) is present. FINDING B-L2: the flock branch below holds the lock
+# on a STATIC fd 9 (`( flock 9 …; ) 9>>lock`), which every bash supports — including
+# 3.2. The old bash>=4.1 floor was a leftover from an earlier dynamic-`{fd}>>` form
+# that no longer exists, and it over-constrained (a Linux box on bash 3.2 with flock
+# would have needlessly fallen back to the mkdir spinlock). macOS ships no flock, so
+# it still always takes the portable mkdir path.
 _gaffer_can_flock() {
-  command -v flock >/dev/null 2>&1 || return 1
-  local maj="${BASH_VERSINFO[0]:-0}" min="${BASH_VERSINFO[1]:-0}"
-  [ "$maj" -gt 4 ] 2>/dev/null && return 0
-  [ "$maj" -eq 4 ] 2>/dev/null && [ "$min" -ge 1 ] 2>/dev/null && return 0
-  return 1
+  command -v flock >/dev/null 2>&1
 }
 gaffer_with_lock() {
   local lockfile="$1"; shift
   [ -n "$lockfile" ] || { "$@"; return $?; }
-  # Prefer flock(1) ONLY when both flock and bash's dynamic-fd syntax ({fd}>>) are
-  # available — i.e. flock present AND bash >= 4.1. macOS ships bash 3.2 with no
-  # flock, so it always takes the portable mkdir path below; a Linux/CI box has
-  # flock + bash 4+. This guard keeps the {fd}>> form from ever being parsed on an
-  # interpreter that can't handle it.
+  # Prefer flock(1) when it is present; the lock is held on a static fd 9 inside a
+  # subshell, which every bash (incl. macOS's 3.2) supports. macOS ships no flock, so
+  # it always takes the portable mkdir path below; a Linux/CI box has flock.
   if _gaffer_can_flock; then
     # flock(1) (Linux/CI): hold an exclusive lock on a dedicated fd, run the
     # command, release on close. -w bounds the wait so a wedged holder can't hang
@@ -1332,6 +1341,46 @@ gaffer_afk_ship_plan() {
   else
     printf 'rework\n'
   fi
+}
+
+# S-H2: reviewer VERDICT resolution from an OUT-OF-BAND STRUCTURED signal, NOT a
+# free-text grep over the reviewer's whole prose. In AFK/graduated mode a clean
+# `approve` triggers an autonomous approve+merge with no human, so the verdict must
+# not be forgeable by text QUOTED in the reviewer's reasoning. An adversarial
+# ticket/diff/rejection-reason could make the reviewer reproduce "RECOMMEND APPROVE"
+# in prose; the old grep over the entire blob would then flip the gate.
+#
+# The reviewer is now required to end its output with a machine-read line —
+#   {"verdict":"APPROVE"}  or  {"verdict":"CHANGES"}
+# — and we take the LAST such line as authoritative. Prose that merely contains the
+# phrase can no longer match. The legacy free-text grep survives ONLY as a fallback
+# for when NO structured line is present (older reviewer output / a truncated
+# result), and it stays fail-closed (defaults changes; the CHANGES check runs last
+# so a blob mentioning both resolves to changes). Pure: no I/O, no side effects.
+#   $1 result : the reviewer agent's full result text (may be multi-line)
+# Echoes exactly one of: approve | changes   (defaults changes on empty/ambiguous).
+gaffer_review_verdict() {
+  local _result="$1" _structured _verdict=changes
+  # The LAST line that IS (or contains) a {"verdict":"APPROVE"|"CHANGES"} object,
+  # whitespace-tolerant. Braces are matched via [{]/[}] so the ERE is portable
+  # across BSD (macOS /usr/bin/grep) and GNU grep (CI) — `\{` is an interval
+  # metacharacter to GNU grep and would error.
+  _structured="$(printf '%s\n' "$_result" \
+    | grep -oiE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"(APPROVE|CHANGES)"[[:space:]]*[}]' \
+    | tail -n 1)"
+  if [ -n "$_structured" ]; then
+    # Structured verdict is authoritative. `approve` ONLY on an explicit APPROVE
+    # object; every other value (CHANGES, or anything unexpected) → changes.
+    case "$_structured" in
+      *[Aa][Pp][Pp][Rr][Oo][Vv][Ee]*) _verdict=approve ;;
+      *) _verdict=changes ;;
+    esac
+  else
+    # FALLBACK (no structured line): the legacy free-text grep — still fail-closed.
+    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*APPROVE" && _verdict=approve
+    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*CHANGES" && _verdict=changes
+  fi
+  printf '%s\n' "$_verdict"
 }
 
 # Strict-execution-mode provider seam (defines sandbox_wrap_cmd). Sourced last so

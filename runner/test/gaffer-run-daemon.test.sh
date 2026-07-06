@@ -62,7 +62,9 @@ unset -f gaffer_day_cap_ok
 echo 0 > "$CNT"
 ( GAFFER_DAEMON_MAX_CYCLES=0 gaffer_run_daemon 1 >/dev/null 2>&1 ) &
 DPID=$!
-sleep 2                          # ~2 passes at interval 1
+# Wait deterministically until the daemon has completed at least one pass, rather
+# than betting 2s of wall-clock (~2 passes at interval 1) — removes the SIGTERM race.
+for _ in $(seq 1 200); do [ "$(cat "$CNT" 2>/dev/null || echo 0)" -ge 1 ] && break; sleep 0.05; done
 kill -TERM "$DPID" 2>/dev/null || true
 wait "$DPID" 2>/dev/null || true
 [ "$(cat "$CNT")" -ge 1 ] 2>/dev/null && ok "daemon ran ≥1 pass before the stop signal (got $(cat "$CNT"))" \

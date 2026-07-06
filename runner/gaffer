@@ -149,7 +149,15 @@ dashboard)
     # Hand it to the operator as a ?token= URL the SPA adopts (and scrubs from history).
     # The delivery agent never gets it: the runner scrubs DISPATCH_API_TOKEN from its env,
     # so an agent still cannot self-approve its own work over the REST API.
-    _tok="$(cat "$GAFFER_DATA/dashboard-token" 2>/dev/null)"
+    # The server auto-provisions + writes the token a beat AFTER /api/dashboard first answers,
+    # so poll briefly (bash-3.2-safe) for the file — otherwise on a fast machine the very first
+    # `gaffer dashboard` can print the URL WITHOUT ?token=, and the first write 401s.
+    _tok=""; _i=0
+    while [ -z "$_tok" ] && [ "$_i" -lt 50 ]; do
+      _tok="$(cat "$GAFFER_DATA/dashboard-token" 2>/dev/null)"
+      [ -n "$_tok" ] && break
+      sleep 0.1; _i=$((_i + 1))
+    done
     if [ -n "$_tok" ]; then
       printf "    to make changes (onboard · plan · approve), open with your token:\n    ${c_cya}http://127.0.0.1:%s/?token=%s${c_off}\n" "$DASH_PORT" "$_tok"
     fi

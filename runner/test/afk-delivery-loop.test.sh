@@ -123,10 +123,22 @@ printf '%s\n' "$OUT_HUMAN" | grep -q "would run a reviewer agent" \
   || ok "human mode never invokes the agent reviewer (guarded call skipped)"
 
 echo "== BUG 1: structural wiring (grep-proof, deterministic) =="
-DEFS="$(grep -c '^_gaffer_agent_review_pass() {' "$TICK" || true)"
+# B-H3: the reviewer pass was extracted to lib/review.sh (monolith paydown). The
+# DEFINITION now lives there (sourced by tick.sh); the CALL sites stay in tick.sh.
+REVIEW_LIB="$RUNNER_DIR/lib/review.sh"
+[ -f "$REVIEW_LIB" ] \
+  && ok "lib/review.sh exists (reviewer pass extracted)" \
+  || fail "lib/review.sh missing — reviewer pass not extracted"
+grep -q '^\[ -f "\$HERE/lib/review.sh" \] && source "\$HERE/lib/review.sh"' "$TICK" \
+  && ok "tick.sh sources lib/review.sh" \
+  || fail "tick.sh does not source lib/review.sh"
+DEFS="$(grep -c '^_gaffer_agent_review_pass() {' "$REVIEW_LIB" || true)"
 [ "$DEFS" = "1" ] \
-  && ok "_gaffer_agent_review_pass defined exactly once" \
-  || fail "_gaffer_agent_review_pass defined $DEFS time(s) — expected 1"
+  && ok "_gaffer_agent_review_pass defined exactly once (in lib/review.sh)" \
+  || fail "_gaffer_agent_review_pass defined $DEFS time(s) in lib/review.sh — expected 1"
+[ "$(grep -c '^_gaffer_agent_review_pass() {' "$TICK" || true)" = "0" ] \
+  && ok "_gaffer_agent_review_pass no longer defined inline in tick.sh" \
+  || fail "_gaffer_agent_review_pass still defined in tick.sh — extraction incomplete"
 # The no_work juncture must invoke the reviewer BEFORE the exit, guarded by REVIEW_MODE.
 awk '/all ready tickets failed delivery this run/{f=1}
      f && /_gaffer_agent_review_pass/{g=1}
@@ -137,9 +149,10 @@ CALLS="$(grep -c '^[[:space:]]*_gaffer_agent_review_pass$' "$TICK" || true)"
 [ "$CALLS" = "2" ] \
   && ok "_gaffer_agent_review_pass invoked at exactly 2 sites (no_work juncture + end-of-tick)" \
   || fail "_gaffer_agent_review_pass invoked $CALLS time(s) — expected 2"
-# The extracted block must still carry its load-bearing bits (byte-preservation).
+# The extracted block must still carry its load-bearing bits (byte-preservation) —
+# now in lib/review.sh after the B-H3 extraction.
 for needle in "result reviewed; exit 0" "would run a reviewer agent" "MERGE_ON_AGENT_REVIEW" "gaffer_skills_mount_cleanup \"review-\$RNUM\""; do
-  grep -qF "$needle" "$TICK" \
+  grep -qF "$needle" "$REVIEW_LIB" \
     && ok "reviewer block preserved: '$needle'" \
     || fail "reviewer block lost: '$needle'"
 done

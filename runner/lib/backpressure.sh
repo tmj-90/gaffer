@@ -131,7 +131,12 @@ gaffer_sweep_abandoned_branches() {
   git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 0
   local b num tstatus merged
   merged="$(git -C "$repo" branch --format='%(refname:short)' --merged "$def" 2>/dev/null | grep -E '^gaffer/' | sort -u)"
-  for b in $(git -C "$repo" for-each-ref --format='%(refname:short)' 'refs/heads/gaffer/*' 2>/dev/null); do
+  # FINDING B-L1: read branch names line-by-line rather than an unquoted
+  # `for b in $(...)` word-split — a branch name containing an IFS char or a glob
+  # metacharacter would otherwise be split/expanded. Process substitution is
+  # bash-3.2-safe at runtime.
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
     printf '%s\n' "$merged" | grep -qxF "$b" && continue   # merged → not our job
     num="$(printf '%s' "$b" | sed -nE 's#^gaffer/ticket-([0-9]+).*#\1#p')"
     [ -n "$num" ] || continue
@@ -145,7 +150,7 @@ except Exception: print('')" 2>/dev/null)"
     # kept — never nuke recorded delivery work.
     gaffer_branch_is_delivery_artifact "$num" "$b" && continue
     git -C "$repo" branch -D "$b" >/dev/null 2>&1 && echo "$b"
-  done
+  done < <(git -C "$repo" for-each-ref --format='%(refname:short)' 'refs/heads/gaffer/*' 2>/dev/null)
 }
 
 # True (0) when branch $2 is recorded as a per-repo delivery artifact for ticket

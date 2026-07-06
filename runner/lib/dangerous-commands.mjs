@@ -175,6 +175,21 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
+    // S-H1 (defense-in-depth): `ps` can dump ANOTHER same-user process's
+    // environment via its env flags (`ps ewww`, `ps -E`, `ps e`, `ps aux e`),
+    // which leaks the dispatch-mcp process's GAFFER_CLAIM_TOKEN and enables an
+    // agent-initiated self-submit. The factory agent never needs `ps`, so we
+    // block it as a COMMAND entirely (env flag or not) — anchored to a command
+    // position (line start / after `;`&`|`(`` ` `` / common transparent wrappers)
+    // so it does NOT trip on the word "ps" inside a commit message, quoted
+    // string, path (`apps/`, `https://`, `report.ps.txt`), or grep pattern.
+    re: /(?:^|[\n;&|(`])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+|env|command|nice|nohup|stdbuf|setsid|time|timeout|ionice|doas|builtin|exec|xargs)[ \t]+(?:-\S+[ \t]+|[0-9]+[ \t]+)*)*(?:\/[^ \t\n;&|]*\/)?ps\b/i,
+    why: "ps (exposes another process's environment via e/-E env flags — exfiltrates the claim token; the factory agent never needs ps)",
+    example: "ps ewww",
+    // The crew TS classifier does not model process-listing tools — runtime-only.
+    crewFlags: false,
+  },
+  {
     re: /\bcrontab\b/,
     why: "crontab (scheduled execution)",
     example: "crontab -e",
@@ -205,9 +220,15 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
-    re: /\bnode\b[^\n|;&]*(?:dispatch|crew)[^\n|;&]*\/(?:dist\/)?cli\b/i,
-    why: "raw node CLI invocation of the Dispatch/Crew control plane (use the scoped MCP)",
-    example: "node packages/dispatch/dist/cli approve",
+    re: /\bnode\b[^\n|;&]*(?:dispatch|crew|memory)[^\n|;&]*\/(?:dist\/)?(?:cli|mcp|core)\b/i,
+    why: "raw node invocation of the Dispatch/Crew/Memory control-plane dist (cli/mcp/core) — a self-spawned server escapes factory context; use the scoped MCP tools",
+    example: "node packages/dispatch/dist/mcp/bin.js  (also …/dist/cli, …/dist/core.js)",
+    crewFlags: false,
+  },
+  {
+    re: /\bnode\b[^\n|;&]*(?:-e|--eval|-p|--print|-r|--require)\b[^\n]*(?:(?:dispatch|crew|memory)[^\n]*\/dist\/|\$\{?(?:DISPATCH_DB|MEMORY_DB)\}?|(?:dispatch|memory)[^\s'"\n]*\.sqlite)/i,
+    why: "inline node (-e/--require) reaching the control-plane dist or the Dispatch/Memory DB directly — bypasses the actor/gate system; use the scoped MCP tools",
+    example: "node -e \"require('…/dispatch/dist/core.js')\"",
     crewFlags: false,
   },
 ];

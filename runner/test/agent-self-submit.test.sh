@@ -26,8 +26,12 @@
 #           the ticket lands in `refining`, never in_review-with-empty-diff;
 #   PART C  the runner's own submit path (`wg submit --token`) keeps working
 #           end-to-end (claimed → in_review, claim completed);
-#   PART D  a caller that actually HOLDS the token (explicit claim_token arg —
-#           the legitimate non-factory MCP use) can still submit.
+#   PART D  (S-H1) an EXPLICIT claim_token agent submit is REFUSED in factory
+#           context — the agent cannot complete its own claim even holding the token;
+#   PART E  (S-H1) the agent-mounted claim_next_ticket / claim_ticket are REFUSED
+#           in factory context — closing the grab-another-ticket-and-submit bypass;
+#   PART F  OUTSIDE factory context an explicit claim_token still submits — the
+#           legitimate non-factory/operator MCP use is preserved.
 #
 # Requires the dispatch package built (dist CLI + dist MCP). SKIPs otherwise.
 # Run: bash test/agent-self-submit.test.sh
@@ -80,18 +84,30 @@ const { Dispatch } = await import(pathToFileURL(process.env.CORE_JS).href);
 const { makeHandlers } = await import(pathToFileURL(process.env.TOOLS_JS).href);
 const wg = Dispatch.open(process.env.DB);
 const h = makeHandlers(wg, { type: "agent", id: "mcp-agent" });
-const args = { ticket_id: process.env.TICKET_ID };
-if (process.env.EXPLICIT_TOKEN) args.claim_token = process.env.EXPLICIT_TOKEN;
-const res = h.submit_ticket_for_review(args);
+const tool = process.env.PROBE_TOOL || "submit_ticket_for_review";
+let res;
+if (tool === "claim_next_ticket") {
+  res = h.claim_next_ticket({ agent_id: process.env.PROBE_AGENT, ttl_seconds: 900 });
+} else if (tool === "claim_ticket") {
+  res = h.claim_ticket({ ticket_id: process.env.TICKET_ID, agent_id: process.env.PROBE_AGENT, ttl_seconds: 900 });
+} else {
+  const args = { ticket_id: process.env.TICKET_ID };
+  if (process.env.EXPLICIT_TOKEN) args.claim_token = process.env.EXPLICIT_TOKEN;
+  res = h.submit_ticket_for_review(args);
+}
 const sc = res.structuredContent ?? {};
 console.log(JSON.stringify({
   isError: res.isError === true,
   code: sc.error?.code ?? null,
   status: sc.status ?? null,
+  claimed: sc.claimed ?? null,
 }));
 PROBE
 agent_mcp_submit() { # $1 = ticket id, env: GAFFER_CLAIM_TOKEN / EXPLICIT_TOKEN
   DB="$DB" TICKET_ID="$1" CORE_JS="$CORE_JS" TOOLS_JS="$TOOLS_JS" node "$MCP_PROBE" 2>/dev/null
+}
+agent_mcp_claim() { # $1 = tool (claim_next_ticket|claim_ticket), $2 = ticket id, env: GAFFER_CLAIM_TOKEN
+  DB="$DB" TICKET_ID="$2" PROBE_TOOL="$1" PROBE_AGENT="$AGENT" CORE_JS="$CORE_JS" TOOLS_JS="$TOOLS_JS" node "$MCP_PROBE" 2>/dev/null
 }
 
 # Seed one ready ticket + a runner claim; echoes "NUM<TAB>TID<TAB>TOKEN".
@@ -120,7 +136,7 @@ A_OUT="$(GAFFER_CLAIM_TOKEN="$CLAIM_TOKEN" agent_mcp_submit "$TID")"
 A_ERR="$(printf '%s' "$A_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
 A_CODE="$(printf '%s' "$A_OUT" | jget "d['code']" 2>/dev/null || echo '')"
 if [ "$A_ERR" = "True" ]; then
-  ok "agent self-submit REFUSED (code=$A_CODE) — the env token is not a submit credential"
+  ok "agent self-submit REFUSED (code=$A_CODE) — submission is runner-owned in factory context"
 else
   fail "agent self-submit SUCCEEDED via the env-token fallback (got: $A_OUT) — the claim is completed and the strand sequence is live"
 fi
@@ -159,14 +175,56 @@ fi
   && ok "runner submit COMPLETED the claim (zero active claims)" \
   || fail "claim not completed by the runner submit (active=$(active_claims "$NUM2"))"
 
-echo "== PART D: an EXPLICIT claim_token still submits via MCP (legitimate holder) =="
+echo "== PART D: an EXPLICIT claim_token agent submit is REFUSED in factory context (S-H1) =="
+# The agent lifts the real token (e.g. from `ps`/the mcp-runtime file) and passes it
+# EXPLICITLY. In factory context (GAFFER_CLAIM_TOKEN present) that must STILL be refused —
+# submission is runner-owned; the agent cannot complete its own claim.
 seed_claimed "Explicit-token delivery" > "$WORK/seed3"; IFS=$'\t' read -r NUM3 TID3 TOKEN3 < "$WORK/seed3"
-D_OUT="$(EXPLICIT_TOKEN="$TOKEN3" agent_mcp_submit "$TID3")"
+D_OUT="$(GAFFER_CLAIM_TOKEN="$TOKEN3" EXPLICIT_TOKEN="$TOKEN3" agent_mcp_submit "$TID3")"
 D_ERR="$(printf '%s' "$D_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
-if [ "$D_ERR" = "False" ] && [ "$(status_of "$NUM3")" = "in_review" ]; then
-  ok "explicit-token MCP submit still works (#$NUM3 → in_review)"
+D_CODE="$(printf '%s' "$D_OUT" | jget "d['code']" 2>/dev/null || echo '')"
+if [ "$D_ERR" = "True" ]; then
+  ok "explicit-token agent submit REFUSED in factory context (code=$D_CODE)"
 else
-  fail "explicit-token MCP submit broken (out=$D_OUT status='$(status_of "$NUM3")')"
+  fail "explicit-token agent submit SUCCEEDED in factory context (got: $D_OUT) — S-H1 hole is OPEN"
+fi
+[ "$(status_of "$NUM3")" = "claimed" ] \
+  && ok "#$NUM3 stays claimed after the refused explicit-token submit" \
+  || fail "#$NUM3 left 'claimed' after the explicit-token submit attempt (got '$(status_of "$NUM3")')"
+
+echo "== PART E: agent claim_next_ticket / claim_ticket are REFUSED in factory context (S-H1) =="
+# The other bypass: grab ANOTHER ready ticket and submit it, dodging the runner's gates.
+# In factory context the agent-mounted claim tools must refuse outright.
+E_NUM="$(wg ticket create -t "Grabbable ready ticket" --description "s-h1 claim probe" --policy solo_loose --risk low 2>/dev/null | jget "d['ticket']['number']")"
+wg ac add "$E_NUM" -t "probe AC" >/dev/null 2>&1
+wg ticket ready "$E_NUM" >/dev/null 2>&1
+E_TID="$(wg ticket show "$E_NUM" 2>/dev/null | jget "d['ticket']['id']")"
+EN_OUT="$(GAFFER_CLAIM_TOKEN="held-token-for-another-ticket" agent_mcp_claim claim_next_ticket "$E_TID")"
+EN_ERR="$(printf '%s' "$EN_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
+[ "$EN_ERR" = "True" ] \
+  && ok "agent claim_next_ticket REFUSED in factory context (code=$(printf '%s' "$EN_OUT" | jget "d['code']" 2>/dev/null))" \
+  || fail "agent claim_next_ticket SUCCEEDED in factory context (got: $EN_OUT)"
+EC_OUT="$(GAFFER_CLAIM_TOKEN="held-token-for-another-ticket" agent_mcp_claim claim_ticket "$E_TID")"
+EC_ERR="$(printf '%s' "$EC_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
+[ "$EC_ERR" = "True" ] \
+  && ok "agent claim_ticket REFUSED in factory context (code=$(printf '%s' "$EC_OUT" | jget "d['code']" 2>/dev/null))" \
+  || fail "agent claim_ticket SUCCEEDED in factory context (got: $EC_OUT)"
+[ "$(status_of "$E_NUM")" = "ready" ] \
+  && ok "#$E_NUM stays ready — never claimed by the agent" \
+  || fail "#$E_NUM no longer ready after the refused claims (got '$(status_of "$E_NUM")')"
+
+echo "== PART F: OUTSIDE factory context an EXPLICIT claim_token still submits (standalone/operator) =="
+# No GAFFER_CLAIM_TOKEN and no GAFFER_FACTORY in the server env → not the factory. The
+# legitimate non-factory MCP holder can still submit with the token it actually holds.
+seed_claimed "Standalone explicit-token delivery" > "$WORK/seed4"; IFS=$'\t' read -r NUM4 TID4 TOKEN4 < "$WORK/seed4"
+# Blank both factory signals explicitly (node inherits the shell env) so this asserts
+# the genuine non-factory posture regardless of the ambient environment.
+F_OUT="$(GAFFER_CLAIM_TOKEN= GAFFER_FACTORY= EXPLICIT_TOKEN="$TOKEN4" agent_mcp_submit "$TID4")"
+F_ERR="$(printf '%s' "$F_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
+if [ "$F_ERR" = "False" ] && [ "$(status_of "$NUM4")" = "in_review" ]; then
+  ok "non-factory explicit-token MCP submit still works (#$NUM4 → in_review)"
+else
+  fail "non-factory explicit-token MCP submit broken (out=$F_OUT status='$(status_of "$NUM4")')"
 fi
 
 echo

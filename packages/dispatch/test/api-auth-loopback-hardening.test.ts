@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   ensureApiToken,
+  isOperatorSetToken,
   isPrivilegedPath,
   isRequestAuthorized,
   recordApiTokenSource,
@@ -17,15 +18,16 @@ import { createApiServer } from "../src/api/server.js";
 import type { IncomingMessage } from "node:http";
 
 // ---------------------------------------------------------------------------
-// Loopback read-auth hardening (balanced fix):
+// Loopback read-auth hardening (S-M1):
 //   (a) a Host/Origin check rejects DNS-rebinding (a foreign Host/Origin → 403);
-//   (b) /api/settings requires the token EVEN on a loopback read (it reports
-//       notify/webhook URLs — secrets);
-//   (c) general board reads stay tokenless on a loopback bind for local dev —
-//       AUTO-provisioned token posture only. An OPERATOR-SET token
-//       (DISPATCH_API_TOKEN in the startup env) restores the strict posture:
-//       every request, loopback reads included, requires the token (see the
-//       "operator-set vs auto-provisioned token posture" describe below).
+//   (b) EVERY data-returning endpoint — /api/settings AND general board/ticket
+//       reads — requires the token, loopback reads included. There is NO tokenless
+//       loopback-read relaxation any more: a same-user process (e.g. a
+//       token-scrubbed delivery agent) must not be able to `GET /tickets` on the
+//       loopback bind and read the backlog. Only the public bootstrap surface (the
+//       static SPA shell + /healthz) stays tokenless. The token source (operator-set
+//       vs auto-provisioned) no longer changes the read posture — both are gated
+//       identically (see the "token posture" describe below).
 // ---------------------------------------------------------------------------
 
 interface RawResponse {
@@ -76,21 +78,33 @@ describe("isPrivilegedPath / isRequestAuthorized", () => {
     expect(isPrivilegedPath("/api/runs/abc-123")).toBe(false); // the run detail is not the log
   });
 
-  it("refuses a tokenless loopback READ of a privileged path but allows a board read", () => {
+  it("S-M1: with a token configured, EVERY tokenless GET is refused (board reads included)", () => {
     const saved = process.env.DISPATCH_API_TOKEN;
     process.env.DISPATCH_API_TOKEN = "tok";
     try {
       const getReq = { method: "GET", headers: {} } as unknown as IncomingMessage;
-      // Privileged: refused even for a loopback GET with no token.
-      expect(isRequestAuthorized(getReq, true, "/api/settings")).toBe(false);
-      // Board read: allowed tokenless on loopback.
-      expect(isRequestAuthorized(getReq, true, "/api/board")).toBe(true);
-      // Privileged with the token present: allowed.
+      // Privileged path: refused (unchanged).
+      expect(isRequestAuthorized(getReq)).toBe(false);
+      // Board/ticket read: NOW refused too — no tokenless loopback read path.
+      expect(isRequestAuthorized(getReq)).toBe(false);
+      // A correct bearer passes.
       const authed = {
         method: "GET",
         headers: { authorization: "Bearer tok" },
       } as unknown as IncomingMessage;
-      expect(isRequestAuthorized(authed, true, "/api/settings")).toBe(true);
+      expect(isRequestAuthorized(authed)).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.DISPATCH_API_TOKEN;
+      else process.env.DISPATCH_API_TOKEN = saved;
+    }
+  });
+
+  it("S-M1: with NO token configured, requests pass (embedder/test posture unchanged)", () => {
+    const saved = process.env.DISPATCH_API_TOKEN;
+    delete process.env.DISPATCH_API_TOKEN;
+    try {
+      const getReq = { method: "GET", headers: {} } as unknown as IncomingMessage;
+      expect(isRequestAuthorized(getReq)).toBe(true);
     } finally {
       if (saved === undefined) delete process.env.DISPATCH_API_TOKEN;
       else process.env.DISPATCH_API_TOKEN = saved;
@@ -157,10 +171,32 @@ describe("loopback read-auth hardening (over a bound server)", () => {
     expect(withToken.body).toContain("settings");
   });
 
-  it("(c) still serves a tokenless board read on loopback", async () => {
-    const board = await rawGet(h.port, "/api/board");
-    expect(board.status).toBe(200);
-    expect(board.body).toContain("columns");
+  it("(c) S-M1: refuses a tokenless board read on loopback, accepts it with the token", async () => {
+    const noToken = await rawGet(h.port, "/api/board");
+    expect(noToken.status).toBe(401);
+
+    const withToken = await rawGet(h.port, "/api/board", { authorization: `Bearer ${TOKEN}` });
+    expect(withToken.status).toBe(200);
+    expect(withToken.body).toContain("columns");
+  });
+
+  it("(c) S-M1: a tokenless loopback GET /tickets is 401; a tokened one is 200", async () => {
+    const noToken = await rawGet(h.port, "/tickets");
+    expect(noToken.status).toBe(401);
+    expect(noToken.body).toContain("UNAUTHORIZED");
+
+    const withToken = await rawGet(h.port, "/tickets", { authorization: `Bearer ${TOKEN}` });
+    expect(withToken.status).toBe(200);
+  });
+
+  it("(c) S-M1: the dashboard bootstrap surface stays tokenless (shell + /healthz)", async () => {
+    // The SPA shell and health probe must load WITHOUT a token so the page can
+    // boot and adopt the token; they carry no board data.
+    const health = await rawGet(h.port, "/healthz");
+    expect(health.status).toBe(200);
+    const shell = await rawGet(h.port, "/");
+    expect(shell.status).toBe(200);
+    expect(shell.body).toContain("<!doctype html");
   });
 
   it("(a) rejects a foreign Host header (DNS-rebinding) with 403", async () => {
@@ -177,26 +213,26 @@ describe("loopback read-auth hardening (over a bound server)", () => {
     expect(rebind.body).toContain("FORBIDDEN_HOST");
   });
 
-  it("(a) allows a loopback Host/Origin (localhost + 127.0.0.1)", async () => {
+  it("(a) allows a loopback Host/Origin (localhost + 127.0.0.1) with the token", async () => {
     const viaLocalhost = await rawGet(h.port, "/api/board", {
       Host: `localhost:${h.port}`,
       Origin: `http://127.0.0.1:${h.port}`,
+      authorization: `Bearer ${TOKEN}`,
     });
     expect(viaLocalhost.status).toBe(200);
   });
 });
 
 // ---------------------------------------------------------------------------
-// FINDING 8 — operator-set vs auto-provisioned token posture.
-// An operator who EXPLICITLY sets DISPATCH_API_TOKEN asked for auth on purpose:
-// every request, loopback reads included, must present the token (the original
-// strict posture). Only the AUTO-provisioned dashboard token (generated / reused
-// from the token file when the env is unset at startup) keeps the relaxed
-// tokenless-loopback-read UX. The posture is captured at startup by
-// ensureApiToken (via recordApiTokenSource), not re-derived per request.
+// S-M1 — token posture is now UNIFORM for reads.
+// Historically an operator-SET DISPATCH_API_TOKEN gated every request while an
+// AUTO-provisioned token relaxed tokenless loopback reads. S-M1 removes that
+// relaxation: both postures require the token for every data-returning endpoint,
+// loopback reads included. The token source is still recorded at startup (for the
+// operator-facing startup log), but it no longer changes the auth decision.
 // ---------------------------------------------------------------------------
 
-describe("operator-set vs auto-provisioned token posture", () => {
+describe("token posture is uniform for reads (S-M1)", () => {
   const TOKEN = "operator-secret";
   const saved: Record<string, string | undefined> = {};
   const TOUCHED = ["DISPATCH_API_TOKEN", "GAFFER_DATA"];
@@ -213,17 +249,32 @@ describe("operator-set vs auto-provisioned token posture", () => {
     }
   });
 
-  it("pure: the recorded token source drives the tokenless loopback-read decision", () => {
+  it("pure: the recorded token source does NOT relax a tokenless loopback read", () => {
     process.env.DISPATCH_API_TOKEN = "tok";
     const getReq = { method: "GET", headers: {} } as unknown as IncomingMessage;
-    // Operator-set (env) → strict: even a plain board read is refused.
-    recordApiTokenSource("env");
-    expect(isRequestAuthorized(getReq, true, "/api/board")).toBe(false);
-    // Auto-provisioned (generated or reused file) → relaxed loopback reads.
+    // Every source — env, generated, file — gates a tokenless board read identically.
+    for (const source of ["env", "generated", "file"] as const) {
+      recordApiTokenSource(source);
+      expect(isRequestAuthorized(getReq)).toBe(false);
+    }
+    // A correct bearer passes regardless of source.
+    const authed = {
+      method: "GET",
+      headers: { authorization: "Bearer tok" },
+    } as unknown as IncomingMessage;
     recordApiTokenSource("generated");
-    expect(isRequestAuthorized(getReq, true, "/api/board")).toBe(true);
+    expect(isRequestAuthorized(authed)).toBe(true);
+  });
+
+  it("isOperatorSetToken still reflects startup provenance (introspection, not the auth decision)", () => {
+    // The provenance is retained for the operator-facing startup log; S-M1 just
+    // stops it changing the auth decision. The predicate itself stays correct.
+    recordApiTokenSource("env");
+    expect(isOperatorSetToken()).toBe(true);
+    recordApiTokenSource("generated");
+    expect(isOperatorSetToken()).toBe(false);
     recordApiTokenSource("file");
-    expect(isRequestAuthorized(getReq, true, "/api/board")).toBe(true);
+    expect(isOperatorSetToken()).toBe(false);
   });
 
   it("(a) operator-set token: a tokenless loopback board GET is refused (401)", async () => {
@@ -251,15 +302,21 @@ describe("operator-set vs auto-provisioned token posture", () => {
     }
   });
 
-  it("(b) auto-generated token (env unset at startup): a tokenless loopback board read stays 200", async () => {
+  it("(b) S-M1: auto-generated token (env unset at startup) ALSO gates a tokenless loopback board read (401)", async () => {
     delete process.env.DISPATCH_API_TOKEN;
     const h = await startHarness(); // sets GAFFER_DATA to a fresh temp dir
     try {
       const ensured = ensureApiToken(process.env); // generates + exports the token
       expect(ensured.source).toBe("generated");
+      // Board read: now refused tokenless even under the auto-provisioned posture.
       const board = await rawGet(h.port, "/api/board");
-      expect(board.status).toBe(200);
-      // The privileged-path carve-out still applies under the relaxed posture.
+      expect(board.status).toBe(401);
+      // A correct bearer passes.
+      const authed = await rawGet(h.port, "/api/board", {
+        authorization: `Bearer ${ensured.token}`,
+      });
+      expect(authed.status).toBe(200);
+      // The privileged path is refused tokenless too (unchanged).
       const settings = await rawGet(h.port, "/api/settings");
       expect(settings.status).toBe(401);
     } finally {

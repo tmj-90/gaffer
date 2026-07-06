@@ -42,9 +42,15 @@ TICK_INLINE="$(grep -cE '"\$CLAUDE_BIN" -p' "$TICK" || true)"
 [ "$TICK_INLINE" = "0" ] && ok "tick.sh open-codes NO claude -p invocation" \
   || fail "tick.sh still open-codes $TICK_INLINE claude -p invocation(s)"
 
-TICK_ROUTES="$(grep -cE '^[[:space:]]*worker_deliver ' "$TICK" || true)"
-[ "$TICK_ROUTES" = "4" ] && ok "tick.sh routes all 4 agent turns through worker_deliver" \
-  || fail "expected 4 worker_deliver routes in tick.sh (got $TICK_ROUTES)"
+# B-H3 (monolith paydown): the review + clarify agent turns were extracted into
+# lib/review.sh + lib/clarify.sh (sourced by tick.sh). Count the routes across
+# tick.sh AND the two extracted passes — the four agent turns are unchanged.
+TICK_ROUTES=0
+for _rf in "$TICK" "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/clarify.sh"; do
+  TICK_ROUTES=$(( TICK_ROUTES + $(grep -cE '^[[:space:]]*worker_deliver ' "$_rf" 2>/dev/null || true) ))
+done
+[ "$TICK_ROUTES" = "4" ] && ok "tick.sh + review/clarify libs route all 4 agent turns through worker_deliver" \
+  || fail "expected 4 worker_deliver routes across tick.sh + review/clarify libs (got $TICK_ROUTES)"
 
 grep -qE 'source "\$RUNNER_DIR/lib/worker.sh"' "$CONFIG" \
   && ok "factory.config.sh sources the worker seam" || fail "factory.config.sh does not source lib/worker.sh"

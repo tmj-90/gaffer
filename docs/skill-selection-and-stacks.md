@@ -46,7 +46,7 @@ and the delivery silently skips the conventions/UI guidance it should have had.
 
 Claude Code uses *progressive disclosure*: for a mounted skill it loads only the
 name + one-line description into context until the agent actually invokes it.
-Listing **all 67 skill descriptions is ~6.3k tokens**, and that prefix is stable
+Listing **all the bundled skill descriptions is a few thousand tokens**, and that prefix is stable
 across ticks so it is almost entirely **prompt-cached**. So the cost delta of
 mounting a pack the agent never uses is negligible.
 

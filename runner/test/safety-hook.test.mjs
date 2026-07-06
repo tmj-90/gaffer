@@ -960,6 +960,20 @@ for (const [label, cmd] of [
   ["raw sqlite3 on a memory .sqlite", "sqlite3 /tmp/memory.sqlite '.tables'"],
   ["raw node dispatch cli", "node /home/x/dispatch/dist/cli/index.js review approve 5"],
   ["raw node crew cli", "node /home/x/crew/dist/cli/index.js approve-ready 5"],
+  // A self-spawned dispatch/memory MCP server escapes factory context (GAFFER_FACTORY
+  // unset in the agent's own child env) → the submit/claim gate wouldn't fire.
+  ["raw node dispatch mcp bin", "node /home/x/dispatch/dist/mcp/bin.js"],
+  ["raw node memory mcp server", "node /home/x/memory/dist/mcp/server.js"],
+  // Inline node reaching the control-plane dist or the DB directly bypasses the actor gate.
+  ["node -e require control-plane core", `node -e "require('/home/x/dispatch/dist/core.js')"`],
+  [
+    "node -e better-sqlite3 on DISPATCH_DB",
+    `node -e "require('better-sqlite3')(process.env.DISPATCH_DB)"`,
+  ],
+  [
+    "node -e better-sqlite3 on dispatch .sqlite",
+    `node -e "require('better-sqlite3')('${CP_ROOT}/dispatch.sqlite')"`,
+  ],
 ]) {
   const code = runWithEnv(bash(cmd), CP_ENV, CP_ROOT);
   if (code === 2) passed += 1;
@@ -970,6 +984,12 @@ for (const [label, cmd] of [
   ["wg ticket show", "wg ticket show 5"],
   ["wg ticket list", "wg ticket list -s ready"],
   ["dispatch ticket show", "dispatch ticket show 5"],
+  // The agent's OWN node usage on the delivered app must stay allowed — the deny rules
+  // only fence the gaffer control-plane dist / DB, not a project that happens to use node.
+  ["agent app cli (not control-plane)", "node ./dist/cli.js build"],
+  ["agent node --test", "node --test"],
+  ["agent benign node -e", `node -e "console.log(process.version)"`],
+  ["agent app better-sqlite3 (own db)", `node -e "require('better-sqlite3')('./app.db')"`],
 ]) {
   const code = runWithEnv(bash(cmd), CP_ENV, CP_ROOT);
   if (code === 0) passed += 1;
@@ -1313,6 +1333,62 @@ allowed("literal in-root cp still allowed", "cp src/a.ts sub/b.ts");
     allowBash("curl plain GET allowed", "curl https://example.com/data.json");
     rmSync(BWR, { recursive: true, force: true });
   }
+}
+
+// ---------------------------------------------------------------------
+// S-H1: process-environment claim-token exfil (defense-in-depth, hook layer).
+// A delivery agent that can read another same-user process's environment lifts
+// GAFFER_CLAIM_TOKEN from the dispatch-mcp process and self-submits. Two vectors:
+//   • `ps` env flags (`ps ewww`, `ps -E`, `ps e`) — macOS + Linux.
+//   • `/proc/<pid>/environ` reads — Linux.
+// Both are now blocked. (The COMPLETE closure also needs the dispatch side to
+// refuse an agent-initiated submit even WITH a token — that is the other layer.)
+// ---------------------------------------------------------------------
+{
+  // (a) ps — blocked ENTIRELY as a command (env flag or not; the factory agent
+  //     never needs ps), anchored to a command position so the WORD "ps" in
+  //     prose/paths/args is NOT a false positive.
+  denied("ps ewww (BSD env dump)", "ps ewww");
+  denied("ps -E (env dump)", "ps -E");
+  denied("ps e (env dump)", "ps e");
+  denied("ps eww -p <pid> (targeted env dump)", "ps eww -p 4242");
+  denied("ps aux (plain listing — still blocked)", "ps aux");
+  denied("ps via nohup wrapper", "nohup ps ewww");
+  denied("ps via env wrapper", "env ps ewww");
+  denied("ps absolute path", "/bin/ps ewww");
+  denied("ps after a command separator", "echo hi; ps ewww");
+  denied("ps in command substitution", 'X=$(ps ewww); echo "$X"');
+  // Negative controls — the literal token "ps" in a non-command position stays ALLOWED
+  // (blocking these would break real delivery, e.g. a commit that mentions "ps").
+  allowed("commit message mentioning ps", `git commit -m "fix the ps output formatting"`);
+  allowed("path segment apps/ (not ps)", "ls apps/web");
+  allowed("https url (not ps)", "curl https://example.com/data.json");
+  allowed("grep pattern 'ps'", "grep -r 'ps' src");
+  allowed("filename report.ps.txt (not a ps command)", "cat report.ps.txt");
+
+  // (b) /proc/<pid>/environ — blocked on EVERY read vector (reuses the secret-path
+  //     mechanism, so shell indirection / inline interpreter / glob cannot bypass).
+  denied("cat /proc/self/environ", "cat /proc/self/environ");
+  denied("cat /proc/<pid>/environ", "cat /proc/1234/environ");
+  denied("redirect read < /proc/self/environ", "tr '\\0' '\\n' < /proc/self/environ");
+  denied("var-indirection of /proc/self/environ", `f=/proc/self/environ; cat "$f"`);
+  denied(
+    "inline python reads /proc/self/environ",
+    `python3 -c "print(open('/proc/self/environ').read())"`,
+  );
+  denied("glob /proc/*/environ", "cat /proc/*/environ");
+  denied("thread environ /proc/self/task/<tid>/environ", "cat /proc/self/task/1/environ");
+  denied("command-substitution feeding cat of environ", 'cat "$(echo /proc/self/environ)"');
+  // Read tool directly targeting the environ file is a secret-path block.
+  {
+    const code = runFileTool("Read", "/proc/self/environ");
+    if (code === 2) passed += 1;
+    else failures.push(`DENY expected but got exit ${code}: Read /proc/self/environ`);
+  }
+  // Negative controls — a plain file literally named `environ` (no /proc ancestor),
+  // and the bare word "environ", are NOT secret paths.
+  allowed("read non-proc file named environ", "cat docs/environ.md");
+  allowed("word 'environ' as a grep pattern", "grep environ src/app.ts");
 }
 
 if (failures.length) {

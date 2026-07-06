@@ -117,7 +117,9 @@ else
   hold_long() { echo "enter-A" >> "$LIVEMARK"; sleep 3; echo "exit-A" >> "$LIVEMARK"; }
   gaffer_with_lock "$LIVELOCK" hold_long &
   hpid=$!
-  sleep 0.5   # let A acquire and write its pid
+  # Wait until A is provably inside the section (its enter marker) rather than betting
+  # 0.5s that it acquired the lock and wrote its pid — deterministic on any scheduler.
+  for _ in $(seq 1 200); do grep -q '^enter-A$' "$LIVEMARK" 2>/dev/null && break; sleep 0.05; done
   # Waiter B tries to enter while A still holds AND the lock is already older than
   # GAFFER_LOCK_STALE. A correct lock makes B WAIT for A; a broken (mtime-only) lock
   # reaps A's dir and lets B in concurrently.

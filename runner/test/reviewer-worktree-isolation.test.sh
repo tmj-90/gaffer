@@ -253,8 +253,11 @@ ORIG_FACTORY_B="$(cat "$REPO_B/CLAUDE.factory.md")"
 make_reviewer_script
 bash "$WORK/reviewer.sh" "$REPO_B" "gaffer/ticket-99-fix" "$DATA_B" "$FAKE_BIN/claude-sleep" "sleep" &
 CHILD_PID=$!
-# Give the reviewer time to create the worktree and enter the sleep
-sleep 1
+# Wait deterministically until the reviewer has created its throwaway worktree (and is
+# about to enter the stubbed agent sleep), rather than betting 1s. The TERM trap is
+# installed BEFORE worktree creation, so a SIGTERM here still exits cleanly either way.
+RWT="$DATA_B/review-wt-99"
+for _ in $(seq 1 200); do [ -d "$RWT" ] && break; sleep 0.05; done
 # Deliver SIGTERM to the child
 kill -TERM "$CHILD_PID" 2>/dev/null || true
 wait "$CHILD_PID" 2>/dev/null; rc_b=$?

@@ -20,7 +20,7 @@ Most coding agents are stateless renters: every run starts cold, the "memory" is
 
 - **It builds you an asset.** Every review verdict, every piece of evidence, every learned convention persists in a control plane (Dispatch) and a gated memory (Memory) that you own and can carry between repos — so the more you run it, the more context (evidence, conventions, product intent) is there to prime the next delivery.
 - **It runs on your machine.** Local-first: the control plane, databases, repo state, worktrees, and evidence all live on your box — no per-seat cloud, fully auditable. Live agent runs use your configured Claude Code CLI, so prompts and selected repo context are sent to that model provider. Treat any connected model as part of your trust boundary.
-- **You hold the gate.** By default a human approves every merge and the agent *structurally cannot* ship its own work. Opt-in flags unlock full hands-off autonomy when you actually want it.
+- **You hold the gate.** By default a human approves every merge and the agent *structurally cannot* ship its own work. Opt-in flags unlock full hands-off autonomy when you actually want it — for **unattended** runs against input you don't fully trust, pair it with the OS sandbox (`GAFFER_MODE=strict`), which is the containment boundary once the human gate is off. See [SECURITY.md](SECURITY.md#running-it-safely).
 
 ## What it does
 
@@ -106,7 +106,7 @@ Four components, one workspace:
 |---|---|
 | **Dispatch** · `packages/dispatch` | The control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard + CLI. |
 | **Crew** · `packages/crew` | The factory runtime — factory-level MCP tools, a hooks engine, and idle loops that draft work, ingest issues, and self-improve. |
-| **Runner** · `runner/` | The orchestrator — bash that spawns a `claude -p` agent per ticket, with a 67-skill library, a deterministic safety hook, git-worktree isolation, and model tiering (plan on a strong model, implement on a fast one). |
+| **Runner** · `runner/` | The orchestrator — bash that spawns a `claude -p` agent per ticket, with a curated skill library, a deterministic safety hook, git-worktree isolation, and model tiering (plan on a strong model, implement on a fast one). |
 | **Memory** · `packages/memory` | The durable, human-gated memory the factory learns into — the lore knowledge base plus the Repo Understanding engine (digest + feature ledger). *(Also usable standalone — see [`packages/memory/README.md`](packages/memory/README.md).)* |
 
 ```
@@ -173,7 +173,7 @@ gaffer/
 │   ├── dispatch/    control plane  (REST + MCP + dashboard + CLI)
 │   ├── crew/   factory runtime (MCP + hooks + idle loops)
 │   └── memory/    durable gated memory + repo understanding (MCP)
-├── runner/           bash orchestrator, 67-skill library, safety hook
+├── runner/           bash orchestrator, curated skill library, safety hook
 ├── pnpm-workspace.yaml
 └── package.json
 ```
@@ -186,7 +186,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Dispatch queue, tickets, epics, scopes, review gate (REST + MCP + CLI)
 - Crew MCP tool server (factory tools, hooks engine, idle loops, repo onboarding)
 - Memory embeddings, Repo Digest, feature ledger, gated lore
-- Runner factory loop with 67-skill library and model tiering — one pass with `runner/loop.sh`, or unattended on any platform with `runner/gaffer run --daemon` (re-runs the loop, honours the per-day cap, stops cleanly on a signal)
+- Runner factory loop with curated skill library and model tiering — one pass with `runner/loop.sh`, or unattended on any platform with `runner/gaffer run --daemon` (re-runs the loop, honours the per-day cap, stops cleanly on a signal)
 - Deterministic safety hook (`runner/safety-hook.mjs`) — worktree isolation, fails closed
 - Web dashboard with all seven views: Overview, Work, Review, Epics, Map, Memory, Settings
 
@@ -194,7 +194,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Container sandbox is a stub — worktree isolation plus `sandbox-exec` (macOS only, Apple-deprecated) is the current boundary; no per-subprocess network isolation
 - No REST RBAC (the API token is shared; no per-user or per-scope permissions)
 - Safety hook is tested on macOS; non-macOS behaviour is best-effort and untested
-- No third-party skill *marketplace* yet. The 67 bundled skills are all mounted into the repo, but the factory injects only a **stack/area-relevant subset** per ticket — `tick.sh` calls `select-skills` to pick the skills matching the repo's stack (and any derived area), plus the always-on quality lenses. `gaffer skills install` adds the whole library to your own Claude Code. Authoring a new skill is still just dropping a `SKILL.md` into `runner/skills/`.
+- No third-party skill *marketplace* yet. The bundled skills are all mounted into the repo, but the factory injects only a **stack/area-relevant subset** per ticket — `tick.sh` calls `select-skills` to pick the skills matching the repo's stack (and any derived area), plus the always-on quality lenses. `gaffer skills install` adds the whole library to your own Claude Code. Authoring a new skill is still just dropping a `SKILL.md` into `runner/skills/`.
 
 ## Credits / Inspired by
 

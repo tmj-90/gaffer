@@ -137,14 +137,14 @@ grep -q 'FILE_CARDS_BLOCK=""' "$TICK" \
 grep -q 'gaffer_prime_context_block.*_CARD_REAL_REPO' "$TICK" \
   && ok "tick.sh delivery calls gaffer_prime_context_block" \
   || fail "tick.sh delivery does not call gaffer_prime_context_block"
-# B7-tick: tick.sh calls gaffer_prime_context_block for clarify.
-grep -q 'gaffer_prime_context_block.*CREPO\|gaffer_prime_context_block.*CREPO' "$TICK" \
-  && ok "tick.sh clarify calls gaffer_prime_context_block" \
-  || fail "tick.sh clarify does not call gaffer_prime_context_block"
-# B8-tick: tick.sh calls gaffer_prime_context_block for review.
-grep -q 'gaffer_prime_context_block.*RREPO\|gaffer_prime_context_block.*basename.*RREPO' "$TICK" \
-  && ok "tick.sh review calls gaffer_prime_context_block" \
-  || fail "tick.sh review does not call gaffer_prime_context_block"
+# B7-tick: the clarify pass (extracted to lib/clarify.sh, B-H3) calls gaffer_prime_context_block.
+grep -q 'gaffer_prime_context_block.*CREPO' "$RUNNER_DIR/lib/clarify.sh" \
+  && ok "clarify pass (lib/clarify.sh) calls gaffer_prime_context_block" \
+  || fail "clarify pass does not call gaffer_prime_context_block"
+# B8-tick: the review pass (extracted to lib/review.sh, B-H3) calls gaffer_prime_context_block.
+grep -q 'gaffer_prime_context_block.*RREPO\|gaffer_prime_context_block.*basename.*RREPO' "$RUNNER_DIR/lib/review.sh" \
+  && ok "review pass (lib/review.sh) calls gaffer_prime_context_block" \
+  || fail "review pass does not call gaffer_prime_context_block"
 
 echo "== F. bash helper gaffer_prime_context_block — live block + fail-soft =="
 # F1: emits a block when cards exist (fixture DB from section A above).

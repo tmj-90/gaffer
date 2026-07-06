@@ -28,6 +28,24 @@ mocks away — matching the repo's existing integration setup, not a new harness
 6. **Evidence:** the command + passing summary and the new test paths. Then use the
    `record-evidence` skill to record `test_output` against the AC and submit for review.
 
+## SQLite isolation (this repo)
+
+The `packages/memory` suite talks to a real SQLite DB (`better-sqlite3`). Copy its
+isolation conventions rather than inventing new ones:
+
+- **Fresh DB per test, in-memory.** A `newDb()` helper builds each one from scratch —
+  `new BetterSqlite3(":memory:")`, then `db.pragma("foreign_keys = ON")`, then
+  `runMigrations(db)` — so every test starts on the current schema with no leaked rows.
+  Prefer this over sharing one DB across a file.
+- **When you need a real on-disk DB** (path handling, WAL, `openDb()`), create it under
+  a temp dir in `beforeEach` — `mkdtempSync(join(tmpdir(), "memory-<area>-"))` — and tear
+  it down in `afterEach` with `rmSync(dir, { recursive: true, force: true })`. `openDb(path)`
+  already applies migrations and pragmas, so use it instead of hand-rolling setup.
+- **Keep `foreign_keys = ON`** so the test exercises the same referential constraints
+  production does; a test that silently drops them can pass on data the app would reject.
+- One DB lifecycle per test (`beforeEach`/`afterEach`), never a module-level singleton —
+  that's what keeps runs order-independent and repeatable.
+
 ## Rules
 
 - Test real wiring; mock only genuine externals, not the components under test.

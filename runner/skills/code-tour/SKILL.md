@@ -1,6 +1,6 @@
 ---
 name: code-tour
-description: Use when asked to create a code walkthrough, onboarding tour, architecture tour, PR review tour, or any structured explanation of how a codebase works. Triggers on "create a code tour", "onboarding tour", "how does X work", "explain the codebase", "architecture walkthrough", "PR tour", or "contributor guide". Outputs a CodeTour `.tour` JSON file for the VS Code CodeTour extension.
+description: Use when asked to create a code walkthrough, onboarding tour, architecture tour, PR review tour, or any structured explanation of how a codebase works. Triggers on "create a code tour", "onboarding tour", "how does X work", "explain the codebase", "architecture walkthrough", "PR tour", or "contributor guide". Outputs a CodeTour `.tour` JSON file for the VS Code CodeTour extension, with a plain-markdown fallback for environments without it.
 stack: []
 area: docs
 ---
@@ -48,6 +48,13 @@ Infer silently from the request:
 
 Tours live in `.tours/<name>.tour` in the repo root.
 
+**Markdown fallback.** The `.tour` JSON is the primary output. When the CodeTour
+extension or VS Code isn't available (CI, a headless agent, a reviewer reading on
+GitHub), also emit — or fall back to — a plain-markdown version: a numbered list of
+`path/to/file.ts:42 — one-line description of what happens here`, one entry per step,
+in the same order as the tour. It carries the same narrative and is readable anywhere,
+so the tour is never blocked on a specific editor being installed.
+
 ## Step writing principles
 
 1. **Start with the entry point.** Request handling / server startup / CLI entry / main module — wherever execution begins.
@@ -63,8 +70,8 @@ Tours live in `.tours/<name>.tour` in the repo root.
 3. **Plan the narrative.** 5-line outline before writing steps — where do we start, what's the arc, where do we end?
 4. **Write steps.** Verify each `file` path and `line` number before including. Line numbers must point to something meaningful (a function signature, a key conditional, a type definition).
 5. **Write the summary step.** Recap the key files and where to start for the most common change types.
-6. **Output the `.tour` file.** Valid JSON; placed in `.tours/<descriptive-name>.tour`.
-7. **Verify.** Open the tour in VS Code with the CodeTour extension; walk every step; confirm file paths and line numbers are correct.
+6. **Output the `.tour` file.** Valid JSON; placed in `.tours/<descriptive-name>.tour`. Emit the markdown fallback alongside it (or in place of it when VS Code isn't part of the workflow).
+7. **Verify — no editor required.** Parse the `.tour` JSON to confirm it's valid, then for every step check the `file` exists and the `line` is in range and points at something meaningful (grep/read the file at that line). This works headless; opening the tour in VS Code with the CodeTour extension is a nice final confirmation, not a prerequisite.
 
 ## Review checklist
 
@@ -74,6 +81,7 @@ Tours live in `.tours/<name>.tour` in the repo root.
 - **Persona-appropriate depth** — quick tours don't rabbit-hole; deep tours don't skip the hard parts.
 - **Summary step present** — what to read first for the most common change type.
 - **Valid JSON** — `.tour` file parses without errors.
+- **Editor-independent** — a markdown fallback exists and verification passed without opening VS Code.
 
 ## Rules
 

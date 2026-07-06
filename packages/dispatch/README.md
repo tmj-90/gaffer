@@ -108,18 +108,24 @@ graphite **control-room** single-page app — over the same facade the CLI and M
 server use. The SPA is a framework-free ES-module app (no build step) under a
 self-only CSP. It binds `127.0.0.1` by default; there is **no RBAC yet** (every
 authenticated caller acts as one human actor), so do not expose it beyond
-localhost. Auth is a bearer token with two postures, decided by how the token
-was obtained at startup:
+localhost. Auth is a bearer token, and it gates **every data-returning
+request** — the posture does not vary by token provenance, HTTP method, or bind:
 
-- **Auto-provisioned** (`DISPATCH_API_TOKEN` unset): `dispatch-api` generates a
-  token (persisted 0600 to `$GAFFER_DATA/dashboard-token`) and, on a loopback
-  bind, keeps read-only GET/HEAD requests open so the local dashboard works
-  tokenless — except secret-bearing paths such as `/api/settings`, which always
-  require the token. Every mutating request requires the token.
-- **Operator-set** (`DISPATCH_API_TOKEN` set in the environment): you asked for
-  auth explicitly, so the strict posture applies — **every** request, including
-  read-only loopback requests (board, run detail, plan-session transcripts,
-  human queue, cost), must present `Authorization: Bearer <token>`.
+- `dispatch-api` **auto-provisions** a token at startup when `DISPATCH_API_TOKEN`
+  is unset — a fresh 256-bit token persisted 0600 to `$GAFFER_DATA/dashboard-token`
+  (an operator-set `DISPATCH_API_TOKEN` wins if present). A token is therefore
+  configured in normal operation.
+- **Every request that returns control-plane data must present
+  `Authorization: Bearer <token>`** — including read-only GET/HEAD on a loopback
+  bind. Only the public bootstrap surface (the static SPA shell + `/healthz`) is
+  served tokenless, so every request that reaches the auth gate is data-bearing and
+  needs the token. This is the structural stop on a same-user process — e.g. a
+  token-scrubbed, prompt-injected delivery agent limited to loopback — reading
+  `/api/tickets` (or self-approving over the REST API). The dashboard SPA sends the
+  bearer on every call, adopting it from the `?token=` URL or the login gate.
+
+Auth is disabled entirely only when *no* token is configured (the dev/embedder path
+where the server is constructed directly).
 
 `--unsafe-bind` / `DISPATCH_UNSAFE_BIND=1` is required to bind anything but
 loopback. Tokenless requests pass a DNS-rebinding Host/Origin check (`/healthz`

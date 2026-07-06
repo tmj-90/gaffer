@@ -30,6 +30,16 @@ mode on, the **kernel** refuses those writes outside the worktree.
 It is defence-in-depth: a best-effort net under the existing boundary. Treat it
 as "raises the cost of an accidental escape," not "makes escape impossible."
 
+> **A write sandbox, not a jail.** What strict mode bounds today is **writes** —
+> where the agent process may create or modify files. It does **not** isolate
+> **reads** (the agent can still read anything the OS user can) or **network egress**
+> (the wrapped process can still reach the network — `claude` itself needs it). So
+> the exfiltration path *read host data → encode it → send it out* is **not** closed
+> by strict mode. Think of the current providers as a **write sandbox**; read and
+> egress isolation wait on the container/VM providers below (still stubs). This is
+> why enabling autonomy defaults `GAFFER_STRICT_REQUIRE=1` but is still "run only
+> against input you trust, on a host whose blast radius you accept."
+
 ## The provider model (the core design)
 
 Strict mode is built around a **provider seam**, not around any single tool. The

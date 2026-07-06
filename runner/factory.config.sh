@@ -1133,6 +1133,41 @@ if [ "$GAFFER_MODE" = "strict" ]; then
   : "${STRICT_MODE:=1}"
 fi
 
+# ── Autonomy REQUIRES containment (enforced in code, not docs) ────────────────
+# Any flag that lets the agent SHIP or MUTATE without a human — agent-approve,
+# merge-on-agent-review, auto-merge, memory-auto-approve, or the autonomous/strict
+# clusters that set them — removes the human review gate. In that posture the OS
+# sandbox is the ONLY remaining containment boundary for a prompt-injected agent
+# (see SECURITY.md). So when autonomy is on we DEFAULT GAFFER_STRICT_REQUIRE=1 — the
+# runner then fails closed (tick.sh) if no OS sandbox provider is available — rather
+# than letting docs be the gate. An operator who supplies containment out-of-band (a
+# VM/container around the whole runner) opts out by setting GAFFER_STRICT_REQUIRE=0
+# EXPLICITLY: honoured, but logged loudly. (Graduated mode ships only via earned
+# per-repo/risk policy; its containment is enforced at the per-ticket ship gate, not
+# here — see the auto-decision path in tick.sh.)
+_gaffer_flag_on() {
+  case "$(printf '%s' "${1:-0}" | tr '[:upper:]' '[:lower:]')" in
+    1 | true | yes | on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+_gaffer_autonomy_on() {
+  _gaffer_flag_on "${DISPATCH_ALLOW_AGENT_APPROVE:-0}" && return 0
+  _gaffer_flag_on "${MERGE_ON_AGENT_REVIEW:-0}" && return 0
+  _gaffer_flag_on "${AUTO_MERGE:-0}" && return 0
+  _gaffer_flag_on "${MEMORY_AUTO_APPROVE:-0}" && return 0
+  case "$GAFFER_MODE" in autonomous | strict) return 0 ;; esac
+  return 1
+}
+if _gaffer_autonomy_on; then
+  if [ -z "${GAFFER_STRICT_REQUIRE+x}" ]; then
+    export GAFFER_STRICT_REQUIRE=1
+    printf 'autonomy: agent ship/mutate flags are on → defaulting GAFFER_STRICT_REQUIRE=1 (OS sandbox mandatory; the runner fails closed without one). Set GAFFER_STRICT_REQUIRE=0 to override if you provide containment out-of-band.\n' >&2
+  elif ! _gaffer_flag_on "${GAFFER_STRICT_REQUIRE}"; then
+    printf 'WARNING: autonomy flags are ON but GAFFER_STRICT_REQUIRE=%s — the OS sandbox is NOT required, so a prompt-injected agent has no containment boundary beyond the deterministic hook. Only safe if you provide containment out-of-band (VM/container).\n' "${GAFFER_STRICT_REQUIRE}" >&2
+  fi
+fi
+
 # Who reviews in_review tickets before they can be approved to done:
 #   human → only a person approves (dispatch review approve, or the board)
 #   agent → a reviewer AGENT (≠ the implementer) reviews via the review-ticket skill

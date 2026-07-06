@@ -50,7 +50,7 @@ export function registerNotify(program: Command): void {
         "hits a turn/budget cap and is parked for review (carries ticket#, spend, " +
         "dashboard URL). With nothing configured the notifier is a no-op and this " +
         "reports 'disabled'. Free-text fields are dropped from the outbound body " +
-        "when GAFFER_NOTIFY_REDACT=1.",
+        "by default (redacted); set GAFFER_NOTIFY_FULL_PAYLOAD=1 to include them.",
     )
     .requiredOption(
       "--kind <kind>",

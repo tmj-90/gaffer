@@ -273,15 +273,15 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "Empty = all gates.",
   },
   {
-    key: "GAFFER_NOTIFY_REDACT",
+    key: "GAFFER_NOTIFY_FULL_PAYLOAD",
     type: "boolean",
     group: "notifications",
-    label: "Redact webhook payload",
+    label: "Send full webhook payload",
     help:
-      "Send a minimal outbound body (kind · ticket number · status · dashboard URL) " +
-      "and drop the free-text ticket title/detail. Use when the webhook/Slack " +
-      "endpoint is outside your trust boundary — ticket text can be " +
-      "prompt-injection-influenced.",
+      "Outbound notifications are REDACTED by default (kind · ticket number · status · " +
+      "dashboard URL). The free-text ticket title/detail can be prompt-injection-" +
+      "influenced, so they never leave the box unless you opt in here. Enable ONLY when " +
+      "the webhook/Slack endpoint is inside your trust boundary.",
   },
 
   // --- Autonomy (cont.): who reviews a delivery ---

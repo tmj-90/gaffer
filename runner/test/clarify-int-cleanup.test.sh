@@ -92,7 +92,10 @@ gaffer_on_signal() { trap - EXIT INT TERM; gaffer_crash_cleanup; exit "$1"; }
 
 # The interrupted agent: raise SIGINT at the subshell running the clarify pass,
 # exactly as a contributor's Ctrl-C would mid-run.
-worker_deliver() { kill -INT "$BASHPID"; sleep 5; return 0; }
+# $BASHPID (the current subshell's PID) is bash 4+; macOS /bin/bash is 3.2. Fall back
+# to a portable self-PID — `exec sh` replaces the command-substitution subshell so its
+# $PPID is this shell — which resolves to the same PID BASHPID would give here.
+worker_deliver() { kill -INT "${BASHPID:-$(exec sh -c 'echo $PPID')}"; sleep 5; return 0; }
 
 # shellcheck source=../lib/clarify.sh
 source "$REAL_RUNNER/lib/clarify.sh"

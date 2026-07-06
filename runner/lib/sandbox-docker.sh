@@ -104,7 +104,16 @@ _envs+=( -e "NO_PROXY=localhost,127.0.0.1,egress-proxy" -e "no_proxy=localhost,1
 
 docker image inspect "$_IMAGE" >/dev/null 2>&1 || _die "sandbox image '$_IMAGE' not found — build it first (runner/sandbox/Dockerfile)"
 
+# Container hardening. cap-drop + no-new-privileges + resource caps are safe and
+# verified by the containment test. (--read-only root + a non-root --user are the next
+# hardening step — they need tmpfs-backed writable paths for claude/npm state and are
+# validated together with the live-delivery capstone; see docs/vm-sandbox-provider.md.)
 exec docker run --rm --network "$_NET_INT" \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --pids-limit "${GAFFER_SANDBOX_PIDS:-512}" \
+  --memory "${GAFFER_SANDBOX_MEMORY:-4g}" \
+  --cpus "${GAFFER_SANDBOX_CPUS:-4}" \
   -w "$(pwd)" \
   "${_mounts[@]}" \
   "${_envs[@]}" \

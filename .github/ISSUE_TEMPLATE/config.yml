@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (report privately — do NOT open a public issue)
+    url: https://github.com/tmj-90/gaffer/security/advisories/new
+    about: >
+      Report vulnerabilities via a private GitHub Security Advisory (Security tab →
+      Report a vulnerability). See SECURITY.md. Please do not include exploit details
+      in a public issue. (Repo owner: enable "Private vulnerability reporting" in
+      Settings → Security for this link to work.)

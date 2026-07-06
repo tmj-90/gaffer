@@ -7,6 +7,8 @@
 
 It isn't a chat assistant that writes code. It's a *factory*: a control plane, a runtime, durable memory, and an orchestrator that works tickets through **plan → implement → test → review** and delivers each as a git branch or PR with evidence — then loops on rejection until it's right. Vague or blocked tickets park for a human rather than being forced through.
 
+> **Alpha software.** Gaffer runs local coding agents with **shell access** inside repos you control. Use it only on **trusted repositories**, keep the **human review gate on**, and treat the host like a machine running an AI agent with developer-level access. Not production security, not a hosted service. See [`SECURITY.md`](SECURITY.md).
+
 <p align="center">
   <img src="docs/img/overview.png" alt="The Gaffer control room — live Overview" width="900">
   <br><sub><em>The control room: cycle time, throughput and flow efficiency up top, the development-flow table, what needs you now, and real per-repo progress — with live charts. (Demo data.)</em></sub>
@@ -160,7 +162,7 @@ Gaffer runs shell-capable agents, so containment is first-class:
 
 - a **deterministic PreToolUse safety hook** scopes writes to the worktree, blocks secret reads, denies the control-plane CLI, and **fails closed** (see [SECURITY.md](SECURITY.md) for residual limits on dynamic paths);
 - every ticket runs in a **throwaway git worktree** — the real checkout is never touched;
-- an optional **OS sandbox** adds a kernel-level write boundary — **macOS only today** (`sandbox-exec`); on Linux it degrades to the safety hook as the boundary until a container/VM provider is wired via the seam, and `GAFFER_STRICT_REQUIRE=1` makes that degrade **fail closed** (refuse to launch rather than run without the OS sandbox);
+- an optional **OS sandbox** via a provider seam — the experimental **`docker` provider** (`SANDBOX_PROVIDER=docker`) adds real read + egress isolation on any host with Docker (container mounts only the worktree, egress via an allowlist proxy); `sandbox-exec` (macOS) is a write-only boundary; `GAFFER_STRICT_REQUIRE=1` makes a missing provider **fail closed** (refuse to launch rather than run uncontained), and enabling any autonomy flag now defaults it on;
 - the **review gate is enforced server-side** — an agent can't approve or merge its own work, and the merge gate verifies the *real git diff*, not the agent's word for it.
 
 Opt-in autonomy, to be used deliberately: `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `MEMORY_AUTO_APPROVE`. Full threat model and honest residual limits: [`SECURITY.md`](SECURITY.md).
@@ -191,7 +193,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Web dashboard with all seven views: Overview, Work, Review, Epics, Map, Memory, Settings
 
 **Not yet / honest limits:**
-- Container sandbox is a stub — worktree isolation plus `sandbox-exec` (macOS only, Apple-deprecated) is the current boundary; no per-subprocess network isolation
+- Container sandbox: the `docker` provider (read + egress isolation) is **experimental** — proven at the containment level (red-team gated: host secret unreadable, egress allowlisted, caps dropped), but the live in-container `claude -p` delivery capstone is still pending; `sandbox-exec` (macOS) remains write-only
 - No REST RBAC (the API token is shared; no per-user or per-scope permissions)
 - Safety hook is tested on macOS; non-macOS behaviour is best-effort and untested
 - No third-party skill *marketplace* yet. The bundled skills are all mounted into the repo, but the factory injects only a **stack/area-relevant subset** per ticket — `tick.sh` calls `select-skills` to pick the skills matching the repo's stack (and any derived area), plus the always-on quality lenses. `gaffer skills install` adds the whole library to your own Claude Code. Authoring a new skill is still just dropping a `SKILL.md` into `runner/skills/`.

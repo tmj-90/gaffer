@@ -81,12 +81,21 @@ done < "$_READ_ROOTS_FILE"
 # The factory's own dir (dist bins, skills, safety hook) — ro, path-mirrored.
 [ -d "$_RUNNER_DIR" ] && _mounts+=( -v "$_RUNNER_DIR:$_RUNNER_DIR:ro" )
 
-# Forward ONLY the allowlisted env. ANTHROPIC_API_KEY + the MCP data-plane vars.
+# Forward ONLY the allowlisted env. The model credential (ONE of ANTHROPIC_API_KEY or
+# CLAUDE_CODE_OAUTH_TOKEN — the latter is a subscription token from `claude setup-token`,
+# the supported headless-Max path) plus the MCP data-plane vars. Nothing else.
 _envs=()
-for k in ANTHROPIC_API_KEY GAFFER_DATA GAFFER_FACTORY GAFFER_CLAIM_TOKEN \
-         DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN; do
+for k in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY \
+         GAFFER_CLAIM_TOKEN DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN; do
   [ -n "${!k:-}" ] && _envs+=( -e "$k" )
 done
+# Fallback: if the operator has placed a Claude credentials file, mount it read-only into
+# the container's home so claude authenticates. The runner never reads its contents.
+_cred="${GAFFER_SANDBOX_CLAUDE_CREDENTIALS:-}"
+[ -n "$_cred" ] && [ -f "$_cred" ] && _mounts+=( -v "$_cred:/root/.claude/.credentials.json:ro" )
+if [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ ! -f "${_cred:-/nonexistent}" ]; then
+  printf 'sandbox-docker: no model credential — set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), ANTHROPIC_API_KEY, or GAFFER_SANDBOX_CLAUDE_CREDENTIALS; claude will not authenticate inside the container\n' >&2
+fi
 # Route all egress through the allowlist proxy.
 _envs+=( -e "HTTP_PROXY=http://egress-proxy:8888" -e "HTTPS_PROXY=http://egress-proxy:8888" )
 _envs+=( -e "http_proxy=http://egress-proxy:8888" -e "https_proxy=http://egress-proxy:8888" )

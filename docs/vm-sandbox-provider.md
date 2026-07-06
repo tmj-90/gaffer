@@ -70,8 +70,10 @@ case echoes a wrapper (`runner/lib/vm-exec.sh` / a small bin) that:
 1. ensures a warm guest is up (pool of 1+ ephemeral guests; cold-boot fallback),
 2. mounts **only**: the target repo/worktree (RW), `$GAFFER_DATA` runtime copies (RW),
    the built `dist` bins + `runner/skills` + `safety-hook.mjs` (RO),
-3. injects **only** `ANTHROPIC_API_KEY` (nothing else — the env is already `env -i`
-   allowlisted; the VM enforces it structurally),
+3. injects **only** the model credential — `ANTHROPIC_API_KEY`, *or* a subscription
+   `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, the supported headless-Max
+   path), *or* a mounted `~/.claude/.credentials.json` — and nothing else (the env is
+   already `env -i` allowlisted; the guest enforces it structurally),
 4. execs the wrapped `claude -p …` inside the guest with the translated cwd (worktree),
 5. tears the guest down (or returns it to the pool, wiped).
 

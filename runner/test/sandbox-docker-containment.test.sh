@@ -48,16 +48,18 @@ PAYLOAD="
   if curl -s --max-time 6 -o /dev/null https://example.com 2>/dev/null; then echo EGRESS_LEAK; else echo EGRESS_BLOCKED; fi
   if curl -s --max-time 6 --noproxy '*' -o /dev/null http://1.1.1.1 2>/dev/null; then echo RAWIP_LEAK; else echo RAWIP_BLOCKED; fi
   if echo canary > '$WT/canary' 2>/dev/null; then echo WRITE_OK; else echo WRITE_FAIL; fi
+  grep -q 'NoNewPrivs:.*1' /proc/self/status && echo NNP_SET || echo NNP_UNSET
+  grep -q 'CapEff:.*0000000000000000' /proc/self/status && echo CAPS_DROPPED || echo CAPS_KEPT
 "
 
 OUT="$(timeout 120 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$PAYLOAD" 2>&1)"
 echo "$OUT" | sed 's/^/    /'
 
 fail=0
-for want in READ_ISOLATED EGRESS_BLOCKED RAWIP_BLOCKED WRITE_OK; do
+for want in READ_ISOLATED EGRESS_BLOCKED RAWIP_BLOCKED WRITE_OK NNP_SET CAPS_DROPPED; do
   if echo "$OUT" | grep -q "$want"; then echo "  ok   $want"; else echo "  FAIL expected $want"; fail=1; fi
 done
-for bad in READ_LEAK EGRESS_LEAK RAWIP_LEAK WRITE_FAIL; do
+for bad in READ_LEAK EGRESS_LEAK RAWIP_LEAK WRITE_FAIL NNP_UNSET CAPS_KEPT; do
   if echo "$OUT" | grep -q "$bad"; then echo "  FAIL saw $bad"; fail=1; fi
 done
 # The write must have actually landed on the host worktree (proves the rw mount round-trips).

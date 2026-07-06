@@ -76,12 +76,14 @@ Strict mode wraps the **whole** `claude -p` process. That process makes Claude's
 own API calls. Therefore network **cannot** be denied without breaking Claude
 itself — so `STRICT_ALLOW_NETWORK` defaults to `1` (network allowed).
 
-True per-subprocess network isolation — deny the *agent's child processes*
-network while letting *Claude itself* reach the API — is a **future-provider
-capability** (docker/lima/VM with per-process network namespaces). A single
-whole-process `sandbox-exec` wrap fundamentally cannot offer it. Setting
-`STRICT_ALLOW_NETWORK=0` with the `sandbox-exec` provider will break the run; it
-exists as an honest, explicit knob, not a recommended setting for that provider.
+The `sandbox-exec` provider **cannot isolate egress**: it wraps the whole
+`claude -p` process, so denying the network denies Claude's own API call too. The
+`docker` provider **does** isolate egress — the container sits on an `--internal`
+network with no route out except the allowlist proxy, so the agent's traffic is
+filtered while the model endpoint stays reachable (a per-ticket microVM, `lima`, is
+the future stronger form). Setting `STRICT_ALLOW_NETWORK=0` with the `sandbox-exec`
+provider will break the run; it exists as an honest, explicit knob, not a
+recommended setting for that provider.
 
 ## Configuration
 

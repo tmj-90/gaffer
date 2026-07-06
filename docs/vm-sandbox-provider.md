@@ -12,8 +12,10 @@ scrub) + the `runner/sandbox/egress-proxy` allowlist proxy + a red-team acceptan
 (`runner/test/sandbox-docker-containment.test.sh`). **Verified on real Docker:** host
 secret unreadable (not mounted), egress to a non-allowlisted host blocked (DNS *and*
 raw-IP), allowlisted model + registry reachable, worktree writable and round-tripping.
-Not yet done: the delivery **image** (node + `claude`) and a live `claude -p` delivery
-end-to-end inside the container (step 5), plus the per-ticket **microVM** upgrade.
+The delivery **image** now exists (`runner/sandbox/Dockerfile` — node + `claude`); still
+not done: a live `claude -p` delivery **end-to-end inside the container** (step 5, gated
+on a headless model credential), plus the per-ticket **microVM** (`lima`) upgrade — the
+true "VM" form this doc is named for, still a stub.
 
 ## Two modes (the framing)
 
@@ -28,13 +30,13 @@ trust level of the input:
 | **Network egress** | unrestricted (`claude` needs the network; we wrap the whole process) | **allowlist only** (model endpoint + package registries) via a host-controlled proxy |
 | Host creds / home | on the box, hook-guarded, same-UID reachable | **not present in the guest** |
 | Good for | trusted repos, human on the gate (supervised/graduated) | **unattended + untrusted** — the posture autonomy actually needs |
-| Selector | `SANDBOX_PROVIDER=sandbox-exec` (default) | `SANDBOX_PROVIDER=vm` |
+| Selector | `SANDBOX_PROVIDER=sandbox-exec` (default) | `SANDBOX_PROVIDER=docker` |
 
 Mode 1 is honest but limited: it is a *write* sandbox (see `STRICT_MODE.md`). Mode 2
 is the boundary a determined or prompt-injected agent is actually contained by. This
 composes with the just-landed rule that **any autonomy flag auto-requires an OS
 sandbox** — the intended safe unattended config becomes `GAFFER_MODE=autonomous` (or
-the flags) **+ `SANDBOX_PROVIDER=vm`**, and the runner fails closed if the VM can't
+the flags) **+ `SANDBOX_PROVIDER=docker`**, and the runner fails closed if the VM can't
 come up.
 
 ## Why a VM, not a container
@@ -108,9 +110,9 @@ applies inside.
 
 ## Acceptance criteria (what makes Mode 2 "done")
 
-1. A ticket delivers to `done` end-to-end with `SANDBOX_PROVIDER=vm`, review gate intact.
+1. A ticket delivers to `done` end-to-end with `SANDBOX_PROVIDER=docker`, review gate intact.
 2. The red-team ticket (read-secret + exfil) **fails closed** — verified, in CI.
-3. `GAFFER_MODE=autonomous` + `SANDBOX_PROVIDER=vm` runs unattended; the same config
+3. `GAFFER_MODE=autonomous` + `SANDBOX_PROVIDER=docker` runs unattended; the same config
    **without** the VM refuses to launch (already true via strict-require).
 4. Honest docs: `STRICT_MODE.md` + `SECURITY.md` updated to describe Mode 2 as the
    read+egress boundary, Mode 1 as the write sandbox.

@@ -509,9 +509,11 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "sandbox",
     label: "Sandbox provider",
     help:
-      "Which OS-level containment backend the strict sandbox uses: sandbox-exec (macOS, " +
-      "proven today) · none (disable OS wrapping, keep the toggle). docker/lima/VM are " +
-      "future providers. Only consulted when the strict sandbox is on.",
+      "Which OS-level containment backend the strict sandbox uses: docker " +
+      "(experimental — real read + write + egress isolation, any host with a Docker " +
+      "daemon) · sandbox-exec (macOS — write-only containment) · none (disable OS " +
+      "wrapping, keep the toggle). lima/VM are future (stronger per-ticket microVM). " +
+      "Only consulted when the strict sandbox is on.",
   },
   {
     key: "STRICT_ALLOW_HOME",

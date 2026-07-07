@@ -237,31 +237,50 @@ function readRequest(opts) {
   return req;
 }
 
+/** Result-envelope phases the decomposer contract recognises. */
+const KNOWN_PHASES = new Set(["clarify", "plan", "error"]);
+
 /**
- * Pull the LAST fenced ```json block out of the model's text. Falls back to the
- * last bare {...} object if no fence is present. Returns the parsed object or null.
+ * Pull the model's result envelope out of its text. Collects EVERY parseable JSON
+ * block — all fenced ```json blocks plus the last bare {...} — and returns the LAST
+ * one that is a real envelope (a recognised `phase`). Only if none carry a phase does
+ * it fall back to the last parseable object (so validateResult still reports a clean
+ * error). Returns the parsed object or null.
+ *
+ * Why not just "take the last block": the model sometimes emits an extra JSON-ish
+ * block AFTER the envelope (an example inside a clarify question, a trailing snippet).
+ * Blindly grabbing the last block then yields a phase-less object → the intermittent
+ * "unknown result phase: undefined" failure. Preferring a phase-bearing envelope is
+ * robust to that ordering.
  */
 export function extractLastJsonBlock(text) {
   if (!text) return null;
-  // Prefer fenced ```json ... ``` blocks; take the LAST one (the skill emits the
-  // structured block last).
+  const parsed = [];
   const fenceRe = /```(?:json)?\s*\n([\s\S]*?)\n```/gi;
   let match;
-  let lastFence = null;
-  while ((match = fenceRe.exec(text)) !== null) lastFence = match[1];
-  const candidates = [];
-  if (lastFence) candidates.push(lastFence);
-  // Fallback: the last balanced top-level {...} in the text.
-  const bare = lastBalancedObject(text);
-  if (bare) candidates.push(bare);
-  for (const c of candidates) {
+  while ((match = fenceRe.exec(text)) !== null) {
     try {
-      return JSON.parse(c);
+      parsed.push(JSON.parse(match[1]));
     } catch {
-      /* try the next candidate */
+      /* skip an unparseable fence */
     }
   }
-  return null;
+  // Fallback source: the last balanced top-level {...} in the text.
+  const bare = lastBalancedObject(text);
+  if (bare) {
+    try {
+      parsed.push(JSON.parse(bare));
+    } catch {
+      /* skip */
+    }
+  }
+  if (parsed.length === 0) return null;
+  // Last recognised envelope wins; else the last parseable object.
+  for (let i = parsed.length - 1; i >= 0; i -= 1) {
+    const o = parsed[i];
+    if (o && typeof o === "object" && KNOWN_PHASES.has(o.phase)) return o;
+  }
+  return parsed[parsed.length - 1];
 }
 
 /** Find the last balanced top-level {...} substring (brace-counting). */

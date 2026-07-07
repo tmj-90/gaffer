@@ -65,7 +65,9 @@ PAYLOAD="
   if curl -s --max-time 6 --noproxy '*' -o /dev/null http://1.1.1.1 2>/dev/null; then echo RAWIP_LEAK; else echo RAWIP_BLOCKED; fi
   if echo canary > '$WT/canary' 2>/dev/null; then echo WRITE_OK; else echo WRITE_FAIL; fi
   grep -q 'NoNewPrivs:.*1' /proc/self/status && echo NNP_SET || echo NNP_UNSET
-  grep -q 'CapEff:.*0000000000000000' /proc/self/status && echo CAPS_DROPPED || echo CAPS_KEPT
+  # CapEff = 0000000000000002 = only CAP_DAC_OVERRIDE (kept so root can write the mounted
+  # worktree on Linux); every other capability dropped by --cap-drop=ALL.
+  grep -q 'CapEff:.*0000000000000002' /proc/self/status && echo CAPS_DROPPED || echo CAPS_KEPT
 "
 
 OUT="$(timeout 120 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$PAYLOAD" 2>&1)"

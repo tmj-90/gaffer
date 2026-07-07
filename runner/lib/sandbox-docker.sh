@@ -104,13 +104,19 @@ _envs+=( -e "NO_PROXY=localhost,127.0.0.1,egress-proxy" -e "no_proxy=localhost,1
 
 docker image inspect "$_IMAGE" >/dev/null 2>&1 || _die "sandbox image '$_IMAGE' not found — build it first (runner/sandbox/Dockerfile)"
 
-# Container hardening. cap-drop=ALL + no-new-privileges are ASSERTED by the containment
-# test (CapEff=0 + NoNewPrivs=1 inside the guest); the pid/mem/cpu caps are applied but
-# not separately asserted. (--read-only root + a non-root --user are the next hardening
-# step — they need tmpfs-backed writable paths for claude/npm state and are validated
-# together with the live-delivery capstone; see docs/vm-sandbox-provider.md.)
+# Container hardening. Drop ALL capabilities EXCEPT DAC_OVERRIDE: root inside the guest
+# needs DAC_OVERRIDE to write the bind-mounted worktree + GAFFER_DATA, which on Linux are
+# owned by the HOST uid (without it, cap-drop=ALL makes even root hit "permission denied"
+# on the mount — macOS Docker Desktop masks this via file-sharing uid mapping). DAC_OVERRIDE
+# only bypasses perms on files that EXIST in the guest (the worktree + GAFFER_DATA it is
+# meant to write); host secrets aren't mounted, so read isolation is unaffected. Plus
+# no-new-privileges + pid/mem/cpu caps. The containment test asserts CapEff is
+# DAC_OVERRIDE-only + NoNewPrivs=1. (A non-root --user + --read-only root are the next
+# hardening step — they need a tmpfs-backed writable HOME for claude/npm state and are
+# validated with the live-delivery capstone; see docs/vm-sandbox-provider.md.)
 exec docker run --rm --network "$_NET_INT" \
   --cap-drop=ALL \
+  --cap-add=DAC_OVERRIDE \
   --security-opt=no-new-privileges \
   --pids-limit "${GAFFER_SANDBOX_PIDS:-512}" \
   --memory "${GAFFER_SANDBOX_MEMORY:-4g}" \

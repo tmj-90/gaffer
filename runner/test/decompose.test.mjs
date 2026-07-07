@@ -97,6 +97,26 @@ console.log("== AC2: bare {...} fallback when no fence ==");
   eq("no json → null", extractLastJsonBlock("just prose, no json"), null);
 }
 
+console.log("== AC1b: the phase-bearing envelope wins over a trailing non-envelope block ==");
+{
+  // Regression: the model sometimes emits an extra JSON block AFTER the real envelope
+  // (an example in prose). Blindly taking the LAST block yielded a phase-less object →
+  // the intermittent "unknown result phase: undefined" failure. The envelope must win.
+  eq(
+    "fenced envelope wins over a trailing fenced example",
+    extractLastJsonBlock(
+      'Plan:\n```json\n{"phase":"plan","plan":{"epic":{"name":"x"}}}\n```\n' +
+        'Example ticket shape:\n```json\n{"title":"example","priority":50}\n```\n',
+    ),
+    { phase: "plan", plan: { epic: { name: "x" } } },
+  );
+  eq(
+    "fenced envelope wins over a trailing bare object",
+    extractLastJsonBlock('```json\n{"phase":"clarify","questions":["q"]}\n```\ne.g. {"title":"x"}'),
+    { phase: "clarify", questions: ["q"] },
+  );
+}
+
 console.log("== AC3: clarify result validates ==");
 {
   const r = validateResult({ phase: "clarify", questions: [" web? ", "", "mobile?"] }, 20);

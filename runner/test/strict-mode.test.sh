@@ -62,10 +62,26 @@ echo "== provider seam dispatch =="
 SANDBOX_PROVIDER=none WRAP="$(sandbox_wrap_cmd "$WORKTREE" "")"
 [ -z "$WRAP" ] && ok "provider 'none' echoes empty prefix" || fail "provider 'none' should echo nothing (got: $WRAP)"
 
-DOCKER_ERR="$(SANDBOX_PROVIDER=docker sandbox_wrap_cmd "$WORKTREE" "" 2>&1 >/dev/null)"
-DOCKER_OUT="$(SANDBOX_PROVIDER=docker sandbox_wrap_cmd "$WORKTREE" "" 2>/dev/null)"
-[ -z "$DOCKER_OUT" ] && ok "provider 'docker' echoes empty prefix (no containment)" || fail "provider 'docker' should echo nothing (got: $DOCKER_OUT)"
-echo "$DOCKER_ERR" | grep -q "not yet supported" && ok "provider 'docker' warns non-fatally on stderr" || fail "provider 'docker' should warn on stderr"
+# docker is a REAL provider now (Mode 2): with a live daemon it emits the container
+# wrapper prefix; with no daemon it degrades to empty + a non-fatal warning.
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  DOCKER_OUT="$(SANDBOX_PROVIDER=docker sandbox_wrap_cmd "$WORKTREE" "" 2>/dev/null)"
+  case "$DOCKER_OUT" in
+    *"lib/sandbox-docker.sh"*) ok "provider 'docker' (daemon up) echoes the container wrapper prefix" ;;
+    *) fail "provider 'docker' should echo the sandbox-docker.sh wrapper (got: $DOCKER_OUT)" ;;
+  esac
+else
+  DOCKER_ERR="$(SANDBOX_PROVIDER=docker sandbox_wrap_cmd "$WORKTREE" "" 2>&1 >/dev/null)"
+  DOCKER_OUT="$(SANDBOX_PROVIDER=docker sandbox_wrap_cmd "$WORKTREE" "" 2>/dev/null)"
+  [ -z "$DOCKER_OUT" ] && ok "provider 'docker' (no daemon) echoes empty prefix + degrades" || fail "provider 'docker' (no daemon) should echo nothing (got: $DOCKER_OUT)"
+  echo "$DOCKER_ERR" | grep -q "daemon unavailable" && ok "provider 'docker' (no daemon) warns non-fatally" || fail "provider 'docker' (no daemon) should warn on stderr"
+fi
+
+# lima is the remaining stub → empty prefix + a 'not yet supported' warning.
+LIMA_ERR="$(SANDBOX_PROVIDER=lima sandbox_wrap_cmd "$WORKTREE" "" 2>&1 >/dev/null)"
+LIMA_OUT="$(SANDBOX_PROVIDER=lima sandbox_wrap_cmd "$WORKTREE" "" 2>/dev/null)"
+[ -z "$LIMA_OUT" ] && ok "provider 'lima' echoes empty prefix (stub)" || fail "provider 'lima' should echo nothing (got: $LIMA_OUT)"
+echo "$LIMA_ERR" | grep -q "not yet supported" && ok "provider 'lima' warns non-fatally on stderr" || fail "provider 'lima' should warn on stderr"
 
 WRAP="$(SANDBOX_PROVIDER=sandbox-exec sandbox_wrap_cmd "$WORKTREE" "")"
 case "$WRAP" in

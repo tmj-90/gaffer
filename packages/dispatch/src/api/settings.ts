@@ -88,9 +88,11 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
       "policy is the sole allow-path — set grants in the per-repo policy editor); " +
       "autonomous lets agents approve and auto-merges + pushes approved work; " +
-      "strict adds OS-level sandbox containment on top of autonomous — but the only " +
-      "sandbox provider is sandbox-exec (macOS), so on a non-macOS host strict behaves " +
-      "EXACTLY like autonomous (the deterministic safety hook is the boundary). " +
+      "strict adds OS-level sandbox containment on top of autonomous, chosen by " +
+      "SANDBOX_PROVIDER: docker (any host with Docker) gives real read + egress " +
+      "isolation; sandbox-exec (macOS) is a write-only sandbox, so with sandbox-exec on " +
+      "a non-macOS host strict has no OS containment beyond the deterministic hook — set " +
+      "GAFFER_STRICT_REQUIRE=1 to fail closed rather than degrade. " +
       "Picking a mode prevents a " +
       "half-configured autonomy posture. The individual knobs below still " +
       "override the mode — an explicitly-set flag always wins.",
@@ -273,15 +275,15 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "Empty = all gates.",
   },
   {
-    key: "GAFFER_NOTIFY_REDACT",
+    key: "GAFFER_NOTIFY_FULL_PAYLOAD",
     type: "boolean",
     group: "notifications",
-    label: "Redact webhook payload",
+    label: "Send full webhook payload",
     help:
-      "Send a minimal outbound body (kind · ticket number · status · dashboard URL) " +
-      "and drop the free-text ticket title/detail. Use when the webhook/Slack " +
-      "endpoint is outside your trust boundary — ticket text can be " +
-      "prompt-injection-influenced.",
+      "Outbound notifications are REDACTED by default (kind · ticket number · status · " +
+      "dashboard URL). The free-text ticket title/detail can be prompt-injection-" +
+      "influenced, so they never leave the box unless you opt in here. Enable ONLY when " +
+      "the webhook/Slack endpoint is inside your trust boundary.",
   },
 
   // --- Autonomy (cont.): who reviews a delivery ---
@@ -507,9 +509,11 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "sandbox",
     label: "Sandbox provider",
     help:
-      "Which OS-level containment backend the strict sandbox uses: sandbox-exec (macOS, " +
-      "proven today) · none (disable OS wrapping, keep the toggle). docker/lima/VM are " +
-      "future providers. Only consulted when the strict sandbox is on.",
+      "Which OS-level containment backend the strict sandbox uses: docker " +
+      "(experimental — real read + write + egress isolation, any host with a Docker " +
+      "daemon) · sandbox-exec (macOS — write-only containment) · none (disable OS " +
+      "wrapping, keep the toggle). lima/VM are future (stronger per-ticket microVM). " +
+      "Only consulted when the strict sandbox is on.",
   },
   {
     key: "STRICT_ALLOW_HOME",

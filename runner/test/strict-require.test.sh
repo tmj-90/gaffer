@@ -25,13 +25,15 @@ rc_for() { SANDBOX_PROVIDER="$1" sandbox_wrap_cmd "/tmp/gaffer-wt" "" >/dev/null
 # ── DEFAULT (no strict-require): every unavailable provider path DEGRADES (rc 0) ──
 unset GAFFER_STRICT_REQUIRE 2>/dev/null || true
 [ "$(rc_for none)" = "0" ]    && ok "default: provider 'none' degrades (rc 0)"            || fail "none should degrade by default"
-[ "$(rc_for docker)" = "0" ]  && ok "default: provider 'docker' (unsupported) degrades"  || fail "docker should degrade by default"
+[ "$(rc_for lima)" = "0" ]    && ok "default: provider 'lima' (stub) degrades"           || fail "lima should degrade by default"
 [ "$(rc_for made-up)" = "0" ] && ok "default: unknown provider degrades (rc 0)"          || fail "unknown should degrade by default"
 
 # ── GAFFER_STRICT_REQUIRE=1: every unavailable path FAILS CLOSED (rc 1) ──
+# (docker is a REAL provider now — when its daemon is up it SUCCEEDS here rather than
+# failing closed; its no-daemon fail-closed path is covered in strict-mode.test.sh.)
 export GAFFER_STRICT_REQUIRE=1
 [ "$(rc_for none)" = "1" ]    && ok "strict-require: provider 'none' FAILS CLOSED (rc 1)"      || fail "none must fail closed under strict-require"
-[ "$(rc_for docker)" = "1" ]  && ok "strict-require: provider 'docker' FAILS CLOSED (rc 1)"    || fail "docker must fail closed under strict-require"
+[ "$(rc_for lima)" = "1" ]    && ok "strict-require: provider 'lima' (stub) FAILS CLOSED (rc 1)" || fail "lima must fail closed under strict-require"
 [ "$(rc_for made-up)" = "1" ] && ok "strict-require: unknown provider FAILS CLOSED (rc 1)"     || fail "unknown must fail closed under strict-require"
 
 # the refusal is loud + says "fail closed"

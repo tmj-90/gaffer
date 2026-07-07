@@ -375,7 +375,7 @@ describe("WebhookSink", () => {
   });
 });
 
-describe("FIX-6 outbound redaction (GAFFER_NOTIFY_REDACT)", () => {
+describe("FIX-6 outbound redaction (redact by default; GAFFER_NOTIFY_FULL_PAYLOAD opts out)", () => {
   // An agent-influenceable event: the title/detail are free text a prompt-injected
   // agent can steer, so they must not leave the box when redaction is on.
   const sensitive: NotifyEvent = {
@@ -454,7 +454,7 @@ describe("FIX-6 outbound redaction (GAFFER_NOTIFY_REDACT)", () => {
     }
   });
 
-  it("without the flag the env-built notifier POSTs the full body", async () => {
+  it("without any flag the env-built notifier REDACTS by default (secure default)", async () => {
     const realFetch = globalThis.fetch;
     let body = "";
     globalThis.fetch = (async (_url: string, init: { body: string }) => {
@@ -464,6 +464,50 @@ describe("FIX-6 outbound redaction (GAFFER_NOTIFY_REDACT)", () => {
     try {
       const notifier = buildNotifierFromEnv({
         GAFFER_NOTIFY_WEBHOOK_URL: "https://example.test/hook",
+      });
+      notifier.notify(sensitive);
+      await new Promise((r) => setTimeout(r, 0));
+      const sent = JSON.parse(body) as Record<string, unknown>;
+      expect(sent["title"]).toBeUndefined();
+      expect(sent["detail"]).toBeUndefined();
+      expect(JSON.stringify(sent)).not.toContain("EXFIL");
+      expect(sent["kind"]).toBe("review_needed");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("GAFFER_NOTIFY_FULL_PAYLOAD=1 opts back into the full body", async () => {
+    const realFetch = globalThis.fetch;
+    let body = "";
+    globalThis.fetch = (async (_url: string, init: { body: string }) => {
+      body = init.body;
+      return { ok: true, status: 200 } as Response;
+    }) as typeof fetch;
+    try {
+      const notifier = buildNotifierFromEnv({
+        GAFFER_NOTIFY_WEBHOOK_URL: "https://example.test/hook",
+        GAFFER_NOTIFY_FULL_PAYLOAD: "1",
+      });
+      notifier.notify(sensitive);
+      await new Promise((r) => setTimeout(r, 0));
+      expect((JSON.parse(body) as Record<string, unknown>)["title"]).toBe(sensitive.title);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("legacy GAFFER_NOTIFY_REDACT=0 is still honoured as a full-payload request", async () => {
+    const realFetch = globalThis.fetch;
+    let body = "";
+    globalThis.fetch = (async (_url: string, init: { body: string }) => {
+      body = init.body;
+      return { ok: true, status: 200 } as Response;
+    }) as typeof fetch;
+    try {
+      const notifier = buildNotifierFromEnv({
+        GAFFER_NOTIFY_WEBHOOK_URL: "https://example.test/hook",
+        GAFFER_NOTIFY_REDACT: "0",
       });
       notifier.notify(sensitive);
       await new Promise((r) => setTimeout(r, 0));

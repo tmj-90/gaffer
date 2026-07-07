@@ -30,6 +30,18 @@ mode on, the **kernel** refuses those writes outside the worktree.
 It is defence-in-depth: a best-effort net under the existing boundary. Treat it
 as "raises the cost of an accidental escape," not "makes escape impossible."
 
+> **`sandbox-exec` is a write sandbox, not a jail — the `docker` provider is the
+> read+egress boundary.** The macOS `sandbox-exec` provider bounds **writes** only: it
+> does **not** isolate **reads** (the agent can read anything the OS user can) or
+> **network egress** (it wraps the whole `claude` process, which needs the network), so
+> under it the path *read host data → encode it → send it out* stays open. The
+> **`docker` provider closes both** — read isolation via mount scoping, egress via the
+> `--internal` network + allowlist proxy (see the table below and
+> `docs/vm-sandbox-provider.md`); the per-ticket microVM (`lima`) is the future
+> stronger-kernel upgrade. Enabling autonomy defaults `GAFFER_STRICT_REQUIRE=1` either
+> way, and the honest posture stays "run untrusted input only under a real isolation
+> provider (`docker` today), on a host whose blast radius you accept."
+
 ## The provider model (the core design)
 
 Strict mode is built around a **provider seam**, not around any single tool. The
@@ -42,8 +54,8 @@ the resolved write/read roots, echoes a command prefix that wraps the
 |----------------|-------------------------------|-----------|
 | `none`         | supported                     | No OS wrapping (worktree + hook still apply). |
 | `sandbox-exec` | supported (default)           | Generates an SBPL profile and wraps with `sandbox-exec -f <profile>`. |
-| `docker`       | **future** — falls back to none | Warns on stderr, adds no OS containment, does not break the run. |
-| `lima`         | **future** — falls back to none | Same as `docker`. |
+| `docker`       | **supported** — read + egress isolation | Runs the agent in a container (`lib/sandbox-docker.sh`): mounts only the write/read roots + `GAFFER_DATA` + `RUNNER_DIR`, on an `--internal` network with egress via the allowlist proxy; drops caps + `no-new-privileges` + resource limits. Fails closed under strict-require if the daemon is down. See `docs/vm-sandbox-provider.md`. |
+| `lima`         | **future** — falls back to none | Warns on stderr, adds no OS containment (per-ticket microVM upgrade). |
 
 **Adding a provider = adding one `case` branch in `lib/sandbox.sh`.** Nothing in
 `tick.sh`, the config, or the profile generator needs to change. `sandbox-exec`
@@ -64,12 +76,14 @@ Strict mode wraps the **whole** `claude -p` process. That process makes Claude's
 own API calls. Therefore network **cannot** be denied without breaking Claude
 itself — so `STRICT_ALLOW_NETWORK` defaults to `1` (network allowed).
 
-True per-subprocess network isolation — deny the *agent's child processes*
-network while letting *Claude itself* reach the API — is a **future-provider
-capability** (docker/lima/VM with per-process network namespaces). A single
-whole-process `sandbox-exec` wrap fundamentally cannot offer it. Setting
-`STRICT_ALLOW_NETWORK=0` with the `sandbox-exec` provider will break the run; it
-exists as an honest, explicit knob, not a recommended setting for that provider.
+The `sandbox-exec` provider **cannot isolate egress**: it wraps the whole
+`claude -p` process, so denying the network denies Claude's own API call too. The
+`docker` provider **does** isolate egress — the container sits on an `--internal`
+network with no route out except the allowlist proxy, so the agent's traffic is
+filtered while the model endpoint stays reachable (a per-ticket microVM, `lima`, is
+the future stronger form). Setting `STRICT_ALLOW_NETWORK=0` with the `sandbox-exec`
+provider will break the run; it exists as an honest, explicit knob, not a
+recommended setting for that provider.
 
 ## Configuration
 

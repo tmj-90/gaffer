@@ -129,3 +129,20 @@ jobs:
             fi
           done
           exit $rc
+
+  # Dedicated job for the Mode-2 docker containment gate. Kept OUT of the general bash
+  # suite (which runs on every OS × node and would be fragile on shared runners) so a
+  # docker-registry hiccup can't red the main matrix. Runs the red-team gate on a
+  # docker-capable runner; the test itself SKIPS (green) on a registry/rate-limit infra
+  # failure and only fails on a genuine containment regression.
+  sandbox-containment:
+    name: Docker sandbox containment gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Red-team containment gate (docker)
+        env:
+          RUN_SANDBOX_DOCKER_TEST: "1"
+        run: bash runner/test/sandbox-docker-containment.test.sh

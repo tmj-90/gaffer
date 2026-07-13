@@ -82,7 +82,7 @@ Repos rarely live alone. The **Factory Map** groups them into **scope nodes** (p
 
 ### Durable repo memory
 
-Gaffer doesn't re-learn a repo from cold on every run. **Memory** keeps a living **Repo Digest** (overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, plus a gated **lore** knowledge base — the team's recorded conventions, decisions, and cross-repo boundaries. It's the Repo Understanding engine, and it's read-only in the product: lore is curated through the memory CLI's review gate, not silently rewritten by agents.
+Gaffer doesn't re-learn a repo from cold on every run — it **writes what it learns back**. **Memory** keeps a living **Repo Digest** (overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, plus a gated **lore** knowledge base of conventions, decisions, and cross-repo boundaries. Onboarding seeds it; then **every delivery advances it** — the ledger moves a feature to `shipped` stamped with the ticket that shipped it, and the digest re-derives to reflect code that didn't exist before. It's the Repo Understanding engine: agents accumulate understanding across runs instead of starting amnesiac, and lore stays **read-only in the product** — human-gated through the memory CLI's review gate, never silently rewritten by an agent.
 
 <p align="center">
   <img src="docs/img/memory.png" alt="A repo's digest and feature ledger in the Memory view" width="900">
@@ -126,6 +126,18 @@ Four components, one workspace:
 Gaffer doesn't re-learn a repo from cold on every run. Memory keeps a living **Repo Digest** (a TLDR of overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, seeded at onboarding and refreshed deterministically as tickets merge — alongside the gated **lore** knowledge base (conventions, decisions, gotchas, cross-repo boundaries). Onboarding runs a skill-driven `claude -p` pass that produces a real digest, a feature inventory, and cited lore drafts grounded in the actual code.
 
 Digest updates use a **prepare-at-delivery / apply-at-merge** split: the delivery agent records an inert delta while it already holds the diff in context; the merge step replays it deterministically without spawning a fresh agent. A rejected delivery never touches the digest — the prepared delta is simply discarded with the branch.
+
+What that leaves in the store after a run is an asset, not a cache. The ledger carries **provenance** — which ticket shipped each feature — and the digest reflects code that didn't exist at onboarding, re-derived in place rather than duplicated:
+
+```text
+feature ledger                              status    provenance
+  add(a, b) · multiply(a, b)                shipped   onboard + re-scan
+  core-uppercase-transform                  shipped   ticket-3
+  cli-entrypoint                            shipped   ticket-4
+
+repo digest, onboarded → after delivering multiply():
+  "Addition helper."  →  "add(a, b), multiply(a, b)."   (same row, re-derived — not a duplicate)
+```
 
 The digest is **a map, not the territory** — a fast orientation that the factory verifies against the real code for high-stakes work, never a substitute for it. (See it in the [Durable repo memory](#durable-repo-memory) screenshot above.)
 

@@ -80,6 +80,24 @@ const RUNNER_DIR = resolve(HERE, "..");
 const GAFFER_HOME = resolve(RUNNER_DIR, "..");
 const GAFFER_DATA = process.env.GAFFER_DATA || resolve(GAFFER_HOME, ".gaffer");
 
+/**
+ * Resolve the two built MCP-server bin paths, honouring env overrides and
+ * otherwise mirroring factory.config.sh's defaults EXACTLY. The two packages do
+ * NOT share a layout: dispatch builds to `dist/mcp/bin.js` but memory-mcp builds
+ * to `dist/bin/memory-mcp.js`. A wrong default here silently drops the affected
+ * MCP server for any standalone PO run that doesn't inherit the factory env
+ * (dispatch → no create_ticket; memory → no search_lore/cards). Exported so a
+ * test can assert the defaults stay aligned with the real build output.
+ */
+export function defaultMcpBins(gafferHome = GAFFER_HOME, env = process.env) {
+  return {
+    dispatchMcpBin:
+      env.DISPATCH_MCP_BIN || resolve(gafferHome, "packages/dispatch/dist/mcp/bin.js"),
+    memoryMcpBin:
+      env.MEMORY_MCP_BIN || resolve(gafferHome, "packages/memory/dist/bin/memory-mcp.js"),
+  };
+}
+
 // Defaults mirror factory.config.sh so a bare invocation (no env) resolves the same
 // wiring the rest of the factory uses.
 const CONFIG = {
@@ -88,12 +106,8 @@ const CONFIG = {
   mcpConfig: process.env.MCP_CONFIG || resolve(RUNNER_DIR, ".mcp.json"),
   // The built MCP server bins. The .mcp.json template references these as
   // ${DISPATCH_MCP_BIN}/${MEMORY_MCP_BIN}; they MUST be substituted (exactly as
-  // tick.sh does) or the dispatch MCP server never starts and the agent has no
-  // create_ticket tool — it drafts into the void. Default to the dist bins.
-  dispatchMcpBin:
-    process.env.DISPATCH_MCP_BIN || resolve(GAFFER_HOME, "packages/dispatch/dist/mcp/bin.js"),
-  memoryMcpBin:
-    process.env.MEMORY_MCP_BIN || resolve(GAFFER_HOME, "packages/memory/dist/mcp/bin.js"),
+  // tick.sh does) or the MCP server never starts and the agent loses that tool.
+  ...defaultMcpBins(GAFFER_HOME, process.env),
   // The memory CLI bin — used to pull the repo-context file-card packet for the
   // PO prompt (cards-for-scope). Mirrors tick.sh's MEMORY_CLI_BIN default.
   memoryCliBin:

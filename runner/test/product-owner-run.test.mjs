@@ -19,7 +19,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
@@ -34,8 +34,14 @@ try {
 }
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = resolve(HERE, "..", "bin", "product-owner-run.mjs");
-const { resolveRepo, buildPrompt, buildClaudeArgv, agentChildEnv, countDraftTickets } =
-  await import(HELPER);
+const {
+  resolveRepo,
+  buildPrompt,
+  buildClaudeArgv,
+  agentChildEnv,
+  countDraftTickets,
+  defaultMcpBins,
+} = await import(HELPER);
 
 let passed = 0;
 const failures = [];
@@ -329,6 +335,46 @@ console.log("== DRAFT-COUNT GUARD: countDraftTickets counts draft tickets per re
     countDraftTickets(resolve(WORKDIR, "absent.sqlite"), "demo"),
     null,
   );
+}
+
+console.log(
+  "== AC9: defaultMcpBins mirrors factory.config.sh — dispatch + memory have DIFFERENT layouts ==",
+);
+{
+  const bins = defaultMcpBins("/repo", {});
+  // memory-mcp builds to dist/bin/memory-mcp.js — NOT the dist/mcp/bin.js dispatch
+  // uses. A regression to the dispatch shape silently drops the memory MCP
+  // (search_lore/cards) for standalone PO runs. Guard both exact defaults.
+  eq(
+    "memory default → packages/memory/dist/bin/memory-mcp.js",
+    bins.memoryMcpBin,
+    "/repo/packages/memory/dist/bin/memory-mcp.js",
+  );
+  eq(
+    "dispatch default → packages/dispatch/dist/mcp/bin.js",
+    bins.dispatchMcpBin,
+    "/repo/packages/dispatch/dist/mcp/bin.js",
+  );
+  const over = defaultMcpBins("/repo", {
+    MEMORY_MCP_BIN: "/x/mem.js",
+    DISPATCH_MCP_BIN: "/x/disp.js",
+  });
+  eq("env MEMORY_MCP_BIN overrides the default", over.memoryMcpBin, "/x/mem.js");
+  eq("env DISPATCH_MCP_BIN overrides the default", over.dispatchMcpBin, "/x/disp.js");
+
+  // Regression guard against a future package-layout rename: when the workspace is
+  // built (CI runs build before test), the resolved default bins must be real
+  // files. Skipped cleanly on an unbuilt tree so local `node --test` before a
+  // build still passes.
+  const repoRoot = resolve(HERE, "..", "..");
+  const real = defaultMcpBins(repoRoot, {});
+  const distBuilt = existsSync(resolve(repoRoot, "packages/dispatch/dist/mcp"));
+  if (distBuilt) {
+    assert("built: memory MCP bin default exists on disk", existsSync(real.memoryMcpBin));
+    assert("built: dispatch MCP bin default exists on disk", existsSync(real.dispatchMcpBin));
+  } else {
+    ok("dist not built — existence check skipped");
+  }
 }
 
 // Cleanup the throwaway DB + repo dir.

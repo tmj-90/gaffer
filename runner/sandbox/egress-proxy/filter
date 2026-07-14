@@ -2,7 +2,12 @@
 # the destination host. Anything not matched is DENIED (FilterDefaultDeny Yes).
 # Keep this tight: it is the network half of the "no exfiltration" boundary. Package
 # registries are included because a delivery legitimately runs `npm ci` / `pip install`;
-# add more per your stack, but every entry widens the exfil surface — justify each.
+# every entry widens the exfil surface — justify each.
+#
+# This is the BAKED DEFAULT. To permit an extra host (a private git host / registry)
+# WITHOUT rebuilding the image, set GAFFER_EGRESS_ALLOW="host1,host2" or list hosts in
+# $GAFFER_DATA/egress-allow.txt — sandbox-docker.sh renders those (regex-escaped +
+# anchored, so they can't widen to match-all) on top of this file and mounts the result.
 
 # --- the model endpoint (claude needs it) ---
 (^|\.)anthropic\.com$

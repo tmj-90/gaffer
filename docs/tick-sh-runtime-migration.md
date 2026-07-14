@@ -54,11 +54,15 @@ is actually good at.
 
 ## Phased slices (each = own PR, own tests, own regression gate)
 
-- **P0 — Spike + seam (no behaviour change).** Stand up `ClaudeAgentRuntime` with
-  the result-envelope parse + usage ledger already in `lib/worker.mjs`, wired into
-  the crew seam and unit-tested. No `tick.sh` cutover yet. Proves the typed runtime
-  can reproduce one real delivery's envelope byte-for-byte against a captured
-  fixture.
+- **P0 — Spike + seam (no behaviour change). ✅ DONE** (`packages/crew/src/runtime/claudeAgentRuntime.ts`).
+  Stood up `ClaudeAgentRuntime` behind the crew seam: `parseClaudeEnvelope` (tolerant
+  parse of the `claude -p --output-format json` envelope) + `mapEnvelopeToRunResult`
+  (the pure bridge where the envelope and `AgentRunResult` contracts meet) + the
+  runtime class (maps a captured envelope, injectable like `MockAgentRuntime`). 11
+  tests incl. a REAL captured envelope. No `tick.sh` cutover, no live spawn.
+  **Finding surfaced for P1:** the seam `run(packet): AgentRunResult` is SYNC — a
+  live spawn needs it async (`Promise<AgentRunResult>`), which touches
+  `MockAgentRuntime` + the impl-loop caller. That interface change is P1's first job.
 - **P1 — Context assembly.** Move prompt + `.mcp.json` render + context-primer
   packet (`lib/context-primer.mjs` is already node) into the runtime. Golden-file
   test: the rendered prompt/MCP for a fixture ticket is identical to today's.

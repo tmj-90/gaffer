@@ -177,7 +177,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     this.envelope = "stdout" in source ? parseClaudeEnvelope(source.stdout) : source;
   }
 
-  run(packet: ContextPacket): AgentRunResult {
+  async run(packet: ContextPacket): Promise<AgentRunResult> {
     return mapEnvelopeToRunResult(this.envelope, packet);
   }
 }

@@ -36,7 +36,7 @@ describe("E2E MVP: idle draft → refine → claim → packet → branch → evi
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("runs the full MVP path with no hand-edited DB rows", () => {
+  it("runs the full MVP path with no hand-edited DB rows", async () => {
     // Config with one repo that has a coverage command.
     initFactory({ dir: tmp, factoryName: "e2e-factory", force: true });
     const cfgPath = join(tmp, "crew.yaml");
@@ -89,7 +89,7 @@ describe("E2E MVP: idle draft → refine → claim → packet → branch → evi
     expect(wg.view(draftId).ticket.status).toBe("ready");
 
     // Implementation loop → claim, packet, branch, evidence, review.
-    const outcome = runImplementationLoop(
+    const outcome = await runImplementationLoop(
       { agentId: agent.id, dryRun: true },
       {
         config: loaded.config,

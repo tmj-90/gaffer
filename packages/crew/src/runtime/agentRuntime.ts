@@ -27,9 +27,13 @@ export interface AgentRunResult {
  * Vendor-agnostic agent runtime boundary. The MVP ships a mock implementation;
  * real Claude Code / Cursor / script runtimes can be slotted in later without
  * touching the loop.
+ *
+ * `run` is async: a real runtime spawns an agent process (`claude -p`), which is
+ * inherently asynchronous. The mock resolves immediately. (tick.sh migration P1 —
+ * the seam went async so a live `ClaudeAgentRuntime` spawn can slot in behind it.)
  */
 export interface AgentRuntime {
-  run(packet: ContextPacket): AgentRunResult;
+  run(packet: ContextPacket): Promise<AgentRunResult>;
 }
 
 /**
@@ -39,7 +43,7 @@ export interface AgentRuntime {
 export class MockAgentRuntime implements AgentRuntime {
   constructor(private readonly result?: Partial<AgentRunResult>) {}
 
-  run(packet: ContextPacket): AgentRunResult {
+  async run(packet: ContextPacket): Promise<AgentRunResult> {
     const evidence: AgentEvidence[] =
       this.result?.evidence ??
       packet.acceptanceCriteria.map((ac) => ({

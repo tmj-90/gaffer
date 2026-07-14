@@ -63,7 +63,14 @@ is actually good at.
   **Finding surfaced for P1:** the seam `run(packet): AgentRunResult` is SYNC — a
   live spawn needs it async (`Promise<AgentRunResult>`), which touches
   `MockAgentRuntime` + the impl-loop caller. That interface change is P1's first job.
-- **P1 — Context assembly.** Move prompt + `.mcp.json` render + context-primer
+- **P1a — Async seam. ✅ DONE.** Made `AgentRuntime.run` return `Promise<AgentRunResult>`
+  (a real runtime spawns a process; the mock resolves immediately). Threaded
+  `async`/`await` through `runImplementationLoop` (+ its inner + the on_failure
+  wrapper) and all callers — the crew CLI (`cli/index.ts`, which was silently about
+  to serialize a `Promise` as `{}` — caught + fixed) and 8 test files. crew: 550
+  tests green, typecheck + build clean, behaviour unchanged. This unblocks a live
+  `ClaudeAgentRuntime.run()` that awaits a `claude -p` spawn.
+- **P1b — Context assembly.** Move prompt + `.mcp.json` render + context-primer
   packet (`lib/context-primer.mjs` is already node) into the runtime. Golden-file
   test: the rendered prompt/MCP for a fixture ticket is identical to today's.
 - **P2 — Launch + parse.** Move the `claude -p` spawn + result parse behind the

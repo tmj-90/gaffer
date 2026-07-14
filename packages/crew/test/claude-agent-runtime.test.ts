@@ -138,18 +138,18 @@ describe("mapEnvelopeToRunResult", () => {
 });
 
 describe("ClaudeAgentRuntime (drop-in for the AgentRuntime seam)", () => {
-  it("maps a captured envelope through run(packet), injectable like MockAgentRuntime", () => {
+  it("maps a captured envelope through run(packet), injectable like MockAgentRuntime", async () => {
     const packet = packetWith(["Reset email is sent"]);
     const runtime: AgentRuntime = new ClaudeAgentRuntime({ stdout: REAL_SUCCESS });
-    const r = runtime.run(packet);
+    const r = await runtime.run(packet);
     expect(r.status).toBe("submitted_for_review");
     expect(r.summary).toBe("DELIVERED");
     expect(r.evidence).toHaveLength(1);
   });
 
-  it("accepts a pre-parsed envelope too", () => {
+  it("accepts a pre-parsed envelope too", async () => {
     const packet = packetWith(["x"]);
     const runtime = new ClaudeAgentRuntime(parseClaudeEnvelope(MAX_TURNS));
-    expect(runtime.run(packet).status).toBe("blocked");
+    expect((await runtime.run(packet)).status).toBe("blocked");
   });
 });

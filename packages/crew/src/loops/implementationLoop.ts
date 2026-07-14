@@ -186,15 +186,16 @@ function fireHook(
  * Returns `no_ticket` when nothing is claimable. Every step records a runtime
  * event so the full path is observable.
  */
-export function runImplementationLoop(
+export async function runImplementationLoop(
   opts: ImplementationLoopOptions,
   deps: ImplementationLoopDeps,
-): ImplementationLoopOutcome {
+): Promise<ImplementationLoopOutcome> {
   // on_failure — only wrap when hooks are present, so behaviour is identical
   // (no extra try/catch frame) when no hook engine is wired.
   if (!deps.hooks) return runImplementationLoopInner(opts, deps);
   try {
-    return runImplementationLoopInner(opts, deps);
+    // await so the on_failure catch fires on async rejections too, not just sync throws.
+    return await runImplementationLoopInner(opts, deps);
   } catch (err) {
     const event = deps.events.record("on_failure", {
       agentId: opts.agentId,
@@ -210,10 +211,10 @@ export function runImplementationLoop(
   }
 }
 
-function runImplementationLoopInner(
+async function runImplementationLoopInner(
   opts: ImplementationLoopOptions,
   deps: ImplementationLoopDeps,
-): ImplementationLoopOutcome {
+): Promise<ImplementationLoopOutcome> {
   const { events } = deps;
   events.record("loop_started", { loop: "implementation", agentId: opts.agentId });
 
@@ -312,7 +313,7 @@ function runImplementationLoopInner(
     context_packet: packet,
   });
 
-  const result = deps.runtime.run(packet);
+  const result = await deps.runtime.run(packet);
 
   // after_tests — runs once the agent (which runs checks) has produced a result.
   fireHook(deps, "after_tests", { factory, agent, ticket: hookTicket, context_packet: packet });

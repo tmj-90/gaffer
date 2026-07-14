@@ -47,7 +47,7 @@ function deps(wg: FakeDispatchClient, repoPath: string, git = new DryRunGitAdapt
 }
 
 describe("implementation loop", () => {
-  it("claims a ticket, creates a prefixed branch, records evidence and enters review", () => {
+  it("claims a ticket, creates a prefixed branch, records evidence and enters review", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({
       title: "Add reset",
@@ -56,7 +56,7 @@ describe("implementation loop", () => {
     });
 
     const d = deps(wg, "/tmp/web-app");
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     expect(outcome.status).toBe("submitted_for_review");
     if (outcome.status === "no_ticket" || outcome.status === "claim_vetoed") {
@@ -83,7 +83,7 @@ describe("implementation loop", () => {
     );
   });
 
-  it("creates a real branch with the required prefix in a temp git repo", () => {
+  it("creates a real branch with the required prefix in a temp git repo", async () => {
     const repoDir = mkdtempSync(join(tmpdir(), "fg-impl-"));
     execFileSync("git", ["-C", repoDir, "init", "-q", "-b", "main"]);
     execFileSync("git", ["-C", repoDir, "config", "user.email", "t@example.com"]);
@@ -102,7 +102,10 @@ describe("implementation loop", () => {
     const d = deps(wg, repoDir, undefined);
     // Replace dry-run adapter with the real system adapter for this test.
     const realDeps = { ...d, git: systemGitAdapter };
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: false }, realDeps);
+    const outcome = await runImplementationLoop(
+      { agentId: "claude-auth-01", dryRun: false },
+      realDeps,
+    );
 
     if (outcome.status === "no_ticket" || outcome.status === "claim_vetoed") {
       throw new Error("unreachable");
@@ -111,7 +114,7 @@ describe("implementation loop", () => {
     expect(systemGitAdapter.currentBranch(repoDir)).toBe(outcome.branch);
   });
 
-  it("pre-filters skills into the packet and reports its token cost", () => {
+  it("pre-filters skills into the packet and reports its token cost", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({
       title: "Add reset",
@@ -133,7 +136,7 @@ describe("implementation loop", () => {
       }),
     ]);
     const d = { ...deps(wg, "/tmp/web-app"), skillRegistry };
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     if (outcome.status === "no_ticket" || outcome.status === "claim_vetoed")
       throw new Error("unreachable");
@@ -144,7 +147,7 @@ describe("implementation loop", () => {
     expect(outcome.packet.fingerprint).toHaveLength(16);
   });
 
-  it("claims the SAME ticket the before_claim hook evaluated (preselect-then-claim)", () => {
+  it("claims the SAME ticket the before_claim hook evaluated (preselect-then-claim)", async () => {
     const wg = new FakeDispatchClient();
     // Two ready tickets: the loop preselects listReady()[0] and the hook must
     // evaluate the exact ticket that then gets claimed.
@@ -175,7 +178,7 @@ describe("implementation loop", () => {
     );
 
     const d = { ...deps(wg, "/tmp/web-app"), hooks };
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "a", dryRun: true }, d);
 
     if (outcome.status === "no_ticket" || outcome.status === "claim_vetoed")
       throw new Error("unreachable");
@@ -185,7 +188,7 @@ describe("implementation loop", () => {
     expect(evaluatedTicketId).toBe(outcome.ticketId);
   });
 
-  it("records a delivery artifact (branch) back to Dispatch after implementation", () => {
+  it("records a delivery artifact (branch) back to Dispatch after implementation", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({
       title: "Add reset",
@@ -194,7 +197,7 @@ describe("implementation loop", () => {
     });
 
     const d = deps(wg, "/tmp/web-app");
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "a", dryRun: true }, d);
 
     if (outcome.status !== "submitted_for_review") throw new Error("unreachable");
     // The branch is recorded on the ticket so done-gates that require a branch
@@ -208,13 +211,13 @@ describe("implementation loop", () => {
     expect(d.events.types()).toContain("delivery_artifact_recorded");
   });
 
-  it("returns no_ticket when nothing is claimable", () => {
+  it("returns no_ticket when nothing is claimable", async () => {
     const wg = new FakeDispatchClient();
-    const outcome = runImplementationLoop({ agentId: "a" }, deps(wg, "/tmp/web-app"));
+    const outcome = await runImplementationLoop({ agentId: "a" }, deps(wg, "/tmp/web-app"));
     expect(outcome.status).toBe("no_ticket");
   });
 
-  it("marks blocked when the runtime reports blocked", () => {
+  it("marks blocked when the runtime reports blocked", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({ title: "x", repositories: [{ name: "web-app", localPath: "/tmp/web-app" }] });
     const base = deps(wg, "/tmp/web-app");
@@ -226,12 +229,12 @@ describe("implementation loop", () => {
         evidence: [],
       }),
     };
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, blockedDeps);
+    const outcome = await runImplementationLoop({ agentId: "a", dryRun: true }, blockedDeps);
     expect(outcome.status).toBe("blocked");
     expect(wg.getTicket((outcome as { ticketId: string }).ticketId).ticket.status).toBe("blocked");
   });
 
-  it("forwards lore suggestions without auto-approving", () => {
+  it("forwards lore suggestions without auto-approving", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({
       title: "x",
@@ -249,7 +252,7 @@ describe("implementation loop", () => {
         ],
       }),
     };
-    runImplementationLoop({ agentId: "a", dryRun: true }, withLore);
+    await runImplementationLoop({ agentId: "a", dryRun: true }, withLore);
     // The agent's own suggestion is forwarded first, verbatim…
     expect(lore.suggestions[0]!.title).toBe("Use argon2id");
     // …and the loop ALSO distills the ticket's product intent (Track 1c): a

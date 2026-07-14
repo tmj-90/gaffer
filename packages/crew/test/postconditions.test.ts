@@ -40,7 +40,7 @@ function facts(overrides: Partial<DeliveryFacts> = {}): DeliveryFacts {
 }
 
 describe("post-condition checker", () => {
-  it("classifies evidence types case-insensitively", () => {
+  it("classifies evidence types case-insensitively", async () => {
     expect(isTestEvidence("test_output")).toBe(true);
     expect(isTestEvidence("Test Run")).toBe(true);
     expect(isTestEvidence("note")).toBe(false);
@@ -48,13 +48,13 @@ describe("post-condition checker", () => {
     expect(isLintEvidence("coverage_report")).toBe(false);
   });
 
-  it("passes when every required post-condition is satisfied", () => {
+  it("passes when every required post-condition is satisfied", async () => {
     const report = checkPostConditions(facts());
     expect(report.passed).toBe(true);
     expect(report.failures).toHaveLength(0);
   });
 
-  it("flags a delivery with no test evidence (the AC example)", () => {
+  it("flags a delivery with no test evidence (the AC example)", async () => {
     const report = checkPostConditions(
       facts({ evidence: [{ acId: "ac-1", evidenceType: "note" }, { evidenceType: "lint" }] }),
     );
@@ -63,7 +63,7 @@ describe("post-condition checker", () => {
     expect(summarisePostConditionFailures(report)).toMatch(/test/i);
   });
 
-  it("flags an acceptance criterion with no evidence", () => {
+  it("flags an acceptance criterion with no evidence", async () => {
     const report = checkPostConditions(
       facts({
         acceptanceCriteria: [
@@ -76,13 +76,13 @@ describe("post-condition checker", () => {
     expect(report.failures.map((f) => f.id)).toContain("ac.evidence");
   });
 
-  it("flags a branch without the required prefix", () => {
+  it("flags a branch without the required prefix", async () => {
     const report = checkPostConditions(facts({ branch: "feature/add-reset" }));
     expect(report.passed).toBe(false);
     expect(report.failures.map((f) => f.id)).toContain("branch.prefix");
   });
 
-  it("flags a prefixed branch that does not reference the ticket", () => {
+  it("flags a prefixed branch that does not reference the ticket", async () => {
     const report = checkPostConditions(
       facts({ branch: `${GIT.require_branch_prefix}ticket-99-other` }),
     );
@@ -90,7 +90,7 @@ describe("post-condition checker", () => {
     expect(report.failures.map((f) => f.id)).toContain("branch.prefix");
   });
 
-  it("flags missing lint evidence when a lint command is configured", () => {
+  it("flags missing lint evidence when a lint command is configured", async () => {
     const report = checkPostConditions(
       facts({ evidence: [{ acId: "ac-1", evidenceType: "test_output" }] }),
     );
@@ -98,7 +98,7 @@ describe("post-condition checker", () => {
     expect(report.failures.map((f) => f.id)).toContain("lint.clean");
   });
 
-  it("treats lint as not-applicable (advisory) when no lint command is configured", () => {
+  it("treats lint as not-applicable (advisory) when no lint command is configured", async () => {
     const report = checkPostConditions(
       facts({ lintConfigured: false, evidence: [{ acId: "ac-1", evidenceType: "test_output" }] }),
     );
@@ -108,7 +108,7 @@ describe("post-condition checker", () => {
     expect(lint?.satisfied).toBe(true);
   });
 
-  it("only enforces the post-conditions that are switched on", () => {
+  it("only enforces the post-conditions that are switched on", async () => {
     const report = checkPostConditions(
       facts({
         branch: "feature/no-prefix",
@@ -163,7 +163,7 @@ function loopDeps(
 }
 
 describe("implementation loop — delivery post-conditions", () => {
-  it("blocks the delivery when test evidence is missing", () => {
+  it("blocks the delivery when test evidence is missing", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({
       title: "Add reset",
@@ -172,7 +172,7 @@ describe("implementation loop — delivery post-conditions", () => {
     });
     // Mock runtime evidences the AC but never runs tests (type "note").
     const d = loopDeps(wg, new MockAgentRuntime(), true);
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     expect(outcome.status).toBe("blocked");
     if (outcome.status === "no_ticket" || outcome.status === "claim_vetoed")
@@ -182,7 +182,7 @@ describe("implementation loop — delivery post-conditions", () => {
     expect(d.events.types()).not.toContain("ticket_submitted_for_review");
   });
 
-  it("submits the delivery when every required post-condition holds", () => {
+  it("submits the delivery when every required post-condition holds", async () => {
     const wg = new FakeDispatchClient();
     const seeded = wg.seedTicket({
       title: "Add reset",
@@ -194,7 +194,7 @@ describe("implementation loop — delivery post-conditions", () => {
       evidence: [{ acId, evidenceType: "test_output", summary: "vitest run: 42 passed" }],
     });
     const d = loopDeps(wg, runtime, true);
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     expect(outcome.status).toBe("submitted_for_review");
     if (outcome.status !== "submitted_for_review") throw new Error("unreachable");
@@ -202,7 +202,7 @@ describe("implementation loop — delivery post-conditions", () => {
     expect(d.events.types()).toContain("postconditions_passed");
   });
 
-  it("does not gate when post-conditions are disabled (back-compat)", () => {
+  it("does not gate when post-conditions are disabled (back-compat)", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({
       title: "Add reset",
@@ -210,7 +210,7 @@ describe("implementation loop — delivery post-conditions", () => {
       repositories: [{ name: "web-app", localPath: "/tmp/web-app" }],
     });
     const d = loopDeps(wg, new MockAgentRuntime(), false);
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     expect(outcome.status).toBe("submitted_for_review");
     expect(d.events.types()).not.toContain("postconditions_failed");

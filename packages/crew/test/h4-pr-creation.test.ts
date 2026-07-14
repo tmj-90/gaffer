@@ -73,13 +73,13 @@ function seedTicket(wg: FakeDispatchClient) {
 // ---------------------------------------------------------------------------
 
 describe("H4 — PR creation", () => {
-  it("calls PrCreator with the evidence bundle and records pr_url when creation succeeds", () => {
+  it("calls PrCreator with the evidence bundle and records pr_url when creation succeeds", async () => {
     const wg = new FakeDispatchClient();
     seedTicket(wg);
     const creator = new FakePrCreator("https://github.com/org/repo/pull/42");
     const d = makeDeps(wg, creator);
 
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     expect(outcome.status).toBe("submitted_for_review");
     if (outcome.status !== "submitted_for_review") throw new Error("unreachable");
@@ -103,12 +103,12 @@ describe("H4 — PR creation", () => {
     expect(artifact).toBeDefined();
   });
 
-  it("is a no-op when no PrCreator is injected (flag off — today's behaviour)", () => {
+  it("is a no-op when no PrCreator is injected (flag off — today's behaviour)", async () => {
     const wg = new FakeDispatchClient();
     seedTicket(wg);
     const d = makeDeps(wg); // no prCreator
 
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     expect(outcome.status).toBe("submitted_for_review");
     if (outcome.status !== "submitted_for_review") throw new Error("unreachable");
@@ -125,26 +125,26 @@ describe("H4 — PR creation", () => {
     expect(prEvent).toBeUndefined();
   });
 
-  it("records pr_url persisted via recordDeliveryArtifact when PrCreator succeeds", () => {
+  it("records pr_url persisted via recordDeliveryArtifact when PrCreator succeeds", async () => {
     const wg = new FakeDispatchClient();
     const ticket = seedTicket(wg);
     const creator = new FakePrCreator("https://github.com/org/repo/pull/99");
     const d = makeDeps(wg, creator);
 
-    runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     // The delivery artifact with the pr_url exists (find the one with a non-null prUrl).
     const artifact = wg.deliveryArtifacts.find((a) => a.ticketId === ticket.id && a.prUrl !== null);
     expect(artifact?.prUrl).toBe("https://github.com/org/repo/pull/99");
   });
 
-  it("proceeds to review even when PrCreator returns null (no remote / failed)", () => {
+  it("proceeds to review even when PrCreator returns null (no remote / failed)", async () => {
     const wg = new FakeDispatchClient();
     seedTicket(wg);
     const creator = new FakePrCreator(null); // simulates no remote
     const d = makeDeps(wg, creator);
 
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     // Delivery still proceeds — PR failure is non-fatal.
     expect(outcome.status).toBe("submitted_for_review");
@@ -160,13 +160,13 @@ describe("H4 — PR creation", () => {
     expect(wg.getTicket(outcome.ticketId).ticket.status).toBe("in_review");
   });
 
-  it("does not record pr_url artifact when PrCreator returns null", () => {
+  it("does not record pr_url artifact when PrCreator returns null", async () => {
     const wg = new FakeDispatchClient();
     seedTicket(wg);
     const creator = new FakePrCreator(null);
     const d = makeDeps(wg, creator);
 
-    runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     // No delivery artifact with a non-null pr_url.
     const withPr = wg.deliveryArtifacts.filter((a) => a.prUrl !== null);

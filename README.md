@@ -3,9 +3,11 @@
 [![CI](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml/badge.svg)](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**A local-first, supervised software factory.** Gaffer works a backlog of tickets into delivered, tested, reviewed code — on your own machine, against your own repos, under a human gate you control. It runs supervised by default; hands-off autonomy is opt-in.
+**A local-first coding factory that works your own backlog — supervised, on your machine, under a human gate.**
 
-It isn't a chat assistant that writes code. It's a *factory*: a control plane, a runtime, durable memory, and an orchestrator that works tickets through **plan → implement → test → review** and delivers each as a git branch or PR with evidence — then loops on rejection until it's right. Vague or blocked tickets park for a human rather than being forced through.
+I built Gaffer to chip away at my own side-project backlog while I'm doing something else: the boring, never-quite-urgent tickets I'd otherwise never get to. It turns a one-line idea into dependency-ordered tickets, works each one through **plan → implement → test → review**, and delivers a git branch or PR with evidence — but **nothing merges until I approve the diff** (the agent *structurally cannot* ship its own work). Vague or blocked tickets park for a human rather than being forced through.
+
+It's a personal hacking tool, not a claim that it replaces engineers or ships production code unsupervised — it's **run-at-your-own-risk alpha**. Think of it as a tireless junior for the stuff you'd never get around to: local-first (your machine, your repos, your keys), supervised by default, hands-off autonomy strictly opt-in.
 
 > **Alpha software.** Gaffer runs local coding agents with **shell access** inside repos you control. Use it only on **trusted repositories**, keep the **human review gate on**, and treat the host like a machine running an AI agent with developer-level access. Not production security, not a hosted service. See [`SECURITY.md`](SECURITY.md).
 

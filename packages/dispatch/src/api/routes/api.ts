@@ -43,6 +43,7 @@ export async function routeApi(
         written: result.written,
         rejected: result.rejected,
         ignored: result.ignored,
+        invalid: result.invalid,
       });
       return;
     }

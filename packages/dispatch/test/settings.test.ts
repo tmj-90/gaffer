@@ -110,3 +110,63 @@ describe("settings module: file contract + env-override semantics", () => {
     expect(readSettingsFile(settingsPath)).toEqual({ MAX_TICKS: "5" });
   });
 });
+
+describe("settings module: enum choices + value validation", () => {
+  let dir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "wg-settings-enum-"));
+    settingsPath = join(dir, "settings.json");
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const ENUM_KEYS = ["GAFFER_MODE", "REVIEW_MODE", "GAFFER_IDLE_MODE", "SANDBOX_PROVIDER"];
+
+  it("every enum setting declares a non-empty choices list", () => {
+    for (const key of ENUM_KEYS) {
+      const def = SETTING_DEFS.find((d) => d.key === key);
+      expect(def, `${key} should be a known setting`).toBeDefined();
+      expect(def?.type).toBe("string");
+      expect(Array.isArray(def?.choices) && def!.choices!.length > 0).toBe(true);
+    }
+  });
+
+  it("surfaces choices through listSettings for enums and omits them elsewhere", () => {
+    const views = listSettings({}, settingsPath);
+    const mode = views.find((v) => v.key === "GAFFER_MODE");
+    expect(mode?.choices).toEqual(["supervised", "graduated", "autonomous", "strict"]);
+    const anInt = views.find((v) => v.key === "MAX_TICKS");
+    expect(anInt?.choices).toBeUndefined();
+  });
+
+  it("persists a valid enum value", () => {
+    const res = writeSettings({ GAFFER_MODE: "graduated" }, {}, settingsPath);
+    expect(res.written).toEqual(["GAFFER_MODE"]);
+    expect(res.invalid).toEqual([]);
+    expect(readSettingsFile(settingsPath)).toEqual({ GAFFER_MODE: "graduated" });
+  });
+
+  it("rejects an out-of-set enum value without persisting it", () => {
+    const res = writeSettings({ GAFFER_MODE: "yolo" }, {}, settingsPath);
+    expect(res.invalid).toEqual(["GAFFER_MODE"]);
+    expect(res.written).toEqual([]);
+    expect(readSettingsFile(settingsPath)).toEqual({});
+  });
+
+  it("allows an empty enum value to clear the override back to default", () => {
+    writeSettings({ GAFFER_MODE: "strict" }, {}, settingsPath);
+    const res = writeSettings({ GAFFER_MODE: "" }, {}, settingsPath);
+    expect(res.written).toEqual(["GAFFER_MODE"]);
+    expect(res.invalid).toEqual([]);
+    expect(readSettingsFile(settingsPath)).toEqual({ GAFFER_MODE: "" });
+  });
+
+  it("still enforces env-lock before enum validation (env-locked never invalid)", () => {
+    const res = writeSettings({ GAFFER_MODE: "yolo" }, { GAFFER_MODE: "supervised" }, settingsPath);
+    expect(res.rejected).toEqual(["GAFFER_MODE"]);
+    expect(res.invalid).toEqual([]);
+  });
+});

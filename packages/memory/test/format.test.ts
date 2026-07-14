@@ -31,6 +31,7 @@ function summary(over: Partial<LoreSummary> = {}): LoreSummary {
     tags: ["security"],
     updatedAt: "2026-02-10T09:31:00.000Z",
     stale: false,
+    flaggedForReview: false,
     ...over,
   };
 }

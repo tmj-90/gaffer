@@ -7377,6 +7377,19 @@ body {
   border-color: rgba(255, 90, 106, 0.3);
 }
 
+/* Learn-loop recall signal: this convention was flagged for review because it
+   was served into a ticket that then reworked/blocked. Amber = "attention"
+   (deliberately distinct from danger-red stale). */
+.badge.lore-flagged {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--amber-line);
+}
+.lore-flag-hint {
+  color: var(--amber);
+  font-size: 0.85em;
+}
+
 /* --- Specs view (Spec-Driven Development, Phase 3) ------------------------ */
 
 .spec-list {

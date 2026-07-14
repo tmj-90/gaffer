@@ -5,7 +5,8 @@ import { dirname, resolve } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { addLore, getLore } from "../src/core/lore.js";
+import { addLore, getLore, listRecent } from "../src/core/lore.js";
+import { renderSummary } from "../src/cli/format.js";
 import { repoKey, upsertFileCard } from "../src/core/fileCards.js";
 import {
   listFlaggedForReview,
@@ -125,6 +126,35 @@ describe("core/recallFeedback", () => {
     recallFeedback(db, { repo: "app", ticket: "3", outcome: "reworked" });
     expect(confOf(db, l.id)).toBe("low"); // medium → low
     expect(flaggedRaw(db, l.id)).toBe(1);
+  });
+
+  it("surfaces the flag on LoreSummary + in the CLI brief line (feeds the Memory view badge)", () => {
+    const flagged = addLore(db, {
+      title: "Flagged convention",
+      summary: "served into rework",
+      body: "b",
+      repos: ["app"],
+      confidence: "high",
+    });
+    const clean = addLore(db, {
+      title: "Healthy convention",
+      summary: "no signal",
+      body: "b",
+      repos: ["app"],
+      confidence: "high",
+    });
+    logRecall(db, { repo: "app", ticket: "42", loreIds: [flagged.id] });
+    recallFeedback(db, { repo: "app", ticket: "42", outcome: "reworked" });
+
+    const summaries = listRecent(db, 50);
+    const fs = summaries.find((s) => s.id === flagged.id)!;
+    const cs = summaries.find((s) => s.id === clean.id)!;
+    // The per-record recall signal is exposed on the summary the API/UI consume…
+    expect(fs.flaggedForReview).toBe(true);
+    expect(cs.flaggedForReview).toBe(false);
+    // …and rendered as the "⚑ flagged" marker the dashboard's parseLore reads.
+    expect(renderSummary(fs)).toContain("⚑ flagged");
+    expect(renderSummary(cs)).not.toContain("⚑ flagged");
   });
 
   it("is BOUNDED — one outcome cannot flip a strong signal end to end", () => {

@@ -57,7 +57,7 @@ const LORE_OUT = `Hash passwords with argon2id (lore-1)
 
 Prefer server components (lore-2)
   Default to RSC unless interactivity is required.
-  [draft]  conf=medium  ⚠ stale  onboard  tags=react
+  [draft]  conf=medium  ⚠ stale  ⚑ flagged  onboard  tags=react
 `;
 
 // `memory recall-stats --json` output (the only JSON-emitting read verb).
@@ -124,6 +124,22 @@ describe("memoryReader parsers", () => {
     expect(lore[0]!.tags).toEqual(["security", "crypto"]);
     expect(lore[0]!.stale).toBe(false);
     expect(lore[1]!.stale).toBe(true);
+  });
+
+  it("parses the recall-feedback flag (⚑ flagged marker) independently of stale", () => {
+    const lore = parseLore(LORE_OUT);
+    // lore-1 carries neither marker; lore-2 carries BOTH ⚠ stale and ⚑ flagged.
+    expect(lore[0]!.flagged).toBe(false);
+    expect(lore[1]!.flagged).toBe(true);
+    expect(lore[1]!.stale).toBe(true);
+  });
+
+  it("does not treat a tag literally named 'flagged' as the recall signal", () => {
+    const out = `Some convention (lore-x)
+  Body.
+  [active]  conf=medium  repos=r  tags=flagged,misc
+`;
+    expect(parseLore(out)[0]!.flagged).toBe(false);
   });
 
   it("returns an empty lore list when nothing is recorded", () => {

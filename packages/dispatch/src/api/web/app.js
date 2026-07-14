@@ -10411,10 +10411,13 @@ function renderLoreList(res, repo) {
   const lore = repo
     ? all.filter((l) => !l.repos || l.repos.length === 0 || l.repos.includes(repo))
     : all;
+  const flaggedCount = lore.filter((l) => l && l.flagged).length;
   const card = el("div", { class: "card", dataset: { section: "lore" } }, [
     el("h2", {}, [
       "Lore",
       res && res.available !== false ? el("span", { class: "count" }, String(lore.length)) : null,
+      // Learn-loop signal at a glance: how many conventions the loop flagged for review.
+      flaggedCount > 0 ? badge(`${flaggedCount} flagged`, "lore-flagged") : null,
     ]),
     el(
       "p",
@@ -10448,12 +10451,23 @@ function renderLoreList(res, repo) {
           l.status ? badge(l.status, `lore-${l.status}`) : null,
           l.confidence ? el("span", { class: "dim lore-conf" }, `conf=${l.confidence}`) : null,
           l.stale ? badge("stale", "lore-stale") : null,
+          // Learn-loop signal: this convention was served into a ticket that then
+          // reworked/blocked. Badge it so the operator can spot conventions dragging
+          // delivery down and curate them via the CLI review gate.
+          l.flagged ? badge("flagged", "lore-flagged") : null,
         ]),
         el("p", { class: "lore-summary dim" }, l.summary),
         el("div", { class: "lore-meta dim" }, [
           l.source ? el("span", {}, l.source) : null,
           ...(l.repos || []).map((r) => el("span", { class: "tag-chip" }, r)),
           ...(l.tags || []).map((t) => el("span", { class: "tag-chip subtle" }, t)),
+          l.flagged
+            ? el(
+                "span",
+                { class: "lore-flag-hint", title: "The learn loop flagged this record for review" },
+                "⚑ served into rework/blocked — curate via `memory review`",
+              )
+            : null,
         ]),
       ]),
     ),

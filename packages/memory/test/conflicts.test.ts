@@ -391,6 +391,7 @@ describe("renderSummary shows counter-claims count when conflictsWith populated 
       tags: ["conflict-report"],
       updatedAt: "2026-01-01T00:00:00.000Z",
       stale: false,
+      flaggedForReview: false,
       conflictsWith: ["bcde2345"],
     };
     const rendered = renderSummary(counter);

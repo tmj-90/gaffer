@@ -81,6 +81,13 @@ export interface LoreRow {
   readonly spec_id: string | null;
   /** Stable clause id within {@link spec_id} this record was seeded from. NULL otherwise. */
   readonly clause_id: string | null;
+  /**
+   * Recall-feedback flag (0/1, migration 008). Set to 1 when this record was
+   * served into a ticket that then reworked or blocked — i.e. the learn loop
+   * suspects the convention it encodes is dragging delivery down and a human
+   * should review it. Cleared back to 0 on a clean-shipped served ticket.
+   */
+  readonly flagged_for_review: number;
 }
 
 /**
@@ -154,6 +161,13 @@ export interface LoreSummary {
   readonly lastVerifiedAt?: string;
   /** Set true when review_after is in the past. UI surfaces a warning. */
   readonly stale: boolean;
+  /**
+   * Recall-feedback signal: true when the learn loop has flagged this record
+   * for human review (it was served into a ticket that then reworked/blocked).
+   * The Memory view badges these so the operator can spot conventions dragging
+   * delivery down and jump to the CLI review gate. See {@link LoreRow.flagged_for_review}.
+   */
+  readonly flaggedForReview: boolean;
   /** FTS rank, lower = more relevant. Undefined when no query was given. */
   readonly score?: number;
   /**

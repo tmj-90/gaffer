@@ -3,9 +3,11 @@
 [![CI](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml/badge.svg)](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**A local-first, supervised software factory.** Gaffer works a backlog of tickets into delivered, tested, reviewed code — on your own machine, against your own repos, under a human gate you control. It runs supervised by default; hands-off autonomy is opt-in.
+**A local-first coding factory that works your own backlog — supervised, on your machine, under a human gate.**
 
-It isn't a chat assistant that writes code. It's a *factory*: a control plane, a runtime, durable memory, and an orchestrator that works tickets through **plan → implement → test → review** and delivers each as a git branch or PR with evidence — then loops on rejection until it's right. Vague or blocked tickets park for a human rather than being forced through.
+I built Gaffer to chip away at my own side-project backlog while I'm doing something else: the boring, never-quite-urgent tickets I'd otherwise never get to. It turns a one-line idea into dependency-ordered tickets, works each one through **plan → implement → test → review**, and delivers a git branch or PR with evidence — but **nothing merges until I approve the diff** (the agent *structurally cannot* ship its own work). Vague or blocked tickets park for a human rather than being forced through.
+
+It's a personal hacking tool, not a claim that it replaces engineers or ships production code unsupervised — it's **run-at-your-own-risk alpha**. Think of it as a tireless junior for the stuff you'd never get around to: local-first (your machine, your repos, your keys), supervised by default, hands-off autonomy strictly opt-in.
 
 > **Alpha software.** Gaffer runs local coding agents with **shell access** inside repos you control. Use it only on **trusted repositories**, keep the **human review gate on**, and treat the host like a machine running an AI agent with developer-level access. Not production security, not a hosted service. See [`SECURITY.md`](SECURITY.md).
 
@@ -82,7 +84,7 @@ Repos rarely live alone. The **Factory Map** groups them into **scope nodes** (p
 
 ### Durable repo memory
 
-Gaffer doesn't re-learn a repo from cold on every run. **Memory** keeps a living **Repo Digest** (overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, plus a gated **lore** knowledge base — the team's recorded conventions, decisions, and cross-repo boundaries. It's the Repo Understanding engine, and it's read-only in the product: lore is curated through the memory CLI's review gate, not silently rewritten by agents.
+Gaffer doesn't re-learn a repo from cold on every run — it **writes what it learns back**. **Memory** keeps a living **Repo Digest** (overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, plus a gated **lore** knowledge base of conventions, decisions, and cross-repo boundaries. Onboarding seeds it; then **every delivery advances it** — the ledger moves a feature to `shipped` stamped with the ticket that shipped it, and the digest re-derives to reflect code that didn't exist before. It's the Repo Understanding engine: agents accumulate understanding across runs instead of starting amnesiac, and lore stays **read-only in the product** — human-gated through the memory CLI's review gate, never silently rewritten by an agent.
 
 <p align="center">
   <img src="docs/img/memory.png" alt="A repo's digest and feature ledger in the Memory view" width="900">
@@ -126,6 +128,18 @@ Four components, one workspace:
 Gaffer doesn't re-learn a repo from cold on every run. Memory keeps a living **Repo Digest** (a TLDR of overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, seeded at onboarding and refreshed deterministically as tickets merge — alongside the gated **lore** knowledge base (conventions, decisions, gotchas, cross-repo boundaries). Onboarding runs a skill-driven `claude -p` pass that produces a real digest, a feature inventory, and cited lore drafts grounded in the actual code.
 
 Digest updates use a **prepare-at-delivery / apply-at-merge** split: the delivery agent records an inert delta while it already holds the diff in context; the merge step replays it deterministically without spawning a fresh agent. A rejected delivery never touches the digest — the prepared delta is simply discarded with the branch.
+
+What that leaves in the store after a run is an asset, not a cache. The ledger carries **provenance** — which ticket shipped each feature — and the digest reflects code that didn't exist at onboarding, re-derived in place rather than duplicated:
+
+```text
+feature ledger                              status    provenance
+  add(a, b) · multiply(a, b)                shipped   onboard + re-scan
+  core-uppercase-transform                  shipped   ticket-3
+  cli-entrypoint                            shipped   ticket-4
+
+repo digest, onboarded → after delivering multiply():
+  "Addition helper."  →  "add(a, b), multiply(a, b)."   (same row, re-derived — not a duplicate)
+```
 
 The digest is **a map, not the territory** — a fast orientation that the factory verifies against the real code for high-stakes work, never a substitute for it. (See it in the [Durable repo memory](#durable-repo-memory) screenshot above.)
 

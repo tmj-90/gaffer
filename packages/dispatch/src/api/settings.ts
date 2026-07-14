@@ -53,6 +53,13 @@ export interface SettingDef {
   readonly group: SettingGroup;
   readonly label: string;
   readonly help?: string;
+  /**
+   * Closed set of allowed values for an enum-style `string` setting (e.g.
+   * GAFFER_MODE). When present the UI renders a dropdown instead of a free-text
+   * box, and {@link writeSettings} refuses any value outside the list (empty is
+   * always allowed — it clears the override back to the built-in default).
+   */
+  readonly choices?: readonly string[];
 }
 
 /** One setting as reported to the UI by GET /api/settings. */
@@ -66,6 +73,8 @@ export interface SettingView {
   readonly group: SettingGroup;
   readonly label: string;
   readonly help?: string;
+  /** Allowed values for an enum setting — the UI renders these as a dropdown. */
+  readonly choices?: readonly string[];
 }
 
 /**
@@ -78,6 +87,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   {
     key: "GAFFER_MODE",
     type: "string",
+    choices: ["supervised", "graduated", "autonomous", "strict"],
     group: "autonomy",
     label: "Autonomy mode",
     help:
@@ -142,6 +152,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   {
     key: "GAFFER_IDLE_MODE",
     type: "string",
+    choices: ["observe_only", "create_draft", "create_ready"],
     group: "idle-loops",
     label: "Idle-loop mode",
     help: "How far an idle loop goes: observe · draft · ready.",
@@ -290,6 +301,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   {
     key: "REVIEW_MODE",
     type: "string",
+    choices: ["human", "agent"],
     group: "autonomy",
     label: "Review mode",
     help:
@@ -506,6 +518,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   {
     key: "SANDBOX_PROVIDER",
     type: "string",
+    choices: ["sandbox-exec", "docker", "lima", "none"],
     group: "sandbox",
     label: "Sandbox provider",
     help:
@@ -602,6 +615,7 @@ export function listSettings(
     group: def.group,
     label: def.label,
     ...(def.help !== undefined ? { help: def.help } : {}),
+    ...(def.choices !== undefined ? { choices: def.choices } : {}),
   }));
 }
 
@@ -612,6 +626,8 @@ export interface WriteSettingsResult {
   readonly rejected: string[];
   /** Unknown keys silently dropped (not in the allow-list). */
   readonly ignored: string[];
+  /** Known enum keys skipped because the value wasn't one of the allowed choices. */
+  readonly invalid: string[];
 }
 
 /**
@@ -636,9 +652,11 @@ export function writeSettings(
   const written: string[] = [];
   const rejected: string[] = [];
   const ignored: string[] = [];
+  const invalid: string[] = [];
 
   for (const [key, value] of Object.entries(updates)) {
-    if (!isKnownSetting(key)) {
+    const def = SETTING_DEFS.find((d) => d.key === key);
+    if (def === undefined) {
       ignored.push(key);
       continue;
     }
@@ -646,6 +664,12 @@ export function writeSettings(
       // env-locked: an explicit env var overrides the file, so persisting this
       // would mislead the operator (the runner would ignore it). Refuse it.
       rejected.push(key);
+      continue;
+    }
+    // Enum settings only accept a listed choice. An empty value is always
+    // allowed — it clears the override back to the built-in default.
+    if (def.choices !== undefined && value !== "" && !def.choices.includes(value)) {
+      invalid.push(key);
       continue;
     }
     merged[key] = value;
@@ -657,7 +681,7 @@ export function writeSettings(
     atomicWriteJson(path, merged);
   }
 
-  return { written, rejected, ignored };
+  return { written, rejected, ignored, invalid };
 }
 
 /** Serialise `data` to `path` atomically (temp file in the same dir + rename). */

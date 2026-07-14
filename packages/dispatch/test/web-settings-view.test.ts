@@ -45,6 +45,15 @@ const SETTINGS = [
     group: "planning-debate",
     label: "Debate models",
   },
+  {
+    key: "GAFFER_MODE",
+    value: "graduated",
+    envLocked: false,
+    type: "string",
+    group: "autonomy",
+    label: "Autonomy mode",
+    choices: ["supervised", "graduated", "autonomous", "strict"],
+  },
 ];
 
 let lastPost: { url: string; body: unknown } | null = null;
@@ -157,5 +166,32 @@ describe("web: Settings view", () => {
     expect(body.settings.DISPATCH_ALLOW_AGENT_APPROVE).toBe("1");
     expect(body.settings.MAX_TICKS).toBe("99");
     expect(body.settings).not.toHaveProperty("GAFFER_PLAN_DEBATE");
+  });
+
+  it("renders an enum setting as a dropdown of its choices and saves the picked value", async () => {
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
+    await tick();
+
+    const modeRow = Array.from(document.querySelectorAll(".setting-row")).find(
+      (r) => r.querySelector(".setting-key")?.textContent === "GAFFER_MODE",
+    ) as HTMLElement;
+    const select = modeRow.querySelector("select") as HTMLSelectElement;
+    expect(select, "enum should render a <select>, not a text input").not.toBeNull();
+    expect(modeRow.querySelector('input[type="text"]')).toBeNull();
+
+    // Options are the leading "default" plus each choice; current value is selected.
+    const optionValues = Array.from(select.options).map((o) => o.value);
+    expect(optionValues).toEqual(["", "supervised", "graduated", "autonomous", "strict"]);
+    expect(select.value).toBe("graduated");
+
+    // Pick a different mode and save → the chosen value is POSTed.
+    select.value = "strict";
+    const form = document.querySelector(".settings-form") as HTMLFormElement;
+    form.requestSubmit();
+    await tick();
+    await tick();
+
+    const body = lastPost!.body as { settings: Record<string, string> };
+    expect(body.settings.GAFFER_MODE).toBe("strict");
   });
 });

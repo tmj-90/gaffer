@@ -1086,6 +1086,34 @@ async function buildPaletteSources() {
       run: () => navigate("#/factory"),
     },
     {
+      group: "Go",
+      label: "Health",
+      hint: "delivery metrics · ledger",
+      icon: "health",
+      run: () => navigate("#/health"),
+    },
+    {
+      group: "Go",
+      label: "Specs",
+      hint: "frozen intent · coverage",
+      icon: "specs",
+      run: () => navigate("#/specs"),
+    },
+    {
+      group: "Go",
+      label: "Memory",
+      hint: "digest · feature ledger · lore",
+      icon: "memory",
+      run: () => navigate("#/memory"),
+    },
+    {
+      group: "Go",
+      label: "Settings",
+      hint: "autonomy · delivery · sandbox",
+      icon: "settings",
+      run: () => navigate("#/settings"),
+    },
+    {
       group: "Create",
       label: "New ticket",
       hint: "create",
@@ -4843,11 +4871,16 @@ async function renderSettings() {
       const res = await api("POST", "/api/settings", { settings: payload });
       const written = (res.written || []).length;
       const rejected = (res.rejected || []).length;
+      const invalid = (res.invalid || []).length;
+      const skips = [
+        rejected ? `${rejected} skipped (set by env)` : null,
+        invalid ? `${invalid} rejected (invalid value)` : null,
+      ].filter(Boolean);
       toast(
-        rejected
-          ? `Saved ${written} setting${written === 1 ? "" : "s"} — ${rejected} skipped (set by env).`
+        skips.length
+          ? `Saved ${written} setting${written === 1 ? "" : "s"} — ${skips.join(", ")}.`
           : `Saved ${written} setting${written === 1 ? "" : "s"}.`,
-        { ok: true },
+        { ok: !invalid },
       );
       // Re-render from the server's fresh state so values + locks reflect reality.
       router();
@@ -5298,7 +5331,23 @@ function renderSettingInput(s, editors) {
     return input;
   }
 
-  // csv / string → a plain text input.
+  // Enum string → a dropdown of the allowed choices. A leading empty option
+  // clears the override back to the built-in default.
+  if (Array.isArray(s.choices) && s.choices.length > 0) {
+    const select = el("select", { class: "setting-select", "aria-label": s.label });
+    const optDefault = el("option", { value: "" }, "— default —");
+    if (s.value === "") optDefault.selected = true;
+    select.appendChild(optDefault);
+    for (const choice of s.choices) {
+      const opt = el("option", { value: choice }, choice);
+      if (s.value === choice) opt.selected = true;
+      select.appendChild(opt);
+    }
+    editors.set(s.key, { read: () => select.value });
+    return select;
+  }
+
+  // csv / free string → a plain text input.
   const input = el("input", {
     type: "text",
     value: s.value,

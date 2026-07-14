@@ -155,7 +155,9 @@ describe("secret redaction", () => {
   });
 
   it("redacts a github token", () => {
-    expect(redactSecrets("ghp_abcdefghijklmnopqrstuvwxyz0123456789").text).toContain("[REDACTED]");
+    expect(redactSecrets("ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789").text).toContain(
+      "[REDACTED]",
+    );
   });
 
   it("masks assigned secret values but keeps the key", () => {
@@ -170,7 +172,10 @@ describe("secret redaction", () => {
   });
 
   it("redacts deeply through objects and arrays", () => {
-    const out = redactDeep({ a: ["ghp_abcdefghijklmnopqrstuvwxyz0123456789"], b: { token: "x" } });
+    const out = redactDeep({
+      a: ["ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"],
+      b: { token: "x" },
+    });
     expect(JSON.stringify(out)).not.toContain("ghp_abcdefghij");
   });
 

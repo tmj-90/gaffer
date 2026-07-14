@@ -229,7 +229,20 @@ skills)
       [ "$skipped" -gt 0 ] && warn "$skipped already present — re-run with --force to overwrite"
       printf "  ${c_dim}symlinks track $SKILLS_DIR (repo updates flow through). Remove: rm \"$dest\"/<name>${c_off}\n"
       ;;
-    *) echo "usage: gaffer skills [list | install [--user|--project] [--force]]";;
+    add)
+      # Install an EXTERNAL skill (local path or git url) into the factory's own
+      # library ($SKILLS_DIR) after validating its SKILL.md — so select-skills can
+      # pick it per-ticket like any bundled skill. Rejects invalid skills with a
+      # reason and installs nothing.
+      if [ $# -eq 0 ]; then
+        echo "usage: gaffer skills add <path|git-url> [--force]"
+      elif SKILLS_DIR="$SKILLS_DIR" node "$HERE/bin/skill-add.mjs" "$@"; then
+        printf "  ${c_dim}the factory now auto-loads this skill every matching ticket. \`gaffer skills list\` to confirm.${c_off}\n"
+      else
+        exit 1
+      fi
+      ;;
+    *) echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]";;
   esac
   ;;
 

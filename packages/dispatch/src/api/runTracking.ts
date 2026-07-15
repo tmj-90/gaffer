@@ -124,7 +124,13 @@ export function spawnTrackedRun(
     logPath = join(runsDir, `${runId}.log`);
     logFd = openSync(logPath, "a", 0o600);
     stdio = ["ignore", logFd, logFd];
-  } catch {
+  } catch (err) {
+    // Non-fatal (the run still spawns + is tracked), but NOT silent: on a disk-full or
+    // permissions error every subsequent run would discard all output with no signal.
+    console.error(
+      `[runTracking] log setup failed for run ${runId} — output will be suppressed: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
     logFd = null;
     logPath = null;
     stdio = "ignore";

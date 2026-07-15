@@ -24,6 +24,7 @@
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdtempSync,
   rmSync,
   statSync,
@@ -101,7 +102,11 @@ export function validateSkillDir(dir) {
 export function fetchSkillSource(source) {
   if (looksLikeGitUrl(source)) {
     const tmp = mkdtempSync(join(tmpdir(), "gaffer-skill-"));
-    const clone = spawnSync("git", ["clone", "--depth", "1", "--quiet", source, tmp], {
+    // `--` ends option parsing so a `source` shaped like a git flag (e.g.
+    // `--upload-pack=…`, `--config=…`, anything ending `.git`) is always treated as
+    // the repo URL, never as an option git would act on. Untrusted input as an
+    // unguarded git argument is a smell; close it regardless of today's exploitability.
+    const clone = spawnSync("git", ["clone", "--depth", "1", "--quiet", "--", source, tmp], {
       stdio: ["ignore", "ignore", "pipe"],
       encoding: "utf8",
     });
@@ -148,7 +153,15 @@ export function addSkill({ source, skillsDir = DEFAULT_SKILLS_DIR, force = false
     // Stage → rename so a partial copy never becomes the live skill.
     const staging = `${dest}.staging-${process.pid}`;
     rmSync(staging, { recursive: true, force: true });
-    cpSync(fetched.dir, staging, { recursive: true });
+    // DROP symlinks entirely (filter returns false for any symlink). A malicious
+    // skill could point a symlink at a host path the agent later reads through
+    // (e.g. `references/x -> ~/.aws/credentials` or a mounted worktree). We don't
+    // dereference (that would copy a sensitive target's CONTENT into the library) —
+    // we simply don't carry symlinks in. Regular files/dirs copy normally.
+    cpSync(fetched.dir, staging, {
+      recursive: true,
+      filter: (src) => !lstatSync(src).isSymbolicLink(),
+    });
     // Never carry a nested .git from a clone into the library.
     rmSync(join(staging, ".git"), { recursive: true, force: true });
     rmSync(dest, { recursive: true, force: true });

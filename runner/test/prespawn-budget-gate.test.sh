@@ -30,6 +30,12 @@ awk '/^gaffer_budget_exhausted\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TICK" > "
 grep -q 'gaffer_budget_exhausted()' "$FN" \
   && ok "extracted the real gaffer_budget_exhausted from tick.sh" \
   || { echo "FAIL: could not extract gaffer_budget_exhausted from tick.sh"; exit 1; }
+# The function closes over the numeric-safe awk comparison helpers (_num_pos/_num_ge);
+# extract the REAL ones from tick.sh too so this still exercises production code.
+grep -E '^_num_(pos|ge|le)\(\)' "$TICK" >> "$FN"
+grep -q '^_num_pos()' "$FN" \
+  && ok "extracted the real _num_ helpers from tick.sh" \
+  || { echo "FAIL: could not extract the _num_ helpers from tick.sh"; exit 1; }
 # shellcheck disable=SC1090
 source "$FN"
 

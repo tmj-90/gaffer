@@ -127,7 +127,17 @@ async function main(argv) {
   if (allowFile) {
     try {
       fileText = readFileSync(allowFile, "utf8");
-    } catch {
+    } catch (err) {
+      // ENOENT is expected + correct to ignore (the operator created no allow-file).
+      // ANY other error (EACCES/EMFILE/…) means a file the operator DID create can't
+      // be read — warn loudly instead of silently dropping their hosts, which would
+      // surface only as an opaque agent network error against their private registry.
+      if (err && err.code !== "ENOENT") {
+        process.stderr.write(
+          `egress-allowlist: WARNING — could not read allow-file "${allowFile}": ` +
+            `${err.message}; operator hosts NOT applied\n`,
+        );
+      }
       fileText = "";
     }
   }

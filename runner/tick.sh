@@ -1606,8 +1606,10 @@ EOF
         # Prime a fresh Node repo's deps (see the created-worktree path below) so the
         # resume symlink resolves too. Idempotent no-op once node_modules exists.
         _pm_primed="$(gaffer_ensure_node_modules "$rpath")"
-        [ -n "$_pm_primed" ] &&
-          log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (resume) for #$NUM"
+        case "$_pm_primed" in
+          FAILED:*) log "greenfield: WARN — ${_pm_primed#FAILED:} install did not prime ${rname:-repo} deps (resume); test gate may fail #$NUM (see the diagnostic above)" ;;
+          ?*) log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (resume) for #$NUM" ;;
+        esac
         [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
         while IFS= read -r _nm; do
           _rel="${_nm#"$rpath"/}"
@@ -1627,8 +1629,10 @@ EOF
       # gate dies on missing modules. Prime the primary repo's install ONCE (runner-
       # side, --ignore-scripts) so the symlink resolves. No-op once node_modules exists.
       _pm_primed="$(gaffer_ensure_node_modules "$rpath")"
-      [ -n "$_pm_primed" ] &&
-        log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (fresh repo had no node_modules) for #$NUM"
+      case "$_pm_primed" in
+        FAILED:*) log "greenfield: WARN — ${_pm_primed#FAILED:} install did not prime ${rname:-repo} deps (fresh repo); test gate may fail #$NUM (see the diagnostic above)" ;;
+        ?*) log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (fresh repo had no node_modules) for #$NUM" ;;
+      esac
       # JS/TS repos can't test/build in a fresh worktree: node_modules is gitignored,
       # lives only in the main checkout, and installs are hook-blocked. Symlink the real
       # repo's node_modules in so `pnpm test`/`build` resolve. No-op for non-JS repos.

@@ -87,14 +87,19 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   {
     key: "GAFFER_MODE",
     type: "string",
-    choices: ["supervised", "graduated", "autonomous", "strict"],
+    choices: ["supervised", "lite", "graduated", "autonomous", "strict"],
     group: "autonomy",
     label: "Autonomy mode",
     help:
       "Preset that sets the whole autonomy cluster at once (review mode, agent " +
-      "approval, auto-merge, auto-push, memory auto-approve): supervised · " +
+      "approval, auto-merge, auto-push, memory auto-approve): supervised · lite · " +
       "graduated · autonomous · strict. supervised (default) keeps a human on every " +
-      "merge; graduated ships what each repo has EARNED at its risk level and holds " +
+      "merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, " +
+      "no sensitive path) that passed every gate + earned an APPROVE from the reviewer " +
+      "agent — and still leaves a human to MERGE (never auto-merges); non-trivial " +
+      "tickets hold for you. (Because auto-approve drops the human quality gate, lite " +
+      "requires the OS sandbox — GAFFER_STRICT_REQUIRE defaults on.) " +
+      "graduated ships what each repo has EARNED at its risk level and holds " +
       "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
       "policy is the sole allow-path — set grants in the per-repo policy editor); " +
       "autonomous lets agents approve and auto-merges + pushes approved work; " +

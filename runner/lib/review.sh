@@ -190,10 +190,24 @@ EOF
       # (verdict × approve-gate × merge-gate) to ONE action through the pure, unit-tested
       # gaffer_afk_ship_plan — the single source of truth for the ship matrix. Fail-closed:
       # the decisions default to deny and the plan defaults to `hold`.
-      _SHIP_APPROVE=deny; _SHIP_MERGE=deny; _SHIP_PLAN=hold
+      _SHIP_APPROVE=deny; _SHIP_MERGE=deny; _SHIP_PLAN=hold; _LITE_TRIVIAL=0
       if [ "$NEWSTATUS" = "in_review" ] && [ -n "$RBRANCH" ]; then
         _SHIP_APPROVE="$(gaffer_auto_decision "$RNUM" approve)"
         _SHIP_MERGE="$(gaffer_auto_decision "$RNUM" merge)"
+        # LITE MODE narrowing: the approve env FLOOR is on for the whole factory, so
+        # restrict auto-approve to genuinely TRIVIAL tickets here (low risk, tiny diff, no
+        # sensitive path — gaffer_ticket_is_trivial). A non-trivial ticket HOLDS for a human
+        # even with the floor on; and lite NEVER auto-merges (merge stays deny → approve_hold),
+        # so a human always lands the change. DoD + hygiene already gated the delivery, and
+        # the reviewer AGENT still had to return APPROVE (R_VERDICT) to reach approve_hold.
+        if [ "$GAFFER_MODE" = "lite" ]; then
+          if gaffer_ticket_is_trivial "$RNUM" "$RREPO" "$RDEFAULT" "$RBRANCH"; then
+            _SHIP_APPROVE=allow; _SHIP_MERGE=deny; _LITE_TRIVIAL=1
+          else
+            _SHIP_APPROVE=deny
+            log "LITE: #$RNUM NOT trivial (${GAFFER_LITE_REASON:-unknown}) — holding for HUMAN review"
+          fi
+        fi
         _SHIP_PLAN="$(gaffer_afk_ship_plan "$R_VERDICT" "$_SHIP_APPROVE" "$_SHIP_MERGE")"
       fi
       case "$_SHIP_PLAN" in
@@ -207,6 +221,15 @@ EOF
           if ( export DISPATCH_ALLOW_AGENT_APPROVE="${DISPATCH_ALLOW_AGENT_APPROVE:-0}"; \
                wg review approve "$RNUM" --as agent --reviewer "$AGENT" >/dev/null 2>&1 ); then
             log "AFK: runner (agent $AGENT) approved #$RNUM on a clean verdict + earned approve grant (→ ready_for_merge)"
+            # LITE self-instrumentation: mark auto-approved-trivial tickets so the gate-skip
+            # is measurable — if a lite-auto-approved ticket later needs rework/revert, the
+            # marker attributes it to a mis-classified skip (the honest "did the gates earn
+            # their cost?" signal). Best-effort; never blocks the approval.
+            if [ "${_LITE_TRIVIAL:-0}" = "1" ]; then
+              log "LITE: #$RNUM auto-approved as TRIVIAL (risk=low, ${GAFFER_LITE_LINES:-?} lines / ${GAFFER_LITE_FILES:-?} files) — NO human review; a human still merges"
+              wg attach-evidence "$RNUM" --type manual_note \
+                --summary "lite: auto-approved trivial — no human review (risk=low, ${GAFFER_LITE_LINES:-?} lines/${GAFFER_LITE_FILES:-?} files). Rework after this = a lite gate-skip that should have held." >/dev/null 2>&1 || true
+            fi
             if [ "$_SHIP_PLAN" = "ship" ]; then
               # Merge gate ALSO earned → safe-merge the delivery branch into the default.
               # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an

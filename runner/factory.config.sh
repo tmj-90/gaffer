@@ -1102,6 +1102,26 @@ case "$GAFFER_MODE" in
     : "${GAFFER_AUTO_PUSH:=1}"
     : "${MEMORY_AUTO_APPROVE:=1}"
     ;;
+  lite)
+    # LITE — auto-approve genuinely TRIVIAL work; hold everything else for a human; a
+    # human still MERGES. Lite relaxes ONLY the human-REVIEW requirement, and only for
+    # tickets that are low-risk, tiny (≤ GAFFER_LITE_MAX_LINES/FILES), touch no sensitive
+    # path, AND already passed EVERY deterministic gate (DoD tests/lint/typecheck +
+    # hygiene) AND earned an APPROVE from the reviewer agent. It does NOT auto-merge or
+    # auto-push (approve → hold at ready_for_merge for a human to land). The env approve
+    # FLOOR is on so the SERVER accepts the runner's agent-approve; the RUNNER narrows
+    # that to trivial tickets per `gaffer_ticket_is_trivial` (a non-trivial ticket holds
+    # for a human even with the floor on). Because auto-approve removes the human quality
+    # gate, DISPATCH_ALLOW_AGENT_APPROVE=1 trips the autonomy→containment rule below, so
+    # the OS sandbox becomes mandatory (GAFFER_STRICT_REQUIRE=1) — set it 0 explicitly
+    # only if you contain the runner out-of-band.
+    : "${REVIEW_MODE:=agent}"
+    : "${DISPATCH_ALLOW_AGENT_APPROVE:=1}"
+    : "${MERGE_ON_AGENT_REVIEW:=0}"
+    : "${AUTO_MERGE:=0}"
+    : "${GAFFER_AUTO_PUSH:=0}"
+    : "${MEMORY_AUTO_APPROVE:=0}"
+    ;;
   graduated)
     # GRADUATED (earned trust). The reviewer AGENT runs (REVIEW_MODE=agent) so there is a
     # verdict for the runner to act on — but the env autonomy FLOOR is identical to
@@ -1376,6 +1396,50 @@ gaffer_afk_ship_plan() {
   else
     printf 'rework\n'
   fi
+}
+
+# LITE MODE trivial classifier — PURE core. Decides whether a ticket is trivial enough
+# to auto-approve WITHOUT a human reviewer. This is an ADDITIONAL narrowing that only
+# applies in GAFFER_MODE=lite: a trivial ticket has already passed the DoD (tests/lint/
+# typecheck) + hygiene gates to reach in_review, and the reviewer AGENT must still return
+# APPROVE; on top of that, ALL of these must hold or it holds for a human:
+#   • risk_level = low
+#   • diff within the TIGHT lite caps (GAFFER_LITE_MAX_LINES / GAFFER_LITE_MAX_FILES)
+#   • touches NO sensitive path (migrations, CI, Dockerfile, auth/security/secrets, lockfiles,
+#     the factory's own .gaffer / safety-hook) — GAFFER_LITE_SENSITIVE_RE, operator-tunable.
+# NB: intentionally tiny caps (60 lines / 4 files) — "trivial" means a typo/doc/small-config
+# change, NOT the 400-line minimalism cap. No I/O, no side effects; echoes `trivial` or
+# `nontrivial:<reason>` so the caller can log WHY a ticket was held.
+#   $1 risk   $2 lines(int)   $3 files(int)   $4 changed-paths(newline-separated)
+gaffer_lite_trivial_reason() {
+  local _risk="$1" _lines="$2" _files="$3" _paths="$4"
+  local _maxl="${GAFFER_LITE_MAX_LINES:-60}" _maxf="${GAFFER_LITE_MAX_FILES:-4}"
+  local _re="${GAFFER_LITE_SENSITIVE_RE:-(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|auth|security|secrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)}"
+  [ "$_risk" = "low" ] || { printf 'nontrivial:risk=%s\n' "$_risk"; return 0; }
+  case "$_lines" in '' | *[!0-9]*) _lines=999999 ;; esac
+  case "$_files" in '' | *[!0-9]*) _files=999999 ;; esac
+  [ "$_lines" -le "$_maxl" ] || { printf 'nontrivial:lines=%s>%s\n' "$_lines" "$_maxl"; return 0; }
+  [ "$_files" -le "$_maxf" ] || { printf 'nontrivial:files=%s>%s\n' "$_files" "$_maxf"; return 0; }
+  if printf '%s\n' "$_paths" | grep -qE "$_re"; then printf 'nontrivial:sensitive-path\n'; return 0; fi
+  printf 'trivial\n'
+}
+
+# LITE MODE trivial classifier — I/O wrapper. Gathers the ticket risk (dispatch) + the
+# delivered diff's size and paths (git, from the review worktree's branch vs base) and runs
+# the pure core. Returns 0 (trivial → runner may auto-approve) / 1 (non-trivial → hold for a
+# human). Sets GAFFER_LITE_REASON / _LINES / _FILES for the caller's log + evidence marker.
+# FAIL-CLOSED: a missing risk defaults to 'medium' (non-trivial); unreadable diff → large.
+#   $1 ticket#   $2 repo-path   $3 base-ref   $4 delivery-branch
+gaffer_ticket_is_trivial() {
+  local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _stat _lines _files _paths _r
+  _risk="$(wg ticket show "$_num" 2>/dev/null | jget "(d['ticket'].get('risk_level') or 'medium')" 2>/dev/null || echo medium)"
+  _stat="$(git -C "$_repo" diff "$_base"..."$_branch" --numstat 2>/dev/null)"
+  _lines="$(printf '%s\n' "$_stat" | awk 'NF{a+=($1 ~ /^[0-9]+$/ ? $1 : 0)+($2 ~ /^[0-9]+$/ ? $2 : 0)} END{print a+0}')"
+  _files="$(printf '%s\n' "$_stat" | awk 'NF' | grep -c . || true)"
+  _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
+  _r="$(gaffer_lite_trivial_reason "$_risk" "${_lines:-0}" "${_files:-0}" "$_paths")"
+  GAFFER_LITE_REASON="$_r"; GAFFER_LITE_LINES="${_lines:-0}"; GAFFER_LITE_FILES="${_files:-0}"
+  case "$_r" in trivial) return 0 ;; *) return 1 ;; esac
 }
 
 # S-H2: reviewer VERDICT resolution from an OUT-OF-BAND STRUCTURED signal, NOT a

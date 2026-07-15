@@ -144,6 +144,7 @@ describe("buildSearchResponseBody", () => {
 
   it("zero hits + active marker → marker wins, no `next` field", async () => {
     const { buildSearchResponseBody } = await import("../src/mcp/redact.js");
+    const { QUARANTINE_NOTICE } = await import("../src/mcp/quarantine.js");
     const r = buildSearchResponseBody({
       hits: [],
       query: "team retry policy",
@@ -156,10 +157,12 @@ describe("buildSearchResponseBody", () => {
     expect(r).toEqual({
       results: [],
       absence_marker: {
-        reason: "no policy yet",
+        // The agent-authored reason is quarantined (envelope) at serve time.
+        reason: "<untrusted-absence>no policy yet</untrusted-absence>",
         recordedAt: "2026-05-01T00:00:00Z",
         expiresAt: "2026-05-31T00:00:00Z",
       },
+      security: QUARANTINE_NOTICE,
     });
     expect("next" in r).toBe(false);
   });

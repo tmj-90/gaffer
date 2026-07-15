@@ -243,7 +243,11 @@ describe("MCP — search_lore", () => {
       query: "kafka exactly-once",
     });
     expect(json.results).toEqual([]);
-    expect(json.absence_marker.reason).toBe("no team policy yet");
+    // The agent-authored reason is quarantined at serve time (envelope + notice).
+    expect(json.absence_marker.reason).toBe(
+      "<untrusted-absence>no team policy yet</untrusted-absence>",
+    );
+    expect(json.security).toContain("<untrusted-*>");
     expect(json.next).toBeUndefined(); // marker wins over coach
   });
 
@@ -648,7 +652,9 @@ describe("MCP — record_absence (env gated)", () => {
     const search = await callJson(client, "search_lore", {
       query: "kafka exactly-once",
     });
-    expect(search.json.absence_marker.reason).toBe("no team policy yet");
+    expect(search.json.absence_marker.reason).toBe(
+      "<untrusted-absence>no team policy yet</untrusted-absence>",
+    );
   });
 });
 
@@ -714,7 +720,9 @@ describe("MCP — find_dependents + declare_boundary", () => {
     });
     const provider = dep.json.providers[0];
     expect(provider.source).toBe("https://example.com/legit");
-    expect(provider.detail).toBe("human detail");
+    // Boundary detail is model/agent-authored → quarantined in the envelope on serve.
+    expect(provider.detail).toBe("<untrusted-boundary>human detail</untrusted-boundary>");
+    expect(dep.json.security).toContain("<untrusted-*>");
     expect(JSON.stringify(dep.json)).not.toContain("attacker.example");
   });
 

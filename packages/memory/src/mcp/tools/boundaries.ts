@@ -5,6 +5,7 @@ import { z } from "zod";
 import { audit } from "../../core/audit.js";
 import { findDependents, suggestBoundary } from "../../core/boundaries.js";
 import type { Boundary } from "../../db/types.js";
+import { quarantine, QUARANTINE_NOTICE, stripEnvelopeTokens } from "../quarantine.js";
 
 /**
  * Compact boundary projection for MCP responses — repo / role / contract
@@ -18,7 +19,10 @@ function boundaryForMcp(b: Boundary): Record<string, unknown> {
     role: b.role,
     contract: b.contract,
     ...(b.kind ? { kind: b.kind } : {}),
-    ...(b.detail ? { detail: b.detail } : {}),
+    // `detail` is model/agent-authored free text — a human ratifies the EDGE, but the
+    // prose can still carry an injection payload — so wrap it in the untrusted envelope
+    // (every other agent-facing memory tool quarantines model text; boundaries lagged).
+    ...(b.detail ? { detail: quarantine("boundary", b.detail) } : {}),
     ...(b.source ? { source: b.source } : {}),
   };
 }
@@ -86,6 +90,7 @@ export function registerBoundaryTools(server: McpServer, db: Database): void {
               : "These are the declared cross-repo dependents. Treat " +
                 "`consumers` as the blast radius of a shape change and " +
                 "coordinate accordingly.",
+          security: QUARANTINE_NOTICE,
         };
         return {
           content: [
@@ -167,6 +172,9 @@ export function registerBoundaryTools(server: McpServer, db: Database): void {
         source: z
           .string()
           .url()
+          .refine((u) => /^https?:\/\//i.test(u), {
+            message: "source must be an http(s) URL",
+          })
           .optional()
           .describe("URL to the code / PR / doc that evidences this edge."),
       },
@@ -186,7 +194,9 @@ export function registerBoundaryTools(server: McpServer, db: Database): void {
           contract: args.contract,
           role: args.role,
           kind: args.kind,
-          detail: args.detail,
+          // Strip any envelope-delimiter tokens at write so stored detail can't later
+          // break OUT of the untrusted envelope when boundaryForMcp serves it.
+          detail: args.detail === undefined ? undefined : stripEnvelopeTokens(args.detail),
           source: args.source,
           author: "agent",
         });

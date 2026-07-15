@@ -547,8 +547,12 @@ export function registerLoreTools(server: McpServer, db: Database): void {
               "promote with `memory approve " +
               lore.id +
               "`.",
-          possibleDuplicates,
+          // Duplicate titles/summaries are AGENT-authored (drafts included) — wrap them
+          // in the untrusted envelope + ship the notice, exactly like search_lore, so a
+          // planted near-dupe can't inject instructions into the suggesting agent.
+          possibleDuplicates: possibleDuplicates.map((d) => quarantineLore(d)),
           restrictedDuplicateCount,
+          security: QUARANTINE_NOTICE,
         };
         return {
           content: [

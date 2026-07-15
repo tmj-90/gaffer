@@ -93,6 +93,33 @@ describe("parseClaudeEnvelope", () => {
     expect(e.isError).toBe(false);
   });
 
+  it("recovers JSON whose result text contains an unbalanced brace (string-aware scan)", () => {
+    // The result string has a `{` with no matching `}` INSIDE the string. A raw
+    // brace counter would mis-balance and return null → a successful run would be
+    // falsely marked blocked. The scanner must ignore braces inside string values.
+    const jsonWithBraceInResult = JSON.stringify({
+      type: "result",
+      is_error: false,
+      result: "Refactored handler: edited `f(x) { return 1;` and left a note {",
+      stop_reason: "end_turn",
+    });
+    const noisy = `Ignoring 8 permissions.allow entries: workspace not trusted.\n${jsonWithBraceInResult}`;
+    const e = parseClaudeEnvelope(noisy);
+    expect(e.isError).toBe(false);
+    expect(e.resultText).toContain("Refactored handler");
+    expect(e.stopReason).toBe("end_turn");
+  });
+
+  it("recovers JSON when prefix noise contains a stray closing brace (depth never goes negative)", () => {
+    // A leading `}` in the log noise must not drive the scanner negative and make it
+    // latch onto a nested object (e.g. the usage block) instead of the real envelope.
+    const noisy = `Error: unhandled case } from a prior line\n${REAL_SUCCESS}`;
+    const e = parseClaudeEnvelope(noisy);
+    expect(e.isError).toBe(false);
+    expect(e.resultText).toBe("DELIVERED");
+    expect(e.totalCostUsd).toBe(0.621343);
+  });
+
   it("is total on empty/garbage input (errored, no result — never throws)", () => {
     for (const junk of ["", "   ", "not json at all", "{oops"]) {
       const e = parseClaudeEnvelope(junk);

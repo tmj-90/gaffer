@@ -11,6 +11,8 @@
  * in the audit log.
  */
 
+import { quarantine, QUARANTINE_NOTICE } from "./quarantine.js";
+
 export interface RestrictedRefusal {
   readonly id: string;
   readonly restricted: true;
@@ -208,10 +210,15 @@ export function buildSearchResponseBody<T>(opts: {
   const base: Record<string, unknown> = { results: opts.hits };
   if (opts.absenceMarker) {
     base["absence_marker"] = {
-      reason: opts.absenceMarker.reason,
+      // The marker `reason` is AGENT-authored free text (writable when
+      // MEMORY_ALLOW_MCP_ABSENCE=1). Wrap it in the untrusted envelope — which also
+      // strips any embedded delimiter tokens — so a planted "SYSTEM: …" reason can't
+      // inject the next agent that hits this zero-hit search. Ship the notice too.
+      reason: quarantine("absence", opts.absenceMarker.reason),
       recordedAt: opts.absenceMarker.recordedAt,
       expiresAt: opts.absenceMarker.expiresAt,
     };
+    base["security"] = QUARANTINE_NOTICE;
     return base;
   }
   if (opts.hits.length === 0 && opts.query) {

@@ -215,24 +215,39 @@ gaffer_ensure_node_modules() {
   command -v "$pm" >/dev/null 2>&1 || return 0
 
   # Frozen/CI install first (respects the lockfile); fall back to a plain install if
-  # the lockfile is out of sync, so a hand-authored scaffold still primes.
+  # the lockfile is out of sync, so a hand-authored scaffold still primes. Output is
+  # CAPTURED (combined) and surfaced ONLY on failure — success stays quiet, but the
+  # diagnostic (403/ENOTFOUND/lockfile mismatch) is never destroyed, so a failed prime
+  # doesn't degrade to an opaque "cannot find module X" at the test gate. `|| true`
+  # keeps a failing install non-fatal under a caller's `set -e`.
+  local _out=""
   case "$pm" in
     pnpm)
-      (cd "$dir" && pnpm install --frozen-lockfile --ignore-scripts >/dev/null 2>&1) ||
-        (cd "$dir" && pnpm install --ignore-scripts >/dev/null 2>&1)
+      _out="$( { (cd "$dir" && pnpm install --frozen-lockfile --ignore-scripts) ||
+        (cd "$dir" && pnpm install --ignore-scripts); } 2>&1 )" || true
       ;;
     yarn)
-      (cd "$dir" && yarn install --frozen-lockfile --ignore-scripts >/dev/null 2>&1) ||
-        (cd "$dir" && yarn install --ignore-scripts >/dev/null 2>&1)
+      _out="$( { (cd "$dir" && yarn install --frozen-lockfile --ignore-scripts) ||
+        (cd "$dir" && yarn install --ignore-scripts); } 2>&1 )" || true
       ;;
     npm)
-      (cd "$dir" && npm ci --ignore-scripts >/dev/null 2>&1) ||
-        (cd "$dir" && npm install --ignore-scripts >/dev/null 2>&1)
+      _out="$( { (cd "$dir" && npm ci --ignore-scripts) ||
+        (cd "$dir" && npm install --ignore-scripts); } 2>&1 )" || true
       ;;
   esac
 
-  # Report success only if node_modules actually materialised.
-  [ -e "$dir/node_modules" ] && echo "$pm"
+  # Success = node_modules materialised → echo the pm for the caller's log. Otherwise
+  # the install was ATTEMPTED but failed: surface the captured reason on stderr and
+  # echo a `FAILED:<pm>` sentinel so the caller logs an accurate, ticket-scoped warning
+  # (vs. an early no-op, which echoes nothing). Still non-fatal — the test gate decides.
+  if [ -e "$dir/node_modules" ]; then
+    echo "$pm"
+  else
+    printf 'gaffer: greenfield: %s install did not prime deps in %s (non-fatal; the test gate will surface it):\n' \
+      "$pm" "$dir" >&2
+    printf '%s\n' "$_out" | sed 's/^/  /' >&2
+    echo "FAILED:$pm"
+  fi
   return 0
 }
 

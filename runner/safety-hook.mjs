@@ -370,10 +370,16 @@ const MCP_RUNTIME_FILE = String.raw`mcp-runtime(?:\.\w+)*\.json`;
 // space/quote, so it cannot bleed across command boundaries.
 const PROC_ENVIRON = String.raw`proc\/[^\s'"]*\/environ`;
 const SECRET_PATH = new RegExp(
-  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|credentials|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|\.?credentials(\.json)?|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
   "i",
 );
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
+// The agent's own settings file wires the PreToolUse safety hook (the runner templates
+// it into each worktree). A write to it — via the Write/Edit tool or a bash redirect —
+// could strip the very hook that enforces this boundary, so it is protected exactly
+// like .git/ internals: never agent-writable. (`.credentials.json` above was added for
+// the same reason: `credentials` alone did not match Claude's `~/.claude/.credentials.json`.)
+const AGENT_SETTINGS = /(^|\/)\.claude\/settings(\.local)?\.json$/i;
 
 // =====================================================================
 // CONTENTS-LEAVING / PATH-REFERENCE BOUNDARY (re-architected)
@@ -1691,6 +1697,11 @@ function checkCommand(cmd) {
         `bash write inside .git (hooks / exec-hijack surface): ${target} — "${cmd.slice(0, 120)}"`,
       );
     }
+    if (target !== UNVERIFIABLE_TARGET && AGENT_SETTINGS.test(target)) {
+      block(
+        `bash write to the agent settings file (safety-hook removal surface): ${target} — "${cmd.slice(0, 120)}"`,
+      );
+    }
     const access = classifyRootAccess(target, roots);
     if (access !== "write") {
       block(
@@ -1733,6 +1744,9 @@ function checkWrite(filePath) {
   const abs = canonicalize(resolve(process.cwd(), filePath));
   if (SECRET_PATH.test(abs)) block(`write to a secret file: ${filePath}`);
   if (GIT_INTERNAL.test(abs)) block(`write inside .git: ${filePath}`);
+  if (AGENT_SETTINGS.test(abs)) {
+    block(`write to the agent settings file (would strip the safety hook): ${filePath}`);
+  }
   // Repo-access boundary: a write is allowed ONLY inside a write-root. A target
   // in a read-only root, or outside all roots, is denied.
   const access = classifyRootAccess(abs, roots);

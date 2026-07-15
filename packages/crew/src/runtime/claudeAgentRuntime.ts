@@ -56,15 +56,31 @@ function tolerantJson(text: string): Json | null {
   } catch {
     // fall through to balanced-block recovery
   }
+  // A string-AWARE brace scanner: braces inside JSON string values are data, not
+  // structure. A raw count would (A) drive depth negative on a stray `}` in prefix
+  // noise and then miss the real block, and (B) mis-balance on an unmatched `{`/`}`
+  // inside a result string (e.g. claude summarising `edited f(x) {`), returning null
+  // and falsely marking a SUCCESSFUL run blocked. Track in-string + escape state and
+  // never let depth go negative. `candidate` keeps the LAST top-level balanced block.
   let depth = 0;
   let start = -1;
   let candidate: string | null = null;
+  let inString = false;
+  let escaped = false;
   for (let i = 0; i < trimmed.length; i += 1) {
     const c = trimmed[i];
-    if (c === "{") {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+    } else if (c === "{") {
       if (depth === 0) start = i;
       depth += 1;
-    } else if (c === "}") {
+    } else if (c === "}" && depth > 0) {
       depth -= 1;
       if (depth === 0 && start >= 0) candidate = trimmed.slice(start, i + 1);
     }
@@ -98,10 +114,24 @@ function finiteNumber(v: unknown): number | null {
  */
 export function parseClaudeEnvelope(stdout: string): ClaudeEnvelope {
   const json = tolerantJson(stdout);
+  if (json === null && (stdout ?? "").trim() !== "") {
+    // Non-empty stdout that yields no JSON envelope is treated as errored below.
+    // Surface a truncated snippet so a parse regression (or a future claude output
+    // change) is diagnosable rather than a silent false-negative "blocked".
+    const snippet = stdout.slice(0, 300).replace(/\s+/g, " ").trim();
+    console.error(
+      `[claudeAgentRuntime] unparseable claude stdout (len=${stdout.length}): ${snippet}`,
+    );
+  }
   const stopReason = firstString(json, ["stop_reason", "subtype", "finish_reason"]);
+  // `json["error"]` is `unknown`; narrow to an object before reading `.message`
+  // rather than asserting `as Json` (a primitive would make that assertion false).
+  const errorObj = json?.["error"];
   const errMsg =
-    json && typeof (json["error"] as Json | undefined)?.["message"] === "string"
-      ? String((json["error"] as Json)["message"])
+    typeof errorObj === "object" &&
+    errorObj !== null &&
+    typeof (errorObj as Json)["message"] === "string"
+      ? String((errorObj as Json)["message"])
       : "";
   const maxTurns = [stopReason ?? "", String(json?.["subtype"] ?? ""), errMsg].some((s) =>
     MAX_TURNS_RE.test(s),

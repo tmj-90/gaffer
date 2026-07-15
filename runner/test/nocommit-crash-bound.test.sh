@@ -122,12 +122,16 @@ SRC="$WORK/real-fns.sh"
   extract_fn "_gaffer_nocommit_record_unlocked"
   extract_fn "gaffer_nocommit_record"
   extract_fn "gaffer_nocommit_clear"
+  # Numeric-safe awk comparison helpers the cost-ceiling branch closes over.
+  extract_fn "_num_pos"
+  extract_fn "_num_ge"
+  extract_fn "_num_le"
   extract_fn "gaffer_release_or_park_nocommit"
 } > "$SRC"
 for fn in _gaffer_locked _gaffer_skip_ticket_unlocked gaffer_skip_ticket \
           gaffer_release_delivery gaffer_nocommit_file gaffer_nocommit_count \
           _gaffer_nocommit_record_unlocked gaffer_nocommit_record \
-          gaffer_nocommit_clear gaffer_release_or_park_nocommit; do
+          gaffer_nocommit_clear _num_pos _num_ge _num_le gaffer_release_or_park_nocommit; do
   grep -q "^$fn() {" "$SRC" \
     || { echo "FAIL: could not extract real '$fn' from tick.sh — missing or reshaped"; exit 1; }
 done

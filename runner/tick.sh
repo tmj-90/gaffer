@@ -16,6 +16,10 @@ source "$HERE/factory.config.sh"
 # shellcheck source=lib/clarify.sh
 [ -f "$HERE/lib/clarify.sh" ] && source "$HERE/lib/clarify.sh"
 mkdir -p "$GAFFER_DATA"
+# $GAFFER_DATA holds the DB copies + the per-tick mcp-runtime file (which carries the
+# live claim token). Lock it to the owner so another local user can't read the token
+# or DBs. 0700 on the dir blocks traversal to any file inside regardless of file mode.
+chmod 700 "$GAFFER_DATA" 2>/dev/null || true
 # Redirect the crew events log to $GAFFER_DATA so it is never written inside a
 # repo worktree (which would trip the delivery-hygiene gate). The GAFFER_* prefix
 # means this is automatically included by gaffer_agent_env and inherited by every
@@ -367,6 +371,16 @@ gaffer_nocommit_clear() { rm -f "$(gaffer_nocommit_file "$1")" 2>/dev/null || tr
 #     ticket.blocked event, memory demotion) so a human is paged the same way.
 # The counter clears here on park, on a successful submit, and on any park out
 # of the delivery pipeline — a flaky-then-fixed ticket is never poisoned.
+# Numeric-safe awk comparisons. Ticket/config numeric fields (delivery_budget_usd,
+# rework spend) originate in the DB, where SQLite NUMERIC affinity can store a
+# non-numeric string verbatim — and epics/tickets can be AI-drafted. Passing values
+# via `awk -v` (NOT string-interpolated into the program body) means such a value can
+# never be parsed as awk source. Empty/garbage coerces to 0. Each returns 0 (success)
+# when the comparison holds, matching the previous `awk 'BEGIN{exit !(…)}'` contract.
+_num_pos() { awk -v x="${1:-0}" 'BEGIN{exit !(x + 0 > 0)}' 2>/dev/null; }                # x > 0
+_num_ge() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{exit !(a + 0 >= b + 0)}' 2>/dev/null; } # a >= b
+_num_le() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{exit !(a + 0 <= b + 0)}' 2>/dev/null; } # a <= b
+
 gaffer_release_or_park_nocommit() {
   local reason="$1"
   # DRY_RUN never claims → never releases and never counts; keep it side-effect-free.
@@ -383,14 +397,14 @@ gaffer_release_or_park_nocommit() {
   local _cost_exhausted=0 _ticket_budget _eff_ceiling _spent=0
   _ticket_budget="$(printf '%s' "${SHOW:-}" | jget "d['ticket'].get('delivery_budget_usd')" 2>/dev/null || true)"
   case "$_ticket_budget" in ""|None|null) _ticket_budget="" ;; esac
-  if [ -n "$_ticket_budget" ] && awk "BEGIN{exit !(${_ticket_budget:-0}+0 > 0)}" 2>/dev/null; then
+  if [ -n "$_ticket_budget" ] && _num_pos "$_ticket_budget"; then
     _eff_ceiling="$_ticket_budget"
   else
     _eff_ceiling="${GAFFER_REWORK_BUDGET_USD:-}"
   fi
-  if [ -n "$_eff_ceiling" ] && awk "BEGIN{exit !(${_eff_ceiling:-0}+0 > 0)}" 2>/dev/null; then
+  if [ -n "$_eff_ceiling" ] && _num_pos "$_eff_ceiling"; then
     _spent="$(gaffer_ticket_rework_spend "$NUM" 2>/dev/null || echo 0)"
-    if awk "BEGIN{exit !(${_spent:-0}+0 >= ${_eff_ceiling}+0)}" 2>/dev/null; then
+    if _num_ge "$_spent" "$_eff_ceiling"; then
       _cost_exhausted=1
       log "NOCOMMIT: #$NUM hit the per-ticket cost ceiling (spent \$${_spent} ≥ \$${_eff_ceiling}) with no committed work — parking to blocked (no unbounded cross-run burn)"
     fi
@@ -428,10 +442,10 @@ gaffer_budget_exhausted() {
   local _num="$1" _tb _ceil _spent
   _tb="$(printf '%s' "${SHOW:-}" | jget "d['ticket'].get('delivery_budget_usd')" 2>/dev/null || true)"
   case "$_tb" in ""|None|null) _tb="" ;; esac
-  if [ -n "$_tb" ] && awk "BEGIN{exit !(${_tb:-0}+0 > 0)}" 2>/dev/null; then _ceil="$_tb"; else _ceil="${GAFFER_REWORK_BUDGET_USD:-}"; fi
-  { [ -n "$_ceil" ] && awk "BEGIN{exit !(${_ceil:-0}+0 > 0)}" 2>/dev/null; } || return 1
+  if [ -n "$_tb" ] && _num_pos "$_tb"; then _ceil="$_tb"; else _ceil="${GAFFER_REWORK_BUDGET_USD:-}"; fi
+  { [ -n "$_ceil" ] && _num_pos "$_ceil"; } || return 1
   _spent="$(gaffer_ticket_rework_spend "$_num" 2>/dev/null || echo 0)"
-  awk "BEGIN{exit !(${_spent:-0}+0 >= ${_ceil}+0)}" 2>/dev/null || return 1
+  _num_ge "$_spent" "$_ceil" || return 1
   GAFFER_BUDGET_SPENT="$_spent"; GAFFER_BUDGET_CEIL="$_ceil"; return 0
 }
 
@@ -459,13 +473,20 @@ gaffer_ticket_slug() {
 
 gaffer_submit_delivery() {
   local reason="$1"
-  local _rc
+  local _rc _err
+  # Capture stderr (discard stdout) so a submit FAILURE reason ("claim expired",
+  # "not in a claimable state", "SQLite locked") reaches the log instead of /dev/null —
+  # the caller's park path already handles the non-zero rc, but silently losing the
+  # WHY made a transient submit failure needlessly hard to triage.
   if [ -n "${CLAIM_TOKEN:-}" ]; then
-    wg submit "$NUM" --token "$CLAIM_TOKEN" --reason "$reason" >/dev/null 2>&1
+    _err="$(wg submit "$NUM" --token "$CLAIM_TOKEN" --reason "$reason" 2>&1 >/dev/null)"
+    _rc=$?
   else
-    wg ticket move "$NUM" in_review >/dev/null 2>&1
+    _err="$(wg ticket move "$NUM" in_review 2>&1 >/dev/null)"
+    _rc=$?
   fi
-  _rc=$?
+  [ "$_rc" -ne 0 ] && [ -n "$_err" ] &&
+    log "submit for #$NUM failed (rc=$_rc): $(printf '%s' "$_err" | tr '\n' ' ' | cut -c1-300)"
   # On a successful submit the claim is COMPLETED (claimed → in_review): the token
   # is consumed. Mark the claim resolved so the EXIT crash trap doesn't re-release
   # it with the void token and page a spurious "needs a human" (N3). On failure we
@@ -601,8 +622,19 @@ for r in d:
         print(n); break" 2>/dev/null || echo '')"
 fi
 
-# How many tickets are claimable?
-READY_JSON="$(wg ticket list -s ready 2>/dev/null || echo '[]')"
+# How many tickets are claimable? DISTINGUISH a real dispatch failure from a genuinely
+# empty queue: `2>/dev/null || echo '[]'` would mask a missing `wg` / unreachable or
+# corrupt DB as "no ready tickets", silently idling the WHOLE factory indefinitely
+# behind a normal-looking no_work log. `wg ticket list` exits 0 on an empty list and
+# non-zero only on a real error — so surface that as a VISIBLE tick error, not silence.
+_ready_err="$(mktemp "${TMPDIR:-/tmp}/gaffer-ready.XXXXXX" 2>/dev/null || echo /tmp/gaffer-ready.$$)"
+if ! READY_JSON="$(wg ticket list -s ready 2>"$_ready_err")"; then
+  log "FATAL: 'wg ticket list -s ready' failed (dispatch unavailable / DB error) — NOT treating as an empty queue: $(tr '\n' ' ' <"$_ready_err" 2>/dev/null | cut -c1-300)"
+  rm -f "$_ready_err" 2>/dev/null || true
+  result error
+  exit 1
+fi
+rm -f "$_ready_err" 2>/dev/null || true
 READY_COUNT="$(echo "$READY_JSON" | jget 'len(d)' 2>/dev/null || echo 0)"
 
 if [ -n "$RESUME_NUM" ]; then
@@ -844,6 +876,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # the token string. Substituted alongside the DB/bin placeholders.
     sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" \
         "$MCP_CONFIG" > "$MCP_RUNTIME"
+    chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     cp -f "$HERE/claude/CLAUDE.md" "$B_DIR/CLAUDE.factory.md"
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
 
@@ -1006,7 +1039,8 @@ print(hits[0] if hits else '')
       GAFFER_KEEP_DELIVERY_BRANCH=1
       # Link the new repo to the bootstrap ticket + record the delivery so the
       # done-gate/reviewer can resolve it (best-effort, non-fatal).
-      wg repo link "$NUM" "$B_NAME" >/dev/null 2>&1 || true
+      wg repo link "$NUM" "$B_NAME" >/dev/null 2>&1 ||
+        log "BOOTSTRAP: repo link #$NUM ↔ $B_NAME did not record (non-fatal)"
       # Record the delivery on the NORMAL lane: the diff is the scaffold delta on TOP of
       # the README baseline (main..branch — exactly what the reviewer diffs), and the
       # persisted branch_name is the `gaffer/ticket-N-<slug>` DELIVERY branch (NOT `main`),
@@ -1015,12 +1049,17 @@ print(hits[0] if hits else '')
       B_DIFFSTAT="$(git -C "$B_DIR" diff "$B_DEFAULT_BRANCH".."$B_WORK_BRANCH" --stat 2>/dev/null | tail -15)"
       B_HEAD_SHA="$(git -C "$B_DIR" rev-parse "$B_WORK_BRANCH" 2>/dev/null || echo '')"
       wg attach-evidence "$NUM" --type diff_summary \
-        --summary "Bootstrapped new repo $B_NAME at $B_DIR — delivered on branch $B_WORK_BRANCH (base $B_DEFAULT_BRANCH)"$'\n'"$B_DIFFSTAT" >/dev/null 2>&1 || true
-      wg delivery-artifact "$NUM" --branch "$B_WORK_BRANCH" --diff "$B_DIFFSTAT" --as system >/dev/null 2>&1 || true
+        --summary "Bootstrapped new repo $B_NAME at $B_DIR — delivered on branch $B_WORK_BRANCH (base $B_DEFAULT_BRANCH)"$'\n'"$B_DIFFSTAT" >/dev/null 2>&1 ||
+        log "BOOTSTRAP: diff_summary evidence for #$NUM did not record (non-fatal)"
+      wg delivery-artifact "$NUM" --branch "$B_WORK_BRANCH" --diff "$B_DIFFSTAT" --as system >/dev/null 2>&1 ||
+        log "BOOTSTRAP: delivery-artifact for #$NUM did not record (non-fatal)"
       # Per-repo delivery record (WG-005 parity with the normal lane): the done-gate /
       # reviewer see a review_ready delivery for the new repo on the delivery branch.
+      # This row is LOAD-BEARING (the done-gate resolves the delivery from it), so a
+      # failure must be visible, never silently swallowed.
       B_SHA_ARG=""; [ -n "$B_HEAD_SHA" ] && B_SHA_ARG="--commit $B_HEAD_SHA"
-      wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready >/dev/null 2>&1 || true
+      wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready >/dev/null 2>&1 ||
+        log "BOOTSTRAP: WARN — per-repo delivery record for #$NUM ($B_NAME) did not record; the done-gate may not resolve this delivery"
       # Rest the new repo's PRIMARY working tree back on its default branch (`main`), so
       # the delivery branch is a plain ref the reviewer's throwaway worktree can check out
       # cleanly, and dependents branch off a tidy `main` after the scaffold merges.
@@ -1606,8 +1645,10 @@ EOF
         # Prime a fresh Node repo's deps (see the created-worktree path below) so the
         # resume symlink resolves too. Idempotent no-op once node_modules exists.
         _pm_primed="$(gaffer_ensure_node_modules "$rpath")"
-        [ -n "$_pm_primed" ] &&
-          log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (resume) for #$NUM"
+        case "$_pm_primed" in
+          FAILED:*) log "greenfield: WARN — ${_pm_primed#FAILED:} install did not prime ${rname:-repo} deps (resume); test gate may fail #$NUM (see the diagnostic above)" ;;
+          ?*) log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (resume) for #$NUM" ;;
+        esac
         [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
         while IFS= read -r _nm; do
           _rel="${_nm#"$rpath"/}"
@@ -1627,8 +1668,10 @@ EOF
       # gate dies on missing modules. Prime the primary repo's install ONCE (runner-
       # side, --ignore-scripts) so the symlink resolves. No-op once node_modules exists.
       _pm_primed="$(gaffer_ensure_node_modules "$rpath")"
-      [ -n "$_pm_primed" ] &&
-        log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (fresh repo had no node_modules) for #$NUM"
+      case "$_pm_primed" in
+        FAILED:*) log "greenfield: WARN — ${_pm_primed#FAILED:} install did not prime ${rname:-repo} deps (fresh repo); test gate may fail #$NUM (see the diagnostic above)" ;;
+        ?*) log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (fresh repo had no node_modules) for #$NUM" ;;
+      esac
       # JS/TS repos can't test/build in a fresh worktree: node_modules is gitignored,
       # lives only in the main checkout, and installs are hook-blocked. Symlink the real
       # repo's node_modules in so `pnpm test`/`build` resolve. No-op for non-JS repos.
@@ -1732,6 +1775,7 @@ EOF
   # "no token" (the resume agent's evidence writes are best-effort, as before).
   sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" \
       "$MCP_CONFIG" > "$MCP_RUNTIME"
+  chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
   # Repo-access boundary (FG-007): tell the runtime safety hook the exact set of
   # repos this run may WRITE to (GAFFER_WRITE_ROOTS) and additionally READ from
   # (GAFFER_READ_ROOTS). The hook then deterministically blocks writes/branches
@@ -1840,15 +1884,15 @@ $real
     local _ticket_budget _eff_ceiling
     _ticket_budget="$(printf '%s' "${SHOW:-}" | jget "d['ticket'].get('delivery_budget_usd')" 2>/dev/null || true)"
     case "$_ticket_budget" in ""|None|null) _ticket_budget="" ;; esac
-    if [ -n "$_ticket_budget" ] && awk "BEGIN{exit !(${_ticket_budget:-0}+0 > 0)}" 2>/dev/null; then
+    if [ -n "$_ticket_budget" ] && _num_pos "$_ticket_budget"; then
       _eff_ceiling="$_ticket_budget"
     else
       _eff_ceiling="${GAFFER_REWORK_BUDGET_USD:-}"
     fi
     if [ -n "$_eff_ceiling" ] \
-       && awk "BEGIN{exit !(${_eff_ceiling:-0}+0 > 0)}" 2>/dev/null; then
+       && _num_pos "$_eff_ceiling"; then
       local _spent; _spent="$(gaffer_ticket_rework_spend "$NUM" 2>/dev/null || echo 0)"
-      if awk "BEGIN{exit !(${_spent:-0}+0 >= ${_eff_ceiling}+0)}" 2>/dev/null; then
+      if _num_ge "$_spent" "$_eff_ceiling"; then
         _cost_exhausted=1
         local _src="factory default"; [ -n "$_ticket_budget" ] && _src="per-ticket budget"
         log "REWORK: #$NUM hit the ${_src} cost ceiling (spent \$${_spent} ≥ \$${_eff_ceiling}) on attempt $_DELIV_ATTEMPT — parking to blocked (no unbounded burn)"
@@ -2045,7 +2089,7 @@ $_trail_q
   # the turn cap wasn't reached, so the factory never silently keeps spending past it.
   _BUDGET_HIT=0
   if [ -n "${GAFFER_BUDGET_REMAINING:-}" ] \
-     && awk "BEGIN{exit !(${GAFFER_BUDGET_REMAINING:-1}+0 <= 0)}" 2>/dev/null; then
+     && _num_le "${GAFFER_BUDGET_REMAINING:-1}" 0; then
     _BUDGET_HIT=1
   fi
   if { [ "$_CAP_HIT" = "1" ] || [ "$_BUDGET_HIT" = "1" ]; } \
@@ -2524,6 +2568,18 @@ for r in d.get("repositories", []) or []:
   # The delivery-artifact / diff_summary / per-repo records BELOW run as a SYSTEM actor
   # and are status-independent, so submitting first (matching the old agent-submit
   # ordering) keeps the done-gate's PR/diff evidence attached to an in_review ticket.
+  #
+  # R-6 (data-loss window): SUBMIT itself is the review-visibility point — it moves the
+  # ticket claimed → in_review AND resolves the claim (GAFFER_CLAIM_RESOLVED=1). If a
+  # signal (the routine outer per-tick timeout SIGTERM, launchd stop, Ctrl-C) lands in
+  # the gap between submit and the first delivery record, the crash trap sees
+  # KEEP=0 + COMPLETE=0 and runs `drop-branch` — DELETING the review-worthy branch —
+  # while CLAIM_RESOLVED=1 suppresses the claim re-release, stranding the ticket
+  # in_review with its branch gone and no branch_name recorded yet. Raise retention
+  # BEFORE submit: past GUARD B the branch is guaranteed to hold delivered commits, so
+  # keeping it is always correct, and the trap now preserves it from the visibility
+  # point onward. (Redundantly re-raised on the record path + the submit-fail park.)
+  GAFFER_KEEP_DELIVERY_BRANCH=1
   if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
     log "submitted #$NUM for review (→ in_review) — runner-owned submit"
     # FINDING-3: this delivery attempt SUCCEEDED — reset the cross-run no-commit
@@ -2579,7 +2635,9 @@ for r in d.get("repositories", []) or []:
   # recorded evidence pointing at a missing branch. Raise the branch-retention flag
   # NOW — strictly BEFORE the first record below — so any crash trap from here on
   # tears down the disposable worktree but PRESERVES the branch. A salvageable
-  # orphan branch is always preferable to a dangling delivery record. We keep
+  # orphan branch is always preferable to a dangling delivery record. Retention is
+  # already raised above (before submit — the true visibility point); re-affirm it
+  # here so this record path stays self-evidently safe. We keep
   # GAFFER_DELIVERY_COMPLETE for the later "fully done, skip all cleanup" case.
   GAFFER_KEEP_DELIVERY_BRANCH=1
   while IFS=$'\t' read -r rid rname rpath rbase rwt; do

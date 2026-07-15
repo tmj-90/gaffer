@@ -14,7 +14,15 @@
 // Run: node runner/test/skill-add.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +41,15 @@ const fail = (l) => {
   console.log(`  FAIL ${l}`);
 };
 const assert = (l, c) => (c ? ok(l) : fail(l));
+/** True if `p` is a symlink (even a dangling one) — existsSync follows links + would
+ *  miss a carried-in dangling symlink, so we lstat to detect the link itself. */
+const symlinkExists = (p) => {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+};
 
 const { addSkill, validateSkillDir } = await import(MOD);
 
@@ -164,6 +181,67 @@ console.log("== a git url (local file:// repo — hermetic) clones + installs, n
     "git url → nested .git NOT carried into the library",
     !existsSync(join(SKILLS, "fromgit", ".git")),
   );
+}
+
+console.log("== a bare scalar `stack` is coerced to a one-element list + accepted ==");
+{
+  // The frontmatter parser coerces `stack: node` to `["node"]` (always an array), so
+  // validateSkillDir's Array.isArray guard is a defensive belt-and-braces check and a
+  // scalar stack installs fine. Assert the REAL behaviour rather than a rejection the
+  // parser makes impossible.
+  const scalarStack = makeSkillDir(
+    "scalarstack",
+    `---\nname: scalarstack\ndescription: stack given as a bare string.\nstack: node\n---\nBody.\n`,
+  );
+  const v = validateSkillDir(scalarStack);
+  assert("scalar stack → validates ok", v.ok === true);
+  const res = addSkill({ source: scalarStack, skillsDir: SKILLS });
+  assert("scalar stack → installed (coerced to a list)", res.ok === true);
+  assert(
+    "scalar stack → landed in the library",
+    existsSync(join(SKILLS, "scalarstack", "SKILL.md")),
+  );
+}
+
+console.log("== a symlink inside the skill is NOT carried into the library (dropped) ==");
+{
+  const secret = join(WORK, "pretend-secret.txt");
+  writeFileSync(secret, "PRETEND SECRET\n");
+  const src = makeSkillDir(
+    "symlinky",
+    `---\nname: symlinky\ndescription: Ships a symlink alongside a valid SKILL.md.\nstack: [node]\n---\nBody.\n`,
+  );
+  symlinkSync(secret, join(src, "leak.txt")); // absolute symlink to a host path
+  const res = addSkill({ source: src, skillsDir: SKILLS });
+  assert("symlink skill still installs (valid SKILL.md)", res.ok === true);
+  assert(
+    "the symlink was NOT carried into the library",
+    !existsSync(join(SKILLS, "symlinky", "leak.txt")) &&
+      !symlinkExists(join(SKILLS, "symlinky", "leak.txt")),
+  );
+  assert("the real SKILL.md still installed", existsSync(join(SKILLS, "symlinky", "SKILL.md")));
+}
+
+console.log("== a failed git clone rejects cleanly and installs nothing ==");
+{
+  const res = addSkill({
+    source: `file://${join(WORK, "does-not-exist-repo")}`,
+    skillsDir: SKILLS,
+  });
+  assert("unreachable git source → rejected", res.ok === false);
+  assert(
+    "unreachable git source → reason mentions the clone failure",
+    res.errors.some((e) => /clone/i.test(e)),
+  );
+}
+
+console.log("== a flag-shaped git source is treated as a URL, never a git option ==");
+{
+  // Ends in `.git` so it's routed to the clone path; the `--` guard means git treats
+  // it as a (nonexistent) repo URL rather than acting on it as an option. Either way
+  // the clone fails and NOTHING is installed — the point is it isn't executed as a flag.
+  const res = addSkill({ source: "--upload-pack=/tmp/evil.git", skillsDir: SKILLS });
+  assert("flag-shaped source → rejected, nothing installed", res.ok === false);
 }
 
 rmSync(WORK, { recursive: true, force: true });

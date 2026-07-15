@@ -59,13 +59,21 @@ _render_egress_filter() {
   local base="$_RUNNER_DIR/sandbox/egress-proxy/filter"
   local allow="${GAFFER_EGRESS_ALLOW_FILE:-$data/egress-allow.txt}"
   _EGRESS_FILTER="$data/egress-filter"
+  # NB: the builder writes the filter TEXT to stdout and operator-relevant messages
+  # (added N hosts / ignored invalid entry / unreadable allow-file) to stderr. Do NOT
+  # suppress stderr — a dropped private-registry host must surface, not vanish.
   if command -v node >/dev/null 2>&1 &&
     node "$_RUNNER_DIR/lib/egress-allowlist.mjs" --base "$base" --allow-file "$allow" \
-      >"$_EGRESS_FILTER.tmp" 2>/dev/null; then
+      >"$_EGRESS_FILTER.tmp"; then
     mv "$_EGRESS_FILTER.tmp" "$_EGRESS_FILTER"
   else
     rm -f "$_EGRESS_FILTER.tmp" 2>/dev/null || true
-    cp "$base" "$_EGRESS_FILTER" 2>/dev/null || return 1
+    cp "$base" "$_EGRESS_FILTER" \
+      || {
+        printf 'sandbox-docker: _render_egress_filter: could not render the operator filter AND the fallback copy of the baked filter "%s" failed\n' \
+          "$base" >&2
+        return 1
+      }
   fi
 }
 
@@ -73,7 +81,7 @@ _render_egress_filter() {
 _ensure_egress() {
   docker network inspect "$_NET_UP"  >/dev/null 2>&1 || docker network create "$_NET_UP" >/dev/null
   docker network inspect "$_NET_INT" >/dev/null 2>&1 || docker network create --internal "$_NET_INT" >/dev/null
-  _render_egress_filter
+  _render_egress_filter || _die "could not render the effective egress filter (see the message above)"
   # Restart the proxy when the effective filter changed — a RUNNING proxy still holds
   # the OLD mounted filter, so an operator's allowlist edit wouldn't take effect.
   local data="${GAFFER_DATA:-$_RUNNER_DIR/.gaffer}"
@@ -123,9 +131,16 @@ done < "$_READ_ROOTS_FILE"
 # Forward ONLY the allowlisted env. The model credential (ONE of ANTHROPIC_API_KEY or
 # CLAUDE_CODE_OAUTH_TOKEN — the latter is a subscription token from `claude setup-token`,
 # the supported headless-Max path) plus the MCP data-plane vars. Nothing else.
+#
+# GAFFER_CLAIM_TOKEN is deliberately NOT forwarded to the container's top-level env: it
+# would land in the AGENT's own environment, where a prompt-injected agent could read it
+# (`printenv`) and call the loopback dispatch API directly, bypassing the MCP tool gating.
+# The dispatch MCP server still receives it — via the mounted mcp-runtime config's `env`
+# block (sed-substituted in tick.sh), which sets it only for that server subprocess. This
+# matches the non-docker agent-env design, where `*_TOKEN` is denied to the agent.
 _envs=()
 for k in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY \
-         GAFFER_CLAIM_TOKEN DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN; do
+         DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN; do
   [ -n "${!k:-}" ] && _envs+=( -e "$k" )
 done
 # Fallback: if the operator has placed a Claude credentials file, mount it read-only into

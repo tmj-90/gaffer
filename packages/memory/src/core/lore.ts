@@ -185,7 +185,7 @@ function rowToSummary(row: LoreRow, repos: string[], tags: string[], score?: num
     updatedAt: row.updated_at,
     lastVerifiedAt: row.last_verified_at ?? undefined,
     stale: isStale(row.review_after),
-    flaggedForReview: row.flagged_for_review === 1,
+    flaggedForReview: (row.flagged_for_review ?? 0) === 1,
     score,
     conflictsWith: parseConflictsWith(row.conflicts_with),
   };

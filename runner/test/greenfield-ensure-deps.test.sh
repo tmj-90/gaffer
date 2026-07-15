@@ -121,6 +121,26 @@ OUT="$(GAFFER_GREENFIELD_INSTALL=0 gaffer_ensure_node_modules "$OFF")"
 [ -z "$OUT" ] && ok "no output when disabled" || fail "no output when disabled (got '$OUT')"
 [ ! -e "$OFF/node_modules" ] && ok "no install when disabled" || fail "no install when disabled"
 
+# --- Case 6: install ATTEMPTED but fails → FAILED sentinel + diagnostic preserved --
+echo "== case 6: failed install → FAILED:<pm> sentinel + diagnostic on stderr =="
+BADDEP="$WORK/baddep"
+mkdir -p "$BADDEP"
+# A registry dependency + an UNREACHABLE registry (127.0.0.1:1, refused immediately)
+# → npm ci AND npm install both fail hermetically (no real network), and node_modules
+# never materialises. Deterministic + fast (connection refused, zero retries).
+printf '{"name":"baddep","version":"1.0.0","dependencies":{"nonexistent-pkg-xyzzy":"1.2.3"}}\n' \
+  >"$BADDEP/package.json"
+printf '{"name":"baddep","version":"1.0.0","lockfileVersion":3,"packages":{}}\n' \
+  >"$BADDEP/package-lock.json"
+ERRLOG="$WORK/case6.err"
+OUT="$(npm_config_registry='http://127.0.0.1:1' npm_config_fetch_retries=0 \
+  gaffer_ensure_node_modules "$BADDEP" 2>"$ERRLOG")"
+[ "$OUT" = "FAILED:npm" ] && ok "echoes FAILED:npm sentinel on a failed prime" ||
+  fail "echoes FAILED:npm (got '$OUT')"
+[ ! -e "$BADDEP/node_modules" ] && ok "no node_modules on failure" || fail "no node_modules on failure"
+grep -q "did not prime deps" "$ERRLOG" && ok "surfaces the failure reason on stderr (not swallowed)" ||
+  fail "surfaces the failure reason on stderr"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS — $PASS checks passed (lib: $LIB)"

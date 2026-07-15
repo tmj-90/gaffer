@@ -11,7 +11,9 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ALLOWLIST="$HERE/../audit-allowlist.txt"
+# GAFFER_TEST_ALLOWLIST lets the hermetic self-test inject an allowlist so the
+# accepted-advisory path is actually exercised; production uses the repo file.
+ALLOWLIST="${GAFFER_TEST_ALLOWLIST:-$HERE/../audit-allowlist.txt}"
 
 # Collect accepted advisory IDs (strip inline `# …` comments and whitespace;
 # ignore blank / comment-only lines).
@@ -68,9 +70,15 @@ ACCEPTED_IDS="$accepted" node -e '
     if (parsed.error && typeof parsed.error === "object") {
       const msg = String(parsed.error.message || "");
       const code = String(parsed.error.code || "");
+      // Skip ONLY on the permanent endpoint-retirement signal (HTTP 410 / "being
+      // retired" / bulk-advisory migration) in the MESSAGE — never on the bare code.
+      // pnpm reuses ERR_PNPM_AUDIT_BAD_RESPONSE for ANY bad HTTP response (503/429/
+      // 403/connection reset); skipping on the code alone would silently green-skip
+      // the whole gate on a transient registry hiccup. A non-410 bad-response still
+      // fails closed below.
       const retired =
-        code === "ERR_PNPM_AUDIT_BAD_RESPONSE" ||
-        /being retired|responded with 410|bulk advisory endpoint/i.test(msg);
+        /being retired|responded with 410|bulk advisory endpoint/i.test(msg) ||
+        (code === "ERR_PNPM_AUDIT_BAD_RESPONSE" && /\b410\b/.test(msg));
       if (retired) {
         console.log(
           "audit-gate: SKIPPED — npm retired the audit endpoint pnpm calls (HTTP 410); " +

@@ -367,7 +367,9 @@ function installProjectLocalWiring() {
     .join(CONFIG.dispatchMcpBin)
     .split("${MEMORY_MCP_BIN}")
     .join(CONFIG.memoryMcpBin);
-  writeFileSync(mcpRuntime, mcp);
+  // Owner-only: the rendered runtime config carries DB paths (and, on the delivery
+  // path, a claim token) — never leave it at the umask default on a shared machine.
+  writeFileSync(mcpRuntime, mcp, { mode: 0o600 });
   return { agentHome, mcpRuntime };
 }
 

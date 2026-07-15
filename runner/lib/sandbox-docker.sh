@@ -131,9 +131,16 @@ done < "$_READ_ROOTS_FILE"
 # Forward ONLY the allowlisted env. The model credential (ONE of ANTHROPIC_API_KEY or
 # CLAUDE_CODE_OAUTH_TOKEN — the latter is a subscription token from `claude setup-token`,
 # the supported headless-Max path) plus the MCP data-plane vars. Nothing else.
+#
+# GAFFER_CLAIM_TOKEN is deliberately NOT forwarded to the container's top-level env: it
+# would land in the AGENT's own environment, where a prompt-injected agent could read it
+# (`printenv`) and call the loopback dispatch API directly, bypassing the MCP tool gating.
+# The dispatch MCP server still receives it — via the mounted mcp-runtime config's `env`
+# block (sed-substituted in tick.sh), which sets it only for that server subprocess. This
+# matches the non-docker agent-env design, where `*_TOKEN` is denied to the agent.
 _envs=()
 for k in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY \
-         GAFFER_CLAIM_TOKEN DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN; do
+         DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN; do
   [ -n "${!k:-}" ] && _envs+=( -e "$k" )
 done
 # Fallback: if the operator has placed a Claude credentials file, mount it read-only into

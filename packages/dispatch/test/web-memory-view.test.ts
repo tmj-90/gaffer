@@ -71,6 +71,19 @@ const LORE = {
       repos: ["sample-repo"],
       tags: ["security"],
       stale: false,
+      flagged: false,
+    },
+    {
+      id: "l2",
+      title: "Prefer server components",
+      summary: "Default to RSC.",
+      status: "active",
+      confidence: "low",
+      source: "onboard",
+      repos: ["sample-repo"],
+      tags: ["react"],
+      stale: false,
+      flagged: true,
     },
   ],
 };
@@ -188,6 +201,23 @@ describe("web: Memory view", () => {
     expect(text).toContain("Lore");
     expect(text).toContain("Hash with argon2id");
     expect(document.querySelector(".lore-row")).not.toBeNull();
+  });
+
+  it("badges the recall-flagged record and counts flagged at the section header", async () => {
+    stubFetch();
+    mountShell("#/memory/sample-repo");
+    await boot();
+    // Exactly one record is flagged (l2) → one per-record badge + a header count.
+    const badges = Array.from(document.querySelectorAll(".badge.lore-flagged"));
+    expect(badges.length).toBe(2); // the per-record badge + the "N flagged" header badge
+    const text = document.body.textContent || "";
+    expect(text).toContain("1 flagged"); // header count
+    expect(text).toContain("memory review"); // the curate-via-CLI hint on the flagged row
+    // The healthy record must NOT carry the hint (degrades to a quiet neutral state).
+    const rows = Array.from(document.querySelectorAll(".lore-row"));
+    const healthy = rows.find((r) => (r.textContent || "").includes("Hash with argon2id"))!;
+    expect(healthy.querySelector(".lore-flagged")).toBeNull();
+    expect(healthy.querySelector(".lore-flag-hint")).toBeNull();
   });
 
   it("renders a clean 'memory unavailable' state when a surface degrades", async () => {

@@ -49,6 +49,13 @@ jobs:
       # `|| true` is intentional — pnpm audit exits non-zero for ANY advisory,
       # including allowlisted ones, so omitting it would abort the step before
       # audit-gate.sh (the actual enforcement) runs. The gate is audit-gate.sh.
+      # Lock the gate's exit-code contract (retired-endpoint→skip, HIGH→fail,
+      # unknown→fail-closed, clean→ok) with a hermetic, network-free self-test so a
+      # future edit can't silently turn the gate into a false all-clear.
+      - name: Audit-gate self-test
+        shell: bash
+        run: bash .github/scripts/audit-gate.test.sh
+
       - name: Dependency audit
         shell: bash
         run: |

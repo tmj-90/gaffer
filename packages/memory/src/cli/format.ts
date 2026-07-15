@@ -63,6 +63,7 @@ export function renderSummary(s: LoreSummary): string {
     colour(c, statusColour(s.status), `[${s.status}]`),
     colour(c, confidenceColour(s.confidence), `conf=${s.confidence}`),
     s.stale ? colour(c, ansi.red, "⚠ stale") : null,
+    s.flaggedForReview ? colour(c, ansi.yellow, "⚑ flagged") : null,
     s.restricted ? colour(c, ansi.red, "🔒 restricted") : null,
     s.possibleConflicts && s.possibleConflicts.length > 0
       ? colour(c, ansi.red, `⚠ possibly conflicts with ${s.possibleConflicts.join(", ")}`)

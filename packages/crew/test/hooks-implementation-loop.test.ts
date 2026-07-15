@@ -50,7 +50,7 @@ class PointTracker implements Hook {
 type HookName = HookInput["hook_name"];
 
 describe("implementation loop + hooks", () => {
-  it("a registered before_claim hook can veto the claim", () => {
+  it("a registered before_claim hook can veto the claim", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({ title: "risky", riskLevel: "critical", repositories: [{ name: "web-app" }] });
     const events = new EventLog(new TestClock());
@@ -65,7 +65,10 @@ describe("implementation loop + hooks", () => {
       })(),
     );
 
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, deps(wg, events, hooks));
+    const outcome = await runImplementationLoop(
+      { agentId: "a", dryRun: true },
+      deps(wg, events, hooks),
+    );
 
     expect(outcome.status).toBe("claim_vetoed");
     if (outcome.status !== "claim_vetoed") throw new Error("unreachable");
@@ -75,7 +78,7 @@ describe("implementation loop + hooks", () => {
     expect(events.types()).not.toContain("ticket_claimed");
   });
 
-  it("fires the wired hook points in order on the happy path", () => {
+  it("fires the wired hook points in order on the happy path", async () => {
     PointTracker.seen = [];
     const wg = new FakeDispatchClient();
     wg.seedTicket({
@@ -98,7 +101,10 @@ describe("implementation loop + hooks", () => {
       hooks.register(new PointTracker(`t-${p}`, p));
     }
 
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, deps(wg, events, hooks));
+    const outcome = await runImplementationLoop(
+      { agentId: "a", dryRun: true },
+      deps(wg, events, hooks),
+    );
     expect(outcome.status).toBe("submitted_for_review");
     expect(PointTracker.seen).toEqual([
       "before_claim",
@@ -112,7 +118,7 @@ describe("implementation loop + hooks", () => {
     ]);
   });
 
-  it("the capture-lore-reflection builtin prompts once at after_ticket_done", () => {
+  it("the capture-lore-reflection builtin prompts once at after_ticket_done", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({
       title: "x",
@@ -123,13 +129,16 @@ describe("implementation loop + hooks", () => {
     const hooks = new HookRegistry(events);
     hooks.register(new CaptureLoreReflectionHook());
 
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, deps(wg, events, hooks));
+    const outcome = await runImplementationLoop(
+      { agentId: "a", dryRun: true },
+      deps(wg, events, hooks),
+    );
     expect(outcome.status).toBe("submitted_for_review");
     // The reflection prompt is recorded exactly once for the unit of work.
     expect(events.types().filter((t) => t === "hook_capture_lore_prompted")).toHaveLength(1);
   });
 
-  it("behaves identically to the no-hook path when no hooks are registered", () => {
+  it("behaves identically to the no-hook path when no hooks are registered", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({
       title: "x",
@@ -138,14 +147,14 @@ describe("implementation loop + hooks", () => {
     });
     const events = new EventLog(new TestClock());
 
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, deps(wg, events));
+    const outcome = await runImplementationLoop({ agentId: "a", dryRun: true }, deps(wg, events));
     expect(outcome.status).toBe("submitted_for_review");
     expect(wg.getTicket((outcome as { ticketId: string }).ticketId).ticket.status).toBe(
       "in_review",
     );
   });
 
-  it("a policy override request from a hook is never applied (safety preserved)", () => {
+  it("a policy override request from a hook is never applied (safety preserved)", async () => {
     const wg = new FakeDispatchClient();
     wg.seedTicket({
       title: "x",
@@ -166,7 +175,7 @@ describe("implementation loop + hooks", () => {
       })(),
     );
 
-    runImplementationLoop({ agentId: "a", dryRun: true }, deps(wg, events, hooks));
+    await runImplementationLoop({ agentId: "a", dryRun: true }, deps(wg, events, hooks));
     expect(events.types()).toContain("hook_policy_override_requested");
     expect(events.types()).not.toContain("hook_policy_override_applied");
   });

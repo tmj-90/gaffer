@@ -176,6 +176,66 @@ gaffer_bootstrap_detect_test_cmd() {
   return 0
 }
 
+# Prime a Node repo's dependencies so the first delivery's test gate can RUN. A
+# freshly-bootstrapped repo (or any fresh clone) has a package.json + lockfile but
+# no node_modules; the worktree flow only SYMLINKS the primary repo's node_modules
+# into each delivery worktree (tick.sh), so if the primary has none, the symlink is
+# a no-op and the very first "build a whole new app" ticket dies at the test gate on
+# missing modules — the honest greenfield wrinkle the README calls out. This installs
+# ONCE into the primary repo so that symlink resolves for every dependent ticket.
+#
+# Fires ONLY when: package.json present, node_modules absent, and a lockfile pins the
+# install (deterministic — no lockfile ⇒ we don't guess). Runs in the RUNNER, not the
+# agent, so it is not subject to the agent safety hook — but we still pass
+# --ignore-scripts so a malicious/compromised dependency's postinstall cannot execute
+# during the factory's own install (belt-and-braces, matching the bootstrap install's
+# --ignore-scripts). Best-effort + quiet + non-fatal: any failure leaves the repo as
+# it was and the test gate fails loudly as before. Echoes the package manager used on
+# a successful install (empty otherwise) so the caller can log it. No-op for non-Node
+# repos and for repos that already have node_modules.
+#   gaffer_ensure_node_modules <repo_dir>
+gaffer_ensure_node_modules() {
+  local dir="$1"
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  [ -f "$dir/package.json" ] || return 0
+  [ -e "$dir/node_modules" ] && return 0 # already present — nothing to do
+  # Optional escape hatch for operators who manage deps themselves.
+  [ "${GAFFER_GREENFIELD_INSTALL:-1}" = "0" ] && return 0
+
+  local pm=""
+  if [ -f "$dir/pnpm-lock.yaml" ]; then
+    pm="pnpm"
+  elif [ -f "$dir/yarn.lock" ]; then
+    pm="yarn"
+  elif [ -f "$dir/package-lock.json" ] || [ -f "$dir/npm-shrinkwrap.json" ]; then
+    pm="npm"
+  else
+    return 0 # no lockfile → not a deterministic install; leave it for a human
+  fi
+  command -v "$pm" >/dev/null 2>&1 || return 0
+
+  # Frozen/CI install first (respects the lockfile); fall back to a plain install if
+  # the lockfile is out of sync, so a hand-authored scaffold still primes.
+  case "$pm" in
+    pnpm)
+      (cd "$dir" && pnpm install --frozen-lockfile --ignore-scripts >/dev/null 2>&1) ||
+        (cd "$dir" && pnpm install --ignore-scripts >/dev/null 2>&1)
+      ;;
+    yarn)
+      (cd "$dir" && yarn install --frozen-lockfile --ignore-scripts >/dev/null 2>&1) ||
+        (cd "$dir" && yarn install --ignore-scripts >/dev/null 2>&1)
+      ;;
+    npm)
+      (cd "$dir" && npm ci --ignore-scripts >/dev/null 2>&1) ||
+        (cd "$dir" && npm install --ignore-scripts >/dev/null 2>&1)
+      ;;
+  esac
+
+  # Report success only if node_modules actually materialised.
+  [ -e "$dir/node_modules" ] && echo "$pm"
+  return 0
+}
+
 # Register + onboard the freshly-scaffolded repo into the factory so the now-done
 # bootstrap unblocks its dependent feature tickets (which target this repo via the
 # normal worktree flow). Two registrations, mirroring how a human onboards a repo:

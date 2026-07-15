@@ -47,19 +47,58 @@ _WRITE_ROOTS_FILE="$1"; _READ_ROOTS_FILE="$2"; shift 2
 command -v docker >/dev/null 2>&1 || _die "docker not found"
 docker info >/dev/null 2>&1 || _die "docker daemon unavailable"
 
+# --- render the effective egress allowlist (baked default + operator hosts) ---
+# The proxy image bakes a default-deny host filter; this lets an operator permit
+# EXTRA hosts (a private git host / package registry) via GAFFER_EGRESS_ALLOW
+# (comma/space list) and/or an egress-allow.txt file, WITHOUT rebuilding the image.
+# The builder anchors + regex-escapes each operator host, so default-deny can never
+# be widened to match-all. Falls back to the baked filter if node is unavailable.
+_render_egress_filter() {
+  local data="${GAFFER_DATA:-$_RUNNER_DIR/.gaffer}"
+  mkdir -p "$data" 2>/dev/null || true
+  local base="$_RUNNER_DIR/sandbox/egress-proxy/filter"
+  local allow="${GAFFER_EGRESS_ALLOW_FILE:-$data/egress-allow.txt}"
+  _EGRESS_FILTER="$data/egress-filter"
+  if command -v node >/dev/null 2>&1 &&
+    node "$_RUNNER_DIR/lib/egress-allowlist.mjs" --base "$base" --allow-file "$allow" \
+      >"$_EGRESS_FILTER.tmp" 2>/dev/null; then
+    mv "$_EGRESS_FILTER.tmp" "$_EGRESS_FILTER"
+  else
+    rm -f "$_EGRESS_FILTER.tmp" 2>/dev/null || true
+    cp "$base" "$_EGRESS_FILTER" 2>/dev/null || return 1
+  fi
+}
+
 # --- ensure the egress network + proxy are up (idempotent) ---
 _ensure_egress() {
   docker network inspect "$_NET_UP"  >/dev/null 2>&1 || docker network create "$_NET_UP" >/dev/null
   docker network inspect "$_NET_INT" >/dev/null 2>&1 || docker network create --internal "$_NET_INT" >/dev/null
-  if ! docker ps --filter "name=^${_PROXY_NAME}$" --filter status=running -q | grep -q .; then
+  _render_egress_filter
+  # Restart the proxy when the effective filter changed — a RUNNING proxy still holds
+  # the OLD mounted filter, so an operator's allowlist edit wouldn't take effect.
+  local data="${GAFFER_DATA:-$_RUNNER_DIR/.gaffer}"
+  local sha shafile prev running=0
+  sha="$(shasum "$_EGRESS_FILTER" 2>/dev/null | awk '{print $1}')"
+  shafile="$data/.egress-filter.sha"
+  [ -f "$shafile" ] && prev="$(cat "$shafile" 2>/dev/null)" || prev=""
+  docker ps --filter "name=^${_PROXY_NAME}$" --filter status=running -q | grep -q . && running=1
+  if [ "$running" = 1 ] && [ -n "$sha" ] && [ "$sha" != "$prev" ]; then
+    docker rm -f "$_PROXY_NAME" >/dev/null 2>&1 || true
+    running=0
+  fi
+  if [ "$running" = 0 ]; then
     docker rm -f "$_PROXY_NAME" >/dev/null 2>&1 || true
     docker image inspect "$_PROXY_IMAGE" >/dev/null 2>&1 \
       || docker build -q -t "$_PROXY_IMAGE" "$_RUNNER_DIR/sandbox/egress-proxy" >/dev/null \
       || _die "could not build the egress proxy image"
-    docker run -d --name "$_PROXY_NAME" --network "$_NET_UP" "$_PROXY_IMAGE" >/dev/null \
+    # Mount the RENDERED filter over the baked one so operator hosts apply without a rebuild.
+    docker run -d --name "$_PROXY_NAME" --network "$_NET_UP" \
+      -v "$_EGRESS_FILTER:/etc/tinyproxy/filter:ro" \
+      "$_PROXY_IMAGE" >/dev/null \
       || _die "could not start the egress proxy"
     docker network connect --alias egress-proxy "$_NET_INT" "$_PROXY_NAME" >/dev/null \
       || _die "could not attach the egress proxy to the internal network"
+    [ -n "$sha" ] && printf '%s' "$sha" >"$shafile" 2>/dev/null || true
   fi
 }
 _ensure_egress

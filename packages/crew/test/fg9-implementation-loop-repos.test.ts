@@ -63,7 +63,7 @@ function deps(wg: FakeDispatchClient, config: CrewConfig, runtime = new MockAgen
 }
 
 describe("FG-009 implementation loop — single + multi-repo delivery", () => {
-  it("unmapped single-repo ticket: works and records exactly one repo delivery", () => {
+  it("unmapped single-repo ticket: works and records exactly one repo delivery", async () => {
     const config = multiRepoConfig();
     const wg = new FakeDispatchClient();
     // No seedWorkPacket → mono-fallback single-repo path.
@@ -78,7 +78,7 @@ describe("FG-009 implementation loop — single + multi-repo delivery", () => {
       config,
       new MockAgentRuntime({ changedPaths: [`${API_ROOT}/src/index.ts`] }),
     );
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "a", dryRun: true }, d);
 
     expect(outcome.status).toBe("submitted_for_review");
     if (outcome.status === "no_ticket" || outcome.status === "claim_vetoed")
@@ -93,7 +93,7 @@ describe("FG-009 implementation loop — single + multi-repo delivery", () => {
     expect(d.git.createdBranches.map((b) => b.repoDir)).toEqual([API_ROOT]);
   });
 
-  it("two write repos: records a delivery and a branch for each", () => {
+  it("two write repos: records a delivery and a branch for each", async () => {
     const config = multiRepoConfig();
     const wg = new FakeDispatchClient();
     const ticket = wg.seedTicket({
@@ -114,7 +114,7 @@ describe("FG-009 implementation loop — single + multi-repo delivery", () => {
       config,
       new MockAgentRuntime({ changedPaths: [`${API_ROOT}/src/a.ts`, `${WEB_ROOT}/src/b.tsx`] }),
     );
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "a", dryRun: true }, d);
 
     expect(outcome.status).toBe("submitted_for_review");
     if (outcome.status === "no_ticket" || outcome.status === "claim_vetoed")
@@ -128,7 +128,7 @@ describe("FG-009 implementation loop — single + multi-repo delivery", () => {
     expect(d.git.createdBranches.map((b) => b.repoDir).sort()).toEqual([API_ROOT, WEB_ROOT]);
   });
 
-  it("read-only repo: not branched, not a delivery target; a write into it fails the loop", () => {
+  it("read-only repo: not branched, not a delivery target; a write into it fails the loop", async () => {
     const config = multiRepoConfig();
     const wg = new FakeDispatchClient();
     const ticket = wg.seedTicket({
@@ -148,7 +148,7 @@ describe("FG-009 implementation loop — single + multi-repo delivery", () => {
       config,
       new MockAgentRuntime({ changedPaths: [`${API_ROOT}/src/a.ts`, `${DOCS_ROOT}/guide.md`] }),
     );
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "a", dryRun: true }, d);
 
     // The loop fails — the write into the read-only repo is rejected.
     expect(outcome.status).toBe("blocked");
@@ -163,7 +163,7 @@ describe("FG-009 implementation loop — single + multi-repo delivery", () => {
     expect(d.git.createdBranches.map((b) => b.repoDir)).not.toContain(DOCS_ROOT);
   });
 
-  it("a write entirely outside every in-scope repo also fails the loop", () => {
+  it("a write entirely outside every in-scope repo also fails the loop", async () => {
     const config = multiRepoConfig();
     const wg = new FakeDispatchClient();
     const ticket = wg.seedTicket({
@@ -177,7 +177,7 @@ describe("FG-009 implementation loop — single + multi-repo delivery", () => {
       config,
       new MockAgentRuntime({ changedPaths: [`${API_ROOT}/src/a.ts`, "/repos/secret-vault/.env"] }),
     );
-    const outcome = runImplementationLoop({ agentId: "a", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "a", dryRun: true }, d);
 
     expect(outcome.status).toBe("blocked");
     expect(wg.getTicket(ticket.id).ticket.status).toBe("blocked");
@@ -186,7 +186,7 @@ describe("FG-009 implementation loop — single + multi-repo delivery", () => {
 });
 
 describe("FakeDispatchClient.recordRepoDelivery", () => {
-  it("records a per-repo delivery row and emits an event", () => {
+  it("records a per-repo delivery row and emits an event", async () => {
     const wg = new FakeDispatchClient();
     const ticket = wg.seedTicket({ title: "x", repositories: [{ name: "api" }] });
 
@@ -208,7 +208,7 @@ describe("FakeDispatchClient.recordRepoDelivery", () => {
     expect(wg.events.some((e) => e.type === "ticket.repo_delivery_recorded")).toBe(true);
   });
 
-  it("defaults status to branch_created when omitted", () => {
+  it("defaults status to branch_created when omitted", async () => {
     const wg = new FakeDispatchClient();
     const ticket = wg.seedTicket({ title: "x", repositories: [{ name: "api" }] });
     const res = wg.recordRepoDelivery({ ticketId: ticket.id, repoId: "R-api" });

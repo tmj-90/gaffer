@@ -1603,6 +1603,11 @@ EOF
         _RESUME_WT_OK=0
       fi
       if [ "${_RESUME_WT_OK:-0}" = "1" ]; then
+        # Prime a fresh Node repo's deps (see the created-worktree path below) so the
+        # resume symlink resolves too. Idempotent no-op once node_modules exists.
+        _pm_primed="$(gaffer_ensure_node_modules "$rpath")"
+        [ -n "$_pm_primed" ] &&
+          log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (resume) for #$NUM"
         [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
         while IFS= read -r _nm; do
           _rel="${_nm#"$rpath"/}"
@@ -1617,6 +1622,13 @@ EOF
     # above should have removed ours, but force-prune once more then add.
     if git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
       log "created worktree for ${rname:-repo} ($rpath) at $rwt on branch $WORK_BRANCH off $rbase for #$NUM"
+      # GREENFIELD FIRST-RUN: a freshly-bootstrapped repo has a package.json+lockfile
+      # but no node_modules, so the symlink below no-ops and the first ticket's test
+      # gate dies on missing modules. Prime the primary repo's install ONCE (runner-
+      # side, --ignore-scripts) so the symlink resolves. No-op once node_modules exists.
+      _pm_primed="$(gaffer_ensure_node_modules "$rpath")"
+      [ -n "$_pm_primed" ] &&
+        log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (fresh repo had no node_modules) for #$NUM"
       # JS/TS repos can't test/build in a fresh worktree: node_modules is gitignored,
       # lives only in the main checkout, and installs are hook-blocked. Symlink the real
       # repo's node_modules in so `pnpm test`/`build` resolve. No-op for non-JS repos.

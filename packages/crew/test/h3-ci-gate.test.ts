@@ -77,13 +77,13 @@ function seedTicket(wg: FakeDispatchClient) {
 // ---------------------------------------------------------------------------
 
 describe("H3 — CI-aware review gate", () => {
-  it("proceeds to submitted_for_review when CI checks are green", () => {
+  it("proceeds to submitted_for_review when CI checks are green", async () => {
     const wg = new FakeDispatchClient();
     seedTicket(wg);
     const gate = new FakeCiGate("green");
     const d = makeDeps(wg, gate);
 
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     expect(outcome.status).toBe("submitted_for_review");
     expect(gate.calls).toHaveLength(1);
@@ -96,7 +96,7 @@ describe("H3 — CI-aware review gate", () => {
     expect(types).not.toContain("ci_rejected");
   });
 
-  it("auto-rejects with ci_rejected status when CI checks are red", () => {
+  it("auto-rejects with ci_rejected status when CI checks are red", async () => {
     const wg = new FakeDispatchClient();
     const ticket = seedTicket(wg);
     const gate = new FakeCiGate("red", [
@@ -104,7 +104,7 @@ describe("H3 — CI-aware review gate", () => {
     ]);
     const d = makeDeps(wg, gate);
 
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     expect(outcome.status).toBe("ci_rejected");
     if (outcome.status !== "ci_rejected") throw new Error("unreachable");
@@ -125,7 +125,7 @@ describe("H3 — CI-aware review gate", () => {
     expect(types).not.toContain("ticket_submitted_for_review");
   });
 
-  it("records the failing check name and url in the evidence when CI is red", () => {
+  it("records the failing check name and url in the evidence when CI is red", async () => {
     const wg = new FakeDispatchClient();
     const ticket = seedTicket(wg);
     const gate = new FakeCiGate("red", [
@@ -133,7 +133,7 @@ describe("H3 — CI-aware review gate", () => {
     ]);
     const d = makeDeps(wg, gate);
 
-    runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     const ciEvidence = wg.evidence.find(
       (e) => e.ticketId === ticket.id && e.evidenceType === "test_output",
@@ -142,12 +142,12 @@ describe("H3 — CI-aware review gate", () => {
     expect(ciEvidence?.summary).toContain("https://github.com/org/repo/actions/runs/99");
   });
 
-  it("is a no-op when no CiGate is injected (flag off — today's behaviour)", () => {
+  it("is a no-op when no CiGate is injected (flag off — today's behaviour)", async () => {
     const wg = new FakeDispatchClient();
     seedTicket(wg);
     const d = makeDeps(wg); // no ciGate
 
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     // Behaves exactly as before: submitted_for_review, no CI events.
     expect(outcome.status).toBe("submitted_for_review");
@@ -156,13 +156,13 @@ describe("H3 — CI-aware review gate", () => {
     expect(types).not.toContain("ci_rejected");
   });
 
-  it("surfaces 'CI still pending' as evidence and proceeds to review on poll timeout", () => {
+  it("surfaces 'CI still pending' as evidence and proceeds to review on poll timeout", async () => {
     const wg = new FakeDispatchClient();
     const ticket = seedTicket(wg);
     const gate = new FakeCiGate("timeout");
     const d = makeDeps(wg, gate);
 
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
 
     // On timeout the ticket PROCEEDS to review (never hung).
     expect(outcome.status).toBe("submitted_for_review");
@@ -182,13 +182,13 @@ describe("H3 — CI-aware review gate", () => {
     expect(d.events.types()).toContain("ticket_submitted_for_review");
   });
 
-  it("polls checks with the delivery branch and passes the prUrl hint", () => {
+  it("polls checks with the delivery branch and passes the prUrl hint", async () => {
     const wg = new FakeDispatchClient();
     seedTicket(wg);
     const gate = new FakeCiGate("green");
     const d = makeDeps(wg, gate);
 
-    const outcome = runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
+    const outcome = await runImplementationLoop({ agentId: "claude-auth-01", dryRun: true }, d);
     if (outcome.status !== "submitted_for_review") throw new Error("unreachable");
 
     // The gate was called with the delivery branch.

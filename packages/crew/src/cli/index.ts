@@ -329,7 +329,7 @@ program
       ? seededSyncClient(await prefetchLore(asyncLore, { tags: repoTags }, events))
       : null;
 
-    const outcome = runImplementationLoop(
+    const outcome = await runImplementationLoop(
       { agentId: opts.agent, dryRun: opts.dryRun },
       {
         config: loaded.config,

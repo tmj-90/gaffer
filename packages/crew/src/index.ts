@@ -122,6 +122,7 @@ export {
 
 // Runtime + events + loops
 export * from "./runtime/agentRuntime.js";
+export * from "./runtime/claudeAgentRuntime.js";
 export { EventLog, type RuntimeEvent } from "./events/eventLog.js";
 export * from "./loops/implementationLoop.js";
 export * from "./loops/idleLoop.js";

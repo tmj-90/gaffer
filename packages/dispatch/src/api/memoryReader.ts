@@ -79,6 +79,12 @@ export interface LoreSummary {
   readonly repos: readonly string[];
   readonly tags: readonly string[];
   readonly stale: boolean;
+  /**
+   * Recall-feedback signal: true when the learn loop has flagged this record
+   * for human review (served into a ticket that then reworked/blocked). The
+   * Memory view badges these and links to the CLI review gate.
+   */
+  readonly flagged: boolean;
 }
 
 /** One calendar-day (UTC) recall-outcome roll-up, from `memory recall-stats`. */
@@ -363,6 +369,10 @@ export function parseLore(stdout: string): LoreSummary[] {
       repos: reposM ? reposM[1]!.split(",").filter(Boolean) : [],
       tags: tagsM ? tagsM[1]!.split(",").filter(Boolean) : [],
       stale: /stale/.test(meta),
+      // The learn loop's per-record recall signal — the memory CLI prints a
+      // "⚑ flagged" marker when a record was served into a reworked/blocked
+      // ticket. Match the glyph so a tag literally named "flagged" can't trip it.
+      flagged: /⚑\s*flagged/.test(meta),
     });
   }
   return out;

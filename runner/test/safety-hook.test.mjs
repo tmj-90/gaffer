@@ -1391,6 +1391,38 @@ allowed("literal in-root cp still allowed", "cp src/a.ts sub/b.ts");
   allowed("word 'environ' as a grep pattern", "grep environ src/app.ts");
 }
 
+// --- Hardening pass (full-app review): the hook must protect its OWN wiring, match
+// Claude's real credentials file, and deny env-dump / trust-mutation commands. ---
+{
+  const denyFile = (label, tool, p) => {
+    const code = runFileTool(tool, p);
+    if (code === 2) passed += 1;
+    else failures.push(`DENY expected but got exit ${code}: ${label} — ${tool} ${p}`);
+  };
+  const allowFile = (label, tool, p) => {
+    const code = runFileTool(tool, p);
+    if (code === 0) passed += 1;
+    else failures.push(`ALLOW expected but got exit ${code}: ${label} — ${tool} ${p}`);
+  };
+  // Writing the agent settings file would strip the PreToolUse hook itself → blocked.
+  denyFile("Write .claude/settings.json (hook-removal)", "Write", ".claude/settings.json");
+  denyFile("Edit .claude/settings.local.json", "Edit", ".claude/settings.local.json");
+  denied("bash redirect into .claude/settings.json", "echo '{}' > .claude/settings.json");
+  allowFile("Write a non-settings file under .claude", "Write", ".claude/skills/x.md");
+  // Claude's real credentials file (leading dot + .json) is a secret path for Read too.
+  denyFile("Read .claude/.credentials.json", "Read", ".claude/.credentials.json");
+  // Env-dump forms leak the forwarded model credential into the agent's context.
+  denied("printenv", "printenv");
+  denied("env | grep token", "env | grep -i token");
+  denied("bare env dump", "env");
+  allowed("env VAR=x cmd (run form, not a dump)", "env FOO=bar echo hi");
+  // trust-workspace.mjs mutates the ~/.claude.json trust registry → not the agent's job.
+  denied(
+    "node trust-workspace.mjs",
+    "GAFFER_TRUST_ALLOW_REPO=1 node ./lib/trust-workspace.mjs /tmp/x",
+  );
+}
+
 if (failures.length) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
   for (const f of failures) console.error("  ✗ " + f);

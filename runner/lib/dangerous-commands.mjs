@@ -231,4 +231,22 @@ export const DANGEROUS_COMMANDS = [
     example: "node -e \"require('…/dispatch/dist/core.js')\"",
     crewFlags: false,
   },
+  {
+    re: /\bnode\b[^\n|;&]*\/trust-workspace\.mjs\b/,
+    why: "node runner/lib/trust-workspace.mjs (mutates ~/.claude.json trust registry — could trust an attacker-crafted repo whose .claude/settings.json strips the hook); trust is the runner's job, not the agent's",
+    example: "GAFFER_TRUST_ALLOW_REPO=1 node …/lib/trust-workspace.mjs /path",
+    crewFlags: false,
+  },
+  {
+    re: /(^|[\s;&|(])printenv\b/,
+    why: "printenv (dumps the environment — including the forwarded model credential — into the agent's context)",
+    example: "printenv",
+    crewFlags: false,
+  },
+  {
+    re: /(^|[\s;&|(])env\s*($|[|;&>#])/,
+    why: "bare `env` environment dump (leaks the forwarded model credential into context); `env VAR=x cmd` to RUN a command is unaffected",
+    example: "env | grep -i token",
+    crewFlags: false,
+  },
 ];

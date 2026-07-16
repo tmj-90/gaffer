@@ -180,7 +180,13 @@ fi
 if [ -z "${GAFFER_BUDGET_LOW_THRESHOLD:-}" ] && [ -n "${GAFFER_BUDGET_USD:-}" ] \
    && command -v awk >/dev/null 2>&1; then
   # Default: bias cheaper once headroom drops below 20% of the configured budget.
-  GAFFER_BUDGET_LOW_THRESHOLD="$(awk "BEGIN{b=${GAFFER_BUDGET_USD}+0; if(b>0) printf \"%.6f\", b*${GAFFER_BUDGET_LOW_FRACTION:-0.20}; else print 0}" 2>/dev/null || echo 0)"
+  # Pass both operator-config values via -v (NEVER interpolated into the awk program
+  # body) so an awk-metacharacter value in settings.json — e.g. `1}; system("…")` — is
+  # treated as inert data (`+0` coerces garbage to 0), never executed as awk code.
+  GAFFER_BUDGET_LOW_THRESHOLD="$(awk \
+    -v b="${GAFFER_BUDGET_USD}" \
+    -v frac="${GAFFER_BUDGET_LOW_FRACTION:-0.20}" \
+    'BEGIN{b+=0; frac+=0; if(b>0) printf "%.6f", b*frac; else print 0}' 2>/dev/null || echo 0)"
 fi
 : "${GAFFER_BUDGET_LOW_THRESHOLD:=0}"
 # GAFFER_CHEAP_PHASES — cost-as-control class knob (Settings). A comma/space list of

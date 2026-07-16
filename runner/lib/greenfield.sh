@@ -342,8 +342,11 @@ gaffer_inherit_repo() {
   [ -n "$planner" ] || { log "inherit: planner not found, skipping"; return 0; }
 
   local plan
-  if ! plan="$(node "$planner" --bootstrap "$boot_num" --db "$DISPATCH_DB" 2>/dev/null)"; then
-    log "inherit: planner failed for bootstrap #$boot_num, skipping"
+  # Bound the planner query: a locked SQLite file or stalled I/O would otherwise hang
+  # here indefinitely (the outer tick timer may have hours of headroom left). The
+  # planner is a fast read-only query in normal operation, so 60s is ample.
+  if ! plan="$(gaffer_timeout "${GAFFER_INHERIT_PLAN_TIMEOUT:-60}" node "$planner" --bootstrap "$boot_num" --db "$DISPATCH_DB" 2>/dev/null)"; then
+    log "inherit: planner failed or timed out for bootstrap #$boot_num, skipping"
     return 0
   fi
 
@@ -452,5 +455,9 @@ d = json.load(sys.stdin)
 for tok in (d.get("ambiguous",[]) or [])[i].get("argv", []) or []:
     sys.stdout.write(tok); sys.stdout.write("\0")' "$idx" 2>/dev/null)
   [ "${#argv[@]}" -gt 0 ] || return 0
-  "$bin" "${argv[@]}" 2>/dev/null || true
+  # Bound this ambiguous-multi-app inherit decision like every other live `claude -p`:
+  # it runs AFTER a fast delivery where the outer per-tick timer may have hours of
+  # headroom, so a hung/runaway agent here would stall the whole tick. Wrap in
+  # gaffer_timeout and forward the turns cap, matching worker.sh.
+  gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ${GAFFER_MAX_TURNS_FLAG:-} 2>/dev/null || true
 }

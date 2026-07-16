@@ -15,11 +15,16 @@ source "$HERE/factory.config.sh"
 [ -f "$HERE/lib/review.sh" ] && source "$HERE/lib/review.sh"
 # shellcheck source=lib/clarify.sh
 [ -f "$HERE/lib/clarify.sh" ] && source "$HERE/lib/clarify.sh"
-mkdir -p "$GAFFER_DATA"
 # $GAFFER_DATA holds the DB copies + the per-tick mcp-runtime file (which carries the
 # live claim token). Lock it to the owner so another local user can't read the token
 # or DBs. 0700 on the dir blocks traversal to any file inside regardless of file mode.
-chmod 700 "$GAFFER_DATA" 2>/dev/null || true
+# Create under umask 077 so a freshly-created dir is owner-only even if the explicit
+# chmod below can't run, and SURFACE a chmod failure (never silently eat it) — a
+# world-traversable data dir would expose the live claim token to other local users.
+( umask 077 && mkdir -p "$GAFFER_DATA" ) 2>/dev/null || mkdir -p "$GAFFER_DATA"
+if ! chmod 700 "$GAFFER_DATA" 2>/dev/null; then
+  echo "gaffer: WARNING — could not chmod 700 $GAFFER_DATA; the live claim token / DB copies inside may be readable by other local users" >&2
+fi
 # Redirect the crew events log to $GAFFER_DATA so it is never written inside a
 # repo worktree (which would trip the delivery-hygiene gate). The GAFFER_* prefix
 # means this is automatically included by gaffer_agent_env and inherited by every
@@ -1088,8 +1093,24 @@ print(hits[0] if hits else '')
       # This row is LOAD-BEARING (the done-gate resolves the delivery from it), so a
       # failure must be visible, never silently swallowed.
       B_SHA_ARG=""; [ -n "$B_HEAD_SHA" ] && B_SHA_ARG="--commit $B_HEAD_SHA"
-      wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready >/dev/null 2>&1 ||
-        log "BOOTSTRAP: WARN — per-repo delivery record for #$NUM ($B_NAME) did not record; the done-gate may not resolve this delivery"
+      # LOAD-BEARING: the done-gate resolves the delivery from this row. If it does not
+      # record, submitting anyway strands the ticket in `in_review` forever (the gate can
+      # never resolve) while the operator is told bootstrap succeeded. So on failure we
+      # surface the real error, park → refining (blocks blind reclaim), skip, and fail the
+      # tick for a human handoff — NEVER fall through to gaffer_submit_delivery.
+      _B_RD_ERR="$GAFFER_DATA/.bootstrap-rd-err.$$"
+      if ! wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready 2>"$_B_RD_ERR"; then
+        log "BOOTSTRAP: per-repo delivery record for #$NUM ($B_NAME) FAILED — done-gate cannot resolve this delivery; parking → blocked (NOT submitting): $(head -c 400 "$_B_RD_ERR" 2>/dev/null | tr '\n' ' ')"
+        rm -f "$_B_RD_ERR"
+        # Park VISIBLY to `blocked` (pages a human via the attention count), never
+        # `refining` (invisible to every human surface), matching the other bootstrap
+        # failure parks. Do NOT fall through to gaffer_submit_delivery: a submit without
+        # this load-bearing row strands the ticket in `in_review` forever.
+        gaffer_release_delivery blocked "bootstrap per-repo delivery record failed for #$NUM ($B_NAME) — the done-gate cannot resolve this delivery; record it manually before submitting" bootstrap_failed
+        gaffer_skip_ticket "$NUM"
+        result error; exit 0
+      fi
+      rm -f "$_B_RD_ERR"
       # Rest the new repo's PRIMARY working tree back on its default branch (`main`), so
       # the delivery branch is a plain ref the reviewer's throwaway worktree can check out
       # cleanly, and dependents branch off a tidy `main` after the scaffold merges.
@@ -1185,7 +1206,19 @@ print("\n".join(write_rows))
   #   • markers ABSENT    → python3/json failure; warn so a multi-repo ticket's
   #                         incomplete delivery is visible (not silent single-repo).
   if ! printf '%s\n' "$WG_PARTITION" | grep -qF '@@WRITE_PATHS@@'; then
-    log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (python3/json failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH). A multi-repo ticket would deliver incomplete."
+    # Parse failure (markers absent = python3/json crash). If the ticket actually links
+    # MORE THAN ONE repo, the single-repo fallback would silently deliver incomplete work
+    # AND hand the safety hook an under-scoped write boundary — so fail CLOSED (park →
+    # ready for re-derivation) rather than guess. A single-repo / repo-less ticket's
+    # fallback IS correct, so it proceeds unchanged.
+    _SHOW_REPO_COUNT="$(echo "$SHOW" | jget "len(d.get('repositories') or [])" 2>/dev/null || echo 0)"
+    if [ "${_SHOW_REPO_COUNT:-0}" -gt 1 ]; then
+      log "WG-002: access-boundary partition FAILED to parse for MULTI-REPO #$NUM ($_SHOW_REPO_COUNT repos) — refusing to deliver with an under-scoped single-repo boundary; parking → ready"
+      gaffer_release_delivery ready "multi-repo access-boundary partition parse failed — needs re-derivation"
+      gaffer_skip_ticket "$NUM"
+      result error; exit 0
+    fi
+    log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (python3/json failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH)."
   fi
 
   # Back-compat (older tickets with no WG-002 access boundary): fall back to the
@@ -2415,8 +2448,22 @@ print(hits[0] if hits else '')
         wg attach-evidence "$NUM" --type manual_note \
           --summary "needs_human_review: unverified_minimalism_note — $GAFFER_MINIMALISM_REASON" >/dev/null 2>&1 \
           && log "MINIMALISM: recorded unverified_note flag on #$NUM" || true ;;
-      *)
+      ok)
         log "MINIMALISM: #$NUM within caps ($_MZ_FILES files / $_MZ_LINES lines)" ;;
+      *)
+        # Empty/unrecognised verdict = gaffer_check_minimalism crashed or produced no
+        # output. A crash must NOT be treated as a pass (the `ok` arm above) — that would
+        # silently skip the gate. Fail closed: flag for human review, or hard-fail when the
+        # note gate is required for unsupervised runs.
+        log "MINIMALISM: #$NUM verdict check produced no/unknown output ('$_MZ_VERDICT') — failing closed (NOT treating as within-caps)"
+        if [ "${MINIMALISM_REQUIRE_NOTE:-0}" = "1" ]; then
+          _recover_or_park "minimalism" "minimalism gate produced no verdict (internal error) — re-deliver"
+          [ "$_DELIV_OUTCOME" = "retry" ] && continue
+          result error; exit 0
+        else
+          wg attach-evidence "$NUM" --type manual_note \
+            --summary "needs_human_review: minimalism gate produced no verdict (internal error) — judge minimality from the diff" >/dev/null 2>&1 || true
+        fi ;;
     esac
   fi
 

@@ -283,6 +283,31 @@ describe("EP-001: create_epic", () => {
     }
   });
 
+  it("carries a bootstrap ticket's `source` (intended repo name) onto the created ticket", () => {
+    // Greenfield seam: the target repo does not exist yet, so it can't be linked via
+    // `repo`; the intended NAME rides on `source` so the runner bootstraps a cleanly-
+    // named repo instead of a slug of the title. Prove the field flows through.
+    const res = wg.createEpic(
+      {
+        epic: { name: "Greenfield calculator" },
+        tickets: [
+          {
+            title: "Bootstrap the calculator repo (CommonJS)",
+            acceptanceCriteria: ["repo exists"],
+            bootstrap: true,
+            source: "calculator",
+          },
+        ],
+      },
+      human,
+    );
+    const t0 = wg.resolveTicket(`#${res.ticketNumbers[0]}`);
+    expect(t0?.bootstrap).toBe(1);
+    // The intended repo name is persisted on the ticket's free-text source column —
+    // exactly what runner/lib/greenfield.sh gaffer_bootstrap_repo_name reads.
+    expect(t0?.source).toBe("calculator");
+  });
+
   it("links a repo with an access boundary when a ticket names one", () => {
     wg.registerRepository({ name: "app-repo" }, human);
     const res = wg.createEpic(

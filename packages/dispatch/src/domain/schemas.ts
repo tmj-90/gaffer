@@ -387,6 +387,16 @@ export const epicTicketInput = z.object({
   repo: z.string().min(1).max(200).optional(),
   access: z.enum(TICKET_REPO_ACCESS).optional(),
   bootstrap: z.boolean().optional(),
+  /**
+   * Free-text intent hint carried onto the created ticket's `source` column. For a
+   * greenfield `bootstrap` ticket this is the INTENDED new-repo NAME: the target repo
+   * does not exist yet so it cannot be linked via `repo`, and the greenfield accept-
+   * seam strips `repo` for any unregistered target — without `source` the runner
+   * falls back to a slug of the ticket title (an ugly repo name). The runner's
+   * `gaffer_bootstrap_repo_name` reads this first (after an actually-linked repo). Not
+   * a repo LINK — purely the name the bootstrap should use.
+   */
+  source: z.string().max(200).optional(),
   /** TRACK-3a: per-ticket delivery budget; overrides the epic-level default below. */
   delivery_budget_usd: z.number().positive().nullable().optional(),
   dependsOn: z.array(z.number().int().nonnegative()).max(MAX_EPIC_TICKETS).default([]),

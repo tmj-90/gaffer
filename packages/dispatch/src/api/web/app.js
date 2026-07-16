@@ -9130,7 +9130,11 @@ async function confirmPlanBuild(plan, opts = {}) {
       if (t.repo && !known.has(t.repo)) {
         deferred++;
         const { repo, access, ...rest } = t;
-        return rest;
+        // Carry the intended repo NAME onto `source` so the runner bootstraps a
+        // cleanly-named repo instead of falling back to a slug of the ticket title.
+        // Only when the plan didn't already set `source`; the link itself stays
+        // deferred until the repo is onboarded.
+        return rest.source ? rest : { ...rest, source: repo };
       }
       return t;
     });

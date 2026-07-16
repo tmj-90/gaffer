@@ -91,6 +91,10 @@ export class EpicsService {
             ...(spec.risk_level !== undefined ? { risk_level: spec.risk_level } : {}),
             ...(spec.policy_pack !== undefined ? { policy_pack: spec.policy_pack } : {}),
             ...(spec.bootstrap !== undefined ? { bootstrap: spec.bootstrap } : {}),
+            // Greenfield: the intended new-repo name rides on `source` so the runner
+            // bootstraps a cleanly-named repo (not a slug of the ticket title) when
+            // the target repo does not exist yet and `repo` was stripped upstream.
+            ...(spec.source !== undefined ? { source: spec.source } : {}),
             // TRACK-3a: per-ticket budget wins; else inherit the epic-level budget.
             ...(spec.delivery_budget_usd !== undefined
               ? { delivery_budget_usd: spec.delivery_budget_usd }

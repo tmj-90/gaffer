@@ -89,8 +89,38 @@ describe("diff-in-review: branch resolution + git", () => {
     expect(rd.deletions).toBe(2);
     expect(rd.truncated).toBe(false);
     expect(rd.diff).toContain("+added line");
+    // A clean src change carries no advisory risk flags.
+    expect(rd.riskAnnotations).toEqual([]);
     // It ran git in the repo's local_path with the resolved range.
     expect(calls.every((c) => c.cwd === process.cwd())).toBe(true);
+    wg.db.close();
+  });
+
+  it("surfaces advisory risk annotations from the diff (sensitive path + large deletion)", () => {
+    const wg = Dispatch.open(":memory:");
+    const { ticketId } = ticketWithWriteRepo(wg, {
+      localPath: process.cwd(),
+      defaultBranch: "main",
+      repoBranch: "feat/risky",
+    });
+    const { runGit } = scriptedGit({
+      "diff --numstat main...feat/risky": {
+        status: 0,
+        // a migration (sensitive), a lockfile (dependency), and 200 deletions
+        stdout: "5\t3\tdb/migrations/007_x.sql\n2\t0\tpnpm-lock.yaml\n1\t200\tsrc/old.ts\n",
+      },
+      "diff main...feat/risky": { status: 0, stdout: "diff --git a/x b/x\n+y\n" },
+    });
+    const out = computeTicketDiff(
+      { repos: wg.repos, tickets: wg.tickets, repoDeliveries: wg.repoDeliveries, runGit },
+      ticketId,
+    );
+    const rd = out.repos[0]!;
+    const kinds = rd.riskAnnotations.map((a) => a.kind).sort();
+    expect(kinds).toEqual(["dependency-change", "large-deletion", "sensitive-path"]);
+    const sens = rd.riskAnnotations.find((a) => a.kind === "sensitive-path");
+    expect(sens!.severity).toBe("high");
+    expect(sens!.paths).toContain("db/migrations/007_x.sql");
     wg.db.close();
   });
 

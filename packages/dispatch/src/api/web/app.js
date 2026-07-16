@@ -5903,7 +5903,43 @@ function repoDiffSection(rd) {
     el("span", { class: "diff-stats" }, statBits),
   ]);
   const body = rd.unavailable ? null : diffBody(rd.diff);
-  return el("div", { class: "diff-section" }, [header, body]);
+  const risk = rd.unavailable ? null : riskOverlay(rd.riskAnnotations || []);
+  return el("div", { class: "diff-section" }, [header, risk, body]);
+}
+
+/**
+ * ADVISORY risk overlay on the review diff — flags where the reviewer's scarce
+ * attention should go FIRST (sensitive paths, dependency changes, large deletions),
+ * computed server-side from the real diff (src/services/riskAnnotations.ts). It NEVER
+ * gates approval — the authoritative diff + the Approve-gated-on-real-diff check are
+ * unchanged. An empty scan shows an explicit "clear" state, not a blank region.
+ */
+function riskOverlay(anns) {
+  if (!anns.length) {
+    return el(
+      "div",
+      { class: "risk-overlay risk-none" },
+      "No elevated-risk signals — advisory scan clear.",
+    );
+  }
+  const sevOrder = { high: 0, medium: 1 };
+  const badges = [...anns]
+    .sort((a, b) => (sevOrder[a.severity] ?? 9) - (sevOrder[b.severity] ?? 9))
+    .map((a) =>
+      el(
+        "span",
+        {
+          class: "risk-badge risk-" + (a.severity === "high" ? "high" : "medium"),
+          // Full path list on hover; the badge text stays a short summary.
+          title: (a.paths || []).join("\n") || a.detail,
+        },
+        `${String(a.kind).replace(/-/g, " ")}: ${a.detail}`,
+      ),
+    );
+  return el("div", { class: "risk-overlay" }, [
+    el("span", { class: "risk-lead" }, "Review first"),
+    ...badges,
+  ]);
 }
 
 /**

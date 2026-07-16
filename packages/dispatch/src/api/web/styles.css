@@ -9164,3 +9164,47 @@ textarea:focus-visible,
   line-height: 1.5;
   padding: 4px 2px;
 }
+
+/* --- Review-gate risk-annotation overlay (advisory; never gates approval) --- */
+.risk-overlay {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(255, 106, 84, 0.04);
+}
+.risk-overlay.risk-none {
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  font-family: var(--mono);
+}
+.risk-lead {
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-right: 2px;
+}
+.risk-badge {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  cursor: help;
+}
+.risk-badge.risk-high {
+  color: var(--danger);
+  border-color: var(--danger-soft);
+  background: var(--danger-soft);
+}
+.risk-badge.risk-medium {
+  color: var(--warn);
+  border-color: var(--warn-soft);
+  background: var(--warn-soft);
+}

@@ -1423,6 +1423,22 @@ allowed("literal in-root cp still allowed", "cp src/a.ts sub/b.ts");
   );
 }
 
+// SEC3: an empty/missing file_path must FAIL CLOSED — a legitimate Write/Read always
+// carries a path, so a malformed empty one must not slip past the boundary as an ALLOW.
+if (runFileTool("Write", "") === 2) passed += 1;
+else failures.push("DENY expected: Write with empty file_path (fail-closed)");
+if (runFileTool("Read", "") === 2) passed += 1;
+else failures.push("DENY expected: Read with empty file_path (fail-closed)");
+
+// SEC4: touch / chmod / chown of a secret path are SIDE-EFFECTING (create the file,
+// change its mode/owner), not metadata-neutral reads — they must no longer pass the
+// "safely governed secret mention" allowance. `rm`/`ls`/`stat`/`git status` stay governed.
+denied("touch .env (side-effecting secret op)", "touch .env");
+denied("chmod 644 .env (mode change on secret)", "chmod 644 .env");
+denied("chmod 777 .env (mode change on secret)", "chmod 777 .env");
+denied("chown .env (owner change on secret)", "chown nobody .env");
+allowed("rm .env (still a governed op)", "rm .env");
+
 if (failures.length) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
   for (const f of failures) console.error("  ✗ " + f);

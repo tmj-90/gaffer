@@ -9225,3 +9225,61 @@ textarea:focus-visible,
   accent-color: var(--accent);
   cursor: pointer;
 }
+
+/* --- Per-delivery memory attribution panel (ticket detail) --- */
+.mem-primed-card {
+  padding: 12px 14px;
+  margin: 12px 0;
+}
+.mem-primed-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.mem-primed-title {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.mem-primed-outcome {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+.mem-primed-outcome.ok {
+  color: var(--ok);
+}
+.mem-primed-outcome.warn {
+  color: var(--warn);
+}
+.mem-primed-outcome.dim {
+  color: var(--text-faint);
+}
+.mem-primed-none {
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  font-style: italic;
+}
+.mem-primed-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+.mem-primed-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line-hair);
+}
+.mem-primed-summary {
+  font-family: var(--mono);
+}
+.mem-primed-at {
+  white-space: nowrap;
+}

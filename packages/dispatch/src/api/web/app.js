@@ -3969,13 +3969,81 @@ async function renderTicket(id) {
   // operator returns to when triaging why a ticket kept bouncing.
   const failureHistory = renderFailureHistory(view.rework_trail || []);
 
+  // PO-r2 #2: per-delivery memory attribution — what memory was primed into the agent
+  // for this delivery, paired with the outcome (shipped clean vs needed rework), so the
+  // learn-loop is visible. Distinct "no memory primed" state vs "primed" (AC3).
+  const memoryPrimed = memoryPrimedPanel(t, view.evidence || [], view.rework_trail || []);
+
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, sideRepos, diffCard, failureHistory, acCard, testingCard, timeline]),
+      el("div", {}, [
+        head,
+        sideRepos,
+        diffCard,
+        failureHistory,
+        acCard,
+        memoryPrimed,
+        testingCard,
+        timeline,
+      ]),
       el("div", {}, [sideFields, sideBlockers]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * Per-delivery memory attribution (PO-r2 #2). Shows the memory context the runner primed
+ * into the delivery agent (recorded as `memory_primed` evidence) + the delivery outcome,
+ * so an operator can see the learn-loop working. Renders NOTHING before a delivery (a
+ * draft/ready/claimed ticket has no delivery to attribute); once delivered it shows either
+ * the primed set or a DISTINCT "no memory primed" state.
+ *
+ * HONESTY: the per-item "which primed items were actually RECALLED/used" signal is the
+ * memory engine's own recall log (write-only via the CLI today) — not fabricated here.
+ * What's shown is what was PRIMED (deterministic) + the outcome (the "did it help?" pair).
+ */
+function memoryPrimedPanel(t, evidence, reworkTrail) {
+  const delivered = ["in_review", "in_testing", "ready_for_merge", "done", "refining", "blocked"];
+  if (!delivered.includes(t.status)) return null;
+  const primed = (evidence || []).filter((e) => e.evidence_type === "memory_primed");
+  const reworks = (reworkTrail || []).length;
+  const outcome =
+    t.status === "done"
+      ? reworks > 0
+        ? { txt: `shipped after ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
+        : { txt: "shipped clean — no rework", cls: "ok" }
+      : reworks > 0
+        ? { txt: `needed ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
+        : { txt: "in review", cls: "dim" };
+
+  const head = el("div", { class: "mem-primed-head" }, [
+    el("span", { class: "mem-primed-title" }, "Memory primed for this delivery"),
+    el("span", { class: "mem-primed-outcome " + outcome.cls }, outcome.txt),
+  ]);
+
+  let bodyNode;
+  if (primed.length === 0) {
+    bodyNode = el(
+      "div",
+      { class: "mem-primed-none" },
+      "No memory primed for this delivery — the agent ran without a lore/file-card context packet.",
+    );
+  } else {
+    bodyNode = el(
+      "ul",
+      { class: "mem-primed-list" },
+      primed.map((e) =>
+        el("li", { class: "mem-primed-item" }, [
+          el("span", { class: "mem-primed-summary" }, String(e.summary || "").trim() || "(empty)"),
+          e.created_at
+            ? el("span", { class: "mem-primed-at dim" }, fmtRelative(e.created_at))
+            : null,
+        ]),
+      ),
+    );
+  }
+  return el("div", { class: "card mem-primed-card" }, [head, bodyNode]);
 }
 
 /**

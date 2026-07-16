@@ -468,6 +468,12 @@ const epicTicketBody = z.object({
   repo: z.string().min(1).max(200).optional(),
   access: z.enum(TICKET_REPO_ACCESS).optional(),
   bootstrap: z.boolean().optional(),
+  // Greenfield: intended new-repo name for a bootstrap ticket (see epicTicketInput).
+  // Without this at the API layer, Zod strips the key before the domain schema sees
+  // it, so a POST /epics bootstrap ticket falls back to a title slug for the repo name.
+  source: z.string().max(200).optional(),
+  // TRACK-3a: per-ticket delivery-budget ceiling (also dropped without this).
+  delivery_budget_usd: z.number().positive().nullable().optional(),
   dependsOn: z.array(z.number().int().nonnegative()).max(100).optional(),
 });
 
@@ -476,6 +482,8 @@ export const createEpicBody = z.object({
   epic: z.object({
     name: z.string().trim().min(1).max(200),
     description: z.string().max(20_000).optional(),
+    // TRACK-3a: epic-level default budget inherited by tickets without their own.
+    delivery_budget_usd: z.number().positive().nullable().optional(),
   }),
   tickets: z.array(epicTicketBody).min(1).max(100),
 });

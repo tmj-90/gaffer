@@ -1315,7 +1315,20 @@ export class Dispatch {
   }
 
   expireStaleClaims(actor: Actor): { expired: number } {
-    return this.claims.expireStaleClaims(actor);
+    const result = this.claims.expireStaleClaims(actor);
+    // A claim-expiry that lands a ticket in `blocked` (an unresolved blocking decision)
+    // needs a human to unblock it — fire the operator gate per blocked ticket AFTER the
+    // sweep commits, best-effort (mirrors markBlocked / runnerRelease). Without this the
+    // expiry-block is silent: no Slack/webhook, and queue readers keyed on the gate miss it.
+    for (const id of result.blockedTicketIds) {
+      const ticket = this.tickets.findById(id);
+      if (ticket) {
+        this.emitGate("ticket_blocked", ticket, {
+          detail: "claim expired with an unresolved blocking decision",
+        });
+      }
+    }
+    return { expired: result.expired };
   }
 
   /**

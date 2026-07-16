@@ -242,6 +242,21 @@ gaffer_assert_safety_hook() {
 # safety-hook is the real boundary, so a failure here only risks the OLD
 # prompt-hang behaviour — never a safety regression. Operator-endorsed fix
 # (configure ~/.claude.json) rather than --dangerously-skip-permissions.
+# Echo the MAIN repo working tree for a git dir: for a LINKED worktree this is the
+# directory that holds the shared `.git` (the git-common-dir's parent); for a normal
+# repo root it is the dir itself. Empty on a non-git dir / failure. Pure — reads git
+# only, mutates nothing — so it is unit-testable in isolation.
+gaffer_git_main_worktree() {
+  local dir="$1" common
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  common="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || return 0
+  [ -n "$common" ] || return 0
+  case "$common" in
+    /*) dirname -- "$common" ;;   # absolute (a linked worktree) → parent of the shared .git
+    *)  printf '%s\n' "$dir" ;;   # relative ('.git') → dir is already the repo root
+  esac
+}
+
 gaffer_trust_workspace() {
   local dir="$1"
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
@@ -251,6 +266,21 @@ gaffer_trust_workspace() {
   # worktrees are still validated strictly (under the worktree root) regardless.
   GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
     || log "TRUST: could not pre-trust $dir (headless agent may hang on an MCP tool prompt)"
+  # Claude Code keys a git WORKTREE's trust on its MAIN repo working tree (the
+  # git-common-dir's parent), NOT the worktree path — so trusting only a linked
+  # delivery worktree is IGNORED: the agent runs untrusted, the settings allowlist is
+  # dropped, and its dispatch/memory MCP tools are never permitted (no evidence /
+  # digest / lore writes during delivery). Also trust the main repo root when it
+  # differs from the worktree. KEY_ONLY: the agent runs in the worktree (whose own
+  # settings.local.json the call above neutralized), so we only write the trust key
+  # for the main root — never mutate the onboarded repo's working tree.
+  local main
+  main="$(gaffer_git_main_worktree "$dir")"
+  if [ -n "$main" ] && [ "$main" != "$dir" ] && [ -d "$main" ]; then
+    GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY=1 \
+      node "$RUNNER_DIR/lib/trust-workspace.mjs" "$main" 2>>"$GAFFER_LOG" \
+      || log "TRUST: could not pre-trust main repo root $main (worktree $dir)"
+  fi
 }
 # Append a ticket number to the per-run skip-file under .skip.lock so concurrent
 # workers never lose or corrupt an entry (the skip-file stops one bad ticket

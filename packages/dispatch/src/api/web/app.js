@@ -690,7 +690,13 @@ function parseHash() {
 }
 
 function navigate(hash) {
-  location.hash = hash;
+  // Re-selecting the view you are already on must still re-fetch. Assigning an
+  // IDENTICAL location.hash fires no `hashchange`, so router() (the sole data-fetch
+  // trigger) never runs and the view shows stale data until a manual reload. When the
+  // hash is unchanged, re-render explicitly; otherwise let the hashchange drive it.
+  const next = hash.startsWith("#") ? hash : "#" + hash;
+  if (location.hash === next) router();
+  else location.hash = next;
 }
 
 // Navigation order — used to decide which way the "camera" steps so a forward
@@ -735,14 +741,28 @@ async function router() {
     app.appendChild(
       skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"),
     );
-    await guard(async () => {
+    try {
       const content = await render(param);
       clear(app);
       app.appendChild(content);
       app.scrollTop = 0;
       stagger(content);
       animateReadouts(content);
-    });
+    } catch (e) {
+      // A 401 is already handled inside api() (the login screen is shown) — returning
+      // here avoids clobbering it. For any OTHER failure, replace the skeleton with an
+      // error panel + retry instead of leaving a misleading permanent "loading" state.
+      if (e && e.code === "UNAUTHORIZED") return;
+      toast((e && e.message) || "Unexpected error", { code: e && e.code });
+      clear(app);
+      const panel = emptyState(
+        "Couldn’t load this view",
+        (e && e.message) || "The request failed. Check the connection and retry.",
+        "alert",
+      );
+      panel.appendChild(el("button", { class: "btn", onClick: () => router() }, "Retry"));
+      app.appendChild(panel);
+    }
   };
 
   const reduce = prefersReducedMotion();

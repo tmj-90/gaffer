@@ -1472,6 +1472,91 @@ async function renderOverview() {
     ]),
   );
 
+  // --- Governance-ROI panel: does the oversight machinery EARN its cost? -------
+  // Merge / rework / unattended-safe rates from /api/health.governance, computed
+  // server-side from REAL ticket transitions (src/health/governanceRoi.ts) — never
+  // the demo dataset. Window-selectable. Every rate is shown WITH the raw counts it
+  // derives from, and an empty window renders an explicit note, never a fake 0%.
+  {
+    const govPanel = el("div", { class: "card gov-panel" });
+    const pct = (r) => (r && typeof r.rate === "number" ? Math.round(r.rate * 100) : null);
+    const tile = (label, r, subFn) => {
+      const p = pct(r);
+      const has = p !== null;
+      return el("div", { class: "gov-tile" + (has ? "" : " gov-tile-empty") }, [
+        el("div", { class: "gov-tile-label" }, label),
+        el("div", { class: "gov-tile-val tabnum" }, has ? p + "%" : "—"),
+        el("div", { class: "gov-tile-sub" }, has ? subFn(r) : "no eligible deliveries yet"),
+      ]);
+    };
+    const paint = (gov) => {
+      govPanel.replaceChildren();
+      const wd = gov && gov.windowDays ? gov.windowDays : 30;
+      const sel = el(
+        "select",
+        {
+          class: "gov-window",
+          title: "Time window for the governance rates",
+          onchange: async (e) => {
+            const v = e.target.value;
+            const res = await api("GET", "/api/health?window_days=" + v).catch(() => null);
+            paint(res && res.governance ? res.governance : { empty: true, windowDays: Number(v) });
+          },
+        },
+        [7, 30, 90, 365].map((n) => {
+          const o = el("option", { value: String(n) }, `last ${n}d`);
+          if (n === wd) o.selected = true;
+          return o;
+        }),
+      );
+      govPanel.appendChild(
+        el("div", { class: "gov-head" }, [
+          el(
+            "div",
+            {
+              class: "gov-title",
+              title:
+                "Does gaffer's governance (gates + review + opt-in autonomy) earn its overhead? Computed from YOUR real ticket transitions — not the demo dataset.",
+            },
+            "Governance ROI",
+          ),
+          sel,
+        ]),
+      );
+      if (!gov || gov.empty) {
+        govPanel.appendChild(
+          el(
+            "div",
+            { class: "gov-emptystate" },
+            `No deliveries reached a review decision in the last ${wd} days — governance ROI needs shipped/rejected history to measure. Ship some tickets to done first.`,
+          ),
+        );
+        return;
+      }
+      govPanel.appendChild(
+        el("div", { class: "gov-tiles" }, [
+          tile(
+            "Merge rate",
+            gov.mergeRate,
+            (r) => `${r.numerator} merged of ${r.denominator} reviewed`,
+          ),
+          tile(
+            "Rework rate",
+            gov.reworkRate,
+            (r) => `${r.numerator} of ${r.denominator} shipped needed rework`,
+          ),
+          tile(
+            "Unattended-safe",
+            gov.unattendedSafeRate,
+            (r) => `${r.numerator} of ${r.denominator} agent-approved merges stayed shipped`,
+          ),
+        ]),
+      );
+    };
+    paint(health.governance);
+    wrap.appendChild(govPanel);
+  }
+
   // --- Cost banner (H1) -------------------------------------------------------
   // One small row: total spend all-time + today. Reads from /api/cost which
   // reads the usage-ledger. Hidden when the ledger is absent / not configured.

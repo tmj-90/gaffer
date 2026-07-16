@@ -9,6 +9,7 @@ import {
   todaySpend,
 } from "../../cost/costAggregator.js";
 import { deliveryFlow, type FlowTicket } from "../../health/deliveryFlow.js";
+import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
 import { aggregateHealth, type ReworkResolver } from "../../health/healthAggregator.js";
 import { aggregateSkillTelemetry } from "../../health/skillsTelemetryAggregator.js";
 import { errorBody, methodNotAllowed, safeDecode, sendJson } from "../http.js";
@@ -237,7 +238,51 @@ export function routeReadModels(
     const resolveRework: ReworkResolver = (n) => reworkByNumber.get(n) ?? 0;
 
     const health = aggregateHealth(process.env, { shippedCount, resolveRework });
-    const flow = deliveryFlow(flowTickets, Date.parse(wg.clock.now()) || Date.now());
+    const nowMs = Date.parse(wg.clock.now()) || Date.now();
+    const flow = deliveryFlow(flowTickets, nowMs);
+
+    // GOVERNANCE-ROI: does the oversight machinery earn its cost? Three rates from REAL
+    // transitions, window-scoped (?window_days=, default 30, clamped 1..365). Null-honest
+    // on an empty window (the UI shows an explicit empty state, never demo/zero-fill).
+    const WINDOW_MIN = 1;
+    const WINDOW_MAX = 365;
+    const rawWindow = Number.parseInt(url.searchParams.get("window_days") ?? "", 10);
+    const windowDays = Number.isFinite(rawWindow)
+      ? Math.min(WINDOW_MAX, Math.max(WINDOW_MIN, rawWindow))
+      : 30;
+    const govRows = wg.db
+      .prepare(
+        `SELECT entity_id                              AS ticket_id,
+                actor_type                             AS actor_type,
+                json_extract(payload_json, '$.from')   AS from_status,
+                json_extract(payload_json, '$.to')     AS to_status,
+                json_extract(payload_json, '$.reason') AS reason,
+                created_at                             AS created_at
+           FROM work_events
+          WHERE entity_type = 'ticket' AND event_type = 'ticket.transitioned'`,
+      )
+      .all() as Array<{
+      ticket_id: string;
+      actor_type: string;
+      from_status: string | null;
+      to_status: string | null;
+      reason: string | null;
+      created_at: string;
+    }>;
+    const govTransitions: GovTransition[] = govRows.map((r) => ({
+      ticketId: r.ticket_id,
+      actorType: r.actor_type,
+      fromStatus: r.from_status,
+      toStatus: r.to_status,
+      reason: r.reason,
+      atMs: Date.parse(r.created_at) || 0,
+    }));
+    // Rework counts keyed by ticket ENTITY ID (governanceRoi keys off entity_id, not number).
+    const reworkByIdRows = wg.db
+      .prepare(`SELECT ticket_id AS id, COUNT(*) AS c FROM rework_attempts GROUP BY ticket_id`)
+      .all() as Array<{ id: string; c: number }>;
+    const reworkById = new Map(reworkByIdRows.map((r) => [r.id, r.c]));
+    const governance = governanceRoi(govTransitions, reworkById, nowMs, windowDays);
 
     // Two previously-DEAD data sources, surfaced best-effort (a missing source
     // degrades to a null/available:false cell, NEVER breaks the endpoint):
@@ -265,6 +310,8 @@ export function routeReadModels(
       duration: health.duration,
       cycle_time: flow.cycle_time,
       throughput: flow.throughput,
+      // Governance-ROI: merge / rework / unattended-safe rates from real transitions.
+      governance,
       // Skill hit-rate (selected-vs-applied). Zero-state when no telemetry.
       skills: {
         total_records: skills.total_records,

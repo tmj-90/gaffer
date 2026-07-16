@@ -9092,3 +9092,75 @@ textarea:focus-visible,
     transform: none;
   }
 }
+
+/* --- Governance-ROI panel (Overview): does the oversight machinery earn its cost? --- */
+.gov-panel {
+  padding: 14px 16px;
+  margin: 12px 0;
+}
+.gov-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.gov-title {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: help;
+}
+.gov-window {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+}
+.gov-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+@media (max-width: 640px) {
+  .gov-tiles {
+    grid-template-columns: 1fr;
+  }
+}
+.gov-tile {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.gov-tile-label {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.gov-tile-val {
+  font-size: 1.7rem;
+  line-height: 1.15;
+  color: var(--accent);
+  margin: 2px 0;
+}
+.gov-tile-empty .gov-tile-val {
+  color: var(--text-ghost);
+}
+.gov-tile-sub {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+.gov-emptystate {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  padding: 4px 2px;
+}

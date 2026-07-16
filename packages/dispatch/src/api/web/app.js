@@ -6170,6 +6170,25 @@ function openRejectDialog({ verb, onConfirm }) {
     "Reject",
   );
 
+  // Opt-in: capture this rejection reason as a lore DRAFT — the highest-signal human
+  // correction the factory ever gets. Human-gated (lands in the memory review queue,
+  // never auto-approved). Off by default.
+  const captureCheckbox = el("input", {
+    type: "checkbox",
+    class: "reject-capture-cb",
+    id: "reject-capture-lore",
+  });
+  const captureRow = el(
+    "label",
+    {
+      class: "reject-capture",
+      for: "reject-capture-lore",
+      title:
+        "Files your reason as a DRAFT lore record in the memory review queue — human-gated, never auto-approved. Compounds your correction into the factory's memory.",
+    },
+    [captureCheckbox, el("span", {}, "Also capture as a lore draft for the team")],
+  );
+
   const dialog = el(
     "div",
     { class: "reject-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Reject reason" },
@@ -6178,6 +6197,7 @@ function openRejectDialog({ verb, onConfirm }) {
       el("p", { class: "reject-dialog-hint" }, "Tap a reason or type your own."),
       chipRow,
       input,
+      captureRow,
       el("div", { class: "reject-dialog-actions btn-row" }, [
         el("button", { class: "btn", type: "button", onclick: close }, "Cancel"),
         submitBtn,
@@ -6214,8 +6234,9 @@ function openRejectDialog({ verb, onConfirm }) {
       toast("A reason is required", {});
       return;
     }
+    const captureLore = captureCheckbox.checked;
     close();
-    onConfirm(value);
+    onConfirm(value, captureLore);
   }
   function onKey(e) {
     if (e.key === "Escape") {
@@ -6359,10 +6380,22 @@ async function renderReview() {
       const verb = to === "cancelled" ? "abandoning (won't do)" : `rejecting to ${to}`;
       openRejectDialog({
         verb,
-        onConfirm: (reason) =>
+        onConfirm: (reason, captureLore) =>
           guard(async () => {
-            await api("POST", `/tickets/${t.id}/review/reject`, { to, reason });
+            const resp = await api("POST", `/tickets/${t.id}/review/reject`, {
+              to,
+              reason,
+              captureLore,
+            });
             toast(to === "cancelled" ? "Marked won't do" : `Rejected to ${to}`, { ok: true });
+            if (captureLore) {
+              const cap = resp && resp.lore_capture;
+              if (cap && cap.captured) {
+                toast("Captured as a lore draft — approve it in memory review", { ok: true });
+              } else if (cap) {
+                toast("Rejected, but the lore draft could not be filed (memory unavailable)", {});
+              }
+            }
             router();
           }),
       });

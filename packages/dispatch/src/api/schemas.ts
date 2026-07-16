@@ -125,6 +125,11 @@ export type AddAcBody = z.infer<typeof addAcBody>;
 export const rejectReviewBody = z.object({
   to: z.enum(["ready", "refining", "cancelled"]),
   reason: z.string().trim().min(1).max(20_000),
+  /**
+   * Opt-in: also capture this rejection reason as a lore DRAFT (human-gated, lands in the
+   * memory review queue — never auto-approved). Off unless the reviewer ticks the box.
+   */
+  captureLore: z.boolean().optional(),
 });
 export type RejectReviewBody = z.infer<typeof rejectReviewBody>;
 

@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Dispatch } from "../../core.js";
 import { DispatchError } from "../../util/errors.js";
 import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
+import type { MemoryReader } from "../memoryReader.js";
 import type { MergeRunner } from "../mergeRunner.js";
 import {
   addAcBody,
@@ -71,6 +72,7 @@ const TICKET_SUB = {
 export async function routeTickets(
   wg: Dispatch,
   mergeRunner: MergeRunner,
+  memoryReader: MemoryReader,
   method: string,
   segments: string[],
   url: URL,
@@ -290,7 +292,30 @@ export async function routeTickets(
     if (action === "reject") {
       const body = rejectReviewBody.parse(await readJsonBody(req));
       const result = wg.rejectReview(id, body.to, API_ACTOR, body.reason);
-      sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
+      // OPT-IN: capture the reviewer's rejection reason as a lore DRAFT (human-gated) so
+      // the highest-signal human correction compounds into memory. FAIL-SOFT — a memory
+      // outage must never affect the rejection, which has already succeeded. Files via the
+      // memory CLI `suggest` (a draft in the review queue), NEVER a memory-DB write.
+      let loreCapture: { captured: boolean; id?: string | null; reason?: string } | undefined;
+      if (body.captureLore) {
+        const t = result.ticket;
+        const summary = `Review rejection of #${t.number} "${t.title}": ${body.reason}`;
+        // Repo is left for the human to scope on approval (the ticket tag links it) — the
+        // Ticket domain object doesn't carry its repos inline, and this is fail-soft anyway.
+        const draft = memoryReader.captureLoreDraft({
+          title: `Review feedback: #${t.number} ${t.title}`.slice(0, 200),
+          summary: summary.slice(0, 20_000),
+          tags: ["review-rejection", `ticket-${t.number}`],
+        });
+        loreCapture = draft.available
+          ? { captured: true, id: draft.id }
+          : { captured: false, reason: draft.reason };
+      }
+      sendJson(res, 200, {
+        ticket: result.ticket,
+        event_id: result.eventId,
+        ...(loreCapture ? { lore_capture: loreCapture } : {}),
+      });
       return;
     }
   }

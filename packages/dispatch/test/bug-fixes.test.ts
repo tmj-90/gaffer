@@ -464,8 +464,10 @@ describe("POST /epics body preserves greenfield `source` + budget (Zod strips un
         },
       ],
     });
-    expect(parsed.tickets[0].source).toBe("calculator");
-    expect(parsed.tickets[0].delivery_budget_usd).toBe(2);
+    const t0 = parsed.tickets[0];
+    expect(t0).toBeDefined();
+    expect(t0?.source).toBe("calculator");
+    expect(t0?.delivery_budget_usd).toBe(2);
     expect(parsed.epic.delivery_budget_usd).toBe(5);
   });
 });

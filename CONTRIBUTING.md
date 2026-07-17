@@ -60,10 +60,19 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`, `build`
 
 1. Fork and branch off `main`.
 2. Make focused, atomic commits.
-3. Ensure CI is green — all four checks must pass:
+3. Ensure CI is green. `pnpm check` runs the TypeScript-side gate in one shot
+   (lint → format:check → build → typecheck → typecheck:test → test); run the runner
+   tests separately (last bullet). A plain `tsc --noEmit` is **not** enough:
+   `typecheck:test` uses `tsconfig.test.json` with `noUncheckedIndexedAccess`, and
+   `format:check` is a root script, so both catch things `tsc --noEmit` and per-package
+   runs miss. The individual checks CI runs, in order:
+   - `pnpm lint` (ESLint)
+   - `pnpm format:check` (Prettier `--check .`, run at the ROOT)
    - `pnpm -r build` (TypeScript packages build clean)
-   - `npx tsc --noEmit` (no type errors)
+   - `pnpm -r typecheck` (source type-check)
+   - `pnpm -r typecheck:test` (STRICTER test type-check — `noUncheckedIndexedAccess`)
    - `pnpm -r test` (all package test suites)
+   - `pnpm -r test:coverage` (per-package coverage floor)
    - Runner tests: `for t in runner/test/*.test.mjs; do node "$t"; done && for t in runner/test/*.test.sh; do bash "$t"; done`
 4. Open a PR describing **why**, not just what. Use the PR template in `.github/PULL_REQUEST_TEMPLATE.md`.
 

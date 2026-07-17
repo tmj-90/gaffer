@@ -18,6 +18,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "check": "pnpm lint && pnpm format:check && pnpm -r build && pnpm -r typecheck && pnpm -r typecheck:test && pnpm -r test",
     "prepare": "husky"
   },
   "engines": {

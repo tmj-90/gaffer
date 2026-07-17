@@ -217,7 +217,7 @@ async function route(
     // to the global 404 below — preserving the original flat-if behaviour.
     switch (segments[0]) {
       case "tickets":
-        await routeTickets(wg, mergeRunner, method, segments, url, req, res);
+        await routeTickets(wg, mergeRunner, memoryReader, method, segments, url, req, res);
         return;
       case "decisions":
         await routeDecisions(wg, method, segments, req, res);

@@ -531,7 +531,18 @@ export class TransitionService {
           { from: ticket.status, to: input.toStatus },
         );
       }
-      if (key === "in_progress->ready" && !input.runnerRelease && !input.humanRelease) {
+      // `systemOverride` is the third legal route: system recovery (claim expiry,
+      // reclaim, voluntary release, admin revoke) hands an in-flight delivery back to
+      // `ready` with systemOverride set — a trusted internal path, never a board-drag
+      // (which sets none of these flags). Without this escape hatch every recovery of an
+      // `in_progress` ticket throws ILLEGAL_TRANSITION; inside the expiry sweep's single
+      // transaction that rolls back the WHOLE sweep, wedging it permanently on that ticket.
+      if (
+        key === "in_progress->ready" &&
+        !input.runnerRelease &&
+        !input.humanRelease &&
+        !input.systemOverride
+      ) {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
           "An in-flight delivery can only be released/parked to ready via the runner-release path (or human hand-back).",

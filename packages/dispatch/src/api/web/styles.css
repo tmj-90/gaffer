@@ -9092,3 +9092,194 @@ textarea:focus-visible,
     transform: none;
   }
 }
+
+/* --- Governance-ROI panel (Overview): does the oversight machinery earn its cost? --- */
+.gov-panel {
+  padding: 14px 16px;
+  margin: 12px 0;
+}
+.gov-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.gov-title {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: help;
+}
+.gov-window {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+}
+.gov-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+@media (max-width: 640px) {
+  .gov-tiles {
+    grid-template-columns: 1fr;
+  }
+}
+.gov-tile {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.gov-tile-label {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.gov-tile-val {
+  font-size: 1.7rem;
+  line-height: 1.15;
+  color: var(--accent);
+  margin: 2px 0;
+}
+.gov-tile-empty .gov-tile-val {
+  color: var(--text-ghost);
+}
+.gov-tile-sub {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+.gov-emptystate {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  padding: 4px 2px;
+}
+
+/* --- Review-gate risk-annotation overlay (advisory; never gates approval) --- */
+.risk-overlay {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(255, 106, 84, 0.04);
+}
+.risk-overlay.risk-none {
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  font-family: var(--mono);
+}
+.risk-lead {
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-right: 2px;
+}
+.risk-badge {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  cursor: help;
+}
+.risk-badge.risk-high {
+  color: var(--danger);
+  border-color: var(--danger-soft);
+  background: var(--danger-soft);
+}
+.risk-badge.risk-medium {
+  color: var(--warn);
+  border-color: var(--warn-soft);
+  background: var(--warn-soft);
+}
+
+/* --- Reject dialog: opt-in "capture as lore draft" (human-gated memory) --- */
+.reject-capture {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 2px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.reject-capture-cb {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* --- Per-delivery memory attribution panel (ticket detail) --- */
+.mem-primed-card {
+  padding: 12px 14px;
+  margin: 12px 0;
+}
+.mem-primed-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.mem-primed-title {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.mem-primed-outcome {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+.mem-primed-outcome.ok {
+  color: var(--ok);
+}
+.mem-primed-outcome.warn {
+  color: var(--warn);
+}
+.mem-primed-outcome.dim {
+  color: var(--text-faint);
+}
+.mem-primed-none {
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  font-style: italic;
+}
+.mem-primed-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+.mem-primed-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line-hair);
+}
+.mem-primed-summary {
+  font-family: var(--mono);
+}
+.mem-primed-at {
+  white-space: nowrap;
+}

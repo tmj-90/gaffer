@@ -825,11 +825,14 @@ export class ClaimService {
    * to `ready` — or to `blocked` if the ticket has an unresolved blocking decision.
    * Transitions use systemOverride so policy gates never stall recovery.
    */
-  expireStaleClaims(actor: Actor): { expired: number } {
+  expireStaleClaims(actor: Actor): { expired: number; blockedTicketIds: string[] } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const stale = this.claims.listExpired(now);
       let expired = 0;
+      // Tickets that landed in `blocked` (not `ready`) — the facade fires the
+      // `ticket_blocked` operator gate for each, so an expiry-block is not silent.
+      const blockedTicketIds: string[] = [];
       for (const claim of stale) {
         this.claims.setStatus(claim.id, "expired", now);
         const ticket = this.tickets.findById(claim.ticket_id);
@@ -852,9 +855,10 @@ export class ClaimService {
           event_type: "claim.expired",
           payload: { claim_id: claim.id, returned_to: blocked ? "blocked" : "ready" },
         });
+        if (blocked) blockedTicketIds.push(ticket.id);
         expired += 1;
       }
-      return { expired };
+      return { expired, blockedTicketIds };
     });
   }
 

@@ -218,6 +218,26 @@ describe("pause-on-cap — continue / resume / stop transitions", () => {
     expect(ctx?.spend).toBe("$4.1000");
     expect(ctx?.resume_requested).toBe(0);
   });
+
+  it("system claim-expiry recovers a RESUMED (in_progress) ticket, not wedging the sweep", () => {
+    // Regression: the `in_progress->ready` guard used to accept only runnerRelease /
+    // humanRelease, so a claim-expiry (which sets systemOverride) threw ILLEGAL_TRANSITION
+    // for a resumed, in-flight ticket. Inside expireStaleClaims' single transaction that
+    // rolled back the WHOLE sweep, wedging it permanently on that ticket.
+    const clock = new TestClock();
+    const wg = freshWg(clock);
+    const { ticketId } = claimedTicket(wg); // claimed, ttl 600, original claim active
+    wg.pauseDelivery(ticketId, CTX, system);
+    wg.continuePaused(ticketId, human);
+    wg.beginResume(ticketId, system); // paused -> in_progress; the ORIGINAL claim is still active
+    expect(wg.view(ticketId).ticket.status).toBe("in_progress");
+
+    clock.advanceSeconds(1200); // the in-flight claim goes stale
+    const { expired } = wg.expireStaleClaims(system);
+    expect(expired).toBe(1);
+    // Recovered cleanly to ready (previously threw and rolled the sweep back).
+    expect(wg.view(ticketId).ticket.status).toBe("ready");
+  });
 });
 
 // --- REST surface -----------------------------------------------------------

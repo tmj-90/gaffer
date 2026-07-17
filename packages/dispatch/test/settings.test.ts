@@ -137,7 +137,7 @@ describe("settings module: enum choices + value validation", () => {
   it("surfaces choices through listSettings for enums and omits them elsewhere", () => {
     const views = listSettings({}, settingsPath);
     const mode = views.find((v) => v.key === "GAFFER_MODE");
-    expect(mode?.choices).toEqual(["supervised", "graduated", "autonomous", "strict"]);
+    expect(mode?.choices).toEqual(["supervised", "lite", "graduated", "autonomous", "strict"]);
     const anInt = views.find((v) => v.key === "MAX_TICKS");
     expect(anInt?.choices).toBeUndefined();
   });

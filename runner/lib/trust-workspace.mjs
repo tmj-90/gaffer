@@ -236,8 +236,16 @@ function releaseLock(fd) {
 // 1) VALIDATE before touching anything — refuse a path that isn't a factory worktree.
 if (!validateTarget(target)) process.exit(2);
 
-// 2) Neutralize any committed local settings in the (validated) worktree.
-neutralizeCommittedLocalSettings(target);
+// 2) Neutralize any committed local settings in the (validated) worktree. Skipped
+// under GAFFER_TRUST_KEY_ONLY: when the caller ALSO trusts a worktree's MAIN repo
+// root (Claude keys a worktree's trust on the main repo, so the allowlist is only
+// honoured when THAT path is trusted), the live agent still runs in the WORKTREE —
+// whose own settings.local.json was neutralized by the worktree's trust pass — so
+// mutating the onboarded repo's working tree here would be a gratuitous, surprising
+// change to the user's repo. Only the trust-key write is needed for the main root.
+if (process.env.GAFFER_TRUST_KEY_ONLY !== "1") {
+  neutralizeCommittedLocalSettings(target);
+}
 
 // 3) Acquire the lock; FAIL SAFE (skip the write) on contention rather than racing.
 const fd = acquireLock();

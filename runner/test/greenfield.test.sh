@@ -26,6 +26,12 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 # shellcheck source=../lib/greenfield.sh
 source "$RUNNER_DIR/lib/greenfield.sh"
 
+# greenfield.sh's inherit helpers bound their planner/agent calls with gaffer_timeout
+# (defined in factory.config.sh at real runtime). This test sources greenfield.sh in
+# isolation, so provide a passthrough stub matching gaffer_timeout's semantics for a
+# positive timeout: drop the seconds arg and run the command directly.
+gaffer_timeout() { shift; "$@"; }
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/greenfield-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 

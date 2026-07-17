@@ -150,6 +150,35 @@ if foot:
 
   [ -n "$_gpc_body" ] || return 0
 
+  # MEMORY ATTRIBUTION (PO-r2 #2): when this is a DELIVERY prime (GAFFER_RECALL_TICKET
+  # set), record WHAT memory was primed into the agent onto the ticket — the card paths
+  # + whether a repo digest was served. This makes the learn-loop visible per delivery:
+  # paired with the ticket's outcome (clean first-pass vs rework) an operator can see
+  # whether memory-primed deliveries fare better. Deterministic (the runner knows exactly
+  # what it primed) + FAIL-SOFT — a recording failure never affects the prime/delivery.
+  if [ -n "${GAFFER_RECALL_TICKET:-}" ] && command -v wg >/dev/null 2>&1; then
+    local _gpc_primed
+    _gpc_primed="$(printf '%s' "$_gpc_json" | python3 -c '
+import sys, json
+try:
+    p = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+paths = [c.get("path", "") for c in (p.get("cards") or []) if c.get("path")]
+digest = bool(p.get("digest"))
+if not paths and not digest:
+    sys.exit(0)
+head = ("%d card%s: %s" % (len(paths), "" if len(paths) == 1 else "s", ", ".join(paths[:8])))
+if len(paths) > 8:
+    head += ", +%d more" % (len(paths) - 8)
+print(("repo-digest + " if digest else "") + head)
+' 2>/dev/null)"
+    if [ -n "$_gpc_primed" ]; then
+      wg attach-evidence "$GAFFER_RECALL_TICKET" --type memory_primed \
+        --summary "Memory primed into the delivery agent — $_gpc_primed" >/dev/null 2>&1 || true
+    fi
+  fi
+
   # FIX 2: wrap the rendered card data in an <untrusted-file-cards> envelope
   # via gaffer_quarantine (which also strips any remaining </untrusted-file-cards>
   # or <untrusted-*> the python pass may have missed due to encoding).  This

@@ -90,6 +90,11 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     const buf = chunk as Buffer;
     size += buf.length;
     if (size > MAX_BYTES) {
+      // Stop consuming an over-limit (possibly hostile/unbounded) upload before
+      // rejecting — draining it to the end would read attacker-controlled data, and
+      // leaving it undrained resets the keep-alive connection. Destroy the stream so
+      // the socket closes deterministically instead of dangling mid-read.
+      req.destroy();
       throw new DispatchError("VALIDATION_ERROR", "Request body too large.");
     }
     chunks.push(buf);

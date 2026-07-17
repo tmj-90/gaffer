@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 import { isActiveTicketRepoRelation } from "../domain/types.js";
+import { computeRiskAnnotations, type RiskAnnotation } from "./riskAnnotations.js";
 import type { RepoRepository } from "../repositories/repoRepository.js";
 import type { TicketRepoDeliveryRepository } from "../repositories/ticketRepoDeliveryRepository.js";
 import type { TicketRepository } from "../repositories/ticketRepository.js";
@@ -62,6 +63,8 @@ export interface RepoDiff {
   unavailable?: DiffUnavailableReason;
   /** Human-readable detail for an unavailable/errored repo. */
   message?: string;
+  /** ADVISORY risk flags derived from the changed paths + line counts (never gating). */
+  riskAnnotations: RiskAnnotation[];
 }
 
 /** The full diff-in-review payload: one entry per WRITE repo on the ticket. */
@@ -105,24 +108,33 @@ export const defaultGitRunner: GitRunner = (cwd, args) => {
   };
 };
 
-/** Parse `git diff --numstat` output into {files, additions, deletions}. */
-function parseNumstat(out: string): { files: number; additions: number; deletions: number } {
+/** Parse `git diff --numstat` output into {files, additions, deletions, paths}. */
+function parseNumstat(out: string): {
+  files: number;
+  additions: number;
+  deletions: number;
+  paths: string[];
+} {
   let files = 0;
   let additions = 0;
   let deletions = 0;
+  const paths: string[] = [];
   for (const line of out.split("\n")) {
     const trimmed = line.trim();
     if (trimmed === "") continue;
     const parts = trimmed.split("\t");
     if (parts.length < 3) continue;
     files += 1;
+    // The path is the last tab-field (a rename shows "old => new"; keep it as-is —
+    // the risk classifier segment-matches either side well enough for an advisory flag).
+    paths.push(parts[parts.length - 1]!);
     // Binary files are reported as "-\t-\tpath"; treat them as 0/0.
     const add = Number.parseInt(parts[0]!, 10);
     const del = Number.parseInt(parts[1]!, 10);
     if (Number.isInteger(add)) additions += add;
     if (Number.isInteger(del)) deletions += del;
   }
-  return { files, additions, deletions };
+  return { files, additions, deletions, paths };
 }
 
 /** Build an empty-diff entry (repo present + on disk, but range yields nothing). */
@@ -144,6 +156,7 @@ function unavailableRepo(
     truncated: false,
     unavailable: reason,
     message,
+    riskAnnotations: [],
   };
 }
 
@@ -226,7 +239,10 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
         firstLine(stat.stderr) || `git could not diff ${rangeDesc}.`,
       );
     }
-    const { files, additions, deletions } = parseNumstat(stat.stdout);
+    const { files, additions, deletions, paths } = parseNumstat(stat.stdout);
+    // ADVISORY risk flags for the reviewer — computed from the real changed paths +
+    // deletion count. Never gates; the authoritative diff below is unchanged.
+    const riskAnnotations = computeRiskAnnotations(paths, deletions);
 
     const patch = runGit(repo.local_path, ["diff", ...diffArgs]);
     if (patch.status !== 0) {
@@ -263,6 +279,7 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
       additions,
       deletions,
       truncated,
+      riskAnnotations,
     };
   });
 

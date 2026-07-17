@@ -129,6 +129,20 @@ export interface MemoryReader {
    * other read: `{ available:false, reason }` when Memory isn't wired / errors.
    */
   recallEffectiveness(opts?: { repo?: string }): MemoryResult<{ recall: RecallEffectiveness }>;
+  /**
+   * File a lore DRAFT via the memory CLI `suggest` (the ONLY write dispatch does to
+   * memory — and it's not a DB write: `suggest` lands the record in the memory review
+   * queue as a DRAFT that a human must approve; dispatch never touches the memory DB).
+   * Used to capture a human's review-rejection reason so the highest-signal correction
+   * compounds into durable memory. Best-effort — a memory outage must NEVER block the
+   * rejection that triggered it.
+   */
+  captureLoreDraft(input: {
+    title: string;
+    summary: string;
+    repo?: string;
+    tags?: string[];
+  }): MemoryResult<{ id: string | null }>;
 }
 
 /** Build the structured "memory unavailable" result every failure path returns. */
@@ -458,6 +472,27 @@ export function createMemoryReader(env: NodeJS.ProcessEnv = process.env): Memory
       const outcome = runCli(env, args);
       if (!outcome.ok) return unavailable(outcome.reason);
       return { available: true, recall: parseRecallStats(outcome.stdout) };
+    },
+    captureLoreDraft(input) {
+      const title = (input.title ?? "").trim();
+      const summary = (input.summary ?? "").trim();
+      if (title === "" || summary === "") {
+        return unavailable("a lore draft needs a non-empty title + summary");
+      }
+      // `suggest` lands a DRAFT (human-gated). All values are discrete argv elements
+      // (runCli uses no shell), so a rejection reason can't inject a CLI flag/command.
+      const args = ["suggest", "--title", title, "--summary", summary];
+      const repo = (input.repo ?? "").trim();
+      if (repo !== "") args.push("--repo", repo);
+      for (const tag of input.tags ?? []) {
+        const t = String(tag).trim();
+        if (t !== "") args.push("--tag", t);
+      }
+      const outcome = runCli(env, args);
+      if (!outcome.ok) return unavailable(outcome.reason);
+      // The suggest CLI prints `memory: suggested <id> (draft)`; pull that id, best-effort.
+      const m = /\bsuggested\s+([a-z0-9]{4,})\b/i.exec(outcome.stdout ?? "");
+      return { available: true, id: m ? m[1]! : null };
     },
   };
 }

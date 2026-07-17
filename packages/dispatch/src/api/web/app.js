@@ -690,7 +690,13 @@ function parseHash() {
 }
 
 function navigate(hash) {
-  location.hash = hash;
+  // Re-selecting the view you are already on must still re-fetch. Assigning an
+  // IDENTICAL location.hash fires no `hashchange`, so router() (the sole data-fetch
+  // trigger) never runs and the view shows stale data until a manual reload. When the
+  // hash is unchanged, re-render explicitly; otherwise let the hashchange drive it.
+  const next = hash.startsWith("#") ? hash : "#" + hash;
+  if (location.hash === next) router();
+  else location.hash = next;
 }
 
 // Navigation order — used to decide which way the "camera" steps so a forward
@@ -735,14 +741,28 @@ async function router() {
     app.appendChild(
       skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"),
     );
-    await guard(async () => {
+    try {
       const content = await render(param);
       clear(app);
       app.appendChild(content);
       app.scrollTop = 0;
       stagger(content);
       animateReadouts(content);
-    });
+    } catch (e) {
+      // A 401 is already handled inside api() (the login screen is shown) — returning
+      // here avoids clobbering it. For any OTHER failure, replace the skeleton with an
+      // error panel + retry instead of leaving a misleading permanent "loading" state.
+      if (e && e.code === "UNAUTHORIZED") return;
+      toast((e && e.message) || "Unexpected error", { code: e && e.code });
+      clear(app);
+      const panel = emptyState(
+        "Couldn’t load this view",
+        (e && e.message) || "The request failed. Check the connection and retry.",
+        "alert",
+      );
+      panel.appendChild(el("button", { class: "btn", onClick: () => router() }, "Retry"));
+      app.appendChild(panel);
+    }
   };
 
   const reduce = prefersReducedMotion();
@@ -1471,6 +1491,91 @@ async function renderOverview() {
       }),
     ]),
   );
+
+  // --- Governance-ROI panel: does the oversight machinery EARN its cost? -------
+  // Merge / rework / unattended-safe rates from /api/health.governance, computed
+  // server-side from REAL ticket transitions (src/health/governanceRoi.ts) — never
+  // the demo dataset. Window-selectable. Every rate is shown WITH the raw counts it
+  // derives from, and an empty window renders an explicit note, never a fake 0%.
+  {
+    const govPanel = el("div", { class: "card gov-panel" });
+    const pct = (r) => (r && typeof r.rate === "number" ? Math.round(r.rate * 100) : null);
+    const tile = (label, r, subFn) => {
+      const p = pct(r);
+      const has = p !== null;
+      return el("div", { class: "gov-tile" + (has ? "" : " gov-tile-empty") }, [
+        el("div", { class: "gov-tile-label" }, label),
+        el("div", { class: "gov-tile-val tabnum" }, has ? p + "%" : "—"),
+        el("div", { class: "gov-tile-sub" }, has ? subFn(r) : "no eligible deliveries yet"),
+      ]);
+    };
+    const paint = (gov) => {
+      govPanel.replaceChildren();
+      const wd = gov && gov.windowDays ? gov.windowDays : 30;
+      const sel = el(
+        "select",
+        {
+          class: "gov-window",
+          title: "Time window for the governance rates",
+          onchange: async (e) => {
+            const v = e.target.value;
+            const res = await api("GET", "/api/health?window_days=" + v).catch(() => null);
+            paint(res && res.governance ? res.governance : { empty: true, windowDays: Number(v) });
+          },
+        },
+        [7, 30, 90, 365].map((n) => {
+          const o = el("option", { value: String(n) }, `last ${n}d`);
+          if (n === wd) o.selected = true;
+          return o;
+        }),
+      );
+      govPanel.appendChild(
+        el("div", { class: "gov-head" }, [
+          el(
+            "div",
+            {
+              class: "gov-title",
+              title:
+                "Does gaffer's governance (gates + review + opt-in autonomy) earn its overhead? Computed from YOUR real ticket transitions — not the demo dataset.",
+            },
+            "Governance ROI",
+          ),
+          sel,
+        ]),
+      );
+      if (!gov || gov.empty) {
+        govPanel.appendChild(
+          el(
+            "div",
+            { class: "gov-emptystate" },
+            `No deliveries reached a review decision in the last ${wd} days — governance ROI needs shipped/rejected history to measure. Ship some tickets to done first.`,
+          ),
+        );
+        return;
+      }
+      govPanel.appendChild(
+        el("div", { class: "gov-tiles" }, [
+          tile(
+            "Merge rate",
+            gov.mergeRate,
+            (r) => `${r.numerator} merged of ${r.denominator} reviewed`,
+          ),
+          tile(
+            "Rework rate",
+            gov.reworkRate,
+            (r) => `${r.numerator} of ${r.denominator} shipped needed rework`,
+          ),
+          tile(
+            "Unattended-safe",
+            gov.unattendedSafeRate,
+            (r) => `${r.numerator} of ${r.denominator} agent-approved merges stayed shipped`,
+          ),
+        ]),
+      );
+    };
+    paint(health.governance);
+    wrap.appendChild(govPanel);
+  }
 
   // --- Cost banner (H1) -------------------------------------------------------
   // One small row: total spend all-time + today. Reads from /api/cost which
@@ -3884,13 +3989,81 @@ async function renderTicket(id) {
   // operator returns to when triaging why a ticket kept bouncing.
   const failureHistory = renderFailureHistory(view.rework_trail || []);
 
+  // PO-r2 #2: per-delivery memory attribution — what memory was primed into the agent
+  // for this delivery, paired with the outcome (shipped clean vs needed rework), so the
+  // learn-loop is visible. Distinct "no memory primed" state vs "primed" (AC3).
+  const memoryPrimed = memoryPrimedPanel(t, view.evidence || [], view.rework_trail || []);
+
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, sideRepos, diffCard, failureHistory, acCard, testingCard, timeline]),
+      el("div", {}, [
+        head,
+        sideRepos,
+        diffCard,
+        failureHistory,
+        acCard,
+        memoryPrimed,
+        testingCard,
+        timeline,
+      ]),
       el("div", {}, [sideFields, sideBlockers]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * Per-delivery memory attribution (PO-r2 #2). Shows the memory context the runner primed
+ * into the delivery agent (recorded as `memory_primed` evidence) + the delivery outcome,
+ * so an operator can see the learn-loop working. Renders NOTHING before a delivery (a
+ * draft/ready/claimed ticket has no delivery to attribute); once delivered it shows either
+ * the primed set or a DISTINCT "no memory primed" state.
+ *
+ * HONESTY: the per-item "which primed items were actually RECALLED/used" signal is the
+ * memory engine's own recall log (write-only via the CLI today) — not fabricated here.
+ * What's shown is what was PRIMED (deterministic) + the outcome (the "did it help?" pair).
+ */
+function memoryPrimedPanel(t, evidence, reworkTrail) {
+  const delivered = ["in_review", "in_testing", "ready_for_merge", "done", "refining", "blocked"];
+  if (!delivered.includes(t.status)) return null;
+  const primed = (evidence || []).filter((e) => e.evidence_type === "memory_primed");
+  const reworks = (reworkTrail || []).length;
+  const outcome =
+    t.status === "done"
+      ? reworks > 0
+        ? { txt: `shipped after ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
+        : { txt: "shipped clean — no rework", cls: "ok" }
+      : reworks > 0
+        ? { txt: `needed ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
+        : { txt: "in review", cls: "dim" };
+
+  const head = el("div", { class: "mem-primed-head" }, [
+    el("span", { class: "mem-primed-title" }, "Memory primed for this delivery"),
+    el("span", { class: "mem-primed-outcome " + outcome.cls }, outcome.txt),
+  ]);
+
+  let bodyNode;
+  if (primed.length === 0) {
+    bodyNode = el(
+      "div",
+      { class: "mem-primed-none" },
+      "No memory primed for this delivery — the agent ran without a lore/file-card context packet.",
+    );
+  } else {
+    bodyNode = el(
+      "ul",
+      { class: "mem-primed-list" },
+      primed.map((e) =>
+        el("li", { class: "mem-primed-item" }, [
+          el("span", { class: "mem-primed-summary" }, String(e.summary || "").trim() || "(empty)"),
+          e.created_at
+            ? el("span", { class: "mem-primed-at dim" }, fmtRelative(e.created_at))
+            : null,
+        ]),
+      ),
+    );
+  }
+  return el("div", { class: "card mem-primed-card" }, [head, bodyNode]);
 }
 
 /**
@@ -5818,7 +5991,43 @@ function repoDiffSection(rd) {
     el("span", { class: "diff-stats" }, statBits),
   ]);
   const body = rd.unavailable ? null : diffBody(rd.diff);
-  return el("div", { class: "diff-section" }, [header, body]);
+  const risk = rd.unavailable ? null : riskOverlay(rd.riskAnnotations || []);
+  return el("div", { class: "diff-section" }, [header, risk, body]);
+}
+
+/**
+ * ADVISORY risk overlay on the review diff — flags where the reviewer's scarce
+ * attention should go FIRST (sensitive paths, dependency changes, large deletions),
+ * computed server-side from the real diff (src/services/riskAnnotations.ts). It NEVER
+ * gates approval — the authoritative diff + the Approve-gated-on-real-diff check are
+ * unchanged. An empty scan shows an explicit "clear" state, not a blank region.
+ */
+function riskOverlay(anns) {
+  if (!anns.length) {
+    return el(
+      "div",
+      { class: "risk-overlay risk-none" },
+      "No elevated-risk signals — advisory scan clear.",
+    );
+  }
+  const sevOrder = { high: 0, medium: 1 };
+  const badges = [...anns]
+    .sort((a, b) => (sevOrder[a.severity] ?? 9) - (sevOrder[b.severity] ?? 9))
+    .map((a) =>
+      el(
+        "span",
+        {
+          class: "risk-badge risk-" + (a.severity === "high" ? "high" : "medium"),
+          // Full path list on hover; the badge text stays a short summary.
+          title: (a.paths || []).join("\n") || a.detail,
+        },
+        `${String(a.kind).replace(/-/g, " ")}: ${a.detail}`,
+      ),
+    );
+  return el("div", { class: "risk-overlay" }, [
+    el("span", { class: "risk-lead" }, "Review first"),
+    ...badges,
+  ]);
 }
 
 /**
@@ -6049,6 +6258,25 @@ function openRejectDialog({ verb, onConfirm }) {
     "Reject",
   );
 
+  // Opt-in: capture this rejection reason as a lore DRAFT — the highest-signal human
+  // correction the factory ever gets. Human-gated (lands in the memory review queue,
+  // never auto-approved). Off by default.
+  const captureCheckbox = el("input", {
+    type: "checkbox",
+    class: "reject-capture-cb",
+    id: "reject-capture-lore",
+  });
+  const captureRow = el(
+    "label",
+    {
+      class: "reject-capture",
+      for: "reject-capture-lore",
+      title:
+        "Files your reason as a DRAFT lore record in the memory review queue — human-gated, never auto-approved. Compounds your correction into the factory's memory.",
+    },
+    [captureCheckbox, el("span", {}, "Also capture as a lore draft for the team")],
+  );
+
   const dialog = el(
     "div",
     { class: "reject-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Reject reason" },
@@ -6057,6 +6285,7 @@ function openRejectDialog({ verb, onConfirm }) {
       el("p", { class: "reject-dialog-hint" }, "Tap a reason or type your own."),
       chipRow,
       input,
+      captureRow,
       el("div", { class: "reject-dialog-actions btn-row" }, [
         el("button", { class: "btn", type: "button", onclick: close }, "Cancel"),
         submitBtn,
@@ -6093,8 +6322,9 @@ function openRejectDialog({ verb, onConfirm }) {
       toast("A reason is required", {});
       return;
     }
+    const captureLore = captureCheckbox.checked;
     close();
-    onConfirm(value);
+    onConfirm(value, captureLore);
   }
   function onKey(e) {
     if (e.key === "Escape") {
@@ -6238,10 +6468,22 @@ async function renderReview() {
       const verb = to === "cancelled" ? "abandoning (won't do)" : `rejecting to ${to}`;
       openRejectDialog({
         verb,
-        onConfirm: (reason) =>
+        onConfirm: (reason, captureLore) =>
           guard(async () => {
-            await api("POST", `/tickets/${t.id}/review/reject`, { to, reason });
+            const resp = await api("POST", `/tickets/${t.id}/review/reject`, {
+              to,
+              reason,
+              captureLore,
+            });
             toast(to === "cancelled" ? "Marked won't do" : `Rejected to ${to}`, { ok: true });
+            if (captureLore) {
+              const cap = resp && resp.lore_capture;
+              if (cap && cap.captured) {
+                toast("Captured as a lore draft — approve it in memory review", { ok: true });
+              } else if (cap) {
+                toast("Rejected, but the lore draft could not be filed (memory unavailable)", {});
+              }
+            }
             router();
           }),
       });
@@ -8908,7 +9150,11 @@ async function confirmPlanBuild(plan, opts = {}) {
       if (t.repo && !known.has(t.repo)) {
         deferred++;
         const { repo, access, ...rest } = t;
-        return rest;
+        // Carry the intended repo NAME onto `source` so the runner bootstraps a
+        // cleanly-named repo instead of falling back to a slug of the ticket title.
+        // Only when the plan didn't already set `source`; the link itself stays
+        // deferred until the repo is onboarded.
+        return rest.source ? rest : { ...rest, source: repo };
       }
       return t;
     });

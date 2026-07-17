@@ -1044,11 +1044,12 @@ function gitInspectionAvailable(cwd) {
  */
 function isSafelyGovernedSecretMention(cmd) {
   const trimmed = cmd.trim();
-  // Whole command is exactly a git-status / git-rm / rm / ls of paths, with no
-  // contents-leaving construct anywhere. (git add/diff/show/log excluded.)
-  const benignOp = /^(git\s+(rm|status|ls-files)|rm|ls|stat|file|chmod|chown|touch)\b/i.test(
-    trimmed,
-  );
+  // Whole command is exactly a git-status / git-rm / rm / ls / stat of paths, with no
+  // contents-leaving construct anywhere. (git add/diff/show/log excluded.) `touch`,
+  // `chmod`, and `chown` are deliberately NOT benign: they mutate a secret path
+  // (create it, or change its mode/owner) — side effects, not metadata-neutral reads —
+  // so a segment naming a secret with those verbs must fall through to the strict path.
+  const benignOp = /^(git\s+(rm|status|ls-files)|rm|ls|stat|file)\b/i.test(trimmed);
   if (!benignOp) return false;
   if (REDIRECT_READ.test(trimmed)) return false;
   if (SOURCE_SECRET.test(trimmed)) return false;
@@ -1739,7 +1740,10 @@ function checkCommand(cmd) {
 }
 
 function checkWrite(filePath) {
-  if (!filePath) allow();
+  // Fail CLOSED on a missing/empty path: a legitimate Write/Edit tool call always
+  // carries a non-empty file_path, so an absent one is malformed input to a security
+  // boundary — allowing it would be an unbounded write escape.
+  if (!filePath) block("write with an empty/missing file path — refusing (fail closed)");
   const roots = resolveRoots();
   const abs = canonicalize(resolve(process.cwd(), filePath));
   if (SECRET_PATH.test(abs)) block(`write to a secret file: ${filePath}`);
@@ -1759,7 +1763,9 @@ function checkWrite(filePath) {
 }
 
 function checkRead(filePath) {
-  if (!filePath) allow();
+  // Fail CLOSED on a missing/empty path (a legitimate Read always carries one): a
+  // malformed empty path must not slip past the secret-read boundary.
+  if (!filePath) block("read with an empty/missing file path — refusing (fail closed)");
   const abs = canonicalize(resolve(process.cwd(), filePath));
   // Existing secret-file denial takes precedence and is never weakened.
   if (SECRET_PATH.test(abs)) {

@@ -23,6 +23,7 @@ import { resolveDbPath } from "../src/util/paths.js";
 import { DispatchError } from "../src/util/errors.js";
 import { TestClock } from "../src/util/clock.js";
 import {
+  createEpicBody,
   createTicketBody,
   createScopeNodeBody,
   recordDeliveryArtifactBody,
@@ -443,5 +444,28 @@ describe("Fix 13: ticket view returns parsed testContract", () => {
     expect(typeof v.ticket.test_contract).toBe("string"); // raw column still a string
     expect(typeof v.testContract).not.toBe("string");
     wg.db.close();
+  });
+});
+
+describe("POST /epics body preserves greenfield `source` + budget (Zod strips unknown keys)", () => {
+  it("keeps ticket `source`/`delivery_budget_usd` and epic `delivery_budget_usd`", () => {
+    // Regression: the domain schema accepted `source`, but the API-layer body schema
+    // did not — so Zod stripped it before the domain schema ran, and a POST /epics
+    // greenfield bootstrap ticket silently lost its intended repo name (title-slug
+    // fallback). The API body must carry the fields end-to-end.
+    const parsed = createEpicBody.parse({
+      epic: { name: "Greenfield calc", delivery_budget_usd: 5 },
+      tickets: [
+        {
+          title: "Bootstrap the calculator repo",
+          bootstrap: true,
+          source: "calculator",
+          delivery_budget_usd: 2,
+        },
+      ],
+    });
+    expect(parsed.tickets[0].source).toBe("calculator");
+    expect(parsed.tickets[0].delivery_budget_usd).toBe(2);
+    expect(parsed.epic.delivery_budget_usd).toBe(5);
   });
 });

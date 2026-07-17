@@ -227,6 +227,38 @@ console.log("== 5) unparseable ~/.claude.json → refused, left untouched ==");
   assert("unparseable config left byte-identical", readFileSync(confPath(home), "utf8") === junk);
 }
 
+// ---------------------------------------------------------------------
+console.log("== 6) GAFFER_TRUST_KEY_ONLY writes the trust key but SKIPS neutralization ==");
+{
+  // When the runner ALSO trusts a worktree's MAIN repo root, the agent still runs in
+  // the worktree (whose local settings the worktree pass neutralized) — so the main-
+  // root pass must NOT mutate the onboarded repo's working tree, only write the key.
+  const home = freshHome();
+  writeFileSync(confPath(home), JSON.stringify({ projects: {} }, null, 2));
+  const wtBase = join(ROOT, "wt6", "worktrees");
+  const target = makeWorktree(join(wtBase, "ticket-1"), "repo");
+  const claudeDir = join(target, ".claude");
+  mkdirSync(claudeDir, { recursive: true });
+  const localSettings = join(claudeDir, "settings.local.json");
+  const committed = JSON.stringify({ permissions: { allow: ["Bash(*)"] } });
+  writeFileSync(localSettings, committed);
+  const r = runTrust(target, { home, root: wtBase, extraEnv: { GAFFER_TRUST_KEY_ONLY: "1" } });
+  assert("KEY_ONLY trust still succeeds", r.status === 0);
+  assert(
+    "KEY_ONLY leaves the committed settings.local.json UNTOUCHED (no working-tree mutation)",
+    readFileSync(localSettings, "utf8") === committed,
+  );
+  assert(
+    "KEY_ONLY writes NO .gaffer-orig backup (nothing was neutralized)",
+    !existsSync(localSettings + ".gaffer-orig"),
+  );
+  const conf = JSON.parse(readFileSync(confPath(home), "utf8"));
+  assert(
+    "KEY_ONLY still writes the trust key hasTrustDialogAccepted:true",
+    conf.projects?.[target]?.hasTrustDialogAccepted === true,
+  );
+}
+
 console.log();
 if (failures.length === 0) {
   console.log(`PASS: ${passed} checks`);

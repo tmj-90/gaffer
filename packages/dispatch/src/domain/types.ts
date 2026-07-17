@@ -133,6 +133,9 @@ export const EVIDENCE_TYPES = [
   "ci_run",
   "static_analysis",
   "lore_record",
+  // The memory context (file-card paths + digest ref) primed into a delivery agent —
+  // recorded by the runner so the learn-loop is visible + attributable per delivery.
+  "memory_primed",
 ] as const;
 export type EvidenceType = (typeof EVIDENCE_TYPES)[number];
 

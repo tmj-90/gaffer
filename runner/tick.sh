@@ -15,11 +15,16 @@ source "$HERE/factory.config.sh"
 [ -f "$HERE/lib/review.sh" ] && source "$HERE/lib/review.sh"
 # shellcheck source=lib/clarify.sh
 [ -f "$HERE/lib/clarify.sh" ] && source "$HERE/lib/clarify.sh"
-mkdir -p "$GAFFER_DATA"
 # $GAFFER_DATA holds the DB copies + the per-tick mcp-runtime file (which carries the
 # live claim token). Lock it to the owner so another local user can't read the token
 # or DBs. 0700 on the dir blocks traversal to any file inside regardless of file mode.
-chmod 700 "$GAFFER_DATA" 2>/dev/null || true
+# Create under umask 077 so a freshly-created dir is owner-only even if the explicit
+# chmod below can't run, and SURFACE a chmod failure (never silently eat it) — a
+# world-traversable data dir would expose the live claim token to other local users.
+( umask 077 && mkdir -p "$GAFFER_DATA" ) 2>/dev/null || mkdir -p "$GAFFER_DATA"
+if ! chmod 700 "$GAFFER_DATA" 2>/dev/null; then
+  echo "gaffer: WARNING — could not chmod 700 $GAFFER_DATA; the live claim token / DB copies inside may be readable by other local users" >&2
+fi
 # Redirect the crew events log to $GAFFER_DATA so it is never written inside a
 # repo worktree (which would trip the delivery-hygiene gate). The GAFFER_* prefix
 # means this is automatically included by gaffer_agent_env and inherited by every
@@ -242,6 +247,21 @@ gaffer_assert_safety_hook() {
 # safety-hook is the real boundary, so a failure here only risks the OLD
 # prompt-hang behaviour — never a safety regression. Operator-endorsed fix
 # (configure ~/.claude.json) rather than --dangerously-skip-permissions.
+# Echo the MAIN repo working tree for a git dir: for a LINKED worktree this is the
+# directory that holds the shared `.git` (the git-common-dir's parent); for a normal
+# repo root it is the dir itself. Empty on a non-git dir / failure. Pure — reads git
+# only, mutates nothing — so it is unit-testable in isolation.
+gaffer_git_main_worktree() {
+  local dir="$1" common
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  common="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || return 0
+  [ -n "$common" ] || return 0
+  case "$common" in
+    /*) dirname -- "$common" ;;   # absolute (a linked worktree) → parent of the shared .git
+    *)  printf '%s\n' "$dir" ;;   # relative ('.git') → dir is already the repo root
+  esac
+}
+
 gaffer_trust_workspace() {
   local dir="$1"
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
@@ -251,6 +271,21 @@ gaffer_trust_workspace() {
   # worktrees are still validated strictly (under the worktree root) regardless.
   GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
     || log "TRUST: could not pre-trust $dir (headless agent may hang on an MCP tool prompt)"
+  # Claude Code keys a git WORKTREE's trust on its MAIN repo working tree (the
+  # git-common-dir's parent), NOT the worktree path — so trusting only a linked
+  # delivery worktree is IGNORED: the agent runs untrusted, the settings allowlist is
+  # dropped, and its dispatch/memory MCP tools are never permitted (no evidence /
+  # digest / lore writes during delivery). Also trust the main repo root when it
+  # differs from the worktree. KEY_ONLY: the agent runs in the worktree (whose own
+  # settings.local.json the call above neutralized), so we only write the trust key
+  # for the main root — never mutate the onboarded repo's working tree.
+  local main
+  main="$(gaffer_git_main_worktree "$dir")"
+  if [ -n "$main" ] && [ "$main" != "$dir" ] && [ -d "$main" ]; then
+    GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY=1 \
+      node "$RUNNER_DIR/lib/trust-workspace.mjs" "$main" 2>>"$GAFFER_LOG" \
+      || log "TRUST: could not pre-trust main repo root $main (worktree $dir)"
+  fi
 }
 # Append a ticket number to the per-run skip-file under .skip.lock so concurrent
 # workers never lose or corrupt an entry (the skip-file stops one bad ticket
@@ -1058,8 +1093,24 @@ print(hits[0] if hits else '')
       # This row is LOAD-BEARING (the done-gate resolves the delivery from it), so a
       # failure must be visible, never silently swallowed.
       B_SHA_ARG=""; [ -n "$B_HEAD_SHA" ] && B_SHA_ARG="--commit $B_HEAD_SHA"
-      wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready >/dev/null 2>&1 ||
-        log "BOOTSTRAP: WARN — per-repo delivery record for #$NUM ($B_NAME) did not record; the done-gate may not resolve this delivery"
+      # LOAD-BEARING: the done-gate resolves the delivery from this row. If it does not
+      # record, submitting anyway strands the ticket in `in_review` forever (the gate can
+      # never resolve) while the operator is told bootstrap succeeded. So on failure we
+      # surface the real error, park → refining (blocks blind reclaim), skip, and fail the
+      # tick for a human handoff — NEVER fall through to gaffer_submit_delivery.
+      _B_RD_ERR="$GAFFER_DATA/.bootstrap-rd-err.$$"
+      if ! wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready 2>"$_B_RD_ERR"; then
+        log "BOOTSTRAP: per-repo delivery record for #$NUM ($B_NAME) FAILED — done-gate cannot resolve this delivery; parking → blocked (NOT submitting): $(head -c 400 "$_B_RD_ERR" 2>/dev/null | tr '\n' ' ')"
+        rm -f "$_B_RD_ERR"
+        # Park VISIBLY to `blocked` (pages a human via the attention count), never
+        # `refining` (invisible to every human surface), matching the other bootstrap
+        # failure parks. Do NOT fall through to gaffer_submit_delivery: a submit without
+        # this load-bearing row strands the ticket in `in_review` forever.
+        gaffer_release_delivery blocked "bootstrap per-repo delivery record failed for #$NUM ($B_NAME) — the done-gate cannot resolve this delivery; record it manually before submitting" bootstrap_failed
+        gaffer_skip_ticket "$NUM"
+        result error; exit 0
+      fi
+      rm -f "$_B_RD_ERR"
       # Rest the new repo's PRIMARY working tree back on its default branch (`main`), so
       # the delivery branch is a plain ref the reviewer's throwaway worktree can check out
       # cleanly, and dependents branch off a tidy `main` after the scaffold merges.
@@ -1155,7 +1206,19 @@ print("\n".join(write_rows))
   #   • markers ABSENT    → python3/json failure; warn so a multi-repo ticket's
   #                         incomplete delivery is visible (not silent single-repo).
   if ! printf '%s\n' "$WG_PARTITION" | grep -qF '@@WRITE_PATHS@@'; then
-    log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (python3/json failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH). A multi-repo ticket would deliver incomplete."
+    # Parse failure (markers absent = python3/json crash). If the ticket actually links
+    # MORE THAN ONE repo, the single-repo fallback would silently deliver incomplete work
+    # AND hand the safety hook an under-scoped write boundary — so fail CLOSED (park →
+    # ready for re-derivation) rather than guess. A single-repo / repo-less ticket's
+    # fallback IS correct, so it proceeds unchanged.
+    _SHOW_REPO_COUNT="$(echo "$SHOW" | jget "len(d.get('repositories') or [])" 2>/dev/null || echo 0)"
+    if [ "${_SHOW_REPO_COUNT:-0}" -gt 1 ]; then
+      log "WG-002: access-boundary partition FAILED to parse for MULTI-REPO #$NUM ($_SHOW_REPO_COUNT repos) — refusing to deliver with an under-scoped single-repo boundary; parking → ready"
+      gaffer_release_delivery ready "multi-repo access-boundary partition parse failed — needs re-derivation"
+      gaffer_skip_ticket "$NUM"
+      result error; exit 0
+    fi
+    log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (python3/json failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH)."
   fi
 
   # Back-compat (older tickets with no WG-002 access boundary): fall back to the
@@ -2385,8 +2448,22 @@ print(hits[0] if hits else '')
         wg attach-evidence "$NUM" --type manual_note \
           --summary "needs_human_review: unverified_minimalism_note — $GAFFER_MINIMALISM_REASON" >/dev/null 2>&1 \
           && log "MINIMALISM: recorded unverified_note flag on #$NUM" || true ;;
-      *)
+      ok)
         log "MINIMALISM: #$NUM within caps ($_MZ_FILES files / $_MZ_LINES lines)" ;;
+      *)
+        # Empty/unrecognised verdict = gaffer_check_minimalism crashed or produced no
+        # output. A crash must NOT be treated as a pass (the `ok` arm above) — that would
+        # silently skip the gate. Fail closed: flag for human review, or hard-fail when the
+        # note gate is required for unsupervised runs.
+        log "MINIMALISM: #$NUM verdict check produced no/unknown output ('$_MZ_VERDICT') — failing closed (NOT treating as within-caps)"
+        if [ "${MINIMALISM_REQUIRE_NOTE:-0}" = "1" ]; then
+          _recover_or_park "minimalism" "minimalism gate produced no verdict (internal error) — re-deliver"
+          [ "$_DELIV_OUTCOME" = "retry" ] && continue
+          result error; exit 0
+        else
+          wg attach-evidence "$NUM" --type manual_note \
+            --summary "needs_human_review: minimalism gate produced no verdict (internal error) — judge minimality from the diff" >/dev/null 2>&1 || true
+        fi ;;
     esac
   fi
 

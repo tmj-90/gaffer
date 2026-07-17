@@ -133,21 +133,23 @@ CTRL_BLOCKED="$(blocked_count)"
 
 echo "== AC6: WIRING — every tick.sh bootstrap failure park targets blocked =="
 N_BLOCKED_PARKS="$(grep -c 'gaffer_release_delivery blocked "bootstrap' "$TICK" 2>/dev/null || echo 0)"
-# Three real bootstrap FAILURES park to blocked: rc≠0, no-commit, hygiene. The minimalism
-# lens is NOT one of them — a greenfield scaffold has no pre-existing code to make a
-# "smallest change" against, so a missing smallest-change note is FLAGGED for human review,
-# never a park (blocking a valid scaffold is the bug that flag replaced).
-[ "$N_BLOCKED_PARKS" -eq 3 ] 2>/dev/null \
-  && ok "all 3 bootstrap failure parks (rc≠0 / no-commit / hygiene) target blocked" \
-  || fail "expected 3 'gaffer_release_delivery blocked \"bootstrap' parks in tick.sh (found $N_BLOCKED_PARKS)"
+# FOUR real bootstrap FAILURES park VISIBLY to blocked: rc≠0, no-commit, hygiene, and the
+# load-bearing per-repo delivery-record write (its failure would strand the ticket in
+# in_review forever if submitted, so it parks to blocked instead). The minimalism lens is
+# NOT one of them — a greenfield scaffold has no pre-existing code to make a "smallest
+# change" against, so a missing smallest-change note is FLAGGED for human review, never a
+# park (blocking a valid scaffold is the bug that flag replaced).
+[ "$N_BLOCKED_PARKS" -eq 4 ] 2>/dev/null \
+  && ok "all 4 bootstrap failure parks (rc≠0 / no-commit / hygiene / delivery-record) target blocked" \
+  || fail "expected 4 'gaffer_release_delivery blocked \"bootstrap' parks in tick.sh (found $N_BLOCKED_PARKS)"
 if grep -q 'gaffer_release_delivery refining "bootstrap' "$TICK"; then
   fail "tick.sh still parks a bootstrap failure to refining (invisible)"
 else
   ok "no bootstrap failure park targets refining any more"
 fi
-grep -c 'bootstrap_failed' "$TICK" | grep -q '^3$' \
+grep -c 'bootstrap_failed' "$TICK" | grep -q '^4$' \
   && ok "each bootstrap park carries the structured bootstrap_failed reason code" \
-  || fail "expected the bootstrap_failed reason code on all 3 parks (found $(grep -c 'bootstrap_failed' "$TICK"))"
+  || fail "expected the bootstrap_failed reason code on all 4 parks (found $(grep -c 'bootstrap_failed' "$TICK"))"
 # The minimalism lens must stay a FLAG (needs_human_review), not a park — lock that in so a
 # future edit can't silently turn a valid greenfield scaffold back into a blocked ticket.
 grep -q 'EXEMPT (fresh scaffold); flagging not failing' "$TICK" \

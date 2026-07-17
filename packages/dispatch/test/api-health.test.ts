@@ -146,6 +146,79 @@ describe("GET /api/health", () => {
       expect(cycle.series).toHaveLength(14);
       expect(thr.last7).toBe(0);
       expect(thr.series).toHaveLength(14);
+      // Governance-ROI: honest empty state — no review history → every rate is null,
+      // NOT a fabricated 0%.
+      const gov = body.governance as {
+        empty: boolean;
+        mergeRate: { rate: number | null };
+        reworkRate: { rate: number | null };
+        unattendedSafeRate: { rate: number | null };
+      };
+      expect(gov.empty).toBe(true);
+      expect(gov.mergeRate.rate).toBeNull();
+      expect(gov.reworkRate.rate).toBeNull();
+      expect(gov.unattendedSafeRate.rate).toBeNull();
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("computes governance rates from real transitions, honours + clamps window_days", async () => {
+    const h = await startHarness({ MEMORY_CLI_BIN: undefined, MEMORY_DB: undefined });
+    try {
+      const nowMs = Date.parse(h.clock.now());
+      // Seed work_events directly: one agent-approved merge (unattended, stayed shipped)
+      // and one review rejection. A transition helper mirrors ticket.transitioned rows.
+      let seq = 0;
+      const tx = (
+        ticketId: string,
+        actor: string,
+        from: string | null,
+        to: string | null,
+        reason: string | null,
+        daysAgo: number,
+      ) => {
+        h.wg.db
+          .prepare(
+            `INSERT INTO work_events (id, entity_type, entity_id, actor_type, event_type, payload_json, created_at)
+             VALUES (@id, 'ticket', @tid, @actor, 'ticket.transitioned', @p, @at)`,
+          )
+          .run({
+            id: `ev-${seq++}`,
+            tid: ticketId,
+            actor,
+            p: JSON.stringify({ from, to, reason }),
+            at: new Date(nowMs - daysAgo * DAY).toISOString(),
+          });
+      };
+      // Ticket A: agent-approved → merged (unattended, safe).
+      tx("A", "agent", "in_review", "ready_for_merge", "review_approved", 3);
+      tx("A", "system", "ready_for_merge", "done", "merge_completed", 2);
+      // Ticket B: rejected back to rework.
+      tx("B", "human", "in_review", "refining", "not ready", 2);
+
+      const { status, body } = await get(h.baseUrl, "/api/health");
+      expect(status).toBe(200);
+      const gov = body.governance as {
+        empty: boolean;
+        windowDays: number;
+        mergeRate: { rate: number | null; numerator: number; denominator: number };
+        unattendedSafeRate: { rate: number | null };
+        counts: { merged: number; rejected: number; unattendedMerges: number };
+      };
+      expect(gov.empty).toBe(false);
+      expect(gov.counts.merged).toBe(1);
+      expect(gov.counts.rejected).toBe(1);
+      expect(gov.mergeRate.rate).toBeCloseTo(0.5);
+      expect(gov.counts.unattendedMerges).toBe(1);
+      expect(gov.unattendedSafeRate.rate).toBe(1);
+
+      // window_days is honoured + clamped: a huge value clamps to 365 (not an error),
+      // and a 1-day window excludes the older events → empty.
+      const big = await get(h.baseUrl, "/api/health?window_days=99999");
+      expect((big.body.governance as { windowDays: number }).windowDays).toBe(365);
+      const tiny = await get(h.baseUrl, "/api/health?window_days=1");
+      expect((tiny.body.governance as { empty: boolean }).empty).toBe(true);
     } finally {
       await h.close();
     }

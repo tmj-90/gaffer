@@ -36,6 +36,31 @@ export const nonEmptyDiffRunner: GitRunner = (_cwd, args) => {
   return { status: 0, stdout: "", stderr: "" };
 };
 
+/**
+ * A git runner whose diff is HIGH observed-risk: the --numstat reports a change to a
+ * sensitive path (`.github/workflows/ci.yml`) so the risk-annotation overlay flags it
+ * `sensitive-path` (high). Branch resolution + the real-diff done-gate still succeed
+ * (non-empty patch). Used to exercise the observed-vs-declared escalation.
+ */
+export const highRiskDiffRunner: GitRunner = (_cwd, args) => {
+  const joined = args.join(" ");
+  if (joined.startsWith("diff --numstat")) {
+    return {
+      status: 0,
+      stdout: "40\t5\t.github/workflows/ci.yml\n80\t10\tsrc/auth/login.ts\n",
+      stderr: "",
+    };
+  }
+  if (joined.startsWith("diff")) {
+    return {
+      status: 0,
+      stdout: "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n+run: deploy\n",
+      stderr: "",
+    };
+  }
+  return { status: 0, stdout: "", stderr: "" };
+};
+
 /** A git runner that always reports an EMPTY diff (no changes in the range). */
 export const emptyDiffRunner: GitRunner = (_cwd, args) => {
   const joined = args.join(" ");

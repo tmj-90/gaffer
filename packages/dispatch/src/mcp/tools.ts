@@ -317,7 +317,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     return t && t.length > 0 ? t : undefined;
   };
 
-  // S-H1/S-M2: refuse AGENT-actor ticket MOVEMENT (submit / claim) when this MCP
+  // S-H1/S-M2: refuse AGENT-actor ticket MOVEMENT (submit / claim / mark_ready) when this MCP
   // server is mounted by the Gaffer factory runner. In the factory the runner owns
   // the whole claim→submit lifecycle: it claims the ticket via the CLI, injects the
   // claim token into THIS server's env (GAFFER_CLAIM_TOKEN) for the agent's
@@ -344,15 +344,19 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     return (process.env.GAFFER_CLAIM_TOKEN ?? "").length > 0;
   };
   /** Throw the runner-owned refusal for an agent-actor move in factory context. */
-  const refuseIfFactoryAgentMove = (action: "submit" | "claim"): void => {
+  const refuseIfFactoryAgentMove = (action: "submit" | "claim" | "mark_ready"): void => {
     if (actor.type !== "agent" || !inFactoryContext()) return;
     const detail =
       action === "submit"
         ? "submission is runner-owned in factory context: the delivery agent cannot submit " +
           "for review (even with an explicit claim_token). The runner runs the DoD gates and " +
           "submits via the CLI. Do NOT call this tool."
-        : "claiming is runner-owned in factory context: the runner claims and leases the ticket " +
-          "and injects the token into this MCP server's env; the delivery agent cannot claim.";
+        : action === "claim"
+          ? "claiming is runner-owned in factory context: the runner claims and leases the ticket " +
+            "and injects the token into this MCP server's env; the delivery agent cannot claim."
+          : "readying is runner-owned in factory context: the delivery agent cannot promote a " +
+            "draft to ready. A human or the runner activates backlog; the agent may create DRAFT " +
+            "tickets but never ready them. Do NOT call this tool.";
     throw new DispatchError("FACTORY_RUNNER_OWNED", detail);
   };
   const raw = {
@@ -382,6 +386,12 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
 
     mark_ticket_ready: (args: Args): ToolResult =>
       guard(() => {
+        // S-H1 sibling: readying is runner-owned in factory context. A prompt-injected
+        // delivery agent may draft tickets (create_ticket lands as draft) but must be
+        // STRUCTURALLY unable to activate them — otherwise it plants attacker-authored
+        // backlog the runner later works as legitimate. Checked BEFORE arg parsing, same
+        // as submit/claim.
+        refuseIfFactoryAgentMove("mark_ready");
         const a = z.object(toolSchemas.mark_ticket_ready).parse(args);
         const res = wg.markReady(a.ticket_id, actor);
         return { ticket_id: res.ticket.id, status: res.ticket.status, event_id: res.eventId };

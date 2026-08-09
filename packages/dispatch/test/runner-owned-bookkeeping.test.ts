@@ -414,6 +414,126 @@ describe("runner-owned bookkeeping", () => {
     });
   });
 
+  // S-H1 sibling (mark_ready is runner-owned): a prompt-injected delivery agent may
+  // create_ticket (lands as DRAFT — idle loops legitimately draft) but must be
+  // STRUCTURALLY unable to promote that draft to ready. Otherwise it plants
+  // attacker-authored backlog the runner later claims and works as legitimate — a
+  // persistence mechanism that survives the session.
+  describe("S-H1: mark_ticket_ready is runner-owned — the agent mount cannot self-ready", () => {
+    // Seed a fresh DRAFT (do NOT mark ready) with no factory env in play.
+    function seedDraftWithAc(wg: Dispatch): string {
+      const h = makeHandlers(wg, agentActor);
+      const created = structured(h.create_ticket({ title: "planted", policy_pack: "solo_loose" }));
+      const ticketId = created.ticket_id as string;
+      structured(h.add_acceptance_criterion({ ticket_id: ticketId, text: "does X" }));
+      expect(wg.view(ticketId).ticket.status).toBe("draft");
+      return ticketId;
+    }
+
+    it("(a) an agent mark_ticket_ready is refused in factory context and the ticket stays draft", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const ticketId = seedDraftWithAc(wg);
+      const h = makeHandlers(wg, agentActor);
+
+      const prev = process.env.GAFFER_CLAIM_TOKEN;
+      // The agent's MCP mount: the runner-held token sits in the server env (which also
+      // signals factory context).
+      process.env.GAFFER_CLAIM_TOKEN = "runner-held-token";
+      try {
+        const res = h.mark_ticket_ready({ ticket_id: ticketId });
+        expect(res.isError).toBe(true);
+        expect((res.structuredContent.error as { code: string }).code).toBe("FACTORY_RUNNER_OWNED");
+      } finally {
+        if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prev;
+      }
+      // The draft was NOT activated — attacker-authored backlog never becomes claimable.
+      expect(wg.view(ticketId).ticket.status).toBe("draft");
+    });
+
+    it("(a') the GAFFER_FACTORY flag alone triggers the mark_ready refusal (no claim token on mount)", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const ticketId = seedDraftWithAc(wg);
+      const h = makeHandlers(wg, agentActor);
+
+      const prevTok = process.env.GAFFER_CLAIM_TOKEN;
+      const prevFlag = process.env.GAFFER_FACTORY;
+      delete process.env.GAFFER_CLAIM_TOKEN;
+      process.env.GAFFER_FACTORY = "1";
+      try {
+        const res = h.mark_ticket_ready({ ticket_id: ticketId });
+        expect(res.isError).toBe(true);
+        expect((res.structuredContent.error as { code: string }).code).toBe("FACTORY_RUNNER_OWNED");
+      } finally {
+        if (prevTok === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prevTok;
+        if (prevFlag === undefined) delete process.env.GAFFER_FACTORY;
+        else process.env.GAFFER_FACTORY = prevFlag;
+      }
+      expect(wg.view(ticketId).ticket.status).toBe("draft");
+    });
+
+    it("(b) agent create_ticket still lands as DRAFT in factory context (idle-loop drafting preserved)", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const h = makeHandlers(wg, agentActor);
+
+      const prev = process.env.GAFFER_CLAIM_TOKEN;
+      process.env.GAFFER_CLAIM_TOKEN = "runner-held-token";
+      try {
+        const created = structured(
+          h.create_ticket({ title: "idle draft", policy_pack: "solo_loose" }),
+        );
+        expect(created.status).toBe("draft");
+        expect(created.ticket_id).toBeTruthy();
+      } finally {
+        if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prev;
+      }
+    });
+
+    it("(c) a human/runner actor CAN still ready a draft in factory context", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const ticketId = seedDraftWithAc(wg);
+      // The runner/human mount carries a non-agent actor — the guard keys on the
+      // agent actor type, so this path is untouched.
+      const humanActor: Actor = { type: "human", id: "tom" };
+      const h = makeHandlers(wg, humanActor);
+
+      const prev = process.env.GAFFER_CLAIM_TOKEN;
+      process.env.GAFFER_CLAIM_TOKEN = "runner-held-token";
+      try {
+        const res = structured(h.mark_ticket_ready({ ticket_id: ticketId }));
+        expect(res.status).toBe("ready");
+      } finally {
+        if (prev === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prev;
+      }
+      expect(wg.view(ticketId).ticket.status).toBe("ready");
+    });
+
+    it("(d) outside factory context an agent mark_ticket_ready is UNCHANGED (still succeeds)", () => {
+      const wg = Dispatch.open(":memory:", new TestClock());
+      const ticketId = seedDraftWithAc(wg);
+      const h = makeHandlers(wg, agentActor);
+
+      // No factory env marker at all — neither GAFFER_CLAIM_TOKEN nor GAFFER_FACTORY.
+      const prevTok = process.env.GAFFER_CLAIM_TOKEN;
+      const prevFlag = process.env.GAFFER_FACTORY;
+      delete process.env.GAFFER_CLAIM_TOKEN;
+      delete process.env.GAFFER_FACTORY;
+      try {
+        const res = structured(h.mark_ticket_ready({ ticket_id: ticketId }));
+        expect(res.status).toBe("ready");
+      } finally {
+        if (prevTok === undefined) delete process.env.GAFFER_CLAIM_TOKEN;
+        else process.env.GAFFER_CLAIM_TOKEN = prevTok;
+        if (prevFlag === undefined) delete process.env.GAFFER_FACTORY;
+        else process.env.GAFFER_FACTORY = prevFlag;
+      }
+      expect(wg.view(ticketId).ticket.status).toBe("ready");
+    });
+  });
+
   it("a claim token scoped to ticket A cannot evidence ticket B (CLAIM_INVALID)", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     // Ticket A: claimed by the runner, token in hand.

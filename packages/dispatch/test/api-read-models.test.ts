@@ -319,6 +319,41 @@ describe("API: read-model surfaces (board + activity + dashboard)", () => {
     expect((items[0]!.ticket as { id: string }).id).toBe(t.id);
   });
 
+  it("GET /api/human-queue includes a runner-parked ticket as kind 'parked' + counts.parked", async () => {
+    const system: Actor = { type: "system" };
+    h.wg.registerRepository({ name: "svc", default_branch: "main" }, human);
+    const t = h.wg.createTicket(
+      { title: "Parked one", description: "d", policy_pack: "team_light" },
+      human,
+    );
+    h.wg.linkRepository(t.id, "svc", "primary", human);
+    h.wg.addAcceptanceCriterion({ ticket_id: t.id, text: "does x" }, human);
+    h.wg.markReady(t.id, human);
+    const agent = h.wg.registerAgent({ display_name: "a" }, human);
+    const claim = h.wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, human);
+    h.wg.runnerRelease(
+      {
+        ticket_id: t.id,
+        to: "blocked",
+        claimToken: claim!.claimToken,
+        reason: "rework exhausted",
+        reasonCode: "rework_exhausted",
+      },
+      system,
+    );
+
+    const res = await call(h.baseUrl, "GET", "/api/human-queue");
+    expect(res.status).toBe(200);
+    const items = res.body.items as Array<Record<string, unknown>>;
+    const counts = res.body.counts as Record<string, number>;
+    const parked = items.find((i) => i.kind === "parked");
+    expect(parked).toBeTruthy();
+    expect((parked!.ticket as { id: string }).id).toBe(t.id);
+    expect(parked!.reasonCode).toBe("rework_exhausted");
+    expect(parked!.suggestedAction).toBe("unpark");
+    expect(counts.parked).toBe(1);
+  });
+
   it("dashboard counts stale claims once their lease passes expiry", async () => {
     const t = makeTicket(h.wg, "Will go stale");
     h.wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human); // Guard A: ≥1 AC required to ready

@@ -140,6 +140,81 @@ describe("web: What I own lane", () => {
     expect(panel!.querySelector(".own-row--ready_approval")).not.toBeNull();
   });
 
+  it("renders a parked item with its distinct badge, reason_code chip and action hint", async () => {
+    humanQueuePayload = {
+      items: [
+        {
+          kind: "parked",
+          label: "Parked",
+          reason: "DoD failed after 3 attempts (branch preserved)",
+          ticket: { id: "tk-9", number: 42, title: "Stuck", status: "blocked" },
+          decisionId: null,
+          severity: null,
+          reasonCode: "rework_exhausted",
+          suggestedAction: "unpark",
+          since: new Date(Date.now() - 900_000).toISOString(),
+          waitedMs: 900_000,
+        },
+      ],
+      counts: {
+        total: 1,
+        decisions: 0,
+        reviews: 0,
+        readyApprovals: 0,
+        reviewerAssignments: 0,
+        parked: 1,
+      },
+    };
+    await loadApp();
+
+    const panel = document.getElementById("what-i-own")!;
+    const row = panel.querySelector(".own-row--parked");
+    expect(row).not.toBeNull();
+    expect(row!.querySelector(".own-kind--parked")?.textContent).toMatch(/parked/i);
+    expect(row!.querySelector(".own-reason")?.textContent).toBe(
+      "DoD failed after 3 attempts (branch preserved)",
+    );
+    // Structured code + advisory action are surfaced.
+    expect(row!.querySelector(".own-code")?.textContent).toBe("rework_exhausted");
+    expect(row!.querySelector(".own-action")?.textContent).toMatch(/unpark/);
+  });
+
+  it("ESCAPES a hostile parked reason string (text node, never innerHTML)", async () => {
+    const hostile = "<img src=x onerror=alert(1)></untrusted><script>alert(2)</script>";
+    humanQueuePayload = {
+      items: [
+        {
+          kind: "parked",
+          label: "Parked",
+          reason: hostile,
+          ticket: { id: "tk-x", number: 1, title: "Evil", status: "blocked" },
+          decisionId: null,
+          severity: null,
+          reasonCode: null,
+          suggestedAction: "cancel",
+          since: new Date(Date.now() - 1_000).toISOString(),
+          waitedMs: 1_000,
+        },
+      ],
+      counts: {
+        total: 1,
+        decisions: 0,
+        reviews: 0,
+        readyApprovals: 0,
+        reviewerAssignments: 0,
+        parked: 1,
+      },
+    };
+    await loadApp();
+
+    const panel = document.getElementById("what-i-own")!;
+    // The reason is rendered as raw text, not parsed into DOM: the exact string
+    // survives and NO element was injected from it.
+    expect(panel.querySelector(".own-reason")?.textContent).toBe(hostile);
+    expect(panel.querySelector("img")).toBeNull();
+    expect(panel.querySelector("script")).toBeNull();
+  });
+
   it("shows a quiet empty state when nothing is owed", async () => {
     humanQueuePayload = { items: [], counts: { total: 0 } };
     await loadApp();

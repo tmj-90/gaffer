@@ -275,6 +275,39 @@ export class EventRepository {
     }));
   }
 
+  /**
+   * PARKED-WORK-QUEUE: the most recent runner/human park (`ticket.blocked`) event
+   * for `ticketId` — when it was parked, its structured `reason_code` (the runner
+   * sets it: rework_exhausted / bootstrap_failed / strict_require_unavailable /
+   * budget_exhausted; NULL for a human/agent block that recorded no code), and the
+   * FREE-TEXT `reason`. `reason` is agent/runner-influenceable UNTRUSTED text —
+   * every caller that renders it must treat it as data (see humanQueue). Returns
+   * null when the ticket has never had a `ticket.blocked` event.
+   *
+   * Reads `$.reason_code` as an enum-ish structured field and `$.reason` as free
+   * text, matching the "read only the fields we surface" discipline above.
+   */
+  latestParkEvent(
+    ticketId: string,
+  ): { at: string; reason: string | null; reasonCode: string | null } | null {
+    const row = this.db
+      .prepare(
+        `SELECT created_at                              AS at,
+                json_extract(payload_json, '$.reason')      AS reason,
+                json_extract(payload_json, '$.reason_code') AS reasonCode
+           FROM work_events
+          WHERE entity_type = 'ticket'
+            AND entity_id = @ticketId
+            AND event_type = 'ticket.blocked'
+          ORDER BY rowid DESC
+          LIMIT 1`,
+      )
+      .get({ ticketId }) as
+      | { at: string; reason: string | null; reasonCode: string | null }
+      | undefined;
+    return row ?? null;
+  }
+
   /** True when the ticket has at least one work-event of the given type. */
   hasTicketEvent(ticketId: string, eventType: string): boolean {
     const row = this.db

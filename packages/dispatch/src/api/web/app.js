@@ -1732,6 +1732,13 @@ function renderOwnedItem(it) {
       el("span", { class: "own-reason" }, it.reason || "(no reason given)"),
       el("span", { class: "own-meta" }, [
         el("span", { class: "own-ref mono" }, ref),
+        // Parked items only: the structured park reason_code and advisory action.
+        // Both are short enum-ish strings, but rendered as string children (text
+        // nodes) for uniformity — never interpolated into markup or an attribute.
+        it.reasonCode != null ? el("span", { class: "own-code mono" }, it.reasonCode) : null,
+        it.suggestedAction
+          ? el("span", { class: "own-action dim" }, `→ ${it.suggestedAction}`)
+          : null,
         el(
           "span",
           { class: "own-age dim tabnum", title: `Waiting since ${it.since}` },

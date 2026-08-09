@@ -90,7 +90,9 @@ export function routeReadModels(
 
   // /api/human-queue — Track 2a "What I own": the HUMAN-owned queue (pending
   // decisions with reasons, review sign-offs, regulated ready-approvals/reviewer
-  // assignments), each with what/which-ticket/why/how-long. Read-only.
+  // assignments, and runner/human PARKED tickets), each with what/which-ticket/
+  // why/how-long. Read-only; the parked item's free-text reason is serialized as a
+  // JSON string (encoder-escaped), never server-rendered HTML.
   if (segments.length === 2 && segments[1] === "human-queue") {
     if (method !== "GET") return methodNotAllowed(res);
     sendJson(res, 200, wg.humanQueue());

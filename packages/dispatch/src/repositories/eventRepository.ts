@@ -319,4 +319,26 @@ export class EventRepository {
       .get(ticketId, eventType);
     return row !== undefined;
   }
+
+  /**
+   * DELIVERY-DOSSIER: the hash carried by the most recent `ticket.dossier_recorded`
+   * event for `ticketId`, or null when none has been recorded. Reads only the
+   * `$.dossier_hash` field (a SHA-256 hex digest — never free text). Powers the
+   * idempotency check in {@link import("../services/dossierService.js").DossierService}:
+   * re-recording an unchanged dossier is a no-op when the fresh hash equals this.
+   */
+  latestDossierHash(ticketId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT json_extract(payload_json, '$.dossier_hash') AS hash
+           FROM work_events
+          WHERE entity_type = 'ticket'
+            AND entity_id = @ticketId
+            AND event_type = 'ticket.dossier_recorded'
+          ORDER BY rowid DESC
+          LIMIT 1`,
+      )
+      .get({ ticketId }) as { hash: string | null } | undefined;
+    return row?.hash ?? null;
+  }
 }

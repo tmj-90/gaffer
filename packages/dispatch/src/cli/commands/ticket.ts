@@ -105,6 +105,35 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("dossier <ref>")
+    .description(
+      "DELIVERY-DOSSIER: assemble the tamper-evident evidence artifact for a " +
+        "delivered ticket from existing recorded state, and record its content hash " +
+        "against the control plane (a `ticket.dossier_recorded` event). --markdown " +
+        "renders the human-readable view; --no-record previews without writing the event.",
+    )
+    .option("--markdown", "render the human-readable Markdown dossier", false)
+    .option("--no-record", "preview only — do NOT record the tamper-evidence event")
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        // `--no-record` (Commander sets opts.record=false) is a pure read; otherwise
+        // record the ONE tamper-evidence event (idempotent when unchanged).
+        if (opts.record === false) {
+          const dossier = wg.dossier(ref);
+          if (opts.markdown) process.stdout.write(`${wg.dossierSvc.renderMarkdown(dossier)}\n`);
+          else printJson({ ok: true, recorded: false, dossier });
+        } else {
+          const { dossier, eventId } = wg.recordDossier(ref, cliActor());
+          if (opts.markdown) process.stdout.write(`${wg.dossierSvc.renderMarkdown(dossier)}\n`);
+          else printJson({ ok: true, recorded: eventId !== null, event: eventId, dossier });
+        }
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  ticket
     .command("auto-decision <ref>")
     .description(
       "GRADUATED-AUTONOMY: read-only ship decision the AFK runner consults — is `auto` " +

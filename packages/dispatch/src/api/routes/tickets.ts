@@ -45,6 +45,8 @@ const TICKET_SUB = {
   REVIEW: "review",
   MARK_MERGED: "mark-merged",
   DIFF: "diff",
+  // DELIVERY-DOSSIER: the tamper-evident evidence artifact (JSON + markdown).
+  DOSSIER: "dossier",
   REOPEN_FOR_REVIEW: "reopen-for-review",
   WONT_DO: "wont-do",
   REOPEN: "reopen",
@@ -366,6 +368,25 @@ export async function routeTickets(
   // approving (and the resolved diff after a reopen-for-review).
   if (segments.length === 3 && sub === TICKET_SUB.DIFF && method === "GET") {
     sendJson(res, 200, wg.ticketDiff(id));
+    return;
+  }
+
+  // DELIVERY-DOSSIER: /tickets/:id/dossier — the tamper-evident evidence artifact
+  // assembled from existing recorded state. READ-ONLY (pure assemble + hash; no
+  // write), so it is reachable by a read-scoped token under the method-based gate;
+  // recording the hash as an event is the CLI's job (the mutation surface). JSON by
+  // default; `?format=markdown` or `Accept: text/markdown` returns the rendered view.
+  if (segments.length === 3 && sub === TICKET_SUB.DOSSIER && method === "GET") {
+    const dossier = wg.dossier(id);
+    const wantsMarkdown =
+      url.searchParams.get("format") === "markdown" ||
+      (req.headers.accept ?? "").includes("text/markdown");
+    if (wantsMarkdown) {
+      res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
+      res.end(wg.dossierSvc.renderMarkdown(dossier));
+      return;
+    }
+    sendJson(res, 200, dossier);
     return;
   }
 

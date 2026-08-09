@@ -5956,12 +5956,12 @@ function safeHttpUrl(url) {
 }
 
 /**
- * Render one git diff as monospace lines, colouring +/- with the existing
- * success/danger tokens. The raw diff text is inserted as text nodes (per-line),
- * never innerHTML, so a hostile diff can never inject markup.
+ * Render a slice of unified-diff lines as monospace rows, colouring +/- with the
+ * existing success/danger tokens. Each line is inserted as its OWN text node
+ * (never innerHTML), so a hostile diff line can never inject markup. Returns the
+ * scrollable `<pre>` well.
  */
-function diffBody(diffText) {
-  const lines = String(diffText || "").split("\n");
+function diffPre(lines) {
   const rows = lines.map((line) => {
     let cls = "diff-line";
     const first = line.charAt(0);
@@ -5975,8 +5975,60 @@ function diffBody(diffText) {
   return el("pre", { class: "diff-pre" }, rows);
 }
 
-/** A single repo's diff section: header (repo/branch/stats) + collapsible body. */
-function repoDiffSection(rd) {
+/** Back-compat: render a whole unified diff as one `<pre>`. */
+function diffBody(diffText) {
+  return diffPre(String(diffText || "").split("\n"));
+}
+
+/**
+ * Split a unified `git diff` into per-file chunks. Each chunk starts at a
+ * `diff --git ` line; any preamble before the first such line is dropped.
+ *
+ * The display PATH is derived from the chunk's `+++ ` line (strip the `b/`
+ * prefix), falling back to the `--- ` source (strip `a/`) for a pure deletion
+ * (`+++ /dev/null`), and finally to the `diff --git` line. It is used ONLY as a
+ * text-node child / attribute value downstream, so a hostile path (spaces,
+ * quotes, markup, escaped bytes) is inert — never a DOM id or selector.
+ *
+ * Per-file +/- counts are best-effort: with a truncated diff the last chunk may
+ * be cut mid-line, so these are advisory (the aggregate `truncated` badge stays
+ * on the section head).
+ */
+function splitDiffFiles(diffText) {
+  const lines = String(diffText || "").split("\n");
+  const files = [];
+  let cur = null;
+  const flush = () => {
+    if (cur) files.push(cur);
+  };
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      flush();
+      cur = { header: line, lines: [], additions: 0, deletions: 0 };
+    }
+    if (!cur) continue; // drop any preamble before the first `diff --git`
+    cur.lines.push(line);
+    if (line.startsWith("+++ ")) cur.plus = line.slice(4).trim();
+    else if (line.startsWith("--- ")) cur.minus = line.slice(4).trim();
+    else if (line.charAt(0) === "+") cur.additions += 1;
+    else if (line.charAt(0) === "-") cur.deletions += 1;
+  }
+  flush();
+  const stripPrefix = (p, pfx) => (p && p.startsWith(pfx) ? p.slice(pfx.length) : p);
+  for (const f of files) {
+    let p;
+    if (f.plus && f.plus !== "/dev/null") p = stripPrefix(f.plus, "b/");
+    else if (f.minus && f.minus !== "/dev/null") p = stripPrefix(f.minus, "a/");
+    else p = f.header.replace(/^diff --git\s+/, "");
+    f.path = p || "(unknown file)";
+  }
+  return files;
+}
+
+/** A single repo's diff section: header (repo/branch/stats) + per-file file
+ *  strip (jumper) + one collapsible `<details>` per file. `repoIdx` scopes the
+ *  DOM ids to indices — a path is NEVER used to build an id or selector. */
+function repoDiffSection(rd, repoIdx = 0) {
   const statBits = [];
   if (rd.unavailable) {
     statBits.push(el("span", { class: "diff-stat dim" }, rd.message || rd.unavailable));
@@ -5997,9 +6049,89 @@ function repoDiffSection(rd) {
       : null,
     el("span", { class: "diff-stats" }, statBits),
   ]);
-  const body = rd.unavailable ? null : diffBody(rd.diff);
   const risk = rd.unavailable ? null : riskOverlay(rd.riskAnnotations || []);
-  return el("div", { class: "diff-section" }, [header, risk, body]);
+
+  if (rd.unavailable) {
+    return el("div", { class: "diff-section" }, [header, risk]);
+  }
+
+  // Set of risk paths, so a file can carry an ADVISORY marker when its path
+  // matches a riskAnnotations entry. Tolerant match survives rename (`old => new`)
+  // strings and a/b-prefix / sub-path differences; drives presentation only.
+  const riskAnns = rd.riskAnnotations || [];
+  const riskInfo = (fp) => {
+    for (const a of riskAnns) {
+      const paths = a.paths || [];
+      const hit = paths.some((p) => p === fp || (p && fp && (p.includes(fp) || fp.includes(p))));
+      if (hit) return a;
+    }
+    return null;
+  };
+
+  const files = splitDiffFiles(rd.diff);
+  if (files.length === 0) {
+    // No parseable `diff --git` chunk (e.g. a plain textual diff): fall back to
+    // the single-pre rendering so nothing is lost.
+    return el("div", { class: "diff-section" }, [header, risk, diffBody(rd.diff)]);
+  }
+
+  const strip = el("nav", { class: "diff-filestrip", "aria-label": "Files in this diff" });
+  const filesBox = el("div", { class: "diff-files" });
+
+  files.forEach((f, fileIdx) => {
+    const targetId = `diff-file-${repoIdx}-${fileIdx}`;
+    const ann = riskInfo(f.path);
+    const riskTitle = ann ? `${String(ann.kind).replace(/-/g, " ")}: ${ann.detail}` : null;
+
+    // Jumper chip — path is a text node; target id is index-derived, never the path.
+    const jumpChildren = [
+      el("code", { class: "mono diff-filejump-path" }, f.path),
+      el("span", { class: "diff-filejump-stat" }, `+${f.additions} −${f.deletions}`),
+    ];
+    if (ann) jumpChildren.push(icon("alert", "diff-file-risk"));
+    const jump = el(
+      "button",
+      {
+        type: "button",
+        class: "diff-filejump" + (ann ? " has-risk" : ""),
+        dataset: { fileTarget: targetId },
+        title: riskTitle || f.path,
+        onclick: () => {
+          const target = document.getElementById(targetId);
+          if (!target) return;
+          target.open = true;
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+        },
+      },
+      jumpChildren,
+    );
+    strip.appendChild(jump);
+
+    // Collapsible per-file block — native <details>, so collapse hides ONLY this
+    // file's lines. The id is index-scoped, never derived from the path.
+    const summaryChildren = [
+      icon("chevron", "diff-file-chev"),
+      el("code", { class: "mono diff-file-path" }, f.path),
+      el("span", { class: "diff-filejump-stat" }, [
+        el("span", { class: "diff-add-stat" }, `+${f.additions}`),
+        " ",
+        el("span", { class: "diff-del-stat" }, `−${f.deletions}`),
+      ]),
+    ];
+    if (ann) {
+      const marker = icon("alert", "diff-file-risk");
+      marker.setAttribute("title", riskTitle);
+      summaryChildren.push(marker);
+    }
+    filesBox.appendChild(
+      el("details", { class: "diff-file-block", open: "", id: targetId }, [
+        el("summary", { class: "diff-file-summary" }, summaryChildren),
+        diffPre(f.lines),
+      ]),
+    );
+  });
+
+  return el("div", { class: "diff-section" }, [header, risk, strip, filesBox]);
 }
 
 /**
@@ -6094,7 +6226,7 @@ function renderTicketDiff(ticketId, onState) {
           `Diff (${repos.length} repo${repos.length === 1 ? "" : "s"})`,
         ),
       );
-      for (const rd of repos) box.appendChild(repoDiffSection(rd));
+      repos.forEach((rd, i) => box.appendChild(repoDiffSection(rd, i)));
       report(diffApprovability(repos));
     })
     .catch((e) => {
@@ -6580,13 +6712,44 @@ async function renderReview() {
     wrap.appendChild(card);
   }
 
-  // Keyboard queue navigation (j/k move, a approve, r reject-to-ready).
+  // Keyboard queue navigation (j/k move, a arm→approve, r reject-to-ready).
   let cursor = 0;
+  // Two-step approve: the FIRST `a` only ARMS the focused card (a visible confirm
+  // state, no POST); a SECOND `a` on the SAME card within the window approves.
+  // Arming is cancelled by Escape, by moving the cursor (j/k), or by the window
+  // elapsing — a single mis-keyed `a` can therefore never approve+merge a ticket.
+  const ARM_WINDOW_MS = 3000;
+  let armedIdx = null;
+  let armTimer = null;
+  const disarm = () => {
+    if (armTimer) {
+      clearTimeout(armTimer);
+      armTimer = null;
+    }
+    if (armedIdx != null) {
+      cards[armedIdx]?.classList.remove("card-armed");
+      armedIdx = null;
+    }
+  };
+  const arm = (idx) => {
+    disarm();
+    armedIdx = idx;
+    cards[idx]?.classList.add("card-armed");
+    armTimer = setTimeout(disarm, ARM_WINDOW_MS);
+  };
   const focusCard = (idx) => {
+    // Moving the cursor cancels a pending arm (spec): the confirm must apply to
+    // the card the human is actually looking at.
+    disarm();
     cursor = Math.max(0, Math.min(cards.length - 1, idx));
     cards[cursor].focus({ preventScroll: false });
     cards.forEach((c, i) => c.classList.toggle("card-accent", i === cursor));
   };
+  // Visible cursor on LOAD: cursor is 0, but `.card-accent` is only applied inside
+  // focusCard (j/k) — so nothing was highlighted on mount even though `a` acted on
+  // card 0. Highlight card 0 class-only (no .focus()/scroll) so exactly one card
+  // visibly carries the cursor before any key is pressed.
+  cards[0]?.classList.add("card-accent");
   const onKey = (e) => {
     // A modal (reject dialog, command palette, detail sheet, move-menu) owns the
     // keyboard while open — never let a queue shortcut fire underneath it. The
@@ -6603,7 +6766,17 @@ async function renderReview() {
       focusCard(cursor - 1);
     } else if (e.key === "a") {
       e.preventDefault();
-      cards[cursor]?._actions.approve();
+      if (armedIdx === cursor) {
+        // Second `a` on the armed card → approve (approve() still fail-closes on
+        // diffState.approvable, so an unseen/unloaded diff can't be approved).
+        const i = cursor;
+        disarm();
+        cards[i]?._actions.approve();
+      } else {
+        arm(cursor);
+      }
+    } else if (e.key === "Escape") {
+      disarm();
     } else if (e.key === "r") {
       e.preventDefault();
       cards[cursor]?._actions.reject("refining");
@@ -6614,6 +6787,7 @@ async function renderReview() {
   const observer = new MutationObserver(() => {
     if (!document.body.contains(wrap)) {
       document.removeEventListener("keydown", onKey);
+      if (armTimer) clearTimeout(armTimer); // no stray timer touching detached nodes
       observer.disconnect();
     }
   });

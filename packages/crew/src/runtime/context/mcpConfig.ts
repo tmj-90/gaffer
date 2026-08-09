@@ -5,8 +5,8 @@ import { CrewError } from "../../util/errors.js";
 // substitution (P1b context assembly, docs/tick-sh-runtime-migration.md).
 // ---------------------------------------------------------------------
 // tick.sh renders a per-tick RUNTIME copy of runner/.mcp.json by sed-
-// substituting five ${NAME} placeholders (tick.sh:1839–1840, bootstrap
-// twin at 912–913), escaping the replacement via _gaffer_sed_repl
+// substituting six ${NAME} placeholders (tick.sh main render + bootstrap
+// twin), escaping the replacement via _gaffer_sed_repl
 // (factory.config.sh) — whose whole point is a LITERAL substitution.
 //
 // PARITY NOTES:
@@ -27,7 +27,7 @@ import { CrewError } from "../../util/errors.js";
 // must never reach a live agent launch.
 // =====================================================================
 
-/** The five runtime values substituted into the .mcp.json template. */
+/** The six runtime values substituted into the .mcp.json template. */
 export interface McpRuntimeInputs {
   dispatchDb: string;
   memoryDb: string;
@@ -35,6 +35,13 @@ export interface McpRuntimeInputs {
   memoryMcpBin: string;
   /** May legitimately be "" (resumed delivery / dry-run — no runner-held claim). */
   claimToken: string;
+  /**
+   * The ticket's in-scope repo NAMES, colon-joined (the memory-scope binding —
+   * binds the memory server's direct-apply writes to the ticket's repos). May
+   * legitimately be "" in edge cases (no named repo); the memory guard then
+   * fails closed and refuses direct-apply writes.
+   */
+  ticketRepos: string;
 }
 
 const PLACEHOLDERS: ReadonlyArray<[token: string, key: keyof McpRuntimeInputs]> = [
@@ -43,6 +50,7 @@ const PLACEHOLDERS: ReadonlyArray<[token: string, key: keyof McpRuntimeInputs]> 
   ["${DISPATCH_MCP_BIN}", "dispatchMcpBin"],
   ["${MEMORY_MCP_BIN}", "memoryMcpBin"],
   ["${GAFFER_CLAIM_TOKEN}", "claimToken"],
+  ["${GAFFER_TICKET_REPOS}", "ticketRepos"],
 ];
 
 const LEFTOVER_PLACEHOLDER = /\$\{[A-Z_]+\}/;

@@ -6,6 +6,7 @@ import { audit } from "../../core/audit.js";
 import { getDigest, upsertDigest } from "../../core/repoUnderstanding.js";
 import { checkMaxLen, DIGEST_CAPS } from "../validation.js";
 import { quarantineDigest, QUARANTINE_NOTICE, stripEnvelopeTokens } from "../quarantine.js";
+import { repoInScope, repoOutOfScopeRefusal, scopeEnforcementActive } from "../scopeGuard.js";
 
 /**
  * Register the repo-digest MCP tools onto `server`:
@@ -143,6 +144,25 @@ export function registerDigestTools(server: McpServer, db: Database): void {
             content: [{ type: "text", text: JSON.stringify(err, null, 2) }],
           };
         }
+      }
+      // Repo-scope guard (factory only): a direct-apply digest write may only
+      // target a repo the current ticket is scoped to. Runs AFTER the length /
+      // sanitise checks and BEFORE the DB write — purely additive, never
+      // weakening the bounds above. Inert (standalone unchanged) unless the
+      // runner set GAFFER_FACTORY=1; fail-closed when the scope signal is
+      // missing. See scopeGuard.ts.
+      if (scopeEnforcementActive(process.env) && !repoInScope(args.repo, process.env)) {
+        audit({
+          tool: "update_repo_digest",
+          request: { repo: args.repo, source: args.source },
+          blocked: "repo_out_of_scope",
+        });
+        return {
+          isError: true,
+          content: [
+            { type: "text", text: JSON.stringify(repoOutOfScopeRefusal(args.repo), null, 2) },
+          ],
+        };
       }
       try {
         const digest = upsertDigest(db, {

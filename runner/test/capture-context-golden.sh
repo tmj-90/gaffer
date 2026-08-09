@@ -201,6 +201,7 @@ NUM="$NUM" TITLE="$TICKET_TITLE" SKILLS_STR="$SKILLS_STR" LENSES_STR="$LENSES_ST
       dispatchMcpBin: e.DBIN,
       memoryMcpBin: e.MBIN,
       claimToken: "__CLAIM_TOKEN__",
+      ticketRepos: "fixture-app",
     },
   }, null, 2) + "\n");
 ' || die "write inputs.json"

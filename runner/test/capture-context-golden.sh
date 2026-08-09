@@ -202,6 +202,7 @@ NUM="$NUM" TITLE="$TICKET_TITLE" SKILLS_STR="$SKILLS_STR" LENSES_STR="$LENSES_ST
       memoryMcpBin: e.MBIN,
       claimToken: "__CLAIM_TOKEN__",
       ticketRepos: "fixture-app",
+      recallTicket: e.NUM,
     },
   }, null, 2) + "\n");
 ' || die "write inputs.json"

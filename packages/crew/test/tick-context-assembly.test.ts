@@ -78,6 +78,25 @@ describe("golden: MCP runtime config (bash sed parity)", () => {
     expect(comment).toContain("__GAFFER_DATA__/dispatch.sqlite");
     expect(comment).not.toContain("${DISPATCH_DB}");
   });
+
+  it("substitutes the 7th placeholder (recall ticket) into the memory server env", () => {
+    const rendered = renderMcpRuntimeConfig(runnerFile(".mcp.json"), {
+      ...captured.mcp,
+      recallTicket: "77",
+    });
+    const env = (
+      JSON.parse(rendered) as { mcpServers: { memory: { env: Record<string, string> } } }
+    ).mcpServers.memory.env;
+    expect(env["GAFFER_RECALL_TICKET"]).toBe("77");
+  });
+
+  it('an empty recall ticket renders as "" (bootstrap / no delivery ticket → inert)', () => {
+    const rendered = renderMcpRuntimeConfig(runnerFile(".mcp.json"), {
+      ...captured.mcp,
+      recallTicket: "",
+    });
+    expect(rendered).toContain('"GAFFER_RECALL_TICKET": ""');
+  });
 });
 
 describe("golden: fresh delivery prompt (heredoc parity)", () => {

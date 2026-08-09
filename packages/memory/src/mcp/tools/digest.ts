@@ -7,6 +7,7 @@ import { getDigest, upsertDigest } from "../../core/repoUnderstanding.js";
 import { checkMaxLen, DIGEST_CAPS } from "../validation.js";
 import { quarantineDigest, QUARANTINE_NOTICE, stripEnvelopeTokens } from "../quarantine.js";
 import { repoInScope, repoOutOfScopeRefusal, scopeEnforcementActive } from "../scopeGuard.js";
+import { recordRetrieval } from "../retrievalLog.js";
 
 /**
  * Register the repo-digest MCP tools onto `server`:
@@ -44,6 +45,11 @@ export function registerDigestTools(server: McpServer, db: Database): void {
           resultCount: digest ? 1 : 0,
           resultIds: digest ? [digest.repo] : [],
         });
+        // ROI: fail-soft retrieval log (ids only, gated on ticket). item_id for a
+        // digest is its repo. Takes no part in the response. See retrievalLog.ts.
+        if (digest) {
+          recordRetrieval(db, "get_repo_digest", [{ type: "digest", id: digest.repo }], args.repo);
+        }
         const out = digest
           ? {
               // Model-derived free text (overview / structure / conventions /

@@ -92,7 +92,11 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
       # substituted EMPTY (the MCP server treats "" as "no token"). Substituting it
       # strips the placeholder so the literal ${GAFFER_CLAIM_TOKEN} never leaks in.
-      sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
+      # Likewise a reviewer is NOT a delivery, so there is no recall ticket:
+      # substitute ${GAFFER_RECALL_TICKET} EMPTY (memory's read path treats "" as
+      # no-ticket => inert) so the literal placeholder never leaks into the memory
+      # server env and buckets reviewer reads under a fake ticket.
+      sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "")#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
       cp -f "$HERE/claude/CLAUDE.md" "$WT/CLAUDE.factory.md"
       # File-card context for the reviewer — orients it on the repo's structure
       # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.

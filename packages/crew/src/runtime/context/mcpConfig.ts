@@ -5,7 +5,7 @@ import { CrewError } from "../../util/errors.js";
 // substitution (P1b context assembly, docs/tick-sh-runtime-migration.md).
 // ---------------------------------------------------------------------
 // tick.sh renders a per-tick RUNTIME copy of runner/.mcp.json by sed-
-// substituting six ${NAME} placeholders (tick.sh main render + bootstrap
+// substituting seven ${NAME} placeholders (tick.sh main render + bootstrap
 // twin), escaping the replacement via _gaffer_sed_repl
 // (factory.config.sh) — whose whole point is a LITERAL substitution.
 //
@@ -27,7 +27,7 @@ import { CrewError } from "../../util/errors.js";
 // must never reach a live agent launch.
 // =====================================================================
 
-/** The six runtime values substituted into the .mcp.json template. */
+/** The seven runtime values substituted into the .mcp.json template. */
 export interface McpRuntimeInputs {
   dispatchDb: string;
   memoryDb: string;
@@ -42,6 +42,13 @@ export interface McpRuntimeInputs {
    * fails closed and refuses direct-apply writes.
    */
   ticketRepos: string;
+  /**
+   * The delivery ticket ref, plumbed into the memory server so its read path can
+   * key a retrieval to a ticket (memory ROI attribution). May legitimately be ""
+   * (bootstrap / no delivery ticket); the memory read path then logs nothing —
+   * the ROI instrumentation is inert, exactly like standalone memory-mcp.
+   */
+  recallTicket: string;
 }
 
 const PLACEHOLDERS: ReadonlyArray<[token: string, key: keyof McpRuntimeInputs]> = [
@@ -51,13 +58,14 @@ const PLACEHOLDERS: ReadonlyArray<[token: string, key: keyof McpRuntimeInputs]> 
   ["${MEMORY_MCP_BIN}", "memoryMcpBin"],
   ["${GAFFER_CLAIM_TOKEN}", "claimToken"],
   ["${GAFFER_TICKET_REPOS}", "ticketRepos"],
+  ["${GAFFER_RECALL_TICKET}", "recallTicket"],
 ];
 
 const LEFTOVER_PLACEHOLDER = /\$\{[A-Z_]+\}/;
 
 /**
  * Render the runtime MCP config from the raw template text. Literal textual
- * substitution of the five `${NAME}` tokens, then fail-closed validation.
+ * substitution of the seven `${NAME}` tokens, then fail-closed validation.
  *
  * @throws CrewError (`INVALID_MCP_TEMPLATE`) when the rendered result is not
  *   valid JSON, lacks `mcpServers.dispatch`/`mcpServers.memory`, or still

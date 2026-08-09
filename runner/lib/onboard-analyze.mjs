@@ -1065,6 +1065,14 @@ export function agentChildEnv(base = process.env) {
     )
       delete env[key];
   }
+  // Onboarding is NOT a delivery, so there is no recall ticket. This analysis
+  // spawn passes the RAW .mcp.json (MCP_CONFIG) whose memory server env carries
+  // "GAFFER_RECALL_TICKET": "${GAFFER_RECALL_TICKET}"; Claude Code expands that
+  // placeholder from THIS env. Pin it EMPTY so the expansion yields "" (memory's
+  // read path treats "" as no-ticket ⇒ inert) instead of forwarding the literal
+  // placeholder, which would bucket every onboarding retrieval under a fake
+  // ticket that can never join to a real outcome.
+  env["GAFFER_RECALL_TICKET"] = "";
   return env;
 }
 

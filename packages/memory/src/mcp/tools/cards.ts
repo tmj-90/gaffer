@@ -16,6 +16,8 @@ import {
   quarantineLore,
   QUARANTINE_NOTICE,
 } from "../quarantine.js";
+import { recordRetrieval } from "../retrievalLog.js";
+import type { RetrievalItem } from "../../core/retrievalRoi.js";
 
 /**
  * Register the file-card retrieval MCP tools onto `server`:
@@ -69,6 +71,11 @@ export function registerCardTools(server: McpServer, db: Database): void {
           resultCount: card ? 1 : 0,
           resultIds: card ? [card.id] : [],
         });
+        // ROI: fail-soft retrieval log (ids only, gated on ticket). Only when a
+        // card was served. Takes no part in the response. See retrievalLog.ts.
+        if (card) {
+          recordRetrieval(db, "get_file_card", [{ type: "card", id: card.id }], args.repo);
+        }
         const out = card
           ? {
               found: true,
@@ -165,6 +172,14 @@ export function registerCardTools(server: McpServer, db: Database): void {
           resultCount: cards.length,
           resultIds: cards.map((c) => c.id),
         });
+        // ROI: fail-soft retrieval log (ids only, gated on ticket). Takes no
+        // part in the response below. See retrievalLog.ts.
+        recordRetrieval(
+          db,
+          "search_file_cards",
+          cards.map((c) => ({ type: "card", id: c.id })),
+          args.repo,
+        );
         const out = {
           query: args.query,
           repo: args.repo,
@@ -313,6 +328,15 @@ export function registerCardTools(server: McpServer, db: Database): void {
           resultCount: packet.cards.length,
           resultIds: packet.cards.map((c) => c.id),
         });
+        // ROI: fail-soft retrieval log (ids only, gated on ticket). This packet
+        // serves cards + repo digest + top lore, so all three kinds are recorded.
+        // Takes no part in the response below. See retrievalLog.ts.
+        {
+          const items: RetrievalItem[] = packet.cards.map((c) => ({ type: "card", id: c.id }));
+          if (packet.digest) items.push({ type: "digest", id: packet.digest.repo });
+          for (const l of packet.lore) items.push({ type: "lore", id: l.id });
+          recordRetrieval(db, "cards_for_scope", items, args.repo);
+        }
         // A canonical/key mismatch diagnostic is an operator concern — log it
         // to stderr, never into the agent-facing packet (it names other repos'
         // keys and is untrusted noise). Consistent with search_file_cards.

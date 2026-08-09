@@ -23,7 +23,8 @@ import { createHash } from "node:crypto";
 import { addBoundary } from "../src/core/boundaries.js";
 import { addLore } from "../src/core/lore.js";
 import { recordAbsence } from "../src/core/absence.js";
-import { upsertFileCard } from "../src/core/fileCards.js";
+import { repoKey, upsertFileCard } from "../src/core/fileCards.js";
+import { addFeature, upsertDigest } from "../src/core/repoUnderstanding.js";
 import { buildMcpServer } from "../src/mcp/server.js";
 import { runMigrations } from "../src/db/migrations.js";
 import type { Database } from "better-sqlite3";
@@ -34,6 +35,8 @@ const ENV_KEYS = [
   "MEMORY_AUTO_APPROVE",
   "MEMORY_AUDIT_OFF",
   "MEMORY_AUDIT_LOG",
+  "GAFFER_RECALL_TICKET",
+  "GAFFER_TICKET_REPOS",
 ];
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -124,6 +127,8 @@ beforeEach(() => {
   delete process.env["MEMORY_ALLOW_RESTRICTED_MCP"];
   delete process.env["MEMORY_ALLOW_MCP_ABSENCE"];
   delete process.env["MEMORY_AUTO_APPROVE"];
+  delete process.env["GAFFER_RECALL_TICKET"];
+  delete process.env["GAFFER_TICKET_REPOS"];
   db = newDb();
 });
 
@@ -817,5 +822,177 @@ describe("MCP — repo-key mismatch diagnostic stays out of agent context (N2)",
     expect(json).not.toHaveProperty("diagnostics");
     expect(JSON.stringify(json)).not.toContain("mismatch");
     expect(err).toContain("mismatch");
+  });
+});
+
+describe("MCP — retrieval-ROI logging on the read path (migration 011)", () => {
+  const CANON = "https://github.com/acme/app.git";
+  const REPO = "app";
+
+  /** Seed one of each served record kind so every read tool has something to serve. */
+  function seedAll(): { loreId: string; cardId: string; featureId: string } {
+    const lore = addLore(db, {
+      title: "Webhook retry policy",
+      summary: "s",
+      body: "b",
+      repos: [REPO],
+      confidence: "medium",
+    });
+    upsertDigest(db, {
+      repo: REPO,
+      overview: "o",
+      structure: "st",
+      conventions: "c",
+      stack: "ts",
+      source: "onboard",
+    });
+    const feature = addFeature(db, { repo: REPO, name: "Retries", summary: "s" });
+    const card = upsertFileCard(db, {
+      repoKey: repoKey(CANON),
+      canonical: CANON,
+      repo: REPO,
+      path: "src/webhook.ts",
+      contentHash: "a".repeat(64),
+      loc: 10,
+      symbols: ["retry"],
+      source: "onboard",
+      tldr: "webhook retry",
+      modelStatus: "active",
+    });
+    return { loreId: lore.id, cardId: card.id, featureId: feature.id };
+  }
+
+  function rows(): Array<{ item_type: string; item_id: string; tool: string; ticket: string }> {
+    return db
+      .prepare(
+        "SELECT item_type, item_id, tool, ticket FROM retrieval_event ORDER BY tool, item_type",
+      )
+      .all() as Array<{ item_type: string; item_id: string; tool: string; ticket: string }>;
+  }
+
+  it("records a retrieval_event for each read tool when GAFFER_RECALL_TICKET is set", async () => {
+    const { loreId, cardId, featureId } = seedAll();
+    process.env["GAFFER_RECALL_TICKET"] = "42";
+    process.env["GAFFER_TICKET_REPOS"] = REPO;
+    client = await connectClient(db);
+
+    await callJson(client, "search_lore", { query: "webhook" });
+    await callJson(client, "get_lore", { id: loreId });
+    await callJson(client, "get_repo_digest", { repo: REPO });
+    await callJson(client, "list_features", { repo: REPO });
+    await callJson(client, "get_file_card", {
+      repoCanonical: CANON,
+      repo: REPO,
+      path: "src/webhook.ts",
+    });
+    await callJson(client, "search_file_cards", {
+      repoCanonical: CANON,
+      repo: REPO,
+      query: "webhook",
+    });
+    await callJson(client, "cards_for_scope", {
+      repoCanonical: CANON,
+      repo: REPO,
+      query: "webhook",
+    });
+
+    const all = rows();
+    // Every row is keyed to the delivery ticket.
+    expect(all.every((r) => r.ticket === "42")).toBe(true);
+    const byTool = (tool: string): Array<{ item_type: string; item_id: string }> =>
+      all
+        .filter((r) => r.tool === tool)
+        .map((r) => ({ item_type: r.item_type, item_id: r.item_id }));
+
+    expect(byTool("search_lore")).toContainEqual({ item_type: "lore", item_id: loreId });
+    expect(byTool("get_lore")).toContainEqual({ item_type: "lore", item_id: loreId });
+    expect(byTool("get_repo_digest")).toContainEqual({ item_type: "digest", item_id: REPO });
+    expect(byTool("list_features")).toContainEqual({ item_type: "feature", item_id: featureId });
+    expect(byTool("get_file_card")).toContainEqual({ item_type: "card", item_id: cardId });
+    expect(byTool("search_file_cards")).toContainEqual({ item_type: "card", item_id: cardId });
+    // cards_for_scope serves all three kinds.
+    const scope = byTool("cards_for_scope");
+    expect(scope).toContainEqual({ item_type: "card", item_id: cardId });
+    expect(scope).toContainEqual({ item_type: "digest", item_id: REPO });
+    expect(scope).toContainEqual({ item_type: "lore", item_id: loreId });
+  });
+
+  it("writes NOTHING when GAFFER_RECALL_TICKET is unset (standalone inert)", async () => {
+    const { loreId } = seedAll();
+    // No GAFFER_RECALL_TICKET set.
+    client = await connectClient(db);
+    await callJson(client, "search_lore", { query: "webhook" });
+    await callJson(client, "get_lore", { id: loreId });
+    await callJson(client, "get_repo_digest", { repo: REPO });
+    await callJson(client, "cards_for_scope", {
+      repoCanonical: CANON,
+      repo: REPO,
+      query: "webhook",
+    });
+    const n = (db.prepare("SELECT COUNT(*) AS n FROM retrieval_event").get() as { n: number }).n;
+    expect(n).toBe(0);
+  });
+
+  it("writes NOTHING when GAFFER_RECALL_TICKET is the unsubstituted ${…} placeholder", async () => {
+    // A non-delivery invocation (onboarding, product-owner, review/clarify) hands
+    // the memory MCP server a PARTIALLY-rendered .mcp.json where ${GAFFER_RECALL_TICKET}
+    // was never substituted, so Claude Code forwards the literal to the server env.
+    // The recallTicket() choke point must treat that exactly like no ticket — else
+    // every read is bucketed under a fake ticket that can never join to an outcome.
+    const { loreId } = seedAll();
+    process.env["GAFFER_RECALL_TICKET"] = "${GAFFER_RECALL_TICKET}";
+    process.env["GAFFER_TICKET_REPOS"] = REPO;
+    client = await connectClient(db);
+    await callJson(client, "search_lore", { query: "webhook" });
+    await callJson(client, "get_lore", { id: loreId });
+    await callJson(client, "get_repo_digest", { repo: REPO });
+    await callJson(client, "cards_for_scope", {
+      repoCanonical: CANON,
+      repo: REPO,
+      query: "webhook",
+    });
+    const n = (db.prepare("SELECT COUNT(*) AS n FROM retrieval_event").get() as { n: number }).n;
+    expect(n).toBe(0);
+  });
+
+  it("returns an IDENTICAL response with the ticket env set vs unset (memory read unchanged)", async () => {
+    const { loreId } = seedAll();
+    client = await connectClient(db);
+
+    // Same DB, same client — only the env toggles. Logging writes to
+    // retrieval_event, which no read tool consults, so the responses must match.
+    const unsetScope = await callJson(client, "cards_for_scope", {
+      repoCanonical: CANON,
+      repo: REPO,
+      query: "webhook",
+    });
+    const unsetLore = await callJson(client, "get_lore", { id: loreId });
+
+    process.env["GAFFER_RECALL_TICKET"] = "42";
+    process.env["GAFFER_TICKET_REPOS"] = REPO;
+    const setScope = await callJson(client, "cards_for_scope", {
+      repoCanonical: CANON,
+      repo: REPO,
+      query: "webhook",
+    });
+    const setLore = await callJson(client, "get_lore", { id: loreId });
+
+    expect(setScope.structuredContent).toEqual(unsetScope.structuredContent);
+    expect(setLore.structuredContent).toEqual(unsetLore.structuredContent);
+    // And the set-run DID record rows (proving the env was actually active).
+    const n = (db.prepare("SELECT COUNT(*) AS n FROM retrieval_event").get() as { n: number }).n;
+    expect(n).toBeGreaterThan(0);
+  });
+
+  it("fail-soft: a broken retrieval log never breaks the read (result is not isError)", async () => {
+    seedAll();
+    process.env["GAFFER_RECALL_TICKET"] = "42";
+    // Drop the table so the INSERT inside logRetrieval throws — recordRetrieval
+    // must swallow it and the read must still succeed.
+    db.exec("DROP TABLE retrieval_event");
+    client = await connectClient(db);
+    const res = await callJson(client, "search_lore", { query: "webhook" });
+    expect(res.isError).toBe(false);
+    expect(res.json.results).toBeDefined();
   });
 });

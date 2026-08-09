@@ -928,7 +928,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # literal) it lets the memory server refuse a direct-apply write against any
     # OTHER repo. (The main-delivery twin at the live run derives this from WT_ROWS.)
     GAFFER_TICKET_REPOS="$B_NAME"
-    sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "$GAFFER_TICKET_REPOS")#g" \
+    # MEMORY ROI: a bootstrap has no delivery-recall context, so ${GAFFER_RECALL_TICKET}
+    # renders empty — the memory read path then logs no retrieval (inert), matching
+    # the standalone posture. The main-delivery twin sets it to the ticket $NUM.
+    sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "$GAFFER_TICKET_REPOS")#g" -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "")#g" \
         "$MCP_CONFIG" > "$MCP_RUNTIME"
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     cp -f "$HERE/claude/CLAUDE.md" "$B_DIR/CLAUDE.factory.md"
@@ -1865,7 +1868,11 @@ EOF
   # not a memory-write target). Paired with GAFFER_FACTORY=1 (a literal in the
   # template) which arms the guard — standalone memory-mcp never sets it.
   GAFFER_TICKET_REPOS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '$2!=""{print $2}' | paste -sd: -)"
-  sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "$GAFFER_TICKET_REPOS")#g" \
+  # MEMORY ROI: the delivery ticket ref is injected as ${GAFFER_RECALL_TICKET} so
+  # the memory MCP server's READ path can attribute a retrieval to this ticket
+  # (best-effort, fail-soft). Empty ⇒ the read path logs nothing (inert), exactly
+  # like standalone memory-mcp. Same one-hop plumbing pattern as GAFFER_TICKET_REPOS.
+  sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "$GAFFER_TICKET_REPOS")#g" -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "$NUM")#g" \
       "$MCP_CONFIG" > "$MCP_RUNTIME"
   chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
   # ── P1b GOLDEN CAPTURE (docs/tick-sh-runtime-migration.md) ──────────────────

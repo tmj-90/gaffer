@@ -1,5 +1,5 @@
 {
-  "_comment": "Claude Code MCP config for the Gaffer factory: the two data-plane MCP servers the agent delivers through. tick.sh renders a runtime copy, substituting ${DISPATCH_DB}/${MEMORY_DB} (runtime DB copies), ${DISPATCH_MCP_BIN}/${MEMORY_MCP_BIN} (the built dist bins), and ${GAFFER_CLAIM_TOKEN} (RUNNER-OWNED-BOOKKEEPING: the runner-held delivery claim token, so the agent's token-gated evidence writes resolve it from the server env — the agent never handles the token). The memory server additionally gets GAFFER_FACTORY=1 + ${GAFFER_TICKET_REPOS} (the ticket's in-scope repo names) so its DIRECT-APPLY writes (digest / feature) are bound to the ticket's repo scope, fail-closed. Build the workspace first: pnpm -r build.",
+  "_comment": "Claude Code MCP config for the Gaffer factory: the two data-plane MCP servers the agent delivers through. tick.sh renders a runtime copy, substituting ${DISPATCH_DB}/${MEMORY_DB} (runtime DB copies), ${DISPATCH_MCP_BIN}/${MEMORY_MCP_BIN} (the built dist bins), and ${GAFFER_CLAIM_TOKEN} (RUNNER-OWNED-BOOKKEEPING: the runner-held delivery claim token, so the agent's token-gated evidence writes resolve it from the server env — the agent never handles the token). The memory server additionally gets GAFFER_FACTORY=1 + ${GAFFER_TICKET_REPOS} (the ticket's in-scope repo names) so its DIRECT-APPLY writes (digest / feature) are bound to the ticket's repo scope, fail-closed, plus GAFFER_RECALL_TICKET (the delivery ticket ref) so its READ path can attribute a retrieval to a ticket for memory ROI (empty ⇒ inert, no logging). Build the workspace first: pnpm -r build.",
   "mcpServers": {
     "dispatch": {
       "command": "node",
@@ -16,7 +16,8 @@
       "env": {
         "MEMORY_DB": "${MEMORY_DB}",
         "GAFFER_FACTORY": "1",
-        "GAFFER_TICKET_REPOS": "${GAFFER_TICKET_REPOS}"
+        "GAFFER_TICKET_REPOS": "${GAFFER_TICKET_REPOS}",
+        "GAFFER_RECALL_TICKET": "${GAFFER_RECALL_TICKET}"
       }
     }
   }

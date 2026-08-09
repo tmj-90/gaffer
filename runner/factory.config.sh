@@ -1583,6 +1583,15 @@ gaffer_review_verdict() {
 # delivery that passes with ZERO gates executed is otherwise a hard fail (the work
 # was never verified). Set only when test_command and lint_command are deliberately
 # absent; without it the delivery is parked for the operator to investigate.
+# GAFFER_DOD_INSTALL (default 1/ON) — before the DoD test gate runs, auto-install
+# the delivery worktree's dependencies so the tests can actually run. A fresh
+# throwaway worktree has no node_modules, so the first greenfield deliveries used
+# to fail the gate ("tests could not run"); this removes that gotcha. Safe-soft: a
+# strict no-op when node_modules already exists or the repo is not a recognised
+# node project, bounded by GAFFER_DOD_INSTALL_TIMEOUT (defaults to GAFFER_DOD_TIMEOUT,
+# 900s), and fail-soft — a failed/timed-out install never crashes the tick and never
+# passes the gate (the gate still runs and fails loudly). Set GAFFER_DOD_INSTALL=0
+# (or the existing GAFFER_GREENFIELD_INSTALL=0) for byte-identical-to-today behaviour.
 # shellcheck source=lib/dod.sh
 [ -f "$RUNNER_DIR/lib/dod.sh" ] && source "$RUNNER_DIR/lib/dod.sh"
 

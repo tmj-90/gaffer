@@ -145,13 +145,17 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
 
 ### Greenfield gotchas (things you currently have to do)
 
-- **The DoD test gate needs the new repo's dependencies installed.** The factory sets the
-  bootstrapped repo's test command automatically, but a feature ticket runs that command
-  in a **fresh throwaway worktree that has no `node_modules`** — so the first deliveries
-  fail the Definition-of-Done gate ("tests couldn't run") until deps are present. For a
-  greenfield run today, either commit a vendored install or **set `GAFFER_ALLOW_NO_DOD=1`**
-  for the first pass to skip the test gate (honest trade-off: the tests are *written* but
-  not *enforced* on that delivery). Automating the worktree install is on the roadmap.
+- **The DoD test gate's worktree dependencies now install automatically.** A feature
+  ticket runs its test command in a **fresh throwaway worktree that has no `node_modules`**.
+  Before the Definition-of-Done gate runs, the factory now auto-installs that worktree's
+  dependencies (detecting the package manager from the lockfile — `pnpm-lock.yaml` → pnpm,
+  `package-lock.json` → npm, `yarn.lock` → yarn) so the tests can actually run. It is a
+  no-op when `node_modules` already exists or the repo is not a node project, is bounded by
+  a timeout, and is fail-soft — a failed install never crashes the tick and never passes the
+  gate (the gate still runs and fails loudly). This is **on by default** (`GAFFER_DOD_INSTALL=1`);
+  set `GAFFER_DOD_INSTALL=0` (or `GAFFER_GREENFIELD_INSTALL=0`) to manage deps yourself. The
+  old workaround of setting `GAFFER_ALLOW_NO_DOD=1` for the first greenfield pass is no longer
+  needed just to get past missing deps.
 - **Hands-off delivery is opt-in.** Without the autonomy flags, the loop stops at
   `in_review` and waits for you. For an unattended greenfield run, set
   `DISPATCH_ALLOW_AGENT_APPROVE=1` (and, if you want auto-merge, `AUTO_MERGE=1`).

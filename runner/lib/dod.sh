@@ -29,6 +29,11 @@
 # so a chatty failure can't bloat the evidence row / the dashboard.
 : "${GAFFER_DOD_OUTPUT_TAIL:=40}"
 
+# Max wall-clock seconds for the PRE-GATE dependency install (see
+# gaffer_dod_install_deps). Inherits the per-gate timeout, then the sane default,
+# so a pathological install can never burn unbounded wall-clock. Always positive.
+: "${GAFFER_DOD_INSTALL_TIMEOUT:=${GAFFER_DOD_TIMEOUT:-900}}"
+
 # True when DoD enforcement is ON for this run. GAFFER_DOD wins over config:
 #   GAFFER_DOD=0  → OFF (today's behaviour: the gate never runs).
 #   GAFFER_DOD=1  → ON.
@@ -39,6 +44,104 @@ gaffer_dod_enabled() {
     0|false|off|no) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+# True when the PRE-GATE dependency install (gaffer_dod_install_deps) is ON.
+#   GAFFER_DOD_INSTALL=0  → OFF (byte-identical to today: no pre-gate install).
+#   GAFFER_DOD_INSTALL=1  → ON.
+#   unset                 → ON.
+# Default ON is safe-soft: the install is a strict no-op whenever node_modules
+# already exists (the common case, since the worktree gets a node_modules symlink
+# at setup) and never crashes a tick nor passes the gate — a failed/timed-out
+# install leaves the DoD gate to run and fail loudly exactly as today. The
+# existing "I manage deps myself" switch (GAFFER_GREENFIELD_INSTALL=0) also
+# disables it, so operators keep ONE mental model rather than two competing knobs.
+gaffer_dod_install_enabled() {
+  case "${GAFFER_DOD_INSTALL:-1}" in
+    0|false|off|no) return 1 ;;
+    *)
+      # Honour the existing greenfield opt-out so a single switch governs both
+      # the greenfield prime and this pre-gate worktree install.
+      [ "${GAFFER_GREENFIELD_INSTALL:-1}" = "0" ] && return 1
+      return 0 ;;
+  esac
+}
+
+# PRE-GATE ENABLER (not a gate). A fresh delivery worktree has no node_modules, so
+# the DoD test gate cannot run — the first greenfield deliveries fail "tests could
+# not run" until deps are present. This installs the worktree's dependencies IN THE
+# WORKTREE, bounded + fail-soft, BEFORE the gate. It mirrors gaffer_ensure_node_modules
+# (greenfield.sh) but (a) operates on the delivery worktree (never the primary
+# checkout — the sandbox-safer seam), and (b) is BOUNDED by gaffer_timeout exactly
+# like gaffer_dod_run_one, so a hung install cannot hang the tick.
+#
+# Package-manager detection (identical to greenfield.sh): pnpm-lock.yaml → pnpm;
+# yarn.lock → yarn; package-lock.json | npm-shrinkwrap.json → npm; else skip (no
+# deterministic install). --ignore-scripts so a dependency's postinstall/prepare
+# cannot execute during the factory's own install (parity + safety).
+#
+# ALWAYS returns 0 (never throws under set -e / set -u). Echoes:
+#   <pm>                 → install succeeded (node_modules materialised)
+#   FAILED:<pm>          → install ATTEMPTED but failed (diagnostic on stderr)
+#   FAILED:timeout:<pm>  → install TIMED OUT (gaffer_timeout returned 124)
+#   (empty)              → no-op (non-node repo, no lockfile, deps already present,
+#                          or the pm binary is unavailable)
+#   gaffer_dod_install_deps <worktree-dir>
+gaffer_dod_install_deps() {
+  local dir="$1"
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  [ -f "$dir/package.json" ] || return 0        # non-node repo → skip
+  [ -e "$dir/node_modules" ] && return 0         # deps already present → no-op
+
+  local pm=""
+  if [ -f "$dir/pnpm-lock.yaml" ]; then
+    pm="pnpm"
+  elif [ -f "$dir/yarn.lock" ]; then
+    pm="yarn"
+  elif [ -f "$dir/package-lock.json" ] || [ -f "$dir/npm-shrinkwrap.json" ]; then
+    pm="npm"
+  else
+    return 0 # no lockfile → not a deterministic install; leave it for the gate
+  fi
+  command -v "$pm" >/dev/null 2>&1 || return 0   # pm binary unavailable → skip
+
+  # The frozen/CI install (respects the lockfile) with a plain-install fallback for
+  # a lockfile that is out of sync — the SAME commands greenfield.sh already uses.
+  # Both arms live INSIDE one gaffer_timeout so the fallback stays bounded too.
+  # gaffer_timeout CANNOT wrap a shell function (it exec's @ARGV), so the timeout
+  # wraps the external pnpm/npm/yarn here, mirroring gaffer_dod_run_one's shape.
+  local _script=""
+  case "$pm" in
+    pnpm) _script='pnpm install --frozen-lockfile --ignore-scripts || pnpm install --ignore-scripts' ;;
+    yarn) _script='yarn install --frozen-lockfile --ignore-scripts || yarn install --ignore-scripts' ;;
+    npm)  _script='npm ci --ignore-scripts || npm install --ignore-scripts' ;;
+  esac
+
+  local _out _rc
+  _out="$(mktemp "${TMPDIR:-/tmp}/gaffer-dod-install.XXXXXX")" || _out="/dev/null"
+  ( cd "$dir" 2>/dev/null || exit 127
+    gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" bash -c "$_script" ) >"$_out" 2>&1
+  _rc=$?
+
+  # Fail-soft verdict. Success = node_modules materialised → echo the pm for the
+  # caller's log. Otherwise the install was ATTEMPTED but failed: surface the
+  # captured reason on stderr (never destroyed → not an opaque "cannot find module"
+  # at the gate) and echo a FAILED sentinel so the caller logs an accurate,
+  # ticket-scoped warning. gaffer_timeout returns 124 on timeout → distinct sentinel.
+  if [ -e "$dir/node_modules" ]; then
+    echo "$pm"
+  else
+    printf 'gaffer: dod-install: %s install did not prime deps in %s (non-fatal; the test gate will surface it):\n' \
+      "$pm" "$dir" >&2
+    tail -n "${GAFFER_DOD_OUTPUT_TAIL:-40}" "$_out" 2>/dev/null | sed 's/^/  /' >&2
+    if [ "$_rc" -eq 124 ]; then
+      echo "FAILED:timeout:$pm"
+    else
+      echo "FAILED:$pm"
+    fi
+  fi
+  [ "$_out" = "/dev/null" ] || rm -f "$_out"
+  return 0
 }
 
 # Run ONE gate command in a worktree, bounded by gaffer_timeout. Writes the

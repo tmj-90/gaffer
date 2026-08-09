@@ -4019,6 +4019,20 @@ td.title-cell {
 .own-kind--reviewer_assignment {
   background: var(--ok, #16a34a);
 }
+.own-kind--parked {
+  background: var(--danger, #dc2626);
+}
+.own-code {
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--danger-soft, rgba(220, 38, 38, 0.12));
+  color: var(--danger, #dc2626);
+}
+.own-action {
+  font-size: 0.72rem;
+  text-transform: lowercase;
+}
 .own-body {
   flex: 1 1 auto;
   min-width: 0;

@@ -27,6 +27,7 @@ import {
   type Ticket,
   type TicketStatus,
 } from "../domain/types.js";
+import { type ObservedRisk, shouldEscalate } from "./observedRisk.js";
 import { writeEvent } from "../events/eventWriter.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
@@ -125,6 +126,16 @@ export interface ReviewGateServiceDeps {
    * pure env-flag check. See services/autonomyPolicyService.ts.
    */
   readonly policyAllowsAgentApprove?: (ticket: Ticket) => boolean;
+  /**
+   * OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical): resolves the OBSERVED
+   * risk of a ticket from its REAL server-computed diff (the advisory risk-annotation
+   * overlay + diff size). Used ONLY on the AUTO-SHIP path (an agent approving because an
+   * autonomy flag/policy is on) to hold-for-human when observed risk exceeds the DECLARED
+   * `risk_level`. `undefined` (the default) means the escalation is INERT — behaviour is
+   * byte-identical to today. A resolver throw degrades to "indeterminate" (fail toward
+   * human). It can only ever DENY an auto-ship; it never grants one. See observedRisk.ts.
+   */
+  readonly observedRiskResolver?: (ticket: Ticket) => ObservedRisk | null;
 }
 
 export class ReviewGateService {
@@ -142,6 +153,7 @@ export class ReviewGateService {
     | undefined;
   private readonly approvalShaResolver: ApprovalShaResolver | undefined;
   private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
+  private readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
 
   constructor(deps: ReviewGateServiceDeps) {
     this.db = deps.db;
@@ -156,6 +168,7 @@ export class ReviewGateService {
     this.onTicketParked = deps.onTicketParked;
     this.approvalShaResolver = deps.approvalShaResolver;
     this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
+    this.observedRiskResolver = deps.observedRiskResolver;
   }
 
   // ---------------------------------------------------------------------------
@@ -187,6 +200,19 @@ export class ReviewGateService {
         "Only a human or admin may approve a review (set DISPATCH_ALLOW_AGENT_APPROVE=1 to allow autonomous agent approval).",
         { actor_type: actor.type },
       );
+    }
+    // OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical): this runs ONLY on
+    // the AUTO-SHIP path — an agent whose approve+merge was permitted WITHOUT a human
+    // because an autonomy flag (DISPATCH_ALLOW_AGENT_APPROVE) or a mode='auto' approve
+    // policy is on (`agentApproveAllowed === true`). Human/admin never reach here (their
+    // approve is byte-identical to today), and an agent already denied by the P0 throw
+    // above never reaches here either. When the ticket's OBSERVED risk (from the real
+    // diff) exceeds its DECLARED `risk_level` (or a configured ceiling), we HOLD for a
+    // human: throw before any transition runs, so the ticket stays `in_review` — the
+    // identical mechanism as the P0 deny above. This can ONLY convert an auto-ship into a
+    // human-hold; it never grants an approval and never weakens the manual gate.
+    if (agentApproveAllowed) {
+      this.enforceObservedRiskCeiling(ticketRef, actor);
     }
     const ticket = this.ticketSvc.resolveTicket(ticketRef);
     // GRADUATED-AUTONOMY (Spec 2, Phase 1): capture whether this delivery is being
@@ -258,6 +284,59 @@ export class ReviewGateService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical). Called ONLY on the
+   * AUTO-SHIP path (see approveReview). Compares the OBSERVED risk derived from the real
+   * server-computed diff against the ticket's DECLARED `risk_level`. When observed exceeds
+   * declared (or crosses a configured ceiling), or the diff cannot be observed
+   * (indeterminate ⇒ fail toward human), it records an `autoship_escalated` event and
+   * throws `OBSERVED_RISK_ESCALATED` — held BEFORE any transition, so the ticket stays
+   * `in_review` for a human, exactly like the P0 deny above.
+   *
+   * FAIL-SAFE by construction:
+   *  - No resolver wired ⇒ returns immediately (inert; autonomy-off parity unaffected).
+   *  - Resolver throws ⇒ treated as indeterminate ⇒ HOLD (never silently auto-ships).
+   *  - Observed ≤ declared and no ceiling ⇒ returns; the ticket auto-ships exactly as
+   *    before (no false-escalation of a genuinely-low-risk change).
+   * It can only ever THROW (deny) — it never calls `transition`, so it can never turn a
+   * hold into a ship, never newly-allow, and never weakens the manual human gate.
+   */
+  private enforceObservedRiskCeiling(ticketRef: string, actor: Actor): void {
+    if (!this.observedRiskResolver) return;
+    const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    let observed: ObservedRisk | null;
+    try {
+      observed = this.observedRiskResolver(ticket);
+    } catch {
+      observed = null; // a probe failure must fail toward a human, never silently ship.
+    }
+    // A missing observation is indeterminate ⇒ escalate (hold for a human).
+    const escalate = !observed || shouldEscalate(observed, ticket.risk_level);
+    if (!escalate) return;
+    const observedLevel = observed?.level ?? "unknown";
+    const reasons = observed?.reasons.length ? observed.reasons : ["diff unavailable to observe"];
+    // Record the reason on the EXISTING append-only event log (no new mutation surface).
+    writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: "ticket.autoship_escalated",
+      payload: {
+        declared: ticket.risk_level,
+        observed: observedLevel,
+        determinate: observed?.determinate ?? false,
+        reasons,
+        files: observed?.files ?? null,
+        lines: observed?.lines ?? null,
+      },
+    });
+    throw new DispatchError(
+      "OBSERVED_RISK_ESCALATED",
+      `Auto-approve held for human review: observed risk '${observedLevel}' exceeds declared '${ticket.risk_level}'.`,
+      { declared: ticket.risk_level, observed: observedLevel, reasons },
+    );
   }
 
   /**

@@ -117,6 +117,7 @@ import {
 import { PauseService, type PauseInput } from "./services/pauseService.js";
 import { HumanQueueService, type HumanQueue } from "./services/humanQueueService.js";
 import { ReviewGateService, type ApprovalShas } from "./services/reviewGateService.js";
+import { observedRisk } from "./services/observedRisk.js";
 import {
   AutonomyRecommendationService,
   type AutonomyRecommendation,
@@ -475,6 +476,12 @@ export class Dispatch {
           ticket.risk_level,
           "approve",
         ),
+      // OBSERVED-RISK ESCALATION (Trust & Autonomy, security-critical): on the AUTO-SHIP
+      // path only, resolve the OBSERVED risk from the REAL server-computed diff (reusing
+      // computeTicketDiff + the advisory risk-annotation overlay) so the gate can hold for
+      // a human when observed exceeds the DECLARED risk_level. Pure read; a throw degrades
+      // to indeterminate (fail toward human). Never grants an approval.
+      observedRiskResolver: (ticket) => observedRisk(this.ticketDiff(ticket.id).repos),
     });
     this.autonomyRecommendations = new AutonomyRecommendationService({
       reviewDecisions: () => this.events.reviewDecisions(),

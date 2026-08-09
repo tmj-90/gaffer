@@ -104,6 +104,23 @@ runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (L
                                       #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
 ```
 
+> **Readying a ticket needs a reviewer under the strict policy packs.** The default
+> policy pack is `solo_loose`, which readies freely. But tickets under
+> **`factory_strict`** or **`regulated`** — which is what the **Product Owner**
+> ("Suggest work") drafts, and what you'll use for anything you actually gate —
+> **must have a reviewer assigned first**, or **Mark ready** fails with
+> `POLICY_DENIED … REVIEWER_REQUIRED`. Assign one from the CLI (the dashboard
+> button for this is planned):
+>
+> ```bash
+> # use the FULL ticket id (the 8-char short ref won't resolve here)
+> node packages/dispatch/dist/cli/index.js ticket set-reviewer <FULL-TICKET-ID> --reviewer <your-name> --admin
+> ```
+>
+> Then **Mark ready** succeeds, and the ticket flows plan → implement → test →
+> review as normal. (The reviewer is *who owns the gate*; the agent still cannot
+> approve or merge its own work.)
+
 ---
 
 ## 5. Build a whole new app from one line (greenfield)

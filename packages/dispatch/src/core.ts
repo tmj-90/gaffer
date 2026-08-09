@@ -103,6 +103,7 @@ import {
   type WorkPacketRepos,
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
+import { DossierService, DOSSIER_EVENT_TYPE, type Dossier } from "./services/dossierService.js";
 import { SpecsService } from "./services/specsService.js";
 import { SpecCoverageService } from "./services/specCoverageService.js";
 import { resolveSpecClauseSeeder } from "./services/specClauseSeeder.js";
@@ -291,6 +292,7 @@ export class Dispatch {
   readonly specsSvc: SpecsService;
   readonly specCoverageSvc: SpecCoverageService;
   readonly boardSvc: BoardService;
+  readonly dossierSvc: DossierService;
   readonly reviewGateSvc: ReviewGateService;
   readonly autonomyRecommendations: AutonomyRecommendationService;
   readonly pauseSvc: PauseService;
@@ -439,6 +441,13 @@ export class Dispatch {
       decisions: this.decisions,
       claimsRepo: this.claimsRepo,
       events: this.events,
+    });
+    this.dossierSvc = new DossierService({
+      db,
+      clock: this.clock,
+      acs: this.acs,
+      evidence: this.evidence,
+      repoDeliveries: this.repoDeliveries,
     });
     this.reviewGateSvc = new ReviewGateService({
       db,
@@ -1184,6 +1193,44 @@ export class Dispatch {
 
   listRepoDeliveries(ticketRef: string): TicketRepoDeliveryWithRepo[] {
     return this.ticketSvc.listRepoDeliveries(ticketRef);
+  }
+
+  /**
+   * DELIVERY-DOSSIER: assemble the tamper-evident evidence dossier for a ticket from
+   * EXISTING recorded state. Pure read — no write, no lifecycle change. Deterministic:
+   * unchanged ticket state always yields the same {@link Dossier.hash}.
+   */
+  dossier(ref: string): Dossier {
+    const ticket = this.resolveTicket(ref);
+    return this.dossierSvc.assemble(ticket);
+  }
+
+  /**
+   * DELIVERY-DOSSIER: assemble the dossier AND record its hash against the control
+   * plane as a `ticket.dossier_recorded` work-event, so the dossier can later be
+   * verified. This is the ONLY write on the dossier path. Idempotent: when the freshly
+   * computed hash equals the most recently recorded one, no new event is written
+   * (`eventId` is null). Recording NEVER changes ticket status or any lifecycle state.
+   */
+  recordDossier(ref: string, actor: Actor): { dossier: Dossier; eventId: string | null } {
+    const ticket = this.resolveTicket(ref);
+    const dossier = this.dossierSvc.assemble(ticket);
+    const previous = this.events.latestDossierHash(ticket.id);
+    if (previous === dossier.hash) {
+      return { dossier, eventId: null };
+    }
+    const eventId = writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: DOSSIER_EVENT_TYPE,
+      payload: {
+        dossier_hash: dossier.hash,
+        hash_algo: dossier.hash_algo,
+        schema: dossier.schema,
+      },
+    });
+    return { dossier, eventId };
   }
 
   grantReadyApproval(ref: string, actor: Actor): { ticketId: string; eventId: string } {

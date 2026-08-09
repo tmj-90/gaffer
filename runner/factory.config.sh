@@ -158,7 +158,7 @@ for (const r of parseLedger(text)) {
   const c = r.total_cost_usd;
   if (typeof c === 'number' && Number.isFinite(c) && c >= 0) { spend += c; continue; }
   // Part A: a KILLED/timeout call books no measured cost but a labelled ESTIMATE —
-  // count it so an unattended run that keeps timing out can't read as free.
+  // count it so an unattended run that keeps timing out cannot read as free.
   const e = r.estimated_cost_usd;
   if (typeof e === 'number' && Number.isFinite(e) && e >= 0) spend += e;
 }

@@ -91,6 +91,75 @@ export function unknownRecord({ ts, ticket, kind, reason }) {
 }
 
 /**
+ * Budget honesty for a KILLED / TIMED-OUT call (Part A). A `claude -p` that is
+ * SIGALRM'd (rc=124), TERM'd (143), INT'd (130) or otherwise crashes emits no
+ * clean result envelope — so today its cost lands as "unknown", which every spend
+ * summation skips, i.e. it books $0. An unattended run that keeps timing out then
+ * looks FREE while it is really burning tokens. This record fixes that gap without
+ * ever pretending the call was measured:
+ *   - `measured` stays FALSE and `total_cost_usd` stays "unknown" — nothing was
+ *     measured, and estimate.mjs's isMeasuredRow still drops the row so token
+ *     PREDICTIONS remain built only on real measured history.
+ *   - `estimated:true` + `estimated_cost_usd:<number>` make it a first-class,
+ *     clearly-labelled ESTIMATE that the windowed-spend summations DO count.
+ *   - `estimate_basis` documents how the number was derived so the ledger is
+ *     self-explaining ("history-p10" vs "flat-floor").
+ * A non-positive / non-finite estimate falls back to a plain unknownRecord — that
+ * is the opt-out (GAFFER_KILL_ESTIMATE_USD=0 with no usable history) and preserves
+ * today's $0/unknown behaviour exactly.
+ */
+export function estimatedRecord({ ts, ticket, kind, reason, estimateUsd, basis }) {
+  const usd = typeof estimateUsd === "number" && Number.isFinite(estimateUsd) ? estimateUsd : NaN;
+  if (!(usd > 0)) return unknownRecord({ ts, ticket, kind, reason });
+  return {
+    ...unknownRecord({ ts, ticket, kind, reason }),
+    // NEVER measured — this is an explicit, conservative ESTIMATE, not a reading.
+    estimated: true,
+    estimated_cost_usd: usd,
+    estimate_basis: basis || "flat-floor",
+  };
+}
+
+/**
+ * Conservative kill-cost estimate from the factory's OWN measured history: the
+ * P10 (cheapest-decile) of measured `total_cost_usd` across prior calls of the
+ * SAME kind. Rationale: a killed call did real work, and the cheapest comparable
+ * MEASURED call is a defensible floor (never invents a price table). Returns null
+ * when there is not enough history (< MIN_SAMPLES) so the caller falls back to the
+ * flat floor. Self-contained (a tiny JSONL scan + percentile) so this module never
+ * imports estimate.mjs — whose honesty contract forbids it from reading cost, and
+ * which itself imports UNKNOWN from here (avoiding an import cycle).
+ */
+export const KILL_ESTIMATE_MIN_SAMPLES = 5;
+export function killEstimateFromHistory(text, kind, minSamples = KILL_ESTIMATE_MIN_SAMPLES) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  const costs = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj;
+    try {
+      obj = JSON.parse(trimmed);
+    } catch {
+      continue; // one corrupt line never aborts the estimate
+    }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) continue;
+    if (obj.measured !== true) continue; // only REAL measured rows ground the floor
+    if (kind && obj.kind !== kind) continue;
+    const c = obj.total_cost_usd;
+    if (typeof c === "number" && Number.isFinite(c) && c >= 0) costs.push(c);
+  }
+  if (costs.length < minSamples) return null;
+  costs.sort((a, b) => a - b);
+  // Linear-interpolated P10 (same "type 7" convention as estimate.mjs percentile).
+  const rank = 0.1 * (costs.length - 1);
+  const lo = Math.floor(rank);
+  const hi = Math.ceil(rank);
+  const p10 = lo === hi ? costs[lo] : costs[lo] + (costs[hi] - costs[lo]) * (rank - lo);
+  return p10 > 0 ? p10 : null;
+}
+
+/**
  * Build a ledger record from a parsed claude JSON result object. Applies all
  * three honesty rules. When `json` has no usable usage signal at all (no
  * modelUsage AND no top-level usage AND no total_cost_usd), we return an
@@ -203,15 +272,75 @@ export function appendUsageRecord(record, env = process.env) {
 // problem — the tick must not be affected.
 // =====================================================================
 function parseCliArgs(argv) {
-  const out = { kind: null, ticket: null, rc: null, jsonFile: null };
+  const out = {
+    kind: null,
+    ticket: null,
+    rc: null,
+    jsonFile: null,
+    killEstimate: null,
+    killBasis: null,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--kind") out.kind = argv[++i];
     else if (a === "--ticket") out.ticket = argv[++i];
     else if (a === "--rc") out.rc = argv[++i];
     else if (a === "--json-file") out.jsonFile = argv[++i];
+    // Part A: flat conservative USD floor booked ONLY on the killed/timeout branches
+    // (measured calls ignore it). Optional --kill-basis overrides the derived basis.
+    else if (a === "--kill-estimate") out.killEstimate = argv[++i];
+    else if (a === "--kill-basis") out.killBasis = argv[++i];
   }
   return out;
+}
+
+/**
+ * Resolve the ledger path exactly as appendUsageRecord does (explicit
+ * GAFFER_USAGE_LEDGER wins, else $GAFFER_DATA/usage-ledger.jsonl). Used to read the
+ * factory's own measured history for the conservative kill-cost P10. Read is fully
+ * best-effort: any resolution/IO failure returns "" so the caller degrades to the
+ * flat floor — the ledger write must never block on this.
+ */
+function readLedgerText(env = process.env) {
+  try {
+    let path = env.GAFFER_USAGE_LEDGER;
+    if (!path) {
+      const dir = env.GAFFER_DATA;
+      if (!dir) return "";
+      path = join(dir, LEDGER_FILENAME);
+    }
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Derive the conservative kill-cost estimate for a killed/timeout record. Precedence
+ * (cheapest-and-most-grounded first): the P10 of the factory's OWN measured history
+ * for this kind, else the flat operator floor (--kill-estimate). Returns
+ * { estimateUsd, basis } — estimateUsd 0 means "no estimate" (the caller then writes
+ * a plain unknownRecord). Fully wrapped: any failure falls through to the floor / 0.
+ */
+export function deriveKillEstimate({ kind, killEstimate, killBasis, env = process.env }) {
+  const floor = killEstimate != null ? parseFloat(killEstimate) : NaN;
+  let est = null;
+  let basis = null;
+  try {
+    const hist = killEstimateFromHistory(readLedgerText(env), kind);
+    if (hist != null && hist > 0) {
+      est = hist;
+      basis = "history-p10";
+    }
+  } catch {
+    /* history read is best-effort — fall through to the flat floor */
+  }
+  if (est == null && Number.isFinite(floor) && floor > 0) {
+    est = floor;
+    basis = "flat-floor";
+  }
+  if (est == null || !(est > 0)) return { estimateUsd: 0, basis: null };
+  return { estimateUsd: est, basis: killBasis || basis };
 }
 
 function readInput(jsonFile) {
@@ -238,16 +367,29 @@ function cliMain(argv) {
   if (resultText) process.stdout.write(resultText);
 
   // Decide measured vs unknown honestly. A non-zero rc (timeout=124, crash) or an
-  // unparseable/usage-less JSON → unknown record (never 0).
+  // unparseable/usage-less JSON → the call was KILLED with no usage envelope. Part A:
+  // book a CONSERVATIVE ESTIMATE (measured stays false, cost stays "unknown", but
+  // estimated_cost_usd counts toward windowed spend) instead of a silent $0. A
+  // measured call NEVER reaches these branches, so an estimate can never overwrite a
+  // real measured record.
   let record;
   if (Number.isFinite(rcNum) && rcNum !== 0) {
-    record = unknownRecord({
-      ticket,
+    const reason =
+      rcNum === 124 ? "claude call timed out (rc=124)" : `claude call exited rc=${rcNum}`;
+    const { estimateUsd, basis } = deriveKillEstimate({
       kind,
-      reason: rcNum === 124 ? "claude call timed out (rc=124)" : `claude call exited rc=${rcNum}`,
+      killEstimate: args.killEstimate,
+      killBasis: args.killBasis,
     });
+    record = estimatedRecord({ ticket, kind, reason, estimateUsd, basis });
   } else if (json === null) {
-    record = unknownRecord({ ticket, kind, reason: "no parseable --output-format json on stdout" });
+    const reason = "no parseable --output-format json on stdout";
+    const { estimateUsd, basis } = deriveKillEstimate({
+      kind,
+      killEstimate: args.killEstimate,
+      killBasis: args.killBasis,
+    });
+    record = estimatedRecord({ ticket, kind, reason, estimateUsd, basis });
   } else {
     record = buildUsageRecord({ json, ticket, kind });
   }

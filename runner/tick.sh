@@ -328,6 +328,18 @@ gaffer_area_for_stack() {
 # never even be launched).
 gaffer_timeout_preflight || { log "no timeout primitive — aborting tick (setup error)"; result error; exit 1; }
 
+# Part B (defense-in-depth): before this tick can claim work and spawn ANY paid
+# `claude -p`, consult the per-UTC-day USD cap. If the day's ledger spend is already
+# at/over GAFFER_DAILY_BUDGET_USD, do NOT start new paid work — halt cleanly like the
+# MAX_TICKS_PER_DAY / backpressure stops: log the reason and exit 0 with a no_work
+# result so the loop treats it as an empty poll and backs off (no crash, no partial
+# spend). DRY_RUN never spends, so it is never gated. Inert when the cap is unset/0.
+if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 \
+   && ! gaffer_day_usd_cap_ok; then
+  log "BUDGET: UTC-day USD cap reached (spent \$$(gaffer_day_usd_spent) >= \$${GAFFER_DAILY_BUDGET_USD}) — not starting new paid work this tick"
+  result no_work; exit 0
+fi
+
 # Ensure a stable factory agent (register once).
 if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
   wg init >/dev/null 2>&1 || true

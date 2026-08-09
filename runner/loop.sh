@@ -187,6 +187,14 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
     echo "gaffer factory: per-day cap (MAX_TICKS_PER_DAY=$MAX_TICKS_PER_DAY, used $(gaffer_day_count)) reached — stopping."
     break
   fi
+  # Part B: per-UTC-day USD ceiling. Same clean stop as the tick-count cap above —
+  # once the day's ledger spend is at/over GAFFER_DAILY_BUDGET_USD, halt cleanly
+  # (logged reason, break, exit 0) so the daemon backs off to the next day rather
+  # than starting more paid work. Inert (always OK) when the cap is unset/0.
+  if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
+    echo "gaffer factory: per-day USD cap (GAFFER_DAILY_BUDGET_USD=$GAFFER_DAILY_BUDGET_USD, spent \$$(gaffer_day_usd_spent)) reached — stopping."
+    break
+  fi
   ticks=$((ticks + 1))
   # Wrap the whole tick in an outer wall-clock cap so a tick wedged anywhere can't
   # burn unbounded wall-clock. FINDING-6 (a): the bound is GAFFER_TICK_OUTER_TIMEOUT

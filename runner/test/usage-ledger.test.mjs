@@ -28,11 +28,14 @@ const {
   parseClaudeJson,
   buildUsageRecord,
   unknownRecord,
+  estimatedRecord,
+  killEstimateFromHistory,
   extractResultText,
   appendUsageRecord,
   UNKNOWN,
   LEDGER_FILENAME,
 } = await import(MOD);
+const { isMeasuredRow } = await import(resolve(RUNNER_DIR, "lib", "estimate.mjs"));
 
 let passed = 0;
 const failures = [];
@@ -351,6 +354,251 @@ console.log("== AC4: --output-format json is wired into the consolidated invocat
     "product-owner-run.mjs uses --output-format json",
     /--output-format/.test(po) && /buildUsageRecord/.test(po),
   );
+}
+
+console.log("== PART A: killed/timeout call records an ESTIMATE (flagged, counts toward spend) ==");
+{
+  // estimatedRecord: clearly-labelled estimate, never mistaken for measured.
+  const est = estimatedRecord({
+    ticket: 5,
+    kind: "delivery",
+    reason: "claude call timed out (rc=124)",
+    estimateUsd: 0.05,
+    basis: "flat-floor",
+  });
+  assert("estimated:true flag set", est.estimated === true);
+  assert("estimated_cost_usd is the number", est.estimated_cost_usd === 0.05);
+  assert("estimate_basis recorded", est.estimate_basis === "flat-floor");
+  assert("measured stays FALSE (never a measured row)", est.measured === false);
+  assert("total_cost_usd stays 'unknown' (nothing measured)", est.total_cost_usd === UNKNOWN);
+  // estimate.mjs still drops it → token predictions stay clean.
+  assert(
+    "isMeasuredRow DROPS the estimated row (predictions unaffected)",
+    isMeasuredRow(est) === false,
+  );
+
+  // A non-positive / non-finite estimate → plain unknownRecord (opt-out).
+  const zero = estimatedRecord({ kind: "delivery", reason: "t/o", estimateUsd: 0 });
+  assert(
+    "estimateUsd<=0 → falls back to unknownRecord (no estimated field)",
+    zero.estimated === undefined && zero.total_cost_usd === UNKNOWN,
+  );
+  const nan = estimatedRecord({ kind: "delivery", reason: "t/o", estimateUsd: "0.05" });
+  assert(
+    "non-number estimateUsd → unknownRecord (never a string cost)",
+    nan.estimated === undefined,
+  );
+}
+
+console.log("== PART A: killEstimateFromHistory = P10 of measured same-kind cost ==");
+{
+  // 5 measured delivery rows: costs 0.10..0.50. P10 (type-7) over sorted = 0.10 + 0.1*4*(0.10) = 0.14.
+  const rows = [0.1, 0.2, 0.3, 0.4, 0.5]
+    .map((c, i) =>
+      JSON.stringify({
+        ts: `2026-01-0${i + 1}T00:00:00Z`,
+        kind: "delivery",
+        measured: true,
+        total_cost_usd: c,
+      }),
+    )
+    .join("\n");
+  const p10 = killEstimateFromHistory(rows, "delivery");
+  assert("P10 over 5 measured rows ≈ 0.14", Math.abs(p10 - 0.14) < 1e-9);
+  // < MIN_SAMPLES → null (fall back to flat floor).
+  const few = [0.1, 0.2, 0.3]
+    .map((c, i) =>
+      JSON.stringify({
+        ts: `2026-01-0${i + 1}T00:00:00Z`,
+        kind: "delivery",
+        measured: true,
+        total_cost_usd: c,
+      }),
+    )
+    .join("\n");
+  assert(
+    "< 5 measured rows → null (defers to flat floor)",
+    killEstimateFromHistory(few, "delivery") === null,
+  );
+  // A wrong-kind measured row and unmeasured rows never ground the floor.
+  const mixed =
+    rows +
+    "\n" +
+    JSON.stringify({
+      ts: "2026-01-06T00:00:00Z",
+      kind: "review",
+      measured: true,
+      total_cost_usd: 99,
+    }) +
+    "\n" +
+    JSON.stringify({
+      ts: "2026-01-07T00:00:00Z",
+      kind: "delivery",
+      measured: false,
+      total_cost_usd: "unknown",
+    });
+  assert(
+    "wrong-kind + unmeasured rows ignored (still ≈0.14)",
+    Math.abs(killEstimateFromHistory(mixed, "delivery") - 0.14) < 1e-9,
+  );
+}
+
+console.log("== PART A CLI: rc=124/143/130 book an estimated record; rc=0 stays measured ==");
+{
+  const dir = mkdtempSync(join(tmpdir(), "kill-est-"));
+  try {
+    const runKilled = (rc) =>
+      spawnSync(
+        process.execPath,
+        [
+          MOD,
+          "--kind",
+          "delivery",
+          "--ticket",
+          "7",
+          "--rc",
+          String(rc),
+          "--kill-estimate",
+          "0.05",
+          "--json-file",
+          "/dev/null",
+        ],
+        { env: { ...process.env, GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: "" }, encoding: "utf8" },
+      );
+    const ledgerPath = join(dir, LEDGER_FILENAME);
+    for (const rc of [124, 143, 130]) {
+      const r = runKilled(rc);
+      assert(`CLI rc=${rc} exits 0 (never fails the tick)`, r.status === 0);
+    }
+    const lines = readFileSync(ledgerPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    assert("three killed rows appended", lines.length === 3);
+    for (const rec of lines) {
+      assert(
+        `killed row: estimated:true, cost>0, measured:false, total 'unknown', basis set`,
+        rec.estimated === true &&
+          rec.estimated_cost_usd > 0 &&
+          rec.measured === false &&
+          rec.total_cost_usd === UNKNOWN &&
+          typeof rec.estimate_basis === "string",
+      );
+    }
+    assert(
+      "flat-floor basis when no history (basis=flat-floor, cost=0.05)",
+      lines[0].estimate_basis === "flat-floor" &&
+        Math.abs(lines[0].estimated_cost_usd - 0.05) < 1e-9,
+    );
+
+    // rc=0 with a real envelope → measured record, NO estimated* fields (never overwrites measured).
+    const sampleFile = join(dir, "sample.json");
+    writeFileSync(sampleFile, JSON.stringify(SAMPLE));
+    const clean = spawnSync(
+      process.execPath,
+      [
+        MOD,
+        "--kind",
+        "delivery",
+        "--ticket",
+        "8",
+        "--rc",
+        "0",
+        "--kill-estimate",
+        "0.05",
+        "--json-file",
+        sampleFile,
+      ],
+      { env: { ...process.env, GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: "" }, encoding: "utf8" },
+    );
+    assert("clean CLI exits 0", clean.status === 0);
+    const last = JSON.parse(readFileSync(ledgerPath, "utf8").trim().split("\n").pop());
+    assert(
+      "clean call stays measured, no estimated* fields, real cost relayed",
+      last.measured === true &&
+        last.estimated === undefined &&
+        last.estimated_cost_usd === undefined &&
+        last.total_cost_usd === 0.1234,
+    );
+
+    // Opt-out: --kill-estimate 0 and no history → plain unknown row ($0/unknown, no estimate).
+    const optOut = spawnSync(
+      process.execPath,
+      [
+        MOD,
+        "--kind",
+        "clarify",
+        "--ticket",
+        "9",
+        "--rc",
+        "124",
+        "--kill-estimate",
+        "0",
+        "--json-file",
+        "/dev/null",
+      ],
+      {
+        env: {
+          ...process.env,
+          GAFFER_DATA: mkdtempSync(join(tmpdir(), "optout-")),
+          GAFFER_USAGE_LEDGER: "",
+        },
+        encoding: "utf8",
+      },
+    );
+    // Read that fresh dir's ledger.
+    assert("opt-out CLI exits 0", optOut.status === 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("== PART A CLI: history-p10 basis fires once ≥5 measured same-kind rows exist ==");
+{
+  const dir = mkdtempSync(join(tmpdir(), "kill-hist-"));
+  try {
+    const ledgerPath = join(dir, LEDGER_FILENAME);
+    // Seed 5 measured delivery rows (costs 0.10..0.50 → P10 ≈ 0.14).
+    const seed =
+      [0.1, 0.2, 0.3, 0.4, 0.5]
+        .map((c, i) =>
+          JSON.stringify({
+            ts: `2026-01-0${i + 1}T00:00:00Z`,
+            ticket: i,
+            kind: "delivery",
+            measured: true,
+            total_cost_usd: c,
+          }),
+        )
+        .join("\n") + "\n";
+    writeFileSync(ledgerPath, seed);
+    const r = spawnSync(
+      process.execPath,
+      [
+        MOD,
+        "--kind",
+        "delivery",
+        "--ticket",
+        "42",
+        "--rc",
+        "124",
+        "--kill-estimate",
+        "0.05",
+        "--json-file",
+        "/dev/null",
+      ],
+      { env: { ...process.env, GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: "" }, encoding: "utf8" },
+    );
+    assert("history CLI exits 0", r.status === 0);
+    const last = JSON.parse(readFileSync(ledgerPath, "utf8").trim().split("\n").pop());
+    assert("basis is history-p10 with ≥5 samples", last.estimate_basis === "history-p10");
+    assert(
+      "estimated_cost_usd == P10 (≈0.14), not the 0.05 flat floor",
+      Math.abs(last.estimated_cost_usd - 0.14) < 1e-9,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log();

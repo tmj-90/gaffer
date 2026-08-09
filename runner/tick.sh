@@ -1839,6 +1839,23 @@ EOF
   sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" \
       "$MCP_CONFIG" > "$MCP_RUNTIME"
   chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
+  # ── P1b GOLDEN CAPTURE (docs/tick-sh-runtime-migration.md) ──────────────────
+  # Default-OFF dump of the assembled context (the delivery PROMPT + the rendered
+  # MCP runtime config) so the TS renderer (packages/crew/src/runtime/context/)
+  # can be byte-compared against this bash path. With GAFFER_CONTEXT_DUMP_ONLY=1
+  # the tick additionally exits BEFORE the agent launch (render-only fixture
+  # capture: the claim is released back to ready and the EXIT trap tears the
+  # worktrees + branch down). Both vars unset ⇒ byte-identical behaviour.
+  if [ -n "${GAFFER_CONTEXT_DUMP_DIR:-}" ]; then
+    mkdir -p "$GAFFER_CONTEXT_DUMP_DIR" 2>/dev/null || true
+    printf '%s' "$PROMPT" > "$GAFFER_CONTEXT_DUMP_DIR/prompt.txt"
+    cp -f "$MCP_RUNTIME" "$GAFFER_CONTEXT_DUMP_DIR/mcp-runtime.json"
+    if [ "${GAFFER_CONTEXT_DUMP_ONLY:-0}" = "1" ]; then
+      gaffer_release_delivery ready "context-dump render-only exit (P1b fixture capture)"
+      log "context-dump: wrote prompt + mcp-runtime to $GAFFER_CONTEXT_DUMP_DIR; exiting before agent launch"
+      result no_work; exit 0
+    fi
+  fi
   # Repo-access boundary (FG-007): tell the runtime safety hook the exact set of
   # repos this run may WRITE to (GAFFER_WRITE_ROOTS) and additionally READ from
   # (GAFFER_READ_ROOTS). The hook then deterministically blocks writes/branches

@@ -123,6 +123,12 @@ export {
 // Runtime + events + loops
 export * from "./runtime/agentRuntime.js";
 export * from "./runtime/claudeAgentRuntime.js";
+export * from "./runtime/context/quarantine.js";
+export * from "./runtime/context/ticketSlug.js";
+export * from "./runtime/context/mcpConfig.js";
+export * from "./runtime/context/contextPrimer.js";
+export * from "./runtime/context/deliveryPrompt.js";
+export * from "./runtime/context/assembleContext.js";
 export { EventLog, type RuntimeEvent } from "./events/eventLog.js";
 export * from "./loops/implementationLoop.js";
 export * from "./loops/idleLoop.js";

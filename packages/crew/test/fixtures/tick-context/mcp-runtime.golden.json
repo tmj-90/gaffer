@@ -1,0 +1,19 @@
+{
+  "_comment": "Claude Code MCP config for the Gaffer factory: the two data-plane MCP servers the agent delivers through. tick.sh renders a runtime copy, substituting __GAFFER_DATA__/dispatch.sqlite/__GAFFER_DATA__/memory.sqlite (runtime DB copies), /opt/gaffer-fixture/dispatch-mcp/bin.js//opt/gaffer-fixture/memory-mcp/bin.js (the built dist bins), and __CLAIM_TOKEN__ (RUNNER-OWNED-BOOKKEEPING: the runner-held delivery claim token, so the agent's token-gated evidence writes resolve it from the server env — the agent never handles the token). Build the workspace first: pnpm -r build.",
+  "mcpServers": {
+    "dispatch": {
+      "command": "node",
+      "args": ["/opt/gaffer-fixture/dispatch-mcp/bin.js"],
+      "env": {
+        "DISPATCH_DB": "__GAFFER_DATA__/dispatch.sqlite",
+        "GAFFER_CLAIM_TOKEN": "__CLAIM_TOKEN__",
+        "GAFFER_FACTORY": "1"
+      }
+    },
+    "memory": {
+      "command": "node",
+      "args": ["/opt/gaffer-fixture/memory-mcp/bin.js"],
+      "env": { "MEMORY_DB": "__GAFFER_DATA__/memory.sqlite" }
+    }
+  }
+}

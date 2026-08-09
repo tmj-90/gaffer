@@ -339,6 +339,28 @@ grep -q 'PROMPT\$_REWORK_BLOCK' "$RUNNER_DIR/tick.sh" \
 grep -q '@@DOD_PARSE_OK@@' "$RUNNER_DIR/tick.sh" \
   && ok "C tick.sh fails CLOSED when gate commands can't be resolved (no fail-open)" \
   || fail "C tick.sh missing the parse-sentinel fail-closed guard"
+# PRE-GATE INSTALL ENABLER: the worktree dep install must run BEFORE the gate, be
+# guarded by the opt-out knob, and be fail-soft (no exit/continue-out on failure).
+grep -q 'gaffer_dod_install_deps' "$RUNNER_DIR/tick.sh" \
+  && ok "C tick.sh invokes gaffer_dod_install_deps (pre-gate worktree dep install)" \
+  || fail "C tick.sh does not call gaffer_dod_install_deps"
+grep -q 'gaffer_dod_install_enabled' "$RUNNER_DIR/tick.sh" \
+  && ok "C the pre-gate install is guarded by gaffer_dod_install_enabled (opt-out knob)" \
+  || fail "C tick.sh does not guard the pre-gate install with gaffer_dod_install_enabled"
+# The install must run BEFORE gaffer_run_dod_gates so the gate can actually run.
+INST_LINE="$(grep -n 'gaffer_dod_install_deps' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
+GATES_LINE="$(grep -n 'gaffer_run_dod_gates' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
+if [ -n "$INST_LINE" ] && [ -n "$GATES_LINE" ] && [ "$INST_LINE" -lt "$GATES_LINE" ]; then
+  ok "C the pre-gate install runs BEFORE gaffer_run_dod_gates (line $INST_LINE < $GATES_LINE)"
+else
+  fail "C the pre-gate install must precede the gate runner (install=$INST_LINE gates=$GATES_LINE)"
+fi
+# Fail-soft: on an install FAILURE the tick must NOT bail — the FAILED arms of the
+# verdict `case` only log a WARN and let the gate run. Extract the `case "$_pm"`
+# block and assert its FAILED arms carry no `exit`/`result error`/`continue`.
+perl -0777 -ne 'if (/case "\$_pm" in(.*?)esac/ms) { my $b=$1; exit(($b =~ /\bexit\b|result error|\bcontinue\b/) ? 1 : 0) } exit 1' "$RUNNER_DIR/tick.sh" \
+  && ok "C a failed pre-gate install is fail-soft (WARN only, no exit/continue — the gate still runs)" \
+  || fail "C the pre-gate install FAILED arms must be fail-soft (no exit/continue on a failed install)"
 # The gate must sit BEFORE the delivery is recorded/submitted.
 DOD_LINE="$(grep -n 'Stabilisation gate 2.5: DEFINITION OF DONE' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
 REC_LINE="$(grep -n 'Deterministically record the TOP-LEVEL delivery' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"

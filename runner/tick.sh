@@ -2608,6 +2608,26 @@ for r in d.get("repositories", []) or []:
     done <<< "$WT_ROWS"
     DOD_ROWS="${DOD_ROWS%$'\n'}"
 
+    # Pre-gate ENABLER (NOT a gate): a fresh delivery worktree has no node_modules,
+    # so the test gate cannot run. Auto-install deps in EACH worktree, bounded +
+    # fail-soft, BEFORE the gate runs. This never crashes the tick and never passes
+    # the gate — on a failed/timed-out install the gate still runs and fails loudly
+    # exactly as today. Disable with GAFFER_DOD_INSTALL=0 (or GAFFER_GREENFIELD_INSTALL=0)
+    # for byte-identical-to-today behaviour. Separate loop from the row-builder above
+    # so the enabler stays visibly distinct from gate-command resolution.
+    if gaffer_dod_install_enabled; then
+      while IFS=$'\t' read -r _iid _iname _ipath _ibase _iwt; do
+        [ -n "$_iwt" ] || continue
+        git -C "$_iwt" rev-parse --git-dir >/dev/null 2>&1 || continue
+        _pm="$(gaffer_dod_install_deps "$_iwt")"
+        case "$_pm" in
+          FAILED:timeout:*) log "DoD-install: WARN — ${_pm#FAILED:timeout:} install TIMED OUT in $_iwt (#$NUM); test gate will surface it" ;;
+          FAILED:*)         log "DoD-install: WARN — ${_pm#FAILED:} install failed in $_iwt (#$NUM); test gate will surface it" ;;
+          ?*)               log "DoD-install: installed ${_iname:-repo} deps via '$_pm' in the worktree for #$NUM" ;;
+        esac
+      done <<< "$WT_ROWS"
+    fi
+
     if [ -n "$DOD_ROWS" ]; then
       DOD_RESULTS="$GAFFER_DATA/.dod-$NUM.results"
       if printf '%s\n' "$DOD_ROWS" | gaffer_run_dod_gates "$DOD_RESULTS"; then

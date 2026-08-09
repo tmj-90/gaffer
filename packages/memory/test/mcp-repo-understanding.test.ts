@@ -20,7 +20,11 @@ import { buildMcpServer } from "../src/mcp/server.js";
 import { runMigrations } from "../src/db/migrations.js";
 import type { Database } from "better-sqlite3";
 
-const savedAuditOff = { v: undefined as string | undefined };
+// GAFFER_FACTORY / GAFFER_TICKET_REPOS arm the repo-scope guard on the
+// direct-apply writes; saved+restored per-test so a factory-context case
+// can't leak into the standalone cases (or the wider suite).
+const SCOPE_ENV_KEYS = ["MEMORY_AUDIT_OFF", "GAFFER_FACTORY", "GAFFER_TICKET_REPOS"] as const;
+const savedEnv: Record<string, string | undefined> = {};
 
 let db: Database;
 let client: Client;
@@ -71,14 +75,19 @@ async function callJson(
 }
 
 beforeEach(() => {
-  savedAuditOff.v = process.env["MEMORY_AUDIT_OFF"];
+  for (const k of SCOPE_ENV_KEYS) savedEnv[k] = process.env[k];
   process.env["MEMORY_AUDIT_OFF"] = "1";
+  // Default: NOT in factory context (guard inert) unless a test opts in.
+  delete process.env["GAFFER_FACTORY"];
+  delete process.env["GAFFER_TICKET_REPOS"];
   db = newDb();
 });
 
 afterEach(async () => {
-  if (savedAuditOff.v === undefined) delete process.env["MEMORY_AUDIT_OFF"];
-  else process.env["MEMORY_AUDIT_OFF"] = savedAuditOff.v;
+  for (const k of SCOPE_ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
   try {
     await client?.close();
   } catch {
@@ -343,5 +352,181 @@ describe("MCP — advance_feature (legal vs illegal)", () => {
     });
     expect(res.isError).toBe(true);
     expect(res.text).toMatch(/no feature with id/);
+  });
+});
+
+/**
+ * Repo-scope binding on the DIRECT-APPLY tier (security architect risk item).
+ * In factory delivery context (GAFFER_FACTORY=1) a digest / feature / advance
+ * write may only target a repo the current ticket is scoped to
+ * (GAFFER_TICKET_REPOS). An out-of-scope write is refused, fail-closed, with
+ * NO memory mutation. Standalone (no GAFFER_FACTORY) is unchanged.
+ *
+ * The two directions bracket the guard so a one-line mutation of either env
+ * check fails the suite:
+ *   - in-scope (or standalone) → the write APPLIES
+ *   - out-of-scope (or fail-closed empty scope) → REFUSED, nothing stored
+ */
+describe("MCP — direct-apply repo-scope binding (factory)", () => {
+  it("factory + in-scope repo: update_repo_digest applies", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "payments-svc:orders-svc";
+    client = await connectClient(db);
+    const write = await callJson(client, "update_repo_digest", {
+      repo: "payments-svc",
+      overview: "o",
+      structure: "s",
+      conventions: "c",
+      stack: "st",
+      source: "merge:#1",
+    });
+    expect(write.isError).toBe(false);
+    expect(write.json.repo).toBe("payments-svc");
+    const read = await callJson(client, "get_repo_digest", { repo: "payments-svc" });
+    expect(read.json.digest).not.toBeNull();
+    expect(read.json.source).toBe("merge:#1");
+  });
+
+  it("factory + OUT-OF-SCOPE repo: update_repo_digest is refused, no digest stored", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "payments-svc";
+    client = await connectClient(db);
+    const write = await callJson(client, "update_repo_digest", {
+      repo: "victim-svc",
+      overview: "o",
+      structure: "s",
+      conventions: "c",
+      stack: "st",
+      source: "manual",
+    });
+    expect(write.isError).toBe(true);
+    expect(write.json.error).toBe("repo_out_of_scope");
+    expect(write.json.repo).toBe("victim-svc");
+    // No mutation: the out-of-scope repo has no digest.
+    const read = await callJson(client, "get_repo_digest", { repo: "victim-svc" });
+    expect(read.json.digest).toBeNull();
+  });
+
+  it("factory + in-scope repo: add_feature applies", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "app";
+    client = await connectClient(db);
+    const { isError, json } = await callJson(client, "add_feature", {
+      repo: "app",
+      name: "Refund flow",
+      summary: "s",
+    });
+    expect(isError).toBe(false);
+    expect(json.id).toMatch(/^[a-z2-9]{8}$/);
+  });
+
+  it("factory + OUT-OF-SCOPE repo: add_feature is refused, ledger stays empty", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "app";
+    client = await connectClient(db);
+    const { isError, json } = await callJson(client, "add_feature", {
+      repo: "other-svc",
+      name: "Poison",
+      summary: "s",
+    });
+    expect(isError).toBe(true);
+    expect(json.error).toBe("repo_out_of_scope");
+    // No mutation: the out-of-scope repo's ledger is empty.
+    const list = await callJson(client, "list_features", { repo: "other-svc" });
+    expect(list.json.count).toBe(0);
+  });
+
+  it("factory: advance_feature is scoped by the LOOKED-UP feature's repo (refused out of scope)", async () => {
+    // Seed a feature in repo 'app' while 'app' IS in scope (so the add lands).
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "app";
+    client = await connectClient(db);
+    const add = await callJson(client, "add_feature", {
+      repo: "app",
+      name: "X",
+      summary: "y",
+    });
+    const id = add.json.id;
+    await client.close();
+
+    // Now a DIFFERENT ticket, scoped to another repo, tries to advance it by id.
+    process.env["GAFFER_TICKET_REPOS"] = "unrelated-svc";
+    client = await connectClient(db);
+    const res = await callJson(client, "advance_feature", { id, to_status: "building" });
+    expect(res.isError).toBe(true);
+    expect(res.json.error).toBe("repo_out_of_scope");
+    expect(res.json.repo).toBe("app");
+    // No mutation: the feature is still at its original status.
+    const list = await callJson(client, "list_features", { repo: "app" });
+    expect(list.json.count).toBe(1);
+    expect(list.json.features[0].status).toBe("backlog");
+  });
+
+  it("factory: advance_feature applies when the feature's repo IS in scope", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "app";
+    client = await connectClient(db);
+    const add = await callJson(client, "add_feature", { repo: "app", name: "X", summary: "y" });
+    const res = await callJson(client, "advance_feature", {
+      id: add.json.id,
+      to_status: "building",
+    });
+    expect(res.isError).toBe(false);
+    expect(res.json.status).toBe("building");
+  });
+
+  it("factory: an unknown feature id still yields unknown_id (guard doesn't mask it)", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "app";
+    client = await connectClient(db);
+    const res = await callJson(client, "advance_feature", {
+      id: "missing00",
+      to_status: "shipped",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.text).toMatch(/no feature with id/);
+  });
+
+  it("factory + EMPTY GAFFER_TICKET_REPOS: fail-closed — every direct-apply write is refused", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "";
+    client = await connectClient(db);
+    const digest = await callJson(client, "update_repo_digest", {
+      repo: "app",
+      overview: "o",
+      structure: "s",
+      conventions: "c",
+      stack: "st",
+      source: "manual",
+    });
+    expect(digest.isError).toBe(true);
+    expect(digest.json.error).toBe("repo_out_of_scope");
+    const feature = await callJson(client, "add_feature", { repo: "app", name: "n", summary: "s" });
+    expect(feature.isError).toBe(true);
+    expect(feature.json.error).toBe("repo_out_of_scope");
+  });
+
+  it("standalone (no GAFFER_FACTORY): the guard is inert — any repo write applies unchanged", async () => {
+    // No GAFFER_FACTORY set (beforeEach deletes it). Even a repo that would be
+    // out of scope under enforcement writes normally — standalone is unchanged.
+    process.env["GAFFER_TICKET_REPOS"] = "something-else"; // present but ignored without FACTORY
+    client = await connectClient(db);
+    const write = await callJson(client, "update_repo_digest", {
+      repo: "any-repo",
+      overview: "o",
+      structure: "s",
+      conventions: "c",
+      stack: "st",
+      source: "manual",
+    });
+    expect(write.isError).toBe(false);
+    const read = await callJson(client, "get_repo_digest", { repo: "any-repo" });
+    expect(read.json.digest).not.toBeNull();
+    const feature = await callJson(client, "add_feature", {
+      repo: "any-repo",
+      name: "n",
+      summary: "s",
+    });
+    expect(feature.isError).toBe(false);
   });
 });

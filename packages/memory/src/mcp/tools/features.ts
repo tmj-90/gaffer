@@ -7,11 +7,13 @@ import {
   addFeature,
   advanceFeature,
   AdvanceFeatureError,
+  getFeature,
   listFeatures,
 } from "../../core/repoUnderstanding.js";
 import type { Feature } from "../../db/types.js";
 import { checkMaxLen, FEATURE_CAPS } from "../validation.js";
 import { quarantineFeature, stripEnvelopeTokens } from "../quarantine.js";
+import { repoInScope, repoOutOfScopeRefusal, scopeEnforcementActive } from "../scopeGuard.js";
 
 /**
  * Compact feature projection for MCP responses. Carries the lifecycle
@@ -181,6 +183,24 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
           };
         }
       }
+      // Repo-scope guard (factory only): a direct-apply feature write may only
+      // target a repo the current ticket is scoped to. Runs AFTER the length /
+      // sanitise checks and BEFORE the DB write — purely additive. Inert
+      // (standalone unchanged) unless the runner set GAFFER_FACTORY=1;
+      // fail-closed when the scope signal is missing. See scopeGuard.ts.
+      if (scopeEnforcementActive(process.env) && !repoInScope(args.repo, process.env)) {
+        audit({
+          tool: "add_feature",
+          request: { repo: args.repo, scope_node: args.scope_node },
+          blocked: "repo_out_of_scope",
+        });
+        return {
+          isError: true,
+          content: [
+            { type: "text", text: JSON.stringify(repoOutOfScopeRefusal(args.repo), null, 2) },
+          ],
+        };
+      }
       try {
         const feature = addFeature(db, {
           repo: args.repo,
@@ -251,6 +271,30 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
     },
     async (args) => {
       try {
+        // Repo-scope guard (factory only). advance_feature takes only an id, so
+        // the target repo is IMPLICIT — resolve it from the feature and refuse
+        // if it's outside the ticket's scope. A missing feature falls through to
+        // advanceFeature's existing `unknown_id` error (behaviour unchanged).
+        // Inert (standalone unchanged) unless GAFFER_FACTORY=1. See scopeGuard.ts.
+        if (scopeEnforcementActive(process.env)) {
+          const existing = getFeature(db, args.id);
+          if (existing && !repoInScope(existing.repo, process.env)) {
+            audit({
+              tool: "advance_feature",
+              request: args as Record<string, unknown>,
+              blocked: "repo_out_of_scope",
+            });
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(repoOutOfScopeRefusal(existing.repo), null, 2),
+                },
+              ],
+            };
+          }
+        }
         const feature = advanceFeature(db, args.id, args.to_status);
         audit({
           tool: "advance_feature",

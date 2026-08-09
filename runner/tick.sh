@@ -909,7 +909,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
     # MCP server env so the agent's evidence writes resolve it without ever handling
     # the token string. Substituted alongside the DB/bin placeholders.
-    sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" \
+    #
+    # MEMORY-SCOPE BINDING: a bootstrap ticket has exactly one target repo — the
+    # fresh repo being scaffolded ($B_NAME) — so that is the sole in-scope name
+    # bound into ${GAFFER_TICKET_REPOS}. Paired with GAFFER_FACTORY=1 (template
+    # literal) it lets the memory server refuse a direct-apply write against any
+    # OTHER repo. (The main-delivery twin at the live run derives this from WT_ROWS.)
+    GAFFER_TICKET_REPOS="$B_NAME"
+    sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "$GAFFER_TICKET_REPOS")#g" \
         "$MCP_CONFIG" > "$MCP_RUNTIME"
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     cp -f "$HERE/claude/CLAUDE.md" "$B_DIR/CLAUDE.factory.md"
@@ -1836,7 +1843,17 @@ EOF
   # resolve it from the server env — the agent never handles the token. Empty for a
   # resumed delivery (the runner holds no token), which the MCP server treats as
   # "no token" (the resume agent's evidence writes are best-effort, as before).
-  sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" \
+  #
+  # MEMORY-SCOPE BINDING: the ticket's in-scope repo NAMES (WT_ROWS col-2, the
+  # names sourced from repositories.name in the same rows that produce
+  # GAFFER_WRITE_ROOTS) are injected as ${GAFFER_TICKET_REPOS} so the memory MCP
+  # server can refuse a DIRECT-APPLY write (digest / feature) targeting a repo
+  # this ticket has no scope over. COLON-joined (not newline) so the value stays
+  # a single-line, valid JSON string; empty names are skipped (an unnamed repo is
+  # not a memory-write target). Paired with GAFFER_FACTORY=1 (a literal in the
+  # template) which arms the guard — standalone memory-mcp never sets it.
+  GAFFER_TICKET_REPOS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '$2!=""{print $2}' | paste -sd: -)"
+  sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "$GAFFER_TICKET_REPOS")#g" \
       "$MCP_CONFIG" > "$MCP_RUNTIME"
   chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
   # ── P1b GOLDEN CAPTURE (docs/tick-sh-runtime-migration.md) ──────────────────

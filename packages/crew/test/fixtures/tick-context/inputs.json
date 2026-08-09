@@ -21,6 +21,7 @@
     "memoryDb": "__GAFFER_DATA__/memory.sqlite",
     "dispatchMcpBin": "/opt/gaffer-fixture/dispatch-mcp/bin.js",
     "memoryMcpBin": "/opt/gaffer-fixture/memory-mcp/bin.js",
-    "claimToken": "__CLAIM_TOKEN__"
+    "claimToken": "__CLAIM_TOKEN__",
+    "ticketRepos": "fixture-app"
   }
 }

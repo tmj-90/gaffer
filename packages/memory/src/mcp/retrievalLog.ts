@@ -25,9 +25,26 @@ import type { Database } from "better-sqlite3";
 import { logRetrieval, type RetrievalItem } from "../core/retrievalRoi.js";
 import { parseTicketRepos } from "./scopeGuard.js";
 
+/**
+ * An unsubstituted `${VAR}` render placeholder. A non-delivery invocation
+ * (onboarding, product-owner, review/clarify, merge, inherit) hands the memory
+ * MCP server a PARTIALLY-rendered .mcp.json — the DB/bin placeholders are filled
+ * in but the newer `${GAFFER_RECALL_TICKET}` is not — and Claude Code forwards
+ * an unresolved `${VAR}` to the server env VERBATIM. Only tick.sh's delivery /
+ * bootstrap renders substitute it (to $NUM / "").
+ */
+const UNSUBSTITUTED_PLACEHOLDER = /\$\{[^}]*\}/;
+
 /** The current delivery ticket ref, or "" when there is none (standalone/no-ticket). */
 export function recallTicket(env: NodeJS.ProcessEnv): string {
-  return (env["GAFFER_RECALL_TICKET"] ?? "").trim();
+  const ticket = (env["GAFFER_RECALL_TICKET"] ?? "").trim();
+  // FAIL-SAFE (load-bearing): treat an unsubstituted render placeholder exactly
+  // like an empty ticket — the read path stays inert instead of bucketing every
+  // retrieval under a fake ticket ("${GAFFER_RECALL_TICKET}") that can never join
+  // to a real outcome. This is the single choke point where the ticket ref is
+  // resolved for logging, so it neutralises EVERY leaking render path at once.
+  if (UNSUBSTITUTED_PLACEHOLDER.test(ticket)) return "";
+  return ticket;
 }
 
 /**

@@ -933,6 +933,28 @@ describe("MCP — retrieval-ROI logging on the read path (migration 011)", () =>
     expect(n).toBe(0);
   });
 
+  it("writes NOTHING when GAFFER_RECALL_TICKET is the unsubstituted ${…} placeholder", async () => {
+    // A non-delivery invocation (onboarding, product-owner, review/clarify) hands
+    // the memory MCP server a PARTIALLY-rendered .mcp.json where ${GAFFER_RECALL_TICKET}
+    // was never substituted, so Claude Code forwards the literal to the server env.
+    // The recallTicket() choke point must treat that exactly like no ticket — else
+    // every read is bucketed under a fake ticket that can never join to an outcome.
+    const { loreId } = seedAll();
+    process.env["GAFFER_RECALL_TICKET"] = "${GAFFER_RECALL_TICKET}";
+    process.env["GAFFER_TICKET_REPOS"] = REPO;
+    client = await connectClient(db);
+    await callJson(client, "search_lore", { query: "webhook" });
+    await callJson(client, "get_lore", { id: loreId });
+    await callJson(client, "get_repo_digest", { repo: REPO });
+    await callJson(client, "cards_for_scope", {
+      repoCanonical: CANON,
+      repo: REPO,
+      query: "webhook",
+    });
+    const n = (db.prepare("SELECT COUNT(*) AS n FROM retrieval_event").get() as { n: number }).n;
+    expect(n).toBe(0);
+  });
+
   it("returns an IDENTICAL response with the ticket env set vs unset (memory read unchanged)", async () => {
     const { loreId } = seedAll();
     client = await connectClient(db);

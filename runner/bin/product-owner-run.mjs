@@ -358,6 +358,10 @@ function installProjectLocalWiring() {
   // runs can't overwrite each other's MCP wiring (FIX 4: eliminated shared path
   // $GAFFER_DATA/mcp-product-owner-runtime.json). Cleaned up with agentHome on exit.
   const mcpRuntime = resolve(agentHome, "mcp-runtime.json");
+  // The product-owner run is NOT a delivery, so there is no recall ticket:
+  // neutralise ${GAFFER_RECALL_TICKET} to EMPTY (memory's read path treats "" as
+  // no-ticket ⇒ inert) so the literal placeholder never leaks into the memory
+  // server env and buckets these reads under a fake ticket.
   const mcp = readFileSync(CONFIG.mcpConfig, "utf8")
     .split("${DISPATCH_DB}")
     .join(CONFIG.dispatchDb)
@@ -366,7 +370,9 @@ function installProjectLocalWiring() {
     .split("${DISPATCH_MCP_BIN}")
     .join(CONFIG.dispatchMcpBin)
     .split("${MEMORY_MCP_BIN}")
-    .join(CONFIG.memoryMcpBin);
+    .join(CONFIG.memoryMcpBin)
+    .split("${GAFFER_RECALL_TICKET}")
+    .join("");
   // Owner-only: the rendered runtime config carries DB paths (and, on the delivery
   // path, a claim token) — never leave it at the umask default on a shared machine.
   writeFileSync(mcpRuntime, mcp, { mode: 0o600 });

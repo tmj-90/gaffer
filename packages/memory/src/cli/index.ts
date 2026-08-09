@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { defaultDbPath, openDb } from "../db/index.js";
 import { getString, parseArgs } from "./args.js";
 import {
@@ -446,4 +449,36 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
     process.stderr.write(`memory: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
+}
+
+/**
+ * Run `main` when THIS module is the process entry — i.e. `node dist/cli/index.js
+ * <cmd>` was invoked directly, not only the packaged `dist/bin/memory.js` (which
+ * imports { main }). Without this, invoking the router module by path defines
+ * `main` but never calls it, so the command exits 0 having printed NOTHING (every
+ * command, `stats` / `stats --roi` included — the ROI report never even runs).
+ * The guard fires only when argv[1] resolves to this file, so `bin/memory.ts`'s
+ * `import { main }` can never trigger a second run.
+ */
+function invokedDirectly(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  let entryReal: string;
+  try {
+    entryReal = realpathSync(entry);
+  } catch {
+    entryReal = entry;
+  }
+  return fileURLToPath(import.meta.url) === entryReal;
+}
+
+if (invokedDirectly()) {
+  main(process.argv)
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      process.stderr.write(
+        `memory: fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
+      );
+      process.exit(1);
+    });
 }

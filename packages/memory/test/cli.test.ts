@@ -1106,6 +1106,30 @@ describe("CLI — stats --roi (retrieval-ROI report)", () => {
     expect(out.toLowerCase()).not.toContain("percent");
   });
 
+  it("human render on seeded data prints the header AND the consulted row (never silent)", async () => {
+    const rc = await run(
+      "add",
+      "--title",
+      "Consulted rule",
+      "--summary",
+      "s",
+      "--body",
+      "b",
+      "--repo",
+      REPO,
+    );
+    expect(rc).toBe(0);
+    const consultedId = firstId(out);
+    seedRetrieval(consultedId, "1", "clean");
+
+    out = "";
+    expect(await run("stats", "--roi")).toBe(0);
+    expect(out.trim().length).toBeGreaterThan(0);
+    expect(out).toMatch(/MEMORY RETRIEVAL ROI/);
+    expect(out).toMatch(/sample: 1 ticket,/);
+    expect(out).toContain(consultedId);
+  });
+
   it("--json emits the raw report shape with counts joined to outcomes", async () => {
     // A consulted+clean lore, plus a never-retrieved lore.
     const rc = await run(

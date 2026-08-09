@@ -334,11 +334,17 @@ function installProjectLocalWiring(worktreePath) {
 
   mkdirSync(GAFFER_DATA, { recursive: true });
   const mcpRuntime = resolve(GAFFER_DATA, "mcp-merge-ticket-runtime.json");
+  // The merge-ticket run is NOT a delivery, so there is no recall ticket:
+  // neutralise ${GAFFER_RECALL_TICKET} to EMPTY (memory's read path treats "" as
+  // no-ticket ⇒ inert) so the literal placeholder never leaks into the memory
+  // server env and buckets these reads under a fake ticket.
   const mcp = readFileSync(CONFIG.mcpConfig, "utf8")
     .split("${DISPATCH_DB}")
     .join(CONFIG.dispatchDb)
     .split("${MEMORY_DB}")
-    .join(CONFIG.memoryDb);
+    .join(CONFIG.memoryDb)
+    .split("${GAFFER_RECALL_TICKET}")
+    .join("");
   writeFileSync(mcpRuntime, mcp);
   return mcpRuntime;
 }

@@ -393,6 +393,7 @@ export async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<numb
   const {
     evidenceForRecord,
     recentActivity,
+    renderRetrievalRoi,
     renderStatsReport,
     retireCandidates,
     topCitedRecords,
@@ -416,6 +417,31 @@ export async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<numb
   if (top === null) return 2;
   const sinceDays = parseInt1("since-days", 90);
   if (sinceDays === null) return 2;
+
+  // --roi: retrieval-ROI view. Early-return — a distinct read-only report
+  // (which served records get consulted, and how those deliveries turned out),
+  // joined to the recall_feedback outcome ledger. Reuses --repo / --since-days /
+  // --json. COUNTS + sample size only — no percentages, no causal claims.
+  if (getBool(args.flags, "roi")) {
+    const { retrievalRoi } = await import("../../core/retrievalRoi.js");
+    const repo = getString(args.flags, "repo");
+    const roiJson = getBool(args.flags, "json");
+    const db = openDb();
+    try {
+      const report = retrievalRoi(db, {
+        ...(repo && repo.trim() ? { repo: repo.trim() } : {}),
+        sinceDays,
+      });
+      if (roiJson) {
+        process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+      } else {
+        process.stdout.write(renderRetrievalRoi(report) + "\n");
+      }
+      return 0;
+    } finally {
+      db.close();
+    }
+  }
   const quietForDays = parseInt1("quiet-for-days", 180);
   if (quietForDays === null) return 2;
   const wantsJson = getBool(args.flags, "json");

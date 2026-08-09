@@ -19,6 +19,8 @@ import { createInterface } from "node:readline";
 
 import type { Database } from "better-sqlite3";
 
+import type { RetrievalRoiReport } from "../core/retrievalRoi.js";
+
 export interface TopCitedRecord {
   readonly id: string;
   readonly title: string;
@@ -219,6 +221,49 @@ export function renderStatsReport(
   lines.push(
     `  superseded ${activity.superseded}  updated ${activity.updated}  reads ${activity.reads}  imports ${activity.imports}`,
   );
+  return lines.join("\n");
+}
+
+// ── Retrieval ROI: which served records earned their keep? ───────────
+
+/**
+ * Render the retrieval-ROI report. HONESTY GUARDRAILS baked in: the header
+ * states the sample size and that these are COUNTS, not a causal measure; there
+ * is NO percentage anywhere; `bounce-correlated` is shown as a flag to look at,
+ * never a verdict. Mirrors the MIN_SAMPLES humility lesson — at small n, read a
+ * count as signal, not proof.
+ */
+export function renderRetrievalRoi(report: RetrievalRoiReport): string {
+  const lines: string[] = [];
+  lines.push(
+    `MEMORY RETRIEVAL ROI  (sample: ${report.sampleSize} ticket${
+      report.sampleSize === 1 ? "" : "s"
+    }, ${report.ticketsWithOutcome} with a recorded outcome)`,
+  );
+  lines.push("  Counts only — not a causal measure. At small n, read as signal, not proof.");
+  lines.push("");
+
+  if (report.records.length === 0) {
+    lines.push("  No retrievals recorded yet — run some deliveries that consult memory.");
+  } else {
+    lines.push(
+      "  Consulted records (consulted-in / approved-clean / reworked / blocked / pending):",
+    );
+    for (const r of report.records) {
+      const counts = `${r.consultedIn} / ${r.approvedClean} / ${r.reworked} / ${r.blocked} / ${r.outcomePending}`;
+      const flag = r.bounceCorrelated ? "   ⚠ bounce-correlated" : "";
+      lines.push(`    ${r.itemType.padEnd(7)} ${r.itemId}   ${counts}   ${r.label}${flag}`);
+    }
+  }
+
+  lines.push("");
+  lines.push(`  Never retrieved (candidates to prune): ${report.neverRetrievedTotal}`);
+  for (const n of report.neverRetrieved) {
+    lines.push(`    ${n.itemType.padEnd(7)} ${n.itemId}   ${n.label}   [${n.note}]`);
+  }
+  if (report.neverRetrievedTotal > report.neverRetrieved.length) {
+    lines.push(`    ... and ${report.neverRetrievedTotal - report.neverRetrieved.length} more`);
+  }
   return lines.join("\n");
 }
 

@@ -14,6 +14,7 @@ import type { Feature } from "../../db/types.js";
 import { checkMaxLen, FEATURE_CAPS } from "../validation.js";
 import { quarantineFeature, stripEnvelopeTokens } from "../quarantine.js";
 import { repoInScope, repoOutOfScopeRefusal, scopeEnforcementActive } from "../scopeGuard.js";
+import { recordRetrieval } from "../retrievalLog.js";
 
 /**
  * Compact feature projection for MCP responses. Carries the lifecycle
@@ -88,6 +89,14 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
           resultCount: features.length,
           resultIds: features.map((f) => f.id),
         });
+        // ROI: fail-soft retrieval log (ids only, gated on ticket). Takes no
+        // part in the response below. See retrievalLog.ts.
+        recordRetrieval(
+          db,
+          "list_features",
+          features.map((f) => ({ type: "feature", id: f.id })),
+          args.repo,
+        );
         const out = {
           repo: args.repo,
           ...(args.status ? { status: args.status } : {}),

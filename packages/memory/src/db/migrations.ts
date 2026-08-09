@@ -452,6 +452,48 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // retrieval_event — the READ-PATH attribution edge for memory ROI.
+    //
+    // WHY A SECOND TABLE (not recall_event): recall_event feeds recallFeedback,
+    // which MUTATES lore.confidence / flagged_for_review from the outcome. That
+    // loop must learn ONLY from the runner's deliberate context prime — never
+    // from every ad-hoc MCP read a delivery agent makes. Funnelling MCP reads
+    // into recall_event would change what that loop adjusts. So MCP reads land
+    // in their OWN read-only ledger here, joined to the existing recall_feedback
+    // outcome ledger by the report (retrievalRoi) — no new cross-package
+    // coupling, and the confidence loop is left byte-for-byte untouched.
+    //
+    // Its item_type CHECK also admits 'digest' and 'feature' (recall_event only
+    // allows 'lore'/'card'), because the read path serves those too.
+    //
+    // UNIQUE(ticket,item_type,item_id,tool): repeated ad-hoc reads of the same
+    // record within one ticket collapse to a SET per read surface (idempotent,
+    // INSERT OR IGNORE), so a chatty agent can't inflate the consulted count —
+    // the same discipline as recall_event, plus the `tool` dimension so the
+    // report can say WHICH read surface served a record.
+    //
+    // read-only: nothing consumes this to adjust an item. It is instrumentation
+    // for the ROI report and a clean seam for a future consumer.
+    id: "011-retrieval-roi",
+    up(db) {
+      db.exec(`
+        CREATE TABLE retrieval_event (
+          id          TEXT PRIMARY KEY,
+          repo        TEXT NOT NULL,
+          ticket      TEXT NOT NULL,
+          item_type   TEXT NOT NULL
+            CHECK (item_type IN ('lore','digest','feature','card')),
+          item_id     TEXT NOT NULL,
+          tool        TEXT NOT NULL,
+          served_at   TEXT NOT NULL,
+          UNIQUE (ticket, item_type, item_id, tool)
+        );
+        CREATE INDEX idx_retrieval_event_ticket ON retrieval_event(ticket);
+        CREATE INDEX idx_retrieval_event_item   ON retrieval_event(item_type, item_id);
+      `);
+    },
+  },
 ];
 
 /**

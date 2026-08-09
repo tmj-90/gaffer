@@ -163,6 +163,14 @@ COMMANDS
                             zero reads in N days), recent activity.
                             Opt out of read tracking via
                             MEMORY_NO_TELEMETRY=1.
+  stats --roi [--repo R] [--since-days N] [--json]
+                            Memory retrieval-ROI view: which served
+                            records get consulted in deliveries, joined
+                            to the recorded ticket outcome (approved-
+                            clean / reworked / blocked), plus never-
+                            retrieved + bounce-correlated pruning
+                            candidates. COUNTS + sample size only — no
+                            causal or percentage claims.
   prune [--read-events-older-than N] [--vacuum] [--dry-run]
                             Local-DB GC. Deletes 'read' audit events
                             older than N days (default 90; lifecycle

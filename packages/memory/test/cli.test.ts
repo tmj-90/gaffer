@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { main } from "../src/cli/index.js";
+import { openDb } from "../src/db/index.js";
+import { newLoreId } from "../src/core/ids.js";
 import { VERSION } from "../src/version.js";
 
 let dir: string;
@@ -1067,5 +1069,80 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
     expect(out).toMatch(/RECALL EFFECTIVENESS/);
     expect(out).toMatch(/effectiveness: 100% clean/);
     void id;
+  });
+});
+
+describe("CLI — stats --roi (retrieval-ROI report)", () => {
+  const REPO = "app";
+
+  /** Seed retrieval_event + recall_feedback rows directly (the MCP read path is
+   *  what writes retrieval_event in production; the CLI report only reads them). */
+  function seedRetrieval(loreId: string, ticket: string, outcome?: string): void {
+    const db = openDb();
+    try {
+      const ts = new Date().toISOString();
+      db.prepare(
+        `INSERT OR IGNORE INTO retrieval_event (id, repo, ticket, item_type, item_id, tool, served_at)
+         VALUES (?, ?, ?, 'lore', ?, 'search_lore', ?)`,
+      ).run(newLoreId(), REPO, ticket, loreId, ts);
+      if (outcome) {
+        db.prepare(
+          `INSERT OR IGNORE INTO recall_feedback (id, repo, ticket, outcome, items_adjusted, applied_at)
+           VALUES (?, ?, ?, ?, 0, ?)`,
+        ).run(newLoreId(), REPO, ticket, outcome, ts);
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  it("reports a zero-state without crashing", async () => {
+    out = "";
+    expect(await run("stats", "--roi")).toBe(0);
+    expect(out).toMatch(/MEMORY RETRIEVAL ROI/);
+    expect(out).toMatch(/sample: 0 tickets, 0 with a recorded outcome/);
+    // Honesty: no percentage / causal language anywhere.
+    expect(out).not.toMatch(/%/);
+    expect(out.toLowerCase()).not.toContain("percent");
+  });
+
+  it("--json emits the raw report shape with counts joined to outcomes", async () => {
+    // A consulted+clean lore, plus a never-retrieved lore.
+    const rc = await run(
+      "add",
+      "--title",
+      "Consulted rule",
+      "--summary",
+      "s",
+      "--body",
+      "b",
+      "--repo",
+      REPO,
+      "--confidence",
+      "medium",
+    );
+    expect(rc).toBe(0);
+    const consultedId = firstId(out);
+    await run("add", "--title", "Never used", "--summary", "s", "--body", "b", "--repo", REPO);
+
+    seedRetrieval(consultedId, "1", "clean");
+    seedRetrieval(consultedId, "2", "reworked");
+
+    out = "";
+    expect(await run("stats", "--roi", "--json")).toBe(0);
+    const report = JSON.parse(out);
+    expect(report.sampleSize).toBe(2);
+    expect(report.ticketsWithOutcome).toBe(2);
+    const rec = report.records.find((r: { itemId: string }) => r.itemId === consultedId);
+    expect(rec.consultedIn).toBe(2);
+    expect(rec.approvedClean).toBe(1);
+    expect(rec.reworked).toBe(1);
+    expect(rec.bounceCorrelated).toBe(false);
+    // The never-used lore surfaces as a pruning candidate.
+    expect(report.neverRetrievedTotal).toBeGreaterThanOrEqual(1);
+    // Honesty: no percentage/ratio field in the raw JSON.
+    expect(out.toLowerCase()).not.toContain("pct");
+    expect(out.toLowerCase()).not.toContain("percent");
+    expect(out.toLowerCase()).not.toContain("effectiveness");
   });
 });

@@ -45,6 +45,17 @@ export type {
   RecallItemType,
   RecallOutcome,
 } from "./core/recallFeedback.js";
+export { logRetrieval, retrievalRoi } from "./core/retrievalRoi.js";
+export type {
+  LogRetrievalInput,
+  LogRetrievalResult,
+  NeverRetrievedRecord,
+  RetrievalItem,
+  RetrievalItemType,
+  RetrievalRecordRoi,
+  RetrievalRoiOptions,
+  RetrievalRoiReport,
+} from "./core/retrievalRoi.js";
 export {
   addBoundary,
   approveBoundary,

@@ -23,6 +23,7 @@ import {
 } from "../redact.js";
 import { auditMessageForTooLong, checkLength, LENGTH_CAPS } from "../validation.js";
 import { quarantineLore, QUARANTINE_NOTICE } from "../quarantine.js";
+import { recordRetrieval } from "../retrievalLog.js";
 
 /**
  * Register the lore-knowledge MCP tools onto `server`:
@@ -185,6 +186,14 @@ export function registerLoreTools(server: McpServer, db: Database): void {
           resultCount: hits.length,
           resultIds: hits.map((h) => h.id),
         });
+        // ROI: fail-soft retrieval log (ids only, gated on ticket). Takes no
+        // part in the response below; a throw is swallowed. See retrievalLog.ts.
+        recordRetrieval(
+          db,
+          "search_lore",
+          hits.map((h) => ({ type: "lore", id: h.id })),
+          args.repo,
+        );
         // possibleConflicts is a CLI-only heuristic for human triage —
         // see stripPossibleConflicts for the rationale.
         const mcpHits = stripPossibleConflicts(hits).map((h) => quarantineLore(h));
@@ -289,6 +298,12 @@ export function registerLoreTools(server: McpServer, db: Database): void {
           resultCount: lore ? 1 : 0,
           resultIds: lore ? [lore.id] : [],
         });
+        // ROI: fail-soft retrieval log (ids only, gated on ticket). Only when a
+        // record was actually served (not on a miss / the restricted-gate block
+        // above, which returns before this). See retrievalLog.ts.
+        if (lore) {
+          recordRetrieval(db, "get_lore", [{ type: "lore", id: lore.id }]);
+        }
         if (!lore) {
           const notFound = { found: false, id: args.id };
           return {

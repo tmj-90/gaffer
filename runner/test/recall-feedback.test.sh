@@ -116,6 +116,28 @@ else
   esac
 fi
 
+echo "== E. memory MCP env carries the recall ticket for the ROI read path =="
+MCP_JSON="$RUNNER_DIR/.mcp.json"
+# The memory server env must forward GAFFER_RECALL_TICKET (one-hop plumbing, same
+# pattern as GAFFER_TICKET_REPOS) so the read path can attribute a retrieval.
+if grep -q '"GAFFER_RECALL_TICKET": "\${GAFFER_RECALL_TICKET}"' "$MCP_JSON"; then
+  ok ".mcp.json memory env forwards GAFFER_RECALL_TICKET"
+else
+  fail ".mcp.json memory env does not forward GAFFER_RECALL_TICKET"
+fi
+# The DELIVERY render binds the placeholder to the ticket number ($NUM).
+if grep -q 's#\\${GAFFER_RECALL_TICKET}#\$(_gaffer_sed_repl "\$NUM")#g' "$TICK"; then
+  ok "delivery render sets GAFFER_RECALL_TICKET to \$NUM"
+else
+  fail "delivery render does not set GAFFER_RECALL_TICKET to \$NUM"
+fi
+# The BOOTSTRAP render leaves it empty (no delivery-recall context → inert).
+if grep -q 's#\\${GAFFER_RECALL_TICKET}#\$(_gaffer_sed_repl "")#g' "$TICK"; then
+  ok "bootstrap render leaves GAFFER_RECALL_TICKET empty (inert)"
+else
+  fail "bootstrap render does not leave GAFFER_RECALL_TICKET empty"
+fi
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS ($PASS checks)"

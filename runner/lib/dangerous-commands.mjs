@@ -127,8 +127,8 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
-    re: /\bfind\b[^\n]*\s-exec(?:dir)?\s+(?:rm|sh|bash|zsh|dash|cp|mv|tee|dd|install|ln|rsync|truncate|shred|chmod|chown)\b/,
-    why: "find -exec writer/shell (destructive or unverifiable-target tree walk)",
+    re: /\bfind\b[^\n]*\s-exec(?:dir)?\s+(?:rm|sh|bash|zsh|dash|cp|mv|tee|dd|install|ln|rsync|truncate|shred|chmod|chown|sed|awk|gawk|mawk|perl|python|python3|node|patch|ex|ed)\b/,
+    why: "find -exec writer/shell/editor (destructive or unverifiable-target tree walk; the {} target is invisible to the write-target extractor). Slightly over-blocks a read-only awk/sed/perl -exec, which is acceptable versus letting an in-place edit escape.",
     example: "find . -exec rm {} ;",
     crewFlags: false,
   },

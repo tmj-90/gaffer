@@ -1485,8 +1485,12 @@ function extractBashWriteTargets(cmd) {
     targets.push(canonicalize(resolve(process.cwd(), p)));
   };
 
-  // Output redirection: `> file`, `>> file`, `2> file`, `&> file`.
-  for (const m of cmd.matchAll(/(?:^|\s)(?:[0-9]*|&)>>?\s*("[^"]+"|'[^']+'|[^\s;&|<>]+)/g)) {
+  // Output redirection: `> file`, `>> file`, `2> file`, `&> file`, plus the
+  // noclobber/csh override forms `>| file`, `>& file`, `>>& file` (the optional
+  // `[|&]` after the arrow is consumed so the destination is captured, not the
+  // operator). fd-duplication targets like `2>&1` / `>&2` route their bare
+  // `1`/`2` into the `/^[&\d]+$/` skip guard in add() below and stay allowed.
+  for (const m of cmd.matchAll(/(?:^|\s)(?:[0-9]*|&)>>?[|&]?\s*("[^"]+"|'[^']+'|[^\s;&|<>]+)/g)) {
     add(m[1]);
   }
   // `dd of=FILE`.
@@ -1818,9 +1822,13 @@ process.stdin.on("end", () => {
       parsed = false;
     }
     if (!parsed) {
-      // If we can't parse the hook payload, fail safe-open for non-mutating tools
-      // but the matchers below only route mutating tools here, so allow.
-      allow();
+      // If we can't parse the hook payload we cannot identify the tool/target, so
+      // we cannot prove the call is safe — fail CLOSED (exit 2), matching every
+      // other error path in this file (uncaughtException + outer-catch). NOTE: an
+      // EMPTY payload is distinct: it parses as {} above and falls through to the
+      // default allow (no mutating tool identified); only a genuine parse FAILURE
+      // reaches here.
+      block("unparseable hook payload — failing closed");
       return;
     }
     const tool = payload.tool_name ?? payload.toolName ?? "";

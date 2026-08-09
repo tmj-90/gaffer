@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import type { Dispatch } from "../core.js";
-import { hasValidBearer, isRequestAuthorized } from "./auth.js";
+import { hasValidBearer, isMutationAuthorized, isRequestAuthorized } from "./auth.js";
 import { errorBody, handleError, sendJson } from "./http.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
 import { createMergeRunner, type MergeRunner } from "./mergeRunner.js";
@@ -207,6 +207,27 @@ async function route(
     if (!isRequestAuthorized(req)) {
       sendJson(res, 401, {
         error: { code: "UNAUTHORIZED", message: "Missing or invalid bearer token." },
+      });
+      return;
+    }
+
+    // Capability gate (scoped tokens): a valid credential has reached here, but a
+    // READ-scoped token may only browse. GET and HEAD are the RFC "safe" methods
+    // and form the entire read surface (every read route is GET; every
+    // mutating/gate route — approve/reject/ready/move/onboard/product-owner
+    // run/poll/merge/settings write — is non-GET). Fail closed: permit a mutation
+    // ONLY when the caller provably holds the full token; a read-scoped or
+    // otherwise unprovable credential gets 403. `isMutationAuthorized` is a no-op
+    // when auth is disabled (no token configured) and always true for the legacy
+    // full token, so this is strictly additive: zero behaviour change for an
+    // operator who does nothing. No per-route allowlist — it keys on the existing
+    // method structure.
+    if (method !== "GET" && method !== "HEAD" && !isMutationAuthorized(req)) {
+      sendJson(res, 403, {
+        error: {
+          code: "READ_ONLY_TOKEN",
+          message: "This token is read-scoped; mutating routes are not permitted.",
+        },
       });
       return;
     }

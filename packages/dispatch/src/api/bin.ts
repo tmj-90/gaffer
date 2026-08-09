@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 
-import { authConfigured, ensureApiToken } from "./auth.js";
+import { authConfigured, deriveReadToken, ensureApiToken } from "./auth.js";
 import { Dispatch } from "../core.js";
 import { resolveDbPath } from "../util/paths.js";
 import { DEFAULT_API_PORT, assertSafeBind, createApiServer } from "./server.js";
@@ -106,6 +106,21 @@ program
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
+  });
+
+// Mint the read-scoped token for the current API token. The full token grants
+// everything (read + approve/reject/merge/onboard/run); the read token can browse
+// the dashboard and read models but is refused (403) on every mutating/gate route.
+// Hand this string to a phone / read-only viewer / `?token=` login — a leaked read
+// token cannot recover merge rights (the derivation is one-way HMAC). Resolves the
+// full token via the same env → file → generated precedence the server uses, so the
+// printed value is exactly what the running server will accept as read-scoped.
+program
+  .command("print-read-token")
+  .description("Print the read-scoped token derived from the current API token")
+  .action(() => {
+    const { token } = ensureApiToken(process.env);
+    process.stdout.write(`${deriveReadToken(token)}\n`);
   });
 
 program.parseAsync(process.argv).catch((err: unknown) => {

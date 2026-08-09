@@ -20,7 +20,7 @@
 // backwards compatibility. A configured token also satisfies the safe-bind guard:
 // an authenticated API is safe to expose beyond loopback.
 
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { homedir } from "node:os";
@@ -160,18 +160,81 @@ function bearer(req: IncomingMessage): string {
 }
 
 /**
- * True ONLY when the request carries a CORRECT `Authorization: Bearer <token>`.
- * Unlike {@link isAuthorized} this never returns true merely because auth is
- * disabled — it proves the caller actually holds the credential. Used by the
- * Host/Origin DNS-rebinding check to let a token-bearing caller through: a
- * browser cannot attach the bearer token cross-origin, so a valid token is
- * proof the request is not a rebound attacker page.
+ * Domain-separation label for the read-scoped token derivation. Versioned so the
+ * derivation can be rotated in a future release without colliding with tokens
+ * minted today.
+ */
+const READ_SCOPE_LABEL = "gaffer-api-read-scope.v1";
+
+/**
+ * Capability tier a credential carries. This is CAPABILITY scoping on the single
+ * shared credential — NOT multi-operator identity/RBAC (there is one human).
+ *
+ * - `"full"`: the legacy/full token — reads AND every mutating/gate route, exactly
+ *   as today.
+ * - `"read"`: the derived read-scoped token — may browse read-model/board/diff
+ *   routes but is refused (403, fail-closed) on every mutating/gate route.
+ */
+export type ApiCapability = "full" | "read";
+
+/**
+ * Derive the read-scoped token from the full token, one-way. `HMAC-SHA256(full,
+ * label)` — a read token holder can never recover the full token (that would
+ * require inverting HMAC), so a leaked read credential cannot be escalated to
+ * merge rights. Deterministic, so `dispatch-api print-read-token` reproduces the
+ * same value the running server accepts, and requires NO new persisted secret or
+ * config: the read token exists as a pure function of whatever full token the
+ * operator already has (env / file / generated, identically).
+ */
+export function deriveReadToken(full: string): string {
+  return createHmac("sha256", full).update(READ_SCOPE_LABEL).digest("base64url");
+}
+
+/**
+ * Resolve the capability tier a request's credential carries. Fail-closed:
+ *
+ * - No token configured → `"full"` (auth-disabled embedder/test posture, unchanged).
+ * - Correct full token → `"full"`.
+ * - Correct derived read token → `"read"`.
+ * - Missing / malformed / unknown credential → `null` (no valid credential; the
+ *   caller is refused upstream with 401, and mutation gating treats it as least
+ *   privilege). The full token is checked FIRST so the full tier is never
+ *   down-graded.
+ */
+export function requestCapability(req: IncomingMessage): ApiCapability | null {
+  const full = apiToken();
+  if (!full) return "full";
+  const provided = bearer(req);
+  if (provided.length === 0) return null;
+  if (tokenMatches(provided, full)) return "full";
+  if (tokenMatches(provided, deriveReadToken(full))) return "read";
+  return null;
+}
+
+/**
+ * True ONLY when the caller PROVABLY holds FULL capability (or auth is disabled).
+ * Fail-closed: a read-scoped, missing, malformed, or unknown credential returns
+ * false, so mutating/gate routes are refused. This is the capability check the
+ * server applies in front of every non-safe (non-GET/HEAD) route; it never makes
+ * an existing route more permissive — the auth-disabled and full-token postures
+ * are byte-for-byte unchanged.
+ */
+export function isMutationAuthorized(req: IncomingMessage): boolean {
+  return apiToken().length === 0 || requestCapability(req) === "full";
+}
+
+/**
+ * True ONLY when the request carries a CORRECT credential — either the full token
+ * or the derived read-scoped token. Unlike {@link isAuthorized} this never returns
+ * true merely because auth is disabled — it proves the caller actually holds a
+ * credential. Used by the Host/Origin DNS-rebinding check to let a token-bearing
+ * caller through: a browser cannot attach a bearer token cross-origin, so a valid
+ * token (full OR read) is proof the request is not a rebound attacker page. The
+ * read token must satisfy this too, so the read-only dashboard reachable over the
+ * LAN (phone / proxied deploy whose Host never matches the bind host) can load.
  */
 export function hasValidBearer(req: IncomingMessage): boolean {
-  const expected = apiToken();
-  if (!expected) return false;
-  const provided = bearer(req);
-  return provided.length > 0 && tokenMatches(provided, expected);
+  return apiToken().length > 0 && requestCapability(req) !== null;
 }
 
 /**

@@ -156,7 +156,11 @@ try { text = readFileSync(ledger, 'utf8'); } catch { /* missing ledger = 0 spend
 let spend = 0;
 for (const r of parseLedger(text)) {
   const c = r.total_cost_usd;
-  if (typeof c === 'number' && Number.isFinite(c) && c >= 0) spend += c;
+  if (typeof c === 'number' && Number.isFinite(c) && c >= 0) { spend += c; continue; }
+  // Part A: a KILLED/timeout call books no measured cost but a labelled ESTIMATE —
+  // count it so an unattended run that keeps timing out can't read as free.
+  const e = r.estimated_cost_usd;
+  if (typeof e === 'number' && Number.isFinite(e) && e >= 0) spend += e;
 }
 const budget = parseFloat(process.env.GAFFER_BUDGET_USD || '0');
 if (budget <= 0) { process.stdout.write(''); process.exit(0); }
@@ -451,7 +455,10 @@ gaffer_ticket_rework_spend() {
       if (r.kind!=="delivery") continue;
       if (String(r.ticket)!==want) continue;
       const c=r.total_cost_usd;
-      if (typeof c==="number" && Number.isFinite(c) && c>=0) spend+=c;
+      if (typeof c==="number" && Number.isFinite(c) && c>=0) { spend+=c; continue; }
+      // Part A: count a killed/timeout ESTIMATE too (measured cost is "unknown").
+      const e=r.estimated_cost_usd;
+      if (typeof e==="number" && Number.isFinite(e) && e>=0) spend+=e;
     }
     process.stdout.write(spend.toFixed(6));
   ' 2>/dev/null || printf '0'
@@ -983,6 +990,18 @@ gaffer_is_self_target() {
 # spend. The count persists in DAILY_COUNTER_FILE and resets each day. 0 = off.
 : "${MAX_TICKS_PER_DAY:=50}"
 : "${DAILY_COUNTER_FILE:=$GAFFER_DATA/.daily-ticks}"
+# Per-CALENDAR-DAY (UTC) USD spend ceiling (Part B). MAX_TICKS_PER_DAY bounds the
+# NUMBER of ticks; this bounds the DOLLARS spent in a UTC day, summed from the usage
+# ledger (measured total_cost_usd PLUS killed/timeout estimated_cost_usd, so a run
+# that keeps timing out still counts against the cap). Before a tick starts new paid
+# work, if the UTC-day ledger spend is already at/over this cap the tick halts
+# cleanly (logs why, exits 0) exactly like the MAX_TICKS_PER_DAY stop — the daemon
+# then backs off to the next day. Empty or 0 = OFF (the default → the CAP is
+# byte-identical to today). Note: killed/timeout cost accounting (Part A,
+# GAFFER_KILL_ESTIMATE_USD) is a SEPARATE default-on honesty change — set it to 0
+# for the old $0 behaviour. Example: GAFFER_DAILY_BUDGET_USD=20.00.
+: "${GAFFER_DAILY_BUDGET_USD:=}"
+export GAFFER_DAILY_BUDGET_USD
 
 # --- Parallel ticket execution (A-1) -----------------------------------------
 # How many worker processes deliver tickets at once. The DEFAULT of 1 is a hard
@@ -1033,6 +1052,19 @@ export GAFFER_CONCURRENCY MAX_CONCURRENT_TICKETS_PER_REPO MAX_CANDIDATES
 : "${GAFFER_USAGE_LEDGER:=$GAFFER_DATA/usage-ledger.jsonl}"
 export GAFFER_USAGE_LEDGER
 
+# GAFFER_KILL_ESTIMATE_USD — budget honesty for a KILLED / TIMED-OUT `claude -p`
+# call (Part A). Such a call emits no clean result envelope, so today its cost is
+# recorded "unknown" and every spend summation skips it — i.e. it books $0, and an
+# unattended run that keeps timing out looks FREE while it is really burning tokens.
+# When the ledger CLI hits a killed/timeout branch it instead records a CONSERVATIVE
+# ESTIMATE (measured:false, total_cost_usd stays "unknown", but a labelled
+# estimated_cost_usd that DOES count toward windowed spend). The estimate prefers the
+# P10 of the factory's OWN measured history for that kind; this value is the FLAT
+# FLOOR used when there isn't enough history (it is a floor, NOT precision). 0
+# restores today's exact $0/unknown behaviour (opt-out). Measured calls ignore it.
+: "${GAFFER_KILL_ESTIMATE_USD:=0.05}"
+export GAFFER_KILL_ESTIMATE_USD
+
 # gaffer_usage_record <kind> <ticket-or-empty> <rc> <captured-json-file>
 # Hands the captured `--output-format json` stdout to the usage-ledger CLI, which
 # PRINTS the agent's `.result` text to stdout (so the caller keeps a
@@ -1059,7 +1091,7 @@ gaffer_usage_record() {
   # tick), but the WARNING is now VISIBLE in the log.
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
-      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   else
     node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   fi

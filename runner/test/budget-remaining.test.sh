@@ -108,6 +108,30 @@ TIER="$(printf '%s\n' "$OUT" | sed -n 's/^TIER=//p')"
   && ok "remaining 0.5 above the explicit 0.1 threshold → no downgrade" \
   || fail "expected sonnet with a low explicit threshold (got '$TIER')"
 
+echo "== 7 (Part A): a killed/timeout ESTIMATE counts toward windowed spend =="
+# Ledger: one measured $1.00 delivery + one ESTIMATED $0.05 killed row + one plain
+# unmeasured row (contributes 0). GAFFER_BUDGET_REMAINING must subtract measured
+# PLUS estimated (1.05), NOT just the measured 1.00 (a run that keeps timing out
+# can't read as free), while the honest "unknown" row still contributes nothing.
+{
+  printf '{"ts":"2026-07-01T00:00:00Z","ticket":1,"kind":"delivery","measured":true,"total_cost_usd":1.00}\n'
+  printf '{"ts":"2026-07-01T00:01:00Z","ticket":1,"kind":"delivery","measured":false,"estimated":true,"estimated_cost_usd":0.05,"estimate_basis":"flat-floor","total_cost_usd":"unknown"}\n'
+  printf '{"ts":"2026-07-01T00:02:00Z","ticket":2,"kind":"delivery","measured":false,"total_cost_usd":"unknown"}\n'
+} > "$WORK/data/usage-ledger.jsonl"
+OUT="$(probe 5.00)"
+REMAINING="$(printf '%s\n' "$OUT" | sed -n 's/^REMAINING=//p')"
+awk "BEGIN{exit !((${REMAINING:-0}+0) > 3.9499 && (${REMAINING:-0}+0) < 3.9501)}" \
+  && ok "remaining = 5.00 - (measured 1.00 + estimated 0.05) = 3.95 (unknown row = 0)" \
+  || fail "remaining should be 3.95 (measured+estimated) (got '$REMAINING')"
+
+# gaffer_ticket_rework_spend must ALSO count the estimate for that ticket (1.05).
+RW="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" \
+      bash -c 'source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1
+               gaffer_ticket_rework_spend 1')"
+awk "BEGIN{exit !((${RW:-0}+0) > 1.0499 && (${RW:-0}+0) < 1.0501)}" \
+  && ok "gaffer_ticket_rework_spend #1 = measured 1.00 + estimated 0.05 = 1.05" \
+  || fail "rework-spend should be 1.05 (got '$RW')"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

@@ -25,6 +25,10 @@ gaffer_run_daemon() {
   while [ "$_GAFFER_DAEMON_STOP" = "0" ]; do
     if declare -F gaffer_day_cap_ok >/dev/null 2>&1 && ! gaffer_day_cap_ok; then
       printf 'gaffer daemon: per-day cap (MAX_TICKS_PER_DAY=%s) reached — idle until the next calendar day\n' "${MAX_TICKS_PER_DAY:-}" >&2
+    elif declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
+      # Part B: per-UTC-day USD ceiling. Same graceful back-off as the tick-count cap
+      # — idle (no new loop pass) until the next calendar day rolls the window over.
+      printf 'gaffer daemon: per-day USD cap (GAFFER_DAILY_BUDGET_USD=%s) reached — idle until the next calendar day\n' "${GAFFER_DAILY_BUDGET_USD:-}" >&2
     else
       bash "$loop_sh" || true
       passes=$((passes + 1))

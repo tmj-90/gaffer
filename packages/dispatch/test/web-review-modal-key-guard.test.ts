@@ -189,16 +189,23 @@ describe("web review gate: global j/k/a/r shortcuts are suppressed while a modal
     ).toHaveLength(1);
   });
 
-  it("NEGATIVE CONTROL: with no modal open, `a` approves+merges the queued ticket as designed", async () => {
+  it("NEGATIVE CONTROL: with no modal open, two-step `a` (arm then confirm) approves+merges", async () => {
     await bootReview();
 
     // No dialog open, focus on <body> — the gate shortcut should work.
     expect(document.querySelector(".reject-scrim")).toBeNull();
+
+    // First `a` only ARMS the focused card (visible confirm state, no POST).
     pressKey("a");
     await tick();
+    expect(approveCalls(), "a single `a` must not approve").toHaveLength(0);
+    expect(document.querySelector(".card-armed"), "first `a` arms the card").not.toBeNull();
 
+    // Second `a` on the same card confirms → approve+merge.
+    pressKey("a");
+    await tick();
     const approved = approveCalls();
-    expect(approved, "`a` should approve the queued ticket when no modal is open").toHaveLength(1);
+    expect(approved, "a second `a` should approve the queued ticket").toHaveLength(1);
     expect(approved[0]!.url).toContain(`/tickets/${TICKET.id}/review/approve`);
   });
 });

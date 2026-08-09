@@ -1518,6 +1518,32 @@ html::after {
     inset 3px 0 0 -1px var(--amber);
 }
 
+/* Two-step approve: the ARMED card carries a visible confirm state (amber ring +
+   an inline "press a again" hint) between the first and second `a`. Purely
+   presentational — the approve gate itself is unchanged. */
+.card-armed {
+  border-color: var(--amber-line);
+  box-shadow:
+    var(--glow-amber),
+    inset 3px 0 0 -1px var(--amber);
+  position: relative;
+}
+.card-armed::after {
+  content: "Press a again to approve";
+  position: absolute;
+  top: var(--s-3);
+  right: var(--s-3);
+  padding: 2px 9px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--amber-bright);
+  background: var(--amber-soft);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--r-pill);
+  pointer-events: none;
+}
+
 .panel-grid {
   display: grid;
   gap: var(--s-4);
@@ -7048,6 +7074,95 @@ body {
 .diff-line.diff-hunk {
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* --- Per-file jumper + collapsible file sections -------------------------- */
+.diff-filestrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+}
+.diff-filejump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 9px;
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+.diff-filejump:hover {
+  color: var(--text);
+  border-color: var(--accent-line);
+}
+.diff-filejump-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 30ch;
+}
+.diff-filejump-stat {
+  color: var(--text-faint);
+  flex: none;
+}
+.diff-filejump.has-risk {
+  border-color: var(--warn-soft);
+}
+.diff-file-risk {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--warn);
+}
+.diff-files {
+  display: flex;
+  flex-direction: column;
+}
+.diff-file-block {
+  border-top: 1px solid var(--line-soft);
+}
+.diff-file-block:first-child {
+  border-top: 0;
+}
+.diff-file-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.diff-file-summary::-webkit-details-marker {
+  display: none;
+}
+.diff-file-chev {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+.diff-file-block[open] > .diff-file-summary .diff-file-chev {
+  transform: rotate(90deg);
+}
+.diff-file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+.diff-file-summary .diff-filejump-stat {
+  margin-left: auto;
 }
 
 /* "Merge conflict resolved — re-approve" banner on a reopened-for-review ticket. */

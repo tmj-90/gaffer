@@ -484,6 +484,56 @@ rootCase(
   WRITE_ROOT,
   "deny",
 );
+// Redirect-operator bypass (`>|` noclobber override, `>&`/`>>&` csh forms): the
+// destination sits after a `|`/`&` glued to the arrow. Before the fix the target
+// was never captured and these landed OUTSIDE the write-root at exit 0. Each MUST
+// now BLOCK, and the same operator targeting INSIDE the root must still ALLOW.
+rootCase(
+  "bash >| (noclobber) OUTSIDE → DENY",
+  bash(`echo x >| ${OUTSIDE}/a.txt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "bash >& OUTSIDE → DENY",
+  bash(`echo x >& ${OUTSIDE}/a.txt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "bash >>& OUTSIDE → DENY",
+  bash(`echo x >>& ${OUTSIDE}/a.txt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "bash >| (noclobber) INSIDE write-root → ALLOW",
+  bash(`echo x >| ${WRITE_ROOT}/a.txt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "bash >>& INSIDE write-root → ALLOW",
+  bash(`echo x >>& ${WRITE_ROOT}/a.txt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+// fd-duplication must NOT regress: `2>&1` and `>&2` have bare-fd targets that route
+// into the /^[&\d]+$/ skip guard, so they carry no path and stay ALLOWED even when
+// the `[|&]?` in the widened regex consumes the `&`.
+rootCase(
+  "bash cmd 2>&1 (fd dup) → ALLOW",
+  bash(`echo hi > ${WRITE_ROOT}/out.txt 2>&1`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase("bash >&2 (fd dup to stderr) → ALLOW", bash(`echo hi >&2`), ROOT_ENV, WRITE_ROOT, "allow");
 rootCase(
   "bash cp dest INTO read-root → DENY",
   bash(`cp a.ts ${READ_ROOT}/b.ts`),
@@ -1051,6 +1101,17 @@ for (const [label, cmd] of VERB_BYPASS_POCS) {
 for (const [label, cmd] of [
   ["find -exec rm", "find . -name '*.tmp' -exec rm {} ;"],
   ["find -exec sh", "find . -exec sh -c 'rm {}' ;"],
+  // find -exec in-place editors / interpreters: the `{}` target is invisible to
+  // the write-target extractor, so an in-place edit escapes the boundary unless
+  // the verb itself is denied. Each MUST BLOCK.
+  ["find -exec sed -i", "find . -exec sed -i s/a/b/ {} ;"],
+  ["find -exec perl -i (+ term)", "find . -exec perl -i -pe s/a/b/ {} +"],
+  ["find -exec awk", "find . -exec awk {} ;"],
+  ["find -exec perl", "find . -exec perl -i -pe s/a/b/ {} ;"],
+  ["find -exec python", "find . -exec python x {} ;"],
+  ["find -exec node", "find . -exec node x {} ;"],
+  ["find -execdir python3 -c", "find . -execdir python3 -c 'open(x)' {} ;"],
+  ["find -exec patch", "find . -exec patch {} ;"],
   ["shred a file", "shred -u /home/operator/.zshrc"],
   ["git config core.fsmonitor", "git config core.fsmonitor /tmp/payload"],
   ["git config core.sshCommand", "git config core.sshCommand 'sh -c payload'"],
@@ -1438,6 +1499,28 @@ denied("chmod 644 .env (mode change on secret)", "chmod 644 .env");
 denied("chmod 777 .env (mode change on secret)", "chmod 777 .env");
 denied("chown .env (owner change on secret)", "chown nobody .env");
 allowed("rm .env (still a governed op)", "rm .env");
+
+// SEC5: an UNPARSEABLE hook payload must FAIL CLOSED (exit 2). If JSON.parse
+// throws we cannot identify the tool/target, so we cannot prove the call is safe —
+// this now matches every other error path in the hook. An EMPTY / whitespace-only
+// payload is distinct: it parses as {} (identifies no mutating tool) and stays an
+// ALLOW. Feed raw stdin directly (bypassing the JSON.stringify helpers).
+function runRawStdin(raw) {
+  const res = spawnSync(process.execPath, [HOOK], {
+    input: raw,
+    cwd: resolve(HERE, ".."),
+    encoding: "utf8",
+  });
+  return res.status;
+}
+if (runRawStdin("not json {") === 2) passed += 1;
+else failures.push("DENY expected: unparseable JSON payload must fail closed (exit 2)");
+if (runRawStdin("{ broken: ") === 2) passed += 1;
+else failures.push("DENY expected: truncated JSON payload must fail closed (exit 2)");
+if (runRawStdin("") === 0) passed += 1;
+else failures.push("ALLOW expected: empty stdin parses as {} and stays allowed");
+if (runRawStdin("   \n  ") === 0) passed += 1;
+else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays allowed");
 
 if (failures.length) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed`);

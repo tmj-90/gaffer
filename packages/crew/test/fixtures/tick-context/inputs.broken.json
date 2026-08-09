@@ -1,0 +1,14 @@
+{
+  "_comment": "NEGATIVE CONTROL — a boundary-less input set (no write repos, empty ticket number); renderDeliveryPrompt must THROW, never emit a prompt.",
+  "ticketNumber": "",
+  "title": "Add password reset flow",
+  "resuming": false,
+  "skills": "minimalism",
+  "lenses": "minimalism",
+  "reviewFeedbackReasons": [],
+  "fileCardsBlock": "",
+  "productContextBlock": "",
+  "writeRepos": [],
+  "readRoots": [],
+  "primaryRepo": "__GAFFER_DATA__/worktrees/ticket-1/fixture-repo-id"
+}

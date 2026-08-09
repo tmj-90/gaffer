@@ -1,0 +1,5 @@
+# Goldens are EXACT BYTES captured from the live bash path — no EOL conversion,
+# no final-newline munging (the prompt golden deliberately has NO trailing
+# newline; `read -r -d ''` strips it on the live path too).
+*.golden.txt -text
+*.golden.json -text

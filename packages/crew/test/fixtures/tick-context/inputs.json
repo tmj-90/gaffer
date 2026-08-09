@@ -1,0 +1,26 @@
+{
+  "_comment": "Captured by runner/test/capture-context-golden.sh — regenerate, never hand-edit.",
+  "ticketNumber": "1",
+  "title": "Add password reset flow",
+  "resuming": false,
+  "skills": "minimalism, react-component, typescript-conventions",
+  "lenses": "minimalism",
+  "reviewFeedbackReasons": [],
+  "fileCardsBlock": "",
+  "productContextBlock": "",
+  "writeRepos": [
+    {
+      "worktreePath": "__GAFFER_DATA__/worktrees/ticket-1/fixture-repo-id",
+      "name": "fixture-app"
+    }
+  ],
+  "readRoots": [],
+  "primaryRepo": "__GAFFER_DATA__/worktrees/ticket-1/fixture-repo-id",
+  "mcp": {
+    "dispatchDb": "__GAFFER_DATA__/dispatch.sqlite",
+    "memoryDb": "__GAFFER_DATA__/memory.sqlite",
+    "dispatchMcpBin": "/opt/gaffer-fixture/dispatch-mcp/bin.js",
+    "memoryMcpBin": "/opt/gaffer-fixture/memory-mcp/bin.js",
+    "claimToken": "__CLAIM_TOKEN__"
+  }
+}

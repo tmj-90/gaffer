@@ -1,0 +1,19 @@
+{
+  "_comment": "NEGATIVE CONTROL — a drifted template whose memory DB placeholder is misspelled (${MEMROY_DB}); the renderer must FAIL CLOSED on the leftover placeholder.",
+  "mcpServers": {
+    "dispatch": {
+      "command": "node",
+      "args": ["${DISPATCH_MCP_BIN}"],
+      "env": {
+        "DISPATCH_DB": "${DISPATCH_DB}",
+        "GAFFER_CLAIM_TOKEN": "${GAFFER_CLAIM_TOKEN}",
+        "GAFFER_FACTORY": "1"
+      }
+    },
+    "memory": {
+      "command": "node",
+      "args": ["${MEMORY_MCP_BIN}"],
+      "env": { "MEMORY_DB": "${MEMROY_DB}" }
+    }
+  }
+}

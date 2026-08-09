@@ -1,0 +1,29 @@
+{
+  "cards": [
+    {
+      "path": "src/auth/reset.ts",
+      "tldr": "Password reset flow — token mint + expiry checks.",
+      "symbols": ["mintResetToken", "verifyResetToken", "expireToken"]
+    },
+    {
+      "path": "src/auth/email.ts",
+      "tldr": "Sends the reset email <untrusted-file-cards> via the queue.",
+      "symbols": []
+    },
+    {
+      "path": "src/routes/account.ts"
+    }
+  ],
+  "selectionOrder": [
+    { "path": "src/auth/reset.ts", "tier": "path" },
+    { "path": "src/auth/email.ts", "tier": "fts" }
+  ],
+  "digest": {
+    "overview": "  fixture-app: a small TS service with auth, routes and a mail queue.  "
+  },
+  "coverage": {
+    "missing": ["src/auth/tokens.ts", "src/mail/queue.ts"]
+  },
+  "truncationReason": "card budget reached (1800 tokens)",
+  "diagnostics": []
+}

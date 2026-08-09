@@ -21,3 +21,10 @@ runner/skills/**/SKILL.md
 # Local factory state
 .gaffer/
 .crew/
+
+# P1b golden fixtures — EXACT BYTES captured from the live bash path
+# (runner/test/capture-context-golden.sh); formatting them would break the
+# byte-parity tests. inputs.json is machine-written by the same harness.
+packages/crew/test/fixtures/tick-context/*.golden.json
+packages/crew/test/fixtures/tick-context/*.golden.txt
+packages/crew/test/fixtures/tick-context/inputs.json

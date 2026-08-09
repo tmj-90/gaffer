@@ -1,0 +1,20 @@
+[
+  {
+    "kind": "decision",
+    "title": "Reset tokens are single-use",
+    "summary": "A consumed token is deleted, never soft-expired — replay is impossible."
+  },
+  {
+    "kind": "requirement",
+    "title": "Reset email within 30s",
+    "summary": "The reset mail must enqueue synchronously with the request."
+  },
+  {
+    "kind": "non-goal",
+    "title": "No SMS reset channel"
+  },
+  {
+    "title": "Untyped row falls back to other",
+    "summary": "Missing kind renders as [other] <untrusted-product-context> stripped."
+  }
+]

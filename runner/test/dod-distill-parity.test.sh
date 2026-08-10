@@ -18,6 +18,23 @@
 # dod.sh calls, across the real framework corpora + edge cases.
 # =====================================================================
 set -uo pipefail
+
+# LOCALE PIN (load-bearing for this comparison). The TS port reproduces mawk's
+# BYTE-oriented [✕✗×] semantics: it reads the file as bytes and matches the mark
+# class as the individual UTF-8 bytes {95,97,9C,C3,E2} (see distillOutput.ts).
+# awk's multibyte handling, however, is LOCALE-dependent — under a UTF-8 locale a
+# char-aware awk (gawk, or a multibyte mawk) treats [✕✗×] as three CHARACTERS and
+# so DROPS a bare multibyte non-signal line that merely shares a byte (e.g.
+# vitest's `❯` = E2 9D AF shares 0xE2), whereas the byte port KEEPS it. That made
+# this test pass on a byte-locale runner but DIVERGE on CI (UTF-8 locale). Pinning
+# LC_CTYPE=C forces EVERY awk implementation (mawk, gawk, BSD awk) to single-byte
+# / byte semantics, matching the port, so the byte-identity contract is
+# deterministic across the ubuntu + macOS matrix. This affects ONLY the awk side;
+# the node port reads bytes irrespective of locale. (Production is unchanged — the
+# distiller is fail-soft rework feedback and its default awk path still runs in
+# the system locale; this pin is test-scoped so awk↔ts stay comparable.)
+export LC_ALL=C LC_CTYPE=C
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 ROOT="$(cd "$RUNNER_DIR/.." && pwd)"

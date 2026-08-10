@@ -134,6 +134,14 @@ render_delivery_case "resume (single repo)" resume
 _RF="$(printf '  - %s\n  - %s' "The reset token was not single-use" "Missing rate-limit on the reset endpoint")"
 render_delivery_case "fresh (with prior review feedback)" fresh
 
+# 3b. A review reason that itself spans MULTIPLE lines (only its first line carries
+#     the "  - " prefix; the continuation is a bare line). The ts branch must group
+#     the continuation into the SAME reason, not re-prefix it — else it drifts from
+#     the bash path, which quarantines the raw block verbatim. Guards the parity gap
+#     the security review surfaced.
+_RF="$(printf '  - %s\n%s\n  - %s' "The reset token was not single-use;" "it must be deleted on consume, not soft-expired." "Missing rate-limit on the reset endpoint")"
+render_delivery_case "fresh (multi-line review reason)" fresh
+
 # 4. Multi-repo + read roots + non-empty context blocks (fills every seam slot).
 _RF=""
 READ_ROOTS="$(printf '/repos/design-system\n/repos/api-contracts')"

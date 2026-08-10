@@ -531,6 +531,7 @@ export class ClaimService {
         uri: input.uri ?? null,
         payload_json: input.payload === undefined ? null : JSON.stringify(input.payload),
         created_by: actor.id ?? actor.type,
+        recorded_by_actor_type: actor.type,
         created_at: now,
       });
 

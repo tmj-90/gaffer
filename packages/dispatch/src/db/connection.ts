@@ -219,6 +219,14 @@ export function migrate(db: Db): void {
   // column) and idempotent on an already-migrated one. Existing rows inherit NULL
   // (⇒ authored outside a spec-driven build), which is exactly the backfill.
   alterAcAddSpecClauseId(db);
+  // EVIDENCE-PROVENANCE (v19→v20): add the nullable `recorded_by_actor_type` column
+  // to an EXISTING evidence table — the recording actor's type, so the reviewer
+  // surface can reliably flag agent self-reported evidence. CREATE TABLE IF NOT
+  // EXISTS won't add a column, so it must be ALTERed in. A plain additive ALTER
+  // (free nullable TEXT, no CHECK to widen). No-op on a fresh DB (SCHEMA_SQL creates
+  // the column) and idempotent on an already-migrated one. Existing rows inherit
+  // NULL (⇒ unknown provenance — no trust class asserted), which is the backfill.
+  alterEvidenceAddRecordedByActorType(db);
   // Graduated Autonomy Phase 3 (v18→v19): the `autonomy_policy` table — the
   // per-(repo × risk × gate) enablement store that gates agent self-approve / merge.
   // A brand-new standalone table (FK to repositories, CASCADE) created idempotently
@@ -383,6 +391,23 @@ function alterAcAddSpecClauseId(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("spec_clause_id")) {
     db.exec("ALTER TABLE acceptance_criteria ADD COLUMN spec_clause_id TEXT");
+  }
+}
+
+/**
+ * EVIDENCE-PROVENANCE additive migration (v19→v20): add the nullable
+ * `recorded_by_actor_type` column to an EXISTING evidence table. Idempotent
+ * (skipped when already present via PRAGMA table_info) and a no-op on a fresh DB
+ * (table absent — SCHEMA_SQL creates the column). Existing rows inherit NULL,
+ * which reads as unknown provenance — the reviewer surface asserts no trust class
+ * for them, so a not-yet-migrated DB is behaviourally identical to today.
+ */
+function alterEvidenceAddRecordedByActorType(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(evidence)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("recorded_by_actor_type")) {
+    db.exec("ALTER TABLE evidence ADD COLUMN recorded_by_actor_type TEXT");
   }
 }
 

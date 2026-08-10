@@ -9,9 +9,9 @@ export class EvidenceRepository {
     this.db
       .prepare(
         `INSERT INTO evidence
-          (id, ticket_id, ac_id, repo_id, decision_id, evidence_type, summary, uri, payload_json, created_by, created_at)
+          (id, ticket_id, ac_id, repo_id, decision_id, evidence_type, summary, uri, payload_json, created_by, recorded_by_actor_type, created_at)
          VALUES
-          (@id, @ticket_id, @ac_id, @repo_id, @decision_id, @evidence_type, @summary, @uri, @payload_json, @created_by, @created_at)`,
+          (@id, @ticket_id, @ac_id, @repo_id, @decision_id, @evidence_type, @summary, @uri, @payload_json, @created_by, @recorded_by_actor_type, @created_at)`,
       )
       .run(evidence);
   }

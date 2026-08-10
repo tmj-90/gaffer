@@ -6334,11 +6334,27 @@ function reviewEvidenceList(evidence, acList) {
   const rows = evidence.map((ev) => {
     const link = safeHttpUrl(ev.uri);
     const acLabel = ev.ac_id && acText.has(ev.ac_id) ? acText.get(ev.ac_id) : null;
+    // Provenance line — who recorded this evidence and when, plus an explicit flag
+    // when it was SELF-REPORTED by a delivery agent so the reviewer weighs it with
+    // due skepticism. `recorded_by_agent` is set server-side ONLY when the recording
+    // actor is a KNOWN registered agent (a reliable positive signal — agent ids are
+    // distinct and never collide with a human/system principal); it is never inferred
+    // from an absence. We therefore surface the amber "agent-reported" chip only on a
+    // confident match and otherwise show who/when WITHOUT asserting a trust class —
+    // no fabricated "trusted" label. `created_by` renders through el() as a text node,
+    // so it can never inject markup regardless of its content.
+    const who = ev.created_by ? String(ev.created_by) : "—";
+    const provBadge =
+      ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
     return el("li", { class: "review-evi" }, [
       badge(ev.evidence_type, "no-dot"),
       el("span", { class: "evi-summary" }, ev.summary),
       link ? el("a", { href: link, target: "_blank", rel: "noopener" }, "open") : null,
       acLabel ? el("span", { class: "ac-meta evi-ac" }, `for AC: ${acLabel}`) : null,
+      el("div", { class: "ac-meta evi-prov" }, [
+        provBadge,
+        el("span", { class: "evi-who" }, `${who} · ${fmtTime(ev.created_at)}`),
+      ]),
     ]);
   });
   return el("div", { class: "review-evidence" }, [

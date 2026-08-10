@@ -608,6 +608,14 @@ export interface Evidence {
   uri: string | null;
   payload_json: string | null;
   created_by: string;
+  /**
+   * EVIDENCE-PROVENANCE: the recording actor's type ("human" | "agent" | "admin"
+   * | "system"), or null on legacy rows recorded before this was captured. The
+   * reliable agent-vs-trusted signal for the reviewer surface — `created_by` alone
+   * can't be trusted for this because an agent's `created_by` is a runner-supplied
+   * id, not the registered agent's identity.
+   */
+  recorded_by_actor_type: string | null;
   created_at: string;
 }
 

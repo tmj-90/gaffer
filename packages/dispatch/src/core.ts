@@ -162,6 +162,19 @@ export function resolveMaxAttempts(env: NodeJS.ProcessEnv = process.env): number
 /** BBT-001 global toggle: is the independent black-box testing lane ON? */
 export { isTestingEnabled, testerProvenance } from "./util/testingLane.js";
 
+/**
+ * An evidence row enriched with derived provenance for the reviewer surface.
+ * `recorded_by_agent` is TRUE iff the row's recording actor type was "agent"
+ * (`recorded_by_actor_type === "agent"`) — i.e. evidence SELF-REPORTED by a
+ * delivery agent, which the reviewer should weigh with more skepticism than
+ * evidence recorded by a trusted principal (a human operator or the factory
+ * system). Derived from the real recorded actor type — never fabricated; legacy
+ * rows (null type) read as false, so no agent chip and no trust claim is asserted.
+ */
+export interface EvidenceView extends Evidence {
+  recorded_by_agent: boolean;
+}
+
 export interface TicketView {
   ticket: Ticket;
   acceptanceCriteria: AcceptanceCriterion[];
@@ -176,7 +189,7 @@ export interface TicketView {
    */
   dependencies: TicketDependencyView[];
   /** Recorded evidence rows (oldest first), so reviewers can judge inline. */
-  evidence: Evidence[];
+  evidence: EvidenceView[];
   events: WorkEvent[];
   /**
    * BBT-001: the parsed test_contract (or null). Surfaced as a structured object
@@ -1566,7 +1579,7 @@ export class Dispatch {
       scopes: this.ticketScopes.listForTicket(ticket.id),
       blockingDecisions: this.decisions.blockingForTicket(ticket.id),
       dependencies: this.ticketDependencies.listForTicket(ticket.id),
-      evidence: this.evidence.listForTicket(ticket.id),
+      evidence: this.enrichEvidenceProvenance(this.evidence.listForTicket(ticket.id)),
       events: listEvents(this.db, "ticket", ticket.id),
       // BBT-001: parse the JSON-encoded test_contract to a structured object so
       // consumers (CLI, API) never receive a JSON-in-JSON string.
@@ -1574,6 +1587,24 @@ export class Dispatch {
       // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
       reworkTrail: this.reworkAttempts.listForTicket(ticket.id),
     };
+  }
+
+  /**
+   * Stamp each evidence row with `recorded_by_agent` for the reviewer's trust
+   * surface, derived from the RECORDING ACTOR'S TYPE captured at record time
+   * (`recorded_by_actor_type`). A row is agent self-reported iff that type is
+   * "agent"; a human operator or the factory/system actor is a trusted principal.
+   * This is the dependable signal — `created_by` cannot be used because an agent's
+   * `created_by` is a runner-supplied id (e.g. "mcp-agent"), never the registered
+   * agent identity. Legacy rows carry a null type (recorded before this column);
+   * their flag is left `false` (⇒ no agent chip, no trust claim asserted). Never
+   * fabricated — always the real recorded actor type.
+   */
+  private enrichEvidenceProvenance(rows: Evidence[]): EvidenceView[] {
+    return rows.map((e) => ({
+      ...e,
+      recorded_by_agent: e.recorded_by_actor_type === "agent",
+    }));
   }
 
   list(status?: TicketStatus): Ticket[] {

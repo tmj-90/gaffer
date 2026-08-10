@@ -375,6 +375,7 @@ export class ReviewGateService {
         uri: input.uri ?? null,
         payload_json: JSON.stringify({ verdict: "pass", provenance: testerProvenance(actor) }),
         created_by: actor.id ?? actor.type,
+        recorded_by_actor_type: actor.type,
         created_at: now,
       });
       const result = this.transitions.transition({
@@ -432,6 +433,7 @@ export class ReviewGateService {
         uri: input.uri ?? null,
         payload_json: JSON.stringify({ verdict: "fail", provenance: testerProvenance(actor) }),
         created_by: actor.id ?? actor.type,
+        recorded_by_actor_type: actor.type,
         created_at: now,
       });
 
@@ -566,6 +568,7 @@ export class ReviewGateService {
         uri: null,
         payload_json: null,
         created_by: actor.id ?? actor.type,
+        recorded_by_actor_type: actor.type,
         created_at: now,
       });
       const eventId = writeEvent(this.db, {

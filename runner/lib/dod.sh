@@ -355,6 +355,19 @@ PY
 gaffer_dod_distill_output() {
   local infile="$1" max="${2:-$GAFFER_DOD_FEEDBACK_LINES}"
   [ -f "$infile" ] || return 0
+  # STRANGLER SEAM (additive-then-cutover, mirrors gaffer_render_mcp_runtime in
+  # factory.config.sh). GAFFER_DOD_DISTILL=ts AND the typed dist bin on disk →
+  # route to the byte-identical TS port (dodDistillCli.js); else the legacy awk
+  # below runs VERBATIM. Default is awk — unchanged live behaviour. FAIL-SOFT is
+  # preserved either way: the TS branch is best-effort feedback, never a gate, so
+  # a non-zero node exit falls through to `return 0` (prints nothing), exactly
+  # like the awk's `2>/dev/null`; the caller's `|| tail …` still backstops it.
+  if [ "${GAFFER_DOD_DISTILL:-awk}" = "ts" ] \
+     && [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ]; then
+    node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" distill \
+      --in "$infile" --max "${max:-40}" 2>/dev/null || return 0
+    return 0
+  fi
   awk -v MAX="${max:-40}" '
     # A line that carries real failure signal across the common stacks. Kept
     # deliberately broad (best-effort): a false positive just keeps one extra
@@ -395,6 +408,16 @@ gaffer_dod_distill_output() {
 gaffer_dod_extract_failure() {
   local results="$1"
   [ -f "$results" ] || return 0
+  # STRANGLER SEAM (see gaffer_dod_distill_output). GAFFER_DOD_DISTILL=ts AND the
+  # typed dist bin on disk → route to the byte-identical TS port; else the legacy
+  # awk below runs VERBATIM. Default awk. FAIL-SOFT preserved: a non-zero node
+  # exit falls through to `return 0` (prints nothing) — this is feedback only.
+  if [ "${GAFFER_DOD_DISTILL:-awk}" = "ts" ] \
+     && [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ]; then
+    node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" extract \
+      --in "$results" 2>/dev/null || return 0
+    return 0
+  fi
   awk '
     /^---DOD-OUTPUT / { h=$0; sub(/^---DOD-OUTPUT /,"",h); sub(/---[ \t]*$/,"",h);
                         print "failing gate: " h; keep=1; next }

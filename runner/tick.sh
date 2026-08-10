@@ -931,8 +931,13 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # MEMORY ROI: a bootstrap has no delivery-recall context, so ${GAFFER_RECALL_TICKET}
     # renders empty — the memory read path then logs no retrieval (inert), matching
     # the standalone posture. The main-delivery twin sets it to the ticket $NUM.
-    sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "$GAFFER_TICKET_REPOS")#g" -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "")#g" \
-        "$MCP_CONFIG" > "$MCP_RUNTIME"
+    # Render via the single seam (factory.config.sh): TS renderer under
+    # GAFFER_RUNTIME=ts (byte-identical), legacy bash sed by default. Recall is
+    # empty for a bootstrap (no delivery-recall context ⇒ memory read inert).
+    # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
+    # must abort the bootstrap before the agent launch — the bare sed never did.
+    gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
+      || { log "MCP-RENDER: failed to render bootstrap runtime .mcp.json — refusing live bootstrap (fail closed)"; result error; exit 1; }
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     cp -f "$HERE/claude/CLAUDE.md" "$B_DIR/CLAUDE.factory.md"
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
@@ -1872,8 +1877,13 @@ EOF
   # the memory MCP server's READ path can attribute a retrieval to this ticket
   # (best-effort, fail-soft). Empty ⇒ the read path logs nothing (inert), exactly
   # like standalone memory-mcp. Same one-hop plumbing pattern as GAFFER_TICKET_REPOS.
-  sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "$GAFFER_TICKET_REPOS")#g" -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "$NUM")#g" \
-      "$MCP_CONFIG" > "$MCP_RUNTIME"
+  # Render via the single seam (factory.config.sh): TS renderer under
+  # GAFFER_RUNTIME=ts (byte-identical), legacy bash sed by default. Recall is the
+  # ticket $NUM so the memory read path can attribute a retrieval to this ticket.
+  # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
+  # must abort the delivery before the agent launch — the bare sed never did.
+  gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "$NUM" \
+    || { log "MCP-RENDER: failed to render delivery runtime .mcp.json — refusing live run (fail closed)"; result error; exit 1; }
   chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
   # ── P1b GOLDEN CAPTURE (docs/tick-sh-runtime-migration.md) ──────────────────
   # Default-OFF dump of the assembled context (the delivery PROMPT + the rendered

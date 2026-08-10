@@ -64,6 +64,11 @@ case "$OUT3" in
 esac
 
 echo "== tick.sh wires quarantine into the prompts =="
+# tick.sh still BUILDS the quarantined values (TITLE_Q, the review-feedback block);
+# the delivery/bootstrap prompt bodies that INTERPOLATE them + the standing
+# QUARANTINE_NOTICE moved into the gaffer_render_delivery_prompt seam
+# (factory.config.sh, P1b), so the notice-prepend assertion greps the seam.
+SEAM="$RUNNER_DIR/factory.config.sh"
 grep -q 'gaffer_quarantine ticket-title "\$TITLE" single' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh quarantines the delivery \$TITLE (single-line)" \
   || fail "tick.sh should quarantine \$TITLE for the delivery prompt"
@@ -71,9 +76,9 @@ grep -q 'gaffer_quarantine review-feedback' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh quarantines the prior review feedback" \
   || fail "tick.sh should quarantine the review feedback block"
 grep -q 'gaffer_quarantine ticket-title "\$TITLE" single' "$RUNNER_DIR/tick.sh" \
-  && grep -q '\$QUARANTINE_NOTICE' "$RUNNER_DIR/tick.sh" \
-  && ok "tick.sh prepends the standing QUARANTINE_NOTICE" \
-  || fail "tick.sh should prepend QUARANTINE_NOTICE to the prompts"
+  && grep -q '\$QUARANTINE_NOTICE' "$SEAM" \
+  && ok "tick.sh quarantines \$TITLE and the prompt seam prepends the standing QUARANTINE_NOTICE" \
+  || fail "tick.sh should quarantine \$TITLE and the prompt seam prepend QUARANTINE_NOTICE"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

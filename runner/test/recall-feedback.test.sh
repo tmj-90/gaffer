@@ -125,15 +125,19 @@ if grep -q '"GAFFER_RECALL_TICKET": "\${GAFFER_RECALL_TICKET}"' "$MCP_JSON"; the
 else
   fail ".mcp.json memory env does not forward GAFFER_RECALL_TICKET"
 fi
-# The DELIVERY render binds the placeholder to the ticket number ($NUM).
-if grep -q 's#\\${GAFFER_RECALL_TICKET}#\$(_gaffer_sed_repl "\$NUM")#g' "$TICK"; then
-  ok "delivery render sets GAFFER_RECALL_TICKET to \$NUM"
+# The runtime .mcp.json is now rendered through the gaffer_render_mcp_runtime
+# seam (the P1b ts-cutover replaced the inline 6-`e` sed chains). The seam's
+# THIRD positional arg is the recall ticket, so the delivery render binds it to
+# the ticket number ($NUM) and the bootstrap render passes it empty. Match the
+# seam call (whitespace-tolerant) rather than the retired inline sed.
+if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+"\$NUM"' "$TICK"; then
+  ok "delivery render sets GAFFER_RECALL_TICKET to \$NUM (seam recall arg)"
 else
   fail "delivery render does not set GAFFER_RECALL_TICKET to \$NUM"
 fi
 # The BOOTSTRAP render leaves it empty (no delivery-recall context → inert).
-if grep -q 's#\\${GAFFER_RECALL_TICKET}#\$(_gaffer_sed_repl "")#g' "$TICK"; then
-  ok "bootstrap render leaves GAFFER_RECALL_TICKET empty (inert)"
+if grep -Eq 'gaffer_render_mcp_runtime[[:space:]]+"\$MCP_CONFIG"[[:space:]]+"\$MCP_RUNTIME"[[:space:]]+""' "$TICK"; then
+  ok "bootstrap render leaves GAFFER_RECALL_TICKET empty (inert, seam recall arg)"
 else
   fail "bootstrap render does not leave GAFFER_RECALL_TICKET empty"
 fi

@@ -863,7 +863,22 @@ print(json.dumps({
   GF_WT_ROWS="${WT_ROWS:-}" GF_READ_ROOTS="${READ_ROOTS:-}" GF_PRIMARY="${PRIMARY_REPO:-}" python3 -c '
 import json, os
 rf = os.environ.get("GF_RF", "")
-reasons = [(l[4:] if l.startswith("  - ") else l) for l in rf.split("\n") if l != ""]
+# Reconstruct the reasons array so renderReviewFeedbackBlock re-prefixes each with
+# "  - " to a block byte-identical to the bash path, which quarantines the raw
+# "  - "-prefixed $_RF verbatim. A reason may span multiple lines (a rejection
+# reason with an embedded newline): only its FIRST line carries the "  - " prefix,
+# continuation lines belong to the same reason — so group them, do NOT split every
+# newline into its own reason (that would re-prefix continuations and drift from bash).
+reasons = []
+for l in rf.split("\n"):
+    if l == "":
+        continue
+    if l.startswith("  - "):
+        reasons.append(l[4:])
+    elif reasons:
+        reasons[-1] += "\n" + l
+    else:
+        reasons.append(l)
 write_repos = []
 for l in os.environ.get("GF_WT_ROWS", "").split("\n"):
     if l == "":

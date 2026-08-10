@@ -3061,6 +3061,20 @@ html::after {
   border-color: var(--danger);
 }
 
+/* evidence provenance — an amber caution chip on evidence self-reported by a
+   delivery agent (shown only on a confident match; absence asserts nothing) */
+.badge.prov-agent {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--amber-line);
+}
+.evi-prov {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 /* access */
 .badge.access-write {
   color: var(--ok);

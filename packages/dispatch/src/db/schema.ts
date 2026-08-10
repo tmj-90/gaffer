@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -269,6 +269,13 @@ CREATE TABLE IF NOT EXISTS evidence (
   uri          TEXT,
   payload_json TEXT,
   created_by   TEXT NOT NULL,
+  -- EVIDENCE-PROVENANCE: the recording actor TYPE (human|agent|admin|system),
+  -- captured so the reviewer surface can flag agent SELF-REPORTED evidence
+  -- reliably. created_by holds the actor id (for agents a runner-supplied id like
+  -- mcp-agent, never the registered agent uuid), so the type is the only
+  -- dependable agent-vs-trusted signal. Nullable: legacy rows predate this column
+  -- and read as unknown (no trust claim asserted).
+  recorded_by_actor_type TEXT,
   created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_ticket ON evidence(ticket_id, created_at);

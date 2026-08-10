@@ -660,6 +660,7 @@ export class TicketService {
           uri: null,
           payload_json: null,
           created_by: actor.id ?? actor.type,
+          recorded_by_actor_type: actor.type,
           created_at: now,
         });
         writeEvent(this.db, {
@@ -709,6 +710,7 @@ export class TicketService {
         uri: input.uri ?? null,
         payload_json: null,
         created_by: actor.id ?? actor.type,
+        recorded_by_actor_type: actor.type,
         created_at: now,
       });
       const eventId = writeEvent(this.db, {

@@ -80,7 +80,20 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # ticket: substitute ${GAFFER_RECALL_TICKET} EMPTY (memory's read path treats
       # "" as no-ticket => inert) so the literal placeholder never leaks into the
       # memory server env and buckets clarify reads under a fake ticket.
-      sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "")#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
+      # ${GAFFER_TICKET_REPOS} is likewise EXPLICITLY EMPTY: clarify reads the repo
+      # read-only, files ACs/decisions via dispatch, and only READS memory
+      # (search_lore) — it does NO scope-bound memory direct-apply writes, so an
+      # empty repo scope fails closed exactly as before. The prior inline sed chain
+      # OMITTED this placeholder entirely, leaking the literal ${GAFFER_TICKET_REPOS}
+      # into the memory server env; empty and that leaked literal are functionally
+      # equivalent (both fail closed), so this is a placeholder-leak fix, not a
+      # change to what the clarify agent can do. Set explicitly (not inherited) for
+      # set -u safety at this no-work juncture, and rendered through the single
+      # gaffer_render_mcp_runtime seam (factory.config.sh) shared with delivery.
+      GAFFER_TICKET_REPOS=""
+      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
+        || { log "MCP-RENDER: failed to render clarify runtime .mcp.json — refusing live clarify (fail closed)"; result error; exit 1; }
+      chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
       cp -f "$HERE/claude/CLAUDE.md" "$CREPO/CLAUDE.factory.md"
       # File-card context for the intake agent — orients it on the repo before
       # it reads the ticket and spots ambiguities. FAIL-SOFT via gaffer_prime_context_block.

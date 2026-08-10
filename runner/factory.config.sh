@@ -630,6 +630,56 @@ gaffer_timeout_preflight() {
 # robust regardless of what the path contains. Pure text-in/text-out.
 _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 
+# --- MCP runtime-config render (P1b strangler seam) --------------------------
+# Render the per-tick runtime .mcp.json from the template, substituting the
+# seven ${NAME} placeholders. This is the SINGLE render site the delivery and
+# bootstrap ticks both call (they previously carried duplicate inline sed
+# chains, which is exactly how the two drifted). It is the strangler seam for
+# docs/tick-sh-runtime-migration.md P1b: it renders via the golden-tested typed
+# renderer (packages/crew renderMcpCli.js → renderMcpRuntimeConfig) when
+# GAFFER_RUNTIME=ts and that dist bin is built, else via the legacy bash sed.
+#
+# Usage: gaffer_render_mcp_runtime <template> <out> <recall_ticket>
+#   Reads the other six values from the ambient shell scope (DISPATCH_DB,
+#   MEMORY_DB, DISPATCH_MCP_BIN, MEMORY_MCP_BIN, CLAIM_TOKEN, GAFFER_TICKET_REPOS
+#   — each set by the caller before the call, exactly as the inline sed did).
+#   Only the recall ticket differs per site (empty on bootstrap, $NUM on
+#   delivery), so it is the one positional argument.
+#
+# BYTE-IDENTITY: the ts and bash branches produce byte-identical output for the
+# same inputs (proven by runner/test/mcp-render-parity.test.sh) — the typed
+# renderer returns the template verbatim and the CLI writes it with no added
+# newline, matching the sed redirect. FAIL-CLOSED: both branches propagate a
+# non-zero exit (the ts renderer additionally rejects a leftover placeholder /
+# invalid JSON / missing server); the caller must treat that as a hard error.
+#
+# STRANGLER SEQUENCING: default is bash (unchanged live behaviour). The ts
+# branch is additive and proven byte-identical here; the default flips to ts,
+# and later the bash sed branch is deleted, in SEPARATE commits once the ts
+# path has soaked green — matching the doc's additive-then-cutover discipline.
+gaffer_render_mcp_runtime() {
+  local tmpl="$1" out="$2" recall="$3"
+  if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] && [ -f "$CREW_DIR/dist/runtime/context/renderMcpCli.js" ]; then
+    GAFFER_MCP_DISPATCH_DB="$DISPATCH_DB" \
+    GAFFER_MCP_MEMORY_DB="$MEMORY_DB" \
+    GAFFER_MCP_DISPATCH_BIN="$DISPATCH_MCP_BIN" \
+    GAFFER_MCP_MEMORY_BIN="$MEMORY_MCP_BIN" \
+    GAFFER_MCP_CLAIM_TOKEN="$CLAIM_TOKEN" \
+    GAFFER_MCP_TICKET_REPOS="$GAFFER_TICKET_REPOS" \
+    GAFFER_MCP_RECALL_TICKET="$recall" \
+      node "$CREW_DIR/dist/runtime/context/renderMcpCli.js" --template "$tmpl" --out "$out" || return 1
+  else
+    sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" \
+        -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" \
+        -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" \
+        -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" \
+        -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" \
+        -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "$GAFFER_TICKET_REPOS")#g" \
+        -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "$recall")#g" \
+        "$tmpl" > "$out" || return 1
+  fi
+}
+
 # --- Portable file lock (A-1 parallel execution) -----------------------------
 # Serialise a critical section across concurrent worker.sh processes. Mirrors the
 # gaffer_timeout shim's discipline: prefer the best primitive, fall back portably,

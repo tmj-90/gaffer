@@ -72,6 +72,21 @@ wg() {
   esac
 }
 _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
+# clarify.sh renders the runtime .mcp.json through the factory.config.sh seam.
+# This hermetic harness stubs every collaborator, so provide a faithful bash-branch
+# stand-in: it substitutes the same seven placeholders (incl. ${GAFFER_TICKET_REPOS},
+# which clarify sets to "") so the flow proceeds to the interruptible worker.
+gaffer_render_mcp_runtime() {
+  local tmpl="$1" out="$2" recall="$3"
+  sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" \
+      -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" \
+      -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" \
+      -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" \
+      -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" \
+      -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "${GAFFER_TICKET_REPOS:-}")#g" \
+      -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "$recall")#g" \
+      "$tmpl" > "$out" || return 1
+}
 gaffer_trust_workspace() { :; }
 gaffer_assert_db_vars()  { return 0; }
 gaffer_prime_context_block() { printf ''; }

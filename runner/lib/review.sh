@@ -96,7 +96,18 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # substitute ${GAFFER_RECALL_TICKET} EMPTY (memory's read path treats "" as
       # no-ticket => inert) so the literal placeholder never leaks into the memory
       # server env and buckets reviewer reads under a fake ticket.
-      sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" -e "s#\${MEMORY_MCP_BIN}#$(_gaffer_sed_repl "$MEMORY_MCP_BIN")#g" -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "")#g" "$MCP_CONFIG" > "$MCP_RUNTIME"
+      # ${GAFFER_TICKET_REPOS} is likewise EXPLICITLY EMPTY: a reviewer records AC
+      # evidence via dispatch only and does NO scope-bound memory direct-apply
+      # writes, so an empty repo scope fails closed exactly as before — this only
+      # strips the literal ${GAFFER_TICKET_REPOS} placeholder the prior inline sed
+      # chain (which omitted it) leaked into the memory server env. Set explicitly
+      # (not inherited) for set -u safety at this no-work juncture, and rendered
+      # through the single gaffer_render_mcp_runtime seam (factory.config.sh) so
+      # review, delivery + bootstrap share one byte-identical render path.
+      GAFFER_TICKET_REPOS=""
+      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
+        || { log "MCP-RENDER: failed to render review runtime .mcp.json — refusing live review (fail closed)"; result error; exit 1; }
+      chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
       cp -f "$HERE/claude/CLAUDE.md" "$WT/CLAUDE.factory.md"
       # File-card context for the reviewer — orients it on the repo's structure
       # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.

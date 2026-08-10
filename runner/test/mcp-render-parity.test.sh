@@ -97,6 +97,12 @@ render_case "escaping torture (# & \$& \$')" "$TRICKY" "$MDB" "$DBIN" "$MBIN" "$
 # 5. Colon-joined multi-repo scope (the delivery WT_ROWS shape).
 render_case "colon-joined repos (a:b:c)" "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "a:b:c" "77"
 
+# 6. Review/clarify shape: recall EMPTY *and* ticket-repos EMPTY (non-delivery
+#    ticks — reviewer/clarify hold no delivery claim scope and do no scope-bound
+#    memory direct-apply writes). Proves bash≡ts on the exact inputs review.sh /
+#    clarify.sh now feed the seam.
+render_case "review/clarify (recall empty, repos empty)" "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "" ""
+
 # ── Negative control: the ts branch must FAIL CLOSED on a drifted template
 # with an unsubstituted placeholder (the bash sed would silently pass it
 # through — the divergence this migration exists to kill). Proves the live

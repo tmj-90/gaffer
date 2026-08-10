@@ -20,6 +20,10 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 GAFFER_HOME="$(cd "$RUNNER_DIR/.." && pwd)"
 TICK="$RUNNER_DIR/tick.sh"
 PRIMER_SH="$RUNNER_DIR/lib/context-primer.sh"
+# The delivery/bootstrap prompt bodies moved into the gaffer_render_delivery_prompt
+# seam (factory.config.sh, P1b): tick.sh still BUILDS PRODUCT_CONTEXT_BLOCK + defines
+# the lore-reflection nudge, but the prompt that INJECTS them lives in the seam now.
+SEAM="$RUNNER_DIR/factory.config.sh"
 RUNNER_CLAUDE="$RUNNER_DIR/CLAUDE.md"
 CREW_LOOP="$GAFFER_HOME/packages/crew/src/loops/implementationLoop.ts"
 CREW_CLI="$GAFFER_HOME/packages/crew/src/cli/index.ts"
@@ -40,11 +44,11 @@ grep -q -- '--kind decision,requirement,non-goal' "$PRIMER_SH" \
 grep -q 'gaffer_quarantine product-context' "$PRIMER_SH" \
   && ok "primer QUARANTINES the rendered block (untrusted envelope)" \
   || fail "primer does not quarantine the product-context block"
-CNT_PC="$(grep -c '^\$PRODUCT_CONTEXT_BLOCK$' "$TICK" 2>/dev/null || echo 0)"
+CNT_PC="$(grep -c '^\$PRODUCT_CONTEXT_BLOCK$' "$SEAM" 2>/dev/null || echo 0)"
 [ "$CNT_PC" = "2" ] \
   && ok "PRODUCT_CONTEXT_BLOCK injected into both delivery prompts (x$CNT_PC)" \
   || fail "PRODUCT_CONTEXT_BLOCK not injected into both prompts (found $CNT_PC, want 2)"
-if grep -A1 '^\$FILE_CARDS_BLOCK$' "$TICK" | grep -q '^\$PRODUCT_CONTEXT_BLOCK$'; then
+if grep -A1 '^\$FILE_CARDS_BLOCK$' "$SEAM" | grep -q '^\$PRODUCT_CONTEXT_BLOCK$'; then
   ok "product-context is injected AFTER the file-cards block"
 else
   fail "product-context is not injected immediately after the file-cards block"
@@ -55,7 +59,7 @@ grep -q 'LORE_REFLECTION_NUDGE' "$TICK" \
   && grep -q 'suggest_lore' "$TICK" \
   && ok "tick.sh defines the suggest_lore reflection nudge" \
   || fail "tick.sh missing the suggest_lore reflection nudge"
-CNT_NUDGE="$(grep -c '\$LORE_REFLECTION_NUDGE' "$TICK" 2>/dev/null || echo 0)"
+CNT_NUDGE="$(grep -c '\$LORE_REFLECTION_NUDGE' "$SEAM" 2>/dev/null || echo 0)"
 [ "$CNT_NUDGE" = "2" ] \
   && ok "nudge injected into both delivery prompts (x$CNT_NUDGE)" \
   || fail "nudge not injected into both prompts (found $CNT_NUDGE, want 2)"

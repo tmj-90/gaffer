@@ -71,16 +71,22 @@ for i in 1 2 3; do
 done
 git -C "$REPO" checkout -q main
 
+# NOTE: match with here-strings (grep <<<"$VAR"), never `printf … | grep -q`.
+# `grep -q` closes the pipe on first match while printf is still writing → printf
+# takes SIGPIPE, and under `set -o pipefail` that failure masks grep's success,
+# flipping the verdict. A here-string is a single command (no pipeline, no
+# writer to signal), so grep's own exit status is authoritative. This raced
+# only on macOS before (pipe-buffer/scheduling timing).
 OUT_BP="$(run_tick MAX_OPEN_AGENT_BRANCHES_PER_REPO=3)"
-if printf '%s' "$OUT_BP" | grep -q 'BACKPRESSURE: skipping ready'; then
+if grep -q 'BACKPRESSURE: skipping ready' <<<"$OUT_BP"; then
   ok "tick SKIPS the ready ticket — repo is over the branch cap"
 else
-  fail "expected a BACKPRESSURE skip log (got: $(printf '%s' "$OUT_BP" | tail -3))"
+  fail "expected a BACKPRESSURE skip log (got: $(tail -3 <<<"$OUT_BP"))"
 fi
-if printf '%s' "$OUT_BP" | grep -q 'TICK_RESULT=no_work'; then
+if grep -q 'TICK_RESULT=no_work' <<<"$OUT_BP"; then
   ok "with the only repo backpressured, the tick yields no_work (no new claim)"
 else
-  fail "expected no_work when all ready repos are backpressured (got: $(printf '%s' "$OUT_BP" | grep TICK_RESULT=))"
+  fail "expected no_work when all ready repos are backpressured (got: $(grep TICK_RESULT= <<<"$OUT_BP"))"
 fi
 BP_FILE="$WORK/.gaffer/.backpressure-repos"
 [ -s "$BP_FILE" ] && grep -q 'repo' "$BP_FILE" \
@@ -91,10 +97,10 @@ echo "== PROOF A (control): raising the cap lets the SAME ticket through =="
 # With the cap raised above the 3 outstanding branches, the repo is no longer
 # backpressured and the tick proceeds to plan delivery for the ticket.
 OUT_OK="$(run_tick MAX_OPEN_AGENT_BRANCHES_PER_REPO=99)"
-if printf '%s' "$OUT_OK" | grep -q "delivering #$TNUM"; then
+if grep -q "delivering #$TNUM" <<<"$OUT_OK"; then
   ok "cap raised to 99 → tick proceeds to deliver #$TNUM (backpressure lifted)"
 else
-  fail "raising the cap should let the ticket through (got: $(printf '%s' "$OUT_OK" | grep -E 'delivering|TICK_RESULT'))"
+  fail "raising the cap should let the ticket through (got: $(grep -E 'delivering|TICK_RESULT' <<<"$OUT_OK"))"
 fi
 
 echo "== PROOF B: hygiene rejects a planted bad delivery branch =="
@@ -114,9 +120,9 @@ if [ "$HY_RC" -ne 0 ]; then
 else
   fail "planted bad branch should be rejected"
 fi
-printf '%s' "$HY_OUT" | grep -qiE 'self-referential|forbidden path' \
+grep -qiE 'self-referential|forbidden path' <<<"$HY_OUT" \
   && ok "rejection cites the node_modules leak" || fail "expected node_modules leak in reasons ($HY_OUT)"
-printf '%s' "$HY_OUT" | grep -qi 'copied source tree' \
+grep -qi 'copied source tree' <<<"$HY_OUT" \
   && ok "rejection cites the copied src tree (src.ticket9/)" || fail "expected copied-src leak in reasons ($HY_OUT)"
 # And tick.sh's enforcement path is present (parks, never submits).
 grep -q 'HYGIENE: delivery for #\$NUM is NOT hygienic' "$RUNNER_DIR/tick.sh" \

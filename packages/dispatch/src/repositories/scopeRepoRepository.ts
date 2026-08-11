@@ -38,8 +38,7 @@ export class ScopeRepoRepository {
 
   findById(id: string): ScopeRepo | undefined {
     return this.db.prepare(`SELECT * FROM scope_repos WHERE id = ?`).get(id) as
-      | ScopeRepo
-      | undefined;
+      ScopeRepo | undefined;
   }
 
   exists(scopeNodeId: string, repoId: string, relation: ScopeRepoRelation): boolean {

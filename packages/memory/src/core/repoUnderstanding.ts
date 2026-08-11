@@ -136,8 +136,7 @@ export function upsertDigest(db: Database, input: UpsertDigestInput): RepoDigest
   const ts = nowIso();
 
   const existing = db.prepare("SELECT repo FROM repo_digest WHERE repo = ?").get(repo) as
-    | { repo: string }
-    | undefined;
+    { repo: string } | undefined;
 
   const tx = db.transaction(() => {
     if (existing) {
@@ -169,8 +168,7 @@ export function upsertDigest(db: Database, input: UpsertDigestInput): RepoDigest
 /** Fetch the current digest for a repo, or null if none has been written. */
 export function getDigest(db: Database, repo: string): RepoDigest | null {
   const row = db.prepare("SELECT * FROM repo_digest WHERE repo = ?").get(normaliseRepo(repo)) as
-    | RepoDigestRow
-    | undefined;
+    RepoDigestRow | undefined;
   return row ? rowToDigest(row) : null;
 }
 
@@ -304,8 +302,7 @@ export function advanceFeature(db: Database, id: string, toStatus: FeatureStatus
     );
   }
   const current = db.prepare("SELECT status FROM feature WHERE id = ?").get(id) as
-    | { status: FeatureStatus }
-    | undefined;
+    { status: FeatureStatus } | undefined;
   if (!current) {
     throw new AdvanceFeatureError("unknown_id", `advanceFeature: no feature with id '${id}'`);
   }

@@ -303,8 +303,7 @@ export class EventRepository {
           LIMIT 1`,
       )
       .get({ ticketId }) as
-      | { at: string; reason: string | null; reasonCode: string | null }
-      | undefined;
+      { at: string; reason: string | null; reasonCode: string | null } | undefined;
     return row ?? null;
   }
 

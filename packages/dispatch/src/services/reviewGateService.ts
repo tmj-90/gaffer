@@ -149,8 +149,7 @@ export class ReviewGateService {
   private readonly maxAttempts: number;
   private readonly testingEnabledOverride: boolean | undefined;
   private readonly onTicketParked:
-    | ((ticket: import("../domain/types.js").Ticket, detail: string) => void)
-    | undefined;
+    ((ticket: import("../domain/types.js").Ticket, detail: string) => void) | undefined;
   private readonly approvalShaResolver: ApprovalShaResolver | undefined;
   private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
   private readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;

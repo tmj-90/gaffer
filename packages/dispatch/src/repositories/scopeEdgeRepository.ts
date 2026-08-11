@@ -18,8 +18,7 @@ export class ScopeEdgeRepository {
 
   findById(id: string): ScopeEdge | undefined {
     return this.db.prepare(`SELECT * FROM scope_edges WHERE id = ?`).get(id) as
-      | ScopeEdge
-      | undefined;
+      ScopeEdge | undefined;
   }
 
   exists(fromNodeId: string, toNodeId: string, relation: ScopeEdgeRelation): boolean {

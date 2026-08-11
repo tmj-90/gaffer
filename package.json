@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.33.0",
-  "description": "Gaffer — a local-first autonomous software factory: a control plane, runtime, durable memory, and orchestrator that plans, builds, tests, and reviews software from tickets, on your own machine.",
+  "description": "Gaffer \u2014 a local-first autonomous software factory: a control plane, runtime, durable memory, and orchestrator that plans, builds, tests, and reviews software from tickets, on your own machine.",
   "keywords": [
     "ai-agent",
     "coding-agent",
@@ -73,12 +73,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.5.0",
+    "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",
-    "globals": "^17.7.0",
+    "globals": "^17.9.0",
     "husky": "^9.1.7",
-    "lint-staged": "^15.5.2",
-    "prettier": "^3.8.4",
-    "typescript-eslint": "^8.62.0"
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.9.6",
+    "typescript-eslint": "^8.66.0"
   }
 }

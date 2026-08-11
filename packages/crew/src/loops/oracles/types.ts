@@ -37,8 +37,7 @@ export interface OracleFinding {
  * distinct from "tool absent".
  */
 export type OracleResult =
-  | { available: false; reason: string }
-  | { available: true; findings: OracleFinding[] };
+  { available: false; reason: string } | { available: true; findings: OracleFinding[] };
 
 /** A normalized adapter over one analysis tool. */
 export interface Oracle {

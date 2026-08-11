@@ -29,8 +29,7 @@ export class AcRepository {
 
   findById(id: string): AcceptanceCriterion | undefined {
     return this.db.prepare(`SELECT * FROM acceptance_criteria WHERE id = ?`).get(id) as
-      | AcceptanceCriterion
-      | undefined;
+      AcceptanceCriterion | undefined;
   }
 
   listForTicket(ticketId: string): AcceptanceCriterion[] {

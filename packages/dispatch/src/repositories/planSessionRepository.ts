@@ -115,8 +115,7 @@ export class PlanSessionRepository {
   /** Fetch a session by id, or null if not found. */
   getById(id: string): PlanSession | null {
     const row = this.db.prepare("SELECT * FROM plan_sessions WHERE id = ?").get(id) as
-      | PlanSessionRow
-      | undefined;
+      PlanSessionRow | undefined;
     return row ? rowToSession(row) : null;
   }
 

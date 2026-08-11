@@ -112,8 +112,7 @@ export function migrate(db: Db): void {
   // can read any stamped version without a "no such table" error.
   db.exec("CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   const row = db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get() as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
   if (row) {
     const found = Number(row.value);
     if (Number.isFinite(found) && found > SCHEMA_VERSION) {

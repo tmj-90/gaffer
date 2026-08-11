@@ -67,8 +67,7 @@ export class PausedDeliveryRepository {
 
   find(ticketId: string): PausedDelivery | undefined {
     return this.db.prepare(`SELECT * FROM paused_deliveries WHERE ticket_id = ?`).get(ticketId) as
-      | PausedDelivery
-      | undefined;
+      PausedDelivery | undefined;
   }
 
   /** Mark a paused ticket resume-requested (the human pressed Continue). */

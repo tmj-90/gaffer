@@ -208,8 +208,7 @@ export class ClaimRepository {
            )`,
       )
       .get(nowIso, ticketId, nowIso, nowIso, criteria.maxRiskRank, ...caps, nowIso) as
-      | CandidateRow
-      | undefined;
+      CandidateRow | undefined;
   }
 
   /** The active, unexpired claim matching this token hash (if any). */
@@ -225,8 +224,7 @@ export class ClaimRepository {
   /** A claim by its id, regardless of status. */
   findById(id: string): TicketClaim | undefined {
     return this.db.prepare(`SELECT * FROM ticket_claims WHERE id = ?`).get(id) as
-      | TicketClaim
-      | undefined;
+      TicketClaim | undefined;
   }
 
   /**

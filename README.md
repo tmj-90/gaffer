@@ -1,3 +1,12 @@
+<!--
+  Canonical GitHub repo topics (set these under repo → About → Topics for discoverability).
+  Keep in sync with the "keywords" field in package.json.
+  Apply with: gh repo edit tmj-90/gaffer --add-topic <topic> (one --add-topic per entry)
+  ai-agent, coding-agent, ai-coding-assistant, agentic-ai, autonomous-agents, llm,
+  claude, anthropic, developer-tools, local-first, self-hosted, human-in-the-loop,
+  code-review, automation, typescript, cli
+-->
+
 # Gaffer
 
 [![CI](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml/badge.svg)](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml)

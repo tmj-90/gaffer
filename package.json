@@ -4,9 +4,31 @@
   "private": true,
   "packageManager": "pnpm@10.33.0",
   "description": "Gaffer — a local-first autonomous software factory: a control plane, runtime, durable memory, and orchestrator that plans, builds, tests, and reviews software from tickets, on your own machine.",
+  "keywords": [
+    "ai-agent",
+    "coding-agent",
+    "ai-coding-assistant",
+    "agentic-ai",
+    "autonomous-agents",
+    "llm",
+    "claude",
+    "anthropic",
+    "developer-tools",
+    "local-first",
+    "self-hosted",
+    "human-in-the-loop",
+    "code-review",
+    "automation",
+    "typescript",
+    "cli"
+  ],
+  "homepage": "https://github.com/tmj-90/gaffer#readme",
   "repository": {
     "type": "git",
     "url": "https://github.com/tmj-90/gaffer"
+  },
+  "bugs": {
+    "url": "https://github.com/tmj-90/gaffer/issues"
   },
   "scripts": {
     "build": "pnpm -r build",

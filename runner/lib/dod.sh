@@ -251,6 +251,14 @@ gaffer_run_dod_gates() {
 #   gaffer_dod_summary_line <results-file>
 gaffer_dod_summary_line() {
   local results="$1"
+  # STRANGLER SEAM (see gaffer_dod_distill_output). GAFFER_DOD_DISTILL=ts AND the
+  # typed dist bin on disk → route to the byte-identical TS port (summarizeGates);
+  # else the legacy awk below runs VERBATIM. Default awk — unchanged live behaviour.
+  if [ "${GAFFER_DOD_DISTILL:-awk}" = "ts" ] \
+     && [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ]; then
+    node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" summary --in "$results" 2>/dev/null || return 0
+    return 0
+  fi
   awk -F'\t' '
     $1=="GATE" {
       total++
@@ -272,6 +280,14 @@ gaffer_dod_summary_line() {
 # silently waved through (R1 LOW).
 gaffer_dod_executed_count() {
   local results="$1"
+  # STRANGLER SEAM (see gaffer_dod_distill_output). GAFFER_DOD_DISTILL=ts AND the
+  # typed dist bin on disk → route to the byte-identical TS port (executedCount);
+  # else the legacy awk below runs VERBATIM. Default awk — unchanged live behaviour.
+  if [ "${GAFFER_DOD_DISTILL:-awk}" = "ts" ] \
+     && [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ]; then
+    node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" executed-count --in "$results" 2>/dev/null || return 0
+    return 0
+  fi
   awk -F'\t' '$1=="GATE" && ($4=="PASS" || $4=="FAIL") { n++ } END { print n+0 }' \
     "$results" 2>/dev/null
 }

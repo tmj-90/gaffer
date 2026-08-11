@@ -208,5 +208,44 @@ done
 # Missing results file: both paths print nothing.
 extract_case "missing-file" "$CORPUS/does-not-exist.results"
 
+# ── SUMMARY / EXECUTED-COUNT seams (gaffer_dod_summary_line / _executed_count) ──
+# The two verdict-tally awk helpers ported to the same CLI (summary / executed-count
+# modes). Drive BOTH seams both ways on the same results corpus, byte-identical.
+summary_case() {
+  local label="$1" f="$2" a="$WORK/out.awk" t="$WORK/out.ts"
+  GAFFER_DOD_DISTILL=awk gaffer_dod_summary_line "$f" > "$a" 2>/dev/null
+  GAFFER_DOD_DISTILL=ts  gaffer_dod_summary_line "$f" > "$t" 2>/dev/null
+  cmp -s "$a" "$t" && ok "summary $label — awk and ts are byte-identical" \
+    || { echo "----- diff (awk left, ts right) -----" >&2; diff "$a" "$t" >&2 || true; no "summary $label — DIVERGED"; }
+}
+count_case() {
+  local label="$1" f="$2" a="$WORK/out.awk" t="$WORK/out.ts"
+  GAFFER_DOD_DISTILL=awk gaffer_dod_executed_count "$f" > "$a" 2>/dev/null
+  GAFFER_DOD_DISTILL=ts  gaffer_dod_executed_count "$f" > "$t" 2>/dev/null
+  cmp -s "$a" "$t" && ok "executed-count $label — awk and ts are byte-identical" \
+    || { echo "----- diff (awk left, ts right) -----" >&2; diff "$a" "$t" >&2 || true; no "executed-count $label — DIVERGED"; }
+}
+
+# Mixed: pass + fail + skip, two FAILs (exercises the comma-joined failed list),
+# plus a framed transcript block the tally must IGNORE (only GATE rows count).
+{
+  printf 'GATE\ttests\tapp-web\tPASS\t0\tnpm test\n'
+  printf 'GATE\ttypecheck\tapp-web\tFAIL\t2\texited 2: tsc\n'
+  printf -- '---DOD-OUTPUT typecheck@app-web---\nsrc/x.ts:3:1 error\n---END-DOD-OUTPUT---\n'
+  printf 'GATE\tlint\tapp-web\tSKIP\t0\tno command configured\n'
+  printf 'GATE\ttests\tapp-api\tFAIL\t1\texited 1: pytest\n'
+} > "$CORPUS/res-mixed.results"
+# All-skip (vacuous pass — executed-count must be 0).
+printf 'GATE\ttests\trepo\tSKIP\t0\tgate disabled by config\nGATE\tlint\trepo\tSKIP\t0\tno command configured\n' > "$CORPUS/res-allskip.results"
+# All-pass, single repo.
+printf 'GATE\ttests\tr\tPASS\t0\tt\nGATE\tlint\tr\tPASS\t0\tl\n' > "$CORPUS/res-allpass.results"
+# Empty file (no rows).
+: > "$CORPUS/res-empty.results"
+
+for r in res-mixed res-allskip res-allpass res-empty res-none; do
+  summary_case "$r" "$CORPUS/$r.results"
+  count_case  "$r" "$CORPUS/$r.results"
+done
+
 echo "dod-distill-parity: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -35,11 +35,7 @@ export const GIT_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /** Why a repo carries no diff text (the UI renders a hint instead of a patch). */
 export type DiffUnavailableReason =
-  | "no_branch"
-  | "repo_not_on_disk"
-  | "no_local_path"
-  | "empty"
-  | "git_error";
+  "no_branch" | "repo_not_on_disk" | "no_local_path" | "empty" | "git_error";
 
 /** The diff for a single WRITE repo on the ticket. */
 export interface RepoDiff {

@@ -1,7 +1,7 @@
 {
   "name": "crew",
   "version": "0.1.0",
-  "description": "Local-first software factory runtime — orchestrates Dispatch (work) and Memory (memory) with safety guards, context packets and loops.",
+  "description": "Local-first software factory runtime \u2014 orchestrates Dispatch (work) and Memory (memory) with safety guards, context packets and loops.",
   "keywords": [
     "mcp",
     "model-context-protocol",
@@ -55,7 +55,7 @@
     "prepublishOnly": "npm run typecheck && npm run test"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "commander": "^12.1.0",
     "dispatch": "workspace:*",
     "yaml": "^2.5.1",
@@ -64,7 +64,7 @@
   "devDependencies": {
     "@types/node": "^22.5.0",
     "@vitest/coverage-v8": "^3.2.6",
-    "tsx": "^4.19.0",
+    "tsx": "^4.23.10",
     "typescript": "^5.6.0",
     "vitest": "^3.2.6"
   }

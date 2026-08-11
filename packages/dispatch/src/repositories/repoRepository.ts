@@ -46,14 +46,12 @@ export class RepoRepository {
 
   findById(id: string): Repository | undefined {
     return this.db.prepare(`SELECT * FROM repositories WHERE id = ?`).get(id) as
-      | Repository
-      | undefined;
+      Repository | undefined;
   }
 
   findByName(name: string): Repository | undefined {
     return this.db.prepare(`SELECT * FROM repositories WHERE name = ?`).get(name) as
-      | Repository
-      | undefined;
+      Repository | undefined;
   }
 
   /**

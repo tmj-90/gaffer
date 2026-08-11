@@ -320,8 +320,7 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
         });
         const asyncLore = await resolveAsyncMemory(ctx.loaded.config, events);
         let memory = new NullMemoryClient() as
-          | ReturnType<typeof seededSyncClient>
-          | NullMemoryClient;
+          ReturnType<typeof seededSyncClient> | NullMemoryClient;
         if (asyncLore) {
           const bundle = dispatch.getTicket(args.ticketRef);
           const tags = [

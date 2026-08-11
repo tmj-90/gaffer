@@ -769,8 +769,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
       const result = fn(args);
       if (result.isError) {
         const err = result.structuredContent.error as
-          | { code?: string; message?: string }
-          | undefined;
+          { code?: string; message?: string } | undefined;
         const code = err?.code ?? "error";
         const summary = err?.code ? `${err.code}: ${err.message ?? ""}`.trim() : "error";
         // A POLICY_DENIED failure is a *deliberate* refusal by a policy gate, not

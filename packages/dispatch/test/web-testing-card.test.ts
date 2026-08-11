@@ -135,8 +135,7 @@ describe("BBT-001 web: the Independent testing card", () => {
     const toggle = Array.from(
       document.querySelectorAll('input[type="checkbox"][role="switch"]'),
     ).find((el) => (el as HTMLInputElement).getAttribute("aria-label") === "Testable") as
-      | HTMLInputElement
-      | undefined;
+      HTMLInputElement | undefined;
     expect(toggle).toBeDefined();
     expect(toggle!.checked).toBe(true);
   });

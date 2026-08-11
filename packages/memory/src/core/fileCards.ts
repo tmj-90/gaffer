@@ -516,8 +516,7 @@ export function listCardsForPathPrefixes(
  */
 export function getWatermark(db: Database, rk: string): RepoSync | null {
   const row = db.prepare("SELECT * FROM repo_sync WHERE repo_key = ?").get(rk) as
-    | RepoSyncRow
-    | undefined;
+    RepoSyncRow | undefined;
   return row ? rowToRepoSync(row) : null;
 }
 
@@ -846,8 +845,7 @@ export function rekeyRepo(db: Database, repoName: string, canonicalRaw: string):
     // cards: only migrate/drop watermarks under a PROVABLE legacy key, never by
     // display name (a shared name across repos would clobber the wrong one). ──
     const syncHasNew = db.prepare("SELECT 1 FROM repo_sync WHERE repo_key = ?").get(newKey) as
-      | { 1: number }
-      | undefined;
+      { 1: number } | undefined;
     const oldSync =
       legacy.length === 0
         ? []

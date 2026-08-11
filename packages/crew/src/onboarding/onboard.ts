@@ -27,9 +27,7 @@ import { deriveRepoUnderstanding, type RepoUnderstanding } from "./repoDigest.js
 
 /** How the operator chose to map the repo. */
 export type OnboardMappingChoice =
-  | { mode: "unmapped" }
-  | { mode: "standalone" }
-  | { mode: "mapped"; scopeNodeIds: string[] };
+  { mode: "unmapped" } | { mode: "standalone" } | { mode: "mapped"; scopeNodeIds: string[] };
 
 export interface OnboardOptions {
   /** Repo id; defaults to the directory basename. */

@@ -56,8 +56,7 @@ describe("plan_sessions migration", () => {
     const db = new Database(":memory:");
     migrate(db);
     const row = db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get() as
-      | { value: string }
-      | undefined;
+      { value: string } | undefined;
     expect(Number(row?.value)).toBe(SCHEMA_VERSION);
     db.close();
   });

@@ -20,8 +20,7 @@ export class ScopeNodeRepository {
 
   findById(id: string): ScopeNode | undefined {
     return this.db.prepare(`SELECT * FROM scope_nodes WHERE id = ?`).get(id) as
-      | ScopeNode
-      | undefined;
+      ScopeNode | undefined;
   }
 
   /** Newest-defined first within a type isn't meaningful; order by name for the UI. */

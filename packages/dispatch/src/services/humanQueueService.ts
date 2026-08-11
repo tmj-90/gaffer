@@ -18,11 +18,7 @@ import type { Clock } from "../util/clock.js";
  *                            human to unpark/refine/cancel it.
  */
 export type HumanQueueKind =
-  | "decision"
-  | "review"
-  | "ready_approval"
-  | "reviewer_assignment"
-  | "parked";
+  "decision" | "review" | "ready_approval" | "reviewer_assignment" | "parked";
 
 /** The ticket a human-queue item concerns (null for a decision with no link). */
 export interface HumanQueueTicketRef {

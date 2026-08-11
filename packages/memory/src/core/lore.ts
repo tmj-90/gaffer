@@ -427,8 +427,7 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
   const updatedAt = input.updatedAt ?? nowTs;
 
   const existing = db.prepare("SELECT rowid, kind FROM lore WHERE id = ?").get(input.id) as
-    | { rowid: number; kind: string | null }
-    | undefined;
+    { rowid: number; kind: string | null } | undefined;
   const isCreate = !existing;
 
   // Kind preservation — mirrors updateLore's "no kind supplied → keep the
@@ -788,8 +787,7 @@ export function deprecateLore(db: Database, id: string): Lore | null {
 export function supersedeLore(db: Database, oldId: string, newId: string): Lore | null {
   if (oldId === newId) return null;
   const replacement = db.prepare("SELECT id, status FROM lore WHERE id = ?").get(newId) as
-    | { id: string; status: LoreStatus }
-    | undefined;
+    { id: string; status: LoreStatus } | undefined;
   if (!replacement) return null;
   if (replacement.status === "deprecated" || replacement.status === "superseded") {
     return null;
@@ -819,8 +817,7 @@ export function supersedeLore(db: Database, oldId: string, newId: string): Lore 
  */
 export function verifyLore(db: Database, id: string, nextReviewAfter?: string | null): Lore | null {
   const current = db.prepare("SELECT review_after FROM lore WHERE id = ?").get(id) as
-    | { review_after: string | null }
-    | undefined;
+    { review_after: string | null } | undefined;
   if (!current) return null;
 
   const ts = nowIso();
@@ -970,8 +967,7 @@ export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lo
 export function rejectLore(db: Database, id: string, reason?: string): boolean {
   const ts = nowIso();
   const row = db.prepare("SELECT rowid, status FROM lore WHERE id = ?").get(id) as
-    | { rowid: number; status: LoreStatus }
-    | undefined;
+    { rowid: number; status: LoreStatus } | undefined;
   if (!row) return false;
   if (row.status !== "draft") return false;
   const trimmed = reason?.trim();
@@ -1030,8 +1026,7 @@ export function getRejectionReason(db: Database, id: string): string | undefined
 export function deleteLore(db: Database, id: string): boolean {
   const ts = nowIso();
   const row = db.prepare("SELECT rowid FROM lore WHERE id = ?").get(id) as
-    | { rowid: number }
-    | undefined;
+    { rowid: number } | undefined;
   if (!row) return false;
   const tx = db.transaction(() => {
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);

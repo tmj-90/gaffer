@@ -201,8 +201,7 @@ export function suggestBoundary(db: Database, input: DeclareBoundaryInput): Boun
 
 export function getBoundary(db: Database, id: string): Boundary | null {
   const row = db.prepare("SELECT * FROM boundaries WHERE id = ?").get(id) as
-    | BoundaryRow
-    | undefined;
+    BoundaryRow | undefined;
   return row ? rowToBoundary(row) : null;
 }
 
@@ -226,8 +225,7 @@ export function approveBoundary(db: Database, id: string): Boundary | null {
 export function rejectBoundary(db: Database, id: string): boolean {
   const ts = nowIso();
   const row = db.prepare("SELECT status FROM boundaries WHERE id = ?").get(id) as
-    | { status: BoundaryStatus }
-    | undefined;
+    { status: BoundaryStatus } | undefined;
   if (!row || row.status !== "draft") return false;
   db.prepare("DELETE FROM boundaries WHERE id = ?").run(id);
   db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'boundary_rejected', ?)").run(

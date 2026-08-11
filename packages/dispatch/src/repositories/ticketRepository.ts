@@ -44,8 +44,7 @@ export class TicketRepository {
 
   findByNumber(number: number): Ticket | undefined {
     return this.db.prepare(`SELECT * FROM tickets WHERE number = ?`).get(number) as
-      | Ticket
-      | undefined;
+      Ticket | undefined;
   }
 
   /**

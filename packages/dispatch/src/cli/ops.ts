@@ -140,8 +140,7 @@ export function runDoctor(db: Db, dbPath: string, nowIso = new Date().toISOStrin
   // 6. SQLite quick integrity check.
   try {
     const integrity = db.prepare("PRAGMA integrity_check").get() as
-      | { integrity_check: string }
-      | undefined;
+      { integrity_check: string } | undefined;
     if (integrity?.integrity_check === "ok") {
       checks.push({ label: "SQLite integrity_check: ok", level: "ok" });
     } else {

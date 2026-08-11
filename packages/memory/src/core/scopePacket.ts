@@ -58,11 +58,7 @@ const CHARS_PER_TOKEN = 4;
 
 /** How a particular card was selected — which priority tier picked it. */
 export type SelectionTier =
-  | "exact-path"
-  | "path-prefix"
-  | "important-path"
-  | "important-prefix"
-  | "fts";
+  "exact-path" | "path-prefix" | "important-path" | "important-prefix" | "fts";
 
 export interface SelectionEntry {
   readonly path: string;

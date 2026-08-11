@@ -154,8 +154,7 @@ export interface ExportStateOptions {
  */
 function readSchemaVersion(db: Db): number {
   const row = db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get() as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
   if (!row) return SCHEMA_VERSION;
   const parsed = Number(row.value);
   return Number.isFinite(parsed) ? parsed : SCHEMA_VERSION;

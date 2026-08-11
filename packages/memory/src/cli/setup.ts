@@ -42,11 +42,7 @@ export function claudeMdPath(scope: ClaudeMdScope, cwd?: string): string {
 }
 
 export type AppendAction =
-  | "created"
-  | "appended"
-  | "already-present"
-  | "replaced"
-  | "skipped-partial";
+  "created" | "appended" | "already-present" | "replaced" | "skipped-partial";
 
 export interface AppendResult {
   readonly path: string;

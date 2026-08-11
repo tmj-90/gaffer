@@ -611,8 +611,7 @@ export function importFromDir(
       const incomingUpdatedAt =
         typeof fm["updatedAt"] === "string" ? (fm["updatedAt"] as string) : undefined;
       const localUpdatedAt = db.prepare("SELECT updated_at FROM lore WHERE id = ?").get(id) as
-        | { updated_at: string }
-        | undefined;
+        { updated_at: string } | undefined;
       if (localUpdatedAt && incomingUpdatedAt && localUpdatedAt.updated_at > incomingUpdatedAt) {
         skippedNewer++;
         continue;

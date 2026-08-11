@@ -52,6 +52,25 @@ export GAFFER_ESTIMATE_LIB
 : "${CLAUDE_BIN:=claude}"                                   # headless `claude -p`
 : "${CLAUDE_FLAGS:=--permission-mode acceptEdits}"          # tune to your Claude Code version
 
+# ── Typed-runtime cutover (docs/tick-sh-runtime-migration.md) ─────────────────
+# THE FLIP. Every P1b/P3/P4 render + gate seam is proven byte-identical to the
+# legacy bash/awk (each carries a *-parity test driving BOTH runtimes, and
+# capture-context-golden.sh reproduces the checked-in goldens with ZERO diff under
+# bash AND ts). So the typed path is now the DEFAULT: prompt / .mcp.json /
+# context-primer renders, the DoD text-processing, and the P4 pure-logic helpers
+# (worktree-leaf, hygiene forbidden-path, minimalism + diff-stats, ci-gate parse)
+# all run through the golden-tested typed CLIs unless explicitly overridden.
+#
+# This is the SINGLE cutover switch. It sets the default here (before any lib is
+# sourced), so the per-seam `${GAFFER_RUNTIME:-bash}` / `${GAFFER_DOD_DISTILL:-awk}`
+# fallbacks are superseded and now only apply if this block is removed. SAFETY NETS
+# remain: every seam still falls back to the legacy bash when the crew dist bin is
+# absent (unbuilt checkout), and an explicit `GAFFER_RUNTIME=bash` /
+# `GAFFER_DOD_DISTILL=awk` reverts a single run. Revert the whole cutover by
+# changing these two values back to bash/awk.
+: "${GAFFER_RUNTIME:=ts}"
+: "${GAFFER_DOD_DISTILL:=ts}"
+
 # Model tiering: a strong model PLANS, a fast model IMPLEMENTS + TESTS. Set either
 # to empty to fall back to the Claude default for that step. The steps split as:
 #   PLAN  → decompose (plan-build), clarify, product-owner   (deep reasoning)

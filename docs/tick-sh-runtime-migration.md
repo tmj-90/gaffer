@@ -1,9 +1,13 @@
 # Epic — collapse the delivery runtime: strangle `tick.sh` into a typed `ClaudeAgentRuntime`
 
-Status: **proposed** (not started). Owner: TBD. Gated behind: bookkeeping stable
-(done — runner-owned-bookkeeping landed) + a green end-to-end regression harness
-(exists). This is the [gaffer-v2 master plan](../README.md)'s **Track 4** — the
-monolith break — and it is deliberately **last and cautious**.
+Status: **in progress.** P0/P1a (seam) ✅, P1b (context assembly) ✅, P2 (launch +
+parse) ✅ (realised in the runner's own `worker.sh`/`worker.mjs` seam), P3 (DoD
+text-processing) ✅, P4 (claim/worktree/submit) — pure-logic helpers seamed, the
+orchestration + the single-runtime collapse remain. **Every landed seam is additive
+and flag-gated with the bash/awk path as the still-live DEFAULT — no default has
+flipped to `ts` yet (that is soak-gated, see below).** Owner: TBD. This is the
+[gaffer-v2 master plan](../README.md)'s **Track 4** — the monolith break — and it is
+deliberately **last and cautious**.
 
 ## Why
 
@@ -70,18 +74,56 @@ is actually good at.
   to serialize a `Promise` as `{}` — caught + fixed) and 8 test files. crew: 550
   tests green, typecheck + build clean, behaviour unchanged. This unblocks a live
   `ClaudeAgentRuntime.run()` that awaits a `claude -p` spawn.
-- **P1b — Context assembly.** Move prompt + `.mcp.json` render + context-primer
-  packet (`lib/context-primer.mjs` is already node) into the runtime. Golden-file
-  test: the rendered prompt/MCP for a fixture ticket is identical to today's.
-- **P2 — Launch + parse.** Move the `claude -p` spawn + result parse behind the
-  runtime, still launched inside the existing sandbox provider. `tick.sh` calls it
-  and consumes the structured result. Flag-gated; bash path kept.
-- **P3 — DoD gate orchestration.** Move gate sequencing (`lib/dod.sh` logic) into
-  typed code with per-gate unit tests; `tick.sh` invokes and renders.
-- **P4 — Claim/worktree/submit orchestration.** The last and most safety-sensitive
-  slice. Move claim→worktree→submit bookkeeping; `tick.sh` shrinks to: pick the
-  ticket, set up env/sandbox, hand off to the runtime, tear down. Delete the
-  superseded bash once `ts` has soaked a full autonomous trial.
+- **P1b — Context assembly. ✅ DONE.** The three delivery-context renders now have
+  golden-tested typed renderers reached through flag-gated bash seams (default bash):
+  the delivery/bootstrap **prompt** (`renderPromptCli` ← `deliveryPrompt.ts`, via
+  `gaffer_render_delivery_prompt` in `factory.config.sh`), the **`.mcp.json`** runtime
+  (`renderMcpCli`, via `gaffer_render_mcp_runtime`), and the **context-primer** file-
+  cards + product-context blocks (`renderContextPrimerCli` ← `contextPrimer.ts`, via
+  the seams in `lib/context-primer.sh`). Each is proven byte-identical to the bash by
+  a `*-parity` test driving BOTH runtimes + a `capture-context-golden.sh` real-tick
+  zero-diff under bash AND ts. `GAFFER_RUNTIME=ts` selects the typed path.
+- **P2 — Launch + parse. ✅ DONE** (realised in the runner's own seam, not the crew
+  runtime). The single `claude -p` spawn lives in `worker_deliver` (`lib/worker.sh`,
+  with `GAFFER_WORKER_PROVIDER` dispatch — `claude-code` real + fail-closed stubs) and
+  the `--output-format json` result parse lives in `lib/worker.mjs`'s `parseResult`
+  (the bash cap/spend guards call its `parse-result` CLI; `usage-ledger.mjs` imports
+  the same extractors). The crew `ClaudeAgentRuntime` is the P0 typed BRIDGE (maps a
+  pre-captured envelope); wiring it as the live spawn — retiring `worker.sh`'s spawn —
+  is the single-runtime collapse below.
+- **P3 — DoD gate orchestration. ✅ DONE (text-processing).** The DoD output/verdict
+  helpers are typed behind `dodDistillCli` (`GAFFER_DOD_DISTILL=ts`): `distillOutput`,
+  `extractFailure`, `summarizeGates`, `executedCount` — each byte-identical to the awk
+  (`dod-distill-parity.test.sh`). The gate **sequencer** (`gaffer_run_dod_gates` /
+  `gaffer_dod_run_one`) stays in bash **by design** — it spawns the gate commands next
+  to the in-process safety hook; only its pure logic was portable.
+- **P4 — Claim/worktree/submit orchestration. 🚧 IN PROGRESS.** The pure-logic helpers
+  in the claim→worktree→submit path are seamed behind `GAFFER_RUNTIME=ts` (default
+  bash), each byte-identical to the bash via a `*-parity` test that drives BOTH
+  runtimes: the **worktree-leaf** derivation (`worktreeKey`), the delivery-hygiene
+  **forbidden-path** policy (`forbiddenPath`, a batch scan), the **minimalism**
+  post-condition (`checkMinimalism`) + its **diff-stats** input (`diffStats`), and the
+  **CI-gate** check-status verdict (`parseChecks`). The orchestration proper — the
+  claim/worktree add+teardown and submit bookkeeping (git/process side-effects) — and
+  the collapse below remain. `tick.sh` shrinks to pick-ticket → env/sandbox → hand off
+  → tear down only once those move.
+
+### Landed typed seams (all default-bash, flag-gated, byte-identical)
+
+| Live bash | Typed module + CLI | Flag |
+|---|---|---|
+| `gaffer_render_delivery_prompt` | `deliveryPrompt.ts` / `renderPromptCli` | `GAFFER_RUNTIME=ts` |
+| `gaffer_render_mcp_runtime` | `mcpConfig.ts` / `renderMcpCli` | `GAFFER_RUNTIME=ts` |
+| `gaffer_prime_context_block` / `gaffer_product_context_block` | `contextPrimer.ts` / `renderContextPrimerCli` | `GAFFER_RUNTIME=ts` |
+| `gaffer_dod_distill_output` / `_extract_failure` / `_summary_line` / `_executed_count` | `dod/*.ts` / `dodDistillCli` | `GAFFER_DOD_DISTILL=ts` |
+| worktree-leaf (`tick.sh` WT_ROWS loop) | `worktree/worktreeKey.ts` / `worktreeKeyCli` | `GAFFER_RUNTIME=ts` |
+| `gaffer_assert_clean_delivery` forbidden-path scan | `hygiene/forbiddenPath.ts` / `hygieneCli` | `GAFFER_RUNTIME=ts` |
+| `gaffer_check_minimalism` / `gaffer_diff_stats` | `minimalism/*.ts` / `minimalismCli` | `GAFFER_RUNTIME=ts` |
+| `gaffer_parse_checks` | `ci/parseChecks.ts` / `ciGateCli` | `GAFFER_RUNTIME=ts` |
+
+**The default flip (`bash/awk → ts`) has NOT happened for any seam** — per the
+strangler discipline the defaults flip only after `ts` has soaked green in a real
+autonomous trial, in separate commits, and the bash is deleted later still.
 
 ## Regression gate (every slice)
 

@@ -47,6 +47,25 @@ gaffer_check_minimalism() {
   local max_lines="${OVERSIZED_MAX_LINES:-400}" max_files="${OVERSIZED_MAX_FILES:-12}"
   GAFFER_MINIMALISM_REASON=""
 
+  # STRANGLER SEAM (P4): the byte-identical typed decision (minimalismCli.js →
+  # checkMinimalism) under GAFFER_RUNTIME=ts + the dist bin on disk; else the legacy
+  # bash below runs VERBATIM (default). The CLI emits the three observable outputs on
+  # three lines — token / return code / reason — which this plumbs back to stdout,
+  # the exit status, and GAFFER_MINIMALISM_REASON. On a NON-ZERO CLI exit it falls
+  # through to the bash so a gate decision is never lost.
+  if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
+     && [ -f "${CREW_DIR:-}/dist/runtime/minimalism/minimalismCli.js" ]; then
+    local _mm_out _mm_tok _mm_code _mm_reason
+    if _mm_out="$(printf '%s' "$note" | node "${CREW_DIR}/dist/runtime/minimalism/minimalismCli.js" --files "$files" --lines "$lines" --changed "$changed" 2>/dev/null)"; then
+      _mm_tok="$(printf '%s\n' "$_mm_out" | sed -n 1p)"
+      _mm_code="$(printf '%s\n' "$_mm_out" | sed -n 2p)"
+      _mm_reason="$(printf '%s\n' "$_mm_out" | sed -n '3,$p')"
+      GAFFER_MINIMALISM_REASON="$_mm_reason"
+      printf '%s\n' "$_mm_tok"
+      return "$_mm_code"
+    fi
+  fi
+
   # Smallest-change note is MANDATORY. Treat whitespace-only as missing.
   local trimmed
   trimmed="$(printf '%s' "$note" | tr -d '[:space:]')"

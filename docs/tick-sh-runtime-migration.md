@@ -1,11 +1,16 @@
 # Epic — collapse the delivery runtime: strangle `tick.sh` into a typed `ClaudeAgentRuntime`
 
-Status: **in progress.** P0/P1a (seam) ✅, P1b (context assembly) ✅, P2 (launch +
-parse) ✅ (realised in the runner's own `worker.sh`/`worker.mjs` seam), P3 (DoD
-text-processing) ✅, P4 (claim/worktree/submit) — pure-logic helpers seamed, the
-orchestration + the single-runtime collapse remain. **Every landed seam is additive
-and flag-gated with the bash/awk path as the still-live DEFAULT — no default has
-flipped to `ts` yet (that is soak-gated, see below).** Owner: TBD. This is the
+Status: **in progress — typed runtime now LIVE by default.** P0/P1a (seam) ✅, P1b
+(context assembly) ✅, P2 (launch + parse) ✅ (realised in the runner's own
+`worker.sh`/`worker.mjs` seam), P3 (DoD text-processing) ✅, P4 (claim/worktree/submit)
+— pure-logic helpers seamed, the orchestration + the single-runtime collapse remain.
+**The default flip is DONE: `GAFFER_RUNTIME`/`GAFFER_DOD_DISTILL` default to `ts`
+(one central switch in `factory.config.sh`), so every seamed render + gate runs
+through the typed CLIs in production.** Verified byte-identical before flipping (each
+seam's `*-parity` test drives both runtimes; `capture-context-golden.sh` reproduces
+the goldens with ZERO diff under the new default). The legacy bash/awk branches are
+retained one soak cycle as the fallback (an explicit `=bash`/`=awk`, or an unbuilt
+crew dist, still selects them) before deletion. Owner: TBD. This is the
 [gaffer-v2 master plan](../README.md)'s **Track 4** — the monolith break — and it is
 deliberately **last and cautious**.
 
@@ -121,9 +126,13 @@ is actually good at.
 | `gaffer_check_minimalism` / `gaffer_diff_stats` | `minimalism/*.ts` / `minimalismCli` | `GAFFER_RUNTIME=ts` |
 | `gaffer_parse_checks` | `ci/parseChecks.ts` / `ciGateCli` | `GAFFER_RUNTIME=ts` |
 
-**The default flip (`bash/awk → ts`) has NOT happened for any seam** — per the
-strangler discipline the defaults flip only after `ts` has soaked green in a real
-autonomous trial, in separate commits, and the bash is deleted later still.
+**The default flip (`bash/awk → ts`) is DONE** (one central switch in
+`factory.config.sh`) — every seam above now runs typed in production. It was flipped
+only after each seam proved byte-identical (its `*-parity` test + a golden zero-diff
+under the new default). Per the strangler discipline the bash/awk branches stay one
+soak cycle as the fallback, then get deleted in a later commit; the remaining epic
+work is that deletion plus the single-runtime collapse (wire `ClaudeAgentRuntime` as
+the live spawn, retiring `worker.sh`'s bash spawn).
 
 ## Regression gate (every slice)
 

@@ -63,6 +63,14 @@ gaffer_ci_timeout_proceed() {
 # (or similar, depending on gh version). We look for any "failure"/"error" conclusion.
 gaffer_parse_checks() {
   local checks_output="$1"
+  # STRANGLER SEAM (P4): the byte-identical typed parse (ciGateCli.js parse-checks
+  # → parseChecks) under GAFFER_RUNTIME=ts + the dist bin; else the legacy bash
+  # below runs VERBATIM (default). On a non-zero node exit it falls through so a
+  # CI verdict is never lost. The CLI handles the empty-input → "unknown" case too.
+  if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
+     && [ -f "${CREW_DIR:-}/dist/runtime/ci/ciGateCli.js" ]; then
+    printf '%s' "$checks_output" | node "${CREW_DIR}/dist/runtime/ci/ciGateCli.js" parse-checks 2>/dev/null && return
+  fi
   if [ -z "$checks_output" ]; then
     printf 'unknown'
     return

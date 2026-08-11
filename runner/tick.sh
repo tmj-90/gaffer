@@ -1330,9 +1330,17 @@ print("\n".join(write_rows))
     [ -n "$rpath" ] || continue
     rbase="${rbase:-main}"
     # Stable, filesystem-safe leaf for this repo's worktree.
-    __wt_key="${rid:-$rname}"
-    [ -n "$__wt_key" ] || __wt_key="repo$__wt_idx"
-    __wt_key="$(printf '%s' "$__wt_key" | tr -c 'A-Za-z0-9._-' '-' | sed -E 's/-+/-/g; s/^-+//; s/-+$//')"
+    # STRANGLER SEAM (P4): the byte-identical typed leaf derivation
+    # (worktreeKeyCli.js → worktreeKey) under GAFFER_RUNTIME=ts + the dist bin on
+    # disk; else the legacy tr|sed below runs VERBATIM (default bash, unchanged).
+    if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
+       && [ -f "${CREW_DIR:-}/dist/runtime/worktree/worktreeKeyCli.js" ]; then
+      __wt_key="$(node "${CREW_DIR}/dist/runtime/worktree/worktreeKeyCli.js" --id "$rid" --name "$rname" --index "$__wt_idx" 2>/dev/null)"
+    else
+      __wt_key="${rid:-$rname}"
+      [ -n "$__wt_key" ] || __wt_key="repo$__wt_idx"
+      __wt_key="$(printf '%s' "$__wt_key" | tr -c 'A-Za-z0-9._-' '-' | sed -E 's/-+/-/g; s/^-+//; s/-+$//')"
+    fi
     [ -n "$__wt_key" ] || __wt_key="repo$__wt_idx"
     __wt_path="$WORKTREES_BASE/$__wt_key"
     WT_ROWS+="$(printf '%s\t%s\t%s\t%s\t%s' "$rid" "$rname" "$rpath" "$rbase" "$__wt_path")"$'\n'

@@ -34,19 +34,20 @@ fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 no() { echo "  FAIL $1"; fail=$((fail + 1)); }
 
-# case <label> <files> <lines> <note> <changed>  [env overrides via caller]
+# case <label> <files> <lines> <note> <changed>
+# Drives the WIRED gaffer_check_minimalism BOTH ways (GAFFER_RUNTIME=bash — the
+# legacy body; =ts — the seam through minimalismCli.js) and asserts all three
+# observable outputs (stdout token / exit code / GAFFER_MINIMALISM_REASON) agree.
+# Called in the CURRENT shell (redirect only stdout) so the reason var propagates.
 mcase() {
   local label="$1" files="$2" lines="$3" note="$4" changed="$5"
-  local btok bcode breason
-  gaffer_check_minimalism "$files" "$lines" "$note" "$changed" > "$WORK/tok" 2>/dev/null; bcode=$?
+  local btok bcode breason ttok tcode treason
+  GAFFER_RUNTIME=bash gaffer_check_minimalism "$files" "$lines" "$note" "$changed" > "$WORK/tok" 2>/dev/null; bcode=$?
   btok="$(cat "$WORK/tok")"; breason="$GAFFER_MINIMALISM_REASON"
-  local out ttok tcode treason
-  out="$(printf '%s' "$note" | node "$CLI" --files "$files" --lines "$lines" --changed "$changed" 2>/dev/null)"
-  ttok="$(printf '%s\n' "$out" | sed -n 1p)"
-  tcode="$(printf '%s\n' "$out" | sed -n 2p)"
-  treason="$(printf '%s\n' "$out" | sed -n '3,$p')"
+  GAFFER_RUNTIME=ts CREW_DIR="$CREW_DIR" gaffer_check_minimalism "$files" "$lines" "$note" "$changed" > "$WORK/tok" 2>/dev/null; tcode=$?
+  ttok="$(cat "$WORK/tok")"; treason="$GAFFER_MINIMALISM_REASON"
   if [ "$btok" = "$ttok" ] && [ "$bcode" = "$tcode" ] && [ "$breason" = "$treason" ]; then
-    ok "$label — bash and ts agree (token/code/reason)"
+    ok "$label — bash and ts branches agree (token/code/reason)"
   else
     { echo "  bash: [$btok/$bcode] $breason"; echo "  ts:   [$ttok/$tcode] $treason"; } >&2
     no "$label — DIVERGED"
@@ -65,13 +66,12 @@ mcase "no changed list → skip relevance"   2  50  "any note here is fine"     
 mcase "note excerpt truncation (>80 chars)" 2 50 "$(printf 'x%.0s' {1..120})"                   "src/z.ts"
 mcase "exactly at line cap (not oversized)" 1 400 "right at the line cap edge"                  "src/edge.ts"
 
-# Enforcement OFF: a missing note downgrades from code 1 → code 2.
-( export MINIMALISM_ENFORCE=0
-  gaffer_check_minimalism 3 120 "" "" > "$WORK/tok" 2>/dev/null; c=$?
-  t="$(printf '%s' "" | MINIMALISM_ENFORCE=0 node "$CLI" --files 3 --lines 120 --changed "" 2>/dev/null | sed -n 2p)"
-  [ "$c" = 2 ] && [ "$t" = 2 ] && echo "  ok   MINIMALISM_ENFORCE=0 downgrades missing note to code 2 (bash=$c ts=$t)" \
-    || echo "  FAIL enforce=0 (bash=$c ts=$t)"
-) || true
+# Enforcement OFF: a missing note downgrades from code 1 → code 2, on BOTH branches.
+MINIMALISM_ENFORCE=0 GAFFER_RUNTIME=bash gaffer_check_minimalism 3 120 "" "" >/dev/null 2>&1; _bc=$?
+MINIMALISM_ENFORCE=0 GAFFER_RUNTIME=ts CREW_DIR="$CREW_DIR" gaffer_check_minimalism 3 120 "" "" >/dev/null 2>&1; _tc=$?
+{ [ "$_bc" = 2 ] && [ "$_tc" = 2 ]; } \
+  && ok "MINIMALISM_ENFORCE=0 downgrades missing note to code 2 (both branches)" \
+  || no "enforce=0 divergence (bash=$_bc ts=$_tc)"
 
 echo ""
 echo "minimalism-parity: $pass passed, $fail failed"

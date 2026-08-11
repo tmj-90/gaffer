@@ -162,12 +162,27 @@ gaffer_assert_clean_delivery() {
   # manual-salvage leak; an added one is the copied/symlinked leak).
   local changed path
   changed="$(git -C "$worktree" diff --name-only "$base"...HEAD 2>/dev/null || true)"
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    if _hygiene_path_forbidden "$path"; then
-      violations+="forbidden path in delivery diff: $path"$'\n'
+  # STRANGLER SEAM (P4): the byte-identical typed batch scan (hygieneCli.js →
+  # isForbiddenPath) under GAFFER_RUNTIME=ts + the dist bin on disk — ONE node
+  # spawn for the whole diff. This is a SAFETY gate, so on a NON-ZERO CLI exit
+  # (scan could not complete) we FALL BACK to the legacy bash `case`-glob loop
+  # rather than trust an incomplete scan; default bash runs that loop directly.
+  local _forbidden _used_ts=0
+  if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
+     && [ -f "${CREW_DIR:-}/dist/runtime/hygiene/hygieneCli.js" ]; then
+    if _forbidden="$(printf '%s\n' "$changed" | node "${CREW_DIR}/dist/runtime/hygiene/hygieneCli.js" forbidden 2>/dev/null)"; then
+      _used_ts=1
+      [ -n "$_forbidden" ] && violations+="$_forbidden"$'\n'
     fi
-  done <<< "$changed"
+  fi
+  if [ "$_used_ts" != 1 ]; then
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      if _hygiene_path_forbidden "$path"; then
+        violations+="forbidden path in delivery diff: $path"$'\n'
+      fi
+    done <<< "$changed"
+  fi
 
   # Copied source tree(s).
   local copied

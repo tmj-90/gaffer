@@ -12,8 +12,10 @@
 // pure function IS the live behaviour.
 //
 // CONTRACT (paths on argv, mode as the first token):
-//   node dodDistillCli.js distill --in <path> [--max <n>]
-//   node dodDistillCli.js extract --in <path>
+//   node dodDistillCli.js distill        --in <path> [--max <n>]
+//   node dodDistillCli.js extract        --in <path>
+//   node dodDistillCli.js summary        --in <path>
+//   node dodDistillCli.js executed-count --in <path>
 // The distilled/extracted text is written to STDOUT with no added byte
 // (process.stdout.write of a latin1 Buffer, NOT console.log) so it is
 // byte-identical to the awk `print` output the bash seam redirects with `>>`
@@ -37,6 +39,7 @@
 import { readFileSync } from "node:fs";
 
 import { distillOutput } from "./distillOutput.js";
+import { executedCount, summarizeGates } from "./dodSummary.js";
 import { extractFailure } from "./extractFailure.js";
 
 /** Resolve MAX exactly as the bash/awk chain does; coerce empty/NaN to 40. */
@@ -79,6 +82,12 @@ function main(): void {
     result = distillOutput(text, resolveMax(argMax, process.env));
   } else if (mode === "extract") {
     result = extractFailure(text);
+  } else if (mode === "summary") {
+    // No trailing byte — mirrors gaffer_dod_summary_line's awk `printf`.
+    result = summarizeGates(text);
+  } else if (mode === "executed-count") {
+    // Trailing "\n" — mirrors gaffer_dod_executed_count's awk `print n+0`.
+    result = `${executedCount(text)}\n`;
   } else {
     return; // unknown mode → print nothing, exit 0.
   }

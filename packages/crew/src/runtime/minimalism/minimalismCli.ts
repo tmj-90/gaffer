@@ -23,6 +23,7 @@
 
 import { readFileSync } from "node:fs";
 
+import { diffStats } from "./diffStats.js";
 import { checkMinimalism } from "./minimalism.js";
 
 function flag(argv: string[], name: string): string {
@@ -39,6 +40,14 @@ function intOr(raw: string | undefined, fallback: number): number {
 
 try {
   const argv = process.argv.slice(2);
+
+  // `diff-stats` mode: parse `git diff --numstat` on stdin → "<files> <lines>"
+  // (the awk in gaffer_diff_stats). The default (no mode) is the minimalism check.
+  if (argv[0] === "diff-stats") {
+    process.stdout.write(`${diffStats(readFileSync(0, "utf8"))}\n`);
+    process.exit(0);
+  }
+
   const note = readFileSync(0, "utf8"); // stdin — the free-form note
   const v = checkMinimalism({
     files: intOr(flag(argv, "--files"), 0),

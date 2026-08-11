@@ -26,7 +26,18 @@
 gaffer_diff_stats() {
   local worktree="$1" base="${2:-main}"
   git -C "$worktree" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0"; return 0; }
-  git -C "$worktree" diff --numstat "$base"...HEAD 2>/dev/null | awk '
+  local _numstat
+  _numstat="$(git -C "$worktree" diff --numstat "$base"...HEAD 2>/dev/null)"
+  # STRANGLER SEAM (P4): the byte-identical typed parse (minimalismCli.js diff-stats
+  # → diffStats) under GAFFER_RUNTIME=ts + the dist bin; else the legacy awk below.
+  # `printf %s` (no added newline) so an EMPTY numstat stays 0 records → "0 0" on both
+  # branches (a spurious trailing newline would count as one phantom file). On a
+  # non-zero node exit it falls through to the awk so a stat is never lost.
+  if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
+     && [ -f "${CREW_DIR:-}/dist/runtime/minimalism/minimalismCli.js" ]; then
+    printf '%s' "$_numstat" | node "${CREW_DIR}/dist/runtime/minimalism/minimalismCli.js" diff-stats 2>/dev/null && return 0
+  fi
+  printf '%s' "$_numstat" | awk '
     { files++ }
     $1 ~ /^[0-9]+$/ { added += $1 }
     $2 ~ /^[0-9]+$/ { deleted += $2 }

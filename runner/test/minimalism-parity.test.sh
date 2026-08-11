@@ -73,6 +73,33 @@ MINIMALISM_ENFORCE=0 GAFFER_RUNTIME=ts CREW_DIR="$CREW_DIR" gaffer_check_minimal
   && ok "MINIMALISM_ENFORCE=0 downgrades missing note to code 2 (both branches)" \
   || no "enforce=0 divergence (bash=$_bc ts=$_tc)"
 
+# ── diff-stats seam (gaffer_diff_stats): the numstat → "<files> <lines>" parse. ──
+dscase() {
+  local label="$1" numstat="$2" a t
+  a="$(printf '%s' "$numstat" | awk '{files++} $1~/^[0-9]+$/{added+=$1} $2~/^[0-9]+$/{deleted+=$2} END{printf "%d %d\n",files+0,added+deleted+0}')"
+  t="$(printf '%s' "$numstat" | node "$CLI" diff-stats 2>/dev/null)"
+  [ "$a" = "$t" ] && ok "diff-stats $label — awk and ts agree ([$a])" || no "diff-stats $label — bash=[$a] ts=[$t]"
+}
+dscase "empty (→ 0 0)"      ""
+dscase "one text file"      "$(printf '12\t3\tsrc/a.ts')"
+dscase "text + binary + 0"  "$(printf '12\t3\tsrc/a.ts\n-\t-\tlogo.png\n0\t0\ttouched.ts')"
+dscase "path with spaces"   "$(printf '4\t2\tmy dir/file.ts')"
+
+# End-to-end: the WIRED gaffer_diff_stats BOTH ways over a real tiny git repo.
+DSREPO="$WORK/ds-repo"; mkdir -p "$DSREPO"
+git -C "$DSREPO" init -q -b main
+printf 'a\nb\nc\n' > "$DSREPO/f.txt"
+git -C "$DSREPO" -c user.email=t@e -c user.name=t add -A
+git -C "$DSREPO" -c user.email=t@e -c user.name=t -c commit.gpgsign=false commit -qm base
+git -C "$DSREPO" checkout -q -b work
+printf 'a\nB\nc\nd\ne\n' > "$DSREPO/f.txt"; printf 'new\n' > "$DSREPO/g.txt"
+git -C "$DSREPO" -c user.email=t@e -c user.name=t add -A
+git -C "$DSREPO" -c user.email=t@e -c user.name=t -c commit.gpgsign=false commit -qm work
+_bds="$(GAFFER_RUNTIME=bash gaffer_diff_stats "$DSREPO" main)"
+_tds="$(GAFFER_RUNTIME=ts CREW_DIR="$CREW_DIR" gaffer_diff_stats "$DSREPO" main)"
+[ "$_bds" = "$_tds" ] && ok "diff-stats (wired, real repo) — bash and ts agree ([$_bds])" \
+  || no "diff-stats wired — bash=[$_bds] ts=[$_tds]"
+
 echo ""
 echo "minimalism-parity: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

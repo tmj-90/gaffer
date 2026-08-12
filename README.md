@@ -12,7 +12,7 @@
 [![CI](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml/badge.svg)](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**A local-first coding factory that works your own backlog — supervised, on your machine, under a human gate.**
+**A local-first, self-hosted AI coding factory that works your own backlog — autonomous coding agents you supervise, on your machine, under a human merge gate.**
 
 I built Gaffer to chip away at my own side-project backlog while I'm doing something else: the boring, never-quite-urgent tickets I'd otherwise never get to. It turns a one-line idea into dependency-ordered tickets, works each one through **plan → implement → test → review**, and delivers a git branch or PR with evidence — but **nothing merges until I approve the diff** (the agent *structurally cannot* ship its own work). Vague or blocked tickets park for a human rather than being forced through.
 
@@ -21,7 +21,7 @@ It's a personal hacking tool, not a claim that it replaces engineers or ships pr
 > **Alpha software.** Gaffer runs local coding agents with **shell access** inside repos you control. Use it only on **trusted repositories**, keep the **human review gate on**, and treat the host like a machine running an AI agent with developer-level access. Not production security, not a hosted service. See [`SECURITY.md`](SECURITY.md).
 
 <p align="center">
-  <img src="docs/img/overview.png" alt="The Gaffer control room — live Overview" width="900">
+  <img src="docs/img/overview.png" alt="Gaffer dashboard — the control room: cycle time, throughput, flow efficiency, and per-repo AI coding-agent delivery progress" width="900">
   <br><sub><em>The control room: cycle time, throughput and flow efficiency up top, the development-flow table, what needs you now, and real per-repo progress — with live charts. (Demo data.)</em></sub>
 </p>
 

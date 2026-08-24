@@ -1480,9 +1480,20 @@ function extractBashWriteTargets(cmd) {
       targets.push(UNVERIFIABLE_TARGET);
       return;
     }
-    // Skip process substitutions / fds / globs we can't resolve to a real path.
-    if (/^[&\d]+$/.test(p) || p.startsWith("/dev/")) return;
-    targets.push(canonicalize(resolve(process.cwd(), p)));
+    // Skip process substitutions / fds we can't resolve to a real path.
+    if (/^[&\d]+$/.test(p)) return;
+    // Decide the /dev skip on the LEXICALLY-normalised path (`..` collapsed, but
+    // symlinks NOT followed), then push the fully-canonicalised target. Two
+    // failure modes are closed at once:
+    //   • `/dev/../<write-root>/.claude/settings.json` normalises OUT of /dev, so
+    //     it is NOT skipped — closing a total write-boundary bypass (the agent
+    //     could otherwise rewrite its own settings to remove this hook).
+    //   • `/dev/stdin` · `/dev/stdout` · `/dev/fd/N` stay lexically under /dev, so
+    //     they ARE skipped — realpath would resolve these to /proc/self/fd/* and
+    //     wrongly surface a legitimate device write as an out-of-root target.
+    const lexical = resolve(process.cwd(), p);
+    if (lexical === "/dev" || lexical.startsWith("/dev/")) return;
+    targets.push(canonicalize(lexical));
   };
 
   // Output redirection: `> file`, `>> file`, `2> file`, `&> file`, plus the
@@ -1621,12 +1632,18 @@ function extractBashReadTargets(cmd) {
     for (const tok of operands) {
       const raw = unquote(tok.trim());
       if (!raw) continue;
-      // Skip non-path-literals: globs, interpolation, fds, /dev, sed scripts
+      // Skip non-path-literals: globs, interpolation, fds, sed scripts
       // like `1,5p` / `s/a/b/`, and bare option-ish tokens.
       if (/[*?$`]|\$\{/.test(raw)) continue;
-      if (raw.startsWith("/dev/") || /^[&\d]+$/.test(raw)) continue;
+      if (/^[&\d]+$/.test(raw)) continue; // fd redirections, not paths
       if (!raw.includes("/") && !raw.includes(".")) continue; // not path-shaped
-      targets.push(canonicalize(resolve(process.cwd(), raw)));
+      // Decide the /dev skip on the LEXICALLY-normalised path (mirror of the
+      // write path). `/dev/null` · `/dev/stdin` · `/dev/fd/N` stay under /dev and
+      // are skipped; `/dev/../etc/passwd` normalises OUT of /dev and is checked —
+      // a bare `/dev/` prefix was a read-side bypass of the out-of-root guard.
+      const lexical = resolve(process.cwd(), raw);
+      if (lexical === "/dev" || lexical.startsWith("/dev/")) continue;
+      targets.push(canonicalize(lexical));
     }
   }
 

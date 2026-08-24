@@ -133,7 +133,12 @@ PY
   #      longitudinal comparability, and so self-grading (judge == impl model)
   #      is visible in the data rather than hidden. ──
   repo_name="$(basename "$repo_dir")"
-  judge_model="$(printf '%s' "$judge_flag" | sed -E 's/.*--model[= ]+([^ ]+).*/\1/; t; s/.*//')"
+  # Extract the value after `--model`/`--model=`; empty when the flag carries no
+  # model. `sed -n …/p` prints ONLY on a successful substitution — portable across
+  # GNU and BSD/macOS sed. (The `s///; t; s/.*//` idiom is NOT: BSD sed reads the
+  # rest of the line after `t` as a label, so `t; s/.*//` errors with "undefined
+  # label", the extraction fails, and judgeModel silently goes unrecorded.)
+  judge_model="$(printf '%s' "$judge_flag" | sed -n -E 's/.*--model[= ]+([^ ]+).*/\1/p')"
   VJ="$verdict_json" NUM="$num" REPO="$repo_name" MEM="$mem" SPEND="$spend" JMODEL="$judge_model" \
     python3 - > "$tmp/record.json" 2>/dev/null <<'PY' || return 0
 import json, os

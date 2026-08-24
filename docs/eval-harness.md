@@ -61,6 +61,31 @@ node packages/crew/dist/eval/evalLedgerCli.js --mode summarize \
 | `GAFFER_JUDGE_MODEL_FLAG` | impl model flag | model for the judge turn |
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | ledger path |
 
+## Honest limits of the current metrics (read before trusting a number)
+
+These are real conditioning biases, not polish — surfaced by an adversarial audit
+of this harness and left visible rather than hidden:
+
+- **Submit-success sampling.** Judging runs only after a *successful* submit
+  (post-gate). Deliveries that fail DoD, park, or fail submit are never judged,
+  so `passRate`/`memoryLift`/`cost.costPerPass` are conditioned on gate-passing
+  work. In particular `costPerPass`'s "amortised failure spend" only includes
+  deliveries that passed every boolean gate and *then* scored badly — it does
+  **not** capture burn on parked/failed attempts, so it understates true
+  cost-per-good-delivery. `memoryLift` is likewise measured only within
+  gate-passers, so if memory mostly helps work *clear the gates*, the effect is
+  conditioned away. Widening judging to failed attempts is future work.
+- **Self-grading by default.** The judge turn uses
+  `GAFFER_JUDGE_MODEL_FLAG`, falling back to the implementation model flag — so
+  out of the box the judge shares the implementer's blind spots. Set
+  `GAFFER_JUDGE_MODEL_FLAG` to a *different* (ideally stronger) model for real
+  independence. Every record now carries `judgeModel` so a model swap is visible
+  and doesn't silently break longitudinal comparability.
+- **Prefix grading on huge diffs.** Diffs over `GAFFER_JUDGE_DIFF_BYTES`
+  (120 KB default) are truncated; the judge is told so and instructed to treat
+  unseen changes as ungraded, not absent — but `minimalism`/`security` on a very
+  large delivery are still graded on a prefix.
+
 ## Later (deliberately not in this slice)
 
 - **Enforcement** — acting on a `blocking` verdict (e.g. auto-park) is a

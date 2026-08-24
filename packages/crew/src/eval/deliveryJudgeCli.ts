@@ -55,15 +55,20 @@ export function runJudgeCli(argv: string[], stdin: string): { stdout: string; ex
   }
 
   const verdict = parseJudgeVerdict(stdin);
+  // Line 2 is `judged:blocking` (e.g. "1:0") so a bash caller can tell a real
+  // grading (judged=1) from a refusal/garbled reply (judged=0) — the latter
+  // must NOT be recorded as a quality verdict, or a judge refusal lands as a
+  // fake score-0 fail and poisons the metric.
   const stdout =
     [
       verdict.overall,
-      verdict.blocking ? "1" : "0",
+      `${verdict.judged ? "1" : "0"}:${verdict.blocking ? "1" : "0"}`,
       verdict.score.toFixed(2),
       JSON.stringify(verdict),
     ].join("\n") + "\n";
-  // Exit non-zero when blocking so a bash caller can `if node …; then` gate on it.
-  return { stdout, exitCode: verdict.blocking ? 1 : 0 };
+  // Exit: 0 = judged & ok · 1 = judged & blocking · 2 = NOT judged (an infra
+  // outcome, not a quality fail) so a caller can branch three ways.
+  return { stdout, exitCode: !verdict.judged ? 2 : verdict.blocking ? 1 : 0 };
 }
 
 // Entrypoint: run only when executed as a script, not when imported by a test.

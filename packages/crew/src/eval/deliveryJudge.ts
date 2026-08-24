@@ -62,6 +62,14 @@ export interface JudgeVerdict {
   score: number;
   /** True when the delivery should NOT be auto-advanced (fail, or a critical dim <= 1). */
   blocking: boolean;
+  /**
+   * True only when the reply actually contained a parseable grading (a JSON
+   * object with at least one valid rubric dimension). False means the judge
+   * REFUSED or the reply was cut/garbled — an infra outcome, not a quality
+   * verdict. Callers recording metrics MUST skip judged:false verdicts, or a
+   * refusal would be ledgered as a fake score-0 quality fail.
+   */
+  judged: boolean;
   dimensions: DimensionScore[];
   /** Short human-facing summary line (never contains raw untrusted bytes verbatim beyond the model's own words). */
   summary: string;
@@ -72,10 +80,16 @@ const QUARANTINE_NOTICE =
 
 function envelope(tag: string, body: string): string {
   // A closing-tag collision in the body would let untrusted text escape the
-  // envelope; neutralise it by escaping the `<` of the collision to `&lt;`, so
-  // the literal closing tag no longer matches (the text is preserved for
-  // grading — the judge just sees a defanged tag).
-  const safe = body.replaceAll(`</${tag}>`, `&lt;/${tag}>`);
+  // envelope; neutralise it by escaping the `<` to `&lt;` so the tag no longer
+  // reads as markup (the text is preserved for grading — the judge just sees a
+  // defanged tag). The match must be as permissive as an LLM's reading of
+  // "closing tag", not an exact literal: case-insensitive, tolerant of
+  // whitespace around the slash/name, and applied to ANY </untrusted-*> or
+  // <untrusted-*> the body carries — an uppercase or padded variant of a
+  // DIFFERENT envelope's tag would otherwise survive verbatim and still read
+  // as structure to the model.
+  const anyEnvelopeTag = /<\s*\/?\s*untrusted-[a-z0-9-]*\s*>/gi;
+  const safe = body.replace(anyEnvelopeTag, (m) => `&lt;${m.slice(1)}`);
   return `<${tag}>\n${safe}\n</${tag}>`;
 }
 
@@ -190,11 +204,20 @@ export function parseJudgeVerdict(raw: string): JudgeVerdict {
     (d) => byDim.get(d) ?? { dimension: d, score: 0, rationale: "not scored by the judge" },
   );
 
+  // A grading happened only if the reply carried a JSON object with at least
+  // one valid rubric dimension. Prose refusals, mid-JSON cuts, and unrelated
+  // JSON all yield judged:false — the verdict still aggregates (fail/blocking,
+  // useful for a caller that wants to gate) but must not enter quality metrics.
+  const judged = byDim.size > 0;
+
   const { overall, score, blocking } = aggregateVerdict(dimensions);
   const modelSummary =
     obj && typeof obj === "object" ? String((obj as Record<string, unknown>).summary ?? "") : "";
   const summary =
-    modelSummary.trim().slice(0, 300) || `${overall} (${score.toFixed(2)}/5) — judged by rubric`;
+    modelSummary.trim().slice(0, 300) ||
+    (judged
+      ? `${overall} (${score.toFixed(2)}/5) — judged by rubric`
+      : "not judged — reply carried no parseable rubric grading");
 
-  return { overall, score, blocking, dimensions, summary };
+  return { overall, score, blocking, judged, dimensions, summary };
 }

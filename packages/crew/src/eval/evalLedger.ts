@@ -37,6 +37,13 @@ export interface EvalRecord {
    * fake 0, so cost aggregates only over records that actually carried one.
    */
   costUsd?: number;
+  /**
+   * Which model judged this delivery (the judge turn's model flag/name).
+   * Recorded so a judge-model swap never silently breaks longitudinal
+   * comparability of meanScore/memoryLift, and so self-grading (judge ==
+   * implementer model) is visible in the data rather than hidden.
+   */
+  judgeModel?: string;
 }
 
 export interface EvalSummary {
@@ -104,6 +111,7 @@ export function parseLedger(jsonl: string): EvalRecord[] {
       ...(typeof r.costUsd === "number" && Number.isFinite(r.costUsd)
         ? { costUsd: r.costUsd }
         : {}),
+      ...(typeof r.judgeModel === "string" && r.judgeModel ? { judgeModel: r.judgeModel } : {}),
     });
   }
   return out;

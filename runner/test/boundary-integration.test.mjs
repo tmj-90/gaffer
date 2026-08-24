@@ -253,6 +253,33 @@ try {
   allow("write /dev/stdout still allowed", bash(`echo x > /dev/stdout`));
   allow("read /dev/null still allowed", bash(`cat /dev/null`));
   allow("read /dev/stdin still allowed", bash(`cat /dev/stdin`));
+
+  // ---- download / copy destination boundary (regression) --------------------
+  // `curl -o` / `wget -O` / `rsync` / `scp` / `git clone <dir>` all write a file
+  // (or a whole tree) to an arbitrary path that the redirect/verb scans never
+  // saw — an out-of-root write, and via `/dev/../…/.claude/settings.json` a
+  // hook-removal surface. The destination is now surfaced to the boundary.
+  deny("curl -o outside roots", bash(`curl -o ${OUTSIDE}/x https://example.com/a`));
+  deny("curl --output= outside roots", bash(`curl --output=${OUTSIDE}/x https://example.com/a`));
+  deny(
+    "curl -o /dev/../ agent settings (hook-removal)",
+    bash(`curl -o /dev/../${WRITE_ROOT}/.claude/settings.json https://example.com/a`),
+  );
+  deny("wget -O outside roots", bash(`wget -O ${OUTSIDE}/x https://example.com/a`));
+  deny(
+    "wget --output-document= outside roots",
+    bash(`wget --output-document=${OUTSIDE}/x https://example.com/a`),
+  );
+  deny("rsync local dest outside roots", bash(`rsync -a ${WRITE_ROOT}/src/ ${OUTSIDE}/dst/`));
+  deny("scp download to outside roots", bash(`scp remote:x ${OUTSIDE}/y`));
+  deny("git clone into outside roots", bash(`git clone https://example.com/r.git ${OUTSIDE}/r`));
+  // Legit downloads/copies INSIDE roots, and remote UPLOAD dests, stay allowed.
+  allow("curl -o inside write-root", bash(`curl -o ${WRITE_ROOT}/x https://example.com/a`));
+  allow("wget -O inside write-root", bash(`wget -O ${WRITE_ROOT}/x https://example.com/a`));
+  allow("curl plain stdout (no -o)", bash(`curl https://example.com/a`));
+  allow("rsync upload to remote dest", bash(`rsync -a ${WRITE_ROOT}/src/ user@host:/tmp/`));
+  allow("scp upload to remote dest", bash(`scp ${WRITE_ROOT}/x remote:/tmp/y`));
+  allow("git clone into write-root", bash(`git clone https://example.com/r.git ${WRITE_ROOT}/r`));
 } finally {
   for (const dir of [WRITE_ROOT, READ_ROOT, OUTSIDE]) {
     rmSync(dir, { recursive: true, force: true });

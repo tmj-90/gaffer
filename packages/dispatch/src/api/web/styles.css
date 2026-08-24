@@ -153,6 +153,41 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Accessibility utilities ---------------------------------------------------
+   .sr-only hides content visually while keeping it in the accessibility tree
+   (used by the #sr-status live region). .skip-link is off-screen until it
+   receives keyboard focus, then anchors the tab order to the main view. */
+.sr-only {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.skip-link {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  transform: translateY(-120%);
+  padding: var(--s-2, 0.6rem) var(--s-3, 0.9rem);
+  background: var(--accent);
+  color: var(--on-accent, #16140f);
+  font-weight: 600;
+  border-radius: 0 0 var(--r-2, 8px) 0;
+  text-decoration: none;
+  transition: transform 0.12s ease;
+}
+.skip-link:focus {
+  transform: translateY(0);
+  outline: 2px solid var(--white, #f4eee0);
+  outline-offset: 2px;
+}
+
 /* The room: a fixed, filmic backdrop behind everything — a blueprint grid
    under a soft phosphor wash and a vignette that pulls focus to the centre.
    Lives on a pseudo so it never scrolls and never costs layout. */

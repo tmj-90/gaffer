@@ -731,6 +731,7 @@ async function router() {
   app.dataset.area = activeArea; // lets CSS give width-hungry views (work/map/epics) the full screen
   syncNav();
   updateNavBadges();
+  setDocTitle(view); // detail views refine this once their data loads
   app.classList.remove("login-shell");
 
   // The actual DOM swap: skeleton in, awaited content in. Wrapped in a View
@@ -748,6 +749,8 @@ async function router() {
       app.scrollTop = 0;
       stagger(content);
       animateReadouts(content);
+      // Tell a screen reader the view changed (one short line, not the whole DOM).
+      announce(`${VIEW_TITLES[view] || "View"} loaded`);
     } catch (e) {
       // A 401 is already handled inside api() (the login screen is shown) — returning
       // here avoids clobbering it. For any OTHER failure, replace the skeleton with an
@@ -1021,8 +1024,47 @@ function startLiveTick() {
 
 function syncNav() {
   document.querySelectorAll("[data-area]").forEach((n) => {
-    n.classList.toggle("active", n.dataset.area === activeArea);
+    const on = n.dataset.area === activeArea;
+    n.classList.toggle("active", on);
+    // Programmatic active state for assistive tech (the amber tint alone is
+    // color-only — WCAG 1.4.1). `page` marks the current view in the nav.
+    if (on) n.setAttribute("aria-current", "page");
+    else n.removeAttribute("aria-current");
   });
+}
+
+// One-line polite announcement into the dedicated #sr-status region (see
+// index.html). Used for view changes and background refreshes so a screen
+// reader hears a short message instead of the whole re-rendered view.
+function announce(msg) {
+  const r = document.getElementById("sr-status");
+  if (!r) return;
+  r.textContent = "";
+  // A microtask gap makes the region change register as a fresh announcement.
+  requestAnimationFrame(() => {
+    r.textContent = msg;
+  });
+}
+
+// Human-facing browser-tab title per view, so several open tabs (Review, a
+// ticket, Settings) are distinguishable in the tab strip, history and bookmarks.
+const VIEW_TITLES = {
+  overview: "Overview",
+  health: "Health",
+  work: "Work",
+  review: "Review",
+  epics: "Epics",
+  specs: "Specs",
+  factory: "Map",
+  memory: "Memory",
+  settings: "Settings",
+  ticket: "Ticket",
+  repo: "Repo",
+  node: "Map",
+};
+function setDocTitle(view, detail) {
+  const base = VIEW_TITLES[view] || "Gaffer";
+  document.title = detail ? `${detail} · Gaffer` : `${base} · Gaffer`;
 }
 
 /** Live, data-driven nav badges: Work shows open (in-flight) tickets, Review

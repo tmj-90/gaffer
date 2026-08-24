@@ -18,6 +18,12 @@
     <link rel="preload" as="image" href="assets/bg/hero-city.jpg" />
   </head>
   <body>
+    <!-- Keyboard users skip the app bar / nav and land on the view. -->
+    <a href="#app" class="skip-link">Skip to main content</a>
+    <!-- One small polite region for targeted announcements (board updated, view
+         changed). The old page-wide aria-live on <main> made screen readers
+         re-announce the ENTIRE view on every 9s refresh. -->
+    <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
     <!-- Dispatch shield mark — reused by app bar, login gate and nav via <use href="#wg-shield">. -->
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <symbol id="wg-shield" viewBox="0 0 256 280">
@@ -110,7 +116,7 @@
       <!-- App bar + nav are populated by app.js so the login gate can suppress them. -->
       <header id="appbar" class="appbar" hidden></header>
 
-      <main id="app" class="app" aria-live="polite">
+      <main id="app" class="app" tabindex="-1">
         <p class="loading">Loading…</p>
       </main>
 

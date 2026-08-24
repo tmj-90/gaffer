@@ -1808,7 +1808,7 @@ html::after {
 }
 .stat-card.tone-accent .stat-value {
   color: var(--accent);
-  text-shadow: 0 0 24px rgba(22, 20, 15, 0.38);
+  text-shadow: 0 0 24px var(--accent-glow);
 }
 /* ===========================================================================
    THE INSTRUMENT CLUSTER — throughput as one cockpit gauge, not N cards
@@ -1982,7 +1982,7 @@ html::after {
 }
 .gauge.tone-accent .gauge-value {
   color: var(--accent);
-  text-shadow: 0 0 22px rgba(22, 20, 15, 0.4);
+  text-shadow: 0 0 22px var(--accent-glow);
 }
 .gauge.tone-warn {
   --gauge: var(--amber);
@@ -3946,7 +3946,7 @@ td.title-cell {
   gap: 10px;
 }
 .failure-attempt {
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border: 1px solid var(--line);
   border-left: 3px solid var(--danger);
   border-radius: 6px;
   overflow: hidden;
@@ -3984,7 +3984,7 @@ td.title-cell {
   white-space: pre-wrap;
   word-break: break-word;
   background: var(--surface, #fff);
-  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+  border-top: 1px solid var(--line-hair, var(--line));
   max-height: 260px;
   overflow: auto;
 }
@@ -4003,7 +4003,7 @@ td.title-cell {
   align-items: center;
   gap: 10px;
   padding: 7px 4px;
-  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+  border-bottom: 1px solid var(--line-hair, var(--line));
   color: inherit;
   text-decoration: none;
 }
@@ -4056,7 +4056,7 @@ td.title-cell {
   gap: 12px;
   padding: 10px 12px;
   border-radius: 10px;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border: 1px solid var(--line);
   background: var(--surface-2, rgba(0, 0, 0, 0.02));
   color: inherit;
   text-decoration: none;

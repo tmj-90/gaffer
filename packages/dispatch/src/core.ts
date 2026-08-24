@@ -825,6 +825,11 @@ export class Dispatch {
     return this.repoSvc.setRepoHidden(repoRef, hidden, actor);
   }
 
+  /** Set a repo's default branch (the base delivery worktrees branch off). */
+  setRepoDefaultBranch(repoRef: string, branch: string, actor: Actor): Repository {
+    return this.repoSvc.setRepoDefaultBranch(repoRef, branch, actor);
+  }
+
   linkRepository(ticketId: string, repoName: string, role: string, actor: Actor): void {
     return this.repoSvc.linkRepository(ticketId, repoName, role, actor);
   }

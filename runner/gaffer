@@ -7,6 +7,7 @@
 #   gaffer status                     what's registered + what's running
 #   gaffer demo                       run the Factory Map showcase (DRY_RUN)
 #   gaffer skills [install]           list the skill library / install it into your Claude Code
+#   gaffer eval [--json]              delivery-quality metrics (pass rate · memory lift · cost/pass)
 #   gaffer help
 #
 # Everything uses the factory's own config/state under $GAFFER_DATA — no flags to remember.
@@ -178,6 +179,43 @@ setup)
   ;;
 
 demo) DRY_RUN="${DRY_RUN:-1}" bash "$HERE/demo.sh" ;;
+
+eval)
+  # Delivery-quality metrics from the eval ledger (docs/eval-harness.md):
+  # pass rate, per-dimension means, MEMORY LIFT (does the durable memory
+  # measurably improve deliveries?), and cost-per-passing-delivery.
+  _ledger="${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
+  _cli="$CREW_DIR/dist/eval/evalLedgerCli.js"
+  if [ ! -f "$_cli" ]; then echo "eval: crew not built — run: pnpm -C packages/crew build"; exit 1; fi
+  if [ ! -s "$_ledger" ]; then
+    echo "eval: no judged deliveries yet ($_ledger is empty)."
+    echo "Enable post-submit judging with GAFFER_EVAL_JUDGE=1 — see docs/eval-harness.md."
+    exit 0
+  fi
+  if [ "${1:-}" = "--json" ]; then
+    node "$_cli" --mode summarize --file "$_ledger"
+  else
+    node "$_cli" --mode summarize --file "$_ledger" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+lift, cost = s["memoryLift"], s["cost"]
+def pct(x): return str(round(100 * x)) + "%"
+print("deliveries judged   %s   (pass %s / blocking %s)" % (s["count"], pct(s["passRate"]), pct(s["blockRate"])))
+print("mean score          %s/5" % s["meanScore"])
+dims = s.get("dimensionMeans") or {}
+if dims:
+    print("dimensions          " + "  ".join("%s %s" % kv for kv in dims.items()))
+l = lift["lift"]
+wm, wo = lift["withMemory"], lift["withoutMemory"]
+arms = "with-memory %s/5 (n=%s) vs without %s/5 (n=%s)" % (wm["meanScore"], wm["count"], wo["meanScore"], wo["count"])
+print("memory lift         %s   %s" % (("%+.2f" % l) if l is not None else "n/a (need both arms)", arms))
+if cost["costedCount"]:
+    cpp = cost["costPerPass"]
+    tail = ("$%s/passing delivery" % cpp) if cpp is not None else "no costed passes yet"
+    print("cost                $%s over %s costed / $%s mean / %s" % (cost["totalCostUsd"], cost["costedCount"], cost["meanCostUsd"], tail))
+'
+  fi
+  ;;
 
 run)
   # Live run. Without --daemon: ONE supervisor pass (drains the ready queue, honours

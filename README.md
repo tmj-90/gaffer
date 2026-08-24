@@ -214,6 +214,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Runner factory loop with curated skill library and model tiering — one pass with `runner/loop.sh`, or unattended on any platform with `runner/gaffer run --daemon` (re-runs the loop, honours the per-day cap, stops cleanly on a signal)
 - Deterministic safety hook (`runner/safety-hook.mjs`) — worktree isolation, fails closed
 - Web dashboard with all seven views: Overview, Work, Review, Epics, Map, Memory, Settings
+- Delivery-quality **eval harness** ([docs/eval-harness.md](docs/eval-harness.md)): an independent rubric judge scores every submitted delivery into an eval ledger — pass rate, per-dimension quality, real cost-per-passing-delivery, and a **memory-lift** metric that makes the "builds you an asset" claim falsifiable (`gaffer eval`; opt-in via `GAFFER_EVAL_JUDGE=1` while it soaks)
 
 **Not yet / honest limits:**
 - Container sandbox: the `docker` provider (read + egress isolation) is **experimental** — proven at the containment level (red-team gated: host secret unreadable, egress allowlisted, caps dropped), but the live in-container `claude -p` delivery capstone is still pending; `sandbox-exec` (macOS) remains write-only

@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Dispatch } from "../../core.js";
 import { methodNotAllowed, readJsonBody, sendJson } from "../http.js";
 import type { OnboardRunner } from "../onboard.js";
-import { onboardRepoBody, setRepoHiddenBody } from "../schemas.js";
+import { onboardRepoBody, setRepoDefaultBranchBody, setRepoHiddenBody } from "../schemas.js";
 import { API_ACTOR } from "./context.js";
 
 /**
@@ -79,6 +79,20 @@ export async function routeRepos(
     }
     const body = setRepoHiddenBody.parse(await readJsonBody(req));
     const repo = wg.setRepoHidden(segments[1] as string, body.hidden, API_ACTOR);
+    sendJson(res, 200, { repository: repo });
+    return true;
+  }
+
+  // POST /repos/:id/default-branch — set the base branch every delivery worktree
+  // branches off. A wrong value hard-fails delivery at worktree setup, so it must
+  // be editable per-repo. Behind the same bearer-token gate as the rest.
+  if (segments[0] === "repos" && segments.length === 3 && segments[2] === "default-branch") {
+    if (method !== "POST") {
+      methodNotAllowed(res);
+      return true;
+    }
+    const body = setRepoDefaultBranchBody.parse(await readJsonBody(req));
+    const repo = wg.setRepoDefaultBranch(segments[1] as string, body.default_branch, API_ACTOR);
     sendJson(res, 200, { repository: repo });
     return true;
   }

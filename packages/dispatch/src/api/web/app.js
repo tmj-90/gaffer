@@ -7687,7 +7687,34 @@ async function renderRepo(id) {
       el("dt", {}, "Path"),
       el("dd", {}, repo.local_path ? el("code", { class: "mono" }, repo.local_path) : "—"),
       el("dt", {}, "Default branch"),
-      el("dd", {}, repo.default_branch || "—"),
+      el("dd", {}, [
+        el("code", { class: "mono" }, repo.default_branch || "main"),
+        " ",
+        el(
+          "button",
+          {
+            class: "btn small",
+            type: "button",
+            "aria-label": `Edit default branch for ${repo.name}`,
+            title:
+              "The base branch every delivery worktree branches off. A wrong value fails delivery at worktree setup.",
+            onclick: () =>
+              guard(async () => {
+                const next = window.prompt(
+                  `Default branch for “${repo.name}” — the base every delivery branches off:`,
+                  repo.default_branch || "main",
+                );
+                if (next == null) return;
+                const branch = next.trim();
+                if (!branch || branch === repo.default_branch) return;
+                await api("POST", `/repos/${repo.id}/default-branch`, { default_branch: branch });
+                toast(`${repo.name} default branch → ${branch}`, { ok: true });
+                router();
+              }),
+          },
+          "Edit",
+        ),
+      ]),
       el("dt", {}, "Remote"),
       el("dd", {}, repo.remote_url ? el("code", { class: "mono" }, repo.remote_url) : "—"),
     ]),

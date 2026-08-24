@@ -100,6 +100,13 @@ export const registerRepoInput = z.object({
 });
 export type RegisterRepoInput = z.infer<typeof registerRepoInput>;
 
+/** Input for changing a repo's default branch (CLI `repo set-branch`, API
+ *  POST /repos/:id/default-branch). Same GIT_REF_SAFE validation as registration. */
+export const setRepoDefaultBranchInput = z.object({
+  default_branch: z.string().trim().min(1).max(200).regex(GIT_REF_SAFE, GIT_REF_SAFE_MESSAGE),
+});
+export type SetRepoDefaultBranchInput = z.infer<typeof setRepoDefaultBranchInput>;
+
 export const registerAgentInput = z.object({
   display_name: z.string().max(200).optional(),
   agent_type: z.string().max(100).default("coding_agent"),

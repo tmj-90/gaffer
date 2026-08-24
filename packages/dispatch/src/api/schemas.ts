@@ -83,6 +83,13 @@ export const setRepoHiddenBody = z.object({
 });
 export type SetRepoHiddenBody = z.infer<typeof setRepoHiddenBody>;
 
+/** Body for POST /repos/:id/default-branch — set the base branch deliveries
+ *  branch off. Same GIT_REF_SAFE validation the service enforces. */
+export const setRepoDefaultBranchBody = z.object({
+  default_branch: z.string().trim().min(1).max(200),
+});
+export type SetRepoDefaultBranchBody = z.infer<typeof setRepoDefaultBranchBody>;
+
 /**
  * Body for POST /repos/onboard — kick off onboarding for a repo. `repo` is EITHER
  * a registered repo id/name OR a local filesystem path; the onboard command

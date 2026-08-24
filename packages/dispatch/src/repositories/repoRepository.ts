@@ -80,6 +80,14 @@ export class RepoRepository {
       .run(hidden ? 1 : 0, nowIso, repoId);
   }
 
+  /** Set a repo's default branch (the base every delivery worktree branches off)
+   *  and bump updated_at. The caller validates the branch name. */
+  setDefaultBranch(repoId: string, branch: string, nowIso: string): void {
+    this.db
+      .prepare(`UPDATE repositories SET default_branch = ?, updated_at = ? WHERE id = ?`)
+      .run(branch, nowIso, repoId);
+  }
+
   linkTicket(ticketId: string, repoId: string, role: string, nowIso: string): void {
     this.db
       .prepare(

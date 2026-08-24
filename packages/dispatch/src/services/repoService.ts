@@ -1,6 +1,7 @@
 import { type Db, inTransaction } from "../db/connection.js";
 import {
   registerRepoInput,
+  setRepoDefaultBranchInput,
   setTicketRepoAccessInput,
   suggestReposInput,
 } from "../domain/schemas.js";
@@ -130,6 +131,34 @@ export class RepoService {
         payload: { name: repo.name },
       });
       return { ...repo, hidden: hidden ? 1 : 0, updated_at: now };
+    });
+  }
+
+  /**
+   * Set a repo's default branch — the base every delivery worktree branches off
+   * (tick.sh: `git worktree add … off <default_branch>`). A wrong value (e.g. the
+   * `main` default on a `master` repo) hard-fails every delivery at worktree
+   * setup, so this is editable per-repo from the CLI and the dashboard. The name
+   * is validated against GIT_REF_SAFE, exactly like registration. Idempotent.
+   */
+  setRepoDefaultBranch(repoRef: string, rawBranch: string, actor: Actor): Repository {
+    const branch = setRepoDefaultBranchInput.parse({ default_branch: rawBranch }).default_branch;
+    return inTransaction(this.db, () => {
+      const repo = this.repos.findById(repoRef) ?? this.repos.findByName(repoRef);
+      if (!repo) throw notFound("repository", repoRef);
+      if (repo.default_branch === branch) {
+        return repo;
+      }
+      const now = this.clock.now();
+      this.repos.setDefaultBranch(repo.id, branch, now);
+      writeEvent(this.db, {
+        entity_type: "repository",
+        entity_id: repo.id,
+        actor,
+        event_type: "repository.default_branch_changed",
+        payload: { name: repo.name, from: repo.default_branch, to: branch },
+      });
+      return { ...repo, default_branch: branch, updated_at: now };
     });
   }
 

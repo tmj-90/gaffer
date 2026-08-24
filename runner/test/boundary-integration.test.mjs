@@ -313,6 +313,21 @@ try {
     "cd read-root && relative read (reads allowed there)",
     bash(`cd ${READ_ROOT} && cat ctx.txt`),
   );
+
+  // ---- quote/backslash verb obfuscation (regression) ------------------------
+  // At runtime `'cp'` `"cp"` `\cp` all invoke `cp` — the quotes/backslash only
+  // suppress alias expansion. The verb switches keyed on the raw token, so an
+  // obfuscated verb slipped the whole write/read boundary. The effective verb is
+  // now normalised (quotes + backslashes stripped) before dispatch.
+  deny("quoted 'cp' dest outside", bash(`'cp' a.txt ${OUTSIDE}/b.txt`));
+  deny("backslash \\cp dest outside", bash(`\\cp a.txt ${OUTSIDE}/b.txt`));
+  deny("quoted 'tee' outside", bash(`echo x | 'tee' ${OUTSIDE}/p`));
+  deny("backslash \\tee outside", bash(`echo x | \\tee ${OUTSIDE}/p`));
+  deny("quoted 'cd' relocation escape", bash(`'cd' ${OUTSIDE} && echo x > p`));
+  deny("backslash \\cd relocation escape", bash(`\\cd ${OUTSIDE} && echo x > p`));
+  deny("quoted 'curl' -o outside", bash(`'curl' -o ${OUTSIDE}/x https://example.com/a`));
+  deny("quoted 'cat' read outside", bash(`'cat' ${OUTSIDE}/x.txt`));
+  allow("quoted 'cp' dest inside write-root", bash(`'cp' a.txt ${WRITE_ROOT}/b.txt`));
 } finally {
   for (const dir of [WRITE_ROOT, READ_ROOT, OUTSIDE]) {
     rmSync(dir, { recursive: true, force: true });

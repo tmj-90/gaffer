@@ -1465,6 +1465,14 @@ function extractAwkRedirectTargets(awkBody) {
  */
 function extractBashWriteTargets(cmd) {
   const targets = [];
+  // Effective cwd for resolving RELATIVE targets. Updated as the segment loop
+  // replays `cd`/`pushd` left-to-right, so a `cd <outside> && echo x > rel`
+  // resolves `rel` against <outside> — not the process cwd — closing a
+  // write-boundary escape. `null` = a dynamic/unknown cd (`cd $VAR`, `cd -`,
+  // `cd ~`, `popd`, bare `cd` → $HOME): the effective dir is unprovable, so any
+  // subsequent RELATIVE target fails closed (UNVERIFIABLE). Absolute targets are
+  // unaffected by cd and stay exactly resolvable.
+  let effectiveCwd = process.cwd();
   const add = (raw) => {
     if (!raw) return;
     const p = unquote(raw.trim());
@@ -1482,6 +1490,12 @@ function extractBashWriteTargets(cmd) {
     }
     // Skip process substitutions / fds we can't resolve to a real path.
     if (/^[&\d]+$/.test(p)) return;
+    // A RELATIVE target under a dynamic/unknown cd (effectiveCwd === null) lands
+    // somewhere we cannot prove — fail closed. Absolute targets ignore cwd.
+    if (!p.startsWith("/") && effectiveCwd === null) {
+      targets.push(UNVERIFIABLE_TARGET);
+      return;
+    }
     // Decide the /dev skip on the LEXICALLY-normalised path (`..` collapsed, but
     // symlinks NOT followed), then push the fully-canonicalised target. Two
     // failure modes are closed at once:
@@ -1491,21 +1505,10 @@ function extractBashWriteTargets(cmd) {
     //   • `/dev/stdin` · `/dev/stdout` · `/dev/fd/N` stay lexically under /dev, so
     //     they ARE skipped — realpath would resolve these to /proc/self/fd/* and
     //     wrongly surface a legitimate device write as an out-of-root target.
-    const lexical = resolve(process.cwd(), p);
+    const lexical = resolve(effectiveCwd ?? "/", p);
     if (lexical === "/dev" || lexical.startsWith("/dev/")) return;
     targets.push(canonicalize(lexical));
   };
-
-  // Output redirection: `> file`, `>> file`, `2> file`, `&> file`, plus the
-  // noclobber/csh override forms `>| file`, `>& file`, `>>& file` (the optional
-  // `[|&]` after the arrow is consumed so the destination is captured, not the
-  // operator). fd-duplication targets like `2>&1` / `>&2` route their bare
-  // `1`/`2` into the `/^[&\d]+$/` skip guard in add() below and stay allowed.
-  for (const m of cmd.matchAll(/(?:^|\s)(?:[0-9]*|&)>>?[|&]?\s*("[^"]+"|'[^']+'|[^\s;&|<>]+)/g)) {
-    add(m[1]);
-  }
-  // `dd of=FILE`.
-  for (const m of cmd.matchAll(/\bof=("[^"]+"|'[^']+'|[^\s;&|<>]+)/g)) add(m[1]);
 
   // FAIL-CLOSED gate (S-1/S-4): if the WHOLE command has quoting we cannot
   // resolve (a $'…'/$"…" ANSI-C/locale string, or a dangling quote), a write
@@ -1515,14 +1518,55 @@ function extractBashWriteTargets(cmd) {
   // inside a legitimate quoted body. See commandQuotingAmbiguous.
   if (commandQuotingAmbiguous(cmd)) targets.push(UNVERIFIABLE_TARGET);
 
-  // Per-segment parsing for the verb-style mutators (quote-aware tokenizer so a
-  // quoted assignment value with a space no longer hides the real verb/target).
-  for (const segment of cmd.split(/(?:&&|\|\||[;&|\n])/)) {
+  // Per-segment parsing, LEFT-TO-RIGHT so `cd`/`pushd` can move the effective
+  // cwd for subsequent segments (quote-aware tokenizer so a quoted assignment
+  // value with a space no longer hides the real verb/target). The splitter must
+  // NOT cut inside the redirect operators `>&` `>>&` `&>` `&>>` `>|`, whose `&`/
+  // `|` would otherwise read as a control separator and strand the redirect
+  // target in its own segment (it did — those forms then escaped the boundary
+  // once the redirect scan moved per-segment): a single `&` preceded/followed by
+  // `>`, and a single `|` preceded by `>`, are redirect syntax, not separators.
+  for (const segment of cmd.split(/(?:&&|\|\||;|\n|(?<![>&])&(?!>)|(?<!>)\|)/)) {
     const tokens = tokenizeSegment(segment.trim());
     if (tokens.length === 0) continue;
     // Resolve the EFFECTIVE verb: strip leading `VAR=value` assignments and no-op
     // wrapper commands so a demoted verb (`env tee …`, `VAR=1 mv …`) is still seen.
     const effective = resolveEffectiveTokens(tokens);
+
+    // `cd`/`pushd`/`popd` relocate the effective cwd for LATER segments. A
+    // provable literal dir updates it; a dynamic/unknown target (`cd $VAR`,
+    // `cd -`, `cd ~…`, bare `cd` → $HOME, or `popd` off an unknown stack) poisons
+    // it to null so any subsequent relative write fails closed. cd carries no
+    // write target of its own → handled here, before the redirect scan.
+    if (effective && (effective.verb === "cd" || effective.verb === "pushd")) {
+      const arg = effective.operands[0];
+      const bare = arg ? unquote(arg) : "";
+      if (!bare || /[*?$`]|\$\{/.test(arg) || bare === "-" || bare.startsWith("~")) {
+        effectiveCwd = null;
+      } else if (effectiveCwd !== null) {
+        effectiveCwd = canonicalize(resolve(effectiveCwd, bare));
+      }
+      continue;
+    }
+    if (effective && effective.verb === "popd") {
+      effectiveCwd = null; // dir stack is unknown to a stateless hook → poison
+      continue;
+    }
+
+    // Output redirection: `> file`, `>> file`, `2> file`, `&> file`, plus the
+    // noclobber/csh override forms `>| file`, `>& file`, `>>& file` (the optional
+    // `[|&]` after the arrow is consumed so the destination is captured, not the
+    // operator). fd-duplication targets like `2>&1` / `>&2` route their bare
+    // `1`/`2` into the `/^[&\d]+$/` skip guard in add(). Scanned per-segment so
+    // the redirect resolves against the effective cwd in force here.
+    for (const m of segment.matchAll(
+      /(?:^|\s)(?:[0-9]*|&)>>?[|&]?\s*("[^"]+"|'[^']+'|[^\s;&|<>]+)/g,
+    )) {
+      add(m[1]);
+    }
+    // `dd of=FILE`.
+    for (const m of segment.matchAll(/\bof=("[^"]+"|'[^']+'|[^\s;&|<>]+)/g)) add(m[1]);
+
     if (!effective) continue;
     const { verb, operands } = effective;
 
@@ -1646,6 +1690,12 @@ function extractBashWriteTargets(cmd) {
  */
 function extractBashReadTargets(cmd) {
   const targets = [];
+  // Effective cwd for relative reads, replayed from `cd`/`pushd` like the write
+  // path — so `cd <outside> && cat rel` resolves `rel` OUTSIDE the roots and is
+  // blocked. `null` marks a dynamic/unknown cd; unlike the write path, a relative
+  // read under it is SKIPPED (not fail-closed) — reads are best-effort here (the
+  // documented residual) and fail-closing them would be too aggressive.
+  let effectiveCwd = process.cwd();
   for (const segment of cmd.split(/(?:&&|\|\||[;&|\n])/)) {
     // Quote-aware tokenization (same as the write path). Whole-command quoting
     // ambiguity is already fail-closed by extractBashWriteTargets (which surfaces
@@ -1658,6 +1708,22 @@ function extractBashReadTargets(cmd) {
     const effective = resolveEffectiveTokens(tokens);
     if (!effective) continue;
     const { verb, operands } = effective;
+
+    // Replay cwd relocation for LATER segments (mirror of the write path).
+    if (verb === "cd" || verb === "pushd") {
+      const arg = operands[0];
+      const bare = arg ? unquote(arg) : "";
+      if (!bare || /[*?$`]|\$\{/.test(arg) || bare === "-" || bare.startsWith("~")) {
+        effectiveCwd = null;
+      } else if (effectiveCwd !== null) {
+        effectiveCwd = canonicalize(resolve(effectiveCwd, bare));
+      }
+      continue;
+    }
+    if (verb === "popd") {
+      effectiveCwd = null;
+      continue;
+    }
 
     // `xargs <read-verb>`: target comes from STDIN — unverifiable → fail closed.
     if (verb === "xargs") {
@@ -1675,11 +1741,13 @@ function extractBashReadTargets(cmd) {
       if (/[*?$`]|\$\{/.test(raw)) continue;
       if (/^[&\d]+$/.test(raw)) continue; // fd redirections, not paths
       if (!raw.includes("/") && !raw.includes(".")) continue; // not path-shaped
+      // A relative read under a dynamic/unknown cd is left best-effort (skip).
+      if (!raw.startsWith("/") && effectiveCwd === null) continue;
       // Decide the /dev skip on the LEXICALLY-normalised path (mirror of the
       // write path). `/dev/null` · `/dev/stdin` · `/dev/fd/N` stay under /dev and
       // are skipped; `/dev/../etc/passwd` normalises OUT of /dev and is checked —
       // a bare `/dev/` prefix was a read-side bypass of the out-of-root guard.
-      const lexical = resolve(process.cwd(), raw);
+      const lexical = resolve(effectiveCwd ?? "/", raw);
       if (lexical === "/dev" || lexical.startsWith("/dev/")) continue;
       targets.push(canonicalize(lexical));
     }

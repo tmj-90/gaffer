@@ -1169,6 +1169,17 @@ function unquote(token) {
   return token.replace(/^['"]|['"]$/g, "");
 }
 
+// Normalise a VERB token to the command the shell would actually execute, so a
+// quote/backslash-obfuscated verb can't slip past the verb switches. At runtime
+// `'cp'`, `"cp"`, `\cp`, and `c'p'` all invoke `cp` — the quotes/backslashes only
+// suppress alias/keyword expansion, they are not part of the command name. A
+// unix command name never legitimately contains a quote or backslash, so
+// stripping both recovers the effective verb without false collisions. Applied
+// ONLY to the verb (operands keep their own quote handling via unquote()).
+function normalizeVerb(token) {
+  return token.replace(/['"\\]/g, "");
+}
+
 // =====================================================================
 // EFFECTIVE-VERB RESOLUTION (P0 verb-bypass fix)
 // ---------------------------------------------------------------------
@@ -1220,7 +1231,7 @@ function resolveEffectiveTokens(tokens) {
     // (a) Leading `VAR=value` assignments.
     while (i < tokens.length && ASSIGNMENT_TOKEN.test(tokens[i])) i += 1;
     if (i >= tokens.length) return null;
-    const word = tokens[i];
+    const word = normalizeVerb(tokens[i]);
     if (!WRAPPER_COMMANDS.has(word)) break;
     // (b) Skip the wrapper word itself…
     i += 1;
@@ -1240,7 +1251,7 @@ function resolveEffectiveTokens(tokens) {
     }
     // Continue the loop to re-resolve (handles `env VAR=1 command nice cmd`).
   }
-  const verb = tokens[i];
+  const verb = normalizeVerb(tokens[i]);
   const operands = tokens.slice(i + 1).filter((t) => !t.startsWith("-"));
   return { verb, operands, rest: tokens.slice(i) };
 }

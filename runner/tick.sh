@@ -2179,6 +2179,9 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
     result paused; exit 0
   fi
   # Ledger the call (best-effort, swallowed) and append the agent's text to the log.
+  # Capture the attempt's REAL spend before the envelope is removed — the eval
+  # judge attaches it to the quality record at submit time (cost-per-pass metric).
+  _DELIVERY_SPEND_USD="$(gaffer_delivery_spend "$USAGE_JSON" 2>/dev/null || true)"
   gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
   rm -f "$USAGE_JSON"
   log "delivery tick for #$NUM finished (rc=$rc)"
@@ -2678,6 +2681,15 @@ for r in d.get("repositories", []) or []:
     # intent (title + AC) into a human-gated REQUIREMENT DRAFT so the "why"
     # survives the ticket. Additive + fail-soft; the delivery is already submitted.
     gaffer_distill_ticket_intent
+    # EVAL JUDGE (quality telemetry, GAFFER_EVAL_JUDGE=1 opt-in): score the
+    # just-submitted delivery against its ACs on the crew rubric and append the
+    # verdict + real spend to the eval ledger. memoryPresent = whether durable
+    # product-context primed this delivery (the memory-lift metric's arm flag).
+    # Additive + fail-soft telemetry — never gates or delays the submitted work.
+    if type gaffer_eval_judge_delivery >/dev/null 2>&1; then
+      gaffer_eval_judge_delivery "$NUM" "$PRIMARY_REPO" "$DEFAULT_BRANCH" "$WORK_BRANCH" \
+        "$([ -n "${PRODUCT_CONTEXT_BLOCK:-}" ] && echo 1 || echo 0)" "${_DELIVERY_SPEND_USD:-}" || true
+    fi
   else
     # M1 (data-loss path): the submit FAILED. We must NOT fall through to record the
     # delivery artifacts and exit "worked" — that leaves the ticket `claimed` with

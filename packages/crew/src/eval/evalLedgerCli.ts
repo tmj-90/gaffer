@@ -58,6 +58,16 @@ export function buildRecordLine(recordJson: string, ts: string): string {
   const overall = (
     raw.overall === "pass" || raw.overall === "borderline" ? raw.overall : "fail"
   ) as Overall;
+  // Cost arrives from bash, which reads the spend helper's "$0.1234" / "unknown"
+  // output — accept a number or a numeric string (with or without the $), and
+  // OMIT the field otherwise (absent ≠ free; a fake 0 would poison cost means).
+  const rawCost = raw.costUsd;
+  const cost =
+    typeof rawCost === "number"
+      ? rawCost
+      : typeof rawCost === "string"
+        ? Number.parseFloat(rawCost.replace(/^\$/, ""))
+        : Number.NaN;
   const record: EvalRecord = {
     ts,
     ticketId: String(raw.ticketId ?? ""),
@@ -67,6 +77,7 @@ export function buildRecordLine(recordJson: string, ts: string): string {
     blocking: Boolean(raw.blocking),
     memoryPresent: Boolean(raw.memoryPresent),
     dims: toDimsMap(raw.dims ?? raw.dimensions),
+    ...(Number.isFinite(cost) && cost >= 0 ? { costUsd: cost } : {}),
   };
   return formatRecord(record);
 }

@@ -31,6 +31,12 @@ export interface EvalRecord {
   memoryPresent: boolean;
   /** Per-dimension 0–5 scores. */
   dims: Partial<Record<RubricDimension, number>>;
+  /**
+   * Real cost of the delivery attempt in USD (from the worker's usage envelope,
+   * `total_cost_usd`). Absent when the runner couldn't read a spend — never a
+   * fake 0, so cost aggregates only over records that actually carried one.
+   */
+  costUsd?: number;
 }
 
 export interface EvalSummary {
@@ -45,9 +51,22 @@ export interface EvalSummary {
     /** withMemory.meanScore − withoutMemory.meanScore, or null if either side is empty. */
     lift: number | null;
   };
+  /**
+   * Real-cost FinOps view, over the records that carried a costUsd. The headline
+   * is costPerPass — total spend divided by the number of PASSING deliveries in
+   * the costed set: what a delivery the judge actually rates good costs you,
+   * with the spend on failures amortised in. null until a costed pass exists.
+   */
+  cost: {
+    costedCount: number;
+    totalCostUsd: number;
+    meanCostUsd: number;
+    costPerPass: number | null;
+  };
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+const round4 = (n: number): number => Math.round(n * 10000) / 10000; // USD precision
 const mean = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 
 /** Serialise one record to a single JSONL line (no trailing newline). */
@@ -82,6 +101,9 @@ export function parseLedger(jsonl: string): EvalRecord[] {
         r.dims && typeof r.dims === "object"
           ? (r.dims as Partial<Record<RubricDimension, number>>)
           : {},
+      ...(typeof r.costUsd === "number" && Number.isFinite(r.costUsd)
+        ? { costUsd: r.costUsd }
+        : {}),
     });
   }
   return out;
@@ -106,6 +128,10 @@ export function summarize(records: EvalRecord[]): EvalSummary {
   const withoutMean = round2(mean(withoutMem));
   const lift = withMem.length && withoutMem.length ? round2(withMean - withoutMean) : null;
 
+  const costed = records.filter((r) => typeof r.costUsd === "number");
+  const totalCost = costed.reduce((a, r) => a + (r.costUsd ?? 0), 0);
+  const costedPasses = costed.filter((r) => r.overall === "pass").length;
+
   return {
     count,
     passRate: round2(passRate),
@@ -116,6 +142,12 @@ export function summarize(records: EvalRecord[]): EvalSummary {
       withMemory: { count: withMem.length, meanScore: withMean },
       withoutMemory: { count: withoutMem.length, meanScore: withoutMean },
       lift,
+    },
+    cost: {
+      costedCount: costed.length,
+      totalCostUsd: round4(totalCost),
+      meanCostUsd: round4(mean(costed.map((r) => r.costUsd ?? 0))),
+      costPerPass: costedPasses ? round4(totalCost / costedPasses) : null,
     },
   };
 }

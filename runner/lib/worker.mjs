@@ -305,6 +305,8 @@ export const Worker = { deliver, parseResult, workerProvider, unsupportedProvide
 //        → prints "$<total_cost_usd.toFixed(4)>" or "unknown"; exit 0
 //   node lib/worker.mjs parse-result stopreason-maxturns  --json-file <f>
 //        → exit 0 iff a max-turns stop reason is present, else exit 1
+//   node lib/worker.mjs parse-result result-text          --json-file <f>
+//        → prints the model's reply text (empty when absent); exit 0
 // =====================================================================
 function readFileSafe(f) {
   try {
@@ -334,6 +336,12 @@ function parseResultCli(argv) {
   }
   if (field === "stopreason-maxturns") {
     process.exit(parsed.capHit.stopReasonIsMaxTurns ? 0 : 1);
+  }
+  if (field === "result-text") {
+    // The model's reply text from the envelope (empty when absent/unparseable).
+    // Used by the eval judge to feed the reply into deliveryJudgeCli --mode parse.
+    if (typeof parsed.resultText === "string") process.stdout.write(parsed.resultText);
+    process.exit(0);
   }
   process.exit(2); // unknown field
 }

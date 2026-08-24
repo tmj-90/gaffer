@@ -1955,3 +1955,9 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # gaffer_parse_checks). Sourced here for the same reason.
 # shellcheck source=lib/ci-gate.sh
 [ -f "$RUNNER_DIR/lib/ci-gate.sh" ] && source "$RUNNER_DIR/lib/ci-gate.sh"
+
+# Post-delivery quality judging (gaffer_eval_judge_delivery): scores a submitted
+# delivery on the crew rubric into the eval ledger (pass rate / cost-per-pass /
+# memory-lift telemetry). Opt-in via GAFFER_EVAL_JUDGE=1, always fail-soft.
+# shellcheck source=lib/eval-judge.sh
+[ -f "$RUNNER_DIR/lib/eval-judge.sh" ] && source "$RUNNER_DIR/lib/eval-judge.sh"

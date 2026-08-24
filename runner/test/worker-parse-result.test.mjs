@@ -228,6 +228,16 @@ console.log("== parse-result CLI: the bash cap/spend guards' entrypoint (exact f
     assert("CLI stopreason-maxturns exit 1 when not max-turns", srNo.status === 1);
     const srGarbage = run("stopreason-maxturns", garbageFile);
     assert("CLI stopreason-maxturns exit 1 on garbage (no crash)", srGarbage.status === 1);
+
+    // result-text: the model's reply text or empty (the eval judge's read path).
+    const rtFile = write("result-text.json", { result: "hello judge", num_turns: 1 });
+    const rt = run("result-text", rtFile);
+    assert("CLI result-text prints the reply", rt.status === 0 && rt.stdout === "hello judge");
+    const rtGarbage = run("result-text", garbageFile);
+    assert(
+      "CLI result-text empty on garbage (exit 0, never crashes)",
+      rtGarbage.status === 0 && rtGarbage.stdout === "",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

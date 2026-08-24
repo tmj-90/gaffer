@@ -1543,6 +1543,16 @@ function extractBashWriteTargets(cmd) {
     } else if (verb === "cp" || verb === "mv" || verb === "install" || verb === "ln") {
       // Destination is the LAST operand.
       if (operands.length >= 1) add(operands[operands.length - 1]);
+    } else if (verb === "rsync" || verb === "scp") {
+      // `rsync [opts] SRC… DEST` / `scp [opts] SRC… DEST` — the LAST operand is
+      // the destination and a LOCAL dest writes to the filesystem, so an
+      // out-of-root dest is a boundary escape (e.g. `scp remote:x /etc/cron.d/j`).
+      // A REMOTE dest (`host:path`, `user@host:path`) is a network upload, not a
+      // local write — skip it here (secret-exfil of a remote upload is caught by
+      // the secret guard), and only surface local destinations to the boundary.
+      const dest = operands.length >= 1 ? unquote(operands[operands.length - 1]) : "";
+      const isRemote = /^[^/]*@[^/]*:|^[A-Za-z0-9._-]+:/.test(dest);
+      if (dest && !isRemote) add(operands[operands.length - 1]);
     } else if (verb === "mkdir" || verb === "touch" || verb === "rm" || verb === "truncate") {
       // `truncate -s 0 FILE` — operands already have `-flags` stripped, but
       // `truncate`'s `-s` takes a value (`0`, `10K`). Drop a leading size arg.
@@ -1573,6 +1583,28 @@ function extractBashWriteTargets(cmd) {
         if (cdir) add(cdir[1]);
         targets.push(UNVERIFIABLE_TARGET); // archive-relative traversal → fail closed
       }
+    } else if (verb === "curl") {
+      // `curl -o FILE` / `-oFILE` / `--output FILE` / `--output=FILE` writes the
+      // response body to an arbitrary path — an out-of-root write (and, via
+      // `-o /dev/../…/.claude/settings.json`, a hook-removal surface) that the
+      // redirect/verb scans above never saw. The destination is parsed from the
+      // raw segment because the tokenizer strips `-o` as a flag. (`-O`/`--remote-name`
+      // writes cwd/<remote-name>; with `--output-dir DIR` that dir is the write
+      // target, so surface it too — an outside DIR is then blocked.)
+      for (const m of segment.matchAll(
+        /(?:^|\s)(?:-o\s*|--output[=\s]+|--output-dir[=\s]+)("[^"]+"|'[^']+'|[^\s;&|<>]+)/g,
+      )) {
+        add(m[1]);
+      }
+    } else if (verb === "wget") {
+      // `wget -O FILE` / `-OFILE` / `--output-document FILE|=FILE` writes the
+      // download to an arbitrary path (wget's `-o` is a LOGFILE, not output, and
+      // `-O` is capital — hence the tool-specific scan, distinct from curl's).
+      for (const m of segment.matchAll(
+        /(?:^|\s)(?:-O\s*|--output-document[=\s]+)("[^"]+"|'[^']+'|[^\s;&|<>]+)/g,
+      )) {
+        add(m[1]);
+      }
     } else if (verb === "git") {
       // `git [-C dir] worktree add <path>` creates a NEW worktree directory at
       // <path>; if <path> is outside the write-roots it writes outside the
@@ -1583,6 +1615,12 @@ function extractBashWriteTargets(cmd) {
       if (wi !== -1 && operands[wi + 1] === "add" && operands.length > wi + 2) {
         add(operands[wi + 2]);
       }
+      // `git clone <url> <DIR>` writes a whole tree at DIR. The URL is the first
+      // operand after `clone`; an EXPLICIT second operand is the target dir, so
+      // an out-of-root DIR is a boundary escape. With no DIR, git clones into
+      // cwd/<name> (in-root when cwd is) — nothing to surface.
+      const ci = operands.indexOf("clone");
+      if (ci !== -1 && operands.length > ci + 2) add(operands[ci + 2]);
     }
   }
 

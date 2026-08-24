@@ -43,7 +43,13 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # NEVER touched. The worktree lives under $GAFFER_DATA and is torn down by
       # _review_cleanup on ALL exit paths (EXIT, INT, TERM). Using a per-ticket
       # path (review-wt-$RNUM) prevents collisions when GAFFER_CONCURRENCY>1.
-      WT="$GAFFER_DATA/review-wt-$RNUM"
+      # Placed UNDER $GAFFER_DATA/worktrees (the factory's canonical worktree
+      # root) so gaffer_trust_workspace accepts it — a sibling of $GAFFER_DATA
+      # was refused by trust-workspace.mjs ("not under an expected worktree
+      # root"), leaving the reviewer untrusted and at risk of hanging on an MCP
+      # permission prompt. orphan-recovery only reaps `worktrees/ticket-*`, so a
+      # `review-wt-*` sibling here is untouched by it (cleanup stays trap-driven).
+      WT="$GAFFER_DATA/worktrees/review-wt-$RNUM"
       _review_cleanup() {
         if [ -n "${WT:-}" ] && [ -e "$WT" ]; then
           git -C "$RREPO" worktree remove --force "$WT" 2>/dev/null || true
@@ -79,6 +85,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       fi
       # Fail CLOSED if the throwaway worktree can't be created — prevents the
       # reviewer from operating on the wrong code.
+      mkdir -p "$GAFFER_DATA/worktrees"  # `git worktree add` won't create leading dirs
       if ! git -C "$RREPO" worktree add --force "$WT" "$RBRANCH" >/dev/null 2>&1; then
         log "REVIEW-ERROR: failed to create review worktree for branch '$RBRANCH' in $RREPO — refusing review of #$RNUM (fail closed; branch may be missing or corrupt)"
         result error; exit 1

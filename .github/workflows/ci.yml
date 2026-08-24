@@ -106,13 +106,17 @@ jobs:
       # Each runner test runs under a per-test wall-clock cap (perl alarm — portable
       # across the ubuntu + macOS runners; GNU `timeout` isn't on macOS). A hung test
       # is killed and reported as a failure (exit 124) instead of stalling the job.
+      # The node cap is 300s: safety-hook.test.mjs spawns ~470 hook subprocesses and
+      # runs ~80s on a fast Linux box — slow macOS runners have hit a 180s cap on a
+      # passing suite (SIGALRM 142), so the cap leaves headroom while still catching
+      # genuine hangs.
       - name: Runner tests (node)
         shell: bash
         run: |
           rc=0
           for t in runner/test/*.test.mjs; do
             echo "::group::$t"
-            perl -e 'alarm shift; exec @ARGV' 180 node "$t" || { c=$?; rc=1; case $c in 124|142) echo "::error::$t TIMED OUT (180s, exit $c)";; esac; }
+            perl -e 'alarm shift; exec @ARGV' 300 node "$t" || { c=$?; rc=1; case $c in 124|142) echo "::error::$t TIMED OUT (300s, exit $c)";; esac; }
             echo "::endgroup::"
           done
           exit $rc

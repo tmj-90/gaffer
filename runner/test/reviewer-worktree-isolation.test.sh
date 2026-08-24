@@ -107,7 +107,9 @@ trap 'gaffer_on_signal 130' INT
 trap 'gaffer_on_signal 143' TERM
 
 # ── mirror tick.sh's reviewer worktree block (post-fix) ──
-WT="$GAFFER_DATA/review-wt-99"
+# Under $GAFFER_DATA/worktrees (the trusted factory worktree root), matching
+# lib/review.sh so gaffer_trust_workspace accepts it.
+WT="$GAFFER_DATA/worktrees/review-wt-99"
 _review_cleanup() {
   if [ -n "${WT:-}" ] && [ -e "$WT" ]; then
     git -C "$RREPO" worktree remove --force "$WT" 2>/dev/null || true
@@ -130,6 +132,7 @@ trap _review_on_term TERM
 if [ -z "${RBRANCH:-}" ]; then
   echo "REVIEW-ERROR: no branch" >&2; exit 1
 fi
+mkdir -p "$GAFFER_DATA/worktrees"  # `git worktree add` won't create leading dirs
 if ! git -C "$RREPO" worktree add --force "$WT" "$RBRANCH" >/dev/null 2>&1; then
   echo "REVIEW-ERROR: worktree add failed" >&2; exit 1
 fi
@@ -230,7 +233,7 @@ else
 fi
 
 # worktree cleaned up
-if [ -e "$DATA_A/review-wt-99" ]; then
+if [ -e "$DATA_A/worktrees/review-wt-99" ]; then
   fail "A: throwaway worktree was not removed after a successful review"
 else
   ok "A: throwaway worktree was removed on normal completion"
@@ -256,7 +259,7 @@ CHILD_PID=$!
 # Wait deterministically until the reviewer has created its throwaway worktree (and is
 # about to enter the stubbed agent sleep), rather than betting 1s. The TERM trap is
 # installed BEFORE worktree creation, so a SIGTERM here still exits cleanly either way.
-RWT="$DATA_B/review-wt-99"
+RWT="$DATA_B/worktrees/review-wt-99"
 for _ in $(seq 1 200); do [ -d "$RWT" ] && break; sleep 0.05; done
 # Deliver SIGTERM to the child
 kill -TERM "$CHILD_PID" 2>/dev/null || true
@@ -269,7 +272,7 @@ else
 fi
 
 # worktree cleaned up
-if [ -e "$DATA_B/review-wt-99" ]; then
+if [ -e "$DATA_B/worktrees/review-wt-99" ]; then
   fail "B: throwaway worktree left behind after SIGTERM"
 else
   ok "B: throwaway worktree removed after SIGTERM"

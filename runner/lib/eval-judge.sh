@@ -47,12 +47,25 @@ gaffer_eval_judge_delivery() (
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/eval-judge.XXXXXX")" || return 0
   trap 'rm -rf "$tmp"' EXIT
 
-  # ── 1. The delivery diff (bounded: the judge grades a diff, not a repo dump). ──
-  git -C "$repo_dir" diff "$base".."$work" 2>/dev/null | head -c 120000 > "$tmp/diff" || true
-  [ -s "$tmp/diff" ] || return 0   # nothing to judge
+  # ── 1. The delivery diff (bounded: the judge grades a diff, not a repo dump).
+  #      head -c can cut mid-UTF-8/mid-hunk; the python builder re-decodes with
+  #      replacement and, when the diff was truncated, appends an explicit
+  #      marker so the judge grades a KNOWN-partial diff instead of silently
+  #      treating a prefix as the whole delivery (which would let scope/risk
+  #      past the cut score as "absent"). ──
+  diff_cap="${GAFFER_JUDGE_DIFF_BYTES:-120000}"
+  git -C "$repo_dir" diff "$base".."$work" 2>/dev/null > "$tmp/diff.full" || true
+  [ -s "$tmp/diff.full" ] || return 0   # nothing to judge
+  head -c "$diff_cap" "$tmp/diff.full" > "$tmp/diff" 2>/dev/null || true
 
-  # ── 2. Judge input JSON: title + ACs from $SHOW, diff from the file. ──
-  SHOW="${SHOW:-}" python3 - "$tmp/diff" > "$tmp/input.json" 2>/dev/null <<'PY' || return 0
+  # Test evidence: the DoD gate results the runner just captured (if any) give
+  # the judge real ground truth for test_adequacy instead of "(no test output)".
+  dod_results="$GAFFER_DATA/.dod-$num.results"
+  [ -f "$dod_results" ] && tail -c 20000 "$dod_results" > "$tmp/tests" 2>/dev/null || : > "$tmp/tests"
+
+  # ── 2. Judge input JSON: title + ACs from $SHOW, diff + tests from files. ──
+  SHOW="${SHOW:-}" FULL_BYTES="$(wc -c < "$tmp/diff.full" 2>/dev/null || echo 0)" CAP="$diff_cap" \
+    python3 - "$tmp/diff" "$tmp/tests" > "$tmp/input.json" 2>/dev/null <<'PY' || return 0
 import json, os, sys
 try:
     d = json.loads(os.environ.get("SHOW", "") or "{}")
@@ -63,16 +76,25 @@ for i, a in enumerate(d.get("acceptanceCriteria") or []):
     text = (a.get("text") or "").strip()
     if text:
         acs.append({"id": str(a.get("id") or f"AC{i+1}"), "text": text})
+def readf(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+diff = readf(sys.argv[1])
 try:
-    with open(sys.argv[1], "rb") as f:
-        diff = f.read().decode("utf-8", "replace")
+    full = int(os.environ.get("FULL_BYTES", "0")); cap = int(os.environ.get("CAP", "0"))
 except Exception:
-    diff = ""
-print(json.dumps({
-    "ticketTitle": (d.get("title") or "").strip(),
-    "acceptanceCriteria": acs,
-    "diff": diff,
-}))
+    full = cap = 0
+if cap and full > cap:
+    diff += ("\n\n[NOTE: delivery diff truncated to %d of %d bytes — you are "
+             "grading a PREFIX; treat unseen changes as ungraded, not absent.]" % (cap, full))
+tests = readf(sys.argv[2]).strip()
+out = {"ticketTitle": (d.get("title") or "").strip(), "acceptanceCriteria": acs, "diff": diff}
+if tests:
+    out["testOutput"] = tests
+print(json.dumps(out))
 PY
 
   # ── 3. Render the judge prompt (quarantined by the CLI), then ONE model turn
@@ -93,13 +115,26 @@ PY
   [ -n "$reply" ] || return 0
   verdict_out="$(printf '%s' "$reply" | node "$judge_cli" --mode parse 2>/dev/null)" || true
   overall="$(printf '%s\n' "$verdict_out" | sed -n '1p')"
+  # Line 2 is `judged:blocking`. judged=0 means the reply carried NO parseable
+  # rubric (a refusal / mid-JSON cut / unrelated JSON) — an infra outcome, not a
+  # quality verdict. Recording it would ledger a fake score-0 fail and poison
+  # passRate/memoryLift, so skip it (the very thing an empty reply is skipped for).
+  judged="$(printf '%s\n' "$verdict_out" | sed -n '2p' | cut -d: -f1)"
   score="$(printf '%s\n' "$verdict_out" | sed -n '3p')"
   verdict_json="$(printf '%s\n' "$verdict_out" | sed -n '4p')"
   [ -n "$verdict_json" ] || return 0
+  if [ "$judged" != "1" ]; then
+    type log >/dev/null 2>&1 && log "EVAL: judge #$num returned no parseable grading (refusal/garbled) — not recorded" || true
+    return 0
+  fi
 
-  # ── 5. Compose the ledger record (verdict + delivery context) and append. ──
+  # ── 5. Compose the ledger record (verdict + delivery context) and append.
+  #      judgeModel is recorded so a judge-model swap never silently breaks
+  #      longitudinal comparability, and so self-grading (judge == impl model)
+  #      is visible in the data rather than hidden. ──
   repo_name="$(basename "$repo_dir")"
-  VJ="$verdict_json" NUM="$num" REPO="$repo_name" MEM="$mem" SPEND="$spend" \
+  judge_model="$(printf '%s' "$judge_flag" | sed -E 's/.*--model[= ]+([^ ]+).*/\1/; t; s/.*//')"
+  VJ="$verdict_json" NUM="$num" REPO="$repo_name" MEM="$mem" SPEND="$spend" JMODEL="$judge_model" \
     python3 - > "$tmp/record.json" 2>/dev/null <<'PY' || return 0
 import json, os
 try:
@@ -112,9 +147,22 @@ v["memoryPresent"] = os.environ.get("MEM", "0") == "1"
 spend = os.environ.get("SPEND", "")
 if spend:
     v["costUsd"] = spend  # "$0.1234" / "unknown" — the ledger CLI normalises/omits
+jm = os.environ.get("JMODEL", "").strip()
+if jm:
+    v["judgeModel"] = jm
 print(json.dumps(v))
 PY
-  node "$ledger_cli" --mode append --file "$ledger" < "$tmp/record.json" 2>/dev/null || return 0
+  # The ledger is a shared append under GAFFER_CONCURRENCY>1 (N workers, one
+  # $GAFFER_DATA). Route through the runner's append lock like every other
+  # shared append so two ticks can't interleave a multi-KB JSONL line; log (not
+  # swallow) an append failure so "count:0" can't hide "ran 400×, all failed".
+  if type _gaffer_locked >/dev/null 2>&1; then
+    _gaffer_locked .eval-ledger.lock node "$ledger_cli" --mode append --file "$ledger" < "$tmp/record.json" \
+      || { type log >/dev/null 2>&1 && log "EVAL: ledger append FAILED for #$num (path/disk?) — verdict lost" || true; return 0; }
+  else
+    node "$ledger_cli" --mode append --file "$ledger" < "$tmp/record.json" \
+      || { type log >/dev/null 2>&1 && log "EVAL: ledger append FAILED for #$num — verdict lost" || true; return 0; }
+  fi
 
   if type log >/dev/null 2>&1; then
     log "EVAL: judged #$num → ${overall:-unknown} (score ${score:-?}/5, memory=$mem) → $(basename "$ledger")" || true

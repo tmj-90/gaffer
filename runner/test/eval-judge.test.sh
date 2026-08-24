@@ -120,12 +120,52 @@ gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 0 ''; rc=$?
 [ "$(wc -l < "$LEDGER")" -eq 1 ] \
   && ok "no fake quality-fail recorded on an infra failure" || no "infra failure polluted the ledger"
 
+echo "== E2. NON-empty but unparseable reply (judge refusal) records NOTHING =="
+worker_deliver() { # emit a prose refusal — a NON-empty reply that is NOT a grading
+  REPLY_OUT="$5" python3 - <<'PY'
+import json, os
+with open(os.environ["REPLY_OUT"], "w") as f:
+    json.dump({"result": "I'm sorry, I can't grade this diff.", "num_turns": 1, "total_cost_usd": 0.01}, f)
+PY
+}
+gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 0 '$0.05'; rc=$?
+[ "$rc" -eq 0 ] && ok "refusal reply: exit 0" || no "refusal leaked rc=$rc"
+[ "$(wc -l < "$LEDGER")" -eq 1 ] \
+  && ok "judge refusal is NOT ledgered as a fake score-0 fail (unparseable → skip)" \
+  || no "unparseable reply polluted the ledger (got $(wc -l < "$LEDGER") lines)"
+
 echo "== F. empty diff → no-op, no spawn =="
 : > "$WORKER_CALLS"
 worker_deliver() { printf 'CALLED\n' >> "$WORKER_CALLS"; }
 gaffer_eval_judge_delivery 9 "$REPO" main main 0 ''; rc=$?
 [ "$rc" -eq 0 ] && [ ! -s "$WORKER_CALLS" ] \
   && ok "no diff: exit 0 and the worker is never spawned" || no "empty diff should skip the spawn (rc=$rc)"
+
+echo "== G. test evidence + judge model flow into the record =="
+rm -f "$LEDGER"
+# restore the passing stub (also record which model flag it was handed)
+worker_deliver() {
+  printf '%s' "$2" > "$WORK/last-prompt.txt"; printf '%s' "$3" > "$WORK/last-flag.txt"
+  REPLY_OUT="$5" python3 - <<'PY'
+import json, os
+reply = "```json\n" + json.dumps({
+    "dimensions": [{"dimension": d, "score": 5, "rationale": "ok"} for d in
+        ["ac_coverage","correctness","minimalism","test_adequacy","security"]],
+    "summary": "clean"}) + "\n```"
+open(os.environ["REPLY_OUT"], "w").write(json.dumps({"result": reply, "num_turns": 1}))
+PY
+}
+printf 'PASS 12 tests, 0 failed\ncoverage 91%%\n' > "$GAFFER_DATA/.dod-9.results"
+GAFFER_JUDGE_MODEL_FLAG="--model opus" \
+  gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 1 '$0.20'
+grep -q '<untrusted-test-output>' "$WORK/last-prompt.txt" && grep -q 'PASS 12 tests' "$WORK/last-prompt.txt" \
+  && ok "DoD test output is fed to the judge (test_adequacy graded on real evidence)" \
+  || no "test output not passed to the judge prompt"
+python3 - "$LEDGER" <<'PY' && ok "record carries judgeModel (self-grading is visible in the data)" || no "judgeModel not recorded"
+import json, sys
+r = json.loads(open(sys.argv[1]).read().splitlines()[0])
+assert r.get("judgeModel") == "opus", r
+PY
 
 echo ""
 echo "eval-judge: $pass passed, $fail failed"

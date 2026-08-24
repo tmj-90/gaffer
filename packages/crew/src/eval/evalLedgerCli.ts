@@ -78,6 +78,9 @@ export function buildRecordLine(recordJson: string, ts: string): string {
     memoryPresent: Boolean(raw.memoryPresent),
     dims: toDimsMap(raw.dims ?? raw.dimensions),
     ...(Number.isFinite(cost) && cost >= 0 ? { costUsd: cost } : {}),
+    ...(typeof raw.judgeModel === "string" && raw.judgeModel.trim()
+      ? { judgeModel: raw.judgeModel.trim() }
+      : {}),
   };
   return formatRecord(record);
 }

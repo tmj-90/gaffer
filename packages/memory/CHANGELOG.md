@@ -282,10 +282,10 @@ boundary — it all ships in 0.1.0.
 - **Data directory** — `~/.lore/` → `~/.memory/`. Env vars
   `LORE_*` → `MEMORY_*` (hard rename, no fallback — only the
   initial single-user install existed at the time).
-- **GitHub repo** — `todmj/lore-mcp` → `tmj-90/memory-mcp`
-  (collapses two renames: the package rename and the subsequent
-  GitHub account rename). All README install paths, package.json
-  URLs, and JSDoc examples updated.
+- **GitHub repo** — `lore-mcp` → `tmj-90/memory-mcp`
+  (collapses two renames: the package rename and a later account
+  rename). All README install paths, package.json URLs, and JSDoc
+  examples updated.
 - **Summary cap** — `summary` field bumped from 500 → 800 chars.
   Real-usage feedback: 500 forced a teaser-shaped summary that
   required a follow-up `get_lore` to decide relevance; 800 fits one

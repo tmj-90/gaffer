@@ -280,6 +280,39 @@ try {
   allow("rsync upload to remote dest", bash(`rsync -a ${WRITE_ROOT}/src/ user@host:/tmp/`));
   allow("scp upload to remote dest", bash(`scp ${WRITE_ROOT}/x remote:/tmp/y`));
   allow("git clone into write-root", bash(`git clone https://example.com/r.git ${WRITE_ROOT}/r`));
+
+  // ---- cd/pushd relocation escape (regression) ------------------------------
+  // A relative write/read target resolves against the EFFECTIVE cwd, which `cd`
+  // moves. The extractor previously resolved every relative target against the
+  // fixed process cwd, so `cd <outside> && echo x > rel` wrote OUTSIDE the roots
+  // while the hook classified `rel` as in-root — a write-boundary escape. The
+  // segment loop now replays cd left-to-right.
+  deny("cd outside && relative redirect", bash(`cd ${OUTSIDE} && echo x > pwned.txt`));
+  deny("cd outside ; relative redirect", bash(`cd ${OUTSIDE} ; echo x > pwned.txt`));
+  deny("cd outside && relative tee", bash(`cd ${OUTSIDE} && echo x | tee pwned.txt`));
+  deny("cd outside && relative touch", bash(`cd ${OUTSIDE} && touch pwned.txt`));
+  deny(
+    "cd read-root && relative write (read-root is not writable)",
+    bash(`cd ${READ_ROOT} && echo x > p`),
+  );
+  deny("cd outside && relative read", bash(`cd ${OUTSIDE} && cat notes.txt`));
+  // Dynamic/unknown cd fails closed for a relative WRITE (unprovable dest)…
+  deny(
+    "dynamic cd $HOME && relative write (fail-closed)",
+    bash(`cd "$HOME" && echo x > pwned.txt`),
+  );
+  deny("cd ~ && relative write (fail-closed)", bash(`cd ~ && echo x > pwned.txt`));
+  // …legit in-root relocations and cwd-independent absolute targets stay allowed.
+  allow("cd into write-root subdir && relative write", bash(`cd ${WRITE_ROOT} && echo x > ok.txt`));
+  allow(
+    "cd outside && ABSOLUTE in-root write",
+    bash(`cd ${OUTSIDE} && echo x > ${WRITE_ROOT}/ok.txt`),
+  );
+  allow("cd outside && stdout only (no target)", bash(`cd ${OUTSIDE} && echo hi`));
+  allow(
+    "cd read-root && relative read (reads allowed there)",
+    bash(`cd ${READ_ROOT} && cat ctx.txt`),
+  );
 } finally {
   for (const dir of [WRITE_ROOT, READ_ROOT, OUTSIDE]) {
     rmSync(dir, { recursive: true, force: true });

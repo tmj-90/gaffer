@@ -88,6 +88,26 @@ describe("summarize", () => {
     expect(s.memoryLift.lift).toBeNull();
     expect(s.memoryLift.withoutMemory.count).toBe(0);
   });
+
+  it("COST: aggregates only costed records; costPerPass amortises failures", () => {
+    const s = summarize([
+      rec({ overall: "pass", costUsd: 0.4 }),
+      rec({ overall: "fail", score: 1, costUsd: 0.2 }),
+      rec({ overall: "pass", costUsd: 0.6 }),
+      rec({ overall: "pass" }), // uncosted — excluded from cost aggregates
+    ]);
+    expect(s.cost.costedCount).toBe(3);
+    expect(s.cost.totalCostUsd).toBe(1.2);
+    expect(s.cost.meanCostUsd).toBe(0.4);
+    // $1.20 spent for 2 costed passes → $0.60 per passing delivery
+    expect(s.cost.costPerPass).toBe(0.6);
+  });
+
+  it("COST: costPerPass is null with no costed passes (never divide-by-zero)", () => {
+    const s = summarize([rec({ overall: "fail", score: 1, costUsd: 0.3 })]);
+    expect(s.cost.costPerPass).toBeNull();
+    expect(s.cost.totalCostUsd).toBe(0.3);
+  });
 });
 
 describe("evalLedgerCli", () => {
@@ -124,6 +144,20 @@ describe("evalLedgerCli", () => {
     expect(r?.overall).toBe("fail");
     expect(r?.score).toBe(0);
     expect(r?.blocking).toBe(false);
+  });
+
+  it("buildRecordLine accepts costUsd as number or bash '$0.1234' string; omits 'unknown'", () => {
+    const base = { ticketId: "1", score: 4, overall: "pass" };
+    const [num] = parseLedger(buildRecordLine(JSON.stringify({ ...base, costUsd: 0.25 }), "t"));
+    expect(num?.costUsd).toBe(0.25);
+    const [str] = parseLedger(
+      buildRecordLine(JSON.stringify({ ...base, costUsd: "$0.1234" }), "t"),
+    );
+    expect(str?.costUsd).toBe(0.1234);
+    const [unk] = parseLedger(
+      buildRecordLine(JSON.stringify({ ...base, costUsd: "unknown" }), "t"),
+    );
+    expect(unk?.costUsd).toBeUndefined();
   });
 
   it("renderSummary parses a ledger and surfaces the memory-lift block", () => {

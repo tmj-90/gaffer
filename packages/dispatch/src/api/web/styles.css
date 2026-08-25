@@ -3047,10 +3047,12 @@ html::after {
   background: var(--info-soft);
   border-color: var(--accent-line);
 }
+/* ready_for_merge = earned approval, waiting on the merge — its OWN hue (violet)
+   so it no longer reads identical to an in-progress amber on the board/cards. */
 .badge.status-ready_for_merge {
-  color: var(--amber);
-  background: var(--amber-soft);
-  border-color: var(--amber-line);
+  color: var(--violet);
+  background: var(--violet-soft);
+  border-color: rgba(199, 166, 255, 0.4);
 }
 .badge.status-done,
 .badge.ac-satisfied {
@@ -3067,11 +3069,13 @@ html::after {
   color: var(--text-faint);
   background: var(--surface-2);
 }
-/* PAUSE-ON-CAP: a paused (cap-hit) delivery — amber, distinct from blocked/danger. */
+/* PAUSE-ON-CAP: a paused (cap-hit) delivery is STALLED, not active — a neutral/
+   dim badge so it reads as "waiting", visually distinct from the live amber of
+   in_progress and the violet of ready_for_merge. */
 .badge.status-paused {
-  color: var(--amber);
-  background: var(--amber-soft);
-  border-color: var(--amber-line);
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border-color: var(--line);
 }
 
 /* risk */
@@ -3695,7 +3699,7 @@ td.title-cell {
   --col: var(--info);
 }
 .col-ready_for_merge {
-  --col: var(--amber);
+  --col: var(--violet);
 }
 .col-done {
   --col: var(--ok);
@@ -3741,7 +3745,7 @@ td.title-cell {
   background: var(--info);
 }
 .col-ready_for_merge .board-col-title::before {
-  background: var(--amber);
+  background: var(--violet);
 }
 .col-done .board-col-title::before {
   background: var(--ok);
@@ -3763,10 +3767,13 @@ td.title-cell {
   color: var(--accent);
   border-color: var(--accent-line);
 }
-.col-in_progress .board-col-count,
-.col-ready_for_merge .board-col-count {
+.col-in_progress .board-col-count {
   color: var(--amber);
   border-color: var(--amber-line);
+}
+.col-ready_for_merge .board-col-count {
+  color: var(--violet);
+  border-color: rgba(199, 166, 255, 0.4);
 }
 .col-blocked .board-col-count {
   color: var(--danger);

@@ -369,6 +369,26 @@ code,
   gap: var(--s-1);
   margin-left: var(--s-4);
 }
+/* Divider between the primary loop (Overview/Work/Review/Map) and the utility
+   cluster (Health/Epics/Specs/Memory/Settings) so the rail reads as two tiers. */
+.nav-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--s-1);
+  background: var(--line);
+}
+/* Utility items sit a notch quieter than the primary loop until hovered/active. */
+.nav-link.nav-utility {
+  font-weight: 500;
+}
+.nav-link.nav-utility .nav-label {
+  opacity: 0.82;
+}
+.nav-link.nav-utility:hover .nav-label,
+.nav-link.nav-utility.active .nav-label {
+  opacity: 1;
+}
 /* Hide the inline nav links on small screens — bottom-nav takes over. */
 @media (max-width: 979px) {
   .nav-rail {
@@ -889,26 +909,34 @@ code,
   :root.booting .nav-link {
     animation: rack-in 0.46s var(--ease) both;
   }
-  :root.booting .nav-link:nth-child(1) {
+  /* nth-of-type (buttons) so the utility-cluster divider <span> doesn't offset
+     the stagger; each rail link racks in a beat after the one before it. */
+  :root.booting .nav-link:nth-of-type(1) {
     animation-delay: 0.3s;
   }
-  :root.booting .nav-link:nth-child(2) {
+  :root.booting .nav-link:nth-of-type(2) {
     animation-delay: 0.37s;
   }
-  :root.booting .nav-link:nth-child(3) {
+  :root.booting .nav-link:nth-of-type(3) {
     animation-delay: 0.44s;
   }
-  :root.booting .nav-link:nth-child(4) {
+  :root.booting .nav-link:nth-of-type(4) {
     animation-delay: 0.51s;
   }
-  :root.booting .nav-link:nth-child(5) {
+  :root.booting .nav-link:nth-of-type(5) {
     animation-delay: 0.58s;
   }
-  :root.booting .nav-link:nth-child(6) {
+  :root.booting .nav-link:nth-of-type(6) {
     animation-delay: 0.65s;
   }
-  :root.booting .nav-link:nth-child(7) {
+  :root.booting .nav-link:nth-of-type(7) {
     animation-delay: 0.72s;
+  }
+  :root.booting .nav-link:nth-of-type(8) {
+    animation-delay: 0.79s;
+  }
+  :root.booting .nav-link:nth-of-type(9) {
+    animation-delay: 0.86s;
   }
   :root.booting .cmdk-trigger,
   :root.booting .appbar > .btn {

@@ -713,16 +713,20 @@ const VIEW_ALIASES = {
 };
 
 // Primary nav entries (order = bottom-nav + desktop rail order).
+// Two tiers. "primary" is the loop an operator actually drives — the same four
+// areas the mobile bottom-nav promotes. "utility" is reference & config you
+// visit occasionally; the rail sets it apart with a divider so the primary loop
+// reads first instead of drowning in a flat nine-item list.
 const NAV = [
-  { id: "overview", label: "Overview", icon: "overview" },
-  { id: "health", label: "Health", icon: "health" },
-  { id: "work", label: "Work", icon: "work" },
-  { id: "review", label: "Review", icon: "review" },
-  { id: "epics", label: "Epics", icon: "epics" },
-  { id: "specs", label: "Specs", icon: "specs" },
-  { id: "factory", label: "Map", icon: "map" },
-  { id: "memory", label: "Memory", icon: "memory" },
-  { id: "settings", label: "Settings", icon: "settings" },
+  { id: "overview", label: "Overview", icon: "overview", group: "primary" },
+  { id: "work", label: "Work", icon: "work", group: "primary" },
+  { id: "review", label: "Review", icon: "review", group: "primary" },
+  { id: "factory", label: "Map", icon: "map", group: "primary" },
+  { id: "health", label: "Health", icon: "health", group: "utility" },
+  { id: "epics", label: "Epics", icon: "epics", group: "utility" },
+  { id: "specs", label: "Specs", icon: "specs", group: "utility" },
+  { id: "memory", label: "Memory", icon: "memory", group: "utility" },
+  { id: "settings", label: "Settings", icon: "settings", group: "utility" },
 ];
 
 // Sub-views highlight their parent area in the nav.
@@ -759,12 +763,12 @@ function navigate(hash) {
 // makes navigating feel like walking through a plan rather than a page reload.
 const NAV_ORDER = [
   "overview",
-  "health",
   "work",
   "review",
+  "factory",
+  "health",
   "epics",
   "specs",
-  "factory",
   "memory",
   "settings",
 ];
@@ -930,14 +934,19 @@ function buildChrome() {
     el("span", { class: "rail-status-text" }, "LIVE"),
     el("span", { class: "rail-status-meta mono", id: "live-tick" }, "tick 001"),
   ]);
-  const rail = el(
-    "nav",
-    { class: "nav-rail", "aria-label": "Primary views" },
-    NAV.map((n) =>
+  const railItems = [];
+  let sepPlaced = false;
+  for (const n of NAV) {
+    // One thin divider where the primary loop ends and the utility cluster begins.
+    if (n.group === "utility" && !sepPlaced) {
+      railItems.push(el("span", { class: "nav-sep", "aria-hidden": "true" }));
+      sepPlaced = true;
+    }
+    railItems.push(
       el(
         "button",
         {
-          class: "nav-link",
+          class: `nav-link nav-${n.group}`,
           type: "button",
           dataset: { area: n.id },
           onclick: () => navigate(`#/${n.id}`),
@@ -949,8 +958,9 @@ function buildChrome() {
           el("span", { class: "nav-count", dataset: { count: n.id }, hidden: true }),
         ],
       ),
-    ),
-  );
+    );
+  }
+  const rail = el("nav", { class: "nav-rail", "aria-label": "Primary views" }, railItems);
 
   const cmdk = el(
     "button",

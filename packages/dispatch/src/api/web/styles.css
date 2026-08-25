@@ -1317,9 +1317,10 @@ html::after {
   color: var(--text-dim);
 }
 .view-hero-diamond {
-  color: var(--accent);
+  /* Decorative eyebrow pip — demoted to a dim neutral so amber stays the
+     currency of the LIVE lamp and the one primary action, not chrome. */
+  color: var(--text-dim);
   font-size: 0.72rem;
-  text-shadow: 0 0 10px var(--accent-glow);
 }
 .view-hero-title {
   font-family: var(--display);
@@ -4547,12 +4548,13 @@ td.title-cell {
   border: 1px solid var(--line-hair);
   background: var(--bg);
 }
-.feed-event.ev-ticket {
-  color: var(--accent);
-}
+/* Event-category labels stay neutral: the actionable ticket #N chip is the one
+   amber accent per row, so it reads as the link instead of drowning in a column
+   of amber category words. Decisions keep violet (a non-amber category cue). */
+.feed-event.ev-ticket,
 .feed-event.ev-claim,
 .feed-event.ev-review {
-  color: var(--amber);
+  color: var(--text-dim);
 }
 .feed-event.ev-decision {
   color: var(--violet);
@@ -5267,7 +5269,10 @@ td.title-cell {
   position: relative;
   width: 58px;
   height: 58px;
-  color: var(--accent);
+  /* Neutral, not amber: an empty state is neither a live signal nor an action,
+     so its art shouldn't compete with the LIVE lamp and the primary button for
+     the eye. Amber is reserved for those. */
+  color: var(--text-dim);
   display: grid;
   place-items: center;
   border-radius: var(--r-lg);
@@ -5282,7 +5287,7 @@ td.title-cell {
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  border: 1px solid var(--accent-line);
+  border: 1px solid var(--line);
   opacity: 0.5;
 }
 .empty-state .es-icon::after {

@@ -590,27 +590,45 @@ function skeleton(kind = "list") {
 // --- Detail sheet (mobile bottom-sheet / desktop side-panel) ----------------
 
 let sheetEls = null;
+let sheetReturnFocus = null; // element to restore focus to when the sheet closes
 function ensureSheet() {
   if (sheetEls) return sheetEls;
   const scrim = el("div", { class: "sheet-scrim", onclick: closeSheet });
   const head = el("div", { class: "sheet-head" });
   const body = el("div", { class: "sheet-body" });
-  const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true" }, [
-    el("div", { class: "sheet-grip" }),
-    head,
-    body,
-  ]);
+  // tabindex -1 so we can focus the dialog itself as a fallback; aria-labelledby
+  // gives it an accessible name from its own <h2> title (set per-open below).
+  const sheet = el(
+    "div",
+    {
+      class: "sheet",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "sheet-title",
+      tabindex: "-1",
+    },
+    [el("div", { class: "sheet-grip" }), head, body],
+  );
   sheet.addEventListener("click", (e) => e.stopPropagation());
   document.body.appendChild(scrim);
   document.body.appendChild(sheet);
   sheetEls = { scrim, sheet, head, body };
   return sheetEls;
 }
+/** Focusable elements inside a container, in DOM order (visible + enabled). */
+function focusableIn(root) {
+  return [
+    ...root.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ].filter((e) => e.offsetParent !== null || e === document.activeElement);
+}
 function openSheet(title, contentNode) {
   const { scrim, sheet, head, body } = ensureSheet();
+  sheetReturnFocus = document.activeElement; // so focus returns here on close
   clear(head);
   clear(body);
-  head.appendChild(el("h2", {}, title));
+  head.appendChild(el("h2", { id: "sheet-title" }, title));
   head.appendChild(
     el(
       "button",
@@ -622,15 +640,44 @@ function openSheet(title, contentNode) {
   scrim.classList.add("open");
   sheet.classList.add("open");
   document.addEventListener("keydown", sheetKeydown);
+  // Move focus INTO the dialog so keyboard/AT users aren't stranded behind it.
+  const first = focusableIn(sheet)[0];
+  (first || sheet).focus();
 }
 function closeSheet() {
   if (!sheetEls) return;
   sheetEls.scrim.classList.remove("open");
   sheetEls.sheet.classList.remove("open");
   document.removeEventListener("keydown", sheetKeydown);
+  // Restore focus to whatever opened the sheet (the trigger), not the body.
+  if (sheetReturnFocus && typeof sheetReturnFocus.focus === "function") {
+    sheetReturnFocus.focus();
+  }
+  sheetReturnFocus = null;
 }
 function sheetKeydown(e) {
-  if (e.key === "Escape") closeSheet();
+  if (e.key === "Escape") {
+    closeSheet();
+    return;
+  }
+  // Trap Tab within the open sheet so focus can't walk into the covered content.
+  if (e.key === "Tab" && sheetEls) {
+    const f = focusableIn(sheetEls.sheet);
+    if (f.length === 0) {
+      e.preventDefault();
+      sheetEls.sheet.focus();
+      return;
+    }
+    const first = f[0];
+    const last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
 }
 
 // --- Routing & IA -----------------------------------------------------------

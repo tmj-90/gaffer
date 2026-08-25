@@ -15,6 +15,7 @@ import {
   type ActivityQuery,
   type TransitionRow,
 } from "../repositories/eventRepository.js";
+import { RepoRepository } from "../repositories/repoRepository.js";
 import { TicketRepository } from "../repositories/ticketRepository.js";
 import { DispatchError } from "../util/errors.js";
 import type { Clock } from "../util/clock.js";
@@ -94,6 +95,12 @@ export interface BoardCard {
    * WHY a ticket in `refining`/rework was sent back. `null` when there is none.
    */
   lastReviewFeedback: ReviewFeedback | null;
+  /**
+   * The confirmed write-boundary repos this ticket delivers to (id + name), so a
+   * card can cross-link straight to a repo's detail page. Empty until a boundary
+   * is confirmed; usually one entry (multi-repo tickets carry several).
+   */
+  repos: { id: string; name: string }[];
 }
 
 /** A board column: the column key and its ordered cards. */
@@ -293,6 +300,7 @@ export interface BoardServiceDeps {
   readonly decisions: DecisionRepository;
   readonly claimsRepo: ClaimRepository;
   readonly events: EventRepository;
+  readonly repos: RepoRepository;
 }
 
 export class BoardService {
@@ -303,6 +311,7 @@ export class BoardService {
   private readonly decisions: DecisionRepository;
   private readonly claimsRepo: ClaimRepository;
   private readonly events: EventRepository;
+  private readonly repos: RepoRepository;
 
   constructor(deps: BoardServiceDeps) {
     this.db = deps.db;
@@ -312,6 +321,7 @@ export class BoardService {
     this.decisions = deps.decisions;
     this.claimsRepo = deps.claimsRepo;
     this.events = deps.events;
+    this.repos = deps.repos;
   }
 
   /**
@@ -335,6 +345,9 @@ export class BoardService {
       claimsByTicket.set(claim.ticket_id, claim);
     }
 
+    // One batched query for every card's write-boundary repos (avoids N+1).
+    const reposByTicket = this.repos.writeRefsForTickets(tickets.map((t) => t.id));
+
     const empty = (): BoardColumnView[] =>
       BOARD_COLUMNS.map((column) => ({ column, cards: [] as BoardCard[] }));
     const columns = empty();
@@ -343,7 +356,12 @@ export class BoardService {
     const wontDo: BoardCard[] = [];
 
     for (const ticket of tickets) {
-      const card = this.toBoardCard(ticket, claimsByTicket.get(ticket.id), now);
+      const card = this.toBoardCard(
+        ticket,
+        claimsByTicket.get(ticket.id),
+        now,
+        reposByTicket.get(ticket.id) ?? [],
+      );
       // `cancelled` is the terminal won't-do bucket (reopenable); `failed` stays in
       // the closed area; everything else maps to a live column.
       if (ticket.status === "cancelled") {
@@ -365,7 +383,12 @@ export class BoardService {
   }
 
   /** Build a single board card, computing AC progress + claim/lease state. */
-  toBoardCard(ticket: Ticket, claim: ActiveClaimView | undefined, nowIso: string): BoardCard {
+  toBoardCard(
+    ticket: Ticket,
+    claim: ActiveClaimView | undefined,
+    nowIso: string,
+    repos: { id: string; name: string }[] = [],
+  ): BoardCard {
     const acs = this.acs.listForTicket(ticket.id);
     const acSatisfied = acs.filter((a) => a.status === "satisfied").length;
     const evidenceRequired = acs.filter((a) => a.evidence_required === 1);
@@ -397,6 +420,7 @@ export class BoardService {
       claim: claimCard,
       humanOwner: ticket.human_owner,
       lastReviewFeedback: parseReviewFeedback(ticket.last_review_feedback),
+      repos,
     };
   }
 

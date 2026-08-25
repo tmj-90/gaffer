@@ -454,6 +454,27 @@ function riskBadge(risk) {
 function accessBadge(access) {
   return badge(access, `access-${access}`);
 }
+/**
+ * A repo name that navigates to that repo's detail page (#/repo/:id). renderRepo
+ * resolves the param by id OR name, so either works. Falls back to a plain span
+ * when there's nothing to link to. `stop` halts click propagation so the link
+ * works inside a clickable board card without also opening the ticket.
+ */
+function repoLink(repo, { className = "", stop = false } = {}) {
+  const ref = repo && (repo.id || repo.name);
+  const name = (repo && (repo.name || repo.id)) || "repo";
+  if (!ref) return el("span", { class: `repo-link plain ${className}`.trim() }, name);
+  return el(
+    "a",
+    {
+      class: `repo-link ${className}`.trim(),
+      href: `#/repo/${encodeURIComponent(ref)}`,
+      title: `Open ${name}`,
+      onclick: stop ? (e) => e.stopPropagation() : null,
+    },
+    name,
+  );
+}
 
 /**
  * Pipeline-dots lifecycle indicator (cyan → amber → cyan). The lifecycle stage
@@ -3458,6 +3479,34 @@ function renderBoardCard(card) {
     ownerMarker,
   ]);
 
+  // Repo cross-link (audit: "no path from a card to its repo"). A card is an
+  // <a> to its ticket, so the repo chips are buttons that stopPropagation and
+  // navigate to #/repo/:id — one hop to the repo, no ticket-open side effect.
+  const cardRepos = card.repos || [];
+  const repoChips = cardRepos.length
+    ? el("div", { class: "card-repos" }, [
+        ...cardRepos.slice(0, 2).map((r) =>
+          el(
+            "button",
+            {
+              class: "card-repo-chip",
+              type: "button",
+              title: `Open ${r.name}`,
+              onclick: (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                navigate(`#/repo/${encodeURIComponent(r.id || r.name)}`);
+              },
+            },
+            [icon("map", "chip-ico"), el("span", {}, r.name)],
+          ),
+        ),
+        cardRepos.length > 2
+          ? el("span", { class: "card-repo-more dim" }, `+${cardRepos.length - 2}`)
+          : null,
+      ])
+    : null;
+
   const go = () => navigate(`#/ticket/${card.id}`);
   const movable = cardIsMovable(card);
 
@@ -3540,6 +3589,7 @@ function renderBoardCard(card) {
       ]),
       el("div", { class: "card-title" }, card.title),
       chips,
+      repoChips,
       reject,
       meta,
       humanLaneBtn,
@@ -4605,7 +4655,7 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
       el("div", { class: "repo-row" }, [
         el("div", { class: "repo-row-main" }, [
           el("div", { class: "repo-row-head" }, [
-            el("span", { class: "assoc-name plain" }, r.name || r.id),
+            repoLink(r, { className: "assoc-name" }),
             isSuggested
               ? badge("suggested", "relation-suggested")
               : badge("confirmed", "relation-confirmed"),

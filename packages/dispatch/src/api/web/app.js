@@ -989,6 +989,19 @@ function startAutoRefresh() {
     // (an OPEN sheet), not `.sheet` — the latter is the always-present container, so it would
     // pause auto-refresh permanently after the first sheet ever opens.
     if (document.querySelector(".dragging, .is-dragging, .sheet.open, .menu-open")) return;
+    // A modal owns the screen — use the single source of truth (isModalOpen), not a
+    // narrower ad-hoc list, so a refresh never fires under the reject dialog, move
+    // menu, or command palette and detach the nodes they anchor to.
+    if (isModalOpen()) return;
+    // Never tear down the review queue mid-triage: a blind re-render resets the
+    // j/k cursor, silently DISARMS a pending approve, and reloads every diff. Skip
+    // while an approve is armed (keyboard `.card-armed` or the mouse `.btn-armed`),
+    // or while the operator is focused inside a review card.
+    if (document.querySelector(".card-armed, .btn-armed")) return;
+    {
+      const a = document.activeElement;
+      if (a && typeof a.closest === "function" && a.closest(".view .card")) return;
+    }
     const { view, param } = parseHash();
     if (!AUTO_REFRESHABLE.has(view)) return;
     const render = VIEWS[view];
@@ -6689,12 +6702,49 @@ async function renderReview() {
     // The diff-unavailable banner + the Approve button are held by reference so the
     // async diff load (fix 4) can toggle them once it settles.
     const canApprove = hasTicketAction(t.status, "approve");
+    // Mouse Approve is a two-step arm→confirm, matching the keyboard path — a single
+    // stray click on the primary button must never fire an irreversible merge. First
+    // click ARMS (label → "Confirm merge", no POST); a second click within the
+    // BTN_ARM_MS window merges; the window elapsing or a blur disarms.
+    const BTN_ARM_MS = 3000;
+    const approveLabel = el("span", {}, "Approve");
     const approveBtn = canApprove
-      ? el("button", { class: "btn ok", type: "button", disabled: "", onclick: approve }, [
-          icon("check"),
-          "Approve",
-        ])
+      ? el(
+          "button",
+          { class: "btn ok", type: "button", disabled: "", "aria-label": "Approve and merge" },
+          [icon("check"), approveLabel],
+        )
       : null;
+    let btnArmed = false;
+    let btnArmTimer = null;
+    const disarmApproveBtn = () => {
+      btnArmed = false;
+      if (btnArmTimer) {
+        clearTimeout(btnArmTimer);
+        btnArmTimer = null;
+      }
+      if (approveBtn) approveBtn.classList.remove("btn-armed");
+      approveLabel.textContent = "Approve";
+    };
+    const onApproveClick = () => {
+      if (!diffState.approvable) {
+        toast(`Can't approve — ${diffState.reason}`, {});
+        return;
+      }
+      if (btnArmed) {
+        disarmApproveBtn();
+        approve();
+        return;
+      }
+      btnArmed = true;
+      if (approveBtn) approveBtn.classList.add("btn-armed");
+      approveLabel.textContent = "Confirm merge";
+      btnArmTimer = setTimeout(disarmApproveBtn, BTN_ARM_MS);
+    };
+    if (approveBtn) {
+      approveBtn.addEventListener("click", onApproveClick);
+      approveBtn.addEventListener("blur", disarmApproveBtn);
+    }
     const diffBlockBanner = el(
       "div",
       { class: "reopen-banner diff-block-banner", style: "display:none" },

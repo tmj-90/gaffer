@@ -454,6 +454,27 @@ function riskBadge(risk) {
 function accessBadge(access) {
   return badge(access, `access-${access}`);
 }
+/**
+ * A repo name that navigates to that repo's detail page (#/repo/:id). renderRepo
+ * resolves the param by id OR name, so either works. Falls back to a plain span
+ * when there's nothing to link to. `stop` halts click propagation so the link
+ * works inside a clickable board card without also opening the ticket.
+ */
+function repoLink(repo, { className = "", stop = false } = {}) {
+  const ref = repo && (repo.id || repo.name);
+  const name = (repo && (repo.name || repo.id)) || "repo";
+  if (!ref) return el("span", { class: `repo-link plain ${className}`.trim() }, name);
+  return el(
+    "a",
+    {
+      class: `repo-link ${className}`.trim(),
+      href: `#/repo/${encodeURIComponent(ref)}`,
+      title: `Open ${name}`,
+      onclick: stop ? (e) => e.stopPropagation() : null,
+    },
+    name,
+  );
+}
 
 /**
  * Pipeline-dots lifecycle indicator (cyan → amber → cyan). The lifecycle stage
@@ -590,27 +611,45 @@ function skeleton(kind = "list") {
 // --- Detail sheet (mobile bottom-sheet / desktop side-panel) ----------------
 
 let sheetEls = null;
+let sheetReturnFocus = null; // element to restore focus to when the sheet closes
 function ensureSheet() {
   if (sheetEls) return sheetEls;
   const scrim = el("div", { class: "sheet-scrim", onclick: closeSheet });
   const head = el("div", { class: "sheet-head" });
   const body = el("div", { class: "sheet-body" });
-  const sheet = el("div", { class: "sheet", role: "dialog", "aria-modal": "true" }, [
-    el("div", { class: "sheet-grip" }),
-    head,
-    body,
-  ]);
+  // tabindex -1 so we can focus the dialog itself as a fallback; aria-labelledby
+  // gives it an accessible name from its own <h2> title (set per-open below).
+  const sheet = el(
+    "div",
+    {
+      class: "sheet",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "sheet-title",
+      tabindex: "-1",
+    },
+    [el("div", { class: "sheet-grip" }), head, body],
+  );
   sheet.addEventListener("click", (e) => e.stopPropagation());
   document.body.appendChild(scrim);
   document.body.appendChild(sheet);
   sheetEls = { scrim, sheet, head, body };
   return sheetEls;
 }
+/** Focusable elements inside a container, in DOM order (visible + enabled). */
+function focusableIn(root) {
+  return [
+    ...root.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ].filter((e) => e.offsetParent !== null || e === document.activeElement);
+}
 function openSheet(title, contentNode) {
   const { scrim, sheet, head, body } = ensureSheet();
+  sheetReturnFocus = document.activeElement; // so focus returns here on close
   clear(head);
   clear(body);
-  head.appendChild(el("h2", {}, title));
+  head.appendChild(el("h2", { id: "sheet-title" }, title));
   head.appendChild(
     el(
       "button",
@@ -622,15 +661,44 @@ function openSheet(title, contentNode) {
   scrim.classList.add("open");
   sheet.classList.add("open");
   document.addEventListener("keydown", sheetKeydown);
+  // Move focus INTO the dialog so keyboard/AT users aren't stranded behind it.
+  const first = focusableIn(sheet)[0];
+  (first || sheet).focus();
 }
 function closeSheet() {
   if (!sheetEls) return;
   sheetEls.scrim.classList.remove("open");
   sheetEls.sheet.classList.remove("open");
   document.removeEventListener("keydown", sheetKeydown);
+  // Restore focus to whatever opened the sheet (the trigger), not the body.
+  if (sheetReturnFocus && typeof sheetReturnFocus.focus === "function") {
+    sheetReturnFocus.focus();
+  }
+  sheetReturnFocus = null;
 }
 function sheetKeydown(e) {
-  if (e.key === "Escape") closeSheet();
+  if (e.key === "Escape") {
+    closeSheet();
+    return;
+  }
+  // Trap Tab within the open sheet so focus can't walk into the covered content.
+  if (e.key === "Tab" && sheetEls) {
+    const f = focusableIn(sheetEls.sheet);
+    if (f.length === 0) {
+      e.preventDefault();
+      sheetEls.sheet.focus();
+      return;
+    }
+    const first = f[0];
+    const last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
 }
 
 // --- Routing & IA -----------------------------------------------------------
@@ -666,16 +734,20 @@ const VIEW_ALIASES = {
 };
 
 // Primary nav entries (order = bottom-nav + desktop rail order).
+// Two tiers. "primary" is the loop an operator actually drives — the same four
+// areas the mobile bottom-nav promotes. "utility" is reference & config you
+// visit occasionally; the rail sets it apart with a divider so the primary loop
+// reads first instead of drowning in a flat nine-item list.
 const NAV = [
-  { id: "overview", label: "Overview", icon: "overview" },
-  { id: "health", label: "Health", icon: "health" },
-  { id: "work", label: "Work", icon: "work" },
-  { id: "review", label: "Review", icon: "review" },
-  { id: "epics", label: "Epics", icon: "epics" },
-  { id: "specs", label: "Specs", icon: "specs" },
-  { id: "factory", label: "Map", icon: "map" },
-  { id: "memory", label: "Memory", icon: "memory" },
-  { id: "settings", label: "Settings", icon: "settings" },
+  { id: "overview", label: "Overview", icon: "overview", group: "primary" },
+  { id: "work", label: "Work", icon: "work", group: "primary" },
+  { id: "review", label: "Review", icon: "review", group: "primary" },
+  { id: "factory", label: "Map", icon: "map", group: "primary" },
+  { id: "health", label: "Health", icon: "health", group: "utility" },
+  { id: "epics", label: "Epics", icon: "epics", group: "utility" },
+  { id: "specs", label: "Specs", icon: "specs", group: "utility" },
+  { id: "memory", label: "Memory", icon: "memory", group: "utility" },
+  { id: "settings", label: "Settings", icon: "settings", group: "utility" },
 ];
 
 // Sub-views highlight their parent area in the nav.
@@ -712,12 +784,12 @@ function navigate(hash) {
 // makes navigating feel like walking through a plan rather than a page reload.
 const NAV_ORDER = [
   "overview",
-  "health",
   "work",
   "review",
+  "factory",
+  "health",
   "epics",
   "specs",
-  "factory",
   "memory",
   "settings",
 ];
@@ -883,14 +955,19 @@ function buildChrome() {
     el("span", { class: "rail-status-text" }, "LIVE"),
     el("span", { class: "rail-status-meta mono", id: "live-tick" }, "tick 001"),
   ]);
-  const rail = el(
-    "nav",
-    { class: "nav-rail", "aria-label": "Primary views" },
-    NAV.map((n) =>
+  const railItems = [];
+  let sepPlaced = false;
+  for (const n of NAV) {
+    // One thin divider where the primary loop ends and the utility cluster begins.
+    if (n.group === "utility" && !sepPlaced) {
+      railItems.push(el("span", { class: "nav-sep", "aria-hidden": "true" }));
+      sepPlaced = true;
+    }
+    railItems.push(
       el(
         "button",
         {
-          class: "nav-link",
+          class: `nav-link nav-${n.group}`,
           type: "button",
           dataset: { area: n.id },
           onclick: () => navigate(`#/${n.id}`),
@@ -902,8 +979,9 @@ function buildChrome() {
           el("span", { class: "nav-count", dataset: { count: n.id }, hidden: true }),
         ],
       ),
-    ),
-  );
+    );
+  }
+  const rail = el("nav", { class: "nav-rail", "aria-label": "Primary views" }, railItems);
 
   const cmdk = el(
     "button",
@@ -3401,6 +3479,34 @@ function renderBoardCard(card) {
     ownerMarker,
   ]);
 
+  // Repo cross-link (audit: "no path from a card to its repo"). A card is an
+  // <a> to its ticket, so the repo chips are buttons that stopPropagation and
+  // navigate to #/repo/:id — one hop to the repo, no ticket-open side effect.
+  const cardRepos = card.repos || [];
+  const repoChips = cardRepos.length
+    ? el("div", { class: "card-repos" }, [
+        ...cardRepos.slice(0, 2).map((r) =>
+          el(
+            "button",
+            {
+              class: "card-repo-chip",
+              type: "button",
+              title: `Open ${r.name}`,
+              onclick: (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                navigate(`#/repo/${encodeURIComponent(r.id || r.name)}`);
+              },
+            },
+            [icon("map", "chip-ico"), el("span", {}, r.name)],
+          ),
+        ),
+        cardRepos.length > 2
+          ? el("span", { class: "card-repo-more dim" }, `+${cardRepos.length - 2}`)
+          : null,
+      ])
+    : null;
+
   const go = () => navigate(`#/ticket/${card.id}`);
   const movable = cardIsMovable(card);
 
@@ -3483,6 +3589,7 @@ function renderBoardCard(card) {
       ]),
       el("div", { class: "card-title" }, card.title),
       chips,
+      repoChips,
       reject,
       meta,
       humanLaneBtn,
@@ -4548,7 +4655,7 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
       el("div", { class: "repo-row" }, [
         el("div", { class: "repo-row-main" }, [
           el("div", { class: "repo-row-head" }, [
-            el("span", { class: "assoc-name plain" }, r.name || r.id),
+            repoLink(r, { className: "assoc-name" }),
             isSuggested
               ? badge("suggested", "relation-suggested")
               : badge("confirmed", "relation-confirmed"),

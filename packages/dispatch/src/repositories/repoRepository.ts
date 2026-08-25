@@ -117,6 +117,35 @@ export class RepoRepository {
   }
 
   /**
+   * The confirmed WRITE-boundary repos for many tickets in a single query,
+   * keyed by ticket id. Only active write links (access='write' with a
+   * confirmed/implicit relation — the repos a ticket may actually deliver to)
+   * are returned; suggestions and rejections are excluded. Used by the board
+   * to render each card's repo cross-link without an N+1 per-card fetch.
+   */
+  writeRefsForTickets(ticketIds: readonly string[]): Map<string, { id: string; name: string }[]> {
+    const out = new Map<string, { id: string; name: string }[]>();
+    if (ticketIds.length === 0) return out;
+    const placeholders = ticketIds.map(() => "?").join(",");
+    const rows = this.db
+      .prepare(
+        `SELECT tr.ticket_id AS ticket_id, r.id AS id, r.name AS name
+           FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
+          WHERE tr.ticket_id IN (${placeholders})
+            AND tr.access = 'write'
+            AND tr.relation IN ('confirmed', 'implicit_single_repo')
+          ORDER BY r.name ASC`,
+      )
+      .all(...ticketIds) as { ticket_id: string; id: string; name: string }[];
+    for (const row of rows) {
+      const list = out.get(row.ticket_id) ?? [];
+      list.push({ id: row.id, name: row.name });
+      out.set(row.ticket_id, list);
+    }
+    return out;
+  }
+
+  /**
    * Upsert a ticket↔repo access boundary (WG-002). Inserts a new link or patches
    * the access/relation/source/confidence/reasons of an existing one, preserving
    * the legacy role/branch/status columns. The (ticket_id, repo_id) PK makes this

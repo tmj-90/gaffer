@@ -455,6 +455,7 @@ export class Dispatch {
       decisions: this.decisions,
       claimsRepo: this.claimsRepo,
       events: this.events,
+      repos: this.repos,
     });
     this.dossierSvc = new DossierService({
       db,

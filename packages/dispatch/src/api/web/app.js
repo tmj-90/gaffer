@@ -391,6 +391,7 @@ function renderLogin(wasWrong) {
     placeholder: "access token",
     autocomplete: "off",
     autofocus: "",
+    "aria-label": "Access token",
   });
   const form = el("form", { class: "login-gate" }, [
     shield("login-mark"),
@@ -399,6 +400,13 @@ function renderLogin(wasWrong) {
     wasWrong ? el("p", { class: "login-error" }, "That token was rejected — try again.") : null,
     input,
     el("button", { class: "btn primary", type: "submit" }, "Enter"),
+    // Tell a new operator where the token actually comes from — the hardest
+    // first-run wall was a gate that never said this.
+    el(
+      "p",
+      { class: "login-hint" },
+      "Printed in the terminal that started Dispatch, or set as DISPATCH_API_TOKEN.",
+    ),
   ]);
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
@@ -716,11 +724,16 @@ const NAV_ORDER = [
 let lastAreaIndex = 0;
 
 let activeArea = "overview";
+// Where a ticket detail's "← Back" returns to. Tracks the last LIST view the
+// operator came from (Work or Review) so opening a ticket from the Review queue
+// returns to Review, not always Work.
+let detailBackHash = "#/work";
 async function router() {
   const { view, param } = parseHash();
   // Unknown views fall through to Overview; aliases are resolved in parseHash.
   const render = VIEWS[view] || renderOverview;
   activeArea = AREA_FOR_VIEW[view] || (VIEWS[view] ? view : "overview");
+  if (view === "work" || view === "review") detailBackHash = "#/" + view;
 
   // Decide the step direction (forward = deeper into the plan, back = out).
   const idx = NAV_ORDER.indexOf(activeArea);
@@ -926,9 +939,13 @@ function buildChrome() {
   }
   appbar.hidden = false;
 
-  // Bottom nav (mobile): Overview · Work · Review · Map · +.
+  // Bottom nav (mobile): the primary loop only — Overview · Work · Review · Map · +.
+  // Looping the full 9-item desktop NAV crammed 10 cells into a phone width (~36px
+  // each, below the 44px touch target, labels clipped); the reference/config views
+  // stay reachable via ⌘K and the desktop rail.
   clear(bottomnav);
-  for (const n of NAV) {
+  const BOTTOM_NAV_IDS = new Set(["overview", "work", "review", "factory"]);
+  for (const n of NAV.filter((x) => BOTTOM_NAV_IDS.has(x.id))) {
     bottomnav.appendChild(
       el(
         "button",
@@ -1155,7 +1172,7 @@ async function buildPaletteSources() {
     },
     {
       group: "Go",
-      label: "Factory Map",
+      label: "Map",
       hint: "scope graph",
       icon: "map",
       run: () => navigate("#/factory"),
@@ -3510,11 +3527,29 @@ async function renderWorkList() {
   const tickets = (await api("GET", path)).tickets || [];
 
   if (tickets.length === 0) {
-    return emptyState(
-      "No tickets match",
-      "Adjust the filters above, or suggest fresh work.",
+    // A day-one empty factory must not be told its (nonexistent) filter is hiding
+    // work. Only show "No tickets match" when a filter is actually active.
+    const filtered = Boolean(workState.status || workState.repo || workState.risk);
+    if (filtered) {
+      return emptyState(
+        "No tickets match",
+        "Adjust the filters above, or suggest fresh work.",
+        "work",
+      );
+    }
+    const panel = emptyState(
+      "No tickets yet",
+      "Create your first ticket, or let the product-owner suggest work.",
       "work",
     );
+    panel.appendChild(
+      el(
+        "button",
+        { class: "btn primary", type: "button", onclick: () => navigate("#/create") },
+        "Create a ticket",
+      ),
+    );
+    return panel;
   }
   return el(
     "div",
@@ -3637,8 +3672,8 @@ async function renderTicket(id) {
   wrap.appendChild(
     el(
       "button",
-      { class: "back-link", type: "button", onclick: () => navigate("#/work") },
-      "← Back to Work",
+      { class: "back-link", type: "button", onclick: () => navigate(detailBackHash) },
+      detailBackHash === "#/review" ? "← Back to Review" : "← Back to Work",
     ),
   );
 
@@ -6905,7 +6940,7 @@ async function renderReview() {
 }
 
 // ===========================================================================
-//  Factory Map (UI-000 / UI-001 / UI-002 / UI-003)
+//  Map (UI-000 / UI-001 / UI-002 / UI-003)
 // ===========================================================================
 
 const SCOPE_NODE_TYPES = [
@@ -6966,7 +7001,7 @@ async function renderFactory() {
   const wrap = el("div", { class: "view" });
   wrap.appendChild(
     viewHead(
-      "Factory Map",
+      "Map",
       `${nodes.length} node${nodes.length === 1 ? "" : "s"} · ${unmapped.length} unmapped repo${unmapped.length === 1 ? "" : "s"}`,
       el("button", { class: "btn primary", type: "button", onclick: () => navigate("#/node") }, [
         icon("plus"),
@@ -6977,7 +7012,7 @@ async function renderFactory() {
 
   wrap.appendChild(
     el("div", { class: "banner" }, [
-      el("strong", {}, "How the Factory Map works. "),
+      el("strong", {}, "How the Map works. "),
       "Scope nodes group products, systems and capabilities into a graph using ",
       el("code", { class: "mono" }, "contains"),
       " and ",
@@ -6992,7 +7027,7 @@ async function renderFactory() {
     type: "search",
     placeholder: "Search nodes, repos, tags, owners…",
     value: factoryState.query,
-    "aria-label": "Search the Factory Map",
+    "aria-label": "Search the Map",
     oninput: (e) => {
       factoryState.query = e.target.value;
       applyFactoryFilter(wrap, e.target.value.trim().toLowerCase());
@@ -7012,7 +7047,7 @@ async function renderFactory() {
 }
 
 // Low-key entry point to the (deliberately unadvertised) "Hidden repos" page.
-// Not a nav tab — a small footer link under the Factory Map, so a hidden repo
+// Not a nav tab — a small footer link under the Map, so a hidden repo
 // can be brought back without surfacing the capability prominently.
 function renderFactoryFooter() {
   return el("div", { class: "factory-footer dim" }, [
@@ -7242,7 +7277,7 @@ function hideRepoBtn(repo) {
 }
 
 // View: Hidden repos (WG-006). A deliberately low-key surface — reached only via
-// the small footer link on the Factory Map — listing every hidden repo with an
+// the small footer link on the Map — listing every hidden repo with an
 // "Unhide" button that returns it to its normal place.
 async function renderHidden() {
   const repos = (await api("GET", "/repositories?hidden=only")).repositories || [];
@@ -7251,14 +7286,14 @@ async function renderHidden() {
     el(
       "button",
       { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-      "← Back to Factory Map",
+      "← Back to Map",
     ),
   );
   wrap.appendChild(viewHead("Hidden repos", `${repos.length} hidden`));
   wrap.appendChild(
     el("div", { class: "banner" }, [
       el("strong", {}, "These repos are hidden from the dashboard. "),
-      "They stay registered and keep their links and scope mappings, but are excluded from the repo list, the Factory Map unmapped list and repo pickers. Un-hide one to return it to its normal place.",
+      "They stay registered and keep their links and scope mappings, but are excluded from the repo list, the Map unmapped list and repo pickers. Un-hide one to return it to its normal place.",
     ]),
   );
 
@@ -7355,7 +7390,7 @@ async function renderNode(id) {
       el(
         "button",
         { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-        "← Back to Factory Map",
+        "← Back to Map",
       ),
     );
     wrap.appendChild(viewHead("New scope node"));
@@ -7373,7 +7408,7 @@ async function renderNode(id) {
     el(
       "button",
       { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-      "← Back to Factory Map",
+      "← Back to Map",
     ),
   );
 
@@ -7753,7 +7788,7 @@ async function renderRepo(id) {
     el(
       "button",
       { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-      "← Back to Factory Map",
+      "← Back to Map",
     ),
   );
   if (!repo) {
@@ -7871,7 +7906,7 @@ async function renderRepo(id) {
     el(
       "p",
       { class: "section-note dim" },
-      "Every Factory Map node this repo is linked to, with its relation and the default access agents inherit. Change access in place; change relation by re-linking.",
+      "Every Map node this repo is linked to, with its relation and the default access agents inherit. Change access in place; change relation by re-linking.",
     ),
     scopes.length
       ? el(
@@ -7988,7 +8023,7 @@ function renderMapRepoBox(repo, allNodes) {
   if (!allNodes.length)
     return el("div", { class: "map-repo-box" }, [
       el("strong", {}, "Unmapped. "),
-      "Create a scope node on the Factory Map first, then map this repo into it.",
+      "Create a scope node on the Map first, then map this repo into it.",
     ]);
   const nodeSel = el(
     "select",
@@ -8015,7 +8050,7 @@ function renderMapRepoBox(repo, allNodes) {
             relation: "owns",
             default_access: accessSel.value,
           });
-          toast("Repo mapped into the Factory Map", { ok: true });
+          toast("Repo mapped into the Map", { ok: true });
           router();
         }),
     },

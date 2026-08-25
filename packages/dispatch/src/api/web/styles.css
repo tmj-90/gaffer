@@ -5260,6 +5260,12 @@ td.title-cell {
   color: var(--danger);
   font-weight: 600;
 }
+.login-gate .login-hint {
+  color: var(--text-faint);
+  font-size: var(--step--2, 0.78rem);
+  max-width: 34ch;
+  line-height: 1.45;
+}
 .login-gate input {
   text-align: center;
 }

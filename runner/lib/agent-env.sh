@@ -44,6 +44,28 @@ gaffer_write_agent_settings() {
   return 0
 }
 
+# gaffer_install_agent_dir <dir> <skills-csv> <mount-tag>
+#   The ONE agent-directory installer every spawn site uses: mount the skill subset,
+#   render + VERIFY .claude/settings.json, trust the workspace (so the allowlist is
+#   honoured headless), and install the CLAUDE.factory.md brief. Any failure returns
+#   1 so the caller refuses the run (fail closed). The reviewer and clarify sites
+#   previously copied the brief unguarded — a failed copy launched an agent with no
+#   brief; now it refuses like the delivery site.
+gaffer_install_agent_dir() {
+  local dir="$1" skills="$2" tag="$3"
+  [ -n "$dir" ] || return 1
+  gaffer_skills_mount "$dir" "$skills" "$tag"
+  gaffer_write_agent_settings "$dir" || return 1
+  gaffer_trust_workspace "$dir"
+  local brief="${HERE:-$RUNNER_DIR}/claude/CLAUDE.md"
+  if ! cp -f "$brief" "$dir/CLAUDE.factory.md" 2>/dev/null; then
+    rm -f "$dir/CLAUDE.factory.md"
+    _agent_env_log "SAFETY: could not install the CLAUDE.factory.md brief into $dir (fail closed)"
+    return 1
+  fi
+  return 0
+}
+
 gaffer_link_node_modules() {
   local rpath="$1" rwt="$2" _nm _rel
   [ -n "$rpath" ] && [ -n "$rwt" ] && [ -d "$rpath" ] && [ -d "$rwt" ] || return 0

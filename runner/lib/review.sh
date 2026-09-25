@@ -91,12 +91,11 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
         result error; exit 1
       fi
       # Mount only the review-relevant + universal skill subset (not all ~66).
-      gaffer_skills_mount "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM"
-      # Render + VERIFY the safety-hook wiring (shared helper); an unwired settings
-      # file must never launch the reviewer — fail closed like the delivery site.
-      gaffer_write_agent_settings "$WT" \
-        || { log "SAFETY: reviewer settings.json unwired for #$RNUM — refusing live review (fail closed)"; result error; exit 1; }
-      gaffer_trust_workspace "$WT"
+      # Skills mount + verified settings.json + workspace trust + the brief, through the
+      # ONE shared installer (lib/agent-env.sh) every spawn site uses; any failure
+      # refuses the live review (fail closed) — the same posture as the delivery site.
+      gaffer_install_agent_dir "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM" \
+        || { log "SAFETY: reviewer agent env install failed for #$RNUM — refusing live review (fail closed)"; result error; exit 1; }
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
@@ -118,7 +117,6 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
         || { log "MCP-RENDER: failed to render review runtime .mcp.json — refusing live review (fail closed)"; result error; exit 1; }
       chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
-      cp -f "$HERE/claude/CLAUDE.md" "$WT/CLAUDE.factory.md"
       # File-card context for the reviewer — orients it on the repo's structure
       # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.
       # Cards are keyed off the REAL repo ($RREPO) canonical identity, not the

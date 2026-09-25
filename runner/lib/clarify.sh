@@ -68,12 +68,11 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       trap _clarify_on_int  INT
       trap _clarify_on_term TERM
       # Mount only the clarify-relevant + universal skill subset (not all ~66).
-      gaffer_skills_mount "$CREPO" "clarify, record-evidence" "clarify-$CNUM"
-      # Render + VERIFY the safety-hook wiring (shared helper); an unwired settings
-      # file must never launch the clarify agent — fail closed like the delivery site.
-      gaffer_write_agent_settings "$CREPO" \
-        || { log "SAFETY: clarify settings.json unwired for #$CNUM — refusing live clarify (fail closed)"; result error; exit 1; }
-      gaffer_trust_workspace "$CREPO"
+      # Skills mount + verified settings.json + workspace trust + the brief, through the
+      # ONE shared installer (lib/agent-env.sh) every spawn site uses; any failure
+      # refuses the live clarify (fail closed) — the same posture as the delivery site.
+      gaffer_install_agent_dir "$CREPO" "clarify, record-evidence" "clarify-$CNUM" \
+        || { log "SAFETY: clarify agent env install failed for #$CNUM — refusing live clarify (fail closed)"; result error; exit 1; }
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
@@ -97,7 +96,6 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
         || { log "MCP-RENDER: failed to render clarify runtime .mcp.json — refusing live clarify (fail closed)"; result error; exit 1; }
       chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
-      cp -f "$HERE/claude/CLAUDE.md" "$CREPO/CLAUDE.factory.md"
       # File-card context for the intake agent — orients it on the repo before
       # it reads the ticket and spots ambiguities. FAIL-SOFT via gaffer_prime_context_block.
       _CDESC="$(echo "$CSHOW" | jget "(d['ticket'].get('description') or '')[:400]" 2>/dev/null || echo '')"

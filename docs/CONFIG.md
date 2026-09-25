@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 89 |
 | Knobs editable in the dashboard | 53 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 73 |
+| Env reads in code with no default and no UI entry | 74 |
 
 ## Runner defaults (`runner/factory.config.sh`)
 
@@ -244,6 +244,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `DISPATCH_AUDIT` |  | `packages/dispatch/src/audit/audit.ts` |
 | `DISPATCH_AUDIT_OFF` |  | `packages/dispatch/src/audit/audit.ts` |
 | `DISPATCH_CLI` |  | `runner/bin/merge-ticket.mjs` |
+| `DISPATCH_CORRELATION_ID` |  | `packages/dispatch/src/events/eventWriter.ts` |
 | `DISPATCH_LARGE_DELETION_LINES` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_MAX_ATTEMPTS` |  | `packages/dispatch/src/core.ts` |
 | `DISPATCH_OBSERVED_RISK_CEILING` | _(empty)_ | `packages/dispatch/src/services/observedRisk.ts` |

@@ -51,6 +51,15 @@ export GAFFER_TIMEOUT_PGID_FILE="$GAFFER_DATA/.agent-pgid.$$"
 # tick gets its OWN path — fresh PID per tick.sh process, exactly like the PGID
 # file above. Removed on EXIT by the crash-cleanup trap.
 MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
+# TRACE ID (one per tick). Dispatch stamps it as `correlation_id` on every
+# work_event written while it is in the environment — the runner's own `wg` calls
+# (claim, submit, gate results, review, merge) AND the agent's MCP writes, since the
+# GAFFER_ prefix carries it through gaffer_agent_env into the MCP server's env. So
+# every event one tick produced joins on one key (`dispatch events list
+# --correlation <id>`), which is what the flat per-file logs never offered. A
+# caller (loop.sh, a test) may preset it; otherwise it is time + pid, unique per tick.
+GAFFER_TICK_ID="${GAFFER_TICK_ID:-$(date -u +%Y%m%dT%H%M%SZ).$$}"
+export GAFFER_TICK_ID
 # Reap an orphaned agent process group if one is still recorded (see above). TERM
 # the whole group, brief grace, then KILL any survivor so no `claude -p` lingers
 # burning tokens. Numeric-guarded and fully best-effort — never faults the trap.

@@ -35,11 +35,11 @@ if [ -f "$OUT/data/dashboard.pid" ]; then
 fi
 rm -rf "$OUT"; mkdir -p "$OUT/data" "$OUT/shots" "$OUT/bin"
 
-# ── playwright-core (no browser download) into the out dir ──
-if ! node -e 'require.resolve("playwright-core")' >/dev/null 2>&1; then
-  ( cd "$OUT" && npm init -y >/dev/null 2>&1 && npm install --silent playwright-core >/dev/null 2>&1 ) \
-    || { echo "could not install playwright-core (npm)"; exit 2; }
-  export PW_CORE_ROOT="$OUT"   # regress.mjs resolves playwright-core from here (ESM ignores NODE_PATH)
+# ── playwright-core (no browser download) + axe-core (a11y audit) into the out dir ──
+if ! node -e 'require.resolve("playwright-core"); require.resolve("axe-core")' >/dev/null 2>&1; then
+  ( cd "$OUT" && npm init -y >/dev/null 2>&1 && npm install --silent playwright-core axe-core >/dev/null 2>&1 ) \
+    || { echo "could not install playwright-core / axe-core (npm)"; exit 2; }
+  export PW_CORE_ROOT="$OUT"   # regress.mjs resolves both from here (ESM ignores NODE_PATH)
 fi
 
 # ── sample target repo: a tiny node project with a real, passing test command ──

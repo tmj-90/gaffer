@@ -9,7 +9,7 @@
 // work (stub delivery) → review + approve → merge → done → suggest work (product
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -21,6 +21,16 @@ const requireFrom = createRequire(
   path.join(process.env.PW_CORE_ROOT || process.cwd(), "package.json"),
 );
 const { chromium } = requireFrom("playwright-core");
+// axe-core (WCAG 2.1 A/AA audit) is injected as an init script — CSP is
+// `script-src 'self'`, so an inline <script> would be refused; init scripts run
+// through the driver before the page's own and are not subject to the page CSP.
+const AXE_SOURCE = (() => {
+  try {
+    return readFileSync(requireFrom.resolve("axe-core/axe.min.js"), "utf8");
+  } catch {
+    return null;
+  }
+})();
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8797";
 const TOKEN = process.env.TOKEN;
@@ -384,8 +394,13 @@ try {
     ? ok("Review view renders the server-computed diff (shows the stub's added function)")
     : bad("Review view never rendered the diff");
   await shot(page, "review-diff");
-  const approveBtn = await page.$('button:has-text("Approve")');
-  if (!approveBtn) bad("no Approve button on the review view");
+  // A LOCATOR, not an ElementHandle: the review list re-renders under the live
+  // stream while the diff loads, and a handle taken before that detaches
+  // ("Element is not attached to the DOM"). A locator re-resolves on every action.
+  const approveBtn = page
+    .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
+    .first();
+  if ((await approveBtn.count()) === 0) bad("no Approve button on the review view");
   else {
     const disabled = await approveBtn.isDisabled();
     disabled ? note("Approve button disabled at first paint (diff still loading) — waiting") : null;
@@ -467,8 +482,22 @@ try {
   await page.keyboard.press("Escape"); // close the sheet — an open sheet suppresses auto-refresh by design
   await sleep(300);
 
-  // ── 7. every other view renders without console errors ────────────────────
-  for (const v of ["overview", "health", "epics", "factory", "specs", "settings", "hidden"]) {
+  // ── 7. every other view renders without console errors + passes the a11y audit ──
+  if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
+  for (const v of [
+    "overview",
+    "work",
+    "review",
+    "health",
+    "epics",
+    "factory",
+    "specs",
+    "settings",
+    "hidden",
+    "memory",
+    `ticket/${ticket.id}`,
+    `repo/${encodeURIComponent(repo.id)}`,
+  ]) {
     const before = consoleErrors.length;
     await page.goto(`${BASE}/#/${v}`, { waitUntil: "load" });
     await sleep(900);
@@ -479,6 +508,48 @@ try {
           `view '${v}' problem: len=${txt.trim().length} newErrors=${consoleErrors.slice(before).join(" | ")}`,
         );
     await shot(page, `view-${v}`);
+    if (AXE_SOURCE) {
+      // Inject axe into THIS document. Hash routing keeps one document alive for
+      // the whole loop, so an init script (new documents only) never lands; a
+      // string evaluate runs as an indirect eval in the page's global scope, is
+      // not subject to the page CSP, and defines `axe` once.
+      if (!(await page.evaluate(() => typeof globalThis.axe !== "undefined"))) {
+        await page.evaluate(AXE_SOURCE);
+      }
+      // WCAG 2.1 A + AA over the rendered view. critical/serious fail the run;
+      // moderate/minor are reported as notes so they are visible but not blocking.
+      const violations = await page
+        .evaluate(async () => {
+          // eslint-disable-next-line no-undef
+          const r = await axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+          });
+          return r.violations.map((x) => {
+            const n0 = x.nodes[0];
+            const data = n0?.any?.[0]?.data ?? n0?.all?.[0]?.data ?? null;
+            const detail =
+              data && typeof data === "object" && "contrastRatio" in data
+                ? ` fg=${data.fgColor} bg=${data.bgColor} ratio=${data.contrastRatio} need=${data.expectedContrastRatio}`
+                : "";
+            return {
+              id: x.id,
+              impact: x.impact,
+              nodes: x.nodes.length,
+              sample: `${n0?.target?.[0] ?? ""}${detail}`,
+            };
+          });
+        })
+        .catch((e) => [{ id: "axe-run-failed", impact: "serious", nodes: 0, sample: String(e) }]);
+      const serious = violations.filter((x) => x.impact === "critical" || x.impact === "serious");
+      const minor = violations.filter((x) => !(x.impact === "critical" || x.impact === "serious"));
+      const fmt = (xs) => xs.map((x) => `${x.id}[${x.impact}]×${x.nodes} @${x.sample}`).join("; ");
+      serious.length
+        ? bad(`a11y '${v}': ${fmt(serious)}`)
+        : ok(
+            `a11y '${v}': no critical/serious WCAG 2.1 A/AA violations${minor.length ? ` (${minor.length} moderate/minor)` : ""}`,
+          );
+      if (minor.length) note(`a11y '${v}' moderate/minor: ${fmt(minor)}`);
+    }
   }
 
   // ── 8. SSE live refresh: a ticket created out-of-band appears on the board without reload

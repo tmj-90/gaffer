@@ -1163,11 +1163,12 @@ gaffer_agent_env() {
     # every provider except claude-code, so the bare form crashes gaffer_agent_env there.
     for kd in ${keep_despite_deny[@]+"${keep_despite_deny[@]}"}; do [ "$name" = "$kd" ] && { keep_forced=1; break; }; done
     if [ "$keep_forced" -eq 0 ]; then
+      # The credential deny pattern's named entries are deliberately redundant with the
+      # *_TOKEN / *_KEY globs: they document the exact secrets this list exists for and
+      # survive a future glob edit.
+      # shellcheck disable=SC2221,SC2222
       case "$name" in
-        # Credential-shaped vars — never reach the agent. The named entries are
-        # deliberately redundant with the *_TOKEN / *_KEY globs: they document the
-        # exact secrets this list exists for and survive a future glob edit.
-        # shellcheck disable=SC2221,SC2222
+        # Credential-shaped vars — never reach the agent:
         *_TOKEN|*_SECRET|*_KEY|*_PASSWORD|*_PASSWD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|DISPATCH_API_TOKEN)
           continue ;;
         # Outbound endpoint / notify config — runner-only; the agent must not read

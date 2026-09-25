@@ -25,7 +25,7 @@ State (dbs, config, logs) lives **outside** the packages, in `<repo-root>/.gaffe
 ## 0. Prerequisites
 
 - macOS (Linux works; `sandbox-exec` strict mode is macOS-only — see `STRICT_MODE.md`)
-- Node ≥ 20 · pnpm · git · python3 (the runner uses small python helpers)
+- Node ≥ 22 (`.nvmrc`; `engines` is enforced) · pnpm 10 · git · python3 (the runner uses small python helpers)
 - Claude Code CLI (`claude`) — only needed to run the *live* factory
 
 ```bash
@@ -74,12 +74,14 @@ After this, `.gaffer/` holds: `dispatch.sqlite`, `memory.sqlite`,
 DISPATCH_DB=.gaffer/dispatch.sqlite \
   node packages/dispatch/dist/api/bin.js --port 8787
 # → http://127.0.0.1:8787
-#   tabs: Dashboard · Board · Tickets · Factory Map · Decisions
+#   views: Overview · Work · Review · Epics · Map · Memory · Settings (+ detail views)
 ```
 
-Loopback-only by default — a bind guard refuses non-loopback hosts unless you pass
-`--unsafe-bind` (or `DISPATCH_UNSAFE_BIND=1`). Run it backgrounded with `nohup … &` to
-keep it up across shells.
+Prefer `runner/gaffer dashboard`, which wires the action commands and prints the
+`?token=` URL. Every data request needs the auto-provisioned bearer token (only the
+SPA shell and `/healthz` are tokenless). Loopback-only by default — a bind guard refuses
+non-loopback hosts unless you pass `--unsafe-bind` (or `DISPATCH_UNSAFE_BIND=1`). Run it
+backgrounded with `nohup … &` to keep it up across shells.
 
 **"Suggest work" button** (`POST /product-owner/runs`): the dashboard runs the
 product-owner skill headlessly to file fresh draft tickets. It needs two env vars on

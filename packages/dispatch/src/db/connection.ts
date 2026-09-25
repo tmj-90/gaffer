@@ -218,6 +218,10 @@ export function migrate(db: Db): void {
   // column) and idempotent on an already-migrated one. Existing rows inherit NULL
   // (⇒ authored outside a spec-driven build), which is exactly the backfill.
   alterAcAddSpecClauseId(db);
+  // MACHINE-CHECKABLE AC (v20→v21): add the nullable `check_command` column to an
+  // EXISTING acceptance_criteria table — the shell command the runner executes to
+  // verify the AC. Plain additive ALTER; NULL backfill (a prose AC), idempotent.
+  alterAcAddCheckCommand(db);
   // EVIDENCE-PROVENANCE (v19→v20): add the nullable `recorded_by_actor_type` column
   // to an EXISTING evidence table — the recording actor's type, so the reviewer
   // surface can reliably flag agent self-reported evidence. CREATE TABLE IF NOT
@@ -382,6 +386,23 @@ function alterTicketsAddHumanDelivered(db: Db): void {
  * DB `acceptance_criteria` doesn't exist yet, so this is a no-op and SCHEMA_SQL
  * creates the table with the column.
  */
+/**
+ * MACHINE-CHECKABLE AC additive migration (v20→v21): add the `check_command` column
+ * to an EXISTING `acceptance_criteria` table. Idempotent; no-op on a fresh DB
+ * (SCHEMA_SQL creates the column). Existing rows inherit NULL — a prose AC with no
+ * executable check, which is exactly the pre-v21 meaning.
+ */
+function alterAcAddCheckCommand(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(acceptance_criteria)").all() as Array<{
+    name: string;
+  }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("check_command")) {
+    db.exec("ALTER TABLE acceptance_criteria ADD COLUMN check_command TEXT");
+  }
+}
+
 function alterAcAddSpecClauseId(db: Db): void {
   const info = db.prepare("PRAGMA table_info(acceptance_criteria)").all() as Array<{
     name: string;

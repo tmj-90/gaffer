@@ -105,6 +105,10 @@ export const toolSchemas = {
     text: z.string().min(1),
     verification_method: z.string().optional(),
     evidence_required: z.boolean().optional(),
+    // MACHINE-CHECKABLE AC: a shell command the RUNNER (not the agent) executes in the
+    // delivery worktree to verify this AC; exit 0 ⇒ satisfied, else the delivery is
+    // rejected to rework. Prefer this over prose for anything a command can prove.
+    check_command: z.string().optional(),
   },
   mark_ticket_ready: {
     ticket_id: z.string().min(1),

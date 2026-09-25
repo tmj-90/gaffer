@@ -22,6 +22,7 @@
 
 import { type Db, inTransaction } from "../db/connection.js";
 import {
+  type AcStatus,
   type Actor,
   type ReviewFeedback,
   type Ticket,
@@ -35,7 +36,9 @@ import { TicketRepository } from "../repositories/ticketRepository.js";
 import type { TransitionResult, TransitionService } from "./transitionService.js";
 import type { TicketService } from "./ticketService.js";
 import type { Clock } from "../util/clock.js";
-import { DispatchError } from "../util/errors.js";
+import { recordAcCheckInput } from "../domain/schemas.js";
+import { AC_CHECK_VERIFIER } from "../policy/policy.js";
+import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
 
@@ -265,6 +268,78 @@ export class ReviewGateService {
       expectedFromStatus: "in_review",
       approvedUnchanged,
       reviewApprove: true, // reached the merge-ready state through the guarded approve path
+    });
+  }
+
+  /**
+   * MACHINE-CHECKABLE AC — record the RUNNER's execution of an AC's `check_command`.
+   *
+   * Trusted-actor only: the runner (`system`) or a human/admin. An `agent` actor is
+   * refused — this is the verification the done gate TRUSTS precisely because the
+   * agent cannot author it (the agent's own `record_ac_evidence` still marks an AC
+   * satisfied, but with `verified_by = <agent>`, which the gate does not accept for
+   * a checked AC). Exit 0 ⇒ `satisfied`, else `failed`; either way a `test_output`
+   * evidence row carries the command, exit code and bounded output tail so the
+   * reviewer (and the next rework attempt) sees exactly what ran.
+   */
+  recordAcCheck(
+    raw: unknown,
+    actor: Actor,
+  ): { status: AcStatus; evidenceId: string; eventId: string } {
+    const input = recordAcCheckInput.parse(raw);
+    if (actor.type === "agent") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "An agent may not record an acceptance-criterion check result; the runner (system) executes and records checks.",
+        { actor_type: actor.type },
+      );
+    }
+    const now = this.clock.now();
+    return inTransaction(this.db, () => {
+      const ticket = this.tickets.findById(input.ticket_id);
+      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ac = this.acs.findById(input.ac_id);
+      if (!ac || ac.ticket_id !== ticket.id) throw notFound("acceptance_criterion", input.ac_id);
+      if (!ac.check_command) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "This acceptance criterion has no check_command; a check result can only be recorded for a machine-checkable AC.",
+          { ac_id: ac.id },
+        );
+      }
+      const passed = input.exit_code === 0;
+      const status: AcStatus = passed ? "satisfied" : "failed";
+      this.acs.setStatus(ac.id, status, AC_CHECK_VERIFIER, now);
+      const evidenceId = newId();
+      this.evidence.insert({
+        id: evidenceId,
+        ticket_id: ticket.id,
+        ac_id: ac.id,
+        repo_id: null,
+        decision_id: null,
+        evidence_type: "test_output",
+        summary: `AC check ${passed ? "PASSED" : "FAILED"} (exit ${input.exit_code}): ${input.command}`,
+        uri: null,
+        payload_json: JSON.stringify({
+          kind: "ac_check",
+          passed,
+          exit_code: input.exit_code,
+          command: input.command,
+          ...(input.output_tail !== undefined ? { output_tail: input.output_tail } : {}),
+          ...(input.duration_s !== undefined ? { duration_s: input.duration_s } : {}),
+        }),
+        created_by: actor.id ?? actor.type,
+        recorded_by_actor_type: actor.type,
+        created_at: now,
+      });
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ac.checked",
+        payload: { ac_id: ac.id, passed, exit_code: input.exit_code, evidence_id: evidenceId },
+      });
+      return { status, evidenceId, eventId };
     });
   }
 

@@ -63,6 +63,7 @@ const SANITISERS: Record<ToolName, Sanitiser> = {
       text_chars: chars(a.text),
       verification_method: asString(a.verification_method),
       evidence_required: a.evidence_required,
+      check_command_chars: chars(a.check_command),
     }),
   mark_ticket_ready: (a) => compact({ ticket_id: asString(a.ticket_id) }),
   claim_next_ticket: (a) =>

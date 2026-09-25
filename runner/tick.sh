@@ -2641,6 +2641,33 @@ for r in d.get("repositories", []) or []:
     log "DoD: enforcement OFF (GAFFER_DOD=${GAFFER_DOD:-unset}) — skipping the Definition-of-Done gate for #$NUM"
   fi
 
+  # ── MACHINE-CHECKABLE ACCEPTANCE CRITERIA (runner-executed, runner-recorded) ──
+  # Every AC carrying a `check_command` is executed HERE, in the primary write
+  # worktree, by the runner — never the agent — and its verdict recorded through the
+  # trusted `wg ac check-result` path (satisfied/failed + test_output evidence with
+  # the exit code and output tail). Dispatch's done gate refuses a checked AC the
+  # runner has not passed, so the agent's own record_ac_evidence cannot substitute.
+  # A failing check is a RECOVERABLE gate failure exactly like DoD: keep the branch,
+  # feed the real failure back, retry-or-park. Runs whether or not DoD is enabled —
+  # the checks are per-ticket contracts, not per-repo gate config. See lib/ac-checks.sh.
+  if command -v gaffer_run_ac_checks >/dev/null 2>&1 && [ "$(gaffer_ac_check_count "$SHOW")" -gt 0 ]; then
+    AC_RESULTS="$GAFFER_DATA/.ac-check-$NUM.results"; : > "$AC_RESULTS"
+    if gaffer_run_ac_checks "$NUM" "$SHOW" "$PRIMARY_REPO" "$AC_RESULTS"; then
+      log "AC-check: #$NUM PASSED — $(gaffer_dod_summary_line "$AC_RESULTS")"
+      rm -f "$AC_RESULTS"
+    else
+      _AC_SUM="$(gaffer_dod_summary_line "$AC_RESULTS")"
+      log "AC-check: #$NUM FAILED — $_AC_SUM; auto-rejecting back to rework (not submitting for review)"
+      _AC_DETAIL="$(gaffer_dod_extract_failure "$AC_RESULTS" 2>/dev/null || true)"
+      rm -f "$AC_RESULTS"
+      _recover_or_park "acceptance-check" \
+        "Acceptance check failed: $_AC_SUM — make the acceptance criterion's check command pass and re-deliver" \
+        "$_AC_DETAIL"
+      [ "$_DELIV_OUTCOME" = "retry" ] && continue
+      result error; exit 0
+    fi
+  fi
+
   # ── GUARD B: every gate passed → leave the recoverable-attempt loop ─────────
   # Reaching here means the agent delivered AND every downstream gate (empty /
   # hygiene / minimalism / DoD) passed on this attempt. Break out of the retry

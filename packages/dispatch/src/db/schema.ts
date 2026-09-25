@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -170,6 +170,13 @@ CREATE TABLE IF NOT EXISTS acceptance_criteria (
   -- outside a spec-driven build. One clause can back many ACs (1→N); a join
   -- table would only be needed for a many-to-many link later.
   spec_clause_id     TEXT,
+  -- MACHINE-CHECKABLE AC (v21): an OPTIONAL shell command the RUNNER executes in the
+  -- delivery worktree after the DoD gates. Exit 0 => the AC is satisfied with
+  -- verified_by = 'runner:check' and a test_output evidence row carrying the exit
+  -- code + output tail; non-zero => failed and the delivery is auto-rejected to
+  -- rework like a failing DoD gate. NULL => a prose AC (verified by evidence/review as
+  -- before). The done gate refuses an AC that HAS a check but was not runner-verified.
+  check_command      TEXT,
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

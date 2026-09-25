@@ -4154,10 +4154,15 @@ async function renderTicket(id) {
                     "div",
                     { class: "ac-meta" },
                     [
-                      ac.verification_method
-                        ? `verify: ${ac.verification_method}`
-                        : "no verification method",
+                      ac.check_command
+                        ? `check: ${ac.check_command}`
+                        : ac.verification_method
+                          ? `verify: ${ac.verification_method}`
+                          : "no verification method",
                       ac.evidence_required ? " · evidence required" : "",
+                      ac.check_command && ac.verified_by === "runner:check"
+                        ? " · runner-verified"
+                        : "",
                     ].join(""),
                   ),
                 ]),

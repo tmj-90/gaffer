@@ -84,8 +84,39 @@ export const addAcInput = z.object({
    * absent (an AC authored outside a spec-driven build).
    */
   spec_clause_id: z.string().trim().min(1).max(100).optional(),
+  /**
+   * MACHINE-CHECKABLE AC: an OPTIONAL shell command the runner executes in the
+   * delivery worktree to verify this AC (exit 0 ⇒ satisfied). Bounded; a single
+   * command line (no NUL / newlines — the runner passes it to `bash -c` as one gate).
+   */
+  check_command: z
+    .string()
+    .trim()
+    .min(1)
+    .max(2_000)
+    .refine(
+      (v) => !v.includes("\n") && !v.includes("\r") && !v.includes("\0"),
+      "check_command must be a single command line",
+    )
+    .optional(),
 });
 export type AddAcInput = z.infer<typeof addAcInput>;
+
+/**
+ * MACHINE-CHECKABLE AC: the RUNNER's report of executing an AC's `check_command`.
+ * Recorded by a trusted (system/human/admin) actor only — never the agent.
+ */
+export const recordAcCheckInput = z.object({
+  ticket_id: z.string().min(1),
+  ac_id: z.string().min(1),
+  exit_code: z.number().int().min(0).max(255),
+  command: z.string().trim().min(1).max(2_000),
+  /** Bounded output tail (stdout+stderr) for the evidence row / rework feedback. */
+  output_tail: z.string().max(8_000).optional(),
+  /** Seconds the check ran (informational). */
+  duration_s: z.number().nonnegative().optional(),
+});
+export type RecordAcCheckInput = z.infer<typeof recordAcCheckInput>;
 
 export const registerRepoInput = z.object({
   name: z.string().trim().min(1).max(200),

@@ -67,6 +67,8 @@ export interface DossierAcceptanceCriterion {
   verified_by: string | null;
   verified_at: string | null;
   spec_clause_id: string | null;
+  /** MACHINE-CHECKABLE AC: the runner-executed verification command (null ⇒ prose AC). */
+  check_command: string | null;
   evidence: DossierEvidence[];
 }
 
@@ -236,6 +238,7 @@ export class DossierService {
       verified_by: ac.verified_by,
       verified_at: ac.verified_at,
       spec_clause_id: ac.spec_clause_id,
+      check_command: ac.check_command,
       evidence: allEvidence.filter((e) => e.ac_id === ac.id).map(toDossierEvidence),
     }));
 

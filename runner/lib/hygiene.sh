@@ -74,8 +74,8 @@ _hygiene_path_forbidden() {
   local path="$1" frag
   while IFS= read -r frag; do
     [ -n "$frag" ] || continue
+    # shellcheck disable=SC2254  # a '*'-prefixed fragment IS a glob — matching it literally would defeat the rule
     case "$frag" in
-      # shellcheck disable=SC2254  # the fragment IS a glob here — matching literally would defeat it
       '*'*) case "$path" in ${frag}) return 0 ;; esac ;;          # suffix glob
       *)    case "$path" in *"$frag"*) return 0 ;; esac ;;        # substring / segment
     esac

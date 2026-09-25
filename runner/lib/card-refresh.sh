@@ -13,7 +13,9 @@
 # and swallowed — a freshness hiccup must NEVER block or fail the merge.
 #
 # Reuses the existing memory CLI (the design already anticipated incremental refresh):
-#   lg card upsert … --repo-root <wt> --path <f>   (mechanical card; model half stays)
+#   lg card upsert … --repo-root <wt> --path <f> --keep-model
+#       (refresh the MECHANICAL half; --keep-model carries the existing model summary forward —
+#        without it the upsert nulls tldr/role and every touched card decays to mechanical-only)
 #   lg delete-file-card … --path <f>               (removes a deleted file's card)
 #   lg card sync … --commit <sha>                  (advances repo_sync watermark)
 #
@@ -52,7 +54,7 @@ gaffer_refresh_cards() {
         case "$path" in
           *.ts|*.tsx|*.js|*.jsx|*.mjs|*.cjs|*.java|*.py|*.go|*.rs|*.sql|*.kt|*.rb|*.php|*.swift)
             lg card upsert --canonical "$canonical" --repo "$repo" --repo-root "$wt" \
-              --path "$path" --source delivery >/dev/null 2>&1 && up=$((up + 1)) ;;
+              --path "$path" --source delivery --keep-model >/dev/null 2>&1 && up=$((up + 1)) ;;
         esac ;;
       D*)
         lg delete-file-card --canonical "$canonical" --repo "$repo" --path "$path" \

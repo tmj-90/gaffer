@@ -207,6 +207,29 @@ export interface UpsertFileCardInput {
   readonly validationError?: string;
   readonly model?: string;
   readonly promptVersion?: string;
+  /**
+   * MECHANICAL-ONLY REFRESH: when true and the caller supplies NO model fields
+   * (tldr / rolePrimary / roleTags), an existing row keeps its model half —
+   * tldr, role_primary, role_tags, model_status, model, prompt_version,
+   * validation_error — while the mechanical half (hash, loc, symbols, commit,
+   * source) is replaced. Without this, the post-merge card refresh (which never
+   * re-runs the model) wrote `tldr = NULL, model_status = 'absent'` over every
+   * touched file, so a repo's cards decayed to mechanical-only after their first
+   * edit. Ignored on insert (there is nothing to preserve) and whenever a model
+   * field IS supplied (the caller is re-summarising and owns the model half).
+   */
+  readonly preserveModel?: boolean;
+}
+
+/** The model-derived half of a file_card row, as stored. */
+interface StoredModelHalf {
+  readonly tldr: string | null;
+  readonly role_primary: string | null;
+  readonly role_tags: string | null;
+  readonly model_status: ModelStatus;
+  readonly model: string | null;
+  readonly prompt_version: string | null;
+  readonly validation_error: string | null;
 }
 
 /**
@@ -237,22 +260,47 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
       : null;
   const symbolsJson = JSON.stringify(input.symbols ?? []);
   const symbolsFts = symbolsToFts(input.symbols ?? []);
-  const roleTagsJson = input.roleTags !== undefined ? JSON.stringify(input.roleTags) : null;
   const ts = nowIso();
   const cardStatus: CardStatus = input.cardStatus ?? "active";
-  const modelStatus: ModelStatus = input.modelStatus ?? "absent";
+  const callerSuppliedModel =
+    input.tldr !== undefined || input.rolePrimary !== undefined || input.roleTags !== undefined;
 
   const eventKey = `${rk}:${path}`;
 
+  // The model half that will be stored — the caller's by default; the EXISTING row's
+  // when this is a mechanical-only refresh with preserveModel (resolved inside the tx).
+  let tldr: string | null = input.tldr ?? null;
+  let rolePrimary: string | null = input.rolePrimary ?? null;
+  let roleTagsJson: string | null =
+    input.roleTags !== undefined ? JSON.stringify(input.roleTags) : null;
+  let modelStatus: ModelStatus = input.modelStatus ?? "absent";
+  let model: string | null = input.model ?? null;
+  let promptVersion: string | null = input.promptVersion ?? null;
+  let validationError: string | null = input.validationError ?? null;
+
   const tx = db.transaction(() => {
-    // Check for an existing row to get its rowid for FTS maintenance.
+    // Check for an existing row to get its rowid for FTS maintenance (and, on a
+    // preserveModel refresh, the model half to carry forward).
     const existingRow = db
-      .prepare("SELECT rowid FROM file_card WHERE repo_key = ? AND path = ?")
-      .get(rk, path) as { rowid: number } | undefined;
+      .prepare(
+        `SELECT rowid, tldr, role_primary, role_tags, model_status, model, prompt_version,
+                validation_error
+           FROM file_card WHERE repo_key = ? AND path = ?`,
+      )
+      .get(rk, path) as ({ rowid: number } & StoredModelHalf) | undefined;
 
     let rowid: number;
 
     if (existingRow) {
+      if (input.preserveModel === true && !callerSuppliedModel) {
+        tldr = existingRow.tldr;
+        rolePrimary = existingRow.role_primary;
+        roleTagsJson = existingRow.role_tags;
+        modelStatus = existingRow.model_status;
+        model = existingRow.model;
+        promptVersion = existingRow.prompt_version;
+        validationError = existingRow.validation_error;
+      }
       db.prepare(
         `UPDATE file_card SET
            repo = ?, canonical = COALESCE(?, canonical), content_hash = ?,
@@ -270,15 +318,15 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
         symbolsJson,
         input.syncedCommit ?? null,
         input.source,
-        input.tldr ?? null,
-        input.rolePrimary ?? null,
+        tldr,
+        rolePrimary,
         roleTagsJson,
         cardStatus,
         modelStatus,
         input.validatedAt ?? null,
-        input.validationError ?? null,
-        input.model ?? null,
-        input.promptVersion ?? null,
+        validationError,
+        model,
+        promptVersion,
         ts,
         rk,
         path,
@@ -309,15 +357,15 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
           symbolsJson,
           input.syncedCommit ?? null,
           input.source,
-          input.tldr ?? null,
-          input.rolePrimary ?? null,
+          tldr,
+          rolePrimary,
           roleTagsJson,
           cardStatus,
           modelStatus,
           input.validatedAt ?? null,
-          input.validationError ?? null,
-          input.model ?? null,
-          input.promptVersion ?? null,
+          validationError,
+          model,
+          promptVersion,
           ts,
           ts,
         );
@@ -327,7 +375,7 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
     // Insert fresh FTS row. tldr is indexed ONLY when model_status = 'active':
     // a failed or absent summary shouldn't drive search ranking. path and
     // symbols_fts are always indexed so mechanical fields remain discoverable.
-    const ftsTldr = modelStatus === "active" ? (input.tldr ?? null) : null;
+    const ftsTldr = modelStatus === "active" ? tldr : null;
     db.prepare("INSERT INTO file_card_fts(rowid, path, tldr, symbols_fts) VALUES (?, ?, ?, ?)").run(
       rowid,
       path,

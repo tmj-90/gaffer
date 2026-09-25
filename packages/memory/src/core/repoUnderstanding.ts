@@ -39,6 +39,7 @@ import type { Database } from "better-sqlite3";
 
 import type { Feature, FeatureRow, FeatureStatus, RepoDigest, RepoDigestRow } from "../db/types.js";
 import { newLoreId } from "./ids.js";
+import { stripEnvelopeTokens } from "./untrusted.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -134,6 +135,13 @@ export function upsertDigest(db: Database, input: UpsertDigestInput): RepoDigest
   const source = input.source.trim();
   if (!source) throw new Error("upsertDigest: source must be non-empty");
   const ts = nowIso();
+  // WRITE HYGIENE (every path — MCP and CLI): the digest is agent/model-derived and
+  // served inside a quarantine envelope; strip any embedded envelope delimiter so the
+  // stored text can never close that envelope early (see core/untrusted.ts).
+  const overview = stripEnvelopeTokens(input.overview);
+  const structure = stripEnvelopeTokens(input.structure);
+  const conventions = stripEnvelopeTokens(input.conventions);
+  const stack = stripEnvelopeTokens(input.stack);
 
   const existing = db.prepare("SELECT repo FROM repo_digest WHERE repo = ?").get(repo) as
     { repo: string } | undefined;
@@ -145,13 +153,13 @@ export function upsertDigest(db: Database, input: UpsertDigestInput): RepoDigest
            overview = ?, structure = ?, conventions = ?,
            stack = ?, updated_at = ?, source = ?
          WHERE repo = ?`,
-      ).run(input.overview, input.structure, input.conventions, input.stack, ts, source, repo);
+      ).run(overview, structure, conventions, stack, ts, source, repo);
     } else {
       db.prepare(
         `INSERT INTO repo_digest
            (repo, overview, structure, conventions, stack, updated_at, source)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(repo, input.overview, input.structure, input.conventions, input.stack, ts, source);
+      ).run(repo, overview, structure, conventions, stack, ts, source);
     }
     // Audit trail: one event per write, keyed by repo (NOT a lore id —
     // the events table's `lore_id` column is a free string key). Payload
@@ -221,9 +229,15 @@ export interface AddFeatureInput {
 export function addFeature(db: Database, input: AddFeatureInput): Feature {
   const repo = normaliseRepo(input.repo);
   if (!repo) throw new Error("addFeature: repo must be non-empty");
-  const name = input.name.trim();
+  // WRITE HYGIENE (every path — MCP and CLI): strip embedded envelope delimiters from
+  // the agent-writable free text so it can never close the serve-time quarantine
+  // envelope early (see core/untrusted.ts).
+  const name = stripEnvelopeTokens(input.name).trim();
   if (!name) throw new Error("addFeature: name must be non-empty");
-  const summary = input.summary;
+  const summary = stripEnvelopeTokens(input.summary);
+  const area = input.area === undefined ? undefined : stripEnvelopeTokens(input.area);
+  const provenance =
+    input.provenance === undefined ? undefined : stripEnvelopeTokens(input.provenance);
   const status: FeatureStatus = input.status ?? "backlog";
   if (!ALLOWED_FEATURE_STATUSES.has(status)) {
     throw new Error(
@@ -246,8 +260,8 @@ export function addFeature(db: Database, input: AddFeatureInput): Feature {
       name,
       summary,
       status,
-      input.area ?? null,
-      input.provenance ?? null,
+      area ?? null,
+      provenance ?? null,
       ts,
       ts,
     );

@@ -5107,6 +5107,8 @@ async function renderHealth() {
   const skillList = Array.isArray(skills.by_skill) ? skills.by_skill : [];
   const dailySpend = Array.isArray(health.daily_spend) ? health.daily_spend : [];
   const totalUsd = typeof health.total_usd === "number" ? health.total_usd : 0;
+  const eventLog =
+    health.event_log && typeof health.event_log.chain_ok === "boolean" ? health.event_log : null;
 
   // --- ROI KPI row ----------------------------------------------------------
   const costPerFeature = health.cost_per_shipped_usd; // ticket-level (epic deferred)
@@ -5176,6 +5178,21 @@ async function renderHealth() {
         delta: 0,
         series: [coveragePct],
       }),
+      // TAMPER-EVIDENT LOG: the work_events hash chain, re-derived server-side.
+      // A break means an event was rewritten, deleted or re-ordered after the fact —
+      // every rollup on this page is derived from that log, so it is shown first-class.
+      eventLog
+        ? kpiCard({
+            label: "Event log",
+            value: eventLog.chain_ok ? "intact" : "BROKEN",
+            unit: eventLog.chain_ok
+              ? `${eventLog.events} events chained`
+              : `at seq ${eventLog.broken_at_seq} (${eventLog.reason})`,
+            tone: eventLog.chain_ok ? "ok" : "danger",
+            delta: 0,
+            series: [eventLog.chain_ok ? 1 : 0],
+          })
+        : null,
     ]),
   );
 

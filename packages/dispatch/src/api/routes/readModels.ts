@@ -30,6 +30,38 @@ const AUDIT_TAIL_DEFAULT = 50;
  * dashboard summary, the cross-ticket activity feed, and the optional tool-audit
  * tail. All GET-only — none of these mutate state.
  */
+/**
+ * `/api/health` → `event_log`: the work_events hash chain, re-derived by
+ * `wg.verifyEventChain()`. Verification is O(events) sha256 work and the Overview
+ * polls this route, so the result is memoised per (latest seq, row count) for
+ * 60s: a tampered EXISTING row is therefore reported within a minute, a new
+ * append re-verifies at once.
+ */
+interface EventLogIntegrity {
+  chain_ok: boolean;
+  events: number;
+  broken_at_seq: number | null;
+  reason: "unhashed" | "link" | "content" | null;
+}
+let integrityMemo: { key: string; at: number; value: EventLogIntegrity } | null = null;
+const INTEGRITY_MEMO_MS = 60_000;
+function eventLogIntegrity(wg: Dispatch): EventLogIntegrity {
+  const key = `${wg.events.latestSeq()}:${wg.events.countActivity()}`;
+  const now = Date.now();
+  if (integrityMemo && integrityMemo.key === key && now - integrityMemo.at < INTEGRITY_MEMO_MS) {
+    return integrityMemo.value;
+  }
+  const v = wg.verifyEventChain();
+  const value: EventLogIntegrity = {
+    chain_ok: v.ok,
+    events: v.ok ? v.checked : wg.events.countActivity(),
+    broken_at_seq: v.brokenAtSeq,
+    reason: v.reason,
+  };
+  integrityMemo = { key, at: now, value };
+  return value;
+}
+
 export function routeReadModels(
   wg: Dispatch,
   memoryReader: MemoryReader,
@@ -307,8 +339,12 @@ export function routeReadModels(
     //     read via Memory's own CLI (standalone product; unavailable when unwired).
     const skills = aggregateSkillTelemetry(process.env);
     const recallRead = memoryReader.recallEffectiveness();
+    const eventLog = eventLogIntegrity(wg);
 
     sendJson(res, 200, {
+      // TAMPER-EVIDENT LOG: the work_events hash chain re-derived (memoised per
+      // log head for 60s — the Overview polls this route).
+      event_log: eventLog,
       total_usd: health.total_usd,
       ticket_count: health.ticket_count,
       shipped_count: health.shipped_count,

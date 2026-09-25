@@ -125,6 +125,16 @@ describe("GET /api/health", () => {
       expect(body.by_model).toEqual([]);
       expect(body.daily_spend).toEqual([]);
       expect(body.last_record_at).toBeNull();
+      // TAMPER-EVIDENT LOG: the chain verifies on a fresh board (the harness may
+      // have written zero or more events; either way it is intact).
+      const eventLog = body.event_log as {
+        chain_ok: boolean;
+        broken_at_seq: number | null;
+        events: number;
+      };
+      expect(eventLog.chain_ok).toBe(true);
+      expect(eventLog.broken_at_seq).toBeNull();
+      expect(typeof eventLog.events).toBe("number");
 
       // The two newly-wired sources degrade gracefully in the zero-state:
       // skill telemetry is a zero-state (null overall hit-rate); recall is

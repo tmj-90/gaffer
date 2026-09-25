@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 
 import Database from "better-sqlite3";
 
+import { backfillEventChain } from "../events/eventChain.js";
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
 
 export type Db = Database.Database;
@@ -242,7 +243,13 @@ export function migrate(db: Db): void {
   // (external links live on tickets.pr_url and evidence.url). Dropping it removes
   // a dead table from the state-export bundle and the drift guard. Idempotent.
   db.exec("DROP TABLE IF EXISTS external_refs");
+  // TAMPER-EVIDENT LOG (v22→v23): add the nullable `prev_hash` / `hash` columns to
+  // an EXISTING work_events table (plain additive ALTER, idempotent), then — after
+  // SCHEMA_SQL so a fresh DB has the table too — hash every row that has none, in
+  // rowid order from the genesis constant. Existing rows are never rewritten.
+  alterEventsAddHashChain(db);
   db.exec(SCHEMA_SQL);
+  backfillEventChain(db);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -397,6 +404,14 @@ function alterTicketsAddHumanDelivered(db: Db): void {
  * (SCHEMA_SQL creates the column). Existing rows inherit NULL — a prose AC with no
  * executable check, which is exactly the pre-v21 meaning.
  */
+function alterEventsAddHashChain(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(work_events)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the columns.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("prev_hash")) db.exec("ALTER TABLE work_events ADD COLUMN prev_hash TEXT");
+  if (!cols.has("hash")) db.exec("ALTER TABLE work_events ADD COLUMN hash TEXT");
+}
+
 function alterAcAddCheckCommand(db: Db): void {
   const info = db.prepare("PRAGMA table_info(acceptance_criteria)").all() as Array<{
     name: string;

@@ -521,6 +521,13 @@ export interface AcceptanceCriterion {
   verified_by: string | null;
   verified_at: string | null;
   /**
+   * MACHINE-CHECKABLE AC: an OPTIONAL shell command the RUNNER executes in the
+   * delivery worktree after the DoD gates (exit 0 ⇒ satisfied, verified_by
+   * `runner:check`; non-zero ⇒ failed + auto-reject to rework). NULL ⇒ a prose AC.
+   * The done gate refuses an AC that has a check but was not runner-verified.
+   */
+  check_command: string | null;
+  /**
    * Spec-Driven Development (Phase 2a): OPTIONAL provenance link to the frozen
    * spec clause this AC satisfies ({@link SpecClause.clause_id}). NULL when the AC
    * was authored outside a spec-driven build. One clause can back many ACs.

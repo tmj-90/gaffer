@@ -193,6 +193,7 @@ export async function routeTickets(
         text: body.text,
         verification_method: body.verification_method,
         evidence_required: body.evidence_required ?? false,
+        ...(body.check_command ? { check_command: body.check_command } : {}),
       },
       API_ACTOR,
     );

@@ -75,7 +75,7 @@ Every ticket moves through **draft → ready → in-progress → review** lanes,
 
 ### The human review gate
 
-When an agent delivers, the ticket lands in **Review** — and this is a *structural* barrier, not a courtesy. The agent **cannot approve or merge its own work**. The diff you sign off on is the **real `git diff`, computed server-side** against the delivery branch — never the agent's word for what it changed — and the Approve button stays disabled until that diff actually loads. Approve sends it to merge; reject loops it back for rework with your reason attached.
+When an agent delivers, the ticket lands in **Review** — and this is a *structural* barrier, not a courtesy. The agent **cannot approve or merge its own work**. The diff you sign off on is the **real `git diff`, computed server-side** against the delivery branch — never the agent's word for what it changed — and the Approve button stays disabled until that diff actually loads. Acceptance criteria can carry a **`check_command`**: the runner (not the agent) executes it in the delivery worktree, a pass is recorded as runner-verified evidence, a failure bounces the delivery back to rework before you ever see it, and approval is refused while a checked criterion is unverified. Approve sends it to merge; reject loops it back for rework with your reason attached.
 
 <p align="center">
   <img src="docs/img/review.png" alt="The Review gate with a server-computed diff and approve/reject" width="900">

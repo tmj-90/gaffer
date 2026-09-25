@@ -34,7 +34,7 @@ DRAFT  ──▶  READY  ──▶  CLAIMING  ──▶  IN PROGRESS  ──▶ 
 
 1. **plan** — a strong model (default: `opus`) decomposes the ticket into a concrete implementation plan. With `GAFFER_PLAN_DEBATE=1`, two models run a bounded adversarial debate before the plan is finalised.
 2. **implement** — a fast model (default: `sonnet`) executes the plan in a throwaway git worktree.
-3. **test** — the delivery agent runs the repo's test/build commands and records evidence.
+3. **test** — the delivery agent runs the repo's test/build commands and records evidence; then the **runner** re-runs the configured Definition-of-Done gates (tests · typecheck · lint) deterministically in the worktree and executes every acceptance criterion that carries a `check_command`, recording pass/fail as runner-verified evidence. A failing gate or check auto-rejects to rework.
 4. **self-review** — the agent checks its own diff for hygiene violations and minimalism compliance.
 5. **human gate** — the ticket lands in the Review tab. A human approves or rejects. On rejection the ticket re-queues for refinement.
 

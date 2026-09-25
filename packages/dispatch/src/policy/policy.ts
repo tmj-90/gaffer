@@ -37,6 +37,13 @@ export interface ScopeRepoContext {
   unresolvedSuggestedRepoCount: number;
 }
 
+/**
+ * MACHINE-CHECKABLE AC: the `verified_by` value the RUNNER stamps when it executed an
+ * AC's `check_command` and it exited 0. The done gate accepts a checked AC ONLY with
+ * this verifier — an agent's own evidence write stamps its agent id instead.
+ */
+export const AC_CHECK_VERIFIER = "runner:check";
+
 export interface PolicyContext {
   ticket: Ticket;
   acceptanceCriteria: AcceptanceCriterion[];
@@ -204,6 +211,25 @@ export function evaluatePolicy(
 
   // ---- Review → done ------------------------------------------------------
   if (gate === "done") {
+    // MACHINE-CHECKABLE AC (every pack — it is opt-in per AC): an AC that carries a
+    // `check_command` is done only when the RUNNER executed it and it passed —
+    // `status = satisfied` AND `verified_by = 'runner:check'`. An agent marking the
+    // same AC satisfied via record_ac_evidence (verified_by = the agent) does NOT
+    // count: the whole point of an executable check is that the fox does not count
+    // the hens. A `failed` or never-run check holds the ticket out of `done`.
+    for (const c of ac) {
+      if (!c.check_command || c.status === "waived") continue;
+      if (c.status !== "satisfied" || c.verified_by !== AC_CHECK_VERIFIER) {
+        failures.push(
+          fail(
+            "AC_CHECK_UNVERIFIED",
+            `AC "${c.text}" has an executable check that the runner has not passed ` +
+              `(status: ${c.status}${c.verified_by ? `, verified_by: ${c.verified_by}` : ""}). ` +
+              "The check must run and exit 0 in the delivery worktree.",
+          ),
+        );
+      }
+    }
     // Recomputed-diff verification applies to EVERY delivery-bound pack —
     // solo_loose (the DEFAULT pack) included. `done` must correspond to a REAL,
     // server-recomputed `git diff base...delivery-branch` on the recorded branch

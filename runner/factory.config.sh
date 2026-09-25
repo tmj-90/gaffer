@@ -1900,6 +1900,10 @@ gaffer_review_verdict() {
 # (or the existing GAFFER_GREENFIELD_INSTALL=0) for byte-identical-to-today behaviour.
 # shellcheck source=lib/dod.sh
 [ -f "$RUNNER_DIR/lib/dod.sh" ] && source "$RUNNER_DIR/lib/dod.sh"
+# MACHINE-CHECKABLE acceptance criteria: the runner executes each AC's check_command
+# in the delivery worktree after the DoD gates and records the verdict server-side.
+# shellcheck source=lib/ac-checks.sh
+[ -f "$RUNNER_DIR/lib/ac-checks.sh" ] && source "$RUNNER_DIR/lib/ac-checks.sh"
 
 # Recoverable-delivery + ask-on-cap primitives (GUARD B / GUARD C): defines
 # gaffer_branch_has_commits / gaffer_any_branch_has_commits (recoverable-vs-

@@ -190,6 +190,8 @@ export class TicketService {
         // Spec-Driven Development (Phase 2a): thread the frozen-spec clause id
         // through as provenance; NULL when the AC maps to no clause.
         spec_clause_id: input.spec_clause_id ?? null,
+        // MACHINE-CHECKABLE AC: the runner-executed verification command (NULL ⇒ prose).
+        check_command: input.check_command ?? null,
         created_at: now,
         updated_at: now,
       };

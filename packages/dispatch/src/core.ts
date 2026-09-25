@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { type Db, inTransaction, openDatabase } from "./db/connection.js";
 import { claimTicketInput } from "./domain/schemas.js";
 import {
+  type AcStatus,
   type AcceptanceCriterion,
   type Actor,
   type Agent,
@@ -1026,6 +1027,17 @@ export class Dispatch {
 
   approveReview(ticketRef: string, actor: Actor): TransitionResult {
     return this.reviewGateSvc.approveReview(ticketRef, actor);
+  }
+
+  /**
+   * MACHINE-CHECKABLE AC: the runner records the result of executing an AC's
+   * `check_command` (trusted actor only — see ReviewGateService.recordAcCheck).
+   */
+  recordAcCheck(
+    input: unknown,
+    actor: Actor,
+  ): { status: AcStatus; evidenceId: string; eventId: string } {
+    return this.reviewGateSvc.recordAcCheck(input, actor);
   }
 
   testerPass(

@@ -119,6 +119,8 @@ export const addAcBody = z.object({
   text: z.string().trim().min(1).max(2_000),
   verification_method: z.string().max(500).optional(),
   evidence_required: z.boolean().optional(),
+  /** MACHINE-CHECKABLE AC: shell command the runner executes to verify this AC. */
+  check_command: z.string().trim().min(1).max(2_000).optional(),
 });
 export type AddAcBody = z.infer<typeof addAcBody>;
 

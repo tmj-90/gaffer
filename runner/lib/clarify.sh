@@ -69,7 +69,10 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       trap _clarify_on_term TERM
       # Mount only the clarify-relevant + universal skill subset (not all ~66).
       gaffer_skills_mount "$CREPO" "clarify, record-evidence" "clarify-$CNUM"
-      sed "s#\${RUNNER_DIR}#$(_gaffer_sed_repl "$RUNNER_DIR")#g" "$CLAUDE_SETTINGS" > "$CREPO/.claude/settings.json"
+      # Render + VERIFY the safety-hook wiring (shared helper); an unwired settings
+      # file must never launch the clarify agent — fail closed like the delivery site.
+      gaffer_write_agent_settings "$CREPO" \
+        || { log "SAFETY: clarify settings.json unwired for #$CNUM — refusing live clarify (fail closed)"; result error; exit 1; }
       gaffer_trust_workspace "$CREPO"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }

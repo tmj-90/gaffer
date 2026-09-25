@@ -44,7 +44,9 @@ CREPO="$WORK/real-repo";          mkdir -p "$CREPO"
 # The runner "environment" files the clarify pass templates from.
 FAKE_RUNNER="$WORK/runner"; mkdir -p "$FAKE_RUNNER/claude"
 : > "$FAKE_RUNNER/safety-hook.mjs"
-printf '{"settings":"${RUNNER_DIR}"}\n' > "$FAKE_RUNNER/settings.tmpl.json"
+# Wired like the real template: the shared writer (lib/agent-env.sh) VERIFIES the
+# PreToolUse safety-hook wiring and fails closed without it.
+printf '{"hooks":{"PreToolUse":[{"command":"node ${RUNNER_DIR}/safety-hook.mjs"}]}}\n' > "$FAKE_RUNNER/settings.tmpl.json"
 printf '{"mcp":"${DISPATCH_DB}"}\n'      > "$FAKE_RUNNER/mcp.tmpl.json"
 printf '# brief\n'                        > "$FAKE_RUNNER/claude/CLAUDE.md"
 
@@ -72,6 +74,9 @@ wg() {
   esac
 }
 _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
+# The REAL shared settings writer clarify.sh calls (verified render; fail closed).
+# shellcheck source=../lib/agent-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/agent-env.sh"
 # clarify.sh renders the runtime .mcp.json through the factory.config.sh seam.
 # This hermetic harness stubs every collaborator, so provide a faithful bash-branch
 # stand-in: it substitutes the same seven placeholders (incl. ${GAFFER_TICKET_REPOS},

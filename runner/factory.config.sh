@@ -1874,6 +1874,10 @@ gaffer_review_verdict() {
 # gaffer_assert_repo_clean). HARD-FAIL guard against the unattended-run leaks.
 # shellcheck source=lib/hygiene.sh
 [ -f "$RUNNER_DIR/lib/hygiene.sh" ] && source "$RUNNER_DIR/lib/hygiene.sh"
+# Agent-env helpers shared by every spawn site: the verified settings.json write
+# and the worktree node_modules linker (see lib/agent-env.sh).
+# shellcheck source=lib/agent-env.sh
+[ -f "$RUNNER_DIR/lib/agent-env.sh" ] && source "$RUNNER_DIR/lib/agent-env.sh"
 
 # Minimalism post-condition (defines gaffer_diff_stats / gaffer_check_minimalism).
 # shellcheck source=lib/minimalism.sh

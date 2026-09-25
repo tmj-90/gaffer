@@ -92,7 +92,10 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       fi
       # Mount only the review-relevant + universal skill subset (not all ~66).
       gaffer_skills_mount "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM"
-      sed "s#\${RUNNER_DIR}#$(_gaffer_sed_repl "$RUNNER_DIR")#g" "$CLAUDE_SETTINGS" > "$WT/.claude/settings.json"
+      # Render + VERIFY the safety-hook wiring (shared helper); an unwired settings
+      # file must never launch the reviewer — fail closed like the delivery site.
+      gaffer_write_agent_settings "$WT" \
+        || { log "SAFETY: reviewer settings.json unwired for #$RNUM — refusing live review (fail closed)"; result error; exit 1; }
       gaffer_trust_workspace "$WT"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }

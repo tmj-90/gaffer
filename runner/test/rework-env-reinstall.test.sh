@@ -60,6 +60,8 @@ extract_retry_block() {
 source "$RUNNER_DIR/lib/skills-mount.sh"
 # shellcheck source=../lib/hygiene.sh
 source "$RUNNER_DIR/lib/hygiene.sh"
+# shellcheck source=../lib/agent-env.sh
+source "$RUNNER_DIR/lib/agent-env.sh"
 # B-M1: gaffer_install_agent_env now escapes sed replacements via _gaffer_sed_repl
 # (defined in factory.config.sh, which tick.sh sources before this helper runs). We
 # extract the helper VERBATIM here without sourcing the whole config, so provide the

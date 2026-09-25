@@ -1666,13 +1666,7 @@ EOF
           FAILED:*) log "greenfield: WARN — ${_pm_primed#FAILED:} install did not prime ${rname:-repo} deps (resume); test gate may fail #$NUM (see the diagnostic above)" ;;
           ?*) log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (resume) for #$NUM" ;;
         esac
-        [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
-        while IFS= read -r _nm; do
-          _rel="${_nm#"$rpath"/}"
-          [ "$_rel" = "node_modules" ] && continue
-          [ -e "$rwt/$_rel" ] && continue
-          mkdir -p "$(dirname "$rwt/$_rel")" 2>/dev/null && ln -sfn "$_nm" "$rwt/$_rel"
-        done < <(find "$rpath" -maxdepth 3 -name node_modules -type d 2>/dev/null)
+        gaffer_link_node_modules "$rpath" "$rwt"
       fi
       continue
     fi
@@ -1690,19 +1684,9 @@ EOF
         ?*) log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (fresh repo had no node_modules) for #$NUM" ;;
       esac
       # JS/TS repos can't test/build in a fresh worktree: node_modules is gitignored,
-      # lives only in the main checkout, and installs are hook-blocked. Symlink the real
-      # repo's node_modules in so `pnpm test`/`build` resolve. No-op for non-JS repos.
-      [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
-      # Workspaces (pnpm/yarn/npm monorepos) keep test/build binaries in PER-PACKAGE
-      # node_modules/.bin, not the root — so also symlink each sub-package's node_modules,
-      # or `vitest`/`tsc` are unresolvable in the worktree and the DoD gate fails to RUN
-      # (every workspace delivery would die with "vitest: command not found" → rc=1).
-      while IFS= read -r _nm; do
-        _rel="${_nm#"$rpath"/}"
-        [ "$_rel" = "node_modules" ] && continue
-        [ -e "$rwt/$_rel" ] && continue
-        mkdir -p "$(dirname "$rwt/$_rel")" 2>/dev/null && ln -sfn "$_nm" "$rwt/$_rel"
-      done < <(find "$rpath" -maxdepth 3 -name node_modules -type d 2>/dev/null)
+      # lives only in the main checkout, and installs are hook-blocked. Link the real
+      # repo's node_modules (root + per-package) in so `pnpm test`/`build` resolve.
+      gaffer_link_node_modules "$rpath" "$rwt"
     else
       log "FAIL: could not add worktree $rwt on $WORK_BRANCH (base $rbase) for write repo ${rname:-repo} ($rpath) for #$NUM"
       WT_FAILED=1
@@ -1757,18 +1741,9 @@ EOF
   gaffer_install_agent_env() {
     gaffer_assert_safety_hook || { log "SAFETY: refusing to prepare the agent env (fail closed)"; return 1; }
     gaffer_skills_mount "$PRIMARY_REPO" "$SKILLS, $LENSES" "delivery-$NUM"
-    mkdir -p "$PRIMARY_REPO/.claude" 2>/dev/null || true
-    if ! sed "s#\${RUNNER_DIR}#$(_gaffer_sed_repl "$RUNNER_DIR")#g" "$CLAUDE_SETTINGS" > "$PRIMARY_REPO/.claude/settings.json" 2>/dev/null; then
-      rm -f "$PRIMARY_REPO/.claude/settings.json"   # never leave a truncated half-write behind
-      log "SAFETY: could not write $PRIMARY_REPO/.claude/settings.json from $CLAUDE_SETTINGS (fail closed)"; return 1
-    fi
-    # Verify the WIRING, not just the write: the settings the agent will load
-    # must reference the resolved hook path as a PreToolUse hook.
-    if ! grep -q '"PreToolUse"' "$PRIMARY_REPO/.claude/settings.json" 2>/dev/null \
-       || ! grep -qF "$RUNNER_DIR/safety-hook.mjs" "$PRIMARY_REPO/.claude/settings.json" 2>/dev/null; then
-      rm -f "$PRIMARY_REPO/.claude/settings.json"   # an unwired settings file must not survive
-      log "SAFETY: $PRIMARY_REPO/.claude/settings.json lacks the PreToolUse safety-hook wiring (fail closed)"; return 1
-    fi
+    # Render + VERIFY the settings (PreToolUse safety-hook wiring) — shared with the
+    # reviewer and clarify sites via lib/agent-env.sh; an unwired file fails closed.
+    gaffer_write_agent_settings "$PRIMARY_REPO" || return 1
     # Trust the worktree so the allowlist just written is HONOURED headless — else
     # the agent hangs on the first MCP tool-permission prompt (untrusted-dir gate).
     gaffer_trust_workspace "$PRIMARY_REPO"
@@ -2070,17 +2045,7 @@ $_trail_q
       if ! git -C "$rpath" worktree add "$rwt" "$WORK_BRANCH" >/dev/null 2>&1; then
         git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1 || true
       fi
-      [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
-      # Workspaces (pnpm/yarn/npm monorepos) keep test/build binaries in PER-PACKAGE
-      # node_modules/.bin, not the root — so also symlink each sub-package's node_modules,
-      # or `vitest`/`tsc` are unresolvable in the worktree and the DoD gate fails to RUN
-      # (every workspace delivery would die with "vitest: command not found" → rc=1).
-      while IFS= read -r _nm; do
-        _rel="${_nm#"$rpath"/}"
-        [ "$_rel" = "node_modules" ] && continue
-        [ -e "$rwt/$_rel" ] && continue
-        mkdir -p "$(dirname "$rwt/$_rel")" 2>/dev/null && ln -sfn "$_nm" "$rwt/$_rel"
-      done < <(find "$rpath" -maxdepth 3 -name node_modules -type d 2>/dev/null)
+      gaffer_link_node_modules "$rpath" "$rwt"
     done <<< "$WT_ROWS"
     # RE-INSTALL the agent environment into the FRESH worktree. The rework
     # teardown destroyed the untracked runner config with the old worktree — a

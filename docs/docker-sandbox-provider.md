@@ -1,10 +1,14 @@
-# VM sandbox provider — design (the second execution mode)
+# Docker sandbox provider — design & status (the second execution mode)
 
-Status: **P0 built + validated (docker provider); live-delivery capstone (step 5) +
-true-microVM (`lima`) pending.** Fills the `docker` case in `runner/lib/sandbox.sh`'s
-`sandbox_wrap_cmd` provider seam (`lima` remains a stub). Addresses the external
-security review's #1 ("no real exfiltration boundary — read + network") — the item no
-amount of regex/hook hardening can close.
+> Formerly `vm-sandbox-provider.md`. The shipped provider is **docker**; the
+> per-ticket microVM described further down is a design sketch with no code behind
+> it (the former `lima` provider stub was removed — an unknown provider fails closed
+> under `GAFFER_STRICT_REQUIRE=1` and otherwise warns and runs unwrapped).
+
+Status: **P0 built + validated (docker provider); live-delivery capstone (step 5)
+pending.** Fills the `docker` case in `runner/lib/sandbox.sh`'s `sandbox_wrap_cmd`
+provider seam. Addresses the external security review's #1 ("no real exfiltration
+boundary — read + network") — the item no amount of regex/hook hardening can close.
 
 **Built so far** (`SANDBOX_PROVIDER=docker`): the seam `docker` case → `lib/sandbox-docker.sh`
 wrapper (path-mirrored mounts, `--internal` network, allowlist-proxy env, credential
@@ -14,8 +18,7 @@ secret unreadable (not mounted), egress to a non-allowlisted host blocked (DNS *
 raw-IP), allowlisted model + registry reachable, worktree writable and round-tripping.
 The delivery **image** now exists (`runner/sandbox/Dockerfile` — node + `claude`); still
 not done: a live `claude -p` delivery **end-to-end inside the container** (step 5, gated
-on a headless model credential), plus the per-ticket **microVM** (`lima`) upgrade — the
-true "VM" form this doc is named for, still a stub.
+on a headless model credential), plus the per-ticket **microVM** upgrade — a design sketch, not code.
 
 ## Two modes (the framing)
 

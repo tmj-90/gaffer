@@ -225,7 +225,7 @@ consuming component applies its own default when the variable is unset.
 | `GAFFER_NOTIFY_DESKTOP` | boolean | notifications | dispatch, runner | Fire a native desktop banner (macOS/Linux) on each human gate. |
 | `GAFFER_NOTIFY_EVENTS` | csv | notifications | dispatch | Comma-separated allow-list of gate kinds to notify on (review_needed · ticket_blocked · ticket_parked · decision_pending). Empty = all gates. |
 | `GAFFER_NOTIFY_FULL_PAYLOAD` | boolean | notifications | dispatch | Outbound notifications are REDACTED by default (kind · ticket number · status · dashboard URL). The free-text ticket title/detail can be prompt-injection-influenced, so they never leave the box unless you opt in here. Enable ONLY when the webhook/Slack endpoint is inside your trust boundary. |
-| `SANDBOX_PROVIDER` | string: sandbox-exec / docker / lima / none | sandbox | dispatch, runner | Which OS-level containment backend the strict sandbox uses: docker (experimental — real read + write + egress isolation, any host with a Docker daemon) · sandbox-exec (macOS — write-only containment) · none (disable OS wrapping, keep the toggle). lima/VM are future (stronger per-ticket microVM). Only consulted when the strict sandbox is on. |
+| `SANDBOX_PROVIDER` | string: sandbox-exec / docker / none | sandbox | dispatch, runner | Which OS-level containment backend the strict sandbox uses: docker (experimental — real read + write + egress isolation, any host with a Docker daemon) · sandbox-exec (macOS — write-only containment) · none (disable OS wrapping, keep the toggle). Only consulted when the strict sandbox is on. |
 
 ## Env reads without a default or UI entry
 

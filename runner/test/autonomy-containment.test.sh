@@ -99,8 +99,8 @@ STRICT_MODE=0 GAFFER_STRICT_REQUIRE=1 SANDBOX_PROVIDER=none run_bare
 case "$ERR" in *"fail closed"*) ok "refusal is loud and says 'fail closed'" ;; *) fail "no fail-closed message (got: $ERR)" ;; esac
 
 STRICT_MODE=1 GAFFER_STRICT_REQUIRE=1 SANDBOX_PROVIDER=lima run_bare
-[ "$RC" = "75" ] && [ ! -f "$MARKER" ] && ok "STRICT_MODE=1 + stub provider 'lima' → refused, no spawn" \
-  || fail "lima stub under strict-require should refuse (rc=$RC marker=$([ -f "$MARKER" ] && echo yes || echo no))"
+[ "$RC" = "75" ] && [ ! -f "$MARKER" ] && ok "STRICT_MODE=1 + unknown provider 'lima' → refused, no spawn" \
+  || fail "unknown provider under strict-require should refuse (rc=$RC marker=$([ -f "$MARKER" ] && echo yes || echo no))"
 
 echo "== 3: sandbox off → invocation unchanged (spawns) =="
 STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none run_bare

@@ -24,7 +24,7 @@ State (dbs, config, logs) lives **outside** the packages, in `<repo-root>/.gaffe
 
 ## 0. Prerequisites
 
-- macOS (Linux works; `sandbox-exec` strict mode is macOS-only — see `STRICT_MODE.md`)
+- macOS or Linux. OS-level containment: `sandbox-exec` (macOS, write-only) or `docker` (any host with a daemon; read + egress isolation) — auto-detected, see `STRICT_MODE.md`
 - Node ≥ 22 (`.nvmrc`; `engines` is enforced) · pnpm 10 · git · python3 (the runner uses small python helpers)
 - Claude Code CLI (`claude`) — only needed to run the *live* factory
 

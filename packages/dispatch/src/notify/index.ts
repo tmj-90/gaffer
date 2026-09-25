@@ -35,3 +35,4 @@ export {
 export { WebhookSink, DEFAULT_WEBHOOK_TIMEOUT_MS } from "./sinks/webhook.js";
 export { SlackSink, renderSlackText } from "./sinks/slack.js";
 export { DesktopSink } from "./sinks/desktop.js";
+export { notifyUrlProblem, notifyAllowsPrivate, privateHostReason } from "./urlPolicy.js";

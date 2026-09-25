@@ -2,6 +2,7 @@ import { CompositeNotifier, NOOP_NOTIFIER } from "./notifier.js";
 import { DesktopSink } from "./sinks/desktop.js";
 import { SlackSink } from "./sinks/slack.js";
 import { WebhookSink } from "./sinks/webhook.js";
+import { notifyAllowsPrivate, notifyUrlProblem } from "./urlPolicy.js";
 import {
   isNotifyKind,
   NOTIFY_KINDS,
@@ -62,14 +63,30 @@ export function parseAllowedEvents(raw: string | undefined): readonly NotifyKind
  *
  * Pure w.r.t. `env` (defaults to `process.env`) so it's trivially testable.
  */
-export function buildNotifierFromEnv(env: NodeJS.ProcessEnv = process.env): Notifier {
+export function buildNotifierFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  warn: (message: string) => void = (m) => process.stderr.write(`${m}\n`),
+): Notifier {
   const sinks: NotifySink[] = [];
+  // URL POLICY (SSRF): a sink is only built from an http(s) URL that does not point at a
+  // loopback / link-local / private destination (unless GAFFER_NOTIFY_ALLOW_PRIVATE=1).
+  // A refused URL is skipped LOUDLY — never silently, never by falling back to the raw
+  // value — so a mis-set or hostile endpoint cannot become an outbound POST primitive.
+  const allowPrivate = notifyAllowsPrivate(env);
+  const accept = (key: string, raw: string): boolean => {
+    const problem = notifyUrlProblem(raw, { allowPrivate });
+    if (problem === null) return true;
+    warn(`notify: ignoring ${key} — ${problem}`);
+    return false;
+  };
 
   const webhookUrl = (env[NOTIFY_ENV.webhookUrl] ?? "").trim();
-  if (webhookUrl !== "") sinks.push(new WebhookSink(webhookUrl));
+  if (webhookUrl !== "" && accept(NOTIFY_ENV.webhookUrl, webhookUrl)) {
+    sinks.push(new WebhookSink(webhookUrl));
+  }
 
   const slackUrl = (env[NOTIFY_ENV.slackUrl] ?? "").trim();
-  if (slackUrl !== "") sinks.push(new SlackSink(slackUrl));
+  if (slackUrl !== "" && accept(NOTIFY_ENV.slackUrl, slackUrl)) sinks.push(new SlackSink(slackUrl));
 
   if (isTruthyFlag(env[NOTIFY_ENV.desktop])) sinks.push(new DesktopSink());
 

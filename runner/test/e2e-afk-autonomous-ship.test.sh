@@ -155,12 +155,20 @@ V="$(gaffer_review_verdict "$APPROVE_RESULT")"
 PLAN="$(gaffer_afk_ship_plan "$V" allow allow)"
 [ "$PLAN" = "ship" ] && ok "gaffer_afk_ship_plan approve+allow+allow → ship" || fail "plan wrong (got '$PLAN')"
 
-# The runner crosses the review gate AS ITS AGENT ACTOR under the approve floor — the
-# EXACT call lib/review.sh makes (--as agent --reviewer \$AGENT with the floor exported).
+# REVIEWER ≠ AUTHOR (server-side): the bare delivering agent id is REFUSED even under the
+# approve floor — the implementer may not approve its own delivery. Negative control first.
 ( export DISPATCH_ALLOW_AGENT_APPROVE=1
   wg review approve "$NUM" --as agent --reviewer "$AGENT" >/dev/null 2>&1 )
+[ "$(status_of "$NUM")" = "in_review" ] \
+  && ok "self-approval refused: the DELIVERING agent id cannot approve its own ticket (still in_review)" \
+  || fail "#$NUM left in_review by a self-approval attempt (got '$(status_of "$NUM")')"
+
+# The runner crosses the review gate AS ITS REVIEWER PRINCIPAL under the approve floor — the
+# EXACT call lib/review.sh makes (--as agent --reviewer \$AGENT/reviewer, floor exported).
+( export DISPATCH_ALLOW_AGENT_APPROVE=1
+  wg review approve "$NUM" --as agent --reviewer "$AGENT/reviewer" >/dev/null 2>&1 )
 [ "$(status_of "$NUM")" = "ready_for_merge" ] \
-  && ok "runner (agent actor) approved under the floor → ready_for_merge (autonomous, no human)" \
+  && ok "runner (reviewer principal) approved under the floor → ready_for_merge (autonomous, no human)" \
   || fail "#$NUM not ready_for_merge after agent-approve (got '$(status_of "$NUM")')"
 
 # The merge gate is also earned → REAL git auto-merge into the default branch, then record it.

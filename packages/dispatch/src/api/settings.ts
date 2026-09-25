@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import { notifyAllowsPrivate, notifyUrlProblem } from "../notify/urlPolicy.js";
 import { DispatchError } from "../util/errors.js";
 
 /**
@@ -677,6 +678,24 @@ export function writeSettings(
       invalid.push(key);
       continue;
     }
+    // Typed values must parse: an `int` is a non-negative integer literal; a `boolean`
+    // is 0/1/true/false/yes/no. Previously any string was persisted for any type, so a
+    // typo'd cap silently became "unset" at runtime (bash `[ "$x" -ge … ]` on "abc").
+    if (value !== "" && !valueFitsType(def.type, value)) {
+      invalid.push(key);
+      continue;
+    }
+    // Outbound URLs (notify webhook / Slack) must pass the notify URL policy: http(s)
+    // only and no loopback / link-local / private destination unless the env opts in.
+    // The dashboard token would otherwise let anyone aim the factory's POSTs at an
+    // internal service (SSRF) from the settings panel.
+    if (value !== "" && key.endsWith("_URL")) {
+      const problem = notifyUrlProblem(value, { allowPrivate: notifyAllowsPrivate(env) });
+      if (problem !== null) {
+        invalid.push(key);
+        continue;
+      }
+    }
     merged[key] = value;
     written.push(key);
   }
@@ -687,6 +706,18 @@ export function writeSettings(
   }
 
   return { written, rejected, ignored, invalid };
+}
+
+/** Does `value` parse as the setting's declared type? (Empty is handled by the caller.) */
+function valueFitsType(type: SettingType, value: string): boolean {
+  switch (type) {
+    case "int":
+      return /^\d+$/.test(value.trim());
+    case "boolean":
+      return /^(0|1|true|false|yes|no)$/i.test(value.trim());
+    default:
+      return true;
+  }
 }
 
 /** Serialise `data` to `path` atomically (temp file in the same dir + rename). */

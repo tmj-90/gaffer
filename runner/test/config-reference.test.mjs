@@ -117,8 +117,21 @@ ok(
   "dashboard-only section lists SANDBOX_PROVIDER",
 );
 ok(
-  /\| `GAFFER_DOD_TIMEOUT` \| `900` \| /.test(text),
-  "undocumented-read section surfaces GAFFER_DOD_TIMEOUT with its in-code default",
+  /\| `GAFFER_DOD_TIMEOUT` \| `900` \|/.test(text) &&
+    !/\| `GAFFER_DOD_TIMEOUT` \| `900` \| `runner/.test(text),
+  "GAFFER_DOD_TIMEOUT is a documented runner default now (not an undocumented read)",
+);
+ok(
+  /### lib\/skills-mount\.sh[\s\S]*\| `GAFFER_UNIVERSAL_SKILLS` \|/.test(text),
+  "a knob defaulted in runner/lib/*.sh is listed under its lib section",
+);
+ok(
+  !/\| `GAFFER_DOD_INSTALL_TIMEOUT` \| [^|]*\| `runner\/lib\/dod\.sh`/.test(text),
+  "a lib-defaulted knob is not reported as an undocumented read",
+);
+ok(
+  /\| `GAFFER_ONBOARD_TIMEOUT` \| [^|]*\| `runner\/lib\/onboard-analyze\.mjs`/.test(text),
+  "a read with no default anywhere is still listed as undocumented",
 );
 ok(
   !/\| `GAFFER_STRICT_REQUIRE` \| `runner/.test(text),

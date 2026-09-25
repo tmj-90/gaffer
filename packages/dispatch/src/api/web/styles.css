@@ -1171,14 +1171,17 @@ html::after {
     display: block;
     padding: var(--s-4) clamp(var(--s-5), 3vw, var(--s-8));
     margin-top: auto;
-    color: var(--text-ghost);
+    color: var(
+      --text-faint
+    ); /* a11y: --text-ghost is ~3.4:1 on the console bg; faint clears 4.5:1 */
     font-family: var(--mono);
     font-size: 0.64rem;
     letter-spacing: var(--track-label);
     text-transform: uppercase;
     text-align: left;
     border-top: 1px solid var(--line-hair);
-    opacity: 0.7;
+    /* a11y: no opacity here — 0.7 blended --text-faint down to #655f52 (3.1:1); the
+       faint token is already the quiet register and clears 4.5:1 on the console bg. */
   }
 }
 
@@ -4903,11 +4906,22 @@ td.title-cell {
   max-height: 86dvh;
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   transform: translateY(101%);
-  transition: transform var(--med) var(--ease);
+  /* a11y: a closed sheet is only translated off-screen, so its controls stayed in
+     the focus order and the accessibility tree (an unlabeled off-screen <select>
+     was announced on every view). visibility:hidden removes both; the delay keeps
+     the close animation visible, and opening flips visibility immediately. */
+  visibility: hidden;
+  transition:
+    transform var(--med) var(--ease),
+    visibility 0s linear var(--med);
   padding-bottom: var(--safe-b);
 }
 .sheet.open {
   transform: translateY(0);
+  visibility: visible;
+  transition:
+    transform var(--med) var(--ease),
+    visibility 0s;
 }
 .sheet-grip {
   width: 40px;

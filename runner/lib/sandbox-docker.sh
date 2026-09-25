@@ -44,8 +44,15 @@ _WRITE_ROOTS_FILE="$1"; _READ_ROOTS_FILE="$2"; shift 2
 [ "$1" = "--" ] || _die "expected -- before the command, got '$1'"; shift
 [ "$#" -ge 1 ] || _die "no command to run"
 
-command -v docker >/dev/null 2>&1 || _die "docker not found"
-docker info >/dev/null 2>&1 || _die "docker daemon unavailable"
+# GAFFER_SANDBOX_DRY_RUN=1: assemble the `docker run` argv and PRINT it (one arg per
+# line) instead of executing — no daemon, no network, no image needed. This is the
+# testable seam for the mount/env assembly below (test/sandbox-docker-mounts.test.sh).
+_DRY_RUN="${GAFFER_SANDBOX_DRY_RUN:-0}"
+
+if [ "$_DRY_RUN" != "1" ]; then
+  command -v docker >/dev/null 2>&1 || _die "docker not found"
+  docker info >/dev/null 2>&1 || _die "docker daemon unavailable"
+fi
 
 # --- render the effective egress allowlist (baked default + operator hosts) ---
 # The proxy image bakes a default-deny host filter; this lets an operator permit
@@ -86,7 +93,8 @@ _ensure_egress() {
   # the OLD mounted filter, so an operator's allowlist edit wouldn't take effect.
   local data="${GAFFER_DATA:-$_RUNNER_DIR/.gaffer}"
   local sha shafile prev running=0
-  sha="$(shasum "$_EGRESS_FILTER" 2>/dev/null | awk '{print $1}')"
+  # sha256sum (GNU coreutils, Linux) or shasum (macOS/perl) — whichever this host has.
+  sha="$( { sha256sum "$_EGRESS_FILTER" 2>/dev/null || shasum -a 256 "$_EGRESS_FILTER" 2>/dev/null; } | awk '{print $1}')"
   shafile="$data/.egress-filter.sha"
   [ -f "$shafile" ] && prev="$(cat "$shafile" 2>/dev/null)" || prev=""
   docker ps --filter "name=^${_PROXY_NAME}$" --filter status=running -q | grep -q . && running=1
@@ -109,24 +117,64 @@ _ensure_egress() {
     [ -n "$sha" ] && printf '%s' "$sha" >"$shafile" 2>/dev/null || true
   fi
 }
-_ensure_egress
+[ "$_DRY_RUN" = "1" ] || _ensure_egress
 
 # --- assemble mount + env args ---
 _mounts=()
+_mounted_roots=()   # every host path we bind (any mode) — for the "already covered?" test
+_add_mount() {      # <host-path> <rw|ro>
+  local p="$1" mode="$2" m
+  for m in ${_mounted_roots[@]+"${_mounted_roots[@]}"}; do [ "$m" = "$p" ] && return 0; done
+  _mounts+=( -v "$p:$p:$mode" ); _mounted_roots+=( "$p" )
+}
+_covered() {        # true when <path> is a mounted root or lives under one
+  local p="$1" m
+  for m in ${_mounted_roots[@]+"${_mounted_roots[@]}"}; do
+    case "$p" in "$m"|"$m"/*) return 0 ;; esac
+  done
+  return 1
+}
+_WRITE_ROOTS=()
 while IFS= read -r root; do
   [ -n "$(printf '%s' "$root" | tr -d '[:space:]')" ] || continue
   [ -e "$root" ] || continue
-  _mounts+=( -v "$root:$root:rw" )
+  _add_mount "$root" rw; _WRITE_ROOTS+=( "$root" )
 done < "$_WRITE_ROOTS_FILE"
 while IFS= read -r root; do
   [ -n "$(printf '%s' "$root" | tr -d '[:space:]')" ] || continue
   [ -e "$root" ] || continue
-  _mounts+=( -v "$root:$root:ro" )
+  _add_mount "$root" ro
 done < "$_READ_ROOTS_FILE"
 # GAFFER_DATA holds the MCP db copies + agent runtime — rw, path-mirrored.
-[ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && _mounts+=( -v "$GAFFER_DATA:$GAFFER_DATA:rw" )
-# The factory's own dir (dist bins, skills, safety hook) — ro, path-mirrored.
-[ -d "$_RUNNER_DIR" ] && _mounts+=( -v "$_RUNNER_DIR:$_RUNNER_DIR:ro" )
+[ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && _add_mount "$GAFFER_DATA" rw
+# The factory's own dir (skills, safety hook, worker seam) — ro, path-mirrored.
+[ -d "$_RUNNER_DIR" ] && _add_mount "$_RUNNER_DIR" ro
+# The factory's BUILT PACKAGES + their dependency tree — ro, path-mirrored. The MCP
+# servers the agent delivers through are `node $GAFFER_HOME/packages/{dispatch,memory}/dist/…`
+# (DISPATCH_MCP_BIN / MEMORY_MCP_BIN) and resolve their imports via the pnpm store in
+# `$GAFFER_HOME/node_modules`. Without these two mounts neither MCP server can start
+# inside the container — the worker has no data plane and every delivery is inert.
+# Deliberately NOT the whole $GAFFER_HOME: that would expose the factory's own `.env`
+# and any operator files kept beside the checkout to a kernel-level read the hook
+# cannot see. `packages/` and `node_modules/` are code, not secrets.
+_GAFFER_HOME="${GAFFER_HOME:-$(cd "$_RUNNER_DIR/.." && pwd)}"
+for _d in "$_GAFFER_HOME/packages" "$_GAFFER_HOME/node_modules"; do
+  [ -d "$_d" ] && ! _covered "$_d" && _add_mount "$_d" ro
+done
+# Each write root's node_modules are SYMLINKS into the real checkout (tick.sh links
+# them in because installs are hook-blocked in a worktree). Mounts are path-mirrored,
+# so the link resolves inside the container ONLY if its target is mounted too — bind
+# each resolved target ro (dedup'd, skipped when an existing mount already covers it).
+# Depth 4 mirrors tick.sh's workspace-package sweep (`find -maxdepth 3 -name node_modules`).
+_readlink_f() { readlink -f "$1" 2>/dev/null || python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null; }
+for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+  while IFS= read -r _lnk; do
+    _tgt="$(_readlink_f "$_lnk")"
+    [ -n "$_tgt" ] && [ -d "$_tgt" ] || continue
+    _covered "$_tgt" && continue
+    _add_mount "$_tgt" ro
+  done < <(find "$_wr" -maxdepth 4 -name node_modules -type l 2>/dev/null)
+done
 
 # Forward ONLY the allowlisted env. The model credential (ONE of ANTHROPIC_API_KEY or
 # CLAUDE_CODE_OAUTH_TOKEN — the latter is a subscription token from `claude setup-token`,
@@ -155,6 +203,14 @@ _envs+=( -e "HTTP_PROXY=http://egress-proxy:8888" -e "HTTPS_PROXY=http://egress-
 _envs+=( -e "http_proxy=http://egress-proxy:8888" -e "https_proxy=http://egress-proxy:8888" )
 # No proxy for loopback + the docker-internal proxy hostname itself.
 _envs+=( -e "NO_PROXY=localhost,127.0.0.1,egress-proxy" -e "no_proxy=localhost,127.0.0.1,egress-proxy" )
+
+if [ "$_DRY_RUN" = "1" ]; then
+  printf '%s\n' docker run --rm --network "$_NET_INT" \
+    --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges \
+    --pids-limit "${GAFFER_SANDBOX_PIDS:-512}" --memory "${GAFFER_SANDBOX_MEMORY:-4g}" --cpus "${GAFFER_SANDBOX_CPUS:-4}" \
+    -w "$(pwd)" "${_mounts[@]}" "${_envs[@]}" "$_IMAGE" "$@"
+  exit 0
+fi
 
 docker image inspect "$_IMAGE" >/dev/null 2>&1 || _die "sandbox image '$_IMAGE' not found — build it first (runner/sandbox/Dockerfile)"
 

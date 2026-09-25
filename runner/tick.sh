@@ -1845,7 +1845,11 @@ EOF
   # containment; worktree isolation + safety hook still apply). STRICT_MODE=0
   # leaves WRAP empty, so the invocation below is byte-for-byte as before.
   WRAP=""
-  if [ "${STRICT_MODE:-0}" = "1" ]; then
+  # Consult the provider when the sandbox is ON (STRICT_MODE=1) OR REQUIRED
+  # (GAFFER_STRICT_REQUIRE — auto-set by every autonomy flag). Gating this on
+  # STRICT_MODE alone let `GAFFER_MODE=autonomous` announce "fails closed without an
+  # OS sandbox" and then launch uncontained, because nothing here ever asked.
+  if [ "${STRICT_MODE:-0}" = "1" ] || _sandbox_strict_required; then
     # C4: sandbox_wrap_cmd returns NON-ZERO only when GAFFER_STRICT_REQUIRE=1 and no OS
     # sandbox provider is available — a hard fail-closed: the operator demanded OS
     # containment this host can't supply, so we do NOT launch the agent uncontained.

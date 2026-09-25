@@ -1519,6 +1519,17 @@ if _gaffer_autonomy_on; then
   elif ! _gaffer_flag_on "${GAFFER_STRICT_REQUIRE}"; then
     printf 'WARNING: autonomy flags are ON but GAFFER_STRICT_REQUIRE=%s — the OS sandbox is NOT required, so a prompt-injected agent has no containment boundary beyond the deterministic hook. Only safe if you provide containment out-of-band (VM/container).\n' "${GAFFER_STRICT_REQUIRE}" >&2
   fi
+  # Requiring the sandbox is only meaningful if the launch path actually ASKS for one.
+  # Historically only GAFFER_MODE=strict defaulted STRICT_MODE=1, so `autonomous` (and
+  # any single ship/mutate flag) exported GAFFER_STRICT_REQUIRE=1, printed the
+  # fail-closed notice above, and then launched the agent with NO OS sandbox — the
+  # wrap is consulted only when STRICT_MODE=1 (tick.sh) — i.e. the requirement was
+  # never evaluated. Default STRICT_MODE=1 whenever autonomy is on, so the requirement
+  # is enforced at the spawn. An explicit STRICT_MODE=0 in the env is honoured, but
+  # worker_deliver still fails closed while GAFFER_STRICT_REQUIRE is on (lib/worker.sh).
+  if _gaffer_flag_on "${GAFFER_STRICT_REQUIRE}"; then
+    : "${STRICT_MODE:=1}"
+  fi
 fi
 
 # Who reviews in_review tickets before they can be approved to done:

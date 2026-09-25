@@ -369,6 +369,24 @@ async function runAsyncActionUntilDone(btn, running, fn) {
     });
   await done();
   restore();
+  // The run finished (or the cap elapsed) — say so when it FAILED. Before this a
+  // failed onboard / product-owner / poll run only showed in the Running-now panel
+  // while the button quietly reset, so a first-run misconfiguration looked like
+  // "nothing happened". Best-effort: a read error here never throws.
+  try {
+    const data = await api("GET", "/api/runs");
+    const recent = [...(data.recent || []), ...(data.active || [])];
+    const failed = recent.filter((r) => wanted.has(r.id) && r.status === "failed");
+    for (const r of failed) {
+      const why = r.summary || r.error || r.last_line || "";
+      toast(
+        `${RUN_KIND_LABELS[r.kind] || r.kind || "Run"} failed${r.exit_code != null ? ` (exit ${r.exit_code})` : ""}${why ? ` — ${String(why).slice(0, 160)}` : ""}. Open it under Running now for the log.`,
+        { code: "RUN_FAILED" },
+      );
+    }
+  } catch {
+    // best-effort
+  }
 }
 
 // --- Login gate (restyled, behaviour preserved) -----------------------------
@@ -7445,6 +7463,64 @@ function renderRepoCommands(repo) {
   );
 }
 
+/**
+ * Repo detail: the Definition-of-Done gate commands, EDITABLE. Onboarding
+ * auto-detects them from the manifest; a wrong or missing command is the top
+ * reason a delivery bounces (tests gate FAIL) or ships unverified (all gates
+ * SKIP), so the operator can correct them here. Empty clears a gate (skipped).
+ */
+function renderRepoCommandsEditor(repo) {
+  const field = (name, label, value, ph) => {
+    const input = el("input", {
+      type: "text",
+      name,
+      value: value || "",
+      placeholder: ph,
+      "aria-label": label,
+      class: "mono",
+    });
+    return { input, row: el("div", { class: "field" }, [el("label", {}, label), input]) };
+  };
+  const test = field("test_command", "Test command", repo.test_command, "e.g. npm test");
+  const lint = field("lint_command", "Lint command", repo.lint_command, "e.g. npm run lint");
+  const cov = field(
+    "coverage_command",
+    "Coverage command",
+    repo.coverage_command,
+    "optional — e.g. npm run coverage",
+  );
+  const form = el(
+    "form",
+    {
+      class: "inline-form cmd-editor",
+      onsubmit: (e) => {
+        e.preventDefault();
+        guard(async () => {
+          await api("POST", `/repos/${repo.id}/commands`, {
+            test_command: test.input.value.trim(),
+            lint_command: lint.input.value.trim(),
+            coverage_command: cov.input.value.trim(),
+          });
+          toast("Gate commands saved", { ok: true });
+          router();
+        });
+      },
+    },
+    [test.row, lint.row, cov.row, el("button", { class: "btn", type: "submit" }, "Save")],
+  );
+  return el("div", { class: "cmd-block" }, [
+    el("div", { class: "cmd-editor-head" }, [
+      el("strong", {}, "Definition-of-Done gates"),
+      el(
+        "span",
+        { class: "dim" },
+        " — run by the runner in the delivery worktree; a failing gate bounces the delivery, an empty gate is skipped.",
+      ),
+    ]),
+    form,
+  ]);
+}
+
 // A discreet "Hide" button for a repo row (WG-006). Stops the row's navigate
 // click, confirms, then hides the repo and refreshes — it drops off the list and
 // reappears on the "Hidden repos" page.
@@ -8044,7 +8120,7 @@ async function renderRepo(id) {
       el("dt", {}, "Remote"),
       el("dd", {}, repo.remote_url ? el("code", { class: "mono" }, repo.remote_url) : "—"),
     ]),
-    el("div", { class: "cmd-block" }, renderRepoCommands(repo)),
+    renderRepoCommandsEditor(repo),
     el(
       "div",
       { class: "repo-visibility dim" },

@@ -176,7 +176,7 @@ describe("web: ticket-detail Add-AC form — check_command", () => {
       [],
     );
     await bootDetail();
-    const metas = [...document.querySelectorAll(".ac-meta")].map((n) => n.textContent ?? "");
+    const metas = Array.from(document.querySelectorAll(".ac-meta")).map((n) => n.textContent ?? "");
     expect(metas.some((m) => m.includes("check: npm test") && m.includes("runner-verified"))).toBe(
       true,
     );

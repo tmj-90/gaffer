@@ -1,6 +1,7 @@
 import { type Db, inTransaction } from "../db/connection.js";
 import {
   registerRepoInput,
+  setRepoCommandsInput,
   setRepoDefaultBranchInput,
   setTicketRepoAccessInput,
   suggestReposInput,
@@ -159,6 +160,52 @@ export class RepoService {
         payload: { name: repo.name, from: repo.default_branch, to: branch },
       });
       return { ...repo, default_branch: branch, updated_at: now };
+    });
+  }
+
+  /**
+   * Set a repo's Definition-of-Done gate commands (test / lint / coverage) after
+   * registration. Onboarding auto-detects them from the manifest; this is the
+   * operator's correction path (CLI + dashboard). Omitted keys keep their value;
+   * null / "" clears a gate (it is then skipped, never failed). Idempotent.
+   */
+  setRepoCommands(repoRef: string, raw: unknown, actor: Actor): Repository {
+    const input = setRepoCommandsInput.parse(raw);
+    return inTransaction(this.db, () => {
+      const repo = this.repos.findById(repoRef) ?? this.repos.findByName(repoRef);
+      if (!repo) throw notFound("repository", repoRef);
+      const norm = (v: string | null | undefined, cur: string | null): string | null =>
+        v === undefined ? cur : v === null || v === "" ? null : v;
+      const next = {
+        test_command: norm(input.test_command, repo.test_command),
+        lint_command: norm(input.lint_command, repo.lint_command),
+        coverage_command: norm(input.coverage_command, repo.coverage_command),
+      };
+      if (
+        next.test_command === repo.test_command &&
+        next.lint_command === repo.lint_command &&
+        next.coverage_command === repo.coverage_command
+      ) {
+        return repo;
+      }
+      const now = this.clock.now();
+      this.repos.setCommands(repo.id, next, now);
+      writeEvent(this.db, {
+        entity_type: "repository",
+        entity_id: repo.id,
+        actor,
+        event_type: "repository.commands_changed",
+        payload: {
+          name: repo.name,
+          from: {
+            test_command: repo.test_command,
+            lint_command: repo.lint_command,
+            coverage_command: repo.coverage_command,
+          },
+          to: next,
+        },
+      });
+      return { ...repo, ...next, updated_at: now };
     });
   }
 

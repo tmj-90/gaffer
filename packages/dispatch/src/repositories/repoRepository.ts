@@ -88,6 +88,25 @@ export class RepoRepository {
       .run(branch, nowIso, repoId);
   }
 
+  /** Set the DoD gate commands (null clears one). */
+  setCommands(
+    repoId: string,
+    cmds: {
+      test_command: string | null;
+      lint_command: string | null;
+      coverage_command: string | null;
+    },
+    nowIso: string,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE repositories
+            SET test_command = ?, lint_command = ?, coverage_command = ?, updated_at = ?
+          WHERE id = ?`,
+      )
+      .run(cmds.test_command, cmds.lint_command, cmds.coverage_command, nowIso, repoId);
+  }
+
   linkTicket(ticketId: string, repoId: string, role: string, nowIso: string): void {
     this.db
       .prepare(

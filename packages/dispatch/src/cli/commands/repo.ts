@@ -69,6 +69,38 @@ export function registerRepo(program: Command): void {
     });
 
   repo
+    .command("set-commands <name>")
+    .description(
+      "Set a repo's Definition-of-Done gate commands (omitted = unchanged; pass '' to clear a gate)",
+    )
+    .option("--test <cmd>", "test command")
+    .option("--lint <cmd>", "lint command")
+    .option("--coverage <cmd>", "coverage command")
+    .action((name, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      const r = wg.setRepoCommands(
+        name,
+        {
+          ...(opts.test !== undefined ? { test_command: opts.test } : {}),
+          ...(opts.lint !== undefined ? { lint_command: opts.lint } : {}),
+          ...(opts.coverage !== undefined ? { coverage_command: opts.coverage } : {}),
+        },
+        cliActor(),
+      );
+      printJson({
+        ok: true,
+        repo: {
+          id: r.id,
+          name: r.name,
+          test_command: r.test_command,
+          lint_command: r.lint_command,
+          coverage_command: r.coverage_command,
+        },
+      });
+      wg.db.close();
+    });
+
+  repo
     .command("set-branch <name> <branch>")
     .description("Set a repo's default branch (the base every delivery worktree branches off)")
     .action((name, branch, _opts, cmd) => {

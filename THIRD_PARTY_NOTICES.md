@@ -113,3 +113,18 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## Web fonts (dashboard, self-hosted)
+
+The dashboard bundles two typefaces as web fonts under
+`packages/dispatch/src/api/web/assets/fonts/` so that a local-first install makes no
+third-party network request on load. Both are distributed under the
+**SIL Open Font License 1.1** (https://openfontlicense.org), which permits bundling
+and redistribution; the fonts are not modified.
+
+- **Space Grotesk** — Copyright 2020 The Space Grotesk Project Authors
+  (https://github.com/floriankarsten/space-grotesk). OFL-1.1.
+- **JetBrains Mono** — Copyright 2020 The JetBrains Mono Project Authors
+  (https://github.com/JetBrains/JetBrainsMono). OFL-1.1.

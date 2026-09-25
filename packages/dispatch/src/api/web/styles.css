@@ -9015,10 +9015,18 @@ body {
 /* order inside the bar: brand · tabs · [spacer] · live · ⌘K · new · logout */
 .appbar .brand {
   order: 0;
+  /* NEVER shrink: the base .brand/.brand-text carry min-width:0 for the (retired)
+     vertical rail, so in the row bar the tabs squeezed the brand to its icon and the
+     wordmark overdrew "overview". The bar sizes itself to the brand's content. */
+  flex: 0 0 auto;
+  min-width: auto;
   margin-right: var(--s-4);
   padding-right: var(--s-3);
   border-right: 1px solid var(--line);
   align-self: center;
+}
+.appbar .brand-name {
+  white-space: nowrap;
 }
 /* a terminal wordmark is just the name — drop the "CONTROL ROOM" sub next to tabs */
 .appbar .brand-sub {

@@ -3,7 +3,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Dispatch } from "../../core.js";
 import { methodNotAllowed, readJsonBody, sendJson } from "../http.js";
 import type { OnboardRunner } from "../onboard.js";
-import { onboardRepoBody, setRepoDefaultBranchBody, setRepoHiddenBody } from "../schemas.js";
+import {
+  onboardRepoBody,
+  setRepoCommandsBody,
+  setRepoDefaultBranchBody,
+  setRepoHiddenBody,
+} from "../schemas.js";
 import { API_ACTOR } from "./context.js";
 
 /**
@@ -93,6 +98,20 @@ export async function routeRepos(
     }
     const body = setRepoDefaultBranchBody.parse(await readJsonBody(req));
     const repo = wg.setRepoDefaultBranch(segments[1] as string, body.default_branch, API_ACTOR);
+    sendJson(res, 200, { repository: repo });
+    return true;
+  }
+
+  // POST /repos/:id/commands — set the Definition-of-Done gate commands (test /
+  // lint / coverage). Onboarding auto-detects them; this is the operator's edit path
+  // from the repo detail view. Omitted keys are unchanged; null / "" clears a gate.
+  if (segments[0] === "repos" && segments.length === 3 && segments[2] === "commands") {
+    if (method !== "POST") {
+      methodNotAllowed(res);
+      return true;
+    }
+    const body = setRepoCommandsBody.parse(await readJsonBody(req));
+    const repo = wg.setRepoCommands(segments[1] as string, body, API_ACTOR);
     sendJson(res, 200, { repository: repo });
     return true;
   }

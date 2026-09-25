@@ -90,6 +90,14 @@ export const setRepoDefaultBranchBody = z.object({
 });
 export type SetRepoDefaultBranchBody = z.infer<typeof setRepoDefaultBranchBody>;
 
+const gateCommandBody = z.string().trim().max(500).nullable().optional();
+export const setRepoCommandsBody = z.object({
+  test_command: gateCommandBody,
+  lint_command: gateCommandBody,
+  coverage_command: gateCommandBody,
+});
+export type SetRepoCommandsBody = z.infer<typeof setRepoCommandsBody>;
+
 /**
  * Body for POST /repos/onboard — kick off onboarding for a repo. `repo` is EITHER
  * a registered repo id/name OR a local filesystem path; the onboard command

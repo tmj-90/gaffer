@@ -1584,8 +1584,9 @@ fi
 # Which provider supplies the OS-level containment. This is a PROVIDER SEAM, not
 # a hard dependency on any one tool. Two providers are real: `sandbox-exec` (macOS,
 # write-only) and `docker` (any host with a daemon: read + egress isolation);
-# `lima` is a stub; `none` disables OS wrapping while keeping STRICT_MODE
-# semantics togglable. A new provider = a new case in lib/sandbox.sh.
+# `none` disables OS wrapping while keeping STRICT_MODE semantics togglable; any
+# other value is unknown (fails closed under GAFFER_STRICT_REQUIRE=1). A new
+# provider = a new case in lib/sandbox.sh.
 #
 # AUTO-DETECTED default (explicit env always wins): `sandbox-exec` where the binary
 # exists (macOS), else `docker` where the docker CLI exists (Linux hosts — the daemon
@@ -1602,7 +1603,7 @@ fi
 # strict mode wraps the WHOLE `claude -p` process, network CANNOT be denied
 # without breaking Claude's own API calls — so this defaults to 1 (allow). True
 # per-subprocess network isolation (deny the agent's children network while
-# Claude itself reaches the API) is a FUTURE-PROVIDER capability (docker/lima/VM),
+# Claude itself reaches the API) is a FUTURE-PROVIDER capability (docker / a microVM),
 # not something `sandbox-exec` wrapping the whole process can deliver.
 : "${STRICT_ALLOW_NETWORK:=1}"
 # Space-separated HOME paths the sandbox may WRITE to even though they live

@@ -1826,7 +1826,7 @@ EOF
   RUN_LOG_MARK="$(wc -l < "$GAFFER_LOG" 2>/dev/null || echo 0)"
   # ── Strict execution mode (OPTIONAL, best-effort OS-level containment) ──────
   # When STRICT_MODE=1 we additionally wrap the live `claude -p` in an OS sandbox
-  # PROVIDER (sandbox-exec today; docker/lima/VM are future providers) so writes
+  # PROVIDER (sandbox-exec or docker; a microVM provider is a design sketch) so writes
   # the in-process safety hook can't see (dynamic paths in `python3 -c …`, exec'd
   # children) are refused by the OS, not just by our shell. The provider is fed
   # the SAME write/read roots the safety hook uses. WRAP is a command prefix

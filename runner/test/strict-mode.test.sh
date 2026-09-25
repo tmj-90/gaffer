@@ -77,11 +77,12 @@ else
   echo "$DOCKER_ERR" | grep -q "daemon unavailable" && ok "provider 'docker' (no daemon) warns non-fatally" || fail "provider 'docker' (no daemon) should warn on stderr"
 fi
 
-# lima is the remaining stub → empty prefix + a 'not yet supported' warning.
+# The former `lima` stub is gone: it is now an UNKNOWN provider → empty prefix + an
+# 'unknown provider' warning (fail closed under GAFFER_STRICT_REQUIRE=1, see strict-require.test.sh).
 LIMA_ERR="$(SANDBOX_PROVIDER=lima sandbox_wrap_cmd "$WORKTREE" "" 2>&1 >/dev/null)"
 LIMA_OUT="$(SANDBOX_PROVIDER=lima sandbox_wrap_cmd "$WORKTREE" "" 2>/dev/null)"
-[ -z "$LIMA_OUT" ] && ok "provider 'lima' echoes empty prefix (stub)" || fail "provider 'lima' should echo nothing (got: $LIMA_OUT)"
-echo "$LIMA_ERR" | grep -q "not yet supported" && ok "provider 'lima' warns non-fatally on stderr" || fail "provider 'lima' should warn on stderr"
+[ -z "$LIMA_OUT" ] && ok "removed provider 'lima' echoes empty prefix (unknown)" || fail "provider 'lima' should echo nothing (got: $LIMA_OUT)"
+echo "$LIMA_ERR" | grep -q "unknown provider" && ok "removed provider 'lima' warns as an unknown provider" || fail "provider 'lima' should warn 'unknown provider' (got: $LIMA_ERR)"
 
 WRAP="$(SANDBOX_PROVIDER=sandbox-exec sandbox_wrap_cmd "$WORKTREE" "")"
 case "$WRAP" in

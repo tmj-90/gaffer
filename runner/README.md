@@ -225,7 +225,7 @@ secret into a prompt.**
 
 **Optional: strict execution mode** (`STRICT_MODE=1`, OFF by default) adds a
 best-effort OS-level containment layer *on top of* the worktree + hook, via a
-**provider seam** (`sandbox-exec` today; docker/lima/VM are future providers).
+**provider seam** (`sandbox-exec` and `docker` today; a microVM provider is a design sketch).
 It is defence-in-depth, **not** a security guarantee — see
 [`STRICT_MODE.md`](STRICT_MODE.md) for the provider model, the network caveat,
 and per-repo config.

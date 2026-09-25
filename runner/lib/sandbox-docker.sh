@@ -223,7 +223,7 @@ docker image inspect "$_IMAGE" >/dev/null 2>&1 || _die "sandbox image '$_IMAGE' 
 # no-new-privileges + pid/mem/cpu caps. The containment test asserts CapEff is
 # DAC_OVERRIDE-only + NoNewPrivs=1. (A non-root --user + --read-only root are the next
 # hardening step — they need a tmpfs-backed writable HOME for claude/npm state and are
-# validated with the live-delivery capstone; see docs/vm-sandbox-provider.md.)
+# validated with the live-delivery capstone; see docs/docker-sandbox-provider.md.)
 exec docker run --rm --network "$_NET_INT" \
   --cap-drop=ALL \
   --cap-add=DAC_OVERRIDE \

@@ -369,6 +369,24 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 # else runs the command unbounded (best-effort — never breaks the call).
 : "${GAFFER_TICK_TIMEOUT:=1800}"   # 30 min hard wall-clock cap per claude -p call
 : "${GAFFER_MAX_TURNS:=200}"        # max agent turns per claude -p call
+# Definition-of-Done gate switches + bounds. The consumers (tick.sh, lib/dod.sh,
+# lib/ac-checks.sh) carry the SAME fallbacks, so these lines change nothing at
+# runtime — they exist so the knobs are documented here (docs/CONFIG.md) and
+# settable from one place like every other operator knob.
+: "${GAFFER_DOD_TESTS:=1}"           # 1 = run the repo's test gate on every delivery; 0 skips it
+: "${GAFFER_DOD_LINT:=1}"            # 1 = run the lint gate
+: "${GAFFER_DOD_TYPECHECK:=1}"       # 1 = run the typecheck gate (auto-detected command)
+: "${GAFFER_DOD_TYPECHECK_CMD:=}"    # override the auto-detected typecheck command
+: "${GAFFER_DOD_TIMEOUT:=900}"       # wall-clock cap (seconds) per gate and per AC check command
+: "${GAFFER_DOD_OUTPUT_TAIL:=40}"    # lines of gate output kept as evidence / rework feedback
+: "${GAFFER_REWORK_HISTORY_BYTES:=8000}"   # prior-attempt feedback carried into a rework prompt
+: "${GAFFER_JUDGE_DIFF_BYTES:=120000}"     # diff bytes handed to the eval judge
+# Docker sandbox resource caps (lib/sandbox-docker.sh) and the daemon cadence (lib/daemon.sh).
+: "${GAFFER_SANDBOX_CPUS:=4}"
+: "${GAFFER_SANDBOX_MEMORY:=4g}"
+: "${GAFFER_SANDBOX_PIDS:=512}"
+: "${GAFFER_DAEMON_INTERVAL:=30}"    # seconds between `gaffer run --daemon` cycles
+: "${GAFFER_DAEMON_MAX_CYCLES:=0}"   # 0 = unbounded
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 

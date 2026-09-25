@@ -19,12 +19,12 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 89 |
+| Knobs with a runner default | 107 |
 | Knobs editable in the dashboard | 53 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 74 |
+| Env reads in code with no default and no UI entry | 57 |
 
-## Runner defaults (`runner/factory.config.sh`)
+## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
 ### Locations & wiring
 
@@ -74,6 +74,19 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_TICK_TIMEOUT` | `1800` | yes (int) | dispatch, runner | Wall-clock cap on a single tick before it is killed. |
 | `GAFFER_MAX_TURNS` | `200` | yes (int) | dispatch, runner | Cap on agent turns within one ticket. |
+| `GAFFER_DOD_TESTS` | `1` |  | runner | 1 = run the repo's test gate on every delivery; 0 skips it |
+| `GAFFER_DOD_LINT` | `1` |  | runner | 1 = run the lint gate |
+| `GAFFER_DOD_TYPECHECK` | `1` |  | runner | 1 = run the typecheck gate (auto-detected command) |
+| `GAFFER_DOD_TYPECHECK_CMD` | _(empty)_ |  | runner | override the auto-detected typecheck command |
+| `GAFFER_DOD_TIMEOUT` | `900` |  | runner | wall-clock cap (seconds) per gate and per AC check command |
+| `GAFFER_DOD_OUTPUT_TAIL` | `40` |  | crew, runner | lines of gate output kept as evidence / rework feedback |
+| `GAFFER_REWORK_HISTORY_BYTES` | `8000` |  | runner | prior-attempt feedback carried into a rework prompt |
+| `GAFFER_JUDGE_DIFF_BYTES` | `120000` |  | runner | diff bytes handed to the eval judge |
+| `GAFFER_SANDBOX_CPUS` | `4` |  | runner | Docker sandbox resource caps (lib/sandbox-docker.sh) and the daemon cadence (lib/daemon.sh). |
+| `GAFFER_SANDBOX_MEMORY` | `4g` |  | runner |  |
+| `GAFFER_SANDBOX_PIDS` | `512` |  | runner |  |
+| `GAFFER_DAEMON_INTERVAL` | `30` |  | runner | seconds between `gaffer run --daemon` cycles |
+| `GAFFER_DAEMON_MAX_CYCLES` | `0` |  | runner | 0 = unbounded |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many times a ticket may be re-worked after a rejected review before it parks to blocked. |
 | `GAFFER_CLAIM_TTL` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))`) |  | runner |  |
 | `GAFFER_TICK_OUTER_TIMEOUT` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))`) |  | runner | FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around the WHOLE tick.sh. |
@@ -210,6 +223,31 @@ computed from other knobs at runtime.
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 
+### lib/delivery-recovery.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_WORKER_MJS` | _derived_ (`$_GAFFER_DR_LIB/worker.mjs`) |  | runner |  |
+
+### lib/dod.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_DOD_INSTALL_TIMEOUT` | _derived_ (`${GAFFER_DOD_TIMEOUT:-900}`) |  | runner | Max wall-clock seconds for the PRE-GATE dependency install (see gaffer_dod_install_deps). |
+| `GAFFER_DOD_FEEDBACK_LINES` | _derived_ (`${GAFFER_DOD_OUTPUT_TAIL:-40}`) |  | crew, runner | How many lines of distilled failure to keep per gate. |
+
+### lib/pr-create.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_PR_REMOTE` | `origin` |  | runner |  |
+
+### lib/skills-mount.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_UNIVERSAL_SKILLS` | `run-tests run-lint run-coverage minimalism self-review submit-review record-evidence create-branch prepare-digest-delta` |  | runner | !/usr/bin/env bash shellcheck shell=bash Gaffer factory — per-agent SKILL mount + skill-selection telemetry. |
+
 ## Dashboard-only settings
 
 These have a Settings-panel entry but no `factory.config.sh` default: the
@@ -259,39 +297,24 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/factory.config.sh`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
 | `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
-| `GAFFER_DAEMON_INTERVAL` | `30` | `runner/gaffer` |
-| `GAFFER_DAEMON_MAX_CYCLES` | `0` | `runner/lib/daemon.sh` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
-| `GAFFER_DOD_FEEDBACK_LINES` |  | `packages/crew/src/runtime/dod/dodDistillCli.ts`, `runner/lib/dod.sh` |
-| `GAFFER_DOD_INSTALL_TIMEOUT` |  | `runner/lib/dod.sh` |
-| `GAFFER_DOD_LINT` | `1` | `runner/tick.sh` |
-| `GAFFER_DOD_OUTPUT_TAIL` | `40` | `packages/crew/src/runtime/dod/dodDistillCli.ts`, `runner/lib/dod.sh` |
-| `GAFFER_DOD_TESTS` | `1` | `runner/tick.sh` |
-| `GAFFER_DOD_TIMEOUT` | `900` | `runner/lib/ac-checks.sh`, `runner/lib/dod.sh` |
-| `GAFFER_DOD_TYPECHECK` | `1` | `runner/tick.sh` |
-| `GAFFER_DOD_TYPECHECK_CMD` | _(empty)_ | `runner/tick.sh` |
 | `GAFFER_EGRESS_ALLOW` | _(empty)_ | `runner/lib/egress-allowlist.mjs` |
 | `GAFFER_EGRESS_ALLOW_FILE` | `$data/egress-allow.txt` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | `runner/gaffer`, `runner/lib/eval-judge.sh` |
 | `GAFFER_INHERIT_AMB_TIMEOUT` | `300` | `runner/lib/greenfield.sh` |
 | `GAFFER_INHERIT_PLAN_TIMEOUT` | `60` | `runner/lib/greenfield.sh` |
-| `GAFFER_JUDGE_DIFF_BYTES` | `120000` | `runner/lib/eval-judge.sh` |
 | `GAFFER_JUDGE_MODEL_FLAG` | `${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-` | `runner/lib/eval-judge.sh` |
 | `GAFFER_LITE_MAX_FILES` | `4` | `runner/factory.config.sh` |
 | `GAFFER_LITE_MAX_LINES` | `60` | `runner/factory.config.sh` |
 | `GAFFER_LITE_SENSITIVE_RE` | `(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
 | `GAFFER_ONBOARD_SYNTH_MODEL` |  | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_REWORK_HISTORY_BYTES` | `8000` | `runner/tick.sh` |
 | `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_CLAUDE_CREDENTIALS` | _(empty)_ / `/nonexistent` | `runner/lib/sandbox-docker.sh`, `runner/sandbox/smoke-test.sh` |
-| `GAFFER_SANDBOX_CPUS` | `4` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_HOME` | `/root` | `runner/lib/worker.sh` |
-| `GAFFER_SANDBOX_MEMORY` | `4g` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_NET_INT` | `gaffer-egress-int` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_NET_UP` | `gaffer-egress-uplink` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_PATH` | `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` | `runner/lib/worker.sh` |
-| `GAFFER_SANDBOX_PIDS` | `512` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_PROXY` | `gaffer-egress-proxy-svc` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_PROXY_IMAGE` | `gaffer-egress-proxy` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SKILL_TELEMETRY` | `$GAFFER_DATA/skills-telemetry.jsonl` | `packages/dispatch/src/health/skillsTelemetryAggregator.ts`, `runner/lib/skills-mount.sh` |
@@ -301,11 +324,9 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_TRUST_LOCK_SLEEP_MS` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_LOCK_TRIES` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_WORKTREE_ROOT` |  | `runner/lib/trust-workspace.mjs` |
-| `GAFFER_UNIVERSAL_SKILLS` |  | `runner/lib/skills-mount.sh` |
 | `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/orphan-recovery.sh` |
-| `GAFFER_WORKER_MJS` | `$RUNNER_DIR/lib/worker.mjs` | `runner/lib/delivery-recovery.sh`, `runner/lib/eval-judge.sh` |
 | `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
 | `MEMORY_AUDIT_LOG` |  | `packages/memory/src/cli/commands/setup.ts`, `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts` |
 | `MEMORY_AUDIT_OFF` |  | `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts`, `packages/memory/src/core/lore.ts` |

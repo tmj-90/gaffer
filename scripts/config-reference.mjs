@@ -20,6 +20,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_SH = path.join(ROOT, "runner", "factory.config.sh");
+/** Every file whose `: "${NAME:=default}"` lines define a knob: the config plus the runner libs. */
+function defaultFiles() {
+  const libDir = path.join(ROOT, "runner", "lib");
+  const libs = existsSync(libDir)
+    ? readdirSync(libDir)
+        .filter((f) => f.endsWith(".sh"))
+        .sort()
+        .map((f) => path.join(libDir, f))
+    : [];
+  return [CONFIG_SH, ...libs];
+}
 const SETTINGS_JS = path.join(ROOT, "packages", "dispatch", "dist", "api", "settings.js");
 const OUT = path.join(ROOT, "docs", "CONFIG.md");
 
@@ -34,20 +45,26 @@ const ENV_READ_RE = /\b(?:process\.)?env(?:\.([A-Z][A-Z0-9_]+)|\[["']([A-Z][A-Z0
 // Env var reads in bash: ${X:-…}, ${X}, ${X+x} … — only factory-prefixed names.
 const SH_READ_RE = /\$\{([A-Z][A-Z0-9_]+)[-:}+]/g;
 // A name the code ASSIGNS somewhere is plumbing it sets for itself, not an input.
+// `: "${X:=v}"` / `: "${X=v}"` in ANY shell file also assigns X (a default line).
+const COLON_ASSIGN_RE = /\$\{([A-Z][A-Z0-9_]+):?=/g;
 const ASSIGN_RE =
   /(?:^|[\s;(])(?:export\s+|local\s+|readonly\s+)?([A-Z][A-Z0-9_]+)=|printf -v "?([A-Z][A-Z0-9_]+)|\benv\.([A-Z][A-Z0-9_]+)\s*=[^=]|\[["']([A-Z][A-Z0-9_]+)["']\]\s*=[^=]/gm;
 const KNOB_PREFIX_RE =
   /^(GAFFER_|DISPATCH_|MEMORY_|CREW_|STRICT_|SANDBOX_|MERGE_|AUTO_|REVIEW_|MAX_|HYGIENE_|OVERSIZED_|MINIMALISM_)/;
 
-/** Parse factory.config.sh into ordered knob definitions (first definition wins). */
-export function parseConfigDefaults(text) {
+/**
+ * Parse one shell file's `: "${NAME:=default}"` lines into ordered knob definitions
+ * (first definition wins). `fixedSection` pins every knob to one section title (used
+ * for runner/lib/*.sh, whose banners are not config sections).
+ */
+export function parseConfigDefaults(text, { fixedSection = null } = {}) {
   const lines = text.split("\n");
   const knobs = new Map();
-  let section = "Locations & wiring";
+  let section = fixedSection ?? "Locations & wiring";
   let commentBlock = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const sec = line.match(SECTION_RE);
+    const sec = fixedSection ? null : line.match(SECTION_RE);
     if (sec) {
       section = sec[1].replace(/\s*\(.*?\)\s*$/, "").trim();
       commentBlock = [];
@@ -114,6 +131,7 @@ function sourceFiles(dir, out = []) {
 
 /** Which consumers mention each identifier, plus env reads not defined anywhere. */
 export function scanConsumers(root, knobNames) {
+  const defaultFileSet = new Set(defaultFiles());
   const areas = {
     runner: [path.join(root, "runner")],
     dispatch: [path.join(root, "packages", "dispatch", "src")],
@@ -128,7 +146,8 @@ export function scanConsumers(root, knobNames) {
     for (const dir of dirs) {
       for (const file of sourceFiles(dir)) {
         let text = readFileSync(file, "utf8");
-        if (file === CONFIG_SH) {
+        if (defaultFileSet.has(file)) {
+          // A knob's own default line is its definition, not a consumer read.
           text = text
             .split("\n")
             .filter((l) => !DEFAULT_RE.test(l))
@@ -138,6 +157,7 @@ export function scanConsumers(root, knobNames) {
           if (new RegExp(`\\b${name}\\b`).test(text)) consumers.get(name).add(area);
         }
         for (const m of text.matchAll(ASSIGN_RE)) assigned.add(m[1] ?? m[2] ?? m[3] ?? m[4]);
+        for (const m of text.matchAll(COLON_ASSIGN_RE)) assigned.add(m[1]);
         const isShell = file.endsWith(".sh") || file.endsWith("/gaffer");
         const matches = isShell ? text.matchAll(SH_READ_RE) : text.matchAll(ENV_READ_RE);
         for (const m of matches) {
@@ -242,7 +262,7 @@ export function render({ knobs, defs, consumers, undocumented, defaults = new Ma
     if (!s) sections.push((s = { title: k.section, knobs: [] }));
     s.knobs.push(k);
   }
-  out.push("## Runner defaults (`runner/factory.config.sh`)", "");
+  out.push("## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)", "");
   for (const s of sections) {
     out.push(`### ${s.title}`, "");
     out.push("| Variable | Default | UI | Read by | Notes |", "|---|---|---|---|---|");
@@ -298,7 +318,16 @@ export function render({ knobs, defs, consumers, undocumented, defaults = new Ma
 }
 
 export async function generate(root = ROOT) {
-  const knobs = parseConfigDefaults(readFileSync(CONFIG_SH, "utf8"));
+  const seen = new Set();
+  const knobs = [];
+  for (const file of defaultFiles()) {
+    const opts = file === CONFIG_SH ? {} : { fixedSection: `lib/${path.basename(file)}` };
+    for (const k of parseConfigDefaults(readFileSync(file, "utf8"), opts)) {
+      if (seen.has(k.name)) continue; // factory.config.sh wins over a lib re-default
+      seen.add(k.name);
+      knobs.push(k);
+    }
+  }
   const defs = await loadSettingDefs();
   const names = [...new Set([...knobs.map((k) => k.name), ...defs.map((d) => d.key)])];
   const { consumers, undocumented, defaults } = scanConsumers(root, names);

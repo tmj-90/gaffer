@@ -382,18 +382,28 @@ gaffer_release_delivery() {
   [ -n "$code" ]    && extra+=(--reason-code "$code")
   [ -n "$attempt" ] && extra+=(--attempt "$attempt")
   [ -n "$maxa" ]    && extra+=(--max "$maxa")
-  if [ -n "${CLAIM_TOKEN:-}" ]; then
-    wg runner-release "$NUM" --to "$to" --token "$CLAIM_TOKEN" --reason "$reason" ${extra[@]+"${extra[@]}"} >/dev/null 2>&1 \
-      && log "released claim on #$NUM → $to ($reason)" \
-      || log "WARNING — could not release claim on #$NUM → $to ($reason); needs a human"
-  else
-    wg runner-release "$NUM" --to "$to" --reason "$reason" ${extra[@]+"${extra[@]}"} >/dev/null 2>&1 \
-      && log "transitioned #$NUM → $to ($reason)" \
-      || log "WARNING — could not transition #$NUM → $to ($reason); needs a human"
-  fi
-  # The claim is now resolved by the normal flow (released, or a release we tried
-  # and already logged). Mark it so the EXIT crash trap does NOT re-attempt the
-  # release with the now-void token and page a spurious "needs a human" (N3).
+  # BOUNDED RETRY. A single failed control-plane call used to be final: the claim
+  # stayed live until its TTL, the ticket sat 'claimed' and a human was paged — for
+  # what is usually a transient (a busy SQLite writer under GAFFER_CONCURRENCY>1, a
+  # slow node start-up). Three attempts with a short back-off self-heal that; a
+  # persistent failure is logged WITH the CLI's own error tail so it is diagnosable,
+  # not a bare "needs a human". (Seen once on a macOS CI runner: 1 of 4 identical
+  # jobs failed the release and stranded the ticket.)
+  local _tok=() _verb="released claim on" _fail="could not release claim on" _out="" _try
+  if [ -n "${CLAIM_TOKEN:-}" ]; then _tok=(--token "$CLAIM_TOKEN"); else _verb="transitioned"; _fail="could not transition"; fi
+  for _try in 1 2 3; do
+    if _out="$(wg runner-release "$NUM" --to "$to" ${_tok[@]+"${_tok[@]}"} --reason "$reason" ${extra[@]+"${extra[@]}"} 2>&1)"; then
+      local _suffix=""; [ "$_try" -gt 1 ] && _suffix=" after $_try attempts"
+      log "$_verb #$NUM → $to ($reason)$_suffix"
+      GAFFER_CLAIM_RESOLVED=1
+      return 0
+    fi
+    [ "$_try" -lt 3 ] && sleep "$_try"
+  done
+  log "WARNING — $_fail #$NUM → $to ($reason); needs a human — 3 attempts failed, last error: $(printf '%s' "$_out" | tail -n 3 | tr '\n' ' ' | cut -c1-300)"
+  # The claim is now resolved by the normal flow (a release we tried and already
+  # logged). Mark it so the EXIT crash trap does NOT re-attempt the release with
+  # the now-void token and page a spurious "needs a human" (N3).
   GAFFER_CLAIM_RESOLVED=1
 }
 

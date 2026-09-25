@@ -93,7 +93,7 @@ the Claude CLI; that's only for live runs.
 | `gaffer status` | One-pane roll-up: registrations, work counts, running ticks, what needs a human. |
 | `gaffer demo` | The Factory-Map showcase (dry-run only). |
 
-See [`GETTING_STARTED.md`](GETTING_STARTED.md), [`ONBOARDING.md`](ONBOARDING.md),
+See the root [`quickstart.md`](../quickstart.md) (the canonical first run), [`ONBOARDING.md`](ONBOARDING.md),
 and [`RUNBOOK.md`](RUNBOOK.md) for the full walkthroughs.
 
 ## Worktree isolation

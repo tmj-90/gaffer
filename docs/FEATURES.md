@@ -89,6 +89,19 @@ Day-to-day, work lives on the board. Tickets flow through
 Every card carries a **risk badge**, a **priority**, and live
 **acceptance-criteria progress** (`2/3 satisfied`).
 
+An acceptance criterion can be **machine-checkable**: give it a check command
+(`npm test`, a script, an HTTP probe) and the runner executes it in the delivery
+worktree after the Definition-of-Done gates. Exit 0 marks the criterion
+satisfied as *runner-verified*, with the output stored as evidence; a failure
+sends the delivery back to rework with that output as feedback — and the done
+gate refuses a checked criterion an agent merely *claimed* to have met. The
+repo page holds the Definition-of-Done gate commands (test / lint / coverage),
+auto-detected at onboarding and editable there, because a wrong gate command is
+the commonest reason a delivery bounces or ships unverified.
+
+The board is **live**: the control plane streams its event log to the browser,
+so a transition shows up within a second instead of on a polling timer.
+
 ![The work board](img/board.png)
 
 *Tickets spread across the lanes: drafts being shaped, ready work waiting, one
@@ -112,6 +125,15 @@ structural barrier the whole design hangs on.
   fails closed.
 - **Reject** loops the ticket back for rework (or abandons it), with your reason
   recorded and its acceptance criteria reset.
+- The **reviewer is never the author**, even when agent approval is allowed: the
+  server refuses an approval from the agent that delivered the ticket, and the
+  factory's own review pass approves as a distinct reviewer principal.
+- The **event log is tamper-evident.** Every event is chained by a SHA-256 hash,
+  so a row rewritten, deleted or re-ordered after the fact breaks every hash
+  after it; `dispatch events verify`, `dispatch doctor` and the Health view's
+  "Event log" card re-derive the chain. Each event also carries the **runner
+  tick** that wrote it (the ticket timeline shows a `tick …` chip), so one tick's
+  whole trail — the runner's calls and the agent's MCP writes — reads as one.
 
 ![The review gate](img/review.png)
 
@@ -155,7 +177,8 @@ human-gated knowledge the factory works from:
 - **Lore** — the team's recorded conventions, decisions, gotchas, and cross-repo
   boundaries. It's **read-only in the product**: agents *draft* lore through an
   MCP review gate, and a human approves it via the memory CLI — it is never
-  silently rewritten.
+  silently rewritten. Every edit snapshots the previous version
+  (`memory history <id>`), so a change is diffable and reversible.
 
 ![A repo's digest and feature ledger](img/memory.png)
 
@@ -182,7 +205,14 @@ on**:
 | `MEMORY_AUTO_APPROVE` | Accept memory draft records without a human review step. |
 
 The same panel controls the **idle loops** (background work the factory mines
-between real tickets) and the **planning-debate** depth.
+between real tickets) and the **planning-debate** depth. Every knob the factory
+reads — its default, whether the panel can edit it, which component consumes it
+— is listed in the generated [`CONFIG.md`](CONFIG.md).
+
+Enabling autonomy **requires containment**: any agent ship or mutate flag turns
+on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
+launch the agent rather than run it uncontained. The provider is auto-detected
+(`sandbox-exec` on macOS, `docker` where a Docker CLI exists).
 
 ![The Settings panel](img/settings.png)
 

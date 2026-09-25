@@ -109,6 +109,12 @@ jobs:
       - name: Build
         run: pnpm -r build
 
+      # docs/CONFIG.md is generated from factory.config.sh + SETTING_DEFS (needs the
+      # dispatch build above). A knob added, renamed or re-defaulted without
+      # regenerating the reference fails here.
+      - name: Config reference is current
+        run: node scripts/config-reference.mjs --check
+
       - name: Typecheck
         run: pnpm -r typecheck
 

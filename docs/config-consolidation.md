@@ -1,5 +1,8 @@
 # Config consolidation — audit, classification & reduction plan
 
+> The counts below are a point-in-time audit. The live, generated knob list is
+> [`CONFIG.md`](CONFIG.md) (`node scripts/config-reference.mjs`, checked in CI).
+
 Audit of the Gaffer factory configuration surface: `runner/factory.config.sh`
 (the env-override defaults) vs `packages/dispatch/src/api/settings.ts` (the
 UI-editable allow-list). Goal: replace "83 flat knobs" with the *right* config

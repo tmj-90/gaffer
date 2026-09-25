@@ -240,6 +240,24 @@ describe("CLI — update flag-conflict refusals", () => {
     await run("show", id);
     expect(out).toContain("new summary text");
   });
+
+  it("history lists the pre-update snapshot below the current head", async () => {
+    out = "";
+    expect(await run("history", id)).toBe(0);
+    expect(out).toContain("0 earlier versions");
+    expect(await run("update", id, "--summary", "second summary")).toBe(0);
+    out = "";
+    expect(await run("history", id)).toBe(0);
+    expect(out).toContain("1 earlier version");
+    expect(out).toMatch(/v2 {2}current/);
+    expect(out).toMatch(/v1 {2}/);
+    expect(out.indexOf("v2")).toBeLessThan(out.indexOf("v1")); // newest first
+  });
+
+  it("history with an unknown id exits 1 and with no id exits 2", async () => {
+    expect(await run("history", "zzzzzzzz")).toBe(1);
+    expect(await run("history")).toBe(2);
+  });
 });
 
 describe("CLI — prune", () => {

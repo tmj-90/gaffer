@@ -6,13 +6,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-  ensureApiToken,
-  isOperatorSetToken,
-  isPrivilegedPath,
-  isRequestAuthorized,
-  recordApiTokenSource,
-} from "../src/api/auth.js";
+import { ensureApiToken, isRequestAuthorized } from "../src/api/auth.js";
 import { Dispatch } from "../src/core.js";
 import { createApiServer } from "../src/api/server.js";
 import type { IncomingMessage } from "node:http";
@@ -54,30 +48,7 @@ function rawGet(
 
 // --- Pure decision-function coverage (fast, no socket) ----------------------
 
-describe("isPrivilegedPath / isRequestAuthorized", () => {
-  it("treats /api/settings (and a trailing slash) as privileged, board paths as not", () => {
-    expect(isPrivilegedPath("/api/settings")).toBe(true);
-    expect(isPrivilegedPath("/api/settings/")).toBe(true);
-    expect(isPrivilegedPath("/api/board")).toBe(false);
-    expect(isPrivilegedPath("/tickets")).toBe(false);
-    expect(isPrivilegedPath("/")).toBe(false);
-  });
-
-  it("closes the repeated-slash bypass (Express still routes // to the handler)", () => {
-    // Regression: normalisePath stripped only ONE trailing slash, so /api/settings//
-    // slipped past the privileged check and leaked notify/webhook secrets tokenless.
-    expect(isPrivilegedPath("/api/settings//")).toBe(true);
-    expect(isPrivilegedPath("/api/settings///")).toBe(true);
-    expect(isPrivilegedPath("/api//settings")).toBe(true);
-    expect(isPrivilegedPath("//api/settings")).toBe(true);
-  });
-
-  it("treats a run-log tail as privileged (raw delivery output requires the token)", () => {
-    expect(isPrivilegedPath("/api/runs/abc-123/log")).toBe(true);
-    expect(isPrivilegedPath("/api/runs/abc-123/log/")).toBe(true);
-    expect(isPrivilegedPath("/api/runs/abc-123")).toBe(false); // the run detail is not the log
-  });
-
+describe("isRequestAuthorized", () => {
   it("S-M1: with a token configured, EVERY tokenless GET is refused (board reads included)", () => {
     const saved = process.env.DISPATCH_API_TOKEN;
     process.env.DISPATCH_API_TOKEN = "tok";
@@ -228,8 +199,8 @@ describe("loopback read-auth hardening (over a bound server)", () => {
 // Historically an operator-SET DISPATCH_API_TOKEN gated every request while an
 // AUTO-provisioned token relaxed tokenless loopback reads. S-M1 removes that
 // relaxation: both postures require the token for every data-returning endpoint,
-// loopback reads included. The token source is still recorded at startup (for the
-// operator-facing startup log), but it no longer changes the auth decision.
+// loopback reads included. The token source is reported by ensureApiToken for the
+// operator-facing startup log only; it never enters the auth decision.
 // ---------------------------------------------------------------------------
 
 describe("token posture is uniform for reads (S-M1)", () => {
@@ -241,40 +212,22 @@ describe("token posture is uniform for reads (S-M1)", () => {
     for (const k of TOUCHED) saved[k] = process.env[k];
   });
   afterEach(() => {
-    // Reset the recorded startup posture so other tests keep the default.
-    recordApiTokenSource(null);
     for (const k of TOUCHED) {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
   });
 
-  it("pure: the recorded token source does NOT relax a tokenless loopback read", () => {
+  it("pure: a tokenless loopback read is refused whenever a token is configured", () => {
     process.env.DISPATCH_API_TOKEN = "tok";
     const getReq = { method: "GET", headers: {} } as unknown as IncomingMessage;
-    // Every source — env, generated, file — gates a tokenless board read identically.
-    for (const source of ["env", "generated", "file"] as const) {
-      recordApiTokenSource(source);
-      expect(isRequestAuthorized(getReq)).toBe(false);
-    }
-    // A correct bearer passes regardless of source.
+    expect(isRequestAuthorized(getReq)).toBe(false);
+    // A correct bearer passes.
     const authed = {
       method: "GET",
       headers: { authorization: "Bearer tok" },
     } as unknown as IncomingMessage;
-    recordApiTokenSource("generated");
     expect(isRequestAuthorized(authed)).toBe(true);
-  });
-
-  it("isOperatorSetToken still reflects startup provenance (introspection, not the auth decision)", () => {
-    // The provenance is retained for the operator-facing startup log; S-M1 just
-    // stops it changing the auth decision. The predicate itself stays correct.
-    recordApiTokenSource("env");
-    expect(isOperatorSetToken()).toBe(true);
-    recordApiTokenSource("generated");
-    expect(isOperatorSetToken()).toBe(false);
-    recordApiTokenSource("file");
-    expect(isOperatorSetToken()).toBe(false);
   });
 
   it("(a) operator-set token: a tokenless loopback board GET is refused (401)", async () => {

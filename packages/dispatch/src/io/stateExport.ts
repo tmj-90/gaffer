@@ -80,7 +80,6 @@ export const EXPORT_TABLES = [
   "evidence",
   // Free-standing audit tables (no FK, but logically late).
   "work_events",
-  "external_refs",
   // Self-referential within tickets (already present by here).
   "ticket_dependencies",
   // FAILURE-DIAGNOSIS: the append-only rework failure trail (FK to tickets). Durable
@@ -120,7 +119,6 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   ticket_decisions: "ticket_id, decision_id, relation",
   evidence: "id",
   work_events: "id",
-  external_refs: "id",
   ticket_dependencies: "ticket_id, depends_on_ticket_id",
   rework_attempts: "id",
   autonomy_policy: "id",

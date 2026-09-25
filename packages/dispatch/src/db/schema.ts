@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -303,19 +303,6 @@ CREATE TABLE IF NOT EXISTS work_events (
 CREATE INDEX IF NOT EXISTS idx_events_entity ON work_events(entity_type, entity_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_type ON work_events(event_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_correlation ON work_events(correlation_id);
-
-CREATE TABLE IF NOT EXISTS external_refs (
-  id          TEXT PRIMARY KEY,
-  entity_type TEXT NOT NULL,
-  entity_id   TEXT NOT NULL,
-  provider    TEXT NOT NULL,
-  external_id TEXT,
-  url         TEXT,
-  relation    TEXT,
-  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE INDEX IF NOT EXISTS idx_external_refs_entity ON external_refs(entity_type, entity_id);
-CREATE INDEX IF NOT EXISTS idx_external_refs_provider ON external_refs(provider, external_id);
 
 -- ============================================================================
 -- Factory Map scope graph (FG-001 + FG-002). Additive, schema_version 2.

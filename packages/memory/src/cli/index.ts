@@ -15,7 +15,15 @@ import {
   cmdUpdate,
   cmdVerify,
 } from "./commands/lifecycle.js";
-import { cmdExport, cmdList, cmdRepos, cmdSearch, cmdShow, cmdTags } from "./commands/queries.js";
+import {
+  cmdExport,
+  cmdHistory,
+  cmdList,
+  cmdRepos,
+  cmdSearch,
+  cmdShow,
+  cmdTags,
+} from "./commands/queries.js";
 import {
   cmdBoundary,
   cmdDigest,
@@ -70,6 +78,8 @@ COMMANDS
                             --include-deprecated, --include-superseded,
                             --include-restricted, --limit
   show <id>                 Print the full record (body included).
+  history <id>              List the record's earlier versions (every update
+                            snapshots the previous row), newest first.
   list                      Recent records across all lifecycle states.
   review [--list]           Interactive triage queue: show each pending
                             draft and ask [a]pprove / [r]eject / [e]dit /
@@ -361,6 +371,8 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
         return await cmdSearch(parsed);
       case "show":
         return await cmdShow(parsed);
+      case "history":
+        return await cmdHistory(parsed);
       case "list":
         return await cmdList();
       case "review":

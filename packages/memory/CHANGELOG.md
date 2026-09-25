@@ -6,6 +6,35 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Added — lore version history
+
+- **Every `updateLore` snapshots the previous row** into `lore_version`
+  (version 1 = the original) before overwriting, so an edit is diffable and
+  reversible. `listLoreVersions(id)` reads the history; the CLI exposes it as
+  **`memory history <id>`** (newest first, current row as the head).
+  Migration 012.
+
+### Security
+
+- **Drafts stay invisible to delivery agents.** In factory context
+  (`GAFFER_FACTORY=1`) the MCP server ignores `search_lore`'s `includeDrafts`
+  flag, the same way it already ignores `includeRestricted` without the env
+  opt-in.
+- **Envelope-delimiter stripping moved into the core** for the repo digest
+  and feature ledger, so the CLI write path is sanitised like the MCP tools.
+
+### Fixed
+
+- **`memory card upsert --keep-model`** preserves a card's model-written
+  half when only the mechanical half is refreshed; the factory's post-merge
+  card refresh uses it, so summaries survive a merge.
+
+### Removed
+
+- The package-local `.github/workflows/ci.yml` and `dependabot.yml`: GitHub
+  does not run workflows from a sub-directory, so they never ran. The
+  monorepo's root workflow builds and tests this package.
+
 ## [0.2.0] — 2026-05-30
 
 ### Removed — one cold-start path, not four

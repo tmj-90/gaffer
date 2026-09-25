@@ -122,6 +122,7 @@ export function scanConsumers(root, knobNames) {
   };
   const consumers = new Map(knobNames.map((n) => [n, new Set()]));
   const reads = new Map();
+  const defaults = new Map(); // name → Set of in-code fallback literals seen at read sites
   const assigned = new Set();
   for (const [area, dirs] of Object.entries(areas)) {
     for (const dir of dirs) {
@@ -144,13 +145,36 @@ export function scanConsumers(root, knobNames) {
           if (!name || consumers.has(name) || !KNOB_PREFIX_RE.test(name)) continue;
           if (!reads.has(name)) reads.set(name, new Set());
           reads.get(name).add(path.relative(root, file));
+          const dflt = readSiteDefault(text, m.index, name, isShell);
+          if (dflt !== null) {
+            if (!defaults.has(name)) defaults.set(name, new Set());
+            defaults.get(name).add(dflt);
+          }
         }
       }
     }
   }
   // Read but never assigned anywhere in the codebase ⇒ an input only the operator can set.
   const undocumented = new Map([...reads].filter(([name]) => !assigned.has(name)));
-  return { consumers, undocumented };
+  return { consumers, undocumented, defaults };
+}
+
+/**
+ * The fallback literal at one read site, or null when the read has no inline
+ * default. Shell: `${NAME:-value}`. TS/JS: `process.env.NAME ?? <literal>` or
+ * `|| <literal>` (string / number / boolean literal only; computed values skip).
+ */
+export function readSiteDefault(text, index, name, isShell) {
+  if (isShell) {
+    const m = text.slice(index, index + name.length + 300).match(/^\$\{[A-Z0-9_]+:-([^}]*)\}/);
+    return m ? m[1] : null;
+  }
+  const after = text.slice(index, index + name.length + 120);
+  const m = after.match(
+    /^(?:process\.)?env(?:\.[A-Z0-9_]+|\[["'][A-Z0-9_]+["']\])\s*(?:\?\?|\|\|)\s*("[^"]*"|'[^']*'|-?\d+(?:\.\d+)?|true|false)/,
+  );
+  if (!m) return null;
+  return m[1].replace(/^["']|["']$/g, "");
 }
 
 async function loadSettingDefs() {
@@ -171,7 +195,7 @@ function cell(s) {
     .replace(/\n/g, " ");
 }
 
-export function render({ knobs, defs, consumers, undocumented }) {
+export function render({ knobs, defs, consumers, undocumented, defaults = new Map() }) {
   const defByKey = new Map(defs.map((d) => [d.key, d]));
   const knobByName = new Map(knobs.map((k) => [k.name, k]));
   const out = [];
@@ -254,13 +278,16 @@ export function render({ knobs, defs, consumers, undocumented }) {
     "assigns itself, with neither a `factory.config.sh` default nor a Settings-panel",
     "entry — so only an operator (or a test) can set them. Each is either a",
     "deliberate advanced/test-only override or a knob missing its default line or",
-    "`SETTING_DEFS` entry.",
+    "`SETTING_DEFS` entry. **Default in code** is the fallback literal at the read",
+    "site (`${X:-…}` / `?? …`); two values means the read sites disagree.",
     "",
   );
-  out.push("| Variable | Read in |", "|---|---|");
+  out.push("| Variable | Default in code | Read in |", "|---|---|---|");
   for (const [name, files] of [...undocumented.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const d = [...(defaults.get(name) ?? [])].sort();
+    const dflt = d.length ? d.map((v) => code(v)).join(" / ") : "";
     out.push(
-      `| \`${name}\` | ${[...files]
+      `| \`${name}\` | ${cell(dflt)} | ${[...files]
         .sort()
         .map((f) => `\`${f}\``)
         .join(", ")} |`,
@@ -274,8 +301,8 @@ export async function generate(root = ROOT) {
   const knobs = parseConfigDefaults(readFileSync(CONFIG_SH, "utf8"));
   const defs = await loadSettingDefs();
   const names = [...new Set([...knobs.map((k) => k.name), ...defs.map((d) => d.key)])];
-  const { consumers, undocumented } = scanConsumers(root, names);
-  return render({ knobs, defs, consumers, undocumented });
+  const { consumers, undocumented, defaults } = scanConsumers(root, names);
+  return render({ knobs, defs, consumers, undocumented, defaults });
 }
 
 async function main(argv) {

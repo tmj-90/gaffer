@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
-const { parseConfigDefaults, generate } = await import(
+const { parseConfigDefaults, generate, readSiteDefault } = await import(
   path.join(ROOT, "scripts", "config-reference.mjs")
 );
 
@@ -72,6 +72,31 @@ ok(
   "file order preserved, no duplicates",
 );
 
+console.log("== read-site defaults ==");
+const sh = 'x="${GAFFER_DOD_TIMEOUT:-900}"; y="${GAFFER_NONE}"';
+ok(
+  readSiteDefault(sh, sh.indexOf("${GAFFER_DOD"), "GAFFER_DOD_TIMEOUT", true) === "900",
+  "shell ${X:-900} → 900",
+);
+ok(
+  readSiteDefault(sh, sh.indexOf("${GAFFER_NONE"), "GAFFER_NONE", true) === null,
+  "shell ${X} without fallback → null",
+);
+const ts =
+  'const a = process.env.GAFFER_A ?? "abc"; const b = Number(process.env.GAFFER_B || 42); const c = process.env.GAFFER_C ?? compute();';
+ok(
+  readSiteDefault(ts, ts.indexOf("process.env.GAFFER_A"), "GAFFER_A", false) === "abc",
+  'TS `?? "abc"` → abc',
+);
+ok(
+  readSiteDefault(ts, ts.indexOf("process.env.GAFFER_B"), "GAFFER_B", false) === "42",
+  "TS `|| 42` → 42",
+);
+ok(
+  readSiteDefault(ts, ts.indexOf("process.env.GAFFER_C"), "GAFFER_C", false) === null,
+  "TS computed fallback → null (not a literal)",
+);
+
 console.log("== generated reference is current ==");
 const text = await generate();
 const committed = readFileSync(path.join(ROOT, "docs", "CONFIG.md"), "utf8");
@@ -92,8 +117,8 @@ ok(
   "dashboard-only section lists SANDBOX_PROVIDER",
 );
 ok(
-  /\| `GAFFER_DOD_TIMEOUT` \| /.test(text),
-  "undocumented-read section surfaces GAFFER_DOD_TIMEOUT",
+  /\| `GAFFER_DOD_TIMEOUT` \| `900` \| /.test(text),
+  "undocumented-read section surfaces GAFFER_DOD_TIMEOUT with its in-code default",
 );
 ok(
   !/\| `GAFFER_STRICT_REQUIRE` \| `runner/.test(text),

@@ -333,6 +333,122 @@ export interface TransitionInput {
   reviewApprove?: boolean;
 }
 
+/**
+ * GUARDED EDGES — the capability table behind {@link TransitionService.transition}.
+ *
+ * Every edge listed here is in {@link ALLOWED} but legal ONLY through the facade
+ * path that sets one of its `anyOf` flags on the {@link TransitionInput}. The raw
+ * board-move path sets none of them, so a stray drag can never fake a merge, park a
+ * ticket, approve a review, claim without a lease, or re-route an in-flight
+ * delivery. `edges` are exact `from->to` keys; `to:<status>` matches that
+ * destination from ANY source.
+ *
+ * Adding a guarded edge is one row here — not another if-block — and the messages
+ * are part of the API surface (tests and the dashboard's error toasts read them).
+ */
+export interface GuardedEdge {
+  readonly edges: readonly string[];
+  /** Input flags ANY of which legalises the edge — the facade paths that may take it. */
+  readonly anyOf: readonly (keyof TransitionInput)[];
+  readonly message: string;
+  /** Why the edge is guarded (kept next to the rule, not in a commit message). */
+  readonly why: string;
+}
+
+export const GUARDED_EDGES: readonly GuardedEdge[] = [
+  {
+    edges: ["done->in_review", "ready_for_merge->in_review"],
+    anyOf: ["reopenForReview"],
+    message: "A ticket can only return to review via the reopen-for-review path.",
+    why: "Auto-merge re-approval / conflict-reopen are deliberate system actions, never a card drag into in_review.",
+  },
+  {
+    edges: ["ready_for_merge->done"],
+    anyOf: ["markMerged"],
+    message: "A ticket can only be marked merged via the mark-merged path.",
+    why: "MERGE-COMPLETE only: a user or board-drag can never fake 'merged'.",
+  },
+  {
+    edges: ["in_review->blocked", "ready_for_merge->blocked", "in_testing->blocked"],
+    anyOf: ["park"],
+    message: "A ticket can only be parked to blocked via the retry-cap reject path.",
+    why: "Retry-cap park is reachable only once a delivery has exhausted its retry budget.",
+  },
+  {
+    edges: ["in_review->in_testing", "in_testing->ready_for_merge", "in_testing->refining"],
+    anyOf: ["testerVerdict"],
+    message: "A ticket can only move into or out of testing via the testing-lane paths.",
+    why: "BBT-001: into the lane on approval, out of it on a tester verdict — never a drag.",
+  },
+  {
+    edges: ["to:paused"],
+    anyOf: ["pauseDelivery"],
+    message: "A ticket can only be paused via the pause-on-cap path.",
+    why: "PAUSE-ON-CAP keeps a live worktree; only the runner's pause path may take it.",
+  },
+  {
+    edges: ["paused->in_progress"],
+    anyOf: ["resumeDelivery"],
+    message: "A paused ticket can only resume delivery via the resume path.",
+    why: "Only the loop's resume entry point may re-enter delivery.",
+  },
+  {
+    edges: ["ready->in_progress"],
+    anyOf: ["humanClaim"],
+    message: "A ready ticket can only be taken by hand via the human-claim path.",
+    why: "TRACK-2b: Dispatch.humanClaimTicket records who took it; a drag would push ready work straight into in-flight human-owned state.",
+  },
+  {
+    edges: ["claimed->refining", "in_progress->refining"],
+    anyOf: ["runnerRelease"],
+    message: "An in-flight delivery can only be released/parked via the runner-release path.",
+    why: "RUNNER-OWNED-BOOKKEEPING: releasing/parking a runner-held claim is the runner's call.",
+  },
+  {
+    edges: ["in_progress->ready"],
+    anyOf: ["runnerRelease", "humanRelease", "systemOverride"],
+    message:
+      "An in-flight delivery can only be released/parked to ready via the runner-release path (or human hand-back).",
+    why: "Shared hand-back route: runner release, human hand-back, or system recovery (claim expiry / reclaim / admin revoke — without systemOverride the expiry sweep's single transaction would wedge on this ticket).",
+  },
+  {
+    edges: ["to:cancelled"],
+    anyOf: ["wontDo"],
+    message: "A ticket can only be abandoned via the won't-do path.",
+    why: "A deliberate terminal abandon; a drag onto a 'Won't do' column must not swallow a ticket.",
+  },
+  {
+    edges: ["ready->claimed"],
+    anyOf: ["agentClaim"],
+    message: "A ticket can only be claimed via the claim path (which creates the lease).",
+    why: "GHOST-CLAIM guard: `claimed` is real only when a ticket_claims lease row backs it; a ghost is stranded forever (the expiry sweeper scans active claims only).",
+  },
+  {
+    edges: ["in_review->ready_for_merge"],
+    anyOf: ["reviewApprove"],
+    message: "A ticket can only be approved for merge via the review-approve path.",
+    why: "ReviewGateService.approveReview routes testable tickets through the tester and enforces reviewer ≠ author; a drag would skip both.",
+  },
+];
+
+/**
+ * The first guarded-edge rule `key` violates given the flags on `input`, or null
+ * when the edge is unguarded or a legalising flag is set. Pure; exported so the
+ * table is unit-testable without standing up a ticket in every source state.
+ */
+export function violatedGuard(
+  key: string,
+  input: Pick<TransitionInput, "toStatus"> & Partial<TransitionInput>,
+): GuardedEdge | null {
+  const toKey = `to:${input.toStatus}`;
+  for (const rule of GUARDED_EDGES) {
+    if (!rule.edges.some((e) => e === key || e === toKey)) continue;
+    if (rule.anyOf.some((flag) => Boolean(input[flag]))) continue;
+    return rule;
+  }
+  return null;
+}
+
 export interface TransitionResult {
   ticket: Ticket;
   eventId: string;
@@ -423,169 +539,15 @@ export class TransitionService {
         });
       }
 
-      // `done -> in_review` and `ready_for_merge -> in_review` are the auto-merge
-      // re-approval/conflict-reopen paths only. Reject them on any other route
-      // (e.g. a user dragging a card to the in_review column) so re-opening stays a
-      // deliberate system action.
-      if (
-        (key === "done->in_review" || key === "ready_for_merge->in_review") &&
-        !input.reopenForReview
-      ) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A ticket can only return to review via the reopen-for-review path.",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-
-      // `ready_for_merge -> done` is the MERGE-COMPLETE path only. Reject it on any
-      // route that did not opt in via the mark-merged path so a user/board-drag can
-      // never fake "merged" (the board-move path never sets this flag).
-      if (key === "ready_for_merge->done" && !input.markMerged) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A ticket can only be marked merged via the mark-merged path.",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-
-      // Retry-cap park (`in_review|ready_for_merge -> blocked`) is reachable only
-      // through the reject path once a delivery has exhausted its retry budget.
-      // Reject it on any route that did not opt in via the `park` flag so a stray
-      // board-drag onto a "Blocked" column can never park a ticket.
-      if (
-        (key === "in_review->blocked" ||
-          key === "ready_for_merge->blocked" ||
-          key === "in_testing->blocked") &&
-        !input.park
-      ) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A ticket can only be parked to blocked via the retry-cap reject path.",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-
-      // BBT-001: the independent-testing routes (into the lane on approval, and out
-      // of it on a tester verdict) are reachable ONLY through the dedicated facade
-      // paths that set `testerVerdict`. Reject them on any other route — a stray
-      // board-drag can never move a ticket into or out of `in_testing`.
-      if (
-        (key === "in_review->in_testing" ||
-          key === "in_testing->ready_for_merge" ||
-          key === "in_testing->refining") &&
-        !input.testerVerdict
-      ) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A ticket can only move into or out of testing via the testing-lane paths.",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-
-      // PAUSE-ON-CAP: pausing an in-flight delivery (`* -> paused`) is a deliberate
-      // runner action that KEEPS a live worktree; reject it on any route that did not
-      // opt in via the pause path so a stray board-drag can never park a ticket as
-      // paused. The resume route (`paused -> in_progress`) is likewise gated so only
-      // the loop's resume entry point can re-enter delivery.
-      if (input.toStatus === "paused" && !input.pauseDelivery) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A ticket can only be paused via the pause-on-cap path.",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-      if (key === "paused->in_progress" && !input.resumeDelivery) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A paused ticket can only resume delivery via the resume path.",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-
-      // TRACK-2b: a human takes a ready ticket "by hand" (`ready -> in_progress`).
-      // Reachable ONLY through Dispatch.humanClaimTicket (which sets `humanClaim`);
-      // reject any other route so a stray board drag can never push a ready ticket
-      // straight into in-flight human-owned work.
-      if (key === "ready->in_progress" && !input.humanClaim) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A ready ticket can only be taken by hand via the human-claim path.",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-
-      // RUNNER-OWNED-BOOKKEEPING: releasing/parking a runner-held delivery claim
-      // (`claimed->refining`, `in_progress->refining`) is reachable only through the
-      // runner-release path. `in_progress->ready` is the shared hand-back route: the
-      // runner releasing a delivery claim (`runnerRelease`) OR a human handing back a
-      // by-hand ticket (`humanRelease`) legalises it. Reject any other route so a
-      // stray board-drag can never re-route an in-flight delivery.
-      if (
-        (key === "claimed->refining" || key === "in_progress->refining") &&
-        !input.runnerRelease
-      ) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "An in-flight delivery can only be released/parked via the runner-release path.",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-      // `systemOverride` is the third legal route: system recovery (claim expiry,
-      // reclaim, voluntary release, admin revoke) hands an in-flight delivery back to
-      // `ready` with systemOverride set — a trusted internal path, never a board-drag
-      // (which sets none of these flags). Without this escape hatch every recovery of an
-      // `in_progress` ticket throws ILLEGAL_TRANSITION; inside the expiry sweep's single
-      // transaction that rolls back the WHOLE sweep, wedging it permanently on that ticket.
-      if (
-        key === "in_progress->ready" &&
-        !input.runnerRelease &&
-        !input.humanRelease &&
-        !input.systemOverride
-      ) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "An in-flight delivery can only be released/parked to ready via the runner-release path (or human hand-back).",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-
-      // Won't-do (`* -> cancelled`) is a deliberate terminal abandon. Reject it on
-      // any route that did not opt in via the won't-do path so a stray board-drag
-      // onto a "Won't do" column can never silently swallow a ticket.
-      if (input.toStatus === "cancelled" && !input.wontDo) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A ticket can only be abandoned via the won't-do path.",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-
-      // GHOST-CLAIM guard: `ready -> claimed` is real only when a ticket_claims lease
-      // row backs it — the claim path inserts the row THEN sets `agentClaim`. Reject any
-      // other route so a raw board move can never set a ticket `claimed` with no lease
-      // (unrecoverable: the expiry sweeper only scans active claims, so the ghost is
-      // stranded forever and the ticket never re-enters the queue).
-      if (key === "ready->claimed" && !input.agentClaim) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A ticket can only be claimed via the claim path (which creates the lease).",
-          { from: ticket.status, to: input.toStatus },
-        );
-      }
-
-      // TESTING-LANE / SELF-APPROVE guard: `in_review -> ready_for_merge` is reachable
-      // only through ReviewGateService.approveReview, which routes a testable ticket
-      // through the independent tester first and enforces the agent-approve authz check.
-      // Reject any other route (the raw board move never sets this flag) so a board drag
-      // can never approve-and-merge while skipping the mandatory testing lane or the
-      // "an agent can never approve its own work" invariant.
-      if (key === "in_review->ready_for_merge" && !input.reviewApprove) {
-        throw new DispatchError(
-          "ILLEGAL_TRANSITION",
-          "A ticket can only be approved for merge via the review-approve path.",
-          { from: ticket.status, to: input.toStatus },
-        );
+      // GUARDED EDGES: an edge in ALLOWED that is legal only through the facade path
+      // that sets its flag. One declarative table + one check replaces the former
+      // eleven near-identical if-blocks (see GUARDED_EDGES for each edge's rationale).
+      const guard = violatedGuard(key, input);
+      if (guard) {
+        throw new DispatchError("ILLEGAL_TRANSITION", guard.message, {
+          from: ticket.status,
+          to: input.toStatus,
+        });
       }
 
       const gate = gateFor(input.toStatus);

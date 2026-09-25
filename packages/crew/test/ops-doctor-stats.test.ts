@@ -196,7 +196,11 @@ describe("ops: doctor + stats + audit wiring", () => {
     expect(report.ok).toBe(false);
   });
 
-  it("doctor warns when the audit log target is not writable", async () => {
+  // As root every directory is writable, so the "not writable" branch cannot be
+  // observed — skip (with the reason in the title) instead of failing in a root
+  // container; the ok-path test below still runs.
+  const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+  it.skipIf(isRoot)("doctor warns when the audit log target is not writable", async () => {
     // Point the audit path at a location whose nearest existing ancestor doesn't
     // exist on any writable root: a path under a guaranteed-missing absolute dir.
     const unwritable = "/crew-nonexistent-root-xyz/deep/audit.jsonl";

@@ -92,7 +92,7 @@ All knobs live in `factory.config.sh` and are env-overridable per run/per repo.
 | Variable             | Default                        | Meaning |
 |----------------------|--------------------------------|---------|
 | `STRICT_MODE`        | `0`                            | `1` wraps the live agent in the OS sandbox provider. |
-| `SANDBOX_PROVIDER`   | `sandbox-exec`                 | Which provider supplies containment (`none`/`sandbox-exec`/`docker`/`lima`). |
+| `SANDBOX_PROVIDER`   | auto: `sandbox-exec` if present, else `docker` if the docker CLI is present, else `sandbox-exec` | Which provider supplies containment (`none`/`sandbox-exec`/`docker`/`lima`). Explicit env always wins. |
 | `STRICT_ALLOW_NETWORK` | `1`                          | Allow network inside the sandbox (see caveat — cannot be `0` with `sandbox-exec`). |
 | `STRICT_ALLOW_HOME`  | `$HOME/.claude $HOME/.cache`   | Space-separated HOME paths the sandbox may write to (Claude's own state/cache). |
 

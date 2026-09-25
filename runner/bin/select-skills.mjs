@@ -182,14 +182,70 @@ export function skillMatches(skill, { stacks = [], area = "" } = {}) {
   return stackOk && areaOk;
 }
 
+/** Words too generic to signal relevance on their own. */
+const STOP_WORDS = new Set(
+  (
+    "a an and are as at be by for from has have in into is it its of on or that the this to " +
+    "with you your when use using used skill skills agent code file files repo project add adds " +
+    "create new make build build-time run runs write writes write-up guide how what which where " +
+    "will can should must never always every any all not no yes one two via per into over under " +
+    "after before while after before then than these those they them their there here about " +
+    "more most less least also only just each both such very much many some most other same"
+  ).split(/\s+/),
+);
+
+/** Lower-cased, de-hyphenated, stop-word-free tokens (≥ 3 chars) of a text. */
+export function relevanceTokens(text = "") {
+  const out = new Set();
+  for (const raw of String(text)
+    .toLowerCase()
+    .split(/[^a-z0-9+#.]+/)) {
+    const t = raw.replace(/^[.+#]+|[.+#]+$/g, "");
+    if (t.length >= 3 && !STOP_WORDS.has(t) && !/^\d+$/.test(t)) out.add(t);
+  }
+  return out;
+}
+
 /**
- * Select skills from the library by stack + area. Compound stack labels (e.g.
- * "typescript-react") are expanded to their parts before matching so the runner CLI
- * path agrees with the Crew registry (see {@link expandStacks}).
+ * TEXT RELEVANCE (additive, opt-in via `text`): an OFF-DOMAIN skill — one that the
+ * stack/area rules keep opt-in (marketing / product / planning / devops / infra /
+ * meta / security-ops) — is ALSO mounted when the ticket text plainly calls for it:
+ * its name (as a phrase, e.g. "terraform patterns" / "seo audit") or its name's
+ * distinctive parts appear in the text, or at least two distinctive words of its
+ * description do. Before this, ~25 packs were unreachable from any runner path
+ * (no runner path ever set `--area devops|marketing|…`), so a ticket that said
+ * "add a Terraform module for the S3 bucket" got no Terraform skill. Always-eligible
+ * skills are unaffected; with no text the selection is byte-identical to before.
  */
-export function selectSkills({ skillsDir = DEFAULT_SKILLS_DIR, stacks = [], area = "" } = {}) {
+export function textMatches(skill, text = "") {
+  if (!text) return false;
+  const words = relevanceTokens(text);
+  if (words.size === 0) return false;
+  const nameParts = [...relevanceTokens(skill.name.replace(/[-_]/g, " "))];
+  if (nameParts.length > 0 && nameParts.every((p) => words.has(p))) return true;
+  const phrase = skill.name.replace(/[-_]/g, " ").toLowerCase();
+  if (phrase.length >= 5 && String(text).toLowerCase().includes(phrase)) return true;
+  const descHits = [...relevanceTokens(skill.description)].filter((t) => words.has(t));
+  return descHits.length >= 2;
+}
+
+/**
+ * Select skills from the library by stack + area (+ optional ticket text). Compound
+ * stack labels (e.g. "typescript-react") are expanded to their parts before matching
+ * so the runner CLI path agrees with the Crew registry (see {@link expandStacks}).
+ * `text` (the ticket title + description) additionally pulls in off-domain packs the
+ * text plainly calls for — see {@link textMatches}.
+ */
+export function selectSkills({
+  skillsDir = DEFAULT_SKILLS_DIR,
+  stacks = [],
+  area = "",
+  text = "",
+} = {}) {
   const expanded = expandStacks(stacks);
-  return loadSkills(skillsDir).filter((skill) => skillMatches(skill, { stacks: expanded, area }));
+  return loadSkills(skillsDir).filter(
+    (skill) => skillMatches(skill, { stacks: expanded, area }) || textMatches(skill, text),
+  );
 }
 
 /** Distinct area packs present in the library, sorted. */
@@ -205,6 +261,7 @@ function parseArgs(argv) {
   const opts = {
     stacks: [],
     area: "",
+    text: "",
     skillsDir: DEFAULT_SKILLS_DIR,
     json: false,
     listAreas: false,
@@ -218,6 +275,9 @@ function parseArgs(argv) {
         break;
       case "--area":
         opts.area = next() ?? "";
+        break;
+      case "--text":
+        opts.text = next() ?? "";
         break;
       case "--skills-dir":
         opts.skillsDir = resolve(next() ?? DEFAULT_SKILLS_DIR);

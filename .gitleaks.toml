@@ -1,0 +1,15 @@
+# gitleaks configuration (used by .github/workflows/secret-scan.yml and `gitleaks git .`).
+# Extends the default rules; the allowlist below names the ONLY places a
+# secret-shaped string is expected — test fixtures that exist precisely to prove
+# a scanner or an env scrub catches such strings. Anything else is a finding.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Deliberate fake secrets in tests"
+paths = [
+  # crew's security-hotspot scanner test feeds itself a fake `sk_live_…` key to prove it is flagged.
+  '''packages/crew/test/idle-loops\.test\.ts''',
+  # the agent-env scrub test seeds fake AWS/DB/API credentials to prove they NEVER reach the agent.
+  '''runner/test/agent-env-scrub\.test\.sh''',
+]

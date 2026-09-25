@@ -12,13 +12,5 @@
 # Review this list whenever dependencies are bumped; drop entries the moment the
 # advisory's patched version is reachable.
 
-# --- vitest / vite (dev-only test runner; not shipped in any published package) ---
-# Both advisories below come from the pinned `vitest@^2.1.0` dev dependency in
-# packages/{crew,dispatch,memory}. They are exploitable only against the Vitest
-# UI dev server / Vite dev server — neither of which we run in CI or ship to
-# users (vitest + vite are devDependencies; published `dist/` carries no vite).
-# The real fix is bumping vitest to >=3.2.6, a major upgrade across all three
-# suites that is out of scope for this hardening pass and tracked separately.
-# Drop both entries once vitest is on >=3.2.6 (which pulls vite >=6.4.3).
-GHSA-5xrq-8626-4rwp  # critical · vitest <3.2.6 · Vitest UI server arbitrary file read/exec
-GHSA-fx2h-pf6j-xcff  # high · vite <=6.4.2 · server.fs.deny bypass on Windows alternate paths
+# (No accepted advisories at present. The former vitest@2 / vite entries were retired
+# once every package moved to vitest >=3.2.6 — the condition they named.)

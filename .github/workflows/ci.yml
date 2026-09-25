@@ -78,6 +78,28 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # ~27k lines of production bash (the live delivery runtime) — static-check it like
+      # the TypeScript. Error severity is the gate (parse errors, missing shell directive,
+      # unquoted-glob-in-test classes); warnings are reported in the log for the baseline
+      # burn-down but do not fail the job yet. `-x` follows `source` so factory.config.sh's
+      # sourced libs are checked in context. LC_ALL=C.UTF-8: shellcheck 0.9 aborts on
+      # non-ASCII comments under a POSIX locale.
+      - name: Shellcheck (runner bash)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          sudo apt-get install -y -q shellcheck >/dev/null
+          shellcheck --version | head -2
+          FILES=(runner/tick.sh runner/loop.sh runner/worker.sh runner/factory.config.sh runner/gaffer
+                 runner/setup.sh runner/preflight.sh runner/status.sh runner/run-summary.sh runner/demo.sh
+                 runner/lib/*.sh runner/sandbox/smoke-test.sh runner/bin/poll-once.sh runner/test/*.sh)
+          echo "::group::warnings (informational baseline)"
+          shellcheck -S warning -x "${FILES[@]}" || true
+          echo "::endgroup::"
+          shellcheck -S error -x "${FILES[@]}"
+
       - name: Format check
         run: pnpm format:check
 
@@ -144,8 +166,10 @@ jobs:
   # Dedicated job for the Mode-2 docker containment gate. Kept OUT of the general bash
   # suite (which runs on every OS × node and would be fragile on shared runners) so a
   # docker-registry hiccup can't red the main matrix. Runs the red-team gate on a
-  # docker-capable runner; the test itself SKIPS (green) on a registry/rate-limit infra
-  # failure and only fails on a genuine containment regression.
+  # docker-capable runner. On PULL REQUESTS the test SKIPS (green) on a registry /
+  # rate-limit infra failure and only fails on a genuine containment regression; on a
+  # PUSH TO MAIN a skip is a failure (GAFFER_SANDBOX_TEST_REQUIRE=1) so the gate can
+  # never be silently green on the branch that ships.
   sandbox-containment:
     name: Docker sandbox containment gate
     runs-on: ubuntu-latest
@@ -156,4 +180,8 @@ jobs:
       - name: Red-team containment gate (docker)
         env:
           RUN_SANDBOX_DOCKER_TEST: "1"
+          # On a push to main the gate must have RUN: an infra skip (no daemon, registry
+          # rate-limit, image build failure) is a red job, not a silent green. Pull requests
+          # keep the tolerant posture so a Docker Hub hiccup can't block review.
+          GAFFER_SANDBOX_TEST_REQUIRE: ${{ github.event_name == 'push' && '1' || '0' }}
         run: bash runner/test/sandbox-docker-containment.test.sh

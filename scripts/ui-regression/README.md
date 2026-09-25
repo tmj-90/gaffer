@@ -11,7 +11,7 @@ the board refreshes itself over the live event stream.
 
 ```bash
 pnpm -r build
-npx playwright install chromium        # once (or PLAYWRIGHT_CHROMIUM=/path/to/chromium)
+npx playwright@1.63.0 install chromium # once, same version as the pinned playwright-core (or PLAYWRIGHT_CHROMIUM=/path/to/chromium)
 bash scripts/ui-regression/run.sh      # ~2 minutes
 ```
 

@@ -169,6 +169,45 @@ jobs:
           done
           exit $rc
 
+  # The dashboard in a REAL browser: onboard → ticket → machine-checkable AC → poll
+  # (live tick with a stub worker) → review/approve → merge → product-owner run → every
+  # view rendered with zero console errors, zero failed requests and zero critical /
+  # serious WCAG 2.1 A/AA violations (axe-core). Its own job so a browser download or
+  # rendering hiccup never reds the unit matrix, and ubuntu-only (one browser is enough).
+  # playwright-core is pinned in scripts/ui-regression/run.sh; the Chromium installed
+  # here MUST be the same version or playwright-core refuses to launch it.
+  ui-regression:
+    name: Dashboard browser regression (Playwright + axe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - name: Setup Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm -r build
+      - name: Install Chromium (same version as the harness's playwright-core)
+        run: npx --yes playwright@1.63.0 install --with-deps chromium
+      - name: Browser regression
+        shell: bash
+        env:
+          UI_REGRESS_OUT: ${{ runner.temp }}/ui-regression
+        run: |
+          bash scripts/ui-regression/run.sh
+          echo "::group::results.json"
+          cat "$UI_REGRESS_OUT/shots/results.json" 2>/dev/null || true
+          echo "::endgroup::"
+
   # Dedicated job for the Mode-2 docker containment gate. Kept OUT of the general bash
   # suite (which runs on every OS × node and would be fragile on shared runners) so a
   # docker-registry hiccup can't red the main matrix. Runs the red-team gate on a

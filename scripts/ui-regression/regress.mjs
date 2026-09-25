@@ -9,8 +9,18 @@
 // work (stub delivery) → review + approve → merge → done → suggest work (product
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
-import { chromium } from "playwright-core";
 import { writeFileSync, mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+
+// playwright-core is resolved with CommonJS rules (NOT a bare ESM import) so the
+// copy run.sh installs under $UI_REGRESS_OUT/node_modules is found: ESM ignores
+// NODE_PATH, so a bare `import "playwright-core"` only works when the package is
+// already in the repo's node_modules.
+const requireFrom = createRequire(
+  path.join(process.env.PW_CORE_ROOT || process.cwd(), "package.json"),
+);
+const { chromium } = requireFrom("playwright-core");
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8797";
 const TOKEN = process.env.TOKEN;
@@ -247,8 +257,10 @@ try {
       await checkInput.fill("npm test");
       ok("Ticket view: check command entered in the AC form (machine-checkable AC via UI)");
     } else note("Ticket view: no check-command input in the AC form");
+    // The submit button of the AC form itself — the ticket view has other "Add …"
+    // forms (attach repo) earlier in the DOM, so a text-only fallback hits the wrong one.
     const addAc = await page.$(
-      'button:has-text("Add AC"), button:has-text("Add criterion"), button:has-text("Add")',
+      'form:has(input[placeholder*="criterion" i]) button[type="submit"], button:has-text("Add AC")',
     );
     if (addAc) {
       await addAc.click();

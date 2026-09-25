@@ -26,13 +26,20 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 OUT="${UI_REGRESS_OUT:-/tmp/gaffer-ui-regression}"
 PORT="${UI_REGRESS_PORT:-8797}"
+# A previous KEEP_DASHBOARD=1 run leaves its dashboard bound to $PORT; its pid
+# file lives under $OUT, so stop it BEFORE the wipe below — otherwise the new
+# dashboard dies with EADDRINUSE and every call 401s against the stale token.
+if [ -f "$OUT/data/dashboard.pid" ]; then
+  _old="$(cat "$OUT/data/dashboard.pid" 2>/dev/null)"
+  [ -n "$_old" ] && kill "$_old" 2>/dev/null && sleep 1
+fi
 rm -rf "$OUT"; mkdir -p "$OUT/data" "$OUT/shots" "$OUT/bin"
 
 # ── playwright-core (no browser download) into the out dir ──
 if ! node -e 'require.resolve("playwright-core")' >/dev/null 2>&1; then
   ( cd "$OUT" && npm init -y >/dev/null 2>&1 && npm install --silent playwright-core >/dev/null 2>&1 ) \
     || { echo "could not install playwright-core (npm)"; exit 2; }
-  export NODE_PATH="$OUT/node_modules${NODE_PATH:+:$NODE_PATH}"
+  export PW_CORE_ROOT="$OUT"   # regress.mjs resolves playwright-core from here (ESM ignores NODE_PATH)
 fi
 
 # ── sample target repo: a tiny node project with a real, passing test command ──
@@ -69,6 +76,10 @@ bash "$ROOT/runner/gaffer" dashboard --restart >/dev/null 2>&1
 for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
 TOKEN="$(cat "$GAFFER_DATA/dashboard-token" 2>/dev/null)"
 [ -n "$TOKEN" ] || { echo "dashboard did not come up (see $GAFFER_DATA/dashboard.log)"; exit 2; }
+# Prove the server on $PORT is OURS (accepts this run's token) — a foreign process
+# on the port would pass /healthz and then fail every authenticated call.
+curl -sf -H "authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/api/dashboard" >/dev/null \
+  || { echo "a server on :$PORT rejects this run's token — another dashboard is bound there (see $GAFFER_DATA/dashboard.log)"; exit 2; }
 
 echo "== UI regression against http://127.0.0.1:$PORT (out: $OUT) =="
 BASE="http://127.0.0.1:$PORT" TOKEN="$TOKEN" REPO_PATH="$R" OUT="$OUT/shots" node "$HERE/regress.mjs"

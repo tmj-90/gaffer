@@ -9,11 +9,12 @@
 #   Review (server diff, arm + confirm Approve) → merge runner → done →
 #   Suggest work (product-owner run) → every view renders clean → SSE live refresh.
 #
-# Opt-in (needs a browser); NOT wired into CI. Run from the repo root:
+# Runs in CI (the `ui-regression` job) and locally. From the repo root:
 #
 #   pnpm -r build
-#   npx playwright install chromium            # once, or point PLAYWRIGHT_CHROMIUM at a binary
-#   bash scripts/ui-regression/run.sh          # ~2 min; writes <out>/results.json + screenshots
+#   npx playwright@1.63.0 install chromium     # once (same version as the pinned playwright-core),
+#                                              # or point PLAYWRIGHT_CHROMIUM at a chromium binary
+#   bash scripts/ui-regression/run.sh          # ~3 min; writes <out>/shots/results.json + screenshots
 #
 # Env: UI_REGRESS_PORT (default 8797) · UI_REGRESS_OUT (default /tmp/gaffer-ui-regression)
 #      PLAYWRIGHT_CHROMIUM (chromium binary; default: playwright-core's resolution)
@@ -37,7 +38,8 @@ rm -rf "$OUT"; mkdir -p "$OUT/data" "$OUT/shots" "$OUT/bin"
 
 # ── playwright-core (no browser download) + axe-core (a11y audit) into the out dir ──
 if ! node -e 'require.resolve("playwright-core"); require.resolve("axe-core")' >/dev/null 2>&1; then
-  ( cd "$OUT" && npm init -y >/dev/null 2>&1 && npm install --silent playwright-core axe-core >/dev/null 2>&1 ) \
+  # Pinned: CI installs the matching Chromium with `npx playwright@<same version> install`.
+  ( cd "$OUT" && npm init -y >/dev/null 2>&1 && npm install --silent playwright-core@1.63.0 axe-core@4.13.0 >/dev/null 2>&1 ) \
     || { echo "could not install playwright-core / axe-core (npm)"; exit 2; }
   export PW_CORE_ROOT="$OUT"   # regress.mjs resolves both from here (ESM ignores NODE_PATH)
 fi

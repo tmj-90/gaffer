@@ -1075,42 +1075,108 @@ function busyEditing() {
       a.isContentEditable)
   );
 }
+// --- live event stream --------------------------------------------------------
+// The control plane pushes its append-only event log as Server-Sent Events
+// (GET /api/events/stream). Every push schedules ONE debounced refresh of the
+// current view, so the board reacts within a second of a transition instead of
+// on the next blind interval. Streamed with fetch (not EventSource) so the bearer
+// token travels in the Authorization header, never in the URL. The interval
+// refresh below stays as the fallback when the stream is unavailable.
+let liveStreamAbort = null;
+let liveStreamSeq = null;
+let liveRefreshTimer = null;
+const LIVE_REFRESH_DEBOUNCE_MS = 400;
+const LIVE_RECONNECT_MS = 5000;
+
+function scheduleLiveRefresh() {
+  if (liveRefreshTimer) return;
+  liveRefreshTimer = setTimeout(() => {
+    liveRefreshTimer = null;
+    refreshCurrentView();
+  }, LIVE_REFRESH_DEBOUNCE_MS);
+}
+
+async function startLiveStream() {
+  if (liveStreamAbort || typeof fetch !== "function" || typeof ReadableStream === "undefined")
+    return;
+  const controller = new AbortController();
+  liveStreamAbort = controller;
+  const headers = { accept: "text/event-stream" };
+  const tok = authToken();
+  if (tok) headers["authorization"] = "Bearer " + tok;
+  const since = liveStreamSeq === null ? "" : `?since=${liveStreamSeq}`;
+  try {
+    const res = await fetch(`/api/events/stream${since}`, { headers, signal: controller.signal });
+    if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let isEvent = false;
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("id: ")) liveStreamSeq = Number(line.slice(4)) || liveStreamSeq;
+          else if (line.startsWith("event: work_event")) isEvent = true;
+        }
+        if (isEvent) scheduleLiveRefresh();
+      }
+    }
+  } catch {
+    // fall through to reconnect (the interval refresh keeps the UI honest meanwhile)
+  } finally {
+    liveStreamAbort = null;
+    if (!controller.signal.aborted && document.visibilityState !== "hidden") {
+      setTimeout(startLiveStream, LIVE_RECONNECT_MS);
+    }
+  }
+}
+
+/** Re-render the current view in place if it is safe to do so (shared by the interval + stream). */
+function refreshCurrentView() {
+  if (document.visibilityState !== "visible") return;
+  if (busyEditing()) return;
+  // don't yank a card mid-drag or a menu/sheet out from under a click. Match `.sheet.open`
+  // (an OPEN sheet), not `.sheet` — the latter is the always-present container, so it would
+  // pause auto-refresh permanently after the first sheet ever opens.
+  if (document.querySelector(".dragging, .is-dragging, .sheet.open, .menu-open")) return;
+  // A modal owns the screen — use the single source of truth (isModalOpen), not a
+  // narrower ad-hoc list, so a refresh never fires under the reject dialog, move
+  // menu, or command palette and detach the nodes they anchor to.
+  if (isModalOpen()) return;
+  // Never tear down the review queue mid-triage: a blind re-render resets the
+  // j/k cursor, silently DISARMS a pending approve, and reloads every diff. Skip
+  // while an approve is armed (keyboard `.card-armed` or the mouse `.btn-armed`),
+  // or while the operator is focused inside a review card.
+  if (document.querySelector(".card-armed, .btn-armed")) return;
+  {
+    const a = document.activeElement;
+    if (a && typeof a.closest === "function" && a.closest(".view .card")) return;
+  }
+  const { view, param } = parseHash();
+  if (!AUTO_REFRESHABLE.has(view)) return;
+  const render = VIEWS[view];
+  if (!render) return;
+  const y = app.scrollTop;
+  guard(async () => {
+    const content = await render(param);
+    // bail if the operator navigated or started interacting during the fetch
+    if (parseHash().view !== view || busyEditing()) return;
+    clear(app);
+    app.appendChild(content);
+    app.scrollTop = y;
+  });
+}
+
 function startAutoRefresh() {
   if (autoRefreshTimer) return;
-  autoRefreshTimer = setInterval(() => {
-    if (document.visibilityState !== "visible") return;
-    if (busyEditing()) return;
-    // don't yank a card mid-drag or a menu/sheet out from under a click. Match `.sheet.open`
-    // (an OPEN sheet), not `.sheet` — the latter is the always-present container, so it would
-    // pause auto-refresh permanently after the first sheet ever opens.
-    if (document.querySelector(".dragging, .is-dragging, .sheet.open, .menu-open")) return;
-    // A modal owns the screen — use the single source of truth (isModalOpen), not a
-    // narrower ad-hoc list, so a refresh never fires under the reject dialog, move
-    // menu, or command palette and detach the nodes they anchor to.
-    if (isModalOpen()) return;
-    // Never tear down the review queue mid-triage: a blind re-render resets the
-    // j/k cursor, silently DISARMS a pending approve, and reloads every diff. Skip
-    // while an approve is armed (keyboard `.card-armed` or the mouse `.btn-armed`),
-    // or while the operator is focused inside a review card.
-    if (document.querySelector(".card-armed, .btn-armed")) return;
-    {
-      const a = document.activeElement;
-      if (a && typeof a.closest === "function" && a.closest(".view .card")) return;
-    }
-    const { view, param } = parseHash();
-    if (!AUTO_REFRESHABLE.has(view)) return;
-    const render = VIEWS[view];
-    if (!render) return;
-    const y = app.scrollTop;
-    guard(async () => {
-      const content = await render(param);
-      // bail if the operator navigated or started interacting during the fetch
-      if (parseHash().view !== view || busyEditing()) return;
-      clear(app);
-      app.appendChild(content);
-      app.scrollTop = y;
-    });
-  }, AUTO_REFRESH_MS);
+  startLiveStream();
+  autoRefreshTimer = setInterval(refreshCurrentView, AUTO_REFRESH_MS);
 }
 
 // Live heartbeat — the tick counter breathes in the bar so the room reads
@@ -1566,11 +1632,23 @@ async function renderOverview() {
     : 0;
   const last7 = typeof flowThr.last7 === "number" ? flowThr.last7 : 0;
   const prev7 = typeof flowThr.prev7 === "number" ? flowThr.prev7 : 0;
-  const flowEff = Math.round(
-    ((byStatus.done || 0) /
-      Math.max(1, (byStatus.done || 0) + inReview + blocked + inProgress + (byStatus.ready || 0))) *
-      100,
-  );
+  // Flow efficiency is SERVER-AUTHORITATIVE when the endpoint carries it: the median
+  // (active time / lead time) over shipped tickets, from the transition log
+  // (src/health/deliveryFlow.ts). The former client number was a WIP ratio
+  // (done / done+in-flight), which is not flow efficiency; it remains only as the
+  // fallback when the server has no shipped ticket with the signal yet.
+  const flowEffServer = health.flow_efficiency || {};
+  const flowEff =
+    typeof flowEffServer.median_pct === "number"
+      ? Math.round(flowEffServer.median_pct)
+      : Math.round(
+          ((byStatus.done || 0) /
+            Math.max(
+              1,
+              (byStatus.done || 0) + inReview + blocked + inProgress + (byStatus.ready || 0),
+            )) *
+            100,
+        );
   // honest deltas: second-half avg vs first-half avg of the relevant series
   const half = (s) => {
     const h = Math.floor(s.length / 2);

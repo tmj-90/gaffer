@@ -8,7 +8,11 @@ import {
   resolveLedgerPath,
   todaySpend,
 } from "../../cost/costAggregator.js";
-import { deliveryFlow, type FlowTicket } from "../../health/deliveryFlow.js";
+import {
+  deliveryFlow,
+  flowSignalsFromTransitions,
+  type FlowTicket,
+} from "../../health/deliveryFlow.js";
 import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
 import { aggregateHealth, type ReworkResolver } from "../../health/healthAggregator.js";
 import { aggregateSkillTelemetry } from "../../health/skillsTelemetryAggregator.js";
@@ -220,11 +224,20 @@ export function routeReadModels(
     // Shipped divisor + ticket list for delivery flow come from one ticket read.
     const allTickets = wg.tickets.listFiltered({});
     const shippedCount = allTickets.filter((t) => t.status === "done").length;
-    const flowTickets: FlowTicket[] = allTickets.map((t) => ({
-      status: t.status,
-      created_at: t.created_at,
-      updated_at: t.updated_at,
-    }));
+    // EVENT-DERIVED flow signals: when each ticket last entered `done` and how long it
+    // spent in active states, from the transition log — not `updated_at`, which moves
+    // on any patch and inflated cycle time / mis-bucketed throughput.
+    const signals = flowSignalsFromTransitions(wg.events.stateTransitions());
+    const flowTickets: FlowTicket[] = allTickets.map((t) => {
+      const sig = signals.get(t.id);
+      return {
+        status: t.status,
+        created_at: t.created_at,
+        updated_at: t.updated_at,
+        done_at: sig?.done_at ?? null,
+        active_ms: sig?.active_ms ?? null,
+      };
+    });
 
     // Rework resolver: ticket-number → rework-attempt count, one grouped query.
     const reworkRows = wg.db

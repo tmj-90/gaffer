@@ -7,6 +7,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import {
   exportLore,
   getLore,
+  listLoreVersions,
   listRecent,
   listRepos,
   listTags,
@@ -141,6 +142,43 @@ export async function cmdShow(args: ReturnType<typeof parseArgs>): Promise<numbe
       return 1;
     }
     process.stdout.write(renderFull(lore) + "\n");
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `memory history <id>` — the record's version history. Every `update`
+ * snapshots the pre-update row into `lore_version` (version 1 = the original),
+ * so an edit is diffable and reversible. Prints newest first; the current row
+ * is what `show` prints, so it is listed as the head above the snapshots.
+ */
+export async function cmdHistory(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const id = args.positionals[0];
+  if (!id) {
+    process.stderr.write("memory: history <id> requires an id\n");
+    return 2;
+  }
+  const db = openDb();
+  try {
+    const lore = getLore(db, id);
+    if (!lore) {
+      process.stderr.write(`memory: no record with id ${id}\n`);
+      return 1;
+    }
+    const versions = listLoreVersions(db, id);
+    const head = versions.length + 1;
+    process.stdout.write(
+      `${id}  ${versions.length} earlier version${versions.length === 1 ? "" : "s"}\n`,
+    );
+    process.stdout.write(`  v${head}  current  ${lore.updatedAt}  ${lore.title}\n`);
+    for (const v of versions) {
+      process.stdout.write(`  v${v.version}  ${v.status}  ${v.snapshotOf}  ${v.title}\n`);
+      if (v.summary !== lore.summary || v.body !== lore.body) {
+        process.stdout.write(`      summary: ${v.summary}\n`);
+      }
+    }
     return 0;
   } finally {
     db.close();

@@ -46,38 +46,6 @@ export function resolveDashboardTokenPath(env: NodeJS.ProcessEnv = process.env):
 /** How the effective API token was obtained (for operator-facing startup logs). */
 export type ApiTokenSource = "env" | "file" | "generated";
 
-/**
- * How the effective token was resolved at STARTUP. Captured once (by
- * {@link ensureApiToken}, or explicitly via {@link recordApiTokenSource}) rather
- * than re-derived from the environment per request, so tests and embedders
- * control the auth posture deterministically. `null` means the provenance was
- * never recorded (an embedder constructed the server directly) — the relaxed
- * posture, matching that path's historical behaviour.
- */
-let resolvedTokenSource: ApiTokenSource | null = null;
-
-/**
- * Record how the API token was resolved at startup. The `dispatch-api`
- * entrypoint gets this for free via {@link ensureApiToken}; embedders that
- * construct the server directly may call it to opt into the strict operator-set
- * posture (`"env"`). Pass `null` to reset to the unknown/relaxed default
- * (primarily for test isolation).
- */
-export function recordApiTokenSource(source: ApiTokenSource | null): void {
-  resolvedTokenSource = source;
-}
-
-/**
- * True when the operator EXPLICITLY configured `DISPATCH_API_TOKEN` (the token
- * source recorded at startup was the environment). An operator-set token means
- * the operator asked for auth on purpose, so {@link isRequestAuthorized} gates
- * ALL requests — loopback reads included — instead of the relaxed loopback-read
- * UX granted to the auto-provisioned dashboard token.
- */
-export function isOperatorSetToken(): boolean {
-  return resolvedTokenSource === "env";
-}
-
 export interface EnsuredApiToken {
   token: string;
   source: ApiTokenSource;
@@ -102,14 +70,12 @@ export interface EnsuredApiToken {
  * delivery agent — whose child env is token-scrubbed by the runner and which
  * therefore cannot present the token — from reaching any mutating endpoint.
  *
- * The resolved source is also recorded (see {@link recordApiTokenSource}): an
- * operator-set token (case 1) switches {@link isRequestAuthorized} to the strict
- * posture where even loopback reads require the token.
+ * The returned `source` is for the operator-facing startup log only: the auth
+ * decision ({@link isRequestAuthorized}) is the same for every source.
  */
 export function ensureApiToken(env: NodeJS.ProcessEnv = process.env): EnsuredApiToken {
   const existing = (env.DISPATCH_API_TOKEN ?? "").trim();
   if (existing.length > 0) {
-    recordApiTokenSource("env");
     return { token: existing, source: "env" };
   }
 
@@ -118,7 +84,6 @@ export function ensureApiToken(env: NodeJS.ProcessEnv = process.env): EnsuredApi
     const persisted = readFileSync(path, "utf8").trim();
     if (persisted.length > 0) {
       env.DISPATCH_API_TOKEN = persisted;
-      recordApiTokenSource("file");
       return { token: persisted, source: "file", path };
     }
   } catch {
@@ -132,7 +97,6 @@ export function ensureApiToken(env: NodeJS.ProcessEnv = process.env): EnsuredApi
   // mode is only applied on creation).
   chmodSync(path, 0o600);
   env.DISPATCH_API_TOKEN = token;
-  recordApiTokenSource("generated");
   return { token, source: "generated", path };
 }
 
@@ -246,46 +210,6 @@ export function isAuthorized(req: IncomingMessage): boolean {
 }
 
 /**
- * Request paths that require the bearer token EVEN for a read-only request on a
- * loopback bind, because their response body exposes secrets — notably
- * `/api/settings`, which reports the configured notify/webhook URLs. Without this
- * carve-out any local process (including a token-scrubbed, prompt-injected
- * delivery agent that can only reach loopback) could `GET /api/settings` and read
- * control-plane secrets. Matched case-sensitively against the normalised pathname
- * (repeated + trailing slashes collapsed, see {@link normalisePath}). Kept as a set
- * so more secret-bearing endpoints can be added without touching the decision logic.
- */
-const PRIVILEGED_PATHS: ReadonlySet<string> = new Set(["/api/settings"]);
-
-/**
- * Secret-bearing endpoints with a dynamic path segment (a run id), matched by
- * pattern since {@link PRIVILEGED_PATHS} is exact-string. Run-log tails can carry
- * raw delivery output — token required even on a loopback read.
- */
-const PRIVILEGED_PATTERNS: readonly RegExp[] = [/^\/api\/runs\/[^/]+\/log$/];
-
-/**
- * Normalise for the privileged-path check: collapse repeated slashes AND strip all
- * trailing slashes. Express still routes `/api/settings//` and `/api//settings` to
- * the settings handler, so a check that stripped only ONE trailing slash could be
- * bypassed (`/api/settings//` → `/api/settings/` ∉ the set → tokenless secret leak).
- * Never returns empty; the root stays "/".
- */
-function normalisePath(pathname: string): string {
-  const collapsed = pathname.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
-  return collapsed.length > 0 ? collapsed : "/";
-}
-
-/**
- * True when `pathname` names a secret-bearing endpoint that requires the token
- * even for a loopback read (see {@link PRIVILEGED_PATHS} / {@link PRIVILEGED_PATTERNS}).
- */
-export function isPrivilegedPath(pathname: string): boolean {
-  const p = normalisePath(pathname);
-  return PRIVILEGED_PATHS.has(p) || PRIVILEGED_PATTERNS.some((re) => re.test(p));
-}
-
-/**
  * Full control-plane authorization decision (S-M1).
  *
  * - No token configured → always allowed (backwards-compatible dev posture). The
@@ -301,11 +225,11 @@ export function isPrivilegedPath(pathname: string): boolean {
  *   env the runner scrubs of `DISPATCH_API_TOKEN` — reading `/api/tickets` (or
  *   self-approving its work) over the REST API.
  *
- * The posture no longer varies by HTTP method, bind, or token provenance:
- * auto-provisioned and operator-set tokens are gated identically. (The exported
- * {@link isOperatorSetToken} / {@link isPrivilegedPath} predicates are retained as
- * independently-tested markers of the token source and the secret-bearing paths;
- * they no longer *relax* the decision — the token is required for all of them.)
+ * The posture does not vary by HTTP method, bind, path, or token provenance:
+ * auto-provisioned and operator-set tokens are gated identically, and there is no
+ * "privileged path" carve-out because EVERY data path requires the token. (The
+ * former `isOperatorSetToken` / `isPrivilegedPath` predicates were write-only
+ * leftovers of the relaxed posture and have been removed.)
  */
 export function isRequestAuthorized(req: IncomingMessage): boolean {
   return isAuthorized(req);

@@ -237,6 +237,11 @@ export function migrate(db: Db): void {
   // so — adding no column to a pre-existing table — it needs no ADD COLUMN migration.
   // No-op on a fresh DB. SECURITY: an absent table/row means the enforcement falls
   // back to the existing env flag, so a not-yet-migrated DB is byte-identical to today.
+  // v21→v22: drop `external_refs`. The table was created by every version since
+  // v1 and NEVER written — no repository, service, CLI or MCP tool inserted a row
+  // (external links live on tickets.pr_url and evidence.url). Dropping it removes
+  // a dead table from the state-export bundle and the drift guard. Idempotent.
+  db.exec("DROP TABLE IF EXISTS external_refs");
   db.exec(SCHEMA_SQL);
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +

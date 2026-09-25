@@ -156,19 +156,21 @@ export function assertSafeBind(
  * loads a single external module (`/app.js`), so no inline-script allowance is
  * needed (and none is granted: an injected inline `<script>` is refused).
  *
- * `style-src` permits `'unsafe-inline'` + the Google Fonts stylesheet origin
- * because the shell uses an inline `style=""` attribute (the hidden SVG sprite)
- * and `app.js` sets element styles via innerHTML; `font-src` allows the Google
- * Fonts file origin. These style/font origins are a deliberate, reviewed
- * deviation from a bare `default-src 'self'` policy so the SPA's typography
- * keeps working — they do NOT relax `script-src`.
+ * `style-src` permits `'unsafe-inline'` because the shell uses an inline
+ * `style=""` attribute (the hidden SVG sprite) and `app.js` sets element styles
+ * via innerHTML. Fonts are self-hosted under `/assets/fonts/` (see
+ * `scripts/vendor-fonts.sh`), so `style-src` and `font-src` are `'self'` only:
+ * the dashboard makes NO third-party request, and a compromised CDN cannot ship
+ * a stylesheet into the operator's browser. `'unsafe-inline'` is a deliberate,
+ * reviewed deviation from a bare `default-src 'self'` policy; it does NOT relax
+ * `script-src`.
  */
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
-  "font-src 'self' https://fonts.gstatic.com",
+  "font-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'none'",

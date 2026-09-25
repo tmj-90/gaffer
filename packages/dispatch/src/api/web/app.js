@@ -11360,5 +11360,14 @@ if (!prefersReducedMotion()) {
 
 adoptTokenFromUrl(); // one-scan token pickup (QR) before the first authed call
 buildChrome();
+// Preload the Overview hero image only when the Overview is the landing view: a
+// static <link rel=preload> in index.html fetched 200 KB on EVERY deep link
+// (#/ticket/…, #/review) and the browser then warned that the preload went
+// unused. Any other view's hero loads with its own render.
+if (parseHash().view === "overview") {
+  document.head.appendChild(
+    el("link", { rel: "preload", as: "image", href: "assets/bg/hero-city.jpg" }),
+  );
+}
 window.addEventListener("hashchange", router);
 router();

@@ -69,14 +69,15 @@ describe("P1-C: security response headers", () => {
     expect(res.headers.get("x-frame-options")).toBe("DENY");
   });
 
-  it("permits the SPA's external font stylesheet + font origins in the CSP", async () => {
+  it("allows NO third-party style or font origin in the CSP (fonts are self-hosted)", async () => {
     h = await startHarness();
     const res = await fetch(`${h.baseUrl}/healthz`);
     const csp = res.headers.get("content-security-policy") ?? "";
-    // The shell pulls its webfonts from Google Fonts; the CSP must allow them
-    // without relaxing script-src.
-    expect(csp).toContain("style-src 'self' 'unsafe-inline' https://fonts.googleapis.com");
-    expect(csp).toContain("font-src 'self' https://fonts.gstatic.com");
+    // Webfonts are vendored under /assets/fonts/, so the only style allowance is
+    // the inline attribute the shell needs — never a CDN host.
+    expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+    expect(csp).toContain("font-src 'self'");
+    expect(csp).not.toMatch(/https?:\/\//);
   });
 
   it("does NOT emit HSTS on a loopback (default) bind", async () => {

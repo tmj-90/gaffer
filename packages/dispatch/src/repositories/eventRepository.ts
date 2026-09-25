@@ -140,6 +140,41 @@ export class EventRepository {
       .all({ afterSeq, limit }) as Array<ActivityEvent & { seq: number }>;
   }
 
+  /**
+   * TRACE: every event that carries `correlationId` (one tick's worth of runner +
+   * agent writes), oldest first. Same metadata-only shape as {@link listActivity}
+   * plus the rowid `seq`; payload bodies are not selected.
+   */
+  listByCorrelation(
+    correlationId: string,
+    limit: number,
+  ): Array<ActivityEvent & { seq: number; correlation_id: string }> {
+    return this.db
+      .prepare(
+        `SELECT
+            e.rowid          AS seq,
+            e.id             AS id,
+            e.entity_type    AS entity_type,
+            e.entity_id      AS entity_id,
+            e.event_type     AS event_type,
+            e.actor_type     AS actor_type,
+            e.actor_id       AS actor_id,
+            e.created_at     AS created_at,
+            e.correlation_id AS correlation_id,
+            t.number         AS ticket_number,
+            t.title          AS ticket_title
+         FROM work_events e
+         LEFT JOIN tickets t
+           ON e.entity_type = 'ticket' AND t.id = e.entity_id
+         WHERE e.correlation_id = @correlationId
+         ORDER BY e.rowid ASC
+         LIMIT @limit`,
+      )
+      .all({ correlationId, limit }) as Array<
+      ActivityEvent & { seq: number; correlation_id: string }
+    >;
+  }
+
   /** The newest work_events rowid (0 when the log is empty) — the stream's initial cursor. */
   latestSeq(): number {
     const row = this.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS seq FROM work_events").get() as {

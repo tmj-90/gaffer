@@ -111,6 +111,9 @@ gaffer_timeout()   { shift; "$@"; return $?; }
 gaffer_agent_env() { GAFFER_AGENT_ENV=("PATH=$PATH" "HOME=$HOME"); }
 export CLAUDE_BIN="$STUB" CLAUDE_FLAGS="" GAFFER_MAX_TURNS_FLAG="" \
        GAFFER_TICK_TIMEOUT=60 GAFFER_LOG="$WORK/gaffer.log" GAFFER_WORKER_PROVIDER=claude-code
+# TRACE ID: tick.sh exports one per tick; here the harness sets it so the events the
+# runner-side `wg` calls below write can be asserted to carry it as correlation_id.
+export GAFFER_TICK_ID="e2e-tick-$$"
 : > "$GAFFER_LOG"
 # shellcheck source=../lib/worker.sh
 source "$RUNNER_DIR/lib/worker.sh"
@@ -152,6 +155,16 @@ wg submit "$NUM" --token "$TOKEN" --reason "gates passed" >/dev/null 2>&1
 [ "$(active_claims "$NUM")" = "0" ] \
   && ok "submit COMPLETED the claim — zero active claims on #$NUM" \
   || fail "claim not completed after submit (active=$(active_claims "$NUM"))"
+
+echo "== TRACE: every event this tick wrote carries the tick id as correlation_id =="
+TRACED="$(wg events list --correlation "$GAFFER_TICK_ID" --json 2>/dev/null | jget "len(d['events'])" 2>/dev/null || echo 0)"
+[ "${TRACED:-0}" -ge 1 ] \
+  && ok "dispatch events list --correlation \$GAFFER_TICK_ID → $TRACED event(s) (runner wg calls stamped)" \
+  || fail "no work_event carries correlation_id=$GAFFER_TICK_ID (got $TRACED)"
+SUBMIT_TRACED="$(wg events list --correlation "$GAFFER_TICK_ID" --json 2>/dev/null | jget "sum(1 for e in d['events'] if e['event_type']=='ticket.transitioned')" 2>/dev/null || echo 0)"
+[ "${SUBMIT_TRACED:-0}" -ge 1 ] \
+  && ok "the submit's ticket.transitioned event is among them" \
+  || fail "the submit transition was not stamped with the tick id"
 
 # ── summary ──────────────────────────────────────────────────────────────────
 echo

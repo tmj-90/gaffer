@@ -36,9 +36,41 @@ export function registerDiagnostics(program: Command): void {
       }
     });
 
-  program
+  const events = program
     .command("events")
-    .description("The work_events log: `events verify` re-derives the tamper-evidence hash chain")
+    .description(
+      "The work_events log: `events verify` re-derives the tamper-evidence hash chain; " +
+        "`events list --correlation <id>` shows one tick's trail",
+    );
+
+  events
+    .command("list")
+    .description(
+      "Events sharing a correlation id (the runner's per-tick GAFFER_TICK_ID), oldest first; " +
+        "metadata only — bodies stay in `ticket show`.",
+    )
+    .requiredOption("--correlation <id>", "the correlation / tick id to list")
+    .option("--limit <n>", "max rows", "500")
+    .option("--json", "emit machine-readable JSON", false)
+    .action((opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const limit = Math.max(1, Math.min(5000, Number(opts.limit) || 500));
+        const rows = wg.events.listByCorrelation(String(opts.correlation), limit);
+        if (opts.json) printJson({ correlation_id: opts.correlation, events: rows });
+        else if (rows.length === 0)
+          process.stdout.write(`no events carry correlation id ${opts.correlation}\n`);
+        else
+          for (const r of rows)
+            process.stdout.write(
+              `${r.created_at}  ${r.event_type.padEnd(28)} ${r.entity_type}${r.ticket_number != null ? ` #${r.ticket_number}` : ""}  ${r.actor_type}${r.actor_id ? `/${r.actor_id}` : ""}\n`,
+            );
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  events
     .command("verify")
     .description(
       "Walk every work_event in insertion order and re-derive its sha256 chain hash; " +

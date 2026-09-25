@@ -30,7 +30,7 @@ export function writeEvent(db: Db, input: WriteEventInput): string {
     actor_id: input.actor.id ?? null,
     event_type: input.event_type,
     payload_json: input.payload === undefined ? null : JSON.stringify(input.payload),
-    correlation_id: input.correlation_id ?? null,
+    correlation_id: input.correlation_id ?? envCorrelationId(),
     // Explicit (not the column default) because the hash covers it — the same
     // `YYYY-MM-DDTHH:MM:SS.mmmZ` shape strftime('%Y-%m-%dT%H:%M:%fZ') produced.
     created_at: new Date().toISOString(),
@@ -44,6 +44,18 @@ export function writeEvent(db: Db, input: WriteEventInput): string {
     ).run({ ...fields, prev_hash, hash });
   });
   return id;
+}
+
+/**
+ * TRACE ID: when the caller passes no correlation id, take the one the runner
+ * put in the environment for this tick — `DISPATCH_CORRELATION_ID` explicitly, or
+ * the runner's `GAFFER_TICK_ID` (which reaches the agent's MCP server through the
+ * scrubbed agent env, so the agent's writes join the runner's on the same key).
+ * Bounded so an odd environment cannot bloat the log. Null when neither is set.
+ */
+export function envCorrelationId(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = (env.DISPATCH_CORRELATION_ID ?? env.GAFFER_TICK_ID ?? "").trim();
+  return raw ? raw.slice(0, 128) : null;
 }
 
 export function listEvents(db: Db, entityType: string, entityId: string): WorkEvent[] {

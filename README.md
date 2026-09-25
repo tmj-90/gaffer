@@ -186,7 +186,8 @@ Gaffer runs shell-capable agents, so containment is first-class:
 - a **deterministic PreToolUse safety hook** scopes writes to the worktree, blocks secret reads, denies the control-plane CLI, and **fails closed** (see [SECURITY.md](SECURITY.md) for residual limits on dynamic paths);
 - every ticket runs in a **throwaway git worktree** — the real checkout is never touched;
 - an optional **OS sandbox** via a provider seam — the experimental **`docker` provider** (`SANDBOX_PROVIDER=docker`) adds real read + egress isolation on any host with Docker (container mounts only the worktree, egress via an allowlist proxy); `sandbox-exec` (macOS) is a write-only boundary; `GAFFER_STRICT_REQUIRE=1` makes a missing provider **fail closed** (refuse to launch rather than run uncontained), and enabling any autonomy flag now defaults it on;
-- the **review gate is enforced server-side** — an agent can't approve or merge its own work, and the merge gate verifies the *real git diff*, not the agent's word for it.
+- the **review gate is enforced server-side** — an agent can't approve or merge its own work, and the merge gate verifies the *real git diff*, not the agent's word for it;
+- the **event log is tamper-evident** — every `work_events` row is chained by a SHA-256 hash, `dispatch events verify` (and `dispatch doctor`) name the first altered row, and every event carries the tick that wrote it.
 
 Opt-in autonomy, to be used deliberately: `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `MEMORY_AUTO_APPROVE`. Full threat model and honest residual limits: [`SECURITY.md`](SECURITY.md).
 

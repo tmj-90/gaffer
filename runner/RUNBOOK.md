@@ -201,6 +201,9 @@ DRY_RUN=0 bash loop.sh               # real Claude ticks; delivers ready tickets
 | Crew MCP | `packages/crew/dist/mcp/bin.js` (`-c crew.yaml`) |
 | CLIs | `packages/<dispatch\|crew>/dist/cli/index.js` · `packages/memory/dist/bin/memory.js` |
 | State (dbs/config/logs) | `<repo-root>/.gaffer/` |
-| Config + stop conditions | `runner/factory.config.sh` |
+| Config + stop conditions | `runner/factory.config.sh` — every knob, default and reader: [`docs/CONFIG.md`](../docs/CONFIG.md) |
+| Event-log integrity | `dispatch events verify` (also a `dispatch doctor` check and the Health view's "Event log" card) — the sha256 hash chain over `work_events` |
+| One tick's trail | `dispatch events list --correlation <GAFFER_TICK_ID>` — every event the runner and the agent wrote during that tick |
+| Lore history | `memory history <id>` — every earlier version of a record |
 
 Architecture + status: [`../README.md`](../README.md) · [`runner/README.md`](README.md).

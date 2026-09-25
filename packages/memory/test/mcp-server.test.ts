@@ -37,6 +37,7 @@ const ENV_KEYS = [
   "MEMORY_AUDIT_LOG",
   "GAFFER_RECALL_TICKET",
   "GAFFER_TICKET_REPOS",
+  "GAFFER_FACTORY",
 ];
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -129,6 +130,7 @@ beforeEach(() => {
   delete process.env["MEMORY_AUTO_APPROVE"];
   delete process.env["GAFFER_RECALL_TICKET"];
   delete process.env["GAFFER_TICKET_REPOS"];
+  delete process.env["GAFFER_FACTORY"];
   db = newDb();
 });
 
@@ -515,6 +517,28 @@ describe("MCP — suggest_lore + MEMORY_AUTO_APPROVE (env gated)", () => {
       includeDrafts: true,
     });
     expect(drafts.json.results.some((r: any) => r.id === json.id)).toBe(true);
+  });
+
+  it("in FACTORY context (GAFFER_FACTORY=1) the server ignores includeDrafts — drafts stay invisible", async () => {
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Factory draft convention",
+      summary: "s",
+      body: "b",
+    });
+    expect(json.status).toBe("draft");
+    process.env["GAFFER_FACTORY"] = "1";
+    const drafts = await callJson(client, "search_lore", {
+      query: "factory draft convention",
+      includeDrafts: true,
+    });
+    expect(drafts.json.results.some((r: any) => r.id === json.id)).toBe(false);
+    delete process.env["GAFFER_FACTORY"];
+    const visible = await callJson(client, "search_lore", {
+      query: "factory draft convention",
+      includeDrafts: true,
+    });
+    expect(visible.json.results.some((r: any) => r.id === json.id)).toBe(true);
   });
 
   it("lands a suggestion active and immediately searchable when the flag is on", async () => {

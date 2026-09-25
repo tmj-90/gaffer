@@ -283,6 +283,7 @@ describe("humanQueue: runner/human parked tickets (parked kind)", () => {
       readyApprovals: 0,
       reviewerAssignments: 0,
       parked: 0,
+      dependencyCancelled: 0,
     });
     expect(queue.items.every((i) => i.kind !== "parked")).toBe(true);
     wg.db.close();
@@ -314,5 +315,42 @@ describe("humanQueue: waited-time + ordering + counts", () => {
     expect(queue.items[0]!.waitedMs).toBe((3600 + 60) * 1000);
     expect(queue.counts.total).toBe(2);
     wg.db.close();
+  });
+});
+
+describe("humanQueue: dependents of a cancelled/failed ticket", () => {
+  it("surfaces a ticket whose dependency was cancelled (it can never unblock by itself)", () => {
+    const wg = fresh();
+    const dep = wg.createTicket({ title: "Data model" }, human);
+    const t = wg.createTicket({ title: "API on top" }, human);
+    wg.addDependency({ ticket: t.id, depends_on: dep.id }, human);
+    // Nothing owed yet — the dependency is merely not done.
+    expect(wg.humanQueue().items.filter((i) => i.kind === "dependency_cancelled")).toEqual([]);
+
+    wg.wontDo(dep.id, human, "descoped");
+    expect(wg.view(dep.id).ticket.status).toBe("cancelled");
+
+    const q = wg.humanQueue();
+    const item = q.items.find((i) => i.kind === "dependency_cancelled");
+    expect(item).toBeDefined();
+    expect(item!.ticket?.id).toBe(t.id);
+    expect(item!.label).toBe("Dependency cancelled");
+    expect(item!.reason).toContain(`#${dep.number}`);
+    expect(item!.reason).toContain("cancelled");
+    expect(q.counts.dependencyCancelled).toBe(1);
+
+    // Removing the edge clears the item — the human's remedy.
+    wg.removeDependency(t.id, dep.id, human);
+    expect(wg.humanQueue().counts.dependencyCancelled).toBe(0);
+  });
+
+  it("does not surface dependents that are themselves done or cancelled", () => {
+    const wg = fresh();
+    const dep = wg.createTicket({ title: "Dep" }, human);
+    const t = wg.createTicket({ title: "Dependent" }, human);
+    wg.addDependency({ ticket: t.id, depends_on: dep.id }, human);
+    wg.wontDo(dep.id, human, "descoped");
+    wg.wontDo(t.id, human, "descoped too");
+    expect(wg.humanQueue().counts.dependencyCancelled).toBe(0);
   });
 });

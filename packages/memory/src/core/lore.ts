@@ -856,6 +856,101 @@ export function verifyLore(db: Database, id: string, nextReviewAfter?: string | 
  * "agent draft can't claim high" / "sourceless can't be high" rules
  * even via update (status comes from the current row).
  */
+/** One historical version of a lore record (the row as it was BEFORE an update). */
+export interface LoreVersion {
+  loreId: string;
+  version: number;
+  title: string;
+  summary: string;
+  body: string;
+  author: string | null;
+  team: string | null;
+  source: string | null;
+  confidence: string;
+  kind: string | null;
+  restricted: boolean;
+  reviewAfter: string | null;
+  status: string;
+  /** The `updated_at` the snapshotted row carried (when that text became current). */
+  snapshotOf: string;
+  /** When the snapshot was taken — i.e. when this version stopped being current. */
+  replacedAt: string;
+}
+
+function snapshotLoreVersion(db: Database, row: LoreRow, replacedAt: string): void {
+  const next = (
+    db
+      .prepare("SELECT COALESCE(MAX(version), 0) + 1 AS v FROM lore_version WHERE lore_id = ?")
+      .get(row.id) as { v: number }
+  ).v;
+  db.prepare(
+    `INSERT INTO lore_version
+       (lore_id, version, title, summary, body, author, team, source, confidence, kind,
+        restricted, review_after, status, snapshot_of, replaced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    next,
+    row.title,
+    row.summary,
+    row.body,
+    row.author,
+    row.team,
+    row.source,
+    row.confidence,
+    row.kind ?? null,
+    row.restricted,
+    row.review_after,
+    row.status,
+    row.updated_at,
+    replacedAt,
+  );
+}
+
+/**
+ * The prior versions of a lore record, newest first (version N is the text that was
+ * current immediately before the most recent update; version 1 is the original).
+ * Empty when the record has never been updated.
+ */
+export function listLoreVersions(db: Database, id: string): LoreVersion[] {
+  const rows = db
+    .prepare("SELECT * FROM lore_version WHERE lore_id = ? ORDER BY version DESC")
+    .all(id) as Array<{
+    lore_id: string;
+    version: number;
+    title: string;
+    summary: string;
+    body: string;
+    author: string | null;
+    team: string | null;
+    source: string | null;
+    confidence: string;
+    kind: string | null;
+    restricted: number;
+    review_after: string | null;
+    status: string;
+    snapshot_of: string;
+    replaced_at: string;
+  }>;
+  return rows.map((r) => ({
+    loreId: r.lore_id,
+    version: r.version,
+    title: r.title,
+    summary: r.summary,
+    body: r.body,
+    author: r.author,
+    team: r.team,
+    source: r.source,
+    confidence: r.confidence,
+    kind: r.kind,
+    restricted: r.restricted === 1,
+    reviewAfter: r.review_after,
+    status: r.status,
+    snapshotOf: r.snapshot_of,
+    replacedAt: r.replaced_at,
+  }));
+}
+
 export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lore | null {
   const current = db.prepare("SELECT * FROM lore WHERE id = ?").get(id) as LoreRow | undefined;
   if (!current) return null;
@@ -892,6 +987,9 @@ export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lo
 
   const ts = nowIso();
   const tx = db.transaction(() => {
+    // VERSION HISTORY: snapshot the row as it is NOW before overwriting it, so the
+    // prior text survives (version 1 == the original). See migration 012.
+    snapshotLoreVersion(db, current, ts);
     db.prepare(
       `UPDATE lore SET
         title = ?, summary = ?, body = ?,

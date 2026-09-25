@@ -99,6 +99,56 @@ export class TicketDependencyRepository {
     return this.listForTicket(ticketId).filter((d) => !d.satisfied);
   }
 
+  /**
+   * Dependents whose dependency reached a TERMINAL non-done state (`cancelled` /
+   * `failed`) — such an edge can never satisfy itself (only `done` unblocks), so the
+   * dependent waits forever unless a human removes the edge or cancels the ticket.
+   * Only pre-delivery dependents are relevant (draft / refining / ready / blocked /
+   * paused); done / cancelled dependents are ignored. Surfaced in the human queue.
+   */
+  listBlockedByTerminalDependency(): Array<{
+    ticket_id: string;
+    ticket_number: number | null;
+    ticket_title: string;
+    ticket_status: TicketDependencyView["status"];
+    depends_on_ticket_id: string;
+    dep_number: number | null;
+    dep_title: string;
+    dep_status: TicketDependencyView["status"];
+    since: string;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT
+            t.id        AS ticket_id,
+            t.number    AS ticket_number,
+            t.title     AS ticket_title,
+            t.status    AS ticket_status,
+            d.id        AS depends_on_ticket_id,
+            d.number    AS dep_number,
+            d.title     AS dep_title,
+            d.status    AS dep_status,
+            d.updated_at AS since
+         FROM ticket_dependencies e
+         JOIN tickets t ON t.id = e.ticket_id
+         JOIN tickets d ON d.id = e.depends_on_ticket_id
+         WHERE d.status IN ('cancelled', 'failed')
+           AND t.status IN ('draft', 'refining', 'ready', 'blocked', 'paused')
+         ORDER BY d.updated_at ASC, t.number ASC`,
+      )
+      .all() as Array<{
+      ticket_id: string;
+      ticket_number: number | null;
+      ticket_title: string;
+      ticket_status: TicketDependencyView["status"];
+      depends_on_ticket_id: string;
+      dep_number: number | null;
+      dep_title: string;
+      dep_status: TicketDependencyView["status"];
+      since: string;
+    }>;
+  }
+
   /** Whether `ticketId` has at least one not-yet-`done` dependency. */
   hasUnsatisfiedDependencies(ticketId: string): boolean {
     const row = this.db

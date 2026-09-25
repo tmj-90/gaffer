@@ -233,80 +233,81 @@ Factory-prefixed identifiers the code reads from the environment and never
 assigns itself, with neither a `factory.config.sh` default nor a Settings-panel
 entry — so only an operator (or a test) can set them. Each is either a
 deliberate advanced/test-only override or a knob missing its default line or
-`SETTING_DEFS` entry.
+`SETTING_DEFS` entry. **Default in code** is the fallback literal at the read
+site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 
-| Variable | Read in |
-|---|---|
-| `DISPATCH_AGENT_ID` | `packages/dispatch/src/mcp/server.ts` |
-| `DISPATCH_ALLOWED_HOSTS` | `packages/dispatch/src/api/security.ts` |
-| `DISPATCH_API_PORT` | `packages/dispatch/src/api/bin.ts`, `runner/gaffer`, `runner/status.sh` |
-| `DISPATCH_AUDIT` | `packages/dispatch/src/audit/audit.ts` |
-| `DISPATCH_AUDIT_OFF` | `packages/dispatch/src/audit/audit.ts` |
-| `DISPATCH_CLI` | `runner/bin/merge-ticket.mjs` |
-| `DISPATCH_LARGE_DELETION_LINES` | `packages/dispatch/src/services/riskAnnotations.ts` |
-| `DISPATCH_MAX_ATTEMPTS` | `packages/dispatch/src/core.ts` |
-| `DISPATCH_OBSERVED_RISK_CEILING` | `packages/dispatch/src/services/observedRisk.ts` |
-| `DISPATCH_SENSITIVE_PATH_RE` | `packages/dispatch/src/services/riskAnnotations.ts` |
-| `DISPATCH_TESTER_VERDICT_CMD` | `runner/bin/tester-run.mjs` |
-| `GAFFER_AGENT_EMAIL` | `runner/lib/greenfield.sh` |
-| `GAFFER_BLOCK_LEDGER` | `runner/bin/build-log.mjs`, `runner/run-summary.sh` |
-| `GAFFER_BP_FILE` | `runner/run-summary.sh` |
-| `GAFFER_BUDGET_LOW_FRACTION` | `runner/factory.config.sh` |
-| `GAFFER_CARD_BATCH` | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_CARD_MODEL` | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_CARD_SNIPPET_CHARS` | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_CLAIM_TOKEN` | `packages/dispatch/src/mcp/tools.ts`, `runner/factory.config.sh`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
-| `GAFFER_CONTEXT_DUMP_DIR` | `runner/tick.sh` |
-| `GAFFER_DAEMON_INTERVAL` | `runner/gaffer` |
-| `GAFFER_DAEMON_MAX_CYCLES` | `runner/lib/daemon.sh` |
-| `GAFFER_DECOMPOSE_MOCK` | `runner/bin/decompose.mjs` |
-| `GAFFER_DOD_FEEDBACK_LINES` | `packages/crew/src/runtime/dod/dodDistillCli.ts`, `runner/lib/dod.sh` |
-| `GAFFER_DOD_INSTALL_TIMEOUT` | `runner/lib/dod.sh` |
-| `GAFFER_DOD_LINT` | `runner/tick.sh` |
-| `GAFFER_DOD_OUTPUT_TAIL` | `packages/crew/src/runtime/dod/dodDistillCli.ts`, `runner/lib/dod.sh` |
-| `GAFFER_DOD_TESTS` | `runner/tick.sh` |
-| `GAFFER_DOD_TIMEOUT` | `runner/lib/ac-checks.sh`, `runner/lib/dod.sh` |
-| `GAFFER_DOD_TYPECHECK` | `runner/tick.sh` |
-| `GAFFER_DOD_TYPECHECK_CMD` | `runner/tick.sh` |
-| `GAFFER_EGRESS_ALLOW` | `runner/lib/egress-allowlist.mjs` |
-| `GAFFER_EGRESS_ALLOW_FILE` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_EVAL_LEDGER` | `runner/gaffer`, `runner/lib/eval-judge.sh` |
-| `GAFFER_INHERIT_AMB_TIMEOUT` | `runner/lib/greenfield.sh` |
-| `GAFFER_INHERIT_PLAN_TIMEOUT` | `runner/lib/greenfield.sh` |
-| `GAFFER_JUDGE_DIFF_BYTES` | `runner/lib/eval-judge.sh` |
-| `GAFFER_JUDGE_MODEL_FLAG` | `runner/lib/eval-judge.sh` |
-| `GAFFER_LITE_MAX_FILES` | `runner/factory.config.sh` |
-| `GAFFER_LITE_MAX_LINES` | `runner/factory.config.sh` |
-| `GAFFER_LITE_SENSITIVE_RE` | `runner/factory.config.sh` |
-| `GAFFER_ONBOARD_SYNTH_MODEL` | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_ONBOARD_TIMEOUT` | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_REWORK_HISTORY_BYTES` | `runner/tick.sh` |
-| `GAFFER_SANDBOX_CLAUDE_BIN` | `runner/lib/worker.sh` |
-| `GAFFER_SANDBOX_CLAUDE_CREDENTIALS` | `runner/lib/sandbox-docker.sh`, `runner/sandbox/smoke-test.sh` |
-| `GAFFER_SANDBOX_CPUS` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_SANDBOX_HOME` | `runner/lib/worker.sh` |
-| `GAFFER_SANDBOX_MEMORY` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_SANDBOX_NET_INT` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_SANDBOX_NET_UP` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_SANDBOX_PATH` | `runner/lib/worker.sh` |
-| `GAFFER_SANDBOX_PIDS` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_SANDBOX_PROXY` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_SANDBOX_PROXY_IMAGE` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_SKILL_TELEMETRY` | `packages/dispatch/src/health/skillsTelemetryAggregator.ts`, `runner/lib/skills-mount.sh` |
-| `GAFFER_SLACK_WEBHOOK` | `runner/status.sh` |
-| `GAFFER_SPEC_AUTHOR_MOCK` | `runner/bin/spec-author.mjs` |
-| `GAFFER_TICKET` | `runner/safety-hook.mjs` |
-| `GAFFER_TRUST_LOCK_SLEEP_MS` | `runner/lib/trust-workspace.mjs` |
-| `GAFFER_TRUST_LOCK_TRIES` | `runner/lib/trust-workspace.mjs` |
-| `GAFFER_TRUST_WORKTREE_ROOT` | `runner/lib/trust-workspace.mjs` |
-| `GAFFER_UNIVERSAL_SKILLS` | `runner/lib/skills-mount.sh` |
-| `GAFFER_WG_DELIVERIES_CMD` | `runner/lib/backpressure.sh` |
-| `GAFFER_WG_LIST_CMD` | `runner/lib/backpressure.sh` |
-| `GAFFER_WG_SHOW_CMD` | `runner/lib/backpressure.sh`, `runner/lib/orphan-recovery.sh` |
-| `GAFFER_WORKER_MJS` | `runner/lib/delivery-recovery.sh`, `runner/lib/eval-judge.sh` |
-| `GAFFER_WORKER_PROVIDER` | `runner/factory.config.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
-| `MEMORY_AUDIT_LOG` | `packages/memory/src/cli/commands/setup.ts`, `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts` |
-| `MEMORY_AUDIT_OFF` | `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts`, `packages/memory/src/core/lore.ts` |
-| `MEMORY_CLI` | `runner/bin/epic-feature.mjs`, `runner/bin/merge-ticket.mjs` |
-| `MEMORY_NO_COLOR` | `packages/memory/src/cli/format.ts` |
-| `MEMORY_REVIEW_NUDGE_EVERY_TIME` | `packages/memory/src/cli/commands/setup.ts` |
+| Variable | Default in code | Read in |
+|---|---|---|
+| `DISPATCH_AGENT_ID` | `mcp-agent` | `packages/dispatch/src/mcp/server.ts` |
+| `DISPATCH_ALLOWED_HOSTS` | _(empty)_ | `packages/dispatch/src/api/security.ts` |
+| `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/bin.ts`, `runner/gaffer`, `runner/status.sh` |
+| `DISPATCH_AUDIT` |  | `packages/dispatch/src/audit/audit.ts` |
+| `DISPATCH_AUDIT_OFF` |  | `packages/dispatch/src/audit/audit.ts` |
+| `DISPATCH_CLI` |  | `runner/bin/merge-ticket.mjs` |
+| `DISPATCH_LARGE_DELETION_LINES` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
+| `DISPATCH_MAX_ATTEMPTS` |  | `packages/dispatch/src/core.ts` |
+| `DISPATCH_OBSERVED_RISK_CEILING` | _(empty)_ | `packages/dispatch/src/services/observedRisk.ts` |
+| `DISPATCH_SENSITIVE_PATH_RE` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
+| `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
+| `GAFFER_AGENT_EMAIL` | `gaffer-factory@users.noreply.invalid` | `runner/lib/greenfield.sh` |
+| `GAFFER_BLOCK_LEDGER` | `$GAFFER_DATA/safety-blocks.jsonl` | `runner/bin/build-log.mjs`, `runner/run-summary.sh` |
+| `GAFFER_BP_FILE` | `$GAFFER_DATA/.backpressure-repos` | `runner/run-summary.sh` |
+| `GAFFER_BUDGET_LOW_FRACTION` | `0.20` | `runner/factory.config.sh` |
+| `GAFFER_CARD_BATCH` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
+| `GAFFER_CARD_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
+| `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
+| `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/factory.config.sh`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
+| `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
+| `GAFFER_DAEMON_INTERVAL` | `30` | `runner/gaffer` |
+| `GAFFER_DAEMON_MAX_CYCLES` | `0` | `runner/lib/daemon.sh` |
+| `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
+| `GAFFER_DOD_FEEDBACK_LINES` |  | `packages/crew/src/runtime/dod/dodDistillCli.ts`, `runner/lib/dod.sh` |
+| `GAFFER_DOD_INSTALL_TIMEOUT` |  | `runner/lib/dod.sh` |
+| `GAFFER_DOD_LINT` | `1` | `runner/tick.sh` |
+| `GAFFER_DOD_OUTPUT_TAIL` | `40` | `packages/crew/src/runtime/dod/dodDistillCli.ts`, `runner/lib/dod.sh` |
+| `GAFFER_DOD_TESTS` | `1` | `runner/tick.sh` |
+| `GAFFER_DOD_TIMEOUT` | `900` | `runner/lib/ac-checks.sh`, `runner/lib/dod.sh` |
+| `GAFFER_DOD_TYPECHECK` | `1` | `runner/tick.sh` |
+| `GAFFER_DOD_TYPECHECK_CMD` | _(empty)_ | `runner/tick.sh` |
+| `GAFFER_EGRESS_ALLOW` | _(empty)_ | `runner/lib/egress-allowlist.mjs` |
+| `GAFFER_EGRESS_ALLOW_FILE` | `$data/egress-allow.txt` | `runner/lib/sandbox-docker.sh` |
+| `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | `runner/gaffer`, `runner/lib/eval-judge.sh` |
+| `GAFFER_INHERIT_AMB_TIMEOUT` | `300` | `runner/lib/greenfield.sh` |
+| `GAFFER_INHERIT_PLAN_TIMEOUT` | `60` | `runner/lib/greenfield.sh` |
+| `GAFFER_JUDGE_DIFF_BYTES` | `120000` | `runner/lib/eval-judge.sh` |
+| `GAFFER_JUDGE_MODEL_FLAG` | `${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-` | `runner/lib/eval-judge.sh` |
+| `GAFFER_LITE_MAX_FILES` | `4` | `runner/factory.config.sh` |
+| `GAFFER_LITE_MAX_LINES` | `60` | `runner/factory.config.sh` |
+| `GAFFER_LITE_SENSITIVE_RE` | `(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
+| `GAFFER_ONBOARD_SYNTH_MODEL` |  | `runner/lib/onboard-analyze.mjs` |
+| `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
+| `GAFFER_REWORK_HISTORY_BYTES` | `8000` | `runner/tick.sh` |
+| `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.sh` |
+| `GAFFER_SANDBOX_CLAUDE_CREDENTIALS` | _(empty)_ / `/nonexistent` | `runner/lib/sandbox-docker.sh`, `runner/sandbox/smoke-test.sh` |
+| `GAFFER_SANDBOX_CPUS` | `4` | `runner/lib/sandbox-docker.sh` |
+| `GAFFER_SANDBOX_HOME` | `/root` | `runner/lib/worker.sh` |
+| `GAFFER_SANDBOX_MEMORY` | `4g` | `runner/lib/sandbox-docker.sh` |
+| `GAFFER_SANDBOX_NET_INT` | `gaffer-egress-int` | `runner/lib/sandbox-docker.sh` |
+| `GAFFER_SANDBOX_NET_UP` | `gaffer-egress-uplink` | `runner/lib/sandbox-docker.sh` |
+| `GAFFER_SANDBOX_PATH` | `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` | `runner/lib/worker.sh` |
+| `GAFFER_SANDBOX_PIDS` | `512` | `runner/lib/sandbox-docker.sh` |
+| `GAFFER_SANDBOX_PROXY` | `gaffer-egress-proxy-svc` | `runner/lib/sandbox-docker.sh` |
+| `GAFFER_SANDBOX_PROXY_IMAGE` | `gaffer-egress-proxy` | `runner/lib/sandbox-docker.sh` |
+| `GAFFER_SKILL_TELEMETRY` | `$GAFFER_DATA/skills-telemetry.jsonl` | `packages/dispatch/src/health/skillsTelemetryAggregator.ts`, `runner/lib/skills-mount.sh` |
+| `GAFFER_SLACK_WEBHOOK` | _(empty)_ | `runner/status.sh` |
+| `GAFFER_SPEC_AUTHOR_MOCK` | _(empty)_ | `runner/bin/spec-author.mjs` |
+| `GAFFER_TICKET` |  | `runner/safety-hook.mjs` |
+| `GAFFER_TRUST_LOCK_SLEEP_MS` |  | `runner/lib/trust-workspace.mjs` |
+| `GAFFER_TRUST_LOCK_TRIES` |  | `runner/lib/trust-workspace.mjs` |
+| `GAFFER_TRUST_WORKTREE_ROOT` |  | `runner/lib/trust-workspace.mjs` |
+| `GAFFER_UNIVERSAL_SKILLS` |  | `runner/lib/skills-mount.sh` |
+| `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
+| `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
+| `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/orphan-recovery.sh` |
+| `GAFFER_WORKER_MJS` | `$RUNNER_DIR/lib/worker.mjs` | `runner/lib/delivery-recovery.sh`, `runner/lib/eval-judge.sh` |
+| `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
+| `MEMORY_AUDIT_LOG` |  | `packages/memory/src/cli/commands/setup.ts`, `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts` |
+| `MEMORY_AUDIT_OFF` |  | `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts`, `packages/memory/src/core/lore.ts` |
+| `MEMORY_CLI` |  | `runner/bin/epic-feature.mjs`, `runner/bin/merge-ticket.mjs` |
+| `MEMORY_NO_COLOR` |  | `packages/memory/src/cli/format.ts` |
+| `MEMORY_REVIEW_NUDGE_EVERY_TIME` |  | `packages/memory/src/cli/commands/setup.ts` |

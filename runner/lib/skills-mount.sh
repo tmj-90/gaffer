@@ -141,7 +141,9 @@ gaffer_skills_mount_cleanup() {
   [ -n "${GAFFER_DATA:-}" ] || { gaffer_skills_unmount "${2:-}"; return 0; }
   root="$(_gaffer_skills_mount_root)"
   key="$(_gaffer_skills_mount_key "${1:-}")"
-  rm -rf "$root/$key" 2>/dev/null || true
+  # ${var:?} guards: an empty root or key must never turn this into `rm -rf /` or
+  # `rm -rf <root>/` — abort the function instead (the `|| true` keeps the caller alive).
+  rm -rf "${root:?}/${key:?}" 2>/dev/null || true
   gaffer_skills_unmount "${2:-}"
 }
 

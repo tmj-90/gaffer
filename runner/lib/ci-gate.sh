@@ -109,6 +109,7 @@ gaffer_parse_checks() {
 #   to restore the legacy fail-open behaviour for those cases only; red checks
 #   always return 2 regardless.
 gaffer_ci_gate() {
+  # shellcheck disable=SC2034  # pr_url is part of the call contract (the PR-based CI probe is a follow-up)
   local num="$1" repo_dir="$2" branch="$3" pr_url="${4:-}"
 
   if ! gaffer_ci_gate_enabled; then

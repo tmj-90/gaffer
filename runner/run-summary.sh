@@ -92,7 +92,7 @@ parked_reasons() {
 # Oversized-flagged: tickets carrying a needs_human_review: oversized_diff note.
 oversized_flagged() {
   local found=0 status n nums
-  for status in in_review refining ready done; do
+  for status in in_review refining ready 'done'; do
     nums="$(status_numbers "$status")"
     for n in $nums; do
       # Substring match on the raw ticket JSON — a plain grep is far cheaper to spawn
@@ -108,7 +108,7 @@ oversized_flagged() {
 say "run summary"
 
 printf "\n  ${c_dim}outcomes${c_off}\n"
-line "landed:"      "$(count_status done) done"
+line "landed:"      "$(count_status 'done') done"
 line "failed-safe:" "$(count_status blocked) blocked"
 line "parked:"      "$(count_status refining) refining"
 line "re-queued:"   "$(count_status ready) ready"
@@ -141,7 +141,7 @@ fi
 # ticket; surface whether any exist so a leak is never silently shipped.
 printf "\n  ${c_dim}cleanup state${c_off}\n"
 LEAK_HITS=0
-for status in refining blocked in_review done; do
+for status in refining blocked in_review 'done'; do
   nums="$(status_numbers "$status")"
   for n in $nums; do
     # grep (cheap to spawn) instead of a per-ticket python; substring match on raw JSON.

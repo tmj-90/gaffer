@@ -33,7 +33,10 @@ wg(){ node "$CLI" --db "$DISPATCH_DB" "$@"; }
 gaffer_assert_db_vars(){ return 0; }
 jget(){ python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # The real primitives the lib composes: the gate runner + distiller from lib/dod.sh.
-gaffer_timeout(){ local s="$1"; shift; timeout "$s" "$@"; }
+# Faithful relay (same shim the dod-gate + e2e tests use): the bound is not under test
+# here, and GNU `timeout` does not exist on macOS — the previous stub made every check
+# exit 127 on the macOS CI runner.
+gaffer_timeout(){ shift; "$@"; }
 # shellcheck source=../lib/dod.sh
 source "$RUNNER_DIR/lib/dod.sh"
 # shellcheck source=../lib/ac-checks.sh

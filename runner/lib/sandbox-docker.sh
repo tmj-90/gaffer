@@ -127,6 +127,11 @@ _add_mount() {      # <host-path> <rw|ro>
   for m in ${_mounted_roots[@]+"${_mounted_roots[@]}"}; do [ "$m" = "$p" ] && return 0; done
   _mounts+=( -v "$p:$p:$mode" ); _mounted_roots+=( "$p" )
 }
+_add_mount_at() {   # <host-path> <container-path> <rw|ro> — dedup on the CONTAINER path
+  local src="$1" at="$2" mode="$3" m
+  for m in ${_mounted_roots[@]+"${_mounted_roots[@]}"}; do [ "$m" = "$at" ] && return 0; done
+  _mounts+=( -v "$src:$at:$mode" ); _mounted_roots+=( "$at" )
+}
 _covered() {        # true when <path> is a mounted root or lives under one
   local p="$1" m
   for m in ${_mounted_roots[@]+"${_mounted_roots[@]}"}; do
@@ -171,8 +176,16 @@ for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   while IFS= read -r _lnk; do
     _tgt="$(_readlink_f "$_lnk")"
     [ -n "$_tgt" ] && [ -d "$_tgt" ] || continue
-    _covered "$_tgt" && continue
-    _add_mount "$_tgt" ro
+    # Mount the resolved host directory AT THE PATH THE LINK NAMES. Inside the
+    # container the symlink is followed literally, so a mount at the canonical path
+    # alone dangles wherever the two differ — on macOS every temp/worktree path under
+    # /var is really /private/var, which left the DoD gate without node_modules. An
+    # absolute link gets the mount at its own path; a relative link resolves inside
+    # the (already mounted) root or falls back to the canonical target.
+    _raw="$(readlink "$_lnk" 2>/dev/null || true)"
+    case "$_raw" in /*) _at="$_raw" ;; *) _at="$_tgt" ;; esac
+    _covered "$_at" && continue
+    _add_mount_at "$_tgt" "$_at" ro
   done < <(find "$_wr" -maxdepth 4 -name node_modules -type l 2>/dev/null)
 done
 

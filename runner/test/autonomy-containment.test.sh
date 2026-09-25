@@ -141,7 +141,15 @@ ARGV="$(cd "$WT" && GAFFER_HOME="$HOME_FAKE" RUNNER_DIR="$HOME_FAKE/runner" GAFF
   bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- true 2>&1)"
 grep -q -- "$HOME_FAKE/packages:$HOME_FAKE/packages:ro" <<<"$ARGV" && ok "\$GAFFER_HOME/packages mounted ro (MCP dist bins reachable)" || fail "packages/ not mounted"
 grep -q -- "$HOME_FAKE/node_modules:$HOME_FAKE/node_modules:ro" <<<"$ARGV" && ok "\$GAFFER_HOME/node_modules mounted ro (MCP imports resolve)" || fail "node_modules/ not mounted"
-grep -q -- "$REAL_REPO/node_modules:$REAL_REPO/node_modules:ro" <<<"$ARGV" && ok "worktree node_modules symlink target mounted ro (DoD gate can run)" || fail "symlink target not mounted"
+# The mount must sit at the path the LINK NAMES (container side), sourced from the
+# resolved host dir — on macOS those differ (/var → /private/var), and the old
+# canonical-only mount left the in-container symlink dangling.
+# (dry-run prints one argv element per line, so the -v flag and its value are separate lines)
+_NM_MOUNT="$(grep -- ":$REAL_REPO/node_modules:ro\$" <<<"$ARGV" | head -1)"
+[ -n "$_NM_MOUNT" ] && ok "worktree node_modules symlink target mounted ro AT the link's own path (DoD gate can run)" || fail "symlink target not mounted at the link path (mounts: $(grep -- 'node_modules' <<<"$ARGV" | tr '\n' ' '))"
+_NM_SRC="${_NM_MOUNT%%:*}"
+[ -n "$_NM_SRC" ] && [ "$(cd "$_NM_SRC" 2>/dev/null && pwd -P)" = "$(cd "$REAL_REPO/node_modules" && pwd -P)" ] \
+  && ok "the mount's host source is the resolved real node_modules directory" || fail "mount host source wrong: '$_NM_SRC'"
 ! grep -q -- "$HOME_FAKE:$HOME_FAKE:" <<<"$ARGV" && ok "the WHOLE \$GAFFER_HOME is NOT mounted (factory .env stays unreadable)" || fail "GAFFER_HOME root mounted"
 [ "$(grep -c -- "$HOME_FAKE/runner:$HOME_FAKE/runner:ro" <<<"$ARGV")" = "1" ] && ok "runner dir mounted exactly once" || fail "runner dir mount count wrong"
 

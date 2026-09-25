@@ -686,3 +686,78 @@ describe("module isolation", () => {
     expect(typeof mod.repoKey).toBe("function");
   });
 });
+
+// ── preserveModel (mechanical-only refresh keeps the model half) ──────
+
+describe("upsertFileCard preserveModel — post-merge refresh keeps the summary", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newDb();
+  });
+
+  function seedActive(): void {
+    upsertFileCard(
+      db,
+      cardInput({
+        tldr: "Creates and refunds payments via PaymentService",
+        rolePrimary: "api_route",
+        roleTags: ["payments"],
+        modelStatus: "active",
+        model: "haiku",
+        promptVersion: "v3",
+      }),
+    );
+  }
+
+  it("without preserveModel a mechanical-only upsert nulls the model half (the old behaviour)", () => {
+    seedActive();
+    upsertFileCard(db, cardInput({ contentHash: "ffff", loc: 130 }));
+    const row = db
+      .prepare("SELECT tldr, model_status FROM file_card WHERE repo_key = ? AND path = ?")
+      .get(TEST_REPO_KEY, "src/api/payments.ts") as { tldr: string | null; model_status: string };
+    expect(row.tldr).toBeNull();
+    expect(row.model_status).toBe("absent");
+  });
+
+  it("with preserveModel and no model fields, the existing model half survives a refresh", () => {
+    seedActive();
+    const card = upsertFileCard(
+      db,
+      cardInput({ contentHash: "ffff", loc: 130, symbols: ["createPayment"], preserveModel: true }),
+    );
+    expect(card.contentHash).toBe("ffff");
+    expect(card.loc).toBe(130);
+    expect(card.tldr).toBe("Creates and refunds payments via PaymentService");
+    expect(card.rolePrimary).toBe("api_route");
+    expect(card.roleTags).toEqual(["payments"]);
+    expect(card.modelStatus).toBe("active");
+    const row = db
+      .prepare("SELECT model, prompt_version FROM file_card WHERE repo_key = ? AND path = ?")
+      .get(TEST_REPO_KEY, "src/api/payments.ts") as { model: string; prompt_version: string };
+    expect(row.model).toBe("haiku");
+    expect(row.prompt_version).toBe("v3");
+  });
+
+  it("preserveModel keeps the tldr searchable (FTS row re-indexed with the carried tldr)", () => {
+    seedActive();
+    upsertFileCard(db, cardInput({ contentHash: "ffff", preserveModel: true }));
+    const hits = searchFileCards(db, TEST_REPO_KEY, "refunds");
+    expect(hits.map((h) => h.path)).toContain("src/api/payments.ts");
+  });
+
+  it("preserveModel is ignored when the caller supplies model fields (re-summarise wins)", () => {
+    seedActive();
+    const card = upsertFileCard(
+      db,
+      cardInput({ tldr: "New summary", modelStatus: "active", preserveModel: true }),
+    );
+    expect(card.tldr).toBe("New summary");
+    expect(card.rolePrimary).toBeNull();
+  });
+
+  it("preserveModel on a fresh insert behaves like a plain insert", () => {
+    const card = upsertFileCard(db, cardInput({ path: "src/new.ts", preserveModel: true }));
+    expect(card.modelStatus).toBe("absent");
+    expect(card.tldr).toBeNull();
+  });
+});

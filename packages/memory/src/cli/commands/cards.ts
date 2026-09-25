@@ -405,6 +405,9 @@ export async function cmdCardUpsert(args: ReturnType<typeof parseArgs>): Promise
   const promptVersion = getString(args.flags, "prompt-version");
   const syncedCommit = getString(args.flags, "synced-commit");
   const source = getString(args.flags, "source") ?? "onboard";
+  // --keep-model: a MECHANICAL-ONLY refresh (no --tldr/--role-*) carries an existing
+  // card's model half forward instead of nulling it — the post-merge freshness path.
+  const keepModel = getBool(args.flags, "keep-model");
   const json = getBool(args.flags, "json");
 
   // Read the file off disk — the mechanical source of truth. A path that
@@ -483,6 +486,7 @@ export async function cmdCardUpsert(args: ReturnType<typeof parseArgs>): Promise
           : {}),
       ...(model ? { model } : {}),
       ...(promptVersion ? { promptVersion } : {}),
+      ...(keepModel ? { preserveModel: true } : {}),
     });
 
     if (json) {

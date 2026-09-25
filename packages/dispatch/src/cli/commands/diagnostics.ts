@@ -37,6 +37,31 @@ export function registerDiagnostics(program: Command): void {
     });
 
   program
+    .command("events")
+    .description("The work_events log: `events verify` re-derives the tamper-evidence hash chain")
+    .command("verify")
+    .description(
+      "Walk every work_event in insertion order and re-derive its sha256 chain hash; " +
+        "exit 1 and name the first row that was rewritten, deleted or re-ordered.",
+    )
+    .option("--json", "emit machine-readable JSON", false)
+    .action((opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const v = wg.verifyEventChain();
+        if (opts.json) printJson(v);
+        else if (v.ok) process.stdout.write(`event log hash chain intact (${v.checked} events)\n`);
+        else
+          process.stdout.write(
+            `event log hash chain BROKEN at seq ${v.brokenAtSeq} (event ${v.brokenEventId}): ${v.reason} — ${v.checked} rows checked before the break\n`,
+          );
+        process.exitCode = v.ok ? 0 : 1;
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  program
     .command("stats")
     .description("Summary: tickets by status, open decisions, active/stale claims")
     .option("--json", "emit machine-readable JSON", false)

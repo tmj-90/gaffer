@@ -34,6 +34,7 @@ import {
   isActiveTicketRepoRelation,
   parseTestContract,
 } from "./domain/types.js";
+import { verifyEventChain, type ChainVerification } from "./events/eventChain.js";
 import { listEvents, writeEvent } from "./events/eventWriter.js";
 import { AcRepository } from "./repositories/acRepository.js";
 import { AgentRepository } from "./repositories/agentRepository.js";
@@ -1859,5 +1860,15 @@ export class Dispatch {
    */
   humanQueue(): HumanQueue {
     return this.humanQueueSvc.build();
+  }
+
+  /**
+   * TAMPER-EVIDENT LOG: re-derive the sha256 hash chain over every work_event in
+   * insertion order and report the first row that does not hash to its stored
+   * value or does not link to its predecessor. Read-only. `dispatch events verify`
+   * and `dispatch doctor` surface it.
+   */
+  verifyEventChain(): ChainVerification {
+    return verifyEventChain(this.db);
   }
 }

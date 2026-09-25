@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 
 import type { Db } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
+import { verifyEventChain } from "../events/eventChain.js";
 import type { HumanQueue } from "../services/humanQueueService.js";
 import { VERSION } from "../version.js";
 
@@ -165,6 +166,22 @@ export function runDoctor(db: Db, dbPath: string, nowIso = new Date().toISOStrin
         level: "warn",
         detail: "Recommended 0600 (owner read/write only).",
         fix: `chmod 600 ${dbPath}`,
+      });
+    }
+  }
+
+  // 8. Event-log hash chain (tamper evidence). A broken link means a work_events
+  //    row was rewritten, deleted or re-ordered after it was written.
+  if (tableExists(db, "work_events")) {
+    const chain = verifyEventChain(db);
+    if (chain.ok) {
+      checks.push({ label: `Event log hash chain: intact (${chain.checked} events)`, level: "ok" });
+    } else {
+      checks.push({
+        label: `Event log hash chain: BROKEN at seq ${chain.brokenAtSeq} (${chain.reason})`,
+        level: "fail",
+        detail: `event ${chain.brokenEventId}; ${chain.checked} rows checked before the break`,
+        fix: "The log was altered after it was written. Restore from a trusted export bundle; `dispatch events verify --json` names the row.",
       });
     }
   }

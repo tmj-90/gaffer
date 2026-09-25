@@ -194,3 +194,50 @@ describe("web: Health view", () => {
     expect(body).toMatch(/No skill telemetry/i);
   });
 });
+
+describe("web: Health view — event-log integrity card", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("shows an intact chain with its event count", async () => {
+    healthPayload = {
+      ...(FULL_HEALTH as Record<string, unknown>),
+      event_log: { chain_ok: true, events: 42, broken_at_seq: null, reason: null },
+    };
+    mountShell();
+    stubFetch();
+    await loadApp();
+    const text = document.querySelector("#app")?.textContent ?? "";
+    expect(text).toContain("Event log");
+    expect(text).toContain("intact");
+    expect(text).toContain("42 events chained");
+  });
+
+  it("shows a BROKEN chain with the first broken seq and reason", async () => {
+    healthPayload = {
+      ...(FULL_HEALTH as Record<string, unknown>),
+      event_log: { chain_ok: false, events: 42, broken_at_seq: 7, reason: "content" },
+    };
+    mountShell();
+    stubFetch();
+    await loadApp();
+    const text = document.querySelector("#app")?.textContent ?? "";
+    expect(text).toContain("BROKEN");
+    expect(text).toContain("at seq 7 (content)");
+  });
+
+  it("renders without the card when the payload predates the field", async () => {
+    healthPayload = FULL_HEALTH;
+    mountShell();
+    stubFetch();
+    await loadApp();
+    const text = document.querySelector("#app")?.textContent ?? "";
+    expect(text).not.toContain("Event log");
+    expect(text).toContain("Health");
+  });
+});

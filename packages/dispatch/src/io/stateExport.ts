@@ -20,6 +20,7 @@
  * round-tripping it preserves the claim/trust history. No new secret is exposed.
  */
 import type { Db } from "../db/connection.js";
+import { backfillEventChain } from "../events/eventChain.js";
 import { migrate } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
 import { DispatchError } from "../util/errors.js";
@@ -338,6 +339,10 @@ export function importState(
         byTable[table] = n;
         rowsInserted += n;
       }
+      // A bundle written before v23 carries no event hashes: chain the restored
+      // log now so `dispatch events verify` passes on the imported board. Rows
+      // that arrived WITH hashes keep them (the export carried the chain over).
+      backfillEventChain(db);
     });
     tx();
   } finally {

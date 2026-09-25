@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -298,7 +298,12 @@ CREATE TABLE IF NOT EXISTS work_events (
   event_type   TEXT NOT NULL,
   payload_json TEXT,
   correlation_id TEXT,
-  created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  -- TAMPER-EVIDENT LOG (v23): sha256 hash chain. prev_hash is the previous row's
+  -- hash (genesis constant for the first row); hash covers prev_hash + this row's
+  -- fields. Nullable only so a pre-v23 log can be ALTERed then backfilled.
+  prev_hash    TEXT,
+  hash         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_entity ON work_events(entity_type, entity_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_type ON work_events(event_type, created_at);

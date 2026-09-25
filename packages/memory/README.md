@@ -58,7 +58,7 @@ MEMORY_AUTO_APPROVE=1
 ```
 
 …and `suggest_lore` lands `active` immediately — the operator opting into trusting
-agent writes (their machine, their call). **Default is governed** (draft-then-approve),
+agent writes (their machine, their call). **Default is governed** (draft-then-approve) — in the Gaffer factory too: the runner's ticket-close distiller lands a DRAFT unless memory auto-approve is on (`MEMORY_AUTO_APPROVE=1`, or `GAFFER_MEMORY_AUTO_PROMOTE=1` explicitly),
 so the standalone product is unchanged. This re-opens cross-ticket memory poisoning
 (fine for trusted input, not for untrusted issues); pair it deliberately and see the
 package [`docs/SECURITY.md`](docs/SECURITY.md) and the root

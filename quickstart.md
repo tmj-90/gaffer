@@ -59,7 +59,7 @@ runner/gaffer dashboard --lan
 ```
 
 Prints a URL (`http://<your-lan-ip>:8787`) and a bearer **token** — paste the token at the
-login prompt. (`runner/gaffer dashboard` without `--lan` binds loopback-only, no token.)
+login prompt. (`runner/gaffer dashboard` without `--lan` binds loopback-only; every data request still needs the auto-provisioned token, which the command prints as a `?token=` URL.)
 
 > **Wiring reference — always launch the dashboard via `gaffer dashboard`.** It wires
 > every action command (`DISPATCH_PRODUCT_OWNER_CMD`, `DISPATCH_MERGE_CMD`,

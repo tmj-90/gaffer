@@ -1,6 +1,6 @@
 # Epic — collapse the delivery runtime: strangle `tick.sh` into a typed `ClaudeAgentRuntime`
 
-Status: **in progress — typed runtime now LIVE by default.** P0/P1a (seam) ✅, P1b
+Status: **in progress — the typed RENDERERS and pure helpers are live by default; the side-effecting orchestration (claim / worktree / gates / submit / spawn) is still bash.** Honest share: roughly a quarter of `tick.sh`'s logic has a typed twin behind `GAFFER_RUNTIME=ts`; `ClaudeAgentRuntime` parses envelopes but does not spawn. P0/P1a (seam) ✅, P1b
 (context assembly) ✅, P2 (launch + parse) ✅ (realised in the runner's own
 `worker.sh`/`worker.mjs` seam), P3 (DoD text-processing) ✅, P4 (claim/worktree/submit)
 — pure-logic helpers seamed, the orchestration + the single-runtime collapse remain.

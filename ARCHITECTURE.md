@@ -11,7 +11,7 @@ A concise map of how the system fits together.
 | **Dispatch** | `packages/dispatch` | Control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard (7 views) + CLI. |
 | **Crew** | `packages/crew` | Factory runtime — MCP tool server, hooks engine, idle loops (draft work, ingest issues, self-improve), repo onboarding. |
 | **Memory** | `packages/memory` | Durable, human-gated knowledge — lore knowledge base, Repo Digest, feature ledger, grounded lore drafts. Also usable standalone as `memory-mcp`. |
-| **Runner** | `runner/` | Bash orchestrator — spawns a `claude -p` agent per ticket, 66-skill library, deterministic safety hook, git-worktree isolation, model tiering. |
+| **Runner** | `runner/` | Bash orchestrator — spawns a `claude -p` agent per ticket, ~70-skill library (`runner/skills/`), deterministic safety hook, git-worktree isolation, model tiering. |
 
 All four live in a single pnpm monorepo. The runner derives every path from its own location (`runner/factory.config.sh`) so any checkout root works.
 
@@ -63,7 +63,7 @@ A crew-side mirror of the classifier keeps parity. Do not weaken either side.
 - The gate verifies the **real `git diff`**, not an agent-authored evidence string.
 - `DISPATCH_ALLOW_AGENT_APPROVE` and `MERGE_ON_AGENT_REVIEW` relax this — they are **off by default** and removing the human gate is a conscious trust decision.
 
-Optional third layer: OS sandbox (`STRICT_MODE=1`, macOS only today via `sandbox-exec`) adds a kernel-level write boundary. Container/VM providers exist as a seam in `runner/lib/sandbox.sh` but are stubs on non-macOS.
+Optional third layer: an OS sandbox via the provider seam in `runner/lib/sandbox.sh` (`SANDBOX_PROVIDER`). Two providers are real: **`docker`** (any host with a daemon — read + egress isolation; the delivery worktree, `$GAFFER_DATA`, `runner/`, `packages/` and `node_modules/` are the only host paths mounted) and macOS **`sandbox-exec`** (write-only boundary). `lima`/microVM is a stub. The sandbox is on when `STRICT_MODE=1`; **every autonomy flag (`GAFFER_MODE=autonomous|strict|lite`, or any single ship/mutate flag) defaults `STRICT_MODE=1` and `GAFFER_STRICT_REQUIRE=1`**, so unattended runs fail closed when no provider is available. The wrap is applied inside the one worker seam (`runner/lib/worker.sh`), so the bootstrap, reviewer, clarify and eval-judge spawns are contained the same way the delivery spawn is.
 
 ---
 
@@ -77,7 +77,7 @@ Optional third layer: OS sandbox (`STRICT_MODE=1`, macOS only today via `sandbox
 | `crew.yaml` | Crew config — dispatch DB path, MCP wiring |
 | `usage-ledger.jsonl` | Per-call token/cost records (best-effort, never blocks a tick) |
 
-All state lives under `GAFFER_DATA` (default: `<repo-root>/.gaffer/`). Delete that directory to reset completely. Chroma/pgvector embedding backends are a planned extension for the memory package.
+All state lives under `GAFFER_DATA` (default: `<repo-root>/.gaffer/`). Delete that directory to reset completely. Memory retrieval is SQLite FTS5 (lexical, trust-weighted re-rank); there is no embedding/vector backend today.
 
 ---
 
@@ -85,8 +85,10 @@ All state lives under `GAFFER_DATA` (default: `<repo-root>/.gaffer/`). Delete th
 
 Two MCP servers run during a ticket's agent session (wired via `runner/.mcp.json`):
 
-- **Crew MCP** (`packages/crew`) — exposes factory-level tools to the Claude agent: ticket reads, evidence recording, lore store/recall, repo context queries, hygiene checks.
-- **Memory MCP** (`packages/memory`) — exposes `recall` and `store` for the agent to read and write durable knowledge. Two trust tiers:
+- **Dispatch MCP** (`packages/dispatch`) — the agent's ticket data plane: `get_ticket`, `record_ac_evidence`, `record_repo_delivery`, `mark_ticket_blocked`, `request_decision`, … In factory context it refuses `claim`/`submit`/`mark_ready` (submission is runner-owned) and exposes no approve tool.
+- **Memory MCP** (`packages/memory`) — `search_lore` / `get_lore` / `suggest_lore`, the repo digest, the feature ledger and file cards, for the agent to read and (gated) write durable knowledge. Two trust tiers:
+
+(The **Crew MCP** server (`crew-mcp`, `packages/crew`) is an operator/desktop tool — factory status, context packets, safety-policy explainers — and is **not** connected to the delivery agent.)
   - **Gated (draft → human approve).** Interpretive claims — lore (`suggest_lore`) and cross-repo boundaries (`declare_boundary`) — land as **drafts**, invisible to default retrieval until a human runs `memory review` / `approve` (unless `MEMORY_AUTO_APPROVE=1`).
   - **Direct-apply (bounded + quarantined).** Factual/proposal records — the repo digest (`update_repo_digest`), the feature ledger (`add_feature` / `advance_feature`), and file cards — apply directly (a digest is a post-merge reflection of real code, not an opinion to ratify). Because these are agent-writable and ungated, agent input is **length-bounded and sanitised on write**, and ALL agent-facing memory responses (cards, digest, lore, features) wrap agent-derived free text in a `<untrusted-…>` **quarantine envelope** so it reaches a future agent as data, never as instructions. File-card model fields additionally pass a mechanical validation + fail-closed semantic-review gate before they are ever served.
 
@@ -98,11 +100,11 @@ The Dispatch REST API and MCP server are for humans and the dashboard, not the d
 
 ### Add a skill
 
-Create `runner/skills/<name>/SKILL.md`. The runner's 66-skill library is loaded from this directory. Each skill is a structured markdown prompt fragment that the agent receives for specific task types. No TypeScript compilation needed.
+Create `runner/skills/<name>/SKILL.md`. The runner's skill library is loaded from this directory. Each skill is a structured markdown prompt fragment that the agent receives for specific task types. No TypeScript compilation needed.
 
 ### Add a Dispatch route
 
-Extend the HTTP API in `packages/dispatch/src/` (TypeScript, Hono). Run `pnpm -r build` to rebuild.
+Extend the HTTP API in `packages/dispatch/src/api/` (TypeScript on `node:http` — a hand-rolled router in `server.ts`, zod-validated bodies in `api/schemas.ts`; no framework). Run `pnpm -r build` to rebuild.
 
 ### Add a Crew MCP tool
 

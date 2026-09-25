@@ -102,7 +102,11 @@ PY
   prompt="$(node "$judge_cli" --mode prompt < "$tmp/input.json" 2>/dev/null)" || return 0
   [ -n "$prompt" ] || return 0
   printf '{"mcpServers":{}}' > "$tmp/mcp.json"
-  judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}"
+  # JUDGE INDEPENDENCE: default the judge to the PLAN-tier (strong) model, not the
+  # implementer's — a model grading its own tier's output is the weakest reading the
+  # eval can take. GAFFER_JUDGE_MODEL_FLAG still overrides; the implementer flag is the
+  # last resort only when no plan flag is configured.
+  judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"
   worker_deliver "$repo_dir" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" \
     >/dev/null 2>&1 || true   # a failed judge turn is fail-soft; the guard below skips
 

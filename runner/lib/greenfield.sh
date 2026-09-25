@@ -262,6 +262,7 @@ gaffer_ensure_node_modules() {
 # factory.config.sh being in scope.
 #   gaffer_bootstrap_onboard <ticket-num> <name> <dir> <stack> [remote] [default-branch]
 gaffer_bootstrap_onboard() {
+  # shellcheck disable=SC2034  # num is part of the call contract (logged by callers / future use)
   local num="$1" name="$2" dir="$3" stack="${4:-}" remote="${5:-}" branch="${6:-main}"
   [ -n "$name" ] && [ -n "$dir" ] || return 1
   local wg_ok=1

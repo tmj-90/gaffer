@@ -4291,6 +4291,20 @@ async function renderTicket(id) {
                 { class: "ev-actor" },
                 `${ev.actor_type}${ev.actor_id ? ` · ${ev.actor_id}` : ""}`,
               ),
+              // TRACE: the runner tick that wrote this event (work_events.correlation_id).
+              // Every event one tick produced — the runner's own calls and the agent's
+              // MCP writes — carries the same id, so the chip shows which events belong
+              // together; `dispatch events list --correlation <id>` prints the whole trail.
+              ev.correlation_id
+                ? el(
+                    "div",
+                    {
+                      class: "ev-tick mono",
+                      title: `Written during tick ${ev.correlation_id} — dispatch events list --correlation ${ev.correlation_id}`,
+                    },
+                    `tick ${ev.correlation_id}`,
+                  )
+                : null,
               ev.payload_json && ev.payload_json !== "{}" ? formatPayload(ev.payload_json) : null,
             ]),
           ),

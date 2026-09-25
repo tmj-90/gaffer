@@ -78,6 +78,19 @@ _gaffer_worker_unsupported_msg() {
   printf 'worker provider %s not yet supported; safety-hook containment unavailable\n' "$1"
 }
 
+# True when the OS sandbox is ON (STRICT_MODE=1) or REQUIRED (GAFFER_STRICT_REQUIRE).
+# `_sandbox_strict_required` lives in lib/sandbox.sh (sourced by factory.config.sh);
+# guard the call so a bare `source lib/worker.sh` in a test still works.
+_worker_sandbox_wanted() {
+  [ "${STRICT_MODE:-0}" = "1" ] && return 0
+  if command -v _sandbox_strict_required >/dev/null 2>&1; then
+    _sandbox_strict_required && return 0
+  else
+    case "${GAFFER_STRICT_REQUIRE:-0}" in 1 | true | yes | on) return 0 ;; esac
+  fi
+  return 1
+}
+
 worker_deliver() {
   local cwd="$1" prompt="$2" model_flag="$3" mcp_config="$4" out_json="$5" wrap="${6:-}"
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
@@ -87,9 +100,47 @@ worker_deliver() {
       # Populated here so the scrub is byte-identical for every site (each site called
       # gaffer_agent_env immediately before its invocation previously).
       gaffer_agent_env
-      ( cd "$cwd" \
+      # ── OS-sandbox containment AT THE SEAM (every spawn site, not just delivery) ──
+      # Before this, only tick.sh's delivery spawn passed a $wrap; the bootstrap,
+      # reviewer, clarify and eval-judge spawns ran bare even under STRICT_MODE=1 —
+      # and the reviewer reads an UNTRUSTED diff with a shell. When the sandbox is ON
+      # (STRICT_MODE=1) or REQUIRED (GAFFER_STRICT_REQUIRE, auto-set by every autonomy
+      # flag) and the caller passed no wrap, derive it here from the per-call boundary
+      # vars (GAFFER_WRITE_ROOTS / GAFFER_READ_ROOTS in WORKER_CALL_ENV; the cwd is the
+      # write root when none is named). FAIL CLOSED: a required sandbox that the host
+      # cannot supply means NO spawn — rc 75, empty envelope — never a silent bare run.
+      # With the sandbox off this block is inert and the invocation is byte-identical.
+      if [ -z "$wrap" ] && _worker_sandbox_wanted; then
+        local _wr="" _rr="" _kv
+        for _kv in ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"}; do
+          case "$_kv" in
+            GAFFER_WRITE_ROOTS=*) _wr="${_kv#GAFFER_WRITE_ROOTS=}" ;;
+            GAFFER_READ_ROOTS=*)  _rr="${_kv#GAFFER_READ_ROOTS=}" ;;
+          esac
+        done
+        [ -n "$_wr" ] || _wr="$cwd"
+        if ! wrap="$(sandbox_wrap_cmd "$_wr" "$_rr" 2>>"$GAFFER_LOG")"; then
+          : > "$out_json"
+          printf 'worker: GAFFER_STRICT_REQUIRE demands an OS sandbox and none is available on this host — refusing to spawn the agent (fail closed)\n' >&2
+          return 75
+        fi
+      fi
+      # Inside the `docker` provider the HOST's claude binary path / HOME / PATH do not
+      # exist — the image ships `claude` on its own PATH and root's HOME is /root (where
+      # the credentials file is mounted). Substitute ONLY when a docker wrap is active;
+      # the per-call env layers on top of the allowlist, so these win over host values.
+      local _sbx_claude_bin="$CLAUDE_BIN" _sbx_env=()
+      if [ -n "$wrap" ] && [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ]; then
+        _sbx_claude_bin="${GAFFER_SANDBOX_CLAUDE_BIN:-claude}"
+        _sbx_env=( "HOME=${GAFFER_SANDBOX_HOME:-/root}"
+                   "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
+      fi
+      # CLAUDE_BIN is rebound INSIDE the invocation subshell only (the docker case above
+      # swaps in the image's binary; otherwise it is unchanged), so the single pinned
+      # invocation site below stays exactly where the seam tests look for it.
+      ( cd "$cwd" && CLAUDE_BIN="$_sbx_claude_bin" \
         && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
-           env -i "${GAFFER_AGENT_ENV[@]}" "${WORKER_CALL_ENV[@]}" \
+           env -i "${GAFFER_AGENT_ENV[@]}" "${WORKER_CALL_ENV[@]}" ${_sbx_env[@]+"${_sbx_env[@]}"} \
              "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$mcp_config" $CLAUDE_FLAGS $model_flag $GAFFER_MAX_TURNS_FLAG \
       ) >"$out_json" 2>>"$GAFFER_LOG"
       ;;

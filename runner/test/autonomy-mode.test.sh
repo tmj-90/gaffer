@@ -75,7 +75,9 @@ expect "$OUT" MERGE_ON_AGENT_REVIEW        1    "autonomous: merge-on-agent-revi
 expect "$OUT" AUTO_MERGE                   1    "autonomous: auto-merge on"
 expect "$OUT" GAFFER_AUTO_PUSH             1    "autonomous: auto-push on"
 expect "$OUT" MEMORY_AUTO_APPROVE          1    "autonomous: memory auto-approve on"
-expect "$OUT" STRICT_MODE                  0    "autonomous: sandbox still off"
+# Autonomy REQUIRES containment: the OS sandbox is on (and required) whenever the human
+# gate is off — see autonomy-containment.test.sh for the full matrix.
+expect "$OUT" STRICT_MODE                  1    "autonomous: OS sandbox on (autonomy requires containment)"
 
 echo "== 2b: GAFFER_MODE=graduated → reviewer runs, but env floor stays SUPERVISED =="
 # The distinguishing posture: REVIEW_MODE=agent (a verdict exists to act on) while every

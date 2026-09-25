@@ -138,6 +138,26 @@ export const setRepoDefaultBranchInput = z.object({
 });
 export type SetRepoDefaultBranchInput = z.infer<typeof setRepoDefaultBranchInput>;
 
+/**
+ * Per-repo Definition-of-Done gate commands (test / lint / coverage), editable
+ * after registration. Each is a single command line the runner hands to `bash -c`
+ * in the delivery worktree; `null` / "" clears the gate (it is then SKIPPED, not
+ * failed). Omitted keys are left unchanged.
+ */
+const gateCommand = z
+  .string()
+  .trim()
+  .max(500)
+  .refine((v) => !/[\r\n\0]/.test(v), "a gate command must be a single line")
+  .nullable()
+  .optional();
+export const setRepoCommandsInput = z.object({
+  test_command: gateCommand,
+  lint_command: gateCommand,
+  coverage_command: gateCommand,
+});
+export type SetRepoCommandsInput = z.infer<typeof setRepoCommandsInput>;
+
 export const registerAgentInput = z.object({
   display_name: z.string().max(200).optional(),
   agent_type: z.string().max(100).default("coding_agent"),

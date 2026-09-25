@@ -833,6 +833,11 @@ export class Dispatch {
     return this.repoSvc.setRepoDefaultBranch(repoRef, branch, actor);
   }
 
+  /** Set a repo's DoD gate commands (test / lint / coverage); see RepoService.setRepoCommands. */
+  setRepoCommands(repoRef: string, input: unknown, actor: Actor): Repository {
+    return this.repoSvc.setRepoCommands(repoRef, input, actor);
+  }
+
   linkRepository(ticketId: string, repoName: string, role: string, actor: Actor): void {
     return this.repoSvc.linkRepository(ticketId, repoName, role, actor);
   }

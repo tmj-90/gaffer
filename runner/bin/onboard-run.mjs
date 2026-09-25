@@ -41,7 +41,7 @@
 // =====================================================================
 
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -233,6 +233,29 @@ function lastBalancedObject(text) {
   return last;
 }
 
+function ensureCrewConfig() {
+  if (existsSync(CONFIG.crewConfig)) return;
+  const crewCli = resolve(CONFIG.crewDir, "dist", "cli", "index.js");
+  if (!existsSync(crewCli)) return; // crew not built — the spawn below reports it loudly
+  log(`crew config ${CONFIG.crewConfig} missing — initialising it (first run)`);
+  const init = spawnSync(process.execPath, [crewCli, "init", "-d", GAFFER_DATA, "-n", "gaffer"], {
+    encoding: "utf8",
+  });
+  if (init.status !== 0 || !existsSync(CONFIG.crewConfig)) {
+    log(`crew init failed (exit ${init.status}): ${(init.stderr || init.stdout || "").trim()}`);
+    return;
+  }
+  try {
+    const yaml = readFileSync(CONFIG.crewConfig, "utf8").replace(
+      /sqlite_path:.*/,
+      `sqlite_path: ${CONFIG.dispatchDb}`,
+    );
+    writeFileSync(CONFIG.crewConfig, yaml);
+  } catch (err) {
+    log(`could not point crew.yaml at the dispatch db: ${err?.message ?? err}`);
+  }
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -265,6 +288,13 @@ function main() {
     fail(`onboard target "${opts.repo}" resolves to ${repoPath}, which is not on disk`);
     return;
   }
+
+  // FIRST-RUN SELF-HEAL: the dashboard's Onboard button (and `gaffer onboard`) used to
+  // fail with CONFIG_NOT_FOUND when `gaffer setup` had not created crew.yaml — visible
+  // only in the Runs panel while the UI toasted "will appear shortly". Create the
+  // factory's crew config the same way setup.sh does (crew init + point it at the
+  // dispatch DB), then proceed. Idempotent: a present config is left untouched.
+  ensureCrewConfig();
 
   log(`onboarding "${opts.repo}" (${repoPath}) via crew repo onboard`);
   const res = spawnSync(process.execPath, argv, {

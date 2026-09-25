@@ -252,8 +252,26 @@ try {
     );
     if (addAc) {
       await addAc.click();
-      await sleep(600);
-      ok("Ticket view: acceptance criterion added through the UI");
+      // The view re-renders asynchronously after the POST — wait for the AC to land
+      // server-side before deciding whether the API fallback is needed.
+      const landed = await waitFor(
+        async () => {
+          const v = (await api("GET", `/tickets/${ticket.id}`)).json;
+          const list = v.acceptanceCriteria || v.acceptance_criteria || [];
+          return list.length > 0 ? list : null;
+        },
+        "AC added via the ticket view",
+        10000,
+        300,
+      ).catch(() => null);
+      if (landed) {
+        const withCheck = landed.find((a) => a.check_command);
+        withCheck
+          ? ok(
+              `Ticket view: acceptance criterion added through the UI with check_command='${withCheck.check_command}'`,
+            )
+          : ok("Ticket view: acceptance criterion added through the UI (no check command carried)");
+      } else bad("Ticket view: 'Add AC' did not create a criterion within 10s");
     } else note("Ticket view: AC input found but no Add button — added via API");
   } else note("Ticket view exposes no AC input — adding the acceptance criterion via API (UI gap)");
   const acs = (await api("GET", `/tickets/${ticket.id}`)).json;

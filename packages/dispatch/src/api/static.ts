@@ -32,6 +32,9 @@ const STATIC_ROUTES: ReadonlyMap<string, { file: string; type: string }> = new M
 /** Bundled media served under /assets/ (hero backgrounds, textures). */
 const ASSETS_DIR = join(WEB_DIR, "assets");
 const ASSET_MIME: ReadonlyMap<string, string> = new Map([
+  // Self-hosted fonts + their @font-face sheet (assets/fonts/).
+  [".woff2", "font/woff2"],
+  [".css", "text/css; charset=utf-8"],
   [".jpg", "image/jpeg"],
   [".jpeg", "image/jpeg"],
   [".png", "image/png"],

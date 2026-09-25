@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Gaffer AFK daemon (C1) — the portable "walk away and it keeps working" loop.
 #
 # runner/loop.sh is a SINGLE supervisor pass: it drains the ready queue (honouring the

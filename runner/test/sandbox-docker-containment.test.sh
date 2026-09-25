@@ -17,9 +17,17 @@ set -u
 RUNNER_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 export RUNNER_DIR
 
+# GAFFER_SANDBOX_TEST_REQUIRE=1 turns every infra SKIP below into a FAILURE — the CI job on
+# pushes to main sets it so "the gate did not run" can never read as green there.
+_skip() {
+  if [ "${GAFFER_SANDBOX_TEST_REQUIRE:-0}" = "1" ]; then
+    echo "FAIL (required): $1"; echo "::error::docker containment gate did not run: $1"; exit 1
+  fi
+  echo "SKIP: $1"; exit 0
+}
+
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-  echo "SKIP: docker daemon unavailable — Mode-2 containment gate not exercised on this host"
-  exit 0
+  _skip "docker daemon unavailable — Mode-2 containment gate not exercised on this host"
 fi
 
 # On shared CI runners this gate is fragile — it builds images + docker networks, and
@@ -39,10 +47,10 @@ echo "== Mode-2 docker sandbox — red-team containment gate =="
 # broken sandbox.
 _IMG="gaffer-sbx-redteam-test"
 if ! printf 'FROM alpine:3.20\nRUN apk add --no-cache curl\n' | docker build -q -t "$_IMG" - >/dev/null 2>&1; then
-  echo "SKIP: could not build the test image (docker registry/infra unavailable) — containment not exercised"; exit 0
+  _skip "could not build the test image (docker registry/infra unavailable) — containment not exercised"
 fi
 if ! docker build -q -t gaffer-egress-proxy "$RUNNER_DIR/sandbox/egress-proxy" >/dev/null 2>&1; then
-  echo "SKIP: could not build the egress-proxy image (docker registry/infra unavailable) — containment not exercised"; exit 0
+  _skip "could not build the egress-proxy image (docker registry/infra unavailable) — containment not exercised"
 fi
 
 WORK="$(mktemp -d)"

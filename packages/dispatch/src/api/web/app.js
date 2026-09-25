@@ -1700,8 +1700,17 @@ async function renderOverview() {
       title: "Ship better software, faster.",
       subtitle:
         "Real-time insight into your factory. Track flow, focus on what matters, and keep everything moving.",
-      status: "Factory online", // honest: the dashboard is up. 'All systems nominal' was a hardcoded literal, not a health signal.
-      statusOk: true,
+      // Honest status line: the dashboard is up, AND the event log the whole room is
+      // derived from verifies (the server re-derives the sha256 chain). A broken
+      // chain means an event was rewritten, deleted or re-ordered after the fact —
+      // the one thing a control room must never paper over.
+      status:
+        healthRes?.event_log?.chain_ok === false
+          ? `Factory online · event log ALTERED at seq ${healthRes.event_log.broken_at_seq} — see Health`
+          : healthRes?.event_log?.chain_ok === true
+            ? `Factory online · event log intact (${healthRes.event_log.events} events)`
+            : "Factory online",
+      statusOk: healthRes?.event_log?.chain_ok !== false,
     }),
   );
 

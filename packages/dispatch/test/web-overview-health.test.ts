@@ -116,6 +116,40 @@ describe("web: Overview cycle-time/throughput from /api/health", () => {
     expect(kpiValue("Throughput")).toBe("9");
   });
 
+  it("hero status names the event-log integrity: intact with the count, ALTERED with the seq", async () => {
+    healthPayload = {
+      total_usd: 0,
+      cycle_time: { median_days: 3.5, series: zeros14() },
+      throughput: { last7: 9, prev7: 3, series: zeros14() },
+      event_log: { chain_ok: true, events: 17, broken_at_seq: null, reason: null },
+    };
+    await loadApp();
+    let status = document.querySelector(".view-hero-status");
+    expect(status?.textContent).toContain("event log intact (17 events)");
+    expect(status?.classList.contains("ok")).toBe(true);
+
+    vi.resetModules();
+    document.body.innerHTML = "";
+    mountShell();
+    healthPayload = {
+      total_usd: 0,
+      cycle_time: { median_days: 3.5, series: zeros14() },
+      throughput: { last7: 9, prev7: 3, series: zeros14() },
+      event_log: { chain_ok: false, events: 17, broken_at_seq: 9, reason: "content" },
+    };
+    await loadApp();
+    status = document.querySelector(".view-hero-status");
+    expect(status?.textContent).toContain("event log ALTERED at seq 9");
+    expect(status?.classList.contains("ok")).toBe(false);
+
+    // Restore for other tests.
+    healthPayload = {
+      total_usd: 0,
+      cycle_time: { median_days: 3.5, series: zeros14() },
+      throughput: { last7: 9, prev7: 3, series: zeros14() },
+    };
+  });
+
   it("falls back to a zeroed shape when /api/health is unavailable", async () => {
     healthPayload = null;
     ticketsPayload = { tickets: [] };

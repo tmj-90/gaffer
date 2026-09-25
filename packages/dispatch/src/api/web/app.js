@@ -115,6 +115,24 @@ function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
+/**
+ * A labelled form control. The <label> is ASSOCIATED with the control (for/id), so
+ * assistive tech announces "Repository, combo box" instead of an unnamed select and
+ * a click on the label focuses the control. Every form field goes through here —
+ * the former `el("div", { class: "field" }, [el("label", {}, text), control])` pattern
+ * rendered a visually adjacent but programmatically unrelated label (axe: select-name /
+ * label). `attrs` extends the wrapper (`class` is appended to "field").
+ */
+let fieldSeq = 0;
+function field(labelText, control, attrs = {}) {
+  if (!control.id) control.id = `field-${++fieldSeq}`;
+  const { class: extra, ...rest } = attrs;
+  return el("div", { ...rest, class: extra ? `field ${extra}` : "field" }, [
+    el("label", { for: control.id }, labelText),
+    control,
+  ]);
+}
+
 /** Inline SVG icon (24x24 stroke icons, currentColor). */
 const ICONS = {
   overview: '<path d="M3 13h8V3H3zM13 21h8V3h-8zM3 21h8v-6H3z"/>',
@@ -2556,11 +2574,9 @@ function openSuggestWorkPicker(repos, nodes) {
     ...nodes.map((n) => el("option", { value: n.id }, `${n.name} (${typeLabel(n.type)})`)),
   ]);
 
-  const repoBlock = el("div", { class: "where-block" }, [
-    el("div", { class: "field" }, [el("label", {}, "Repository"), repoSel]),
-  ]);
+  const repoBlock = el("div", { class: "where-block" }, [field("Repository", repoSel)]);
   const nodeBlock = el("div", { class: "where-block" }, [
-    el("div", { class: "field" }, [el("label", {}, "Scope node"), nodeSel]),
+    field("Scope node", nodeSel),
     el(
       "p",
       { class: "mode-note dim" },
@@ -3187,9 +3203,9 @@ function renderWorkFilters(repos) {
     "Reset",
   );
   return el("div", { class: "filters" }, [
-    el("div", { class: "field" }, [el("label", {}, "Status"), statusSel]),
-    el("div", { class: "field" }, [el("label", {}, "Repo"), repoSel]),
-    el("div", { class: "field" }, [el("label", {}, "Risk"), riskSel]),
+    field("Status", statusSel),
+    field("Repo", repoSel),
+    field("Risk", riskSel),
     el("div", { class: "field", style: "flex:0 0 auto" }, [el("label", { html: "&nbsp;" }), reset]),
   ]);
 }
@@ -4588,9 +4604,9 @@ function renderAddAcForm(ticketId) {
       },
     },
     [
-      el("div", { class: "field" }, [el("label", {}, "Criterion"), text]),
-      el("div", { class: "field" }, [el("label", {}, "Verification"), verify]),
-      el("div", { class: "field" }, [el("label", {}, "Check command"), check]),
+      field("Criterion", text),
+      field("Verification", verify),
+      field("Check command", check),
       el("div", { class: "field", style: "flex:0 0 auto" }, [
         el("label", {}, "Evidence"),
         el("label", { class: "checkbox-line" }, [evidence, "required"]),
@@ -4933,8 +4949,8 @@ function renderAddRepoForm(ticketId, reload) {
       },
     },
     [
-      el("div", { class: "field" }, [el("label", {}, "Repo"), repoSel]),
-      el("div", { class: "field" }, [el("label", {}, "Access"), access]),
+      field("Repo", repoSel),
+      field("Access", access),
       el("button", { class: "btn", type: "submit" }, "Add repo"),
     ],
   );
@@ -5935,11 +5951,11 @@ async function renderCreate() {
       },
     },
     [
-      el("div", { class: "field" }, [el("label", {}, "Title"), title]),
-      el("div", { class: "field" }, [el("label", {}, "Description"), desc]),
+      field("Title", title),
+      field("Description", desc),
       el("div", { class: "form-grid cols-2" }, [
-        el("div", { class: "field" }, [el("label", {}, "Policy pack"), policy]),
-        el("div", { class: "field" }, [el("label", {}, "Risk level"), risk]),
+        field("Policy pack", policy),
+        field("Risk level", risk),
       ]),
       selector.node,
       validationMsg,
@@ -6186,11 +6202,11 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
         { class: "where-intro dim" },
         "Attach the repos this ticket may write, read or test, and optionally the scope node it lives under. At least one write repo is required.",
       ),
-      el("div", { class: "field" }, [el("label", {}, "Scope node"), scopeSel]),
+      field("Scope node", scopeSel),
       scopeList,
       el("div", { class: "selector-add-repo" }, [
-        el("div", { class: "field grow" }, [el("label", {}, "Repository"), repoSel]),
-        el("div", { class: "field" }, [el("label", {}, "Access"), accessSel]),
+        field("Repository", repoSel, { class: "grow" }),
+        field("Access", accessSel),
         addRepoBtn,
       ]),
       repoList,
@@ -6252,8 +6268,8 @@ function renderDecisionCard(d) {
       el("h3", { style: "font-size:var(--step-0)" }, d.title),
       el("p", { class: "desc" }, d.question),
       el("div", { class: "inline-form", style: "margin:0;border:0;padding:0" }, [
-        el("div", { class: "field" }, [el("label", {}, "Answer"), answer]),
-        el("div", { class: "field" }, [el("label", {}, "Rationale"), rationale]),
+        field("Answer", answer),
+        field("Rationale", rationale),
         el("div", { class: "btn-row", style: "align-self:flex-end" }, [
           el(
             "button",
@@ -7267,11 +7283,7 @@ async function renderFactory() {
       applyFactoryFilter(wrap, e.target.value.trim().toLowerCase());
     },
   });
-  wrap.appendChild(
-    el("div", { class: "filters" }, [
-      el("div", { class: "field", style: "flex:1" }, [el("label", {}, "Search"), search]),
-    ]),
-  );
+  wrap.appendChild(el("div", { class: "filters" }, [field("Search", search, { style: "flex:1" })]));
 
   wrap.appendChild(renderScopeGraph(nodes, edges));
   wrap.appendChild(renderUnmappedSection(unmapped));
@@ -7487,20 +7499,20 @@ function renderRepoCommands(repo) {
  * SKIP), so the operator can correct them here. Empty clears a gate (skipped).
  */
 function renderRepoCommandsEditor(repo) {
-  const field = (name, label, value, ph) => {
+  // Named distinctly from the global `field()` labelled-control helper it calls.
+  const commandField = (name, label, value, ph) => {
     const input = el("input", {
       type: "text",
       name,
       value: value || "",
       placeholder: ph,
-      "aria-label": label,
       class: "mono",
     });
-    return { input, row: el("div", { class: "field" }, [el("label", {}, label), input]) };
+    return { input, row: field(label, input) };
   };
-  const test = field("test_command", "Test command", repo.test_command, "e.g. npm test");
-  const lint = field("lint_command", "Lint command", repo.lint_command, "e.g. npm run lint");
-  const cov = field(
+  const test = commandField("test_command", "Test command", repo.test_command, "e.g. npm test");
+  const lint = commandField("lint_command", "Lint command", repo.lint_command, "e.g. npm run lint");
+  const cov = commandField(
     "coverage_command",
     "Coverage command",
     repo.coverage_command,
@@ -7882,16 +7894,13 @@ function renderNodeForm(node) {
     },
     [
       el("div", { class: "form-grid cols-2" }, [
-        el("div", { class: "field" }, [el("label", {}, "Name"), name]),
-        el("div", { class: "field" }, [el("label", {}, "Type"), type]),
-        el("div", { class: "field" }, [el("label", {}, "Owner"), owner]),
-        el("div", { class: "field" }, [el("label", {}, "Risk level"), risk]),
+        field("Name", name),
+        field("Type", type),
+        field("Owner", owner),
+        field("Risk level", risk),
       ]),
-      el("div", { class: "field" }, [el("label", {}, "Description"), desc]),
-      el("div", { class: "form-grid cols-2" }, [
-        el("div", { class: "field" }, [el("label", {}, "Tags"), tags]),
-        el("div", { class: "field" }, [el("label", {}, "Lore tags"), loreTags]),
-      ]),
+      field("Description", desc),
+      el("div", { class: "form-grid cols-2" }, [field("Tags", tags), field("Lore tags", loreTags)]),
       el("div", { class: "btn-row" }, [
         el(
           "button",
@@ -7999,8 +8008,8 @@ function renderAddEdgeForm(node, allNodes) {
       },
     },
     [
-      el("div", { class: "field" }, [el("label", {}, "Connect to"), target]),
-      el("div", { class: "field" }, [el("label", {}, "Relation"), relation]),
+      field("Connect to", target),
+      field("Relation", relation),
       el("div", { class: "field", style: "flex:0 0 auto" }, [
         el("label", { html: "&nbsp;" }),
         advancedWrap,
@@ -8052,9 +8061,9 @@ function renderLinkRepoForm(nodeId) {
       },
     },
     [
-      el("div", { class: "field" }, [el("label", {}, "Repo"), repoSel]),
-      el("div", { class: "field" }, [el("label", {}, "Relation"), relation]),
-      el("div", { class: "field" }, [el("label", {}, "Access"), access]),
+      field("Repo", repoSel),
+      field("Relation", relation),
+      field("Access", access),
       el("button", { class: "btn", type: "submit" }, "Link repo"),
     ],
   );
@@ -8466,9 +8475,9 @@ function renderAddAssociationForm(repo, allNodes, existing) {
       },
     },
     [
-      el("div", { class: "field" }, [el("label", {}, "Scope node"), nodeSel]),
-      el("div", { class: "field" }, [el("label", {}, "Relation"), relation]),
-      el("div", { class: "field" }, [el("label", {}, "Access"), access]),
+      field("Scope node", nodeSel),
+      field("Relation", relation),
+      field("Access", access),
       el("button", { class: "btn", type: "submit" }, "Add association"),
     ],
   );
@@ -9553,9 +9562,7 @@ function renderPlanBuildModeToggle() {
         planBuildEls.input.focus();
       },
     });
-    children.push(
-      el("div", { class: "field pb-extend-field" }, [el("label", {}, "Extend"), picker]),
-    );
+    children.push(field("Extend", picker, { class: "pb-extend-field" }));
   }
 
   return el("div", { class: "pb-mode" }, children);
@@ -10133,9 +10140,7 @@ function renderSpecDraft(draft) {
     specBuildState.title = titleInput.value;
     updateSpecCreateEnabled();
   });
-  wrap.appendChild(
-    el("div", { class: "field sb-title-field" }, [el("label", {}, "Title"), titleInput]),
-  );
+  wrap.appendChild(field("Title", titleInput, { class: "sb-title-field" }));
 
   const list = el("ol", { class: "pb-tickets sb-clauses" });
   clauses.forEach((clause, i) => list.appendChild(renderSpecClauseRow(clause, i, !!created)));
@@ -10601,9 +10606,9 @@ function openOnboardPicker(repos, presetRepo) {
         "Cards the whole repo — a sizeable one-off (several minutes + model calls for larger repos). " +
           "Memory then refreshes itself incrementally as agents deliver, so you don't need to re-run it.",
       ),
-      el("div", { class: "field" }, [el("label", {}, "Registered repo"), repoSel]),
+      field("Registered repo", repoSel),
       el("div", { class: "or-divider dim" }, "or"),
-      el("div", { class: "field" }, [el("label", {}, "Local path"), pathInput]),
+      field("Local path", pathInput),
       el("div", { class: "btn-row" }, [runBtn]),
     ],
   );
@@ -11107,11 +11112,7 @@ async function renderMemory(param) {
       ),
     ],
   );
-  wrap.appendChild(
-    el("div", { class: "filters" }, [
-      el("div", { class: "field", style: "flex:1" }, [el("label", {}, "Repo"), repoSel]),
-    ]),
-  );
+  wrap.appendChild(el("div", { class: "filters" }, [field("Repo", repoSel, { style: "flex:1" })]));
 
   if (memoryState.repo) {
     const [digestRes, featuresRes] = await Promise.all([
@@ -11231,9 +11232,7 @@ function renderFeatureLedger(repo, res) {
       ],
     );
     card.appendChild(
-      el("div", { class: "filters" }, [
-        el("div", { class: "field", style: "flex:1" }, [el("label", {}, "Scope node"), nodeSel]),
-      ]),
+      el("div", { class: "filters" }, [field("Scope node", nodeSel, { style: "flex:1" })]),
     );
   }
 

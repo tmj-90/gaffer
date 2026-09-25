@@ -156,6 +156,43 @@ describe("settings module: enum choices + value validation", () => {
     expect(readSettingsFile(settingsPath)).toEqual({});
   });
 
+  it("rejects a non-integer for an int setting without persisting it", () => {
+    const res = writeSettings({ MAX_TICKS: "abc" }, {}, settingsPath);
+    expect(res.invalid).toEqual(["MAX_TICKS"]);
+    expect(readSettingsFile(settingsPath)).toEqual({});
+    const ok = writeSettings({ MAX_TICKS: "12" }, {}, settingsPath);
+    expect(ok.written).toEqual(["MAX_TICKS"]);
+  });
+
+  it("rejects a notify URL that fails the SSRF policy (loopback / link-local / private / non-http)", () => {
+    for (const bad of [
+      "http://127.0.0.1:8787/api/tickets",
+      "http://169.254.169.254/latest/meta-data/",
+      "http://10.1.2.3/hook",
+      "file:///etc/passwd",
+      "nonsense",
+    ]) {
+      const res = writeSettings({ GAFFER_NOTIFY_WEBHOOK_URL: bad }, {}, settingsPath);
+      expect(res.invalid, bad).toEqual(["GAFFER_NOTIFY_WEBHOOK_URL"]);
+    }
+    expect(readSettingsFile(settingsPath)).toEqual({});
+    const ok = writeSettings(
+      { GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/T0/B0/x" },
+      {},
+      settingsPath,
+    );
+    expect(ok.written).toEqual(["GAFFER_NOTIFY_SLACK_URL"]);
+  });
+
+  it("GAFFER_NOTIFY_ALLOW_PRIVATE=1 in the env lets a LAN relay URL persist", () => {
+    const res = writeSettings(
+      { GAFFER_NOTIFY_WEBHOOK_URL: "http://192.168.1.20:9000/relay" },
+      { GAFFER_NOTIFY_ALLOW_PRIVATE: "1" },
+      settingsPath,
+    );
+    expect(res.written).toEqual(["GAFFER_NOTIFY_WEBHOOK_URL"]);
+  });
+
   it("allows an empty enum value to clear the override back to default", () => {
     writeSettings({ GAFFER_MODE: "strict" }, {}, settingsPath);
     const res = writeSettings({ GAFFER_MODE: "" }, {}, settingsPath);

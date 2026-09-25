@@ -6,6 +6,7 @@ import { TestClock } from "../src/util/clock.js";
 import {
   buildNotifierFromEnv,
   CompositeNotifier,
+  notifyUrlProblem,
   DesktopSink,
   parseAllowedEvents,
   renderSlackText,
@@ -671,4 +672,74 @@ beforeEach(() => {
 afterEach(() => {
   restoreNotifyEnv(envSnapshot);
   vi.restoreAllMocks();
+});
+
+// ── URL policy (SSRF): where a sink may POST ─────────────────────────────
+
+describe("notify URL policy — sinks are only built from safe http(s) destinations", () => {
+  const REFUSED = [
+    "http://127.0.0.1:8787/api/tickets",
+    "http://localhost/hook",
+    "http://[::1]/hook",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://10.0.0.5/hook",
+    "http://172.16.3.4/hook",
+    "http://192.168.1.10/hook",
+    "http://100.64.0.1/hook",
+    "http://0.0.0.0/hook",
+    "http://[::ffff:127.0.0.1]/hook",
+    "http://[fd12::1]/hook",
+    "http://[fe80::1]/hook",
+    "file:///etc/passwd",
+    "ftp://hooks.example.com/x",
+    "not a url",
+  ];
+  const ACCEPTED = [
+    "https://hooks.slack.com/services/T000/B000/XXXX",
+    "https://example.com/webhook",
+    "http://203.0.113.9:9000/hook",
+  ];
+
+  for (const url of REFUSED) {
+    it(`refuses ${url}`, () => {
+      expect(notifyUrlProblem(url)).not.toBeNull();
+    });
+  }
+  for (const url of ACCEPTED) {
+    it(`accepts ${url}`, () => {
+      expect(notifyUrlProblem(url)).toBeNull();
+    });
+  }
+
+  it("allowPrivate opts a loopback/private destination back in (scheme rule still holds)", () => {
+    expect(notifyUrlProblem("http://127.0.0.1:9000/relay", { allowPrivate: true })).toBeNull();
+    expect(notifyUrlProblem("http://192.168.1.2/relay", { allowPrivate: true })).toBeNull();
+    expect(notifyUrlProblem("file:///x", { allowPrivate: true })).not.toBeNull();
+  });
+
+  it("buildNotifierFromEnv skips a refused URL loudly and builds nothing from it", () => {
+    const warnings: string[] = [];
+    const n = buildNotifierFromEnv(
+      { GAFFER_NOTIFY_WEBHOOK_URL: "http://169.254.169.254/latest/meta-data/" },
+      (m) => warnings.push(m),
+    );
+    // No acceptable sink ⇒ the shared no-op notifier (nothing will ever POST).
+    expect(n).toBe(buildNotifierFromEnv({}));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("GAFFER_NOTIFY_WEBHOOK_URL");
+    expect(warnings[0]).toContain("link-local");
+  });
+
+  it("buildNotifierFromEnv honours GAFFER_NOTIFY_ALLOW_PRIVATE=1", () => {
+    const warnings: string[] = [];
+    const n = buildNotifierFromEnv(
+      {
+        GAFFER_NOTIFY_WEBHOOK_URL: "http://127.0.0.1:9000/relay",
+        GAFFER_NOTIFY_ALLOW_PRIVATE: "1",
+      },
+      (m) => warnings.push(m),
+    );
+    expect(n).not.toBe(buildNotifierFromEnv({}));
+    expect(warnings).toEqual([]);
+  });
 });

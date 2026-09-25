@@ -214,6 +214,23 @@ export class ReviewGateService {
       this.enforceObservedRiskCeiling(ticketRef, actor);
     }
     const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    // REVIEWER ≠ AUTHOR (server-side, not by convention). Even on an autonomy-permitted
+    // agent approve, the approving principal must not be the agent that DELIVERED the
+    // ticket: the id on the ticket's most recent claim. Before this the "agent cannot
+    // approve its own work" guarantee rested on the runner's bash hook denying the CLI;
+    // any process that could open the DB (or a runner passing its own agent id as the
+    // reviewer) could self-approve. The runner's reviewer pass now presents a distinct
+    // reviewer principal (`<agent>/reviewer`), so the autonomous path is unaffected.
+    if (actor.type === "agent") {
+      const author = this.deliveringAgentId(ticket.id);
+      if (author !== null && actor.id !== undefined && actor.id === author) {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          "An agent may not approve its own delivery: the approving actor id matches the agent that claimed and delivered this ticket. Approve as a distinct reviewer principal (or a human).",
+          { actor_type: actor.type, actor_id: actor.id, delivering_agent_id: author },
+        );
+      }
+    }
     // GRADUATED-AUTONOMY (Spec 2, Phase 1): capture whether this delivery is being
     // approved UNCHANGED vs edited, emitted on the transition below. Best-effort — a
     // resolver throw or absence yields `null` (unknown) and never blocks the approve.
@@ -249,6 +266,20 @@ export class ReviewGateService {
       approvedUnchanged,
       reviewApprove: true, // reached the merge-ready state through the guarded approve path
     });
+  }
+
+  /**
+   * The agent id on the ticket's MOST RECENT claim (active or released) — the principal
+   * that delivered the work now under review. `null` when the ticket was never claimed
+   * (e.g. a human-driven delivery), in which case the reviewer≠author rule is inert.
+   */
+  private deliveringAgentId(ticketId: string): string | null {
+    const row = this.db
+      .prepare(
+        "SELECT agent_id FROM ticket_claims WHERE ticket_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      )
+      .get(ticketId) as { agent_id: string } | undefined;
+    return row?.agent_id ?? null;
   }
 
   /**

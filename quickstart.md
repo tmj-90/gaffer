@@ -185,3 +185,4 @@ Full autonomy is **opt-in**, off by default: `DISPATCH_ALLOW_AGENT_APPROVE`, `ME
 | `packages/memory` | durable gated memory — digest + feature ledger + lore (`memory-mcp`) |
 | `runner/` | the bash orchestrator, the skill library, the safety hook |
 | `.gaffer/` | your factory state (DBs, agent id, config, token) — git-ignored |
+| `docs/CONFIG.md` | every configuration knob: its default, whether the dashboard can edit it, which component reads it (generated from the code) |

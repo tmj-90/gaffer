@@ -52,4 +52,25 @@ PY="$WORK/py"; mkdir -p "$PY"; PWT="$WORK/pwt"; mkdir -p "$PWT"
 gaffer_link_node_modules "$PY" "$PWT"; [ -z "$(ls -A "$PWT")" ] && ok "non-JS repo: nothing linked" || fail "non-JS repo got links"
 gaffer_link_node_modules "" "$PWT" && ok "empty args are a no-op (rc 0)" || fail "empty args failed"
 
+echo "== 6: gaffer_install_agent_dir — mount + verified settings + trust + brief, fail closed =="
+CLAUDE_SETTINGS="$RUNNER_DIR/claude/settings.json"
+MOUNTS=""; TRUSTED=""
+gaffer_skills_mount() { MOUNTS="$1|$2|$3"; }
+gaffer_trust_workspace() { TRUSTED="$1"; }
+HERE="$RUNNER_DIR"
+IDIR="$WORK/idir"; mkdir -p "$IDIR"
+if gaffer_install_agent_dir "$IDIR" "review-ticket, self-review" "review-7"; then ok "installs into a fresh dir (rc 0)"; else fail "install failed on the happy path"; fi
+[ "$MOUNTS" = "$IDIR|review-ticket, self-review|review-7" ] && ok "skills mounted with the dir, subset and tag" || fail "skills mount args wrong: $MOUNTS"
+[ -f "$IDIR/.claude/settings.json" ] && ok "verified settings.json written" || fail "settings.json missing"
+[ "$TRUSTED" = "$IDIR" ] && ok "workspace trusted" || fail "trust not called for the dir"
+[ -f "$IDIR/CLAUDE.factory.md" ] && cmp -s "$IDIR/CLAUDE.factory.md" "$RUNNER_DIR/claude/CLAUDE.md" && ok "brief installed byte-identical" || fail "brief missing or differs"
+HERE="$WORK/no-such-runner"
+IDIR2="$WORK/idir2"; mkdir -p "$IDIR2"
+if gaffer_install_agent_dir "$IDIR2" "clarify" "clarify-1" 2>/dev/null; then fail "missing brief accepted"; else ok "missing brief → rc 1 (fail closed; reviewer/clarify used to continue without one)"; fi
+[ ! -e "$IDIR2/CLAUDE.factory.md" ] && ok "no partial brief left behind" || fail "partial brief left"
+HERE="$RUNNER_DIR"; CLAUDE_SETTINGS="$WORK/unwired.json"
+IDIR3="$WORK/idir3"; mkdir -p "$IDIR3"
+if gaffer_install_agent_dir "$IDIR3" "clarify" "clarify-2" 2>/dev/null; then fail "unwired settings accepted by the installer"; else ok "unwired settings → rc 1 through the installer"; fi
+[ ! -e "$IDIR3/CLAUDE.factory.md" ] && ok "brief not installed after a settings refusal (stops at the first failure)" || fail "brief installed despite refusal"
+
 echo; [ "$FAIL" -eq 0 ] && echo "agent-env: ALL $PASS checks passed" || { echo "agent-env: $FAIL FAILED"; exit 1; }

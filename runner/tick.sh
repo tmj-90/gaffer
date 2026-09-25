@@ -1749,16 +1749,10 @@ EOF
   # launching without the hook is the one unacceptable outcome.
   gaffer_install_agent_env() {
     gaffer_assert_safety_hook || { log "SAFETY: refusing to prepare the agent env (fail closed)"; return 1; }
-    gaffer_skills_mount "$PRIMARY_REPO" "$SKILLS, $LENSES" "delivery-$NUM"
-    # Render + VERIFY the settings (PreToolUse safety-hook wiring) — shared with the
-    # reviewer and clarify sites via lib/agent-env.sh; an unwired file fails closed.
-    gaffer_write_agent_settings "$PRIMARY_REPO" || return 1
-    # Trust the worktree so the allowlist just written is HONOURED headless — else
-    # the agent hangs on the first MCP tool-permission prompt (untrusted-dir gate).
-    gaffer_trust_workspace "$PRIMARY_REPO"
-    if ! cp -f "$HERE/claude/CLAUDE.md" "$PRIMARY_REPO/CLAUDE.factory.md" 2>/dev/null; then
-      log "SAFETY: could not install the CLAUDE.factory.md brief into $PRIMARY_REPO (fail closed)"; return 1
-    fi
+    # Skills mount + render/VERIFY settings.json (PreToolUse safety-hook wiring) +
+    # workspace trust + the brief — the ONE shared installer (lib/agent-env.sh) the
+    # reviewer and clarify sites use too; any failure fails closed.
+    gaffer_install_agent_dir "$PRIMARY_REPO" "$SKILLS, $LENSES" "delivery-$NUM" || return 1
     gaffer_exclude_runner_config "$PRIMARY_REPO"   # keep runner config out of `git add -A`
     return 0
   }

@@ -261,6 +261,8 @@ knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 - `tick.sh` / `loop.sh` — one tick / the driver loop
 - `safety-hook.mjs` — the PreToolUse safety boundary
 - `lib/sandbox.sh` — strict-mode provider seam (`sandbox_wrap_cmd`); sourced by `factory.config.sh`
+- `lib/agent-env.sh` — the ONE agent-directory installer every spawn site uses (`gaffer_install_agent_dir`: skills mount, rendered + VERIFIED `.claude/settings.json`, workspace trust, brief — fail closed) and the worktree `node_modules` linker; sourced by `factory.config.sh`
+- `lib/ac-checks.sh` — machine-checkable acceptance criteria: runs each AC's `check_command` in the delivery worktree after the DoD gates and records the verdict through `dispatch ac check-result`
 - `lib/budget.sh` — per-day cost guard (`MAX_TICKS_PER_DAY`); halts the loop across runs; sourced by `factory.config.sh`
 - `STRICT_MODE.md` — optional OS-level containment: provider model, caveats, config
 - `claude/settings.json` — wires the hook into Claude Code

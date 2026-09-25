@@ -10,8 +10,9 @@
 #      helper and CALLS it in the submit-success path (right after recall-feedback).
 #   B. BEHAVIOURAL (live, needs memory built): driving the helper on a ticket that
 #      HAS acceptance criteria lands exactly one REQUIREMENT lore record. By DEFAULT it
-#      is auto-promoted ACTIVE (so it primes future agents on unattended runs — audit
-#      fix 3109af6); GAFFER_MEMORY_AUTO_PROMOTE=0 keeps it a human-gated DRAFT.
+#      lands as a human-gated DRAFT by default (its inputs are agent-influenceable);
+#      it is auto-promoted ACTIVE only when memory auto-approve is already on
+#      (MEMORY_AUTO_APPROVE=1) or GAFFER_MEMORY_AUTO_PROMOTE=1 says so explicitly.
 #   C. BEHAVIOURAL: a ticket with NO acceptance criteria is a no-op (nothing durable).
 #
 # Run:  perl -e 'alarm 120; exec @ARGV' /bin/bash runner/test/ticket-intent-distill.test.sh
@@ -84,17 +85,34 @@ else
     SHOW='{"ticket":{"title":"Add password rotation"},"acceptanceCriteria":[{"text":"Passwords rotate every 90 days","status":"pending"},{"text":"Rotation is auditable","status":"pending"}]}'
     gaffer_distill_ticket_intent
 
-    # Default (GAFFER_MEMORY_AUTO_PROMOTE=1): the distilled requirement is auto-promoted
-    # ACTIVE so it primes future agents on UNATTENDED runs (audit tier-2 fix 3109af6) —
-    # otherwise the priming block stays permanently empty when no human ever reviews it.
+    # SUPERVISED default (MEMORY_AUTO_APPROVE unset/0): the distilled requirement lands as a
+    # human-gated DRAFT. Its inputs (ticket title + ACs) are agent-influenceable, so an
+    # ungated ACTIVE write would be the cross-ticket memory poisoning the gate exists for.
     ACTIVE="$(lg search --repo app --kind requirement --json 2>/dev/null || echo '[]')"
     AN="$(printf '%s' "$ACTIVE" | jget 'len(d)' 2>/dev/null || echo 0)"
-    if [ "$AN" = "1" ]; then ok "distilled requirement is auto-promoted ACTIVE (primes future agents)"; else fail "expected 1 active requirement (auto-promoted), got $AN"; fi
-    AT="$(printf '%s' "$ACTIVE" | jget "d[0]['title'] if d else ''" 2>/dev/null || echo '')"
+    DRAFTS="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null || echo '[]')"
+    DN="$(printf '%s' "$DRAFTS" | jget 'len(d)' 2>/dev/null || echo 0)"
+    if [ "$AN" = "0" ] && [ "$DN" = "1" ]; then ok "supervised default: distilled requirement is a human-gated DRAFT (not active)"; else fail "expected 0 active / 1 draft by default (got active=$AN draft=$DN)"; fi
+    AT="$(printf '%s' "$DRAFTS" | jget "d[0]['title'] if d else ''" 2>/dev/null || echo '')"
     case "$AT" in
       "Requirement from #42:"*) ok "record title carries the ticket provenance ($AT)" ;;
       *) fail "record title not derived from ticket (got: $AT)" ;;
     esac
+
+    # AUTONOMY (MEMORY_AUTO_APPROVE=1 — the operator already accepted agent-authored memory
+    # going live): the distilled requirement is auto-promoted ACTIVE so it primes future
+    # agents on unattended runs.
+    NUM=62; TITLE="Add export to CSV"
+    SHOW='{"ticket":{"title":"Add export to CSV"},"acceptanceCriteria":[{"text":"CSV download works","status":"pending"}]}'
+    MEMORY_AUTO_APPROVE=1 gaffer_distill_ticket_intent
+    A62="$(lg search --repo app --kind requirement --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #62' in r['title']])" 2>/dev/null || echo 0)"
+    if [ "$A62" = "1" ]; then ok "MEMORY_AUTO_APPROVE=1: distilled requirement is auto-promoted ACTIVE (primes unattended runs)"; else fail "expected #62 active under MEMORY_AUTO_APPROVE=1 (got $A62)"; fi
+    # GAFFER_MEMORY_AUTO_PROMOTE=1 overrides a supervised default the other way.
+    NUM=72; TITLE="Add dark mode"
+    SHOW='{"ticket":{"title":"Add dark mode"},"acceptanceCriteria":[{"text":"Theme toggle persists","status":"pending"}]}'
+    GAFFER_MEMORY_AUTO_PROMOTE=1 gaffer_distill_ticket_intent
+    A72="$(lg search --repo app --kind requirement --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #72' in r['title']])" 2>/dev/null || echo 0)"
+    if [ "$A72" = "1" ]; then ok "GAFFER_MEMORY_AUTO_PROMOTE=1 explicitly promotes ACTIVE in supervised mode"; else fail "expected #72 active under GAFFER_MEMORY_AUTO_PROMOTE=1 (got $A72)"; fi
 
     # The human-gate is still honoured: GAFFER_MEMORY_AUTO_PROMOTE=0 keeps a distilled
     # requirement a DRAFT (invisible to a normal active-only search) for review-first workflows.

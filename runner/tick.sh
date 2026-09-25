@@ -622,22 +622,25 @@ PY
   # prompt. Suggest (draft) with an explicit kind so recall can later aim at the "why";
   # tags carry ticket provenance (ticket-<n>).
   #
-  # AUTO-PROMOTE (operator decision): land the distilled product-intent ACTIVE by default
-  # (GAFFER_MEMORY_AUTO_PROMOTE=1) so it primes future agents on UNATTENDED runs — the
-  # PRODUCT CONTEXT primer surfaces only `active` lore, so a draft-only distiller left that
-  # block permanently empty. MEMORY_AUTO_APPROVE=1 makes `lg suggest` land active (the same
-  # env the MCP suggest_lore honours). Set GAFFER_MEMORY_AUTO_PROMOTE=0 to keep the draft
-  # human-ratification gate. The inline var applies only to this `lg` call.
-  local _promote="${GAFFER_MEMORY_AUTO_PROMOTE:-1}"
+  # AUTO-PROMOTE follows the memory gate. The distilled text is derived from the ticket
+  # title + acceptance criteria — agent-influenceable inputs the factory otherwise treats
+  # as untrusted — so landing it ACTIVE without review is exactly the cross-ticket memory
+  # poisoning the draft gate exists to stop. Default: promote iff the operator has ALREADY
+  # accepted agent-authored memory going live (MEMORY_AUTO_APPROVE=1 — on in the
+  # autonomous/strict clusters, off in supervised/lite/graduated). Supervised runs land a
+  # DRAFT for `memory review`; the PRODUCT CONTEXT primer surfaces only `active` lore, so
+  # ratify the drafts you want priming future agents. GAFFER_MEMORY_AUTO_PROMOTE=1|0
+  # overrides either way. The inline var applies only to this `lg` call.
+  local _promote="${GAFFER_MEMORY_AUTO_PROMOTE:-${MEMORY_AUTO_APPROVE:-0}}"
   if MEMORY_AUTO_APPROVE="$([ "$_promote" = "1" ] && echo 1 || echo 0)" \
       lg suggest --title "$_dt" --summary "$_ds" --body "$_ds" \
       --repo "$RECALL_REPO_NAME" --kind requirement \
       --tag ticket-intent --tag requirement --tag "ticket-$NUM" \
       --author gaffer-distill >/dev/null 2>&1; then
     if [ "$_promote" = "1" ]; then
-      log "memory: distilled requirement from #$NUM → ACTIVE (auto-promoted; GAFFER_MEMORY_AUTO_PROMOTE=0 to gate)"
+      log "memory: distilled requirement from #$NUM → ACTIVE (auto-promoted: memory auto-approve is on; GAFFER_MEMORY_AUTO_PROMOTE=0 to gate)"
     else
-      log "memory: distilled requirement DRAFT from #$NUM (human-gated)"
+      log "memory: distilled requirement DRAFT from #$NUM (human-gated — \`memory review\` to ratify; GAFFER_MEMORY_AUTO_PROMOTE=1 to auto-promote)"
     fi
   else
     log "memory: distill #$NUM skipped/failed — non-fatal, delivery unaffected"

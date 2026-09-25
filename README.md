@@ -102,7 +102,7 @@ Gaffer doesn't re-learn a repo from cold on every run — it **writes what it le
 
 ### Control you opt into
 
-The factory is **supervised by default**: a human readies tickets, a human approves merges, memory drafts wait for review. **Settings** is where you loosen that — and it's the one place every operator knob lives, grouped: **autonomy** (every flag off until you turn it on — let an agent approve reviews, auto-merge on agent review, auto-approve memory), the **delivery** cycle (auto-merge · push · PR · require-CI), **execution** & concurrency, the **idle loops** that mine backlog work between tickets, **budget & caps**, the **planning debate**, the **quality gates**, the strict **sandbox**, and **notifications**. Anything also set as a real env var wins and renders read-only.
+The factory is **supervised by default**: a human readies tickets, a human approves merges, memory drafts wait for review. **Settings** is where you loosen that — and it's the one place every operator knob lives, grouped: **autonomy** (every flag off until you turn it on — let an agent approve reviews, auto-merge on agent review, auto-approve memory), the **delivery** cycle (auto-merge · push · PR · require-CI), **execution** & concurrency, the **idle loops** that mine backlog work between tickets, **budget & caps**, the **planning debate**, the **quality gates**, the strict **sandbox**, and **notifications**. Anything also set as a real env var wins and renders read-only. Every knob — runner default, dashboard editability, and which component reads it — is listed in the generated [`docs/CONFIG.md`](docs/CONFIG.md).
 
 <p align="center">
   <img src="docs/img/settings.png" alt="The Settings panel with the autonomy dial and opt-in flags" width="900">

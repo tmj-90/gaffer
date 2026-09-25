@@ -109,6 +109,45 @@ export class EventRepository {
       .all({ limit: query.limit, offset: query.offset }) as ActivityEvent[];
   }
 
+  /**
+   * The live-stream cursor read: activity rows STRICTLY AFTER `afterSeq` (a
+   * work_events rowid), oldest first, capped at `limit`. Same metadata-only shape
+   * as {@link listActivity} plus the row's `seq` so a client can resume from the
+   * last id it saw. rowid is monotonic for an append-only table, which makes it a
+   * cheap, gap-free cursor without a schema change.
+   */
+  listSince(afterSeq: number, limit: number): Array<ActivityEvent & { seq: number }> {
+    return this.db
+      .prepare(
+        `SELECT
+            e.rowid        AS seq,
+            e.id           AS id,
+            e.entity_type  AS entity_type,
+            e.entity_id    AS entity_id,
+            e.event_type   AS event_type,
+            e.actor_type   AS actor_type,
+            e.actor_id     AS actor_id,
+            e.created_at   AS created_at,
+            t.number       AS ticket_number,
+            t.title        AS ticket_title
+         FROM work_events e
+         LEFT JOIN tickets t
+           ON e.entity_type = 'ticket' AND t.id = e.entity_id
+         WHERE e.rowid > @afterSeq
+         ORDER BY e.rowid ASC
+         LIMIT @limit`,
+      )
+      .all({ afterSeq, limit }) as Array<ActivityEvent & { seq: number }>;
+  }
+
+  /** The newest work_events rowid (0 when the log is empty) — the stream's initial cursor. */
+  latestSeq(): number {
+    const row = this.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS seq FROM work_events").get() as {
+      seq: number;
+    };
+    return Number(row.seq) || 0;
+  }
+
   /** Total number of work_events (for pagination hints). */
   countActivity(): number {
     const row = this.db.prepare(`SELECT COUNT(*) AS n FROM work_events`).get() as { n: number };

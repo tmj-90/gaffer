@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Live event stream — `GET /api/events/stream?since=<seq>`.** The control plane pushes its append-only `work_events` log as Server-Sent Events (metadata-only, the same safe shape as `/api/activity`; a `seq` cursor for resume). The dashboard subscribes with `fetch` (so the bearer token travels in the header, never a URL) and re-renders the current view within a second of a transition instead of on a blind 3-second interval; the interval remains as the fallback when the stream is unavailable.
+- **Event-derived cycle time and a real flow efficiency.** `/api/health` takes each ticket's completion time from its last `ticket.transitioned → done` event rather than `updated_at` (which moves on any patch and inflated cycle time or bucketed the ship on the wrong day), and gains `flow_efficiency.median_pct`: the median over shipped tickets of time in active states divided by lead time, from the transition log — `null` until a shipped ticket carries the signal. The Overview reads it; the former client number was a WIP ratio, not flow efficiency.
+
 ### Security
 
 - **Autonomy really requires containment now.** `GAFFER_MODE=autonomous` (and `lite`, and every single ship/mutate flag) exported `GAFFER_STRICT_REQUIRE=1` and printed "fails closed without an OS sandbox", but the sandbox was consulted only under `STRICT_MODE=1`, which only `GAFFER_MODE=strict` defaulted on — so the agent launched uncontained. Autonomy now defaults `STRICT_MODE=1` as well, `tick.sh` consults the provider whenever strict is on **or required**, and the worker seam (`runner/lib/worker.sh`) derives and enforces the wrap for **every** spawn site — bootstrap, reviewer, clarify and eval judge were previously never sandboxed even under `STRICT_MODE=1`. A required-but-unavailable sandbox now refuses to spawn (rc 75, no envelope). New test: `runner/test/autonomy-containment.test.sh`.

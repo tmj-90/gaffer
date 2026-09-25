@@ -145,6 +145,26 @@ grep -q -- "$REAL_REPO/node_modules:$REAL_REPO/node_modules:ro" <<<"$ARGV" && ok
 ! grep -q -- "$HOME_FAKE:$HOME_FAKE:" <<<"$ARGV" && ok "the WHOLE \$GAFFER_HOME is NOT mounted (factory .env stays unreadable)" || fail "GAFFER_HOME root mounted"
 [ "$(grep -c -- "$HOME_FAKE/runner:$HOME_FAKE/runner:ro" <<<"$ARGV")" = "1" ] && ok "runner dir mounted exactly once" || fail "runner dir mount count wrong"
 
+echo "== 7: SANDBOX_PROVIDER auto-detects docker where the CLI exists (explicit env wins) =="
+provider_for() {   # $1 = PATH to use; prints the resolved default provider
+  env -i PATH="$1" HOME="$HOME" GAFFER_DATA="$WORK/data" bash -c '
+    source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1; printf "%s" "${SANDBOX_PROVIDER:-}"'
+}
+DBIN="$WORK/dbin"; mkdir -p "$DBIN"; printf '#!/usr/bin/env bash\nexit 0\n' > "$DBIN/docker"; chmod +x "$DBIN/docker"
+if command -v sandbox-exec >/dev/null 2>&1; then
+  [ "$(provider_for "$PATH")" = "sandbox-exec" ] && ok "macOS host: default provider is sandbox-exec" || fail "expected sandbox-exec on a host with the binary"
+else
+  [ "$(provider_for "$DBIN:$PATH")" = "docker" ] && ok "no sandbox-exec + docker CLI on PATH → default provider docker" || fail "expected docker default (got $(provider_for "$DBIN:$PATH"))"
+  # A PATH with every tool the config needs EXCEPT docker (the host may have a real docker CLI).
+  NBIN="$WORK/nbin"; mkdir -p "$NBIN"
+  for t in bash sh env node python3 jq git uname id mktemp date sed awk grep cut tr head tail cat sort wc dirname basename readlink realpath command; do
+    src="$(command -v "$t" 2>/dev/null || true)"; [ -n "$src" ] && ln -sf "$src" "$NBIN/$t"
+  done
+  [ "$(provider_for "$NBIN")" = "sandbox-exec" ] && ok "no sandbox-exec, no docker → default stays sandbox-exec (honest refusal text)" || fail "expected sandbox-exec fallback (got $(provider_for "$NBIN"))"
+fi
+[ "$(env -i PATH="$DBIN:$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" SANDBOX_PROVIDER=none bash -c 'source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1; printf "%s" "$SANDBOX_PROVIDER"')" = "none" ] \
+  && ok "explicit SANDBOX_PROVIDER=none wins over auto-detect" || fail "explicit provider should win"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "autonomy-containment: ALL $PASS checks passed"; exit 0

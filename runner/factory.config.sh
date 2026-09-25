@@ -1582,11 +1582,22 @@ fi
 # Default OFF: behaviour is byte-for-byte as before unless explicitly enabled.
 : "${STRICT_MODE:=0}"          # 1 = wrap the live `claude -p` in the OS sandbox provider
 # Which provider supplies the OS-level containment. This is a PROVIDER SEAM, not
-# a hard dependency on any one tool: `sandbox-exec` is the one a spike proved on
-# macOS today; `docker`/`lima`/VM are future providers (currently fall back to
-# no extra containment). `none` disables OS wrapping while keeping STRICT_MODE
+# a hard dependency on any one tool. Two providers are real: `sandbox-exec` (macOS,
+# write-only) and `docker` (any host with a daemon: read + egress isolation);
+# `lima` is a stub; `none` disables OS wrapping while keeping STRICT_MODE
 # semantics togglable. A new provider = a new case in lib/sandbox.sh.
-: "${SANDBOX_PROVIDER:=sandbox-exec}"
+#
+# AUTO-DETECTED default (explicit env always wins): `sandbox-exec` where the binary
+# exists (macOS), else `docker` where the docker CLI exists (Linux hosts — the daemon
+# is probed at wrap time and STRICT_REQUIRE fails closed if it is down), else
+# `sandbox-exec` so the degrade/refusal messages name the macOS-only tool honestly.
+# Before this the default was always `sandbox-exec`, which on Linux silently meant
+# "no OS sandbox" even on a host with Docker right there.
+if [ -z "${SANDBOX_PROVIDER+x}" ]; then
+  if command -v sandbox-exec >/dev/null 2>&1; then SANDBOX_PROVIDER=sandbox-exec
+  elif command -v docker >/dev/null 2>&1; then SANDBOX_PROVIDER=docker
+  else SANDBOX_PROVIDER=sandbox-exec; fi
+fi
 # Allow outbound network from inside the sandbox. IMPORTANT HONEST NOTE: because
 # strict mode wraps the WHOLE `claude -p` process, network CANNOT be denied
 # without breaking Claude's own API calls — so this defaults to 1 (allow). True

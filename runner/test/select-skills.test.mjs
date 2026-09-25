@@ -9,6 +9,8 @@ import {
   loadSkills,
   listAreas,
   expandStacks,
+  textMatches,
+  relevanceTokens,
   DEFAULT_SKILLS_DIR,
 } from "../bin/select-skills.mjs";
 
@@ -631,6 +633,61 @@ check("denylist: an off-domain pack IS selected when its --area is explicitly re
 });
 
 // --- report -----------------------------------------------------------------
+// --- TEXT RELEVANCE (additive, opt-in via --text) ---------------------------
+check("relevanceTokens drops stop words, short and numeric tokens; keeps tech tokens", () => {
+  const t = relevanceTokens(
+    "Add a Terraform module for the S3 bucket in 2 regions, c++ and node.js",
+  );
+  assert(
+    t.has("terraform") && t.has("module") && t.has("bucket") && t.has("regions"),
+    "keeps content words",
+  );
+  assert(
+    !t.has("add") && !t.has("the") && !t.has("for") && !t.has("2"),
+    "drops stop/short/numeric",
+  );
+});
+check("textMatches: a skill's name as a phrase in the text mounts it", () => {
+  const sk = {
+    name: "terraform-patterns",
+    description: "Terraform module layout and state",
+    stack: [],
+    area: "infra",
+  };
+  assert(textMatches(sk, "Add a terraform patterns module for the bucket"), "phrase match");
+  assert(textMatches(sk, "Refactor the Terraform state layout"), "two description words match");
+  assert(!textMatches(sk, "Fix the login form validation bug"), "unrelated text does not match");
+  assert(!textMatches(sk, ""), "no text → no match");
+});
+check(
+  "selectSkills with text mounts an off-domain pack the ticket calls for, and nothing else changes",
+  () => {
+    const base = selectSkills({ stacks: ["node"] }).map((s) => s.name);
+    const withText = selectSkills({
+      stacks: ["node"],
+      text: "Write a Terraform module for the S3 bucket and its state backend",
+    }).map((s) => s.name);
+    assert(!base.includes("terraform-patterns"), "off-domain pack is NOT mounted without text");
+    assert(
+      withText.includes("terraform-patterns"),
+      "off-domain pack IS mounted when the text calls for it",
+    );
+    for (const n of base) assert(withText.includes(n), `text never removes a skill (${n})`);
+    const unrelated = selectSkills({
+      stacks: ["node"],
+      text: "Fix the off-by-one in the pagination helper",
+    }).map((s) => s.name);
+    eq(unrelated, base, "unrelated text leaves the selection byte-identical");
+  },
+);
+check("selectSkills without text is byte-identical to before (no text arg == empty text)", () => {
+  eq(
+    selectSkills({ stacks: ["typescript"] }).map((s) => s.name),
+    selectSkills({ stacks: ["typescript"], text: "" }).map((s) => s.name),
+    "identical",
+  );
+});
+
 if (failures.length) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
   for (const f of failures) console.error("  ✗ " + f);

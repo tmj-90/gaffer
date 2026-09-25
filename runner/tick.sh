@@ -1255,7 +1255,12 @@ print("\n".join(write_rows))
   # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
   # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
   SKILL_AREA="$(gaffer_area_for_stack "$STACK")"
-  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${SKILL_AREA:+--area "$SKILL_AREA"} --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+  # TEXT RELEVANCE: hand the selector the ticket's title + description head so an
+  # off-domain pack the ticket plainly calls for (a Terraform module, an SEO audit, a
+  # runbook) is mounted too — those packs were otherwise unreachable from any runner
+  # path. An argv, never a shell string: the untrusted text cannot inject flags.
+  _SKILL_TEXT="$(printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget "(d['ticket'].get('description') or '')[:600]" 2>/dev/null || true)")"
+  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${SKILL_AREA:+--area "$SKILL_AREA"} --text "$_SKILL_TEXT" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
   [ -n "$SKILLS" ] || SKILLS="$(fg skills --stack "$STACK" 2>/dev/null | jget "', '.join(s.get('id', s.get('name','')) for s in (d if isinstance(d,list) else d.get('skills',[])))" 2>/dev/null || true)"
   [ -n "$SKILLS" ] || SKILLS="(choose the skill whose description matches the ticket)"
 

@@ -4543,6 +4543,13 @@ function renderAddAcForm(ticketId) {
     required: "",
   });
   const verify = el("input", { type: "text", placeholder: "verification method (optional)" });
+  // MACHINE-CHECKABLE AC: a shell command the RUNNER executes in the delivery
+  // worktree; exit 0 ⇒ satisfied (runner-verified), else rework. Optional.
+  const check = el("input", {
+    type: "text",
+    name: "check_command",
+    placeholder: "check command, e.g. npm test (optional — runner-executed)",
+  });
   const evidence = el("input", { type: "checkbox" });
   const form = el(
     "form",
@@ -4553,6 +4560,7 @@ function renderAddAcForm(ticketId) {
         const body = { text: text.value.trim() };
         if (!body.text) return;
         if (verify.value.trim()) body.verification_method = verify.value.trim();
+        if (check.value.trim()) body.check_command = check.value.trim();
         if (evidence.checked) body.evidence_required = true;
         guard(async () => {
           await api("POST", `/tickets/${ticketId}/acceptance-criteria`, body);
@@ -4564,6 +4572,7 @@ function renderAddAcForm(ticketId) {
     [
       el("div", { class: "field" }, [el("label", {}, "Criterion"), text]),
       el("div", { class: "field" }, [el("label", {}, "Verification"), verify]),
+      el("div", { class: "field" }, [el("label", {}, "Check command"), check]),
       el("div", { class: "field", style: "flex:0 0 auto" }, [
         el("label", {}, "Evidence"),
         el("label", { class: "checkbox-line" }, [evidence, "required"]),

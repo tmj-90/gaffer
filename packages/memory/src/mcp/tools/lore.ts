@@ -24,6 +24,7 @@ import {
 import { auditMessageForTooLong, checkLength, LENGTH_CAPS } from "../validation.js";
 import { quarantineLore, QUARANTINE_NOTICE } from "../quarantine.js";
 import { recordRetrieval } from "../retrievalLog.js";
+import { scopeEnforcementActive } from "../scopeGuard.js";
 
 /**
  * Register the lore-knowledge MCP tools onto `server`:
@@ -163,7 +164,11 @@ export function registerLoreTools(server: McpServer, db: Database): void {
           tag: args.tag,
           prefix: args.prefix,
           updatedAfter: args.updatedAfter,
-          includeDrafts: args.includeDrafts,
+          // FACTORY CONTEXT (GAFFER_FACTORY=1 — a delivery agent's MCP): drafts are
+          // agent-suggested, unreviewed text; a prompt-injected agent must not be able
+          // to read another agent's unratified suggestions back into its own context.
+          // The server ignores the flag there (mirrors the restricted gate below).
+          includeDrafts: scopeEnforcementActive(process.env) ? false : args.includeDrafts,
           includeDeprecated: args.includeDeprecated,
           includeSuperseded: args.includeSuperseded,
           // R4 — env-gated. The agent can ASK for restricted records, but

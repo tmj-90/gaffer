@@ -494,6 +494,37 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // LORE VERSION HISTORY. `updateLore` used to overwrite a record in place: the only
+    // trace was an `updated` event with no body, so a bad edit (or a prompt-injected
+    // agent editing its own draft) destroyed the prior text irrecoverably. Every update
+    // now snapshots the PRE-update row here first (version 1 = the original), so the
+    // full text history of a record is queryable and a change is diffable.
+    id: "012-lore-version",
+    up(db) {
+      db.exec(`
+        CREATE TABLE lore_version (
+          lore_id       TEXT    NOT NULL,
+          version       INTEGER NOT NULL,
+          title         TEXT    NOT NULL,
+          summary       TEXT    NOT NULL,
+          body          TEXT    NOT NULL,
+          author        TEXT,
+          team          TEXT,
+          source        TEXT,
+          confidence    TEXT    NOT NULL,
+          kind          TEXT,
+          restricted    INTEGER NOT NULL DEFAULT 0,
+          review_after  TEXT,
+          status        TEXT    NOT NULL,
+          snapshot_of   TEXT    NOT NULL,
+          replaced_at   TEXT    NOT NULL,
+          PRIMARY KEY (lore_id, version)
+        );
+        CREATE INDEX idx_lore_version_lore ON lore_version(lore_id, version DESC);
+      `);
+    },
+  },
 ];
 
 /**

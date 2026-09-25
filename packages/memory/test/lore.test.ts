@@ -23,6 +23,7 @@ import {
   trustRankAdjustment,
   updateLore,
   verifyLore,
+  listLoreVersions,
 } from "../src/core/lore.js";
 import { getString, parseArgs } from "../src/cli/args.js";
 import { runMigrations } from "../src/db/migrations.js";
@@ -1680,5 +1681,39 @@ describe("core/lore", () => {
       expect(titles).toContain("to deprecate");
       expect(all.find((l) => l.id === drafted.id)?.status).toBe("draft");
     });
+  });
+});
+
+describe("lore version history (migration 012)", () => {
+  it("snapshots the prior text on every update; the original is version 1", () => {
+    const db = newInMemoryDb();
+    const lore = addLore(db, { title: "Original title", summary: "s1", body: "b1" });
+    expect(listLoreVersions(db, lore.id)).toEqual([]);
+
+    updateLore(db, lore.id, { title: "Second title" });
+    updateLore(db, lore.id, { body: "b3" });
+
+    const versions = listLoreVersions(db, lore.id);
+    expect(versions.map((v) => v.version)).toEqual([2, 1]);
+    expect(versions[1]).toMatchObject({
+      title: "Original title",
+      summary: "s1",
+      body: "b1",
+      status: lore.status,
+    });
+    expect(versions[0]).toMatchObject({ title: "Second title", body: "b1" });
+    // Current row reflects the latest edit; the history holds what it replaced.
+    expect(getLore(db, lore.id)?.title).toBe("Second title");
+    expect(getLore(db, lore.id)?.body).toBe("b3");
+    for (const v of versions) expect(Date.parse(v.replacedAt)).not.toBeNaN();
+  });
+
+  it("is per record and untouched by other records' updates", () => {
+    const db = newInMemoryDb();
+    const a = addLore(db, { title: "A", summary: "s", body: "b" });
+    const b = addLore(db, { title: "B", summary: "s", body: "b" });
+    updateLore(db, a.id, { title: "A2" });
+    expect(listLoreVersions(db, a.id)).toHaveLength(1);
+    expect(listLoreVersions(db, b.id)).toHaveLength(0);
   });
 });

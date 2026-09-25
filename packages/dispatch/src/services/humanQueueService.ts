@@ -1,5 +1,6 @@
 import type { DecisionSeverity, TicketStatus } from "../domain/types.js";
 import type { DecisionRepository } from "../repositories/decisionRepository.js";
+import type { TicketDependencyRepository } from "../repositories/ticketDependencyRepository.js";
 import type { EventRepository } from "../repositories/eventRepository.js";
 import type { TicketRepository } from "../repositories/ticketRepository.js";
 import type { Clock } from "../util/clock.js";
@@ -18,7 +19,12 @@ import type { Clock } from "../util/clock.js";
  *                            human to unpark/refine/cancel it.
  */
 export type HumanQueueKind =
-  "decision" | "review" | "ready_approval" | "reviewer_assignment" | "parked";
+  | "decision"
+  | "review"
+  | "ready_approval"
+  | "reviewer_assignment"
+  | "parked"
+  | "dependency_cancelled";
 
 /** The ticket a human-queue item concerns (null for a decision with no link). */
 export interface HumanQueueTicketRef {
@@ -68,6 +74,8 @@ export interface HumanQueueCounts {
   readyApprovals: number;
   reviewerAssignments: number;
   parked: number;
+  /** Tickets blocked by a dependency that was cancelled/failed (can never self-clear). */
+  dependencyCancelled: number;
 }
 
 /** The aggregated human-owned queue: everything waiting on the OPERATOR. */
@@ -83,6 +91,7 @@ export interface HumanQueueServiceDeps {
   readonly decisions: DecisionRepository;
   readonly tickets: TicketRepository;
   readonly events: EventRepository;
+  readonly dependencies: TicketDependencyRepository;
 }
 
 const REVIEW_REASON_FALLBACK = "Delivered by the agent — awaiting your review sign-off.";
@@ -123,12 +132,14 @@ export class HumanQueueService {
   private readonly decisions: DecisionRepository;
   private readonly tickets: TicketRepository;
   private readonly events: EventRepository;
+  private readonly dependencies: TicketDependencyRepository;
 
   constructor(deps: HumanQueueServiceDeps) {
     this.clock = deps.clock;
     this.decisions = deps.decisions;
     this.tickets = deps.tickets;
     this.events = deps.events;
+    this.dependencies = deps.dependencies;
   }
 
   /** Build the human-owned queue, oldest-waited first (the operator's priority). */
@@ -254,6 +265,32 @@ export class HumanQueueService {
       }
     }
 
+    // --- Dependents of a CANCELLED / FAILED ticket. The claim query only treats
+    // `done` as satisfying a dependency, so such an edge blocks its dependent forever;
+    // nothing in the pipeline can clear it. A human must decide: drop the edge
+    // (`dispatch ticket dep remove`, DELETE /tickets/:id/dependencies/:dep) or cancel
+    // the dependent too. Previously this was invisible — the ticket just never ran.
+    for (const row of this.dependencies.listBlockedByTerminalDependency()) {
+      const depRef = row.dep_number !== null ? `#${row.dep_number}` : row.depends_on_ticket_id;
+      items.push({
+        kind: "dependency_cancelled",
+        label: "Dependency cancelled",
+        reason:
+          `Depends on ${depRef} (${row.dep_title}), which is ${row.dep_status} — it can never ` +
+          "unblock. Remove the dependency or cancel this ticket.",
+        ticket: {
+          id: row.ticket_id,
+          number: row.ticket_number,
+          title: row.ticket_title,
+          status: row.ticket_status,
+        },
+        decisionId: null,
+        severity: null,
+        since: row.since,
+        waitedMs: waited(row.since),
+      });
+    }
+
     // Oldest-waited first — the item that has waited longest leads the queue.
     items.sort((a, b) => Date.parse(a.since) - Date.parse(b.since));
 
@@ -264,6 +301,7 @@ export class HumanQueueService {
       readyApprovals: items.filter((i) => i.kind === "ready_approval").length,
       reviewerAssignments: items.filter((i) => i.kind === "reviewer_assignment").length,
       parked: items.filter((i) => i.kind === "parked").length,
+      dependencyCancelled: items.filter((i) => i.kind === "dependency_cancelled").length,
     };
 
     return { items, counts, generatedAt: now };

@@ -519,6 +519,7 @@ export class Dispatch {
       decisions: this.decisions,
       tickets: this.tickets,
       events: this.events,
+      dependencies: this.ticketDependencies,
     });
   }
 

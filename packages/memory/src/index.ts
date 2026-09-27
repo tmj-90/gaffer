@@ -30,7 +30,20 @@ export {
   suggestLore,
   updateLore,
   verifyLore,
+  ensureLoreEmbeddings,
+  fuseHybrid,
 } from "./core/lore.js";
+export {
+  HashedNgramEmbedder,
+  HASHED_NGRAM_DIM,
+  HASHED_NGRAM_MODEL,
+  cosine,
+  getEmbedder,
+  hybridRetrievalEnabled,
+  loreEmbeddingText,
+  tokenise,
+} from "./core/embedding.js";
+export type { Embedder } from "./core/embedding.js";
 export { newLoreId } from "./core/ids.js";
 export { logRecall, recallFeedback, listFlaggedForReview } from "./core/recallFeedback.js";
 export type {

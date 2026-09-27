@@ -138,9 +138,15 @@ Things explicitly NOT in v0.1, with rationale:
   lore needs judgement about what's durable — the `/memory-onboard`
   skill (agent reads the repo, proposes grounded drafts) is the single
   cold-start path. One good door beats four mediocre ones.
-- **Semantic / embedding search.** FTS5 + Crockford ids + manual
-  tagging gets you most of the way. Embeddings are a v0.2+
-  consideration if recall becomes measurably bad.
+- **Model-backed semantic search.** Retrieval is hybrid: FTS5 bm25 fused
+  with a built-in, credential-free hashed n-gram vector per record
+  (`core/embedding.ts`), which recovers the measurable lexical misses
+  (typos beside a real term, joined/split compounds, subwords) without a
+  model, a network call or a second store. A model-backed embedder is a
+  drop-in behind the same `Embedder` interface, keyed by `model` so the
+  corpus re-embeds lazily; it is worth adding only when the labelled
+  eval set (`test/retrieval-eval.test.ts`) shows paraphrase misses the
+  n-gram space cannot close.
 - **Web UI / server mode.** Single-user local CLI. The MCP server
   is stdio-only; no HTTP listener. This stays.
 

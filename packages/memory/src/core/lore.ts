@@ -12,6 +12,16 @@ import type {
   UpdateLoreInput,
 } from "../db/types.js";
 import { LORE_KINDS } from "../db/types.js";
+import {
+  cosine,
+  deserialiseVector,
+  embeddingTextHash,
+  getEmbedder,
+  hybridRetrievalEnabled,
+  loreEmbeddingText,
+  serialiseVector,
+} from "./embedding.js";
+import type { Embedder } from "./embedding.js";
 import { newLoreId } from "./ids.js";
 
 const LORE_KIND_SET = new Set<string>(LORE_KINDS);
@@ -168,8 +178,15 @@ function parseConflictsWith(raw: string | null): ReadonlyArray<string> | undefin
   }
 }
 
-function rowToSummary(row: LoreRow, repos: string[], tags: string[], score?: number): LoreSummary {
+function rowToSummary(
+  row: LoreRow,
+  repos: string[],
+  tags: string[],
+  score?: number,
+  retrieval?: "lexical" | "dense" | "both",
+): LoreSummary {
   return {
+    ...(retrieval ? { retrieval } : {}),
     id: row.id,
     title: row.title,
     summary: row.summary,
@@ -328,6 +345,7 @@ function insertLore(db: Database, input: AddLoreInput, status: LoreStatus): Lore
       input.summary,
       input.body,
     );
+    refreshLoreEmbedding(db, id, input.title, input.summary);
     const repoStmt = db.prepare("INSERT OR IGNORE INTO lore_repos (lore_id, repo) VALUES (?, ?)");
     for (const r of repos) repoStmt.run(id, r);
     const tagStmt = db.prepare("INSERT OR IGNORE INTO lore_tags (lore_id, tag) VALUES (?, ?)");
@@ -491,6 +509,7 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
         input.summary,
         input.body,
       );
+      refreshLoreEmbedding(db, input.id, input.title, input.summary);
     } else {
       db.prepare(
         `UPDATE lore SET
@@ -531,6 +550,7 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
         input.summary,
         input.body,
       );
+      refreshLoreEmbedding(db, input.id, input.title, input.summary);
     }
     // Replace repos + tags atomically.
     db.prepare("DELETE FROM lore_repos WHERE lore_id = ?").run(input.id);
@@ -1027,6 +1047,7 @@ export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lo
         summary,
         body,
       );
+      refreshLoreEmbedding(db, id, title, summary);
     }
     if (input.repos !== undefined) {
       const repos = Array.from(new Set(input.repos.map(normaliseRepo).filter(Boolean))).sort();
@@ -1073,6 +1094,7 @@ export function rejectLore(db: Database, id: string, reason?: string): boolean {
   const tx = db.transaction(() => {
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
     db.prepare("DELETE FROM lore WHERE id = ?").run(id);
+    db.prepare("DELETE FROM lore_embeddings WHERE lore_id = ?").run(id);
     db.prepare("INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'rejected', ?, ?)").run(
       id,
       ts,
@@ -1129,6 +1151,7 @@ export function deleteLore(db: Database, id: string): boolean {
   const tx = db.transaction(() => {
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
     db.prepare("DELETE FROM lore WHERE id = ?").run(id);
+    db.prepare("DELETE FROM lore_embeddings WHERE lore_id = ?").run(id);
     db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'deleted', ?)").run(id, ts);
   });
   tx();
@@ -1164,6 +1187,157 @@ const RANK_MAX_SWING = 0.5;
  * extra hydration cost stays small.
  */
 const RANK_CANDIDATE_POOL = 60;
+
+/**
+ * Dense-side knobs (see core/embedding.ts for the vector space).
+ *
+ * A dense candidate must reach DENSE_MIN_COSINE to count at all: below it the
+ * hashed n-gram space is noise (unrelated texts sit near 0), and admitting
+ * noise would defeat the zero-hit path (absence markers, "search wider"
+ * coaching) that a genuinely unknown topic relies on.
+ *
+ * Fusion is a magnitude-preserving sum, NOT reciprocal-rank fusion: the
+ * lexical score is bm25 normalised to (0, 1] within the candidate pool
+ * (top lexical hit = 1) and the dense score is cosine scaled by DENSE_WEIGHT,
+ * so a dense-only hit tops out at DENSE_WEIGHT and can outrank only a weak
+ * lexical hit (one that matched a minor OR-token), never a strong one. The
+ * trust adjustment then applies to the fused magnitude exactly as it did to
+ * bm25, keeping its "reorders near-ties, never flips a clear winner" contract.
+ */
+const DENSE_MIN_COSINE = 0.25;
+const DENSE_WEIGHT = 0.5;
+const DENSE_CANDIDATE_POOL = 60;
+/** Upper bound on records embedded lazily during one search (a first search on a big legacy DB). */
+const EMBED_BACKFILL_BATCH = 5000;
+
+/**
+ * Store (or refresh) the dense vector for one record. Called inside every
+ * lore write transaction beside the lore_fts maintenance. Skips the embed when
+ * the text and model are unchanged.
+ */
+function refreshLoreEmbedding(db: Database, id: string, title: string, summary: string): void {
+  const embedder = getEmbedder();
+  const text = loreEmbeddingText(title, summary);
+  const hash = embeddingTextHash(text);
+  const existing = db
+    .prepare("SELECT text_hash FROM lore_embeddings WHERE lore_id = ? AND model = ?")
+    .get(id, embedder.model) as { text_hash: string } | undefined;
+  if (existing && existing.text_hash === hash) return;
+  db.prepare(
+    `INSERT INTO lore_embeddings (lore_id, model, dim, vec, text_hash, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(lore_id, model) DO UPDATE SET
+       dim = excluded.dim, vec = excluded.vec, text_hash = excluded.text_hash,
+       updated_at = excluded.updated_at`,
+  ).run(id, embedder.model, embedder.dim, serialiseVector(embedder.embed(text)), hash, nowIso());
+}
+
+/**
+ * Embed every record that has no vector under the current model (a DB written
+ * before migration 013, or by a different embedder) and drop vectors of other
+ * models. Runs inside the dense search branch so an upgraded DB becomes hybrid
+ * on its first query with no operator step. Exported for tests and `doctor`.
+ */
+export function ensureLoreEmbeddings(db: Database, embedder: Embedder = getEmbedder()): number {
+  const missing = db
+    .prepare(
+      `SELECT l.id, l.title, l.summary FROM lore l
+       LEFT JOIN lore_embeddings e ON e.lore_id = l.id AND e.model = ?
+       WHERE e.lore_id IS NULL LIMIT ?`,
+    )
+    .all(embedder.model, EMBED_BACKFILL_BATCH) as Array<{
+    id: string;
+    title: string;
+    summary: string;
+  }>;
+  const stale = db
+    .prepare("SELECT COUNT(*) AS n FROM lore_embeddings WHERE model <> ?")
+    .get(embedder.model) as { n: number };
+  if (missing.length === 0 && stale.n === 0) return 0;
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM lore_embeddings WHERE model <> ?").run(embedder.model);
+    for (const m of missing) refreshLoreEmbedding(db, m.id, m.title, m.summary);
+  });
+  tx();
+  return missing.length;
+}
+
+/**
+ * Dense candidates for a query: every record passing the caller's filters
+ * (repo / tag / kind / status / restricted / updatedAfter — the same clauses
+ * the lexical side uses, minus the FTS MATCH) scored by cosine against the
+ * query vector, thresholded, top DENSE_CANDIDATE_POOL. Brute force over the
+ * filtered set: a lore corpus is thousands of rows at most and each dot
+ * product is 256 multiplies, so this is microseconds, not an index problem.
+ */
+function denseCandidates(
+  db: Database,
+  opts: SearchOptions,
+  embedder: Embedder,
+): Array<{ row: LoreRow; cosine: number }> {
+  const q = embedder.embed(opts.query!.trim());
+  const { where, params } = buildSearchClauses({ ...opts, query: undefined });
+  const rows = db
+    .prepare(
+      `SELECT l.*, e.vec AS vec FROM lore l
+       JOIN lore_embeddings e ON e.lore_id = l.id AND e.model = ? AND e.dim = ?
+       ${where}`,
+    )
+    .all(embedder.model, embedder.dim, ...params) as Array<LoreRow & { vec: Buffer }>;
+  const scored: Array<{ row: LoreRow; cosine: number }> = [];
+  for (const r of rows) {
+    const c = cosine(q, deserialiseVector(r.vec, embedder.dim));
+    if (c >= DENSE_MIN_COSINE) {
+      const { vec: _vec, ...row } = r;
+      scored.push({ row: row as LoreRow, cosine: c });
+    }
+  }
+  scored.sort((a, b) =>
+    a.cosine !== b.cosine ? b.cosine - a.cosine : a.row.updated_at < b.row.updated_at ? 1 : -1,
+  );
+  return scored.slice(0, DENSE_CANDIDATE_POOL);
+}
+
+/**
+ * Fuse the lexical pool (bm25 ASC, i.e. most relevant first) with the dense
+ * pool into one ranked list. Pure and exported so the fusion contract can be
+ * unit-tested without a DB. Returns rows tagged with which side found them and
+ * the fused magnitude BEFORE trust adjustment.
+ */
+export function fuseHybrid<R extends { id: string }>(
+  lexical: ReadonlyArray<{ row: R; score: number }>,
+  dense: ReadonlyArray<{ row: R; cosine: number }>,
+): Array<{
+  row: R;
+  fused: number;
+  lexScore: number | undefined;
+  retrieval: "lexical" | "dense" | "both";
+}> {
+  const maxLex = lexical.reduce((m, l) => Math.max(m, Math.abs(l.score)), 0);
+  const out = new Map<
+    string,
+    { row: R; fused: number; lexScore: number | undefined; retrieval: "lexical" | "dense" | "both" }
+  >();
+  for (const l of lexical) {
+    const norm = maxLex > 0 ? Math.abs(l.score) / maxLex : 1;
+    out.set(l.row.id, { row: l.row, fused: norm, lexScore: l.score, retrieval: "lexical" });
+  }
+  for (const d of dense) {
+    const hit = out.get(d.row.id);
+    if (hit) {
+      hit.fused += DENSE_WEIGHT * d.cosine;
+      hit.retrieval = "both";
+    } else {
+      out.set(d.row.id, {
+        row: d.row,
+        fused: DENSE_WEIGHT * d.cosine,
+        lexScore: undefined,
+        retrieval: "dense",
+      });
+    }
+  }
+  return [...out.values()];
+}
 
 /**
  * Per-row trust delta (a signed fraction, clamped to ±RANK_MAX_SWING)
@@ -1287,11 +1461,15 @@ export function searchLoreCount(db: Database, opts: SearchOptions = {}): number 
  *   - Stale records (review_after in the past) DO appear but each
  *     result is flagged `stale: true` so the agent can warn the user.
  *
- * Ranking: when `query` is set, bm25 relevance ADJUSTED by trust signals
- * (see `trustRankAdjustment`) — we over-fetch a candidate pool, re-rank,
- * then slice to `limit`, so a high-trust record bm25 buried just past the
- * limit can still surface and a stale/low-trust record can't crowd out a
- * better-trusted near-tie. Without a query, plain `updated_at` desc.
+ * Ranking: when `query` is set, HYBRID relevance — the FTS5 bm25 pool fused
+ * with a dense n-gram-vector pool (see core/embedding.ts and `fuseHybrid`), so
+ * a typo, an unstemmed inflection or a differently split term still surfaces
+ * the record — ADJUSTED by trust signals (see `trustRankAdjustment`). We
+ * over-fetch both pools, fuse, re-rank, then slice to `limit`, so a high-trust
+ * record buried just past the limit can still surface and a stale/low-trust
+ * record can't crowd out a better-trusted near-tie. Each hit says which side
+ * found it (`retrieval`). MEMORY_HYBRID_RETRIEVAL=0 restores pure bm25.
+ * Without a query, plain `updated_at` desc.
  */
 export function searchLore(db: Database, opts: SearchOptions = {}): LoreSummary[] {
   // Public-API hardening — CLI and MCP both validate before we get
@@ -1321,27 +1499,53 @@ export function searchLore(db: Database, opts: SearchOptions = {}): LoreSummary[
     LIMIT ${fetchLimit}
   `;
   let rows = db.prepare(sql).all(...params) as Array<LoreRow & { score: number | null }>;
+  const retrievalOf = new Map<string, "lexical" | "dense" | "both">();
 
   if (hasFts) {
-    // Stable re-rank by trust-adjusted bm25. bm25 is NEGATIVE (more
-    // negative = more relevant; SQL sorted ASC). We scale each row's
-    // score by (1 + adj) where adj ∈ [-0.5, 0.5]: a promoted row's
-    // negative score gets MORE negative (ranks earlier), a demoted row's
-    // gets LESS negative. Because the multiplier is bounded to [0.5,
-    // 1.5], a reorder can only happen inside a ~3× relevance band, so
-    // trust breaks near-ties and rescues buried high-trust records but
-    // never overrides a clearly stronger lexical match. V8's Array.sort
-    // is stable; updated_at desc is the explicit tiebreak for true ties.
-    rows = rows
-      .map((row) => ({
-        row,
-        adjusted: (row.score ?? 0) * (1 + trustRankAdjustment(row)),
-      }))
+    // HYBRID: fuse the bm25 pool with the dense (n-gram vector) pool, then apply
+    // the trust adjustment to the fused magnitude. The dense side is a FEEDBACK
+    // helper, so it fails soft: a read-only DB, a missing table or any embed
+    // error leaves the lexical ranking exactly as it was. With
+    // MEMORY_HYBRID_RETRIEVAL=0 the fused magnitude is plain |bm25| and the
+    // ordering is the pre-hybrid one.
+    const lexical = rows.map((row) => ({ row, score: row.score ?? 0 }));
+    let candidates: Array<{
+      row: LoreRow;
+      fused: number;
+      lexScore: number | undefined;
+      retrieval: "lexical" | "dense" | "both" | undefined;
+    }>;
+    if (hybridRetrievalEnabled()) {
+      let dense: Array<{ row: LoreRow; cosine: number }>;
+      try {
+        const embedder = getEmbedder();
+        ensureLoreEmbeddings(db, embedder);
+        dense = denseCandidates(db, opts, embedder);
+      } catch {
+        dense = [];
+      }
+      candidates = fuseHybrid(lexical, dense);
+    } else {
+      candidates = lexical.map((l) => ({
+        row: l.row,
+        fused: Math.abs(l.score),
+        lexScore: l.score,
+        retrieval: undefined,
+      }));
+    }
+    // Stable re-rank by trust-adjusted magnitude (larger = more relevant). The
+    // multiplier is bounded to [0.5, 1.5], so a reorder can only happen inside
+    // a ~3x relevance band: trust breaks near-ties and rescues buried high-trust
+    // records but never overrides a clearly stronger match. V8's Array.sort is
+    // stable; updated_at desc is the explicit tiebreak for true ties.
+    const ranked = candidates
+      .map((c) => ({ ...c, adjusted: c.fused * (1 + trustRankAdjustment(c.row)) }))
       .sort((a, b) => {
-        if (a.adjusted !== b.adjusted) return a.adjusted - b.adjusted;
+        if (a.adjusted !== b.adjusted) return b.adjusted - a.adjusted;
         return a.row.updated_at < b.row.updated_at ? 1 : -1;
-      })
-      .map((s) => s.row);
+      });
+    rows = ranked.map((c) => ({ ...c.row, score: c.lexScore ?? null }));
+    for (const c of ranked) if (c.retrieval) retrievalOf.set(c.row.id, c.retrieval);
   }
   // Slice to the caller's limit BEFORE hydrating / recording reads, so we
   // don't pay to hydrate pool rows that didn't make the cut and don't
@@ -1352,7 +1556,13 @@ export function searchLore(db: Database, opts: SearchOptions = {}): LoreSummary[
   const repoMap = reposByIds(db, ids);
   const tagMap = tagsByIds(db, ids);
   const summaries = rows.map((row) =>
-    rowToSummary(row, repoMap.get(row.id) ?? [], tagMap.get(row.id) ?? [], row.score ?? undefined),
+    rowToSummary(
+      row,
+      repoMap.get(row.id) ?? [],
+      tagMap.get(row.id) ?? [],
+      row.score ?? undefined,
+      retrievalOf.get(row.id),
+    ),
   );
   recordRead(db, ids, "search");
   return annotatePossibleConflicts(summaries);

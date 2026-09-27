@@ -79,9 +79,14 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         "exist than were returned, a `truncated: { shown, total, hint }` " +
         "block tells you the set is partial — narrow or raise `limit` " +
         "before treating the shown hits as the team's complete position. " +
-        "Results are ordered by relevance ADJUSTED for trust (active, " +
-        "sourced, higher-confidence, non-stale records rank higher), so " +
-        "the top hits are the ones most worth acting on.",
+        "Results are ordered by HYBRID relevance — FTS5 keyword rank fused " +
+        "with a dense n-gram similarity, so a typo, a joined/split compound " +
+        "('ratelimiting', 'time out') or a subword still finds the record — " +
+        "ADJUSTED for trust (active, sourced, higher-confidence, non-stale " +
+        "records rank higher), so the top hits are the ones most worth " +
+        "acting on. Each hit's `retrieval` says which side found it " +
+        "('lexical', 'dense' or 'both'); treat a 'dense'-only hit as a " +
+        "near-miss worth a look, not an exact match.",
       inputSchema: {
         query: z
           .string()
@@ -183,8 +188,12 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         // the agent when results were capped ("showing 10 of 23") and it
         // narrows rather than concluding the team has nothing more. Only
         // worth the extra query when we actually hit the cap.
+        // The count is lexical (FTS matches); dense-only hits can push the shown
+        // set past it, so never report a total smaller than what was shown.
         const totalMatches =
-          hits.length >= (args.limit ?? 10) ? searchLoreCount(db, searchOpts) : hits.length;
+          hits.length >= (args.limit ?? 10)
+            ? Math.max(searchLoreCount(db, searchOpts), hits.length)
+            : hits.length;
         audit({
           tool: "search_lore",
           request: args as Record<string, unknown>,

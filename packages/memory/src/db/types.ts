@@ -171,6 +171,12 @@ export interface LoreSummary {
   /** FTS rank, lower = more relevant. Undefined when no query was given. */
   readonly score?: number;
   /**
+   * Which retrieval side(s) produced this hit under hybrid search: the FTS5
+   * lexical match, the dense (n-gram vector) match, or both. Undefined when no
+   * query was given or hybrid retrieval is off (MEMORY_HYBRID_RETRIEVAL=0).
+   */
+  readonly retrieval?: "lexical" | "dense" | "both";
+  /**
    * IDs of other `active` records in the SAME search response that share
    * at least one repo AND at least one tag with this one — i.e. records
    * that POSSIBLY conflict. This is an overlap heuristic, not contradiction

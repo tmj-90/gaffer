@@ -525,6 +525,28 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // HYBRID RETRIEVAL. One dense vector per lore record (title + summary, see
+    // core/embedding.ts) so search can surface typos / inflections / re-split terms
+    // that FTS5 bm25 misses, fused with the lexical ranking. `model` keys the vector
+    // space: a different embedder re-embeds lazily on the next search instead of
+    // comparing vectors from two spaces. `text_hash` skips re-embedding an unchanged
+    // record. No FK: the lore write paths maintain the row explicitly (like lore_fts).
+    id: "013-lore-embeddings",
+    up(db) {
+      db.exec(`
+        CREATE TABLE lore_embeddings (
+          lore_id     TEXT    NOT NULL,
+          model       TEXT    NOT NULL,
+          dim         INTEGER NOT NULL,
+          vec         BLOB    NOT NULL,
+          text_hash   TEXT    NOT NULL,
+          updated_at  TEXT    NOT NULL,
+          PRIMARY KEY (lore_id, model)
+        );
+      `);
+    },
+  },
 ];
 
 /**

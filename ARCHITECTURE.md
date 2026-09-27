@@ -77,7 +77,7 @@ Optional third layer: an OS sandbox via the provider seam in `runner/lib/sandbox
 | `crew.yaml` | Crew config — dispatch DB path, MCP wiring |
 | `usage-ledger.jsonl` | Per-call token/cost records (best-effort, never blocks a tick) |
 
-All state lives under `GAFFER_DATA` (default: `<repo-root>/.gaffer/`). Delete that directory to reset completely. Memory retrieval is SQLite FTS5 (lexical, trust-weighted re-rank); there is no embedding/vector backend today.
+All state lives under `GAFFER_DATA` (default: `<repo-root>/.gaffer/`). Delete that directory to reset completely. Memory retrieval is hybrid: SQLite FTS5 bm25 fused with a dense vector per lore record (`lore_embeddings`; the built-in embedder is a deterministic hashed n-gram space that needs no model or network, so a typo, a joined/split compound or a subword still finds the record), then a trust-weighted re-rank. A model-backed embedder can replace the built-in one behind `packages/memory/src/core/embedding.ts`'s `Embedder` interface; there is no external vector store.
 
 ---
 

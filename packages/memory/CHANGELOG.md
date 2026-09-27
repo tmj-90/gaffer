@@ -6,6 +6,26 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Added — hybrid retrieval
+
+- **`searchLore` fuses FTS5 bm25 with a dense vector per record.** Migration
+  013 adds `lore_embeddings` (one vector per `(lore_id, model)`, written inside
+  every lore write transaction, backfilled on the first search of an older
+  database). The built-in embedder (`core/embedding.ts`, `hashed-ngram-v1`) is
+  a deterministic signed-hashing space over word unigrams/bigrams and
+  character trigrams — no model, network or credential — so a typo beside a
+  real term, a joined/split compound (`ratelimiting`, `time out`) or a subword
+  (`argon 2id`) still finds the record. Fusion preserves magnitude (top
+  lexical hit = 1, dense capped at 0.5, cosine floor 0.25), dense candidates
+  pass the same repo/tag/kind/status filters, and the trust re-rank applies to
+  the fused score unchanged. Each `LoreSummary` carries
+  `retrieval: "lexical" | "dense" | "both"`. `MEMORY_HYBRID_RETRIEVAL=0`
+  restores pure bm25. `Embedder` is exported: a model-backed embedder plugs in
+  behind it and re-embeds lazily under its own `model` id.
+- **Retrieval eval set.** `test/retrieval-eval.test.ts` is a labelled corpus +
+  query table asserting hybrid recall is monotone over lexical, each documented
+  lexical blind spot is recovered, and unknown topics still return zero hits.
+
 ### Added — lore version history
 
 - **Every `updateLore` snapshots the previous row** into `lore_version`

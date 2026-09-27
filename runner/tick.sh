@@ -679,9 +679,12 @@ if [ -n "$RESUME_NUM" ]; then
   # existing worktree. resume-begin moves it paused -> in_progress (guarded) and keeps
   # the resume context for crash recovery.
   NUM="$RESUME_NUM"
+  # "Primary repo" = the first WRITE link with a local path (fallback: any link with a
+  # path, then link 0). Links sort by role then name and every access row is role
+  # primary, so a bare repositories[0] was merely the alphabetically first repo.
   SHOW="$(wg ticket show "$NUM" 2>/dev/null)"
-  REPO_PATH="$(echo "$SHOW" | jget '(d.repositories[0]?.local_path) || ""' 2>/dev/null)"
-  STACK="$(echo "$SHOW" | jget '(d.repositories[0]?.stack) || ""' 2>/dev/null)"
+  REPO_PATH="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' 2>/dev/null)"
+  STACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
   TITLE="$(echo "$SHOW" | jget 'd.ticket.title' 2>/dev/null)"
   if wg ticket resume-begin "$NUM" >/dev/null 2>&1; then
     _RESUMING=1
@@ -741,9 +744,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
       break
     fi
     _cshow="$(wg ticket show "$_cand" 2>/dev/null)"
-    _crepo="$(echo "$_cshow" | jget '(d.repositories[0]?.local_path) || ""' 2>/dev/null)"
-    _cdef="$(echo "$_cshow" | jget '(d.repositories[0]?.default_branch) || "main"' 2>/dev/null)"
-    _cname="$(echo "$_cshow" | jget '(d.repositories[0]?.name) || ""' 2>/dev/null)"
+    _crepo="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' 2>/dev/null)"
+    _cdef="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).default_branch) || "main"' 2>/dev/null)"
+    _cname="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).name) || ""' 2>/dev/null)"
     if [ -n "$_crepo" ] && git -C "$_crepo" rev-parse --git-dir >/dev/null 2>&1; then
       # Sweep genuinely-abandoned branches (POSITIVELY cancelled tickets with no
       # delivery record) first so they don't count against the cap. Parked
@@ -778,7 +781,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       log "claimed #$_cand for delivery (runner holds the claim; ttl=${GAFFER_CLAIM_TTL}s)"
     fi
     NUM="$_cand"; SHOW="$_cshow"; REPO_PATH="$_crepo"
-    STACK="$(echo "$_cshow" | jget '(d.repositories[0]?.stack) || ""' 2>/dev/null)"
+    STACK="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
     TITLE="$(echo "$_cshow" | jget 'd.ticket.title' 2>/dev/null)"
     break
   done <<< "$CANDIDATES"
@@ -1155,7 +1158,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
   #   • markers PRESENT   → parse succeeded; WRITE_ROOTS empty = legitimate fallback.
   #   • markers ABSENT    → json parse failure; warn so a multi-repo ticket's
   #                         incomplete delivery is visible (not silent single-repo).
+  _WG_MARKERS=1
   if ! printf '%s\n' "$WG_PARTITION" | grep -qF '@@WRITE_PATHS@@'; then
+    _WG_MARKERS=0
     # Parse failure (markers absent = json parse crash). If the ticket actually links
     # MORE THAN ONE repo, the single-repo fallback would silently deliver incomplete work
     # AND hand the safety hook an under-scoped write boundary — so fail CLOSED (park →
@@ -1171,15 +1176,28 @@ if [ "$READY_COUNT" -gt 0 ]; then
     log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (json parse failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH)."
   fi
 
-  # Back-compat (older tickets with no WG-002 access boundary): fall back to the
-  # single delivery repo as the sole write repo. This reproduces EXACTLY today's
-  # single-repo behaviour — one write root, one gaffer/ branch, no read roots.
+  # A parsed boundary (markers present) with NO write repo is a ticket whose repos
+  # are all read / test / context-only. It must NOT fall through to the legacy
+  # single-repo fallback below — that made the alphabetically-first linked repo
+  # WRITABLE (worktree + branch + hook allowing writes) for a ticket the operator
+  # had marked read-only. Release it for a human and skip it this run.
+  if [ "$_WG_MARKERS" = 1 ] && [ -z "$(printf '%s' "$WRITE_ROOTS" | tr -d '[:space:]')" ]; then
+    log "WG-002: #$NUM has no WRITE repo (all links are read/test/context-only) — refusing to deliver into a read-only repo; parking → ready"
+    gaffer_release_delivery ready "no write repo on the ticket — set a repo's access to write, then re-ready"
+    gaffer_skip_ticket "$NUM"
+    result no_work; exit 0
+  fi
+
+  # Back-compat (older tickets with no WG-002 access boundary, i.e. no markers):
+  # fall back to the single delivery repo as the sole write repo. This reproduces
+  # EXACTLY today's single-repo behaviour — one write root, one gaffer/ branch, no
+  # read roots.
   if [ -z "$(printf '%s' "$WRITE_ROOTS" | tr -d '[:space:]')" ]; then
     WRITE_ROOTS="$REPO_PATH"
     READ_ROOTS=""
-    DEFAULT_BRANCH_FALLBACK="$(echo "$SHOW" | jget '(d.repositories[0]?.default_branch) || "main"' 2>/dev/null || echo main)"
-    REPO_NAME_FALLBACK="$(echo "$SHOW" | jget '(d.repositories[0]?.name) || ""' 2>/dev/null || echo '')"
-    REPO_ID_FALLBACK="$(echo "$SHOW" | jget '(d.repositories[0]?.id) || ""' 2>/dev/null || echo '')"
+    DEFAULT_BRANCH_FALLBACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).default_branch) || "main"' 2>/dev/null || echo main)"
+    REPO_NAME_FALLBACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).name) || ""' 2>/dev/null || echo '')"
+    REPO_ID_FALLBACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).id) || ""' 2>/dev/null || echo '')"
     WRITE_ROWS="$(printf '%s\t%s\t%s\t%s' "$REPO_ID_FALLBACK" "$REPO_NAME_FALLBACK" "$REPO_PATH" "$DEFAULT_BRANCH_FALLBACK")"
     MULTI_REPO=0
   else
@@ -1214,6 +1232,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
   if [ -z "$REPO_PATH" ] || [ ! -d "$REPO_PATH" ]; then
     log "ticket #$NUM has no local repo path; leaving it for a human"
     gaffer_release_delivery ready "no local repo path — leaving it for a human"
+    # Skip it for the rest of this run: released to `ready` at the head of the queue
+    # it would be re-claimed by the very next tick, forever (a wedged queue).
+    gaffer_skip_ticket "$NUM"
     result no_work; exit 0
   fi
 
@@ -1487,7 +1508,7 @@ EOF
   # DEFAULT_BRANCH = the PRIMARY write repo's base, kept for the existing
   # diff/assertion code paths below (which operate on PRIMARY_REPO = primary wt).
   DEFAULT_BRANCH="$(printf '%s\n' "$WRITE_ROWS" | grep . | head -1 | awk -F'\t' '{print ($4==""?"main":$4)}')"
-  [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="$(echo "$SHOW" | jget '(d.repositories[0]?.default_branch) || "main"')"
+  [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).default_branch) || "main"')"
 
   # Helper: tear down every worktree we may have created for this ticket and
   # (optionally) delete the gaffer/ branch. Used for (a) stale cleanup before a
@@ -2736,7 +2757,10 @@ $_trail_q
   # injectable via GAFFER_GH_BIN so the no-op (flag off / no remote) path is clean.
   _PR_URL=""
   if declare -F gaffer_create_pr >/dev/null 2>&1; then
-    _PR_URL="$(gaffer_create_pr "$NUM" "$PRIMARY_REPO" "$WORK_BRANCH" "$DEFAULT_BRANCH" "$TITLE" 2>>"$GAFFER_LOG" || true)"
+    # The REAL primary repo (the branch persists there), NOT the worktree: this runs
+    # after the worktrees are torn down, so the worktree path no longer exists and
+    # every remote check on it said "no GitHub remote" — PR creation never fired.
+    _PR_URL="$(gaffer_create_pr "$NUM" "${_CARD_REAL_REPO:-$PRIMARY_REPO}" "$WORK_BRANCH" "$DEFAULT_BRANCH" "$TITLE" 2>>"$GAFFER_LOG" || true)"
   else
     log "H4: pr-create.sh not loaded — skipping (GAFFER_CREATE_PR=${GAFFER_CREATE_PR:-0})"
   fi
@@ -2750,7 +2774,7 @@ $_trail_q
   #   timeout / no-PR / no-checks (GAFFER_CI_TIMEOUT_POLICY=proceed) → proceed (rc=0)
   #   flag off                → no-op (rc=0)
   if declare -F gaffer_ci_gate >/dev/null 2>&1; then
-    gaffer_ci_gate "$NUM" "$PRIMARY_REPO" "$WORK_BRANCH" "${_PR_URL:-}"
+    gaffer_ci_gate "$NUM" "${_CARD_REAL_REPO:-$PRIMARY_REPO}" "$WORK_BRANCH" "${_PR_URL:-}"
     _CI_RC=$?
     if [ "$_CI_RC" = "2" ]; then
       # CI went red → auto-reject back to rework so a human never sees a broken CI.

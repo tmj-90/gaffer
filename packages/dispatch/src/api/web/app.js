@@ -5436,10 +5436,16 @@ async function renderSettings() {
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    // Collect only editable (non-locked) values. The server is the final gate:
-    // it re-checks env-lock and drops unknown keys, so this is just the payload.
+    // Collect only editable (non-locked) values the user actually CHANGED. Sending
+    // every editor used to persist an explicit "0" for each untouched switch, which
+    // then out-ranked the GAFFER_MODE presets in the runner (a save silently turned
+    // autonomy off). The server is the final gate: it re-checks env-lock and drops
+    // unknown keys, so this is just the payload.
     const payload = {};
-    for (const [key, ed] of editors) payload[key] = ed.read();
+    for (const [key, ed] of editors) {
+      const v = ed.read();
+      if (ed.initial === undefined || v !== ed.initial) payload[key] = v;
+    }
     runAsyncAction(saveBtn, "Saving…", async () => {
       const res = await api("POST", "/api/settings", { settings: payload });
       const written = (res.written || []).length;
@@ -5475,9 +5481,11 @@ async function renderSettings() {
  *  Reads the boolean autonomy settings: each one ON is one human gate opened. */
 function autonomyDial(all) {
   const isOn = (v) => v === true || v === "true" || v === "1" || v === "on";
+  // The dial reads the EFFECTIVE posture (env → file → GAFFER_MODE preset), so an
+  // autonomous mode shows its gates open even when settings.json stores nothing.
   const bools = all.filter((s) => s.group === "autonomy" && s.type === "boolean");
   const total = Math.max(1, bools.length);
-  const on = bools.filter((s) => isOn(s.value)).length;
+  const on = bools.filter((s) => isOn(s.effective !== undefined ? s.effective : s.value)).length;
   const pct = Math.round((on / total) * 100);
   const level = on === 0 ? "Supervised" : on >= total ? "Hands-off" : "Assisted";
   const tone = on === 0 ? "ok" : on >= total ? "danger" : "amber";
@@ -5505,10 +5513,13 @@ function autonomyDial(all) {
         "div",
         { class: "ad-gates" },
         bools.map((s) =>
-          el("span", { class: `ad-gate ${isOn(s.value) ? "on" : "off"}` }, [
-            el("span", { class: "ad-gate-dot" }),
-            s.label || s.key,
-          ]),
+          el(
+            "span",
+            {
+              class: `ad-gate ${isOn(s.effective !== undefined ? s.effective : s.value) ? "on" : "off"}`,
+            },
+            [el("span", { class: "ad-gate-dot" }), s.label || s.key],
+          ),
         ),
       ),
     ]),
@@ -6239,10 +6250,15 @@ function renderSettingInput(s, editors) {
   }
 
   if (s.type === "boolean") {
-    const checked = s.value === "1";
+    // Show the value the factory will USE (env → file → GAFFER_MODE preset), not
+    // only what settings.json stores; an autonomous mode's presets read as on.
+    const eff = s.effective !== undefined ? s.effective : s.value;
+    const checked = eff === "1" || eff === "true" || eff === "yes" || eff === "on";
     const input = el("input", { type: "checkbox", role: "switch", "aria-label": s.label });
     input.checked = checked;
-    editors.set(s.key, { read: () => (input.checked ? "1" : "0") });
+    // `initial` lets Save send only what the user changed: an untouched switch
+    // that merely reflects a mode preset must not be written as an explicit "0".
+    editors.set(s.key, { read: () => (input.checked ? "1" : "0"), initial: checked ? "1" : "0" });
     return el("label", { class: "switch" }, [
       input,
       el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
@@ -6258,7 +6274,7 @@ function renderSettingInput(s, editors) {
       value: s.value,
       "aria-label": s.label,
     });
-    editors.set(s.key, { read: () => input.value.trim() });
+    editors.set(s.key, { read: () => input.value.trim(), initial: s.value });
     return input;
   }
 
@@ -6274,7 +6290,7 @@ function renderSettingInput(s, editors) {
       if (s.value === choice) opt.selected = true;
       select.appendChild(opt);
     }
-    editors.set(s.key, { read: () => select.value });
+    editors.set(s.key, { read: () => select.value, initial: s.value });
     return select;
   }
 

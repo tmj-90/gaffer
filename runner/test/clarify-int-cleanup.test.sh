@@ -3,9 +3,9 @@
 # B-H1 — Ctrl-C DURING a clarify run must not leak runner config into the
 #         contributor's REAL repo.
 # ---------------------------------------------------------------------
-# The clarify pass injects CLAUDE.factory.md / .claude/settings.json /
-# .claude/skills DIRECTLY into the registered repo (clarify is read-only, so it
-# runs in place — there is NO throwaway worktree whose teardown would take the
+# The clarify pass used to inject CLAUDE.factory.md / .claude/settings.json /
+# .claude/skills DIRECTLY into the registered repo; it now runs in a THROWAWAY
+# worktree (removed on exit/Ctrl-C) and must never leave residue in the real repo (the
 # residue with it). _clarify_cleanup is the ONLY thing that removes that residue.
 #
 # The bug: the clarify block installed a cleanup on EXIT ONLY. On a real Ctrl-C the
@@ -40,6 +40,10 @@ trap 'rm -rf "$WORK"' EXIT
 export GAFFER_DATA="$WORK/data";  mkdir -p "$GAFFER_DATA"
 export GAFFER_LOG="$GAFFER_DATA/factory.log"; : > "$GAFFER_LOG"
 CREPO="$WORK/real-repo";          mkdir -p "$CREPO"
+# A real git repo on `main`: the clarify pass now works in a THROWAWAY detached
+# worktree of the default branch (never in this checkout), so it needs a commit.
+( cd "$CREPO" && git init -q -b main && printf "# r\n" > README.md && git -c user.email=t@t -c user.name=t add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+CWT_EXPECTED="$GAFFER_DATA/worktrees/clarify-wt-42"
 # The runner "environment" files the clarify pass templates from.
 FAKE_RUNNER="$WORK/runner"; mkdir -p "$FAKE_RUNNER/claude"
 : > "$FAKE_RUNNER/safety-hook.mjs"
@@ -69,7 +73,7 @@ jget()  { gaffer_json expr "$1" 2>/dev/null; }
 wg() {
   case "$*" in
     "ticket list -s draft") printf '[{"number":42,"title":"Ambiguous draft"}]' ;;
-    "ticket show 42") printf '{"ticket":{"title":"Ambiguous draft","description":"d"},"repositories":[{"local_path":"%s"}]}' "$CREPO" ;;
+    "ticket show 42") printf '{"ticket":{"title":"Ambiguous draft","description":"d"},"repositories":[{"local_path":"%s","default_branch":"main","access":"write"}]}' "$CREPO" ;;
     *) printf '{}' ;;
   esac
 }
@@ -100,7 +104,7 @@ _gaffer_locked() { shift; "$@"; }
 _gaffer_append_line() { printf '%s\n' "$2" >> "$1"; }
 # The real skills mount would create $CREPO/.claude/skills; reproduce that so the
 # cleanup has the exact residue to remove.
-gaffer_skills_mount() { mkdir -p "$CREPO/.claude"; ln -sfn "$WORK/mount-$3" "$CREPO/.claude/skills"; }
+gaffer_skills_mount() { mkdir -p "$1/.claude"; ln -sfn "$WORK/mount-$3" "$1/.claude/skills"; }
 gaffer_skills_mount_cleanup() { :; }
 # gaffer_crash_cleanup does NOT know about the injected clarify config (this models
 # reality — it only handles worktrees/claims/skill mounts). If the fix is absent,
@@ -135,6 +139,15 @@ rc=$?
 [ "$rc" = "130" ] \
   && ok "interrupted clarify exited 130 (SIGINT), not a normal 0" \
   || fail "expected exit 130 from the interrupted clarify, got $rc"
+
+# The intake agent now works in a THROWAWAY detached worktree; Ctrl-C must remove it
+# and leave the real repo with no worktree registration behind.
+[ ! -e "$CWT_EXPECTED" ] \
+  && ok "throwaway clarify worktree removed after Ctrl-C" \
+  || fail "throwaway clarify worktree $CWT_EXPECTED still present after Ctrl-C"
+[ "$(git -C "$CREPO" worktree list | wc -l | tr -d ' ')" = "1" ] \
+  && ok "real repo has no lingering worktree registration" \
+  || fail "real repo still lists a clarify worktree: $(git -C "$CREPO" worktree list | tr '\n' '|')"
 
 [ ! -e "$CREPO/CLAUDE.factory.md" ] \
   && ok "CLAUDE.factory.md removed from the real repo after Ctrl-C" \

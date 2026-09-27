@@ -68,7 +68,14 @@ export interface SettingView {
   readonly key: string;
   /** Current file value, or "" when unset in settings.json. */
   readonly value: string;
-  /** True iff `process.env[key]` is set — env overrides the file, so read-only. */
+  /**
+   * The value the factory will actually use: the operator's env when locked, else
+   * the stored file value, else the GAFFER_MODE preset, else "" (built-in default).
+   */
+  readonly effective: string;
+  /** Where `effective` came from. */
+  readonly source: SettingSource;
+  /** True iff the OPERATOR set this key in the real environment — read-only in the UI. */
   readonly envLocked: boolean;
   readonly type: SettingType;
   readonly group: SettingGroup;
@@ -601,27 +608,170 @@ export function readSettingsFile(path: string): Record<string, string> {
 }
 
 /**
+ * The autonomy posture each GAFFER_MODE implies — a MIRROR of the `case
+ * "$GAFFER_MODE"` block in runner/factory.config.sh. The runner fills these with
+ * `:=` (only when unset) after settings.json, so a stored value wins over the
+ * mode; the API applies the same precedence so the dashboard shows the value the
+ * tick will actually use, and so its own gates (agent approve, testing lane)
+ * agree with the runner. Unknown mode ⇒ supervised (the safe posture).
+ */
+export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  autonomous: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "1",
+    MERGE_ON_AGENT_REVIEW: "1",
+    AUTO_MERGE: "1",
+    GAFFER_AUTO_PUSH: "1",
+    MEMORY_AUTO_APPROVE: "1",
+  },
+  strict: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "1",
+    MERGE_ON_AGENT_REVIEW: "1",
+    AUTO_MERGE: "1",
+    GAFFER_AUTO_PUSH: "1",
+    MEMORY_AUTO_APPROVE: "1",
+  },
+  lite: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "1",
+    MERGE_ON_AGENT_REVIEW: "0",
+    AUTO_MERGE: "0",
+    GAFFER_AUTO_PUSH: "0",
+    MEMORY_AUTO_APPROVE: "0",
+  },
+  graduated: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "0",
+    MERGE_ON_AGENT_REVIEW: "0",
+    AUTO_MERGE: "0",
+    GAFFER_AUTO_PUSH: "0",
+    MEMORY_AUTO_APPROVE: "0",
+  },
+  supervised: {
+    REVIEW_MODE: "human",
+    DISPATCH_ALLOW_AGENT_APPROVE: "0",
+    MERGE_ON_AGENT_REVIEW: "0",
+    AUTO_MERGE: "0",
+    GAFFER_AUTO_PUSH: "0",
+    MEMORY_AUTO_APPROVE: "0",
+  },
+};
+
+/** Where a setting's effective value came from (see {@link SettingView.source}). */
+export type SettingSource = "env" | "file" | "mode" | "default";
+
+/**
+ * Keys this process set on its OWN env from settings.json or a mode preset (see
+ * {@link applySettingsToEnv}). They are NOT operator env overrides, so they are
+ * never reported env-locked — the UI may still edit them.
+ */
+const DERIVED_BY_ENV = new WeakMap<object, Map<string, SettingSource>>();
+function derivedOf(env: NodeJS.ProcessEnv): Map<string, SettingSource> {
+  let m = DERIVED_BY_ENV.get(env);
+  if (!m) {
+    m = new Map();
+    DERIVED_BY_ENV.set(env, m);
+  }
+  return m;
+}
+
+/**
+ * Apply settings.json, then the GAFFER_MODE presets, to `env` as DEFAULTS (never
+ * overwriting a key the operator set in the real environment) — the same
+ * precedence runner/factory.config.sh gives the runner. Call once at API startup
+ * so every env reader in this process (autonomy gates, notifier, testing lane)
+ * sees what the dashboard stores, and again after each write so a change takes
+ * effect without a restart. Returns the keys it set.
+ */
+export function applySettingsToEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): { applied: string[] } {
+  const file = readSettingsFile(path);
+  const applied: string[] = [];
+  const isReal = (k: string) =>
+    Object.prototype.hasOwnProperty.call(env, k) && !derivedOf(env).has(k);
+  for (const [k, v] of Object.entries(file)) {
+    if (isReal(k)) continue;
+    if (v === "") {
+      // An empty stored value means "cleared back to the default": drop any value
+      // this process derived earlier so the mode preset / default applies again.
+      if (derivedOf(env).has(k)) {
+        delete env[k];
+        derivedOf(env).delete(k);
+      }
+      continue;
+    }
+    env[k] = v;
+    derivedOf(env).set(k, "file");
+    applied.push(k);
+  }
+  const mode = (env["GAFFER_MODE"] ?? "").trim();
+  const presets = MODE_PRESETS[mode] ?? MODE_PRESETS["supervised"]!;
+  for (const [k, v] of Object.entries(presets)) {
+    if (isReal(k)) continue;
+    if (derivedOf(env).get(k) === "file") continue;
+    env[k] = v;
+    derivedOf(env).set(k, "mode");
+    applied.push(k);
+  }
+  return { applied };
+}
+
+/** True iff the OPERATOR set this key in the real environment (not this process). */
+export function isEnvLocked(env: NodeJS.ProcessEnv, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(env, key) && !derivedOf(env).has(key);
+}
+
+/** Test seam: forget every derived key (a fresh process). */
+export function resetDerivedSettings(env: NodeJS.ProcessEnv = process.env): void {
+  derivedOf(env).clear();
+}
+
+/**
  * Build the per-setting views GET /api/settings returns: for each known setting,
- * its current file value (or "" when unset) plus whether it is env-locked.
+ * its current file value (or "" when unset), the value the factory will actually
+ * use (`effective`) and where that came from, plus whether it is env-locked.
  */
 export function listSettings(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
 ): SettingView[] {
   const file = readSettingsFile(path);
-  return SETTING_DEFS.map((def) => ({
-    key: def.key,
-    value: file[def.key] ?? "",
-    // env-locked iff the key is PRESENT in the environment (even empty string),
-    // because the runner's `:=` only fills an UNSET var — a set-but-empty env
-    // var still wins over the file.
-    envLocked: Object.prototype.hasOwnProperty.call(env, def.key),
-    type: def.type,
-    group: def.group,
-    label: def.label,
-    ...(def.help !== undefined ? { help: def.help } : {}),
-    ...(def.choices !== undefined ? { choices: def.choices } : {}),
-  }));
+  const mode = (env["GAFFER_MODE"] ?? file["GAFFER_MODE"] ?? "").trim();
+  const presets = MODE_PRESETS[mode] ?? MODE_PRESETS["supervised"]!;
+  return SETTING_DEFS.map((def) => {
+    const locked = isEnvLocked(env, def.key);
+    const fileValue = file[def.key] ?? "";
+    let effective: string;
+    let source: SettingSource;
+    if (locked) {
+      effective = env[def.key] ?? "";
+      source = "env";
+    } else if (fileValue !== "") {
+      effective = fileValue;
+      source = "file";
+    } else if (presets[def.key] !== undefined) {
+      effective = presets[def.key]!;
+      source = "mode";
+    } else {
+      effective = "";
+      source = "default";
+    }
+    return {
+      key: def.key,
+      value: fileValue,
+      effective,
+      source,
+      envLocked: locked,
+      type: def.type,
+      group: def.group,
+      label: def.label,
+      ...(def.help !== undefined ? { help: def.help } : {}),
+      ...(def.choices !== undefined ? { choices: def.choices } : {}),
+    };
+  });
 }
 
 /** Outcome of a settings write: which keys persisted and which were rejected. */
@@ -665,7 +815,7 @@ export function writeSettings(
       ignored.push(key);
       continue;
     }
-    if (Object.prototype.hasOwnProperty.call(env, key)) {
+    if (isEnvLocked(env, key)) {
       // env-locked: an explicit env var overrides the file, so persisting this
       // would mislead the operator (the runner would ignore it). Refuse it.
       rejected.push(key);
@@ -702,6 +852,24 @@ export function writeSettings(
   // Only touch the disk when something actually changed.
   if (written.length > 0) {
     atomicWriteJson(path, merged);
+    // Take effect in THIS process immediately (its own gates read env): drop what
+    // was derived earlier so a cleared key falls back to its preset, then re-apply.
+    for (const k of written) {
+      if (derivedOf(env).has(k)) {
+        delete env[k];
+        derivedOf(env).delete(k);
+      }
+    }
+    // A mode change re-derives every preset key that is not stored explicitly.
+    if (written.includes("GAFFER_MODE")) {
+      for (const k of [...derivedOf(env).keys()]) {
+        if (derivedOf(env).get(k) === "mode") {
+          delete env[k];
+          derivedOf(env).delete(k);
+        }
+      }
+    }
+    applySettingsToEnv(env, path);
   }
 
   return { written, rejected, ignored, invalid };

@@ -26,7 +26,11 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
   RNUM="$(echo "$RJSON" | gaffer_json pick-unskipped "$REVIEWED_FILE" 2>/dev/null)"
   if [ -n "$RNUM" ]; then
     RSHOW="$(wg ticket show "$RNUM" 2>/dev/null)"
-    RREPO="$(echo "$RSHOW" | jget '(d.repositories[0]?.local_path) || ""' 2>/dev/null)"
+    # The PRIMARY WRITE repo, not repositories[0]: links sort by role then name and
+    # every access row is role "primary", so [0] was simply the alphabetically first
+    # repo — a read-only context repo on a multi-repo ticket, whose branch does not
+    # exist, so `git worktree add` failed and the ticket could never be agent-reviewed.
+    RREPO="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' 2>/dev/null)"
     if [ -n "$RREPO" ] && [ -d "$RREPO" ]; then
       # Resolve the delivered branch from Dispatch (persisted by delivery-artifact)
       # rather than grepping local git — the reviewer trusts the recorded branch_name.
@@ -35,7 +39,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       [ -n "$RBRANCH" ] || RBRANCH="$(git -C "$RREPO" branch 2>/dev/null | grep -oE "gaffer/ticket-$RNUM-[a-z0-9-]*" | head -1)"
       # The repo's default branch — used as the diff base in the reviewer prompt so
       # we never hardcode 'main' for repos whose default is master/develop/etc.
-      RDEFAULT="$(echo "$RSHOW" | jget '(d.repositories[0]?.default_branch) || "main"')"
+      RDEFAULT="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).default_branch) || "main"')"
       log "review_mode=$REVIEW_MODE → agent-reviewing in_review #$RNUM in $RREPO (branch ${RBRANCH:-unknown}, base $RDEFAULT)"
       if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run a reviewer agent on #$RNUM (branch ${RBRANCH:-unknown})"; result reviewed; exit 0; fi
       # BLOCKING 1 fix: run the reviewer in a THROWAWAY git worktree so the
@@ -196,6 +200,16 @@ EOF
       # force an AFK approve+merge. gaffer_review_verdict falls back to the legacy grep only
       # when no structured line is present, and stays fail-closed (ambiguous/empty → changes).
       R_VERDICT="$(gaffer_review_verdict "$R_RESULT")"
+      # A reviewer that did NOT run is not a verdict. worker_deliver returns non-zero
+      # (containment refused to spawn, timeout, crash) or the envelope is empty →
+      # the fail-closed default above would read as CHANGES and, in AFK mode, send a
+      # possibly-fine delivery back to rework. Hold instead: leave the ticket
+      # in_review for a human, skip it for the rest of this run, and say why.
+      R_HELD_REASON=""
+      if [ "$rrc" -ne 0 ] || [ -z "${R_RESULT// /}" ]; then
+        R_HELD_REASON="reviewer did not run (rc=$rrc${R_RESULT:+, non-empty result}) — not a verdict"
+        R_VERDICT=held
+      fi
       NEWSTATUS="$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
 
       # ── AFK auto-completion — GRADUATED per-repo/risk autonomy ───────────────────
@@ -242,6 +256,8 @@ EOF
           fi
         fi
         _SHIP_PLAN="$(gaffer_afk_ship_plan "$R_VERDICT" "$_SHIP_APPROVE" "$_SHIP_MERGE")"
+        # No reviewer output ⇒ no plan: never approve, never rework on it.
+        [ -n "$R_HELD_REASON" ] && _SHIP_PLAN=hold
       fi
       case "$_SHIP_PLAN" in
         ship|approve_hold)
@@ -320,7 +336,7 @@ EOF
             # that has NOT earned an `auto` approve grant). Leave for a human; mark
             # reviewed-this-run so we don't loop. The verdict is recorded either way.
           [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
-          log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT, approve_gate=$_SHIP_APPROVE) — ADVISORY/HELD; awaiting HUMAN approval"
+          log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT, approve_gate=$_SHIP_APPROVE) — ADVISORY/HELD; awaiting HUMAN approval${R_HELD_REASON:+ [$R_HELD_REASON]}"
           ;;
       esac
       # Restore the global traps now that the review block is complete. Run cleanup

@@ -51,3 +51,27 @@ gaffer_dashboard_pid() {
   if _gaffer_dashboard_pid_is_ours "$pid"; then printf '%s\n' "$pid"; return 0; fi
   return 1
 }
+
+# Env flags (`-u KEY …`) that strip CONFIG-DERIVED setting values from the dashboard
+# process's environment. `gaffer dashboard` sources factory.config.sh, which exports
+# settings.json values and `:=` defaults for many UI-editable keys; inherited as env,
+# the dashboard reported every one of them "set by env" and refused UI edits (15
+# settings were locked that way). Only a key the OPERATOR had in the environment
+# before the config ran (_GAFFER_ENV_AT_SOURCE) is a real override and stays. The
+# dashboard re-applies settings.json to its own env at startup (applySettingsToEnv),
+# so nothing is lost — it just stops mistaking its own defaults for locks. The six
+# tick-only knobs are always unset, as before. Fail-soft: with no dispatch dist the
+# list is empty and the launch is unchanged.
+gaffer_dashboard_env_unset_flags() {
+  local _flags="-u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE"
+  local _settings_js="${DISPATCH_DIR:-}/dist/api/settings.js" _k
+  if [ -f "$_settings_js" ] && command -v node >/dev/null 2>&1; then
+    while IFS= read -r _k; do
+      [ -n "$_k" ] || continue
+      case " ${_GAFFER_ENV_AT_SOURCE:-} " in *" $_k "*) continue ;; esac   # operator override → keep
+      case "$_flags" in *" -u $_k"*|*"-u $_k "*) continue ;; esac
+      _flags="$_flags -u $_k"
+    done < <(node --input-type=module -e 'import { SETTING_DEFS } from process.argv[1]; for (const d of SETTING_DEFS) console.log(d.key);' "$_settings_js" 2>/dev/null || true)
+  fi
+  printf '%s' "$_flags"
+}

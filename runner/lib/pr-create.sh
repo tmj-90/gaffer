@@ -112,7 +112,7 @@ gaffer_create_pr() {
   if [ -n "$pr_url" ]; then
     log "H4: created PR for #$num → $pr_url"
     # Persist the PR URL back onto the ticket (best-effort; non-fatal).
-    wg delivery-artifact "$num" --branch "$branch" --pr-url "$pr_url" --as system >/dev/null 2>&1 \
+    wg delivery-artifact "$num" --branch "$branch" --pr "$pr_url" --as system >/dev/null 2>&1 \
       && log "H4: recorded pr_url=$pr_url on #$num" \
       || log "H4: could not record pr_url on #$num (non-fatal)"
     printf '%s' "$pr_url"

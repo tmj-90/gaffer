@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   isKnownSetting,
+  applySettingsToEnv,
   listSettings,
+  resetDerivedSettings,
+  MODE_PRESETS,
   readSettingsFile,
   resolveSettingsPath,
   SETTING_DEFS,
@@ -205,5 +208,101 @@ describe("settings module: enum choices + value validation", () => {
     const res = writeSettings({ GAFFER_MODE: "yolo" }, { GAFFER_MODE: "supervised" }, settingsPath);
     expect(res.rejected).toEqual(["GAFFER_MODE"]);
     expect(res.invalid).toEqual([]);
+  });
+});
+
+describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEFAULTS", () => {
+  let dir: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    resetDerivedSettings();
+    dir = mkdtempSync(join(tmpdir(), "wg-settings-boot-"));
+    settingsPath = join(dir, "settings.json");
+  });
+  afterEach(() => {
+    resetDerivedSettings();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("applies stored values to an env that lacks them, and never over a real env var", () => {
+    writeFileSync(settingsPath, JSON.stringify({ MAX_TICKS: "7", REVIEW_MODE: "agent" }), "utf8");
+    const env: NodeJS.ProcessEnv = { REVIEW_MODE: "human" };
+    const { applied } = applySettingsToEnv(env, settingsPath);
+    expect(env.MAX_TICKS).toBe("7");
+    expect(env.REVIEW_MODE).toBe("human"); // operator env wins
+    expect(applied).toContain("MAX_TICKS");
+    expect(applied).not.toContain("REVIEW_MODE");
+  });
+
+  it("derived keys are NOT env-locked — the UI may still edit them", () => {
+    writeFileSync(settingsPath, JSON.stringify({ MAX_TICKS: "7" }), "utf8");
+    const env: NodeJS.ProcessEnv = { GAFFER_PLAN_DEBATE: "1" };
+    applySettingsToEnv(env, settingsPath);
+    const byKey = new Map(listSettings(env, settingsPath).map((v) => [v.key, v]));
+    expect(byKey.get("MAX_TICKS")?.envLocked).toBe(false);
+    expect(byKey.get("MAX_TICKS")?.effective).toBe("7");
+    expect(byKey.get("MAX_TICKS")?.source).toBe("file");
+    expect(byKey.get("GAFFER_PLAN_DEBATE")?.envLocked).toBe(true);
+    expect(byKey.get("GAFFER_PLAN_DEBATE")?.source).toBe("env");
+    // And a write to the derived key is accepted, not rejected as env-locked.
+    const res = writeSettings({ MAX_TICKS: "9" }, env, settingsPath);
+    expect(res.written).toEqual(["MAX_TICKS"]);
+    expect(env.MAX_TICKS).toBe("9"); // took effect in-process
+  });
+
+  it("GAFFER_MODE=autonomous presets read as effective ON without touching settings.json", () => {
+    writeFileSync(settingsPath, JSON.stringify({ GAFFER_MODE: "autonomous" }), "utf8");
+    const env: NodeJS.ProcessEnv = {};
+    applySettingsToEnv(env, settingsPath);
+    expect(env.AUTO_MERGE).toBe("1");
+    expect(env.DISPATCH_ALLOW_AGENT_APPROVE).toBe("1");
+    const byKey = new Map(listSettings(env, settingsPath).map((v) => [v.key, v]));
+    expect(byKey.get("AUTO_MERGE")?.effective).toBe("1");
+    expect(byKey.get("AUTO_MERGE")?.source).toBe("mode");
+    expect(byKey.get("AUTO_MERGE")?.value).toBe(""); // nothing stored
+    expect(byKey.get("AUTO_MERGE")?.envLocked).toBe(false);
+    // The mirror stays in step with the runner's presets for every mode.
+    for (const mode of ["autonomous", "strict", "lite", "graduated", "supervised"]) {
+      expect(Object.keys(MODE_PRESETS[mode]!).sort()).toEqual(
+        [
+          "AUTO_MERGE",
+          "DISPATCH_ALLOW_AGENT_APPROVE",
+          "GAFFER_AUTO_PUSH",
+          "MEMORY_AUTO_APPROVE",
+          "MERGE_ON_AGENT_REVIEW",
+          "REVIEW_MODE",
+        ].sort(),
+      );
+    }
+  });
+
+  it("an explicit stored '0' beats the mode preset (the user's choice), and clearing it restores the preset", () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ GAFFER_MODE: "autonomous", AUTO_MERGE: "0" }),
+      "utf8",
+    );
+    const env: NodeJS.ProcessEnv = {};
+    applySettingsToEnv(env, settingsPath);
+    expect(env.AUTO_MERGE).toBe("0");
+    expect(listSettings(env, settingsPath).find((v) => v.key === "AUTO_MERGE")?.source).toBe(
+      "file",
+    );
+    writeSettings({ AUTO_MERGE: "" }, env, settingsPath);
+    expect(env.AUTO_MERGE).toBe("1");
+    expect(listSettings(env, settingsPath).find((v) => v.key === "AUTO_MERGE")?.source).toBe(
+      "mode",
+    );
+  });
+
+  it("changing GAFFER_MODE re-derives every preset that is not stored explicitly", () => {
+    writeFileSync(settingsPath, JSON.stringify({ GAFFER_MODE: "autonomous" }), "utf8");
+    const env: NodeJS.ProcessEnv = {};
+    applySettingsToEnv(env, settingsPath);
+    expect(env.AUTO_MERGE).toBe("1");
+    writeSettings({ GAFFER_MODE: "supervised" }, env, settingsPath);
+    expect(env.AUTO_MERGE).toBe("0");
+    expect(env.REVIEW_MODE).toBe("human");
   });
 });

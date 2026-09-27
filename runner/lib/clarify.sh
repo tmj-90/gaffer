@@ -34,10 +34,18 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
   CNUM="$(echo "$DRAFT_JSON" | gaffer_json pick-unskipped "$CLARIFIED_FILE" 2>/dev/null)"
   if [ -n "$CNUM" ]; then
     CSHOW="$(wg ticket show "$CNUM" 2>/dev/null)"
-    CREPO="$(echo "$CSHOW" | jget '(d.repositories[0]?.local_path) || ""' 2>/dev/null)"
+    # The primary WRITE repo (not repositories[0], which is merely alphabetical).
+    CREPO="$(echo "$CSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' 2>/dev/null)"
+    CDEFAULT="$(echo "$CSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).default_branch) || "main"' 2>/dev/null)"
     CTITLE="$(echo "$CSHOW" | jget 'd.ticket.title' 2>/dev/null || echo '')"
     if [ -n "$CREPO" ] && [ -d "$CREPO" ]; then
-      log "no ready tickets → intake: clarifying draft #$CNUM ('$CTITLE') in $CREPO"
+      # The intake agent works in a THROWAWAY detached worktree of the default
+      # branch, never in the registered repo's own checkout: clarify is read-only by
+      # instruction, but a prompt-injected draft could make an agent write, and its
+      # only write root used to be the operator's live working tree (a probe stub
+      # committed to `main` there). Same posture as the reviewer's worktree.
+      CWT="$GAFFER_DATA/worktrees/clarify-wt-$CNUM"
+      log "no ready tickets → intake: clarifying draft #$CNUM ('$CTITLE') in $CREPO (throwaway worktree $CWT @ $CDEFAULT)"
       if [ "$DRY_RUN" = "1" ]; then
         log "DRY_RUN: would run a clarify pass (clarify skill) on draft #$CNUM — files ACs / escalates decisions; never marks it ready"
         result clarified; exit 0
@@ -46,10 +54,12 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # BUG 2 fix: remove injected runner config from the clarify repo on exit
       # (success OR failure / crash) so the real repo is always left clean.
       _clarify_cleanup() {
-        rm -f "$CREPO/CLAUDE.factory.md"
-        rm -f "$CREPO/.claude/settings.json"
-        rm -f "$CREPO/.claude/skills"
-        rmdir "$CREPO/.claude" 2>/dev/null || true
+        # Drop the throwaway worktree (the runner config it carried goes with it);
+        # the registered repo's own checkout was never touched.
+        if [ -n "${CWT:-}" ] && [ -e "$CWT" ]; then
+          git -C "$CREPO" worktree remove --force "$CWT" 2>/dev/null || true
+          git -C "$CREPO" worktree prune 2>/dev/null || true
+        fi
         gaffer_skills_mount_cleanup "clarify-$CNUM"
       }
       # FINDING B-H1: install EXIT *and* signal traps (mirroring the reviewer block).
@@ -71,7 +81,14 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # Skills mount + verified settings.json + workspace trust + the brief, through the
       # ONE shared installer (lib/agent-env.sh) every spawn site uses; any failure
       # refuses the live clarify (fail closed) — the same posture as the delivery site.
-      gaffer_install_agent_dir "$CREPO" "clarify, record-evidence" "clarify-$CNUM" \
+      git -C "$CREPO" worktree remove --force "$CWT" 2>/dev/null || true
+      git -C "$CREPO" worktree prune 2>/dev/null || true
+      if ! git -C "$CREPO" worktree add -q --detach "$CWT" "$CDEFAULT" 2>/dev/null; then
+        log "CLARIFY: could not create the throwaway worktree for #$CNUM ($CREPO @ $CDEFAULT) — skipping this draft"
+        _gaffer_locked .skip.lock _gaffer_append_line "$CLARIFIED_FILE" "$CNUM"
+        result no_work; exit 0
+      fi
+      gaffer_install_agent_dir "$CWT" "clarify, record-evidence" "clarify-$CNUM" \
         || { log "SAFETY: clarify agent env install failed for #$CNUM — refusing live clarify (fail closed)"; result error; exit 1; }
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }
@@ -109,14 +126,14 @@ gaps whose answer would change the implementation, scope, or acceptance). For ea
 either add_acceptance_criterion (a knowable answer or noted sane default) or
 request_decision (a genuine unmade decision). NEVER mark the ticket ready and never
 guess past a real ambiguity — if one stays unresolved, mark_ticket_blocked with the
-open question. Work only in: $CREPO
+open question. Work only in: $CWT
 EOF
       CPROMPT="${CPROMPT}${_CLARIFY_CARDS}"
       C_USAGE_JSON="$GAFFER_DATA/.usage-$CNUM.json"; : > "$C_USAGE_JSON"
       # C1/M2: scrub ambient credentials from the clarify agent's env (allowlist)
       # inside worker_deliver; the per-call vars in WORKER_CALL_ENV layer on top.
       WORKER_CALL_ENV=(
-        "GAFFER_WRITE_ROOTS=$CREPO"
+        "GAFFER_WRITE_ROOTS=$CWT"
         "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
       )
       # ROUTED INTAKE: the router picks the clarify tier (phase `clarify`, default
@@ -129,7 +146,7 @@ EOF
       CLARIFY_MODEL="$(gaffer_route_model clarify "$CRISK" "${CAC:-0}" "" 1 "$CNUM" 2>/dev/null || true)"
       CLARIFY_MODEL_FLAG="${GAFFER_PLAN_MODEL_FLAG:-}"
       [ -n "$CLARIFY_MODEL" ] && CLARIFY_MODEL_FLAG="--model $CLARIFY_MODEL"
-      worker_deliver "$CREPO" "$CPROMPT" "$CLARIFY_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON"
+      worker_deliver "$CWT" "$CPROMPT" "$CLARIFY_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON"
       crc=$?
       gaffer_usage_record clarify "$CNUM" "$crc" "$C_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       rm -f "$C_USAGE_JSON"

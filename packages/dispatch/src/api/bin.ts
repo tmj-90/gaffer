@@ -5,6 +5,7 @@ import { authConfigured, deriveReadToken, ensureApiToken } from "./auth.js";
 import { Dispatch } from "../core.js";
 import { resolveDbPath } from "../util/paths.js";
 import { DEFAULT_API_PORT, assertSafeBind, createApiServer } from "./server.js";
+import { applySettingsToEnv } from "./settings.js";
 
 /**
  * Resolve the unsafe-bind opt-in. True when the `--unsafe-bind` flag is set or
@@ -49,6 +50,10 @@ program
     // $GAFFER_DATA/dashboard-token, and exported into the process env — so the
     // human operator can authenticate while the delivery agent (whose child env
     // the runner scrubs of the token) structurally cannot approve its own work.
+    // Settings the dashboard stores (and the GAFFER_MODE presets) become this
+    // process's env DEFAULTS — the same precedence the runner gives them — so the
+    // API's own gates and the values it reports agree with the tick.
+    applySettingsToEnv(process.env);
     const ensured = ensureApiToken(process.env);
 
     // Refuse to expose the API on a public interface unless it is safe: a bearer

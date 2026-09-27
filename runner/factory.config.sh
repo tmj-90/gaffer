@@ -1,5 +1,10 @@
 # Gaffer factory configuration — source-controlled defaults; override any with env.
 # shellcheck shell=bash
+# The operator's REAL environment, captured before this file assigns anything. The
+# dashboard launcher uses it to tell an operator override (which locks a setting in
+# the UI) from a value this config derived (settings.json, mode preset, default) —
+# those are unset for the dashboard process so the UI can still edit them.
+_GAFFER_ENV_AT_SOURCE=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
 
 # This file lives in runner/ of the Gaffer monorepo, so RUNNER_DIR is its own dir
 # and GAFFER_HOME is the mono root — which holds runner/ alongside
@@ -22,7 +27,11 @@
 if [ -f "$GAFFER_DATA/settings.json" ] && command -v node >/dev/null 2>&1; then
   while IFS=$'\t' read -r _sk _sv; do
     [[ "$_sk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # whole-key anchor (^…$)
-    if [ -z "${!_sk:-}" ]; then printf -v "$_sk" '%s' "$_sv"; fi   # assign-if-unset, no eval
+    # assign-if-unset, no eval — and EXPORT: a dashboard setting must reach the
+    # processes that read it (the dispatch CLI's notifier, the memory server, crew),
+    # not only this shell. Unexported, notifications/auto-approve set in the UI
+    # silently never fired.
+    if [ -z "${!_sk:-}" ]; then printf -v "$_sk" '%s' "$_sv"; export "${_sk?}"; fi
   done < <(node -e 'try{const s=require(process.argv[1]);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")}catch{}' "$GAFFER_DATA/settings.json")
   unset _sk _sv
 fi

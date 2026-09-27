@@ -41,7 +41,7 @@ computed from other knobs at runtime.
 | `GAFFER_ESTIMATE_LIB` | _derived_ (`$RUNNER_DIR/lib/estimate.mjs`) |  | runner | Shared usage-ledger READER (lib/estimate.mjs parseLedger). |
 | `MCP_CONFIG` | _derived_ (`$RUNNER_DIR/.mcp.json`) |  | runner | Claude Code wiring |
 | `CLAUDE_SETTINGS` | _derived_ (`$RUNNER_DIR/claude/settings.json`) |  | runner |  |
-| `SKILLS_DIR` | _derived_ (`$RUNNER_DIR/skills`) |  | runner |  |
+| `SKILLS_DIR` | _derived_ (`$RUNNER_DIR/skills`) |  | crew, runner |  |
 | `CLAUDE_BIN` | `claude` |  | runner | headless `claude -p` |
 | `CLAUDE_FLAGS` | `--permission-mode acceptEdits` |  | runner | tune to your Claude Code version |
 | `GAFFER_PLAN_MODEL` | `opus` |  | runner |  |

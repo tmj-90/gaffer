@@ -58,6 +58,9 @@ export GAFFER_ESTIMATE_LIB
 : "${MCP_CONFIG:=$RUNNER_DIR/.mcp.json}"
 : "${CLAUDE_SETTINGS:=$RUNNER_DIR/claude/settings.json}"
 : "${SKILLS_DIR:=$RUNNER_DIR/skills}"
+# Exported so the crew CLI the runner spawns (`fg skills`, `fg idle`, `fg maintain`)
+# reads the SAME SKILL.md library the agents are mounted (crew's loadSkillRegistry).
+export SKILLS_DIR
 : "${CLAUDE_BIN:=claude}"                                   # headless `claude -p`
 : "${CLAUDE_FLAGS:=--permission-mode acceptEdits}"          # tune to your Claude Code version
 

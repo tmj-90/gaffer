@@ -59,3 +59,25 @@ function matches(declared: readonly string[], wanted: readonly string[]): boolea
   if (declared.length === 0 || wanted.length === 0) return true;
   return declared.some((d) => wanted.includes(d));
 }
+
+/**
+ * Expand compound stack labels into the token set skills are tagged with. A repo's
+ * stack label like "typescript-react-native-expo" expands to the whole plus its parts
+ * ("typescript-react-native-expo", "typescript", "react", "native", "expo") so a skill
+ * tagged with either the broad or the specific stack matches. Mirrors the runner's
+ * `select-skills.mjs expandStacks` and the context packet's `ticketStacks` EXACTLY, so
+ * `fg skills --stack <label>` (tick.sh's fallback selector) agrees with both. Lower-cased,
+ * de-duplicated, order preserved (whole label first).
+ */
+export function expandStackLabels(labels: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const raw of labels) {
+    const normalised = String(raw ?? "")
+      .toLowerCase()
+      .trim();
+    if (!normalised) continue;
+    out.add(normalised);
+    for (const part of normalised.split(/[-/]+/).filter(Boolean)) out.add(part);
+  }
+  return [...out];
+}

@@ -878,8 +878,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # but always include the scaffolder hint. (Same selector as normal delivery.)
     # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
     # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
+    # B30: hand the selector the ticket's title + description head too (`--text`),
+    # exactly as the delivery path does — a bootstrap brief that plainly calls for
+    # an off-domain pack (a CLI tool, a Terraform module, a docs site) was otherwise
+    # unreachable, since the bootstrap passed no text and matched on stack alone.
+    # An argv, never a shell string: the untrusted text cannot inject flags.
     B_AREA="$(gaffer_area_for_stack "$STACK")"
-    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${B_AREA:+--area "$B_AREA"} --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+    _B_SKILL_TEXT="$(printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget '(d.ticket.description || "").slice(0, 600)' 2>/dev/null || true)")"
+    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${B_AREA:+--area "$B_AREA"} --text "$_B_SKILL_TEXT" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
     [ -n "$B_SKILLS" ] || B_SKILLS="(scaffold the stack from the ticket's ACs)"
 
     if [ "$DRY_RUN" = "1" ]; then

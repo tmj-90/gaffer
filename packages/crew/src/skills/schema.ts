@@ -17,6 +17,13 @@ export const skillSchema = z.object({
     .default({}),
   steps: z.array(z.string().min(1)).min(1, "a skill needs at least one step"),
   evidence: z.array(z.string()).default([]),
+  /**
+   * The SKILL.md library's one-line trigger description and area bucket (frontmatter
+   * `description:` / `area:`), carried so `fg skills` lists the same facts the runner's
+   * selector matches on. Empty for a built-in or a YAML skill that declares none.
+   */
+  description: z.string().default(""),
+  area: z.string().default(""),
 });
 
 export type Skill = z.infer<typeof skillSchema>;

@@ -119,6 +119,61 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     responses: [ok("The OpenAPI document.")],
   },
 
+  // --- /api identity & credentials ----------------------------------------------
+  {
+    method: "GET",
+    path: "/api/whoami",
+    tag: T.meta,
+    summary: "How this request authenticated",
+    description:
+      "The capability tier, the actor this credential's writes are attributed to, and the principal (`null` for the shared token).",
+    capability: "read",
+    responses: [ok("`{ capability, actor: { type, id }, principal: { id, name } | null }`.")],
+  },
+  {
+    method: "GET",
+    path: "/api/principals",
+    tag: T.config,
+    summary: "List API principals",
+    description:
+      "Every named credential, newest first, revoked ones included. Never carries token material.",
+    capability: "read",
+    responses: [ok("`{ principals: PrincipalView[] }`.")],
+  },
+  {
+    method: "POST",
+    path: "/api/principals",
+    tag: T.config,
+    summary: "Mint a named API credential",
+    description:
+      "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored.",
+    capability: "full",
+    body: "createPrincipalBody",
+    responses: [
+      created("`{ principal, token }` — the only time the token is shown."),
+      invalid,
+      {
+        status: 409,
+        description: "A principal with that name exists (`DUPLICATE`).",
+        content: "json",
+      },
+    ],
+  },
+  {
+    method: "DELETE",
+    path: "/api/principals/:id",
+    tag: T.config,
+    summary: "Revoke an API credential",
+    description:
+      "Stamps `revoked_at`; the row stays for the audit trail. `:id` accepts the id or the name.",
+    capability: "full",
+    responses: [
+      ok("`{ principal }`."),
+      notFound,
+      { status: 409, description: "Already revoked (`NO_OP`).", content: "json" },
+    ],
+  },
+
   // --- /api configuration ----------------------------------------------------
   {
     method: "GET",
@@ -1232,7 +1287,7 @@ export function operationIdFor(e: EndpointSpec): string {
 }
 
 const PARAM_DESCRIPTIONS: Record<string, string> = {
-  id: "Resource id. Ticket routes also accept the ticket number.",
+  id: "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name.",
   nodeId: "Scope node id.",
   dependsOn: "Id or number of the ticket depended on.",
   repo: "Repository name or id.",

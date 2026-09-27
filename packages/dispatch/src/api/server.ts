@@ -1,7 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import type { Dispatch } from "../core.js";
-import { hasValidBearer, isMutationAuthorized, isRequestAuthorized } from "./auth.js";
+import {
+  hasValidBearer,
+  isMutationAuthorized,
+  isRequestAuthorized,
+  requestPrincipal,
+  setPrincipalResolver,
+} from "./auth.js";
 import { errorBody, handleError, sendJson } from "./http.js";
 import { createMemoryReader, type MemoryReader } from "./memoryReader.js";
 import { createMergeRunner, type MergeRunner } from "./mergeRunner.js";
@@ -10,6 +16,7 @@ import { createPlanBuildRunner, type PlanBuildRunner } from "./planBuild.js";
 import { createPollWorkRunner, type PollWorkRunner } from "./pollWork.js";
 import { createProductOwnerRunner, type ProductOwnerRunner } from "./productOwner.js";
 import { routeApi } from "./routes/api.js";
+import { API_ACTOR, runWithActor } from "./routes/context.js";
 import { routeClaims } from "./routes/claims.js";
 import { routeDecisions } from "./routes/decisions.js";
 import { routeEpics } from "./routes/epics.js";
@@ -75,6 +82,10 @@ export function createApiHandler(
   // Resolve the HSTS posture ONCE from the bind host (not per request), so a
   // spoofed Host header can't toggle Strict-Transport-Security on/off.
   const loopbackBind = isLoopbackHost(bindHost);
+  // PER-PRINCIPAL CREDENTIALS: the auth gate consults this facade for `gfp_…`
+  // tokens. Registered per handler so the last-constructed server owns resolution
+  // (one control plane per process in practice).
+  setPrincipalResolver((token) => wg.resolvePrincipalToken(token));
   return (req, res) => {
     // Baseline security headers on EVERY response (static assets, JSON, errors).
     applySecurityHeaders(res, loopbackBind);
@@ -232,6 +243,47 @@ async function route(
       return;
     }
 
+    // PER-PRINCIPAL CREDENTIALS: attribute everything this request writes to the
+    // principal it authenticated as (the shared token keeps the single API actor).
+    const principal = requestPrincipal(req);
+    await runWithActor(principal ? principal.actor : API_ACTOR, () =>
+      dispatchResource(
+        wg,
+        runner,
+        planBuildRunner,
+        mergeRunner,
+        pollWorkRunner,
+        memoryReader,
+        onboardRunner,
+        specAuthorRunner,
+        method,
+        segments,
+        url,
+        req,
+        res,
+      ),
+    );
+  } catch (err) {
+    handleError(res, err);
+  }
+}
+
+async function dispatchResource(
+  wg: Dispatch,
+  runner: ProductOwnerRunner,
+  planBuildRunner: PlanBuildRunner,
+  mergeRunner: MergeRunner,
+  pollWorkRunner: PollWorkRunner,
+  memoryReader: MemoryReader,
+  onboardRunner: OnboardRunner,
+  specAuthorRunner: SpecAuthorRunner,
+  method: string,
+  segments: string[],
+  url: URL,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  {
     // Resource dispatch by first path segment. Routers that always own their
     // segment (their own 404) return void; the rest return `true` when they
     // handled the request and `false` to let an unmatched sub-path fall through
@@ -290,7 +342,5 @@ async function route(
     }
 
     sendJson(res, 404, errorBody("NOT_FOUND", `No route for ${method} ${url.pathname}.`));
-  } catch (err) {
-    handleError(res, err);
   }
 }

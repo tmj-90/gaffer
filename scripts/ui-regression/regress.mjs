@@ -482,6 +482,64 @@ try {
   await page.keyboard.press("Escape"); // close the sheet — an open sheet suppresses auto-refresh by design
   await sleep(300);
 
+  // ── 6b. Settings → Access: mint a named credential (token shown once), revoke it ──
+  await page.goto(`${BASE}/#/settings`, { waitUntil: "load" });
+  await sleep(900);
+  const whoami = (await page.textContent('[data-testid="access-whoami"]').catch(() => "")) || "";
+  /Signed in as .* via the shared token/.test(whoami)
+    ? ok("Settings: Access panel names the signed-in actor and the shared token")
+    : bad(`Settings: Access panel whoami missing/unexpected: ${whoami.slice(0, 120)}`);
+  const pName = await page.$('input[name="principal-name"]');
+  if (pName) {
+    await pName.fill("ci-reviewer");
+    await page.selectOption('select[name="principal-capability"]', "read");
+    await page.click('form.access-form button[type="submit"]');
+    await sleep(800);
+    const minted = (await page.inputValue('[data-testid="access-token"]').catch(() => "")) || "";
+    minted.startsWith("gfp_") && minted.length > 40
+      ? ok("Settings: creating a principal shows its gfp_ token once")
+      : bad(
+          `Settings: no one-time token after creating a principal (got '${minted.slice(0, 12)}…')`,
+        );
+    await shot(page, "settings-principal-created");
+    // The new principal authenticates as its own actor, read-scoped.
+    const who = await fetch(`${BASE}/api/whoami`, {
+      headers: { Authorization: `Bearer ${minted}` },
+    });
+    const whoJson = who.ok ? await who.json() : null;
+    whoJson && whoJson.capability === "read" && whoJson.actor && whoJson.actor.id === "ci-reviewer"
+      ? ok("API: the minted token authenticates as principal ci-reviewer (read)")
+      : bad(`API: minted token whoami unexpected: ${who.status} ${JSON.stringify(whoJson)}`);
+    const denied = await fetch(`${BASE}/tickets`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${minted}`, "content-type": "application/json" },
+      body: JSON.stringify({ title: "should be refused" }),
+    });
+    denied.status === 403
+      ? ok("API: the read principal is refused on a mutation (403)")
+      : bad(`API: read principal mutation returned ${denied.status}`);
+    // Two-step revoke from the list, then the token is dead.
+    const revokeBtn = page.locator(
+      '.access-item:has-text("ci-reviewer") button:has-text("Revoke")',
+    );
+    await revokeBtn.click();
+    await page
+      .locator('.access-item:has-text("ci-reviewer") button:has-text("Confirm revoke")')
+      .click();
+    await sleep(900);
+    const rowTxt =
+      (await page.textContent('.access-item:has-text("ci-reviewer")').catch(() => "")) || "";
+    /revoked/.test(rowTxt)
+      ? ok("Settings: revoking a principal marks it revoked in the list")
+      : bad(`Settings: principal row after revoke: ${rowTxt.slice(0, 120)}`);
+    const dead = await fetch(`${BASE}/api/whoami`, {
+      headers: { Authorization: `Bearer ${minted}` },
+    });
+    dead.status === 401
+      ? ok("API: the revoked token is refused (401)")
+      : bad(`API: revoked token returned ${dead.status}`);
+  } else bad("Settings: no principal-name input (Access panel missing)");
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [

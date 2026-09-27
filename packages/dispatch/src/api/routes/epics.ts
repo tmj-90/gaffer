@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Dispatch } from "../../core.js";
 import { methodNotAllowed, readJsonBody, sendCreated } from "../http.js";
 import { createEpicBody } from "../schemas.js";
-import { API_ACTOR } from "./context.js";
+import { apiActor } from "./context.js";
 
 /**
  * POST /epics — create an epic (scope node + dependency-ordered draft tickets)
@@ -25,7 +25,7 @@ export async function routeEpics(
     return true;
   }
   const body = createEpicBody.parse(await readJsonBody(req));
-  const result = wg.createEpic(body, API_ACTOR);
+  const result = wg.createEpic(body, apiActor());
   // An epic IS a scope node — its canonical URL is /scope/nodes/:id (M5).
   sendCreated(res, `/scope/nodes/${result.epicNodeId}`, {
     epic_node_id: result.epicNodeId,

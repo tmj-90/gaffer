@@ -757,3 +757,23 @@ export const autonomyPolicyBody = z.object({
   confirm: z.boolean().default(false),
 });
 export type AutonomyPolicyBody = z.infer<typeof autonomyPolicyBody>;
+
+// --- Per-principal API credentials -------------------------------------------
+
+/**
+ * Body for POST /api/principals — mint a named bearer credential bound to an actor
+ * identity and a capability. The token is returned once and never stored.
+ */
+export const createPrincipalBody = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/, "letters, digits, '.', '_', '@' or '-'"),
+  capability: z.enum(["full", "read"]).default("full"),
+  actor_type: z.enum(["human", "admin"]).default("human"),
+  /** Defaults to the name. */
+  actor_id: z.string().trim().min(1).max(200).optional(),
+});
+export type CreatePrincipalBody = z.infer<typeof createPrincipalBody>;

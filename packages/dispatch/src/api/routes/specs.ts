@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Dispatch } from "../../core.js";
 import { methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
 import { createSpecBody, specListQuery, updateSpecClausesBody } from "../schemas.js";
-import { API_ACTOR } from "./context.js";
+import { apiActor } from "./context.js";
 
 /**
  * Specs (Spec-Driven Development, Phase 1a). Returns true when the request
@@ -32,7 +32,7 @@ export async function routeSpecs(
   if (segments.length === 1) {
     if (method === "POST") {
       const body = createSpecBody.parse(await readJsonBody(req));
-      const spec = wg.createSpec(body, API_ACTOR);
+      const spec = wg.createSpec(body, apiActor());
       sendCreated(res, `/specs/${spec.id}`, { spec });
       return true;
     }
@@ -52,7 +52,7 @@ export async function routeSpecs(
       methodNotAllowed(res);
       return true;
     }
-    const spec = wg.freezeSpec(segments[1] as string, API_ACTOR);
+    const spec = wg.freezeSpec(segments[1] as string, apiActor());
     sendJson(res, 200, { spec });
     return true;
   }
@@ -80,7 +80,7 @@ export async function routeSpecs(
     }
     if (method === "PATCH") {
       const body = updateSpecClausesBody.parse(await readJsonBody(req));
-      const spec = wg.updateSpecClauses(segments[1] as string, body, API_ACTOR);
+      const spec = wg.updateSpecClauses(segments[1] as string, body, apiActor());
       sendJson(res, 200, { spec });
       return true;
     }

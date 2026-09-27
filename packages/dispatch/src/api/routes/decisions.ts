@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Dispatch } from "../../core.js";
 import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
 import { createDecisionBody, resolveDecisionBody } from "../schemas.js";
-import { API_ACTOR } from "./context.js";
+import { apiActor } from "./context.js";
 
 export async function routeDecisions(
   wg: Dispatch,
@@ -27,7 +27,7 @@ export async function routeDecisions(
           ...(body.severity !== undefined ? { severity: body.severity } : {}),
           ...(body.ticket_id !== undefined ? { ticketId: body.ticket_id } : {}),
         },
-        API_ACTOR,
+        apiActor(),
       );
       sendCreated(res, `/decisions/${decision.id}`, { decision });
       return;
@@ -46,7 +46,7 @@ export async function routeDecisions(
         answer: body.answer,
         rationale: body.rationale,
       },
-      API_ACTOR,
+      apiActor(),
     );
     sendJson(res, 200, { decision });
     return;

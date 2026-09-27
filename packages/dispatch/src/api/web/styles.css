@@ -9632,3 +9632,52 @@ textarea:focus-visible,
 .mem-primed-at {
   white-space: nowrap;
 }
+
+/* ── Access panel (Settings): principals + one-time token ─────────────────── */
+.access-whoami {
+  margin: 0 0 var(--s-3);
+  color: var(--ink-2);
+}
+.access-item.is-revoked {
+  opacity: 0.75;
+  border-left-color: var(--line);
+}
+.access-name {
+  font-weight: 600;
+}
+.access-status {
+  font-size: var(--fs-xs, 0.75rem);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-3, var(--ink-2));
+}
+.access-form {
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line);
+}
+.access-form h3 {
+  margin: 0 0 var(--s-2);
+  font-size: 1rem;
+}
+.access-form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--s-3);
+  margin-bottom: var(--s-3);
+}
+.access-token-out {
+  margin-top: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.access-token-note {
+  margin: 0 0 var(--s-2);
+}
+.access-token {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}

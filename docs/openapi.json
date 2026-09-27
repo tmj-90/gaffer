@@ -131,6 +131,257 @@
         "x-capability": "read"
       }
     },
+    "/api/whoami": {
+      "get": {
+        "operationId": "getApiWhoami",
+        "tags": [
+          "Meta"
+        ],
+        "summary": "How this request authenticated",
+        "description": "The capability tier, the actor this credential's writes are attributed to, and the principal (`null` for the shared token).",
+        "responses": {
+          "200": {
+            "description": "`{ capability, actor: { type, id }, principal: { id, name } | null }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
+    "/api/principals": {
+      "get": {
+        "operationId": "getApiPrincipals",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "List API principals",
+        "description": "Every named credential, newest first, revoked ones included. Never carries token material.",
+        "responses": {
+          "200": {
+            "description": "`{ principals: PrincipalView[] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      },
+      "post": {
+        "operationId": "postApiPrincipals",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Mint a named API credential",
+        "description": "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/createPrincipalBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "`{ principal, token }` — the only time the token is shown. The Location header names the created resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A principal with that name exists (`DUPLICATE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/api/principals/{id}": {
+      "delete": {
+        "operationId": "deleteApiPrincipalsById",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Revoke an API credential",
+        "description": "Stamps `revoked_at`; the row stays for the audit trail. `:id` accepts the id or the name.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ principal }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already revoked (`NO_OP`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
     "/api/settings": {
       "get": {
         "operationId": "getApiSettings",
@@ -1231,7 +1482,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -1299,7 +1550,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -1646,7 +1897,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -1715,7 +1966,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -1803,7 +2054,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -1882,7 +2133,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -1980,7 +2231,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -2068,7 +2319,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -2156,7 +2407,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -2234,7 +2485,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -2303,7 +2554,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -2372,7 +2623,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -2451,7 +2702,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -2550,7 +2801,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -2629,7 +2880,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -2728,7 +2979,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -2797,7 +3048,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           },
           {
             "name": "format",
@@ -2883,7 +3134,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -2971,7 +3222,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -3060,7 +3311,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -3158,7 +3409,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -3256,7 +3507,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -3355,7 +3606,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -3443,7 +3694,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -3542,7 +3793,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -3630,7 +3881,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -3718,7 +3969,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -3784,7 +4035,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -3872,7 +4123,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -3938,7 +4189,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -4026,7 +4277,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           },
           {
             "name": "nodeId",
@@ -4103,7 +4354,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -4192,7 +4443,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -4281,7 +4532,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -4349,7 +4600,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -4427,7 +4678,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -4495,7 +4746,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -4563,7 +4814,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -4629,7 +4880,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -4727,7 +4978,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           },
           {
             "name": "dependsOn",
@@ -4804,7 +5055,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -4870,7 +5121,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -5070,7 +5321,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -5215,7 +5466,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -5520,7 +5771,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -5586,7 +5837,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -5672,7 +5923,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -5873,7 +6124,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -6084,7 +6335,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -6170,7 +6421,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -6414,7 +6665,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -6483,7 +6734,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -6571,7 +6822,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -6864,7 +7115,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -6930,7 +7181,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -7029,7 +7280,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -7107,7 +7358,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -7363,7 +7614,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "responses": {
@@ -7431,7 +7682,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -7519,7 +7770,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -7608,7 +7859,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Resource id. Ticket routes also accept the ticket number."
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
         "requestBody": {
@@ -8256,6 +8507,41 @@
         "required": [
           "epic",
           "tickets"
+        ]
+      },
+      "createPrincipalBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$"
+          },
+          "capability": {
+            "type": "string",
+            "enum": [
+              "full",
+              "read"
+            ],
+            "default": "full"
+          },
+          "actor_type": {
+            "type": "string",
+            "enum": [
+              "human",
+              "admin"
+            ],
+            "default": "human"
+          },
+          "actor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "name"
         ]
       },
       "createScopeEdgeBody": {

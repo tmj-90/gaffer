@@ -83,6 +83,20 @@ SPA shell and `/healthz` are tokenless). Loopback-only by default — a bind gua
 non-loopback hosts unless you pass `--unsafe-bind` (or `DISPATCH_UNSAFE_BIND=1`). Run it
 backgrounded with `nohup … &` to keep it up across shells.
 
+**Named credentials.** The shared token acts as one operator identity. To give each
+person (or CI job) their own credential whose writes are attributed to them in the
+event log, mint a principal — from Settings → Access in the dashboard, or:
+
+```bash
+node packages/dispatch/dist/cli/index.js principal create alice            # full: read + write
+node packages/dispatch/dist/cli/index.js principal create ci-viewer --read # GET routes only
+node packages/dispatch/dist/cli/index.js principal list
+node packages/dispatch/dist/cli/index.js principal revoke ci-viewer
+```
+
+The token (`gfp_…`) is printed once; only its hash is stored. `GET /api/whoami` tells
+a caller which principal and capability its token carries.
+
 **"Suggest work" button** (`POST /product-owner/runs`): the dashboard runs the
 product-owner skill headlessly to file fresh draft tickets. It needs two env vars on
 the dashboard process — `gaffer dashboard` exports both for you; if you start

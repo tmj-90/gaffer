@@ -5322,18 +5322,29 @@ async function renderSettings() {
   // Load the env-override settings plus the crew idle-loop config + the repos and
   // scope nodes the idle-loop target picker needs. Best-effort on the extras: a
   // failure there must not blank the whole Settings page.
-  const [{ settings }, idleLoopsRes, reposRes, nodesRes, autonomyRecRes, autonomyPolRes] =
-    await Promise.all([
-      api("GET", "/api/settings"),
-      api("GET", "/api/idle-loops").catch(() => null),
-      api("GET", "/repositories").catch(() => ({ repositories: [] })),
-      api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
-      // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
-      // blank the page if the endpoint is unavailable.
-      api("GET", "/api/autonomy/recommendations").catch(() => null),
-      // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies.
-      api("GET", "/api/autonomy/policies").catch(() => null),
-    ]);
+  const [
+    { settings },
+    idleLoopsRes,
+    reposRes,
+    nodesRes,
+    autonomyRecRes,
+    autonomyPolRes,
+    whoamiRes,
+    principalsRes,
+  ] = await Promise.all([
+    api("GET", "/api/settings"),
+    api("GET", "/api/idle-loops").catch(() => null),
+    api("GET", "/repositories").catch(() => ({ repositories: [] })),
+    api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
+    // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
+    // blank the page if the endpoint is unavailable.
+    api("GET", "/api/autonomy/recommendations").catch(() => null),
+    // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies.
+    api("GET", "/api/autonomy/policies").catch(() => null),
+    // PER-PRINCIPAL CREDENTIALS: who this session is + the named credentials.
+    api("GET", "/api/whoami").catch(() => null),
+    api("GET", "/api/principals").catch(() => null),
+  ]);
   const all = Array.isArray(settings) ? settings : [];
   const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
   const repos = reposRes.repositories || [];
@@ -5379,6 +5390,14 @@ async function renderSettings() {
   // track record — each is now an ENABLE action (evidence + explicit confirm → POST).
   const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies);
   if (recPanel) wrap.appendChild(recPanel);
+
+  // PER-PRINCIPAL CREDENTIALS: who is signed in, the named credentials, mint/revoke.
+  wrap.appendChild(
+    accessPanel(
+      whoamiRes,
+      principalsRes && Array.isArray(principalsRes.principals) ? principalsRes.principals : [],
+    ),
+  );
 
   // edit registry: key → { def, read() } for non-locked inputs, so Save collects
   // only the values the operator can actually change.
@@ -5681,6 +5700,189 @@ function autonomyPoliciesPanel(policies) {
       }),
     ),
   ]);
+}
+
+/**
+ * Access panel (Settings): how this session authenticated, the named API
+ * credentials (principals) and, for a full-capability session, the mint and
+ * revoke actions. A minted token is shown ONCE in a read-only field; only its
+ * hash exists server-side, so it cannot be shown again.
+ */
+function accessPanel(whoami, principals) {
+  const cap = whoami && whoami.capability ? whoami.capability : "full";
+  const canManage = cap === "full";
+  const actorId = whoami && whoami.actor ? whoami.actor.id || whoami.actor.type : "—";
+  const via =
+    whoami && whoami.principal
+      ? `principal “${whoami.principal.name}”`
+      : whoami
+        ? "the shared token"
+        : "unknown";
+  const card = el("div", { class: "card panel access-panel" }, [
+    el("div", { class: "ar-head" }, [
+      icon("lock", "ar-ico"),
+      el("div", {}, [
+        el("h2", { class: "ar-title" }, "Access"),
+        el(
+          "p",
+          { class: "section-note dim" },
+          "Named credentials for the API. Every write a principal makes is attributed to its actor in the event log.",
+        ),
+      ]),
+    ]),
+    el("p", { class: "access-whoami", "data-testid": "access-whoami" }, [
+      "Signed in as ",
+      el("strong", {}, actorId),
+      ` (${cap}) via ${via}.`,
+    ]),
+  ]);
+
+  const list = el("ul", { class: "ar-list access-list", "aria-label": "API principals" });
+  if (principals.length === 0) {
+    list.appendChild(
+      el("li", { class: "ar-item dim" }, "No principals yet — every caller uses the shared token."),
+    );
+  }
+  for (const p of principals) {
+    const revoked = Boolean(p.revoked_at);
+    const item = el("li", { class: `ar-item access-item${revoked ? " is-revoked" : ""}` }, [
+      el("div", { class: "ar-item-head" }, [
+        el("span", { class: "access-name" }, p.name),
+        el("span", { class: "ap-mode" }, p.capability),
+        el("span", { class: "ar-repo" }, `${p.actor_type}:${p.actor_id}`),
+        revoked ? el("span", { class: "access-status" }, "revoked") : null,
+      ]),
+      el(
+        "p",
+        { class: "ar-reasons dim" },
+        `created ${String(p.created_at || "").slice(0, 10)}${p.created_by ? ` by ${p.created_by}` : ""}` +
+          (p.last_used_at
+            ? ` · last used ${String(p.last_used_at).slice(0, 16).replace("T", " ")}`
+            : " · never used") +
+          (revoked ? ` · revoked ${String(p.revoked_at).slice(0, 10)}` : ""),
+      ),
+    ]);
+    if (canManage && !revoked) {
+      // Two-step revoke: the first click arms, the second confirms (no modal).
+      const btn = el(
+        "button",
+        { class: "btn small ghost", type: "button" },
+        el("span", {}, "Revoke"),
+      );
+      let armed = false;
+      btn.addEventListener("click", () => {
+        if (!armed) {
+          armed = true;
+          clear(btn);
+          btn.appendChild(el("span", {}, "Confirm revoke"));
+          btn.classList.add("danger");
+          setTimeout(() => {
+            if (!armed) return;
+            armed = false;
+            clear(btn);
+            btn.appendChild(el("span", {}, "Revoke"));
+            btn.classList.remove("danger");
+          }, 6000);
+          return;
+        }
+        runAsyncAction(btn, "Revoking…", async () => {
+          await api("DELETE", `/api/principals/${encodeURIComponent(p.id)}`);
+          toast(`Revoked “${p.name}”.`, { ok: true });
+          router();
+        });
+      });
+      item.appendChild(el("div", { class: "ar-action" }, [btn]));
+    }
+    list.appendChild(item);
+  }
+  card.appendChild(list);
+
+  if (canManage) {
+    const nameInput = el("input", {
+      type: "text",
+      name: "principal-name",
+      placeholder: "e.g. alice or ci-reviewer",
+      required: "required",
+      maxlength: "64",
+      // The HTML pattern attribute compiles with the `v` flag: `-` in a class must be escaped.
+      pattern: "[A-Za-z0-9][A-Za-z0-9._@\\-]{0,63}",
+      autocomplete: "off",
+    });
+    const capSelect = el("select", { name: "principal-capability" }, [
+      el("option", { value: "full" }, "full — read and write"),
+      el("option", { value: "read" }, "read — GET routes only"),
+    ]);
+    const actorInput = el("input", {
+      type: "text",
+      name: "principal-actor-id",
+      placeholder: "defaults to the name",
+      maxlength: "200",
+      autocomplete: "off",
+    });
+    const submit = el("button", { class: "btn primary small", type: "submit" }, [
+      icon("plus"),
+      el("span", {}, "Create credential"),
+    ]);
+    const tokenOut = el("div", { class: "access-token-out", hidden: true });
+    const form = el("form", { class: "access-form" }, [
+      el("h3", {}, "New credential"),
+      el("div", { class: "access-form-row" }, [
+        field("Name", nameInput),
+        field("Capability", capSelect),
+        field("Actor id", actorInput),
+      ]),
+      el("div", { class: "btn-row" }, [submit]),
+      tokenOut,
+    ]);
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const name = nameInput.value.trim();
+      if (!name) return;
+      runAsyncAction(submit, "Creating…", async () => {
+        const body = { name, capability: capSelect.value };
+        if (actorInput.value.trim()) body.actor_id = actorInput.value.trim();
+        const res = await api("POST", "/api/principals", body);
+        const tok = el("input", {
+          type: "text",
+          readonly: "readonly",
+          class: "access-token",
+          "data-testid": "access-token",
+          value: res.token,
+          "aria-label": "New token (shown once)",
+        });
+        tok.addEventListener("focus", () => tok.select());
+        clear(tokenOut);
+        tokenOut.hidden = false;
+        tokenOut.append(
+          el("p", { class: "access-token-note" }, [
+            el("strong", {}, `Token for “${res.principal.name}” — shown once. `),
+            "Copy it now; only its hash is stored.",
+          ]),
+          tok,
+        );
+        toast(`Created “${res.principal.name}”. The token is shown once below.`, { ok: true });
+        nameInput.value = "";
+        actorInput.value = "";
+        // Refresh the list without dropping the one-time token from view.
+        const fresh = await api("GET", "/api/principals").catch(() => null);
+        if (fresh && Array.isArray(fresh.principals)) {
+          const rebuilt = accessPanel(whoami, fresh.principals);
+          const freshList = rebuilt.querySelector(".access-list");
+          if (freshList) list.replaceWith(freshList);
+        }
+      });
+    });
+    card.appendChild(form);
+  } else {
+    card.appendChild(
+      el(
+        "p",
+        { class: "section-note dim" },
+        "This session is read-scoped: it can see principals but not mint or revoke them.",
+      ),
+    );
+  }
+  return card;
 }
 
 /** The known idle scan loops, in display order, with copy for the panel. */

@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -645,4 +645,32 @@ CREATE TABLE IF NOT EXISTS autonomy_policy (
 );
 CREATE INDEX IF NOT EXISTS idx_autonomy_policy_lookup
   ON autonomy_policy(repo_id, risk_level, gate);
+
+-- ============================================================================
+-- PER-PRINCIPAL API CREDENTIALS (schema_version 24). Named bearer tokens for the
+-- REST surface, each bound to an ACTOR IDENTITY and a CAPABILITY. Until now the
+-- API acted as one hard-coded human actor for every caller of the shared token;
+-- a request authenticated with a principal token is attributed to that
+-- principal's actor on every event and evidence row it writes, so the audit trail
+-- names who acted. Only the SHA-256 of the token is stored; the token itself is
+-- shown once at creation. Revocation is a timestamp (rows are never deleted) so
+-- the history of who held access is itself auditable. Machine-local: excluded
+-- from the portable state bundle (credentials do not travel with a board).
+-- Brand-new table, created idempotently — no ADD COLUMN migration needed.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS api_principals (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL UNIQUE,
+  token_hash    TEXT NOT NULL UNIQUE,
+  capability    TEXT NOT NULL CHECK (capability IN ('full','read')),
+  actor_type    TEXT NOT NULL CHECK (actor_type IN ('human','admin')),
+  actor_id      TEXT NOT NULL,
+  created_by    TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  last_used_at  TEXT,
+  revoked_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_api_principals_active
+  ON api_principals(revoked_at, token_hash);
 `;

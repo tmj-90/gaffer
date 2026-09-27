@@ -9,7 +9,7 @@ import {
   setRepoDefaultBranchBody,
   setRepoHiddenBody,
 } from "../schemas.js";
-import { API_ACTOR } from "./context.js";
+import { apiActor } from "./context.js";
 
 /**
  * The agents / repositories / repos read + management surface. Returns true when
@@ -83,7 +83,7 @@ export async function routeRepos(
       return true;
     }
     const body = setRepoHiddenBody.parse(await readJsonBody(req));
-    const repo = wg.setRepoHidden(segments[1] as string, body.hidden, API_ACTOR);
+    const repo = wg.setRepoHidden(segments[1] as string, body.hidden, apiActor());
     sendJson(res, 200, { repository: repo });
     return true;
   }
@@ -97,7 +97,7 @@ export async function routeRepos(
       return true;
     }
     const body = setRepoDefaultBranchBody.parse(await readJsonBody(req));
-    const repo = wg.setRepoDefaultBranch(segments[1] as string, body.default_branch, API_ACTOR);
+    const repo = wg.setRepoDefaultBranch(segments[1] as string, body.default_branch, apiActor());
     sendJson(res, 200, { repository: repo });
     return true;
   }
@@ -111,7 +111,7 @@ export async function routeRepos(
       return true;
     }
     const body = setRepoCommandsBody.parse(await readJsonBody(req));
-    const repo = wg.setRepoCommands(segments[1] as string, body, API_ACTOR);
+    const repo = wg.setRepoCommands(segments[1] as string, body, apiActor());
     sendJson(res, 200, { repository: repo });
     return true;
   }

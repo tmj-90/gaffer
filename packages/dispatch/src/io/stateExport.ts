@@ -51,6 +51,10 @@ export const STATE_FORMAT_VERSION = 1;
  *    pid would actively mislead the stale-run sweep), so run history is NOT part
  *    of the portable board bundle.
  *
+ *  - `api_principals`: machine-local CREDENTIALS (token hashes bound to actor
+ *    identities). A board bundle must never carry access material; an importing
+ *    factory mints its own principals.
+ *
  * Every other table in SCHEMA_SQL carries durable board state and IS included.
  * The drift guard in state-export.test.ts enforces that any future durable table
  * is consciously added here or excluded with a reason.

@@ -2,7 +2,7 @@ import type { ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
 import { errorBody, sendJson } from "../http.js";
-import { API_ACTOR } from "./context.js";
+import { apiActor } from "./context.js";
 
 export async function routeClaims(
   wg: Dispatch,
@@ -18,7 +18,7 @@ export async function routeClaims(
 
   // /claims/:id/revoke
   if (segments.length === 3 && segments[2] === "revoke" && method === "POST") {
-    const result = wg.revokeClaim(segments[1] as string, API_ACTOR);
+    const result = wg.revokeClaim(segments[1] as string, apiActor());
     sendJson(res, 200, { claim_id: result.claimId, ticket_id: result.ticketId });
     return;
   }

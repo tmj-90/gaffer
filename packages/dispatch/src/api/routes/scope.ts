@@ -10,7 +10,7 @@ import {
   updateScopeNodeBody,
   updateScopeRepoBody,
 } from "../schemas.js";
-import { API_ACTOR } from "./context.js";
+import { apiActor } from "./context.js";
 
 /**
  * Factory Map scope graph (FG-001 + FG-002). Routes:
@@ -35,7 +35,7 @@ export async function routeScope(
   if (segments.length === 2 && resource === "repo-suggestions") {
     if (method !== "POST") return methodNotAllowed(res);
     const body = suggestReposBody.parse(await readJsonBody(req));
-    const suggestions = wg.suggestReposForTicket(body, API_ACTOR);
+    const suggestions = wg.suggestReposForTicket(body, apiActor());
     sendJson(res, 200, { suggestions });
     return;
   }
@@ -56,7 +56,7 @@ export async function routeScope(
       }
       if (method === "POST") {
         const body = createScopeNodeBody.parse(await readJsonBody(req));
-        const node = wg.createScopeNode(body, API_ACTOR);
+        const node = wg.createScopeNode(body, apiActor());
         sendCreated(res, `/scope/nodes/${node.id}`, { node });
         return;
       }
@@ -71,12 +71,12 @@ export async function routeScope(
       }
       if (method === "PATCH") {
         const body = updateScopeNodeBody.parse(await readJsonBody(req));
-        const node = wg.updateScopeNode(nodeId, body, API_ACTOR);
+        const node = wg.updateScopeNode(nodeId, body, apiActor());
         sendJson(res, 200, { node });
         return;
       }
       if (method === "DELETE") {
-        const result = wg.deleteScopeNode(nodeId, API_ACTOR);
+        const result = wg.deleteScopeNode(nodeId, apiActor());
         sendJson(res, 200, { node_id: result.nodeId, event_id: result.eventId });
         return;
       }
@@ -94,14 +94,14 @@ export async function routeScope(
       }
       if (method === "POST") {
         const body = createScopeEdgeBody.parse(await readJsonBody(req));
-        const edge = wg.createScopeEdge(body, API_ACTOR);
+        const edge = wg.createScopeEdge(body, apiActor());
         sendCreated(res, `/scope/edges/${edge.id}`, { edge });
         return;
       }
       return methodNotAllowed(res);
     }
     if (segments.length === 3 && method === "DELETE") {
-      const result = wg.deleteScopeEdge(segments[2] as string, API_ACTOR);
+      const result = wg.deleteScopeEdge(segments[2] as string, apiActor());
       sendJson(res, 200, { edge_id: result.edgeId, event_id: result.eventId });
       return;
     }
@@ -132,7 +132,7 @@ export async function routeScope(
       }
       if (method === "POST") {
         const body = createScopeRepoBody.parse(await readJsonBody(req));
-        const link = wg.linkScopeRepo(body, API_ACTOR);
+        const link = wg.linkScopeRepo(body, apiActor());
         sendCreated(res, `/scope/repos/${link.id}`, { association: link });
         return;
       }
@@ -142,12 +142,12 @@ export async function routeScope(
       const associationId = segments[2] as string;
       if (method === "PATCH") {
         const body = updateScopeRepoBody.parse(await readJsonBody(req));
-        const link = wg.updateScopeRepo(associationId, body, API_ACTOR);
+        const link = wg.updateScopeRepo(associationId, body, apiActor());
         sendJson(res, 200, { association: link });
         return;
       }
       if (method === "DELETE") {
-        const result = wg.unlinkScopeRepo(associationId, API_ACTOR);
+        const result = wg.unlinkScopeRepo(associationId, apiActor());
         sendJson(res, 200, { association_id: result.associationId, event_id: result.eventId });
         return;
       }

@@ -1,13 +1,19 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
-import { errorBody, methodNotAllowed, readJsonBody, sendJson } from "../http.js";
+import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "../idleLoops.js";
 import type { MemoryReader } from "../memoryReader.js";
 import { buildOpenApiDocument } from "../openapi/spec.js";
-import { autonomyPolicyBody, idleLoopsBody, settingsBody } from "../schemas.js";
+import { requestCapability, requestPrincipal } from "../auth.js";
+import {
+  autonomyPolicyBody,
+  createPrincipalBody,
+  idleLoopsBody,
+  settingsBody,
+} from "../schemas.js";
 import { listSettings, writeSettings } from "../settings.js";
-import { API_ACTOR } from "./context.js";
+import { apiActor } from "./context.js";
 import { routeReadModels } from "./readModels.js";
 
 /**
@@ -64,6 +70,49 @@ export async function routeApi(
     res.end(openApiCache);
     return;
   }
+  // GET /api/whoami — how this request authenticated: capability tier, the actor
+  // its writes are attributed to, and the principal (null for the shared token).
+  if (segments.length === 2 && segments[1] === "whoami") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const p = requestPrincipal(req);
+    sendJson(res, 200, {
+      capability: requestCapability(req) ?? "full",
+      actor: apiActor(),
+      principal: p ? { id: p.principal.id, name: p.principal.name } : null,
+    });
+    return;
+  }
+  // PER-PRINCIPAL CREDENTIALS — GET/POST /api/principals, DELETE /api/principals/:id.
+  // Named bearer tokens bound to an actor identity + capability. Creation returns
+  // the token ONCE; the list never carries hashes. Mutations need the full tier
+  // (the capability gate upstream), so a read principal can see but not mint.
+  if (segments.length === 2 && segments[1] === "principals") {
+    if (method === "GET") {
+      sendJson(res, 200, { principals: wg.listPrincipals() });
+      return;
+    }
+    if (method === "POST") {
+      const body = createPrincipalBody.parse(await readJsonBody(req));
+      const { principal, token } = wg.createPrincipal(
+        {
+          name: body.name,
+          capability: body.capability,
+          actorType: body.actor_type,
+          actorId: body.actor_id,
+        },
+        apiActor(),
+      );
+      sendCreated(res, `/api/principals/${principal.id}`, { principal, token });
+      return;
+    }
+    return methodNotAllowed(res);
+  }
+  if (segments.length === 3 && segments[1] === "principals") {
+    if (method !== "DELETE") return methodNotAllowed(res);
+    const principal = wg.revokePrincipal(segments[2] ?? "", apiActor());
+    sendJson(res, 200, { principal });
+    return;
+  }
   // GET/PUT /api/idle-loops — dashboard control for the crew idle scan loops.
   // GET reads the `loops.idle_<key>.{enabled,repos}` slice of crew.yaml (a
   // missing file is a clean "not configured" shape, never a 500). PUT validates
@@ -111,7 +160,7 @@ export async function routeApi(
         mode: body.mode,
         confirm: body.confirm,
       },
-      API_ACTOR,
+      apiActor(),
     );
     sendJson(res, 200, { policy });
     return;

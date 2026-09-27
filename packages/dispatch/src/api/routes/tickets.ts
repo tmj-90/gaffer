@@ -29,7 +29,7 @@ import {
   ticketListQuery,
   wontDoBody,
 } from "../schemas.js";
-import { API_ACTOR } from "./context.js";
+import { apiActor } from "./context.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -119,10 +119,10 @@ export async function routeTickets(
           policy_pack: body.policy_pack,
           source: body.source,
         },
-        API_ACTOR,
+        apiActor(),
       );
       // Legacy single-repo link (older callers / mono-fallback flows).
-      if (body.repo) wg.linkRepository(ticket.id, body.repo, "primary", API_ACTOR);
+      if (body.repo) wg.linkRepository(ticket.id, body.repo, "primary", apiActor());
       // Feature A: link the chosen scope node(s) — the first is primary so the
       // ticket lives under a product scope, the rest are secondary context.
       if (body.scopeNodeIds) {
@@ -133,7 +133,7 @@ export async function routeTickets(
               scope_node_id: scopeNodeId,
               relation: i === 0 ? "primary" : "secondary",
             },
-            API_ACTOR,
+            apiActor(),
           );
         });
       }
@@ -143,7 +143,7 @@ export async function routeTickets(
         for (const r of body.repoIds) {
           wg.setTicketRepoAccess(
             { ticket_id: ticket.id, repo_id: r.repo_id, access: r.access, relation: "confirmed" },
-            API_ACTOR,
+            apiActor(),
           );
         }
       }
@@ -195,7 +195,7 @@ export async function routeTickets(
         evidence_required: body.evidence_required ?? false,
         ...(body.check_command ? { check_command: body.check_command } : {}),
       },
-      API_ACTOR,
+      apiActor(),
     );
     sendJson(res, 201, { acceptance_criterion: ac, event_id: eventId });
     return;
@@ -204,7 +204,7 @@ export async function routeTickets(
   // /tickets/:id/ready
   if (segments.length === 3 && sub === TICKET_SUB.READY && method === "POST") {
     const ticket = wg.resolveTicket(id);
-    const result = wg.markReady(ticket.id, API_ACTOR);
+    const result = wg.markReady(ticket.id, apiActor());
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -215,7 +215,7 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.MOVE && method === "POST") {
     const ticket = wg.resolveTicket(id);
     const body = moveTicketBody.parse(await readJsonBody(req));
-    const result = wg.moveTicket(ticket.id, body.to, API_ACTOR);
+    const result = wg.moveTicket(ticket.id, body.to, apiActor());
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -227,7 +227,7 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.HUMAN_CLAIM && method === "POST") {
     humanClaimBody.parse(await readJsonBody(req));
     const ticket = wg.resolveTicket(id);
-    const result = wg.humanClaimTicket(ticket.id, API_ACTOR);
+    const result = wg.humanClaimTicket(ticket.id, apiActor());
     sendJson(res, 200, { ticket_id: result.ticketId, number: result.number, human_owned: true });
     return;
   }
@@ -238,7 +238,7 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.HUMAN_RELEASE && method === "POST") {
     humanClaimBody.parse(await readJsonBody(req));
     const ticket = wg.resolveTicket(id);
-    const result = wg.humanReleaseTicket(ticket.id, API_ACTOR);
+    const result = wg.humanReleaseTicket(ticket.id, apiActor());
     sendJson(res, 200, {
       ticket_id: result.ticketId,
       status: result.status,
@@ -265,7 +265,7 @@ export async function routeTickets(
   if (segments.length === 4 && sub === TICKET_SUB.REVIEW && method === "POST") {
     const action = segments[3] as string;
     if (action === "approve") {
-      const result = wg.approveReview(id, API_ACTOR);
+      const result = wg.approveReview(id, apiActor());
       // The ticket has reached `ready_for_merge` via the review-approve path (NOT
       // `done` — `done` means the merge actually landed). Fire the configured
       // auto-merge command (fire-and-gaffert; logged, never fatal): it does the git
@@ -274,7 +274,7 @@ export async function routeTickets(
       let merge: { triggered: boolean; pid: number | null; skipped?: string } | undefined;
       const number = result.ticket.number;
       // GRADUATED-AUTONOMY (Spec 2, Phase 3): this REST approve is the HUMAN merge gate.
-      // API_ACTOR is the hardcoded human actor (the dashboard Approve action is the ONLY
+      // apiActor() is the hardcoded human actor (the dashboard Approve action is the ONLY
       // REST approver; the AFK runner approves through the CLI as an agent actor, never
       // REST). A human approval has ALWAYS auto-fired the configured merge, and MUST stay
       // byte-identical (Graduated-Autonomy invariant "human path byte-identical") even now
@@ -294,7 +294,7 @@ export async function routeTickets(
     }
     if (action === "reject") {
       const body = rejectReviewBody.parse(await readJsonBody(req));
-      const result = wg.rejectReview(id, body.to, API_ACTOR, body.reason);
+      const result = wg.rejectReview(id, body.to, apiActor(), body.reason);
       // OPT-IN: capture the reviewer's rejection reason as a lore DRAFT (human-gated) so
       // the highest-signal human correction compounds into memory. FAIL-SOFT — a memory
       // outage must never affect the rejection, which has already succeeded. Files via the
@@ -336,7 +336,7 @@ export async function routeTickets(
   // BBT-001: /tickets/:id/testable — set the independent-testing eligibility flag.
   if (segments.length === 3 && sub === TICKET_SUB.TESTABLE && method === "POST") {
     const body = setTestableBody.parse(await readJsonBody(req));
-    const result = wg.setTestable(id, body.can_be_tested, API_ACTOR);
+    const result = wg.setTestable(id, body.can_be_tested, apiActor());
     sendJson(res, 200, result);
     return;
   }
@@ -344,7 +344,7 @@ export async function routeTickets(
   // BBT-001: /tickets/:id/test-contract — record the testing handover artifact.
   if (segments.length === 3 && sub === TICKET_SUB.TEST_CONTRACT && method === "POST") {
     const body = setTestContractBody.parse(await readJsonBody(req));
-    const contract = wg.setTestContract(id, body, API_ACTOR);
+    const contract = wg.setTestContract(id, body, apiActor());
     sendJson(res, 200, { test_contract: contract });
     return;
   }
@@ -413,7 +413,7 @@ export async function routeTickets(
   // bucket). Guarded: rejected for in-flight/claimed tickets and resets the ACs.
   if (segments.length === 3 && sub === TICKET_SUB.WONT_DO && method === "POST") {
     const body = wontDoBody.parse(await readJsonBody(req));
-    const result = wg.wontDo(id, API_ACTOR, body.reason);
+    const result = wg.wontDo(id, apiActor(), body.reason);
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -422,7 +422,7 @@ export async function routeTickets(
   // pipeline (-> refining by default, or draft).
   if (segments.length === 3 && sub === TICKET_SUB.REOPEN && method === "POST") {
     const body = reopenWontDoBody.parse(await readJsonBody(req));
-    const result = wg.reopenFromWontDo(id, body.to, API_ACTOR);
+    const result = wg.reopenFromWontDo(id, body.to, apiActor());
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -432,7 +432,7 @@ export async function routeTickets(
   // delivery in the existing worktree. 409 if the ticket isn't paused.
   if (segments.length === 3 && sub === TICKET_SUB.CONTINUE && method === "POST") {
     continuePausedBody.parse(await readJsonBody(req));
-    const result = wg.continuePaused(id, API_ACTOR);
+    const result = wg.continuePaused(id, apiActor());
     sendJson(res, 200, {
       ticket_id: result.ticketId,
       event_id: result.eventId,
@@ -445,14 +445,14 @@ export async function routeTickets(
   // dropping the resume context; the runner reaps the worktree. 409 if not paused.
   if (segments.length === 3 && sub === TICKET_SUB.STOP && method === "POST") {
     const body = stopPausedBody.parse(await readJsonBody(req));
-    const result = wg.stopPaused(id, API_ACTOR, body.reason);
+    const result = wg.stopPaused(id, apiActor(), body.reason);
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
 
   // /tickets/:id/ready-approval — grant the regulated-pack human ready-approval.
   if (segments.length === 3 && sub === TICKET_SUB.READY_APPROVAL && method === "POST") {
-    const result = wg.grantReadyApproval(id, API_ACTOR);
+    const result = wg.grantReadyApproval(id, apiActor());
     sendJson(res, 200, { ticket_id: result.ticketId, event_id: result.eventId });
     return;
   }
@@ -469,7 +469,7 @@ export async function routeTickets(
         commit: body.commit,
         diff_summary: body.diff_summary,
       },
-      API_ACTOR,
+      apiActor(),
     );
     sendJson(res, 200, {
       ticket_id: result.ticketId,
@@ -483,7 +483,7 @@ export async function routeTickets(
   // /tickets/:id/reviewer — assign the reviewer the strict packs gate on.
   if (segments.length === 3 && sub === TICKET_SUB.REVIEWER && method === "PUT") {
     const body = assignReviewerBody.parse(await readJsonBody(req));
-    const result = wg.assignReviewer(id, body.reviewer, API_ACTOR);
+    const result = wg.assignReviewer(id, body.reviewer, apiActor());
     sendJson(res, 200, {
       ticket_id: result.ticketId,
       reviewer: result.reviewer,
@@ -503,7 +503,7 @@ export async function routeTickets(
       const body = setRequiredCapabilitiesBody.parse(await readJsonBody(req));
       const result = wg.setRequiredCapabilities(
         { ticket_id: ticket.id, capabilities: body.capabilities },
-        API_ACTOR,
+        apiActor(),
       );
       sendJson(res, 200, { capabilities: result.capabilities, event_id: result.eventId });
       return;
@@ -523,7 +523,7 @@ export async function routeTickets(
     if (method === "POST") {
       const ticket = wg.resolveTicket(id);
       const body = linkTicketScopeBody.parse(await readJsonBody(req));
-      const link = wg.linkTicketScope({ ticket_id: ticket.id, ...body }, API_ACTOR);
+      const link = wg.linkTicketScope({ ticket_id: ticket.id, ...body }, apiActor());
       sendJson(res, 201, { scope: link });
       return;
     }
@@ -533,7 +533,7 @@ export async function routeTickets(
 
   // /tickets/:id/scopes/:nodeId — DELETE a ticket↔scope link.
   if (segments.length === 4 && sub === TICKET_SUB.SCOPES && method === "DELETE") {
-    const result = wg.removeTicketScope(id, segments[3] as string, API_ACTOR);
+    const result = wg.removeTicketScope(id, segments[3] as string, apiActor());
     sendJson(res, 200, {
       ticket_id: result.ticketId,
       scope_node_id: result.scopeNodeId,
@@ -553,7 +553,7 @@ export async function routeTickets(
       const body = addTicketDependencyBody.parse(await readJsonBody(req));
       const result = wg.addDependency(
         { ticket: ticket.id, depends_on: body.depends_on },
-        API_ACTOR,
+        apiActor(),
       );
       sendJson(res, 201, {
         ticket_id: result.ticketId,
@@ -568,7 +568,7 @@ export async function routeTickets(
 
   // /tickets/:id/dependencies/:dependsOnRef — DELETE one dependency edge.
   if (segments.length === 4 && sub === TICKET_SUB.DEPENDENCIES && method === "DELETE") {
-    const result = wg.removeDependency(id, segments[3] as string, API_ACTOR);
+    const result = wg.removeDependency(id, segments[3] as string, apiActor());
     sendJson(res, 200, {
       ticket_id: result.ticketId,
       depends_on_ticket_id: result.dependsOnTicketId,
@@ -580,7 +580,7 @@ export async function routeTickets(
   // /tickets/:id/primary-scope — PUT to mark a scope node primary.
   if (segments.length === 3 && sub === TICKET_SUB.PRIMARY_SCOPE && method === "PUT") {
     const body = setPrimaryScopeBody.parse(await readJsonBody(req));
-    const link = wg.setPrimaryScope(id, body.scope_node_id, API_ACTOR);
+    const link = wg.setPrimaryScope(id, body.scope_node_id, apiActor());
     sendJson(res, 200, { scope: link });
     return;
   }
@@ -591,7 +591,7 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.REPO_ACCESS && method === "PUT") {
     const ticket = wg.resolveTicket(id);
     const body = setTicketRepoAccessBody.parse(await readJsonBody(req));
-    const result = wg.setTicketRepoAccess({ ticket_id: ticket.id, ...body }, API_ACTOR);
+    const result = wg.setTicketRepoAccess({ ticket_id: ticket.id, ...body }, apiActor());
     sendJson(res, 200, {
       ticket_id: result.ticketId,
       repo_id: result.repoId,
@@ -610,7 +610,7 @@ export async function routeTickets(
 
   // /tickets/:id/mono-fallback — POST to promote a single unmapped repo to write.
   if (segments.length === 3 && sub === TICKET_SUB.MONO_FALLBACK && method === "POST") {
-    const result = wg.applyMonoFallback(id, API_ACTOR);
+    const result = wg.applyMonoFallback(id, apiActor());
     sendJson(res, 200, result);
     return;
   }
@@ -620,7 +620,7 @@ export async function routeTickets(
   // /tickets/:id/repo-suggestions — GET advisory repo suggestions for the ticket.
   if (segments.length === 3 && sub === TICKET_SUB.REPO_SUGGESTIONS && method === "GET") {
     const ticket = wg.resolveTicket(id);
-    const suggestions = wg.suggestReposForTicket({ ticketId: ticket.id }, API_ACTOR);
+    const suggestions = wg.suggestReposForTicket({ ticketId: ticket.id }, apiActor());
     sendJson(res, 200, { suggestions });
     return;
   }
@@ -644,7 +644,7 @@ export async function routeTickets(
     if (method === "POST") {
       const ticket = wg.resolveTicket(id);
       const body = recordRepoDeliveryBody.parse(await readJsonBody(req));
-      const result = wg.recordRepoDelivery({ ticket_id: ticket.id, ...body }, API_ACTOR);
+      const result = wg.recordRepoDelivery({ ticket_id: ticket.id, ...body }, apiActor());
       sendJson(res, 201, { delivery: result.delivery, event_id: result.eventId });
       return;
     }

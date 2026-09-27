@@ -13,6 +13,7 @@ import { registerDiagnostics } from "./commands/diagnostics.js";
 import { registerEpic } from "./commands/epic.js";
 import { registerNotify } from "./commands/notify.js";
 import { registerPortability } from "./commands/portability.js";
+import { registerPrincipal } from "./commands/principal.js";
 import { registerRepo } from "./commands/repo.js";
 import { registerReview } from "./commands/review.js";
 import { registerScope } from "./commands/scope.js";
@@ -53,6 +54,7 @@ registerReview(program);
 registerAgentSystem(program);
 registerDiagnostics(program);
 registerPortability(program);
+registerPrincipal(program);
 registerNotify(program);
 
 async function main(): Promise<void> {

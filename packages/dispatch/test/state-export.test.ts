@@ -299,6 +299,10 @@ describe("dispatch state export", () => {
       // exist there), so they are not part of the portable board bundle — exactly
       // like `runs`.
       "paused_deliveries",
+      // api_principals: machine-local CREDENTIALS (sha256 token hashes bound to actor
+      // identities). Access material never travels with a board bundle; an importing
+      // factory mints its own principals.
+      "api_principals",
     ];
 
     const covered = new Set<string>([...EXPORT_TABLES, ...INTENTIONALLY_EXCLUDED]);

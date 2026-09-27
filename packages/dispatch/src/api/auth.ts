@@ -26,6 +26,47 @@ import type { IncomingMessage } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import type { Actor } from "../domain/types.js";
+import type { PrincipalView } from "../repositories/principalRepository.js";
+import { looksLikePrincipalToken } from "../services/principalService.js";
+
+/**
+ * PER-PRINCIPAL CREDENTIALS. Beyond the shared full/read tokens, the server may
+ * accept named principal tokens (`gfp_…`, see services/principalService.ts), each
+ * bound to an actor identity and a capability. Resolution needs the database, so
+ * the server registers a resolver at construction; with none registered (embedders,
+ * tests) only the shared tokens authenticate — byte-identical to the prior posture.
+ */
+export interface ResolvedPrincipal {
+  principal: PrincipalView;
+  actor: Actor;
+}
+export type PrincipalResolver = (token: string) => ResolvedPrincipal | null;
+
+let principalResolver: PrincipalResolver | null = null;
+
+/** Install (or clear, with null) the principal lookup the auth gate consults. */
+export function setPrincipalResolver(resolver: PrincipalResolver | null): void {
+  principalResolver = resolver;
+}
+
+/**
+ * The principal a request authenticates as, or null when it carries none (a
+ * shared token, or no token). A principal is only resolved when the credential
+ * has the principal-token shape and the shared tokens did NOT match, so the
+ * shared tokens keep their exact semantics.
+ */
+export function requestPrincipal(req: IncomingMessage): ResolvedPrincipal | null {
+  if (!principalResolver) return null;
+  const full = apiToken();
+  const provided = bearer(req);
+  if (provided.length === 0 || !looksLikePrincipalToken(provided)) return null;
+  if (full && (tokenMatches(provided, full) || tokenMatches(provided, deriveReadToken(full)))) {
+    return null;
+  }
+  return principalResolver(provided);
+}
+
 /** The configured bearer token, trimmed; "" means auth is disabled. */
 export function apiToken(): string {
   return (process.env.DISPATCH_API_TOKEN ?? "").trim();
@@ -160,6 +201,7 @@ export function deriveReadToken(full: string): string {
  * - No token configured → `"full"` (auth-disabled embedder/test posture, unchanged).
  * - Correct full token → `"full"`.
  * - Correct derived read token → `"read"`.
+ * - Active principal token → that principal's capability.
  * - Missing / malformed / unknown credential → `null` (no valid credential; the
  *   caller is refused upstream with 401, and mutation gating treats it as least
  *   privilege). The full token is checked FIRST so the full tier is never
@@ -172,6 +214,9 @@ export function requestCapability(req: IncomingMessage): ApiCapability | null {
   if (provided.length === 0) return null;
   if (tokenMatches(provided, full)) return "full";
   if (tokenMatches(provided, deriveReadToken(full))) return "read";
+  // A named principal token: its stored capability (revoked/unknown ⇒ null).
+  const p = requestPrincipal(req);
+  if (p) return p.principal.capability;
   return null;
 }
 

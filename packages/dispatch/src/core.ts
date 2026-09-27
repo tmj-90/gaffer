@@ -132,6 +132,18 @@ import {
   type AutonomyMode,
 } from "./repositories/autonomyPolicyRepository.js";
 import { isAutonomyAllowed, policyGrantsAuto } from "./services/autonomyPolicyService.js";
+import {
+  PrincipalRepository,
+  type PrincipalActorType,
+  type PrincipalCapability,
+  type PrincipalView,
+} from "./repositories/principalRepository.js";
+import {
+  hashPrincipalToken,
+  mintPrincipalToken,
+  PRINCIPAL_NAME_RE,
+  principalActor,
+} from "./services/principalService.js";
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
@@ -297,6 +309,7 @@ export class Dispatch {
   readonly specCoverageRepo: SpecCoverageRepository;
   /** GRADUATED-AUTONOMY (Spec 2, Phase 3): the per-(repo × risk × gate) enablement store. */
   readonly autonomyPolicy: AutonomyPolicyRepository;
+  readonly principals: PrincipalRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -377,6 +390,7 @@ export class Dispatch {
     this.specsRepo = new SpecRepository(db);
     this.specCoverageRepo = new SpecCoverageRepository(db);
     this.autonomyPolicy = new AutonomyPolicyRepository(db);
+    this.principals = new PrincipalRepository(db);
     this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -714,6 +728,111 @@ export class Dispatch {
       evidenceJson,
       now,
     });
+  }
+
+  // --- Per-principal API credentials -----------------------------------------
+
+  /**
+   * Mint a named bearer credential bound to an actor identity and a capability.
+   * Returns the token ONCE (it is never stored — only its SHA-256). The creating
+   * actor and the new principal's identity are recorded as a `principal.created`
+   * event so the credential's provenance is in the tamper-evident log.
+   */
+  createPrincipal(
+    input: {
+      name: string;
+      capability?: PrincipalCapability | undefined;
+      actorType?: PrincipalActorType | undefined;
+      actorId?: string | undefined;
+    },
+    actor: Actor,
+  ): { principal: PrincipalView; token: string } {
+    const name = String(input.name ?? "").trim();
+    if (!PRINCIPAL_NAME_RE.test(name)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "Principal name must be 1–64 characters: letters, digits, '.', '_', '@' or '-', starting with a letter or digit.",
+        { name },
+      );
+    }
+    if (this.principals.getByName(name)) {
+      throw new DispatchError("DUPLICATE", `A principal named '${name}' already exists.`, { name });
+    }
+    const capability = input.capability ?? "full";
+    const actorType = input.actorType ?? "human";
+    const actorId = String(input.actorId ?? name).trim() || name;
+    const token = mintPrincipalToken();
+    const now = this.clock.now();
+    const principal = inTransaction(this.db, () => {
+      const row = this.principals.insert({
+        id: newId(),
+        name,
+        tokenHash: hashPrincipalToken(token),
+        capability,
+        actorType,
+        actorId,
+        createdBy: actor.id ?? actor.type,
+        now,
+      });
+      writeEvent(this.db, {
+        entity_type: "principal",
+        entity_id: row.id,
+        actor,
+        event_type: "principal.created",
+        payload: { name, capability, actor_type: actorType, actor_id: actorId },
+      });
+      return row;
+    });
+    return { principal, token };
+  }
+
+  /** Every principal, newest first, revoked ones included (never the hash). */
+  listPrincipals(): PrincipalView[] {
+    return this.principals.list();
+  }
+
+  /** Revoke by id or name. Idempotent on an already-revoked principal (NO_OP). */
+  revokePrincipal(ref: string, actor: Actor): PrincipalView {
+    const row = this.principals.get(ref) ?? this.principals.getByName(ref);
+    if (!row) throw notFound("principal", ref);
+    if (row.revoked_at) {
+      throw new DispatchError("NO_OP", `Principal '${row.name}' is already revoked.`, {
+        id: row.id,
+      });
+    }
+    const now = this.clock.now();
+    return inTransaction(this.db, () => {
+      this.principals.revoke(row.id, now);
+      writeEvent(this.db, {
+        entity_type: "principal",
+        entity_id: row.id,
+        actor,
+        event_type: "principal.revoked",
+        payload: { name: row.name },
+      });
+      const after = this.principals.get(row.id);
+      if (!after) throw notFound("principal", ref);
+      return after;
+    });
+  }
+
+  /**
+   * Authenticate a bearer credential against the ACTIVE principals. Returns the
+   * principal and the actor it speaks for, or null for an unknown/revoked token.
+   * Stamps `last_used_at` at most once a minute per principal (best-effort).
+   */
+  resolvePrincipalToken(token: string): { principal: PrincipalView; actor: Actor } | null {
+    const row = this.principals.findActiveByHash(hashPrincipalToken(token));
+    if (!row) return null;
+    const now = this.clock.now();
+    if (!row.last_used_at || Date.parse(now) - Date.parse(row.last_used_at) > 60_000) {
+      try {
+        this.principals.touch(row.id, now);
+      } catch {
+        // A usage stamp must never fail authentication.
+      }
+    }
+    return { principal: row, actor: principalActor(row) };
   }
 
   // --- Tickets -------------------------------------------------------------

@@ -3,7 +3,9 @@
 #
 #   gaffer setup                      nothing → running: build + init + open the UI
 #   gaffer onboard <path> [--standalone]   scan + register a repo (standalone scope; map to a wider scope in the Factory Map UI)
-#   gaffer dashboard [--restart|--lan] start the web dashboard (--lan = token-protected, on your LAN)
+#   gaffer dashboard [--restart|--lan|--foreground]
+#                                     start the web dashboard (--lan = token-protected, on your LAN;
+#                                     --foreground = run in THIS process for containers/supervisors)
 #   gaffer status                     what's registered + what's running
 #   gaffer demo                       run the Factory Map showcase (DRY_RUN)
 #   gaffer skills [install]           list the skill library / install it into your Claude Code
@@ -82,8 +84,22 @@ onboard)
   ;;
 
 dashboard)
-  want_lan=0; want_restart=0
-  for a in "$@"; do case "$a" in --lan) want_lan=1;; --restart) want_restart=1;; esac; done
+  want_lan=0; want_restart=0; want_fg=0
+  for a in "$@"; do case "$a" in --lan) want_lan=1;; --restart) want_restart=1;; --foreground) want_fg=1;; esac; done
+  if [ "$want_fg" = 1 ]; then
+    # FOREGROUND (compose / systemd / any supervisor): the SAME env wiring as the
+    # detached paths below, exec'd in this process so the supervisor owns the lifetime
+    # and the logs. Always token-protected (a container binds every interface; the
+    # compose file maps the port to loopback on the host). Bind 0.0.0.0 with --lan,
+    # loopback otherwise. Prints the login URL first so `docker compose logs` shows it.
+    TOKFILE="$GAFFER_DATA/dashboard-token"
+    [ -s "$TOKFILE" ] || { umask 077; (openssl rand -hex 16 2>/dev/null || head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n') > "$TOKFILE"; }
+    TOK="$(tr -d ' \n' < "$TOKFILE")"
+    fg_host="127.0.0.1"; [ "$want_lan" = 1 ] && fg_host="0.0.0.0"
+    export GAFFER_DASHBOARD_URL="${GAFFER_DASHBOARD_URL:-http://127.0.0.1:$DASH_PORT}"
+    say "dashboard (foreground, $fg_host:$DASH_PORT) — open with your token: $GAFFER_DASHBOARD_URL/?token=$TOK"
+    exec env -u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" DISPATCH_API_TOKEN="$TOK" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host "$fg_host"
+  fi
   # Precise running-detection: a recorded+validated PID (alive AND its command is
   # the dispatch api bin), not a broad `pgrep -f` that can match another checkout.
   pid="$(gaffer_dashboard_pid 2>/dev/null || true)"

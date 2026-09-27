@@ -1,0 +1,13 @@
+# Build context for the root Dockerfile: sources only. Dependencies and dist are
+# produced inside the image; local state and caches never enter it.
+.git
+.gaffer
+.crew
+node_modules
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+docs/img
+.devcontainer
+compose.yaml

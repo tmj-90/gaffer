@@ -1,0 +1,49 @@
+# One command to a running factory:  docker compose up -d
+#
+#   dashboard      the control plane + runner (see Dockerfile). Port mapped to
+#                  LOOPBACK on the host; the login token is printed in its logs
+#                  (`docker compose logs dashboard`). State persists in gaffer-data.
+#   egress-proxy   (profile: sandbox) the allowlist proxy the docker sandbox
+#                  provider routes agent egress through.
+#   sandbox-image  (profile: sandbox) builds the per-ticket delivery image the
+#                  docker provider runs agents in (gaffer-sandbox:latest).
+#
+# The sandbox profile is for a factory running ON a Docker host (the runner spawns
+# each agent in its own container); inside the dashboard container the container
+# itself is the boundary and the runner's provider is `none`.
+#
+#   ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN   the worker's credential (required for live ticks)
+#   GAFFER_REPOS   host directory holding the repos to onboard (default ./repos → /repos)
+#   GAFFER_PORT    host bind for the dashboard (default 127.0.0.1:8787)
+#   GAFFER_MODE    supervised (default) · lite · graduated · autonomous · strict
+services:
+  dashboard:
+    build: .
+    image: gaffer:local
+    ports:
+      - "${GAFFER_PORT:-127.0.0.1:8787}:8787"
+    volumes:
+      - gaffer-data:/data
+      - "${GAFFER_REPOS:-./repos}:/repos"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      GAFFER_MODE: ${GAFFER_MODE:-supervised}
+      GAFFER_DASHBOARD_URL: http://${GAFFER_PORT:-127.0.0.1:8787}
+      DRY_RUN: ${DRY_RUN:-0}
+    restart: unless-stopped
+
+  egress-proxy:
+    profiles: [sandbox]
+    build: runner/sandbox/egress-proxy
+    image: gaffer-egress-proxy
+    restart: unless-stopped
+
+  sandbox-image:
+    profiles: [sandbox]
+    build: runner/sandbox
+    image: gaffer-sandbox:latest
+    command: ["claude", "--version"]
+
+volumes:
+  gaffer-data:

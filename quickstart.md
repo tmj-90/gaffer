@@ -164,6 +164,24 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
 
 ---
 
+## Run it in a container instead
+
+If you would rather not install Node, pnpm and the Claude CLI on the machine:
+
+```bash
+export ANTHROPIC_API_KEY=…            # or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`
+mkdir -p repos                        # the repos you want the factory to work on
+docker compose up -d                  # builds the image, starts the dashboard on 127.0.0.1:8787
+docker compose logs dashboard | grep token=   # the login URL, token included
+```
+
+State lives in the `gaffer-data` volume; repos under `./repos` appear at `/repos`
+inside the container, so onboard them by that path. The container itself is the
+containment boundary there, so the runner's own OS sandbox is off; on a Docker host
+running the factory natively, `docker compose --profile sandbox build` produces the
+per-ticket delivery image and egress proxy the `docker` sandbox provider uses.
+A `.devcontainer/` is included for VS Code / Codespaces development.
+
 ## Safety (read before going live)
 
 Gaffer runs shell-capable agents, so containment is first-class — but it is **run-at-your-own-risk** software:

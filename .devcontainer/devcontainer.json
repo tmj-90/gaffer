@@ -1,0 +1,17 @@
+{
+  "name": "Gaffer",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" }
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck ripgrep && corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile && pnpm -r build",
+  "forwardPorts": [8787],
+  "portsAttributes": { "8787": { "label": "Gaffer dashboard" } },
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode", "timonwong.shellcheck"]
+    }
+  },
+  "remoteEnv": { "GAFFER_DATA": "${containerWorkspaceFolder}/.gaffer" }
+}

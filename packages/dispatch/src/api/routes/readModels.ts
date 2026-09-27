@@ -6,6 +6,7 @@ import {
   aggregateCosts,
   readLedgerRows,
   resolveLedgerPath,
+  todayEstimatedSpend,
   todaySpend,
 } from "../../cost/costAggregator.js";
 import {
@@ -227,9 +228,15 @@ export function routeReadModels(
     const ledgerPath = resolveLedgerPath(process.env);
     const rows = ledgerPath ? readLedgerRows(ledgerPath) : [];
     const today_usd = todaySpend(rows);
+    // B28(e): both figures INCLUDE the labelled estimate the runner books for a
+    // killed/timed-out call (the same window sum the daemon's day-USD cap halts on);
+    // the estimated share rides alongside so the UI can mark it as an estimate.
+    const today_estimated_usd = todayEstimatedSpend(rows);
     sendJson(res, 200, {
       total_usd: agg.total_usd,
+      estimated_usd: agg.estimated_usd,
       today_usd,
+      today_estimated_usd,
       ticket_count: agg.ticket_count,
       last_record_at: agg.last_record_at,
       by_repo: agg.by_repo.slice(0, TOP_N),
@@ -343,6 +350,7 @@ export function routeReadModels(
       // log head for 60s — the Overview polls this route).
       event_log: eventLog,
       total_usd: health.total_usd,
+      estimated_usd: health.estimated_usd,
       ticket_count: health.ticket_count,
       shipped_count: health.shipped_count,
       cost_per_shipped_usd: health.cost_per_shipped_usd,

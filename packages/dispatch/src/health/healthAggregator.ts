@@ -53,6 +53,8 @@ interface RawHealthRow {
   num_turns?: unknown;
   duration_ms?: unknown;
   models?: unknown;
+  estimated?: unknown;
+  estimated_cost_usd?: unknown;
 }
 
 /** A normalised, fully-coerced health row — keeps the per-model token map. */
@@ -66,6 +68,12 @@ export interface HealthRow {
   duration_ms: number;
   /** Per-model token/cost split; empty when the row carried no usable modelUsage. */
   models: Record<string, ModelUsage>;
+  /**
+   * The labelled ESTIMATE booked for a killed / timed-out call (unmeasured row,
+   * `estimated:true`). 0 otherwise. Counted in every spend roll-up exactly as the
+   * runner's caps count it, and reported separately as `estimated_usd`.
+   */
+  estimated_cost_usd?: number;
 }
 
 /** Spend + call count grouped by ledger `kind` (delivery, review, testing …). */
@@ -113,7 +121,10 @@ export interface DurationStat {
 
 /** The full health/ROI aggregate. */
 export interface HealthAggregate {
+  /** Measured spend PLUS the labelled killed/timeout estimates (see estimated_usd). */
   total_usd: number;
+  /** The estimated share of total_usd — never presented as measured. */
+  estimated_usd: number;
   ticket_count: number;
   /** Number of shipped (`done`) tickets used as the cost-per-shipped divisor. */
   shipped_count: number;
@@ -226,8 +237,21 @@ export function parseHealthLine(line: string): HealthRow | null {
   const num_turns = !measured || isUnknownSentinel(r.num_turns) ? 0 : numOrZero(r.num_turns);
   const duration_ms = !measured || isUnknownSentinel(r.duration_ms) ? 0 : numOrZero(r.duration_ms);
   const models = measured ? parseModels(r.models) : {};
+  // Only an unmeasured row may carry the labelled estimate (never double-count).
+  const estimated_cost_usd =
+    !measured && r.estimated === true ? numOrZero(r.estimated_cost_usd) : 0;
 
-  return { ts, ticket, kind, measured, total_cost_usd, num_turns, duration_ms, models };
+  return {
+    ts,
+    ticket,
+    kind,
+    measured,
+    total_cost_usd,
+    num_turns,
+    duration_ms,
+    models,
+    estimated_cost_usd,
+  };
 }
 
 /**
@@ -269,6 +293,7 @@ export function aggregateHealthRows(
   const resolveRework = options.resolveRework ?? (() => 0);
 
   let totalUsd = 0;
+  let estimatedUsd = 0;
   let measuredCount = 0;
   let totalDurationMs = 0;
   let measuredCalls = 0;
@@ -281,7 +306,12 @@ export function aggregateHealthRows(
   const byDay = new Map<string, number>(); // yyyy-mm-dd → cost
 
   for (const row of rows) {
-    totalUsd += row.total_cost_usd;
+    // Measured + labelled estimate: the per-row figure the runner's caps sum. An
+    // estimate is still UNMEASURED for coverage — it never counts as a reading.
+    const estimate = row.estimated_cost_usd ?? 0;
+    const spend = row.total_cost_usd + estimate;
+    totalUsd += spend;
+    estimatedUsd += estimate;
     if (row.measured) {
       measuredCount += 1;
       measuredCalls += 1;
@@ -291,23 +321,20 @@ export function aggregateHealthRows(
     if (lastRecordAt === null || row.ts > lastRecordAt) lastRecordAt = row.ts;
 
     if (row.ticket !== null) {
-      byTicket.set(row.ticket, (byTicket.get(row.ticket) ?? 0) + row.total_cost_usd);
+      byTicket.set(row.ticket, (byTicket.get(row.ticket) ?? 0) + spend);
       // Delivery is the only kind that repeats on rework — track it separately so the
       // rework attribution never charges one-shot decompose/review spend as redo.
       if (row.kind === DELIVERY_KIND) {
-        byTicketDelivery.set(
-          row.ticket,
-          (byTicketDelivery.get(row.ticket) ?? 0) + row.total_cost_usd,
-        );
+        byTicketDelivery.set(row.ticket, (byTicketDelivery.get(row.ticket) ?? 0) + spend);
       }
     }
 
     const kind = row.kind ?? "(unattributed)";
     const prevKind = byKind.get(kind) ?? { cost: 0, count: 0 };
-    byKind.set(kind, { cost: prevKind.cost + row.total_cost_usd, count: prevKind.count + 1 });
+    byKind.set(kind, { cost: prevKind.cost + spend, count: prevKind.count + 1 });
 
     const day = row.ts.slice(0, 10);
-    byDay.set(day, (byDay.get(day) ?? 0) + row.total_cost_usd);
+    byDay.set(day, (byDay.get(day) ?? 0) + spend);
 
     for (const [model, u] of Object.entries(row.models)) {
       const prev = byModel.get(model) ?? {
@@ -373,6 +400,7 @@ export function aggregateHealthRows(
 
   return {
     total_usd,
+    estimated_usd: round6(estimatedUsd),
     ticket_count: byTicket.size,
     shipped_count: shippedCount,
     cost_per_shipped_usd: shippedCount > 0 ? round6(total_usd / shippedCount) : null,

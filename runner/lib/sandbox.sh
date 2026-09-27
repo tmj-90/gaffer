@@ -179,7 +179,22 @@ sandbox_wrap_cmd() {
       fi
       mkdir -p "${GAFFER_DATA:-/tmp}" 2>/dev/null || true
       # write/read roots can be multi-line — hand them to the wrapper via files.
-      local wrf="${GAFFER_DATA:-/tmp}/sandbox-write-roots" rrf="${GAFFER_DATA:-/tmp}/sandbox-read-roots"
+      # B25(a): PER-CALL files, never a fixed shared path. Under GAFFER_CONCURRENCY>1
+      # every worker used to write `$GAFFER_DATA/sandbox-write-roots`: worker B's
+      # roots could overwrite worker A's between A composing its wrap and A's
+      # container starting, so A's agent was mounted B's worktree READ-WRITE (and
+      # lost its own). Each call now gets its own mktemp'd pair, prefixed with the
+      # tick's PID so tick.sh's exit cleanup can sweep exactly its own files.
+      local wrf rrf
+      wrf="$(mktemp "${GAFFER_DATA:-/tmp}/sandbox-write-roots.$$.XXXXXX" 2>/dev/null)" || {
+        printf 'strict-mode: docker provider could not create the per-call write-roots file under %s\n' "${GAFFER_DATA:-/tmp}" >&2
+        return 1
+      }
+      rrf="$(mktemp "${GAFFER_DATA:-/tmp}/sandbox-read-roots.$$.XXXXXX" 2>/dev/null)" || {
+        rm -f "$wrf"
+        printf 'strict-mode: docker provider could not create the per-call read-roots file under %s\n' "${GAFFER_DATA:-/tmp}" >&2
+        return 1
+      }
       printf '%s\n' "$write_roots" > "$wrf"
       printf '%s\n' "$read_roots" > "$rrf"
       printf 'bash %s/lib/sandbox-docker.sh %s %s --' "${RUNNER_DIR:-.}" "$wrf" "$rrf"

@@ -242,15 +242,17 @@ run)
   ;;
 
 skills)
-  # The factory ALREADY loads every bundled skill for each ticket (tick.sh symlinks
-  # $SKILLS_DIR into the agent's worktree). This command exposes the same library to
-  # YOUR own Claude Code so you can use the skills interactively.
+  # The factory selects a SUBSET of this library for each agent by ROLE (delivery,
+  # review, clarify, test, plan, spec, product, merge, bootstrap — `select-skills.mjs
+  # --role`) plus the ticket's stack / area / text, and mounts only that subset into
+  # the agent's `.claude/skills` (lib/skills-mount.sh). This command exposes the whole
+  # library to YOUR own Claude Code so you can use the skills interactively.
   sub="${1:-list}"; [ $# -gt 0 ] && shift || true
   case "$sub" in
     list)
       say "bundled skills ($(ls -d "$SKILLS_DIR"/*/ 2>/dev/null | wc -l | tr -d ' ')) — $SKILLS_DIR"
       for d in "$SKILLS_DIR"/*/; do [ -d "$d" ] && printf "  • %s\n" "$(basename "$d")"; done
-      printf "  ${c_dim}the factory auto-loads all of these every ticket. \`gaffer skills install\` adds them to your own Claude Code.${c_off}\n"
+      printf "  ${c_dim}each agent is mounted a role-based selection of these (select-skills --role <role>, plus the ticket's stack/area/text) — not the whole library. \`gaffer skills install\` adds them all to your own Claude Code.${c_off}\n"
       ;;
     install)
       scope="project"; force=0
@@ -277,7 +279,7 @@ skills)
       if [ $# -eq 0 ]; then
         echo "usage: gaffer skills add <path|git-url> [--force]"
       elif SKILLS_DIR="$SKILLS_DIR" node "$HERE/bin/skill-add.mjs" "$@"; then
-        printf "  ${c_dim}the factory now auto-loads this skill every matching ticket. \`gaffer skills list\` to confirm.${c_off}\n"
+        printf "  ${c_dim}the factory can now select this skill for an agent whose role, stack, area or ticket text matches its frontmatter. \`gaffer skills list\` to confirm.${c_off}\n"
       else
         exit 1
       fi

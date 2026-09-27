@@ -62,6 +62,7 @@ const {
   MEMORY_ONBOARD_RULE,
   INDUCTION_TAG,
   CARD_SOLO_SNIPPET_CHARS,
+  agentChildEnv,
 } = await import(MOD);
 
 let passed = 0;
@@ -80,6 +81,34 @@ function assert(label, cond) {
 function eq(label, got, want) {
   if (JSON.stringify(got) === JSON.stringify(want)) ok(label);
   else fail(`${label} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
+}
+
+// --- B25(b): agentChildEnv keeps the headless-Max OAuth token, and ONLY it ---------
+// Live audit: CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) matched the *_TOKEN deny
+// and was stripped, so the documented headless-Max path could not authenticate.
+console.log("== B25(b): agentChildEnv keeps CLAUDE_CODE_OAUTH_TOKEN (and only that *_TOKEN) ==");
+{
+  const childEnv = agentChildEnv({
+    PATH: "/usr/bin",
+    CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-keepme",
+    CLAUDE_CODE_SOME_OTHER_TOKEN: "lookalike-LEAK",
+    ANTHROPIC_API_KEY: "sk-ant-keepme",
+    DISPATCH_API_TOKEN: "bearer-LEAK",
+    GITHUB_TOKEN: "gh-LEAK",
+    AWS_SESSION_TOKEN: "aws-LEAK",
+  });
+  assert(
+    "keeps CLAUDE_CODE_OAUTH_TOKEN (headless-Max auth)",
+    childEnv.CLAUDE_CODE_OAUTH_TOKEN === "sk-ant-oat01-keepme",
+  );
+  assert("still keeps ANTHROPIC_API_KEY", childEnv.ANTHROPIC_API_KEY === "sk-ant-keepme");
+  assert(
+    "a look-alike CLAUDE_CODE_*_TOKEN is still stripped",
+    !("CLAUDE_CODE_SOME_OTHER_TOKEN" in childEnv),
+  );
+  assert("DISPATCH_API_TOKEN still stripped", !("DISPATCH_API_TOKEN" in childEnv));
+  assert("GITHUB_TOKEN still stripped", !("GITHUB_TOKEN" in childEnv));
+  assert("AWS_SESSION_TOKEN still stripped", !("AWS_SESSION_TOKEN" in childEnv));
 }
 
 // --- A throwaway multi-module Maven repo on disk -----------------------------

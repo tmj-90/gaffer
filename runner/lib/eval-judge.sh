@@ -79,7 +79,16 @@ gaffer_eval_judge_delivery() (
   # last resort only when no plan flag is configured.
   judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"
   worker_deliver "$repo_dir" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" \
-    >/dev/null 2>&1 || true   # a failed judge turn is fail-soft; the guard below skips
+    >/dev/null 2>&1
+  worker_rc=$?   # a failed judge turn is fail-soft; the guard below skips
+  # B28(e): the judge's model turn is PAID work — book it in the usage ledger like
+  # every other agent call (kind `eval-judge`), so the daemon's day-USD cap, the
+  # budget headroom and the dashboard's cost tiles all see it. Best-effort and
+  # swallowed (the ledger CLI prints the reply text; we do not want it here) — the
+  # envelope file is left in place for the verdict parse below.
+  if type gaffer_usage_record >/dev/null 2>&1; then
+    gaffer_usage_record eval-judge "$num" "$worker_rc" "$tmp/envelope.json" >/dev/null 2>&1 || true
+  fi
 
   # ── 4. Parse reply → verdict. An EMPTY reply means the judge never ran (worker
   #      error / timeout) — record NOTHING rather than a fake quality-fail that

@@ -58,6 +58,9 @@ export GAFFER_ESTIMATE_LIB
 : "${MCP_CONFIG:=$RUNNER_DIR/.mcp.json}"
 : "${CLAUDE_SETTINGS:=$RUNNER_DIR/claude/settings.json}"
 : "${SKILLS_DIR:=$RUNNER_DIR/skills}"
+# Exported so the crew CLI the runner spawns (`fg skills`, `fg idle`, `fg maintain`)
+# reads the SAME SKILL.md library the agents are mounted (crew's loadSkillRegistry).
+export SKILLS_DIR
 : "${CLAUDE_BIN:=claude}"                                   # headless `claude -p`
 : "${CLAUDE_FLAGS:=--permission-mode acceptEdits}"          # tune to your Claude Code version
 
@@ -151,8 +154,14 @@ export GAFFER_BUDGET_USD
 # GAFFER_BUDGET_REMAINING — live USD headroom. Recomputed here from the ledger
 # so the I1 router (gaffer_route_model) and Guard C (ask-on-cap) can read a
 # real figure instead of "unlimited". Empty = unlimited (GAFFER_BUDGET_USD unset
-# or ledger unreadable). Updated every time factory.config.sh is sourced (once
-# per tick at source-time in tick.sh / loop.sh).
+# or ledger unreadable). Recomputed EVERY time factory.config.sh is sourced (once
+# per tick, at source-time in tick.sh) and ALWAYS assigned — never `:=`.
+# B28(b): it used to be an assign-if-unset, but the value is exported below, so
+# loop.sh / worker.sh / the daemon computed it ONCE at process start and every
+# tick.sh they spawned inherited that stale figure — the router's low-budget
+# downgrade and the budget_cap pause never saw the spend the day's earlier ticks
+# had booked. It is a DERIVED value, not an operator input: an inherited value is
+# overwritten by the fresh ledger sum here.
 if [ -n "${GAFFER_BUDGET_USD:-}" ] && command -v node >/dev/null 2>&1 \
    && [ -n "${GAFFER_USAGE_LEDGER:-}${GAFFER_DATA:-}" ]; then
   _gaffer_budget_remaining="$(node --input-type=module - <<'__BUDGET_JS__' 2>/dev/null || true
@@ -186,11 +195,11 @@ const remaining = Math.max(0, budget - spend);
 process.stdout.write(remaining.toFixed(6));
 __BUDGET_JS__
 )"
-  : "${GAFFER_BUDGET_REMAINING:=$_gaffer_budget_remaining}"
+  GAFFER_BUDGET_REMAINING="$_gaffer_budget_remaining"
   unset _gaffer_budget_remaining
 else
   # No budget configured or node unavailable → unlimited (the pre-H1 default).
-  : "${GAFFER_BUDGET_REMAINING:=}"
+  GAFFER_BUDGET_REMAINING=""
 fi
 # GAFFER_BUDGET_LOW_THRESHOLD — the USD headroom at/under which the router biases
 # one tier CHEAPER (the "cost-as-control" downgrade). Promoting cost to a real
@@ -413,6 +422,16 @@ export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 : "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"
 : "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
 export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
+# DISPATCH_MAX_ATTEMPTS — Dispatch's OWN reject-loop cap (packages/dispatch/src/core.ts
+# resolveMaxAttempts): a delivery rejected back into the queue this many times is
+# PARKED (blocked) for a human, enforced server-side on every reject transition. It
+# is a SECOND attempt cap next to GAFFER_MAX_DELIVERY_ATTEMPTS (the runner's rework
+# ladder); B29: it was read by Dispatch but never set or exported here, so the two
+# could silently disagree and the dashboard could not show it. Default it to the
+# runner's cap so they agree by construction, and EXPORT it so the `wg` CLI, the
+# MCP server and the dashboard all read the same value. Settings-UI editable.
+: "${DISPATCH_MAX_ATTEMPTS:=$GAFFER_MAX_DELIVERY_ATTEMPTS}"
+export DISPATCH_MAX_ATTEMPTS
 
 # FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around
 # the WHOLE tick.sh. It must mirror the claim-TTL math above, NOT the single-call
@@ -924,8 +943,10 @@ _gaffer_lock_age() {
 #   - LANG / LC_* / TERM / TZ — locale + terminal sanity.
 #   - ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL,
 #     ANTHROPIC_MODEL, CLAUDE_CODE_* and other CLAUDE_*  — claude -p AUTH and
-#     config. NOTE: ANTHROPIC_API_KEY is deliberately the ONE *_KEY we keep; the
-#     allowlist below names it explicitly so the generic *_KEY strip can't take it.
+#     config. NOTE: ANTHROPIC_API_KEY is deliberately the ONE *_KEY we keep, and
+#     CLAUDE_CODE_OAUTH_TOKEN (the `claude setup-token` subscription credential) the
+#     ONE *_TOKEN; the keep-despite-deny list names both explicitly so the generic
+#     *_KEY / *_TOKEN strip can't take them.
 #   - AWS_REGION / AWS_DEFAULT_REGION — needed for Bedrock-backed claude; these
 #     are NON-secret (the AWS_*_KEY / AWS_SESSION_TOKEN credentials are NOT kept).
 #   - MCP_CONFIG, DISPATCH_DB, MEMORY_DB, DISPATCH_MCP_BIN, MEMORY_MCP_BIN — the
@@ -972,10 +993,17 @@ gaffer_provider_env_keep_prefix() {
 }
 # keep-despite-deny: provider auth names that must survive the credential-shaped
 # deny patterns below (they LOOK like secrets because they ARE the worker's auth).
-#   claude-code → the ANTHROPIC auth trio (…_API_KEY / …_AUTH_TOKEN / …_BASE_URL).
+#   claude-code → the ANTHROPIC auth trio (…_API_KEY / …_AUTH_TOKEN / …_BASE_URL)
+#                 PLUS CLAUDE_CODE_OAUTH_TOKEN — the subscription token from
+#                 `claude setup-token`, the documented headless-Max path. B25(b): it
+#                 matched the `*_TOKEN` deny rule and was not in this list, so the
+#                 scrub dropped it and a Max-plan agent (host or docker sandbox)
+#                 could not authenticate. It is the ONE `*_TOKEN` kept; every other
+#                 token (GITHUB_TOKEN, AWS_SESSION_TOKEN, DISPATCH_API_TOKEN…) is
+#                 still denied.
 gaffer_provider_env_keep_despite_deny() {
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
-    claude-code) printf '%s\n' ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ;;
+    claude-code) printf '%s\n' ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN ;;
   esac
 }
 

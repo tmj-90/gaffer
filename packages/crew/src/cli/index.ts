@@ -32,6 +32,7 @@ import {
 import { runImplementationLoop } from "../loops/implementationLoop.js";
 import { MockAgentRuntime } from "../runtime/agentRuntime.js";
 import { loadSkillRegistry } from "../skills/loader.js";
+import { expandStackLabels } from "../skills/registry.js";
 import { withDispatchRepos } from "../registry/dispatchRepos.js";
 import { buildStats, renderDoctor, renderStats, runDoctor } from "../ops/index.js";
 import { loadFactory, openDispatch } from "../runtime/wiring.js";
@@ -495,16 +496,24 @@ program
 
 program
   .command("skills")
-  .description("List skills available to the factory (built-ins + skills/ dir)")
-  .option("--stack <stack>", "filter by stack")
-  .option("--capability <capability>", "filter by capability")
+  .description(
+    "List skills available to the factory (the SKILL.md library the agents run with + built-ins + skills/ dir)",
+  )
+  .option(
+    "--stack <stack>",
+    "filter by stack (a compound repo label like typescript-react expands)",
+  )
+  .option("--capability <capability>", "filter by capability / area (e.g. frontend, testing)")
   .action((opts, cmd) => {
     const { loaded } = loadEverything(cmd.optsWithGlobals());
     const registry = loadSkillRegistry({ factoryDir: loaded.rootDir });
+    // B30: tick.sh's fallback passes the repo's RAW stack label ("typescript-react-native-expo");
+    // expand it the way the selector and the context packet do so stack-tagged library
+    // skills actually match.
     const skills =
       opts.stack || opts.capability
         ? registry.select({
-            ...(opts.stack ? { stacks: [opts.stack] } : {}),
+            ...(opts.stack ? { stacks: expandStackLabels([String(opts.stack)]) } : {}),
             ...(opts.capability ? { capabilities: [opts.capability] } : {}),
           })
         : registry.list();

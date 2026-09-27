@@ -132,6 +132,38 @@ awk "BEGIN{exit !((${RW:-0}+0) > 1.0499 && (${RW:-0}+0) < 1.0501)}" \
   && ok "gaffer_ticket_rework_spend #1 = measured 1.00 + estimated 0.05 = 1.05" \
   || fail "rework-spend should be 1.05 (got '$RW')"
 
+echo "== 8 (B28): an INHERITED GAFFER_BUDGET_REMAINING is recomputed, never trusted =="
+# The value is exported, so loop.sh / worker.sh / the daemon used to compute it ONCE
+# at process start and every tick.sh they spawned inherited that stale figure — the
+# router's downgrade and the budget_cap pause never saw new spend. Source the config
+# with a stale "4.0" already in the environment while the ledger says 4.5 of 5.00 is
+# spent: the fresh sum (0.5) must win, and the router must downgrade on it.
+write_ledger 4.5
+OUT="$(env -i PATH="$PATH" HOME="$HOME" \
+      GAFFER_DATA="$WORK/data" GAFFER_BUDGET_USD=5.00 GAFFER_BUDGET_REMAINING=4.0 \
+      bash -c '
+        source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1
+        printf "REMAINING=%s\n" "${GAFFER_BUDGET_REMAINING:-}"
+        printf "TIER=%s\n" "$(gaffer_route_model implement medium 3 "" 1 2>/dev/null)"
+      ')"
+REMAINING="$(printf '%s\n' "$OUT" | sed -n 's/^REMAINING=//p')"
+TIER="$(printf '%s\n' "$OUT" | sed -n 's/^TIER=//p')"
+awk "BEGIN{exit !((${REMAINING:-0}+0) > 0.4999 && (${REMAINING:-0}+0) < 0.5001)}" \
+  && ok "stale inherited 4.0 is overwritten by the fresh ledger sum (0.5)" \
+  || fail "inherited stale value should be recomputed to 0.5 (got '$REMAINING')"
+[ "$TIER" = "haiku" ] \
+  && ok "router downgrades on the FRESH headroom, not the inherited one" \
+  || fail "expected haiku on fresh headroom 0.5 (got '$TIER')"
+# And with no budget configured the inherited value is cleared, not kept.
+OUT="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" GAFFER_BUDGET_REMAINING=4.0 \
+      bash -c 'source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1; printf "%s" "${GAFFER_BUDGET_REMAINING:-}"')"
+[ -z "$OUT" ] && ok "no budget configured → remaining is empty (unlimited), inherited value dropped" \
+  || fail "unlimited should clear an inherited value (got '$OUT')"
+# tick.sh's pause guard subtracts THIS delivery's spend from the pre-call headroom.
+grep -q 'gaffer_delivery_spend "\$USAGE_JSON"' <(awk '/B28\(b\): GAFFER_BUDGET_REMAINING was summed/,/_BUDGET_HIT=1/' "$RUNNER_DIR/tick.sh") \
+  && ok "tick.sh budget_cap pause nets the in-flight delivery's spend off the headroom" \
+  || fail "tick.sh pause guard should subtract the delivery's own spend"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

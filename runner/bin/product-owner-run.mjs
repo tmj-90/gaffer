@@ -476,11 +476,14 @@ export function buildClaudeArgv({ prompt, mcpConfig, flags }) {
 export function agentChildEnv(base = process.env) {
   const env = { ...base };
   for (const key of Object.keys(env)) {
-    // Explicit keeps — survive all deny checks below.
+    // Explicit keeps — survive all deny checks below. CLAUDE_CODE_OAUTH_TOKEN
+    // (`claude setup-token`, the headless-Max path) is the ONE *_TOKEN kept —
+    // parity with the shell gaffer_agent_env keep-despite-deny list.
     if (
       key === "ANTHROPIC_API_KEY" ||
       key === "ANTHROPIC_AUTH_TOKEN" ||
-      key === "ANTHROPIC_BASE_URL"
+      key === "ANTHROPIC_BASE_URL" ||
+      key === "CLAUDE_CODE_OAUTH_TOKEN"
     )
       continue;
     // Credential-shaped vars — never reach the agent.

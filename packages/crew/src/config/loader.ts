@@ -10,7 +10,7 @@ import {
   type SafetyPolicy,
 } from "../safety/policySchema.js";
 import { CrewError, invalidConfig } from "../util/errors.js";
-import { crewConfigSchema, type CrewConfig } from "./schema.js";
+import { crewConfigSchema, type CrewConfig, type IdleLoopMode } from "./schema.js";
 
 /** Format a ZodError into a precise, multi-line, path-prefixed message. */
 function formatZodError(error: ZodError): string {
@@ -107,11 +107,91 @@ export function resolveEventLogPath(loaded: LoadedConfig): string {
   return loaded.config.logging.event_log_path;
 }
 
+/**
+ * The dashboard's idle-loop settings, as env overrides (B29). `GAFFER_IDLE_MODE` and
+ * `GAFFER_IDLE_FEATURE_BACKLOG` were offered in the Settings panel (and exported into
+ * every runner child process) but nothing ever read them — the panel's help text
+ * promised control over the crew idle loops that never happened. They now override
+ * the crew.yaml values the same way `GAFFER_CREW_EVENTS` overrides the events path:
+ *
+ *   - `GAFFER_IDLE_MODE` — sets the mode of EVERY idle loop (`loops.idle_*.mode`) and
+ *     `safety.default_idle_loop_mode`. Accepts the crew vocabulary
+ *     (`observe_only` · `create_draft_tickets` · `create_ready_tickets`) plus the
+ *     short forms the panel once offered (`create_draft` · `create_ready`). An
+ *     unrecognised value is IGNORED (crew.yaml stands) — a typo must never turn a
+ *     read-only observe factory into one that files ready tickets, nor crash a tick.
+ *   - `GAFFER_IDLE_FEATURE_BACKLOG` — `loops.idle_feature_backlog.enabled`
+ *     (1/true/yes/on → on, 0/false/no/off → off; anything else ignored).
+ *
+ * Empty / unset leaves crew.yaml untouched, so a factory that never set them is
+ * byte-identical.
+ */
+export const IDLE_MODE_ALIASES: Readonly<Record<string, IdleLoopMode>> = {
+  observe_only: "observe_only",
+  create_draft_tickets: "create_draft_tickets",
+  create_ready_tickets: "create_ready_tickets",
+  create_draft: "create_draft_tickets",
+  create_ready: "create_ready_tickets",
+};
+
+/** Parse the env value of GAFFER_IDLE_MODE, or null when unset / unrecognised. */
+export function idleModeFromEnv(raw: string | undefined): IdleLoopMode | null {
+  const key = (raw ?? "").trim().toLowerCase();
+  if (key === "") return null;
+  return IDLE_MODE_ALIASES[key] ?? null;
+}
+
+/** Parse a 0/1/true/false/yes/no/on/off env flag, or null when unset / unrecognised. */
+export function boolFromEnv(raw: string | undefined): boolean | null {
+  const v = (raw ?? "").trim().toLowerCase();
+  if (v === "") return null;
+  if (["1", "true", "yes", "on"].includes(v)) return true;
+  if (["0", "false", "no", "off"].includes(v)) return false;
+  return null;
+}
+
+export function applyIdleLoopEnvOverrides(
+  config: CrewConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): CrewConfig {
+  const mode = idleModeFromEnv(env.GAFFER_IDLE_MODE);
+  const backlog = boolFromEnv(env.GAFFER_IDLE_FEATURE_BACKLOG);
+  if (mode === null && backlog === null) return config;
+
+  const loops: Record<string, unknown> = { ...config.loops };
+  if (mode !== null) {
+    for (const [key, value] of Object.entries(loops)) {
+      if (
+        key.startsWith("idle_") &&
+        value !== null &&
+        typeof value === "object" &&
+        "mode" in (value as Record<string, unknown>)
+      ) {
+        loops[key] = { ...(value as Record<string, unknown>), mode };
+      }
+    }
+  }
+  if (backlog !== null) {
+    // Spread the (possibly mode-overridden) entry, not the original, so both knobs compose.
+    loops.idle_feature_backlog = {
+      ...(loops.idle_feature_backlog as CrewConfig["loops"]["idle_feature_backlog"]),
+      enabled: backlog,
+    };
+  }
+  return {
+    ...config,
+    loops: loops as CrewConfig["loops"],
+    safety: mode !== null ? { ...config.safety, default_idle_loop_mode: mode } : config.safety,
+  };
+}
+
 /** Load + validate the crew config file from disk. */
 export function loadConfig(configPath: string): LoadedConfig {
   const absolute = isAbsolute(configPath) ? configPath : resolve(process.cwd(), configPath);
   const raw = readYamlFile(absolute);
-  const config = parseWith(crewConfigSchema, raw, "crew config", absolute);
+  const parsed = parseWith(crewConfigSchema, raw, "crew config", absolute);
+  // B29: the dashboard's idle-loop settings reach the loops through the env.
+  const config = applyIdleLoopEnvOverrides(parsed);
 
   // Apply the GAFFER_CREW_EVENTS env override so every consumer that reads
   // config.logging.event_log_path automatically gets the redirected path

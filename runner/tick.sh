@@ -141,6 +141,9 @@ gaffer_crash_cleanup() {
   # token). Best-effort; a leftover file is harmless (next tick has a new PID)
   # but we don't want $GAFFER_DATA to accumulate one per tick.
   [ -n "${MCP_RUNTIME:-}" ] && rm -f "$MCP_RUNTIME" 2>/dev/null || true
+  # B25(a): the docker sandbox's per-call root files are named with THIS tick's PID
+  # (lib/sandbox.sh) so they can be swept here without touching a concurrent worker's.
+  rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* 2>/dev/null || true
   # A paused delivery keeps its worktree + branch ALIVE for the one-click resume —
   # the crash-cleanup must never tear it down. This is the load-bearing PAUSE-ON-CAP
   # invariant: a paused worktree survives the tick's exit.
@@ -889,8 +892,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # but always include the scaffolder hint. (Same selector as normal delivery.)
     # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
     # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
+    # B30: hand the selector the ticket's title + description head too (`--text`),
+    # exactly as the delivery path does — a bootstrap brief that plainly calls for
+    # an off-domain pack (a CLI tool, a Terraform module, a docs site) was otherwise
+    # unreachable, since the bootstrap passed no text and matched on stack alone.
+    # An argv, never a shell string: the untrusted text cannot inject flags.
     B_AREA="$(gaffer_area_for_stack "$STACK")"
-    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${B_AREA:+--area "$B_AREA"} --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+    _B_SKILL_TEXT="$(printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget '(d.ticket.description || "").slice(0, 600)' 2>/dev/null || true)")"
+    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${B_AREA:+--area "$B_AREA"} --text "$_B_SKILL_TEXT" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
     [ -n "$B_SKILLS" ] || B_SKILLS="(scaffold the stack from the ticket's ACs)"
 
     if [ "$DRY_RUN" = "1" ]; then
@@ -2072,9 +2081,18 @@ $_trail_q
   if gaffer_is_cap_hit "$USAGE_JSON" "$rc"; then _CAP_HIT=1; fi
   # Budget is the HARD ceiling: if the live USD headroom is exhausted, pause even when
   # the turn cap wasn't reached, so the factory never silently keeps spending past it.
+  # B28(b): GAFFER_BUDGET_REMAINING was summed from the ledger when this tick was
+  # sourced — BEFORE this delivery spent. Its own measured spend is not in the ledger
+  # yet (gaffer_usage_record runs below), so subtract it here: the pause sees the
+  # headroom as it stands AFTER this call, not as it stood before it. A non-numeric
+  # spend ("unknown") coerces to 0 in awk, i.e. the pre-call figure (never a crash).
   _BUDGET_HIT=0
-  if [ -n "${GAFFER_BUDGET_REMAINING:-}" ] \
-     && _num_le "${GAFFER_BUDGET_REMAINING:-1}" 0; then
+  _LIVE_REMAINING="${GAFFER_BUDGET_REMAINING:-}"
+  if [ -n "$_LIVE_REMAINING" ]; then
+    _LIVE_REMAINING="$(awk -v r="$_LIVE_REMAINING" -v s="$(gaffer_delivery_spend "$USAGE_JSON")" \
+      'BEGIN{r+=0; s+=0; d=r-s; if (d<0) d=0; printf "%.6f", d}' 2>/dev/null || printf '%s' "$_LIVE_REMAINING")"
+  fi
+  if [ -n "$_LIVE_REMAINING" ] && _num_le "$_LIVE_REMAINING" 0; then
     _BUDGET_HIT=1
   fi
   if { [ "$_CAP_HIT" = "1" ] || [ "$_BUDGET_HIT" = "1" ]; } \

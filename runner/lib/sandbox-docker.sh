@@ -9,11 +9,26 @@
 # also closes the two gaps in the external security review's #1 (read + network):
 #
 #   • READ isolation — the container's filesystem is empty of the host. We mount ONLY
-#     the write-roots (rw), the read-roots (ro), and $GAFFER_DATA (rw, the MCP db copies
-#     + runtime). Host $HOME, ~/.ssh, ~/.aws, sibling repos, the canonical DBs — none are
-#     present, so `read host secret` has nothing to read. Mounts are PATH-MIRRORED
-#     (host path == container path) so the absolute paths in the command and the rendered
-#     .mcp.json resolve identically inside — no path translation needed.
+#     the write-roots (rw), the read-roots (ro), the delivery worktree's git metadata
+#     (the repo's `.git` common dir read-only, with just the sub-paths a commit writes
+#     read-write) and the factory's own code (runner/, packages/, node_modules — ro).
+#     Host $HOME, ~/.ssh, ~/.aws, sibling repos — none are present, so `read host
+#     secret` has nothing to read. Mounts are PATH-MIRRORED (host path == container
+#     path) so the absolute paths in the command and the rendered .mcp.json resolve
+#     identically inside — no path translation needed.
+#
+#     $GAFFER_DATA is the one exception and it is handled honestly (B25c): the MCP data
+#     plane inside the container writes the CANONICAL dispatch/memory SQLite files
+#     directly (DISPATCH_DB / MEMORY_DB default to `$GAFFER_DATA/*.sqlite`; there is no
+#     copy-and-reconcile step), and SQLite needs the DIRECTORY for its -wal/-shm/-journal
+#     siblings — so the directory is bind-mounted rw, and then EVERY OTHER entry in it is
+#     MASKED (a file by binding /dev/null over it, a directory by a tmpfs): settings.json,
+#     dashboard-token, the ledgers, other workers' mcp-runtime files (their claim
+#     tokens), the sibling delivery worktrees under worktrees/, .workers/… Only the two
+#     DBs (+ siblings), THIS call's own --mcp-config file, the crew events log and the
+#     safety hook's own ledgers stay visible. Entries created after the container
+#     starts are not masked — that is the residual gap; the per-tick files that matter
+#     (mcp-runtime.<pid>.json) already exist when a worker's container starts.
 #
 #   • EGRESS isolation — the container sits on an --internal docker network (no NAT), so
 #     it has no direct route out. Its only path to the internet is the allowlist proxy
@@ -150,8 +165,6 @@ while IFS= read -r root; do
   [ -e "$root" ] || continue
   _add_mount "$root" ro
 done < "$_READ_ROOTS_FILE"
-# GAFFER_DATA holds the MCP db copies + agent runtime — rw, path-mirrored.
-[ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && _add_mount "$GAFFER_DATA" rw
 # The factory's own dir (skills, safety hook, worker seam) — ro, path-mirrored.
 [ -d "$_RUNNER_DIR" ] && _add_mount "$_RUNNER_DIR" ro
 # The factory's BUILT PACKAGES + their dependency tree — ro, path-mirrored. The MCP
@@ -189,6 +202,104 @@ for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   done < <(find "$_wr" -maxdepth 4 -name node_modules -type l 2>/dev/null)
 done
 
+# --- the delivery worktree's git metadata (B25c) ---------------------------------------
+# A delivery worktree is a LINKED worktree: its `.git` is a FILE ("gitdir: …") pointing
+# into the real repo's `.git/worktrees/<name>`, and the objects/refs live in the repo's
+# `.git` (the common dir). Neither was mounted, so inside the container every git
+# command failed ("not a git repository") and the agent could not commit. Mount the
+# common dir READ-ONLY and only what a commit must write READ-WRITE: objects/ (new
+# blobs/trees/commits), refs/ + logs/ (the branch tip + its reflog) and the worktree's
+# own private dir (index, HEAD, COMMIT_EDITMSG). config, hooks, packed-refs, the main
+# checkout's HEAD and every OTHER worktree's private dir stay read-only. A write root
+# that is itself a full repo (`.git` is a directory) is already inside its rw mount.
+_under_write_root() {  # true when <path> is a write root or lives under one
+  local p="$1" w
+  for w in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+    case "$p" in "$w"|"$w"/*) return 0 ;; esac
+  done
+  return 1
+}
+_git_path() {  # <worktree> <rev-parse flag> → absolute, symlink-resolved path (or nothing)
+  local wt="$1" flag="$2" p
+  p="$(git -C "$wt" rev-parse "$flag" 2>/dev/null)" || return 0
+  [ -n "$p" ] || return 0
+  case "$p" in /*) ;; *) p="$wt/$p" ;; esac
+  _readlink_f "$p"
+}
+if command -v git >/dev/null 2>&1; then
+  for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+    [ -f "$_wr/.git" ] || continue          # only LINKED worktrees have a .git FILE
+    _common="$(_git_path "$_wr" --git-common-dir)"
+    _gitdir="$(_git_path "$_wr" --git-dir)"
+    [ -n "$_common" ] && [ -d "$_common" ] || continue
+    _under_write_root "$_common" && continue   # the repo itself is a write root: covered rw
+    _covered "$_common" || _add_mount "$_common" ro
+    # git creates logs/ lazily; make sure the reflog dir exists so its rw mount can land
+    # (an empty dir under .git is exactly what git itself would create on first commit).
+    mkdir -p "$_common/logs" 2>/dev/null || true
+    for _sub in objects refs logs; do
+      [ -d "$_common/$_sub" ] && _add_mount "$_common/$_sub" rw
+    done
+    if [ -n "$_gitdir" ] && [ -d "$_gitdir" ] && [ "$_gitdir" != "$_common" ]; then
+      _add_mount "$_gitdir" rw
+    fi
+  done
+fi
+
+# --- $GAFFER_DATA: the MCP data plane's DB directory, everything else MASKED (B25c) ------
+# See the header. The directory must be mounted (SQLite siblings), so mount it rw and
+# mask every top-level entry that is not on the allowlist below. The masks are ordinary
+# mounts nested inside the GAFFER_DATA mount; docker applies mounts parent-first, so a
+# write root that lives UNDER a masked dir (the default `$GAFFER_DATA/worktrees/ticket-N`
+# layout) is bind-mounted back on top of the tmpfs that hides its siblings.
+if [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && ! _covered "$GAFFER_DATA"; then
+  _add_mount "$GAFFER_DATA" rw
+  _keep=()
+  for _db in "${DISPATCH_DB:-$GAFFER_DATA/dispatch.sqlite}" "${MEMORY_DB:-$GAFFER_DATA/memory.sqlite}"; do
+    case "$_db" in "$GAFFER_DATA"/*) _keep+=( "${_db#"$GAFFER_DATA"/}" ) ;; esac
+  done
+  # THIS call's own rendered MCP config (`--mcp-config <path>` in the wrapped argv) —
+  # never any other tick's (theirs carry other claim tokens).
+  _prev=""
+  for _a in "$@"; do
+    if [ "$_prev" = "--mcp-config" ]; then
+      case "$_a" in "$GAFFER_DATA"/*) _keep+=( "${_a#"$GAFFER_DATA"/}" ) ;; esac
+    fi
+    _prev="$_a"
+  done
+  # The crew events log the MCP servers append to, and the safety hook's own ledgers.
+  case "${GAFFER_CREW_EVENTS:-}" in "$GAFFER_DATA"/*) _keep+=( "${GAFFER_CREW_EVENTS#"$GAFFER_DATA"/}" ) ;; esac
+  _keep+=( safety-blocks.jsonl tool-metrics.jsonl )
+  # The agent's per-agent skills mount (its `.claude/skills` symlink target) — links
+  # into the read-only runner/skills library, nothing secret.
+  for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+    _sk="$(readlink "$_wr/.claude/skills" 2>/dev/null || true)"
+    case "$_sk" in "$GAFFER_DATA"/*) _keep+=( "${_sk#"$GAFFER_DATA"/}" ) ;; esac
+  done
+  _kept() {  # true when top-level entry <name> is (or contains) an allowlisted path
+    local b="$1" k
+    for k in ${_keep[@]+"${_keep[@]}"}; do
+      case "$b" in "$k"|"$k-wal"|"$k-shm"|"$k-journal") return 0 ;; esac   # SQLite siblings
+      case "$k" in "$b"/*) return 0 ;; esac                                # nested keep
+    done
+    return 1
+  }
+  for _e in "$GAFFER_DATA"/* "$GAFFER_DATA"/.[!.]*; do
+    [ -e "$_e" ] || [ -L "$_e" ] || continue
+    _b="$(basename "$_e")"
+    _kept "$_b" && continue
+    # A symlink cannot be reliably masked (docker resolves the destination); its target
+    # is only readable inside if it is under a mount we chose anyway.
+    [ -L "$_e" ] && continue
+    if [ -d "$_e" ]; then
+      # rw (not ro): a write root nested under it needs its mountpoint dir created.
+      _mounts+=( --tmpfs "$_e:rw,noexec,nosuid,size=65536k" )
+    elif [ -f "$_e" ]; then
+      _mounts+=( -v "/dev/null:$_e:ro" )
+    fi
+  done
+fi
+
 # Forward ONLY the allowlisted env. The model credential (ONE of ANTHROPIC_API_KEY or
 # CLAUDE_CODE_OAUTH_TOKEN — the latter is a subscription token from `claude setup-token`,
 # the supported headless-Max path) plus the MCP data-plane vars. Nothing else.
@@ -211,6 +322,12 @@ _cred="${GAFFER_SANDBOX_CLAUDE_CREDENTIALS:-}"
 if [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ ! -f "${_cred:-/nonexistent}" ]; then
   printf 'sandbox-docker: no model credential — set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), ANTHROPIC_API_KEY, or GAFFER_SANDBOX_CLAUDE_CREDENTIALS; claude will not authenticate inside the container\n' >&2
 fi
+# The bind-mounted worktree + repo `.git` are owned by the HOST uid while the guest runs
+# as root; git ≥ 2.35.2 refuses to touch a repo owned by another user ("dubious
+# ownership") unless it is marked safe. Mark the mounted paths safe through git's
+# env-config channel (no file is written): `*` is scoped to the container, whose only
+# repos are the ones this wrapper mounted.
+_envs+=( -e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=*" )
 # Route all egress through the allowlist proxy.
 _envs+=( -e "HTTP_PROXY=http://egress-proxy:8888" -e "HTTPS_PROXY=http://egress-proxy:8888" )
 _envs+=( -e "http_proxy=http://egress-proxy:8888" -e "https_proxy=http://egress-proxy:8888" )

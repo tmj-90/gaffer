@@ -3,8 +3,9 @@
 # loop.sh invocation, but launchd re-runs loop.sh on a schedule — so MAX_TICKS
 # alone can't bound a full day's spend. This tracks a per-CALENDAR-DAY tick count
 # persisted in GAFFER_DATA (DAILY_COUNTER_FILE), surviving across loop.sh runs, so
-# an overnight factory hard-stops once the day's cap is hit. Each tick invokes
-# `claude -p` (real cost), so the count is per tick regardless of result.
+# an overnight factory hard-stops once the day's cap is hit. The count is per tick
+# that may have invoked `claude -p` (real cost) — a `no_work` poll spends nothing and
+# is exempt (gaffer_tick_counts_toward_day_cap), so an idle daemon cannot burn the cap.
 # shellcheck shell=bash
 
 # Echo today's persisted tick count — 0 if there is no record, or the record is
@@ -42,6 +43,24 @@ _gaffer_bump_day_count_unlocked() {
   today="$(date +%Y-%m-%d)"
   c=$(( $(gaffer_day_count) + 1 ))
   printf '%s %s\n' "$today" "$c" > "$DAILY_COUNTER_FILE"
+}
+
+# gaffer_tick_counts_toward_day_cap <TICK_RESULT> — true when a finished tick may
+# have spent (invoked a paid `claude -p`), so it must be counted against
+# MAX_TICKS_PER_DAY. A `no_work` tick never spawns an agent: it polls the queue,
+# finds nothing claimable and exits — so it must NOT consume the day cap. Before this
+# every non-dry tick was counted, and an IDLE daemon (TICK_SLEEP=30, cap 50) burned
+# the whole day's cap in ~37 minutes without delivering anything, then sat idle
+# until midnight. Every OTHER result counts: the productive ones (worked / reviewed /
+# tested / clarified / idle_drafted / maintenance_* / paused), an `error` (the agent
+# may have run before a gate failed) and an EMPTY/unknown result (the outer timeout
+# reaped a tick mid-agent — real spend with no result line). Conservative by design:
+# only the one result that provably cost nothing is exempt.
+gaffer_tick_counts_toward_day_cap() {
+  case "${1:-}" in
+    no_work) return 1 ;;
+    *) return 0 ;;
+  esac
 }
 
 # Return 0 (true) if running another tick today stays within the cap. A cap of

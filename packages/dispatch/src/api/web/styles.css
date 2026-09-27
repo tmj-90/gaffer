@@ -8995,6 +8995,13 @@ body {
   font-weight: 600;
   color: var(--text);
 }
+/* B28(e): the estimated share of a figure (killed/timed-out calls), marked so it is
+   never read as measured usage. */
+.cost-est {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-style: italic;
+}
 .cost-sep {
   color: var(--line);
   user-select: none;

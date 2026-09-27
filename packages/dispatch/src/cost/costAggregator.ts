@@ -31,6 +31,8 @@ interface RawLedgerRow {
   total_cost_usd?: unknown;
   num_turns?: unknown;
   duration_ms?: unknown;
+  estimated?: unknown;
+  estimated_cost_usd?: unknown;
 }
 
 /** A normalised, fully-coerced ledger row. */
@@ -42,6 +44,14 @@ export interface LedgerRow {
   total_cost_usd: number;
   num_turns: number;
   duration_ms: number;
+  /**
+   * The labelled ESTIMATE the runner books for a killed / timed-out call
+   * (`estimated:true`, `estimated_cost_usd`, `measured:false`, total "unknown").
+   * 0 for a measured or plainly-unknown row. B28(e): the runner's day-USD cap and
+   * budget headroom count this, so the dashboard must too — a "Today" tile that
+   * dropped it could read LOWER than the figure the daemon halted on.
+   */
+  estimated_cost_usd?: number;
 }
 
 /** Per-ticket aggregated cost. */
@@ -60,7 +70,10 @@ export interface RepoCostEntry {
 
 /** The full aggregate returned by aggregateCosts(). */
 export interface CostAggregate {
+  /** Measured spend PLUS the labelled killed/timeout estimates (see estimated_usd). */
   total_usd: number;
+  /** The estimated share of total_usd — marked separately so it is never read as measured. */
+  estimated_usd: number;
   ticket_count: number;
   /** All per-ticket totals, sorted descending by cost. */
   by_ticket: TicketCostEntry[];
@@ -121,8 +134,18 @@ export function parseLedgerLine(line: string): LedgerRow | null {
     !measured || isUnknownSentinel(r.total_cost_usd) ? 0 : numOrZero(r.total_cost_usd);
   const num_turns = !measured || isUnknownSentinel(r.num_turns) ? 0 : numOrZero(r.num_turns);
   const duration_ms = !measured || isUnknownSentinel(r.duration_ms) ? 0 : numOrZero(r.duration_ms);
+  // A killed/timeout row carries a labelled estimate INSTEAD of a measured cost. Only
+  // an unmeasured row may carry one (a measured row's estimate, if any, is ignored so
+  // a call can never be counted twice).
+  const estimated_cost_usd =
+    !measured && r.estimated === true ? numOrZero(r.estimated_cost_usd) : 0;
 
-  return { ts, ticket, kind, measured, total_cost_usd, num_turns, duration_ms };
+  return { ts, ticket, kind, measured, total_cost_usd, num_turns, duration_ms, estimated_cost_usd };
+}
+
+/** Measured cost plus the labelled estimate — what the runner's caps count per row. */
+export function rowSpend(row: LedgerRow): number {
+  return row.total_cost_usd + (row.estimated_cost_usd ?? 0);
 }
 
 /**
@@ -170,6 +193,7 @@ export function aggregateRows(
   resolve: RepoResolver = () => null,
 ): CostAggregate {
   let totalUsd = 0;
+  let estimatedUsd = 0;
   let lastRecordAt: string | null = null;
 
   // Per-ticket accumulation
@@ -178,7 +202,11 @@ export function aggregateRows(
   const byRepo = new Map<string, { cost: number; tickets: Set<number> }>();
 
   for (const row of rows) {
-    totalUsd += row.total_cost_usd;
+    // Measured + labelled estimate — the SAME per-row figure the runner's day-USD cap
+    // and budget headroom sum, so the tiles and the daemon agree.
+    const spend = rowSpend(row);
+    totalUsd += spend;
+    estimatedUsd += row.estimated_cost_usd ?? 0;
 
     // Track most-recent ts
     if (lastRecordAt === null || row.ts > lastRecordAt) lastRecordAt = row.ts;
@@ -186,13 +214,13 @@ export function aggregateRows(
     if (row.ticket !== null) {
       const prev = byTicket.get(row.ticket) ?? { cost: 0, turns: 0 };
       byTicket.set(row.ticket, {
-        cost: prev.cost + row.total_cost_usd,
+        cost: prev.cost + spend,
         turns: prev.turns + row.num_turns,
       });
 
       const repo = resolve(row.ticket) ?? "(unlinked)";
       const prevRepo = byRepo.get(repo) ?? { cost: 0, tickets: new Set<number>() };
-      prevRepo.cost += row.total_cost_usd;
+      prevRepo.cost += spend;
       prevRepo.tickets.add(row.ticket);
       byRepo.set(repo, prevRepo);
     }
@@ -216,6 +244,7 @@ export function aggregateRows(
 
   return {
     total_usd: Math.round(totalUsd * 1e6) / 1e6,
+    estimated_usd: Math.round(estimatedUsd * 1e6) / 1e6,
     ticket_count: byTicket.size,
     by_ticket: byTicketArr,
     by_repo: byRepoArr,
@@ -236,23 +265,43 @@ export function aggregateCosts(
 ): CostAggregate {
   const path = resolveLedgerPath(env);
   if (!path) {
-    return { total_usd: 0, ticket_count: 0, by_ticket: [], by_repo: [], last_record_at: null };
+    return {
+      total_usd: 0,
+      estimated_usd: 0,
+      ticket_count: 0,
+      by_ticket: [],
+      by_repo: [],
+      last_record_at: null,
+    };
   }
   const rows = readLedgerRows(path);
   return aggregateRows(rows, resolve);
 }
 
 /**
- * Compute today's spend (UTC calendar day) from an aggregate's ledger rows.
- * Separate from aggregateRows to keep the main path lean.
+ * Compute today's spend (UTC calendar day) from an aggregate's ledger rows —
+ * measured cost PLUS the labelled killed/timeout estimates, exactly the window sum
+ * the runner's GAFFER_DAILY_BUDGET_USD gate halts on (lib/budget.sh
+ * gaffer_day_usd_spent). Separate from aggregateRows to keep the main path lean.
  */
 export function todaySpend(rows: LedgerRow[]): number {
   const today = new Date().toISOString().slice(0, 10);
   return (
     Math.round(
+      rows.filter((r) => r.ts.slice(0, 10) === today).reduce((sum, r) => sum + rowSpend(r), 0) *
+        1e6,
+    ) / 1e6
+  );
+}
+
+/** The estimated share of {@link todaySpend} — shown marked as an estimate, never as measured. */
+export function todayEstimatedSpend(rows: LedgerRow[]): number {
+  const today = new Date().toISOString().slice(0, 10);
+  return (
+    Math.round(
       rows
         .filter((r) => r.ts.slice(0, 10) === today)
-        .reduce((sum, r) => sum + r.total_cost_usd, 0) * 1e6,
+        .reduce((sum, r) => sum + (r.estimated_cost_usd ?? 0), 0) * 1e6,
     ) / 1e6
   );
 }

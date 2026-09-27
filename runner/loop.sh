@@ -195,20 +195,24 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # inner per-call timeouts still fire first (and are logged with context) before
   # this outer backstop reaps the tick.
   out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"
-  # R-1 (counting): this tick has spent (every tick invokes claude -p). Persist the
+  res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
+  # R-1 (counting): a tick that may have spent (invoked claude -p) is persisted to the
   # per-day count NOW — it is the denial-of-wallet guard's only ledger. If the bump
   # silently failed, the day cap would never advance and an overnight run could
   # blow past MAX_TICKS_PER_DAY. So if it fails, log it AND stop the run rather than
   # keep spending unbounded against a cap we can no longer enforce.
   # BUG 6 fix: DRY_RUN ticks never call claude -p so must not consume the daily
   # budget — skip the bump entirely when DRY_RUN=1.
-  if [ "${DRY_RUN:-0}" != "1" ]; then
+  # B28: a `no_work` tick never spawned an agent either — counting it let an IDLE
+  # daemon burn the whole day cap in ~37 min at the defaults, then sit out the day.
+  # Only ticks that did (or may have done) paid work advance the counter
+  # (gaffer_tick_counts_toward_day_cap, lib/budget.sh).
+  if [ "${DRY_RUN:-0}" != "1" ] && gaffer_tick_counts_toward_day_cap "$res"; then
     if ! gaffer_bump_day_count; then
       echo "gaffer factory: ERROR — could not persist the per-day tick count; the day cap can no longer be enforced. Stopping to avoid unbounded spend." >&2
       break
     fi
   fi
-  res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
   echo "tick $ticks/$MAX_TICKS → ${res:-unknown}"
 
   if [ "$res" = "no_work" ]; then

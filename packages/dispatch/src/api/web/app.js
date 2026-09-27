@@ -1861,27 +1861,44 @@ async function renderOverview() {
   // reads the usage-ledger. Hidden when the ledger is absent / not configured.
   if (costRes && (costRes.total_usd > 0 || costRes.today_usd > 0 || costRes.ticket_count > 0)) {
     const fmtUsd = (v) => (typeof v === "number" ? `$${v.toFixed(4)}` : "—");
+    // B28(e): the totals INCLUDE the labelled estimate the runner books for a
+    // killed/timed-out call — the same sum the daemon's day-USD cap halts on, so
+    // "Today" can never read lower than the figure the factory stopped at. The
+    // estimated share is shown marked as such, never passed off as measured.
+    const estNote = (v) =>
+      typeof v === "number" && v > 0
+        ? el(
+            "span",
+            {
+              class: "cost-est",
+              title: `$${v.toFixed(4)} of this is a labelled estimate booked for killed/timed-out calls (not measured usage).`,
+            },
+            `incl. ${fmtUsd(v)} est.`,
+          )
+        : null;
     wrap.appendChild(
       el(
         "div",
         {
           class: "cost-banner",
           // HONESTY: this is an API-EQUIVALENT estimate from Claude Code usage, not real
-          // money — on a Max/Pro subscription the marginal cost is the flat fee, and a
-          // timed-out/killed call reports "unknown" and contributes $0. Labelled so the
-          // number is never read as a real bill.
+          // money — on a Max/Pro subscription the marginal cost is the flat fee. A
+          // timed-out/killed call has no measured usage; the runner books a labelled
+          // conservative estimate for it, which is counted here and marked "est.".
           title:
-            "API-equivalent estimate from Claude Code usage — NOT real charges on a Max/Pro subscription (there the marginal cost is the flat fee). Killed/timed-out calls report as unknown and count as $0.",
+            "API-equivalent estimate from Claude Code usage — NOT real charges on a Max/Pro subscription (there the marginal cost is the flat fee). Killed/timed-out calls carry a labelled conservative estimate (marked est.) — the same figure the runner's daily budget counts.",
         },
         [
           el("span", { class: "cost-item" }, [
             el("span", { class: "cost-label" }, "All-time (API-equiv)"),
             el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
+            estNote(costRes.estimated_usd),
           ]),
           el("span", { class: "cost-sep" }, "·"),
           el("span", { class: "cost-item" }, [
             el("span", { class: "cost-label" }, "Today"),
             el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
+            estNote(costRes.today_estimated_usd),
           ]),
           el("span", { class: "cost-sep" }, "·"),
           el("span", { class: "cost-item" }, [

@@ -93,8 +93,26 @@ DRY_RUN=1 gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 1 '$0.1234';
   && ok "DRY_RUN: exit 0, nothing recorded" || no "DRY_RUN should be a no-op (rc=$rc)"
 
 echo "== D. happy path → one scored ledger record =="
+# B28(e): the judge's model turn is PAID work — it must be booked in the usage
+# ledger (kind eval-judge) like every other agent call. Stub the runner's recorder
+# (factory.config.sh is not sourced here) to capture the call; the real ledger
+# module's acceptance of the kind is checked separately below.
+USAGE_CALLS="$WORK/usage-calls"; : > "$USAGE_CALLS"
+gaffer_usage_record() { printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$([ -s "$4" ] && echo envelope-present || echo envelope-missing)" >> "$USAGE_CALLS"; }
 gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 1 '$0.1234'; rc=$?
 [ "$rc" -eq 0 ] && ok "judge run exits 0" || no "judge run failed (rc=$rc)"
+grep -q '^eval-judge|9|0|.*envelope.json|envelope-present$' "$USAGE_CALLS" \
+  && ok "judge spend booked in the usage ledger (kind eval-judge, ticket 9, rc 0, envelope intact)" \
+  || no "expected a usage-ledger record for the judge turn (got: $(cat "$USAGE_CALLS"))"
+USAGE_LEDGER_T="$WORK/usage-ledger.jsonl"
+GAFFER_USAGE_LEDGER="$USAGE_LEDGER_T" node "$RUNNER_DIR/lib/usage-ledger.mjs" --kind eval-judge --ticket 9 --rc 0 \
+  --json-file "$WORK/last-envelope.json" >/dev/null 2>&1 <<<'' || true
+printf '{"result":"ok","num_turns":1,"total_cost_usd":0.02,"usage":{"input_tokens":1,"output_tokens":1}}' > "$WORK/last-envelope.json"
+GAFFER_USAGE_LEDGER="$USAGE_LEDGER_T" node "$RUNNER_DIR/lib/usage-ledger.mjs" --kind eval-judge --ticket 9 --rc 0 \
+  --json-file "$WORK/last-envelope.json" >/dev/null 2>&1 || true
+grep -q '"kind":"eval-judge"' "$USAGE_LEDGER_T" 2>/dev/null \
+  && ok "usage-ledger.mjs accepts kind eval-judge (a real ledger row is written)" \
+  || no "usage-ledger.mjs should write an eval-judge row (ledger: $(cat "$USAGE_LEDGER_T" 2>/dev/null))"
 [ -s "$LEDGER" ] && [ "$(wc -l < "$LEDGER")" -eq 1 ] \
   && ok "exactly one ledger record appended" || no "expected 1 ledger line (got: $(wc -l < "$LEDGER" 2>/dev/null || echo none))"
 python3 - "$LEDGER" <<'PY' && ok "record carries verdict + context + spend" || no "ledger record fields wrong"

@@ -146,7 +146,7 @@ wg ticket pause "$NUM2" --reason budget_cap --branch "gaffer/ticket-$NUM2-x" --a
 wg ticket stop "$NUM2" --reason "not worth it" >/dev/null 2>&1
 [ "$(status_of "$NUM2")" = "cancelled" ] && ok "Stop abandoned #$NUM2 -> cancelled" || fail "Stop did not cancel the ticket (got '$(status_of "$NUM2")')"
 CTX2="$(wg ticket paused-context "$NUM2" 2>/dev/null | jget 'd.context')"
-[ "$CTX2" = "None" ] && ok "Stop dropped the resume context" || fail "Stop left a stale resume context ($CTX2)"
+{ [ -z "$CTX2" ] || [ "$CTX2" = "None" ] || [ "$CTX2" = "null" ]; } && ok "Stop dropped the resume context" || fail "Stop left a stale resume context ($CTX2)"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

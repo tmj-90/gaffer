@@ -53,10 +53,10 @@ chmod +x "$WORK/bin/claude"
 # Stub gh: records argv; `pr create` prints a PR URL like the real CLI.
 cat > "$WORK/bin/gh" <<'GH'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "${GH_CALLS:?}"
+printf '%s\n' "$*" >> "__GH_CALLS__"
 case "$*" in *"pr create"*) echo "https://github.com/example/repo/pull/42";; *) echo "{}";; esac
 GH
-sed -i "s|\${GH_CALLS:?}|$WORK/data/gh-calls.log|" "$WORK/bin/gh"; chmod +x "$WORK/bin/gh"
+sed -i.bak "s|__GH_CALLS__|$WORK/data/gh-calls.log|" "$WORK/bin/gh" && rm -f "$WORK/bin/gh.bak"; chmod +x "$WORK/bin/gh"
 
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_TICK_TIMEOUT=60 GAFFER_MAX_TURNS=10 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \

@@ -63,7 +63,8 @@ if [ -e .git ] && [ -f package.json ]; then
 fi
 printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'
 STUB
-sed -i "s|__MODE_FILE__|$MODE_FILE|; s|__WORK__|$WORK|" "$WORK/bin/claude"; chmod +x "$WORK/bin/claude"
+# -i.bak: BSD sed (macOS CI) requires a suffix argument to -i; GNU sed accepts it too.
+sed -i.bak "s|__MODE_FILE__|$MODE_FILE|; s|__WORK__|$WORK|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
 
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_TICK_TIMEOUT=60 GAFFER_MAX_TURNS=10 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \

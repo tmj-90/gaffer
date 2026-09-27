@@ -120,6 +120,70 @@ describe("scanRepoForOnboarding (manifest detection, no git)", () => {
     expect(scan.stack).toBe("typescript-react");
   });
 
+  it("detects a .NET solution as csharp with dotnet commands", () => {
+    writeFile(dir, "Shop.sln", "Microsoft Visual Studio Solution File, Format Version 12.00\n");
+    writeFile(dir, "src/Shop.Api/Shop.Api.csproj", '<Project Sdk="Microsoft.NET.Sdk.Web" />\n');
+
+    const scan = scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false }));
+    expect(scan.stack).toBe("csharp");
+    expect(scan.packageManager).toBe("dotnet");
+    expect(scan.testCommand).toBe("dotnet test");
+    expect(scan.buildCommand).toBe("dotnet build");
+  });
+
+  it("detects EVERY ecosystem in a mixed repo: .NET + TypeScript yields a compound stack", () => {
+    // The usual mixed layout: the solution at the root, the SPA one directory down.
+    writeFile(dir, "Shop.sln", "Microsoft Visual Studio Solution File, Format Version 12.00\n");
+    writeFile(dir, "src/Shop.Api/Shop.Api.csproj", '<Project Sdk="Microsoft.NET.Sdk.Web" />\n');
+    writeFile(
+      dir,
+      "web/package.json",
+      JSON.stringify({
+        scripts: { build: "vite build", test: "vitest" },
+        dependencies: { react: "18.2.0" },
+      }),
+    );
+    // node_modules is never entered, so a vendored manifest cannot add a stack.
+    writeFile(dir, "web/node_modules/left-pad/package.json", JSON.stringify({ name: "left-pad" }));
+
+    const scan = scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false }));
+    // Root ecosystem first (its commands win), the SPA's tokens appended: both the
+    // csharp-conventions and typescript-conventions packs route from this label.
+    expect(scan.stack).toBe("csharp-typescript-react");
+    expect(scan.testCommand).toBe("dotnet test");
+  });
+
+  it("a Node root with a Go service beside it composes node + go, commands from the root", () => {
+    writeFile(dir, "package.json", JSON.stringify({ scripts: { test: "vitest" } }));
+    writeFile(dir, "services/indexer/go.mod", "module example.com/indexer\n");
+
+    const scan = scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false }));
+    expect(scan.stack).toBe("node-go");
+    expect(scan.testCommand).toBe("npm run test");
+  });
+
+  it("a Gradle build applying the Kotlin plugin is a kotlin stack; a Gemfile is ruby; Package.swift is swift", () => {
+    writeFile(dir, "build.gradle.kts", 'plugins { kotlin("jvm") version "2.0.0" }\n');
+    expect(scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false })).stack).toBe(
+      "kotlin",
+    );
+    rmSync(join(dir, "build.gradle.kts"));
+
+    writeFile(dir, "Gemfile", 'source "https://rubygems.org"\ngem "rails"\n');
+    writeFile(dir, ".rubocop.yml", "AllCops: {}\n");
+    writeFile(dir, "spec/app_spec.rb", "");
+    const ruby = scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false }));
+    expect(ruby.stack).toBe("ruby");
+    expect(ruby.testCommand).toBe("bundle exec rspec");
+    expect(ruby.lintCommand).toBe("bundle exec rubocop");
+    rmSync(join(dir, "Gemfile"));
+    rmSync(join(dir, ".rubocop.yml"));
+    rmSync(join(dir, "spec"), { recursive: true });
+
+    writeFile(dir, "Package.swift", "// swift-tools-version:5.9\n");
+    expect(scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false })).stack).toBe("swift");
+  });
+
   it("folds Makefile targets into commands a stackless repo would otherwise lack", () => {
     // No recognised manifest → detectStack returns null and no commands; the
     // Makefile targets become the test/lint/build commands.

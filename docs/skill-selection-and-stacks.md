@@ -112,6 +112,23 @@ exist (`attach_delivery_evidence`) and every delivery that followed it silently 
 
 ## 2. Future direction: `stack` should become structured
 
+### What the onboarding scanner writes
+
+`packages/crew/src/scan/repoScan.ts` detects **every** ecosystem in the repo —
+the manifests at the root plus those up to two directories down (`api/*.csproj`
+beside `web/package.json`, or the `apps/*` / `services/*` / `packages/*`
+layout; `node_modules`, `dist`, `.git` and secret dirs are never entered) — and
+composes one compound label from them, root ecosystem first: a .NET solution
+with a React SPA beside it is `csharp-typescript-react`, a Node root with a Go
+service is `node-go`. The root ecosystem's commands become the repo's test /
+lint / build commands. Detectors: Node (React / React Native / Expo variants),
+Python, Rust, Java / Kotlin (Gradle with the Kotlin plugin), Go, .NET
+(`*.sln` / `*.csproj` / `global.json`), Ruby (`Gemfile`), Swift
+(`Package.swift`). Before this the scanner returned the FIRST manifest it found
+in an if/else chain and had no .NET detector at all, so a .NET + TypeScript repo
+was labelled `typescript-react` and, being a *known* stack, never received the
+C# pack.
+
 ### Today's hack
 
 `repositories.stack` is a single nullable **compound string**

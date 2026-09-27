@@ -417,6 +417,36 @@ check("FAIL-OPEN: an unknown or empty stack mounts every stack pack", () => {
   }
 });
 
+check("a mixed .NET + TypeScript repo (compound label) mounts BOTH conventions packs", () => {
+  // The onboarding scanner composes one label per ecosystem it finds; the selector
+  // expands it on "-" so every part routes its pack.
+  for (const label of ["csharp-typescript-react", "typescript-react-csharp", "dotnet-typescript"]) {
+    const names = selectSkills({ stacks: [label] }).map((s) => s.name);
+    assert(names.includes("csharp-conventions"), `${label} → csharp-conventions`);
+    assert(names.includes("typescript-conventions"), `${label} → typescript-conventions`);
+    for (const other of ["java-conventions", "python-conventions", "go-conventions", "mobile-ui"]) {
+      assert(!names.includes(other), `${label} must not mount ${other}`);
+    }
+  }
+  const web = selectSkills({ stacks: ["csharp-typescript-react"] }).map((s) => s.name);
+  assert(web.includes("frontend-design"), "the React half brings the web design bar");
+  assert(web.includes("react-patterns"), "the React half brings react-patterns");
+  // A framework token alone implies the JS/TS language pack (there is no React without it).
+  const csReact = selectSkills({ stacks: ["csharp-react"] }).map((s) => s.name);
+  assert(
+    csReact.includes("typescript-conventions"),
+    "csharp-react → typescript-conventions via react",
+  );
+  // The reviewer of such a repo gets both packs too.
+  const review = selectForRole("review", { stacks: ["csharp-typescript-react"] }).map(
+    (s) => s.name,
+  );
+  assert(
+    review.includes("csharp-conventions") && review.includes("typescript-conventions"),
+    "reviewer gets both packs",
+  );
+});
+
 check("the ticket text pulls a foreign language pack in by name", () => {
   const plain = selectSkills({ stacks: ["node"] }).map((s) => s.name);
   assert(!plain.includes("kotlin-conventions"), "node alone → no kotlin pack");

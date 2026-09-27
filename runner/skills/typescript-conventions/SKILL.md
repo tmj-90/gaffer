@@ -1,7 +1,7 @@
 ---
 name: typescript-conventions
 description: Use when a ticket adds or changes TypeScript/JavaScript code and it must follow the repo's TS conventions — strict typing, async correctness, module/import hygiene, and idiomatic patterns. Invoke for "add this in TypeScript", "fix the type errors", "tighten the types on X", or as the language pack for any TS/JS change.
-stack: [typescript, javascript, node]
+stack: [typescript, javascript, node, react, next, nextjs, vue, svelte, angular, react-native, expo]
 area: language
 ---
 

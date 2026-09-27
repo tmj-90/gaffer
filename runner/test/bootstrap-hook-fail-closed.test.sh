@@ -102,8 +102,14 @@ run_tick() {  # $@ = extra NAME=value; echoes combined stdout+stderr
       GAFFER_BOOTSTRAP_ROOT="$BOOT_ROOT" CLAUDE_BIN="$STUB" CLAUDE_FLAGS="" \
       DRY_RUN=0 REVIEW_MODE=human CLARIFY_DRAFTS_WHEN_IDLE=0 GAFFER_TESTING=0 \
       STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none GAFFER_TICK_TIMEOUT=120 \
-      "$@" timeout 300 bash "$TICK" 2>&1
+      "$@" ${BOUND[@]+"${BOUND[@]}"} bash "$TICK" 2>&1
 }
+# Wall-clock bound for the tick: GNU `timeout` is not on macOS, so prefer the perl
+# alarm wrapper the runner itself uses; fall back to whichever primitive exists.
+if command -v perl >/dev/null 2>&1; then BOUND=(perl -e 'alarm shift; exec @ARGV' 300)
+elif command -v timeout >/dev/null 2>&1; then BOUND=(timeout 300)
+elif command -v gtimeout >/dev/null 2>&1; then BOUND=(gtimeout 300)
+else BOUND=(); fi
 
 echo "== NEG: an unwired settings template → the bootstrap agent is NOT launched =="
 OUT="$(run_tick CLAUDE_SETTINGS="$UNWIRED")"

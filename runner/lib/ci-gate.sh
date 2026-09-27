@@ -24,7 +24,10 @@
 #     → 2  CI failed — caller should auto-reject back to rework.
 #
 # KNOBS:
-#   GAFFER_REQUIRE_CI=0              off by default; set to 1 to opt in.
+#   GAFFER_REQUIRE_CI=0              off by default; set to 1 to opt in. REQUIRES
+#                                    GAFFER_CREATE_PR=1 (the checks live on the PR):
+#                                    with PR creation off the gate logs one warning
+#                                    per run and skips instead of rejecting.
 #   GAFFER_CI_POLL_ATTEMPTS=20       max poll cycles before "still pending" timeout.
 #   GAFFER_CI_POLL_INTERVAL_SECS=30  seconds between polls.
 #   GAFFER_GH_BIN=gh                 injectable gh binary.
@@ -190,6 +193,27 @@ gaffer_ci_gate() {
     log "H3: strict mode — failing closed for #$num (set GAFFER_CI_TIMEOUT_POLICY=proceed to override)"
     return 2
   fi
+}
+
+# DEPENDENCY (tick.sh consults this BEFORE gaffer_ci_gate): the checks are read off the
+# delivery PR (`gh pr checks <branch>`), so GAFFER_REQUIRE_CI without GAFFER_CREATE_PR
+# polled a PR that never exists and, under the strict timeout policy, rejected EVERY
+# delivery after ~10 minutes. True when the gate must be SKIPPED for that reason.
+gaffer_ci_gate_needs_pr() {
+  gaffer_ci_gate_enabled && ! gaffer_pr_create_enabled
+}
+
+# The matching warning, logged ONCE per run — the marker lives beside the other per-run
+# bookkeeping files under $GAFFER_DATA and is cleared by loop.sh / poll-once.sh; without
+# GAFFER_DATA it warns each time. Always returns 0 (the caller proceeds to review).
+gaffer_ci_gate_warn_needs_pr() {
+  local num="$1" marker="${GAFFER_DATA:+$GAFFER_DATA/.ci-gate-needs-pr-warned}"
+  if [ -n "$marker" ] && [ -f "$marker" ]; then
+    return 0
+  fi
+  log "H3: WARNING — GAFFER_REQUIRE_CI is on but GAFFER_CREATE_PR is off: CI checks are read from the delivery PR, and no PR is created, so the CI gate is SKIPPED for #$num (and every delivery this run). Turn on 'Deliver as a pull request' (GAFFER_CREATE_PR=1) to gate on CI, or turn GAFFER_REQUIRE_CI off."
+  [ -n "$marker" ] && : > "$marker" 2>/dev/null
+  return 0
 }
 
 # Portable sleep for CI polling. Uses gaffer_timeout's perl when available so the

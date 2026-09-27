@@ -342,14 +342,30 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "delivery",
     label: "Deliver as a pull request",
-    help: "Open a GitHub PR with the delivery evidence instead of merging directly. Needs the gh CLI authenticated.",
+    help:
+      "Push the delivery branch and open a GitHub PR carrying the evidence. Approval then " +
+      "merges THROUGH that PR (gh pr merge, method below) and fast-forwards the local default " +
+      "branch — never a local merge that leaves the PR open. Needs the gh CLI authenticated; " +
+      "if gh fails the merge falls back to local and says so.",
+  },
+  {
+    key: "GAFFER_PR_MERGE_METHOD",
+    type: "string",
+    choices: ["merge", "squash", "rebase"],
+    group: "delivery",
+    label: "PR merge method",
+    help: "How an approved PR is landed by gh pr merge: merge (default) · squash · rebase. Only used with 'Deliver as a pull request'.",
   },
   {
     key: "GAFFER_REQUIRE_CI",
     type: "boolean",
     group: "delivery",
-    label: "Require CI green before merge",
-    help: "Poll the branch's CI checks and only merge when they pass. Off → merge without waiting on CI.",
+    label: "Require CI green before review",
+    help:
+      "Poll the delivery PR's CI checks and only let the ticket into review when they pass; " +
+      "red checks reject it back to rework. REQUIRES 'Deliver as a pull request' — the checks " +
+      "live on the PR, so with PR delivery off this gate is skipped with a warning (it used to " +
+      "poll a PR that never existed and reject every delivery at the timeout).",
   },
   {
     key: "GAFFER_ALLOW_SELF_DELIVERY",

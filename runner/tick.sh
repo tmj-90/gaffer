@@ -2789,9 +2789,16 @@ $_trail_q
   #   timeout / no-PR / no-checks (strict, default) → auto-reject (rc=2)
   #   timeout / no-PR / no-checks (GAFFER_CI_TIMEOUT_POLICY=proceed) → proceed (rc=0)
   #   flag off                → no-op (rc=0)
+  #   flag on but GAFFER_CREATE_PR off → SKIP with one warning per run (rc=0): the
+  #     checks live on the PR, so without PR creation the gate polled a PR that never
+  #     existed and (strict) rejected every delivery at the timeout.
   if declare -F gaffer_ci_gate >/dev/null 2>&1; then
-    gaffer_ci_gate "$NUM" "${_CARD_REAL_REPO:-$PRIMARY_REPO}" "$WORK_BRANCH" "${_PR_URL:-}"
-    _CI_RC=$?
+    if declare -F gaffer_ci_gate_needs_pr >/dev/null 2>&1 && gaffer_ci_gate_needs_pr; then
+      gaffer_ci_gate_warn_needs_pr "$NUM"; _CI_RC=0
+    else
+      gaffer_ci_gate "$NUM" "${_CARD_REAL_REPO:-$PRIMARY_REPO}" "$WORK_BRANCH" "${_PR_URL:-}"
+      _CI_RC=$?
+    fi
     if [ "$_CI_RC" = "2" ]; then
       # CI went red → auto-reject back to rework so a human never sees a broken CI.
       log "H3: CI FAILED for #$NUM — auto-rejecting delivery back to rework (ticket left for re-delivery)"

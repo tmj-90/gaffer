@@ -20,6 +20,10 @@
 //   AC10 the --dry-run CLI is BOUNDED: --timeout-ms is reported
 //   AC11 an unknown/unresolvable ticket is REFUSED (exit 1, error JSON)
 //   AC12 the resolve-merge-conflict SKILL.md exists with the expected frontmatter name
+//   B14  PR MODE: a ticket with a pr_url is merged THROUGH the PR (`gh pr merge <url>
+//        --<GAFFER_PR_MERGE_METHOD> --delete-branch`, stub gh) and the local default
+//        branch is fast-forwarded — checked out or not; gh failing / absent falls back
+//        to the local merge with the reason logged; no pr_url ⇒ no gh call at all
 //
 // Zero deps (node:sqlite ships with Node 22+; needs git on PATH). No live claude.
 // Run: node test/merge-ticket.test.mjs
@@ -54,6 +58,8 @@ const {
   applyDigestAndFeature,
   formatDigestApplyLog,
   parseDiffStatus,
+  buildPrMergeArgv,
+  resolvePrMergeMethod,
 } = await import(HELPER);
 
 let passed = 0;
@@ -96,32 +102,57 @@ function newRepo(name) {
 // --- a throwaway dispatch sqlite (tickets + repositories + ticket_repos) ---------
 // Mirrors the columns resolveTicket reads — just enough for ticket NUMBER → repo +
 // branch resolution offline, with no dispatch build.
-function makeDb(rows) {
+// `legacySchema: true` builds the tables WITHOUT the pr_url columns (a pre-PR-mode DB /
+// the older fixture shape) so the resolver's column fallback is exercised too.
+function makeDb(rows, { legacySchema = false } = {}) {
   const dbPath = resolve(WORKDIR, `wg-${Math.random().toString(36).slice(2)}.sqlite`);
   const { DatabaseSync } = require("node:sqlite");
   const db = new DatabaseSync(dbPath);
+  const pr = legacySchema ? "" : ", pr_url TEXT";
   db.exec(
-    "CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, branch_name TEXT);" +
+    `CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, branch_name TEXT${pr});` +
       "CREATE TABLE repositories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, " +
       "local_path TEXT, default_branch TEXT NOT NULL DEFAULT 'main');" +
       "CREATE TABLE ticket_repos (ticket_id TEXT, repo_id TEXT, role TEXT DEFAULT 'primary', " +
-      "branch_name TEXT, access TEXT DEFAULT 'write');",
+      `branch_name TEXT, access TEXT DEFAULT 'write'${pr});`,
   );
   for (const r of rows) {
-    db.prepare("INSERT INTO tickets (id,number,branch_name) VALUES (?,?,?)").run(
-      r.ticketId,
-      r.number,
-      r.ticketBranch ?? null,
-    );
+    if (legacySchema) {
+      db.prepare("INSERT INTO tickets (id,number,branch_name) VALUES (?,?,?)").run(
+        r.ticketId,
+        r.number,
+        r.ticketBranch ?? null,
+      );
+    } else {
+      db.prepare("INSERT INTO tickets (id,number,branch_name,pr_url) VALUES (?,?,?,?)").run(
+        r.ticketId,
+        r.number,
+        r.ticketBranch ?? null,
+        r.prUrl ?? null,
+      );
+    }
     db.prepare("INSERT INTO repositories (id,name,local_path,default_branch) VALUES (?,?,?,?)").run(
       r.repoId,
       r.repoName,
       r.localPath,
       r.defaultBranch ?? "main",
     );
-    db.prepare(
-      "INSERT INTO ticket_repos (ticket_id,repo_id,role,branch_name,access) VALUES (?,?,?,?,?)",
-    ).run(r.ticketId, r.repoId, r.role ?? "primary", r.repoBranch ?? null, r.access ?? "write");
+    if (legacySchema) {
+      db.prepare(
+        "INSERT INTO ticket_repos (ticket_id,repo_id,role,branch_name,access) VALUES (?,?,?,?,?)",
+      ).run(r.ticketId, r.repoId, r.role ?? "primary", r.repoBranch ?? null, r.access ?? "write");
+    } else {
+      db.prepare(
+        "INSERT INTO ticket_repos (ticket_id,repo_id,role,branch_name,access,pr_url) VALUES (?,?,?,?,?,?)",
+      ).run(
+        r.ticketId,
+        r.repoId,
+        r.role ?? "primary",
+        r.repoBranch ?? null,
+        r.access ?? "write",
+        r.repoPrUrl ?? null,
+      );
+    }
   }
   db.close();
   return dbPath;
@@ -618,6 +649,291 @@ console.log("== B9: --apply-digest-only → digest/feature apply with no git mut
     "no mark-merged / no git (the merge already landed elsewhere)",
     !calls.some((c) => c.includes("mark-merged")),
   );
+}
+
+// ── B14: PR MODE — a ticket with a pr_url is merged THROUGH its PR, never locally ─────
+// GAFFER_CREATE_PR recorded pr_url on the ticket, but the merge never read it: it
+// merged the branch locally, pushed nothing and left the PR open. Now: `gh pr merge
+// <url> --<method> --delete-branch`, then the local default branch is FAST-FORWARDED
+// from the remote; a gh failure (or no gh) falls back to the local merge and says why.
+console.log(
+  "== B14: resolveTicket carries pr_url (per-repo first, ticket-level, legacy schema) ==",
+);
+{
+  const dbBoth = makeDb([
+    {
+      ticketId: "tp1",
+      number: 7,
+      repoId: "rp1",
+      repoName: "demo",
+      localPath: REPO_OK,
+      repoBranch: "gaffer/ticket-7-x",
+      prUrl: "https://github.com/o/r/pull/1",
+      repoPrUrl: "https://github.com/o/r/pull/2",
+    },
+  ]);
+  eq("per-repo pr_url wins", resolveTicket(dbBoth, 7)?.prUrl, "https://github.com/o/r/pull/2");
+  const dbTicket = makeDb([
+    {
+      ticketId: "tp2",
+      number: 7,
+      repoId: "rp2",
+      repoName: "demo",
+      localPath: REPO_OK,
+      repoBranch: "gaffer/ticket-7-x",
+      prUrl: "https://github.com/o/r/pull/1",
+    },
+  ]);
+  eq(
+    "ticket-level pr_url fallback",
+    resolveTicket(dbTicket, 7)?.prUrl,
+    "https://github.com/o/r/pull/1",
+  );
+  const dbLegacy = makeDb(
+    [
+      {
+        ticketId: "tp3",
+        number: 7,
+        repoId: "rp3",
+        repoName: "demo",
+        localPath: REPO_OK,
+        repoBranch: "gaffer/ticket-7-x",
+      },
+    ],
+    { legacySchema: true },
+  );
+  const legacy = resolveTicket(dbLegacy, 7);
+  eq("schema without pr_url → '' (the local merge, exactly as before)", legacy?.prUrl, "");
+  eq("…and still resolves the branch", legacy?.branch, "gaffer/ticket-7-x");
+}
+
+console.log(
+  "== B14: gh argv + GAFFER_PR_MERGE_METHOD (merge default, squash, rebase, junk → merge) ==",
+);
+{
+  eq(
+    "default → pr merge <url> --merge --delete-branch",
+    buildPrMergeArgv({ prUrl: "https://github.com/o/r/pull/9" }),
+    ["pr", "merge", "https://github.com/o/r/pull/9", "--merge", "--delete-branch"],
+  );
+  eq("squash", buildPrMergeArgv({ prUrl: "U", method: "squash" })[3], "--squash");
+  eq("rebase (trimmed, case-insensitive)", resolvePrMergeMethod(" Rebase "), "rebase");
+  eq(
+    "unknown method → merge (a typo never picks an unintended method)",
+    resolvePrMergeMethod("yolo"),
+    "merge",
+  );
+}
+
+// Live (non-dry-run) PR-mode runs against real git + a stub `gh`. The delivery branch
+// was pushed to a bare `origin` (as GAFFER_CREATE_PR does); the stub's `pr merge` lands
+// the branch tip on origin/main and deletes the remote + local branch, like GitHub + gh
+// --delete-branch do; the helper must then fast-forward the local default branch.
+const GH_STUB = resolve(WORKDIR, "gh-stub.mjs");
+writeFileSync(
+  GH_STUB,
+  [
+    "#!/usr/bin/env node",
+    "import { appendFileSync } from 'node:fs';",
+    "import { spawnSync } from 'node:child_process';",
+    "const argv = process.argv.slice(2);",
+    "appendFileSync(process.env.STUB_GH_CALLS, JSON.stringify(argv) + '\\n');",
+    "if (argv[0] === '--version') { process.stdout.write('gh stub\\n'); process.exit(0); }",
+    "if (process.env.STUB_GH_FAIL === '1') { process.stderr.write('GraphQL: Pull request is not mergeable\\n'); process.exit(1); }",
+    "if (argv[0] === 'pr' && argv[1] === 'merge') {",
+    "  const br = process.env.STUB_GH_BRANCH;",
+    "  const r = spawnSync('git', ['push', '-q', 'origin', `refs/heads/${br}:refs/heads/main`], { encoding: 'utf8' });",
+    "  spawnSync('git', ['push', '-q', 'origin', '--delete', br]);",
+    "  if (argv.includes('--delete-branch')) spawnSync('git', ['branch', '-D', br]);",
+    "  process.exit(r.status ?? 1);",
+    "}",
+    "process.exit(0);",
+  ].join("\n"),
+  { mode: 0o755 },
+);
+const CLI_STUB_B14 = resolve(WORKDIR, "cli-stub-b14.mjs");
+const CLI_CALLS_B14 = resolve(WORKDIR, "cli-calls-b14.log");
+writeFileSync(
+  CLI_STUB_B14,
+  [
+    "import { appendFileSync } from 'node:fs';",
+    "const argv = process.argv.slice(2);",
+    "const real = argv[0] === '--db' ? argv.slice(2) : argv;",
+    `appendFileSync(${JSON.stringify(CLI_CALLS_B14)}, JSON.stringify(real) + '\\n');`,
+    "if (real[0] === 'ticket' && real[1] === 'show') { process.stdout.write('{\"ticket\":{},\"evidence\":[]}'); }",
+    "process.exit(0);",
+  ].join("\n"),
+);
+const CLAUDE_STUB = resolve(WORKDIR, "claude-stub.sh");
+const CLAUDE_MARK = resolve(WORKDIR, "claude-was-spawned");
+writeFileSync(CLAUDE_STUB, `#!/bin/sh\ntouch "${CLAUDE_MARK}"\necho '{}'\n`, { mode: 0o755 });
+
+function prFixture(name, { checkout = "main" } = {}) {
+  const repo = newRepo(name); // on gaffer/ticket-7-x, one base commit on main
+  writeFileSync(resolve(repo, "file.txt"), "base\nfeature\n");
+  git(repo, "commit", "-q", "-am", "feature");
+  const featureSha = git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim();
+  const bare = resolve(WORKDIR, `${name}-origin.git`);
+  spawnSync("git", ["init", "-q", "--bare", bare], { encoding: "utf8" });
+  git(repo, "remote", "add", "origin", bare);
+  git(repo, "push", "-q", "origin", "main", "gaffer/ticket-7-x");
+  if (checkout === "main") git(repo, "checkout", "-q", "main");
+  else git(repo, "checkout", "-q", "-b", checkout, "main");
+  const db = makeDb([
+    {
+      ticketId: `t-${name}`,
+      number: 7,
+      repoId: `r-${name}`,
+      repoName: name,
+      localPath: repo,
+      repoBranch: "gaffer/ticket-7-x",
+      prUrl: `https://github.com/o/${name}/pull/7`,
+    },
+  ]);
+  return { repo, bare, db, featureSha, prUrl: `https://github.com/o/${name}/pull/7` };
+}
+function runLive(env, args) {
+  const calls = resolve(WORKDIR, `gh-calls-${Math.random().toString(36).slice(2)}.log`);
+  const res = spawnSync(process.execPath, [HELPER, ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GAFFER_DATA: resolve(WORKDIR, "data"),
+      DISPATCH_CLI: CLI_STUB_B14,
+      MEMORY_CLI: CLI_STUB_B14,
+      CLAUDE_BIN: CLAUDE_STUB,
+      GAFFER_GH_BIN: GH_STUB,
+      GAFFER_DIGEST_DISABLE: "1",
+      STUB_GH_CALLS: calls,
+      STUB_GH_BRANCH: "gaffer/ticket-7-x",
+      ...env,
+    },
+  });
+  let out = null;
+  try {
+    out = JSON.parse(res.stdout);
+  } catch {
+    /* null */
+  }
+  const ghCalls = existsSync(calls)
+    ? readFileSync(calls, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+    : [];
+  return { code: res.status, out, err: res.stderr || "", ghCalls };
+}
+const cliCalls = () =>
+  existsSync(CLI_CALLS_B14)
+    ? readFileSync(CLI_CALLS_B14, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+    : [];
+
+console.log("== B14: pr_url + gh → merged THROUGH the PR, local default fast-forwarded ==");
+{
+  const f = prFixture("pr-main");
+  const { code, out, err, ghCalls } = runLive({ DISPATCH_DB: f.db }, ["--ticket", "7"]);
+  assert("exit 0 + phase merged", code === 0 && out && out.phase === "merged");
+  assert("via:pr with the PR url", out && out.via === "pr" && out.prUrl === f.prUrl);
+  assert("local default fast-forwarded", out && out.fastForwarded === true);
+  assert(
+    "gh pr merge <url> --merge --delete-branch was the merge",
+    ghCalls.some((c) => c.join(" ") === `pr merge ${f.prUrl} --merge --delete-branch`),
+  );
+  assert(
+    "local main is EXACTLY the branch tip (fast-forward, no local merge commit)",
+    git(f.repo, "rev-parse", "main").stdout.trim() === f.featureSha,
+  );
+  assert(
+    "main has the delivered change",
+    readFileSync(resolve(f.repo, "file.txt"), "utf8").includes("feature"),
+  );
+  assert(
+    "origin/main carries the merge",
+    git(f.bare, "rev-parse", "main").stdout.trim() === f.featureSha,
+  );
+  assert(
+    "ticket flipped merged → done (mark-merged called)",
+    cliCalls().some((c) => c.includes("mark-merged")),
+  );
+  assert("logged as merged through its PR", /through its PR/.test(err));
+  assert("no resolver was spawned", !existsSync(CLAUDE_MARK));
+}
+
+console.log("== B14: default branch NOT checked out → ff ref update, operator branch untouched ==");
+{
+  const f = prFixture("pr-workbench", { checkout: "workbench" });
+  const { code, out } = runLive({ DISPATCH_DB: f.db }, ["--ticket", "7"]);
+  assert("merged via pr", code === 0 && out && out.via === "pr" && out.fastForwarded === true);
+  assert(
+    "main advanced to the branch tip",
+    git(f.repo, "rev-parse", "main").stdout.trim() === f.featureSha,
+  );
+  assert(
+    "HEAD still on the operator's branch",
+    git(f.repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim() === "workbench",
+  );
+}
+
+console.log("== B14: GAFFER_PR_MERGE_METHOD=squash reaches gh ==");
+{
+  const f = prFixture("pr-squash");
+  const { out, ghCalls } = runLive({ DISPATCH_DB: f.db, GAFFER_PR_MERGE_METHOD: "squash" }, [
+    "--ticket",
+    "7",
+  ]);
+  assert("merged via pr", out && out.via === "pr");
+  assert(
+    "gh was told --squash",
+    ghCalls.some((c) => c[1] === "merge" && c.includes("--squash")),
+  );
+}
+
+console.log("== B14: gh FAILS → falls back to the local merge with the reason logged ==");
+{
+  const f = prFixture("pr-ghfail");
+  const { code, out, err } = runLive({ DISPATCH_DB: f.db, STUB_GH_FAIL: "1" }, ["--ticket", "7"]);
+  assert("still merged (exit 0)", code === 0 && out && out.phase === "merged");
+  assert("via:local", out && out.via === "local");
+  assert(
+    "the fallback and its reason are logged",
+    /falling back to a LOCAL merge/.test(err) && /not mergeable/.test(err),
+  );
+  assert(
+    "main has the change (local merge landed)",
+    readFileSync(resolve(f.repo, "file.txt"), "utf8").includes("feature"),
+  );
+}
+
+console.log("== B14: gh NOT available → local merge, logged ==");
+{
+  const f = prFixture("pr-nogh");
+  const { out, err } = runLive(
+    { DISPATCH_DB: f.db, GAFFER_GH_BIN: resolve(WORKDIR, "no-such-gh") },
+    ["--ticket", "7"],
+  );
+  assert("via:local", out && out.via === "local");
+  assert("logged that gh is not available", /not available/.test(err) && /GAFFER_GH_BIN/.test(err));
+}
+
+console.log("== B14: no pr_url → the local merge, byte-identical to before (no gh call) ==");
+{
+  const f = prFixture("pr-none");
+  const dbNoPr = makeDb([
+    {
+      ticketId: "t-none",
+      number: 7,
+      repoId: "r-none",
+      repoName: "pr-none-2",
+      localPath: f.repo,
+      repoBranch: "gaffer/ticket-7-x",
+    },
+  ]);
+  const { out, ghCalls } = runLive({ DISPATCH_DB: dbNoPr }, ["--ticket", "7"]);
+  assert("via:local", out && out.via === "local" && out.prUrl === undefined);
+  assert("gh never consulted", ghCalls.length === 0);
 }
 
 // Cleanup the throwaway repos + DBs.

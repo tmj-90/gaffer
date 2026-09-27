@@ -19,8 +19,8 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 107 |
-| Knobs editable in the dashboard | 53 |
+| Knobs with a runner default | 108 |
+| Knobs editable in the dashboard | 54 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 62 |
 
@@ -207,14 +207,15 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_CREATE_PR` | `0` | yes (boolean) | dispatch, runner | Open a GitHub PR with the delivery evidence instead of merging directly. Needs the gh CLI authenticated. |
+| `GAFFER_CREATE_PR` | `0` | yes (boolean) | dispatch, runner | Push the delivery branch and open a GitHub PR carrying the evidence. Approval then merges THROUGH that PR (gh pr merge, method below) and fast-forwards the local default branch — never a local merge that leaves the PR open. Needs the gh CLI authenticated; if gh fails the merge falls back to local and says so. |
 | `GAFFER_GH_BIN` | `gh` |  | runner | injectable gh binary (for tests) |
+| `GAFFER_PR_MERGE_METHOD` | `merge` | yes (string: merge / squash / rebase) | dispatch, runner | How an approved PR is landed by gh pr merge: merge (default) · squash · rebase. Only used with 'Deliver as a pull request'. |
 
 ### H3: CI-aware review gate
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_REQUIRE_CI` | `0` | yes (boolean) | dispatch, runner | Poll the branch's CI checks and only merge when they pass. Off → merge without waiting on CI. |
+| `GAFFER_REQUIRE_CI` | `0` | yes (boolean) | dispatch, runner | Poll the delivery PR's CI checks and only let the ticket into review when they pass; red checks reject it back to rework. REQUIRES 'Deliver as a pull request' — the checks live on the PR, so with PR delivery off this gate is skipped with a warning (it used to poll a PR that never existed and reject every delivery at the timeout). |
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 

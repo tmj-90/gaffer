@@ -126,7 +126,13 @@ describe("settings module: enum choices + value validation", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const ENUM_KEYS = ["GAFFER_MODE", "REVIEW_MODE", "GAFFER_IDLE_MODE", "SANDBOX_PROVIDER"];
+  const ENUM_KEYS = [
+    "GAFFER_MODE",
+    "REVIEW_MODE",
+    "GAFFER_IDLE_MODE",
+    "SANDBOX_PROVIDER",
+    "GAFFER_PR_MERGE_METHOD",
+  ];
 
   it("every enum setting declares a non-empty choices list", () => {
     for (const key of ENUM_KEYS) {
@@ -143,6 +149,23 @@ describe("settings module: enum choices + value validation", () => {
     expect(mode?.choices).toEqual(["supervised", "lite", "graduated", "autonomous", "strict"]);
     const anInt = views.find((v) => v.key === "MAX_TICKS");
     expect(anInt?.choices).toBeUndefined();
+  });
+
+  it("PR mode: the merge method is an enum and the CI gate declares its PR dependency", () => {
+    // B14: REQUIRE_CI without CREATE_PR polled a PR that never existed; the definitions
+    // now say so, and the merge method (gh pr merge --merge|--squash|--rebase) is a knob.
+    const method = SETTING_DEFS.find((d) => d.key === "GAFFER_PR_MERGE_METHOD");
+    expect(method?.choices).toEqual(["merge", "squash", "rebase"]);
+    expect(method?.group).toBe("delivery");
+    const ci = SETTING_DEFS.find((d) => d.key === "GAFFER_REQUIRE_CI");
+    expect(ci?.help).toMatch(/REQUIRES 'Deliver as a pull request'/);
+    const pr = SETTING_DEFS.find((d) => d.key === "GAFFER_CREATE_PR");
+    expect(pr?.help).toMatch(/merges THROUGH that PR/);
+    const res = writeSettings({ GAFFER_PR_MERGE_METHOD: "squash" }, {}, settingsPath);
+    expect(res.written).toEqual(["GAFFER_PR_MERGE_METHOD"]);
+    expect(writeSettings({ GAFFER_PR_MERGE_METHOD: "yolo" }, {}, settingsPath).invalid).toEqual([
+      "GAFFER_PR_MERGE_METHOD",
+    ]);
   });
 
   it("persists a valid enum value", () => {

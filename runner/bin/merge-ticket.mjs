@@ -38,6 +38,14 @@
 //   MCP_CONFIG / CLAUDE_SETTINGS / SKILLS_DIR   project-local wiring (defaults next to
 //                                this checkout, matching factory.config.sh).
 //   GAFFER_MERGE_TIMEOUT_MS       kill the resolver after this (default 600000).
+//   GAFFER_GH_BIN                PR MODE: the `gh` binary (default `gh`). When the ticket
+//                                carries a pr_url (GAFFER_CREATE_PR opened a PR) and gh is
+//                                available, the merge lands THROUGH the PR (`gh pr merge
+//                                <url> --<method> --delete-branch`) and the local default
+//                                branch is fast-forwarded from GAFFER_PR_REMOTE (origin);
+//                                a gh failure falls back to the local merge with a logged
+//                                reason. No pr_url ⇒ the local merge, exactly as before.
+//   GAFFER_PR_MERGE_METHOD       merge (default) | squash | rebase — the gh merge method.
 //
 // FLAGS:
 //   --ticket <number>    (required) the approved ticket whose branch is being merged.
@@ -48,8 +56,10 @@
 //                        target + resolver claude argv as JSON (the test seam).
 //
 // OUTPUT (stdout, exactly ONE JSON object; the phase is the outcome):
-//   merged:    { "phase":"merged", ticket, repo, branch, defaultBranch, digest }
-//              — the merge landed cleanly. `digest` reports the POST-REVIEW,
+//   merged:    { "phase":"merged", ticket, repo, branch, defaultBranch, via, digest }
+//              — the merge landed cleanly. `via` is "pr" (landed through the PR;
+//                `prUrl` + `fastForwarded` are carried) or "local" (the in-process
+//                merge). `digest` reports the POST-REVIEW,
 //                DETERMINISTIC (no-agent) Repo-Digest refresh + feature→shipped:
 //                { applied, prepared, jobs:[{kind,ok}], error? } — see applyDigestAndFeature.
 //                It is best-effort + fully swallowed: it can never fail the merge.
@@ -192,34 +202,61 @@ export function resolveTicket(dbPath, number) {
   let db;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
-    const ticket = db
-      .prepare("SELECT id, number, branch_name AS branchName FROM tickets WHERE number = ?")
-      .get(num);
+    // pr_url is the PR the delivery opened (GAFFER_CREATE_PR, recorded by
+    // `wg delivery-artifact --pr`); a schema/fixture without the column resolves
+    // without it, so a PR-less merge behaves exactly as before.
+    let ticket;
+    try {
+      ticket = db
+        .prepare(
+          "SELECT id, number, branch_name AS branchName, pr_url AS prUrl FROM tickets WHERE number = ?",
+        )
+        .get(num);
+    } catch {
+      ticket = db
+        .prepare("SELECT id, number, branch_name AS branchName FROM tickets WHERE number = ?")
+        .get(num);
+    }
     if (!ticket || !ticket.id) return null;
 
     // The write-access execution repo this ticket delivers into. Prefer access='write'
     // (the WG-002 boundary), falling back to the legacy role='primary' so older rows
     // still resolve. tr.branch_name is the per-repo delivery branch.
-    const repoSql = (withStack) =>
+    const repoSql = (withStack, withPr) =>
       "SELECT r.name AS name, r.local_path AS localPath, " +
       "r.default_branch AS defaultBranch, " +
       (withStack ? "r.stack AS stack, " : "") +
+      (withPr ? "tr.pr_url AS repoPrUrl, " : "") +
       "tr.branch_name AS repoBranch " +
       "FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id " +
       "WHERE tr.ticket_id = ? " +
       "ORDER BY (tr.access = 'write') DESC, (tr.role = 'primary') DESC " +
       "LIMIT 1";
+    // An older schema (or a minimal test fixture) may lack repositories.stack and/or
+    // ticket_repos.pr_url independently: drop each optional column only when the
+    // query with it fails, so a missing `stack` never hides a present `pr_url`.
     let repoRow;
-    try {
-      repoRow = db.prepare(repoSql(true)).get(ticket.id);
-    } catch {
-      // An older schema (or a minimal test fixture) without repositories.stack.
-      repoRow = db.prepare(repoSql(false)).get(ticket.id);
+    let lastErr;
+    for (const [withStack, withPr] of [
+      [true, true],
+      [false, true],
+      [true, false],
+      [false, false],
+    ]) {
+      try {
+        repoRow = db.prepare(repoSql(withStack, withPr)).get(ticket.id);
+        lastErr = undefined;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
     }
+    if (lastErr) throw lastErr;
     if (!repoRow || !repoRow.localPath) return null;
 
     const branch = String(repoRow.repoBranch || ticket.branchName || "").trim();
     if (!branch) return null;
+    const prUrl = String(repoRow.repoPrUrl || ticket.prUrl || "").trim();
 
     return {
       ticketId: String(ticket.id),
@@ -231,6 +268,7 @@ export function resolveTicket(dbPath, number) {
         stack: repoRow.stack ? String(repoRow.stack) : "",
       },
       branch,
+      prUrl,
     };
   } catch {
     return null;
@@ -263,6 +301,85 @@ export function attemptMerge(repoPath, branch, defaultBranch) {
   // delivery branch is left intact for the resolver.
   git("merge", "--abort");
   return { clean: false, reason: "merge conflict" };
+}
+
+/**
+ * The PR-merge knobs (mirrors lib/automerge.sh gaffer_pr_merge): which `gh` to call,
+ * how to land the PR (`GAFFER_PR_MERGE_METHOD` — merge (default) | squash | rebase;
+ * anything else falls back to merge so a typo can never pick an unintended method),
+ * and which remote holds the PR's base branch for the local fast-forward.
+ */
+export const PR_MERGE_METHODS = ["merge", "squash", "rebase"];
+export function resolvePrMergeMethod(raw) {
+  const m = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  return PR_MERGE_METHODS.includes(m) ? m : "merge";
+}
+
+/** The exact `gh` argv the PR path runs: `pr merge <url> --<method> --delete-branch`. */
+export function buildPrMergeArgv({ prUrl, method }) {
+  return ["pr", "merge", String(prUrl), `--${resolvePrMergeMethod(method)}`, "--delete-branch"];
+}
+
+/** True when `bin` resolves to an executable (`gh` present + on PATH, or an absolute stub). */
+export function ghAvailable(bin) {
+  const b = String(bin || "").trim();
+  if (!b) return false;
+  const probe = spawnSync(b, ["--version"], { encoding: "utf8", stdio: "ignore" });
+  return !probe.error;
+}
+
+/**
+ * PR MODE: land the delivery THROUGH its pull request. When the ticket carries a
+ * `pr_url` (GAFFER_CREATE_PR opened one), the merge that a human approved must happen
+ * where the PR is — `gh pr merge <url> --<method> --delete-branch` — and the local
+ * default branch is then FAST-FORWARDED from the remote (`git fetch <remote> <def>`,
+ * then `merge --ff-only` when <def> is checked out, else a plain ff ref update), so
+ * the local checkout catches up without ever re-merging locally. A local merge in PR
+ * mode left the PR open forever and the default branch unpushed — the Settings help
+ * text promised the opposite.
+ *
+ * Returns { ok:true, fastForwarded } when gh merged the PR; { ok:false, reason } when
+ * gh failed (the caller falls back to the local merge and LOGS why). A merged PR whose
+ * local fast-forward failed is still ok:true (the change landed upstream) with
+ * fastForwarded:false so the caller can log it.
+ */
+export function mergeViaPr({ repoPath, prUrl, defaultBranch, ghBin, method, remote }) {
+  const argv = buildPrMergeArgv({ prUrl, method });
+  const gh = spawnSync(ghBin, argv, {
+    cwd: repoPath,
+    encoding: "utf8",
+    timeout: 5 * 60 * 1000,
+    env: { ...process.env, GH_PROMPT_DISABLED: "1" },
+  });
+  if (gh.error || gh.status !== 0) {
+    const detail = gh.error
+      ? (gh.error.message ?? String(gh.error))
+      : `exit ${gh.status}: ${(gh.stderr || gh.stdout || "").trim().slice(0, 300)}`;
+    return { ok: false, reason: `${ghBin} ${argv.join(" ")} failed (${detail})`, argv };
+  }
+  // Fast-forward the local default branch from the remote the PR merged into.
+  const rem = String(remote || "origin");
+  const g = (...args) => spawnSync("git", ["-C", repoPath, ...args], { encoding: "utf8" });
+  const head = g("symbolic-ref", "--quiet", "--short", "HEAD").stdout.trim();
+  let ff;
+  if (head === defaultBranch) {
+    const fetch = g("fetch", rem, defaultBranch);
+    ff = fetch.status === 0 ? g("merge", "--ff-only", "FETCH_HEAD") : fetch;
+  } else {
+    // Not checked out here: a plain (non-forced) refspec is fast-forward-only by construction.
+    ff = g("fetch", rem, `${defaultBranch}:${defaultBranch}`);
+  }
+  const fastForwarded = ff.status === 0;
+  return {
+    ok: true,
+    argv,
+    fastForwarded,
+    ...(fastForwarded
+      ? {}
+      : { ffReason: (ff.stderr || ff.stdout || "fast-forward failed").trim().slice(0, 300) }),
+  };
 }
 
 /**
@@ -753,10 +870,58 @@ function main() {
     return;
   }
 
-  // 1. Try the clean merge first (gaffer_auto_merge semantics, in-process).
-  const merge = attemptMerge(repo.localPath, branch, repo.defaultBranch);
-  if (merge.clean) {
-    log(`merged #${resolved.number} (${branch} → ${repo.defaultBranch}) cleanly`);
+  // 1. Land the delivery. PR MODE first: when the ticket carries a pr_url (the runner
+  //    opened a PR under GAFFER_CREATE_PR) and `gh` is available, merge THROUGH the PR
+  //    and fast-forward the local default branch from the remote — a local merge here
+  //    left the PR open and the default branch unpushed. If gh fails, fall back to the
+  //    local conflict-safe merge (gaffer_auto_merge semantics) and say why.
+  const ghBin = process.env.GAFFER_GH_BIN || "gh";
+  let landed = null;
+  if (resolved.prUrl) {
+    if (ghAvailable(ghBin)) {
+      const pr = mergeViaPr({
+        repoPath: repo.localPath,
+        prUrl: resolved.prUrl,
+        defaultBranch: repo.defaultBranch,
+        ghBin,
+        method: process.env.GAFFER_PR_MERGE_METHOD,
+        remote: process.env.GAFFER_PR_REMOTE,
+      });
+      if (pr.ok) {
+        landed = { via: "pr", prUrl: resolved.prUrl, fastForwarded: pr.fastForwarded };
+        log(
+          `merged #${resolved.number} through its PR ${resolved.prUrl} (${pr.argv.join(" ")})` +
+            (pr.fastForwarded
+              ? `; local ${repo.defaultBranch} fast-forwarded from the remote`
+              : ""),
+        );
+        if (!pr.fastForwarded) {
+          log(
+            `WARNING: #${resolved.number} PR merged but the local ${repo.defaultBranch} could not be ` +
+              `fast-forwarded (${pr.ffReason}) — pull it by hand`,
+          );
+        }
+      } else {
+        log(
+          `PR merge for #${resolved.number} failed — ${pr.reason}; falling back to a LOCAL merge of ` +
+            `${branch} (the PR ${resolved.prUrl} stays open — close it by hand)`,
+        );
+      }
+    } else {
+      log(
+        `#${resolved.number} has PR ${resolved.prUrl} but '${ghBin}' is not available (GAFFER_GH_BIN) — ` +
+          `falling back to a LOCAL merge of ${branch} (the PR stays open — close it by hand)`,
+      );
+    }
+  }
+  if (!landed) {
+    const merge = attemptMerge(repo.localPath, branch, repo.defaultBranch);
+    if (merge.clean) {
+      landed = { via: "local" };
+      log(`merged #${resolved.number} (${branch} → ${repo.defaultBranch}) cleanly`);
+    }
+  }
+  if (landed) {
     // Flip the ticket ready_for_merge → done now that the branch is actually merged.
     // Non-fatal: the merge already landed; a failure just leaves it in ready_for_merge
     // (a human can run `wg ticket mark-merged <n> --as system`).
@@ -845,6 +1010,7 @@ function main() {
         repo: repo.name,
         branch,
         defaultBranch: repo.defaultBranch,
+        ...landed,
         digest,
       },
       0,

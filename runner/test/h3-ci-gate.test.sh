@@ -247,6 +247,38 @@ grep -q "attach-evidence" "$WG_CALLS" \
   && ok "T14 proceed note attached even for no-PR case" \
   || fail "T14 expected attach-evidence for no-PR proceed case"
 
+echo "== B14: GAFFER_REQUIRE_CI depends on GAFFER_CREATE_PR (tick.sh skips the gate, warns once) =="
+
+# T15: the dependency predicate — on only when CI is required AND no PR is created.
+GAFFER_REQUIRE_CI=1; GAFFER_CREATE_PR=0
+gaffer_ci_gate_needs_pr && ok "T15 REQUIRE_CI=1 + CREATE_PR=0 → gate must be skipped" \
+  || fail "T15 expected needs-pr when CI is required without PR creation"
+GAFFER_REQUIRE_CI=1; GAFFER_CREATE_PR=1
+gaffer_ci_gate_needs_pr && fail "T15 REQUIRE_CI=1 + CREATE_PR=1 should NOT skip" \
+  || ok "T15 REQUIRE_CI=1 + CREATE_PR=1 → gate runs"
+GAFFER_REQUIRE_CI=0; GAFFER_CREATE_PR=0
+gaffer_ci_gate_needs_pr && fail "T15 REQUIRE_CI=0 should never report needs-pr" \
+  || ok "T15 REQUIRE_CI=0 → nothing to skip"
+
+# T16: the warning is logged ONCE per run (marker under GAFFER_DATA), names both knobs,
+#      and always lets the delivery proceed (rc=0).
+LOG_FILE="$WORK/warn.log"; : > "$LOG_FILE"
+log() { printf '%s\n' "$*" >> "$LOG_FILE"; }
+GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA"
+gaffer_ci_gate_warn_needs_pr 21; _RC=$?
+[ "$_RC" = "0" ] && ok "T16 warn-and-skip returns 0 (proceed to review)" || fail "T16 expected rc=0, got $_RC"
+grep -q 'GAFFER_REQUIRE_CI is on but GAFFER_CREATE_PR is off' "$LOG_FILE" \
+  && ok "T16 warning names the dependency" || fail "T16 warning missing: $(cat "$LOG_FILE")"
+gaffer_ci_gate_warn_needs_pr 22; gaffer_ci_gate_warn_needs_pr 23
+[ "$(grep -c 'GAFFER_REQUIRE_CI is on' "$LOG_FILE")" = "1" ] \
+  && ok "T16 warned once for the run (later deliveries stay quiet)" \
+  || fail "T16 expected exactly one warning, got $(grep -c 'GAFFER_REQUIRE_CI is on' "$LOG_FILE")"
+[ -f "$GAFFER_DATA/.ci-gate-needs-pr-warned" ] \
+  && ok "T16 per-run marker written (cleared by loop.sh / poll-once.sh)" || fail "T16 marker missing"
+grep -q 'ci-gate-needs-pr-warned' "$RUNNER_DIR/loop.sh" && grep -q 'ci-gate-needs-pr-warned' "$RUNNER_DIR/bin/poll-once.sh" \
+  && ok "T16 loop.sh + poll-once.sh clear the marker at run start" || fail "T16 marker not cleared by the run starters"
+log() { :; }; unset GAFFER_DATA
+
 echo ""
 echo "Results: $PASS passed, ${#FAILURES[@]} failed"
 if [ "${#FAILURES[@]}" -gt 0 ]; then

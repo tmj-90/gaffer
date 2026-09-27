@@ -1399,7 +1399,9 @@ fi
 # safe unattended posture).
 # Conflict-safe: a clean merge lands on approval; a CONFLICT does NOT force-merge —
 # it spawns a resolver agent + re-queues the ticket for re-approval (with the
-# resolved diff). Never pushes.
+# resolved diff). Never pushes — except in PR MODE (the ticket carries a pr_url from
+# GAFFER_CREATE_PR), where the merge happens THROUGH the PR via `gh pr merge` and the
+# local default branch is fast-forwarded from the remote (see the H4 block below).
 : "${AUTO_MERGE:=0}"
 
 # A MERGE REQUIRES A HUMAN APPROVAL. Even with AUTO_MERGE=1, an AGENT review
@@ -1848,9 +1850,16 @@ gaffer_review_verdict() {
 # URL back as pr_url on the ticket. Off by default — opt in per-run or globally.
 # The `gh` binary is injectable via GAFFER_GH_BIN (default: `gh`) so tests can
 # stub it without a real remote.
+# PR MODE lands the approved change THROUGH that PR: the dashboard merge
+# (bin/merge-ticket.mjs) and the AFK merge (lib/review.sh → gaffer_pr_merge) run
+# `gh pr merge <pr_url> --<GAFFER_PR_MERGE_METHOD> --delete-branch` and then
+# fast-forward the local default branch from GAFFER_PR_REMOTE; a gh failure falls
+# back to the local merge with the reason logged. Without a pr_url the merge is the
+# local one, exactly as before.
 : "${GAFFER_CREATE_PR:=0}"   # 1/true/yes/on to enable real PR creation; default OFF
 : "${GAFFER_GH_BIN:=gh}"     # injectable gh binary (for tests)
-export GAFFER_CREATE_PR GAFFER_GH_BIN
+: "${GAFFER_PR_MERGE_METHOD:=merge}"   # how an approved PR is landed: merge | squash | rebase
+export GAFFER_CREATE_PR GAFFER_GH_BIN GAFFER_PR_MERGE_METHOD
 
 # --- H3: CI-aware review gate (opt-in) ----------------------------------------
 # When GAFFER_REQUIRE_CI=1, after the delivery branch/PR exists the runner polls
@@ -1858,8 +1867,12 @@ export GAFFER_CREATE_PR GAFFER_GH_BIN
 # human review lane. If CI goes red, the ticket is auto-rejected back to rework
 # with the failing check (name + url) as evidence. On poll timeout the gate
 # surfaces "CI still pending" and proceeds rather than hanging forever.
+# REQUIRES GAFFER_CREATE_PR: the checks are read off the delivery PR, so with PR
+# creation off there is no PR to poll — the gate then logs one clear warning per run
+# and SKIPS (proceeds to review) instead of polling a PR that never exists and
+# rejecting every delivery at the timeout.
 # Off by default — fully backward-compatible when unset.
-: "${GAFFER_REQUIRE_CI:=0}"            # 1/true/yes/on to require CI green before review
+: "${GAFFER_REQUIRE_CI:=0}"            # 1/true/yes/on to require CI green before review (needs GAFFER_CREATE_PR)
 : "${GAFFER_CI_POLL_ATTEMPTS:=20}"     # max poll cycles before "still pending" timeout
 : "${GAFFER_CI_POLL_INTERVAL_SECS:=30}" # seconds between polls
 export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS

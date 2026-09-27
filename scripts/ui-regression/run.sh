@@ -61,6 +61,9 @@ import { addTask, completeTask } from "../src/tasks.js";
 test("addTask appends", () => { assert.equal(addTask([], "a").length, 1); });
 test("completeTask marks done", () => { assert.equal(completeTask(addTask([], "a"), "a")[0].done, true); });
 JS
+  # A planted 520-line god-file so the idle tech-debt lane has something to find
+  # when the regression turns maintenance on (step 6c).
+  { echo "// legacy module — deliberately oversized so the tech-debt scan flags it"; for i in $(seq 1 520); do echo "export const legacy$i = $i;"; done; } > src/legacy.js
   printf '# taskflow-mini\nA tiny task list library used to regression-test the Gaffer dashboard.\n' > README.md
   git -c user.email=t@t -c user.name=t add -A && git -c user.email=t@t -c user.name=t commit -qm "init taskflow-mini" )
 

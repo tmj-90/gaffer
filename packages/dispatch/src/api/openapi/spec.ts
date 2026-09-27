@@ -203,7 +203,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Read the crew idle-loop configuration",
     capability: "read",
     responses: [
-      ok("The `loops.idle_*` slice of crew.yaml; a missing file is a clean not-configured shape."),
+      ok(
+        "The `loops.idle_*` rows (each flagged `maintenanceLane`), the `maintenance` switch and the `selfImprove` gate from crew.yaml; a missing file is a clean not-configured shape.",
+      ),
     ],
   },
   {
@@ -212,7 +214,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Write the crew idle-loop configuration",
     description:
-      "Repo names are cross-checked against the registered repositories. The crew runner re-reads crew.yaml on its next tick.",
+      "Loop rows plus the optional `maintenance` switch and `self_improve` gate (opt-in repos, risk ceiling, per-tick cap). Repo names are cross-checked against the registered repositories. The crew runner re-reads crew.yaml on its next tick.",
     capability: "full",
     body: "idleLoopsBody",
     responses: [ok("The written slice."), invalid],

@@ -32,6 +32,7 @@ import {
 import { runImplementationLoop } from "../loops/implementationLoop.js";
 import { MockAgentRuntime } from "../runtime/agentRuntime.js";
 import { loadSkillRegistry } from "../skills/loader.js";
+import { withDispatchRepos } from "../registry/dispatchRepos.js";
 import { buildStats, renderDoctor, renderStats, runDoctor } from "../ops/index.js";
 import { loadFactory, openDispatch } from "../runtime/wiring.js";
 import { checkBranchPolicy } from "../safety/branchPolicy.js";
@@ -381,12 +382,15 @@ program
   .description("Run all configured idle loops (creates draft tickets only)")
   .action(async (_opts, cmd) => {
     const ctx = loadEverything(cmd.optsWithGlobals());
-    const { loaded, repoRegistry } = ctx;
+    const { loaded } = ctx;
     const events = new EventLog(systemClock, {
       filePath: loaded.config.logging.event_log_path,
       redact: loaded.config.logging.redact,
     });
     const dispatch = await openDispatch(ctx);
+    // Dispatch's registry (what onboarding writes) merged into crew.yaml's repos, so a
+    // dashboard-onboarded repo is scanned without hand-editing crew.yaml.
+    const repoRegistry = withDispatchRepos(ctx.repoRegistry, dispatch, events);
     const baseDeps = {
       config: loaded.config,
       repoRegistry,
@@ -451,14 +455,22 @@ program
   .description(
     "Run the idle MAINTENANCE LANE: one scheduler-chosen maintenance loop (priority + rotation)",
   )
-  .action(async (_opts, cmd) => {
+  .option(
+    "--force",
+    "run even when loops.maintenance.enabled is false (the GAFFER_MAINTENANCE=1 override)",
+    false,
+  )
+  .action(async (opts, cmd) => {
     const ctx = loadEverything(cmd.optsWithGlobals());
-    const { loaded, repoRegistry } = ctx;
+    const { loaded } = ctx;
     const events = new EventLog(systemClock, {
       filePath: loaded.config.logging.event_log_path,
       redact: loaded.config.logging.redact,
     });
     const dispatch = await openDispatch(ctx);
+    // Dispatch's registry (what onboarding writes) merged into crew.yaml's repos, so a
+    // dashboard-onboarded repo is scanned without hand-editing crew.yaml.
+    const repoRegistry = withDispatchRepos(ctx.repoRegistry, dispatch, events);
     const baseDeps = {
       config: loaded.config,
       repoRegistry,
@@ -477,7 +489,7 @@ program
     const cursorPath =
       loaded.config.loops.maintenance.cursor_path ?? join(dataDir, "maintenance-cursor.json");
 
-    const report = runMaintenanceLane(baseDeps, cursorPath);
+    const report = runMaintenanceLane(baseDeps, cursorPath, { force: opts.force === true });
     printJson({ ok: true, report, events: events.types() });
   });
 

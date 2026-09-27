@@ -174,8 +174,28 @@ export interface DecisionRequestResult {
   status: string;
 }
 
+/**
+ * A repository as Dispatch's registry knows it (what onboarding writes). The idle
+ * loops scan these — crew.yaml's own `repos:` list is merged with them at command
+ * time (see registry/dispatchRepos.ts), so a repo onboarded from the dashboard is
+ * scanned without anyone hand-editing crew.yaml.
+ */
+export interface DispatchRepository {
+  id: string;
+  name: string;
+  localPath: string | null;
+  defaultBranch: string;
+  stack: string | null;
+  riskLevel: string;
+  testCommand: string | null;
+  lintCommand: string | null;
+  coverageCommand: string | null;
+}
+
 export interface DispatchClient {
   listReady(): ReadyTicket[];
+  /** Dispatch's repository registry (visible repos). `[]` when the facade lacks it. */
+  listRepositories(): DispatchRepository[];
   /**
    * Count tickets DELIVERED for a repo: tickets in the terminal `done` state
    * that reference the named repo. Used by the idle scan loops' per-repo
@@ -332,6 +352,14 @@ export interface DispatchClient {
   findOpenTicketByFindingKey(findingKey: string): { ticketId: string } | undefined;
   /** Transition a draft ticket to the `ready` state. */
   markTicketReady(ticketId: string): void;
+  /**
+   * Attach an acceptance criterion to a ticket. Idle scans use this to give every
+   * drafted finding its behaviour-preserving oracle as a REAL criterion (not prose
+   * in the description): Dispatch's `ready` gate refuses a ticket with zero
+   * criteria, and a `checkCommand` (the repo's own test command) makes the runner
+   * verify the oracle mechanically in the delivery worktree.
+   */
+  addAcceptanceCriterion(p: { ticketId: string; text: string; checkCommand?: string }): void;
   /**
    * Create an epic and its tickets from a decomposed plan (Dispatch's
    * `create_epic`). `ready` decides whether the tickets are filed READY (claimable

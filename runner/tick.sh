@@ -2787,28 +2787,40 @@ _gaffer_agent_review_pass
 # clarifies a draft; otherwise returns and the flow falls through to maintenance.
 _gaffer_clarify_pass
 
-# Nothing ready → idle MAINTENANCE LANE (audit item A4). OFF by default: spending
-# tokens on every empty tick is opt-in. When GAFFER_MAINTENANCE=1, instead of the
-# single fixed idle scan below, run the ONE maintenance loop chosen by crew's
-# deterministic priority+rotation scheduler (`fg maintain`) — security findings
-# first, then test-gaps, then type/tech-debt, then docs — rotating so no lane
-# starves. The chosen lane + rationale are logged so the decision is auditable.
-# The rotation cursor is persisted under $GAFFER_DATA so the cadence survives
-# across ticks. Which loops it rotates through is each idle loop's own enabled
-# flag in the crew config (loops.maintenance gates only the lane itself).
-if [ "${GAFFER_MAINTENANCE:-0}" = "1" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] && [ -f "$CREW_CONFIG" ]; then
-  log "no ready tickets → maintenance lane (deterministic scheduler picks one loop)"
+# Nothing ready → idle MAINTENANCE LANE (audit item A4). The lane's master switch
+# lives in crew.yaml (`loops.maintenance.enabled`, edited from the dashboard's
+# Settings → Idle loops panel), so a built crew + a crew.yaml is enough to ASK the
+# scheduler; it answers `disabled` (no scan, no cursor advance) while the switch is
+# off. GAFFER_MAINTENANCE is the operator's ENV override on top of that: 0 = kill
+# switch (never ask crew on an idle tick), 1 = force the lane even when the switch
+# is off, empty (default) = crew.yaml decides. When the lane runs, ONE loop is
+# chosen by crew's deterministic priority+rotation scheduler (`fg maintain`) —
+# security findings first, then test-gaps, then type/tech-debt, then docs —
+# rotating so no lane starves. The chosen lane + rationale are logged so the
+# decision is auditable. The rotation cursor is persisted under $GAFFER_DATA so the
+# cadence survives across ticks. Which loops it rotates through is each idle loop's
+# own enabled flag in the crew config.
+if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] && [ -f "$CREW_CONFIG" ]; then
+  _MAINT_ARGS=()
+  [ "${GAFFER_MAINTENANCE:-}" = "1" ] && _MAINT_ARGS=(--force)
+  log "no ready tickets → maintenance lane (crew.yaml decides; deterministic scheduler picks one loop)"
   if [ "$DRY_RUN" = "1" ]; then
-    log "DRY_RUN: would run: fg maintain (scheduler-chosen maintenance loop)"; result no_work; exit 0
+    log "DRY_RUN: would run: fg maintain${_MAINT_ARGS[0]:+ --force} (scheduler-chosen maintenance loop)"; result no_work; exit 0
   fi
-  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain 2>>"$GAFFER_LOG")"
+  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain ${_MAINT_ARGS[@]+"${_MAINT_ARGS[@]}"} 2>>"$GAFFER_LOG")"
   MCHOSEN="$(echo "$MOUT" | jget '(d.report || {}).chosen || "none"' 2>/dev/null || echo none)"
   MREASON="$(echo "$MOUT" | jget '(d.report || {}).reason ?? ""' 2>/dev/null || echo '')"
   MSTATUS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).status || "no_op"' 2>/dev/null || echo no_op)"
   MDRAFTS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).draftCount ?? 0' 2>/dev/null || echo 0)"
-  log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, drafts=$MDRAFTS"
-  [ "${MDRAFTS:-0}" -gt 0 ] && { result maintenance_drafted; exit 0; }
-  result maintenance_ran; exit 0
+  if [ "$MSTATUS" = "disabled" ]; then
+    # The switch is off: say so once per idle tick (it is the most common reason an
+    # operator sees "no_work" with lanes enabled) and fall through to the legacy scan.
+    log "maintenance lane is OFF in crew.yaml (loops.maintenance.enabled=false) — turn it on in Settings → Idle loops, or GAFFER_MAINTENANCE=1 to force"
+  else
+    log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, drafts=$MDRAFTS"
+    [ "${MDRAFTS:-0}" -gt 0 ] && { result maintenance_drafted; exit 0; }
+    result maintenance_ran; exit 0
+  fi
 fi
 
 # Nothing ready → idle scan to draft new work (crew). OFF by default: an idle

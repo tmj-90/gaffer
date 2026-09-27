@@ -8,7 +8,7 @@ import { runIdleTechDebtLoop } from "./idleTechDebt.js";
 import { runIdleTestQualityLoop } from "./idleTestQuality.js";
 import { runIdleTypeQualityLoop } from "./idleTypeQuality.js";
 import { SelfImproveGate } from "./selfImprove.js";
-import { commitMaintenanceChoice, type MaintenanceCursor } from "./maintenanceLane.js";
+import { commitMaintenanceChoice, loadCursor, type MaintenanceCursor } from "./maintenanceLane.js";
 import type { IdleScanOutcome } from "./idleScans.js";
 
 /** A normalised outcome the registry reports for every idle loop. */
@@ -19,7 +19,9 @@ export type IdleLoopRunOutcome =
   | { status: "draft_created"; draftCount: number }
   | { status: "ready_created"; draftCount: number }
   | { status: "observed"; observationCount: number }
-  | { status: "suggested"; suggestionCount: number };
+  | { status: "suggested"; suggestionCount: number }
+  /** The maintenance lane was asked to run while `loops.maintenance.enabled` is false. */
+  | { status: "disabled" };
 
 export interface IdleLoopDefinition {
   /** Stable id, matched against config to decide whether the loop runs. */
@@ -222,7 +224,25 @@ export interface MaintenanceLaneReport {
  * loop's outcome. When no lane is eligible (none enabled) it advances + persists
  * the cursor and reports `chosen: null` with a null outcome.
  */
-export function runMaintenanceLane(deps: IdleLoopDeps, cursorPath: string): MaintenanceLaneReport {
+export function runMaintenanceLane(
+  deps: IdleLoopDeps,
+  cursorPath: string,
+  opts: { force?: boolean } = {},
+): MaintenanceLaneReport {
+  // The lane's own master switch (`loops.maintenance.enabled`, edited from the
+  // dashboard's Idle loops panel) is the single source of truth for whether a
+  // quiet tick may spend tokens here. `force` is the operator's env override
+  // (GAFFER_MAINTENANCE=1). Disabled ⇒ report it, touch nothing (no cursor advance).
+  if (!deps.config.loops.maintenance.enabled && !opts.force) {
+    const reason = "maintenance lane disabled (loops.maintenance.enabled=false)";
+    deps.events.record("maintenance_lane_finished", { chosen: null, reason, disabled: true });
+    return {
+      chosen: null,
+      reason,
+      outcome: { status: "disabled" },
+      cursor: loadCursor(cursorPath),
+    };
+  }
   deps.events.record("maintenance_lane_started", {});
   // FIX-4: select + persist atomically under a portable lock so two concurrent
   // idle workers can't pick the same lane from the same stale cursor.

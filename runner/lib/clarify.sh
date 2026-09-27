@@ -119,7 +119,17 @@ EOF
         "GAFFER_WRITE_ROOTS=$CREPO"
         "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
       )
-      worker_deliver "$CREPO" "$CPROMPT" "$GAFFER_PLAN_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON"
+      # ROUTED INTAKE: the router picks the clarify tier (phase `clarify`, default
+      # cheap — intake files ACs and raises decisions, it never writes code; a
+      # high-risk draft climbs). Logged as a ROUTE line. An explicit GAFFER_PLAN_MODEL
+      # still wins (the router honours it for plan-class phases); the static PLAN flag
+      # is the fallback when routing yields nothing.
+      CRISK="$(echo "$CSHOW" | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
+      CAC="$(echo "$CSHOW" | jget '(d.acceptanceCriteria || []).length' 2>/dev/null || echo 0)"
+      CLARIFY_MODEL="$(gaffer_route_model clarify "$CRISK" "${CAC:-0}" "" 1 "$CNUM" 2>/dev/null || true)"
+      CLARIFY_MODEL_FLAG="${GAFFER_PLAN_MODEL_FLAG:-}"
+      [ -n "$CLARIFY_MODEL" ] && CLARIFY_MODEL_FLAG="--model $CLARIFY_MODEL"
+      worker_deliver "$CREPO" "$CPROMPT" "$CLARIFY_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON"
       crc=$?
       gaffer_usage_record clarify "$CNUM" "$crc" "$C_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       rm -f "$C_USAGE_JSON"

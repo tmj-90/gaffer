@@ -11,12 +11,14 @@
   "escalationOrder": ["cheap", "mid", "strong"],
 
   "phaseDefaults": {
-    "$comment": "Per-PHASE default tier. The cheapest-correct layer that can do the phase wins; failure-escalation + risk/complexity rules move off this default at routing time. decompose/plan reason deeply (strong); implement/test default mid; self-review mid; merge-conflict-resolve is delicate (strong); onboarding scans cheap.",
+    "$comment": "Per-PHASE default tier. The cheapest-correct layer that can do the phase wins; failure-escalation + risk/complexity rules move off this default at routing time. decompose/plan reason deeply (strong); implement/test default mid; self-review mid; review (the independent reviewer agent) mid — a wrong APPROVE is expensive; clarify (intake: file ACs / raise decisions, never code) cheap; merge-conflict-resolve is delicate (strong); onboarding scans cheap.",
     "decompose": "strong",
     "plan": "strong",
     "implement": "mid",
     "test": "mid",
     "self-review": "mid",
+    "review": "mid",
+    "clarify": "cheap",
     "merge-conflict-resolve": "strong",
     "onboarding": "cheap"
   },

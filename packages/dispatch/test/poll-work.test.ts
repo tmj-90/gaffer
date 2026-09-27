@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -172,5 +175,33 @@ describe("POST /poll-work", () => {
     expect(res.body.polled).toBe(false);
     expect(res.body.reason).toBe("no_ready_work");
     expect(h.runCount()).toBe(0);
+  });
+
+  it("fires the tick on an EMPTY queue when the idle maintenance lane is on in crew.yaml", async () => {
+    // The tick then runs the scheduler-chosen scan lane (which may draft + promote its
+    // own ticket), so refusing to spawn here would make the lane unreachable from the
+    // dashboard's Poll button.
+    const dir = mkdtempSync(join(tmpdir(), "wg-poll-maint-"));
+    const crewPath = join(dir, "crew.yaml");
+    writeFileSync(
+      crewPath,
+      "factory:\n  name: demo\nloops:\n  maintenance:\n    enabled: true\n  idle_tech_debt:\n    enabled: true\n",
+      "utf8",
+    );
+    const prev = process.env["CREW_CONFIG"];
+    process.env["CREW_CONFIG"] = crewPath;
+    try {
+      h = await startHarness({ run: () => ({ started: true, pid: 7 }) }, /* seedReady */ false);
+      const res = await call(h.baseUrl, "POST", "/poll-work");
+      expect(res.status).toBe(202);
+      expect(res.body.polled).toBe(true);
+      expect(res.body.readyCount).toBe(0);
+      expect(res.body.idle).toBe("maintenance");
+      expect(h.runCount()).toBe(1);
+    } finally {
+      if (prev === undefined) delete process.env["CREW_CONFIG"];
+      else process.env["CREW_CONFIG"] = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

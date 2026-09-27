@@ -540,6 +540,125 @@ try {
       : bad(`API: revoked token returned ${dead.status}`);
   } else bad("Settings: no principal-name input (Access panel missing)");
 
+  // ── 6c. Settings → Idle loops: turn the maintenance lane on through the UI, then prove an
+  //        idle tick finds the planted god-file, files + promotes the ticket, and the next
+  //        tick delivers it with the runner verifying the oracle criterion. ──
+  await page.goto(`${BASE}/#/settings`, { waitUntil: "load" });
+  await sleep(900);
+  if (!(await page.$('[data-testid="maintenance-toggle"]'))) {
+    bad("Settings: Idle loops panel has no maintenance toggle");
+  } else {
+    // The switch inputs are visually hidden (the track is the control), so a user
+    // toggles them by clicking the label — do the same rather than forcing the input.
+    const setSwitch = async (selector, on) => {
+      const input = page.locator(selector);
+      if ((await input.isChecked()) === on) return;
+      const label = input.locator("xpath=ancestor::label[1]");
+      await label.scrollIntoViewIfNeeded();
+      await label.click();
+      if ((await input.isChecked()) !== on) bad(`could not toggle ${selector} to ${on}`);
+    };
+    // Only the tech-debt lane, so the scheduler's choice is deterministic.
+    await setSwitch('[data-testid="maintenance-toggle"]', true);
+    for (const key of [
+      "idle_security_hotspot",
+      "idle_coverage",
+      "idle_test_quality",
+      "idle_type_quality",
+      "idle_documentation",
+      "idle_dependencies",
+      "idle_feature_backlog",
+    ]) {
+      await setSwitch(`[data-testid="idle-loop-${key}"]`, false);
+    }
+    await setSwitch('[data-testid="idle-loop-idle_tech_debt"]', true);
+    await setSwitch('[data-testid="self-improve-toggle"]', true);
+    await setSwitch(`.idle-self-improve .target-picker-check:has-text("${repo.name}") input`, true);
+    // The onboarded repo is medium risk by default; the gate's ceiling must admit it.
+    await page.selectOption('select[name="self-improve-max-risk"]', "medium");
+    const statusTxt = (await page.textContent('[data-testid="idle-status"]').catch(() => "")) || "";
+    /will run 1 lane/.test(statusTxt) && /promote drafts to ready/.test(statusTxt)
+      ? ok("Settings: Idle loops status line reflects the live selection (1 lane, promotion on)")
+      : bad(`Settings: Idle loops status line unexpected: ${statusTxt.slice(0, 160)}`);
+    await shot(page, "settings-idle-loops");
+    await page.click('button:has-text("Save idle loops")');
+    await sleep(1200);
+    const idle = (await api("GET", "/api/idle-loops")).json.idle_loops;
+    idle &&
+    idle.maintenance &&
+    idle.maintenance.enabled === true &&
+    idle.selfImprove &&
+    idle.selfImprove.enabled === true &&
+    idle.selfImprove.repos.includes(repo.name) &&
+    idle.selfImprove.maxRisk === "medium" &&
+    idle.loops.find((l) => l.key === "idle_tech_debt")?.enabled === true
+      ? ok("Settings: Save wrote maintenance + tech-debt lane + self-improve gate to crew.yaml")
+      : bad(`Settings: idle-loops after save unexpected: ${JSON.stringify(idle).slice(0, 300)}`);
+
+    // Idle tick: nothing is ready (ticket #1 is done), so Poll runs the maintenance lane.
+    await page.goto(`${BASE}/#/work`, { waitUntil: "load" });
+    await page.waitForSelector('button:has-text("Poll for work")', { timeout: 15000 });
+    await page.click('button:has-text("Poll for work")');
+    ok("Work view: 'Poll for work' clicked on an empty queue (maintenance lane tick)");
+    const debt = await waitFor(
+      async () => {
+        const rows = (await api("GET", "/tickets")).json;
+        const list = Array.isArray(rows) ? rows : rows.tickets || [];
+        return (
+          list.find((t) => /^Tech-debt hotspots/.test(t.title) && t.status === "ready") || null
+        );
+      },
+      "tech-debt ticket to be filed and promoted to ready",
+      120000,
+      2000,
+    ).catch(() => null);
+    if (!debt) bad("maintenance lane did not file + promote a tech-debt ticket within 120s");
+    else {
+      ok(
+        `maintenance lane filed the god-file finding and self-improve promoted it (#${debt.number} ready)`,
+      );
+      const debtView = (await api("GET", `/tickets/${debt.id}`)).json;
+      const acs = debtView.acceptanceCriteria || debtView.acceptance_criteria || [];
+      acs.length === 1 && acs[0].check_command
+        ? ok(
+            `tech-debt ticket carries the behaviour-preserving oracle (check_command='${acs[0].check_command}')`,
+          )
+        : bad(`tech-debt ticket criteria unexpected: ${JSON.stringify(acs).slice(0, 200)}`);
+      /src\/legacy\.js/.test(debtView.ticket?.description || "")
+        ? ok("the finding names the planted god-file (src/legacy.js)")
+        : bad("the finding does not name src/legacy.js");
+      await shot(page, "work-board-tech-debt-ready");
+
+      // Second poll: the runner claims the promoted ticket and the stub delivers it.
+      await page.click('button:has-text("Poll for work")');
+      const delivered2 = await waitFor(
+        async () => {
+          const t = (await api("GET", `/tickets/${debt.id}`)).json.ticket;
+          return ["in_review", "blocked", "refining", "ready_for_merge", "done", "paused"].includes(
+            t?.status,
+          )
+            ? t
+            : null;
+        },
+        "tech-debt ticket delivery to finish",
+        240000,
+        3000,
+      ).catch(() => null);
+      if (!delivered2) bad("tech-debt delivery did not finish within 240s");
+      else if (delivered2.status !== "in_review")
+        bad(`tech-debt delivery ended in '${delivered2.status}' instead of in_review`);
+      else {
+        ok(`the factory fixed its own finding: #${debt.number} → in_review`);
+        const after = (await api("GET", `/tickets/${debt.id}`)).json;
+        const oracle = (after.acceptanceCriteria || after.acceptance_criteria || [])[0];
+        oracle && oracle.status === "satisfied" && oracle.verified_by === "runner:check"
+          ? ok("the runner verified the oracle in the worktree (verified_by=runner:check)")
+          : bad(`oracle not runner-verified: ${JSON.stringify(oracle).slice(0, 200)}`);
+      }
+      await shot(page, "work-board-tech-debt-delivered");
+    }
+  }
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [

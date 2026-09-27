@@ -209,6 +209,19 @@ between real tickets) and the **planning-debate** depth. Every knob the factory
 reads — its default, whether the panel can edit it, which component consumes it
 — is listed in the generated [`CONFIG.md`](CONFIG.md).
 
+**Maintenance when idle.** With the queue empty, an idle tick can run one scan
+lane (security hotspots, coverage, test quality, type quality, tech debt,
+documentation, dependencies) chosen by a deterministic priority-and-rotation
+scheduler, no model in the choice. Each finding becomes a draft ticket that
+carries a behaviour-preserving acceptance criterion with the repo's own test
+command as its check, so the runner verifies the fix mechanically. The **Idle
+loops** panel holds the master switch, the lane toggles, a recommended set, and
+the **self-improve** gate: opted-in repos, a risk ceiling and a per-tick cap
+under which the tick promotes its own drafts to ready so the delivery loop fixes
+them without a human in the promote step. Off by default; the panel's status
+line says exactly what the next idle tick will do. Repos onboarded from the
+dashboard are scanned without editing `crew.yaml`.
+
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
 launch the agent rather than run it uncontained. The provider is auto-detected

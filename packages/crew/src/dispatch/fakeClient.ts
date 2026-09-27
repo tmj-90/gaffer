@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { CrewError, notFound } from "../util/errors.js";
 import type {
+  DispatchRepository,
   ClaimResult,
   CreateEpicResult,
   DecisionRequestResult,
@@ -49,7 +50,7 @@ interface FakeTicket {
   policyPack: string;
   riskLevel: string;
   branchName: string | null;
-  acceptanceCriteria: Array<{ id: string; text: string; status: string }>;
+  acceptanceCriteria: Array<{ id: string; text: string; status: string; checkCommand?: string }>;
   repositories: Array<{
     id: string;
     name: string;
@@ -542,10 +543,52 @@ export class FakeDispatchClient implements DispatchClient {
     return match ? { ticketId: match.id } : undefined;
   }
 
+  /** Dispatch's repository registry as the fake sees it; seed with {@link seedRepository}. */
+  readonly repositories: DispatchRepository[] = [];
+
+  seedRepository(r: Partial<DispatchRepository> & { name: string }): DispatchRepository {
+    const repo: DispatchRepository = {
+      id: r.id ?? randomUUID(),
+      name: r.name,
+      localPath: r.localPath ?? null,
+      defaultBranch: r.defaultBranch ?? "main",
+      stack: r.stack ?? null,
+      riskLevel: r.riskLevel ?? "medium",
+      testCommand: r.testCommand ?? null,
+      lintCommand: r.lintCommand ?? null,
+      coverageCommand: r.coverageCommand ?? null,
+    };
+    this.repositories.push(repo);
+    return repo;
+  }
+
+  listRepositories(): DispatchRepository[] {
+    return this.repositories.map((r) => ({ ...r }));
+  }
+
   markTicketReady(ticketId: string): void {
     const ticket = this.resolve(ticketId);
+    // Mirror Dispatch's ready gate: a ticket with no acceptance criterion is refused.
+    if (ticket.acceptanceCriteria.length === 0) {
+      throw new Error("AC_REQUIRED: At least one acceptance criterion is required.");
+    }
     ticket.status = "ready";
     this.events.push({ type: "ticket.marked_ready", ticketId: ticket.id });
+  }
+
+  addAcceptanceCriterion(p: { ticketId: string; text: string; checkCommand?: string }): void {
+    const ticket = this.resolve(p.ticketId);
+    ticket.acceptanceCriteria.push({
+      id: randomUUID(),
+      text: p.text,
+      status: "pending",
+      ...(p.checkCommand ? { checkCommand: p.checkCommand } : {}),
+    });
+    this.events.push({
+      type: "acceptance_criterion.added",
+      ticketId: ticket.id,
+      payload: { text: p.text, checkCommand: p.checkCommand ?? null },
+    });
   }
 
   /** Epics created via {@link createEpic}, for test assertions. */

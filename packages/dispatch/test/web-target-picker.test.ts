@@ -138,8 +138,16 @@ describe("web: Settings Idle-loops panel", () => {
     expect(text).toContain("Coverage");
     expect(text).toContain("Security hotspots");
     expect(text).toContain("Feature backlog");
-    // One row per known idle loop (6 of them).
-    expect(document.querySelectorAll(".idle-loop-row").length).toBe(6);
+    // One row per idle loop the stubbed API returned (6), plus the maintenance
+    // master switch row and the self-improve gate row.
+    expect(document.querySelectorAll(".idle-loops-rows .idle-loop-row").length).toBe(6);
+    expect(document.querySelector('[data-testid="maintenance-toggle"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="self-improve-toggle"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="idle-recommended"]')).not.toBeNull();
+    // The live status line explains what the next idle tick will do.
+    expect(document.querySelector('[data-testid="idle-status"]')?.textContent || "").toMatch(
+      /idle tick/i,
+    );
     // The "applies next tick" banner is present in the panel.
     expect(document.querySelector(".idle-loops-note")).not.toBeNull();
   });

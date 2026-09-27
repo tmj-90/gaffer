@@ -2564,10 +2564,15 @@ function pollWorkButton() {
         runAsyncAction(btn, "Polling…", async () => {
           const res = await api("POST", "/poll-work");
           if (res && res.polled === false) {
-            toast("No ready work to deliver — ready a ticket first.", {});
+            toast(
+              "No ready work to deliver — ready a ticket first, or turn on maintenance when idle in Settings → Idle loops.",
+              {},
+            );
             return;
           }
-          toast("Factory tick fired — refreshing the board…", { ok: true });
+          if (res && res.idle === "maintenance") {
+            toast("No ready work — running the idle maintenance lane…", { ok: true });
+          } else toast("Factory tick fired — refreshing the board…", { ok: true });
           router();
         }),
     },
@@ -5893,11 +5898,13 @@ function accessPanel(whoami, principals) {
 
 /** The known idle scan loops, in display order, with copy for the panel. */
 const IDLE_LOOP_LABELS = {
+  idle_security_hotspot: "Security hotspots",
   idle_coverage: "Coverage",
   idle_test_quality: "Test quality",
+  idle_type_quality: "Type quality",
+  idle_tech_debt: "Tech debt",
   idle_documentation: "Documentation",
   idle_dependencies: "Dependencies",
-  idle_security_hotspot: "Security hotspots",
   idle_feature_backlog: "Feature backlog",
 };
 
@@ -5907,6 +5914,14 @@ const IDLE_LOOP_LABELS = {
  * NAMES so the crew loop backend stays repo-name-based, and the whole set is PUT
  * to /api/idle-loops. An empty selection means "all repos" (schema semantics).
  */
+/** The lanes "Use recommended set" turns on (mirrors the API's RECOMMENDED_LANE_KEYS). */
+const IDLE_RECOMMENDED_LANES = [
+  "idle_security_hotspot",
+  "idle_coverage",
+  "idle_tech_debt",
+  "idle_documentation",
+];
+
 function renderIdleLoopsPanel(view, repos, nodes) {
   const card = el("div", { class: "card settings-group idle-loops-group" });
   card.appendChild(el("h2", {}, "Idle loops"));
@@ -5914,13 +5929,15 @@ function renderIdleLoopsPanel(view, repos, nodes) {
     el(
       "p",
       { class: "section-note dim" },
-      "Background scan loops that run when the queue is empty — enable each and scope it to repos or scopes. Empty selection = all repos.",
+      "When the queue is empty the factory can spend the tick on maintenance: one scan lane per idle tick, " +
+        "chosen by priority and rotation, drafting a ticket per finding with a behaviour-preserving acceptance " +
+        "criterion the runner checks with the repo's own test command. Empty scope = all repos.",
     ),
   );
   card.appendChild(
     el("div", { class: "settings-note idle-loops-note" }, [
       icon("clock", "settings-note-ico"),
-      el("span", {}, "Changes apply on the next tick — no live restart."),
+      el("span", {}, "Stored in crew.yaml; changes apply on the next tick — no live restart."),
     ]),
   );
 
@@ -5935,16 +5952,58 @@ function renderIdleLoopsPanel(view, repos, nodes) {
     return card;
   }
 
-  // Per-loop editor registry: key → { read() } collecting enabled + targets.
+  const makeSwitch = (label, checked, testid) => {
+    const input = el("input", {
+      type: "checkbox",
+      role: "switch",
+      "aria-label": label,
+      "data-testid": testid,
+    });
+    input.checked = checked === true;
+    const wrap = el("label", { class: "switch" }, [
+      input,
+      el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
+    ]);
+    return { input, wrap };
+  };
+
+  // ── Maintenance lane master switch ────────────────────────────────────────
+  const maint = makeSwitch(
+    "Maintenance when idle",
+    view.maintenance && view.maintenance.enabled,
+    "maintenance-toggle",
+  );
+  const recommendBtn = el(
+    "button",
+    { class: "btn", type: "button", "data-testid": "idle-recommended" },
+    [icon("spark"), el("span", {}, "Use recommended set")],
+  );
+  card.appendChild(
+    el("div", { class: "idle-loop-row idle-lane-master" }, [
+      el("div", { class: "idle-loop-head" }, [
+        el("div", { class: "idle-loop-label" }, [
+          el("span", {}, "Maintenance when idle"),
+          el("code", { class: "mono setting-key" }, "loops.maintenance.enabled"),
+        ]),
+        maint.wrap,
+      ]),
+      el(
+        "p",
+        { class: "dim" },
+        "The master switch. Off: an idle factory polls and stops. On: each idle tick runs the one enabled lane " +
+          "below that is most due (security first, then tests, types, tech debt, docs, dependencies). " +
+          "GAFFER_MAINTENANCE=0 in the runner's env is the emergency kill switch.",
+      ),
+      el("div", { class: "btn-row" }, [recommendBtn]),
+    ]),
+  );
+
+  // ── Per-loop editors ──────────────────────────────────────────────────────
   const editors = new Map();
   const rows = el("div", { class: "idle-loops-rows" });
 
   for (const loop of view.loops || []) {
     const label = IDLE_LOOP_LABELS[loop.key] || loop.label || loop.key;
-
-    // Seed the picker's selection from the saved repo NAMES (each becomes a repo
-    // target). Node selections aren't persisted server-side — they're resolved to
-    // repo names on save — so the round-trip shows them as their repos.
     const initial = (loop.repos || []).map((name) => ({ kind: "repo", id: name, name }));
     const picker = targetPicker({
       repos,
@@ -5953,17 +6012,14 @@ function renderIdleLoopsPanel(view, repos, nodes) {
       multiple: true,
       onChange: () => {},
     });
-
-    const toggle = el("input", {
-      type: "checkbox",
-      role: "switch",
-      "aria-label": `Enable ${label}`,
-    });
-    toggle.checked = loop.enabled === true;
+    const sw = makeSwitch(`Enable ${label}`, loop.enabled === true, `idle-loop-${loop.key}`);
+    sw.input.addEventListener("change", () => refreshStatus());
 
     editors.set(loop.key, {
       key: loop.key,
-      enabled: () => toggle.checked,
+      lane: loop.maintenanceLane === true,
+      toggle: sw.input,
+      enabled: () => sw.input.checked,
       targets: () => (typeof picker.getTargets === "function" ? picker.getTargets() : []),
     });
 
@@ -5971,11 +6027,9 @@ function renderIdleLoopsPanel(view, repos, nodes) {
       el("div", { class: "idle-loop-label" }, [
         el("span", {}, label),
         el("code", { class: "mono setting-key" }, loop.key),
+        loop.maintenanceLane ? el("span", { class: "dim" }, "· maintenance lane") : null,
       ]),
-      el("label", { class: "switch" }, [
-        toggle,
-        el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
-      ]),
+      sw.wrap,
     ]);
 
     rows.appendChild(
@@ -5990,6 +6044,112 @@ function renderIdleLoopsPanel(view, repos, nodes) {
   }
   card.appendChild(rows);
 
+  // ── Self-improve: promote the lane's own drafts to ready ──────────────────
+  const si = view.selfImprove || { enabled: false, repos: [], maxRisk: "low", maxReadyPerRun: 1 };
+  const siSwitch = makeSwitch("Promote drafts to ready", si.enabled, "self-improve-toggle");
+  const siPicker = targetPicker({
+    repos,
+    nodes,
+    value: (si.repos || []).map((name) => ({ kind: "repo", id: name, name })),
+    multiple: true,
+    onChange: () => {},
+  });
+  const riskSel = el(
+    "select",
+    { name: "self-improve-max-risk", "aria-label": "Maximum repo risk to auto-promote" },
+    ["low", "medium", "high", "critical"].map((r) =>
+      el("option", { value: r, selected: r === si.maxRisk ? "" : undefined }, r),
+    ),
+  );
+  const capInput = el("input", {
+    type: "number",
+    name: "self-improve-max-ready",
+    min: "1",
+    max: "20",
+    step: "1",
+    "aria-label": "Maximum promotions per idle tick",
+  });
+  capInput.value = String(si.maxReadyPerRun || 1);
+  siSwitch.input.addEventListener("change", () => refreshStatus());
+
+  card.appendChild(
+    el("div", { class: "idle-loop-row idle-self-improve" }, [
+      el("div", { class: "idle-loop-head" }, [
+        el("div", { class: "idle-loop-label" }, [
+          el("span", {}, "Promote drafts to ready"),
+          el("code", { class: "mono setting-key" }, "loops.self_improve"),
+        ]),
+        siSwitch.wrap,
+      ]),
+      el(
+        "p",
+        { class: "dim" },
+        "Closes the loop: an idle tick may mark its own drafts ready so the delivery loop claims and fixes " +
+          "them without a human in the promote step. Strict opt-in — only the repos named here, only at or " +
+          "below the risk ceiling, and at most this many per tick. Every promoted ticket carries the " +
+          "behaviour-preserving criterion, machine-checked by the repo's test command.",
+      ),
+      el("div", { class: "idle-loop-targets field" }, [
+        el("label", {}, "Repos allowed to self-improve (empty = none)"),
+        siPicker,
+      ]),
+      el("div", { class: "form-grid" }, [
+        el("div", { class: "field" }, [el("label", {}, "Max repo risk"), riskSel]),
+        el("div", { class: "field" }, [el("label", {}, "Max promotions per tick"), capInput]),
+      ]),
+    ]),
+  );
+
+  // ── Live status: what the next idle tick will actually do ─────────────────
+  const statusText = el("span", {});
+  const statusIcon = el("span", { class: "settings-note-ico" });
+  const status = el("div", { class: "settings-note", "data-testid": "idle-status" }, [
+    statusIcon,
+    statusText,
+  ]);
+  card.appendChild(status);
+
+  function refreshStatus() {
+    const lanesOn = [...editors.values()].filter((e) => e.lane && e.enabled()).length;
+    const maintOn = maint.input.checked;
+    const siOn = siSwitch.input.checked;
+    let tone = "ok";
+    let text;
+    if (!maintOn && lanesOn === 0) {
+      text =
+        "Idle ticks poll and stop. Turn on maintenance and at least one lane to work the backlog while idle.";
+      tone = "dim";
+    } else if (maintOn && lanesOn === 0) {
+      text =
+        "Maintenance is on but no lane is enabled — idle ticks will do nothing. Enable a lane or use the recommended set.";
+      tone = "warn";
+    } else if (!maintOn) {
+      text = `${lanesOn} lane${lanesOn === 1 ? "" : "s"} enabled but maintenance is off — they will not run until you turn it on.`;
+      tone = "warn";
+    } else if (siOn) {
+      text = `Idle ticks will run ${lanesOn} lane${lanesOn === 1 ? "" : "s"} and may promote drafts to ready for the opted-in repos (risk ≤ ${riskSel.value}, ≤ ${capInput.value || 1} per tick).`;
+    } else {
+      text = `Idle ticks will run ${lanesOn} lane${lanesOn === 1 ? "" : "s"}; findings are filed as drafts for you to promote.`;
+    }
+    statusText.textContent = text;
+    status.dataset.tone = tone;
+    statusIcon.innerHTML = "";
+    statusIcon.appendChild(icon(tone === "warn" ? "alert" : tone === "ok" ? "check" : "clock"));
+  }
+  maint.input.addEventListener("change", refreshStatus);
+  riskSel.addEventListener("change", refreshStatus);
+  capInput.addEventListener("input", refreshStatus);
+  recommendBtn.addEventListener("click", () => {
+    maint.input.checked = true;
+    for (const ed of editors.values()) {
+      if (IDLE_RECOMMENDED_LANES.includes(ed.key)) ed.toggle.checked = true;
+    }
+    refreshStatus();
+    toast("Recommended lanes selected — save to apply.", { ok: true });
+  });
+  refreshStatus();
+
+  // ── Save ──────────────────────────────────────────────────────────────────
   const saveBtn = el("button", { class: "btn primary", type: "button" }, [
     icon("check"),
     el("span", {}, "Save idle loops"),
@@ -5998,19 +6158,39 @@ function renderIdleLoopsPanel(view, repos, nodes) {
 
   saveBtn.addEventListener("click", () => {
     runAsyncAction(saveBtn, "Saving…", async () => {
-      // Resolve every loop's selection to repo NAMES (nodes expand to their repos),
+      // Resolve every selection to repo NAMES (nodes expand to their repos),
       // de-duplicating so a repo named twice (directly + via a scope) collapses.
-      const loops = [];
-      for (const ed of editors.values()) {
+      const namesOf = async (targets) => {
         const names = new Set();
-        for (const target of ed.targets()) {
+        for (const target of targets) {
           const resolved = await resolveTargetRepos(target);
           for (const name of resolved) names.add(name);
         }
-        loops.push({ key: ed.key, enabled: ed.enabled(), repos: [...names] });
+        return [...names];
+      };
+      const loops = [];
+      for (const ed of editors.values()) {
+        loops.push({ key: ed.key, enabled: ed.enabled(), repos: await namesOf(ed.targets()) });
       }
-      await api("PUT", "/api/idle-loops", { loops });
-      toast(`Saved ${loops.length} idle loop${loops.length === 1 ? "" : "s"}.`, { ok: true });
+      const cap = Math.min(20, Math.max(1, Math.trunc(Number(capInput.value) || 1)));
+      await api("PUT", "/api/idle-loops", {
+        loops,
+        maintenance: { enabled: maint.input.checked },
+        self_improve: {
+          enabled: siSwitch.input.checked,
+          repos: await namesOf(
+            typeof siPicker.getTargets === "function" ? siPicker.getTargets() : [],
+          ),
+          max_risk: riskSel.value,
+          max_ready_per_run: cap,
+        },
+      });
+      toast(
+        `Saved idle loops (${loops.length} loops, maintenance ${maint.input.checked ? "on" : "off"}).`,
+        {
+          ok: true,
+        },
+      );
       router();
     });
   });

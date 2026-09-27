@@ -36,6 +36,8 @@ export const FALLBACK_REGISTRY = Object.freeze({
     implement: "mid",
     test: "mid",
     "self-review": "mid",
+    review: "mid",
+    clarify: "cheap",
     "merge-conflict-resolve": "strong",
     onboarding: "cheap",
   },

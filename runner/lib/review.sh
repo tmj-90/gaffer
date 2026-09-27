@@ -170,7 +170,17 @@ EOF
         "GAFFER_WRITE_ROOTS=$WT"
         "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
       )
-      worker_deliver "$WT" "$RPROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON"
+      # ROUTED REVIEWER: the same router the delivery uses picks the reviewer's tier
+      # (phase `review`, default mid; a high-risk or many-AC ticket climbs, a trivial
+      # one does not drop — a wrong APPROVE is the expensive mistake). The decision is
+      # logged as a ROUTE line. An explicit GAFFER_IMPL_MODEL still wins (the router
+      # honours it), and the static flag is the fallback when routing yields nothing.
+      RRISK="$(echo "$RSHOW" | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
+      RAC="$(echo "$RSHOW" | jget '(d.acceptanceCriteria || []).length' 2>/dev/null || echo 0)"
+      REVIEW_MODEL="$(gaffer_route_model review "$RRISK" "${RAC:-0}" "" 1 "$RNUM" 2>/dev/null || true)"
+      REVIEW_MODEL_FLAG="${GAFFER_IMPL_MODEL_FLAG:-}"
+      [ -n "$REVIEW_MODEL" ] && REVIEW_MODEL_FLAG="--model $REVIEW_MODEL"
+      worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       # Capture the reviewer's advisory verdict (its final RECOMMEND line) from the result

@@ -2,17 +2,22 @@
 # =====================================================================
 # MAINTENANCE LANE wiring test (audit item A4).
 # ---------------------------------------------------------------------
-# Proves tick.sh routes a quiet idle tick (nothing claimable) into crew's
-# deterministic maintenance scheduler when GAFFER_MAINTENANCE=1, and that the
-# behaviour is UNCHANGED when the toggle is OFF (regression):
-#   1. GAFFER_MAINTENANCE=1 + nothing ready → tick invokes `fg maintain` (the
-#      scheduler-chosen single loop), logs the chosen lane + rationale, and
-#      reports TICK_RESULT=maintenance_drafted.
-#   2. The crew CLI is invoked with the `maintain` subcommand (NOT `idle`),
-#      proving the smart prioritised lane is used, not the fixed scan.
-#   3. With GAFFER_MAINTENANCE unset (default), the maintenance lane is skipped
-#      entirely — today's path is taken and the tick falls through to no_work
-#      (no crew CLI call at all when IDLE_DRAFT_WHEN_IDLE is also off).
+# Proves how tick.sh routes a quiet idle tick (nothing claimable) into crew's
+# deterministic maintenance scheduler, and how the two switches compose:
+#   • crew.yaml `loops.maintenance.enabled` is the lane's own switch (edited from
+#     Settings → Idle loops); tick.sh ASKS crew (`fg maintain`) whenever crew is
+#     built and a crew.yaml exists, and crew answers `disabled` while it is off.
+#   • GAFFER_MAINTENANCE is the env override: 0 = kill switch (crew never asked),
+#     1 = force (`fg maintain --force`), empty = crew.yaml decides.
+#   1. GAFFER_MAINTENANCE=1 + nothing ready → `fg maintain --force`, logs the chosen
+#      lane + rationale, TICK_RESULT=maintenance_drafted.
+#   2. The crew CLI is invoked with `maintain` (NOT `idle`) — the smart lane, not
+#      the fixed scan.
+#   3. GAFFER_MAINTENANCE=0 → crew is never invoked; TICK_RESULT=no_work.
+#   4. GAFFER_MAINTENANCE unset + crew.yaml switch OFF → crew IS asked (no --force),
+#      answers disabled, tick logs the pointer to Settings → Idle loops, no_work.
+#   5. GAFFER_MAINTENANCE unset + crew.yaml switch ON → the lane runs → drafted.
+#   6. DRY_RUN logs intent without invoking crew.
 #
 # Hermetic: stub `dispatch` + `crew` CLIs stand in for the real servers, so no
 # real factory state is touched and Claude is never invoked. Zero deps.
@@ -49,9 +54,9 @@ else out({});
 JS
 
 # ── Stub crew CLI ───────────────────────────────────────────────────────────
-# Records every call (so we can assert `maintain`, not `idle`, is used) and
-# emits the maintenance-lane report shape tick.sh parses (chosen / reason /
-# outcome.status / outcome.draftCount).
+# Records every call (so we can assert `maintain`, `--force`, never `idle`) and
+# emits the maintenance-lane report shape tick.sh parses. Honours the crew.yaml
+# switch the way the real CLI does: MAINT_ENABLED=0 without --force → `disabled`.
 STUB_CREW="$WORK/crew/dist/cli"; mkdir -p "$STUB_CREW"
 cat > "$STUB_CREW/index.js" <<'JS'
 const fs = require("fs");
@@ -59,15 +64,27 @@ const a = process.argv.slice(2);
 fs.appendFileSync(process.env.CREW_CALLS, a.join(" ") + "\n");
 const out = (o) => process.stdout.write(JSON.stringify(o));
 if (a.includes("maintain")) {
-  out({
-    ok: true,
-    report: {
-      chosen: "security_hotspot",
-      reason: "lane 'security_hotspot' selected: highest-priority enabled lane not yet run",
-      outcome: { status: "draft_created", draftCount: 1 },
-    },
-    events: ["maintenance_lane_chosen"],
-  });
+  if (process.env.MAINT_ENABLED === "0" && !a.includes("--force")) {
+    out({
+      ok: true,
+      report: {
+        chosen: null,
+        reason: "maintenance lane disabled (loops.maintenance.enabled=false)",
+        outcome: { status: "disabled" },
+      },
+      events: ["maintenance_lane_finished"],
+    });
+  } else {
+    out({
+      ok: true,
+      report: {
+        chosen: "security_hotspot",
+        reason: "lane 'security_hotspot' selected: highest-priority enabled lane not yet run",
+        outcome: { status: "draft_created", draftCount: 1 },
+      },
+      events: ["maintenance_lane_chosen"],
+    });
+  }
 } else {
   out({ ok: true, outcome: { drafts: [] }, events: [] });
 }
@@ -77,54 +94,77 @@ JS
 CREW_CONFIG="$WORK/crew.config.yaml"; printf 'factory:\n  name: t\n' > "$CREW_CONFIG"
 
 run_tick() {
-  CREW_CALLS="$CREW_CALLS" \
+  CREW_CALLS="$CREW_CALLS" MAINT_ENABLED="${MAINT_ENABLED:-1}" \
   RUNNER_DIR="$RUNNER_DIR" GAFFER_HOME="$WORK" GAFFER_DATA="$GAFFER_DATA" \
   DISPATCH_DIR="$WORK/dispatch" CREW_DIR="$WORK/crew" CREW_CONFIG="$CREW_CONFIG" \
   DRY_RUN="${DRY_RUN:-0}" REVIEW_MODE=human \
-  GAFFER_MAINTENANCE="${GAFFER_MAINTENANCE:-0}" IDLE_DRAFT_WHEN_IDLE="${IDLE_DRAFT_WHEN_IDLE:-0}" \
+  GAFFER_MAINTENANCE="${GAFFER_MAINTENANCE-}" IDLE_DRAFT_WHEN_IDLE="${IDLE_DRAFT_WHEN_IDLE:-0}" \
     bash "$RUNNER_DIR/tick.sh" 2>>"$GAFFER_DATA/stderr.log"
 }
+reset_log() { : > "$CREW_CALLS"; : > "$GAFFER_DATA/factory.log"; }
 
-# ── 1. GAFFER_MAINTENANCE=1 → scheduler-chosen lane runs + is logged ─────────
-: > "$CREW_CALLS"
-OUT1="$(GAFFER_MAINTENANCE=1 run_tick)"
+# ── 1. GAFFER_MAINTENANCE=1 → forced lane runs + is logged ───────────────────
+reset_log
+OUT1="$(GAFFER_MAINTENANCE=1 MAINT_ENABLED=0 run_tick)"
 echo "$OUT1" | grep -q '^TICK_RESULT=maintenance_drafted$' \
-  && ok "maintenance lane drafts → TICK_RESULT=maintenance_drafted" \
-  || fail "expected maintenance_drafted, got: $(echo "$OUT1" | grep '^TICK_RESULT=')"
-
+  && ok "GAFFER_MAINTENANCE=1 forces the lane even with the crew.yaml switch off → maintenance_drafted" \
+  || fail "expected maintenance_drafted under force, got: $(echo "$OUT1" | grep '^TICK_RESULT=')"
 grep -q "maintenance lane chose 'security_hotspot'" "$GAFFER_DATA/factory.log" 2>/dev/null \
   && ok "logs the chosen lane + rationale" \
   || fail "chosen-lane log line missing"
+grep -q 'maintain --force' "$CREW_CALLS" \
+  && ok "the override is passed to crew as 'maintain --force'" \
+  || fail "crew was not invoked with 'maintain --force' (calls: $(tr '\n' '|' < "$CREW_CALLS"))"
 
 # ── 2. crew CLI invoked with `maintain` (the smart lane), not `idle` ──────────
-if grep -q 'maintain' "$CREW_CALLS"; then
-  ok "tick invokes crew 'maintain' (scheduler-chosen loop)"
-else
-  fail "crew 'maintain' subcommand was not invoked"
-fi
 if grep -qw 'idle' "$CREW_CALLS"; then
   fail "tick must NOT fall through to the fixed 'idle' scan when maintenance ran"
 else
   ok "tick does not also run the fixed 'idle' scan"
 fi
 
-# ── 3. toggle OFF → today's behaviour unchanged (regression) ─────────────────
-: > "$CREW_CALLS"
+# ── 3. GAFFER_MAINTENANCE=0 → kill switch: crew never asked ──────────────────
+reset_log
 OUT3="$(GAFFER_MAINTENANCE=0 IDLE_DRAFT_WHEN_IDLE=0 run_tick)"
 echo "$OUT3" | grep -q '^TICK_RESULT=no_work$' \
-  && ok "maintenance OFF + idle OFF → unchanged: TICK_RESULT=no_work" \
-  || fail "expected no_work with maintenance off, got: $(echo "$OUT3" | grep '^TICK_RESULT=')"
+  && ok "GAFFER_MAINTENANCE=0 + idle OFF → TICK_RESULT=no_work" \
+  || fail "expected no_work with the kill switch, got: $(echo "$OUT3" | grep '^TICK_RESULT=')"
 if [ -s "$CREW_CALLS" ]; then
-  fail "crew CLI must NOT be invoked when the maintenance lane is off"
+  fail "crew CLI must NOT be invoked under GAFFER_MAINTENANCE=0"
 else
-  ok "crew CLI is not invoked when the maintenance lane is off"
+  ok "crew CLI is not invoked under the kill switch"
 fi
 
-# ── 4. DRY_RUN logs intent without invoking crew ─────────────────────────────
-: > "$CREW_CALLS"
-OUT4="$(GAFFER_MAINTENANCE=1 DRY_RUN=1 run_tick)"
-grep -q 'DRY_RUN: would run: fg maintain' "$GAFFER_DATA/factory.log" 2>/dev/null \
-  && ok "DRY_RUN logs the maintenance intent" \
+# ── 4. unset + crew.yaml switch OFF → crew asked, answers disabled, no_work ──
+reset_log
+OUT4="$(MAINT_ENABLED=0 IDLE_DRAFT_WHEN_IDLE=0 run_tick)"
+echo "$OUT4" | grep -q '^TICK_RESULT=no_work$' \
+  && ok "crew.yaml switch off (env unset) → TICK_RESULT=no_work" \
+  || fail "expected no_work with the crew.yaml switch off, got: $(echo "$OUT4" | grep '^TICK_RESULT=')"
+if grep -q '^.*maintain' "$CREW_CALLS" && ! grep -q -- '--force' "$CREW_CALLS"; then
+  ok "crew IS asked (fg maintain, no --force) — crew.yaml decides"
+else
+  fail "expected a plain 'maintain' call (calls: $(tr '\n' '|' < "$CREW_CALLS"))"
+fi
+grep -q 'maintenance lane is OFF in crew.yaml' "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "tick logs the pointer to Settings → Idle loops when the switch is off" \
+  || fail "missing the 'maintenance lane is OFF in crew.yaml' log line"
+
+# ── 5. unset + crew.yaml switch ON → the lane runs ───────────────────────────
+reset_log
+OUT5="$(MAINT_ENABLED=1 run_tick)"
+echo "$OUT5" | grep -q '^TICK_RESULT=maintenance_drafted$' \
+  && ok "crew.yaml switch on (env unset) → the lane runs → maintenance_drafted" \
+  || fail "expected maintenance_drafted with the crew.yaml switch on, got: $(echo "$OUT5" | grep '^TICK_RESULT=')"
+
+# ── 6. DRY_RUN logs intent without invoking crew ─────────────────────────────
+reset_log
+OUT6="$(GAFFER_MAINTENANCE=1 DRY_RUN=1 run_tick)"
+echo "$OUT6" | grep -q '^TICK_RESULT=no_work$' \
+  && ok "DRY_RUN → TICK_RESULT=no_work (nothing drafted)" \
+  || fail "DRY_RUN expected no_work, got: $(echo "$OUT6" | grep '^TICK_RESULT=')"
+grep -q 'DRY_RUN: would run: fg maintain --force' "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "DRY_RUN logs the maintenance intent (with the force flag)" \
   || fail "DRY_RUN maintenance intent not logged"
 if [ -s "$CREW_CALLS" ]; then
   fail "DRY_RUN must not actually invoke crew"

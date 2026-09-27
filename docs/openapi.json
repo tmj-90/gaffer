@@ -505,7 +505,7 @@
         "summary": "Read the crew idle-loop configuration",
         "responses": {
           "200": {
-            "description": "The `loops.idle_*` slice of crew.yaml; a missing file is a clean not-configured shape.",
+            "description": "The `loops.idle_*` rows (each flagged `maintenanceLane`), the `maintenance` switch and the `selfImprove` gate from crew.yaml; a missing file is a clean not-configured shape.",
             "content": {
               "application/json": {
                 "schema": {
@@ -548,7 +548,7 @@
           "Configuration"
         ],
         "summary": "Write the crew idle-loop configuration",
-        "description": "Repo names are cross-checked against the registered repositories. The crew runner re-reads crew.yaml on its next tick.",
+        "description": "Loop rows plus the optional `maintenance` switch and `self_improve` gate (opt-in repos, risk ceiling, per-tick cap). Repo names are cross-checked against the registered repositories. The crew runner re-reads crew.yaml on its next tick.",
         "requestBody": {
           "required": true,
           "content": {
@@ -8941,6 +8941,54 @@
             },
             "maxItems": 32,
             "default": []
+          },
+          "maintenance": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "self_improve": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "repos": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "maxItems": 200,
+                "default": []
+              },
+              "max_risk": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "max_ready_per_run": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              }
+            },
+            "required": [
+              "enabled",
+              "max_risk",
+              "max_ready_per_run"
+            ]
           }
         }
       },

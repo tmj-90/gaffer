@@ -703,6 +703,17 @@ export const idleLoopsBody = z.object({
     // unknown/duplicate keys, this just bounds the array the loop iterates.
     .max(32)
     .default([]),
+  /** `loops.maintenance.enabled` — the maintenance lane's master switch. */
+  maintenance: z.object({ enabled: z.boolean() }).optional(),
+  /** `loops.self_improve` — the gate that lets an idle tick promote its own drafts. */
+  self_improve: z
+    .object({
+      enabled: z.boolean(),
+      repos: z.array(z.string().min(1).max(256)).max(200).default([]),
+      max_risk: z.enum(["low", "medium", "high", "critical"]),
+      max_ready_per_run: z.number().int().min(1).max(20),
+    })
+    .optional(),
 });
 export type IdleLoopsBody = z.infer<typeof idleLoopsBody>;
 

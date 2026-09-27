@@ -149,6 +149,86 @@ describe("idleLoops module: read/write crew.yaml slice", () => {
     expect(loops.idle_documentation!.enabled).toBe(false);
   });
 
+  it("exposes the tech-debt and type-quality lanes and flags which loops the maintenance lane rotates", () => {
+    const view = readIdleLoops(path);
+    const keys = view.loops.map((l) => l.key);
+    expect(keys).toContain("idle_tech_debt");
+    expect(keys).toContain("idle_type_quality");
+    expect(view.loops.find((l) => l.key === "idle_tech_debt")!.maintenanceLane).toBe(true);
+    expect(view.loops.find((l) => l.key === "idle_feature_backlog")!.maintenanceLane).toBe(false);
+    // Absent blocks read as the crew schema defaults: lane off, gate off/low/1.
+    expect(view.maintenance).toEqual({ enabled: false });
+    expect(view.selfImprove).toEqual({
+      enabled: false,
+      repos: [],
+      maxRisk: "low",
+      maxReadyPerRun: 1,
+    });
+  });
+
+  it("writes the maintenance switch and the self-improve gate and round-trips them", () => {
+    const view = writeIdleLoops(
+      path,
+      [{ key: "idle_tech_debt", enabled: true, repos: [] }],
+      ["api", "web"],
+      {
+        maintenance: { enabled: true },
+        selfImprove: { enabled: true, repos: ["api"], maxRisk: "medium", maxReadyPerRun: 2 },
+      },
+    );
+    expect(view.maintenance.enabled).toBe(true);
+    expect(view.selfImprove).toEqual({
+      enabled: true,
+      repos: ["api"],
+      maxRisk: "medium",
+      maxReadyPerRun: 2,
+    });
+    expect(view.loops.find((l) => l.key === "idle_tech_debt")!.enabled).toBe(true);
+
+    const doc = parseYaml(readFileSync(path, "utf8")) as Record<string, unknown>;
+    const loops = doc.loops as Record<string, Record<string, unknown>>;
+    expect(loops.maintenance!.enabled).toBe(true);
+    expect(loops.self_improve).toEqual({
+      enabled: true,
+      repos: ["api"],
+      max_risk: "medium",
+      max_ready_per_run: 2,
+    });
+    // A second write that omits the lane fields leaves them untouched.
+    const again = writeIdleLoops(
+      path,
+      [{ key: "idle_coverage", enabled: true, repos: [] }],
+      ["api", "web"],
+    );
+    expect(again.maintenance.enabled).toBe(true);
+    expect(again.selfImprove.repos).toEqual(["api"]);
+  });
+
+  it("rejects an unregistered self-improve repo, an unknown risk level and an out-of-range cap", () => {
+    expect(() =>
+      writeIdleLoops(path, [], ["api"], {
+        selfImprove: { enabled: true, repos: ["ghost"], maxRisk: "low", maxReadyPerRun: 1 },
+      }),
+    ).toThrow(/Unknown repo name: ghost/);
+    expect(() =>
+      writeIdleLoops(path, [], ["api"], {
+        selfImprove: { enabled: true, repos: [], maxRisk: "extreme", maxReadyPerRun: 1 },
+      }),
+    ).toThrow(/max_risk/);
+    expect(() =>
+      writeIdleLoops(path, [], ["api"], {
+        selfImprove: { enabled: true, repos: [], maxRisk: "low", maxReadyPerRun: 0 },
+      }),
+    ).toThrow(/max_ready_per_run/);
+    expect(() =>
+      writeIdleLoops(path, [], ["api"], {
+        selfImprove: { enabled: true, repos: [], maxRisk: "low", maxReadyPerRun: 21 },
+      }),
+    ).toThrow(/max_ready_per_run/);
+    // Nothing was written by the rejected calls.
+    expect(readIdleLoops(path).selfImprove.enabled).toBe(false);
+  });
+
   it("clearing repos to [] means 'all repos'", () => {
     writeIdleLoops(path, [{ key: "idle_coverage", enabled: true, repos: ["api"] }], ["api", "web"]);
     const view = writeIdleLoops(

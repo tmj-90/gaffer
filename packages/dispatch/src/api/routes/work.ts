@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
 import { methodNotAllowed, readJsonBody, sendJson } from "../http.js";
+import { readIdleLoops, resolveCrewConfigPath } from "../idleLoops.js";
 import type { PlanBuildRunner } from "../planBuild.js";
 import type { PollWorkRunner } from "../pollWork.js";
 import type { ProductOwnerRunner, ProductOwnerRunResult } from "../productOwner.js";
@@ -171,15 +172,24 @@ export async function routeWork(
       methodNotAllowed(res);
       return true;
     }
-    // Only fire a tick when there's actually ready work; otherwise the poll silently
-    // does nothing and feels broken. Tell the caller plainly when nothing's ready.
+    // Only fire a tick when it has something to do. Ready work is the obvious case;
+    // an EMPTY queue still has work when the idle maintenance lane is switched on in
+    // crew.yaml (the tick then runs one scheduler-chosen scan lane, which may draft
+    // and promote its own ticket). Otherwise the poll would silently do nothing and
+    // feel broken — tell the caller plainly.
     const readyCount = wg.listTickets({ status: "ready" }).length;
-    if (readyCount === 0) {
+    const maintenanceOn = readIdleLoops(resolveCrewConfigPath()).maintenance.enabled;
+    if (readyCount === 0 && !maintenanceOn) {
       sendJson(res, 200, { polled: false, reason: "no_ready_work", readyCount: 0 });
       return true;
     }
     const result = pollWorkRunner.run();
-    sendJson(res, 202, { polled: true, readyCount, run: result });
+    sendJson(res, 202, {
+      polled: true,
+      readyCount,
+      ...(readyCount === 0 ? { idle: "maintenance" } : {}),
+      run: result,
+    });
     return true;
   }
 

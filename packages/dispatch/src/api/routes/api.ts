@@ -129,7 +129,19 @@ export async function routeApi(
     if (method === "PUT") {
       const body = idleLoopsBody.parse(await readJsonBody(req));
       const repoNames = wg.listRepositories(true).map((r) => r.name);
-      const view = writeIdleLoops(crewPath, body.loops, repoNames);
+      const view = writeIdleLoops(crewPath, body.loops, repoNames, {
+        ...(body.maintenance ? { maintenance: body.maintenance } : {}),
+        ...(body.self_improve
+          ? {
+              selfImprove: {
+                enabled: body.self_improve.enabled,
+                repos: body.self_improve.repos,
+                maxRisk: body.self_improve.max_risk,
+                maxReadyPerRun: body.self_improve.max_ready_per_run,
+              },
+            }
+          : {}),
+      });
       sendJson(res, 200, { idle_loops: view });
       return;
     }

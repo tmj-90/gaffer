@@ -236,7 +236,7 @@ gaffer_route_model() {
   # phase. We still emit an audit line recording the override.
   local override="" overrode=0
   case "$phase" in
-    decompose|plan) [ "${GAFFER_PLAN_MODEL_EXPLICIT:-0}" = 1 ] && { override="${GAFFER_PLAN_MODEL:-}"; overrode=1; } ;;
+    decompose|plan|clarify) [ "${GAFFER_PLAN_MODEL_EXPLICIT:-0}" = 1 ] && { override="${GAFFER_PLAN_MODEL:-}"; overrode=1; } ;;
     *)              [ "${GAFFER_IMPL_MODEL_EXPLICIT:-0}" = 1 ] && { override="${GAFFER_IMPL_MODEL:-}"; overrode=1; } ;;
   esac
   if [ "$overrode" = 1 ]; then
@@ -248,7 +248,7 @@ gaffer_route_model() {
   if [ -z "$node_bin" ] || [ ! -f "$RUNNER_DIR/bin/route-model.mjs" ]; then
     # Fail-safe: no router available → fall back to the static tier for this phase.
     case "$phase" in
-      decompose|plan) printf '%s' "${GAFFER_PLAN_MODEL:-}" ;;
+      decompose|plan|clarify) printf '%s' "${GAFFER_PLAN_MODEL:-}" ;;
       *)              printf '%s' "${GAFFER_IMPL_MODEL:-}" ;;
     esac
     return 0
@@ -305,7 +305,7 @@ gaffer_route_model() {
   if [ -z "$json" ]; then
     # Router crashed/empty → fall back to the static tier, never break the tick.
     case "$phase" in
-      decompose|plan) printf '%s' "${GAFFER_PLAN_MODEL:-}" ;;
+      decompose|plan|clarify) printf '%s' "${GAFFER_PLAN_MODEL:-}" ;;
       *)              printf '%s' "${GAFFER_IMPL_MODEL:-}" ;;
     esac
     return 0
@@ -1780,6 +1780,11 @@ gaffer_review_verdict() {
 # Set to 1 for a factory you want actively refining its own backlog while idle.
 : "${CLARIFY_DRAFTS_WHEN_IDLE:=0}"
 : "${IDLE_DRAFT_WHEN_IDLE:=0}"
+# Maintenance lane ENV override. The lane's own switch is crew.yaml's
+# loops.maintenance.enabled (Settings → Idle loops). Empty (default) = crew.yaml
+# decides; 0 = kill switch (an idle tick never asks crew); 1 = force the lane even
+# when the crew.yaml switch is off.
+: "${GAFFER_MAINTENANCE:=}"   # env override for the idle maintenance lane: empty = crew.yaml decides, 0 = off, 1 = force
 
 # --- H4: real PR creation (opt-in) -------------------------------------------
 # When GAFFER_CREATE_PR=1 AND the primary write repo has a GitHub remote, the

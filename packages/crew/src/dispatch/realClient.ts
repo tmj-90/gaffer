@@ -1,5 +1,6 @@
 import { CrewError } from "../util/errors.js";
 import type {
+  DispatchRepository,
   ClaimResult,
   CreateEpicResult,
   DecisionRequestResult,
@@ -31,6 +32,7 @@ import type {
 // at the boundary.
 export interface DispatchFacade {
   list?(status?: string): Array<Record<string, unknown>>;
+  listRepositories?(includeHidden?: boolean): Array<Record<string, unknown>>;
   view?(ref: string): {
     ticket: Record<string, unknown>;
     acceptanceCriteria: Array<Record<string, unknown>>;
@@ -149,6 +151,7 @@ export interface DispatchFacade {
     tickets?: Array<{ id?: string; ticketId?: string }>;
   };
   markReady?(ref: string, actor?: unknown): unknown;
+  addAcceptanceCriterion?(input: unknown, actor?: unknown): unknown;
   db?: { close(): void };
 }
 
@@ -307,6 +310,24 @@ export class RealDispatchClient implements DispatchClient {
   /** Wrap an already-constructed facade (e.g. a shared Dispatch instance). */
   static fromFacade(facade: DispatchFacade): RealDispatchClient {
     return new RealDispatchClient(facade);
+  }
+
+  listRepositories(): DispatchRepository[] {
+    // Older facades have no registry listing; the idle loops then fall back to
+    // crew.yaml's own repos, exactly as before.
+    if (!this.facade.listRepositories) return [];
+    const rows = this.facade.listRepositories.call(this.facade, false);
+    return rows.map((row) => ({
+      id: String(row.id ?? ""),
+      name: String(row.name ?? ""),
+      localPath: typeof row.local_path === "string" ? row.local_path : null,
+      defaultBranch: String(row.default_branch ?? "main"),
+      stack: typeof row.stack === "string" ? row.stack : null,
+      riskLevel: String(row.risk_level ?? "medium"),
+      testCommand: typeof row.test_command === "string" ? row.test_command : null,
+      lintCommand: typeof row.lint_command === "string" ? row.lint_command : null,
+      coverageCommand: typeof row.coverage_command === "string" ? row.coverage_command : null,
+    }));
   }
 
   listReady(): ReadyTicket[] {
@@ -687,6 +708,23 @@ export class RealDispatchClient implements DispatchClient {
   markTicketReady(ticketId: string): void {
     const markReady = required(this.facade.markReady, "markReady");
     markReady.call(this.facade, ticketId, GAFFER_ACTOR);
+  }
+
+  addAcceptanceCriterion(p: { ticketId: string; text: string; checkCommand?: string }): void {
+    const add = required(this.facade.addAcceptanceCriterion, "addAcceptanceCriterion");
+    add.call(
+      this.facade,
+      {
+        ticket_id: p.ticketId,
+        text: p.text,
+        // A check command makes the criterion machine-checkable: the runner executes
+        // it in the delivery worktree and records the verdict itself.
+        ...(p.checkCommand
+          ? { check_command: p.checkCommand, verification_method: "runner:check" }
+          : {}),
+      },
+      GAFFER_ACTOR,
+    );
   }
 
   createEpic(p: {

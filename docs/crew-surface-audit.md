@@ -14,7 +14,7 @@ taken so the question is not re-litigated silently.
 | `crew doctor` | `status.sh` | live |
 | `crew repo onboard --standalone` | `gaffer onboard`, the dashboard's Onboard button, `lib/greenfield.sh` | live |
 | `crew idle` | `tick.sh`, only with `IDLE_DRAFT_WHEN_IDLE=1` (dashboard toggle) | opt-in |
-| `crew maintain` | `tick.sh`, only with `GAFFER_MAINTENANCE=1` | opt-in |
+| `crew maintain` | `tick.sh` on every idle tick when crew is built (crew.yaml's `loops.maintenance.enabled` decides; `GAFFER_MAINTENANCE` is the env override) | live |
 | the eight `runtime/**/*Cli.js` | prompt / MCP / context renders, DoD distill, worktree key, hygiene, minimalism, CI parse | live — the **only** implementation since the bash twins were deleted |
 | `eval/evalLedgerCli.js`, `eval/deliveryJudgeCli.js` | `gaffer eval`; the judge only with `GAFFER_EVAL_JUDGE=1` | live / opt-in |
 

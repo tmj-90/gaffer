@@ -175,6 +175,15 @@ jobs:
           done
           exit $rc
 
+      # The idle maintenance lane END TO END through the real tick.sh: a fixture repo
+      # with a planted god-file, tick 1 drafts the tech-debt finding with its
+      # machine-checkable oracle and self-improve promotes it, tick 2 delivers it with
+      # the stub worker and the runner verifies the oracle, tick 3 dedupes. Its own
+      # step (three real ticks, ~15s) so the 120s per-test cap above never bites it.
+      - name: Maintenance lane end to end (real runner, stub worker)
+        shell: bash
+        run: perl -e 'alarm shift; exec @ARGV' 400 bash runner/test/maintenance-e2e.sh
+
       # Golden gate fixtures: recorded deliveries replayed through the REAL gate
       # pipeline (hygiene · minimalism · Definition of Done · acceptance checks);
       # every verdict and the resulting submit/rework outcome must match the

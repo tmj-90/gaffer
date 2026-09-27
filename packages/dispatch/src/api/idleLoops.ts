@@ -29,13 +29,19 @@ import { DispatchError } from "../util/errors.js";
  * tick), so there is no live restart.
  */
 
-/** The idle loops the dashboard exposes: the 5 scan loops + the feature backlog. */
+/**
+ * The idle loops the dashboard exposes: the 7 scan loops (the lanes the
+ * maintenance scheduler rotates through) + the feature backlog. Priority order
+ * of the maintenance lane, then the backlog loop.
+ */
 export const IDLE_LOOP_KEYS = [
+  "idle_security_hotspot",
   "idle_coverage",
   "idle_test_quality",
+  "idle_type_quality",
+  "idle_tech_debt",
   "idle_documentation",
   "idle_dependencies",
-  "idle_security_hotspot",
   "idle_feature_backlog",
 ] as const;
 
@@ -43,15 +49,51 @@ export type IdleLoopKey = (typeof IDLE_LOOP_KEYS)[number];
 
 /** Human labels for the panel — kept here so the API is the single source. */
 const IDLE_LOOP_LABELS: Record<IdleLoopKey, string> = {
+  idle_security_hotspot: "Security hotspots",
   idle_coverage: "Coverage",
   idle_test_quality: "Test quality",
+  idle_type_quality: "Type quality",
+  idle_tech_debt: "Tech debt",
   idle_documentation: "Documentation",
   idle_dependencies: "Dependencies",
-  idle_security_hotspot: "Security hotspots",
   idle_feature_backlog: "Feature backlog",
 };
 
+/**
+ * The loops the maintenance lane's deterministic scheduler rotates through
+ * (crew `MAINTENANCE_LANES`). The feature-backlog loop is async and needs a
+ * decomposer, so it is not a lane.
+ */
+export const MAINTENANCE_LANE_KEYS: ReadonlySet<IdleLoopKey> = new Set<IdleLoopKey>([
+  "idle_security_hotspot",
+  "idle_coverage",
+  "idle_test_quality",
+  "idle_type_quality",
+  "idle_tech_debt",
+  "idle_documentation",
+  "idle_dependencies",
+]);
+
+/**
+ * The lanes "Use recommended set" turns on: the ones whose findings are cheap
+ * to verify mechanically (a security pattern, a test gap, a refactor hotspot with
+ * the test suite as oracle, a stale doc). Dependencies and type quality stay
+ * opt-in — their drafts tend to need a human judgement call.
+ */
+export const RECOMMENDED_LANE_KEYS: readonly IdleLoopKey[] = [
+  "idle_security_hotspot",
+  "idle_coverage",
+  "idle_tech_debt",
+  "idle_documentation",
+];
+
 const KNOWN_KEYS = new Set<string>(IDLE_LOOP_KEYS);
+
+export const RISK_LEVELS = ["low", "medium", "high", "critical"] as const;
+export type RiskLevel = (typeof RISK_LEVELS)[number];
+const RISK_SET = new Set<string>(RISK_LEVELS);
+/** Upper bound on auto-promotions per idle tick the panel may set. */
+export const MAX_READY_PER_RUN_CAP = 20;
 
 /** One idle loop as the dashboard sees it. */
 export interface IdleLoopRow {
@@ -60,6 +102,25 @@ export interface IdleLoopRow {
   readonly enabled: boolean;
   /** Scoped repo NAMES; an empty list means "all repos" (schema semantics). */
   readonly repos: readonly string[];
+  /** True when the maintenance lane's scheduler rotates through this loop. */
+  readonly maintenanceLane: boolean;
+}
+
+/** `loops.maintenance` — the lane's master switch. */
+export interface MaintenanceView {
+  readonly enabled: boolean;
+}
+
+/**
+ * `loops.self_improve` — the gate that lets an idle tick promote its own drafts
+ * to `ready`. Strict opt-in per repo (an empty list means NO repos), a risk
+ * ceiling and a per-tick cap.
+ */
+export interface SelfImproveView {
+  readonly enabled: boolean;
+  readonly repos: readonly string[];
+  readonly maxRisk: RiskLevel;
+  readonly maxReadyPerRun: number;
 }
 
 /** The GET payload: the loop rows + factory-wide idle mode + whether configured. */
@@ -69,6 +130,8 @@ export interface IdleLoopsView {
   /** `safety.default_idle_loop_mode` from crew.yaml (empty when not configured). */
   readonly mode: string;
   readonly loops: readonly IdleLoopRow[];
+  readonly maintenance: MaintenanceView;
+  readonly selfImprove: SelfImproveView;
 }
 
 /** One requested update — the editable fields only. */
@@ -76,6 +139,17 @@ export interface IdleLoopUpdate {
   readonly key: string;
   readonly enabled: boolean;
   readonly repos: readonly string[];
+}
+
+/** The optional lane-level updates a PUT may carry beside the loop rows. */
+export interface IdleLaneUpdates {
+  readonly maintenance?: { readonly enabled: boolean };
+  readonly selfImprove?: {
+    readonly enabled: boolean;
+    readonly repos: readonly string[];
+    readonly maxRisk: string;
+    readonly maxReadyPerRun: number;
+  };
 }
 
 /**
@@ -151,10 +225,33 @@ export function readIdleLoops(path: string): IdleLoopsView {
       label: IDLE_LOOP_LABELS[key],
       enabled: readEnabled(node),
       repos: readRepos(node),
+      maintenanceLane: MAINTENANCE_LANE_KEYS.has(key),
     };
   });
 
-  return { configured: true, mode, loops };
+  const selfNode =
+    typeof loopsNode.self_improve === "object" && loopsNode.self_improve !== null
+      ? (loopsNode.self_improve as Record<string, unknown>)
+      : {};
+  const maxRiskRaw = typeof selfNode.max_risk === "string" ? selfNode.max_risk : "low";
+  const maxReadyRaw = selfNode.max_ready_per_run;
+
+  return {
+    configured: true,
+    mode,
+    loops,
+    maintenance: { enabled: readEnabled(loopsNode.maintenance) },
+    selfImprove: {
+      enabled: readEnabled(loopsNode.self_improve),
+      repos: readRepos(loopsNode.self_improve),
+      // Mirror the crew schema defaults so the panel shows what the runner will use.
+      maxRisk: RISK_SET.has(maxRiskRaw) ? (maxRiskRaw as RiskLevel) : "low",
+      maxReadyPerRun:
+        typeof maxReadyRaw === "number" && Number.isInteger(maxReadyRaw) && maxReadyRaw > 0
+          ? maxReadyRaw
+          : 1,
+    },
+  };
 }
 
 /** The clean "crew.yaml absent" shape: every loop disabled, scoped to all repos. */
@@ -167,7 +264,10 @@ function notConfiguredView(): IdleLoopsView {
       label: IDLE_LOOP_LABELS[key],
       enabled: false,
       repos: [],
+      maintenanceLane: MAINTENANCE_LANE_KEYS.has(key),
     })),
+    maintenance: { enabled: false },
+    selfImprove: { enabled: false, repos: [], maxRisk: "low", maxReadyPerRun: 1 },
   };
 }
 
@@ -186,11 +286,40 @@ export function writeIdleLoops(
   path: string,
   updates: readonly IdleLoopUpdate[],
   knownRepoNames: readonly string[],
+  lanes: IdleLaneUpdates = {},
 ): IdleLoopsView {
   // Reject unknown loop keys up front with a clear message.
   for (const u of updates) {
     if (!KNOWN_KEYS.has(u.key)) {
       throw new DispatchError("VALIDATION_ERROR", `Unknown idle loop key: ${u.key}.`);
+    }
+  }
+  // Lane-level fields: the self-improve gate names repos (must be registered — an
+  // unknown name would silently opt in nothing), a risk ceiling from the closed
+  // enum, and a bounded per-tick cap.
+  if (lanes.selfImprove) {
+    const si = lanes.selfImprove;
+    if (!RISK_SET.has(si.maxRisk)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `self_improve.max_risk must be one of ${RISK_LEVELS.join(", ")} (got '${si.maxRisk}').`,
+      );
+    }
+    if (
+      !Number.isInteger(si.maxReadyPerRun) ||
+      si.maxReadyPerRun < 1 ||
+      si.maxReadyPerRun > MAX_READY_PER_RUN_CAP
+    ) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `self_improve.max_ready_per_run must be an integer from 1 to ${MAX_READY_PER_RUN_CAP}.`,
+      );
+    }
+    const known = new Set(knownRepoNames);
+    for (const repo of si.repos) {
+      if (!known.has(repo)) {
+        throw new DispatchError("VALIDATION_ERROR", `Unknown repo name: ${repo}.`);
+      }
     }
   }
   // Reject duplicate keys — an ambiguous request should not silently last-wins.
@@ -257,6 +386,28 @@ export function writeIdleLoops(
     existing.enabled = u.enabled;
     existing.repos = [...u.repos];
     loopsNode[u.key] = existing;
+  }
+
+  // Lane-level slices: `loops.maintenance.enabled` (the cursor path etc. are
+  // preserved) and the four editable `loops.self_improve` fields.
+  if (lanes.maintenance) {
+    const existing =
+      typeof loopsNode.maintenance === "object" && loopsNode.maintenance !== null
+        ? (loopsNode.maintenance as Record<string, unknown>)
+        : {};
+    existing.enabled = lanes.maintenance.enabled;
+    loopsNode.maintenance = existing;
+  }
+  if (lanes.selfImprove) {
+    const existing =
+      typeof loopsNode.self_improve === "object" && loopsNode.self_improve !== null
+        ? (loopsNode.self_improve as Record<string, unknown>)
+        : {};
+    existing.enabled = lanes.selfImprove.enabled;
+    existing.repos = [...lanes.selfImprove.repos];
+    existing.max_risk = lanes.selfImprove.maxRisk;
+    existing.max_ready_per_run = lanes.selfImprove.maxReadyPerRun;
+    loopsNode.self_improve = existing;
   }
 
   atomicWriteYaml(path, root);

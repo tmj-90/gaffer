@@ -1,5 +1,5 @@
 import { dateStamp } from "../util/clock.js";
-import { findingKey, isBelowDeliveredThreshold } from "./idleScans.js";
+import { attachOracleAndPromote, findingKey, isBelowDeliveredThreshold } from "./idleScans.js";
 import type { Clock } from "../util/clock.js";
 import type { CommandRunner } from "../adapters/commandRunner.js";
 import { resolveMinDeliveredTickets } from "../config/schema.js";
@@ -218,21 +218,10 @@ export function runIdleCoverageLoop(deps: IdleLoopDeps): IdleLoopOutcome {
       number: created.number,
       repoName: repo.name,
     });
-    // Promote to ready either because this loop is explicitly in
-    // `create_ready_tickets` mode, or because the self-improve gate elects to
-    // close the loop for this (opted-in, low-risk, under-cap) repo.
-    const promote =
-      mode === "create_ready_tickets" ||
-      (mode === "create_draft_tickets" && (deps.selfImprove?.tryPromote(repo) ?? false));
-    if (promote) {
-      deps.dispatch.markTicketReady(created.ticketId);
+    // Oracle criterion + promotion (mode or the self-improve gate) — the shared
+    // closed-loop step every scan loop uses; see attachOracleAndPromote.
+    if (attachOracleAndPromote(deps, "idle_coverage", mode, repo, created) === "ready") {
       readyCount += 1;
-      events.record("idle_ticket_marked_ready", {
-        ticketId: created.ticketId,
-        number: created.number,
-        repoName: repo.name,
-        via: mode === "create_ready_tickets" ? "mode" : "self_improve",
-      });
     }
     drafts.push({
       ticketId: created.ticketId,

@@ -23,6 +23,15 @@ export class RepoRegistry {
     return new RepoRegistry(config.repos, rootDir);
   }
 
+  /**
+   * A new registry holding this one's repos plus `extra`, same root. A repo whose
+   * id OR name is already present is skipped (crew.yaml wins over a merged source).
+   */
+  merged(extra: readonly RepoConfig[]): RepoRegistry {
+    const added = extra.filter((r) => !this.byId.has(r.id) && !this.byName.has(r.name));
+    return new RepoRegistry([...this.list(), ...added], this.rootDir);
+  }
+
   list(): RepoConfig[] {
     return [...this.byId.values()];
   }

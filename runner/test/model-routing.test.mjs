@@ -64,6 +64,35 @@ check("plan → strong → opus", () => {
 check("merge-conflict-resolve → strong", () => {
   assert.equal(routeModel({ phase: "merge-conflict-resolve" }, reg).tier, "strong");
 });
+check("review (the independent reviewer agent) → mid by default", () => {
+  assert.equal(routeModel({ phase: "review", risk: "medium", acCount: 3 }, reg).tier, "mid");
+});
+
+check("review of a HIGH-risk ticket → strong (a wrong APPROVE is the expensive mistake)", () => {
+  assert.equal(routeModel({ phase: "review", risk: "high", acCount: 3 }, reg).tier, "strong");
+});
+
+check(
+  "review of a trivial ticket does NOT drop to cheap (trivial downgrade is implement/test only)",
+  () => {
+    assert.equal(routeModel({ phase: "review", risk: "low", acCount: 1 }, reg).tier, "mid");
+  },
+);
+
+check("clarify (intake: files ACs, never codes) → cheap by default", () => {
+  assert.equal(routeModel({ phase: "clarify", risk: "medium", acCount: 0 }, reg).tier, "cheap");
+});
+
+check("clarify of a HIGH-risk draft climbs off the cheap tier", () => {
+  const r = routeModel({ phase: "clarify", risk: "high", acCount: 0 }, reg);
+  assert.notEqual(r.tier, "cheap");
+});
+
+check("the built-in fallback registry knows the review + clarify phases", () => {
+  assert.equal(FALLBACK_REGISTRY.phaseDefaults.review, "mid");
+  assert.equal(FALLBACK_REGISTRY.phaseDefaults.clarify, "cheap");
+});
+
 check("onboarding → cheap", () => {
   assert.equal(routeModel({ phase: "onboarding" }, reg).tier, "cheap");
 });

@@ -472,8 +472,8 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     key: "IDLE_DRAFT_WHEN_IDLE",
     type: "boolean",
     group: "idle-loops",
-    label: "Draft new tickets when idle",
-    help: "When idle, let the product-owner loop propose new draft tickets from the repos it watches.",
+    label: "Run every idle scan when idle (legacy)",
+    help: "When idle, run ALL enabled crew idle loops in one pass (drafts only). Superseded by the maintenance lane below, which runs one prioritised lane per idle tick and can promote its own drafts.",
   },
 
   // --- Quality gates: the runner's DoD guards on every delivery ---

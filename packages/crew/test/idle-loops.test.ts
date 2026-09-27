@@ -54,7 +54,7 @@ function configForRepo(
   path: string,
   overrides: Partial<CrewConfig["repos"][number]> = {},
 ): CrewConfig {
-  return enableScanLoops(
+  const config = enableScanLoops(
     crewConfigSchema.parse({
       factory: { name: "test-factory", mode: "local_strict" },
       repos: [
@@ -69,6 +69,10 @@ function configForRepo(
       ],
     }),
   );
+  // The maintenance lane's own master switch (off by default; the dashboard's
+  // Idle loops panel turns it on). The registry-wiring tests exercise the lane.
+  config.loops.maintenance.enabled = true;
+  return config;
 }
 
 function deps(
@@ -862,6 +866,56 @@ describe("self-improve closed loop", () => {
     expect(claim!.ticketId).toBe(ready[0]!.ticketId);
   });
 
+  it("every idle draft carries the behaviour-preserving oracle as a REAL criterion, machine-checked by the repo's test command", () => {
+    const repo = smellyRepo("fg-si-oracle-");
+    const config = configForRepo(repo, {
+      coverage_command: null,
+      risk_level: "low",
+      test_command: "pnpm test",
+    });
+    config.loops.self_improve.enabled = true;
+    config.loops.self_improve.repos = ["demo"];
+    const wg = new FakeDispatchClient();
+
+    const report = runIdleLoops(deps(config, wg));
+
+    expect(report.selfImprovePromoted).toBe(1);
+    const ready = wg.listReady();
+    expect(ready).toHaveLength(1);
+    const bundle = wg.getTicket(ready[0]!.ticketId);
+    // Dispatch's ready gate refuses a 0-AC ticket, so the promotion can only have
+    // succeeded because the oracle criterion was attached first.
+    expect(bundle.acceptanceCriteria).toHaveLength(1);
+    expect(bundle.acceptanceCriteria[0]!.text).toMatch(/behaviour-preserving/i);
+    const added = wg.events.filter((e) => e.type === "acceptance_criterion.added");
+    expect(added).toHaveLength(1);
+    expect(added[0]!.payload).toMatchObject({ checkCommand: "pnpm test" });
+  });
+
+  it("a draft whose oracle cannot be attached is never promoted (fail closed, tick survives)", () => {
+    const repo = smellyRepo("fg-si-oracle-fail-");
+    const config = configForRepo(repo, { coverage_command: null, risk_level: "low" });
+    config.loops.self_improve.enabled = true;
+    config.loops.self_improve.repos = ["demo"];
+    const wg = new FakeDispatchClient();
+    wg.addAcceptanceCriterion = () => {
+      throw new Error("dispatch down");
+    };
+    const d = deps(config, wg);
+
+    const report = runIdleLoops(d);
+
+    expect(report.selfImprovePromoted).toBe(0);
+    expect(wg.listReady()).toHaveLength(0);
+    // The draft(s) still exist for a human (with nothing promoted, later loops in the
+    // same tick draft too); the failure is on the record.
+    expect(
+      wg.events.filter((e) => e.type === "draft_ticket.created").length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(d.events.types()).toContain("idle_ticket_oracle_failed");
+    expect(d.events.types()).not.toContain("idle_ticket_marked_ready");
+  });
+
   it("is bounded — the per-tick cap limits how many drafts a single loop promotes", () => {
     // Two opted-in low-risk repos, each with a smelly test and a clean README,
     // so the test_quality loop drafts for BOTH in one pass. With the queue-empty
@@ -979,6 +1033,44 @@ describe("maintenance lane (A4) — registry wiring", () => {
   function cursorPath(): string {
     return join(tempRepo("fg-maint-cursor-"), "cursor.json");
   }
+
+  it("reports 'disabled' and leaves the cursor untouched when loops.maintenance.enabled is false", () => {
+    const repo = tempRepo("fg-maint-off-");
+    writeFileSync(join(repo, "h.ts"), `eval(req.body);\n`);
+    const wg = new FakeDispatchClient();
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.maintenance.enabled = false;
+    const d = deps(config, wg);
+    const path = cursorPath();
+
+    const report = runMaintenanceLane(d, path);
+    expect(report.chosen).toBeNull();
+    expect(report.outcome).toEqual({ status: "disabled" });
+    expect(report.reason).toMatch(/loops\.maintenance\.enabled=false/);
+    // Nothing ran, nothing was drafted, and the rotation cursor was not written.
+    expect(d.events.types()).not.toContain("maintenance_lane_started");
+    expect(d.events.types()).not.toContain("security_hotspot_scanned");
+    expect(wg.events.filter((e) => e.type === "draft_ticket.created")).toHaveLength(0);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("force runs the lane even when loops.maintenance.enabled is false (env override)", () => {
+    const repo = tempRepo("fg-maint-force-");
+    writeFileSync(join(repo, "h.ts"), `eval(req.body);\n`);
+    const wg = new FakeDispatchClient();
+    const config = configForRepo(repo, { coverage_command: null });
+    config.loops.maintenance.enabled = false;
+    config.loops.idle_coverage.enabled = false;
+    config.loops.idle_test_quality.enabled = false;
+    config.loops.idle_type_quality.enabled = false;
+    config.loops.idle_dependencies.enabled = false;
+    config.loops.idle_tech_debt.enabled = false;
+    const d = deps(config, wg);
+
+    const report = runMaintenanceLane(d, cursorPath(), { force: true });
+    expect(report.chosen).toBe("security_hotspot");
+    expect(report.outcome?.status).toBe("draft_created");
+  });
 
   it("runs only the ONE scheduler-chosen loop and logs the choice", () => {
     const repo = tempRepo("fg-maint-run-");

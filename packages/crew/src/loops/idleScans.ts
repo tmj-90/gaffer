@@ -151,25 +151,90 @@ export function applyScanFinding(
     summary,
   };
 
-  // Promote to ready either because this loop is explicitly in
-  // `create_ready_tickets` mode, or because the self-improve gate elects to
-  // close the loop for this (opted-in, low-risk, under-cap) repo.
-  const promote =
-    mode === "create_ready_tickets" ||
-    (mode === "create_draft_tickets" && (deps.selfImprove?.tryPromote(repo) ?? false));
-  if (promote) {
-    deps.dispatch.markTicketReady(created.ticketId);
-    deps.events.record("idle_ticket_marked_ready", {
+  const kind = attachOracleAndPromote(deps, loop, mode, repo, created);
+  return { kind, draft };
+}
+
+/**
+ * Give a freshly drafted finding its behaviour-preserving oracle as a REAL
+ * acceptance criterion, then promote it to `ready` when the mode or the
+ * self-improve gate says so. Shared by every scan loop so the closed loop has one
+ * definition.
+ *
+ * Why the criterion is mandatory: Dispatch's `ready` gate refuses a ticket with
+ * zero criteria, so a draft without one can never be claimed — the loop could not
+ * close. With the repo's own test command as the check, the runner verifies the
+ * oracle mechanically in the delivery worktree (exit 0 ⇒ satisfied) instead of
+ * trusting the agent's word.
+ *
+ * Fail-soft on both writes: a ticket whose oracle could not be attached is never
+ * promoted (it would be refused, and a criterion-less ticket must not reach a paid
+ * delivery), and a policy refusal at promotion leaves the draft for a human. Each
+ * outcome is recorded as an event so the tick's decision is auditable.
+ */
+export function attachOracleAndPromote(
+  deps: IdleLoopDeps,
+  loop: string,
+  mode: IdleLoopMode,
+  repo: RepoConfig,
+  created: { ticketId: string; number: number },
+): "draft" | "ready" {
+  let oracleAttached = false;
+  try {
+    deps.dispatch.addAcceptanceCriterion({
+      ticketId: created.ticketId,
+      text: ORACLE_AC_TEXT,
+      ...(repo.test_command ? { checkCommand: repo.test_command } : {}),
+    });
+    oracleAttached = true;
+    deps.events.record("idle_ticket_oracle_attached", {
       loop,
       ticketId: created.ticketId,
-      number: created.number,
-      repoName: repo.name,
-      via: mode === "create_ready_tickets" ? "mode" : "self_improve",
+      checkCommand: repo.test_command ?? null,
     });
-    return { kind: "ready", draft };
+  } catch (err) {
+    deps.events.record("idle_ticket_oracle_failed", {
+      loop,
+      ticketId: created.ticketId,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
-  return { kind: "draft", draft };
+
+  const promote =
+    oracleAttached &&
+    (mode === "create_ready_tickets" ||
+      (mode === "create_draft_tickets" && (deps.selfImprove?.tryPromote(repo) ?? false)));
+  if (!promote) return "draft";
+
+  try {
+    deps.dispatch.markTicketReady(created.ticketId);
+  } catch (err) {
+    deps.events.record("idle_ticket_promote_failed", {
+      loop,
+      ticketId: created.ticketId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return "draft";
+  }
+  deps.events.record("idle_ticket_marked_ready", {
+    loop,
+    ticketId: created.ticketId,
+    number: created.number,
+    repoName: repo.name,
+    via: mode === "create_ready_tickets" ? "mode" : "self_improve",
+  });
+  return "ready";
 }
+
+/**
+ * The acceptance criterion every idle-scan draft carries. Behaviour-preserving by
+ * construction: the finding is a refactor / hygiene observation, so the only
+ * thing a delivery may change is structure. When the repo has a test command it
+ * doubles as the machine check.
+ */
+export const ORACLE_AC_TEXT =
+  "Behaviour-preserving: the repo's tests pass after the change exactly as before, " +
+  "with no public API or behaviour change (the finding is resolved by structure only).";
 
 /**
  * Build the terminal {@link IdleScanOutcome} from the per-finding results a loop

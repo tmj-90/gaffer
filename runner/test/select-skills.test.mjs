@@ -11,6 +11,9 @@ import {
   expandStacks,
   textMatches,
   relevanceTokens,
+  selectForRole,
+  ROLE_PROFILES,
+  ROLE_NAMES,
   DEFAULT_SKILLS_DIR,
 } from "../bin/select-skills.mjs";
 
@@ -693,4 +696,106 @@ if (failures.length) {
   for (const f of failures) console.error("  ✗ " + f);
   process.exit(1);
 }
+// --- ROLE profiles: every agent role gets its own set, not the delivery's ---------
+const libNames = new Set(loadSkills().map((s) => s.name));
+check("every ROLE_PROFILES core skill exists in the library (no dangling names)", () => {
+  for (const [role, p] of Object.entries(ROLE_PROFILES)) {
+    for (const n of p.core)
+      assert(libNames.has(n), `${role}: core skill "${n}" is not in the library`);
+  }
+});
+check("ROLE_NAMES covers every factory spawn site", () => {
+  for (const r of [
+    "delivery",
+    "review",
+    "clarify",
+    "test",
+    "plan",
+    "spec",
+    "product",
+    "merge",
+    "bootstrap",
+  ])
+    assert(ROLE_NAMES.includes(r), `missing role ${r}`);
+});
+check("delivery role == legacy selection (byte-identical set)", () => {
+  for (const q of [
+    { stacks: ["typescript-react"], text: "add a login form" },
+    { stacks: ["java"], area: "backend", text: "" },
+    { stacks: [], text: "add a Terraform module for the S3 bucket" },
+  ]) {
+    const legacy = new Set([...selectSkills(q).map((s) => s.name), ...ROLE_PROFILES.delivery.core]);
+    const role = new Set(selectForRole("delivery", q).map((s) => s.name));
+    eq([...role].sort(), [...legacy].sort(), `delivery parity for ${JSON.stringify(q)}`);
+  }
+});
+check("review role: procedure + lenses + the stack's conventions pack, never build skills", () => {
+  const names = selectForRole("review", { stacks: ["typescript-react"] }).map((s) => s.name);
+  for (const n of [
+    "review-ticket",
+    "adversarial-reviewer",
+    "record-evidence",
+    "typescript-conventions",
+    "security-authz",
+    "frontend-design",
+  ])
+    assert(names.includes(n), `review should mount ${n}`);
+  for (const n of [
+    "add-api-endpoint",
+    "backend-service",
+    "add-db-migration",
+    "create-branch",
+    "prepare-digest-delta",
+    "run-coverage",
+  ])
+    assert(!names.includes(n), `review must NOT mount ${n}`);
+  eq(names[0], "review-ticket", "the procedure comes first");
+});
+check("review role: a Java backend gets java-conventions and no frontend design bar", () => {
+  const names = selectForRole("review", { stacks: ["java"] }).map((s) => s.name);
+  assert(names.includes("java-conventions"), "java-conventions");
+  assert(!names.includes("typescript-conventions"), "no typescript pack for a java repo");
+  assert(!names.includes("frontend-design"), "no frontend design bar for a backend stack");
+});
+check("clarify role: intake + product-shaping, never the delivery mechanics", () => {
+  const names = selectForRole("clarify", { stacks: ["python"] }).map((s) => s.name);
+  for (const n of ["clarify", "user-story", "record-evidence", "python-conventions"])
+    assert(names.includes(n), n);
+  for (const n of ["run-tests", "create-branch", "prepare-digest-delta", "add-unit-test"])
+    assert(!names.includes(n), `clarify must NOT mount ${n}`);
+});
+check("merge role: the resolver's tools only", () => {
+  const names = selectForRole("merge", { stacks: ["go"] }).map((s) => s.name);
+  eq(
+    names.slice(0, 5),
+    ["resolve-merge-conflict", "run-tests", "run-lint", "record-evidence", "minimalism"],
+    "core order",
+  );
+  assert(
+    names.includes("go-conventions") && !names.includes("brand"),
+    "language pack yes, design packs no",
+  );
+});
+check("product role: proposes work; no code packs", () => {
+  const names = selectForRole("product", { stacks: ["typescript"] }).map((s) => s.name);
+  assert(names[0] === "product-owner" && names.includes("rice"), "product core");
+  assert(
+    !names.includes("typescript-conventions") && !names.includes("run-tests"),
+    "no code packs",
+  );
+});
+check("unknown role falls back to the delivery profile (never an empty mount)", () => {
+  const names = selectForRole("nope", { stacks: ["node"] }).map((s) => s.name);
+  assert(names.includes("run-tests") && names.includes("record-evidence"), "delivery core present");
+});
+check("roles never return duplicates", () => {
+  for (const r of ROLE_NAMES) {
+    const names = selectForRole(r, {
+      stacks: ["typescript-react-native"],
+      text: "seo audit terraform",
+    }).map((s) => s.name);
+    eq(names.length, new Set(names).size, `${r} has duplicates`);
+  }
+});
+
 console.log(`PASS — ${passed} checks passed (library: ${DEFAULT_SKILLS_DIR})`);

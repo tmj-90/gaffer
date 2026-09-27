@@ -54,3 +54,11 @@ Example — destructive op:
 > ```
 >
 > Caveman resume. Verify backup exist first.
+
+## How to apply
+
+- Switch on only when the operator or ticket asks for terse output; never for a review
+  verdict, an evidence summary, or a decision — those need full sentences a human reads.
+- Keep every identifier, path, command, error text and number exact; compress prose only.
+- Drop articles, filler and pleasantries; keep causality words ("because", "so", "unless").
+- Re-read once: if a sentence could be misread without the dropped words, restore them.

@@ -248,6 +248,229 @@ export function selectSkills({
   );
 }
 
+/**
+ * ROLE PROFILES — what each factory AGENT ROLE is handed. Skill selection used to be
+ * delivery-shaped only: the delivery agent got the stack/area/text selection plus the
+ * universal mechanics, while every other agent got a hard-coded list (the reviewer:
+ * five skills, never the stack's conventions pack or a security lens — even though
+ * review-ticket step 5 tells it to "review Java like Java" from a pack that was not
+ * mounted) or the whole library. A profile names the role's CORE (always mounted),
+ * its LENS areas (whole areas mounted regardless of stack) and whether the stack's
+ * language / surface packs and the text-relevant packs are added. Names that do not
+ * exist in the library are dropped silently, so a trimmed library is safe.
+ *
+ * The delivery profile reproduces today's selection byte-for-byte (core = the
+ * universal mechanics set skills-mount.sh also unions in; selection = skillMatches ||
+ * textMatches), so tick.sh's prompt is unchanged.
+ */
+export const ROLE_PROFILES = Object.freeze({
+  delivery: {
+    core: [
+      "run-tests",
+      "run-lint",
+      "run-coverage",
+      "minimalism",
+      "self-review",
+      "submit-review",
+      "record-evidence",
+      "create-branch",
+      "prepare-digest-delta",
+      "plan-change",
+    ],
+    lensAreas: [],
+    languagePacks: true,
+    surfacePacks: true,
+    textPacks: true,
+    deliverySelection: true,
+  },
+  review: {
+    // The reviewer judges; it never builds. It gets the review procedure, the review
+    // LENSES (security / performance / accessibility / test quality / API design), the
+    // quality bar it holds the diff to, and the conventions pack of the diff's stack.
+    core: [
+      "review-ticket",
+      "adversarial-reviewer",
+      "submit-review",
+      "record-evidence",
+      "engineering-craft",
+      "minimalism",
+    ],
+    lensAreas: ["review", "security"],
+    languagePacks: true,
+    surfacePacks: true,
+    textPacks: false,
+    deliverySelection: false,
+  },
+  clarify: {
+    // Intake: turn a vague draft into deliverable ACs; raise decisions. Product-shaping
+    // skills help it write good criteria; it never codes.
+    core: ["clarify", "record-evidence", "user-story", "prd"],
+    lensAreas: ["security"],
+    languagePacks: true,
+    surfacePacks: false,
+    textPacks: false,
+    deliverySelection: false,
+  },
+  test: {
+    // The independent tester writes tests from the contract — never from the diff.
+    core: [
+      "black-box-test",
+      "run-tests",
+      "add-integration-test",
+      "e2e-browser-test",
+      "contract-test",
+      "test-fixtures-and-factories",
+      "record-evidence",
+    ],
+    lensAreas: ["testing"],
+    languagePacks: true,
+    surfacePacks: false,
+    textPacks: false,
+    deliverySelection: false,
+  },
+  plan: {
+    // Decomposition: a brief → an epic of tickets. Planning + product-shaping packs, the
+    // stack's conventions (so tickets are phrased in the repo's terms) and the design
+    // packs it may need to size UI / data work.
+    core: [
+      "plan-build",
+      "spec-author",
+      "user-story",
+      "rice",
+      "prd",
+      "product-discovery",
+      "database-schema-designer",
+      "api-design-reviewer",
+      "design-system",
+      "write-adr",
+    ],
+    lensAreas: ["planning"],
+    languagePacks: true,
+    surfacePacks: true,
+    textPacks: true,
+    deliverySelection: false,
+  },
+  spec: {
+    core: ["spec-author", "prd", "user-story", "product-discovery", "write-adr"],
+    lensAreas: ["planning"],
+    languagePacks: false,
+    surfacePacks: false,
+    textPacks: false,
+    deliverySelection: false,
+  },
+  product: {
+    core: ["product-owner", "prd", "rice", "user-story", "product-discovery", "brand", "page-cro"],
+    lensAreas: ["product"],
+    languagePacks: false,
+    surfacePacks: false,
+    textPacks: true,
+    deliverySelection: false,
+  },
+  merge: {
+    core: ["resolve-merge-conflict", "run-tests", "run-lint", "record-evidence", "minimalism"],
+    lensAreas: [],
+    languagePacks: true,
+    surfacePacks: false,
+    textPacks: false,
+    deliverySelection: false,
+  },
+  bootstrap: {
+    core: [
+      "create-branch",
+      "record-evidence",
+      "minimalism",
+      "run-tests",
+      "run-lint",
+      "ci-cd-pipeline",
+      "docker-development",
+      "shell-scripting",
+    ],
+    lensAreas: ["quality"],
+    languagePacks: true,
+    surfacePacks: true,
+    textPacks: true,
+    deliverySelection: true,
+  },
+});
+
+export const ROLE_NAMES = Object.freeze(Object.keys(ROLE_PROFILES));
+
+/** Stack tokens that mark a web / mobile SURFACE, used to add the design-bar packs. */
+const WEB_STACKS = new Set([
+  "react",
+  "web",
+  "next",
+  "nextjs",
+  "vue",
+  "svelte",
+  "angular",
+  "html",
+  "css",
+]);
+const MOBILE_STACKS = new Set([
+  "react-native",
+  "native",
+  "expo",
+  "ios",
+  "android",
+  "swift",
+  "kotlin",
+]);
+
+/**
+ * Select the skills for an agent ROLE. Returns the ordered, de-duplicated list of
+ * skill descriptors: core first, then lens areas, then the stack's packs, then the
+ * text-relevant packs. Unknown role → the delivery profile (never an empty mount).
+ */
+export function selectForRole(
+  role,
+  { skillsDir = DEFAULT_SKILLS_DIR, stacks = [], area = "", text = "" } = {},
+) {
+  const profile = ROLE_PROFILES[role] ?? ROLE_PROFILES.delivery;
+  const library = loadSkills(skillsDir);
+  const byName = new Map(library.map((s) => [s.name, s]));
+  const expanded = expandStacks(stacks);
+  const out = [];
+  const seen = new Set();
+  const push = (skill) => {
+    if (!skill || seen.has(skill.name)) return;
+    seen.add(skill.name);
+    out.push(skill);
+  };
+  for (const name of profile.core) push(byName.get(name));
+  for (const skill of library) {
+    if (profile.lensAreas.includes(skill.area)) push(skill);
+  }
+  if (profile.languagePacks) {
+    // The stack's LANGUAGE pack(s): stack-tagged language skills whose tags intersect.
+    for (const skill of library) {
+      if (skill.area === "language" && skill.stack.some((t) => expanded.includes(t))) push(skill);
+    }
+  }
+  if (profile.surfacePacks) {
+    // The stack's SURFACE packs: the frontend / mobile design bar when the stack is one.
+    const isWeb = expanded.some((t) => WEB_STACKS.has(t));
+    const isMobile = expanded.some((t) => MOBILE_STACKS.has(t));
+    for (const skill of library) {
+      if (skill.area === "frontend" && (isWeb || skill.stack.some((t) => expanded.includes(t))))
+        push(skill);
+      if (skill.area === "mobile" && (isMobile || skill.stack.some((t) => expanded.includes(t))))
+        push(skill);
+    }
+  }
+  if (profile.deliverySelection) {
+    for (const skill of library) {
+      if (skillMatches(skill, { stacks: expanded, area })) push(skill);
+    }
+  }
+  if (profile.textPacks && text) {
+    for (const skill of library) {
+      if (textMatches(skill, text)) push(skill);
+    }
+  }
+  return out;
+}
+
 /** Distinct area packs present in the library, sorted. */
 export function listAreas(skillsDir = DEFAULT_SKILLS_DIR) {
   const areas = new Set();
@@ -265,6 +488,7 @@ function parseArgs(argv) {
     skillsDir: DEFAULT_SKILLS_DIR,
     json: false,
     listAreas: false,
+    role: "",
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -288,6 +512,9 @@ function parseArgs(argv) {
       case "--list-areas":
         opts.listAreas = true;
         break;
+      case "--role":
+        opts.role = (next() ?? "").trim();
+        break;
       default:
         break;
     }
@@ -296,13 +523,15 @@ function parseArgs(argv) {
 }
 
 // CLI: print selected skill names (comma-separated) or JSON. Used by tick.sh to
-// inject stack/area-recommended skills into the delivery prompt.
+// inject stack/area-recommended skills into the delivery prompt, and — with --role —
+// by every other agent spawn site (review, clarify, test, plan, spec, product, merge,
+// bootstrap) to mount the role's skill set instead of a hard-coded list.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.listAreas) {
     process.stdout.write(listAreas(opts.skillsDir).join("\n") + "\n");
   } else {
-    const selected = selectSkills(opts);
+    const selected = opts.role ? selectForRole(opts.role, opts) : selectSkills(opts);
     if (opts.json) {
       process.stdout.write(
         JSON.stringify({ ok: true, count: selected.length, skills: selected }) + "\n",

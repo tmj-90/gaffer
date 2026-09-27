@@ -88,7 +88,14 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
         _gaffer_locked .skip.lock _gaffer_append_line "$CLARIFIED_FILE" "$CNUM"
         result no_work; exit 0
       fi
-      gaffer_install_agent_dir "$CWT" "clarify, record-evidence" "clarify-$CNUM" \
+      # The CLARIFY ROLE's skill set (select-skills --role clarify): the intake
+      # procedure, the product-shaping packs that make good acceptance criteria
+      # (user-story, prd), the security lenses, and the stack's conventions pack — not
+      # the delivery mechanics (a clarify pass never branches, tests or prepares a digest).
+      CSTACK="$(echo "$CSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
+      CSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role clarify --stack "$CSTACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+      [ -n "$CSKILLS" ] || CSKILLS="clarify, record-evidence"
+      GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$CWT" "$CSKILLS" "clarify-$CNUM" \
         || { log "SAFETY: clarify agent env install failed for #$CNUM — refusing live clarify (fail closed)"; result error; exit 1; }
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live clarify (fail closed)"; result error; exit 1; }

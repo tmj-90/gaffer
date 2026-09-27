@@ -94,12 +94,24 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
         log "REVIEW-ERROR: failed to create review worktree for branch '$RBRANCH' in $RREPO — refusing review of #$RNUM (fail closed; branch may be missing or corrupt)"
         result error; exit 1
       fi
-      # Mount only the review-relevant + universal skill subset (not all ~66).
+      # Mount the REVIEW ROLE's skill set (select-skills --role review): the review
+      # procedure, the review lenses (security / performance / accessibility / test
+      # quality / API design), the quality bar, and the conventions pack of the diff's
+      # stack — so "review Java like Java" (review-ticket step 5) is actually possible.
+      # Before this the reviewer got a fixed five and never saw a language pack or a
+      # security lens. The delivery mechanics (universal set) are NOT unioned in: a
+      # reviewer neither branches nor prepares a digest delta.
       # Skills mount + verified settings.json + workspace trust + the brief, through the
       # ONE shared installer (lib/agent-env.sh) every spawn site uses; any failure
       # refuses the live review (fail closed) — the same posture as the delivery site.
-      gaffer_install_agent_dir "$WT" "review-ticket, adversarial-reviewer, self-review, submit-review, record-evidence" "review-$RNUM" \
+      RSTACK="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
+      RSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role review --stack "$RSTACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+      [ -n "$RSKILLS" ] || RSKILLS="review-ticket, adversarial-reviewer, submit-review, record-evidence"
+      GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$WT" "$RSKILLS" "review-$RNUM" \
         || { log "SAFETY: reviewer agent env install failed for #$RNUM — refusing live review (fail closed)"; result error; exit 1; }
+      # The lenses the reviewer must apply, named in the prompt (everything mounted that
+      # is not the core procedure): the stack pack + the review/security lenses.
+      _RLENSES="$(printf '%s' "$RSKILLS" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vE '^(review-ticket|adversarial-reviewer|submit-review|record-evidence)$' | paste -sd, - | sed 's/,/, /g')"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
@@ -147,7 +159,10 @@ $QUARANTINE_NOTICE
 Use the review-ticket skill to review in_review ticket #$RNUM: call get_ticket (dispatch)
 for its acceptance criteria and recorded evidence; inspect the delivered change with
 \`git diff $RDEFAULT...HEAD\` in $WT; judge whether each AC is genuinely met and the
-change is sound (tests, scope, quality). Then RECORD YOUR VERDICT as evidence via the
+change is sound (tests, scope, quality). Review the diff in its own stack's terms and
+through the review lenses mounted for you — open the ones that apply to this diff and use
+their checklists: ${_RLENSES:-the stack's conventions pack}. A lens finding counts only when
+it is a CONCRETE defect under the bar below. Then RECORD YOUR VERDICT as evidence via the
 dispatch MCP record_ac_evidence (one entry per AC: PASS/FAIL + the specific reasoning),
 and finish with a one-line overall recommendation. Apply THIS BAR EXACTLY — never raise it:
 say "RECOMMEND APPROVE" when (a) every acceptance criterion is met in the diff, (b) the DoD

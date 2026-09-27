@@ -56,6 +56,14 @@ steps and the diff you can see.
    idiomatic standards and the repo's lore. A diff that compiles but violates its stack's
    conventions (an unguarded `Optional.get()`, a swallowed Go `error`, a bare `except`, a
    floating promise, a template-looking UI) is grounds to RECOMMEND CHANGES.
+   **Apply the review lenses mounted for you.** The runner mounts the lens packs beside
+   this skill — `security-review`, `performance-review`, `accessibility-review`,
+   `test-quality-review`, `migration-review` — each a checklist for one class of defect
+   the author cannot see. Open the ones the diff calls for (any diff: test quality; auth,
+   input, files, outbound calls: security; data access or loops: performance; UI:
+   accessibility; a migrations directory or schema change: migration) and walk their
+   checklists against the code. A lens finding counts only when it is a concrete defect
+   under the bar in the prompt; lens notes are listed "(optional)".
 6. **Record your verdict via the MCP (advisory).** For each AC, record a finding with
    `record_ac_evidence` (Dispatch MCP): PASS/FAIL plus the specific reasoning. Then finish
    your message with ONE overall recommendation line:

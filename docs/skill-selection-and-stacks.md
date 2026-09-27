@@ -70,6 +70,44 @@ those belong to different kinds of work and are pulled in explicitly via
 
 ---
 
+## 1b. Role profiles — what each AGENT is handed
+
+Selection used to be delivery-shaped only. The delivery agent got the stack/area/text
+selection plus the universal mechanics; every other agent got a hard-coded list (the
+reviewer: five skills, never the stack's conventions pack or a security lens, even
+though `review-ticket` tells it to "review Java like Java") or the whole library.
+
+`select-skills.mjs --role <role>` now selects per role (`ROLE_PROFILES`):
+
+| Role | Core (always) | Lens areas | Stack packs | Text packs |
+| --- | --- | --- | --- | --- |
+| `delivery` | the universal mechanics (`run-tests`, `run-lint`, `run-coverage`, `minimalism`, `self-review`, `submit-review`, `record-evidence`, `create-branch`, `prepare-digest-delta`, `plan-change`) | — (the legacy stack/area selection, byte-identical) | language + surface | yes |
+| `review` | `review-ticket`, `adversarial-reviewer`, `submit-review`, `record-evidence`, `engineering-craft`, `minimalism` | `review` (the lenses: `security-review`, `performance-review`, `accessibility-review`, `test-quality-review`, `migration-review`, `api-design-reviewer`), `security` | language + surface | no |
+| `clarify` | `clarify`, `record-evidence`, `user-story`, `prd` | `security` | language | no |
+| `test` | `black-box-test`, `run-tests`, `add-integration-test`, `e2e-browser-test`, `contract-test`, `test-fixtures-and-factories`, `record-evidence` | `testing` | language | no |
+| `plan` | `plan-build`, `spec-author`, `user-story`, `rice`, `prd`, `product-discovery`, `database-schema-designer`, `api-design-reviewer`, `design-system`, `write-adr` | `planning` | language + surface | yes |
+| `spec` | `spec-author`, `prd`, `user-story`, `product-discovery`, `write-adr` | `planning` | — | no |
+| `product` | `product-owner`, `prd`, `rice`, `user-story`, `product-discovery`, `brand`, `page-cro` | `product` | — | yes |
+| `merge` | `resolve-merge-conflict`, `run-tests`, `run-lint`, `record-evidence`, `minimalism` | — | language | no |
+| `bootstrap` | `create-branch`, `record-evidence`, `minimalism`, `run-tests`, `run-lint`, `ci-cd-pipeline`, `docker-development`, `shell-scripting` | `quality` | language + surface | yes |
+
+"Language packs" are the `area: language` skills whose `stack` tags intersect the
+repo's stack (`typescript-conventions` for a TS repo, `java-conventions` for Java…).
+"Surface packs" are the `frontend` / `mobile` packs, added when the stack is a web or
+mobile one. Names a profile lists that are not in the library are dropped silently, so
+a trimmed library is safe. `review.sh` and `clarify.sh` mount their role's set (without
+the delivery mechanics) and the reviewer's prompt names the lenses mounted for it.
+
+### The lint gate
+
+`runner/test/skills-lint.test.mjs` is the quality gate every `SKILL.md` must pass:
+frontmatter (`name` = directory, trigger-phrased one-line `description`, `stack` list,
+`area` in the buckets above), body shape (H1, ≥ 2 sections, a procedure, ≥ 220 words),
+every backticked MCP-tool-shaped token names a real dispatch/memory tool, every
+"`x` skill" cross-reference exists, no duplicate names or descriptions, and every role
+profile's core skills exist. It exists because a skill once named a tool that does not
+exist (`attach_delivery_evidence`) and every delivery that followed it silently failed.
+
 ## 2. Future direction: `stack` should become structured
 
 ### Today's hack

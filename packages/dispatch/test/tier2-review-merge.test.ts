@@ -182,6 +182,36 @@ describe("reviewer evidence (no claim token, GAFFER_REVIEW_TICKET)", () => {
   });
 });
 
+describe("tester evidence (no claim token) on an in_testing ticket", () => {
+  it("accepts a claimless non-human note for the in_testing ticket named by reviewOf, never satisfying an AC", () => {
+    const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner, {
+      testingEnabled: true,
+    });
+    const { ticketId, acId } = inReview(wg);
+    wg.setTestable(ticketId, true, human);
+    expect(wg.approveReview(ticketId, reviewer).ticket.status).toBe("in_testing");
+    const res = wg.recordEvidence(
+      {
+        reviewOf: ticketId,
+        ticket_id: ticketId,
+        ac_id: acId,
+        evidence_type: "manual_note",
+        summary: "black-box: AC1 demonstrated",
+      },
+      { type: "agent", id: "agent-tester" },
+    );
+    expect(res.evidenceId).toBeTruthy();
+    // Still refused without reviewOf, and never flips the AC from the tester's note alone.
+    expect(() =>
+      wg.recordEvidence(
+        { ticket_id: ticketId, evidence_type: "manual_note", summary: "x" },
+        { type: "agent", id: "agent-tester" },
+      ),
+    ).toThrow(DispatchError);
+    wg.db.close();
+  });
+});
+
 describe("MCP handlers: reviewer + default-repo env", () => {
   const saved = {
     review: process.env.GAFFER_REVIEW_TICKET,

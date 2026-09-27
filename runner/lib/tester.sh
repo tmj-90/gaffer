@@ -1,0 +1,35 @@
+# Gaffer INDEPENDENT TESTER pass — the testing analog of lib/review.sh. Sourced by
+# tick.sh; runs at the end-of-tick flow after the agent review pass. When the
+# GAFFER_TESTING lane is on, a ticket the review gate routed to `in_testing` is
+# handed to the independent black-box tester agent (bin/tester-run.mjs --live), which
+# tests it from the contract + acceptance criteria only and records PASS
+# (→ ready_for_merge) or FAIL (→ refining) through the dispatch seam. A ticket the
+# tester cannot decide (no verdict token, spawn failure) is HELD in_testing for a
+# human and skipped for the rest of this run — never passed, never failed on silence.
+# It relies on tick.sh runtime globals (log, wg, jget, result, GAFFER_DATA, …).
+# shellcheck shell=bash
+# shellcheck disable=SC2154  # globals provided by tick.sh at call time
+
+_gaffer_tester_pass() {
+  case "${GAFFER_TESTING:-0}" in 1|true|yes|on) ;; *) return 0 ;; esac
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  TESTED_FILE="$GAFFER_DATA/.tested-tickets"; touch "$TESTED_FILE"
+  TJSON="$(wg ticket list -s in_testing 2>/dev/null || echo '[]')"
+  TNUM="$(echo "$TJSON" | gaffer_json pick-unskipped "$TESTED_FILE" 2>/dev/null)"
+  [ -n "$TNUM" ] || return 0
+  [ -f "$RUNNER_DIR/bin/tester-run.mjs" ] || { log "TESTER: bin/tester-run.mjs missing — cannot run the tester lane"; return 0; }
+  log "TESTER: independent black-box tester for in_testing #$TNUM (lane on)"
+  _T_OUT="$(GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
+    node "$RUNNER_DIR/bin/tester-run.mjs" --ticket "$TNUM" --live 2>>"$GAFFER_DATA/tester.log")"; _trc=$?
+  _T_PHASE="$(printf '%s' "$_T_OUT" | jget 'd.phase || ""' 2>/dev/null || echo '')"
+  _T_VERDICT="$(printf '%s' "$_T_OUT" | jget 'd.verdict || ""' 2>/dev/null || echo '')"
+  _T_BRANCH="$(printf '%s' "$_T_OUT" | jget 'd.testsBranch || ""' 2>/dev/null || echo '')"
+  case "$_T_PHASE" in
+    verdict) log "TESTER: #$TNUM verdict=${_T_VERDICT} recorded${_T_BRANCH:+ (tests kept on $_T_BRANCH)} → $(wg ticket show "$TNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '?')" ;;
+    held)    log "TESTER: #$TNUM HELD in_testing — the tester produced no verdict token (rc=$_trc); a human decides${_T_BRANCH:+ (tests kept on $_T_BRANCH)}" ;;
+    *)       log "TESTER: #$TNUM tester did not run cleanly (rc=$_trc, phase=${_T_PHASE:-none}) — left in_testing for a human; see tester.log" ;;
+  esac
+  # One attempt per ticket per run: a held or errored ticket is not re-spun every tick.
+  _gaffer_locked .skip.lock _gaffer_append_line "$TESTED_FILE" "$TNUM"
+  result tested; exit 0
+}

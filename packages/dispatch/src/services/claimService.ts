@@ -103,10 +103,10 @@ export interface ClaimResult {
 export interface RecordEvidenceInput {
   claimToken?: string | undefined;
   /**
-   * REVIEWER PATH: the ticket (id or number) this MCP server was mounted to REVIEW
-   * (the runner sets GAFFER_REVIEW_TICKET in the reviewer's env). A matching
-   * in_review ticket accepts review notes from a non-human actor without a claim;
-   * such a note never flips an AC to satisfied.
+   * REVIEWER / TESTER PATH: the ticket (id or number) this MCP server was mounted to
+   * REVIEW or TEST (the runner sets GAFFER_REVIEW_TICKET in that agent's env). A
+   * matching in_review or in_testing ticket accepts notes from a non-human actor
+   * without a claim; such a note never flips an AC to satisfied.
    */
   reviewOf?: string | undefined;
   ticket_id: string;
@@ -512,11 +512,13 @@ export class ClaimService {
       // REVIEWER PATH: the reviewer agent holds no claim (the delivery claim was
       // completed at submit) yet must record one note per AC. It may do so for the
       // in_review ticket it was mounted to review — and only annotate, never satisfy.
+      // The same path serves the independent TESTER lane: a ticket in `in_testing` is
+      // being judged from the outside by a non-author agent that holds no claim.
       const isReview =
         !claimToken &&
         actor.type !== "human" &&
         reviewOf !== undefined &&
-        ticket.status === "in_review" &&
+        (ticket.status === "in_review" || ticket.status === "in_testing") &&
         (reviewOf === ticket.id || reviewOf === String(ticket.number));
 
       // A human actor may record manual evidence with no claim token; everyone

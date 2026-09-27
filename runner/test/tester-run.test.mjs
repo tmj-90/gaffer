@@ -270,6 +270,159 @@ console.log("== AC9: a JSON-argv verdict command survives a path with spaces =="
     fail(`spaced-path verdict wrong (code=${code}, out=${JSON.stringify(out)}, log=${logged})`);
 }
 
+// ── AC10–AC12: --live runs the INDEPENDENT tester agent lane end to end (stub claude) ──
+console.log(
+  "== AC10: --live spawns the tester in a worktree of the delivery branch and records PASS ==",
+);
+const LIVE = (() => {
+  // Repo with a delivery branch; the ticket's ticket_repos row points at it.
+  const repo = resolve(WORKDIR, "live-repo");
+  const g = (...a) => spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" });
+  require("node:fs").mkdirSync(resolve(repo, "src"), { recursive: true });
+  spawnSync("git", ["init", "-q", "-b", "main", repo]);
+  g("config", "user.email", "t@t");
+  g("config", "user.name", "t");
+  writeFileSync(
+    resolve(repo, "package.json"),
+    '{"name":"live","type":"module","scripts":{"test":"node --test"}}\n',
+  );
+  writeFileSync(resolve(repo, "src", "w.js"), "export const w = 1;\n");
+  g("add", "-A");
+  g("commit", "-q", "-m", "base");
+  g("checkout", "-q", "-b", "gaffer/ticket-1-widgets");
+  writeFileSync(resolve(repo, "src", "w.js"), "export const w = 2;\n");
+  g("commit", "-q", "-am", "feat: widgets");
+  g("checkout", "-q", "main");
+  const deliverySha = g("rev-parse", "gaffer/ticket-1-widgets").stdout.trim();
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(DB_PATH);
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, local_path TEXT, default_branch TEXT NOT NULL DEFAULT 'main', stack TEXT);" +
+      "CREATE TABLE IF NOT EXISTS ticket_repos (ticket_id TEXT, repo_id TEXT, role TEXT DEFAULT 'primary', branch_name TEXT, access TEXT DEFAULT 'write');",
+  );
+  db.prepare(
+    "INSERT INTO repositories (id,name,local_path,default_branch,stack) VALUES (?,?,?,?,?)",
+  ).run("r1", "live", repo, "main", "typescript-node");
+  db.prepare(
+    "INSERT INTO ticket_repos (ticket_id,repo_id,role,branch_name,access) VALUES (?,?,?,?,?)",
+  ).run("t1", "r1", "primary", "gaffer/ticket-1-widgets", "write");
+  db.close();
+  // Stub claude: captures its prompt + cwd, writes a black-box test into the worktree,
+  // prints a claude JSON envelope whose result ends with the verdict token named by
+  // the TESTER_STUB_VERDICT env (PASS | FAIL | none).
+  const stub = resolve(WORKDIR, "claude-stub.sh");
+  const capture = resolve(WORKDIR, "tester-capture.json");
+  writeFileSync(
+    stub,
+    "#!/usr/bin/env bash\nset -uo pipefail\n" +
+      'prompt=""; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done\n' +
+      `node -e 'const fs=require("node:fs");fs.writeFileSync(process.argv[1],JSON.stringify({cwd:process.cwd(),prompt:process.argv[2],skills:fs.existsSync(".claude/skills")?fs.readdirSync(".claude/skills").sort():null,settings:fs.existsSync(".claude/settings.json"),brief:fs.existsSync("CLAUDE.factory.md")}))' ${JSON.stringify(capture)} "$prompt"\n` +
+      'mkdir -p test && printf \'import test from "node:test"; import assert from "node:assert/strict"; import { w } from "../src/w.js"; test("bb", () => assert.equal(w, 2));\\n\' > test/bb.test.js\n' +
+      'case "${TESTER_STUB_VERDICT:-PASS}" in\n' +
+      '  PASS) printf \'{"type":"result","subtype":"success","is_error":false,"result":"PASS: every AC demonstrated\\\\n{\\\\"verdict\\\\":\\\\"PASS\\\\"}","total_cost_usd":0.01,"num_turns":3}\\n\' ;;\n' +
+      '  FAIL) printf \'{"type":"result","subtype":"success","is_error":false,"result":"FAIL: AC1 POST /api/widgets returned 500, expected 201\\\\n{\\\\"verdict\\\\":\\\\"FAIL\\\\"}","total_cost_usd":0.01,"num_turns":3}\\n\' ;;\n' +
+      '  *) printf \'{"type":"result","subtype":"success","is_error":false,"result":"I think it passes.","total_cost_usd":0.01,"num_turns":1}\\n\' ;;\n' +
+      "esac\n",
+  );
+  chmodSync(stub, 0o755);
+  const verdictStub = resolve(WORKDIR, "verdict-stub.mjs");
+  writeFileSync(
+    verdictStub,
+    "#!/usr/bin/env node\nimport { appendFileSync } from 'node:fs';\n" +
+      `appendFileSync(${JSON.stringify(STUB_LOG)}, JSON.stringify(process.argv.slice(2)) + '\\n');\nprocess.exit(0);\n`,
+  );
+  const data = resolve(WORKDIR, "data");
+  require("node:fs").mkdirSync(data, { recursive: true });
+  return { repo, g, deliverySha, stub, capture, verdictStub, data };
+})();
+function runLive(verdictMode) {
+  if (existsSync(STUB_LOG)) rmSync(STUB_LOG);
+  if (existsSync(LIVE.capture)) rmSync(LIVE.capture);
+  const { code, out } = runCli(["--ticket", "1", "--live"], {
+    GAFFER_DATA: LIVE.data,
+    CLAUDE_BIN: LIVE.stub,
+    CLAUDE_FLAGS: "",
+    TESTER_STUB_VERDICT: verdictMode,
+    DISPATCH_TESTER_VERDICT_CMD: JSON.stringify([process.execPath, LIVE.verdictStub]),
+  });
+  const logged = existsSync(STUB_LOG) ? readFileSync(STUB_LOG, "utf8").trim() : "";
+  const cap = existsSync(LIVE.capture) ? JSON.parse(readFileSync(LIVE.capture, "utf8")) : null;
+  return { code, out, logged, cap };
+}
+{
+  const { code, out, logged, cap } = runLive("PASS");
+  if (code === 0 && out && out.phase === "verdict" && out.verdict === "pass")
+    ok("PASS verdict recorded (phase=verdict, exit 0)");
+  else fail(`live PASS wrong (code=${code}, out=${JSON.stringify(out)})`);
+  logged.includes('"pass"') && logged.includes('"1"')
+    ? ok("verdict seam invoked with (1, pass, summary)")
+    : fail(`seam log: ${logged}`);
+  cap && cap.cwd.includes(`worktrees${require("node:path").sep}tester-1`)
+    ? ok("tester ran in the throwaway worktree of the delivery branch")
+    : fail(`cwd: ${cap && cap.cwd}`);
+  cap && !cap.prompt.includes(IMPL_SENTINEL) && !cap.prompt.includes(PR_SENTINEL)
+    ? ok("prompt carries no implementation pointer (branch/pr sentinels absent)")
+    : fail("prompt leaked an implementation pointer");
+  cap &&
+  /black-box-test skill/.test(cap.prompt) &&
+  /"verdict":"PASS"/.test(cap.prompt) &&
+  /POST \/api\/widgets returns 201/.test(cap.prompt)
+    ? ok("prompt names the skill, the verdict token and the ACs")
+    : fail(`prompt content wrong: ${cap && cap.prompt.slice(0, 200)}`);
+  cap &&
+  Array.isArray(cap.skills) &&
+  cap.skills.includes("black-box-test") &&
+  cap.skills.includes("typescript-conventions") &&
+  !cap.skills.includes("add-api-endpoint")
+    ? ok("test-role skills mounted (black-box-test + the stack's conventions pack, no build packs)")
+    : fail(`skills mounted: ${cap && JSON.stringify(cap.skills)}`);
+  cap && cap.settings && cap.brief
+    ? ok("settings.json (safety hook) + CLAUDE.factory.md installed in the worktree")
+    : fail("agent wiring missing");
+  LIVE.g("rev-parse", "gaffer/ticket-1-widgets").stdout.trim() === LIVE.deliverySha
+    ? ok("the reviewed delivery branch is untouched")
+    : fail("delivery branch moved");
+  const testsSha = LIVE.g("rev-parse", "--verify", "gaffer/ticket-1-tests").status;
+  testsSha === 0 && LIVE.g("show", "gaffer/ticket-1-tests:test/bb.test.js").status === 0
+    ? ok("the tester's tests are kept on gaffer/ticket-1-tests")
+    : fail("tests branch missing or without the test file");
+  out && out.testsBranch === "gaffer/ticket-1-tests"
+    ? ok("emitted JSON names the tests branch")
+    : fail(`testsBranch: ${out && out.testsBranch}`);
+  !existsSync(resolve(LIVE.data, "worktrees", "tester-1"))
+    ? ok("tester worktree removed")
+    : fail("worktree left behind");
+  !existsSync(resolve(LIVE.data, "mcp-tester-1.json"))
+    ? ok("scoped MCP runtime removed after the run")
+    : fail("mcp runtime left behind");
+  const ledger = resolve(LIVE.data, "usage-ledger.jsonl");
+  existsSync(ledger) && readFileSync(ledger, "utf8").includes('"kind":"tester"')
+    ? ok("usage ledgered as kind=tester")
+    : fail("no tester ledger row");
+}
+console.log("== AC11: --live records FAIL when the tester's token says so ==");
+{
+  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  const { code, out, logged } = runLive("FAIL");
+  code === 0 && out && out.verdict === "fail"
+    ? ok("FAIL verdict recorded")
+    : fail(`live FAIL wrong (code=${code}, out=${JSON.stringify(out)})`);
+  logged.includes('"fail"') && /returned 500/.test(logged)
+    ? ok("seam got fail + the tester's summary line")
+    : fail(`seam log: ${logged}`);
+}
+console.log("== AC12: no verdict token → HELD (exit 2), nothing recorded ==");
+{
+  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  const { code, out, logged } = runLive("NONE");
+  code === 2 && out && out.phase === "held"
+    ? ok("no token → phase=held, exit 2")
+    : fail(`held wrong (code=${code}, out=${JSON.stringify(out)})`);
+  logged === ""
+    ? ok("no verdict recorded on silence (never a pass)")
+    : fail(`seam was invoked: ${logged}`);
+}
+
 rmSync(WORKDIR, { recursive: true, force: true });
 
 console.log("");

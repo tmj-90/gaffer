@@ -200,16 +200,22 @@ export function resolveTicket(dbPath, number) {
     // The write-access execution repo this ticket delivers into. Prefer access='write'
     // (the WG-002 boundary), falling back to the legacy role='primary' so older rows
     // still resolve. tr.branch_name is the per-repo delivery branch.
-    const repoRow = db
-      .prepare(
-        "SELECT r.name AS name, r.local_path AS localPath, " +
-          "r.default_branch AS defaultBranch, tr.branch_name AS repoBranch " +
-          "FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id " +
-          "WHERE tr.ticket_id = ? " +
-          "ORDER BY (tr.access = 'write') DESC, (tr.role = 'primary') DESC " +
-          "LIMIT 1",
-      )
-      .get(ticket.id);
+    const repoSql = (withStack) =>
+      "SELECT r.name AS name, r.local_path AS localPath, " +
+      "r.default_branch AS defaultBranch, " +
+      (withStack ? "r.stack AS stack, " : "") +
+      "tr.branch_name AS repoBranch " +
+      "FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id " +
+      "WHERE tr.ticket_id = ? " +
+      "ORDER BY (tr.access = 'write') DESC, (tr.role = 'primary') DESC " +
+      "LIMIT 1";
+    let repoRow;
+    try {
+      repoRow = db.prepare(repoSql(true)).get(ticket.id);
+    } catch {
+      // An older schema (or a minimal test fixture) without repositories.stack.
+      repoRow = db.prepare(repoSql(false)).get(ticket.id);
+    }
     if (!repoRow || !repoRow.localPath) return null;
 
     const branch = String(repoRow.repoBranch || ticket.branchName || "").trim();
@@ -222,6 +228,7 @@ export function resolveTicket(dbPath, number) {
         name: String(repoRow.name || ""),
         localPath: String(repoRow.localPath),
         defaultBranch: String(repoRow.defaultBranch || "main"),
+        stack: repoRow.stack ? String(repoRow.stack) : "",
       },
       branch,
     };

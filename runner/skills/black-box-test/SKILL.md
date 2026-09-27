@@ -7,12 +7,13 @@ area: testing
 
 # Test another agent's ticket — independently, from the contract only
 
-> **Status (BBT-001).** This branch adds the control-plane lane, the test contract, and
-> the runner SEAM for independent black-box testing — the `in_testing` status, the
-> `can_be_tested` gate, the transitions, and the contract-only context assembly (proven
-> to omit the diff). The live `claude -p` tester that consumes this skill end-to-end is a
-> documented follow-up. The lane + seam are what ships now; this skill is the contract the
-> live tester will be held to.
+> **How you are run.** The runner's tester lane (`runner/lib/tester.sh` →
+> `bin/tester-run.mjs --live`) checks the delivered code out in a throwaway worktree —
+> your single write root — mounts this skill and the testing packs for the repo's stack,
+> scopes a dispatch MCP server to the ticket (so `record_ac_evidence` accepts your notes
+> without a claim), and reads your verdict from the machine token on your LAST line. Your
+> tests are kept on a `gaffer/ticket-<n>-tests` branch; the reviewed delivery branch is
+> never rewritten.
 
 You are the independent tester. An implementing agent delivered a ticket; a human (or
 the autonomy gate) approved its review and routed it into the testing lane. Your job is
@@ -125,12 +126,18 @@ EXTEND the existing suite:
 6. **Assert against the acceptance criteria.** For each AC, write a test that demonstrates
    it from the outside. An AC you cannot demonstrate with a black-box test is a FAIL, not
    a charitable pass.
-7. **Record the verdict via the MCP.**
-   - **PASS** — only when every acceptance criterion is demonstrated by a passing
-     black-box test. Record it; the ticket moves to `ready_for_merge`.
-   - **FAIL: <specific, actionable detail>** — when any AC is not demonstrated or a test
-     fails. Name the AC, the surface, and the observed-vs-expected behaviour. The failing
-     test is the evidence; the ticket returns to `refining`.
+7. **Record your findings, then emit the verdict token.** Record one short note per AC
+   via the dispatch MCP `record_ac_evidence` (evidence_type `manual_note`; you hold no
+   claim — the runner scoped the server to this ticket). Commit your tests on the current
+   branch. Print a one-line summary starting with `PASS:` or `FAIL:`, then as your VERY
+   LAST line of output — on its own, nothing after it — EXACTLY one of:
+   - `{"verdict":"PASS"}` — only when every acceptance criterion is demonstrated by a
+     passing black-box test. The runner records it; the ticket moves to `ready_for_merge`.
+   - `{"verdict":"FAIL"}` — when any AC is not demonstrated or a test fails. Your summary
+     names the AC, the surface, and the observed-vs-expected behaviour; the failing test
+     is the evidence. The runner records it; the ticket returns to `refining`.
+   The runner reads ONLY that final token; prose that mentions PASS or FAIL never moves
+   the lane. No token means the ticket is HELD for a human — never a pass.
 8. **Default to FAIL when in doubt.** A borderline ticket — an AC you can't demonstrate, a
    surface you can't reach — is a FAIL with a clear reason, not a hopeful pass.
 

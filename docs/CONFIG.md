@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 106 |
+| Knobs with a runner default | 107 |
 | Knobs editable in the dashboard | 53 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 59 |
+| Env reads in code with no default and no UI entry | 62 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -198,6 +198,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
+| `GAFFER_SECURITY_REVIEW` | `1` |  | runner | SECURITY SECOND OPINION — decides whether a ticket gets a SECOND, security-focused reviewer pass after the primary reviewer APPROVEs (lib/review.sh). |
 | `CLARIFY_DRAFTS_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria. |
 | `IDLE_DRAFT_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run ALL enabled crew idle loops in one pass (drafts only). Superseded by the maintenance lane below, which runs one prioritised lane per idle tick and can promote its own drafts. |
 | `GAFFER_MAINTENANCE` | _(empty)_ |  | crew, dispatch, runner | env override for the idle maintenance lane: empty = crew.yaml decides, 0 = off, 1 = force |
@@ -292,7 +293,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
 | `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
-| `GAFFER_DEFAULT_TICKET_REPO` |  | `packages/dispatch/src/mcp/tools.ts` |
+| `GAFFER_DEFAULT_TICKET_REPO` |  | `packages/dispatch/src/mcp/tools.ts`, `runner/bin/tester-run.mjs` |
 | `GAFFER_EGRESS_ALLOW` | _(empty)_ | `runner/lib/egress-allowlist.mjs` |
 | `GAFFER_EGRESS_ALLOW_FILE` | `$data/egress-allow.txt` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | `runner/gaffer`, `runner/lib/eval-judge.sh` |
@@ -313,9 +314,12 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_SANDBOX_PATH` | `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` | `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_PROXY` | `gaffer-egress-proxy-svc` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_PROXY_IMAGE` | `gaffer-egress-proxy` | `runner/lib/sandbox-docker.sh` |
+| `GAFFER_SECURITY_REVIEW_RE` | `${GAFFER_LITE_SENSITIVE_RE:-(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
 | `GAFFER_SKILL_TELEMETRY` | `$GAFFER_DATA/skills-telemetry.jsonl` | `packages/dispatch/src/health/skillsTelemetryAggregator.ts`, `runner/lib/skills-mount.sh` |
 | `GAFFER_SLACK_WEBHOOK` | _(empty)_ | `runner/status.sh` |
 | `GAFFER_SPEC_AUTHOR_MOCK` | _(empty)_ | `runner/bin/spec-author.mjs` |
+| `GAFFER_TEST_MODEL` |  | `runner/bin/tester-run.mjs` |
+| `GAFFER_TESTER_TIMEOUT_MS` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `GAFFER_TICKET` |  | `runner/safety-hook.mjs` |
 | `GAFFER_TRUST_LOCK_SLEEP_MS` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_LOCK_TRIES` |  | `runner/lib/trust-workspace.mjs` |

@@ -49,8 +49,8 @@ TICK_ROUTES=0
 for _rf in "$TICK" "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/clarify.sh"; do
   TICK_ROUTES=$(( TICK_ROUTES + $(grep -cE '^[[:space:]]*worker_deliver ' "$_rf" 2>/dev/null || true) ))
 done
-[ "$TICK_ROUTES" = "4" ] && ok "tick.sh + review/clarify libs route all 4 agent turns through worker_deliver" \
-  || fail "expected 4 worker_deliver routes across tick.sh + review/clarify libs (got $TICK_ROUTES)"
+[ "$TICK_ROUTES" = "5" ] && ok "tick.sh + review/clarify libs route all 5 agent turns through worker_deliver" \
+  || fail "expected 5 worker_deliver routes across tick.sh + review/clarify libs (delivery, bootstrap, reviewer, SECURITY reviewer, clarify) (got $TICK_ROUTES)"
 
 grep -qE 'source "\$RUNNER_DIR/lib/worker.sh"' "$CONFIG" \
   && ok "factory.config.sh sources the worker seam" || fail "factory.config.sh does not source lib/worker.sh"

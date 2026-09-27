@@ -1657,6 +1657,30 @@ gaffer_ticket_is_trivial() {
   case "$_r" in trivial) return 0 ;; *) return 1 ;; esac
 }
 
+# SECURITY SECOND OPINION — decides whether a ticket gets a SECOND, security-focused
+# reviewer pass after the primary reviewer APPROVEs (lib/review.sh). A ticket qualifies
+# when its risk_level is high, or when the delivered diff touches a security-sensitive
+# path (auth, secrets, migrations, CI, Dockerfiles, lockfiles, the factory's own guards —
+# GAFFER_SECURITY_REVIEW_RE, operator-tunable; defaults to the lite sensitive-path
+# regex). GAFFER_SECURITY_REVIEW=0 disables the lane; empty/1 = on. Sets
+# GAFFER_SECURITY_REVIEW_REASON for the log. Returns 0 (needs it) / 1 (does not).
+#   $1 ticket number  $2 repo path  $3 base branch  $4 delivery branch
+: "${GAFFER_SECURITY_REVIEW:=1}"
+gaffer_needs_security_review() {
+  local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _paths _re
+  GAFFER_SECURITY_REVIEW_REASON=""
+  case "${GAFFER_SECURITY_REVIEW:-1}" in 0|false|no|off) return 1 ;; esac
+  _risk="$(wg ticket show "$_num" 2>/dev/null | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
+  if [ "$_risk" = "high" ]; then GAFFER_SECURITY_REVIEW_REASON="risk=high"; return 0; fi
+  _re="${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|auth|security|secrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)}}"
+  _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
+  if printf '%s\n' "$_paths" | grep -qE "$_re"; then
+    GAFFER_SECURITY_REVIEW_REASON="sensitive-path: $(printf '%s\n' "$_paths" | grep -E "$_re" | head -3 | paste -sd, -)"
+    return 0
+  fi
+  return 1
+}
+
 # S-H2: reviewer VERDICT resolution from an OUT-OF-BAND STRUCTURED signal, NOT a
 # free-text grep over the reviewer's whole prose. In AFK/graduated mode a clean
 # `approve` triggers an autonomous approve+merge with no human, so the verdict must

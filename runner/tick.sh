@@ -15,6 +15,8 @@ source "$HERE/factory.config.sh"
 [ -f "$HERE/lib/review.sh" ] && source "$HERE/lib/review.sh"
 # shellcheck source=lib/clarify.sh
 [ -f "$HERE/lib/clarify.sh" ] && source "$HERE/lib/clarify.sh"
+# shellcheck source=lib/tester.sh
+[ -f "$HERE/lib/tester.sh" ] && source "$HERE/lib/tester.sh"
 # $GAFFER_DATA holds the DB copies + the per-tick mcp-runtime file (which carries the
 # live claim token). Lock it to the owner so another local user can't read the token
 # or DBs. 0700 on the dir blocks traversal to any file inside regardless of file mode.
@@ -2818,6 +2820,12 @@ fi
 # is ready, so delivery is prioritised; a ticket the reviewer doesn't resolve is
 # skipped to avoid re-review loops (loop.sh clears the file each run).
 _gaffer_agent_review_pass
+
+# ── Independent tester lane ── lib/tester.sh. When GAFFER_TESTING is on, hand the
+# next `in_testing` ticket to the black-box tester agent (bin/tester-run.mjs --live);
+# PASS → ready_for_merge, FAIL → refining, no verdict → held for a human. Exits the
+# tick when it tests one; otherwise returns and the flow falls through.
+declare -F _gaffer_tester_pass >/dev/null 2>&1 && _gaffer_tester_pass
 
 # ── Intake clarify gate ── extracted to lib/clarify.sh (B-H3, monolith paydown).
 # Runs a headless clarify pass over the next un-clarified DRAFT when nothing is

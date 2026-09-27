@@ -60,6 +60,8 @@ export const VALID_KINDS = new Set([
   "clarify",
   "bootstrap",
   "review",
+  "security-review",
+  "tester",
   "decompose",
   "product-owner",
   "onboard",

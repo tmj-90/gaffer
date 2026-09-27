@@ -217,6 +217,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Dispatch queue, tickets, epics, scopes, review gate (REST + MCP + CLI)
 - Crew MCP tool server (factory tools, hooks engine, idle loops, repo onboarding)
 - Memory: hybrid retrieval (FTS5 bm25 fused with a built-in, credential-free hashed n-gram vector per record; a model-backed embedder plugs in behind the same `Embedder` seam), Repo Digest, feature ledger, gated lore
+- Independent agent lanes beyond delivery: an **agent reviewer** (routed model, role-selected review lenses), a **security second-opinion reviewer** for high-risk or sensitive-path diffs whose CHANGES overrides a primary approve (`GAFFER_SECURITY_REVIEW`), and an **independent black-box tester** (`GAFFER_TESTING`) that tests an approved ticket from its contract and acceptance criteria only, in its own worktree, and records PASS → ready_for_merge / FAIL → refining
 - Runner factory loop with curated skill library and model tiering — one pass with `runner/loop.sh`, or unattended on any platform with `runner/gaffer run --daemon` (re-runs the loop, honours the per-day cap, stops cleanly on a signal)
 - Deterministic safety hook (`runner/safety-hook.mjs`) — worktree isolation, fails closed
 - Web dashboard with all seven views: Overview, Work, Review, Epics, Map, Memory, Settings

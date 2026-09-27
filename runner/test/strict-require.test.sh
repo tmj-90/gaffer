@@ -49,6 +49,36 @@ else
   ok "SKIP: sandbox-exec absent (Linux) — the real-sandbox case is macOS-only"
 fi
 
+# ── the mjs worker seam honours the SAME requirement (parity with worker_deliver) ──
+# Before this, only the bash seam consulted sandbox_wrap_cmd: Worker.deliver spawned
+# bare under GAFFER_STRICT_REQUIRE=1, so the merge-conflict resolver / product-owner /
+# tester / onboarding analysis ran uncontained exactly when autonomy is on.
+if command -v node >/dev/null 2>&1; then
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/strict-require-mjs.XXXXXX")"
+  trap 'rm -rf "$WORK"' EXIT
+  MARKER="$WORK/spawned.marker"
+  FAKE="$WORK/fake-claude.sh"
+  printf '#!/usr/bin/env bash\n: > "%s"\nprintf "%%s\\n" "{\\"result\\":\\"ok\\"}"\n' "$MARKER" > "$FAKE"; chmod +x "$FAKE"
+  mkdir -p "$WORK/.gaffer"
+  mjs_deliver() {  # $@ = NAME=value env for the seam's decision; prints "<status>|<error-message>"
+    env "$@" GAFFER_DATA="$WORK/.gaffer" node --input-type=module -e '
+      const { Worker } = await import(process.argv[2]);
+      const res = Worker.deliver({ bin: "bash", argv: [process.argv[3]], cwd: process.argv[4], timeoutMs: 10000, maxBuffer: 1 << 20, env: process.env });
+      process.stdout.write(`${res.status}|${res.error ? res.error.message : ""}`);
+    ' x "$RUNNER_DIR/lib/worker.mjs" "$FAKE" "$WORK" 2>/dev/null
+  }
+  rm -f "$MARKER"
+  OUT="$(mjs_deliver GAFFER_STRICT_REQUIRE=1 STRICT_MODE=0 SANDBOX_PROVIDER=none)"
+  [ "${OUT%%|*}" = "75" ] && ok "mjs seam: strict-require + provider 'none' FAILS CLOSED (status 75)" || fail "mjs seam should refuse with status 75 under strict-require (got: $OUT)"
+  [ ! -f "$MARKER" ] && ok "mjs seam: the agent was NOT spawned" || fail "mjs seam spawned the agent despite a required, unavailable sandbox"
+  case "$OUT" in *"fail closed"*) ok "mjs seam: refusal message says 'fail closed'" ;; *) fail "mjs seam: no fail-closed message (got: $OUT)" ;; esac
+  rm -f "$MARKER"
+  OUT="$(mjs_deliver GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0 SANDBOX_PROVIDER=none)"
+  [ "${OUT%%|*}" = "0" ] && [ -f "$MARKER" ] && ok "mjs seam: without strict-require the agent still spawns (status 0)" || fail "mjs seam should spawn when the sandbox is not required (got: $OUT)"
+else
+  ok "SKIP: node absent — the mjs seam parity case needs node"
+fi
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "strict-require: ALL $PASS checks passed"

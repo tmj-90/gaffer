@@ -18,8 +18,10 @@
 //   • a --dry-run seam that reports the PLANNED argv (merge target + resolver claude
 //     argv) WITHOUT spawning claude or mutating git — the test seam;
 //   • fail-closed if safety-hook.mjs is missing;
-//   • strips DISPATCH_API_TOKEN from the child env (the resolver delivers through the
-//     dispatch MCP, never the privileged HTTP API);
+//   • spawns through the ONE worker seam (lib/worker.mjs Worker.deliver — provider
+//     dispatch + the OS-sandbox containment decision) with the credential-and-
+//     endpoint-stripped child env every Node spawn uses (agentChildEnv; the resolver
+//     delivers through the dispatch MCP, never the privileged HTTP API);
 //   • bounded by a timeout;
 //   • emits exactly ONE JSON line on stdout.
 //
@@ -83,6 +85,8 @@ import {
   featureIdFromView,
 } from "../lib/feature-digest.mjs";
 import { refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
+import { Worker } from "../lib/worker.mjs";
+import { agentChildEnv } from "./product-owner-run.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -312,12 +316,16 @@ export function buildClaudeArgv({ prompt, mcpConfig, flags }) {
 /**
  * Build the child env for the resolver: the run delivers through the dispatch MCP
  * (DB path), is bounded to the worktree as its sole write-root (FG-007), and — per the
- * runner contract — STRIPS DISPATCH_API_TOKEN so a headless agent can never reach the
- * privileged Dispatch HTTP API; it only has the scoped MCP data plane. Exported so a
- * test can assert the strip without spawning.
+ * runner contract — starts from the SAME credential-and-endpoint-stripped copy of the
+ * parent env every other Node spawn uses (agentChildEnv: DISPATCH_API_TOKEN, every
+ * *_TOKEN / *_SECRET / *_KEY / *_PASSWORD, AWS_ACCESS_KEY_ID, and the outbound
+ * GAFFER_NOTIFY_* / *_WEBHOOK* / *_SLACK* / *_URL channels; ANTHROPIC_* auth kept).
+ * This used to delete ONLY DISPATCH_API_TOKEN, so GitHub / AWS / webhook secrets
+ * reached an agent that runs exactly when AUTO_MERGE is on. Exported so a test can
+ * assert the strip without spawning.
  */
 export function buildChildEnv(baseEnv, { dispatchDb, memoryDb, writeRoot }) {
-  const env = { ...baseEnv };
+  const env = agentChildEnv(baseEnv);
   delete env.DISPATCH_API_TOKEN;
   env.DISPATCH_DB = dispatchDb;
   env.MEMORY_DB = memoryDb;
@@ -879,10 +887,16 @@ function main() {
     mcpConfig: mcpRuntime,
     flags: CONFIG.claudeFlags,
   });
-  const res = spawnSync(CONFIG.claudeBin, argv, {
+  // Route through the ONE worker spawn seam (lib/worker.mjs): it applies the same
+  // containment decision as the bash seam (OS-sandbox wrap under STRICT_MODE /
+  // GAFFER_STRICT_REQUIRE, fail closed when the host cannot supply one) and the
+  // provider dispatch. This spawn used to be a bare spawnSync — the one agent that
+  // runs exactly when AUTO_MERGE is on ran outside the containment seam.
+  const res = Worker.deliver({
+    bin: CONFIG.claudeBin,
+    argv,
     cwd: worktree,
-    encoding: "utf8",
-    timeout: opts.timeoutMs,
+    timeoutMs: opts.timeoutMs,
     maxBuffer: 32 * 1024 * 1024,
     env: buildChildEnv(process.env, {
       dispatchDb: CONFIG.dispatchDb,

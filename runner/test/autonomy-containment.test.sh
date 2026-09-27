@@ -24,6 +24,14 @@
 #   6. docker wrapper (dry-run): mounts $GAFFER_HOME/packages + node_modules ro and
 #      follows a write root's node_modules symlink to its target — the MCP servers
 #      and the DoD test gate cannot run inside the container without them.
+#   8. mjs worker seam (lib/worker.mjs Worker.deliver — the merge-conflict resolver,
+#      product-owner, tester and onboarding-analysis spawns) makes the SAME decision
+#      as worker_deliver: required + unavailable → status 75 / no spawn; a wrapping
+#      provider is applied; off → unchanged. It used to spawn bare regardless.
+#   9. config: a stored mode='auto' autonomy POLICY row (graduated mode's only
+#      allow-path) turns the autonomy→containment defaults on exactly like an env
+#      ship flag; off/recommend rows do not; the explicit strict-require opt-out
+#      still wins. Graduated mode used to ship earned rows with no OS sandbox.
 # Zero deps beyond bash. Run: bash runner/test/autonomy-containment.test.sh
 # =====================================================================
 set -uo pipefail
@@ -172,6 +180,95 @@ else
 fi
 [ "$(env -i PATH="$DBIN:$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" SANDBOX_PROVIDER=none bash -c 'source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1; printf "%s" "$SANDBOX_PROVIDER"')" = "none" ] \
   && ok "explicit SANDBOX_PROVIDER=none wins over auto-detect" || fail "explicit provider should win"
+
+echo "== 8: the mjs worker seam honours the SAME containment decision as worker_deliver =="
+# Worker.deliver (the merge-conflict resolver / product-owner / tester / onboarding
+# analysis spawn) used to apply only the provider dispatch — under a REQUIRED sandbox
+# with no provider it spawned BARE while every bash spawn site refused with rc 75.
+MJS_MARKER="$WORK/mjs-spawned.marker"
+MJS_FAKE="$WORK/mjs-fake-claude"
+printf '#!/usr/bin/env bash\n: > "%s"\nprintf "%%s\\n" "{\\"result\\":\\"ok\\"}"\n' "$MJS_MARKER" > "$MJS_FAKE"; chmod +x "$MJS_FAKE"
+mjs_deliver() {  # $@ = NAME=value env for the seam's decision; prints "<status>|<error>|<stdout one-line>"
+  env "$@" GAFFER_DATA="$GAFFER_DATA" node --input-type=module -e '
+    const { Worker } = await import(process.argv[2]);
+    const res = Worker.deliver({ bin: "bash", argv: [process.argv[3]], cwd: process.argv[4], timeoutMs: 20000, maxBuffer: 1 << 20, env: process.env });
+    process.stdout.write(`${res.status}|${res.error ? res.error.message : ""}|${(res.stdout || "").replace(/\n/g, " ")}`);
+  ' x "$RUNNER_DIR/lib/worker.mjs" "$MJS_FAKE" "$CWD" 2>/dev/null
+}
+rm -f "$MJS_MARKER"
+OUT="$(mjs_deliver STRICT_MODE=0 GAFFER_STRICT_REQUIRE=1 SANDBOX_PROVIDER=none)"
+[ "${OUT%%|*}" = "75" ] && ok "mjs: required + provider none → status 75 (fail closed, same code as the bash seam)" || fail "mjs: expected status 75 (got: ${OUT%%|*})"
+[ ! -f "$MJS_MARKER" ] && ok "mjs: the agent was NOT spawned" || fail "mjs: agent spawned despite a required, unavailable sandbox"
+case "$OUT" in *"fail closed"*) ok "mjs: refusal is loud and says 'fail closed'" ;; *) fail "mjs: no fail-closed message (got: $OUT)" ;; esac
+rm -f "$MJS_MARKER"
+OUT="$(mjs_deliver STRICT_MODE=1 GAFFER_STRICT_REQUIRE=1 SANDBOX_PROVIDER=lima)"
+[ "${OUT%%|*}" = "75" ] && [ ! -f "$MJS_MARKER" ] && ok "mjs: STRICT_MODE=1 + unknown provider 'lima' → refused, no spawn" || fail "mjs: unknown provider under strict-require should refuse (got: $OUT)"
+rm -f "$MJS_MARKER"
+OUT="$(mjs_deliver STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none)"
+[ "${OUT%%|*}" = "0" ] && [ -f "$MJS_MARKER" ] && ok "mjs: sandbox off → agent spawned, status 0 (invocation unchanged)" || fail "mjs: sandbox off should spawn (got: $OUT)"
+rm -f "$MJS_MARKER"
+OUT="$(mjs_deliver STRICT_MODE=1 GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none)"
+[ "${OUT%%|*}" = "0" ] && [ -f "$MJS_MARKER" ] && ok "mjs: STRICT_MODE=1 + provider 'none' (not required) degrades and still spawns" || fail "mjs: not-required/none should degrade (got: $OUT)"
+rm -f "$MJS_MARKER"
+OUT="$(mjs_deliver PATH="$FAKEBIN:$PATH" STRICT_MODE=1 SANDBOX_PROVIDER=docker GAFFER_SANDBOX_DRY_RUN=1)"
+[ "${OUT%%|*}" = "0" ] && ok "mjs: docker provider (dry-run) wrapped the spawn (status 0)" || fail "mjs: docker dry-run wrap status ${OUT%%|*}"
+[ ! -f "$MJS_MARKER" ] && ok "mjs: the host binary was NOT run directly (the wrap intercepted the spawn)" || fail "mjs: host binary ran directly — the wrap was not applied"
+case "$OUT" in *"$CWD:$CWD:rw"*) ok "mjs: the write root is mounted rw in the container argv" ;; *) fail "mjs: write root mount missing from docker argv" ;; esac
+case "$OUT" in *" claude "*) ok "mjs: inside docker the image's own \`claude\` is invoked" ;; *) fail "mjs: expected the container claude binary in argv" ;; esac
+case "$OUT" in *"HOME=/root"*) ok "mjs: HOME is rebased to the container's /root" ;; *) fail "mjs: HOME not rebased for the container" ;; esac
+
+echo "== 9: a stored mode='auto' autonomy POLICY row turns containment on (graduated mode) =="
+# Graduated mode leaves every env ship flag OFF and ships through per-repo/risk `auto`
+# policy rows instead — an allow-path isAutonomyAllowed honours in EVERY mode. Nothing
+# in the config consulted those rows, so an earned factory ran agents with no OS
+# sandbox. _gaffer_autonomy_on now asks dispatch (`wg autonomy list`) for them.
+CLI_JS="$RUNNER_DIR/../packages/dispatch/dist/cli/index.js"
+if [ -f "$CLI_JS" ] && node -e 'require("node:sqlite")' 2>/dev/null; then
+  POL_DB="$WORK/policy.sqlite"
+  node "$CLI_JS" --db "$POL_DB" init >/dev/null 2>&1
+  node "$CLI_JS" --db "$POL_DB" repo add -n demo --path "$WORK" --branch main >/dev/null 2>&1
+  set_policy_row() {  # $1 = mode (off|recommend|auto): upsert the single (demo, low, approve) row
+    node -e '
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(process.argv[1]);
+      const repo = db.prepare("SELECT id FROM repositories WHERE name = ?").get("demo");
+      db.prepare("DELETE FROM autonomy_policy").run();
+      db.prepare("INSERT INTO autonomy_policy (id, repo_id, risk_level, gate, mode) VALUES (?, ?, ?, ?, ?)")
+        .run("pol-test", repo.id, "low", "approve", process.argv[2]);
+      db.close();
+    ' "$POL_DB" "$1" 2>/dev/null
+  }
+  probe_db() { probe DISPATCH_DB="$POL_DB" "$@"; }
+  [ "$(probe_db GAFFER_MODE=graduated)" = "STRICT_MODE=0 STRICT_REQUIRE=" ] \
+    && ok "graduated + NO policy rows: STRICT stays off (inert until rows are earned)" \
+    || fail "graduated with no rows should stay STRICT_MODE=0 (got: $(probe_db GAFFER_MODE=graduated))"
+  set_policy_row recommend
+  [ "$(probe_db GAFFER_MODE=graduated)" = "STRICT_MODE=0 STRICT_REQUIRE=" ] \
+    && ok "graduated + a 'recommend' row: STRICT stays off (recommend grants no allow-path)" \
+    || fail "a recommend row must not turn containment on (got: $(probe_db GAFFER_MODE=graduated))"
+  set_policy_row auto
+  got="$(probe_db GAFFER_MODE=graduated)"
+  [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] \
+    && ok "graduated + an 'auto' row → STRICT_MODE=1 + GAFFER_STRICT_REQUIRE=1 (earned autonomy requires containment)" \
+    || fail "graduated with an auto row should default STRICT_MODE=1 + strict-require (got: $got)"
+  got="$(probe_db)"
+  [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] \
+    && ok "supervised + an 'auto' row → containment on too (the policy is an allow-path in every mode)" \
+    || fail "an auto row under supervised should default STRICT (got: $got)"
+  got="$(probe_db GAFFER_MODE=graduated GAFFER_STRICT_REQUIRE=0)"
+  [ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=0" ] \
+    && ok "explicit GAFFER_STRICT_REQUIRE=0 opt-out still wins over an auto row" \
+    || fail "strict-require opt-out should be honoured with an auto row (got: $got)"
+  got="$(probe DISPATCH_DB="$WORK/absent.sqlite" GAFFER_MODE=graduated)"
+  [ "$got" = "STRICT_MODE=0 STRICT_REQUIRE=" ] \
+    && ok "an absent DB proves no rows (fail-soft: an unqueryable store cannot turn containment on)" \
+    || fail "absent DB should read as no rows (got: $got)"
+  grep -qE 'wg autonomy list|autonomy list' "$RUNNER_DIR/factory.config.sh" \
+    && ok "factory.config.sh consults the dispatch CLI's autonomy policy listing" \
+    || fail "factory.config.sh does not query the autonomy policy rows"
+else
+  ok "SKIP: dispatch CLI not built or node:sqlite unavailable — the policy-row case needs both"
+fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

@@ -8,7 +8,11 @@
 #           tick.sh routes all four agent turns through worker_deliver and has
 #           zero open-coded launches. factory.config.sh sources the seam.
 #   • mjs:  decompose.mjs + product-owner-run.mjs no longer open-code spawnSync;
-#           they import the seam and call Worker.deliver.
+#           they import the seam and call Worker.deliver. merge-ticket.mjs,
+#           tester-run.mjs and lib/onboard-analyze.mjs (which legitimately spawn
+#           git / the memory CLI) route their AGENT spawn through Worker.deliver and
+#           never spawnSync the claude binary directly — the merge-conflict resolver
+#           used to, outside the containment seam.
 # Structural (grep) proof — matches the task's "grep-assert that no open-coded
 # claude -p remains outside the worker module". Zero deps.
 # Run: bash test/worker-seam-routing.test.sh
@@ -71,6 +75,23 @@ for f in "$DECOMPOSE" "$PO"; do
   grep -qE 'Worker\.deliver\(' "$f" \
     && ok "$name calls Worker.deliver()" || fail "$name does not call Worker.deliver()"
 done
+
+echo "== mjs: the autonomy-time agent spawns (resolver / tester / onboarding analysis) use the seam =="
+for f in "$RUNNER_DIR/bin/merge-ticket.mjs" "$RUNNER_DIR/bin/tester-run.mjs" "$RUNNER_DIR/lib/onboard-analyze.mjs"; do
+  name="$(basename "$f")"
+  # These runners spawn git / the memory CLI legitimately, so the pin is narrower: the
+  # CLAUDE binary is never handed to spawnSync directly.
+  BARE="$(grep -cE 'spawnSync\((CONFIG\.)?claudeBin' "$f" || true)"
+  [ "$BARE" = "0" ] && ok "$name never spawnSync()s the claude binary directly" \
+    || fail "$name open-codes $BARE bare claude spawn(s) outside the seam"
+  grep -qE 'from "\.\./lib/worker\.mjs"|from "\./worker\.mjs"' "$f" \
+    && ok "$name imports the worker seam" || fail "$name does not import lib/worker.mjs"
+  grep -qE 'Worker\.deliver\(' "$f" \
+    && ok "$name calls Worker.deliver()" || fail "$name does not call Worker.deliver()"
+done
+grep -qE 'agentChildEnv\(baseEnv\)' "$RUNNER_DIR/bin/merge-ticket.mjs" \
+  && ok "merge-ticket.mjs builds the resolver env from the shared agentChildEnv scrub" \
+  || fail "merge-ticket.mjs does not start the resolver env from agentChildEnv"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

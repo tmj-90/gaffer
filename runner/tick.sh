@@ -360,6 +360,10 @@ if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
 fi
 AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
 
+# GRADUATED-AUTONOMY: per-repo `auto` policies only act inside the agent review pass;
+# under REVIEW_MODE=human they are inert. Say so once per run (factory.config.sh).
+declare -F gaffer_inert_policy_check >/dev/null 2>&1 && gaffer_inert_policy_check >/dev/null
+
 # ── RUNNER-OWNED-BOOKKEEPING: the runner holds the delivery claim ────────────
 # The runner (not the agent) claims the chosen ticket at SELECTION, holds the claim
 # token for the whole delivery, submits after ITS gates pass, and releases/parks the

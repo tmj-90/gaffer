@@ -8761,6 +8761,22 @@ body {
   color: var(--ok, var(--accent));
   background: var(--accent-soft);
 }
+/* B17: a grant that can never act (REVIEW_MODE=human — no reviewer agent runs). */
+.ap-mode.inert,
+.ar-enabled-chip.inert {
+  border-color: var(--amber-line);
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+.autonomy-policies.is-inert .ar-item {
+  border-left-color: var(--amber);
+}
+.autonomy-inert-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 var(--s-4);
+}
 
 /* ===========================================================================
    REVIEW — the gate console header

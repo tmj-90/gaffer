@@ -1591,6 +1591,28 @@ gaffer_auto_decision() {
   [ "$_dec" = "allow" ] && printf 'allow\n' || printf 'deny\n'
 }
 
+# GRADUATED-AUTONOMY: per-repo `auto` policy rows are consulted ONLY inside the agent
+# review pass (REVIEW_MODE=agent|both → gaffer_auto_decision). In the default supervised
+# posture (REVIEW_MODE=human) no reviewer runs, so a policy the operator enabled shows
+# "Enabled" in Settings and never acts. Detect that and say so — ONE line per run (the
+# marker is cleared with the other per-run markers by loop.sh / poll-once.sh). Read-only
+# and fail-soft: a missing DB / CLI error simply logs nothing. Echoes the number of inert
+# `auto` rows found (0 when none / not applicable) for the caller's own use.
+gaffer_inert_policy_check() {
+  local _n=0 _marker="${GAFFER_DATA:+$GAFFER_DATA/.autonomy-policy-inert-warned}"
+  [ "${REVIEW_MODE:-human}" = "human" ] || { printf '0\n'; return 0; }
+  _n="$(wg autonomy policies --mode auto 2>/dev/null | jget 'd.count ?? 0' 2>/dev/null || echo 0)"
+  case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+  if [ "$_n" -gt 0 ]; then
+    if [ -z "$_marker" ] || [ ! -f "$_marker" ]; then
+      log "AUTONOMY: WARNING — $_n per-repo 'auto' policy grant(s) are enabled but REVIEW_MODE=human, so no reviewer agent runs and the policies are never consulted: they are INERT. Set Review mode to agent or both (or Autonomy mode to graduated) for them to act, or turn them off in Settings."
+      [ -n "$_marker" ] && : > "$_marker" 2>/dev/null
+    fi
+  fi
+  printf '%s\n' "$_n"
+  return 0
+}
+
 # GRADUATED-AUTONOMY: the PURE ship-decision matrix — the single source of truth mapping
 # (reviewer verdict × approve gate × merge gate) → one runner action, so the AFK block in
 # tick.sh just dispatches on the result and the logic is unit-testable in isolation. No I/O,

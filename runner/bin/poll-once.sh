@@ -15,6 +15,6 @@ mkdir -p "$GAFFER_DATA"
 # Fresh poll: nothing skipped from a prior run (mirrors what loop.sh clears).
 rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" \
       "$GAFFER_DATA/.clarified-tickets" "$GAFFER_DATA/.backpressure-repos" \
-      "$GAFFER_DATA/.ci-gate-needs-pr-warned"
+      "$GAFFER_DATA/.ci-gate-needs-pr-warned" "$GAFFER_DATA/.autonomy-policy-inert-warned"
 wg expire-claims >/dev/null 2>&1 || true   # reap any stale claim before polling
 exec bash "$HERE/tick.sh"

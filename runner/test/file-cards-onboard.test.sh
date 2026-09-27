@@ -23,10 +23,11 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 GAFFER_HOME="$(cd "$RUNNER_DIR/.." && pwd)"
 MEMORY_CLI="$GAFFER_HOME/packages/memory/dist/bin/memory.js"
 TICK="$RUNNER_DIR/tick.sh"
-# The delivery/bootstrap prompt bodies moved into the gaffer_render_delivery_prompt
-# seam (factory.config.sh, P1b); tick.sh still BUILDS $FILE_CARDS_BLOCK and calls the
-# primer, but the prompt that INJECTS the block now lives in the seam.
-SEAM="$RUNNER_DIR/factory.config.sh"
+# The delivery/bootstrap prompt bodies are rendered by the typed seam
+# (packages/crew/src/runtime/context/deliveryPrompt.ts via renderPromptCli.js;
+# the bash heredoc twins were deleted). tick.sh still BUILDS $FILE_CARDS_BLOCK and
+# calls the primer; the template that INJECTS the block is the typed renderer.
+SEAM="$GAFFER_HOME/packages/crew/src/runtime/context/deliveryPrompt.ts"
 
 PASS=0
 FAILURES=()
@@ -125,9 +126,10 @@ if grep -q '\blg\b' "$PRIMER_SH" && grep -q 'cards-for-scope' "$PRIMER_SH"; then
 else
   fail "context-primer.sh does not call lg cards-for-scope"
 fi
-# B3: $FILE_CARDS_BLOCK is still injected into BOTH delivery prompts (resume + fresh)
-# — now via the gaffer_render_delivery_prompt seam heredocs (factory.config.sh).
-INJECTS="$(grep -c '^\$FILE_CARDS_BLOCK$' "$SEAM")"
+# B3: the file-cards block is injected into BOTH delivery prompts (resume + fresh)
+# — pinned on the typed renderer template (deliveryPrompt.ts), where tick.sh's
+# $FILE_CARDS_BLOCK arrives as the fileCardsBlock input.
+INJECTS="$(grep -c '^\${i.fileCardsBlock}$' "$SEAM")"
 [ "${INJECTS:-0}" -ge 2 ] && ok "FILE_CARDS_BLOCK injected into both delivery prompts ($INJECTS)" \
   || fail "expected FILE_CARDS_BLOCK in both delivery prompts, found $INJECTS"
 # B4: the non-authoritative framing lives in context-primer.sh.

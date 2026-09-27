@@ -1,0 +1,3 @@
+failing gate: tests@app
+  AssertionError: boom
+    at f.ts:1:2

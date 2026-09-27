@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // =====================================================================
 // Node entrypoint for the DoD failure distill / extract text-processors
-// (strangler port of runner/lib/dod.sh's two awk helpers). This is the
-// LIVE seam target: dod.sh routes `gaffer_dod_distill_output` and
-// `gaffer_dod_extract_failure` through this CLI when GAFFER_DOD_DISTILL=ts
-// and this dist bin exists, otherwise it runs the legacy awk verbatim.
+// (the port of runner/lib/dod.sh's former awk helpers, now the ONLY
+// implementation): dod.sh routes `gaffer_dod_distill_output`,
+// `gaffer_dod_extract_failure`, `gaffer_dod_summary_line` and
+// `gaffer_dod_executed_count` through this CLI; runner/test/
+// dod-distill-golden.test.sh pins the outputs.
 //
 // Mirrors renderMcpCli.ts's discipline: it imports ONLY the two pure
 // modules (./distillOutput.js, ./extractFailure.js) — no CLI framework,

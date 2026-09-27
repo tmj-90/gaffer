@@ -1,5 +1,8 @@
 # Gaffer H3 — CI-aware review gate (sourced by factory.config.sh).
 # shellcheck shell=bash
+# The typed CLIs live in packages/crew; factory.config.sh exports CREW_DIR, and a lib
+# sourced standalone (tests, the gate replay) resolves the workspace default itself.
+[ -n "${CREW_DIR:-}" ] || CREW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/crew" 2>/dev/null && pwd)"
 #
 # When GAFFER_REQUIRE_CI=1, after the delivery branch/PR exists, this gate polls
 # `gh pr checks <branch>` (or `gh api` commit status) until checks are green,
@@ -63,37 +66,12 @@ gaffer_ci_timeout_proceed() {
 # (or similar, depending on gh version). We look for any "failure"/"error" conclusion.
 gaffer_parse_checks() {
   local checks_output="$1"
-  # STRANGLER SEAM (P4): the byte-identical typed parse (ciGateCli.js parse-checks
-  # → parseChecks) under GAFFER_RUNTIME=ts + the dist bin; else the legacy bash
-  # below runs VERBATIM (default). On a non-zero node exit it falls through so a
-  # CI verdict is never lost. The CLI handles the empty-input → "unknown" case too.
-  if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
-     && [ -f "${CREW_DIR:-}/dist/runtime/ci/ciGateCli.js" ]; then
-    printf '%s' "$checks_output" | node "${CREW_DIR}/dist/runtime/ci/ciGateCli.js" parse-checks 2>/dev/null && return
-  fi
-  if [ -z "$checks_output" ]; then
-    printf 'unknown'
-    return
-  fi
-  # If any line contains "fail" or "error" in the conclusion/status column → red.
-  local failing=""
-  failing="$(printf '%s\n' "$checks_output" \
-    | awk -F'\t' 'tolower($2)~/fail|error/ || tolower($3)~/fail|error/ {print $1"\t"$4; exit}')"
-  if [ -n "$failing" ]; then
-    local check_name check_url
-    check_name="$(printf '%s' "$failing" | awk -F'\t' '{print $1}')"
-    check_url="$(printf '%s' "$failing" | awk -F'\t' '{print $2}')"
-    printf 'fail:%s|%s' "${check_name:-unknown}" "${check_url:-}"
-    return
-  fi
-  # If any line has "pending"/"queued"/"in_progress" → still running.
-  if printf '%s\n' "$checks_output" \
-     | awk -F'\t' 'tolower($2)~/pending|queue|in_progress|waiting/ || tolower($3)~/pending|queue|in_progress|waiting/ {found=1} END{exit !found}'; then
-    printf 'pending'
-    return
-  fi
-  # All lines pass / completed → green.
-  printf 'pass'
+  # Typed (packages/crew ciGateCli.js parse-checks → parseChecks); pinned by
+  # ci-gate-golden. The CLI handles the empty-input → "unknown" case. FAIL CLOSED:
+  # without the crew dist, or on a node error, no verdict is printed and the status
+  # is non-zero — gaffer_ci_gate treats an empty verdict as an unreadable signal.
+  [ -f "${CREW_DIR:-}/dist/runtime/ci/ciGateCli.js" ] || return 1
+  printf '%s' "$checks_output" | node "${CREW_DIR}/dist/runtime/ci/ciGateCli.js" parse-checks 2>/dev/null
 }
 
 # Poll CI for a branch and block until green, red, or timeout.

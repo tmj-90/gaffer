@@ -1,5 +1,8 @@
 # Gaffer delivery-hygiene assertions (sourced by factory.config.sh).
 # shellcheck shell=bash
+# The typed CLIs live in packages/crew; factory.config.sh exports CREW_DIR, and a lib
+# sourced standalone (tests, the gate replay) resolves the workspace default itself.
+[ -n "${CREW_DIR:-}" ] || CREW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/crew" 2>/dev/null && pwd)"
 #
 # HARD-FAIL guard against the leaks a large unattended factory run actually
 # produced. These are the failures this module exists to catch:
@@ -163,26 +166,17 @@ gaffer_assert_clean_delivery() {
   # manual-salvage leak; an added one is the copied/symlinked leak).
   local changed path
   changed="$(git -C "$worktree" diff --name-only "$base"...HEAD 2>/dev/null || true)"
-  # STRANGLER SEAM (P4): the byte-identical typed batch scan (hygieneCli.js →
-  # isForbiddenPath) under GAFFER_RUNTIME=ts + the dist bin on disk — ONE node
-  # spawn for the whole diff. This is a SAFETY gate, so on a NON-ZERO CLI exit
-  # (scan could not complete) we FALL BACK to the legacy bash `case`-glob loop
-  # rather than trust an incomplete scan; default bash runs that loop directly.
-  local _forbidden _used_ts=0
-  if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
-     && [ -f "${CREW_DIR:-}/dist/runtime/hygiene/hygieneCli.js" ]; then
-    if _forbidden="$(printf '%s\n' "$changed" | node "${CREW_DIR}/dist/runtime/hygiene/hygieneCli.js" forbidden 2>/dev/null)"; then
-      _used_ts=1
-      [ -n "$_forbidden" ] && violations+="$_forbidden"$'\n'
-    fi
-  fi
-  if [ "$_used_ts" != 1 ]; then
-    while IFS= read -r path; do
-      [ -n "$path" ] || continue
-      if _hygiene_path_forbidden "$path"; then
-        violations+="forbidden path in delivery diff: $path"$'\n'
-      fi
-    done <<< "$changed"
+  # Typed batch scan (packages/crew hygieneCli.js → isForbiddenPath): ONE node spawn
+  # for the whole diff. A SAFETY gate, so it FAILS CLOSED: without the crew dist, or
+  # when the scan exits non-zero (could not complete), the delivery is reported as a
+  # violation naming the cause rather than trusting an unscanned diff.
+  local _forbidden
+  if [ ! -f "${CREW_DIR:-}/dist/runtime/hygiene/hygieneCli.js" ]; then
+    violations+="hygiene scan could not run: packages/crew is not built (dist/runtime/hygiene/hygieneCli.js missing) — run pnpm -r build"$'\n'
+  elif _forbidden="$(printf '%s\n' "$changed" | node "${CREW_DIR}/dist/runtime/hygiene/hygieneCli.js" forbidden 2>/dev/null)"; then
+    [ -n "$_forbidden" ] && violations+="$_forbidden"$'\n'
+  else
+    violations+="hygiene scan could not run: hygieneCli.js exited non-zero (diff not scanned)"$'\n'
   fi
 
   # Copied source tree(s).

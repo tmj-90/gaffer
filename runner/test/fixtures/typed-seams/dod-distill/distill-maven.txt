@@ -1,0 +1,3 @@
+[ERROR] Tests run: 1, Failures: 1 <<< FAILURE!
+org.opentest4j.AssertionFailedError: expected: <4> but was: <3>
+	at com.example.CalcTest.testAdd(CalcTest.java:12)

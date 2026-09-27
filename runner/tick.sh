@@ -921,9 +921,8 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # MEMORY ROI: a bootstrap has no delivery-recall context, so ${GAFFER_RECALL_TICKET}
     # renders empty — the memory read path then logs no retrieval (inert), matching
     # the standalone posture. The main-delivery twin sets it to the ticket $NUM.
-    # Render via the single seam (factory.config.sh): TS renderer under
-    # GAFFER_RUNTIME=ts (byte-identical), legacy bash sed by default. Recall is
-    # empty for a bootstrap (no delivery-recall context ⇒ memory read inert).
+    # Render via the single seam (factory.config.sh → packages/crew renderMcpCli.js).
+    # Recall is empty for a bootstrap (no delivery-recall context ⇒ memory read inert).
     # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
     # must abort the bootstrap before the agent launch — the bare sed never did.
     gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
@@ -1280,17 +1279,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     [ -n "$rpath" ] || continue
     rbase="${rbase:-main}"
     # Stable, filesystem-safe leaf for this repo's worktree.
-    # STRANGLER SEAM (P4): the byte-identical typed leaf derivation
-    # (worktreeKeyCli.js → worktreeKey) under GAFFER_RUNTIME=ts + the dist bin on
-    # disk; else the legacy tr|sed below runs VERBATIM (default bash, unchanged).
-    if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
-       && [ -f "${CREW_DIR:-}/dist/runtime/worktree/worktreeKeyCli.js" ]; then
-      __wt_key="$(node "${CREW_DIR}/dist/runtime/worktree/worktreeKeyCli.js" --id "$rid" --name "$rname" --index "$__wt_idx" 2>/dev/null)"
-    else
-      __wt_key="${rid:-$rname}"
-      [ -n "$__wt_key" ] || __wt_key="repo$__wt_idx"
-      __wt_key="$(printf '%s' "$__wt_key" | tr -c 'A-Za-z0-9._-' '-' | sed -E 's/-+/-/g; s/^-+//; s/-+$//')"
-    fi
+    # Typed leaf derivation (packages/crew worktreeKeyCli.js → worktreeKey; pinned by
+    # worktree-key-golden). A missing crew dist yields an empty key → the repo<index>
+    # backstop below, so a worktree is always created at a stable path.
+    __wt_key="$(node "${CREW_DIR:-}/dist/runtime/worktree/worktreeKeyCli.js" --id "$rid" --name "$rname" --index "$__wt_idx" 2>/dev/null)"
     [ -n "$__wt_key" ] || __wt_key="repo$__wt_idx"
     __wt_path="$WORKTREES_BASE/$__wt_key"
     WT_ROWS+="$(printf '%s\t%s\t%s\t%s\t%s' "$rid" "$rname" "$rpath" "$rbase" "$__wt_path")"$'\n'
@@ -1700,9 +1692,8 @@ EOF
   # the memory MCP server's READ path can attribute a retrieval to this ticket
   # (best-effort, fail-soft). Empty ⇒ the read path logs nothing (inert), exactly
   # like standalone memory-mcp. Same one-hop plumbing pattern as GAFFER_TICKET_REPOS.
-  # Render via the single seam (factory.config.sh): TS renderer under
-  # GAFFER_RUNTIME=ts (byte-identical), legacy bash sed by default. Recall is the
-  # ticket $NUM so the memory read path can attribute a retrieval to this ticket.
+  # Render via the single seam (factory.config.sh → packages/crew renderMcpCli.js).
+  # Recall is the ticket $NUM so the memory read path can attribute a retrieval to it.
   # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
   # must abort the delivery before the agent launch — the bare sed never did.
   gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "$NUM" \
@@ -2305,6 +2296,14 @@ $_trail_q
         wg attach-evidence "$NUM" --type manual_note \
           --summary "needs_human_review: oversized_diff — $GAFFER_MINIMALISM_REASON" >/dev/null 2>&1 \
           && log "MINIMALISM: recorded oversized_diff flag on #$NUM" || true ;;
+      check_failed)
+        # The typed check could not run (packages/crew not built, or the CLI
+        # errored). A gate that cannot decide never waves a delivery through:
+        # recoverable, because a rebuilt factory re-runs the same check.
+        log "MINIMALISM: #$NUM check could not run — $GAFFER_MINIMALISM_REASON; not submitting"
+        _recover_or_park "minimalism" "minimalism check could not run — $GAFFER_MINIMALISM_REASON"
+        [ "$_DELIV_OUTCOME" = "retry" ] && continue
+        result error; exit 0 ;;
       unverified_note)
         # Note present but references no changed file → likely boilerplate. Flag
         # for human review (not a hard fail — a conceptual note can be legitimate).

@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 107 |
+| Knobs with a runner default | 105 |
 | Knobs editable in the dashboard | 53 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 57 |
@@ -44,13 +44,6 @@ computed from other knobs at runtime.
 | `SKILLS_DIR` | _derived_ (`$RUNNER_DIR/skills`) |  | runner |  |
 | `CLAUDE_BIN` | `claude` |  | runner | headless `claude -p` |
 | `CLAUDE_FLAGS` | `--permission-mode acceptEdits` |  | runner | tune to your Claude Code version |
-
-### Typed-runtime cutover
-
-| Variable | Default | UI | Read by | Notes |
-|---|---|---|---|---|
-| `GAFFER_RUNTIME` | `ts` |  | crew, runner | THE FLIP. |
-| `GAFFER_DOD_DISTILL` | `ts` |  | crew, runner |  |
 | `GAFFER_PLAN_MODEL` | `opus` |  | runner |  |
 | `GAFFER_IMPL_MODEL` | `sonnet` |  | runner |  |
 
@@ -295,7 +288,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CARD_BATCH` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CARD_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/factory.config.sh`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
+| `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
 | `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_EGRESS_ALLOW` | _(empty)_ | `runner/lib/egress-allowlist.mjs` |

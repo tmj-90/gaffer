@@ -113,7 +113,7 @@ is actually good at.
   the collapse below remain. `tick.sh` shrinks to pick-ticket → env/sandbox → hand off
   → tear down only once those move.
 
-### Landed typed seams (all default-bash, flag-gated, byte-identical)
+### Landed typed seams (typed only; bash twins deleted, outputs golden-pinned)
 
 | Live bash | Typed module + CLI | Flag |
 |---|---|---|
@@ -126,13 +126,20 @@ is actually good at.
 | `gaffer_check_minimalism` / `gaffer_diff_stats` | `minimalism/*.ts` / `minimalismCli` | `GAFFER_RUNTIME=ts` |
 | `gaffer_parse_checks` | `ci/parseChecks.ts` / `ciGateCli` | `GAFFER_RUNTIME=ts` |
 
-**The default flip (`bash/awk → ts`) is DONE** (one central switch in
-`factory.config.sh`) — every seam above now runs typed in production. It was flipped
-only after each seam proved byte-identical (its `*-parity` test + a golden zero-diff
-under the new default). Per the strangler discipline the bash/awk branches stay one
-soak cycle as the fallback, then get deleted in a later commit; the remaining epic
-work is that deletion plus the single-runtime collapse (wire `ClaudeAgentRuntime` as
-the live spawn, retiring `worker.sh`'s bash spawn).
+**The default flip (`bash/awk → ts`) is DONE, and the bash/awk twins are DELETED.**
+Every seam above runs typed only: the `GAFFER_RUNTIME` / `GAFFER_DOD_DISTILL`
+switches are gone from `factory.config.sh`, the bash sed / heredocs / awk / `tr|sed`
+/ `case`-glob branches are removed, and each seam's output is pinned by a golden
+test (`runner/test/*-golden.test.sh`, fixtures under
+`runner/test/fixtures/typed-seams/`, captured from the bash implementations the
+CLIs replaced — the former `*-parity` tests proved them byte-identical first). The
+crew dist is now a runtime requirement like the dispatch CLI: a GATE whose CLI
+cannot run fails closed (hygiene reports a violation naming the cause, minimalism
+returns `check_failed` and tick.sh parks, the CI parse yields no verdict, the
+prompt/MCP renders refuse to launch an agent), a FEEDBACK helper (DoD distill /
+extract / summary / count) prints nothing. The remaining epic work is the
+single-runtime collapse below (wire `ClaudeAgentRuntime` as the live spawn,
+retiring `worker.sh`'s bash spawn), which needs a live model credential to trial.
 
 ## Regression gate (every slice)
 

@@ -1,0 +1,6 @@
+ FAIL  src/sum.test.js
+  ● Calc › adds
+    expect(received).toBe(expected)
+    Expected: 4
+    Received: 3
+      at Object.<anonymous> (src/sum.test.js:5:19)

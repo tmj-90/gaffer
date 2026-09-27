@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // =====================================================================
 // Node entrypoint for the delivery-hygiene forbidden-path scan (P4).
-// The LIVE seam target: gaffer_assert_clean_delivery routes its per-path
-// forbidden-fragment loop through this CLI when GAFFER_RUNTIME=ts and this
-// dist bin exists, else it runs the legacy bash `case`-glob loop verbatim.
+// The runner's ONLY implementation: gaffer_assert_clean_delivery (runner/lib/
+// hygiene.sh) routes the whole diff through this CLI and FAILS CLOSED when it
+// cannot run (the former bash `case`-glob twin was deleted; runner/test/
+// json-tool + hygiene tests pin the behaviour).
 //
 //   printf '%s\n' "$changed_paths" | node hygieneCli.js forbidden
 //

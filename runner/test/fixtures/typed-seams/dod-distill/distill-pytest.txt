@@ -1,0 +1,4 @@
+>       assert add(1, 2) == 4
+FAILED tests/test_add.py::test_add - assert 3 == 4
+E       assert 3 == 4
+tests/test_add.py:5: AssertionError

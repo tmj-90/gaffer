@@ -1,0 +1,24 @@
+{
+  "_comment": "Claude Code MCP config for the Gaffer factory: the two data-plane MCP servers the agent delivers through. tick.sh renders a runtime copy, substituting /data/gaffer/dispatch.sqlite//data/gaffer/memory.sqlite (runtime DB copies), /opt/gaffer/dispatch-mcp/bin.js//opt/gaffer/memory-mcp/bin.js (the built dist bins), and ct_live_9f3a7b21c0 (RUNNER-OWNED-BOOKKEEPING: the runner-held delivery claim token, so the agent's token-gated evidence writes resolve it from the server env — the agent never handles the token). The memory server additionally gets GAFFER_FACTORY=1 +  (the ticket's in-scope repo names) so its DIRECT-APPLY writes (digest / feature) are bound to the ticket's repo scope, fail-closed, plus GAFFER_RECALL_TICKET (the delivery ticket ref) so its READ path can attribute a retrieval to a ticket for memory ROI (empty ⇒ inert, no logging). Build the workspace first: pnpm -r build.",
+  "mcpServers": {
+    "dispatch": {
+      "command": "node",
+      "args": ["/opt/gaffer/dispatch-mcp/bin.js"],
+      "env": {
+        "DISPATCH_DB": "/data/gaffer/dispatch.sqlite",
+        "GAFFER_CLAIM_TOKEN": "ct_live_9f3a7b21c0",
+        "GAFFER_FACTORY": "1"
+      }
+    },
+    "memory": {
+      "command": "node",
+      "args": ["/opt/gaffer/memory-mcp/bin.js"],
+      "env": {
+        "MEMORY_DB": "/data/gaffer/memory.sqlite",
+        "GAFFER_FACTORY": "1",
+        "GAFFER_TICKET_REPOS": "",
+        "GAFFER_RECALL_TICKET": ""
+      }
+    }
+  }
+}

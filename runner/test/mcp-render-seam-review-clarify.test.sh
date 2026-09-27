@@ -23,10 +23,9 @@
 #   proof that the six shared substitutions render byte-for-byte the same
 #   and the ONLY difference is the ${GAFFER_TICKET_REPOS} placeholder fix.
 #
-# If either migrated render diverged from the prior inline sed on any of
-# the shared values, this test FAILS. It runs the bash branch of the seam
-# (GAFFER_RUNTIME=bash) so it needs no crew build — live behaviour is the
-# bash path.
+# If the migrated render diverged from the prior inline sed on any of the
+# shared values, this test FAILS. It runs the seam as shipped (the typed
+# renderer, packages/crew renderMcpCli.js), so it needs the crew build.
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +33,7 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 TEMPLATE="$RUNNER_DIR/.mcp.json"
 
 [ -f "$TEMPLATE" ] || { echo "FAIL: template missing ($TEMPLATE)" >&2; exit 1; }
+[ -f "$RUNNER_DIR/../packages/crew/dist/runtime/context/renderMcpCli.js" ] || { echo "SKIP: crew not built — run pnpm -C packages/crew build"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/mcp-render-seam-rc.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -79,7 +79,7 @@ seam_case() {
   # The migrated call sites feed the seam exactly this: recall empty, ticket-repos
   # explicitly empty, bash branch (live default).
   GAFFER_TICKET_REPOS=""
-  if ! GAFFER_RUNTIME=bash gaffer_render_mcp_runtime "$TEMPLATE" "$seam" ""; then
+  if ! gaffer_render_mcp_runtime "$TEMPLATE" "$seam" ""; then
     no "$label — seam render exited non-zero"; return
   fi
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // =====================================================================
 // Node entrypoint for the worktree-leaf derivation (P4 orchestration).
-// The LIVE seam target: tick.sh's WT_ROWS loop routes its per-repo key
-// derivation through this CLI when GAFFER_RUNTIME=ts and this dist bin
-// exists, else it runs the legacy `tr | sed` verbatim (default bash).
+// The runner's ONLY implementation: tick.sh's WT_ROWS loop derives every
+// per-repo leaf through this CLI (the former `tr | sed` twin was deleted;
+// runner/test/worktree-key-golden.test.sh pins the output).
 //
 //   node worktreeKeyCli.js --id <repoId> --name <repoName> --index <n>
 //

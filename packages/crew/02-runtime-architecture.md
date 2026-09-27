@@ -32,15 +32,16 @@ Human/operator entry point.
 Commands:
 
 ```text
-crew init
-crew scan-repos
-crew run
-crew run-loop implementation
-crew run-loop idle-coverage
-crew validate-config
-crew explain-policy
-crew doctor
+crew init                      # write crew.yaml + the data dir
+crew doctor                    # config / paths / audit-log health (status.sh calls it)
+crew skills --stack <stack>    # the skills a stack selects (tick.sh fallback)
+crew repo onboard <path>       # scan + register a repo (gaffer onboard, the dashboard)
+crew idle | crew maintain      # opt-in idle-draft and maintenance loops (tick.sh)
+crew scan · run · stats · ingest · safety check   # see docs/crew-surface-audit.md
 ```
+
+Which of these the runner actually invokes, and which are candidates for
+removal, is recorded in [`docs/crew-surface-audit.md`](../../docs/crew-surface-audit.md).
 
 ### crew-mcp
 

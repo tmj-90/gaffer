@@ -1,5 +1,8 @@
 # Gaffer Definition-of-Done (DoD) gate — audit I3 (sourced by factory.config.sh).
 # shellcheck shell=bash
+# The typed CLIs live in packages/crew; factory.config.sh exports CREW_DIR, and a lib
+# sourced standalone (tests, the gate replay) resolves the workspace default itself.
+[ -n "${CREW_DIR:-}" ] || CREW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/crew" 2>/dev/null && pwd)"
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 #
 # The single biggest "factory, not vibe" lever: a configurable, deterministically
@@ -252,26 +255,11 @@ gaffer_run_dod_gates() {
 #   gaffer_dod_summary_line <results-file>
 gaffer_dod_summary_line() {
   local results="$1"
-  # STRANGLER SEAM (see gaffer_dod_distill_output). GAFFER_DOD_DISTILL=ts AND the
-  # typed dist bin on disk → route to the byte-identical TS port (summarizeGates);
-  # else the legacy awk below runs VERBATIM. Default awk — unchanged live behaviour.
-  if [ "${GAFFER_DOD_DISTILL:-awk}" = "ts" ] \
-     && [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ]; then
-    node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" summary --in "$results" 2>/dev/null || return 0
-    return 0
-  fi
-  awk -F'\t' '
-    $1=="GATE" {
-      total++
-      if ($4=="PASS") pass++
-      else if ($4=="FAIL") { fail++; failed = failed (failed?", ":"") $2 "@" $3 }
-      else skip++
-    }
-    END {
-      printf "%d gate(s): %d pass, %d skip, %d fail", total+0, pass+0, skip+0, fail+0
-      if (fail>0) printf " (failed: %s)", failed
-    }
-  ' "$results" 2>/dev/null
+  # Typed (packages/crew dodDistillCli.js summarizeGates); pinned by dod-distill-golden.
+  # A log line, never a gate: without the crew dist it prints nothing and returns 0.
+  [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ] || return 0
+  node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" summary --in "$results" 2>/dev/null || return 0
+  return 0
 }
 
 # Count the gates that actually EXECUTED (PASS or FAIL) in a results file — i.e.
@@ -281,16 +269,13 @@ gaffer_dod_summary_line() {
 # silently waved through (R1 LOW).
 gaffer_dod_executed_count() {
   local results="$1"
-  # STRANGLER SEAM (see gaffer_dod_distill_output). GAFFER_DOD_DISTILL=ts AND the
-  # typed dist bin on disk → route to the byte-identical TS port (executedCount);
-  # else the legacy awk below runs VERBATIM. Default awk — unchanged live behaviour.
-  if [ "${GAFFER_DOD_DISTILL:-awk}" = "ts" ] \
-     && [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ]; then
-    node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" executed-count --in "$results" 2>/dev/null || return 0
-    return 0
-  fi
-  awk -F'\t' '$1=="GATE" && ($4=="PASS" || $4=="FAIL") { n++ } END { print n+0 }' \
-    "$results" 2>/dev/null
+  # Typed (packages/crew dodDistillCli.js executedCount); pinned by dod-distill-golden.
+  # FAIL CLOSED: when the CLI cannot run the count is 0 — tick.sh then refuses the
+  # delivery as "zero gates executed" (unless GAFFER_ALLOW_NO_DOD=1), so a missing
+  # crew dist can only make the DoD stricter, never wave a delivery through.
+  [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ] || { echo 0; return 0; }
+  node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" executed-count --in "$results" 2>/dev/null || echo 0
+  return 0
 }
 
 # Build the compact evidence summary recorded on the ticket. First line is a
@@ -336,49 +321,14 @@ gaffer_dod_evidence_summary() {
 gaffer_dod_distill_output() {
   local infile="$1" max="${2:-$GAFFER_DOD_FEEDBACK_LINES}"
   [ -f "$infile" ] || return 0
-  # STRANGLER SEAM (additive-then-cutover, mirrors gaffer_render_mcp_runtime in
-  # factory.config.sh). GAFFER_DOD_DISTILL=ts AND the typed dist bin on disk →
-  # route to the byte-identical TS port (dodDistillCli.js); else the legacy awk
-  # below runs VERBATIM. Default is awk — unchanged live behaviour. FAIL-SOFT is
-  # preserved either way: the TS branch is best-effort feedback, never a gate, so
-  # a non-zero node exit falls through to `return 0` (prints nothing), exactly
-  # like the awk's `2>/dev/null`; the caller's `|| tail …` still backstops it.
-  if [ "${GAFFER_DOD_DISTILL:-awk}" = "ts" ] \
-     && [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ]; then
-    node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" distill \
-      --in "$infile" --max "${max:-40}" 2>/dev/null || return 0
-    return 0
-  fi
-  awk -v MAX="${max:-40}" '
-    # A line that carries real failure signal across the common stacks. Kept
-    # deliberately broad (best-effort): a false positive just keeps one extra
-    # line; a false negative is covered by the tail fallback below.
-    function is_signal(s) {
-      return (s ~ /--- FAIL:/ ||                              # go test
-              s ~ /(^|[ \t])FAILED([ \t]|:|$)/ ||             # pytest / gradle
-              s ~ /(^|[ \t])FAIL([ \t]|:|$)/ ||               # vitest / jest / go
-              s ~ /[✕✗×]/ ||                                  # vitest / jest marks
-              s ~ /(^|[ \t])● / ||                            # jest failing block
-              s ~ /AssertionError|Assertion/ ||
-              s ~ /[Ee]xpected|[Rr]eceived|but was|but got|actual:/ ||
-              s ~ /[A-Za-z_.]*(Error|Exception)(:| |$)/ ||    # FooError: / Exception
-              s ~ /panic:/ ||                                 # go
-              s ~ /Traceback|(^|[ \t])E[ \t]/ ||              # pytest error lines
-              s ~ /\[ERROR\]|<<< (FAILURE|ERROR)/ ||          # maven surefire
-              s ~ /(^|[ \t])assert/ ||
-              s ~ /:[0-9]+:[0-9]+|:[0-9]+\)/)                 # file:line stack refs
-    }
-    { line[NR]=$0; if (is_signal($0) && $0 !~ /^[ \t]*$/) { sig[NR]=1; nsig++ } }
-    END {
-      c=0
-      if (nsig>0) {
-        for (i=1;i<=NR && c<MAX;i++) if (sig[i]) { print line[i]; c++ }
-      } else {
-        start=NR-MAX+1; if (start<1) start=1
-        for (i=start;i<=NR;i++) if (line[i] !~ /^[ \t]*$/) print line[i]
-      }
-    }
-  ' "$infile" 2>/dev/null
+  # Typed (packages/crew dodDistillCli.js distillOutput): the failing test name(s) +
+  # assertion/error/stack, not a blind tail. Pinned by dod-distill-golden. FEEDBACK,
+  # never a gate: without the crew dist (or on a node error) it prints nothing and
+  # returns 0 — the caller's `|| tail …` backstops it exactly as before.
+  [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ] || return 0
+  node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" distill \
+    --in "$infile" --max "${max:-40}" 2>/dev/null || return 0
+  return 0
 }
 
 # gaffer_dod_extract_failure <results-file>
@@ -389,20 +339,10 @@ gaffer_dod_distill_output() {
 gaffer_dod_extract_failure() {
   local results="$1"
   [ -f "$results" ] || return 0
-  # STRANGLER SEAM (see gaffer_dod_distill_output). GAFFER_DOD_DISTILL=ts AND the
-  # typed dist bin on disk → route to the byte-identical TS port; else the legacy
-  # awk below runs VERBATIM. Default awk. FAIL-SOFT preserved: a non-zero node
-  # exit falls through to `return 0` (prints nothing) — this is feedback only.
-  if [ "${GAFFER_DOD_DISTILL:-awk}" = "ts" ] \
-     && [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ]; then
-    node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" extract \
-      --in "$results" 2>/dev/null || return 0
-    return 0
-  fi
-  awk '
-    /^---DOD-OUTPUT / { h=$0; sub(/^---DOD-OUTPUT /,"",h); sub(/---[ \t]*$/,"",h);
-                        print "failing gate: " h; keep=1; next }
-    /^---END-DOD-OUTPUT---/ { keep=0; next }
-    keep && $0 !~ /^[ \t]*$/ { print "  " $0 }
-  ' "$results" 2>/dev/null
+  # Typed (packages/crew dodDistillCli.js extractFailure); pinned by dod-distill-golden.
+  # Feedback only: without the crew dist it prints nothing and returns 0.
+  [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ] || return 0
+  node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" extract \
+    --in "$results" 2>/dev/null || return 0
+  return 0
 }

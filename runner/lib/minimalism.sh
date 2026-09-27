@@ -1,5 +1,8 @@
 # Gaffer minimalism post-condition (sourced by factory.config.sh).
 # shellcheck shell=bash
+# The typed CLIs live in packages/crew; factory.config.sh exports CREW_DIR, and a lib
+# sourced standalone (tests, the gate replay) resolves the workspace default itself.
+[ -n "${CREW_DIR:-}" ] || CREW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/crew" 2>/dev/null && pwd)"
 #
 # For every COMPLETED delivery the runner requires a minimalism record:
 #   • smallest-change note   (MANDATORY — missing → post-condition FAILS)
@@ -28,21 +31,12 @@ gaffer_diff_stats() {
   git -C "$worktree" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0"; return 0; }
   local _numstat
   _numstat="$(git -C "$worktree" diff --numstat "$base"...HEAD 2>/dev/null)"
-  # STRANGLER SEAM (P4): the byte-identical typed parse (minimalismCli.js diff-stats
-  # → diffStats) under GAFFER_RUNTIME=ts + the dist bin; else the legacy awk below.
-  # `printf %s` (no added newline) so an EMPTY numstat stays 0 records → "0 0" on both
-  # branches (a spurious trailing newline would count as one phantom file). On a
-  # non-zero node exit it falls through to the awk so a stat is never lost.
-  if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
-     && [ -f "${CREW_DIR:-}/dist/runtime/minimalism/minimalismCli.js" ]; then
-    printf '%s' "$_numstat" | node "${CREW_DIR}/dist/runtime/minimalism/minimalismCli.js" diff-stats 2>/dev/null && return 0
-  fi
-  printf '%s' "$_numstat" | awk '
-    { files++ }
-    $1 ~ /^[0-9]+$/ { added += $1 }
-    $2 ~ /^[0-9]+$/ { deleted += $2 }
-    END { printf "%d %d\n", files+0, added+deleted+0 }
-  '
+  # Typed (packages/crew minimalismCli.js diff-stats → diffStats); pinned by
+  # minimalism-golden. `printf %s` (no added newline) so an EMPTY numstat stays 0
+  # records → "0 0". Without the crew dist there is no stat: print "0 0" and return 1
+  # so a caller that checks the status sees the gap.
+  if [ ! -f "${CREW_DIR:-}/dist/runtime/minimalism/minimalismCli.js" ]; then echo "0 0"; return 1; fi
+  printf '%s' "$_numstat" | node "${CREW_DIR}/dist/runtime/minimalism/minimalismCli.js" diff-stats 2>/dev/null || { echo "0 0"; return 1; }
 }
 
 # Assess a completed delivery against the minimalism post-condition.
@@ -51,73 +45,33 @@ gaffer_diff_stats() {
 #   "ok"             — note present, diff within size caps               (return 0)
 #   "missing_note"   — no smallest-change note → post-condition FAILS    (return 1)
 #   "oversized_diff" — note present but diff over a cap → FLAG, not fail  (return 2)
+#   "check_failed"   — the typed check could not run (crew unbuilt)  → FAIL (return 1)
 # When MINIMALISM_ENFORCE=0 a missing note is downgraded to a non-fatal flag so the
 # guard can be observed without blocking (debugging only — default is enforce).
 gaffer_check_minimalism() {
   local files="$1" lines="$2" note="$3" changed="${4:-}"
-  local max_lines="${OVERSIZED_MAX_LINES:-400}" max_files="${OVERSIZED_MAX_FILES:-12}"
+  # Size caps + enforce flag (OVERSIZED_MAX_LINES / OVERSIZED_MAX_FILES / MINIMALISM_ENFORCE)
+  # are read from the env by minimalismCli.js itself.
   GAFFER_MINIMALISM_REASON=""
 
-  # STRANGLER SEAM (P4): the byte-identical typed decision (minimalismCli.js →
-  # checkMinimalism) under GAFFER_RUNTIME=ts + the dist bin on disk; else the legacy
-  # bash below runs VERBATIM (default). The CLI emits the three observable outputs on
-  # three lines — token / return code / reason — which this plumbs back to stdout,
-  # the exit status, and GAFFER_MINIMALISM_REASON. On a NON-ZERO CLI exit it falls
-  # through to the bash so a gate decision is never lost.
-  if [ "${GAFFER_RUNTIME:-bash}" = "ts" ] \
-     && [ -f "${CREW_DIR:-}/dist/runtime/minimalism/minimalismCli.js" ]; then
-    local _mm_out _mm_tok _mm_code _mm_reason
-    if _mm_out="$(printf '%s' "$note" | node "${CREW_DIR}/dist/runtime/minimalism/minimalismCli.js" --files "$files" --lines "$lines" --changed "$changed" 2>/dev/null)"; then
-      _mm_tok="$(printf '%s\n' "$_mm_out" | sed -n 1p)"
-      _mm_code="$(printf '%s\n' "$_mm_out" | sed -n 2p)"
-      _mm_reason="$(printf '%s\n' "$_mm_out" | sed -n '3,$p')"
-      GAFFER_MINIMALISM_REASON="$_mm_reason"
-      printf '%s\n' "$_mm_tok"
-      return "$_mm_code"
-    fi
+  # Typed (packages/crew minimalismCli.js → checkMinimalism); pinned by minimalism-golden.
+  # The CLI emits the three observable outputs on three lines — token / return code /
+  # reason — plumbed back to stdout, the exit status and GAFFER_MINIMALISM_REASON.
+  # FAIL CLOSED: without the crew dist, or on a node error, the verdict is
+  # `check_failed` (return 1) — tick.sh parks on it; a gate decision is never invented.
+  local _mm_out _mm_tok _mm_code _mm_reason
+  if [ ! -f "${CREW_DIR:-}/dist/runtime/minimalism/minimalismCli.js" ]; then
+    GAFFER_MINIMALISM_REASON="minimalism check could not run: packages/crew is not built (dist/runtime/minimalism/minimalismCli.js missing) — run pnpm -r build"
+    echo "check_failed"; return 1
   fi
-
-  # Smallest-change note is MANDATORY. Treat whitespace-only as missing.
-  local trimmed
-  trimmed="$(printf '%s' "$note" | tr -d '[:space:]')"
-  if [ -z "$trimmed" ]; then
-    GAFFER_MINIMALISM_REASON="missing smallest-change note (required for every completed delivery)"
-    if [ "${MINIMALISM_ENFORCE:-1}" = "1" ]; then
-      echo "missing_note"; return 1
-    fi
-    # Enforcement off → surface but do not fail.
-    echo "missing_note"; return 2
+  if _mm_out="$(printf '%s' "$note" | node "${CREW_DIR}/dist/runtime/minimalism/minimalismCli.js" --files "$files" --lines "$lines" --changed "$changed" 2>/dev/null)"; then
+    _mm_tok="$(printf '%s\n' "$_mm_out" | sed -n 1p)"
+    _mm_code="$(printf '%s\n' "$_mm_out" | sed -n 2p)"
+    _mm_reason="$(printf '%s\n' "$_mm_out" | sed -n '3,$p')"
+    GAFFER_MINIMALISM_REASON="$_mm_reason"
+    printf '%s\n' "$_mm_tok"
+    return "$_mm_code"
   fi
-
-  # Relevance: a note that references NONE of the actually-changed files looks like
-  # boilerplate (agents have pasted an unrelated note verbatim to satisfy the
-  # check). Flag for human review — this surfaces gaming without hard-failing a
-  # note that is legitimately conceptual. Matches a file's basename or its stem
-  # (>=4 chars, so "run-summary" matches "run-summary.sh"). Skipped when no
-  # changed-file list is supplied.
-  if [ -n "$changed" ]; then
-    local nlc referenced=0 f bn stem
-    nlc="$(printf '%s' "$note" | tr 'A-Z' 'a-z')"
-    for f in $changed; do
-      bn="$(basename "$f" | tr 'A-Z' 'a-z')"
-      [ -n "$bn" ] || continue
-      case "$nlc" in *"$bn"*) referenced=1; break;; esac
-      stem="${bn%.*}"
-      [ "${#stem}" -ge 4 ] && case "$nlc" in *"$stem"*) referenced=1; break;; esac
-    done
-    if [ "$referenced" = 0 ]; then
-      GAFFER_MINIMALISM_REASON="smallest-change note references no changed file (possible boilerplate): \"$(printf '%s' "$note" | tr -d '\n' | cut -c1-80)\""
-      echo "unverified_note"; return 2
-    fi
-  fi
-
-  # Oversized diff → flag (never fail). A cap of 0 disables that dimension.
-  if { [ "${max_lines:-0}" -gt 0 ] && [ "${lines:-0}" -gt "$max_lines" ]; } \
-     || { [ "${max_files:-0}" -gt 0 ] && [ "${files:-0}" -gt "$max_files" ]; }; then
-    GAFFER_MINIMALISM_REASON="oversized_diff: ${files} files / ${lines} lines (caps: ${max_files} files / ${max_lines} lines) — suggest a split"
-    echo "oversized_diff"; return 2
-  fi
-
-  GAFFER_MINIMALISM_REASON="minimal: ${files} files / ${lines} lines within caps; smallest-change note present"
-  echo "ok"; return 0
+  GAFFER_MINIMALISM_REASON="minimalism check could not run: minimalismCli.js exited non-zero"
+  echo "check_failed"; return 1
 }

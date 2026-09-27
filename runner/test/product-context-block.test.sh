@@ -20,10 +20,13 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 GAFFER_HOME="$(cd "$RUNNER_DIR/.." && pwd)"
 TICK="$RUNNER_DIR/tick.sh"
 PRIMER_SH="$RUNNER_DIR/lib/context-primer.sh"
-# The delivery/bootstrap prompt bodies moved into the gaffer_render_delivery_prompt
-# seam (factory.config.sh, P1b): tick.sh still BUILDS PRODUCT_CONTEXT_BLOCK + defines
-# the lore-reflection nudge, but the prompt that INJECTS them lives in the seam now.
-SEAM="$RUNNER_DIR/factory.config.sh"
+# The delivery/bootstrap prompt bodies are rendered by the typed seam
+# (packages/crew/src/runtime/context/deliveryPrompt.ts via renderPromptCli.js; the
+# bash heredoc twins were deleted). tick.sh still BUILDS PRODUCT_CONTEXT_BLOCK + the
+# lore-reflection nudge; the template that INJECTS them is the typed renderer, and
+# the product-context envelope is applied by the typed primer (contextPrimer.ts).
+SEAM="$GAFFER_HOME/packages/crew/src/runtime/context/deliveryPrompt.ts"
+PRIMER_TS="$GAFFER_HOME/packages/crew/src/runtime/context/contextPrimer.ts"
 RUNNER_CLAUDE="$RUNNER_DIR/CLAUDE.md"
 CREW_LOOP="$GAFFER_HOME/packages/crew/src/loops/implementationLoop.ts"
 CREW_CLI="$GAFFER_HOME/packages/crew/src/cli/index.ts"
@@ -41,14 +44,14 @@ grep -q 'gaffer_product_context_block()' "$PRIMER_SH" \
 grep -q -- '--kind decision,requirement,non-goal' "$PRIMER_SH" \
   && ok "primer queries product-intent kinds only" \
   || fail "primer does not restrict to product-intent kinds"
-grep -q 'gaffer_quarantine product-context' "$PRIMER_SH" \
-  && ok "primer QUARANTINES the rendered block (untrusted envelope)" \
-  || fail "primer does not quarantine the product-context block"
-CNT_PC="$(grep -c '^\$PRODUCT_CONTEXT_BLOCK$' "$SEAM" 2>/dev/null || echo 0)"
+grep -q 'quarantine("product-context"' "$PRIMER_TS" \
+  && ok "typed primer QUARANTINES the rendered block (untrusted envelope)" \
+  || fail "typed primer does not quarantine the product-context block"
+CNT_PC="$(grep -c '^\${i.productContextBlock}$' "$SEAM" 2>/dev/null || echo 0)"
 [ "$CNT_PC" = "2" ] \
   && ok "PRODUCT_CONTEXT_BLOCK injected into both delivery prompts (x$CNT_PC)" \
   || fail "PRODUCT_CONTEXT_BLOCK not injected into both prompts (found $CNT_PC, want 2)"
-if grep -A1 '^\$FILE_CARDS_BLOCK$' "$SEAM" | grep -q '^\$PRODUCT_CONTEXT_BLOCK$'; then
+if grep -A1 '^\${i.fileCardsBlock}$' "$SEAM" | grep -q '^\${i.productContextBlock}$'; then
   ok "product-context is injected AFTER the file-cards block"
 else
   fail "product-context is not injected immediately after the file-cards block"
@@ -59,7 +62,7 @@ grep -q 'LORE_REFLECTION_NUDGE' "$TICK" \
   && grep -q 'suggest_lore' "$TICK" \
   && ok "tick.sh defines the suggest_lore reflection nudge" \
   || fail "tick.sh missing the suggest_lore reflection nudge"
-CNT_NUDGE="$(grep -c '\$LORE_REFLECTION_NUDGE' "$SEAM" 2>/dev/null || echo 0)"
+CNT_NUDGE="$(grep -c '^\${LORE_REFLECTION_NUDGE}$' "$SEAM" 2>/dev/null || echo 0)"
 [ "$CNT_NUDGE" = "2" ] \
   && ok "nudge injected into both delivery prompts (x$CNT_NUDGE)" \
   || fail "nudge not injected into both prompts (found $CNT_NUDGE, want 2)"

@@ -1,0 +1,4 @@
+Building project...
+Compiling module A
+Compiling module B
+Done in 4.2s

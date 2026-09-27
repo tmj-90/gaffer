@@ -1,6 +1,7 @@
 import type { Repository, ScopeNode, TicketRepoAccess } from "../domain/types.js";
 import { RepoRepository } from "../repositories/repoRepository.js";
 import { ScopeNodeRepository } from "../repositories/scopeNodeRepository.js";
+import type { ScopeEdgeRepository } from "../repositories/scopeEdgeRepository.js";
 import {
   ScopeRepoRepository,
   type ScopeRepoWithRepo,
@@ -60,8 +61,15 @@ const KEYWORD_BOOST = 0.15;
 /** Confidence cap below the certain (1.0) reserved for mono-fallback. */
 const MAX_HEURISTIC_CONFIDENCE = 0.98;
 
-/** scope_repos relations that imply the ticket should WRITE to the repo. */
-const WRITE_RELATIONS: ReadonlySet<string> = new Set(["owns", "write_target"]);
+/**
+ * Confidence multiplier per `contains` hop when a repo is reached through a CHILD
+ * scope of the selected node (a product node → its systems → their repos). The
+ * README promises a ticket scoped to a product node reaches "exactly the repos that
+ * product owns"; before this the edges were only ever used for cycle checks.
+ */
+const CONTAINS_HOP_DISCOUNT = 0.85;
+/** Deepest `contains` chain walked (a guard against a runaway graph). */
+const MAX_CONTAINS_DEPTH = 8;
 /** Minimum token length considered for keyword overlap (drops "to", "a", "of"…). */
 const MIN_TOKEN_LENGTH = 3;
 /** Common words that carry no repo-matching signal. */
@@ -143,17 +151,51 @@ export class SuggestionService {
   private readonly repos: RepoRepository;
   private readonly scopeNodes: ScopeNodeRepository;
   private readonly scopeRepos: ScopeRepoRepository;
+  private readonly scopeEdges: ScopeEdgeRepository | undefined;
 
   constructor(
     private readonly deps: {
       repos: RepoRepository;
       scopeNodes: ScopeNodeRepository;
       scopeRepos: ScopeRepoRepository;
+      /** Optional: with it, `contains` edges are walked so a parent scope reaches its children's repos. */
+      scopeEdges?: ScopeEdgeRepository;
     },
   ) {
     this.repos = deps.repos;
     this.scopeNodes = deps.scopeNodes;
     this.scopeRepos = deps.scopeRepos;
+    this.scopeEdges = deps.scopeEdges;
+  }
+
+  /**
+   * The selected nodes plus every node reachable from them over `contains` edges,
+   * each with its hop depth (0 = selected) and the chain of names it came through.
+   * Breadth-first, de-duplicated (a node keeps its shallowest depth), depth-capped.
+   */
+  private expandContains(
+    scopeNodeIds: readonly string[],
+  ): Array<{ nodeId: string; depth: number; via: string[] }> {
+    const out: Array<{ nodeId: string; depth: number; via: string[] }> = [];
+    const seen = new Map<string, number>();
+    const queue: Array<{ nodeId: string; depth: number; via: string[] }> = scopeNodeIds.map(
+      (nodeId) => ({ nodeId, depth: 0, via: [] }),
+    );
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      const prev = seen.get(cur.nodeId);
+      if (prev !== undefined && prev <= cur.depth) continue;
+      seen.set(cur.nodeId, cur.depth);
+      out.push(cur);
+      if (!this.scopeEdges || cur.depth >= MAX_CONTAINS_DEPTH) continue;
+      const node = this.scopeNodes.findById(cur.nodeId);
+      const name = node?.name ?? cur.nodeId;
+      for (const edge of this.scopeEdges.list(cur.nodeId)) {
+        if (edge.relation !== "contains" || edge.from_node_id !== cur.nodeId) continue;
+        queue.push({ nodeId: edge.to_node_id, depth: cur.depth + 1, via: [...cur.via, name] });
+      }
+    }
+    return out;
   }
 
   /**
@@ -175,13 +217,16 @@ export class SuggestionService {
     const tokens = tokenize(`${input.title ?? ""} ${input.description ?? ""}`);
     const acc = new Map<string, Accumulator>();
 
-    // Pass 1: scope→repo graph mappings of the selected scope nodes.
-    for (const nodeId of scopeNodeIds) {
+    // Pass 1: scope→repo graph mappings of the selected scope nodes AND of every
+    // scope they `contain` (walked over the Factory Map's edges): a ticket scoped to
+    // a product node reaches the repos its systems/components map to, each hop
+    // discounting the confidence a little so the directly-mapped repos rank first.
+    for (const { nodeId, depth, via } of this.expandContains(scopeNodeIds)) {
       const node = this.scopeNodes.findById(nodeId);
       if (!node) continue; // unknown node id: skip rather than throw (advisory).
       const links = this.scopeRepos.reposForScope(nodeId);
       for (const link of links) {
-        this.applyScopeRepoSignal(acc, node, link);
+        this.applyScopeRepoSignal(acc, node, link, depth, via);
       }
     }
 
@@ -225,21 +270,34 @@ export class SuggestionService {
     acc: Map<string, Accumulator>,
     node: ScopeNode,
     link: ScopeRepoWithRepo,
+    depth = 0,
+    via: readonly string[] = [],
   ): void {
-    const isWrite = WRITE_RELATIONS.has(link.relation) || link.default_access === "write";
+    // The STORED default access is the operator's decision and wins over the
+    // relation: `owns` + `read` is a deliberate read-only mapping (it used to be
+    // suggested as WRITE anyway), and `none` means "this repo is not in play for this
+    // scope" — no suggestion at all, rather than a read one. (An `owns` link saved
+    // without an explicit access is stored as write — see defaultAccessForRelation.)
+    if (link.default_access === "none") return;
+    const isWrite = link.default_access === "write";
     const access: SuggestedAccess = isWrite
       ? "write"
-      : link.default_access === "test" || link.relation === "test_target"
+      : link.default_access === "test"
         ? "test"
         : "read";
 
     const baseConfidence = isWrite ? WRITE_CONFIDENCE : READ_CONFIDENCE;
     // A scope_repos row may carry its own confidence; prefer the stronger signal.
-    const confidence = Math.max(baseConfidence, link.confidence ?? 0);
+    // A repo reached through `contains` hops is discounted per hop.
+    const confidence =
+      Math.max(baseConfidence, link.confidence ?? 0) * CONTAINS_HOP_DISCOUNT ** depth;
 
+    const chain = via.length > 0 ? ` (via ${via.map((n) => `'${n}'`).join(" ⊃ ")})` : "";
     const reason = isWrite
-      ? `scope '${node.name}' owns/targets this repo`
-      : `read context for scope '${node.name}'`;
+      ? `scope '${node.name}' owns/targets this repo${chain}`
+      : access === "test"
+        ? `test target for scope '${node.name}'${chain}`
+        : `read context for scope '${node.name}'${chain}`;
 
     this.merge(acc, {
       repoId: link.id,

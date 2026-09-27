@@ -285,12 +285,23 @@ export const linkScopeRepoInput = z.object({
   scope_node_id: z.string().min(1),
   repo_id: z.string().min(1),
   relation: z.enum(SCOPE_REPO_RELATIONS).default("uses"),
-  default_access: z.enum(SCOPE_REPO_ACCESS).default("read"),
+  // Optional: when omitted the service derives it FROM THE RELATION (owns /
+  // write_target → write, test_target → test, else read) — a flat "read" default
+  // made `owns` links read-only on paper while the suggestion engine treated the
+  // relation as write anyway, so the stored access and the suggestion disagreed.
+  default_access: z.enum(SCOPE_REPO_ACCESS).optional(),
   confidence: z.number().min(0).max(1).optional(),
   role_description: z.string().max(2_000).optional(),
   reasons: reasons.optional(),
 });
 export type LinkScopeRepoInput = z.infer<typeof linkScopeRepoInput>;
+
+/** The access a scope→repo relation implies when none is given explicitly. */
+export function defaultAccessForRelation(relation: string): (typeof SCOPE_REPO_ACCESS)[number] {
+  if (relation === "owns" || relation === "write_target") return "write";
+  if (relation === "test_target") return "test";
+  return "read";
+}
 
 /** Patch an existing scope→repo association (by its id). */
 export const updateScopeRepoInput = z.object({

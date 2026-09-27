@@ -16,6 +16,80 @@ function fresh(): Dispatch {
  * shared library used as read context, a one-to-many scope, a multi-home repo,
  * and an unmapped standalone repo for the mono-fallback path.
  */
+describe("Factory Map edges + access defaults (B27)", () => {
+  it("a ticket scoped to a PRODUCT node reaches the repos its child systems own (contains walk)", () => {
+    const wg = fresh();
+    const product = wg.createScopeNode({ name: "Marketplace", type: "product" }, human);
+    const system = wg.createScopeNode({ name: "Payments", type: "system" }, human);
+    const component = wg.createScopeNode({ name: "Ledger", type: "service" }, human);
+    wg.createScopeEdge(
+      { from_node_id: product.id, to_node_id: system.id, relation: "contains" },
+      human,
+    );
+    wg.createScopeEdge(
+      { from_node_id: system.id, to_node_id: component.id, relation: "contains" },
+      human,
+    );
+    const payments = wg.registerRepository({ name: "payments-api" }, human);
+    const ledger = wg.registerRepository({ name: "ledger-svc" }, human);
+    wg.linkScopeRepo({ scope_node_id: system.id, repo_id: payments.id, relation: "owns" }, human);
+    wg.linkScopeRepo({ scope_node_id: component.id, repo_id: ledger.id, relation: "owns" }, human);
+
+    const out = wg.suggestReposForTicket({ scopeNodeIds: [product.id] }, human);
+    const byName = new Map(out.map((s) => [s.repoName, s]));
+    expect(byName.has("payments-api")).toBe(true);
+    expect(byName.has("ledger-svc")).toBe(true);
+    // Both are WRITE (owns), each hop discounts confidence so the nearer repo ranks first.
+    expect(byName.get("payments-api")!.suggestedAccess).toBe("write");
+    expect(byName.get("payments-api")!.confidence).toBeGreaterThan(
+      byName.get("ledger-svc")!.confidence,
+    );
+    expect(byName.get("ledger-svc")!.reasons.join(" ")).toContain("via 'Marketplace' ⊃ 'Payments'");
+    wg.db.close();
+  });
+
+  it("`owns` without an explicit access is stored as write; `owns` + read stays READ; `none` is never suggested", () => {
+    const wg = fresh();
+    const node = wg.createScopeNode({ name: "Core", type: "system" }, human);
+    const a = wg.registerRepository({ name: "a-owned" }, human);
+    const b = wg.registerRepository({ name: "b-owned-readonly" }, human);
+    const c = wg.registerRepository({ name: "c-none" }, human);
+    const linkA = wg.linkScopeRepo(
+      { scope_node_id: node.id, repo_id: a.id, relation: "owns" },
+      human,
+    );
+    expect(linkA.default_access).toBe("write");
+    wg.linkScopeRepo(
+      { scope_node_id: node.id, repo_id: b.id, relation: "owns", default_access: "read" },
+      human,
+    );
+    wg.linkScopeRepo(
+      { scope_node_id: node.id, repo_id: c.id, relation: "uses", default_access: "none" },
+      human,
+    );
+    const out = wg.suggestReposForTicket({ scopeNodeIds: [node.id] }, human);
+    const byName = new Map(out.map((s) => [s.repoName, s.suggestedAccess]));
+    expect(byName.get("a-owned")).toBe("write");
+    expect(byName.get("b-owned-readonly")).toBe("read");
+    expect(byName.has("c-none")).toBe(false);
+    wg.db.close();
+  });
+
+  it("a hidden repo mapped to a scope is not suggested and not listed for the scope", () => {
+    const wg = fresh();
+    const node = wg.createScopeNode({ name: "Core", type: "system" }, human);
+    const shown = wg.registerRepository({ name: "shown" }, human);
+    const hidden = wg.registerRepository({ name: "hidden-repo" }, human);
+    wg.linkScopeRepo({ scope_node_id: node.id, repo_id: shown.id, relation: "owns" }, human);
+    wg.linkScopeRepo({ scope_node_id: node.id, repo_id: hidden.id, relation: "owns" }, human);
+    wg.setRepoHidden(hidden.id, true, human);
+    const out = wg.suggestReposForTicket({ scopeNodeIds: [node.id] }, human);
+    expect(out.map((s) => s.repoName)).toEqual(["shown"]);
+    expect(wg.reposForScope(node.id).map((r) => r.name)).toEqual(["shown"]);
+    wg.db.close();
+  });
+});
+
 describe("FG-005: scope→repo suggestion engine", () => {
   it("one-to-one: a scope owning a repo suggests WRITE with high confidence", () => {
     const wg = fresh();

@@ -397,6 +397,7 @@ export class Dispatch {
       repos: this.repos,
       scopeNodes: this.scopeNodes,
       scopeRepos: this.scopeRepos,
+      scopeEdges: this.scopeEdges,
     });
     this.scope = new ScopeService({
       db,

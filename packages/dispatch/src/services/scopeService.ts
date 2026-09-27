@@ -6,6 +6,7 @@ import {
   linkTicketScopeInput,
   updateScopeNodeInput,
   updateScopeRepoInput,
+  defaultAccessForRelation,
 } from "../domain/schemas.js";
 import {
   SCOPE_EDGE_RELATIONS_V1,
@@ -325,7 +326,7 @@ export class ScopeService {
         scope_node_id: node.id,
         repo_id: repo.id,
         relation: input.relation,
-        default_access: input.default_access,
+        default_access: input.default_access ?? defaultAccessForRelation(input.relation),
         confidence: input.confidence ?? null,
         role_description: input.role_description ?? null,
         reasons_json: input.reasons ? JSON.stringify(input.reasons) : null,

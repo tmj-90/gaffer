@@ -87,7 +87,7 @@ export class ScopeRepoRepository {
                 sr.default_access AS default_access, sr.confidence AS confidence,
                 sr.role_description AS role_description
          FROM scope_repos sr JOIN repositories r ON r.id = sr.repo_id
-         WHERE sr.scope_node_id = ?
+         WHERE sr.scope_node_id = ? AND COALESCE(r.hidden, 0) = 0
          ORDER BY sr.relation ASC, r.name ASC`,
       )
       .all(scopeNodeId) as ScopeRepoWithRepo[];

@@ -160,15 +160,24 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "idle-loops",
     label: "Feature-backlog idle loop",
-    help: "When idle, mine repos for feature backlog candidates.",
+    help:
+      "When idle, pull one backlog feature from memory and plan it as an epic. Overrides " +
+      "the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the " +
+      "Feature backlog row in the Idle loops panel) for every crew run the runner " +
+      "spawns; empty = crew.yaml decides.",
   },
   {
     key: "GAFFER_IDLE_MODE",
     type: "string",
-    choices: ["observe_only", "create_draft", "create_ready"],
+    choices: ["observe_only", "create_draft_tickets", "create_ready_tickets"],
     group: "idle-loops",
     label: "Idle-loop mode",
-    help: "How far an idle loop goes: observe · draft · ready.",
+    help:
+      "How far EVERY idle loop goes with a finding: observe_only reports it and files " +
+      "nothing · create_draft_tickets files a draft for a human to ready (the default) · " +
+      "create_ready_tickets files it past the human gate. When set it overrides each " +
+      "loop's `mode` in crew.yaml for the crew runs the runner spawns; empty = crew.yaml " +
+      "decides per loop.",
   },
 
   // --- Budget / caps: hard limits on a run ---
@@ -417,6 +426,19 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "budget",
     label: "Max delivery attempts",
     help: "How many times a ticket may be re-worked after a rejected review before it parks to blocked.",
+  },
+  {
+    key: "DISPATCH_MAX_ATTEMPTS",
+    type: "int",
+    group: "budget",
+    label: "Max review rejections (Dispatch)",
+    help:
+      "Dispatch's own cap on how many times a delivery may be rejected back into the " +
+      "queue before the ticket is parked (blocked) for a human — the server-side " +
+      "wallet guard against an unbounded reject loop, enforced on every reject " +
+      "transition regardless of which runner drove it. Defaults to Max delivery " +
+      "attempts so the two caps agree; set it only to make the server stricter or " +
+      "looser than the runner's rework ladder.",
   },
   {
     key: "GAFFER_MAX_NOCOMMIT_FAILURES",

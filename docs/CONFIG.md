@@ -20,9 +20,9 @@ computed from other knobs at runtime.
 | Metric | Count |
 |---|---|
 | Knobs with a runner default | 107 |
-| Knobs editable in the dashboard | 53 |
+| Knobs editable in the dashboard | 55 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 62 |
+| Env reads in code with no default and no UI entry | 61 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -81,6 +81,7 @@ computed from other knobs at runtime.
 | `GAFFER_DAEMON_MAX_CYCLES` | `0` |  | runner | 0 = unbounded |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many times a ticket may be re-worked after a rejected review before it parks to blocked. |
 | `GAFFER_CLAIM_TTL` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))`) |  | runner |  |
+| `DISPATCH_MAX_ATTEMPTS` | _derived_ (`$GAFFER_MAX_DELIVERY_ATTEMPTS`) | yes (int) | dispatch, runner | Dispatch's own cap on how many times a delivery may be rejected back into the queue before the ticket is parked (blocked) for a human — the server-side wallet guard against an unbounded reject loop, enforced on every reject transition regardless of which runner drove it. Defaults to Max delivery attempts so the two caps agree; set it only to make the server stricter or looser than the runner's rework ladder. |
 | `GAFFER_TICK_OUTER_TIMEOUT` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))`) |  | runner | FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around the WHOLE tick.sh. |
 | `GAFFER_REWORK_STRONG_MODEL` | _derived_ (`${GAFFER_PLAN_MODEL:-opus}`) |  | runner | ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning for the hardest cases before a human is pulled in). |
 | `GAFFER_REWORK_BUDGET_USD` | _derived_ (`${GAFFER_BUDGET_USD:-}`) | yes (string) | dispatch, runner | Cumulative spend ceiling for one ticket's rework loop. Delivery stops at whichever hits first — this or Max delivery attempts — then parks to blocked. Defaults to the factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it). |
@@ -250,8 +251,8 @@ consuming component applies its own default when the variable is unset.
 | Variable | Type | Group | Read by | Help |
 |---|---|---|---|---|
 | `GAFFER_TESTING` | boolean | autonomy | dispatch, runner | When on, an approved testable ticket routes through the independent testing lane (in_review → in_testing) instead of straight to merge. The lane, the contract, and the runner seam are live; the seam hands an independent tester the contract + AC (never the diff). The live tester invocation is a documented follow-up. Off → review approval goes straight to merge. |
-| `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | dispatch | When idle, mine repos for feature backlog candidates. |
-| `GAFFER_IDLE_MODE` | string: observe_only / create_draft / create_ready | idle-loops | dispatch | How far an idle loop goes: observe · draft · ready. |
+| `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | crew, dispatch | When idle, pull one backlog feature from memory and plan it as an epic. Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml decides. |
+| `GAFFER_IDLE_MODE` | string: observe_only / create_draft_tickets / create_ready_tickets | idle-loops | crew, dispatch | How far EVERY idle loop goes with a finding: observe_only reports it and files nothing · create_draft_tickets files a draft for a human to ready (the default) · create_ready_tickets files it past the human gate. When set it overrides each loop's `mode` in crew.yaml for the crew runs the runner spawns; empty = crew.yaml decides per loop. |
 | `GAFFER_NOTIFY_WEBHOOK_URL` | string | notifications | dispatch, runner | POST each human-gate event as JSON to this URL (the generic integration). |
 | `GAFFER_NOTIFY_SLACK_URL` | string | notifications | dispatch, runner | Slack incoming-webhook URL — gates arrive as a Slack message. |
 | `GAFFER_NOTIFY_DESKTOP` | boolean | notifications | dispatch, runner | Fire a native desktop banner (macOS/Linux) on each human gate. |
@@ -278,7 +279,6 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `DISPATCH_CLI` |  | `runner/bin/merge-ticket.mjs` |
 | `DISPATCH_CORRELATION_ID` |  | `packages/dispatch/src/events/eventWriter.ts` |
 | `DISPATCH_LARGE_DELETION_LINES` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
-| `DISPATCH_MAX_ATTEMPTS` |  | `packages/dispatch/src/core.ts` |
 | `DISPATCH_OBSERVED_RISK_CEILING` | _(empty)_ | `packages/dispatch/src/services/observedRisk.ts` |
 | `DISPATCH_SENSITIVE_PATH_RE` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |

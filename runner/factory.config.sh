@@ -411,6 +411,16 @@ export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 : "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"
 : "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
 export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
+# DISPATCH_MAX_ATTEMPTS — Dispatch's OWN reject-loop cap (packages/dispatch/src/core.ts
+# resolveMaxAttempts): a delivery rejected back into the queue this many times is
+# PARKED (blocked) for a human, enforced server-side on every reject transition. It
+# is a SECOND attempt cap next to GAFFER_MAX_DELIVERY_ATTEMPTS (the runner's rework
+# ladder); B29: it was read by Dispatch but never set or exported here, so the two
+# could silently disagree and the dashboard could not show it. Default it to the
+# runner's cap so they agree by construction, and EXPORT it so the `wg` CLI, the
+# MCP server and the dashboard all read the same value. Settings-UI editable.
+: "${DISPATCH_MAX_ATTEMPTS:=$GAFFER_MAX_DELIVERY_ATTEMPTS}"
+export DISPATCH_MAX_ATTEMPTS
 
 # FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around
 # the WHOLE tick.sh. It must mirror the claim-TTL math above, NOT the single-call

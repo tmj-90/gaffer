@@ -624,6 +624,65 @@ export const specBuildBody = z.object({
 });
 export type SpecBuildBody = z.infer<typeof specBuildBody>;
 
+// --- Memory lore ratification (GET /api/memory/lore, approve / reject) -----
+
+/** The memory store's lifecycle states and product-intent kinds (mirrors memory's enums). */
+const LORE_STATUSES = ["draft", "active", "deprecated", "superseded"] as const;
+const LORE_KINDS = [
+  "decision",
+  "requirement",
+  "non-goal",
+  "convention",
+  "gotcha",
+  "other",
+] as const;
+
+/**
+ * Comma-separated enum list in a query string → validated array. Built from
+ * refine + transform (both `ZodEffects`, which the OpenAPI walker renders as the
+ * underlying string) rather than a pipeline the walker would refuse.
+ */
+const csvEnum = <T extends readonly [string, ...string[]]>(values: T) => {
+  const split = (s: string): string[] =>
+    s
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  return z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine(
+      (s) => {
+        const parts = split(s);
+        return parts.length > 0 && parts.every((p) => (values as readonly string[]).includes(p));
+      },
+      { message: `expected a comma-separated list of: ${values.join(", ")}` },
+    )
+    .transform(split);
+};
+
+/**
+ * Query for GET /api/memory/lore — the ratification surface's read. All optional:
+ * with none the page is the 50 freshest records across every state. `status` and
+ * `kind` accept comma-separated lists; `limit` is capped at the CLI's own ceiling.
+ */
+export const memoryLoreQuery = z.object({
+  repo: z.string().trim().min(1).max(200).optional(),
+  status: csvEnum(LORE_STATUSES).optional(),
+  kind: csvEnum(LORE_KINDS).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).max(1_000_000).optional(),
+});
+export type MemoryLoreQuery = z.infer<typeof memoryLoreQuery>;
+
+/** Body for POST /api/memory/lore/:id/reject — an optional reason for the agent's benefit. */
+export const rejectLoreBody = z.object({
+  reason: z.string().trim().max(2_000).optional(),
+});
+export type RejectLoreBody = z.infer<typeof rejectLoreBody>;
+
 // --- Settings panel (UI-editable factory config) ---------------------------
 
 /**

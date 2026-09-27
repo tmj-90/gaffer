@@ -75,6 +75,13 @@ export GAFFER_DATA="$OUT/data" DISPATCH_API_PORT="$PORT" CLAUDE_BIN="$OUT/bin/cl
 source "$ROOT/runner/factory.config.sh" >/dev/null 2>&1
 node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" init >/dev/null || { echo "dispatch init failed (run pnpm -r build)"; exit 2; }
 lg init >/dev/null
+# Seed ONE lore draft for the sample repo so the regression can ratify it from the
+# Memory view (step 2b in regress.mjs): drafts used to be approvable only via the CLI.
+lg suggest --title "UI regression draft lore" \
+  --summary "A seeded draft the browser regression approves from the Memory view." \
+  --body "Seeded by scripts/ui-regression/run.sh so the dashboard's approve path is exercised end to end." \
+  --repo taskflow-mini --kind convention --tag ui-regression >/dev/null \
+  || { echo "could not seed the lore draft (memory CLI)"; exit 2; }
 [ -f "$CREW_CONFIG" ] || node "$CREW_DIR/dist/cli/index.js" init -d "$GAFFER_DATA" -n gaffer >/dev/null
 sed -i.bak "s#sqlite_path:.*#sqlite_path: $DISPATCH_DB#" "$CREW_CONFIG" && rm -f "$CREW_CONFIG.bak"
 bash "$ROOT/runner/gaffer" dashboard --restart >/dev/null 2>&1

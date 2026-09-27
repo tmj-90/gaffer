@@ -7,16 +7,19 @@ import { chmodSync, writeFileSync } from "node:fs";
 import {
   exportLore,
   getLore,
+  LIST_LORE_MAX_LIMIT,
+  listLore,
   listLoreVersions,
   listRecent,
   listRepos,
   listTags,
+  LORE_STATUSES,
   searchLore,
   searchLoreCount,
 } from "../../core/lore.js";
 import { openDb } from "../../db/index.js";
 import { LORE_KINDS } from "../../db/types.js";
-import type { LoreKind } from "../../db/types.js";
+import type { LoreKind, LoreStatus } from "../../db/types.js";
 import { getBool, getString, getStringArray } from "../args.js";
 import type { parseArgs } from "../args.js";
 import { renderFull, renderSummary } from "../format.js";
@@ -185,15 +188,112 @@ export async function cmdHistory(args: ReturnType<typeof parseArgs>): Promise<nu
   }
 }
 
-export async function cmdList(): Promise<number> {
+const LORE_STATUS_SET = new Set<string>(LORE_STATUSES);
+
+/** Parse a repeatable/comma-separated `--status` filter (validated like `--kind`). */
+function parseStatuses(args: ReturnType<typeof parseArgs>): LoreStatus[] | undefined {
+  const raw = getStringArray(args.flags, "status").flatMap((v) => v.split(","));
+  const statuses = Array.from(new Set(raw.map((s) => s.trim().toLowerCase()).filter(Boolean)));
+  if (statuses.length === 0) return undefined;
+  for (const s of statuses) {
+    if (!LORE_STATUS_SET.has(s)) {
+      throw new Error(`invalid --status: ${s} (must be one of ${LORE_STATUSES.join(", ")})`);
+    }
+  }
+  return statuses as LoreStatus[];
+}
+
+function parseNonNegativeInt(v: string | undefined, flag: string): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`invalid --${flag}: ${v} (must be a non-negative integer)`);
+  }
+  return n;
+}
+
+/**
+ * `memory list` — browse records by lifecycle state.
+ *
+ * With no flags the output is byte-for-byte what it always was (the 50 freshest
+ * records across every state, rendered as summaries). The flags turn it into the
+ * ratification surface's read: `--status draft --repo web --json` is what the
+ * dashboard's Memory view calls to list the drafts awaiting approval for one repo,
+ * paging with `--limit/--offset`. `--json` always emits ONE object
+ * `{ total, limit, offset, items }` — an empty page is `items: []`, never a
+ * human-facing string — so a programmatic caller can parse fail-soft.
+ */
+export async function cmdList(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const repo = getString(args.flags, "repo");
+  const status = parseStatuses(args);
+  const kind = parseKinds(args);
+  const limitRaw = getString(args.flags, "limit");
+  const limit = parseNonNegativeInt(limitRaw, "limit");
+  if (limit !== undefined && (limit < 1 || limit > LIST_LORE_MAX_LIMIT)) {
+    throw new Error(`invalid --limit: ${limitRaw} (must be between 1 and ${LIST_LORE_MAX_LIMIT})`);
+  }
+  const offset = parseNonNegativeInt(getString(args.flags, "offset"), "offset");
+  const json = getBool(args.flags, "json");
+  const filtered =
+    repo !== undefined ||
+    status !== undefined ||
+    kind !== undefined ||
+    limit !== undefined ||
+    offset !== undefined;
   const db = openDb();
   try {
-    const hits = listRecent(db, 50);
-    if (hits.length === 0) {
-      process.stdout.write("memory: nothing here yet — try `memory add`.\n");
+    if (!json && !filtered) {
+      // The original at-a-glance browse, unchanged.
+      const hits = listRecent(db, 50);
+      if (hits.length === 0) {
+        process.stdout.write("memory: nothing here yet — try `memory add`.\n");
+        return 0;
+      }
+      for (const h of hits) process.stdout.write(renderSummary(h) + "\n\n");
       return 0;
     }
-    for (const h of hits) process.stdout.write(renderSummary(h) + "\n\n");
+    const page = listLore(db, {
+      ...(repo !== undefined ? { repo } : {}),
+      ...(status ? { status } : {}),
+      ...(kind ? { kind } : {}),
+      limit: limit ?? 50,
+      offset: offset ?? 0,
+    });
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({
+          total: page.total,
+          limit: page.limit,
+          offset: page.offset,
+          items: page.items.map((h) => ({
+            id: h.id,
+            title: h.title,
+            summary: h.summary,
+            kind: h.kind,
+            status: h.status,
+            confidence: h.confidence,
+            source: h.source ?? null,
+            repos: h.repos,
+            tags: h.tags,
+            stale: h.stale,
+            flaggedForReview: h.flaggedForReview,
+            restricted: h.restricted,
+            updatedAt: h.updatedAt,
+          })),
+        }) + "\n",
+      );
+      return 0;
+    }
+    if (page.items.length === 0) {
+      process.stdout.write("memory: no matches\n");
+      return 0;
+    }
+    for (const h of page.items) process.stdout.write(renderSummary(h) + "\n\n");
+    if (page.total > page.offset + page.items.length) {
+      process.stdout.write(
+        `memory: showing ${page.offset + 1}-${page.offset + page.items.length} of ${page.total} — raise --limit (max ${LIST_LORE_MAX_LIMIT}) or use --offset.\n`,
+      );
+    }
     return 0;
   } finally {
     db.close();

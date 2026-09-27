@@ -11596,9 +11596,11 @@ async function renderMemory(param) {
       el("strong", {}, "Feature ledger"),
       " tracks what's shipped, building, and backlogged; ",
       el("strong", {}, "Lore"),
-      " is the team's recorded knowledge. It all lives in the memory product and is ",
+      " is the team's recorded knowledge. It all lives in the memory product; the digest and ledger are ",
       el("strong", {}, "read-only"),
-      " here.",
+      " here, and lore ",
+      el("strong", {}, "drafts"),
+      " (from agents, onboarding and the distiller) are approved or rejected below.",
     ]),
   );
 
@@ -11642,10 +11644,78 @@ async function renderMemory(param) {
     );
   }
 
-  // Lore filtered to the selected repo (plus any global / un-scoped lore).
-  const loreRes = await api("GET", "/api/memory/lore");
-  wrap.appendChild(renderLoreList(loreRes, memoryState.repo));
+  // Lore: a filtered, paged read of the memory store (status / repo / kind) with
+  // approve / reject on drafts. Mounted into a slot so a filter change or a
+  // ratification re-fetches ONLY this card, not the whole view.
+  const loreSlot = el("div", { class: "lore-slot" });
+  wrap.appendChild(loreSlot);
+  await mountLoreCard(loreSlot, repos);
   return wrap;
+}
+
+// Lore card filters. They persist across the live re-render (the SSE refresh
+// re-runs renderMemory every few seconds, and a reviewer mid-queue must not lose
+// their "drafts only" view); the repo filter follows the page's repo whenever
+// that changes. `limit` is a page, not a cap — the pager walks `total`.
+const LORE_STATUSES = ["draft", "active", "deprecated", "superseded"];
+const LORE_KINDS = ["decision", "requirement", "non-goal", "convention", "gotcha", "other"];
+const loreFilter = { status: "", kind: "", repo: "", pageRepo: null, offset: 0, limit: 50 };
+
+/** The lore read for the current filters: GET /api/memory/lore?repo&status&kind&limit&offset. */
+function loreQueryPath() {
+  const q = new URLSearchParams();
+  if (loreFilter.repo) q.set("repo", loreFilter.repo);
+  if (loreFilter.status) q.set("status", loreFilter.status);
+  if (loreFilter.kind) q.set("kind", loreFilter.kind);
+  q.set("limit", String(loreFilter.limit));
+  if (loreFilter.offset > 0) q.set("offset", String(loreFilter.offset));
+  return `/api/memory/lore?${q.toString()}`;
+}
+
+/** Fetch the current lore page and (re)render the card into `slot`. */
+async function mountLoreCard(slot, repos) {
+  if (loreFilter.pageRepo !== memoryState.repo) {
+    loreFilter.pageRepo = memoryState.repo;
+    loreFilter.repo = memoryState.repo;
+    loreFilter.offset = 0;
+  }
+  let res;
+  try {
+    res = await api("GET", loreQueryPath());
+  } catch (e) {
+    res = { available: false, reason: e && e.message ? e.message : "The lore request failed." };
+  }
+  if (!slot.isConnected && slot.childNodes.length) return; // view was torn down mid-fetch
+  clear(slot);
+  slot.appendChild(
+    renderLoreList(res, loreFilter.repo, { repos, refresh: () => mountLoreCard(slot, repos) }),
+  );
+}
+
+/**
+ * Ratify a draft from the dashboard: POST /api/memory/lore/:id/approve|reject. The
+ * server calls the memory CLI (its write boundary); success re-fetches the page so
+ * the row shows its new state (or disappears from a drafts-only filter). A refused
+ * decision (already ratified elsewhere, unknown id) surfaces as a toast, never a
+ * silent no-op.
+ */
+async function ratifyLore(l, action, refresh) {
+  try {
+    await api(
+      "POST",
+      `/api/memory/lore/${encodeURIComponent(l.id)}/${action}`,
+      action === "reject" ? {} : undefined,
+    );
+    toast(
+      action === "approve"
+        ? `Approved "${l.title}" — active for delivery agents from the next tick.`
+        : `Rejected "${l.title}".`,
+      { ok: true },
+    );
+  } catch (e) {
+    toast(e && e.message ? e.message : `Could not ${action} the draft.`, { code: e && e.code });
+  }
+  if (refresh) await refresh();
 }
 
 function renderDigestCard(repo, res, repos = []) {
@@ -11801,17 +11871,26 @@ function renderFeatureCard(f) {
   ]);
 }
 
-function renderLoreList(res, repo) {
-  const all = (res && res.lore) || [];
-  // When viewing a repo, show only its lore plus any global (un-scoped) lore.
-  const lore = repo
-    ? all.filter((l) => !l.repos || l.repos.length === 0 || l.repos.includes(repo))
-    : all;
+/**
+ * The Lore card: a repo / status / kind filter row, the current page of records
+ * (the SERVER filters and pages — `total` is the true count), approve / reject on
+ * every draft, and a pager. `repo` is the lore-card repo filter (tagged records
+ * only; "All repos" shows everything, org-wide lore included).
+ */
+function renderLoreList(res, repo, opts = {}) {
+  const lore = (res && res.lore) || [];
+  const refresh = opts.refresh || null;
+  const total = res && typeof res.total === "number" ? res.total : lore.length;
   const flaggedCount = lore.filter((l) => l && l.flagged).length;
+  const draftCount = lore.filter((l) => l && l.status === "draft").length;
   const card = el("div", { class: "card", dataset: { section: "lore" } }, [
     el("h2", {}, [
       "Lore",
-      res && res.available !== false ? el("span", { class: "count" }, String(lore.length)) : null,
+      res && res.available !== false ? el("span", { class: "count" }, String(total)) : null,
+      // Ratification queue at a glance: drafts on this page awaiting a decision.
+      draftCount > 0
+        ? badge(`${draftCount} draft${draftCount === 1 ? "" : "s"}`, "lore-draft")
+        : null,
       // Learn-loop signal at a glance: how many conventions the loop flagged for review.
       flaggedCount > 0 ? badge(`${flaggedCount} flagged`, "lore-flagged") : null,
     ]),
@@ -11819,10 +11898,64 @@ function renderLoreList(res, repo) {
       "p",
       { class: "dim section-note" },
       repo
-        ? `Knowledge scoped to ${repo} (plus un-scoped lore) — read-only here. Manage it with the memory CLI.`
-        : "The team's recorded knowledge — read-only here. Manage it with the memory CLI.",
+        ? `Knowledge tagged ${repo}. Drafts wait here for ratification — approve or reject them (the CLI's \`memory review\` does the same).`
+        : "The team's recorded knowledge across every repo. Drafts wait here for ratification — approve or reject them (the CLI's `memory review` does the same).",
     ),
   ]);
+
+  // Filter row — each change re-fetches from the first page.
+  const onFilter = (patch) => {
+    Object.assign(loreFilter, patch, { offset: 0 });
+    if (refresh) refresh();
+  };
+  const repoSel = el(
+    "select",
+    { class: "select lore-filter-repo", "aria-label": "Lore repo filter" },
+    [
+      el("option", { value: "", selected: !repo ? "" : undefined }, "All repos"),
+      ...(opts.repos || []).map((r) =>
+        el("option", { value: r.name, selected: repo === r.name ? "" : undefined }, r.name),
+      ),
+    ],
+  );
+  if (repo && !(opts.repos || []).some((r) => r.name === repo)) {
+    repoSel.appendChild(el("option", { value: repo, selected: "" }, repo));
+  }
+  repoSel.addEventListener("change", () => onFilter({ repo: repoSel.value }));
+  const statusSel = el(
+    "select",
+    { class: "select lore-filter-status", "aria-label": "Lore status filter" },
+    [
+      el("option", { value: "" }, "Any status"),
+      ...LORE_STATUSES.map((s) =>
+        el(
+          "option",
+          { value: s, selected: loreFilter.status === s ? "" : undefined },
+          s === "draft" ? "draft — awaiting ratification" : s,
+        ),
+      ),
+    ],
+  );
+  statusSel.addEventListener("change", () => onFilter({ status: statusSel.value }));
+  const kindSel = el(
+    "select",
+    { class: "select lore-filter-kind", "aria-label": "Lore kind filter" },
+    [
+      el("option", { value: "" }, "Any kind"),
+      ...LORE_KINDS.map((k) =>
+        el("option", { value: k, selected: loreFilter.kind === k ? "" : undefined }, k),
+      ),
+    ],
+  );
+  kindSel.addEventListener("change", () => onFilter({ kind: kindSel.value }));
+  card.appendChild(
+    el("div", { class: "filters lore-filters" }, [
+      field("Repo", repoSel),
+      field("Status", statusSel),
+      field("Kind", kindSel),
+    ]),
+  );
+
   if (!res || res.available === false) {
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
     return card;
@@ -11830,8 +11963,16 @@ function renderLoreList(res, repo) {
   if (lore.length === 0) {
     card.appendChild(
       emptyState(
-        repo ? `No lore for ${repo} yet` : "No lore recorded yet",
-        "Lore captures the conventions and decisions agents should respect.",
+        loreFilter.status === "draft"
+          ? repo
+            ? `No drafts awaiting review for ${repo}`
+            : "No drafts awaiting review"
+          : repo
+            ? `No lore tagged ${repo} yet`
+            : "No lore recorded yet",
+        loreFilter.status === "draft"
+          ? "Agents, onboarding and the distiller file drafts here; approving one makes it active for delivery agents."
+          : "Lore captures the conventions and decisions agents should respect.",
         "check",
       ),
     );
@@ -11841,10 +11982,11 @@ function renderLoreList(res, repo) {
     "div",
     { class: "lore-list" },
     lore.map((l) =>
-      el("div", { class: "lore-row" }, [
+      el("div", { class: "lore-row", dataset: { loreId: l.id || "", status: l.status || "" } }, [
         el("div", { class: "lore-head" }, [
           el("span", { class: "lore-title" }, l.title),
           l.status ? badge(l.status, `lore-${l.status}`) : null,
+          l.kind ? el("span", { class: "dim lore-kind" }, l.kind) : null,
           l.confidence ? el("span", { class: "dim lore-conf" }, `conf=${l.confidence}`) : null,
           l.stale ? badge("stale", "lore-stale") : null,
           // Learn-loop signal: this convention was served into a ticket that then
@@ -11865,10 +12007,69 @@ function renderLoreList(res, repo) {
               )
             : null,
         ]),
+        // Ratification: only a DRAFT can be approved or rejected (an active record is
+        // deprecated/superseded through the CLI's lifecycle verbs, not from here).
+        l.status === "draft" && l.id
+          ? el("div", { class: "lore-actions" }, [
+              el(
+                "button",
+                {
+                  class: "btn primary small lore-approve",
+                  type: "button",
+                  onclick: () => ratifyLore(l, "approve", refresh),
+                },
+                [icon("check"), el("span", {}, "Approve")],
+              ),
+              el(
+                "button",
+                {
+                  class: "btn small lore-reject",
+                  type: "button",
+                  onclick: () => ratifyLore(l, "reject", refresh),
+                },
+                "Reject",
+              ),
+            ])
+          : null,
       ]),
     ),
   );
   card.appendChild(list);
+
+  // Pager — the server pages; show where this page sits in `total`.
+  const from = loreFilter.offset + 1;
+  const to = loreFilter.offset + lore.length;
+  if (total > lore.length || loreFilter.offset > 0) {
+    const page = (delta) => {
+      loreFilter.offset = Math.max(0, loreFilter.offset + delta);
+      if (refresh) refresh();
+    };
+    card.appendChild(
+      el("div", { class: "lore-pager" }, [
+        el("span", { class: "dim tabnum" }, `Showing ${from}–${to} of ${total}`),
+        el(
+          "button",
+          {
+            class: "btn small lore-prev",
+            type: "button",
+            disabled: loreFilter.offset === 0 ? "" : undefined,
+            onclick: () => page(-loreFilter.limit),
+          },
+          "Previous",
+        ),
+        el(
+          "button",
+          {
+            class: "btn small lore-next",
+            type: "button",
+            disabled: to >= total ? "" : undefined,
+            onclick: () => page(loreFilter.limit),
+          },
+          "Next",
+        ),
+      ]),
+    );
+  }
   return card;
 }
 

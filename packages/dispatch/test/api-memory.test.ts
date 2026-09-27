@@ -168,28 +168,96 @@ describe("memoryReader parsers", () => {
 
 // --- Stub CLI: a tiny node script that echoes canned output per verb ---------
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-/** Write a stub "memory CLI" that prints the right canned output per verb. */
+// `memory list --json` output (the ratification read): one page object.
+const LORE_JSON_OUT = JSON.stringify({
+  total: 2,
+  limit: 50,
+  offset: 0,
+  items: [
+    {
+      id: "aaaa2222",
+      title: "Hash passwords with argon2id",
+      summary: "Never use bcrypt for new services.",
+      kind: "convention",
+      status: "active",
+      confidence: "high",
+      source: "manual",
+      repos: ["payments-svc", "auth"],
+      tags: ["security", "crypto"],
+      stale: false,
+      flaggedForReview: false,
+      restricted: false,
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    },
+    {
+      id: "bbbb3333",
+      title: "Prefer server components",
+      summary: "Default to RSC unless interactivity is required.",
+      kind: "decision",
+      status: "draft",
+      confidence: "medium",
+      source: null,
+      repos: [],
+      tags: ["react"],
+      stale: true,
+      flaggedForReview: true,
+      restricted: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    },
+  ],
+});
+
+/**
+ * Write a stub "memory CLI" that prints the right canned output per verb. Every
+ * invocation's argv is appended (one JSON line) to the sibling `calls.jsonl`, so a
+ * test can assert exactly which flags dispatch forwarded. `list --json` answers the
+ * JSON page; bare `list` the legacy text. `approve`/`reject` succeed for any id
+ * except `zzzzzzzz`, which the real CLI refuses ("unknown id or not a draft").
+ */
 function writeStubCli(): string {
   const dir = mkdtempSync(join(tmpdir(), "wg-mem-"));
   const cli = join(dir, "fake-memory.cjs");
   const script = `
+const fs = require("node:fs");
 const verb = process.argv[2];
+fs.appendFileSync(${JSON.stringify(join(dir, "calls.jsonl"))}, JSON.stringify(process.argv.slice(2)) + "\\n");
 const digest = ${JSON.stringify(DIGEST_OUT)};
 const features = ${JSON.stringify(FEATURES_OUT)};
 const lore = ${JSON.stringify(LORE_OUT)};
+const loreJson = ${JSON.stringify(LORE_JSON_OUT)};
 const recall = ${JSON.stringify(RECALL_OUT)};
 if (verb === "digest") process.stdout.write(digest);
 else if (verb === "features") process.stdout.write(features);
+else if (verb === "list" && process.argv.includes("--json")) process.stdout.write(loreJson + "\\n");
 else if (verb === "list") process.stdout.write(lore);
 else if (verb === "recall-stats") process.stdout.write(recall);
+else if (verb === "approve" || verb === "reject") {
+  const id = process.argv[3];
+  if (id === "zzzzzzzz") {
+    process.stderr.write("memory: cannot " + verb + " zzzzzzzz (unknown id or not a draft; use \`memory deprecate\` for active records)\\n");
+    process.exit(1);
+  }
+  process.stdout.write("memory: " + (verb === "approve" ? "approved " : "rejected ") + id + "\\n");
+}
 else { process.stderr.write("unknown verb\\n"); process.exit(2); }
 `;
   writeFileSync(cli, script);
   return cli;
+}
+
+/** Read back every argv the stub CLI at `cli` was invoked with. */
+function stubCalls(cli: string): string[][] {
+  const log = join(dirname(cli), "calls.jsonl");
+  if (!existsSync(log)) return [];
+  return readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as string[]);
 }
 
 describe("createMemoryReader (stubbed CLI)", () => {
@@ -247,10 +315,12 @@ describe("createMemoryReader (stubbed CLI)", () => {
 
 interface Harness {
   baseUrl: string;
+  /** Path of the stub CLI this harness's reader spawns ("" when unconfigured). */
+  cli: string;
   close: () => Promise<void>;
 }
 
-async function startHarness(reader: MemoryReader): Promise<Harness> {
+async function startHarness(reader: MemoryReader, cli = ""): Promise<Harness> {
   const wg = Dispatch.open(":memory:");
   const server = createApiServer(
     wg,
@@ -265,6 +335,7 @@ async function startHarness(reader: MemoryReader): Promise<Harness> {
   const { port } = server.address() as AddressInfo;
   return {
     baseUrl: `http://127.0.0.1:${port}`,
+    cli,
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => {
@@ -279,7 +350,8 @@ describe("API: /api/memory/* read surfaces", () => {
   describe("with a working memory CLI", () => {
     let h: Harness;
     beforeEach(async () => {
-      h = await startHarness(createMemoryReader({ MEMORY_CLI_BIN: writeStubCli() }));
+      const cli = writeStubCli();
+      h = await startHarness(createMemoryReader({ MEMORY_CLI_BIN: cli }), cli);
     });
     afterEach(async () => {
       await h.close();
@@ -315,6 +387,134 @@ describe("API: /api/memory/* read surfaces", () => {
       const body = (await res.json()) as { available: boolean; lore: unknown[] };
       expect(body.available).toBe(true);
       expect(body.lore).toHaveLength(2);
+    });
+
+    // --- Lore ratification (B19): filtered/paged list + approve/reject -----------
+    // Drafts were approvable only with `memory review` in a terminal, and the
+    // dashboard listed at most 50 records across all repos. These routes drive the
+    // memory CLI (`list --json`, `approve`, `reject`) — dispatch never opens its DB.
+
+    it("GET /api/memory/lore reads `list --json` and carries the page (total/limit/offset)", async () => {
+      const res = await fetch(`${h.baseUrl}/api/memory/lore`);
+      const body = (await res.json()) as {
+        available: boolean;
+        total: number;
+        limit: number;
+        offset: number;
+        lore: Array<{ id: string; status: string; kind?: string; flagged: boolean }>;
+      };
+      expect(body.available).toBe(true);
+      expect(body.total).toBe(2);
+      expect(body.limit).toBe(50);
+      expect(body.offset).toBe(0);
+      const draft = body.lore.find((l) => l.status === "draft")!;
+      expect(draft.id).toBe("bbbb3333");
+      expect(draft.kind).toBe("decision");
+      expect(draft.flagged).toBe(true);
+      const calls = stubCalls(h.cli).filter((c) => c[0] === "list");
+      expect(calls.at(-1)).toEqual(["list", "--json"]);
+    });
+
+    it("forwards repo / status / kind / limit / offset to the CLI as discrete flags", async () => {
+      const res = await fetch(
+        `${h.baseUrl}/api/memory/lore?repo=web&status=draft,active&kind=decision&limit=20&offset=40`,
+      );
+      expect(res.status).toBe(200);
+      const call = stubCalls(h.cli)
+        .filter((c) => c[0] === "list")
+        .at(-1)!;
+      expect(call).toEqual([
+        "list",
+        "--json",
+        "--repo",
+        "web",
+        "--status",
+        "draft",
+        "--status",
+        "active",
+        "--kind",
+        "decision",
+        "--limit",
+        "20",
+        "--offset",
+        "40",
+      ]);
+    });
+
+    it("rejects an unknown status / kind or an out-of-range page with 422 before spawning", async () => {
+      const before = stubCalls(h.cli).length;
+      for (const q of ["status=rejected", "kind=wisdom", "limit=0", "limit=201", "offset=-1"]) {
+        const res = await fetch(`${h.baseUrl}/api/memory/lore?${q}`);
+        expect(res.status, q).toBe(422);
+      }
+      expect(stubCalls(h.cli).length).toBe(before);
+    });
+
+    it("POST /api/memory/lore/:id/approve runs `memory approve <id>` and reports active", async () => {
+      const res = await fetch(`${h.baseUrl}/api/memory/lore/bbbb3333/approve`, { method: "POST" });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: "bbbb3333", status: "active" });
+      expect(stubCalls(h.cli).at(-1)).toEqual(["approve", "bbbb3333"]);
+    });
+
+    it("POST /api/memory/lore/:id/reject runs `memory reject <id> --reason …`", async () => {
+      const res = await fetch(`${h.baseUrl}/api/memory/lore/bbbb3333/reject`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "duplicates an existing rule" }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: "bbbb3333", status: "rejected" });
+      expect(stubCalls(h.cli).at(-1)).toEqual([
+        "reject",
+        "bbbb3333",
+        "--reason",
+        "duplicates an existing rule",
+      ]);
+      // No body at all is fine too — the reason is optional.
+      const bare = await fetch(`${h.baseUrl}/api/memory/lore/bbbb3333/reject`, { method: "POST" });
+      expect(bare.status).toBe(200);
+      expect(stubCalls(h.cli).at(-1)).toEqual(["reject", "bbbb3333"]);
+    });
+
+    it("a refused decision (unknown id / not a draft) is a 409 CONFLICT with the CLI's reason", async () => {
+      const res = await fetch(`${h.baseUrl}/api/memory/lore/zzzzzzzz/approve`, { method: "POST" });
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: { code: string; message: string } };
+      expect(body.error.code).toBe("CONFLICT");
+      expect(body.error.message).toMatch(/not a draft/);
+    });
+
+    it("a malformed id is a 422 and never reaches the CLI; GET on the action is 405", async () => {
+      const before = stubCalls(h.cli).length;
+      const bad = await fetch(`${h.baseUrl}/api/memory/lore/..%2Fetc/approve`, { method: "POST" });
+      expect(bad.status).toBe(422);
+      const shell = await fetch(
+        `${h.baseUrl}/api/memory/lore/${encodeURIComponent("a;rm -rf")}/reject`,
+        {
+          method: "POST",
+        },
+      );
+      expect(shell.status).toBe(422);
+      expect(stubCalls(h.cli).length).toBe(before);
+      const get = await fetch(`${h.baseUrl}/api/memory/lore/bbbb3333/approve`);
+      expect(get.status).toBe(405);
+    });
+  });
+
+  describe("with memory unreachable for a decision", () => {
+    it("approve answers 503 MEMORY_UNAVAILABLE (not a 500) when the CLI is not configured", async () => {
+      const h = await startHarness(createMemoryReader({}));
+      try {
+        const res = await fetch(`${h.baseUrl}/api/memory/lore/bbbb3333/approve`, {
+          method: "POST",
+        });
+        expect(res.status).toBe(503);
+        const body = (await res.json()) as { error: { code: string } };
+        expect(body.error.code).toBe("MEMORY_UNAVAILABLE");
+      } finally {
+        await h.close();
+      }
     });
   });
 

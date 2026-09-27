@@ -53,7 +53,6 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
 | `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom in-flight work pauses. Empty = unlimited. |
-| `GAFFER_BUDGET_REMAINING` | _derived_ (`$_gaffer_budget_remaining`) _(set by branch/mode logic)_ |  | dispatch, runner |  |
 | `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (string) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
 | `GAFFER_CHEAP_PHASES` | _(empty)_ | yes (csv) | dispatch, runner | Comma-separated phases whose work is biased to the cheap model tier. Only 'implement' is routed through the model router today, so 'implement' is the only value with any effect; other phase names are inert until their call sites are routed. High/critical-risk work is never cheapened. |
 | `GAFFER_PLAN_DEBATE` | `0` | yes (boolean) | dispatch, runner | Run a multi-model debate over the plan before decomposing. |
@@ -134,9 +133,9 @@ computed from other knobs at runtime.
 | `MAX_TICKS` | `5` | yes (int) | dispatch, runner | Upper bound on factory ticks for a single run. |
 | `EMPTY_POLL_LIMIT` | `2` | yes (int) | dispatch, runner | Consecutive empty polls (no ready work) before the run stops or drops into idle loops. |
 | `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. |
-| `MAX_TICKS_PER_DAY` | `50` | yes (int) | dispatch, runner | Daily ceiling on factory ticks. |
+| `MAX_TICKS_PER_DAY` | `50` | yes (int) | dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. 0 = unlimited. |
 | `DAILY_COUNTER_FILE` | _derived_ (`$GAFFER_DATA/.daily-ticks`) |  | runner |  |
-| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ |  | runner | Per-CALENDAR-DAY (UTC) USD spend ceiling (Part B). |
+| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it. Empty or 0 = off. |
 
 ### Parallel ticket execution
 

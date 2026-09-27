@@ -65,6 +65,9 @@ export const VALID_KINDS = new Set([
   "decompose",
   "product-owner",
   "onboard",
+  // The post-delivery quality judge's model turn (lib/eval-judge.sh) — paid work
+  // that must count toward the day-USD cap and the cost tiles like any other call.
+  "eval-judge",
 ]);
 
 // parseClaudeJson / extractResultText / the numeric extractors (numOrUnknown,

@@ -104,6 +104,20 @@ awk '/gaffer_day_usd_cap_ok/{f=1} f&&/result no_work; exit 0/{print "hit"; exit}
 grep -q 'DRY_RUN' <(awk '/Part B \(defense-in-depth\)/,/^fi$/' "$RUNNER_DIR/tick.sh") \
   && ok "tick.sh gate is skipped under DRY_RUN (never blocks a non-spending tick)" \
   || fail "tick.sh gate should be DRY_RUN-guarded"
+# B28(d): the parallel worker pool ignored the USD cap entirely (only the tick-count
+# cap was checked), so at GAFFER_CONCURRENCY>1 GAFFER_DAILY_BUDGET_USD did nothing.
+grep -q 'gaffer_day_usd_cap_ok' "$RUNNER_DIR/worker.sh" \
+  && grep -q 'per-day USD cap' "$RUNNER_DIR/worker.sh" \
+  && ok "worker.sh (GAFFER_CONCURRENCY>1) consults the day-USD gate and stops with a logged reason" \
+  || fail "worker.sh should consult gaffer_day_usd_cap_ok"
+# B28(c): the dashboard's Poll button (bin/poll-once.sh) is gated too.
+grep -q 'gaffer_day_usd_cap_ok' "$RUNNER_DIR/bin/poll-once.sh" \
+  && ok "bin/poll-once.sh (dashboard Poll) consults the day-USD gate" \
+  || fail "poll-once.sh should consult gaffer_day_usd_cap_ok"
+# B28(d): the cap is exposed in the dashboard Settings allow-list.
+grep -q '"GAFFER_DAILY_BUDGET_USD"' "$RUNNER_DIR/../packages/dispatch/src/api/settings.ts" \
+  && ok "GAFFER_DAILY_BUDGET_USD is a dashboard Setting (SETTING_DEFS)" \
+  || fail "GAFFER_DAILY_BUDGET_USD should be in SETTING_DEFS"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

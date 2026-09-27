@@ -184,7 +184,21 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "int",
     group: "budget",
     label: "Max ticks / day",
-    help: "Daily ceiling on factory ticks.",
+    help:
+      "Daily ceiling on factory ticks that did (or may have done) paid work — a " +
+      "no-work poll does not count. 0 = unlimited.",
+  },
+  {
+    key: "GAFFER_DAILY_BUDGET_USD",
+    type: "string",
+    group: "budget",
+    label: "Daily budget (USD)",
+    help:
+      "Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the " +
+      "labelled estimate booked for a killed/timed-out call). Once today's spend is at " +
+      "or over it, no new paid work starts until the next UTC day — the loop, every " +
+      "parallel worker, the daemon and the dashboard's Poll button all honour it. " +
+      "Empty or 0 = off.",
   },
   {
     key: "GAFFER_TICK_TIMEOUT",

@@ -151,8 +151,14 @@ export GAFFER_BUDGET_USD
 # GAFFER_BUDGET_REMAINING — live USD headroom. Recomputed here from the ledger
 # so the I1 router (gaffer_route_model) and Guard C (ask-on-cap) can read a
 # real figure instead of "unlimited". Empty = unlimited (GAFFER_BUDGET_USD unset
-# or ledger unreadable). Updated every time factory.config.sh is sourced (once
-# per tick at source-time in tick.sh / loop.sh).
+# or ledger unreadable). Recomputed EVERY time factory.config.sh is sourced (once
+# per tick, at source-time in tick.sh) and ALWAYS assigned — never `:=`.
+# B28(b): it used to be an assign-if-unset, but the value is exported below, so
+# loop.sh / worker.sh / the daemon computed it ONCE at process start and every
+# tick.sh they spawned inherited that stale figure — the router's low-budget
+# downgrade and the budget_cap pause never saw the spend the day's earlier ticks
+# had booked. It is a DERIVED value, not an operator input: an inherited value is
+# overwritten by the fresh ledger sum here.
 if [ -n "${GAFFER_BUDGET_USD:-}" ] && command -v node >/dev/null 2>&1 \
    && [ -n "${GAFFER_USAGE_LEDGER:-}${GAFFER_DATA:-}" ]; then
   _gaffer_budget_remaining="$(node --input-type=module - <<'__BUDGET_JS__' 2>/dev/null || true
@@ -186,11 +192,11 @@ const remaining = Math.max(0, budget - spend);
 process.stdout.write(remaining.toFixed(6));
 __BUDGET_JS__
 )"
-  : "${GAFFER_BUDGET_REMAINING:=$_gaffer_budget_remaining}"
+  GAFFER_BUDGET_REMAINING="$_gaffer_budget_remaining"
   unset _gaffer_budget_remaining
 else
   # No budget configured or node unavailable → unlimited (the pre-H1 default).
-  : "${GAFFER_BUDGET_REMAINING:=}"
+  GAFFER_BUDGET_REMAINING=""
 fi
 # GAFFER_BUDGET_LOW_THRESHOLD — the USD headroom at/under which the router biases
 # one tier CHEAPER (the "cost-as-control" downgrade). Promoting cost to a real

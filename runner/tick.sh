@@ -2058,9 +2058,18 @@ $_trail_q
   if gaffer_is_cap_hit "$USAGE_JSON" "$rc"; then _CAP_HIT=1; fi
   # Budget is the HARD ceiling: if the live USD headroom is exhausted, pause even when
   # the turn cap wasn't reached, so the factory never silently keeps spending past it.
+  # B28(b): GAFFER_BUDGET_REMAINING was summed from the ledger when this tick was
+  # sourced — BEFORE this delivery spent. Its own measured spend is not in the ledger
+  # yet (gaffer_usage_record runs below), so subtract it here: the pause sees the
+  # headroom as it stands AFTER this call, not as it stood before it. A non-numeric
+  # spend ("unknown") coerces to 0 in awk, i.e. the pre-call figure (never a crash).
   _BUDGET_HIT=0
-  if [ -n "${GAFFER_BUDGET_REMAINING:-}" ] \
-     && _num_le "${GAFFER_BUDGET_REMAINING:-1}" 0; then
+  _LIVE_REMAINING="${GAFFER_BUDGET_REMAINING:-}"
+  if [ -n "$_LIVE_REMAINING" ]; then
+    _LIVE_REMAINING="$(awk -v r="$_LIVE_REMAINING" -v s="$(gaffer_delivery_spend "$USAGE_JSON")" \
+      'BEGIN{r+=0; s+=0; d=r-s; if (d<0) d=0; printf "%.6f", d}' 2>/dev/null || printf '%s' "$_LIVE_REMAINING")"
+  fi
+  if [ -n "$_LIVE_REMAINING" ] && _num_le "$_LIVE_REMAINING" 0; then
     _BUDGET_HIT=1
   fi
   if { [ "$_CAP_HIT" = "1" ] || [ "$_BUDGET_HIT" = "1" ]; } \

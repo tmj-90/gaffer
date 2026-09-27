@@ -27,7 +27,8 @@
 #   • EMPTY_POLL_LIMIT consecutive no_work ticks (the queue is drained for us), or
 #   • MAX_TICKS ticks (shared per-run cost guard, divided across the pool by
 #     loop.sh — see WORKER_MAX_TICKS), or
-#   • the per-day cap (gaffer_day_cap_ok) is hit.
+#   • the per-day tick cap (gaffer_day_cap_ok) or the per-day USD cap
+#     (gaffer_day_usd_cap_ok, GAFFER_DAILY_BUDGET_USD) is hit.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
@@ -54,6 +55,13 @@ while [ "$ticks" -lt "$W_MAX_TICKS" ]; do
     echo "worker $WORKER_ID: per-day cap reached — stopping." >&2
     break
   fi
+  # B28(d): the per-UTC-day USD ceiling (GAFFER_DAILY_BUDGET_USD) is a SHARED guard
+  # too. loop.sh's serial path and the daemon consulted it, but a worker pool did not
+  # — so at GAFFER_CONCURRENCY>1 the USD cap was silently ignored. Same clean stop.
+  if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
+    echo "worker $WORKER_ID: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — stopping." >&2
+    break
+  fi
   ticks=$((ticks + 1))
 
   # Same outer wall-clock cap as loop.sh's serial path: a wedged tick in this
@@ -62,20 +70,21 @@ while [ "$ticks" -lt "$W_MAX_TICKS" ]; do
   # claim-TTL math — the inner per-call GAFFER_TICK_TIMEOUT still bounds each
   # individual claude -p first.
   out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"
+  res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
 
-  # Each tick spends (invokes claude -p), so it counts against the shared per-day
+  # A tick that may have spent (invoked claude -p) counts against the shared per-day
   # ledger. gaffer_bump_day_count is lock-serialised (budget.sh) so concurrent
   # workers never lose a count.
   # BUG 6 fix: DRY_RUN ticks never call claude -p so must not consume the daily
   # budget — skip the bump entirely when DRY_RUN=1.
-  if [ "${DRY_RUN:-0}" != "1" ]; then
+  # B28: a `no_work` tick spawned no agent either — it is exempt, so an idle pool
+  # cannot burn the day cap (gaffer_tick_counts_toward_day_cap, lib/budget.sh).
+  if [ "${DRY_RUN:-0}" != "1" ] && gaffer_tick_counts_toward_day_cap "$res"; then
     if ! gaffer_bump_day_count; then
       echo "worker $WORKER_ID: ERROR — could not persist per-day tick count; stopping." >&2
       break
     fi
   fi
-
-  res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
   case "${res:-unknown}" in
     worked)            worked=$((worked + 1)); empties=0 ;;
     reviewed)          reviewed=$((reviewed + 1)); empties=0 ;;

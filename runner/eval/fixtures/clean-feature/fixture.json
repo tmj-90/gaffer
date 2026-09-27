@@ -1,0 +1,24 @@
+{
+  "title": "Add removeTask with a test (known-good delivery)",
+  "why": "The baseline: a small, tested change with a relevant smallest-change note and a passing acceptance check must reach review untouched.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: added removeTask to src/tasks.js and one test in tasks.test.js; nothing else touched",
+  "acceptance": [
+    {
+      "text": "removeTask is exported from src/tasks.js",
+      "check": "grep -q \"export function removeTask\" src/tasks.js"
+    },
+    { "text": "the library has a README (prose, not checked)" }
+  ],
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "ok",
+    "dod": "PASS",
+    "ac": "PASS",
+    "outcome": "submit",
+    "flags": [],
+    "dod_failed": []
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "title": "Good change plus a copied src-copy/ tree",
+  "why": "A duplicated source tree (the classic salvage leak) is caught by the copied-src hygiene rule even though no forbidden path fragment matches.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: added removeTask to src/tasks.js",
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "violation",
+    "minimalism": "ok",
+    "dod": "PASS",
+    "ac": "none",
+    "outcome": "rework:hygiene",
+    "flags": []
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "title": "Same repo with GAFFER_ALLOW_NO_DOD=1",
+  "why": "The documented opt-out for repos with genuinely no runnable gates: the delivery submits, and the waiver is visible as a flag rather than silent.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: added removeTask to src/tasks.js",
+  "env": { "GAFFER_ALLOW_NO_DOD": "1" },
+  "gates": { "tests": "", "typecheck": "", "lint": "" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "ok",
+    "dod": "PASS",
+    "ac": "none",
+    "outcome": "submit",
+    "flags": ["zero_gates_waived"]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "title": "Known-good delivery in a repo with no gate commands configured",
+  "why": "Zero executed gates means the delivery was never verified: the runner fails it by default so a misconfigured repo cannot ship unverified work.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: added removeTask to src/tasks.js",
+  "gates": { "tests": "", "typecheck": "", "lint": "" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "ok",
+    "dod": "PASS",
+    "ac": "none",
+    "outcome": "rework:definition-of-done",
+    "flags": ["zero_gates"],
+    "dod_failed": []
+  }
+}

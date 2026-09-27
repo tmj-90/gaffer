@@ -94,7 +94,7 @@ jobs:
           shellcheck --version | head -2
           FILES=(runner/tick.sh runner/loop.sh runner/worker.sh runner/factory.config.sh runner/gaffer
                  runner/setup.sh runner/preflight.sh runner/status.sh runner/run-summary.sh runner/demo.sh
-                 runner/lib/*.sh runner/sandbox/smoke-test.sh runner/bin/poll-once.sh runner/test/*.sh)
+                 runner/lib/*.sh runner/eval/*.sh runner/sandbox/smoke-test.sh runner/bin/poll-once.sh runner/test/*.sh)
           echo "::group::warnings (informational baseline)"
           shellcheck -S warning -x "${FILES[@]}" || true
           echo "::endgroup::"
@@ -168,6 +168,19 @@ jobs:
             fi
           done
           exit $rc
+
+      # Golden gate fixtures: recorded deliveries replayed through the REAL gate
+      # pipeline (hygiene · minimalism · Definition of Done · acceptance checks);
+      # every verdict and the resulting submit/rework outcome must match the
+      # fixture's expectation. A gate that starts passing a known-bad delivery, or
+      # bouncing a known-good one, fails here. results.json is printed for the log.
+      - name: Gate replay (golden fixtures)
+        shell: bash
+        run: |
+          bash runner/eval/replay.sh --out "$RUNNER_TEMP/gate-replay"
+          echo "::group::results.json"
+          cat "$RUNNER_TEMP/gate-replay/results.json"
+          echo "::endgroup::"
 
   # The dashboard in a REAL browser: onboard → ticket → machine-checkable AC → poll
   # (live tick with a stub worker) → review/approve → merge → product-owner run → every

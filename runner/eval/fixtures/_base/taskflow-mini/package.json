@@ -1,0 +1,10 @@
+{
+  "name": "taskflow-mini",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "lint": "node -e \"process.exit(0)\""
+  }
+}

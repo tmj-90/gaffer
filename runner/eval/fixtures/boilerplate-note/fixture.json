@@ -1,0 +1,16 @@
+{
+  "title": "Known-good delivery with a note that names none of the changed files",
+  "why": "A pasted boilerplate note (references no changed file) is flagged unverified_note for the reviewer rather than accepted as evidence of minimality.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: kept the change as small as possible and followed the existing patterns",
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "unverified_note",
+    "dod": "PASS",
+    "ac": "none",
+    "outcome": "submit",
+    "flags": ["unverified_note"]
+  }
+}

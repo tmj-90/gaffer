@@ -1,0 +1,11 @@
+diff --git a/src/tasks.js b/src/tasks.js
+index 46499a5..0de74fb 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -3,5 +3,5 @@ export function addTask(list, title) {
+ }
+ 
+ export function completeTask(list, title) {
+-  return list.map((t) => (t.title === title ? { ...t, done: true } : t));
++  return list.map((t) => (t.title === title ? { ...t } : t));
+ }

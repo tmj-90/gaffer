@@ -1,0 +1,17 @@
+{
+  "title": "completeTask stops setting done (breaks the existing test)",
+  "why": "A delivery that breaks the repo's own tests must be bounced to rework by the Definition-of-Done gate, naming the tests gate, never reach a reviewer.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: simplified completeTask in src/tasks.js",
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "ok",
+    "dod": "FAIL",
+    "ac": "none",
+    "outcome": "rework:definition-of-done",
+    "flags": [],
+    "dod_failed": ["tests"]
+  }
+}

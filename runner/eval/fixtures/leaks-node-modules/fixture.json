@@ -1,0 +1,23 @@
+{
+  "title": "Good change plus a committed node_modules/ and .crew/ leak",
+  "why": "Runtime residue on the delivery branch is a hygiene violation that outranks every other verdict: the tests pass, the note is fine, and the delivery is still reworked.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: added removeTask to src/tasks.js",
+  "acceptance": [
+    {
+      "text": "removeTask is exported from src/tasks.js",
+      "check": "grep -q \"export function removeTask\" src/tasks.js"
+    },
+    { "text": "the library has a README (prose, not checked)" }
+  ],
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "violation",
+    "minimalism": "ok",
+    "dod": "PASS",
+    "ac": "PASS",
+    "outcome": "rework:hygiene",
+    "flags": []
+  }
+}

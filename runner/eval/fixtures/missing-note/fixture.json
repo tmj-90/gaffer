@@ -1,0 +1,16 @@
+{
+  "title": "Known-good delivery with no smallest-change note (default policy)",
+  "why": "By default a missing note is a review flag, not a failure: the human judges minimality from the diff. The delivery submits carrying missing_note.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "",
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "missing_note",
+    "dod": "PASS",
+    "ac": "none",
+    "outcome": "submit",
+    "flags": ["missing_note"]
+  }
+}

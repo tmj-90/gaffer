@@ -86,9 +86,37 @@ of this harness and left visible rather than hidden:
   unseen changes as ungraded, not absent — but `minimalism`/`security` on a very
   large delivery are still graded on a prefix.
 
+## Gate replay — the offline, deterministic half
+
+The judge measures *how good* a delivery is; the gates decide *whether it ships*
+without a human. `runner/eval/replay.sh` (`gaffer eval replay`) pins the gates:
+each fixture under `runner/eval/fixtures/` is a base repo plus a **recorded
+delivery patch** and an `expected` block, and the driver commits the delivery on a
+work branch and runs the same library functions `tick.sh` runs, in tick order —
+`gaffer_assert_clean_delivery`, `gaffer_diff_stats` + `gaffer_check_minimalism`,
+`gaffer_run_dod_gates`, `gaffer_run_ac_checks` — then derives the outcome tick.sh
+would take (`submit` or `rework:<gate>`) and the review flags it would carry
+(`missing_note`, `oversized_diff`, `unverified_note`, `zero_gates`, …). Only the
+dispatch CLI is stubbed (a recorder), so the replay needs no model, database or
+network and runs in seconds on every push (CI step `Gate replay (golden
+fixtures)`), writing `results.json` with per-fixture expected / actual / gate rows.
+
+The eleven fixtures cover a known-good delivery, a test-breaking one, two hygiene
+leaks (`node_modules/` + `.crew/`, a copied `src-copy/` tree), an oversized diff,
+missing / boilerplate notes under both note policies, a failing acceptance check,
+and a repo with no gate commands under both `GAFFER_ALLOW_NO_DOD` settings.
+`runner/test/eval-replay.test.sh` proves the harness catches an edited
+expectation **and** a weakened gate. Adding a fixture is documented in
+[`runner/eval/README.md`](../runner/eval/README.md).
+
+This closes the "submit-success sampling" blind spot from the *outside*: the
+judge sees only gate-passers, the replay proves what the gates pass and bounce.
+
 ## Later (deliberately not in this slice)
 
 - **Enforcement** — acting on a `blocking` verdict (e.g. auto-park) is a
   separate, separately-flagged decision after the judge has soaked.
 - **Benchmark runs** — a reproducible SWE-bench-subset harness for a headline
-  number sits on top of the same judge + ledger.
+  number sits on top of the same judge + ledger. The gate replay above is the
+  deterministic scaffold it would reuse (fixture repo + recorded delivery +
+  expected verdict); the missing piece is a live model producing the delivery.

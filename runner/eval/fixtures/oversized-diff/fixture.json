@@ -1,0 +1,16 @@
+{
+  "title": "Good change plus a 450-line generated table",
+  "why": "An oversized diff is flagged for the reviewer (needs_human_review: oversized_diff) but never blocks: minimalism records the flag and the delivery still submits.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: added removeTask to src/tasks.js and the generated bulk.js lookup table",
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "oversized_diff",
+    "dod": "PASS",
+    "ac": "none",
+    "outcome": "submit",
+    "flags": ["oversized_diff"]
+  }
+}

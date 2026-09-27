@@ -1,0 +1,26 @@
+{
+  "title": "Known-good delivery whose ticket demands archiveTask (the check fails)",
+  "why": "A machine-checkable acceptance criterion the delivery does not satisfy bounces it to rework even though every repo-level gate passed; the runner records the verdict through the trusted path.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: added removeTask to src/tasks.js",
+  "acceptance": [
+    {
+      "text": "archiveTask is exported",
+      "check": "grep -q \"export function archiveTask\" src/tasks.js"
+    },
+    {
+      "text": "removeTask is exported",
+      "check": "grep -q \"export function removeTask\" src/tasks.js"
+    }
+  ],
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "ok",
+    "dod": "PASS",
+    "ac": "FAIL",
+    "outcome": "rework:acceptance-check",
+    "flags": []
+  }
+}

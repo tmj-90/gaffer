@@ -1,0 +1,17 @@
+{
+  "title": "Known-good delivery with no note under MINIMALISM_REQUIRE_NOTE=1",
+  "why": "The unsupervised-run policy: with the note required, the same delivery is reworked by the minimalism gate instead of flagged.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "",
+  "env": { "MINIMALISM_REQUIRE_NOTE": "1" },
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "missing_note",
+    "dod": "PASS",
+    "ac": "none",
+    "outcome": "rework:minimalism",
+    "flags": []
+  }
+}

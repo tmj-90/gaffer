@@ -1,0 +1,32 @@
+diff --git a/src/tasks.js b/src/tasks.js
+index 46499a5..f5def2c 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -5,3 +5,7 @@ export function addTask(list, title) {
+ export function completeTask(list, title) {
+   return list.map((t) => (t.title === title ? { ...t, done: true } : t));
+ }
++
++export function removeTask(list, title) {
++  return list.filter((t) => t.title !== title);
++}
+diff --git a/test/tasks.test.js b/test/tasks.test.js
+index 0c6b687..9b3dcb8 100644
+--- a/test/tasks.test.js
++++ b/test/tasks.test.js
+@@ -1,6 +1,6 @@
+ import test from "node:test";
+ import assert from "node:assert/strict";
+-import { addTask, completeTask } from "../src/tasks.js";
++import { addTask, completeTask, removeTask } from "../src/tasks.js";
+ 
+ test("addTask appends", () => {
+   assert.equal(addTask([], "a").length, 1);
+@@ -9,3 +9,7 @@ test("addTask appends", () => {
+ test("completeTask marks done", () => {
+   assert.equal(completeTask(addTask([], "a"), "a")[0].done, true);
+ });
++
++test("removeTask drops the matching task", () => {
++  assert.equal(removeTask(addTask([], "a"), "a").length, 0);
++});

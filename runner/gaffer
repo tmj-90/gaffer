@@ -10,6 +10,7 @@
 #   gaffer demo                       run the Factory Map showcase (DRY_RUN)
 #   gaffer skills [install]           list the skill library / install it into your Claude Code
 #   gaffer eval [--json]              delivery-quality metrics (pass rate · memory lift · cost/pass)
+#   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
 #   gaffer help
 #
 # Everything uses the factory's own config/state under $GAFFER_DATA — no flags to remember.
@@ -197,6 +198,9 @@ setup)
 demo) DRY_RUN="${DRY_RUN:-1}" bash "$HERE/demo.sh" ;;
 
 eval)
+  # `gaffer eval replay` — the offline half of the harness: recorded deliveries
+  # through the real gates, verdicts checked against each fixture (runner/eval/).
+  if [ "${1:-}" = "replay" ]; then shift; exec bash "$HERE/eval/replay.sh" "$@"; fi
   # Delivery-quality metrics from the eval ledger (docs/eval-harness.md):
   # pass rate, per-dimension means, MEMORY LIFT (does the durable memory
   # measurably improve deliveries?), and cost-per-passing-delivery.

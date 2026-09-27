@@ -377,7 +377,11 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           },
           actor,
         );
-        if (a.repo) wg.linkRepository(ticket.id, a.repo, "primary", actor);
+        // Link the repo the caller named, else the one this MCP server was mounted FOR
+        // (GAFFER_DEFAULT_TICKET_REPO — the product-owner run sets it): an unlinked
+        // draft cannot be delivered and was invisible to the run's own draft count.
+        const repo = a.repo ?? process.env.GAFFER_DEFAULT_TICKET_REPO;
+        if (repo && repo.trim() !== "") wg.linkRepository(ticket.id, repo.trim(), "primary", actor);
         return { ticket_id: ticket.id, number: ticket.number, status: ticket.status };
       }),
 
@@ -586,9 +590,14 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     record_ac_evidence: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.record_ac_evidence).parse(args);
+        // REVIEWER PATH: the runner mounts the reviewer's server with no claim token
+        // and GAFFER_REVIEW_TICKET naming the in_review ticket; such a note is
+        // accepted for that ticket only and never satisfies an AC (see claimService).
+        const reviewTicket = process.env.GAFFER_REVIEW_TICKET;
         const res = wg.recordEvidence(
           {
             claimToken: claimTokenFor(a.claim_token),
+            ...(reviewTicket && reviewTicket.length > 0 ? { reviewOf: reviewTicket } : {}),
             ticket_id: a.ticket_id,
             ac_id: a.ac_id,
             repo_id: a.repo_id,

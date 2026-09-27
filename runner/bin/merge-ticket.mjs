@@ -27,7 +27,7 @@
 // CLI CONTRACT (tick.sh / the dashboard build to this)
 // ---------------------------------------------------------------------
 // INVOCATION:
-//   node bin/merge-ticket.mjs --ticket <number> [--dry-run] [--timeout-ms N]
+//   node bin/merge-ticket.mjs --ticket <number> [--dry-run] [--timeout-ms N] [--apply-digest-only]
 //
 // ENV IN (defaults mirror factory.config.sh / product-owner-run.mjs):
 //   DISPATCH_DB                 dispatch sqlite — ticket→repo/branch/local_path
@@ -42,6 +42,8 @@
 // FLAGS:
 //   --ticket <number>    (required) the approved ticket whose branch is being merged.
 //   --timeout-ms N       (GAFFER_MERGE_TIMEOUT_MS, default 600000) resolver kill-timer.
+//   --apply-digest-only  the merge already landed (review.sh AFK path): skip git + claude
+//                        and run only the post-merge memory step (digest + feature).
 //   --dry-run            do NOT spawn claude or mutate git; print the planned merge
 //                        target + resolver claude argv as JSON (the test seam).
 //
@@ -78,6 +80,7 @@ import {
   buildFeatureShippedCommands,
   buildMinimalDigestStamp,
   selectPreparedDelta,
+  featureIdFromView,
 } from "../lib/feature-digest.mjs";
 import { refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
 
@@ -122,7 +125,7 @@ function intEnv(name, fallback) {
 }
 
 function parseArgs(argv) {
-  const opts = { ticket: "", timeoutMs: DEFAULTS.timeoutMs, dryRun: false };
+  const opts = { ticket: "", timeoutMs: DEFAULTS.timeoutMs, dryRun: false, applyDigestOnly: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => argv[(i += 1)];
@@ -135,6 +138,12 @@ function parseArgs(argv) {
         break;
       case "--dry-run":
         opts.dryRun = true;
+        break;
+      case "--apply-digest-only":
+        // The merge ALREADY landed elsewhere (the runner's unattended AFK merge in
+        // review.sh): skip git + claude and run only the post-merge memory work —
+        // apply the prepared digest delta / freshness stamp + feature → shipped.
+        opts.applyDigestOnly = true;
         break;
       default:
         break;
@@ -497,6 +506,9 @@ export function applyDigestAndFeature({ ticketNumber, repo, featureId } = {}) {
   try {
     const view = readTicketView(ticketNumber);
     const delta = selectPreparedDelta(view);
+    // The ticket's own `Feature-Id:` line (stamped on every feature-epic ticket) is the
+    // authoritative ledger row to advance; an explicit featureId still wins.
+    if (!String(featureId ?? "").trim()) featureId = featureIdFromView(view) ?? undefined;
     let jobs;
     if (delta) {
       jobs = buildApplyCommands(delta, { ticketNumber, repo, featureId });
@@ -664,6 +676,22 @@ function main() {
     return;
   }
   const { repo, branch } = resolved;
+
+  if (opts.applyDigestOnly) {
+    // review.sh's AFK path merged + mark-merged already; this is the SAME post-merge
+    // memory step the dashboard merge runs below (digest delta / stamp + feature →
+    // shipped), so an unattended merge no longer skips the memory work. Best-effort
+    // and fully swallowed inside applyDigestAndFeature; exit 0 unless the apply itself
+    // reports it could not run (then 2, so the caller can log it).
+    const digest = applyDigestAndFeature({ ticketNumber: resolved.number, repo: repo.name });
+    const digestLog = formatDigestApplyLog(digest, resolved.number);
+    if (digestLog) log(digestLog.message);
+    emit(
+      { phase: "digest-applied", ticket: resolved.number, repo: repo.name, branch, digest },
+      digest.applied || digest.skipped ? 0 : 2,
+    );
+    return;
+  }
 
   if (!opts.dryRun && !existsSync(repo.localPath)) {
     fail(

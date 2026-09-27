@@ -195,7 +195,9 @@ async function processFeature(
       description: epicDescription(feature, plan, deps.clock),
       tickets: plan.tickets.map((t) => ({
         title: t.title,
-        description: t.description,
+        // The feature id rides on EVERY ticket (not only the epic) so the merge runner
+        // can read it back (`Feature-Id:` marker) and advance the feature to shipped.
+        description: `${t.description}\n\nFeature-Id: ${feature.id}`,
         acceptanceCriteria: t.acceptanceCriteria,
         priority: t.priority,
         repoName: t.repo,

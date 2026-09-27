@@ -306,7 +306,8 @@ export function buildPrompt({ repoName, repoPath, maxTickets }) {
     `Propose a SMALL, high-leverage batch: 3 to ${maxTickets} tickets, each anchored to a`,
     "specific lore line, brand promise, observed gap, or recent-commit thread — no generic",
     "SaaS filler. File each survivor as a DRAFT via the dispatch MCP: create_ticket (with a",
-    "Problem / Proposed solution / Out of scope / Provenance description) followed by",
+    "Problem / Proposed solution / Out of scope / Provenance description, and",
+    `repo: "${repoName}" so the draft is linked to this repo and can be delivered) followed by`,
     "add_acceptance_criterion for each of its 2–4 observable acceptance criteria.",
     "",
     "DRAFT ONLY. Do NOT mark_ticket_ready, do NOT claim, do NOT implement, do NOT edit the",
@@ -329,7 +330,7 @@ export function buildPrompt({ repoName, repoPath, maxTickets }) {
  *   repoPath   — the registered checkout.  Only GAFFER_READ_ROOTS points here so
  *                the agent can inspect README/manifest/git log, nothing more.
  */
-function installProjectLocalWiring() {
+function installProjectLocalWiring(repoName) {
   mkdirSync(GAFFER_DATA, { recursive: true });
   const agentHome = mkdtempSync(resolve(GAFFER_DATA, "po-runtime-"));
   const claudeDir = resolve(agentHome, ".claude");
@@ -358,25 +359,72 @@ function installProjectLocalWiring() {
   // runs can't overwrite each other's MCP wiring (FIX 4: eliminated shared path
   // $GAFFER_DATA/mcp-product-owner-runtime.json). Cleaned up with agentHome on exit.
   const mcpRuntime = resolve(agentHome, "mcp-runtime.json");
-  // The product-owner run is NOT a delivery, so there is no recall ticket:
-  // neutralise ${GAFFER_RECALL_TICKET} to EMPTY (memory's read path treats "" as
-  // no-ticket ⇒ inert) so the literal placeholder never leaks into the memory
-  // server env and buckets these reads under a fake ticket.
-  const mcp = readFileSync(CONFIG.mcpConfig, "utf8")
-    .split("${DISPATCH_DB}")
-    .join(CONFIG.dispatchDb)
-    .split("${MEMORY_DB}")
-    .join(CONFIG.memoryDb)
-    .split("${DISPATCH_MCP_BIN}")
-    .join(CONFIG.dispatchMcpBin)
-    .split("${MEMORY_MCP_BIN}")
-    .join(CONFIG.memoryMcpBin)
-    .split("${GAFFER_RECALL_TICKET}")
-    .join("");
+  const mcp = renderPoMcpRuntime(readFileSync(CONFIG.mcpConfig, "utf8"), {
+    dispatchDb: CONFIG.dispatchDb,
+    memoryDb: CONFIG.memoryDb,
+    dispatchMcpBin: CONFIG.dispatchMcpBin,
+    memoryMcpBin: CONFIG.memoryMcpBin,
+    repoName,
+  });
   // Owner-only: the rendered runtime config carries DB paths (and, on the delivery
   // path, a claim token) — never leave it at the umask default on a shared machine.
   writeFileSync(mcpRuntime, mcp, { mode: 0o600 });
   return { agentHome, mcpRuntime };
+}
+
+/**
+ * Render the product-owner run's MCP runtime config from the shared .mcp.json
+ * template. Pure + exported for the tests. Substitutes EVERY placeholder the template
+ * carries (the old hand-rolled render left `${GAFFER_CLAIM_TOKEN}` and
+ * `${GAFFER_TICKET_REPOS}` in the server env verbatim), then binds this run's repo:
+ *
+ *   • ${GAFFER_CLAIM_TOKEN}   → ""       (the PO run holds no delivery claim)
+ *   • ${GAFFER_TICKET_REPOS}  → repoName (memory direct-apply scope = this repo)
+ *   • ${GAFFER_RECALL_TICKET} → ""       (not a delivery ⇒ recall attribution inert)
+ *   • dispatch env GAFFER_DEFAULT_TICKET_REPO = repoName — the dispatch MCP links every
+ *     create_ticket that names no repo to THIS repo. Before this, the skill's drafts
+ *     landed unlinked, the run's draft-count guard (which joins by repo) saw 0 and
+ *     reported "MCP create_ticket likely denied", and the unlinked drafts later parked
+ *     at delivery with "no local repo path".
+ *
+ * Fails closed (throws) on an unparseable result, a missing dispatch/memory server, or
+ * a leftover `${NAME}` placeholder — a broken MCP config must never reach the agent.
+ */
+export function renderPoMcpRuntime(
+  template,
+  { dispatchDb, memoryDb, dispatchMcpBin, memoryMcpBin, repoName },
+) {
+  const repo = String(repoName ?? "").trim();
+  const rendered = String(template)
+    .split("${DISPATCH_DB}")
+    .join(dispatchDb)
+    .split("${MEMORY_DB}")
+    .join(memoryDb)
+    .split("${DISPATCH_MCP_BIN}")
+    .join(dispatchMcpBin)
+    .split("${MEMORY_MCP_BIN}")
+    .join(memoryMcpBin)
+    .split("${GAFFER_CLAIM_TOKEN}")
+    .join("")
+    .split("${GAFFER_TICKET_REPOS}")
+    .join(repo)
+    .split("${GAFFER_RECALL_TICKET}")
+    .join("");
+  const leftover = /\$\{[A-Z_]+\}/.exec(rendered);
+  if (leftover) {
+    throw new Error(`MCP runtime config still contains a placeholder after render: ${leftover[0]}`);
+  }
+  const parsed = JSON.parse(rendered);
+  const servers = parsed && typeof parsed === "object" ? parsed.mcpServers : null;
+  const dispatch = servers && typeof servers === "object" ? servers.dispatch : null;
+  const memory = servers && typeof servers === "object" ? servers.memory : null;
+  if (!dispatch || typeof dispatch !== "object" || !memory || typeof memory !== "object") {
+    throw new Error(
+      "MCP runtime config must define both mcpServers.dispatch and mcpServers.memory",
+    );
+  }
+  dispatch.env = { ...(dispatch.env || {}), GAFFER_DEFAULT_TICKET_REPO: repo };
+  return JSON.stringify(parsed, null, 2) + "\n";
 }
 
 /**
@@ -540,7 +588,7 @@ function main() {
 
   let mcpRuntime;
   try {
-    ({ agentHome, mcpRuntime } = installProjectLocalWiring());
+    ({ agentHome, mcpRuntime } = installProjectLocalWiring(resolved.name));
   } catch (e) {
     fail(`failed to install project-local wiring: ${e?.message ?? e}`);
     return;

@@ -245,8 +245,38 @@ export function addFeature(db: Database, input: AddFeatureInput): Feature {
     );
   }
   const scopeNode = normaliseScopeNode(input.scopeNode);
-  const id = newLoreId();
   const ts = nowIso();
+
+  // DEDUPE by repo + name (case-insensitive). The merge runner files the shipped
+  // feature by NAME when no id crosses the merge; without this, every merge added a
+  // second "shipped" row and stranded the original "building" one. An existing
+  // feature is moved to the requested status (never backwards) and its summary /
+  // provenance refreshed, so backlog → building → shipped is one row.
+  const existing = db
+    .prepare("SELECT id, status FROM feature WHERE repo = ? AND lower(name) = lower(?) LIMIT 1")
+    .get(repo, name) as { id: string; status: FeatureStatus } | undefined;
+  if (existing) {
+    const order: FeatureStatus[] = ["backlog", "building", "shipped"];
+    const next = order.indexOf(status) > order.indexOf(existing.status) ? status : existing.status;
+    const tx0 = db.transaction(() => {
+      db.prepare(
+        `UPDATE feature SET status = ?, summary = ?, scope_node = COALESCE(?, scope_node),
+           area = COALESCE(?, area), provenance = COALESCE(?, provenance), updated_at = ?
+         WHERE id = ?`,
+      ).run(next, summary, scopeNode ?? null, area ?? null, provenance ?? null, ts, existing.id);
+      db.prepare(
+        "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'feature_updated', ?, ?)",
+      ).run(
+        existing.id,
+        ts,
+        JSON.stringify({ repo, from: existing.status, to: next, dedupedBy: "repo+name" }),
+      );
+    });
+    tx0();
+    return getFeature(db, existing.id)!;
+  }
+
+  const id = newLoreId();
 
   const tx = db.transaction(() => {
     db.prepare(

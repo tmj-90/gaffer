@@ -87,8 +87,6 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   appendUsageRecord,
   buildUsageRecord,
@@ -96,9 +94,10 @@ import {
   parseClaudeJson,
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
+import { makeAgentHome } from "../lib/agent-home.mjs";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const RUNNER_DIR = resolve(HERE, "..");
+// The agent turn spawns from a throwaway agent home (lib/agent-home.mjs), so this
+// helper no longer needs its own runner-dir path.
 
 // The three clause kinds the spec model is allowed to emit (locked-decisions §26 in
 // docs/spec-driven-development.md — mirrors PRODUCT_INTENT_KINDS).
@@ -461,8 +460,8 @@ function runClaudeTurn(prompt, opts) {
     .filter(Boolean);
   // CONTAINMENT (audit blocker): spec authoring reasons from the (untrusted) brief and
   // returns the spec as TEXT (--output-format json → .result) — it never edits files or
-  // runs commands. This spawn runs with cwd = RUNNER_DIR + acceptEdits and the project hook
-  // does not load in an untrusted dir, so run the agent READ-ONLY: deny every write/exec
+  // runs commands. This spawn runs with cwd = a throwaway agent home + acceptEdits and the
+  // project hook does not load in an untrusted dir, so run the agent READ-ONLY: deny every write/exec
   // tool UNCONDITIONALLY (even under a CLAUDE_FLAGS override) so a prompt-injected clause
   // can't write into factory source (denying only the edit tools is defeated by a Bash `>`
   // fallback). Read/Grep/Glob + MCP stay available.
@@ -484,14 +483,24 @@ function runClaudeTurn(prompt, opts) {
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);
-  const res = spawnSync(claudeBin, args, {
-    cwd: RUNNER_DIR,
-    encoding: "utf8",
-    timeout: opts.timeoutMs,
-    maxBuffer: 16 * 1024 * 1024,
-    // never hand the agent DISPATCH_API_TOKEN (or any *_TOKEN/*_SECRET/*_KEY).
-    env: agentChildEnv(),
-  });
+  // SKILLS: mount the factory's skills (spec-author) into a THROWAWAY agent home so the
+  // headless agent can actually see the skill the prompt names — RUNNER_DIR has no
+  // .claude/skills. Same wiring as product-owner-run.mjs / decompose.mjs; removed after
+  // the turn. The read-only denylist above is unchanged.
+  const home = makeAgentHome("spec-author-");
+  let res;
+  try {
+    res = spawnSync(claudeBin, args, {
+      cwd: home.dir,
+      encoding: "utf8",
+      timeout: opts.timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      // never hand the agent DISPATCH_API_TOKEN (or any *_TOKEN/*_SECRET/*_KEY).
+      env: { ...agentChildEnv(), GAFFER_WRITE_ROOTS: home.dir },
+    });
+  } finally {
+    home.remove();
+  }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
       appendUsageRecord(

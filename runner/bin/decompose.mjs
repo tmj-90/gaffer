@@ -113,6 +113,7 @@ import {
 } from "../lib/usage-ledger.mjs";
 import { filterMeasured, parseLedger, summarise } from "../lib/estimate.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
+import { makeAgentHome } from "../lib/agent-home.mjs";
 import { Worker } from "../lib/worker.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -223,6 +224,15 @@ function readRequest(opts) {
   // A target repo flips the helper into BROWNFIELD mode. The flag wins over the
   // input field (explicit CLI intent), mirroring how --brief overrides the body.
   if (opts.repo) req.repo = opts.repo;
+  // The dashboard's "Extend existing" panel sends the target repo NESTED as
+  // `context.repo` (planBuild.ts forwards the PlanBuildContext verbatim). Only the
+  // top-level `repo` flips brownfield mode, so every UI brownfield plan used to be
+  // decomposed as GREENFIELD (one bootstrap ticket scaffolding a NEW repo under ~/git
+  // instead of extending the chosen one). Lift it when no explicit repo was given.
+  if (!String(req.repo ?? "").trim() && req.context && typeof req.context === "object") {
+    const ctxRepo = String(req.context.repo ?? "").trim();
+    if (ctxRepo) req.repo = ctxRepo;
+  }
   // Force-plan can arrive via the stdin `forcePlan` field too (the UI's "Build the
   // tickets now" button). OR it into opts so the CLI flag / env and the per-request
   // field all converge on a single force flag the rest of main() reads.
@@ -983,14 +993,27 @@ function runClaudeTurn(prompt, opts, model) {
   // Route through the ONE worker spawn seam (lib/worker.mjs). argv + the
   // credential-stripped env (P2-A: never hand the agent DISPATCH_API_TOKEN or any
   // *_TOKEN/*_SECRET) stay built here; only the spawn boundary is shared.
-  const res = Worker.deliver({
-    bin: claudeBin,
-    argv: args,
-    cwd: RUNNER_DIR,
-    timeoutMs: opts.timeoutMs,
-    maxBuffer: 16 * 1024 * 1024,
-    env: agentChildEnv(),
-  });
+  // SKILLS: the prompt says "use the plan-build skill and follow its structured-output
+  // contract", but RUNNER_DIR has no .claude/skills, so a headless agent only saw the
+  // skill when the operator had run `gaffer skills install --user` (optional; never in
+  // Docker). Run in a THROWAWAY agent home that mounts the factory's skills + the
+  // project settings (same wiring as product-owner-run.mjs); it is removed after the
+  // turn. The read-only denylist above is unchanged — this widens what the agent can
+  // SEE, not what it can write.
+  const home = makeAgentHome("decompose-");
+  let res;
+  try {
+    res = Worker.deliver({
+      bin: claudeBin,
+      argv: args,
+      cwd: home.dir,
+      timeoutMs: opts.timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...agentChildEnv(), GAFFER_WRITE_ROOTS: home.dir },
+    });
+  } finally {
+    home.remove();
+  }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
       // Ledger the unmeasurable call as "unknown" (honesty rule 3: never 0).

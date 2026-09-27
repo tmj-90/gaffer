@@ -544,6 +544,16 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
   },
   {
     method: "POST",
+    path: "/tickets/:id/merge",
+    tag: T.review,
+    summary: "Merge an approved ticket that has not landed",
+    description:
+      "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge.",
+    capability: "full",
+    responses: [ok("`{ ticket, merge }` — the merge run was started (202)."), notFound, conflict],
+  },
+  {
+    method: "POST",
     path: "/tickets/:id/mark-merged",
     tag: T.review,
     summary: "Merge-complete callback",

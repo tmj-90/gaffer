@@ -44,6 +44,8 @@ const TICKET_SUB = {
   REWORK_TRAIL: "rework-trail",
   REVIEW: "review",
   MARK_MERGED: "mark-merged",
+  // Merge an APPROVED ticket (ready_for_merge) whose branch has not landed yet.
+  MERGE: "merge",
   DIFF: "diff",
   // DELIVERY-DOSSIER: the tamper-evident evidence artifact (JSON + markdown).
   DOSSIER: "dossier",
@@ -330,6 +332,28 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.MARK_MERGED && method === "POST") {
     const result = wg.markMerged(id, { type: "system", id: "dispatch-api" });
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
+    return;
+  }
+
+  // /tickets/:id/merge — MERGE an approved ticket that has not landed. Tickets sit in
+  // ready_for_merge after the runner's approve-only AFK path (merge gate held), lite
+  // mode, or a merge that hit a conflict / dirty tree; before this route the only
+  // board action was "Mark merged", which flips to done WITHOUT merging code. This
+  // fires the same merge runner the human Approve path uses. 409 unless the ticket
+  // is actually in ready_for_merge.
+  if (segments.length === 3 && sub === TICKET_SUB.MERGE && method === "POST") {
+    const ticket = wg.resolveTicket(id);
+    if (ticket.status !== "ready_for_merge") {
+      throw new DispatchError(
+        "ILLEGAL_TRANSITION",
+        `Only a ticket in ready_for_merge can be merged (#${ticket.number ?? "?"} is ${ticket.status}).`,
+      );
+    }
+    if (ticket.number === null) {
+      throw new DispatchError("ILLEGAL_TRANSITION", "Ticket has no number; cannot start a merge.");
+    }
+    const merge = mergeRunner.trigger({ ticketNumber: ticket.number });
+    sendJson(res, 202, { ticket, merge });
     return;
   }
 

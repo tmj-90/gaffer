@@ -215,6 +215,71 @@ describe("addFeature — repo-level and node-level", () => {
   });
 });
 
+describe("addFeature — dedupe by repo + name (one row backlog → building → shipped)", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newDb();
+  });
+
+  it("re-adding the same feature name (case-insensitive) returns the SAME row", () => {
+    const a = addFeature(db, { repo: "payments-svc", name: "Refund flow", summary: "v1" });
+    const b = addFeature(db, { repo: "payments-svc", name: "refund FLOW", summary: "v2" });
+    expect(b.id).toBe(a.id);
+    expect(listFeatures(db, "payments-svc")).toHaveLength(1);
+    expect(getFeature(db, a.id)!.summary).toBe("v2");
+  });
+
+  it("the merge runner filing a feature as shipped BY NAME advances the building row instead of adding a second", () => {
+    const f = addFeature(db, { repo: "payments-svc", name: "Refund flow", summary: "plan" });
+    advanceFeature(db, f.id, "building");
+    const shipped = addFeature(db, {
+      repo: "payments-svc",
+      name: "Refund flow",
+      summary: "shipped in #12",
+      status: "shipped",
+      provenance: "merge:#12",
+    });
+    expect(shipped.id).toBe(f.id);
+    expect(shipped.status).toBe("shipped");
+    expect(shipped.provenance).toBe("merge:#12");
+    expect(listFeatures(db, "payments-svc", { status: "building" })).toHaveLength(0);
+    expect(listFeatures(db, "payments-svc", { status: "shipped" })).toHaveLength(1);
+    const ev = db
+      .prepare("SELECT payload FROM events WHERE lore_id = ? AND kind = 'feature_updated'")
+      .get(f.id) as { payload: string };
+    expect(JSON.parse(ev.payload)).toMatchObject({ from: "building", to: "shipped" });
+  });
+
+  it("never moves a feature BACKWARDS (a later backlog proposal keeps shipped)", () => {
+    const f = addFeature(db, { repo: "r", name: "Capture", summary: "done", status: "shipped" });
+    const again = addFeature(db, { repo: "r", name: "Capture", summary: "idea again" });
+    expect(again.id).toBe(f.id);
+    expect(again.status).toBe("shipped");
+  });
+
+  it("keeps existing scope_node / area / provenance when the re-add omits them", () => {
+    const f = addFeature(db, {
+      repo: "r",
+      scopeNode: "auth",
+      name: "MFA",
+      summary: "s",
+      area: "security",
+      provenance: "onboard-inventory",
+    });
+    const again = addFeature(db, { repo: "r", name: "MFA", summary: "s2" });
+    expect(again.id).toBe(f.id);
+    expect(again.scopeNode).toBe("auth");
+    expect(again.area).toBe("security");
+    expect(again.provenance).toBe("onboard-inventory");
+  });
+
+  it("the same name in a DIFFERENT repo is a different feature", () => {
+    const a = addFeature(db, { repo: "r1", name: "Search", summary: "s" });
+    const b = addFeature(db, { repo: "r2", name: "Search", summary: "s" });
+    expect(b.id).not.toBe(a.id);
+  });
+});
+
 describe("advanceFeature — lifecycle transitions", () => {
   let db: Database;
   beforeEach(() => {

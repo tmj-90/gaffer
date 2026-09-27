@@ -17,6 +17,7 @@
 // Zero deps (node:sqlite ships with Node 22+). Run: node test/product-owner-run.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
@@ -41,6 +42,7 @@ const {
   agentChildEnv,
   countDraftTickets,
   defaultMcpBins,
+  renderPoMcpRuntime,
 } = await import(HELPER);
 
 let passed = 0;
@@ -126,6 +128,7 @@ console.log("== AC3: buildPrompt pins skill + draft-only + no-questions + repo +
     p.includes("AskUserQuestion") && /NEVER ask/i.test(p),
   );
   assert("is draft-only", /DRAFT ONLY/.test(p) && p.includes("create_ticket"));
+  assert("tells the agent to pass repo on create_ticket (B8)", p.includes('repo: "demo"'));
   assert("bounds the batch to the cap", p.includes("3 to 4 tickets"));
 }
 
@@ -385,6 +388,50 @@ try {
 }
 
 console.log();
+console.log("== B8: renderPoMcpRuntime substitutes EVERY placeholder + binds the repo ==");
+{
+  const template = readFileSync(resolve(HERE, "..", ".mcp.json"), "utf8");
+  const out = renderPoMcpRuntime(template, {
+    dispatchDb: "/d/dispatch.sqlite",
+    memoryDb: "/d/memory.sqlite",
+    dispatchMcpBin: "/b/dispatch-mcp.js",
+    memoryMcpBin: "/b/memory-mcp.js",
+    repoName: "demo",
+  });
+  assert("no ${PLACEHOLDER} survives the render", !/\$\{[A-Z_]+\}/.test(out));
+  const j = JSON.parse(out);
+  eq("dispatch env: DB + EMPTY claim token + default ticket repo", j.mcpServers.dispatch.env, {
+    DISPATCH_DB: "/d/dispatch.sqlite",
+    GAFFER_CLAIM_TOKEN: "",
+    GAFFER_FACTORY: "1",
+    GAFFER_DEFAULT_TICKET_REPO: "demo",
+  });
+  eq("memory env: DB + repo scope + inert recall", j.mcpServers.memory.env, {
+    MEMORY_DB: "/d/memory.sqlite",
+    GAFFER_FACTORY: "1",
+    GAFFER_TICKET_REPOS: "demo",
+    GAFFER_RECALL_TICKET: "",
+  });
+  eq(
+    "server bins substituted",
+    [j.mcpServers.dispatch.args[0], j.mcpServers.memory.args[0]],
+    ["/b/dispatch-mcp.js", "/b/memory-mcp.js"],
+  );
+  let threw = false;
+  try {
+    renderPoMcpRuntime('{"mcpServers":{"dispatch":{"env":{"X":"${UNKNOWN_THING}"}},"memory":{}}}', {
+      dispatchDb: "a",
+      memoryDb: "b",
+      dispatchMcpBin: "c",
+      memoryMcpBin: "d",
+      repoName: "demo",
+    });
+  } catch {
+    threw = true;
+  }
+  assert("a leftover placeholder fails closed (throws)", threw);
+}
+
 if (failures.length === 0) {
   console.log(`PASS — ${passed} checks passed (helper: ${HELPER})`);
   process.exit(0);

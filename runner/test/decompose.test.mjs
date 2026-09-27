@@ -983,6 +983,66 @@ console.log("== BROWNFIELD debate: final debated plan stays zero-bootstrap + rep
 }
 
 console.log();
+console.log(
+  "== B6: the UI's nested context.repo flips BROWNFIELD mode (was: silent greenfield) ==",
+);
+{
+  const brownMock =
+    "```json\n" +
+    JSON.stringify({
+      phase: "plan",
+      plan: {
+        epic: { name: "Dark", description: "d" },
+        tickets: [
+          { title: "Tokens", acceptanceCriteria: ["tokens"], dependsOn: [] },
+          { title: "Toggle", acceptanceCriteria: ["toggle"], dependsOn: [0] },
+        ],
+      },
+    }) +
+    "\n```";
+  const viaContext = runCli({
+    brief: "add dark mode",
+    context: { repo: "acme-web" },
+    mockOutput: brownMock,
+  });
+  if (
+    viaContext.code === 0 &&
+    viaContext.out &&
+    viaContext.out.phase === "plan" &&
+    viaContext.out.plan.tickets.length === 2 &&
+    viaContext.out.plan.tickets.every((t) => t.repo === "acme-web" && t.bootstrap === false)
+  ) {
+    ok("context.repo → every ticket stamped acme-web, zero bootstrap (brownfield)");
+  } else
+    fail(
+      `context.repo not lifted (code=${viaContext.code}, out=${JSON.stringify(viaContext.out)})`,
+    );
+  // An explicit top-level repo still wins over the context.
+  const explicit = runCli({
+    brief: "x",
+    repo: "other",
+    context: { repo: "acme-web" },
+    mockOutput: brownMock,
+  });
+  if (
+    explicit.out &&
+    explicit.out.phase === "plan" &&
+    explicit.out.plan.tickets.every((t) => t.repo === "other")
+  )
+    ok("explicit repo wins over context.repo");
+  else fail(`explicit repo lost to context (out=${JSON.stringify(explicit.out)})`);
+  // No repo anywhere → still greenfield (the one-bootstrap plan validates unchanged).
+  const greenMock = "```json\n" + JSON.stringify(planObj) + "\n```";
+  const green = runCli({ brief: "gym tracker", context: {}, mockOutput: greenMock });
+  if (
+    green.out &&
+    green.out.phase === "plan" &&
+    green.out.plan.tickets.some((t) => t.bootstrap === true)
+  )
+    ok("empty context stays greenfield (bootstrap ticket present)");
+  else fail(`empty context changed greenfield (out=${JSON.stringify(green.out)})`);
+}
+
 if (failures.length === 0) {
   console.log(`PASS — ${passed} checks passed (helper: ${HELPER})`);
   process.exit(0);

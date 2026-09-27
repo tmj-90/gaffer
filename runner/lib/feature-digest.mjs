@@ -78,13 +78,41 @@ const DIGEST_SECTION_FLAG = Object.freeze({
   stack: "--stack",
 });
 
+/** Common names an agent uses for the four digest sections. The memory digest has
+ *  exactly four sections (overview / structure / conventions / stack); a delta that
+ *  names "architecture" or "gotchas" used to be dropped SILENTLY at the merge, so the
+ *  prose the delivery agent wrote was wasted. Map the obvious synonyms instead. */
+const DIGEST_SECTION_ALIAS = Object.freeze({
+  summary: "overview",
+  purpose: "overview",
+  "key flows": "overview",
+  flows: "overview",
+  architecture: "structure",
+  layout: "structure",
+  modules: "structure",
+  "surface area": "structure",
+  surface: "structure",
+  gotchas: "conventions",
+  rules: "conventions",
+  style: "conventions",
+  patterns: "conventions",
+  dependencies: "stack",
+  tooling: "stack",
+  tech: "stack",
+  technology: "stack",
+});
+
 /** Normalise a delta's section name to a memory-CLI section flag, or null if it isn't a
  *  recognised digest section. Tolerant of case/whitespace so an agent's "Overview" or
- *  " stack " still lands. */
+ *  " stack " still lands, and of the common synonyms in DIGEST_SECTION_ALIAS. */
 export function digestSectionFlag(section) {
-  const key = String(section ?? "")
+  let key = String(section ?? "")
     .trim()
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+  if (Object.prototype.hasOwnProperty.call(DIGEST_SECTION_ALIAS, key))
+    key = DIGEST_SECTION_ALIAS[key];
   return Object.prototype.hasOwnProperty.call(DIGEST_SECTION_FLAG, key)
     ? DIGEST_SECTION_FLAG[key]
     : null;
@@ -202,7 +230,11 @@ export function selectPreparedDelta(view) {
 export function buildApplyCommands(delta, { ticketNumber, repo, featureId } = {}) {
   const jobs = [];
   const source = mergeSource(ticketNumber);
-  const repoName = String(delta?.repo || repo || "").trim();
+  // The MERGE's repo wins over whatever the delivery agent wrote into the delta: the
+  // delta is agent-authored (untrusted) text and a mistyped/foreign repo name would
+  // stamp another repo's digest. The delta's repo is only a fallback when the merge
+  // has none.
+  const repoName = String(repo || delta?.repo || "").trim();
 
   const sections = Array.isArray(delta?.sections) ? delta.sections : [];
   for (const s of sections) {
@@ -216,6 +248,12 @@ export function buildApplyCommands(delta, { ticketNumber, repo, featureId } = {}
     });
   }
 
+  // ALWAYS stamp freshness: `digest set` above only runs for recognised, non-empty
+  // sections, so a delta with `sections: []` (or only unknown names) used to leave the
+  // digest's source/updated_at untouched — `get_repo_digest` never showed the repo
+  // moved on this merge. The touch is idempotent (same merge source).
+  if (repoName) jobs.push(buildMinimalDigestStamp({ ticketNumber, repo: repoName }));
+
   // The feature note carried INSIDE the delta (delivery agent didn't know an id).
   const feature = delta?.feature && typeof delta.feature === "object" ? delta.feature : null;
   for (const job of buildFeatureShippedCommands({
@@ -227,6 +265,18 @@ export function buildApplyCommands(delta, { ticketNumber, repo, featureId } = {}
     jobs.push(job);
   }
   return jobs;
+}
+
+/**
+ * The feature id a ticket carries in its description (`Feature-Id: <id>` on its own
+ * line — stamped by the crew feature-backlog loop on every ticket of a feature epic,
+ * and by `epic-feature.mjs`). Lets the merge ADVANCE the exact ledger row
+ * (backlog → building → shipped) instead of guessing by name. Pure; null when absent.
+ */
+export function featureIdFromView(view) {
+  const desc = String(view?.ticket?.description ?? view?.description ?? "");
+  const m = /^\s*Feature-Id:\s*(\S+)\s*$/im.exec(desc);
+  return m ? m[1] : null;
 }
 
 /**

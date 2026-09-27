@@ -700,6 +700,29 @@ gaffer_render_mcp_runtime() {
     node "$CREW_DIR/dist/runtime/context/renderMcpCli.js" --template "$tmpl" --out "$out" || return 1
 }
 
+# --- MCP runtime env binding -----------------------------------------------------
+# Add ONE env var to ONE server of an already-rendered runtime .mcp.json, in place.
+# Used for per-pass bindings the shared template has no placeholder for (the review
+# pass binds GAFFER_REVIEW_TICKET into the dispatch server so the reviewer's claimless
+# evidence notes are accepted for that ticket only). Parses + re-serialises the JSON
+# (never a textual splice), fails non-zero on unparseable input or a missing server so
+# the caller can refuse the launch (fail closed).
+# Usage: gaffer_mcp_runtime_set_env <runtime.json> <server> <KEY> <value>
+gaffer_mcp_runtime_set_env() {
+  local file="$1" server="$2" key="$3" value="$4"
+  [ -f "$file" ] || return 1
+  GAFFER_MCP_SET_FILE="$file" GAFFER_MCP_SET_SERVER="$server" GAFFER_MCP_SET_KEY="$key" GAFFER_MCP_SET_VALUE="$value" \
+    node -e '
+      const fs = require("node:fs");
+      const { GAFFER_MCP_SET_FILE: f, GAFFER_MCP_SET_SERVER: s, GAFFER_MCP_SET_KEY: k, GAFFER_MCP_SET_VALUE: v } = process.env;
+      const j = JSON.parse(fs.readFileSync(f, "utf8"));
+      const srv = j && j.mcpServers && j.mcpServers[s];
+      if (!srv || typeof srv !== "object") { process.stderr.write(`mcp-set-env: no server ${s}\n`); process.exit(1); }
+      srv.env = { ...(srv.env || {}), [k]: v };
+      fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+    ' || return 1
+}
+
 # --- Delivery/bootstrap PROMPT render ----------------------------------------
 # Render the live delivery (fresh / resume) or greenfield bootstrap PROMPT — the
 # text tick.sh feeds `claude -p` — through the typed renderer (packages/crew

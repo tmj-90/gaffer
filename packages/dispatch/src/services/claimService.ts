@@ -102,6 +102,13 @@ export interface ClaimResult {
 
 export interface RecordEvidenceInput {
   claimToken?: string | undefined;
+  /**
+   * REVIEWER PATH: the ticket (id or number) this MCP server was mounted to REVIEW
+   * (the runner sets GAFFER_REVIEW_TICKET in the reviewer's env). A matching
+   * in_review ticket accepts review notes from a non-human actor without a claim;
+   * such a note never flips an AC to satisfied.
+   */
+  reviewOf?: string | undefined;
   ticket_id: string;
   ac_id?: string | undefined;
   repo_id?: string | undefined;
@@ -493,10 +500,24 @@ export class ClaimService {
   recordEvidence(raw: RecordEvidenceInput, actor: Actor): { evidenceId: string; eventId: string } {
     const input = recordEvidenceInput.parse(raw);
     const claimToken = raw.claimToken;
+    const reviewOf =
+      typeof raw.reviewOf === "string" && raw.reviewOf.trim() !== ""
+        ? raw.reviewOf.trim()
+        : undefined;
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const ticket = this.tickets.findById(input.ticket_id);
       if (!ticket) throw notFound("ticket", input.ticket_id);
+
+      // REVIEWER PATH: the reviewer agent holds no claim (the delivery claim was
+      // completed at submit) yet must record one note per AC. It may do so for the
+      // in_review ticket it was mounted to review — and only annotate, never satisfy.
+      const isReview =
+        !claimToken &&
+        actor.type !== "human" &&
+        reviewOf !== undefined &&
+        ticket.status === "in_review" &&
+        (reviewOf === ticket.id || reviewOf === String(ticket.number));
 
       // A human actor may record manual evidence with no claim token; everyone
       // else must present a token matching an active claim on this ticket.
@@ -508,7 +529,7 @@ export class ClaimService {
             "Claim token does not match an active claim on this ticket.",
           );
         }
-      } else if (actor.type !== "human") {
+      } else if (actor.type !== "human" && !isReview) {
         throw new DispatchError("CLAIM_INVALID", "A claim token is required to record evidence.");
       }
 
@@ -535,7 +556,9 @@ export class ClaimService {
         created_at: now,
       });
 
-      if (input.ac_id) {
+      // A review note is an annotation: it never marks the criterion satisfied (the
+      // runner's own check and the human's approval do that).
+      if (input.ac_id && !isReview) {
         this.acs.setStatus(input.ac_id, "satisfied", actor.id ?? actor.type, now);
       }
 

@@ -44,6 +44,8 @@ const {
   buildMinimalDigestStamp,
   buildFeatureShippedCommands,
   buildEpicBuildingCommands,
+  digestSectionFlag,
+  featureIdFromView,
 } = await import(LIB);
 const { applyDigestAndFeature } = await import(MERGE);
 
@@ -196,14 +198,18 @@ console.log("== AC3: buildApplyCommands → memory `digest set` (source=merge:#N
     ],
     feature: { name: "Login", summary: "OAuth login", provenance: "epic-1" },
   };
-  const jobs = buildApplyCommands(delta, { ticketNumber: 42, repo: "fallback" });
+  // The MERGE's repo ("demo" here) wins over the agent-authored delta.repo.
+  const jobs = buildApplyCommands(
+    { ...delta, repo: "typo-by-agent" },
+    { ticketNumber: 42, repo: "demo" },
+  );
   const digest = jobs.find((j) => j.kind === "digest");
   assert(
     "one digest job (unknown + empty sections skipped)",
     jobs.filter((j) => j.kind === "digest").length === 1,
   );
   assert("digest job targets the MEMORY CLI (lg), not wg", digest.command === "lg");
-  eq("digest job is `digest set <repo> --overview <c> --source …`", digest.args, [
+  eq("digest job is `digest set <MERGE repo> --overview <c> --source …`", digest.args, [
     "digest",
     "set",
     "demo",
@@ -212,6 +218,40 @@ console.log("== AC3: buildApplyCommands → memory `digest set` (source=merge:#N
     "--source",
     "merge:#42",
   ]);
+  const stamp = jobs.find((j) => j.kind === "digest-stamp");
+  eq("a delta ALWAYS also stamps freshness (digest touch <merge repo>)", stamp && stamp.args, [
+    "digest",
+    "touch",
+    "demo",
+    "--source",
+    "merge:#42",
+  ]);
+  const fallbackOnly = buildApplyCommands(
+    { repo: "from-delta", sections: [] },
+    { ticketNumber: 42 },
+  );
+  eq(
+    "no merge repo → the delta's repo is the fallback; sections:[] still stamps",
+    fallbackOnly.map((j) => j.kind + ":" + j.args[2]),
+    ["digest-stamp:from-delta"],
+  );
+  // Synonyms the prepare-digest-delta skill's older wording produced are mapped, not dropped.
+  eq(
+    "section aliases: architecture→structure, gotchas→conventions, key flows→overview, tooling→stack",
+    ["Architecture", "gotchas", "Key Flows", "tooling", "surface_area", "nonsense"].map(
+      digestSectionFlag,
+    ),
+    ["--structure", "--conventions", "--overview", "--stack", "--structure", null],
+  );
+  eq(
+    "Feature-Id: line on the ticket description is read back (first match, own line)",
+    [
+      featureIdFromView({ ticket: { description: "Do the thing.\n\nFeature-Id: lore_ab12\n" } }),
+      featureIdFromView({ ticket: { description: "no marker" } }),
+      featureIdFromView(null),
+    ],
+    ["lore_ab12", null, null],
+  );
   const feat = jobs.find((j) => j.kind === "feature-add");
   assert("feature add(shipped) present (no linked id)", feat && feat.args.includes("shipped"));
   assert("feature add targets the MEMORY CLI", feat.command === "lg");
@@ -476,6 +516,60 @@ console.log("== sanity: lifecycle constants + mergeSource ==");
     ["backlog", "building", "shipped"],
   );
   eq("mergeSource", mergeSource(7), "merge:#7");
+}
+
+// ── B11: the ticket's Feature-Id line drives feature ADVANCE (not a duplicate add) ───
+console.log("== B11: Feature-Id on the ticket → `feature advance <id> --to shipped` ==");
+{
+  const log = resolve(WORKDIR, "calls-b11.log");
+  const view = {
+    ticket: { number: 101, description: "Build the refund flow.\n\nFeature-Id: lore_feat77\n" },
+    evidence: [{ summary: "ordinary note" }],
+  };
+  const { out } = runApply({ ticket: 101, repo: "demo", view }, log);
+  assert("applied (minimal path)", out && out.applied === true && out.prepared === false);
+  const calls = readCalls(log);
+  const adv = calls.find((c) => c[0] === "feature" && c[1] === "advance");
+  eq("advanced the ledger row named by Feature-Id", adv, [
+    "feature",
+    "advance",
+    "lore_feat77",
+    "--to",
+    "shipped",
+  ]);
+  assert(
+    "no `feature add` (no duplicate row)",
+    !calls.some((c) => c[0] === "feature" && c[1] === "add"),
+  );
+  assert(
+    "freshness stamped",
+    calls.some((c) => c[0] === "digest" && c[1] === "touch"),
+  );
+  // With a prepared delta AND a Feature-Id, the id still wins over the delta's feature name.
+  const log2 = resolve(WORKDIR, "calls-b11b.log");
+  const view2 = {
+    ticket: { number: 102, description: "x\nFeature-Id: lore_feat78" },
+    evidence: [
+      {
+        summary: encodeDigestDelta({
+          repo: "demo",
+          sections: [],
+          feature: { name: "Refund flow" },
+        }),
+      },
+    ],
+  };
+  runApply({ ticket: 102, repo: "demo", view: view2 }, log2);
+  const calls2 = readCalls(log2);
+  assert(
+    "prepared delta + Feature-Id → advance by id, never add by name",
+    calls2.some((c) => c[0] === "feature" && c[1] === "advance" && c[2] === "lore_feat78") &&
+      !calls2.some((c) => c[0] === "feature" && c[1] === "add"),
+  );
+  assert(
+    "sections:[] delta still stamps freshness",
+    calls2.some((c) => c[0] === "digest" && c[1] === "touch"),
+  );
 }
 
 try {

@@ -120,6 +120,13 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       GAFFER_TICKET_REPOS=""
       gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
         || { log "MCP-RENDER: failed to render review runtime .mcp.json — refusing live review (fail closed)"; result error; exit 1; }
+      # REVIEWER EVIDENCE PATH: with no claim token, dispatch's record_ac_evidence refused
+      # every non-human write, so the reviewer's per-AC notes (which the prompt + skill
+      # demand) ALWAYS failed and only the verdict line worked. GAFFER_REVIEW_TICKET names
+      # the ONE in_review ticket this reviewer may annotate; the dispatch server accepts a
+      # claimless note for that ticket only and never flips an AC to satisfied from it.
+      gaffer_mcp_runtime_set_env "$MCP_RUNTIME" dispatch GAFFER_REVIEW_TICKET "$RNUM" \
+        || { log "MCP-RENDER: failed to bind GAFFER_REVIEW_TICKET into the review runtime .mcp.json — refusing live review (fail closed)"; result error; exit 1; }
       chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
       # File-card context for the reviewer — orients it on the repo's structure
       # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.
@@ -298,10 +305,34 @@ EOF
                   # stays current instead of decaying. Fail-soft — never blocks the merge.
                   gaffer_refresh_cards "$RREPO" "$(basename "$RREPO")" "$_CR_BASE" "$RBRANCH" \
                     "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
+                  # POST-MERGE MEMORY WORK — the SAME step the dashboard merge (merge-ticket.mjs)
+                  # runs: apply the digest delta the delivery agent prepared (or stamp
+                  # freshness) and advance the linked feature → shipped. Without this the
+                  # unattended AFK merge left the Repo Digest stale and the feature at
+                  # `building` in every autonomous mode. Best-effort, never blocks the merge.
+                  if [ "${GAFFER_DIGEST_DISABLE:-0}" != "1" ]; then
+                    if node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$RNUM" --apply-digest-only \
+                         >>"$GAFFER_DATA/merge-digest.log" 2>&1; then
+                      log "AFK: #$RNUM digest/feature applied post-merge (see merge-digest.log)"
+                    else
+                      log "AFK: #$RNUM digest/feature apply did not run (rc=$?) — memory not updated for this merge; see merge-digest.log"
+                    fi
+                  fi
                   if [ "${GAFFER_AUTO_PUSH:-0}" = "1" ]; then
                     gaffer_auto_push "$RREPO" "$RDEFAULT" \
                       && log "AFK: pushed $RDEFAULT to origin" \
                       || log "AFK: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push"
+                  fi
+                  # The delivery branch is now fully merged: drop it so branches don't pile
+                  # up (mirrors merge-ticket.mjs). The review worktree still has it checked
+                  # out (git refuses to delete a checked-out branch), and the reviewer is done,
+                  # so tear the worktree down first (idempotent; the exit trap re-runs it).
+                  # `-d` refuses an unmerged branch, so this can never lose work.
+                  _review_cleanup
+                  if git -C "$RREPO" branch -d "$RBRANCH" >/dev/null 2>&1; then
+                    log "AFK: deleted merged branch $RBRANCH"
+                  else
+                    log "AFK: merged branch $RBRANCH left in place (not deletable right now)"
                   fi
                   ;;
                 3) log "AFK: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;

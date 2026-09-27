@@ -20,24 +20,31 @@ win. Keep it cheap: you are summarising a diff you already have, not re-deriving
 
 ## Steps
 
-1. **Decide what the digest should say now.** For each Repo Digest section your change
-   makes stale (architecture, key flows, conventions, surface area, gotchas, …), write
-   the SHORT updated prose for that section — only sections you actually changed. If the
-   change is small and touches no section's narrative, you may record zero sections (the
-   merge will still stamp freshness).
+1. **Decide what the digest should say now.** The Repo Digest has exactly FOUR sections
+   and the merge applies only these names (anything else is dropped):
+   - `overview` — what the repo is and its key flows;
+   - `structure` — architecture, layout, modules, surface area;
+   - `conventions` — rules, patterns, gotchas;
+   - `stack` — languages, dependencies, tooling.
+   For each section your change makes stale, write the SHORT updated prose for that
+   section — only sections you actually changed. If the change is small and touches no
+   section's narrative, record zero sections (the merge still stamps freshness).
 2. **Name the feature this ticket ships.** One feature note: its `name`, a one-line
    `summary`, and — if you know it — the `scopeNode` and `provenance` (e.g. the epic
    ref). This is what the merge advances/adds to `shipped`.
-3. **Record ONE evidence row** via the Dispatch MCP delivery-evidence path
-   (`attach_delivery_evidence` / the `record-evidence` flow), `evidence_type:
-   manual_note`, whose **summary is exactly** the marker line below — the marker, a
-   single space, then a compact one-line JSON payload:
+3. **Record ONE evidence row** with the Dispatch MCP tool `record_ac_evidence`
+   (`ticket_id` = this ticket, NO `ac_id`, `evidence_type: "manual_note"`), whose
+   **summary is exactly** the marker line below — the marker, a single space, then a
+   compact one-line JSON payload:
 
    ```
    GAFFER_DIGEST_DELTA_V1 {"repo":"<repo-name>","sections":[{"section":"<digest section>","content":"<updated prose>"}],"feature":{"name":"<feature name>","summary":"<one line>","scopeNode":"<id or omit>","provenance":"<epic ref or omit>"}}
    ```
 
    - The summary MUST start with `GAFFER_DIGEST_DELTA_V1 ` (marker + one space).
+   - `repo` is the ticket's write repo name. The merge applies the delta to the repo it
+     merged into regardless, so a wrong name here is corrected, not honoured.
+   - `section` MUST be one of `overview`, `structure`, `conventions`, `stack`.
    - The payload MUST be valid one-line JSON. `sections` may be `[]`; `feature` may be
      omitted if this ticket ships no discrete feature.
    - Record at most one such row per ticket. If you record more than one, the merge

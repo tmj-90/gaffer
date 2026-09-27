@@ -3289,7 +3289,7 @@ const TICKET_ACTION_KEYS = {
   in_testing: [],
   // Approved-and-merging: the merge runner is working. A human can mark it merged
   // (admin override) or send it back for rework — but NOT "mark ready".
-  ready_for_merge: ["mark_merged", "rework"],
+  ready_for_merge: ["merge_now", "mark_merged", "rework"],
   // Terminal: reopen only where allowed (cancelled is reopenable; done is not).
   done: [],
   failed: [],
@@ -4028,6 +4028,25 @@ async function renderTicket(id) {
             }),
         },
         "Send back to rework",
+      ),
+    // Merge an approved ticket whose branch has not landed (the runner held the merge
+    // gate, lite mode, or a merge attempt hit a conflict). Fires the merge runner —
+    // the same one the Approve path uses — instead of marking done without code.
+    merge_now: () =>
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          title: "Merge the approved delivery branch now (runs the merge runner)",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/merge`);
+              toast("Merge started — the board updates when it lands", { ok: true });
+              router();
+            }),
+        },
+        "Merge now",
       ),
     // Admin override: mark the ticket actually merged (ready_for_merge -> done).
     mark_merged: () =>

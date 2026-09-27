@@ -24,7 +24,9 @@ export type HumanQueueKind =
   | "ready_approval"
   | "reviewer_assignment"
   | "parked"
-  | "dependency_cancelled";
+  | "dependency_cancelled"
+  /** Approved but not merged: the merge runner did not (or could not) land it. */
+  | "awaiting_merge";
 
 /** The ticket a human-queue item concerns (null for a decision with no link). */
 export interface HumanQueueTicketRef {
@@ -270,6 +272,26 @@ export class HumanQueueService {
     // nothing in the pipeline can clear it. A human must decide: drop the edge
     // (`dispatch ticket dep remove`, DELETE /tickets/:id/dependencies/:dep) or cancel
     // the dependent too. Previously this was invisible — the ticket just never ran.
+    // APPROVED BUT NOT MERGED. Tickets reach ready_for_merge from the runner's
+    // approve-only AFK path (merge gate held), lite mode, or a merge that hit a
+    // conflict / dirty tree. Nothing merged them and, until "Merge now" existed, the
+    // only board action marked them done WITHOUT merging any code. Surface them.
+    for (const t of this.tickets.list("ready_for_merge")) {
+      const since = t.updated_at;
+      items.push({
+        kind: "awaiting_merge",
+        label: "Approved, not merged",
+        reason:
+          "Approved, but the delivery branch has not been merged (the runner held the merge " +
+          "gate, or a merge attempt did not land). Merge now, or mark merged if you merged it by hand.",
+        ticket: { id: t.id, number: t.number, title: t.title, status: t.status },
+        decisionId: null,
+        severity: null,
+        since,
+        waitedMs: waited(since),
+      });
+    }
+
     for (const row of this.dependencies.listBlockedByTerminalDependency()) {
       const depRef = row.dep_number !== null ? `#${row.dep_number}` : row.depends_on_ticket_id;
       items.push({

@@ -27,7 +27,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
@@ -535,6 +535,88 @@ console.log("== boundary: Runner reads the card watermark via the memory CLI, no
   assert(
     "readCardWatermark no longer opens the memory sqlite directly",
     !/readCardWatermark\([^)]*memDbPath/.test(src) && !/repo_sync WHERE repo_key/.test(src),
+  );
+}
+
+// ── B9: --apply-digest-only runs ONLY the post-merge memory step (no git, no claude) ──
+console.log("== B9: --apply-digest-only → digest/feature apply with no git mutation ==");
+{
+  // Stub CLI for BOTH dispatch (`ticket show`) and memory (digest/feature writes).
+  const STUB = resolve(WORKDIR, "cli-stub-b9.mjs");
+  const CALLS = resolve(WORKDIR, "calls-b9.log");
+  const VIEW = resolve(WORKDIR, "view-b9.json");
+  writeFileSync(
+    STUB,
+    [
+      "import { appendFileSync, readFileSync } from 'node:fs';",
+      "const argv = process.argv.slice(2);",
+      "const real = argv[0] === '--db' ? argv.slice(2) : argv;",
+      `appendFileSync(${JSON.stringify(CALLS)}, JSON.stringify(real) + '\\n');`,
+      "if (real[0] === 'ticket' && real[1] === 'show') {",
+      `  process.stdout.write(readFileSync(${JSON.stringify(VIEW)}, 'utf8')); process.exit(0);`,
+      "}",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+  writeFileSync(
+    VIEW,
+    JSON.stringify({
+      ticket: { number: 9, description: "ship it\n\nFeature-Id: lore_f9" },
+      evidence: [],
+    }),
+  );
+  // The repo path does NOT exist on disk: proves no git runs on this path.
+  const db = makeDb([
+    {
+      ticketId: "t9",
+      number: 9,
+      repoId: "r9",
+      repoName: "demo9",
+      localPath: resolve(WORKDIR, "absent-repo"),
+      repoBranch: "gaffer/ticket-9-x",
+    },
+  ]);
+  const res = spawnSync(process.execPath, [HELPER, "--ticket", "9", "--apply-digest-only"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      DISPATCH_DB: db,
+      DISPATCH_CLI: STUB,
+      MEMORY_CLI: STUB,
+      CLAUDE_BIN: "/nonexistent/claude",
+    },
+  });
+  let out = null;
+  try {
+    out = JSON.parse(res.stdout);
+  } catch {
+    /* null */
+  }
+  assert("exit 0", res.status === 0);
+  assert(
+    "phase digest-applied for ticket 9 / repo demo9",
+    out && out.phase === "digest-applied" && out.ticket === 9 && out.repo === "demo9",
+  );
+  assert("digest.applied === true", out && out.digest && out.digest.applied === true);
+  const calls = existsSync(CALLS)
+    ? readFileSync(CALLS, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+    : [];
+  assert(
+    "memory: digest touch demo9 --source merge:#9",
+    calls.some(
+      (c) => c[0] === "digest" && c[1] === "touch" && c[2] === "demo9" && c.includes("merge:#9"),
+    ),
+  );
+  assert(
+    "memory: feature advance lore_f9 --to shipped (from the ticket's Feature-Id)",
+    calls.some((c) => c.join(" ") === "feature advance lore_f9 --to shipped"),
+  );
+  assert(
+    "no mark-merged / no git (the merge already landed elsewhere)",
+    !calls.some((c) => c.includes("mark-merged")),
   );
 }
 

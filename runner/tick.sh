@@ -553,6 +553,20 @@ gaffer_submit_delivery() {
   fi
   [ "$_rc" -ne 0 ] && [ -n "$_err" ] &&
     log "submit for #$NUM failed (rc=$_rc): $(printf '%s' "$_err" | tr '\n' ' ' | cut -c1-300)"
+  # VERIFY AFTER WRITE: a submit that reports success but did not land (observed once
+  # in the browser regression: rc=0, no transition event, ticket still `claimed`) used
+  # to be invisible — the tick logged "submitted" and moved on while the claim stayed
+  # live and the ticket never reached review. Re-read the status through a FRESH CLI
+  # process; anything but in_review is treated as a failed submit so the caller's
+  # park path handles it and the WHY is in the log.
+  if [ "$_rc" -eq 0 ]; then
+    local _st
+    _st="$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
+    if [ "$_st" != "in_review" ]; then
+      log "SUBMIT-VERIFY: #$NUM submit reported success but the ticket reads '${_st:-unknown}' (expected in_review) — treating as a failed submit"
+      _rc=1
+    fi
+  fi
   # On a successful submit the claim is COMPLETED (claimed → in_review): the token
   # is consumed. Mark the claim resolved so the EXIT crash trap doesn't re-release
   # it with the void token and page a spurious "needs a human" (N3). On failure we

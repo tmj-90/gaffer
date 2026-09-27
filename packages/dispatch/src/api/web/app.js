@@ -5430,12 +5430,19 @@ async function renderSettings() {
   // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies, each with a
   // one-click reversible OFF. Rendered above the suggestions so the active posture is
   // the first thing an operator sees.
-  const polPanel = autonomyPoliciesPanel(autonomyPolicies);
+  // B17: those policies are consulted ONLY by the agent review pass. Under
+  // REVIEW_MODE=human (supervised, the default) no reviewer agent runs, so an enabled
+  // grant showed "Enabled" here and never acted. Say so wherever a grant is shown.
+  const inertCount = autonomyPoliciesInert(autonomyPolicies, all);
+  if (inertCount > 0) wrap.appendChild(inertPoliciesNote(inertCount));
+  const polPanel = autonomyPoliciesPanel(autonomyPolicies, { inert: inertCount > 0 });
   if (polPanel) wrap.appendChild(polPanel);
 
   // GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations backed by the review
   // track record — each is now an ENABLE action (evidence + explicit confirm → POST).
-  const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies);
+  const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies, {
+    inert: inertCount > 0,
+  });
   if (recPanel) wrap.appendChild(recPanel);
 
   // PER-PRINCIPAL CREDENTIALS: who is signed in, the named credentials, mint/revoke.
@@ -5604,7 +5611,38 @@ function submitAutonomyPolicy(btn, busyLabel, body, okMsg) {
  * An item already enabled as auto shows an "Enabled" chip instead of the action.
  * Returns null when there's nothing to recommend, so the panel simply doesn't appear.
  */
-function autonomyRecommendationsPanel(recs, policies) {
+/** The REVIEW_MODE the tick will use, from the settings views ('human' when unset). */
+function effectiveReviewMode(all) {
+  const s = (Array.isArray(all) ? all : []).find((x) => x.key === "REVIEW_MODE");
+  const v = s ? String(s.effective !== undefined ? s.effective : s.value || "").trim() : "";
+  return v || "human";
+}
+
+/**
+ * B17: how many active (mode=auto) per-repo grants can never act — the runner consults
+ * them only inside the agent review pass (REVIEW_MODE=agent|both); under `human` no
+ * reviewer runs, so the grants are inert. 0 when there are none or they are live.
+ */
+function autonomyPoliciesInert(policies, all) {
+  const active = (Array.isArray(policies) ? policies : []).filter((p) => p.mode === "auto");
+  if (active.length === 0) return 0;
+  return effectiveReviewMode(all) === "human" ? active.length : 0;
+}
+
+/** The Settings banner for inert grants (see autonomyPoliciesInert). */
+function inertPoliciesNote(n) {
+  return el("div", { class: "warn-box autonomy-inert-note", role: "status" }, [
+    icon("alert", "settings-note-ico"),
+    el("span", {}, [
+      el("strong", {}, `${n} autonomy grant${n === 1 ? " is" : "s are"} inert. `),
+      "Review mode is human, so no reviewer agent runs and the per-repo policies are never " +
+        "consulted. Set Review mode to agent or both (or Autonomy mode to graduated) for them " +
+        "to act, or turn them off below.",
+    ]),
+  ]);
+}
+
+function autonomyRecommendationsPanel(recs, policies, { inert = false } = {}) {
   if (!Array.isArray(recs) || recs.length === 0) return null;
   return el("div", { class: "card panel autonomy-recs" }, [
     el("div", { class: "ar-head" }, [
@@ -5621,13 +5659,13 @@ function autonomyRecommendationsPanel(recs, policies) {
     el(
       "ul",
       { class: "ar-list" },
-      recs.map((r) => autonomyRecItem(r, policies)),
+      recs.map((r) => autonomyRecItem(r, policies, { inert })),
     ),
   ]);
 }
 
 /** One recommendation row with its inline evidence + explicit enable/confirm flow. */
-function autonomyRecItem(r, policies) {
+function autonomyRecItem(r, policies, { inert = false } = {}) {
   const confPct = Math.round((Number(r.confidence) || 0) * 100);
   const reasons = Array.isArray(r.reasons) ? r.reasons : [];
   const active = isPolicyActive(policies, r.repoId, r.riskLevel, r.gate);
@@ -5677,7 +5715,18 @@ function autonomyRecItem(r, policies) {
       ]),
     );
   };
-  if (active) {
+  if (active && inert) {
+    action.appendChild(
+      el(
+        "span",
+        {
+          class: "ar-enabled-chip inert",
+          title: "Review mode is human: no reviewer agent runs, so this grant never acts.",
+        },
+        [icon("alert"), "Enabled · inert"],
+      ),
+    );
+  } else if (active) {
     action.appendChild(el("span", { class: "ar-enabled-chip" }, [icon("check"), "Enabled"]));
   } else {
     renderEnable();
@@ -5707,18 +5756,20 @@ function autonomyRecItem(r, policies) {
  * (mode=auto) autonomy policy with a one-click, reversible OFF. Returns null when
  * nothing is enabled, so the panel only appears once the operator has opted in.
  */
-function autonomyPoliciesPanel(policies) {
+function autonomyPoliciesPanel(policies, { inert = false } = {}) {
   const active = (Array.isArray(policies) ? policies : []).filter((p) => p.mode === "auto");
   if (active.length === 0) return null;
-  return el("div", { class: "card panel autonomy-policies" }, [
+  return el("div", { class: `card panel autonomy-policies${inert ? " is-inert" : ""}` }, [
     el("div", { class: "ar-head" }, [
-      icon("lock", "ar-ico"),
+      icon(inert ? "alert" : "lock", "ar-ico"),
       el("div", {}, [
-        el("h2", { class: "ar-title" }, "Active autonomy"),
+        el("h2", { class: "ar-title" }, inert ? "Active autonomy (inert)" : "Active autonomy"),
         el(
           "p",
           { class: "section-note dim" },
-          "The factory acts without you at these chokepoints. Turn any off to re-gate it immediately.",
+          inert
+            ? "These grants are never consulted while Review mode is human — no reviewer agent runs. Switch Review mode to agent or both for them to act, or turn them off."
+            : "The factory acts without you at these chokepoints. Turn any off to re-gate it immediately.",
         ),
       ]),
     ]),
@@ -5744,7 +5795,17 @@ function autonomyPoliciesPanel(policies) {
             el("span", { class: `ar-gate ar-gate-${p.gate}` }, autonomyGateLabel(p.gate)),
             el("span", { class: "ar-risk" }, `risk=${p.risk_level}`),
             el("span", { class: "ar-repo" }, p.repo_name || ""),
-            el("span", { class: "ap-mode" }, "auto"),
+            inert
+              ? el(
+                  "span",
+                  {
+                    class: "ap-mode inert",
+                    title:
+                      "Review mode is human: no reviewer agent runs, so this grant never acts.",
+                  },
+                  "auto · inert",
+                )
+              : el("span", { class: "ap-mode" }, "auto"),
           ]),
           p.enabled_by
             ? el(

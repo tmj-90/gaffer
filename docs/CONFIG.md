@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 107 |
-| Knobs editable in the dashboard | 55 |
+| Knobs with a runner default | 108 |
+| Knobs editable in the dashboard | 54 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 61 |
+| Env reads in code with no default and no UI entry | 62 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -41,7 +41,7 @@ computed from other knobs at runtime.
 | `GAFFER_ESTIMATE_LIB` | _derived_ (`$RUNNER_DIR/lib/estimate.mjs`) |  | runner | Shared usage-ledger READER (lib/estimate.mjs parseLedger). |
 | `MCP_CONFIG` | _derived_ (`$RUNNER_DIR/.mcp.json`) |  | runner | Claude Code wiring |
 | `CLAUDE_SETTINGS` | _derived_ (`$RUNNER_DIR/claude/settings.json`) |  | runner |  |
-| `SKILLS_DIR` | _derived_ (`$RUNNER_DIR/skills`) |  | crew, runner |  |
+| `SKILLS_DIR` | _derived_ (`$RUNNER_DIR/skills`) |  | runner |  |
 | `CLAUDE_BIN` | `claude` |  | runner | headless `claude -p` |
 | `CLAUDE_FLAGS` | `--permission-mode acceptEdits` |  | runner | tune to your Claude Code version |
 | `GAFFER_PLAN_MODEL` | `opus` |  | runner |  |
@@ -53,6 +53,7 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
 | `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom in-flight work pauses. Empty = unlimited. |
+| `GAFFER_BUDGET_REMAINING` | _derived_ (`$_gaffer_budget_remaining`) _(set by branch/mode logic)_ |  | dispatch, runner |  |
 | `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (string) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
 | `GAFFER_CHEAP_PHASES` | _(empty)_ | yes (csv) | dispatch, runner | Comma-separated phases whose work is biased to the cheap model tier. Only 'implement' is routed through the model router today, so 'implement' is the only value with any effect; other phase names are inert until their call sites are routed. High/critical-risk work is never cheapened. |
 | `GAFFER_PLAN_DEBATE` | `0` | yes (boolean) | dispatch, runner | Run a multi-model debate over the plan before decomposing. |
@@ -81,7 +82,6 @@ computed from other knobs at runtime.
 | `GAFFER_DAEMON_MAX_CYCLES` | `0` |  | runner | 0 = unbounded |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many times a ticket may be re-worked after a rejected review before it parks to blocked. |
 | `GAFFER_CLAIM_TTL` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))`) |  | runner |  |
-| `DISPATCH_MAX_ATTEMPTS` | _derived_ (`$GAFFER_MAX_DELIVERY_ATTEMPTS`) | yes (int) | dispatch, runner | Dispatch's own cap on how many times a delivery may be rejected back into the queue before the ticket is parked (blocked) for a human — the server-side wallet guard against an unbounded reject loop, enforced on every reject transition regardless of which runner drove it. Defaults to Max delivery attempts so the two caps agree; set it only to make the server stricter or looser than the runner's rework ladder. |
 | `GAFFER_TICK_OUTER_TIMEOUT` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))`) |  | runner | FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around the WHOLE tick.sh. |
 | `GAFFER_REWORK_STRONG_MODEL` | _derived_ (`${GAFFER_PLAN_MODEL:-opus}`) |  | runner | ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning for the hardest cases before a human is pulled in). |
 | `GAFFER_REWORK_BUDGET_USD` | _derived_ (`${GAFFER_BUDGET_USD:-}`) | yes (string) | dispatch, runner | Cumulative spend ceiling for one ticket's rework loop. Delivery stops at whichever hits first — this or Max delivery attempts — then parks to blocked. Defaults to the factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it). |
@@ -134,9 +134,9 @@ computed from other knobs at runtime.
 | `MAX_TICKS` | `5` | yes (int) | dispatch, runner | Upper bound on factory ticks for a single run. |
 | `EMPTY_POLL_LIMIT` | `2` | yes (int) | dispatch, runner | Consecutive empty polls (no ready work) before the run stops or drops into idle loops. |
 | `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. |
-| `MAX_TICKS_PER_DAY` | `50` | yes (int) | dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. 0 = unlimited. |
+| `MAX_TICKS_PER_DAY` | `50` | yes (int) | dispatch, runner | Daily ceiling on factory ticks. |
 | `DAILY_COUNTER_FILE` | _derived_ (`$GAFFER_DATA/.daily-ticks`) |  | runner |  |
-| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it. Empty or 0 = off. |
+| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ |  | runner | Per-CALENDAR-DAY (UTC) USD spend ceiling (Part B). |
 
 ### Parallel ticket execution
 
@@ -165,7 +165,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `REVIEW_MODE` | `human` | yes (string: human / agent) | dispatch, runner | Who reviews a delivery before merge: human · agent · both. Agent reviews are ADVISORY — a human (or the AFK auto-approve chain) still owns the merge. |
+| `REVIEW_MODE` | `human` | yes (string: human / agent / both) | dispatch, runner | Who reviews a delivery before merge: human · agent · both (an agent screens first, then a human confirms). Agent reviews are ADVISORY — a human (or the AFK auto-approve chain) still owns the merge. Per-repo autonomy grants act only under agent or both; under human no reviewer agent runs, so they are inert. |
 | `MERGE_ON_AGENT_REVIEW` | `0` | yes (boolean) | dispatch, runner | Fire the merge command when an agent (not just a human) approves. |
 | `AUTO_MERGE` | `0` | yes (boolean) | dispatch, runner | Safe-merge into the default branch on approval. Off → approved tickets wait at ready-for-merge for a human. |
 | `GAFFER_AUTO_PUSH` | `0` | yes (boolean) | dispatch, runner | The final AFK step: push the default branch to origin after a successful auto-merge. Requires Auto-merge; off → merges stay local. |
@@ -207,14 +207,15 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_CREATE_PR` | `0` | yes (boolean) | dispatch, runner | Open a GitHub PR with the delivery evidence instead of merging directly. Needs the gh CLI authenticated. |
+| `GAFFER_CREATE_PR` | `0` | yes (boolean) | dispatch, runner | Push the delivery branch and open a GitHub PR carrying the evidence. Approval then merges THROUGH that PR (gh pr merge, method below) and fast-forwards the local default branch — never a local merge that leaves the PR open. Needs the gh CLI authenticated; if gh fails the merge falls back to local and says so. |
 | `GAFFER_GH_BIN` | `gh` |  | runner | injectable gh binary (for tests) |
+| `GAFFER_PR_MERGE_METHOD` | `merge` | yes (string: merge / squash / rebase) | dispatch, runner | How an approved PR is landed by gh pr merge: merge (default) · squash · rebase. Only used with 'Deliver as a pull request'. |
 
 ### H3: CI-aware review gate
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_REQUIRE_CI` | `0` | yes (boolean) | dispatch, runner | Poll the branch's CI checks and only merge when they pass. Off → merge without waiting on CI. |
+| `GAFFER_REQUIRE_CI` | `0` | yes (boolean) | dispatch, runner | Poll the delivery PR's CI checks and only let the ticket into review when they pass; red checks reject it back to rework. REQUIRES 'Deliver as a pull request' — the checks live on the PR, so with PR delivery off this gate is skipped with a warning (it used to poll a PR that never existed and reject every delivery at the timeout). |
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 
@@ -251,8 +252,8 @@ consuming component applies its own default when the variable is unset.
 | Variable | Type | Group | Read by | Help |
 |---|---|---|---|---|
 | `GAFFER_TESTING` | boolean | autonomy | dispatch, runner | When on, an approved testable ticket routes through the independent testing lane (in_review → in_testing) instead of straight to merge. The lane, the contract, and the runner seam are live; the seam hands an independent tester the contract + AC (never the diff). The live tester invocation is a documented follow-up. Off → review approval goes straight to merge. |
-| `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | crew, dispatch | When idle, pull one backlog feature from memory and plan it as an epic. Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml decides. |
-| `GAFFER_IDLE_MODE` | string: observe_only / create_draft_tickets / create_ready_tickets | idle-loops | crew, dispatch | How far EVERY idle loop goes with a finding: observe_only reports it and files nothing · create_draft_tickets files a draft for a human to ready (the default) · create_ready_tickets files it past the human gate. When set it overrides each loop's `mode` in crew.yaml for the crew runs the runner spawns; empty = crew.yaml decides per loop. |
+| `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | dispatch | When idle, mine repos for feature backlog candidates. |
+| `GAFFER_IDLE_MODE` | string: observe_only / create_draft / create_ready | idle-loops | dispatch | How far an idle loop goes: observe · draft · ready. |
 | `GAFFER_NOTIFY_WEBHOOK_URL` | string | notifications | dispatch, runner | POST each human-gate event as JSON to this URL (the generic integration). |
 | `GAFFER_NOTIFY_SLACK_URL` | string | notifications | dispatch, runner | Slack incoming-webhook URL — gates arrive as a Slack message. |
 | `GAFFER_NOTIFY_DESKTOP` | boolean | notifications | dispatch, runner | Fire a native desktop banner (macOS/Linux) on each human gate. |
@@ -279,6 +280,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `DISPATCH_CLI` |  | `runner/bin/merge-ticket.mjs` |
 | `DISPATCH_CORRELATION_ID` |  | `packages/dispatch/src/events/eventWriter.ts` |
 | `DISPATCH_LARGE_DELETION_LINES` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
+| `DISPATCH_MAX_ATTEMPTS` |  | `packages/dispatch/src/core.ts` |
 | `DISPATCH_OBSERVED_RISK_CEILING` | _(empty)_ | `packages/dispatch/src/services/observedRisk.ts` |
 | `DISPATCH_SENSITIVE_PATH_RE` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
@@ -305,12 +307,12 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_ONBOARD_SYNTH_MODEL` |  | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_REVIEW_TICKET` |  | `packages/dispatch/src/mcp/tools.ts` |
-| `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
+| `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_CLAUDE_CREDENTIALS` | _(empty)_ / `/nonexistent` | `runner/lib/sandbox-docker.sh`, `runner/sandbox/smoke-test.sh` |
-| `GAFFER_SANDBOX_HOME` | `/root` | `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
+| `GAFFER_SANDBOX_HOME` | `/root` | `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_NET_INT` | `gaffer-egress-int` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_NET_UP` | `gaffer-egress-uplink` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_SANDBOX_PATH` | `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` | `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
+| `GAFFER_SANDBOX_PATH` | `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` | `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_PROXY` | `gaffer-egress-proxy-svc` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_PROXY_IMAGE` | `gaffer-egress-proxy` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SECURITY_REVIEW_RE` | `${GAFFER_LITE_SENSITIVE_RE:-(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |

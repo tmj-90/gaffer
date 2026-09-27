@@ -63,9 +63,29 @@ export function parseAllowedEvents(raw: string | undefined): readonly NotifyKind
  *
  * Pure w.r.t. `env` (defaults to `process.env`) so it's trivially testable.
  */
+/**
+ * Refusals already printed by the DEFAULT warn sink in this process. Every `Dispatch`
+ * instance builds its notifier, so a CLI process that opens the control plane more than
+ * once (and the API server, per request path that re-opens) printed the same
+ * "ignoring GAFFER_NOTIFY_*_URL" line each time. Print each distinct refusal at most
+ * once per process; an injected `warn` (tests, callers with their own log) is never
+ * deduplicated.
+ */
+const WARNED_ONCE = new Set<string>();
+const warnOnce = (m: string): void => {
+  if (WARNED_ONCE.has(m)) return;
+  WARNED_ONCE.add(m);
+  process.stderr.write(`${m}\n`);
+};
+
+/** Test seam: forget what this process has already warned about. */
+export function resetNotifyWarnings(): void {
+  WARNED_ONCE.clear();
+}
+
 export function buildNotifierFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-  warn: (message: string) => void = (m) => process.stderr.write(`${m}\n`),
+  warn: (message: string) => void = warnOnce,
 ): Notifier {
   const sinks: NotifySink[] = [];
   // URL POLICY (SSRF): a sink is only built from an http(s) URL that does not point at a

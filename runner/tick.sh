@@ -363,6 +363,10 @@ if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
 fi
 AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
 
+# GRADUATED-AUTONOMY: per-repo `auto` policies only act inside the agent review pass;
+# under REVIEW_MODE=human they are inert. Say so once per run (factory.config.sh).
+declare -F gaffer_inert_policy_check >/dev/null 2>&1 && gaffer_inert_policy_check >/dev/null
+
 # ── RUNNER-OWNED-BOOKKEEPING: the runner holds the delivery claim ────────────
 # The runner (not the agent) claims the chosen ticket at SELECTION, holds the claim
 # token for the whole delivery, submits after ITS gates pass, and releases/parks the
@@ -658,8 +662,11 @@ gaffer_distill_ticket_intent() {
   # DRAFT for `memory review`; the PRODUCT CONTEXT primer surfaces only `active` lore, so
   # ratify the drafts you want priming future agents. GAFFER_MEMORY_AUTO_PROMOTE=1|0
   # overrides either way. The inline var applies only to this `lg` call.
-  local _promote="${GAFFER_MEMORY_AUTO_PROMOTE:-${MEMORY_AUTO_APPROVE:-0}}"
-  if MEMORY_AUTO_APPROVE="$([ "$_promote" = "1" ] && echo 1 || echo 0)" \
+  # Normalised through _gaffer_flag_on (1/true/yes/on), matching what Settings accepts, and
+  # handed to the memory CLI as the exact "1"/"0" it reads.
+  local _promote
+  _promote="$(_gaffer_flag_on "${GAFFER_MEMORY_AUTO_PROMOTE:-${MEMORY_AUTO_APPROVE:-0}}" && echo 1 || echo 0)"
+  if MEMORY_AUTO_APPROVE="$_promote" \
       lg suggest --title "$_dt" --summary "$_ds" --body "$_ds" \
       --repo "$RECALL_REPO_NAME" --kind requirement \
       --tag ticket-intent --tag requirement --tag "ticket-$NUM" \
@@ -2831,15 +2838,24 @@ $_trail_q
   #   timeout / no-PR / no-checks (strict, default) → auto-reject (rc=2)
   #   timeout / no-PR / no-checks (GAFFER_CI_TIMEOUT_POLICY=proceed) → proceed (rc=0)
   #   flag off                → no-op (rc=0)
+  #   flag on but GAFFER_CREATE_PR off → SKIP with one warning per run (rc=0): the
+  #     checks live on the PR, so without PR creation the gate polled a PR that never
+  #     existed and (strict) rejected every delivery at the timeout.
   if declare -F gaffer_ci_gate >/dev/null 2>&1; then
-    gaffer_ci_gate "$NUM" "${_CARD_REAL_REPO:-$PRIMARY_REPO}" "$WORK_BRANCH" "${_PR_URL:-}"
-    _CI_RC=$?
+    if declare -F gaffer_ci_gate_needs_pr >/dev/null 2>&1 && gaffer_ci_gate_needs_pr; then
+      gaffer_ci_gate_warn_needs_pr "$NUM"; _CI_RC=0
+    else
+      gaffer_ci_gate "$NUM" "${_CARD_REAL_REPO:-$PRIMARY_REPO}" "$WORK_BRANCH" "${_PR_URL:-}"
+      _CI_RC=$?
+    fi
     if [ "$_CI_RC" = "2" ]; then
       # CI went red → auto-reject back to rework so a human never sees a broken CI.
       log "H3: CI FAILED for #$NUM — auto-rejecting delivery back to rework (ticket left for re-delivery)"
       _CUR_CI_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
       if [ "$_CUR_CI_STATUS" = "in_review" ]; then
-        wg review reject "$NUM" --to refining --reviewer factory-ci \
+        # --as system: a runner (CI) rejection is NOT a human decision — recorded as one, it
+        # fed the autonomy recommendations' human-agreement rate.
+        wg review reject "$NUM" --to refining --reviewer factory-ci --as system \
           --reason "H3: CI checks failed on branch $WORK_BRANCH — see attached evidence for the failing check" \
           >/dev/null 2>&1 \
           && log "H3: auto-rejected #$NUM (in_review → refining)" \

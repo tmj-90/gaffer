@@ -65,6 +65,64 @@ git -C "$R" cat-file -e main:b.txt 2>/dev/null && ok "  remote received the merg
 gaffer_auto_merge "" a b; [ "$?" = 2 ] && ok "missing repo → rc2" || no "bad-args not 2"
 D="$(mk)"; gaffer_auto_push "$D" main; [ "$?" = 2 ] && ok "no origin → push rc2" || no "no-origin not 2"; rm -rf "$D"
 
+# ── gaffer_pr_merge (B14: PR MODE) — a ticket that has a PR is landed THROUGH it ────────
+# A stub `gh` whose `pr merge` does what GitHub + `--delete-branch` do: lands the branch
+# tip on origin/main, deletes the remote branch (and the local one). The helper must then
+# FAST-FORWARD the local default branch — never merge locally, never push.
+PRW="$(mktemp -d "${TMPDIR:-/tmp}/prmerge.XXXXXX")"; GH_LOG="$PRW/gh.log"
+cat > "$PRW/gh" <<'GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_STUB_LOG"
+[ "${GH_STUB_FAIL:-0}" = "1" ] && { echo "GraphQL: not mergeable" >&2; exit 1; }
+case "$1 $2" in
+  "pr merge") git push -q origin "refs/heads/$GH_STUB_BRANCH:refs/heads/main" 2>/dev/null || exit 1
+              git push -q origin --delete "$GH_STUB_BRANCH" >/dev/null 2>&1; git branch -D "$GH_STUB_BRANCH" >/dev/null 2>&1; exit 0 ;;
+esac
+exit 0
+GH
+chmod +x "$PRW/gh"
+export GH_STUB_LOG="$GH_LOG" GH_STUB_BRANCH=tkt GAFFER_GH_BIN="$PRW/gh"
+# A repo whose delivery branch was pushed to a bare origin (as GAFFER_CREATE_PR does).
+mkpr(){
+  local D R; D="$(mk)"; R="$(mktemp -d "${TMPDIR:-/tmp}/prbare.XXXXXX")/origin.git"
+  git init -q --bare "$R"; git -C "$D" remote add origin "$R"; git -C "$D" push -q origin main tkt 2>/dev/null
+  echo "$D"
+}
+# 7. default checked out + clean → merged THROUGH the PR, local main fast-forwarded to the branch tip
+D="$(mkpr)"; : > "$GH_LOG"; TIP="$(git -C "$D" rev-parse tkt)"
+gaffer_pr_merge "$D" https://github.com/o/r/pull/7 main; rc=$?
+[ "$rc" = 0 ] && ok "pr_merge: checked-out+clean → rc0" || no "pr_merge expected 0 got $rc"
+grep -q '^pr merge https://github.com/o/r/pull/7 --merge --delete-branch$' "$GH_LOG" && ok "  gh pr merge <url> --merge --delete-branch" || no "  gh argv: $(cat "$GH_LOG")"
+[ "$(git -C "$D" rev-parse main)" = "$TIP" ] && ok "  local main fast-forwarded to the branch tip (no local merge commit)" || no "  main not ff'd to tip"
+[ -z "$(git -C "$D" status --porcelain)" ] && ok "  tree clean" || no "  tree dirty after ff"; rm -rf "$D"
+# 8. default NOT checked out → plain ff ref update; operator branch + edits untouched
+D="$(mkpr)"; : > "$GH_LOG"; TIP="$(git -C "$D" rev-parse tkt)"; git -C "$D" checkout -q -b workbench; echo DIRTY > "$D/wip.txt"
+gaffer_pr_merge "$D" https://github.com/o/r/pull/8 main; rc=$?
+[ "$rc" = 0 ] && ok "pr_merge: not-checked-out → rc0" || no "pr_merge expected 0 got $rc"
+[ "$(git -C "$D" rev-parse main)" = "$TIP" ] && ok "  main ref advanced" || no "  main not advanced"
+[ "$(git -C "$D" symbolic-ref --short HEAD)" = workbench ] && [ -f "$D/wip.txt" ] && ok "  operator branch + uncommitted work untouched" || no "  operator state disturbed"; rm -rf "$D"
+# 9. GAFFER_PR_MERGE_METHOD=squash reaches gh; junk → merge
+D="$(mkpr)"; : > "$GH_LOG"; GAFFER_PR_MERGE_METHOD=squash gaffer_pr_merge "$D" U main >/dev/null
+grep -q -- '--squash' "$GH_LOG" && ok "pr_merge: GAFFER_PR_MERGE_METHOD=squash → --squash" || no "  squash not passed: $(cat "$GH_LOG")"; rm -rf "$D"
+D="$(mkpr)"; : > "$GH_LOG"; GAFFER_PR_MERGE_METHOD=yolo gaffer_pr_merge "$D" U main >/dev/null
+grep -q -- '--merge' "$GH_LOG" && ok "pr_merge: unknown method → --merge (never an unintended method)" || no "  junk method not defaulted: $(cat "$GH_LOG")"; rm -rf "$D"
+# 10. gh fails → rc1 (caller falls back to gaffer_auto_merge); nothing moved locally
+D="$(mkpr)"; BASE="$(git -C "$D" rev-parse main)"
+GH_STUB_FAIL=1 gaffer_pr_merge "$D" U main; rc=$?
+[ "$rc" = 1 ] && ok "pr_merge: gh failed → rc1 (fallback signal)" || no "pr_merge expected 1 got $rc"
+[ "$(git -C "$D" rev-parse main)" = "$BASE" ] && ok "  local main untouched on gh failure" || no "  main moved despite gh failure"; rm -rf "$D"
+# 11. default checked out DIRTY → PR merged upstream, local NOT touched (rc3)
+D="$(mkpr)"; echo EDIT >> "$D/a.txt"; BASE="$(git -C "$D" rev-parse main)"
+gaffer_pr_merge "$D" U main; rc=$?
+[ "$rc" = 3 ] && ok "pr_merge: dirty checked-out default → rc3 (merged upstream, local left alone)" || no "pr_merge expected 3 got $rc"
+grep -q EDIT "$D/a.txt" && [ "$(git -C "$D" rev-parse main)" = "$BASE" ] && ok "  dirty edit + local main untouched" || no "  local state disturbed"; rm -rf "$D"
+# 12. no gh / bad args → rc2 (fallback signal), gh never called
+D="$(mkpr)"; : > "$GH_LOG"
+GAFFER_GH_BIN="$PRW/no-such-gh" gaffer_pr_merge "$D" U main; [ "$?" = 2 ] && ok "pr_merge: gh not available → rc2" || no "no-gh not rc2"
+[ ! -s "$GH_LOG" ] && ok "  gh never called" || no "  gh was called"
+gaffer_pr_merge "$D" "" main; [ "$?" = 2 ] && ok "pr_merge: missing pr_url → rc2" || no "bad-args not rc2"; rm -rf "$D"
+unset GH_STUB_LOG GH_STUB_BRANCH GAFFER_GH_BIN; rm -rf "$PRW"
+
 # ── reviewer verdict resolution (S-H2) — exercises the REAL gaffer_review_verdict from
 #    factory.config.sh (not a mirror), so tick.sh and this test cannot drift. The verdict is
 #    an OUT-OF-BAND structured signal ({"verdict":…} last line); the free-text grep survives

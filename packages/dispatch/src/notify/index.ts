@@ -29,6 +29,7 @@ export { CompositeNotifier, NOOP_NOTIFIER, redactEvent } from "./notifier.js";
 export {
   buildNotifierFromEnv,
   parseAllowedEvents,
+  resetNotifyWarnings,
   DEFAULT_NOTIFY_EVENTS,
   NOTIFY_ENV,
 } from "./config.js";

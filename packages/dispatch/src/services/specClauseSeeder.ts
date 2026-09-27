@@ -25,6 +25,7 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 
 import { type Spec, type SpecClause } from "../domain/types.js";
+import { envFlagOn } from "./autonomyPolicyService.js";
 
 /** Env var naming the Memory CLI executable (a Node script run via `node <bin>`). */
 export const MEMORY_CLI_BIN_ENV = "MEMORY_CLI_BIN";
@@ -172,7 +173,7 @@ export class CliSpecClauseSeeder implements SpecClauseSeeder {
     return new CliSpecClauseSeeder({
       cliBin,
       db,
-      autoApprove: env[MEMORY_AUTO_APPROVE_ENV] === "1",
+      autoApprove: envFlagOn(env[MEMORY_AUTO_APPROVE_ENV]),
     });
   }
 

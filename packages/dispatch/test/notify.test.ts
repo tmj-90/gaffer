@@ -10,6 +10,7 @@ import {
   DesktopSink,
   parseAllowedEvents,
   renderSlackText,
+  resetNotifyWarnings,
   SlackSink,
   WebhookSink,
   type CommandResult,
@@ -728,6 +729,38 @@ describe("notify URL policy — sinks are only built from safe http(s) destinati
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("GAFFER_NOTIFY_WEBHOOK_URL");
     expect(warnings[0]).toContain("link-local");
+  });
+
+  it("the default warn prints a refused URL at most ONCE per process, and nothing when no URL is set", () => {
+    // B20e: every Dispatch instance builds its notifier, so a CLI process that opened the
+    // control plane more than once printed the same loopback refusal each time.
+    resetNotifyWarnings();
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      const env = { GAFFER_NOTIFY_WEBHOOK_URL: "http://127.0.0.1:8787/hook" } as NodeJS.ProcessEnv;
+      buildNotifierFromEnv(env);
+      buildNotifierFromEnv(env);
+      buildNotifierFromEnv(env);
+      expect(writes.filter((w) => w.includes("GAFFER_NOTIFY_WEBHOOK_URL"))).toHaveLength(1);
+      expect(writes[0]).toContain("loopback");
+      // A DIFFERENT refusal is still reported (dedupe is per message, not global).
+      buildNotifierFromEnv({
+        GAFFER_NOTIFY_SLACK_URL: "http://10.0.0.5/relay",
+      } as NodeJS.ProcessEnv);
+      expect(writes.filter((w) => w.includes("GAFFER_NOTIFY_SLACK_URL"))).toHaveLength(1);
+      // No notify URL configured ⇒ nothing is printed at all.
+      writes.length = 0;
+      buildNotifierFromEnv({} as NodeJS.ProcessEnv);
+      buildNotifierFromEnv({ GAFFER_NOTIFY_WEBHOOK_URL: "   " } as NodeJS.ProcessEnv);
+      expect(writes).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      resetNotifyWarnings();
+    }
   });
 
   it("buildNotifierFromEnv honours GAFFER_NOTIFY_ALLOW_PRIVATE=1", () => {

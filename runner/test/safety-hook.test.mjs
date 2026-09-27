@@ -600,6 +600,211 @@ rootCase(
   "allow",
 );
 
+// --- B23: branch creation in a READ-ONLY repo was only partly blocked -----------
+// BRANCH_CREATE matched `checkout -B`, `switch -c|--create` and `branch` only, and
+// always resolved the target repo against the PROCESS cwd. So the lowercase
+// `checkout -b`, a `-b` after another flag, `worktree add -b`, and any form behind a
+// leading `cd <read-root> &&` created a branch in a read-only repo unnoticed.
+// Every DENY below was an ALLOW before the fix; the ALLOW cases pin no over-block.
+rootCase(
+  "B23: git -C <read-root> checkout -b (lowercase) → DENY",
+  bash(`git -C ${READ_ROOT} checkout -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: git -C <read-root> checkout -q -b (flag before -b) → DENY",
+  bash(`git -C ${READ_ROOT} checkout -q -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: git -C <read-root> checkout --orphan → DENY",
+  bash(`git -C ${READ_ROOT} checkout --orphan gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: git -C <read-root> switch -C (force-create) → DENY",
+  bash(`git -C ${READ_ROOT} switch -C gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: git -C <read-root> switch --create → DENY",
+  bash(`git -C ${READ_ROOT} switch --create gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: git -C <read-root> worktree add -b <branch> <in-root path> → DENY (branch lands in the read repo)",
+  bash(`git -C ${READ_ROOT} worktree add -b gaffer/x ${WRITE_ROOT}/wt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: git -C <read-root> worktree add <path> -B <branch> (flag after path) → DENY",
+  bash(`git -C ${READ_ROOT} worktree add ${WRITE_ROOT}/wt -B gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: cd <read-root> && git checkout -B → DENY (cwd replay, not the process cwd)",
+  bash(`cd ${READ_ROOT} && git checkout -B gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: cd <read-root>; git checkout -b → DENY (`;` separator)",
+  bash(`cd ${READ_ROOT}; git checkout -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: cd <read-root> && git branch <name> → DENY",
+  bash(`cd ${READ_ROOT} && git branch gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: cd <read-root> && git switch -c → DENY",
+  bash(`cd ${READ_ROOT} && git switch -c gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: cd <read-root> && git worktree add -b → DENY",
+  bash(`cd ${READ_ROOT} && git worktree add -b gaffer/x ${WRITE_ROOT}/wt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: cd <write-root> && cd <read-root> && git checkout -b → DENY (multi-hop cd)",
+  bash(`cd ${WRITE_ROOT} && cd ${READ_ROOT} && git checkout -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: cd $DIR && git checkout -b → DENY (dynamic cd: cwd unprovable, fail closed)",
+  bash(`cd $DIR && git checkout -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: git -C $REPO checkout -b → DENY (dynamic -C target, fail closed)",
+  bash(`git -C $REPO checkout -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: sh -c 'cd <read-root> && git checkout -b' → DENY (nested body)",
+  bash(`sh -c 'cd ${READ_ROOT} && git checkout -b gaffer/x'`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+rootCase(
+  "B23: git worktree add -b <branch> <OUTSIDE path> from a write-root → DENY (path, not the branch name, is the write target)",
+  bash(`git worktree add -b gaffer/x ${OUTSIDE}/wt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "deny",
+);
+// Positive controls — the SAME forms inside a write-root stay ALLOWED.
+rootCase(
+  "B23: git checkout -b in cwd write-root → ALLOW",
+  bash(`git checkout -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "B23: git checkout -q -b in cwd write-root → ALLOW",
+  bash(`git checkout -q -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "B23: git -C <write-root> switch -C → ALLOW",
+  bash(`git -C ${WRITE_ROOT} switch -C gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "B23: git worktree add -b <branch> <in-root path> in cwd write-root → ALLOW",
+  bash(`git worktree add -b gaffer/x ${WRITE_ROOT}/wt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "B23: git -C <write-root> worktree add -B <branch> <in-root path> → ALLOW",
+  bash(`git -C ${WRITE_ROOT} worktree add -B gaffer/x ${WRITE_ROOT}/wt`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "B23: cd <write-root> && git checkout -b → ALLOW (cd into the write root)",
+  bash(`cd ${WRITE_ROOT} && git checkout -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "B23: cd <read-root> && git -C <write-root> checkout -b → ALLOW (absolute -C wins over cd)",
+  bash(`cd ${READ_ROOT} && git -C ${WRITE_ROOT} checkout -b gaffer/x`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+// Non-creating git forms in a read-root are still fine (reads are permitted there).
+rootCase(
+  "B23: git -C <read-root> checkout main (no -b) → ALLOW",
+  bash(`git -C ${READ_ROOT} checkout main`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "B23: git -C <read-root> branch --list → ALLOW",
+  bash(`git -C ${READ_ROOT} branch --list`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "B23: cd <read-root> && git log --oneline → ALLOW",
+  bash(`cd ${READ_ROOT} && git log --oneline`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+rootCase(
+  "B23: git -C <read-root> worktree list → ALLOW",
+  bash(`git -C ${READ_ROOT} worktree list`),
+  ROOT_ENV,
+  WRITE_ROOT,
+  "allow",
+);
+
 // --- Multiple write-roots (colon- and newline-separated) ---------------------
 rootCase(
   "second write-root in colon-separated list → ALLOW",

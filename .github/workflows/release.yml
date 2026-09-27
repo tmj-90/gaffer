@@ -1,0 +1,126 @@
+# Release — tag vX.Y.Z → GitHub release with package tarballs, a CycloneDX SBOM,
+# checksums and a build-provenance statement, plus the container image on GHCR
+# with BuildKit's own SBOM + provenance attestations.
+#
+# Cut a release with scripts/version.mjs (see docs/RELEASING.md): it moves every
+# package to one version and cuts the changelog; the tag must equal that version
+# or the first step fails. Everything below is derived from the tagged commit —
+# nothing is hand-uploaded.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, attest, publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write # create the release + upload assets
+      packages: write # push the image to GHCR
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Setup Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The tag names the version everywhere (tarballs, SBOM, image label): refuse
+      # a tag that does not match package.json rather than publish a mismatch.
+      - name: Tag matches the package version
+        run: node scripts/version.mjs --check "${GITHUB_REF_NAME}"
+
+      - name: Build
+        run: pnpm -r build
+
+      # The tagged commit is already CI-green on main; this is the release's own
+      # proof that what is packed passes its tests.
+      - name: Test
+        run: pnpm -r test
+
+      - name: Version + notes
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          mkdir -p release
+          node scripts/release-notes.mjs "$VERSION" > release/NOTES.md
+          echo "::group::release notes"; cat release/NOTES.md; echo "::endgroup::"
+
+      # One tarball per publishable package (exactly `npm pack` output: the `files`
+      # allow-list of each package.json), named <name>-<version>.tgz.
+      - name: Pack packages
+        run: |
+          for p in packages/*/; do
+            pnpm -C "$p" pack --pack-destination "$PWD/release" >/dev/null
+          done
+          ls -la release
+
+      - name: SBOM (CycloneDX)
+        run: node scripts/sbom.mjs --timestamp --out "release/gaffer-${{ steps.meta.outputs.version }}.cdx.json"
+
+      - name: Checksums + provenance statement
+        run: |
+          cd release
+          sha256sum ./*.tgz ./*.cdx.json > SHA256SUMS
+          cd ..
+          node scripts/provenance.mjs --out "release/gaffer-${{ steps.meta.outputs.version }}.provenance.json" release/*.tgz release/*.cdx.json release/SHA256SUMS
+
+      # Container image: plain buildx (no third-party action). --provenance/--sbom
+      # make BuildKit attach its own signed-by-registry attestations to the image.
+      - name: Log in to GHCR
+        run: printf '%s' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build + push image
+        run: |
+          docker buildx create --use --name gaffer-release >/dev/null
+          IMAGE_LC="$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          docker buildx build \
+            --push \
+            --provenance=mode=max --sbom=true \
+            --build-arg "VERSION=${{ steps.meta.outputs.version }}" \
+            --build-arg "REVISION=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${{ steps.meta.outputs.version }}" \
+            --tag "$IMAGE_LC:${{ steps.meta.outputs.version }}" \
+            --tag "$IMAGE_LC:latest" \
+            .
+          echo "image=$IMAGE_LC:${{ steps.meta.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            cat release/NOTES.md
+            printf '\n---\n\n**Container image:** `%s:%s` (BuildKit SBOM + provenance attestations attached)\n' "$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')" "${{ steps.meta.outputs.version }}"
+            printf '**Assets:** package tarballs (`npm pack` output), `SHA256SUMS`, a CycloneDX SBOM and an unsigned SLSA v1 provenance statement — see docs/RELEASING.md.\n'
+          } > release/BODY.md
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Gaffer ${GITHUB_REF_NAME}" \
+            --notes-file release/BODY.md \
+            --verify-tag \
+            release/*.tgz release/*.cdx.json release/*.provenance.json release/SHA256SUMS

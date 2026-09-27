@@ -18,8 +18,10 @@
 #   GAFFER_MODE    supervised (default) · lite · graduated · autonomous · strict
 services:
   dashboard:
+    # Builds locally by default. To run a published release instead:
+    #   GAFFER_IMAGE=ghcr.io/tmj-90/gaffer:0.1.0 docker compose up -d --no-build
     build: .
-    image: gaffer:local
+    image: ${GAFFER_IMAGE:-gaffer:local}
     ports:
       - "${GAFFER_PORT:-127.0.0.1:8787}:8787"
     volumes:

@@ -29,6 +29,15 @@ COPY . .
 RUN pnpm -r build
 
 FROM node:22-bookworm-slim
+# Release metadata (set by .github/workflows/release.yml; defaults for local builds).
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="Gaffer" \
+      org.opencontainers.image.description="The software factory: control plane, runner and memory in one image." \
+      org.opencontainers.image.source="https://github.com/tmj-90/gaffer" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates ripgrep curl bash \
   && rm -rf /var/lib/apt/lists/*

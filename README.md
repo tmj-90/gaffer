@@ -167,6 +167,8 @@ pnpm -r build     # build the TypeScript packages
 
 See [`quickstart.md`](quickstart.md) for a guided first run.
 
+Releases: tagged versions publish package tarballs, a CycloneDX SBOM, checksums, a provenance statement and the `ghcr.io/tmj-90/gaffer` image — see [docs/RELEASING.md](docs/RELEASING.md).
+
 Or in a container: `docker compose up -d` builds the image and starts the dashboard on
 `127.0.0.1:8787` (login URL in `docker compose logs dashboard`); see
 [`quickstart.md`](quickstart.md#run-it-in-a-container-instead).

@@ -7730,6 +7730,31 @@ body {
   color: var(--amber);
   font-size: 0.85em;
 }
+/* Lore ratification: the filter row, the per-draft decision buttons, the pager. */
+.lore-filters {
+  margin: 10px 0 12px;
+}
+.lore-filters .field {
+  flex: 1 1 160px;
+}
+.lore-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.lore-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.lore-pager > span {
+  margin-right: auto;
+}
+.lore-kind {
+  font-size: 0.85em;
+}
 
 /* --- Specs view (Spec-Driven Development, Phase 3) ------------------------ */
 

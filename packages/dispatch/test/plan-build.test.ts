@@ -1,4 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,10 +9,12 @@ import { describe, expect, it } from "vitest";
 import { createApiServer } from "../src/api/server.js";
 import {
   createPlanBuildRunner,
+  resolvePlanBuildTimeoutMs,
   type PlanBuildRequest,
   type PlanBuildResult,
   type PlanBuildRunner,
 } from "../src/api/planBuild.js";
+import { applySettingsToEnv } from "../src/api/settings.js";
 import { Dispatch } from "../src/core.js";
 import { TestClock } from "../src/util/clock.js";
 
@@ -165,6 +169,136 @@ describe("createPlanBuildRunner (spawns the decompose helper)", () => {
     } as NodeJS.ProcessEnv);
     const result = await runner.run({ brief: "x", history: [] });
     expect(result.phase).toBe("error");
+  });
+});
+
+// ===========================================================================
+//  Planning debate reachability + the debate-aware wall-clock cap (B16).
+//
+//  The launcher (`gaffer dashboard`) strips GAFFER_PLAN_DEBATE* from the dashboard
+//  process env so the Settings panel can edit them; the dashboard then re-applies
+//  settings.json to its own env at startup (applySettingsToEnv). decompose.mjs
+//  reads the toggle ONLY from its env, so the value must survive that round trip
+//  into the child planBuild spawns — otherwise the Settings switch is decorative.
+// ===========================================================================
+
+/** A throwaway GAFFER_DATA dir holding a settings.json with the given values. */
+function settingsFile(values: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), "wg-plan-build-settings-"));
+  const path = join(dir, "settings.json");
+  writeFileSync(path, JSON.stringify(values));
+  return path;
+}
+
+describe("planning debate reaches the decompose child", () => {
+  it("a settings.json GAFFER_PLAN_DEBATE=1 applied to the API env is seen by decompose", async () => {
+    // Launcher posture: the dashboard env has NO GAFFER_PLAN_DEBATE (it was unset).
+    const env = {
+      GAFFER_DECOMPOSE_BIN: STUB,
+      GAFFER_STUB_MODE: "echo-debate",
+    } as NodeJS.ProcessEnv;
+    applySettingsToEnv(env, settingsFile({ GAFFER_PLAN_DEBATE: "1" }));
+    const result = await createPlanBuildRunner(env).run({ brief: "x", history: [] });
+    expect(result.phase).toBe("clarify");
+    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:1");
+  });
+
+  it("with nothing stored the child sees the toggle absent (single-agent path)", async () => {
+    const env = {
+      GAFFER_DECOMPOSE_BIN: STUB,
+      GAFFER_STUB_MODE: "echo-debate",
+    } as NodeJS.ProcessEnv;
+    applySettingsToEnv(env, settingsFile({}));
+    const result = await createPlanBuildRunner(env).run({ brief: "x", history: [] });
+    expect(result.phase).toBe("clarify");
+    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:ABSENT");
+  });
+
+  it("re-applying a changed settings.json flips the child's view without a new runner", async () => {
+    // The dashboard applies settings.json again after every POST /api/settings; the
+    // runner holds a reference to the SAME env object, so it must see the change.
+    const env = {
+      GAFFER_DECOMPOSE_BIN: STUB,
+      GAFFER_STUB_MODE: "echo-debate",
+    } as NodeJS.ProcessEnv;
+    const runner = createPlanBuildRunner(env);
+    applySettingsToEnv(env, settingsFile({}));
+    let result = await runner.run({ brief: "x", history: [] });
+    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:ABSENT");
+    applySettingsToEnv(env, settingsFile({ GAFFER_PLAN_DEBATE: "1" }));
+    result = await runner.run({ brief: "x", history: [] });
+    expect(result.phase).toBe("clarify");
+    if (result.phase === "clarify") expect(result.questions[0]).toBe("debate:1");
+  });
+});
+
+describe("resolvePlanBuildTimeoutMs (debate-aware wall clock)", () => {
+  it("defaults to the single-agent 200 s cap when the debate is off", () => {
+    expect(resolvePlanBuildTimeoutMs({} as NodeJS.ProcessEnv)).toBe(200_000);
+    expect(resolvePlanBuildTimeoutMs({ GAFFER_PLAN_DEBATE: "0" } as NodeJS.ProcessEnv)).toBe(
+      200_000,
+    );
+  });
+
+  it("with the debate on, allows every debate turn its own per-turn budget plus slack", () => {
+    // Default rounds=2 → draft + critic + revision = 3 turns × 180 s + 20 s slack.
+    // The old fixed 200 s cap killed this healthy debate after its first turn.
+    const cap = resolvePlanBuildTimeoutMs({ GAFFER_PLAN_DEBATE: "1" } as NodeJS.ProcessEnv);
+    expect(cap).toBe(3 * 180_000 + 20_000);
+    expect(cap).toBeGreaterThan(200_000);
+  });
+
+  it("scales with GAFFER_PLAN_DEBATE_MAX_ROUNDS and GAFFER_DECOMPOSE_TIMEOUT_MS", () => {
+    const cap = resolvePlanBuildTimeoutMs({
+      GAFFER_PLAN_DEBATE: "true",
+      GAFFER_PLAN_DEBATE_MAX_ROUNDS: "3",
+      GAFFER_DECOMPOSE_TIMEOUT_MS: "60000",
+    } as NodeJS.ProcessEnv);
+    // rounds=3 → 5 turns × 60 s + 20 s slack.
+    expect(cap).toBe(5 * 60_000 + 20_000);
+  });
+
+  it("never drops below the single-agent cap even for a tiny per-turn budget", () => {
+    const cap = resolvePlanBuildTimeoutMs({
+      GAFFER_PLAN_DEBATE: "yes",
+      GAFFER_DECOMPOSE_TIMEOUT_MS: "1000",
+    } as NodeJS.ProcessEnv);
+    expect(cap).toBe(200_000);
+  });
+
+  it("an explicit GAFFER_PLAN_BUILD_TIMEOUT_MS wins over the derived default", () => {
+    expect(
+      resolvePlanBuildTimeoutMs({
+        GAFFER_PLAN_DEBATE: "1",
+        GAFFER_PLAN_BUILD_TIMEOUT_MS: "900000",
+      } as NodeJS.ProcessEnv),
+    ).toBe(900_000);
+    expect(
+      resolvePlanBuildTimeoutMs({ GAFFER_PLAN_BUILD_TIMEOUT_MS: "5000" } as NodeJS.ProcessEnv),
+    ).toBe(5_000);
+  });
+
+  it("ignores an empty or malformed GAFFER_PLAN_BUILD_TIMEOUT_MS", () => {
+    expect(
+      resolvePlanBuildTimeoutMs({ GAFFER_PLAN_BUILD_TIMEOUT_MS: "" } as NodeJS.ProcessEnv),
+    ).toBe(200_000);
+    expect(
+      resolvePlanBuildTimeoutMs({ GAFFER_PLAN_BUILD_TIMEOUT_MS: "soon" } as NodeJS.ProcessEnv),
+    ).toBe(200_000);
+    expect(
+      resolvePlanBuildTimeoutMs({ GAFFER_PLAN_BUILD_TIMEOUT_MS: "-5" } as NodeJS.ProcessEnv),
+    ).toBe(200_000);
+  });
+
+  it("the runner reads the cap from the env per run (a hung helper is reaped at the knob)", async () => {
+    const env = {
+      GAFFER_DECOMPOSE_BIN: STUB,
+      GAFFER_STUB_MODE: "hang",
+      GAFFER_PLAN_BUILD_TIMEOUT_MS: "150",
+    } as NodeJS.ProcessEnv;
+    const result = await createPlanBuildRunner(env).run({ brief: "x", history: [] });
+    expect(result.phase).toBe("error");
+    if (result.phase === "error") expect(result.error).toMatch(/timed out after 150ms/);
   });
 });
 

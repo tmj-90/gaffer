@@ -152,6 +152,108 @@ describe("CLI — add / search / show lifecycle", () => {
   });
 });
 
+describe("CLI — list filters + pagination + --json (the dashboard's ratification read)", () => {
+  beforeEach(async () => {
+    await run("init");
+    await run(
+      "add",
+      "--title",
+      "Active web rule",
+      "--summary",
+      "s",
+      "--body",
+      "b",
+      "--repo",
+      "web",
+    );
+    await run(
+      "suggest",
+      "--title",
+      "Draft web decision",
+      "--summary",
+      "s",
+      "--body",
+      "b",
+      "--repo",
+      "web",
+      "--kind",
+      "decision",
+    );
+    await run(
+      "suggest",
+      "--title",
+      "Draft api gotcha",
+      "--summary",
+      "s",
+      "--body",
+      "b",
+      "--repo",
+      "api",
+    );
+    out = "";
+    err = "";
+  });
+
+  it("bare `list` is unchanged: every state, rendered summaries", async () => {
+    expect(await run("list")).toBe(0);
+    expect(out).toContain("Active web rule");
+    expect(out).toContain("Draft web decision");
+    expect(out).toContain("[draft]");
+  });
+
+  it("--status draft --repo web narrows to that repo's drafts", async () => {
+    expect(await run("list", "--status", "draft", "--repo", "web")).toBe(0);
+    expect(out).toContain("Draft web decision");
+    expect(out).not.toContain("Draft api gotcha");
+    expect(out).not.toContain("Active web rule");
+  });
+
+  it("--json emits one { total, limit, offset, items } object with status/kind/repos per item", async () => {
+    expect(await run("list", "--status", "draft", "--json")).toBe(0);
+    const page = JSON.parse(out) as {
+      total: number;
+      limit: number;
+      offset: number;
+      items: Array<{ title: string; status: string; kind: string; repos: string[] }>;
+    };
+    expect(page.total).toBe(2);
+    expect(page.limit).toBe(50);
+    expect(page.offset).toBe(0);
+    expect(page.items.map((i) => i.title).sort()).toEqual([
+      "Draft api gotcha",
+      "Draft web decision",
+    ]);
+    expect(page.items.every((i) => i.status === "draft")).toBe(true);
+    expect(page.items.find((i) => i.title === "Draft web decision")).toMatchObject({
+      kind: "decision",
+      repos: ["web"],
+    });
+  });
+
+  it("--json on an empty page is still valid JSON (items: []), never a prose message", async () => {
+    expect(await run("list", "--repo", "nope", "--json")).toBe(0);
+    expect(JSON.parse(out)).toEqual({ total: 0, limit: 50, offset: 0, items: [] });
+  });
+
+  it("--limit/--offset page through; --kind filters; bad values are refused", async () => {
+    expect(await run("list", "--limit", "1", "--offset", "0", "--json")).toBe(0);
+    const p1 = JSON.parse(out) as { total: number; items: unknown[] };
+    out = "";
+    expect(await run("list", "--limit", "1", "--offset", "2", "--json")).toBe(0);
+    const p3 = JSON.parse(out) as { total: number; items: unknown[] };
+    expect(p1.total).toBe(3);
+    expect(p1.items).toHaveLength(1);
+    expect(p3.items).toHaveLength(1);
+    out = "";
+    expect(await run("list", "--kind", "decision", "--json")).toBe(0);
+    expect((JSON.parse(out) as { total: number }).total).toBe(1);
+    expect(await run("list", "--status", "rejected")).not.toBe(0);
+    expect(err).toMatch(/invalid --status/);
+    expect(await run("list", "--limit", "0")).not.toBe(0);
+    expect(await run("list", "--limit", "201")).not.toBe(0);
+  });
+});
+
 describe("CLI — draft review flow", () => {
   beforeEach(async () => {
     await run("init");

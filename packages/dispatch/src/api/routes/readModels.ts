@@ -102,11 +102,8 @@ export function routeReadModels(
     );
     return;
   }
-  if (segments.length === 3 && segments[1] === "memory" && segments[2] === "lore") {
-    if (method !== "GET") return methodNotAllowed(res);
-    sendJson(res, 200, memoryReader.lore());
-    return;
-  }
+  // GET /api/memory/lore (+ approve/reject) lives in routes/api.ts: it is a
+  // filtered, paged read through `memory list --json` with mutating siblings.
 
   // /api/board — tickets grouped into kanban columns (+ closed area).
   // Accepts optional ?repo= to restrict the board to one repository.

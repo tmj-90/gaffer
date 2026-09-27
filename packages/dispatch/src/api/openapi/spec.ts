@@ -295,9 +295,43 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     method: "GET",
     path: "/api/memory/lore",
     tag: T.memory,
-    summary: "Lore list from the memory store",
+    summary: "Lore list from the memory store (filter by repo / status / kind, paged)",
+    description:
+      "Read server-side through `memory list --json`. With no query the 50 freshest records across every lifecycle state; `status=draft` is the ratification queue. `status` and `kind` take comma-separated lists. Answers `{ available, lore, total, limit, offset }`, or `{ available: false, reason }` with 200 when the memory product is unavailable.",
     capability: "read",
-    responses: [ok("The lore records, or `{ available: false }`.")],
+    query: "memoryLoreQuery",
+    responses: [ok("One page of lore records, or `{ available: false }`."), invalid],
+  },
+  {
+    method: "POST",
+    path: "/api/memory/lore/:id/approve",
+    tag: T.memory,
+    summary: "Approve a draft lore record",
+    description:
+      "Ratifies a draft through `memory approve <id>` (the memory CLI is the write boundary; dispatch never opens the memory DB). The record becomes `active` and is served to delivery agents from the next tick.",
+    capability: "full",
+    responses: [
+      ok('`{ id, status: "active" }`.'),
+      invalid,
+      { status: 409, description: "Unknown id or not a draft (`CONFLICT`).", content: "json" },
+      { status: 503, description: "Memory unreachable (`MEMORY_UNAVAILABLE`).", content: "json" },
+    ],
+  },
+  {
+    method: "POST",
+    path: "/api/memory/lore/:id/reject",
+    tag: T.memory,
+    summary: "Reject a draft lore record",
+    description:
+      "Drops a draft through `memory reject <id> [--reason]`; the optional reason is kept so the suggesting agent can see why.",
+    capability: "full",
+    body: "rejectLoreBody",
+    responses: [
+      ok('`{ id, status: "rejected" }`.'),
+      invalid,
+      { status: 409, description: "Unknown id or not a draft (`CONFLICT`).", content: "json" },
+      { status: 503, description: "Memory unreachable (`MEMORY_UNAVAILABLE`).", content: "json" },
+    ],
   },
 
   // --- /api read models ---------------------------------------------------------

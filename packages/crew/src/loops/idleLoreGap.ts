@@ -197,6 +197,9 @@ async function suggestConvention(
     title: `${candidate.title} (${repo.name})`,
     summary,
     tags: [candidate.tag, repo.name],
+    // An observed import pattern IS a convention; say so, or the draft lands as
+    // `other` and every `kind`-filtered reader skips it.
+    kind: "convention",
   };
   const suggestion = await deps.memory.suggestLore(input);
   deps.events.record("lore_suggested", {

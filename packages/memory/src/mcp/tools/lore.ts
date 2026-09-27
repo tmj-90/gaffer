@@ -24,7 +24,7 @@ import {
 import { auditMessageForTooLong, checkLength, LENGTH_CAPS } from "../validation.js";
 import { quarantineLore, QUARANTINE_NOTICE } from "../quarantine.js";
 import { recordRetrieval } from "../retrievalLog.js";
-import { scopeEnforcementActive } from "../scopeGuard.js";
+import { parseTicketRepos, scopeEnforcementActive } from "../scopeGuard.js";
 
 /**
  * Register the lore-knowledge MCP tools onto `server`:
@@ -520,13 +520,26 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         // the entry lands `active` immediately. Unset (default) keeps the
         // governed draft flow — the standalone product is unchanged.
         const autoApprove = process.env["MEMORY_AUTO_APPROVE"] === "1";
+        // FACTORY CONTEXT (GAFFER_FACTORY=1): a delivery agent that omits `repos`
+        // is writing about the repo(s) it is delivering into — the runner names
+        // them in GAFFER_TICKET_REPOS. Default to those so the draft is repo-tagged
+        // and the delivery primer's per-repo `search --repo` can surface it once
+        // approved; an untagged draft never reaches a later agent that way. An
+        // explicit non-empty `repos` always wins; standalone memory-mcp is unchanged.
+        const repos =
+          args.repos && args.repos.length > 0
+            ? args.repos
+            : scopeEnforcementActive(process.env)
+              ? parseTicketRepos(process.env["GAFFER_TICKET_REPOS"])
+              : args.repos;
+        sanitised["repos"] = repos;
         const lore = suggestLore(
           db,
           {
             title: args.title,
             summary: args.summary,
             body: args.body,
-            repos: args.repos,
+            repos,
             tags: args.tags,
             source: args.source,
             confidence: args.confidence,
@@ -554,7 +567,7 @@ export function registerLoreTools(server: McpServer, db: Database): void {
           {
             id: lore.id,
             title: args.title,
-            repos: args.repos,
+            repos,
             tags: args.tags,
           },
           { allowRestricted },

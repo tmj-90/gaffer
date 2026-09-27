@@ -85,6 +85,8 @@ export interface LoreSummary {
    * Memory view badges these and links to the CLI review gate.
    */
   readonly flagged: boolean;
+  /** Product-intent classifier (decision / requirement / non-goal / convention / gotcha / other). Only the JSON list verb carries it. */
+  readonly kind?: string;
 }
 
 /** One calendar-day (UTC) recall-outcome roll-up, from `memory recall-stats`. */
@@ -143,7 +145,43 @@ export interface MemoryReader {
     repo?: string;
     tags?: string[];
   }): MemoryResult<{ id: string | null }>;
+  /**
+   * Browse lore by lifecycle status / repo / kind with pagination — the dashboard's
+   * ratification read (`memory list --json …`). Unlike {@link MemoryReader.lore}
+   * (the 50 freshest records, text-parsed) this can ask for ONLY drafts, per repo,
+   * and page through them. Same graceful degradation as every other read.
+   */
+  listLore(opts?: LoreListOptions): MemoryResult<LoreListPage>;
+  /**
+   * Ratify a draft: `memory approve <id>` promotes it to `active`. Dispatch never
+   * touches the memory DB — the CLI is the write boundary, exactly as for
+   * {@link MemoryReader.captureLoreDraft}. A non-draft / unknown id is reported as
+   * `{ available:false, reason }` carrying the CLI's own message.
+   */
+  approveLore(id: string): MemoryResult<{ id: string; status: "active" }>;
+  /** Drop a draft: `memory reject <id> [--reason …]`. Same contract as approveLore. */
+  rejectLore(id: string, reason?: string): MemoryResult<{ id: string; status: "rejected" }>;
 }
+
+/** Filters + page for {@link MemoryReader.listLore}. */
+export interface LoreListOptions {
+  readonly repo?: string;
+  readonly status?: readonly string[];
+  readonly kind?: readonly string[];
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+/** One page of lore records (the `memory list --json` shape, normalised). */
+export interface LoreListPage {
+  readonly lore: LoreSummary[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+}
+
+/** Memory lore ids are 8 chars of the `a-z2-9` alphabet; refuse anything else early. */
+export const LORE_ID_RE = /^[a-z2-9]{8}$/;
 
 /** Build the structured "memory unavailable" result every failure path returns. */
 function unavailable<T>(reason: string): MemoryResult<T> {
@@ -441,6 +479,51 @@ export function parseRecallStats(stdout: string): RecallEffectiveness {
 }
 
 /**
+ * Parse `memory list --json` output: ONE object `{ total, limit, offset, items }`.
+ * Each item is normalised onto the {@link LoreSummary} shape the Memory view already
+ * renders (plus `kind`), so a record looks the same whichever verb produced it.
+ * Malformed output (an older CLI printing prose, truncated JSON) returns null so the
+ * caller can degrade to `{ available:false }` instead of throwing.
+ */
+export function parseLoreJson(stdout: string): LoreListPage | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout.trim() || "null");
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as { items?: unknown }).items)) {
+    return null;
+  }
+  const p = raw as Record<string, unknown>;
+  const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
+  const strs = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  const lore: LoreSummary[] = (p.items as unknown[])
+    .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
+    .map((it) => ({
+      id: str(it.id),
+      title: str(it.title) ?? "",
+      summary: str(it.summary) ?? "",
+      status: str(it.status),
+      confidence: str(it.confidence),
+      source: str(it.source),
+      repos: strs(it.repos),
+      tags: strs(it.tags),
+      stale: it.stale === true,
+      flagged: it.flaggedForReview === true || it.flagged === true,
+      ...(str(it.kind) !== null ? { kind: str(it.kind) as string } : {}),
+    }))
+    .filter((l) => l.title !== "");
+  return {
+    lore,
+    total: numOr0(p.total),
+    limit: numOr0(p.limit),
+    offset: numOr0(p.offset),
+  };
+}
+
+/**
  * Build the default memory reader. It spawns the configured memory CLI for each
  * read verb and parses the text output. Every method degrades gracefully — a
  * missing/unbuilt/erroring memory product yields `{ available:false, reason }`,
@@ -448,6 +531,47 @@ export function parseRecallStats(stdout: string): RecallEffectiveness {
  */
 export function createMemoryReader(env: NodeJS.ProcessEnv = process.env): MemoryReader {
   return {
+    listLore(opts = {}) {
+      const args = ["list", "--json"];
+      const repo = (opts.repo ?? "").trim();
+      if (repo !== "") args.push("--repo", repo);
+      // Repeatable flags, one value each — never a joined string the CLI would have
+      // to split, so a value can't smuggle a second flag.
+      for (const s of opts.status ?? []) {
+        const v = String(s).trim();
+        if (v !== "") args.push("--status", v);
+      }
+      for (const k of opts.kind ?? []) {
+        const v = String(k).trim();
+        if (v !== "") args.push("--kind", v);
+      }
+      if (opts.limit !== undefined) args.push("--limit", String(opts.limit));
+      if (opts.offset !== undefined) args.push("--offset", String(opts.offset));
+      const outcome = runCli(env, args);
+      if (!outcome.ok) return unavailable(outcome.reason);
+      const page = parseLoreJson(outcome.stdout);
+      if (!page) {
+        return unavailable(
+          "Memory CLI `list --json` returned no parsable page — is the memory package up to date?",
+        );
+      }
+      return { available: true, ...page };
+    },
+    approveLore(id) {
+      if (!LORE_ID_RE.test(id)) return unavailable(`"${id}" is not a memory lore id.`);
+      const outcome = runCli(env, ["approve", id]);
+      if (!outcome.ok) return unavailable(outcome.reason);
+      return { available: true, id, status: "active" };
+    },
+    rejectLore(id, reason) {
+      if (!LORE_ID_RE.test(id)) return unavailable(`"${id}" is not a memory lore id.`);
+      const args = ["reject", id];
+      const why = (reason ?? "").trim();
+      if (why !== "") args.push("--reason", why);
+      const outcome = runCli(env, args);
+      if (!outcome.ok) return unavailable(outcome.reason);
+      return { available: true, id, status: "rejected" };
+    },
     digest(repo) {
       const outcome = runCli(env, ["digest", repo]);
       if (!outcome.ok) return unavailable(outcome.reason);

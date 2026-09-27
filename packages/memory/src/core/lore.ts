@@ -1827,6 +1827,104 @@ export function listDrafts(db: Database): LoreSummary[] {
   return rows.map((r) => rowToSummary(r, repoMap.get(r.id) ?? [], tagMap.get(r.id) ?? []));
 }
 
+/** Every lifecycle state a lore record can be in (the `status` column's domain). */
+export const LORE_STATUSES: ReadonlyArray<LoreStatus> = [
+  "draft",
+  "active",
+  "deprecated",
+  "superseded",
+];
+
+export interface ListLoreOptions {
+  /** Only records tagged with this repo (an un-scoped, org-wide record does not match). */
+  readonly repo?: string;
+  /** Lifecycle states to include; undefined/empty = every state. */
+  readonly status?: ReadonlyArray<LoreStatus>;
+  /** Kinds to include; undefined/empty = every kind. */
+  readonly kind?: ReadonlyArray<LoreKind>;
+  /** Page size, 1..200 (default 50). */
+  readonly limit?: number;
+  /** Rows to skip (default 0). */
+  readonly offset?: number;
+}
+
+export interface ListLoreResult {
+  /** Records on this page, freshest first (updated_at desc, id asc tiebreak). */
+  readonly items: LoreSummary[];
+  /** Total records matching the filters, ignoring limit/offset. */
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+}
+
+/** Hard ceiling on a `listLore` page (a browse surface, not a bulk export). */
+export const LIST_LORE_MAX_LIMIT = 200;
+
+/**
+ * Browse lore by lifecycle STATUS (not just "active + opt-ins" like `searchLore`),
+ * with repo/kind filters and offset pagination — the ratification surface's read:
+ * a reviewer asks for `status=draft` (optionally per repo) and pages through it.
+ *
+ * No FTS, no trust re-rank, no read events (a browse is not a recall — it must
+ * never feed the retrieval-ROI ledger). Restricted records are INCLUDED, exactly
+ * as `memory list` has always shown them: this is the operator's own store.
+ */
+export function listLore(db: Database, opts: ListLoreOptions = {}): ListLoreResult {
+  const limitRaw = opts.limit ?? 50;
+  if (!Number.isInteger(limitRaw) || limitRaw < 1 || limitRaw > LIST_LORE_MAX_LIMIT) {
+    throw new Error(`listLore: limit must be an integer between 1 and ${LIST_LORE_MAX_LIMIT}`);
+  }
+  const offsetRaw = opts.offset ?? 0;
+  if (!Number.isInteger(offsetRaw) || offsetRaw < 0) {
+    throw new Error("listLore: offset must be a non-negative integer");
+  }
+  const filters: string[] = [];
+  const params: Array<string | number> = [];
+  const statuses = Array.from(new Set(opts.status ?? [])).filter(Boolean);
+  for (const s of statuses) {
+    if (!LORE_STATUSES.includes(s)) {
+      throw new Error(`listLore: unknown status "${s}" (one of ${LORE_STATUSES.join(", ")})`);
+    }
+  }
+  if (statuses.length > 0) {
+    filters.push(`l.status IN (${statuses.map(() => "?").join(",")})`);
+    params.push(...statuses);
+  }
+  const kinds = Array.from(new Set(opts.kind ?? [])).filter(Boolean);
+  for (const k of kinds) {
+    if (!(LORE_KINDS as ReadonlyArray<string>).includes(k)) {
+      throw new Error(`listLore: unknown kind "${k}" (one of ${LORE_KINDS.join(", ")})`);
+    }
+  }
+  if (kinds.length > 0) {
+    filters.push(`l.kind IN (${kinds.map(() => "?").join(",")})`);
+    params.push(...kinds);
+  }
+  const repo = opts.repo?.trim();
+  if (repo) {
+    filters.push("l.id IN (SELECT lore_id FROM lore_repos WHERE repo = ?)");
+    params.push(repo);
+  }
+  const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const total = (
+    db.prepare(`SELECT COUNT(*) AS n FROM lore l ${where}`).get(...params) as { n: number }
+  ).n;
+  const rows = db
+    .prepare(
+      `SELECT l.*, NULL AS score FROM lore l ${where} ORDER BY l.updated_at DESC, l.id ASC LIMIT ? OFFSET ?`,
+    )
+    .all(...params, limitRaw, offsetRaw) as Array<LoreRow & { score: null }>;
+  const ids = rows.map((r) => r.id);
+  const repoMap = reposByIds(db, ids);
+  const tagMap = tagsByIds(db, ids);
+  return {
+    items: rows.map((r) => rowToSummary(r, repoMap.get(r.id) ?? [], tagMap.get(r.id) ?? [])),
+    total,
+    limit: limitRaw,
+    offset: offsetRaw,
+  };
+}
+
 /**
  * Bulk export — full Lore records (body included). Caller-controlled
  * lifecycle filter, mirroring `searchLore` semantics: defaults to active +

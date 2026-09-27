@@ -88,8 +88,26 @@ const LORE = {
   ],
 };
 
+/**
+ * The server-paged shape GET /api/memory/lore answers now (`memory list --json`):
+ * this page holds two of seven records, one of them a draft awaiting ratification.
+ */
+const LORE_PAGE = {
+  ...LORE,
+  // l2 is the draft awaiting ratification; l1 stays active.
+  lore: LORE.lore.map((l) => (l.id === "l2" ? { ...l, status: "draft", kind: "decision" } : l)),
+  total: 7,
+  limit: 50,
+  offset: 0,
+};
+
 /** Records each POST /repos/onboard call so tests can assert the button wired through. */
 const onboardCalls: Array<{ method: string; body: unknown }> = [];
+/** Every GET /api/memory/lore url the view requested, in order (filters ride the query). */
+const loreCalls: string[] = [];
+const loreRequests = (): string[] => loreCalls.map((u) => u.replace(/^https?:\/\/[^/]+/, ""));
+/** Every approve/reject POST the view made. */
+const ratifyCalls: Array<{ method: string; path: string }> = [];
 
 /** Stub fetch with optional overrides per surface (digest/features/lore). */
 function stubFetch(overrides: Partial<Record<"digest" | "features" | "lore", unknown>> = {}): void {
@@ -104,8 +122,13 @@ function stubFetch(overrides: Partial<Record<"digest" | "features" | "lore", unk
         body = { onboarding: true, repo: "sample-repo", run: { started: true, pid: 1 } };
       } else if (url.includes("/api/memory/digest/")) body = overrides.digest ?? DIGEST;
       else if (url.includes("/api/memory/features/")) body = overrides.features ?? FEATURES;
-      else if (url.includes("/api/memory/lore")) body = overrides.lore ?? LORE;
-      else if (url.includes("/repositories"))
+      else if (/\/api\/memory\/lore\/[^/]+\/(approve|reject)$/.test(url)) {
+        ratifyCalls.push({ method, path: url.replace(/^https?:\/\/[^/]+/, "") });
+        body = { id: "l2", status: url.endsWith("/approve") ? "active" : "rejected" };
+      } else if (url.includes("/api/memory/lore")) {
+        loreCalls.push(url);
+        body = overrides.lore ?? LORE;
+      } else if (url.includes("/repositories"))
         body = { repositories: [{ id: "r1", name: "sample-repo" }] };
       return new Response(JSON.stringify(body), {
         status: 200,
@@ -142,6 +165,8 @@ describe("web: Memory view", () => {
   beforeEach(() => {
     vi.resetModules();
     onboardCalls.length = 0;
+    loreCalls.length = 0;
+    ratifyCalls.length = 0;
   });
 
   it("renders the repo picker and a Memory nav entry", async () => {
@@ -218,6 +243,92 @@ describe("web: Memory view", () => {
     const healthy = rows.find((r) => (r.textContent || "").includes("Hash with argon2id"))!;
     expect(healthy.querySelector(".lore-flagged")).toBeNull();
     expect(healthy.querySelector(".lore-flag-hint")).toBeNull();
+  });
+
+  // --- Lore ratification from the dashboard (B19) -------------------------------
+
+  it("asks the server for the page with the repo filter and shows Approve/Reject on drafts only", async () => {
+    stubFetch({ lore: LORE_PAGE });
+    mountShell("#/memory/sample-repo");
+    await boot();
+    // The read is server-filtered: repo follows the page, limit is a page size.
+    const loreCall = loreRequests().at(-1)!;
+    expect(loreCall).toContain("/api/memory/lore?");
+    expect(loreCall).toContain("repo=sample-repo");
+    expect(loreCall).toContain("limit=50");
+    // The header count is the server's total, not this page's length.
+    expect(document.querySelector("[data-section='lore'] .count")?.textContent).toBe("7");
+    const rows = Array.from(document.querySelectorAll(".lore-row"));
+    const draft = rows.find((r) => r.getAttribute("data-status") === "draft")!;
+    const active = rows.find((r) => r.getAttribute("data-status") === "active")!;
+    expect(draft.querySelector("button.lore-approve")).not.toBeNull();
+    expect(draft.querySelector("button.lore-reject")).not.toBeNull();
+    expect(active.querySelector("button.lore-approve")).toBeNull();
+    // A pager appears because total (7) exceeds the page (2).
+    expect(document.querySelector(".lore-pager")).not.toBeNull();
+    // The old "read-only … memory CLI" copy is gone: this is where drafts are ratified.
+    expect(document.body.textContent).not.toContain(
+      "read-only here. Manage it with the memory CLI",
+    );
+  });
+
+  it("Approve POSTs /api/memory/lore/:id/approve and re-fetches the page", async () => {
+    stubFetch({ lore: LORE_PAGE });
+    mountShell("#/memory/sample-repo");
+    await boot();
+    const fetchesBefore = loreRequests().length;
+    const approve = document.querySelector(
+      ".lore-row[data-status='draft'] button.lore-approve",
+    ) as HTMLButtonElement;
+    approve.click();
+    await tick();
+    await tick();
+    await tick();
+    expect(ratifyCalls).toEqual([{ method: "POST", path: "/api/memory/lore/l2/approve" }]);
+    expect(loreRequests().length).toBeGreaterThan(fetchesBefore);
+  });
+
+  it("Reject POSTs /api/memory/lore/:id/reject", async () => {
+    stubFetch({ lore: LORE_PAGE });
+    mountShell("#/memory/sample-repo");
+    await boot();
+    (
+      document.querySelector(
+        ".lore-row[data-status='draft'] button.lore-reject",
+      ) as HTMLButtonElement
+    ).click();
+    await tick();
+    await tick();
+    expect(ratifyCalls.map((c) => c.path)).toEqual(["/api/memory/lore/l2/reject"]);
+  });
+
+  it("the status filter re-fetches with status=draft from the first page", async () => {
+    stubFetch({ lore: LORE_PAGE });
+    mountShell("#/memory/sample-repo");
+    await boot();
+    const sel = document.querySelector("select.lore-filter-status") as HTMLSelectElement;
+    expect(Array.from(sel.options).map((o) => o.value)).toEqual([
+      "",
+      "draft",
+      "active",
+      "deprecated",
+      "superseded",
+    ]);
+    sel.value = "draft";
+    sel.dispatchEvent(new Event("change"));
+    await tick();
+    await tick();
+    const last = loreRequests().at(-1)!;
+    expect(last).toContain("status=draft");
+    expect(last).toContain("repo=sample-repo");
+    expect(last).not.toContain("offset=");
+    // Switching the repo filter to "All repos" drops the repo constraint.
+    const repoSel = document.querySelector("select.lore-filter-repo") as HTMLSelectElement;
+    repoSel.value = "";
+    repoSel.dispatchEvent(new Event("change"));
+    await tick();
+    await tick();
+    expect(loreRequests().at(-1)).not.toContain("repo=");
   });
 
   it("renders a clean 'memory unavailable' state when a surface degrades", async () => {

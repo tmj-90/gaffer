@@ -11,6 +11,7 @@ import {
   getLore,
   getRejectionReason,
   listDrafts,
+  listLore,
   listRecent,
   listRepos,
   listTags,
@@ -1680,6 +1681,85 @@ describe("core/lore", () => {
       expect(titles).toContain("draft one");
       expect(titles).toContain("to deprecate");
       expect(all.find((l) => l.id === drafted.id)?.status).toBe("draft");
+    });
+  });
+
+  describe("listLore — browse by status/repo/kind with pagination (the ratification read)", () => {
+    function seed() {
+      const a = addLore(db, { title: "active web", summary: "s", body: "b", repos: ["web"] });
+      const d1 = suggestLore(db, {
+        title: "draft web decision",
+        summary: "s",
+        body: "b",
+        repos: ["web"],
+        kind: "decision",
+      });
+      const d2 = suggestLore(db, { title: "draft api", summary: "s", body: "b", repos: ["api"] });
+      const d3 = suggestLore(db, { title: "draft org-wide", summary: "s", body: "b" });
+      const dep = addLore(db, { title: "old", summary: "s", body: "b", repos: ["web"] });
+      deprecateLore(db, dep.id);
+      return { a, d1, d2, d3, dep };
+    }
+
+    it("with no filters lists every lifecycle state and reports the total", () => {
+      seed();
+      const page = listLore(db);
+      expect(page.total).toBe(5);
+      expect(page.items).toHaveLength(5);
+      expect(new Set(page.items.map((l) => l.status))).toEqual(
+        new Set(["active", "draft", "deprecated"]),
+      );
+      expect(page.limit).toBe(50);
+      expect(page.offset).toBe(0);
+    });
+
+    it("status=draft returns ONLY drafts (searchLore can never express that)", () => {
+      const { d1, d2, d3 } = seed();
+      const page = listLore(db, { status: ["draft"] });
+      expect(page.total).toBe(3);
+      expect(page.items.map((l) => l.id).sort()).toEqual([d1.id, d2.id, d3.id].sort());
+      expect(page.items.every((l) => l.status === "draft")).toBe(true);
+    });
+
+    it("repo narrows to records TAGGED with that repo; kind narrows further", () => {
+      const { d1 } = seed();
+      const web = listLore(db, { status: ["draft"], repo: "web" });
+      expect(web.items.map((l) => l.id)).toEqual([d1.id]);
+      const decisions = listLore(db, { repo: "web", kind: ["decision"] });
+      expect(decisions.items.map((l) => l.id)).toEqual([d1.id]);
+      expect(listLore(db, { repo: "nope" }).total).toBe(0);
+    });
+
+    it("pages with limit/offset and keeps the total stable across pages", () => {
+      seed();
+      const p1 = listLore(db, { limit: 2, offset: 0 });
+      const p2 = listLore(db, { limit: 2, offset: 2 });
+      const p3 = listLore(db, { limit: 2, offset: 4 });
+      expect([p1.total, p2.total, p3.total]).toEqual([5, 5, 5]);
+      expect(p1.items).toHaveLength(2);
+      expect(p2.items).toHaveLength(2);
+      expect(p3.items).toHaveLength(1);
+      const ids = [...p1.items, ...p2.items, ...p3.items].map((l) => l.id);
+      expect(new Set(ids).size).toBe(5);
+    });
+
+    it("refuses an unknown status/kind and an out-of-range page at the boundary", () => {
+      seed();
+      expect(() => listLore(db, { status: ["rejected" as never] })).toThrow(/unknown status/);
+      expect(() => listLore(db, { kind: ["wisdom" as never] })).toThrow(/unknown kind/);
+      expect(() => listLore(db, { limit: 0 })).toThrow(/limit/);
+      expect(() => listLore(db, { limit: 201 })).toThrow(/limit/);
+      expect(() => listLore(db, { offset: -1 })).toThrow(/offset/);
+    });
+
+    it("a browse records NO read events (it is not a recall)", () => {
+      seed();
+      const count = () =>
+        (db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind = 'read'").get() as { n: number })
+          .n;
+      const before = count();
+      listLore(db, { status: ["draft"] });
+      expect(count()).toBe(before);
     });
   });
 });

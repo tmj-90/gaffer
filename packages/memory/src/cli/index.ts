@@ -80,7 +80,11 @@ COMMANDS
   show <id>                 Print the full record (body included).
   history <id>              List the record's earlier versions (every update
                             snapshots the previous row), newest first.
-  list                      Recent records across all lifecycle states.
+  list [--repo X] [--status draft,active] [--kind K] [--limit N] [--offset N] [--json]
+                            Recent records across all lifecycle states; the flags
+                            filter by repo / status / kind and page (limit ≤ 200).
+                            --json emits { total, limit, offset, items } (what the
+                            dashboard's Memory view reads).
   review [--list]           Interactive triage queue: show each pending
                             draft and ask [a]pprove / [r]eject / [e]dit /
                             [s]kip / [q]uit. Use --list (or pipe to stdout)
@@ -374,7 +378,7 @@ export async function main(argv: ReadonlyArray<string>): Promise<number> {
       case "history":
         return await cmdHistory(parsed);
       case "list":
-        return await cmdList();
+        return await cmdList(parsed);
       case "review":
         return await cmdReview(parsed);
       case "approve":

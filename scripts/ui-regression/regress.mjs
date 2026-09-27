@@ -166,6 +166,49 @@ try {
     ? ok("Memory view lists the onboarded repo")
     : bad("Memory view does not list taskflow-mini");
 
+  // ── 2b. ratify a lore DRAFT from the Memory view (run.sh seeded one for taskflow-mini) ──
+  // Drafts used to be approvable only with `memory review` in a terminal. The card's
+  // status filter narrows to drafts, Approve POSTs /api/memory/lore/:id/approve
+  // (the server runs the memory CLI), and the record comes back active.
+  try {
+    await page.goto(`${BASE}/#/memory/taskflow-mini`, { waitUntil: "load" });
+    await page.waitForSelector("select.lore-filter-status", { timeout: 15000 });
+    await page.selectOption("select.lore-filter-status", "draft");
+    await page.waitForSelector(".lore-row[data-status='draft'] button.lore-approve", {
+      timeout: 15000,
+    });
+    const draftRow = page.locator(".lore-row[data-status='draft']").first();
+    const draftTitle = (await draftRow.locator(".lore-title").textContent()) || "";
+    /UI regression draft/i.test(draftTitle)
+      ? ok("Memory view: the seeded lore draft is listed under status=draft")
+      : bad(`Memory view: unexpected draft row "${draftTitle}"`);
+    await shot(page, "memory-lore-draft");
+    await draftRow.locator("button.lore-approve").click();
+    // The drafts-only page re-fetches and the row leaves it…
+    await page.waitForFunction(
+      () => !document.querySelector(".lore-row[data-status='draft'] button.lore-approve"),
+      null,
+      { timeout: 15000 },
+    );
+    ok("Memory view: Approve removed the draft from the drafts-only page");
+    // …and the API now reports it active for that repo.
+    const active = await waitFor(
+      async () => {
+        const r = await api("GET", "/api/memory/lore?repo=taskflow-mini&status=active");
+        return (r.json.lore || []).find((l) => /UI regression draft/i.test(l.title || ""));
+      },
+      "approved lore is active",
+      15000,
+      500,
+    );
+    active && active.status === "active"
+      ? ok(`lore draft approved from the dashboard → active (${active.id})`)
+      : bad("approved lore did not come back active");
+    await shot(page, "memory-lore-approved");
+  } catch (e) {
+    bad("Memory view lore ratification: " + (e && e.message ? e.message : String(e)));
+  }
+
   // Set the repo's test/lint commands so the DoD gate has something to run (via UI if present).
   await page.goto(`${BASE}/#/repo/${encodeURIComponent(repo.id)}`, { waitUntil: "load" });
   await sleep(800);

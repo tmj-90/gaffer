@@ -606,7 +606,8 @@ function outputContract() {
     '      "body":       "Source: <file/commit/doc>\\n\\n<detail + why it matters>",',
     '      "tags":       ["induction", "<topic>"],',
     '      "source":     "<a URL ONLY (PR/ADR/incident link), else omit — never a file path or sha>",',
-    '      "confidence": "low | medium"',
+    '      "confidence": "low | medium",',
+    '      "kind":       "decision | requirement | non-goal | convention | gotcha"',
     "    }",
     "  ]",
     "}",
@@ -616,6 +617,10 @@ function outputContract() {
     "lore MAY be an empty array — that is correct when nothing durable + non-obvious stands",
     'out. Every lore record MUST cite a concrete source and carry the "induction" tag.',
     'confidence is capped at "medium" for a sourced draft, "low" otherwise — never "high".',
+    'kind classifies the record: "decision" (a durable choice + why), "requirement" (a product',
+    'need the code serves), "non-goal" (deliberately out of scope), "convention" (how-we-do-it-',
+    'here), "gotcha" (a trap that bit). Product intent → decision/requirement/non-goal; when unsure',
+    'use "convention".',
   ].join("\n");
 }
 
@@ -726,6 +731,22 @@ const ALLOWED_STATUS = new Set(["backlog", "building", "shipped"]);
 
 /** The induction tag every onboard-derived lore draft must carry (skill hard rule 2). */
 export const INDUCTION_TAG = "induction";
+
+/**
+ * Lore kinds an onboard draft may carry (Memory's product-intent classifier, minus
+ * `other`). Every draft is classified: a record suggested WITHOUT `--kind` lands as
+ * `other`, which every `--kind` filter — including the delivery primer's
+ * decision/requirement/non-goal product-context search — silently excludes.
+ */
+export const ONBOARD_LORE_KINDS = new Set([
+  "decision",
+  "requirement",
+  "non-goal",
+  "convention",
+  "gotcha",
+]);
+/** Absent/unknown kind → `convention`: onboarding lore is "how we do it here". */
+export const DEFAULT_ONBOARD_LORE_KIND = "convention";
 
 // Short function words the model re-phrases freely around the same capability
 // ("URL shortening" → "Shorten URL" → "Shorten a URL"). Dropped before the
@@ -908,7 +929,16 @@ export function validateLore(rawLore) {
         ? "medium" // a URL-sourced draft earns medium; else low
         : "low";
 
-    out.push({ title, summary, body, tags: [...tagSet], source: sourceUrl, confidence });
+    // Kind: the product-intent classifier Memory filters on. Honour a valid model
+    // value; anything else (absent, unknown) becomes `convention` — onboarding lore
+    // is "how we do it here". Never omitted: an untyped record lands as `other` and
+    // is invisible to every `--kind` filter (the delivery primer's included).
+    const kindRaw = String(r.kind ?? "")
+      .trim()
+      .toLowerCase();
+    const kind = ONBOARD_LORE_KINDS.has(kindRaw) ? kindRaw : DEFAULT_ONBOARD_LORE_KIND;
+
+    out.push({ title, summary, body, tags: [...tagSet], source: sourceUrl, confidence, kind });
   }
   return out;
 }
@@ -1362,6 +1392,10 @@ export function writeUnderstanding(
       for (const tag of rec.tags) args.push("--tag", tag);
       if (rec.source) args.push("--source", rec.source);
       if (rec.confidence) args.push("--confidence", rec.confidence);
+      // Always classify: `--kind` is what Memory's kind filters (and the delivery
+      // primer's decision/requirement/non-goal search) select on. A record written
+      // without it lands as `other` and never reaches an agent through that path.
+      args.push("--kind", rec.kind || DEFAULT_ONBOARD_LORE_KIND);
       const lresAdd = runMemoryCli(cfg, args, env);
       if (lresAdd.error || (lresAdd.status ?? 0) !== 0) {
         stats.failed += 1;

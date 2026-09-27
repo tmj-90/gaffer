@@ -1,15 +1,24 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
-import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
+import {
+  errorBody,
+  methodNotAllowed,
+  readJsonBody,
+  safeDecode,
+  sendCreated,
+  sendJson,
+} from "../http.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "../idleLoops.js";
-import type { MemoryReader } from "../memoryReader.js";
+import { LORE_ID_RE, type MemoryReader } from "../memoryReader.js";
 import { buildOpenApiDocument } from "../openapi/spec.js";
 import { requestCapability, requestPrincipal } from "../auth.js";
 import {
   autonomyPolicyBody,
   createPrincipalBody,
   idleLoopsBody,
+  memoryLoreQuery,
+  rejectLoreBody,
   settingsBody,
 } from "../schemas.js";
 import { listSettings, writeSettings } from "../settings.js";
@@ -192,6 +201,70 @@ export async function routeApi(
     streamEvents(wg, url, req, res);
     return;
   }
+
+  // --- Lore ratification: list by status/repo/kind + approve/reject a draft ---
+  //
+  // Drafts from the distiller, onboarding and agents used to be approvable ONLY
+  // with `memory review` in a terminal, and the dashboard listed at most 50 records
+  // across all repos. These routes give the Memory view the same power through the
+  // memory CLI (the write boundary — dispatch never opens the memory DB): `list
+  // --json` for a filtered, paged read; `approve` / `reject` for the decision. The
+  // read degrades to 200 `{ available:false, reason }` like every memory surface;
+  // the mutations are behind the full-token gate (every non-GET is) and answer 409
+  // when the CLI refuses (unknown id / not a draft), 503 when Memory is unreachable.
+  if (segments.length === 3 && segments[1] === "memory" && segments[2] === "lore") {
+    if (method !== "GET") return methodNotAllowed(res);
+    const q = memoryLoreQuery.parse(Object.fromEntries(url.searchParams));
+    sendJson(
+      res,
+      200,
+      memoryReader.listLore({
+        ...(q.repo !== undefined ? { repo: q.repo } : {}),
+        ...(q.status !== undefined ? { status: q.status } : {}),
+        ...(q.kind !== undefined ? { kind: q.kind } : {}),
+        ...(q.limit !== undefined ? { limit: q.limit } : {}),
+        ...(q.offset !== undefined ? { offset: q.offset } : {}),
+      }),
+    );
+    return;
+  }
+  if (
+    segments.length === 5 &&
+    segments[1] === "memory" &&
+    segments[2] === "lore" &&
+    (segments[4] === "approve" || segments[4] === "reject")
+  ) {
+    if (method !== "POST") return methodNotAllowed(res);
+    const id = safeDecode(segments[3] as string);
+    if (id === null || !LORE_ID_RE.test(id)) {
+      return sendJson(
+        res,
+        422,
+        errorBody("VALIDATION_ERROR", "Malformed lore id (expected 8 chars of a-z2-9)."),
+      );
+    }
+    let result;
+    if (segments[4] === "approve") {
+      result = memoryReader.approveLore(id);
+    } else {
+      const body = rejectLoreBody.parse((await readJsonBody(req)) ?? {});
+      result = memoryReader.rejectLore(id, body.reason);
+    }
+    if (result.available) {
+      sendJson(res, 200, { id: result.id, status: result.status });
+      return;
+    }
+    // The CLI names a refused decision ("cannot approve … unknown id or not a
+    // draft"); anything else is Memory being unreachable / misconfigured.
+    const refused = /cannot (approve|reject)|unknown id|not a draft/i.test(result.reason);
+    sendJson(
+      res,
+      refused ? 409 : 503,
+      errorBody(refused ? "CONFLICT" : "MEMORY_UNAVAILABLE", result.reason),
+    );
+    return;
+  }
+
   routeReadModels(wg, memoryReader, method, segments, url, res);
 }
 

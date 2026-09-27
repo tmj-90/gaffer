@@ -945,9 +945,20 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Mount ONLY the selected (B_SKILLS) + universal skill subset — not the whole
     # library — so Claude Code doesn't auto-load all ~66 frontmatter blocks.
     # Fail-soft: falls back to the whole library on any error (see skills-mount.sh).
-    gaffer_skills_mount "$B_DIR" "$B_SKILLS" "bootstrap-$NUM"
-    sed "s#\${RUNNER_DIR}#$(_gaffer_sed_repl "$RUNNER_DIR")#g" "$CLAUDE_SETTINGS" > "$B_DIR/.claude/settings.json"
-    gaffer_trust_workspace "$B_DIR"
+    # The ONE shared installer (lib/agent-env.sh) every other spawn site uses:
+    # skills mount + render AND VERIFY .claude/settings.json (the PreToolUse
+    # safety-hook wiring) + workspace trust + the CLAUDE.factory.md brief. This site
+    # used to render the settings with a bare `sed` and no verification, so a bad
+    # template or a full disk could launch the bootstrap agent — the one agent that
+    # is also allowed a dependency install — with no deterministic containment
+    # boundary. FAIL CLOSED: release the claim back to ready (the scaffold resumes on
+    # the next attempt), skip the ticket this run, and never spawn.
+    if ! gaffer_install_agent_dir "$B_DIR" "$B_SKILLS" "bootstrap-$NUM"; then
+      log "SAFETY: agent-env install failed for bootstrap #$NUM (settings/hook wiring unverified) — refusing live bootstrap (fail closed)"
+      gaffer_release_delivery ready "bootstrap: agent-env install failed (safety-hook wiring unverified) — refusing live bootstrap (fail closed)"
+      gaffer_skip_ticket "$NUM"
+      result error; exit 1
+    fi
     MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
     gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"; result error; exit 1; }
     # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
@@ -970,7 +981,6 @@ if [ "$READY_COUNT" -gt 0 ]; then
     gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
       || { log "MCP-RENDER: failed to render bootstrap runtime .mcp.json — refusing live bootstrap (fail closed)"; result error; exit 1; }
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
-    cp -f "$HERE/claude/CLAUDE.md" "$B_DIR/CLAUDE.factory.md"
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
 
     B_TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"

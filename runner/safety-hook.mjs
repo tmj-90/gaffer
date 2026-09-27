@@ -1661,14 +1661,29 @@ function extractBashWriteTargets(cmd) {
         add(m[1]);
       }
     } else if (verb === "git") {
-      // `git [-C dir] worktree add <path>` creates a NEW worktree directory at
-      // <path>; if <path> is outside the write-roots it writes outside the
-      // boundary. Find the `worktree add` pair among the (flag-stripped) operands
-      // — a leading `-C <dir>` survives as a bare `dir` operand, so we scan for
-      // the adjacency rather than assuming a fixed index.
-      const wi = operands.indexOf("worktree");
-      if (wi !== -1 && operands[wi + 1] === "add" && operands.length > wi + 2) {
-        add(operands[wi + 2]);
+      // `git [-C dir] worktree add [-b <branch>] <path>` creates a NEW worktree
+      // directory at <path>; if <path> is outside the write-roots it writes outside
+      // the boundary. Scan the RAW tokens after `git` (a leading `-C <dir>` survives
+      // as a bare `dir` token, so we scan for the `worktree add` adjacency rather
+      // than assuming a fixed index) and take the first non-flag token after `add`,
+      // skipping the VALUE of a value-taking flag. The flag-stripped operand list
+      // used to leave the `-b`/`-B` branch NAME in the path slot, so
+      // `worktree add -b x /outside/wt` checked cwd/x (in-root) and the out-of-root
+      // worktree dir escaped the boundary. (The branch the `-b` creates is checked
+      // separately by branchCreationBoundaryReason.)
+      const rawGit = effective.rest.slice(1);
+      const wi = rawGit.indexOf("worktree");
+      if (wi !== -1 && rawGit[wi + 1] === "add") {
+        for (let k = wi + 2; k < rawGit.length; k += 1) {
+          const t = rawGit[k];
+          if (t === "-b" || t === "-B" || t === "--reason") {
+            k += 1; // consume the flag's value
+            continue;
+          }
+          if (t.startsWith("-")) continue;
+          add(t);
+          break;
+        }
       }
       // `git clone <url> <DIR>` writes a whole tree at DIR. The URL is the first
       // operand after `clone`; an EXPLICIT second operand is the target dir, so
@@ -1772,22 +1787,70 @@ function extractBashReadTargets(cmd) {
 }
 
 // Branch-creation forms that must only occur inside a write-root:
-//   `git checkout -B <branch>`  `git branch <branch>`  `git switch -c <branch>`
+//   `git checkout -b|-B [<flags>] <branch>`   `git checkout --orphan <branch>`
+//   `git switch -c|-C|--create|--orphan <branch>`
+//   `git branch <branch>`                      (not the list/delete/show forms)
+//   `git worktree add … -b|-B <branch> …`      (creates the branch in the -C/cwd repo)
+// Previously only `checkout -B`, `switch -c|--create` and `branch` matched: the
+// lowercase `checkout -b` (the far more common form), a `-b` after another flag
+// (`checkout -q -b`), and `worktree add -b` all created a branch in a READ-ONLY
+// repo unnoticed.
 const BRANCH_CREATE =
-  /\bgit\s+(?:-C\s+("[^"]+"|'[^']+'|\S+)\s+)?(?:checkout\s+-B\b|switch\s+-c\b|switch\s+--create\b|branch\b(?!\s+(?:-[dD]|--delete|--list|-a|-r|-v|--show-current)))/;
+  /\bgit\s+(?:-C\s+("[^"]+"|'[^']+'|\S+)\s+)?(?:checkout(?:\s+-[^\s;&|]+)*\s+(?:-[bB]|--orphan)\b|switch(?:\s+-[^\s;&|]+)*\s+(?:-[cC]|--create|--orphan)\b|branch\b(?!\s+(?:-[dD]|--delete|--list|-a|-r|-v|--show-current))|worktree\s+add(?:\s+[^\s;&|]+)*?\s+-[bB]\b)/;
 
 /**
  * Enforce branch creation only inside a write-root. The relevant location is
  * the repo the branch is created in: `git -C <dir> …` names it explicitly,
- * otherwise it is the cwd. Returns a block reason or null.
+ * otherwise it is the EFFECTIVE cwd — the hook's cwd as relocated by any
+ * preceding `cd`/`pushd` in the same command (a leading `cd <read-root> &&`
+ * used to move the write into a read root unnoticed, because the target was
+ * resolved against the process cwd). Scanned per segment, left to right, with
+ * the same cwd replay the write-target extractor uses; a dynamic/unknown cd
+ * (`cd $VAR`, `cd -`, `popd`) makes a later relative target unprovable → fail
+ * closed. Recurses into `sh -c '…'` bodies. Returns a block reason or null.
  */
 function branchCreationBoundaryReason(cmd, roots) {
-  const m = cmd.match(BRANCH_CREATE);
-  if (!m) return null;
-  const dir = m[1] ? unquote(m[1]) : ".";
-  const abs = canonicalize(resolve(process.cwd(), dir));
-  if (classifyRootAccess(abs, roots) !== "write") {
-    return `branch creation outside write-roots (target repo is not writable): ${dir} [write-roots: ${roots.writeRoots.join(", ")}]`;
+  let effectiveCwd = process.cwd();
+  for (const segment of cmd.split(/(?:&&|\|\||;|\n|(?<![>&])&(?!>)|(?<!>)\|)/)) {
+    const tokens = tokenizeSegment(segment.trim());
+    if (tokens.length === 0) continue;
+    const effective = resolveEffectiveTokens(tokens);
+    // Replay `cd`/`pushd`/`popd` exactly as extractBashWriteTargets does.
+    if (effective && (effective.verb === "cd" || effective.verb === "pushd")) {
+      const arg = effective.operands[0];
+      const bare = arg ? unquote(arg) : "";
+      if (!bare || /[*?$`]|\$\{/.test(arg) || bare === "-" || bare.startsWith("~")) {
+        effectiveCwd = null;
+      } else if (effectiveCwd !== null) {
+        effectiveCwd = canonicalize(resolve(effectiveCwd, bare));
+      }
+      continue;
+    }
+    if (effective && effective.verb === "popd") {
+      effectiveCwd = null;
+      continue;
+    }
+    const m = segment.match(BRANCH_CREATE);
+    if (!m) continue;
+    const dir = m[1] ? unquote(m[1]) : ".";
+    // A `-C` dir carrying shell interpolation is not a provable literal → fail closed.
+    if (/[$`]|\$\{/.test(dir)) {
+      return `branch creation in an unverifiable repo (dynamic -C target): ${dir} [write-roots: ${roots.writeRoots.join(", ")}]`;
+    }
+    // A relative repo (the bare cwd, or a relative -C) under an unknown cwd is
+    // unprovable → fail closed. Absolute -C targets ignore the cwd.
+    if (!dir.startsWith("/") && effectiveCwd === null) {
+      return `branch creation in an unverifiable repo (cwd relocated by a dynamic cd): ${dir} [write-roots: ${roots.writeRoots.join(", ")}]`;
+    }
+    const abs = canonicalize(resolve(effectiveCwd ?? "/", dir));
+    if (classifyRootAccess(abs, roots) !== "write") {
+      return `branch creation outside write-roots (target repo is not writable): ${dir} [write-roots: ${roots.writeRoots.join(", ")}]`;
+    }
+  }
+  // A `sh -c '<body>'` nested program can carry its own branch creation.
+  for (const body of extractShellDashCBodies(cmd)) {
+    const nested = branchCreationBoundaryReason(body, roots);
+    if (nested) return nested;
   }
   return null;
 }

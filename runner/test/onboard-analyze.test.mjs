@@ -28,7 +28,7 @@
 // =====================================================================
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1589,6 +1589,58 @@ console.log(
     assert("both CLIs failing → not counted downgraded", stats.downgraded === 0);
     assert("the un-enforceable downgrade is surfaced loudly", /could NOT downgrade/.test(logged));
   }
+}
+
+console.log("== agentChildEnv: credentials AND outbound-endpoint vars are stripped; auth kept ==");
+{
+  // The analysis agent's scrub used to stop at the credential classes, so a notify
+  // webhook / Slack URL reached an agent that reads UNTRUSTED repo files (parity with
+  // product-owner-run.mjs's agentChildEnv and the shell gaffer_agent_env).
+  const env = agentChildEnv({
+    PATH: "/usr/bin",
+    DISPATCH_API_TOKEN: "leak",
+    GITHUB_TOKEN: "gh-leak",
+    AWS_ACCESS_KEY_ID: "AKIA-leak",
+    AWS_SECRET_ACCESS_KEY: "aws-leak",
+    DB_PASSWORD: "hunter2",
+    GAFFER_NOTIFY_WEBHOOK_URL: "https://hooks.example.com/secret",
+    GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/T/B/secret",
+    MY_WEBHOOK_URL: "https://corp.example.com/webhook",
+    SLACK_WEBHOOK_TOKEN: "xoxb-leak",
+    FOO_URL: "https://internal.corp/endpoint",
+    ANTHROPIC_API_KEY: "sk-ant-keepme",
+    ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+    MEMORY_CLI_BIN: "/x/memory.js",
+  });
+  for (const k of [
+    "DISPATCH_API_TOKEN",
+    "GITHUB_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "DB_PASSWORD",
+    "GAFFER_NOTIFY_WEBHOOK_URL",
+    "GAFFER_NOTIFY_SLACK_URL",
+    "MY_WEBHOOK_URL",
+    "SLACK_WEBHOOK_TOKEN",
+    "FOO_URL",
+  ]) {
+    assert(`strips ${k}`, !(k in env));
+  }
+  assert("keeps ANTHROPIC_API_KEY", env.ANTHROPIC_API_KEY === "sk-ant-keepme");
+  assert("keeps ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL === "https://api.anthropic.com");
+  assert(
+    "keeps non-credential vars",
+    env.PATH === "/usr/bin" && env.MEMORY_CLI_BIN === "/x/memory.js",
+  );
+  assert("pins GAFFER_RECALL_TICKET empty (no delivery recall)", env.GAFFER_RECALL_TICKET === "");
+  // Structural pin: the analysis turn spawns through the ONE worker seam.
+  const src = readFileSync(MOD, "utf8");
+  assert("onboard-analyze imports the worker seam", /from "\.\/worker\.mjs"/.test(src));
+  assert("onboard-analyze spawns via Worker.deliver(", /Worker\.deliver\(/.test(src));
+  assert(
+    "onboard-analyze never spawnSync()s claudeBin directly",
+    !/spawnSync\(claudeBin/.test(src),
+  );
 }
 
 console.log("");

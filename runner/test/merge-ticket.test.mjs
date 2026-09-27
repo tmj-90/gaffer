@@ -329,6 +329,72 @@ console.log("== AC8: buildChildEnv strips DISPATCH_API_TOKEN, sets MCP + write-r
   assert("GAFFER_WRITE_ROOTS = worktree", env.GAFFER_WRITE_ROOTS === "/wt");
 }
 
+console.log(
+  "== AC8b: buildChildEnv strips EVERY credential + outbound-endpoint class (not just the bearer) ==",
+);
+{
+  // The resolver used to receive process.env minus ONLY DISPATCH_API_TOKEN — GitHub,
+  // AWS and webhook secrets reached an agent that runs exactly when AUTO_MERGE is on.
+  const env = buildChildEnv(
+    {
+      PATH: "/usr/bin",
+      DISPATCH_API_TOKEN: "secret-xyz",
+      GITHUB_TOKEN: "gh-leak",
+      GH_TOKEN: "gh-leak-2",
+      AWS_ACCESS_KEY_ID: "AKIA-leak",
+      AWS_SECRET_ACCESS_KEY: "aws-secret-leak",
+      AWS_SESSION_TOKEN: "aws-session-leak",
+      NPM_SECRET: "npm-leak",
+      DB_PASSWORD: "hunter2",
+      SOME_API_KEY: "key-leak",
+      GAFFER_NOTIFY_WEBHOOK_URL: "https://hooks.example.com/secret",
+      GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/T/B/secret",
+      MY_WEBHOOK_URL: "https://corp.example.com/webhook",
+      SLACK_WEBHOOK_TOKEN: "xoxb-leak",
+      FOO_URL: "https://internal.corp/endpoint",
+      // Must SURVIVE: the agent's own auth + API routing, and plain factory knobs.
+      ANTHROPIC_API_KEY: "sk-ant-keepme",
+      ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+      GAFFER_MAX_TURNS: "40",
+    },
+    { dispatchDb: "/db/wg.sqlite", memoryDb: "/db/lg.sqlite", writeRoot: "/wt" },
+  );
+  for (const k of [
+    "DISPATCH_API_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "NPM_SECRET",
+    "DB_PASSWORD",
+    "SOME_API_KEY",
+    "GAFFER_NOTIFY_WEBHOOK_URL",
+    "GAFFER_NOTIFY_SLACK_URL",
+    "MY_WEBHOOK_URL",
+    "SLACK_WEBHOOK_TOKEN",
+    "FOO_URL",
+  ]) {
+    assert(`resolver env strips ${k}`, !(k in env));
+  }
+  assert("keeps ANTHROPIC_API_KEY (claude auth)", env.ANTHROPIC_API_KEY === "sk-ant-keepme");
+  assert(
+    "keeps ANTHROPIC_BASE_URL (sole *_URL exception)",
+    env.ANTHROPIC_BASE_URL === "https://api.anthropic.com",
+  );
+  assert("keeps GAFFER_* knobs", env.GAFFER_MAX_TURNS === "40");
+  assert("keeps PATH", env.PATH === "/usr/bin");
+  // Structural pin: the resolver spawn goes through the ONE worker seam, never a bare
+  // spawnSync of the claude binary.
+  const src = readFileSync(HELPER, "utf8");
+  assert("merge-ticket.mjs imports lib/worker.mjs", /from "\.\.\/lib\/worker\.mjs"/.test(src));
+  assert("merge-ticket.mjs spawns the resolver via Worker.deliver(", /Worker\.deliver\(/.test(src));
+  assert(
+    "merge-ticket.mjs never spawnSync()s CONFIG.claudeBin directly",
+    !/spawnSync\(CONFIG\.claudeBin/.test(src),
+  );
+}
+
 console.log("== AC9: --dry-run on a conflicting ticket → merge target + resolver argv ==");
 {
   const db = makeDb([
@@ -366,6 +432,104 @@ console.log("== AC9: --dry-run on a conflicting ticket → merge target + resolv
   ) {
     ok("dry-run → merge target + resolver argv carrying skill + branch + worktree");
   } else fail(`dry-run wrong (code=${code}, out=${JSON.stringify(out)})`);
+}
+
+console.log(
+  "== AC9b: the LIVE resolver spawn honours the containment decision (fail closed / spawns) ==",
+);
+{
+  // A REAL conflicting repo + a STUB claude (marker file + envelope; no model, no
+  // spend). Under GAFFER_STRICT_REQUIRE=1 with no sandbox provider the resolver must
+  // NOT be spawned (the mjs seam refuses like the bash seam does); with the sandbox
+  // off the same run spawns it. This is the behaviour the bare spawnSync escaped.
+  const repo = newRepo("live-conflict");
+  writeFileSync(resolve(repo, "file.txt"), "base\nbranch-line\n");
+  git(repo, "commit", "-q", "-am", "branch-edit");
+  git(repo, "checkout", "-q", "main");
+  writeFileSync(resolve(repo, "file.txt"), "base\nmain-line\n");
+  git(repo, "commit", "-q", "-am", "main-edit");
+  const mainBefore = git(repo, "rev-parse", "main").stdout.trim();
+  const db = makeDb([
+    {
+      ticketId: "tl",
+      number: 7,
+      ticketBranch: null,
+      repoId: "rl",
+      repoName: "demo",
+      localPath: repo,
+      defaultBranch: "main",
+      repoBranch: "gaffer/ticket-7-x",
+      access: "write",
+    },
+  ]);
+  const DATA = resolve(WORKDIR, "live-data");
+  const MARKER = resolve(WORKDIR, "resolver-spawned.marker");
+  const FAKE = resolve(WORKDIR, "fake-claude.sh");
+  writeFileSync(
+    FAKE,
+    `#!/usr/bin/env bash\n: > ${JSON.stringify(MARKER)}\nprintf '%s\\n' '{"result":"resolved both intents"}'\n`,
+  );
+  require("node:fs").chmodSync(FAKE, 0o755);
+  // A stub dispatch CLI for the re-approval signal (a JS file, spawned via node).
+  const STUB_WG = resolve(WORKDIR, "stub-wg.js");
+  writeFileSync(STUB_WG, `process.stdout.write('{"ok":true}\\n');\n`);
+  const runLive = (extraEnv) => {
+    rmSync(MARKER, { force: true });
+    const res = spawnSync(process.execPath, [HELPER, "--ticket", "7", "--timeout-ms", "60000"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DISPATCH_DB: db,
+        GAFFER_DATA: DATA,
+        CLAUDE_BIN: FAKE,
+        DISPATCH_CLI: STUB_WG,
+        ...extraEnv,
+      },
+    });
+    let out = null;
+    try {
+      out = JSON.parse(res.stdout.trim().split("\n").pop());
+    } catch {
+      /* leave null */
+    }
+    return { code: res.status, out, stderr: res.stderr || "" };
+  };
+
+  const refused = runLive({
+    GAFFER_STRICT_REQUIRE: "1",
+    STRICT_MODE: "0",
+    SANDBOX_PROVIDER: "none",
+  });
+  assert("strict-require + no provider: exit 1", refused.code === 1);
+  assert(
+    "strict-require + no provider: phase error naming the fail-closed refusal",
+    refused.out &&
+      refused.out.phase === "error" &&
+      /fail closed/.test(String(refused.out.error || "")),
+  );
+  assert("strict-require + no provider: the resolver was NOT spawned", !existsSync(MARKER));
+  assert(
+    "strict-require + no provider: the resolver worktree was torn down",
+    !existsSync(resolve(DATA, "worktrees", "merge-ticket-7")),
+  );
+  assert(
+    "strict-require + no provider: default branch untouched, no half-merge",
+    git(repo, "rev-parse", "main").stdout.trim() === mainBefore &&
+      git(repo, "status", "--porcelain").stdout.trim() === "",
+  );
+
+  const spawned = runLive({
+    GAFFER_STRICT_REQUIRE: "0",
+    STRICT_MODE: "0",
+    SANDBOX_PROVIDER: "none",
+  });
+  assert("sandbox off (control): the resolver WAS spawned through the seam", existsSync(MARKER));
+  assert(
+    "sandbox off (control): exit 0 with conflict_resolved_pending_reapproval",
+    spawned.code === 0 &&
+      spawned.out &&
+      spawned.out.phase === "conflict_resolved_pending_reapproval",
+  );
 }
 
 console.log("== AC10: --dry-run is BOUNDED — timeout-ms reported ==");

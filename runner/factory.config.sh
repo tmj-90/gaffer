@@ -1393,18 +1393,39 @@ _gaffer_flag_on() {
     *) return 1 ;;
   esac
 }
+# GRADUATED autonomy ships through STORED policy rows, not env flags: a mode='auto'
+# row in dispatch's autonomy_policy table is an unattended ship allow-path the AFK
+# gate honours in EVERY mode (isAutonomyAllowed = env floor OR policy). The graduated
+# cluster above leaves every env flag off, so nothing here used to turn the
+# autonomy→containment defaults on — a factory that had earned `auto` rows shipped
+# agent work with no OS sandbox, and neither review.sh nor the dispatch policy
+# service ever checked STRICT. Consult the rows (read-only, through the dispatch CLI
+# the other gates use) so an earned allow-path counts exactly like a ship flag.
+# FAIL-SOFT to "no rows proven" when the DB or the CLI is absent (a fresh checkout
+# or a hermetic test has neither): an unqueryable store cannot be the thing that
+# turns containment ON, and the env-flag paths above are unaffected. (`wg`/`jget`
+# are defined further down this file, so the CLI is invoked directly here.)
+_gaffer_autonomy_policy_active() {
+  [ -f "${DISPATCH_DB:-}" ] || return 1
+  [ -f "$DISPATCH_DIR/dist/cli/index.js" ] || return 1
+  local _n
+  _n="$(node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" autonomy list 2>/dev/null \
+        | node "$RUNNER_DIR/lib/json-tool.mjs" expr 'd.auto_count ?? 0' 2>/dev/null)" || _n=0
+  [ "${_n:-0}" -gt 0 ] 2>/dev/null
+}
 _gaffer_autonomy_on() {
   _gaffer_flag_on "${DISPATCH_ALLOW_AGENT_APPROVE:-0}" && return 0
   _gaffer_flag_on "${MERGE_ON_AGENT_REVIEW:-0}" && return 0
   _gaffer_flag_on "${AUTO_MERGE:-0}" && return 0
   _gaffer_flag_on "${MEMORY_AUTO_APPROVE:-0}" && return 0
   case "$GAFFER_MODE" in autonomous | strict) return 0 ;; esac
+  _gaffer_autonomy_policy_active && return 0
   return 1
 }
 if _gaffer_autonomy_on; then
   if [ -z "${GAFFER_STRICT_REQUIRE+x}" ]; then
     export GAFFER_STRICT_REQUIRE=1
-    printf 'autonomy: agent ship/mutate flags are on → defaulting GAFFER_STRICT_REQUIRE=1 (OS sandbox mandatory; the runner fails closed without one). Set GAFFER_STRICT_REQUIRE=0 to override if you provide containment out-of-band.\n' >&2
+    printf 'autonomy: agent ship/mutate flags are on (or an `auto` autonomy policy row is stored) → defaulting GAFFER_STRICT_REQUIRE=1 (OS sandbox mandatory; the runner fails closed without one). Set GAFFER_STRICT_REQUIRE=0 to override if you provide containment out-of-band.\n' >&2
   elif ! _gaffer_flag_on "${GAFFER_STRICT_REQUIRE}"; then
     printf 'WARNING: autonomy flags are ON but GAFFER_STRICT_REQUIRE=%s — the OS sandbox is NOT required, so a prompt-injected agent has no containment boundary beyond the deterministic hook. Only safe if you provide containment out-of-band (VM/container).\n' "${GAFFER_STRICT_REQUIRE}" >&2
   fi

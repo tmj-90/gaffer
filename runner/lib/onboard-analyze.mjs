@@ -58,6 +58,7 @@ import {
   parseClaudeJson,
   unknownRecord,
 } from "./usage-ledger.mjs";
+import { Worker } from "./worker.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
@@ -1089,20 +1090,36 @@ export function agentChildEnv(base = process.env) {
     // CLAUDE_CODE_OAUTH_TOKEN (the `claude setup-token` subscription credential —
     // the documented headless-Max path) the ONE *_TOKEN; both are explicitly
     // preserved (B25(b): the OAuth token used to match the *_TOKEN deny and was
-    // dropped, so a Max-plan agent could not authenticate). Parity with the shell
-    // gaffer_agent_env keep-despite-deny list.
+    // dropped, so a Max-plan agent could not authenticate). ANTHROPIC_BASE_URL is
+    // the ONE *_URL (API routing). Parity with the shell gaffer_agent_env
+    // keep-despite-deny list.
     if (
       key === "ANTHROPIC_API_KEY" ||
       key === "ANTHROPIC_AUTH_TOKEN" ||
-      key === "CLAUDE_CODE_OAUTH_TOKEN"
+      key === "CLAUDE_CODE_OAUTH_TOKEN" ||
+      key === "ANTHROPIC_BASE_URL"
     )
       continue;
     if (
       key === "DISPATCH_API_TOKEN" ||
       key === "AWS_ACCESS_KEY_ID" ||
       /(_TOKEN|_SECRET|_KEY|_PASSWORD|_PASSWD)$/.test(key)
-    )
+    ) {
       delete env[key];
+      continue;
+    }
+    // Outbound endpoint / notify config — runner-only; the agent must not read its
+    // own potential exfiltration channel (parity with product-owner-run.mjs's
+    // agentChildEnv and the shell gaffer_agent_env). This scrub used to stop at the
+    // credential classes, so a webhook URL reached the onboarding analysis agent.
+    if (
+      /^GAFFER_NOTIFY_/.test(key) ||
+      /_WEBHOOK/.test(key) ||
+      /_SLACK/.test(key) ||
+      /_URL$/.test(key)
+    ) {
+      delete env[key];
+    }
   }
   // Onboarding is NOT a delivery, so there is no recall ticket. This analysis
   // spawn passes the RAW .mcp.json (MCP_CONFIG) whose memory server env carries
@@ -1175,12 +1192,17 @@ export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
   const mcp = env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);
 
-  const res = spawnSync(claudeBin, args, {
+  // Route through the ONE worker spawn seam (lib/worker.mjs): provider dispatch plus
+  // the SAME OS-sandbox containment decision the bash seam makes (wrap under
+  // STRICT_MODE / GAFFER_STRICT_REQUIRE, fail closed when the host cannot supply
+  // one). This spawn used to be a bare spawnSync outside the seam.
+  const res = Worker.deliver({
+    bin: claudeBin,
+    argv: args,
     cwd: RUNNER_DIR,
-    encoding: "utf8",
-    timeout: caps.timeoutMs,
+    timeoutMs: caps.timeoutMs,
     maxBuffer: 16 * 1024 * 1024,
-    env: agentChildEnv(env),
+    env: { ...agentChildEnv(env), GAFFER_WRITE_ROOTS: RUNNER_DIR },
   });
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {

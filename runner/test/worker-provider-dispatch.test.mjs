@@ -16,7 +16,7 @@
 //
 // Zero deps beyond node. Run: node test/worker-provider-dispatch.test.mjs
 // =====================================================================
-import { existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,8 +25,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
 const WORKER = resolve(RUNNER_DIR, "lib", "worker.mjs");
 
-const { Worker, deliver, workerProvider, unsupportedProviderMessage, DEFAULT_WORKER_PROVIDER } =
-  await import(WORKER);
+const {
+  Worker,
+  deliver,
+  workerProvider,
+  unsupportedProviderMessage,
+  DEFAULT_WORKER_PROVIDER,
+  sandboxWanted,
+  sandboxRequired,
+} = await import(WORKER);
 
 let passed = 0;
 const failures = [];
@@ -136,11 +143,160 @@ for (const prov of ["codex", "local", "made-up"]) {
     : bad(`provider=${prov} must not fabricate stdout`);
 }
 
+// =====================================================================
+// OS-SANDBOX CONTAINMENT AT THE MJS SEAM (parity with worker.sh's worker_deliver).
+// The bug this pins: the node seam applied the provider dispatch but NOT the
+// sandbox decision the bash seam applies — so under GAFFER_STRICT_REQUIRE=1 with no
+// provider available, the merge-conflict resolver / product-owner / tester /
+// onboarding analysis spawned BARE while every bash spawn site refused (rc 75).
+// =====================================================================
+const SANDBOX_KEYS = [
+  "STRICT_MODE",
+  "GAFFER_STRICT_REQUIRE",
+  "SANDBOX_PROVIDER",
+  "GAFFER_SANDBOX_DRY_RUN",
+  "GAFFER_DATA",
+  "PATH",
+];
+function callDeliverWith(extra) {
+  const saved = Object.fromEntries(SANDBOX_KEYS.map((k) => [k, process.env[k]]));
+  for (const k of SANDBOX_KEYS) delete process.env[k];
+  process.env.PATH = saved.PATH;
+  Object.assign(process.env, extra);
+  try {
+    return callDeliver("claude-code");
+  } finally {
+    for (const k of SANDBOX_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+const SBX_DATA = join(WORK, ".gaffer");
+mkdirSync(SBX_DATA, { recursive: true });
+
+console.log("== sandbox helpers mirror the bash seam's decision ==");
+sandboxRequired({ GAFFER_STRICT_REQUIRE: "1" }) &&
+sandboxRequired({ GAFFER_STRICT_REQUIRE: "yes" }) &&
+!sandboxRequired({ GAFFER_STRICT_REQUIRE: "0" }) &&
+!sandboxRequired({})
+  ? ok("sandboxRequired: 1|true|yes|on ⇒ required (sandbox.sh _sandbox_strict_required)")
+  : bad("sandboxRequired drifted from _sandbox_strict_required");
+sandboxWanted({ STRICT_MODE: "1" }) &&
+sandboxWanted({ GAFFER_STRICT_REQUIRE: "1" }) &&
+!sandboxWanted({ STRICT_MODE: "0", GAFFER_STRICT_REQUIRE: "0" }) &&
+!sandboxWanted({})
+  ? ok("sandboxWanted: STRICT_MODE=1 OR required (worker.sh _worker_sandbox_wanted)")
+  : bad("sandboxWanted drifted from _worker_sandbox_wanted");
+
+console.log("== sandbox REQUIRED + no provider → FAIL CLOSED (rc 75, no spawn, no envelope) ==");
+{
+  const res = callDeliverWith({
+    STRICT_MODE: "0",
+    GAFFER_STRICT_REQUIRE: "1",
+    SANDBOX_PROVIDER: "none",
+    GAFFER_DATA: SBX_DATA,
+  });
+  !existsSync(MARKER)
+    ? ok("strict-require + provider none: the agent was NOT spawned")
+    : bad("strict-require + provider none: agent spawned despite a required, unavailable sandbox");
+  res.status === 75
+    ? ok("strict-require + provider none: status 75 (the bash seam's refusal code)")
+    : bad(`strict-require + provider none: expected status 75 (got ${res.status})`);
+  res.error instanceof Error && res.error.code !== "ETIMEDOUT"
+    ? ok("strict-require + provider none: res.error set (callers' error path fires), not ETIMEDOUT")
+    : bad("strict-require + provider none: res.error should be set and not ETIMEDOUT");
+  /fail closed/.test(res.error?.message || "")
+    ? ok("strict-require + provider none: refusal is loud and says 'fail closed'")
+    : bad(
+        `strict-require + provider none: message lacks 'fail closed' (got: ${res.error?.message})`,
+      );
+  (res.stdout || "") === ""
+    ? ok("strict-require + provider none: stdout empty (no fabricated envelope)")
+    : bad("strict-require + provider none: stdout must be empty");
+}
+{
+  const res = callDeliverWith({
+    STRICT_MODE: "1",
+    GAFFER_STRICT_REQUIRE: "1",
+    SANDBOX_PROVIDER: "lima",
+    GAFFER_DATA: SBX_DATA,
+  });
+  !existsSync(MARKER) && res.status === 75
+    ? ok("STRICT_MODE=1 + unknown provider 'lima' under strict-require → refused, no spawn")
+    : bad(
+        `unknown provider under strict-require should refuse (status=${res.status} marker=${existsSync(MARKER)})`,
+      );
+}
+
+console.log("== sandbox off / not required → invocation unchanged (spawns) ==");
+{
+  const res = callDeliverWith({
+    STRICT_MODE: "0",
+    GAFFER_STRICT_REQUIRE: "0",
+    SANDBOX_PROVIDER: "none",
+    GAFFER_DATA: SBX_DATA,
+  });
+  existsSync(MARKER) && res.status === 0
+    ? ok("sandbox off: the agent spawned, status 0")
+    : bad(`sandbox off should spawn (status=${res.status})`);
+}
+{
+  const res = callDeliverWith({
+    STRICT_MODE: "1",
+    GAFFER_STRICT_REQUIRE: "0",
+    SANDBOX_PROVIDER: "none",
+    GAFFER_DATA: SBX_DATA,
+  });
+  existsSync(MARKER) && res.status === 0
+    ? ok("STRICT_MODE=1 + provider none (not required) degrades and still spawns")
+    : bad(`STRICT_MODE=1/none/not-required should degrade (status=${res.status})`);
+}
+
+console.log("== a wrapping provider is APPLIED at the mjs seam (docker dry-run) ==");
+{
+  // Fake `docker` so sandbox_wrap_cmd emits the docker prefix; the wrapper runs in
+  // dry-run mode and prints the argv (one element per line) instead of executing —
+  // proving the wrap reached the seam and the host binary was NOT run directly.
+  const FAKEBIN = join(WORK, "bin");
+  mkdirSync(FAKEBIN, { recursive: true });
+  writeFileSync(join(FAKEBIN, "docker"), "#!/usr/bin/env bash\nexit 0\n");
+  chmodSync(join(FAKEBIN, "docker"), 0o755);
+  const res = callDeliverWith({
+    STRICT_MODE: "1",
+    SANDBOX_PROVIDER: "docker",
+    GAFFER_SANDBOX_DRY_RUN: "1",
+    GAFFER_DATA: SBX_DATA,
+    PATH: `${FAKEBIN}:${process.env.PATH}`,
+  });
+  const lines = (res.stdout || "").split("\n");
+  res.status === 0
+    ? ok("docker provider (dry-run) wrapped the mjs spawn (status 0)")
+    : bad(`docker dry-run wrap status=${res.status} stderr=${(res.stderr || "").slice(0, 200)}`);
+  !existsSync(MARKER)
+    ? ok("the host worker binary was NOT run directly (the wrap intercepted the spawn)")
+    : bad("host worker ran directly — the wrap was not applied");
+  lines.includes(`${WORK}:${WORK}:rw`)
+    ? ok("the write root (cwd) is mounted rw in the container argv")
+    : bad(`write root mount missing from docker argv (got: ${lines.slice(0, 40).join(" | ")})`);
+  lines.includes("claude")
+    ? ok("inside docker the image's own `claude` is invoked, not the host path")
+    : bad("expected the container claude binary in argv");
+  lines.includes("HOME=/root")
+    ? ok("HOME is rebased to the container's /root for the in-container command")
+    : bad("HOME not rebased for the container");
+}
+
 console.log("== Worker.* namespace re-exports the seam ==");
 typeof Worker.workerProvider === "function" &&
 typeof Worker.unsupportedProviderMessage === "function"
   ? ok("Worker exposes workerProvider + unsupportedProviderMessage")
   : bad("Worker should re-export the provider helpers");
+typeof Worker.sandboxWanted === "function" &&
+typeof Worker.sandboxRequired === "function" &&
+typeof Worker.sandboxWrapArgv === "function"
+  ? ok("Worker exposes the sandbox decision helpers")
+  : bad("Worker should re-export sandboxWanted / sandboxRequired / sandboxWrapArgv");
 
 rmSync(WORK, { recursive: true, force: true });
 

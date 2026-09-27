@@ -46,6 +46,10 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const RUNNER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const UNKNOWN = "unknown";
 
@@ -85,19 +89,134 @@ function failClosedResult(message) {
   };
 }
 
+// ── OS-SANDBOX CONTAINMENT AT THE SEAM (parity with worker.sh's worker_deliver) ──
+// The bash seam derives and enforces the OS-sandbox wrap for EVERY spawn site: when
+// the sandbox is ON (STRICT_MODE=1) or REQUIRED (GAFFER_STRICT_REQUIRE, auto-set by
+// every autonomy flag) it asks lib/sandbox.sh's `sandbox_wrap_cmd` for the provider
+// prefix and FAILS CLOSED (rc 75, no spawn, empty envelope) when the host cannot
+// supply one. The mjs seam used to spawn bare regardless — so the merge-conflict
+// resolver, the product-owner, the tester and the onboarding analysis (which run
+// exactly when autonomy is on) escaped the containment decision the delivery,
+// reviewer, clarify and bootstrap spawns are subject to. `deliver` now makes the
+// SAME decision from the SAME env, reusing the SAME provider scripts (sandbox.sh
+// dispatch → sandbox-exec profile / sandbox-docker.sh), so the two runtimes cannot
+// disagree about what "contained" means.
+
+/** True when the OS sandbox is REQUIRED (GAFFER_STRICT_REQUIRE on) — sandbox.sh's `_sandbox_strict_required`. */
+export function sandboxRequired(env = process.env) {
+  const v = String(env.GAFFER_STRICT_REQUIRE ?? "0")
+    .trim()
+    .toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+/** True when the sandbox is ON (STRICT_MODE=1) or REQUIRED — worker.sh's `_worker_sandbox_wanted`. */
+export function sandboxWanted(env = process.env) {
+  return String(env.STRICT_MODE ?? "0").trim() === "1" || sandboxRequired(env);
+}
+
+/**
+ * Ask lib/sandbox.sh (the ONE provider seam) for the wrap prefix, exactly as
+ * worker_deliver does: `sandbox_wrap_cmd <write-roots> <read-roots>`. Returns
+ *   { ok: true, wrap: string[] }   — the prefix argv (possibly empty = no wrapping)
+ *   { ok: false, message }         — the provider REFUSED (strict-require + no sandbox)
+ * The prefix is word-split the way the bash seam expands `$wrap` unquoted.
+ */
+export function sandboxWrapArgv({ writeRoots, readRoots, env = process.env }) {
+  const res = spawnSync(
+    "bash",
+    [
+      "-c",
+      'source "$0/lib/sandbox.sh" && sandbox_wrap_cmd "$1" "$2"',
+      RUNNER_DIR,
+      writeRoots,
+      readRoots ?? "",
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...env,
+        RUNNER_DIR,
+        GAFFER_DATA: env.GAFFER_DATA || resolve(RUNNER_DIR, "..", ".gaffer"),
+      },
+    },
+  );
+  const diag = (res.stderr || "").trim();
+  if (res.error || res.status !== 0) {
+    return {
+      ok: false,
+      message:
+        "worker: GAFFER_STRICT_REQUIRE demands an OS sandbox and none is available on this host — refusing to spawn the agent (fail closed)" +
+        (diag ? `: ${diag}` : ""),
+    };
+  }
+  return { ok: true, wrap: (res.stdout || "").trim().split(/\s+/).filter(Boolean), diag };
+}
+
+// The bash seam's refusal status for a required-but-unavailable sandbox.
+const SANDBOX_REFUSED_STATUS = 75;
+
 export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env }) {
   const provider = workerProvider(process.env);
   if (provider !== DEFAULT_WORKER_PROVIDER) {
     // codex / local / any non-Claude provider — honest stub, FAIL CLOSED. No spawn.
     return failClosedResult(unsupportedProviderMessage(provider));
   }
-  // claude-code — the current path, byte-identical.
-  return spawnSync(bin, argv, {
+  // claude-code — the current path. With the sandbox off this is byte-identical.
+  let spawnBin = bin;
+  let spawnArgv = argv;
+  let spawnEnv = env;
+  if (sandboxWanted(process.env)) {
+    // Derive the wrap from the per-call boundary vars (the cwd is the write root
+    // when none is named), exactly like worker_deliver's WORKER_CALL_ENV scan.
+    const writeRoots = (env && env.GAFFER_WRITE_ROOTS) || cwd;
+    const readRoots = (env && env.GAFFER_READ_ROOTS) || "";
+    const wrapped = sandboxWrapArgv({ writeRoots, readRoots, env: process.env });
+    if (!wrapped.ok) {
+      // FAIL CLOSED: a required sandbox the host cannot supply means NO spawn —
+      // status 75, empty stdout (no fabricated envelope), error set so callers'
+      // existing error paths fire. Never a silent bare run.
+      const r = failClosedResult(wrapped.message);
+      r.status = SANDBOX_REFUSED_STATUS;
+      return r;
+    }
+    if (wrapped.diag) process.stderr.write(wrapped.diag + "\n");
+    if (wrapped.wrap.length > 0) {
+      // The wrapper script itself (sandbox-docker.sh / sandbox-exec) needs the
+      // factory's path vars to build its mounts; they are not secrets. The caller's
+      // env wins where it already names them.
+      spawnEnv = {
+        RUNNER_DIR,
+        GAFFER_HOME: process.env.GAFFER_HOME || resolve(RUNNER_DIR, ".."),
+        GAFFER_DATA: process.env.GAFFER_DATA || resolve(RUNNER_DIR, "..", ".gaffer"),
+        ...env,
+      };
+      // Inside the `docker` provider the HOST's claude path / HOME / PATH do not
+      // exist — the image ships `claude` on its own PATH and root's HOME is /root.
+      // Substitute ONLY when a docker wrap is active, and only for the command
+      // INSIDE the container (an `env HOME=… PATH=… claude` prefix, the shape the
+      // bash seam's `env -i … HOME= PATH= claude` takes) — the wrapper script itself
+      // still runs with the host PATH so it can find `docker`.
+      let inner = [spawnBin, ...argv];
+      if ((process.env.SANDBOX_PROVIDER || "sandbox-exec") === "docker") {
+        inner = [
+          "env",
+          `HOME=${process.env.GAFFER_SANDBOX_HOME || "/root"}`,
+          `PATH=${process.env.GAFFER_SANDBOX_PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
+          process.env.GAFFER_SANDBOX_CLAUDE_BIN || "claude",
+          ...argv,
+        ];
+      }
+      spawnArgv = [...wrapped.wrap.slice(1), ...inner];
+      spawnBin = wrapped.wrap[0];
+    }
+  }
+  return spawnSync(spawnBin, spawnArgv, {
     cwd,
     encoding: "utf8",
     timeout: timeoutMs,
     maxBuffer,
-    env,
+    env: spawnEnv,
   });
 }
 
@@ -293,7 +412,15 @@ export function parseResult(text) {
   };
 }
 
-export const Worker = { deliver, parseResult, workerProvider, unsupportedProviderMessage };
+export const Worker = {
+  deliver,
+  parseResult,
+  workerProvider,
+  unsupportedProviderMessage,
+  sandboxWanted,
+  sandboxRequired,
+  sandboxWrapArgv,
+};
 
 // =====================================================================
 // CLI — the bash worker (delivery-recovery.sh) reads cap/spend through this so the

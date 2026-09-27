@@ -126,6 +126,16 @@ function run(stdin) {
       out({ phase: "clarify", questions: [`token:${process.env.DISPATCH_API_TOKEN ?? "ABSENT"}`] });
       return;
 
+    case "echo-debate":
+      // Report what the planning-debate toggle looks like from INSIDE the child —
+      // the real helper reads GAFFER_PLAN_DEBATE only from its env, so this is the
+      // proof a settings.json value made it through the dashboard to decompose.
+      out({
+        phase: "clarify",
+        questions: [`debate:${process.env.GAFFER_PLAN_DEBATE ?? "ABSENT"}`],
+      });
+      return;
+
     default:
       out({ phase: "error", error: `unknown stub mode ${mode}` });
   }

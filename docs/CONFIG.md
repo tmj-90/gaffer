@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 107 |
 | Knobs editable in the dashboard | 53 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 62 |
+| Env reads in code with no default and no UI entry | 64 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -293,6 +293,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
 | `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
+| `GAFFER_DECOMPOSE_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
 | `GAFFER_DEFAULT_TICKET_REPO` |  | `packages/dispatch/src/mcp/tools.ts`, `runner/bin/tester-run.mjs` |
 | `GAFFER_EGRESS_ALLOW` | _(empty)_ | `runner/lib/egress-allowlist.mjs` |
 | `GAFFER_EGRESS_ALLOW_FILE` | `$data/egress-allow.txt` | `runner/lib/sandbox-docker.sh` |
@@ -305,6 +306,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_LITE_SENSITIVE_RE` | `(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
 | `GAFFER_ONBOARD_SYNTH_MODEL` |  | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
+| `GAFFER_PLAN_BUILD_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
 | `GAFFER_REVIEW_TICKET` |  | `packages/dispatch/src/mcp/tools.ts` |
 | `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_CLAUDE_CREDENTIALS` | _(empty)_ / `/nonexistent` | `runner/lib/sandbox-docker.sh`, `runner/sandbox/smoke-test.sh` |

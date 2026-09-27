@@ -45,8 +45,70 @@ export const DEFAULT_DECOMPOSE_BIN = join(
   "decompose.mjs",
 );
 
-/** Wall-clock cap on a single decompose turn (each turn is a real `claude -p` cost). */
+/**
+ * Wall-clock cap on ONE single-agent decompose run (each turn is a real `claude -p`
+ * cost). This is the default when the planning debate is OFF and no explicit
+ * {@link GAFFER_PLAN_BUILD_TIMEOUT_MS_ENV} is set.
+ */
 const DEFAULT_TIMEOUT_MS = 200_000;
+
+/**
+ * Env knob overriding the plan-build wall-clock cap (milliseconds). Unset/empty/
+ * invalid → the debate-aware default from {@link resolvePlanBuildTimeoutMs}.
+ */
+export const GAFFER_PLAN_BUILD_TIMEOUT_MS_ENV = "GAFFER_PLAN_BUILD_TIMEOUT_MS";
+
+/**
+ * The decompose helper's OWN per-`claude` call cap (`GAFFER_DECOMPOSE_TIMEOUT_MS`,
+ * default 180 s in runner/bin/decompose.mjs). Every debate turn runs under it, so
+ * the plan-build cap must allow that many turns or it kills a healthy debate.
+ */
+const DECOMPOSE_TURN_TIMEOUT_DEFAULT_MS = 180_000;
+
+/** Slack added on top of the per-turn budget for spawn + JSON extraction. */
+const DEBATE_SLACK_MS = 20_000;
+
+/** Debate rounds when `GAFFER_PLAN_DEBATE_MAX_ROUNDS` is unset (mirrors decompose.mjs). */
+const DEBATE_DEFAULT_MAX_ROUNDS = 2;
+
+/** Same truthy set decompose.mjs's `debateConfig` accepts for `GAFFER_PLAN_DEBATE`. */
+function debateEnabled(env: NodeJS.ProcessEnv): boolean {
+  const v = (env["GAFFER_PLAN_DEBATE"] ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+function positiveInt(raw: string | undefined): number | null {
+  const n = Number.parseInt((raw ?? "").trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Resolve how long one plan-build request may run before the decompose child is
+ * killed. Precedence:
+ *
+ *   1. `GAFFER_PLAN_BUILD_TIMEOUT_MS` (positive integer) — the operator's word.
+ *   2. Debate ON (`GAFFER_PLAN_DEBATE`): the debate runs `2 × maxRounds − 1`
+ *      model turns (draft, then critic + revision per extra round — see
+ *      `runDebate` in runner/bin/decompose.mjs), each under the helper's own
+ *      per-turn cap (`GAFFER_DECOMPOSE_TIMEOUT_MS`, default 180 s). The cap is
+ *      that many turns plus slack, so a healthy 3-turn debate is never reaped by
+ *      a single-turn budget.
+ *   3. Otherwise the single-agent default (200 s).
+ *
+ * Read per request (not once at startup) so a settings.json edit that flips the
+ * debate on — applied to this process's env by `applySettingsToEnv` — takes
+ * effect on the next plan-build without a restart.
+ */
+export function resolvePlanBuildTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const explicit = positiveInt(env["GAFFER_PLAN_BUILD_TIMEOUT_MS"]);
+  if (explicit !== null) return explicit;
+  if (!debateEnabled(env)) return DEFAULT_TIMEOUT_MS;
+  const perTurn =
+    positiveInt(env["GAFFER_DECOMPOSE_TIMEOUT_MS"]) ?? DECOMPOSE_TURN_TIMEOUT_DEFAULT_MS;
+  const rounds = positiveInt(env["GAFFER_PLAN_DEBATE_MAX_ROUNDS"]) ?? DEBATE_DEFAULT_MAX_ROUNDS;
+  const turns = 2 * rounds - 1;
+  return Math.max(DEFAULT_TIMEOUT_MS, perTurn * turns + DEBATE_SLACK_MS);
+}
 
 /** Cap the helper's stdout so a runaway child can't exhaust memory. */
 const MAX_OUTPUT_BYTES = 2_000_000;
@@ -181,11 +243,15 @@ function parseResult(raw: string): PlanBuildResult {
  */
 export function createPlanBuildRunner(
   env: NodeJS.ProcessEnv = process.env,
-  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  timeoutMs?: number,
 ): PlanBuildRunner {
   return {
     run(input) {
       const bin = (env[GAFFER_DECOMPOSE_BIN_ENV] ?? "").trim() || DEFAULT_DECOMPOSE_BIN;
+      // An explicit constructor cap (tests) wins; otherwise resolve from the env on
+      // EVERY run so a debate toggled on via the dashboard's settings.json (applied
+      // to this process's env in place) widens the cap without a restart.
+      const capMs = timeoutMs ?? resolvePlanBuildTimeoutMs(env);
       const payload = JSON.stringify({
         brief: input.brief,
         history: input.history,
@@ -231,8 +297,8 @@ export function createPlanBuildRunner(
 
         const timer = setTimeout(() => {
           child.kill("SIGKILL");
-          finish(errorResult(`The decompose helper timed out after ${timeoutMs}ms.`));
-        }, timeoutMs);
+          finish(errorResult(`The decompose helper timed out after ${capMs}ms.`));
+        }, capMs);
         timer.unref?.();
 
         child.stdout?.on("data", (chunk: Buffer) => {

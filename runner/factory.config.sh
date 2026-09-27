@@ -354,6 +354,14 @@ gaffer_route_model() {
 # agent even when DEBATE=1. Unset/0 → any positive signal passes (gate disabled).
 : "${GAFFER_PLAN_DEBATE_MIN_ESTIMATE:=0}"    # min size signal to trigger a debate (0 = off)
 export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUNDS GAFFER_PLAN_DEBATE_MIN_ESTIMATE
+# DASHBOARD WALL CLOCK: the dashboard's "Plan a build" spawns decompose and kills
+# it after GAFFER_PLAN_BUILD_TIMEOUT_MS (milliseconds). Unset, the cap is derived:
+# 200 s single-agent, or with the debate ON (2 × MAX_ROUNDS − 1) turns × the
+# helper's per-turn GAFFER_DECOMPOSE_TIMEOUT_MS (default 180 s) + 20 s slack —
+# so a healthy 3-turn debate is never reaped by a single-turn budget. Deliberately
+# NOT defaulted here: a fixed value would override that debate-aware scaling. Read
+# by packages/dispatch/src/api/planBuild.ts on every plan-build request, so a
+# Settings-panel debate toggle widens the cap without a dashboard restart.
 
 # --- Per-call resource caps (P1 denial-of-wallet / token runaway) ------------
 # Every headless `claude -p` call (delivery, bootstrap, agent-review, clarify) —

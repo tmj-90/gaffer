@@ -115,6 +115,12 @@ jobs:
       - name: Config reference is current
         run: node scripts/config-reference.mjs --check
 
+      # docs/openapi.json is generated from the endpoint table + the zod schemas the
+      # routes validate with (needs the dispatch build). A route added, renamed or
+      # re-shaped without regenerating the contract fails here.
+      - name: OpenAPI contract is current
+        run: node scripts/openapi.mjs --check
+
       - name: Typecheck
         run: pnpm -r typecheck
 

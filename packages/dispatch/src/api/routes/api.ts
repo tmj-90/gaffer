@@ -4,6 +4,7 @@ import type { Dispatch } from "../../core.js";
 import { errorBody, methodNotAllowed, readJsonBody, sendJson } from "../http.js";
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "../idleLoops.js";
 import type { MemoryReader } from "../memoryReader.js";
+import { buildOpenApiDocument } from "../openapi/spec.js";
 import { autonomyPolicyBody, idleLoopsBody, settingsBody } from "../schemas.js";
 import { listSettings, writeSettings } from "../settings.js";
 import { API_ACTOR } from "./context.js";
@@ -48,6 +49,20 @@ export async function routeApi(
       return;
     }
     return methodNotAllowed(res);
+  }
+  // GET /api/openapi.json — the REST contract, generated from the same zod schemas
+  // the routes parse with (api/openapi/spec.ts). Built once per process: the
+  // document is a pure function of the code. Behind the read gate like every
+  // other data route (it describes the control plane; the shell stays tokenless).
+  if (segments.length === 2 && segments[1] === "openapi.json") {
+    if (method !== "GET") return methodNotAllowed(res);
+    openApiCache ??= JSON.stringify(buildOpenApiDocument());
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": Buffer.byteLength(openApiCache),
+    });
+    res.end(openApiCache);
+    return;
   }
   // GET/PUT /api/idle-loops — dashboard control for the crew idle scan loops.
   // GET reads the `loops.idle_<key>.{enabled,repos}` slice of crew.yaml (a
@@ -118,6 +133,9 @@ export async function routeApi(
   }
   routeReadModels(wg, memoryReader, method, segments, url, res);
 }
+
+/** The serialised OpenAPI document, built on first request. */
+let openApiCache: string | undefined;
 
 /** Poll interval for tailing the event log (ms). */
 const STREAM_POLL_MS = 1000;

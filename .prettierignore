@@ -28,3 +28,6 @@ runner/skills/**/SKILL.md
 packages/crew/test/fixtures/tick-context/*.golden.json
 packages/crew/test/fixtures/tick-context/*.golden.txt
 packages/crew/test/fixtures/tick-context/inputs.json
+
+# Generated REST contract (scripts/openapi.mjs writes it byte-exactly; CI checks it).
+docs/openapi.json

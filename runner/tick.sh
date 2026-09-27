@@ -645,8 +645,11 @@ gaffer_distill_ticket_intent() {
   # DRAFT for `memory review`; the PRODUCT CONTEXT primer surfaces only `active` lore, so
   # ratify the drafts you want priming future agents. GAFFER_MEMORY_AUTO_PROMOTE=1|0
   # overrides either way. The inline var applies only to this `lg` call.
-  local _promote="${GAFFER_MEMORY_AUTO_PROMOTE:-${MEMORY_AUTO_APPROVE:-0}}"
-  if MEMORY_AUTO_APPROVE="$([ "$_promote" = "1" ] && echo 1 || echo 0)" \
+  # Normalised through _gaffer_flag_on (1/true/yes/on), matching what Settings accepts, and
+  # handed to the memory CLI as the exact "1"/"0" it reads.
+  local _promote
+  _promote="$(_gaffer_flag_on "${GAFFER_MEMORY_AUTO_PROMOTE:-${MEMORY_AUTO_APPROVE:-0}}" && echo 1 || echo 0)"
+  if MEMORY_AUTO_APPROVE="$_promote" \
       lg suggest --title "$_dt" --summary "$_ds" --body "$_ds" \
       --repo "$RECALL_REPO_NAME" --kind requirement \
       --tag ticket-intent --tag requirement --tag "ticket-$NUM" \
@@ -2808,7 +2811,9 @@ $_trail_q
       log "H3: CI FAILED for #$NUM — auto-rejecting delivery back to rework (ticket left for re-delivery)"
       _CUR_CI_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
       if [ "$_CUR_CI_STATUS" = "in_review" ]; then
-        wg review reject "$NUM" --to refining --reviewer factory-ci \
+        # --as system: a runner (CI) rejection is NOT a human decision — recorded as one, it
+        # fed the autonomy recommendations' human-agreement rate.
+        wg review reject "$NUM" --to refining --reviewer factory-ci --as system \
           --reason "H3: CI checks failed on branch $WORK_BRANCH — see attached evidence for the failing check" \
           >/dev/null 2>&1 \
           && log "H3: auto-rejected #$NUM (in_review → refining)" \

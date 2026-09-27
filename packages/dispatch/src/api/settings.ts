@@ -314,12 +314,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   {
     key: "REVIEW_MODE",
     type: "string",
-    choices: ["human", "agent"],
+    choices: ["human", "agent", "both"],
     group: "autonomy",
     label: "Review mode",
     help:
-      "Who reviews a delivery before merge: human · agent · both. Agent reviews are " +
-      "ADVISORY — a human (or the AFK auto-approve chain) still owns the merge.",
+      "Who reviews a delivery before merge: human · agent · both (an agent screens first, " +
+      "then a human confirms). Agent reviews are ADVISORY — a human (or the AFK " +
+      "auto-approve chain) still owns the merge. Per-repo autonomy grants act only under " +
+      "agent or both; under human no reviewer agent runs, so they are inert.",
   },
 
   // --- Delivery: what the factory does once a ticket is approved ---

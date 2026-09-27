@@ -60,6 +60,7 @@ const {
   parseDiffStatus,
   buildPrMergeArgv,
   resolvePrMergeMethod,
+  inspectWorkingTree,
 } = await import(HELPER);
 
 let passed = 0;
@@ -934,6 +935,94 @@ console.log("== B14: no pr_url → the local merge, byte-identical to before (no
   const { out, ghCalls } = runLive({ DISPATCH_DB: dbNoPr }, ["--ticket", "7"]);
   assert("via:local", out && out.via === "local" && out.prUrl === undefined);
   assert("gh never consulted", ghCalls.length === 0);
+}
+
+// ── B20a: the dashboard merge never touches a DIRTY live checkout, and a failed checkout
+//    is a REFUSAL, not a conflict ───────────────────────────────────────────────────────
+// merge-ticket ran `git checkout <default>` in the live repo with no dirty-tree check: an
+// operator's uncommitted edits were carried across (or the checkout failed and was read as
+// a CONFLICT, spawning the resolver on a branch with nothing to resolve).
+console.log("== B20a: uncommitted changes in the live checkout → REFUSED, tree untouched ==");
+{
+  const f = prFixture("dirty-live"); // on main, clean, with a pr_url + gh available
+  writeFileSync(resolve(f.repo, "file.txt"), "base\nOPERATOR WIP\n");
+  writeFileSync(resolve(f.repo, "scratch.txt"), "untracked scratch\n");
+  eq("inspectWorkingTree reports the tracked edit only", inspectWorkingTree(f.repo), {
+    dirty: true,
+    summary: " M file.txt",
+  });
+  const mainBefore = git(f.repo, "rev-parse", "main").stdout.trim();
+  rmSync(CLAUDE_MARK, { force: true });
+  const { code, out, err, ghCalls } = runLive({ DISPATCH_DB: f.db }, ["--ticket", "7"]);
+  assert("exit 1 + phase error", code === 1 && out && out.phase === "error");
+  assert(
+    "says it REFUSED because of uncommitted changes and names the file",
+    /refusing to merge #7/.test(out?.error ?? "") &&
+      /uncommitted changes/.test(out?.error ?? "") &&
+      /file\.txt/.test(out?.error ?? ""),
+  );
+  assert("says the ticket stays ready_for_merge", /ready_for_merge/.test(out?.error ?? ""));
+  assert(
+    "operator edit preserved byte-for-byte",
+    readFileSync(resolve(f.repo, "file.txt"), "utf8") === "base\nOPERATOR WIP\n",
+  );
+  assert("default branch unchanged", git(f.repo, "rev-parse", "main").stdout.trim() === mainBefore);
+  assert(
+    "still on main",
+    git(f.repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim() === "main",
+  );
+  assert("no PR merge attempted either (gh never called)", ghCalls.length === 0);
+  assert("resolver NOT spawned", !existsSync(CLAUDE_MARK));
+  assert("not reported as a conflict", !/conflicted — spawning/.test(err));
+}
+
+console.log("== B20a: untracked files alone do not block (git handles a collision itself) ==");
+{
+  const f = prFixture("untracked-live");
+  writeFileSync(resolve(f.repo, "notes.txt"), "scratch\n");
+  eq("inspectWorkingTree: clean", inspectWorkingTree(f.repo).dirty, false);
+  const { code, out } = runLive({ DISPATCH_DB: f.db }, ["--ticket", "7"]);
+  assert("merged (via pr) with an untracked file present", code === 0 && out && out.via === "pr");
+  assert("untracked file still there", existsSync(resolve(f.repo, "notes.txt")));
+}
+
+console.log("== B20a: a failed checkout of the default branch is REFUSED, not a conflict ==");
+{
+  // The default branch does not exist → `git checkout` fails. This used to read as a merge
+  // conflict and spawn the resolver agent.
+  const repo = newRepo("bad-default");
+  const db = makeDb([
+    {
+      ticketId: "t-bd",
+      number: 7,
+      repoId: "r-bd",
+      repoName: "bad-default",
+      localPath: repo,
+      defaultBranch: "no-such-branch",
+      repoBranch: "gaffer/ticket-7-x",
+    },
+  ]);
+  const r = attemptMerge(repo, "gaffer/ticket-7-x", "no-such-branch");
+  assert(
+    "attemptMerge flags checkoutFailed (not a plain conflict)",
+    r.clean === false &&
+      r.checkoutFailed === true &&
+      /could not checkout no-such-branch/.test(r.reason),
+  );
+  rmSync(CLAUDE_MARK, { force: true });
+  const { code, out, err } = runLive({ DISPATCH_DB: db }, ["--ticket", "7"]);
+  assert("exit 1 + phase error", code === 1 && out && out.phase === "error");
+  assert(
+    "says it REFUSED and names the checkout failure",
+    /refusing to merge #7/.test(out?.error ?? "") &&
+      /could not checkout no-such-branch/.test(out?.error ?? ""),
+  );
+  assert("resolver NOT spawned", !existsSync(CLAUDE_MARK));
+  assert("not reported as a conflict", !/conflicted — spawning/.test(err));
+  assert(
+    "no resolver worktree left behind",
+    !existsSync(resolve(WORKDIR, "data", "worktrees", "merge-ticket-7")),
+  );
 }
 
 // Cleanup the throwaway repos + DBs.

@@ -165,7 +165,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `REVIEW_MODE` | `human` | yes (string: human / agent) | dispatch, runner | Who reviews a delivery before merge: human · agent · both. Agent reviews are ADVISORY — a human (or the AFK auto-approve chain) still owns the merge. |
+| `REVIEW_MODE` | `human` | yes (string: human / agent / both) | dispatch, runner | Who reviews a delivery before merge: human · agent · both (an agent screens first, then a human confirms). Agent reviews are ADVISORY — a human (or the AFK auto-approve chain) still owns the merge. Per-repo autonomy grants act only under agent or both; under human no reviewer agent runs, so they are inert. |
 | `MERGE_ON_AGENT_REVIEW` | `0` | yes (boolean) | dispatch, runner | Fire the merge command when an agent (not just a human) approves. |
 | `AUTO_MERGE` | `0` | yes (boolean) | dispatch, runner | Safe-merge into the default branch on approval. Off → approved tickets wait at ready-for-merge for a human. |
 | `GAFFER_AUTO_PUSH` | `0` | yes (boolean) | dispatch, runner | The final AFK step: push the default branch to origin after a successful auto-merge. Requires Auto-merge; off → merges stay local. |

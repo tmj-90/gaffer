@@ -13,6 +13,7 @@ import {
   ALLOW_AGENT_APPROVE_ENV,
   AUTO_MERGE_ENV,
   envAllowsAuto,
+  envFlagOn,
   isAutonomyAllowed,
   MERGE_ON_AGENT_REVIEW_ENV,
   policyGrantsAuto,
@@ -70,6 +71,47 @@ describe("envAllowsAuto — the per-gate env fallback (today's behaviour)", () =
   it("memory gate follows MEMORY_AUTO_APPROVE", () => {
     expect(envAllowsAuto("memory", ENV_OFF)).toBe(false);
     expect(envAllowsAuto("memory", { MEMORY_AUTO_APPROVE: "1" } as NodeJS.ProcessEnv)).toBe(true);
+  });
+
+  // B20b: Settings accepts true/yes for a boolean and the runner's _gaffer_flag_on accepts
+  // 1/true/yes/on, but the env floor required exactly "1" — a stored `true` read as ON for
+  // the runner's containment rule and OFF for the gate it was meant to open.
+  it("every gate accepts the same spellings as the runner and Settings: 1 / true / yes / on", () => {
+    for (const on of ["1", "true", "yes", "on", "TRUE", " Yes ", "On"]) {
+      expect(envFlagOn(on), on).toBe(true);
+      expect(
+        envAllowsAuto("approve", { [ALLOW_AGENT_APPROVE_ENV]: on } as NodeJS.ProcessEnv),
+        on,
+      ).toBe(true);
+      expect(
+        envAllowsAuto("merge", {
+          [AUTO_MERGE_ENV]: on,
+          [MERGE_ON_AGENT_REVIEW_ENV]: "yes",
+        } as NodeJS.ProcessEnv),
+        on,
+      ).toBe(true);
+      expect(envAllowsAuto("memory", { MEMORY_AUTO_APPROVE: on } as NodeJS.ProcessEnv), on).toBe(
+        true,
+      );
+    }
+  });
+
+  it("anything else stays OFF (fail-closed): 0 / false / no / off / empty / junk", () => {
+    for (const off of ["0", "false", "no", "off", "", "  ", "junk", "2", undefined]) {
+      expect(envFlagOn(off), String(off)).toBe(false);
+      expect(
+        envAllowsAuto("approve", { [ALLOW_AGENT_APPROVE_ENV]: off } as NodeJS.ProcessEnv),
+        String(off),
+      ).toBe(false);
+      // One half of the merge floor off keeps the merge gate closed.
+      expect(
+        envAllowsAuto("merge", {
+          [AUTO_MERGE_ENV]: "true",
+          [MERGE_ON_AGENT_REVIEW_ENV]: off,
+        } as NodeJS.ProcessEnv),
+        String(off),
+      ).toBe(false);
+    }
   });
 });
 

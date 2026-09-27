@@ -94,11 +94,30 @@ export function envAllowsAuto(
 ): boolean {
   switch (gate) {
     case "approve":
-      return env[ALLOW_AGENT_APPROVE_ENV] === "1";
+      return envFlagOn(env[ALLOW_AGENT_APPROVE_ENV]);
     case "merge":
-      return env[AUTO_MERGE_ENV] === "1" && env[MERGE_ON_AGENT_REVIEW_ENV] === "1";
+      return envFlagOn(env[AUTO_MERGE_ENV]) && envFlagOn(env[MERGE_ON_AGENT_REVIEW_ENV]);
     case "memory":
-      return env[MEMORY_AUTO_APPROVE_ENV] === "1";
+      return envFlagOn(env[MEMORY_AUTO_APPROVE_ENV]);
+  }
+}
+
+/**
+ * An autonomy flag is ON for `1`, `true`, `yes` or `on` (case-insensitive, trimmed) — the
+ * same spellings the runner's `_gaffer_flag_on` and the Settings boolean validation accept.
+ * The gates used to require exactly "1", so a stored `true` read as OFF here while the
+ * runner's own containment logic read it as ON: half-configured autonomy. Anything else
+ * (unset, "", "0", "false", "no", "off", junk) is OFF — fail-closed.
+ */
+export function envFlagOn(value: string | undefined): boolean {
+  switch ((value ?? "").trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    default:
+      return false;
   }
 }
 

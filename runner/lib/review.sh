@@ -422,7 +422,7 @@ EOF
                   fi
                   # A PR merge already landed upstream: nothing to push (and never push a
                   # stale local default over it).
-                  if [ "$_MERGED_VIA" = "local" ] && [ "${GAFFER_AUTO_PUSH:-0}" = "1" ]; then
+                  if [ "$_MERGED_VIA" = "local" ] && _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"; then
                     gaffer_auto_push "$RREPO" "$RDEFAULT" \
                       && log "AFK: pushed $RDEFAULT to origin" \
                       || log "AFK: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push"
@@ -464,7 +464,10 @@ EOF
           # The feedback loop (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
           _rreason="$(printf '%s' "$R_RESULT" | tr '\n' ' ' | tail -c 480)"
           [ -n "${_rreason// /}" ] || _rreason="agent review recommended changes"
-          if wg review reject "$RNUM" --reason "$_rreason" --to ready >/dev/null 2>&1; then
+          # --as agent (the reviewer principal): this is the REVIEWER AGENT's verdict, not a
+          # human's — recorded as human it counted toward the autonomy recommendations'
+          # human-agreement rate, so runner rework inflated the case for more autonomy.
+          if wg review reject "$RNUM" --reason "$_rreason" --to ready --as agent --reviewer "$AGENT/reviewer" >/dev/null 2>&1; then
             log "AFK: #$RNUM → CHANGES; re-queued to ready for rework with reviewer feedback (retry-cap parks to blocked at the threshold)"
           else
             log "AFK: #$RNUM CHANGES but reject failed — left in_review"

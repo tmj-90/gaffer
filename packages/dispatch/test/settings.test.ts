@@ -151,6 +151,17 @@ describe("settings module: enum choices + value validation", () => {
     expect(anInt?.choices).toBeUndefined();
   });
 
+  it("REVIEW_MODE offers `both` (documented: agent screens, human confirms) and persists it", () => {
+    // B20c: the runner honoured `both` but the Settings dropdown only offered human/agent,
+    // so the documented mode was unreachable from the dashboard.
+    const def = SETTING_DEFS.find((d) => d.key === "REVIEW_MODE");
+    expect(def?.choices).toEqual(["human", "agent", "both"]);
+    const res = writeSettings({ REVIEW_MODE: "both" }, {}, settingsPath);
+    expect(res.written).toEqual(["REVIEW_MODE"]);
+    expect(res.invalid).toEqual([]);
+    expect(readSettingsFile(settingsPath)).toEqual({ REVIEW_MODE: "both" });
+  });
+
   it("PR mode: the merge method is an enum and the CI gate declares its PR dependency", () => {
     // B14: REQUIRE_CI without CREATE_PR polled a PR that never existed; the definitions
     // now say so, and the merge method (gh pr merge --merge|--squash|--rebase) is a knob.

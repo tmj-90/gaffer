@@ -77,7 +77,9 @@
 //   error:     { "phase":"error", error }   (exit 1)
 //
 // EXIT: 0 on merged / conflict_resolved_pending_reapproval / dry-run; 1 on any hard
-//   failure (missing repo/branch/safety hook, spawn error, timeout).
+//   failure (missing repo/branch/safety hook, spawn error, timeout, a REFUSED merge: the
+//   live checkout has uncommitted changes, or the default branch could not be checked
+//   out — neither is a conflict, so the resolver is never spawned for them).
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
@@ -289,12 +291,21 @@ export function resolveTicket(dbPath, number) {
  * the conflict so the caller spawns the resolver.
  *
  * Returns { clean: true } on a landed merge, { clean: false } on a conflict (aborted,
- * branch left intact). Honoured only on the live path; --dry-run never calls this.
+ * branch left intact). A FAILED CHECKOUT of the default branch is NOT a conflict: it is
+ * reported as { clean: false, checkoutFailed: true } so the caller refuses instead of
+ * spawning the resolver (there is nothing on the branch to resolve). Honoured only on
+ * the live path; --dry-run never calls this.
  */
 export function attemptMerge(repoPath, branch, defaultBranch) {
   const git = (...args) => spawnSync("git", ["-C", repoPath, ...args], { encoding: "utf8" });
   const co = git("checkout", defaultBranch);
-  if (co.status !== 0) return { clean: false, reason: `could not checkout ${defaultBranch}` };
+  if (co.status !== 0) {
+    return {
+      clean: false,
+      checkoutFailed: true,
+      reason: `could not checkout ${defaultBranch}: ${(co.stderr || co.stdout || "").trim().slice(0, 200)}`,
+    };
+  }
   const merge = git("merge", "--no-edit", branch);
   if (merge.status === 0) return { clean: true };
   // Conflict (or other merge failure): abort so the default branch is restored and the
@@ -328,6 +339,24 @@ export function ghAvailable(bin) {
   if (!b) return false;
   const probe = spawnSync(b, ["--version"], { encoding: "utf8", stdio: "ignore" });
   return !probe.error;
+}
+
+/**
+ * True when the live checkout has uncommitted changes to TRACKED files (staged or not).
+ * The dashboard merge runs `git checkout <default>` + `git merge` IN the live repo, so it
+ * must never do that over an operator's active edits (gaffer_auto_merge's rule). Untracked
+ * files never block: git itself refuses a checkout that would clobber one, and that is
+ * reported as a refusal, not a conflict. Returns { dirty, summary }.
+ */
+export function inspectWorkingTree(repoPath) {
+  const st = spawnSync("git", ["-C", repoPath, "status", "--porcelain", "--untracked-files=no"], {
+    encoding: "utf8",
+  });
+  const lines = (st.stdout || "").split("\n").filter((l) => l.trim() !== "");
+  return {
+    dirty: st.status === 0 && lines.length > 0,
+    summary: lines.slice(0, 5).join("; ") + (lines.length > 5 ? `; +${lines.length - 5} more` : ""),
+  };
 }
 
 /**
@@ -870,6 +899,21 @@ function main() {
     return;
   }
 
+  // 0. Never touch a DIRTY live checkout. Both landing paths below operate in the real
+  //    repo (checkout + merge, or a fast-forward); an operator's uncommitted edits there
+  //    used to be carried across the checkout — or the checkout failed and was read as a
+  //    CONFLICT, spawning the resolver on a branch with nothing to resolve. Refuse, leave
+  //    the ticket at ready_for_merge and the tree exactly as it was.
+  const tree = inspectWorkingTree(repo.localPath);
+  if (tree.dirty) {
+    fail(
+      `refusing to merge #${resolved.number}: the live checkout ${repo.localPath} has uncommitted ` +
+        `changes (${tree.summary}) — commit or stash them, then re-run the merge; ticket left ` +
+        `ready_for_merge, working tree untouched`,
+    );
+    return;
+  }
+
   // 1. Land the delivery. PR MODE first: when the ticket carries a pr_url (the runner
   //    opened a PR under GAFFER_CREATE_PR) and `gh` is available, merge THROUGH the PR
   //    and fast-forward the local default branch from the remote — a local merge here
@@ -919,6 +963,14 @@ function main() {
     if (merge.clean) {
       landed = { via: "local" };
       log(`merged #${resolved.number} (${branch} → ${repo.defaultBranch}) cleanly`);
+    } else if (merge.checkoutFailed) {
+      // Not a conflict — nothing on the branch to resolve. Refuse, leave the ticket at
+      // ready_for_merge and the live checkout as it was (never spawn the resolver).
+      fail(
+        `refusing to merge #${resolved.number}: ${merge.reason} — live checkout left untouched; ` +
+          `ticket stays ready_for_merge for a human`,
+      );
+      return;
     }
   }
   if (landed) {

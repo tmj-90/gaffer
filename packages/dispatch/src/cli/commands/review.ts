@@ -38,7 +38,20 @@ export function registerReview(program: Command): void {
     .requiredOption("--reason <text>", "rejection reason (recorded on the event)")
     .option("--to <status>", "return status: refining (default), ready, or cancelled", "refining")
     .option("--reviewer <id>", "reviewer id")
+    .option(
+      "--as <type>",
+      "actor type: human (default), agent (the reviewer agent's verdict) or system (a runner " +
+        "gate such as CI). Runner rejections must not be recorded as HUMAN decisions — the " +
+        "autonomy recommendations count only human/admin decisions as ground truth.",
+      "human",
+    )
     .action((ref, opts, cmd) => {
+      const as = opts.as as string;
+      if (as !== "human" && as !== "agent" && as !== "system") {
+        throw new DispatchError("VALIDATION_ERROR", "--as must be 'human', 'agent' or 'system'.", {
+          as,
+        });
+      }
       const wg = open(cmd.optsWithGlobals());
       const to = opts.to as "ready" | "refining" | "cancelled";
       if (to !== "ready" && to !== "refining" && to !== "cancelled") {
@@ -48,7 +61,12 @@ export function registerReview(program: Command): void {
           { to },
         );
       }
-      const actor: Actor = { type: "human", id: opts.reviewer ?? "reviewer" };
+      const actor: Actor =
+        as === "agent"
+          ? { type: "agent", id: opts.reviewer ?? "agent" }
+          : as === "system"
+            ? { type: "system", ...(opts.reviewer ? { id: opts.reviewer } : {}) }
+            : { type: "human", id: opts.reviewer ?? "reviewer" };
       const res = wg.rejectReview(ref, to, actor, opts.reason);
       printJson({ ok: true, status: res.ticket.status, event: res.eventId, policy: res.policy });
       wg.db.close();

@@ -29,6 +29,7 @@ import {
   type TicketStatus,
 } from "../domain/types.js";
 import { type ObservedRisk, shouldEscalate } from "./observedRisk.js";
+import { envFlagOn } from "./autonomyPolicyService.js";
 import { writeEvent } from "../events/eventWriter.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
@@ -194,7 +195,7 @@ export class ReviewGateService {
     // exactly the pure env-flag gate (byte-identical to today). system is never permitted.
     const agentApproveAllowed =
       actor.type === "agent" &&
-      (process.env.DISPATCH_ALLOW_AGENT_APPROVE === "1" ||
+      (envFlagOn(process.env.DISPATCH_ALLOW_AGENT_APPROVE) ||
         this.policyGrantsAgentApprove(ticketRef));
     if (actor.type !== "human" && actor.type !== "admin" && !agentApproveAllowed) {
       throw new DispatchError(

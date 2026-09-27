@@ -36,7 +36,7 @@ render_case() { # <name> <label> <db> <mdb> <dbin> <mbin> <token> <repos> <recal
   seam_golden mcp-render "$name" "$WORK/out.json" "$label"
 }
 DB="/data/gaffer/dispatch.sqlite"; MDB="/data/gaffer/memory.sqlite"
-DBIN="/opt/gaffer/dispatch-mcp/bin.js"; MBIN="/opt/gaffer/memory-mcp/bin.js"; TOK="ct_live_9f3a7b21c0"
+DBIN="/opt/gaffer/dispatch-mcp/bin.js"; MBIN="/opt/gaffer/memory-mcp/bin.js"; TOK="fixture-claim-token"
 render_case delivery        "delivery (recall=77)"                        "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "fixture-app" "77"
 render_case bootstrap       "bootstrap (recall empty)"                    "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "fixture-app" ""
 render_case empty-token     "empty claim token"                           "$DB" "$MDB" "$DBIN" "$MBIN" ""     "fixture-app" "42"

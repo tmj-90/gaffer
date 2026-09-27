@@ -1,0 +1,8 @@
+# gitleaks fingerprints to ignore (commit:file:rule:line). These are the fake claim
+# token the mcp-render golden fixtures carried in ONE commit before it was replaced
+# with a low-entropy placeholder; the value was never a credential.
+9a5a145d44ffe113449b4a5cc9d694c63435392a:runner/test/fixtures/typed-seams/mcp-render/bootstrap.txt:generic-api-key:9
+9a5a145d44ffe113449b4a5cc9d694c63435392a:runner/test/fixtures/typed-seams/mcp-render/colon-repos.txt:generic-api-key:9
+9a5a145d44ffe113449b4a5cc9d694c63435392a:runner/test/fixtures/typed-seams/mcp-render/delivery.txt:generic-api-key:9
+9a5a145d44ffe113449b4a5cc9d694c63435392a:runner/test/fixtures/typed-seams/mcp-render/escaping.txt:generic-api-key:9
+9a5a145d44ffe113449b4a5cc9d694c63435392a:runner/test/fixtures/typed-seams/mcp-render/review-clarify.txt:generic-api-key:9

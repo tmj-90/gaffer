@@ -80,6 +80,25 @@ if has ANTHROPIC_API_KEY; then ok "ANTHROPIC_API_KEY kept (claude auth)"; else f
 echo "== ANTHROPIC_BASE_URL survives despite ending in _URL (explicit keep) =="
 if has ANTHROPIC_BASE_URL; then ok "ANTHROPIC_BASE_URL kept (claude base URL override)"; else fail "ANTHROPIC_BASE_URL wrongly stripped"; fi
 
+echo "== B25(b): CLAUDE_CODE_OAUTH_TOKEN (headless-Max subscription token) survives the *_TOKEN deny =="
+# Live audit: the `claude setup-token` credential matched `*_TOKEN` and was not in the
+# keep list, so the documented headless-Max path could not authenticate (host or docker).
+# It is the ONE *_TOKEN kept — a look-alike token must still be dropped.
+OAUTH_ENV="$(
+  env -i PATH="/usr/bin:/bin" HOME="/home/agent" RUNNER_DIR="$RUNNER_DIR" \
+    CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-keepme" \
+    CLAUDE_CODE_SOME_OTHER_TOKEN="lookalike-LEAK" \
+    GITHUB_TOKEN="gh-LEAK" \
+    bash -c '
+      source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
+      gaffer_agent_env
+      for kv in "${GAFFER_AGENT_ENV[@]}"; do printf "%s\n" "${kv%%=*}"; done
+    '
+)"
+if printf '%s\n' "$OAUTH_ENV" | grep -qx CLAUDE_CODE_OAUTH_TOKEN; then ok "CLAUDE_CODE_OAUTH_TOKEN kept (claude setup-token auth)"; else fail "CLAUDE_CODE_OAUTH_TOKEN wrongly stripped — headless-Max cannot authenticate"; fi
+if printf '%s\n' "$OAUTH_ENV" | grep -qx CLAUDE_CODE_SOME_OTHER_TOKEN; then fail "a look-alike CLAUDE_CODE_*_TOKEN leaked (only the OAuth token is exempt)"; else ok "a look-alike CLAUDE_CODE_*_TOKEN is still stripped (only the OAuth token is exempt)"; fi
+if printf '%s\n' "$OAUTH_ENV" | grep -qx GITHUB_TOKEN; then fail "GITHUB_TOKEN leaked alongside the OAuth exemption"; else ok "GITHUB_TOKEN still stripped alongside the OAuth exemption"; fi
+
 echo "== values are preserved verbatim (no truncation/quoting damage) =="
 VAL="$(
   env -i RUNNER_DIR="$RUNNER_DIR" ANTHROPIC_API_KEY="sk-ant has spaces=and-eq" PATH="/usr/bin:/bin" \

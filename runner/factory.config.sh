@@ -922,8 +922,10 @@ _gaffer_lock_age() {
 #   - LANG / LC_* / TERM / TZ — locale + terminal sanity.
 #   - ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL,
 #     ANTHROPIC_MODEL, CLAUDE_CODE_* and other CLAUDE_*  — claude -p AUTH and
-#     config. NOTE: ANTHROPIC_API_KEY is deliberately the ONE *_KEY we keep; the
-#     allowlist below names it explicitly so the generic *_KEY strip can't take it.
+#     config. NOTE: ANTHROPIC_API_KEY is deliberately the ONE *_KEY we keep, and
+#     CLAUDE_CODE_OAUTH_TOKEN (the `claude setup-token` subscription credential) the
+#     ONE *_TOKEN; the keep-despite-deny list names both explicitly so the generic
+#     *_KEY / *_TOKEN strip can't take them.
 #   - AWS_REGION / AWS_DEFAULT_REGION — needed for Bedrock-backed claude; these
 #     are NON-secret (the AWS_*_KEY / AWS_SESSION_TOKEN credentials are NOT kept).
 #   - MCP_CONFIG, DISPATCH_DB, MEMORY_DB, DISPATCH_MCP_BIN, MEMORY_MCP_BIN — the
@@ -970,10 +972,17 @@ gaffer_provider_env_keep_prefix() {
 }
 # keep-despite-deny: provider auth names that must survive the credential-shaped
 # deny patterns below (they LOOK like secrets because they ARE the worker's auth).
-#   claude-code → the ANTHROPIC auth trio (…_API_KEY / …_AUTH_TOKEN / …_BASE_URL).
+#   claude-code → the ANTHROPIC auth trio (…_API_KEY / …_AUTH_TOKEN / …_BASE_URL)
+#                 PLUS CLAUDE_CODE_OAUTH_TOKEN — the subscription token from
+#                 `claude setup-token`, the documented headless-Max path. B25(b): it
+#                 matched the `*_TOKEN` deny rule and was not in this list, so the
+#                 scrub dropped it and a Max-plan agent (host or docker sandbox)
+#                 could not authenticate. It is the ONE `*_TOKEN` kept; every other
+#                 token (GITHUB_TOKEN, AWS_SESSION_TOKEN, DISPATCH_API_TOKEN…) is
+#                 still denied.
 gaffer_provider_env_keep_despite_deny() {
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
-    claude-code) printf '%s\n' ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ;;
+    claude-code) printf '%s\n' ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN ;;
   esac
 }
 

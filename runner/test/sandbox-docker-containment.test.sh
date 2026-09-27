@@ -8,6 +8,13 @@
 #   READ_ISOLATED   a host secret placed OUTSIDE every mounted root is not readable
 #   EGRESS_BLOCKED  a request to a non-allowlisted host fails at the network layer
 #   WRITE_OK        the delivery worktree is still writable (the sandbox isn't uselessly tight)
+# and, since B25(c), that the $GAFFER_DATA mount is HONEST and git WORKS:
+#   DATA_MASKED     settings.json / dashboard-token / another worker's mcp-runtime (claim
+#                   token) / a sibling delivery worktree under $GAFFER_DATA are NOT readable,
+#                   while this call's own mcp-runtime file and the SQLite DB stay usable
+#   GIT_COMMIT_OK   the LINKED delivery worktree can `git status` + `git commit` inside
+#                   (its repo's .git is mounted ro with only the commit path rw; the
+#                   commit round-trips to the host), and .git/config stays read-only
 #
 # CI-safe: with no docker daemon the whole gate SKIPS (exit 0) rather than failing, so the
 # bash suite stays green on machines/CI without docker. Where docker IS present it is a
@@ -46,7 +53,7 @@ echo "== Mode-2 docker sandbox — red-team containment gate =="
 # than fail red, and do it before the assertions so a pull limit can't masquerade as a
 # broken sandbox.
 _IMG="gaffer-sbx-redteam-test"
-if ! printf 'FROM alpine:3.20\nRUN apk add --no-cache curl\n' | docker build -q -t "$_IMG" - >/dev/null 2>&1; then
+if ! printf 'FROM alpine:3.20\nRUN apk add --no-cache curl git\n' | docker build -q -t "$_IMG" - >/dev/null 2>&1; then
   _skip "could not build the test image (docker registry/infra unavailable) — containment not exercised"
 fi
 if ! docker build -q -t gaffer-egress-proxy "$RUNNER_DIR/sandbox/egress-proxy" >/dev/null 2>&1; then
@@ -54,8 +61,26 @@ if ! docker build -q -t gaffer-egress-proxy "$RUNNER_DIR/sandbox/egress-proxy" >
 fi
 
 WORK="$(mktemp -d)"
-GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA"
-WT="$WORK/worktree"; mkdir -p "$WT"; echo "repo" > "$WT/README"
+WORK="$(cd "$WORK" && pwd -P)"
+GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA/worktrees"
+# B25(c): the delivery worktree is a REAL linked worktree of a real repo, laid out the
+# way tick.sh lays it out ($GAFFER_DATA/worktrees/ticket-N) — so the git-metadata mounts
+# and the GAFFER_DATA masking are exercised exactly as a live delivery exercises them.
+REPO="$WORK/repo"; mkdir -p "$REPO"
+git -C "$REPO" init -q -b main
+git -C "$REPO" config user.email t@e; git -C "$REPO" config user.name t
+echo "repo" > "$REPO/README"; git -C "$REPO" add -A; git -C "$REPO" commit -qm seed
+WT="$GAFFER_DATA/worktrees/ticket-1"
+git -C "$REPO" worktree add -q -b gaffer/ticket-1 "$WT" main
+GIT_COMMON="$(cd "$REPO/.git" && pwd -P)"
+# What must NOT be visible inside: the dashboard's secrets, another worker's claim
+# token and a sibling delivery's worktree — all of them live in $GAFFER_DATA.
+printf '{"GAFFER_MODE":"autonomous","note":"TOPSECRET_SETTINGS"}\n' > "$GAFFER_DATA/settings.json"
+printf 'TOPSECRET_DASHBOARD_TOKEN\n' > "$GAFFER_DATA/dashboard-token"
+printf '{"claim":"TOPSECRET_OTHER_CLAIM"}\n' > "$GAFFER_DATA/mcp-runtime.other.json"
+printf '{"claim":"SELF_CLAIM_OK"}\n' > "$GAFFER_DATA/mcp-runtime.self.json"
+SIB="$GAFFER_DATA/worktrees/ticket-2"; mkdir -p "$SIB"; echo "TOPSECRET_SIBLING" > "$SIB/secret"
+: > "$GAFFER_DATA/dispatch.sqlite"; : > "$GAFFER_DATA/memory.sqlite"
 # The host secret lives OUTSIDE every root the wrapper mounts (worktree / read-roots /
 # GAFFER_DATA / RUNNER_DIR) — so a correct sandbox physically cannot see it.
 SECRET_DIR="$WORK/host-home"; mkdir -p "$SECRET_DIR"
@@ -76,20 +101,41 @@ PAYLOAD="
   # CapEff = 0000000000000002 = only CAP_DAC_OVERRIDE (kept so root can write the mounted
   # worktree on Linux); every other capability dropped by --cap-drop=ALL.
   grep -q 'CapEff:.*0000000000000002' /proc/self/status && echo CAPS_DROPPED || echo CAPS_KEPT
+  # B25(c): \$GAFFER_DATA is mounted for the SQLite DBs — everything else in it is masked.
+  if cat '$GAFFER_DATA/settings.json' '$GAFFER_DATA/dashboard-token' '$GAFFER_DATA/mcp-runtime.other.json' '$SIB/secret' 2>/dev/null | grep -q TOPSECRET; then echo DATA_LEAK; else echo DATA_MASKED; fi
+  if grep -q SELF_CLAIM_OK '$GAFFER_DATA/mcp-runtime.self.json' 2>/dev/null; then echo OWN_MCP_OK; else echo OWN_MCP_MISSING; fi
+  if echo x >> '$GAFFER_DATA/dispatch.sqlite' 2>/dev/null; then echo DB_RW_OK; else echo DB_RW_FAIL; fi
+  # B25(c): the linked worktree's git metadata is mounted — status + commit work inside.
+  if git -C '$WT' status >/dev/null 2>&1; then echo GIT_STATUS_OK; else echo GIT_STATUS_FAIL; fi
+  if git -C '$WT' add canary >/dev/null 2>&1 && git -C '$WT' -c user.email=s@x -c user.name=s commit -qm sandbox-commit >/dev/null 2>&1; then echo GIT_COMMIT_OK; else echo GIT_COMMIT_FAIL; fi
+  if echo x >> '$GIT_COMMON/config' 2>/dev/null; then echo GITCONFIG_WRITABLE; else echo GITCONFIG_RO; fi
 "
 
-OUT="$(timeout 120 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$PAYLOAD" 2>&1)"
+# The wrapped argv names THIS call's --mcp-config so the wrapper keeps that one file
+# visible (sh ignores the extra positional args).
+OUT="$(timeout 120 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$PAYLOAD" gaffer-sbx --mcp-config "$GAFFER_DATA/mcp-runtime.self.json" 2>&1)"
 echo "$OUT" | sed 's/^/    /'
 
 fail=0
-for want in READ_ISOLATED EGRESS_BLOCKED RAWIP_BLOCKED WRITE_OK NNP_SET CAPS_DROPPED; do
+for want in READ_ISOLATED EGRESS_BLOCKED RAWIP_BLOCKED WRITE_OK NNP_SET CAPS_DROPPED \
+            DATA_MASKED OWN_MCP_OK DB_RW_OK GIT_STATUS_OK GIT_COMMIT_OK GITCONFIG_RO; do
   if echo "$OUT" | grep -q "$want"; then echo "  ok   $want"; else echo "  FAIL expected $want"; fail=1; fi
 done
-for bad in READ_LEAK EGRESS_LEAK RAWIP_LEAK WRITE_FAIL NNP_UNSET CAPS_KEPT; do
+for bad in READ_LEAK EGRESS_LEAK RAWIP_LEAK WRITE_FAIL NNP_UNSET CAPS_KEPT \
+           DATA_LEAK OWN_MCP_MISSING DB_RW_FAIL GIT_STATUS_FAIL GIT_COMMIT_FAIL GITCONFIG_WRITABLE; do
   if echo "$OUT" | grep -q "$bad"; then echo "  FAIL saw $bad"; fail=1; fi
 done
 # The write must have actually landed on the host worktree (proves the rw mount round-trips).
 if [ -f "$WT/canary" ]; then echo "  ok   worktree write round-tripped to host"; else echo "  FAIL canary not on host"; fail=1; fi
+# The commit made INSIDE must be on the host repo's branch (the .git mounts round-trip).
+if git -C "$REPO" log --oneline gaffer/ticket-1 2>/dev/null | grep -q sandbox-commit; then
+  echo "  ok   in-container commit round-tripped to the host repo branch"
+else
+  echo "  FAIL in-container commit not on the host branch"; fail=1
+fi
+# And the host's canonical settings.json was not touched by the mask.
+grep -q TOPSECRET_SETTINGS "$GAFFER_DATA/settings.json" && echo "  ok   host settings.json intact after masking" || { echo "  FAIL host settings.json damaged"; fail=1; }
 
+git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
 rm -rf "$WORK"
-if [ "$fail" -eq 0 ]; then echo "PASS (Mode-2 containment holds: secret unreadable, egress denied, worktree writable)"; exit 0; else echo "FAILED"; exit 1; fi
+if [ "$fail" -eq 0 ]; then echo "PASS (Mode-2 containment holds: secret unreadable, egress denied, worktree writable, data dir masked, git works)"; exit 0; else echo "FAILED"; exit 1; fi

@@ -433,7 +433,14 @@ export function buildPrompt(req) {
 export function agentChildEnv(base = process.env) {
   const env = { ...base };
   for (const key of Object.keys(env)) {
-    if (key === "ANTHROPIC_API_KEY" || key === "ANTHROPIC_AUTH_TOKEN") continue;
+    // CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`, the headless-Max path) is the
+    // ONE *_TOKEN kept — parity with the shell gaffer_agent_env keep-despite-deny list.
+    if (
+      key === "ANTHROPIC_API_KEY" ||
+      key === "ANTHROPIC_AUTH_TOKEN" ||
+      key === "CLAUDE_CODE_OAUTH_TOKEN"
+    )
+      continue;
     if (
       key === "DISPATCH_API_TOKEN" ||
       key === "AWS_ACCESS_KEY_ID" ||

@@ -141,6 +141,9 @@ gaffer_crash_cleanup() {
   # token). Best-effort; a leftover file is harmless (next tick has a new PID)
   # but we don't want $GAFFER_DATA to accumulate one per tick.
   [ -n "${MCP_RUNTIME:-}" ] && rm -f "$MCP_RUNTIME" 2>/dev/null || true
+  # B25(a): the docker sandbox's per-call root files are named with THIS tick's PID
+  # (lib/sandbox.sh) so they can be swept here without touching a concurrent worker's.
+  rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* 2>/dev/null || true
   # A paused delivery keeps its worktree + branch ALIVE for the one-click resume —
   # the crash-cleanup must never tear it down. This is the load-bearing PAUSE-ON-CAP
   # invariant: a paused worktree survives the tick's exit.

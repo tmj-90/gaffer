@@ -926,8 +926,15 @@ export function agentChildEnv(base = process.env) {
     // M2: broaden the credential denylist beyond *_TOKEN/*_SECRET to also catch
     // *_KEY (AWS_ACCESS_KEY_ID etc.), *_PASSWORD/*_PASSWD, AWS_SESSION_TOKEN and
     // GITHUB/GH tokens. ANTHROPIC_API_KEY is the ONE *_KEY the spawned `claude`
-    // needs for auth, so it is explicitly preserved.
-    if (key === "ANTHROPIC_API_KEY" || key === "ANTHROPIC_AUTH_TOKEN") continue;
+    // needs for auth, and CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`, the
+    // headless-Max path) the ONE *_TOKEN — both explicitly preserved (parity with
+    // the shell gaffer_agent_env keep-despite-deny list).
+    if (
+      key === "ANTHROPIC_API_KEY" ||
+      key === "ANTHROPIC_AUTH_TOKEN" ||
+      key === "CLAUDE_CODE_OAUTH_TOKEN"
+    )
+      continue;
     if (
       key === "DISPATCH_API_TOKEN" ||
       key === "AWS_ACCESS_KEY_ID" || // ends in _ID, so name it explicitly

@@ -334,11 +334,12 @@ console.log("== AC4: --output-format json is wired into the consolidated invocat
     .filter((l) => /"\$CLAUDE_BIN"\s+-p\b/.test(l) && /--output-format json/.test(l)).length;
   assert("lib/worker.sh has exactly 1 claude -p invocation site", workerSites === 1);
   assert("lib/worker.sh: the invocation uses --output-format json", workerJson === 1);
-  // tick.sh + the extracted review/clarify passes route all 4 agent turns through the seam.
+  // tick.sh + the extracted review/clarify passes route all 5 agent turns through the
+  // seam: delivery, bootstrap, the reviewer, the SECURITY second-opinion reviewer, clarify.
   const routed = (passes.match(/^\s*worker_deliver /gm) || []).length;
   assert(
-    "tick.sh + review/clarify libs route exactly 4 turns through worker_deliver",
-    routed === 4,
+    "tick.sh + review/clarify libs route exactly 5 turns through worker_deliver",
+    routed === 5,
   );
   assert(
     "each routed turn ledgers via gaffer_usage_record (across tick.sh + review/clarify libs)",

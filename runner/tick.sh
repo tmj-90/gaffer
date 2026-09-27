@@ -628,6 +628,20 @@ gaffer_distill_ticket_intent() {
   _ds="$(printf '%s' "$_distill" | jget 'd.summary' 2>/dev/null)" || return 0
   [ -n "$_dt" ] || return 0
 
+  # ONCE PER TICKET. This runs on every submit, and a ticket that is reworked is
+  # submitted again — so every rework cycle used to draft another copy of the same
+  # requirement (and a ticket later rejected still left one). The ticket-<n> tag is
+  # the provenance key: if memory already holds a record for this ticket (draft or
+  # active), there is nothing new to harvest. Fail-soft: an unreadable lookup drafts
+  # as before rather than silently skipping.
+  local _existing
+  _existing="$(lg search --repo "$RECALL_REPO_NAME" --tag "ticket-$NUM" --include-drafts --json 2>/dev/null \
+    | jget 'Array.isArray(d) ? d.length : 0' 2>/dev/null || echo 0)"
+  if [ "${_existing:-0}" != "0" ]; then
+    log "memory: requirement for #$NUM already distilled (${_existing} record(s) tagged ticket-$NUM) — not drafting again"
+    return 0
+  fi
+
   # --title/--summary/--body all supplied ⇒ `suggest` never drops into an interactive
   # prompt. Suggest (draft) with an explicit kind so recall can later aim at the "why";
   # tags carry ticket provenance (ticket-<n>).

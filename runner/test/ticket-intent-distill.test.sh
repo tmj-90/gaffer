@@ -94,6 +94,12 @@ else
     DRAFTS="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null || echo '[]')"
     DN="$(printf '%s' "$DRAFTS" | jget 'd.length' 2>/dev/null || echo 0)"
     if [ "$AN" = "0" ] && [ "$DN" = "1" ]; then ok "supervised default: distilled requirement is a human-gated DRAFT (not active)"; else fail "expected 0 active / 1 draft by default (got active=$AN draft=$DN)"; fi
+
+    # ── B2: the SAME ticket submitted again (a rework cycle) drafts NOTHING new ──
+    gaffer_distill_ticket_intent
+    gaffer_distill_ticket_intent
+    DN2="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget 'd.length' 2>/dev/null || echo 0)"
+    if [ "$DN2" = "1" ]; then ok "re-submitting #42 (rework) does not draft a duplicate requirement (still 1)"; else fail "duplicate drafts per rework cycle (got $DN2)"; fi
     AT="$(printf '%s' "$DRAFTS" | jget 'd[0]?.title ?? ""' 2>/dev/null || echo '')"
     case "$AT" in
       "Requirement from #42:"*) ok "record title carries the ticket provenance ($AT)" ;;

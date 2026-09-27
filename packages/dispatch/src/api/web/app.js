@@ -1189,11 +1189,7 @@ function refreshCurrentView() {
   // j/k cursor, silently DISARMS a pending approve, and reloads every diff. Skip
   // while an approve is armed (keyboard `.card-armed` or the mouse `.btn-armed`),
   // or while the operator is focused inside a review card.
-  if (document.querySelector(".card-armed, .btn-armed")) return;
-  {
-    const a = document.activeElement;
-    if (a && typeof a.closest === "function" && a.closest(".view .card")) return;
-  }
+  if (reviewInteractionInProgress()) return;
   const { view, param } = parseHash();
   if (!AUTO_REFRESHABLE.has(view)) return;
   const render = VIEWS[view];
@@ -1201,12 +1197,22 @@ function refreshCurrentView() {
   const y = app.scrollTop;
   guard(async () => {
     const content = await render(param);
-    // bail if the operator navigated or started interacting during the fetch
-    if (parseHash().view !== view || busyEditing()) return;
+    // bail if the operator navigated or started interacting during the fetch — the
+    // armed-approve check must run AGAIN here: a refresh that started a moment before
+    // the first Approve click would otherwise swap in a fresh, unarmed button under
+    // the confirming second click (the click then only re-arms; nothing is approved).
+    if (parseHash().view !== view || busyEditing() || reviewInteractionInProgress()) return;
     clear(app);
     app.appendChild(content);
     app.scrollTop = y;
   });
+}
+
+/** An approve is armed (keyboard `.card-armed` or mouse `.btn-armed`) or the operator is focused inside a review card. */
+function reviewInteractionInProgress() {
+  if (document.querySelector(".card-armed, .btn-armed")) return true;
+  const a = document.activeElement;
+  return !!(a && typeof a.closest === "function" && a.closest(".view .card"));
 }
 
 function startAutoRefresh() {

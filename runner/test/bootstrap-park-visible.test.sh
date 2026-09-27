@@ -49,12 +49,12 @@ DB="$WORK/dispatch.sqlite"
 # The runner wraps the CLI as `wg`; jget reads stdin JSON as `d` — byte-identical
 # to factory.config.sh so the extracted function runs EXACTLY as it does in tick.sh.
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 LOGF="$WORK/log.txt"; : > "$LOGF"
 log()  { printf '%s\n' "$*" >> "$LOGF"; }
 
-status_of()    { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
-blocked_count() { wg stats --json 2>/dev/null | jget "(d.get('ticketsByStatus') or {}).get('blocked', 0)" 2>/dev/null || echo ''; }
+status_of()    { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
+blocked_count() { wg stats --json 2>/dev/null | jget '(d.ticketsByStatus || {}).blocked ?? 0' 2>/dev/null || echo ''; }
 feedback_of() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -92,13 +92,13 @@ source "$SRC"
 DRY_RUN=0
 
 # One ready, claimable bootstrap-shaped ticket → echoes its number.
-AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget 'd.agent.id')"
 [ -n "$AGENT" ] || { echo "SKIP: could not register agent"; exit 0; }
 make_claimed_ticket() {  # $1 = title → sets NUM + CLAIM_TOKEN
-  NUM="$(wg ticket create -t "$1" --risk low 2>/dev/null | jget "d['ticket']['number']")"
+  NUM="$(wg ticket create -t "$1" --risk low 2>/dev/null | jget 'd.ticket.number')"
   wg ac add "$NUM" -t "AC" >/dev/null 2>&1
   wg ticket ready "$NUM" >/dev/null 2>&1
-  CLAIM_TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']" 2>/dev/null || echo '')"
+  CLAIM_TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken' 2>/dev/null || echo '')"
   [ -n "$NUM" ] && [ -n "$CLAIM_TOKEN" ]
 }
 

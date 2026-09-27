@@ -68,9 +68,9 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/concurrency-bk.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 DB="$WORK/dispatch.sqlite"
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
-ac_status_of() { wg ticket show "$1" 2>/dev/null | jget "d['acceptanceCriteria'][0]['status']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
+ac_status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.acceptanceCriteria[0].status' 2>/dev/null || echo ''; }
 
 # DB-level claim ledger queries (the DB is the arbiter under contention).
 claims_active_total() {
@@ -103,8 +103,8 @@ PY
 }
 
 wg init >/dev/null 2>&1
-A1="$(wg agent register -n w1 --max-risk high 2>/dev/null | jget "d['agent']['id']")"
-A2="$(wg agent register -n w2 --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+A1="$(wg agent register -n w1 --max-risk high 2>/dev/null | jget 'd.agent.id')"
+A2="$(wg agent register -n w2 --max-risk high 2>/dev/null | jget 'd.agent.id')"
 [ -n "$A1" ] && [ -n "$A2" ] || { echo "SKIP: could not register agents"; exit 0; }
 
 # The EXACT candidate-loop claim step from tick.sh: claim; capture the token; an
@@ -113,7 +113,7 @@ A2="$(wg agent register -n w2 --max-risk high 2>/dev/null | jget "d['agent']['id
 runner_claim() {  # $1 ticket number, $2 agent id → echoes the captured token (may be empty)
   local _cand="$1" AGENT="$2" GAFFER_CLAIM_TTL=900 _j _t
   _j="$(wg claim-ticket "$_cand" --agent "$AGENT" --ttl "$GAFFER_CLAIM_TTL" 2>/dev/null || true)"
-  _t="$(printf '%s' "$_j" | jget "d.get('claimToken','')" 2>/dev/null || echo '')"
+  _t="$(printf '%s' "$_j" | jget 'd.claimToken ?? ""' 2>/dev/null || echo '')"
   printf '%s' "$_t"
 }
 
@@ -171,10 +171,10 @@ for n in $(seq 1 "$TICKETS"); do [ "$(status_of "$n")" = "ready" ] && STILL_READ
   || fail "$STILL_READY ticket(s) left ready after the race"
 
 echo "== PART B: a token is bound to ITS ticket — cross-token writes are REJECTED =="
-NA="$(wg ticket create -t "iso-A" --risk low | jget "d['ticket']['number']")"
-ACA="$(wg ac add "$NA" -t "A works" | jget "d['ac_id']")"; wg ticket ready "$NA" >/dev/null
-NB="$(wg ticket create -t "iso-B" --risk low | jget "d['ticket']['number']")"
-ACB="$(wg ac add "$NB" -t "B works" | jget "d['ac_id']")"; wg ticket ready "$NB" >/dev/null
+NA="$(wg ticket create -t "iso-A" --risk low | jget 'd.ticket.number')"
+ACA="$(wg ac add "$NA" -t "A works" | jget 'd.ac_id')"; wg ticket ready "$NA" >/dev/null
+NB="$(wg ticket create -t "iso-B" --risk low | jget 'd.ticket.number')"
+ACB="$(wg ac add "$NB" -t "B works" | jget 'd.ac_id')"; wg ticket ready "$NB" >/dev/null
 TOKA="$(runner_claim "$NA" "$A1")"
 TOKB="$(runner_claim "$NB" "$A2")"
 [ -n "$TOKA" ] && [ -n "$TOKB" ] || fail "PART B setup: could not claim both tickets"
@@ -199,10 +199,10 @@ fi
 
 echo "== PART C: two parallel deliveries stay isolated + fail closed + recover =="
 # Fresh dedicated tickets so the active-claim bookkeeping is exact for this part.
-NC="$(wg ticket create -t "dlv-C" --risk low | jget "d['ticket']['number']")"
-ACC="$(wg ac add "$NC" -t "C works" | jget "d['ac_id']")"; wg ticket ready "$NC" >/dev/null
-ND="$(wg ticket create -t "dlv-D" --risk low | jget "d['ticket']['number']")"
-ACD="$(wg ac add "$ND" -t "D works" | jget "d['ac_id']")"; wg ticket ready "$ND" >/dev/null
+NC="$(wg ticket create -t "dlv-C" --risk low | jget 'd.ticket.number')"
+ACC="$(wg ac add "$NC" -t "C works" | jget 'd.ac_id')"; wg ticket ready "$NC" >/dev/null
+ND="$(wg ticket create -t "dlv-D" --risk low | jget 'd.ticket.number')"
+ACD="$(wg ac add "$ND" -t "D works" | jget 'd.ac_id')"; wg ticket ready "$ND" >/dev/null
 TOKC="$(runner_claim "$NC" "$A1")"
 TOKD="$(runner_claim "$ND" "$A2")"
 BEFORE_ACTIVE="$(claims_active_total)"   # includes the two we just took + Part A/B leftovers
@@ -259,10 +259,10 @@ echo "== PART D: BEGIN IMMEDIATE fix — parallel deliveries need NO retry, ZERO
 # busy_timeout; post-fix BEGIN IMMEDIATE takes the write lock up front so the loser
 # WAITS (busy_timeout) and both complete cleanly. Any SQLITE_BUSY here — or any
 # non-completion — is a regression.
-NE="$(wg ticket create -t "dlv-E" --risk low | jget "d['ticket']['number']")"
-ACE="$(wg ac add "$NE" -t "E works" | jget "d['ac_id']")"; wg ticket ready "$NE" >/dev/null
-NF="$(wg ticket create -t "dlv-F" --risk low | jget "d['ticket']['number']")"
-ACF="$(wg ac add "$NF" -t "F works" | jget "d['ac_id']")"; wg ticket ready "$NF" >/dev/null
+NE="$(wg ticket create -t "dlv-E" --risk low | jget 'd.ticket.number')"
+ACE="$(wg ac add "$NE" -t "E works" | jget 'd.ac_id')"; wg ticket ready "$NE" >/dev/null
+NF="$(wg ticket create -t "dlv-F" --risk low | jget 'd.ticket.number')"
+ACF="$(wg ac add "$NF" -t "F works" | jget 'd.ac_id')"; wg ticket ready "$NF" >/dev/null
 TOKE="$(runner_claim "$NE" "$A1")"
 TOKF="$(runner_claim "$NF" "$A2")"
 

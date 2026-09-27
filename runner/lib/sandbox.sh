@@ -46,9 +46,9 @@ _sandbox_realpath() {
   # Prefer the directory itself if it exists; else its nearest existing parent
   # (a worktree may be created after this runs — its parent base already exists).
   if [ -e "$p" ]; then
-    ( cd "$p" 2>/dev/null && pwd -P ) || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$p" 2>/dev/null || printf '%s' "$p"
+    ( cd "$p" 2>/dev/null && pwd -P ) || node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$p" 2>/dev/null || printf '%s' "$p"
   else
-    python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$p" 2>/dev/null || printf '%s' "$p"
+    node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' "$p" 2>/dev/null || printf '%s' "$p"
   fi
 }
 

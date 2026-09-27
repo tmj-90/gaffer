@@ -56,9 +56,9 @@ REPO="$WORK/repo"
 export GAFFER_DATA="$WORK"
 
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
-ac_status_of() { wg ticket show "$1" 2>/dev/null | jget "d['acceptanceCriteria'][0]['status']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
+ac_status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.acceptanceCriteria[0].status' 2>/dev/null || echo ''; }
 active_claims() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -111,8 +111,8 @@ chmod +x "$STUB"
 echo "== SETUP: repo + ticket + acceptance criterion =="
 wg init >/dev/null 2>&1
 wg repo add -n demo --path "$REPO" --branch main --test "true" >/dev/null 2>&1
-NUM="$(wg ticket create -t "Add a delivered line" --description "the factory delivers a trivial change" --policy team_light --risk low 2>/dev/null | jget "d['ticket']['number']")"
-ACID="$(wg ac add "$NUM" -t "the line is added" 2>/dev/null | jget "d['ac_id']")"
+NUM="$(wg ticket create -t "Add a delivered line" --description "the factory delivers a trivial change" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
+ACID="$(wg ac add "$NUM" -t "the line is added" 2>/dev/null | jget 'd.ac_id')"
 wg ticket repo-access set "$NUM" demo --access write --relation confirmed >/dev/null 2>&1
 [ -n "$NUM" ] && [ -n "$ACID" ] && ok "created ticket #$NUM with an acceptance criterion" || { fail "setup: could not create ticket/AC"; }
 
@@ -121,15 +121,15 @@ wg ticket ready "$NUM" >/dev/null 2>&1
 [ "$(status_of "$NUM")" = "ready" ] && ok "#$NUM is ready" || fail "#$NUM did not reach ready (got '$(status_of "$NUM")')"
 
 echo "== CLAIM: the RUNNER claims at selection and holds the token =="
-AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget "d['agent']['id']")"
-CLAIM_TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']")"
+AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget 'd.agent.id')"
+CLAIM_TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
 [ -n "$CLAIM_TOKEN" ] && ok "runner captured a claim token" || fail "no claim token captured"
 [ "$(status_of "$NUM")" = "claimed" ] && ok "#$NUM moved ready → claimed (in-flight before the agent)" || fail "#$NUM not claimed"
 [ "$(active_claims "$NUM")" = "1" ] && ok "exactly one active claim on #$NUM" || fail "expected one active claim on #$NUM"
 
 echo "== G1 (guard): a second claim on a claimed ticket is REFUSED (no double-claim) =="
 if wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 >/dev/null 2>&1 && \
-   [ -n "$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d.get('claimToken','')" 2>/dev/null)" ]; then
+   [ -n "$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken ?? ""' 2>/dev/null)" ]; then
   fail "G1: a second claim on an already-claimed ticket wrongly succeeded"
 else
   ok "G1: a second claim on #$NUM is refused (the claim is the lock)"
@@ -197,17 +197,17 @@ echo "== G2 (guard) + done-gate control: an EMPTY-diff delivery is DENIED at app
 # A second ticket whose delivery branch has NO change vs main → the done-gate must
 # DENY approval (the real git diff is empty; prose/PR links can't satisfy it). Then
 # a real change flips it to allowed — proving the gate reads git, not the agent.
-NUM2="$(wg ticket create -t "empty then real" --description "controls the done-gate" --policy team_light --risk low | jget "d['ticket']['number']")"
-AC2="$(wg ac add "$NUM2" -t "works" | jget "d['ac_id']")"
+NUM2="$(wg ticket create -t "empty then real" --description "controls the done-gate" --policy team_light --risk low | jget 'd.ticket.number')"
+AC2="$(wg ac add "$NUM2" -t "works" | jget 'd.ac_id')"
 wg ticket repo-access set "$NUM2" demo --access write --relation confirmed >/dev/null 2>&1
 wg ticket ready "$NUM2" >/dev/null 2>&1
-TOK2="$(wg claim-ticket "$NUM2" --agent "$AGENT" --ttl 900 | jget "d['claimToken']")"
+TOK2="$(wg claim-ticket "$NUM2" --agent "$AGENT" --ttl 900 | jget 'd.claimToken')"
 BR2="gaffer/t$NUM2"
 git -C "$REPO" branch "$BR2" main          # branch off main with NO extra commit → empty diff
 wg ticket repo-delivery record "$NUM2" demo --branch "$BR2" >/dev/null 2>&1
 wg evidence "$NUM2" --token "$TOK2" --type test_output --summary ok --ac "$AC2" >/dev/null 2>&1
 wg submit "$NUM2" --token "$TOK2" --reason "no real change" >/dev/null 2>&1
-DENY_CODES="$(wg review approve "$NUM2" --reviewer human1 2>&1 | jget "[f['code'] for f in d['details']['policy']['failures']]" 2>/dev/null || echo '')"
+DENY_CODES="$(wg review approve "$NUM2" --reviewer human1 2>&1 | jget 'd.details.policy.failures.map((f) => f.code)' 2>/dev/null || echo '')"
 case "$DENY_CODES" in
   *PR_OR_DIFF_REQUIRED*) ok "G2: approve on an EMPTY-diff delivery is DENIED (PR_OR_DIFF_REQUIRED)";;
   *) fail "G2: empty-diff approve was not denied with PR_OR_DIFF_REQUIRED (got: $DENY_CODES, status=$(status_of "$NUM2"))";;
@@ -222,11 +222,11 @@ echo "== RELEASE bookkeeping: a rework-exhausted delivery parks to VISIBLE block
 # The runner's park verb (gaffer_release_delivery → wg runner-release --to blocked)
 # returns a rework-exhausted CLAIMED delivery to the visible `blocked` column and
 # releases the claim — a human never wonders where the ticket went.
-NUM3="$(wg ticket create -t "will exhaust rework" --description "d" --policy team_light --risk low | jget "d['ticket']['number']")"
+NUM3="$(wg ticket create -t "will exhaust rework" --description "d" --policy team_light --risk low | jget 'd.ticket.number')"
 wg ac add "$NUM3" -t "AC" >/dev/null 2>&1
 wg ticket repo-access set "$NUM3" demo --access write --relation confirmed >/dev/null 2>&1
 wg ticket ready "$NUM3" >/dev/null 2>&1
-TOK3="$(wg claim-ticket "$NUM3" --agent "$AGENT" --ttl 900 | jget "d['claimToken']")"
+TOK3="$(wg claim-ticket "$NUM3" --agent "$AGENT" --ttl 900 | jget 'd.claimToken')"
 [ "$(active_claims "$NUM3")" = "1" ] && ok "release-setup: #$NUM3 claimed (one active claim)" || fail "release-setup: #$NUM3 not claimed"
 wg runner-release "$NUM3" --to blocked --token "$TOK3" --reason "rework exhausted" --reason-code rework_exhausted --attempt 3 --max 3 >/dev/null 2>&1
 [ "$(status_of "$NUM3")" = "blocked" ] && ok "#$NUM3 parked to the VISIBLE blocked column (rework_exhausted)" || fail "#$NUM3 not blocked after runner-release (got '$(status_of "$NUM3")')"

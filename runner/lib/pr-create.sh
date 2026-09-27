@@ -1,5 +1,6 @@
 # Gaffer H4 — real PR creation (sourced by factory.config.sh).
 # shellcheck shell=bash
+_GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 #
 # When GAFFER_CREATE_PR=1 AND the primary write repo has a GitHub remote, runs
 # `gh pr create` with a body assembled from the ticket's evidence bundle (AC list
@@ -45,80 +46,7 @@ gaffer_has_github_remote() {
 # Prints the body to stdout. Best-effort; never fatal.
 gaffer_build_pr_body() {
   local ticket_num="$1"
-  python3 - "$ticket_num" <<'__PY__' 2>/dev/null || printf 'Delivered ticket #%s\n' "$ticket_num"
-import sys, json, subprocess, os
-
-num = sys.argv[1]
-wg_cli = os.path.join(
-    os.environ.get("RUNNER_DIR", ""),
-    "..", "packages", "dispatch", "dist", "cli", "index.js",
-)
-db = os.environ.get("DISPATCH_DB", "")
-if not (wg_cli and db):
-    print(f"Delivered ticket #{num}")
-    sys.exit(0)
-
-try:
-    out = subprocess.check_output(
-        ["node", wg_cli, "--db", db, "ticket", "show", num, "--format", "json"],
-        stderr=subprocess.DEVNULL,
-        timeout=10,
-    )
-    d = json.loads(out)
-except Exception:
-    print(f"Delivered ticket #{num}")
-    sys.exit(0)
-
-ticket = d.get("ticket", {})
-acs = d.get("acceptanceCriteria", []) or []
-evidence = d.get("evidence", []) or []
-
-lines = []
-lines.append(f"## Ticket #{num}: {ticket.get('title', '')}")
-lines.append("")
-
-if acs:
-    lines.append("### Acceptance Criteria")
-    for ac in acs:
-        status = ac.get("status", "pending")
-        icon = "x" if status in ("done", "passed", "verified") else " "
-        lines.append(f"- [{icon}] {ac.get('text', '')}")
-    lines.append("")
-
-# Per-AC evidence grouped by AC id.
-ac_ev = {}
-for ev in evidence:
-    ac_id = ev.get("acId") or ev.get("ac_id") or ""
-    if ac_id:
-        ac_ev.setdefault(ac_id, []).append(ev)
-
-if evidence:
-    lines.append("### Evidence")
-    diff_lines = []
-    test_lines = []
-    other_lines = []
-    for ev in evidence:
-        t = ev.get("evidenceType", "") or ev.get("evidence_type", "")
-        s = (ev.get("summary") or "").strip()
-        if not s:
-            continue
-        if t in ("diff_summary",):
-            diff_lines.append(s)
-        elif t in ("test_output", "lint_output"):
-            test_lines.append(s)
-        else:
-            other_lines.append(s)
-    for block in (diff_lines + test_lines + other_lines):
-        lines.append("")
-        lines.append("```")
-        lines.append(block[:2000])
-        lines.append("```")
-    lines.append("")
-
-lines.append("---")
-lines.append("*Delivered by Gaffer factory agent.*")
-print("\n".join(lines))
-__PY__
+  node "$_GAFFER_JSON_TOOL" pr-body "$ticket_num" 2>/dev/null || printf 'Delivered ticket #%s\n' "$ticket_num"
 }
 
 # Create a PR for a ticket delivery. Returns 0 on success (and prints the PR URL

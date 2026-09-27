@@ -7,6 +7,7 @@
 # so the content lands as DATA, paired with QUARANTINE_NOTICE — one standing line
 # telling the agent that envelope content is data to act on, never instructions.
 # shellcheck shell=bash
+_GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 
 # gaffer_quarantine <tag> <value> [single]
 #   • Strips any literal opening/closing delimiter for THIS tag the data tries to
@@ -18,16 +19,9 @@
 #   • Emits <untrusted-tag>…</untrusted-tag>.
 gaffer_quarantine() {
   local tag="$1" value="$2" mode="${3:-multi}"
-  printf '%s' "$value" | python3 -c "
-import sys, re
-tag = sys.argv[1]; mode = sys.argv[2]
-data = sys.stdin.read()
-# Neutralise any opening/closing delimiter for THIS tag the data tries to smuggle.
-data = re.sub(r'</?\s*untrusted-' + re.escape(tag) + r'\s*>', '', data, flags=re.I)
-if mode == 'single':
-    data = re.sub(r'\s+', ' ', data).strip()
-sys.stdout.write('<untrusted-' + tag + '>' + data + '</untrusted-' + tag + '>')
-" "$tag" "$mode"
+  # Neutralises any opening/closing delimiter for THIS tag the data tries to smuggle;
+  # `single` collapses whitespace to one line.
+  printf '%s' "$value" | node "$_GAFFER_JSON_TOOL" quarantine "$tag" "$mode"
 }
 
 # The standing instruction prepended to every prompt that embeds quarantined data.

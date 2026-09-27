@@ -215,25 +215,7 @@ eval)
   if [ "${1:-}" = "--json" ]; then
     node "$_cli" --mode summarize --file "$_ledger"
   else
-    node "$_cli" --mode summarize --file "$_ledger" | python3 -c '
-import json, sys
-s = json.load(sys.stdin)
-lift, cost = s["memoryLift"], s["cost"]
-def pct(x): return str(round(100 * x)) + "%"
-print("deliveries judged   %s   (pass %s / blocking %s)" % (s["count"], pct(s["passRate"]), pct(s["blockRate"])))
-print("mean score          %s/5" % s["meanScore"])
-dims = s.get("dimensionMeans") or {}
-if dims:
-    print("dimensions          " + "  ".join("%s %s" % kv for kv in dims.items()))
-l = lift["lift"]
-wm, wo = lift["withMemory"], lift["withoutMemory"]
-arms = "with-memory %s/5 (n=%s) vs without %s/5 (n=%s)" % (wm["meanScore"], wm["count"], wo["meanScore"], wo["count"])
-print("memory lift         %s   %s" % (("%+.2f" % l) if l is not None else "n/a (need both arms)", arms))
-if cost["costedCount"]:
-    cpp = cost["costPerPass"]
-    tail = ("$%s/passing delivery" % cpp) if cpp is not None else "no costed passes yet"
-    print("cost                $%s over %s costed / $%s mean / %s" % (cost["totalCostUsd"], cost["costedCount"], cost["meanCostUsd"], tail))
-'
+    node "$_cli" --mode summarize --file "$_ledger" | node "$HERE/lib/json-tool.mjs" eval-summary
   fi
   ;;
 

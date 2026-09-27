@@ -71,7 +71,7 @@ DRY_RUN=0
 # The runner wraps the CLI as `wg`; jget reads stdin JSON as `d` — byte-identical
 # to factory.config.sh, so the extracted functions run EXACTLY as they do in tick.sh.
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 LOGF="$WORK/log.txt"; : > "$LOGF"
 log()  { printf '%s\n' "$*" >> "$LOGF"; }
 # Stubs for the factory.config.sh helpers the wrapper calls (not defined in tick.sh):
@@ -79,7 +79,7 @@ log()  { printf '%s\n' "$*" >> "$LOGF"; }
 gaffer_ticket_rework_spend() { printf '%s' "${STUB_SPEND:-0}"; }
 gaffer_recall_feedback()     { :; }
 
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 feedback_of() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -139,17 +139,17 @@ done
 source "$SRC"
 
 # One ready, claimable ticket → echoes its number.
-AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget 'd.agent.id')"
 [ -n "$AGENT" ] || { echo "SKIP: could not register agent"; exit 0; }
 make_ready_ticket() {
   local num
-  num="$(wg ticket create -t "$1" --risk low 2>/dev/null | jget "d['ticket']['number']")"
+  num="$(wg ticket create -t "$1" --risk low 2>/dev/null | jget 'd.ticket.number')"
   wg ac add "$num" -t "AC" >/dev/null 2>&1
   wg ticket ready "$num" >/dev/null 2>&1
   printf '%s' "$num"
 }
 claim() {  # $1 = num → echoes the claim token (empty on failure)
-  wg claim-ticket "$1" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']" 2>/dev/null || echo ''
+  wg claim-ticket "$1" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken' 2>/dev/null || echo ''
 }
 # Simulate ONE fresh runner run failing this ticket with a no-commit crash:
 # fresh per-run state (new skip-file, reset claim-resolved flag), durable state

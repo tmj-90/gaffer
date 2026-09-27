@@ -1,5 +1,6 @@
 # Gaffer Definition-of-Done (DoD) gate — audit I3 (sourced by factory.config.sh).
 # shellcheck shell=bash
+_GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 #
 # The single biggest "factory, not vibe" lever: a configurable, deterministically
 # ENFORCED Definition of Done that every non-empty delivery must clear BEFORE the
@@ -300,44 +301,8 @@ gaffer_dod_evidence_summary() {
   local results="$1" overall="$2"
   # JSON line: {"dod":"PASS|FAIL","gates":[{"gate","repo","status","rc","note"}...]}
   local out
-  out="$(python3 - "$results" "$overall" <<'PY' 2>/dev/null
-import sys, json
-results, overall = sys.argv[1], sys.argv[2]
-gates = []
-lines = []
-try:
-    with open(results, "r", encoding="utf-8", errors="replace") as fh:
-        text = fh.read()
-except OSError:
-    text = ""
-for ln in text.splitlines():
-    parts = ln.split("\t")
-    if parts and parts[0] == "GATE" and len(parts) >= 6:
-        _, gate, repo, status, rc, note = parts[:6]
-        gates.append({"gate": gate, "repo": repo, "status": status, "rc": rc, "note": note})
-        lines.append(f"  [{status}] {gate} ({repo}) — {note}")
-# Keep the failing transcript blocks (bounded already by the writer) verbatim.
-tail_blocks = []
-keep = False
-for ln in text.splitlines():
-    if ln.startswith("---DOD-OUTPUT "):
-        keep = True
-        tail_blocks.append(ln)
-    elif ln.startswith("---END-DOD-OUTPUT---"):
-        tail_blocks.append(ln); keep = False
-    elif keep:
-        tail_blocks.append(ln)
-payload = {"dod": overall, "gates": gates}
-out = [f"DoD: {overall}", json.dumps(payload, separators=(",", ":"))]
-out.append("")
-out.extend(lines)
-if tail_blocks:
-    out.append("")
-    out.extend(tail_blocks)
-sys.stdout.write("\n".join(out))
-PY
-)"
-  # Fallback if python3 is unavailable (or produced nothing): still emit the verdict
+  out="$(node "$_GAFFER_JSON_TOOL" dod-evidence-summary "$results" "$overall" 2>/dev/null)"
+  # Fallback if the node render produced nothing: still emit the verdict
   # line + a built JSON object via awk + the raw results, so the evidence — and the
   # next attempt's feedback — is never totally lost. The dashboard parses the JSON
   # line either way.

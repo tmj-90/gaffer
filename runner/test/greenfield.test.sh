@@ -163,7 +163,7 @@ grep -q 'lib/greenfield.sh' "$RUNNER_DIR/factory.config.sh" \
   || fail "lib/greenfield.sh not sourced"
 
 echo "== AC8: tick.sh wires the bootstrap create-a-repo branch =="
-grep -q "ticket'\].get('bootstrap')" "$RUNNER_DIR/tick.sh" \
+grep -q "d.ticket.bootstrap" "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh reads ticket.bootstrap" || fail "tick.sh does not read ticket.bootstrap"
 grep -q 'gaffer_bootstrap_repo_dir' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh derives the new repo dir" || fail "tick.sh does not derive the repo dir"
@@ -217,6 +217,7 @@ chmod +x "$BIN/wg"
 # Stub planner: ignore args, print the canned plan JSON. Selected by shadowing the
 # resolved planner path is awkward, so instead we shadow `node` to emit the plan
 # whenever it is asked to run inherit-repo.mjs.
+REAL_NODE="$(command -v node)"
 cat >"$BIN/node" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
@@ -229,7 +230,7 @@ case "\$*" in
  "unresolved":[]}
 JSON
     ;;
-  *) exec /usr/bin/env node "\$@" ;;
+  *) exec "$REAL_NODE" "\$@" ;;
 esac
 EOF
 chmod +x "$BIN/node"

@@ -56,8 +56,8 @@ while [ $# -gt 0 ]; do
     *) echo "replay: unknown argument $1" >&2; exit 2 ;;
   esac
 done
-for _bin in node git perl python3; do
-  command -v "$_bin" >/dev/null 2>&1 || { echo "replay: $_bin is required (the acceptance-check library parses the ticket with python3)" >&2; exit 2; }
+for _bin in node git perl; do
+  command -v "$_bin" >/dev/null 2>&1 || { echo "replay: $_bin is required" >&2; exit 2; }
 done
 [ -d "$FIXTURES" ] || { echo "replay: fixtures dir not found: $FIXTURES" >&2; exit 2; }
 FIXTURES="$(cd "$FIXTURES" && pwd)"
@@ -71,6 +71,7 @@ OUT="$(cd "$OUT" && pwd)"
 FX="$HERE/fixture.mjs"
 
 # ── The runtime the libraries expect (same shims the runner tests use) ────────
+gaffer_json() { node "$RUNNER_DIR/lib/json-tool.mjs" "$@"; }
 log() { [ "$VERBOSE" = 1 ] && printf '    log: %s\n' "$*" >&2; return 0; }
 gaffer_timeout() {
   local secs="$1"; shift

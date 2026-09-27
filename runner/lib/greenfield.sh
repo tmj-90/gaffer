@@ -1,5 +1,6 @@
 # Gaffer greenfield "create-a-repo" delivery mode (sourced by factory.config.sh).
 # shellcheck shell=bash
+_GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 #
 # A `bootstrap` ticket (dispatch `ticket.bootstrap == 1`) has NO existing repo to
 # branch — it CREATES one. Today's normal flow branches an onboarded repo and
@@ -27,26 +28,8 @@
 # Echoes the chosen name (slugged to a filesystem-safe leaf) or empty on failure.
 gaffer_bootstrap_repo_name() {
   local show_json="$1"
-  printf '%s' "$show_json" | python3 -c '
-import sys, json, re
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    print(""); sys.exit(0)
-t = d.get("ticket", {}) or {}
-repos = d.get("repositories", []) or []
-name = ""
-if repos and (repos[0].get("name") or "").strip():
-    name = repos[0]["name"].strip()
-elif (t.get("source") or "").strip():
-    name = t["source"].strip()
-else:
-    name = (t.get("title") or "").strip()
-# Slug to a filesystem-safe leaf: lowercase, non-alnum → "-", collapse, trim.
-slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-slug = re.sub(r"-+", "-", slug)[:64].strip("-")
-print(slug)
-' 2>/dev/null
+  # Slug: lowercase, non-alnum → "-", collapse, trim, ≤64 chars.
+  printf '%s' "$show_json" | node "$_GAFFER_JSON_TOOL" bootstrap-repo-name 2>/dev/null
 }
 
 # Compute the absolute target directory for a new bootstrap repo: <root>/<name>.
@@ -351,7 +334,7 @@ gaffer_inherit_repo() {
     return 0
   fi
 
-  # 1) Apply the deterministic links. python3 emits "ticket\trepo\treason" lines.
+  # 1) Apply the deterministic links. json-tool emits "ticket\trepo\treason" lines.
   local applied=0
   while IFS=$'\t' read -r tnum repo reason; do
     [ -n "$tnum" ] && [ -n "$repo" ] || continue
@@ -394,43 +377,19 @@ gaffer_inherit_repo() {
   return 0
 }
 
-# --- plan JSON readers (python3 over the planner's single-line JSON) -----------
+# --- plan JSON readers (json-tool.mjs over the planner's single-line JSON) ------
 # Kept tiny + isolated so the spawn/parse logic stays out of gaffer_inherit_repo.
 
 _gaffer_inherit_links() {  # stdin: plan JSON → "ticket<TAB>repo<TAB>reason" per link
-  python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for l in d.get("links", []) or []:
-    t = l.get("ticket"); r = l.get("repo")
-    if t and r:
-        print("\t".join([str(t), str(r), str(l.get("reason", ""))]))' 2>/dev/null
+  node "$_GAFFER_JSON_TOOL" inherit-links 2>/dev/null
 }
 
 _gaffer_inherit_ambiguous_count() {  # stdin: plan JSON → count of ambiguous siblings
-  python3 -c '
-import sys, json
-try: d = json.load(sys.stdin)
-except Exception: print(0); sys.exit(0)
-print(len(d.get("ambiguous", []) or []))' 2>/dev/null
+  node "$_GAFFER_JSON_TOOL" inherit-amb-count 2>/dev/null
 }
 
 _gaffer_inherit_amb_field() {  # stdin: plan JSON; args: <idx> <ticket|candidates>
-  python3 -c '
-import sys, json
-i = int(sys.argv[1]); field = sys.argv[2]
-try: d = json.load(sys.stdin)
-except Exception: sys.exit(0)
-amb = (d.get("ambiguous", []) or [])
-if i >= len(amb): sys.exit(0)
-a = amb[i]
-if field == "ticket": print(a.get("ticket",""))
-elif field == "candidates":
-    for c in a.get("candidates", []) or []:
-        if c.get("repo"): print(c["repo"])' "$1" "$2" 2>/dev/null
+  node "$_GAFFER_JSON_TOOL" inherit-amb-field "$1" "$2" 2>/dev/null
 }
 
 # Spawn the planned claude argv for ambiguous sibling <idx> and echo its stdout.
@@ -441,20 +400,11 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; arg: <idx> → claude stdout
   payload="$(cat)"
   # Pull the binary + argv as NUL-separated tokens to survive spaces in the prompt.
   local bin
-  bin="$(printf '%s' "$payload" | python3 -c '
-import sys, json
-i = int(sys.argv[1])
-d = json.load(sys.stdin)
-print((d.get("ambiguous",[]) or [])[i].get("claudeBin","claude"))' "$idx" 2>/dev/null)"
+  bin="$(printf '%s' "$payload" | node "$_GAFFER_JSON_TOOL" inherit-amb-bin "$idx" 2>/dev/null)"
   [ -n "$bin" ] || bin="${CLAUDE_BIN:-claude}"
   # Build the argv array from the JSON and exec it.
   local -a argv=()
-  while IFS= read -r -d '' tok; do argv+=("$tok"); done < <(printf '%s' "$payload" | python3 -c '
-import sys, json
-i = int(sys.argv[1])
-d = json.load(sys.stdin)
-for tok in (d.get("ambiguous",[]) or [])[i].get("argv", []) or []:
-    sys.stdout.write(tok); sys.stdout.write("\0")' "$idx" 2>/dev/null)
+  while IFS= read -r -d '' tok; do argv+=("$tok"); done < <(printf '%s' "$payload" | node "$_GAFFER_JSON_TOOL" inherit-amb-argv "$idx" 2>/dev/null)
   [ "${#argv[@]}" -gt 0 ] || return 0
   # Bound this ambiguous-multi-app inherit decision like every other live `claude -p`:
   # it runs AFTER a fast delivery where the outer per-tick timer may have hours of

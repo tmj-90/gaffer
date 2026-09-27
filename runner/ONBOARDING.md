@@ -53,7 +53,7 @@ runner/gaffer onboard /path/to/repo --standalone   # register as its own single-
 2. **Give it work:** create a ticket in the dashboard's PO flow, or:
    ```bash
    WG="node packages/dispatch/dist/cli/index.js --db .gaffer/dispatch.sqlite"
-   NUM=$($WG ticket create -t "Add health endpoint" -p team_light | python3 -c 'import sys,json;print(json.load(sys.stdin)["ticket"]["number"])')
+   NUM=$($WG ticket create -t "Add health endpoint" -p team_light | node runner/lib/json-tool.mjs expr 'd.ticket.number'
    $WG ticket repo-access set $NUM <repo-name> --access write
    $WG ticket ready $NUM
    ```

@@ -1,5 +1,6 @@
 # Gaffer per-repo backpressure (sourced by factory.config.sh).
 # shellcheck shell=bash
+_GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 #
 # Before claiming/delivering for a repo, count its OUTSTANDING work and refuse to
 # pile up more than the configured cap. Outstanding work for a repo =
@@ -63,12 +64,7 @@ gaffer_repo_unmerged_branches() {
 gaffer_parked_ticket_numbers() {
   local s
   for s in blocked refining; do
-    _bp_wg_list "$s" 2>/dev/null | python3 -c "import sys,json
-try: d=json.load(sys.stdin)
-except Exception: d=[]
-for t in (d if isinstance(d, list) else []):
-    n=(t or {}).get('number')
-    if n is not None: print(n)" 2>/dev/null
+    _bp_wg_list "$s" 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
   done
   return 0
 }
@@ -140,9 +136,7 @@ gaffer_sweep_abandoned_branches() {
     printf '%s\n' "$merged" | grep -qxF "$b" && continue   # merged → not our job
     num="$(printf '%s' "$b" | sed -nE 's#^gaffer/ticket-([0-9]+).*#\1#p')"
     [ -n "$num" ] || continue
-    tstatus="$(_bp_wg_show "$num" 2>/dev/null | python3 -c "import sys,json
-try: print(json.load(sys.stdin)['ticket']['status'])
-except Exception: print('')" 2>/dev/null)"
+    tstatus="$(_bp_wg_show "$num" 2>/dev/null | node "$_GAFFER_JSON_TOOL" ticket-status 2>/dev/null)"
     # PRESERVE unless the ticket is POSITIVELY cancelled. Every live/preserved
     # state, and every ambiguous/unresolvable status, keeps the branch.
     [ "$tstatus" = "cancelled" ] || continue
@@ -162,12 +156,8 @@ except Exception: print('')" 2>/dev/null)"
 gaffer_branch_is_delivery_artifact() {
   local num="$1" branch="$2" out
   out="$(_bp_wg_deliveries "$num" 2>/dev/null)" || return 0
-  printf '%s' "$out" | python3 -c "import sys,json
-b=sys.argv[1]
-try: d=json.load(sys.stdin)
-except Exception: sys.exit(0)  # unparseable → fail safe (treat as recorded → keep)
-rows = d if isinstance(d, list) else (d.get('deliveries') or [])
-sys.exit(0 if any((r or {}).get('branch_name') == b for r in rows) else 1)" "$branch"
+  # unparseable → fail safe (treat as recorded → keep)
+  printf '%s' "$out" | node "$_GAFFER_JSON_TOOL" branch-recorded "$branch"
 }
 
 # Default Dispatch accessors (overridable by tests). Each appends its argument.
@@ -197,20 +187,10 @@ _bp_wg_deliveries() {
 gaffer_repo_tickets_in_status() {
   local status="$1" target="$2"
   local nums n
-  nums="$(_bp_wg_list "$status" 2>/dev/null | python3 -c "import sys,json
-try: d=json.load(sys.stdin)
-except Exception: d=[]
-print(' '.join(str(t['number']) for t in d))" 2>/dev/null)"
+  nums="$(_bp_wg_list "$status" 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers-joined 2>/dev/null)"
   local count=0
   for n in $nums; do
-    if _bp_wg_show "$n" 2>/dev/null | python3 -c "import sys,json
-target=sys.argv[1]
-try: d=json.load(sys.stdin)
-except Exception: sys.exit(1)
-for r in (d.get('repositories') or []):
-    if (r.get('local_path') or '')==target or (r.get('name') or '')==target:
-        sys.exit(0)
-sys.exit(1)" "$target"; then
+    if _bp_wg_show "$n" 2>/dev/null | node "$_GAFFER_JSON_TOOL" repo-matches "$target"; then
       count=$((count + 1))
     fi
   done

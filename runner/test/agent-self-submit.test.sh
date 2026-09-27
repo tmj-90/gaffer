@@ -59,8 +59,8 @@ trap 'rm -rf "$WORK"' EXIT
 DB="$WORK/dispatch.sqlite"
 
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 active_claims() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -113,17 +113,17 @@ agent_mcp_claim() { # $1 = tool (claim_next_ticket|claim_ticket), $2 = ticket id
 # Seed one ready ticket + a runner claim; echoes "NUM<TAB>TID<TAB>TOKEN".
 seed_claimed() {
   local title="$1" num tid token
-  num="$(wg ticket create -t "$title" --description "finding-2 probe" --policy solo_loose --risk low 2>/dev/null | jget "d['ticket']['number']")"
+  num="$(wg ticket create -t "$title" --description "finding-2 probe" --policy solo_loose --risk low 2>/dev/null | jget 'd.ticket.number')"
   wg ac add "$num" -t "probe AC" >/dev/null 2>&1
   wg ticket ready "$num" >/dev/null 2>&1
-  tid="$(wg ticket show "$num" 2>/dev/null | jget "d['ticket']['id']")"
-  token="$(wg claim-ticket "$num" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']")"
+  tid="$(wg ticket show "$num" 2>/dev/null | jget 'd.ticket.id')"
+  token="$(wg claim-ticket "$num" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
   printf '%s\t%s\t%s\n' "$num" "$tid" "$token"
 }
 
 echo "== SETUP: temp dispatch DB + registered factory agent =="
 wg init >/dev/null 2>&1
-AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget 'd.agent.id')"
 [ -n "$AGENT" ] && ok "registered runner agent" || fail "setup: could not register agent"
 
 seed_claimed "Disobedient delivery" > "$WORK/seed1"; IFS=$'\t' read -r NUM TID CLAIM_TOKEN < "$WORK/seed1"
@@ -133,8 +133,8 @@ seed_claimed "Disobedient delivery" > "$WORK/seed1"; IFS=$'\t' read -r NUM TID C
 
 echo "== PART A: the agent-mounted submit (env token, no arg) is REFUSED =="
 A_OUT="$(GAFFER_CLAIM_TOKEN="$CLAIM_TOKEN" agent_mcp_submit "$TID")"
-A_ERR="$(printf '%s' "$A_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
-A_CODE="$(printf '%s' "$A_OUT" | jget "d['code']" 2>/dev/null || echo '')"
+A_ERR="$(printf '%s' "$A_OUT" | jget 'd.isError' 2>/dev/null || echo '')"
+A_CODE="$(printf '%s' "$A_OUT" | jget 'd.code' 2>/dev/null || echo '')"
 if [ "$A_ERR" = "True" ]; then
   ok "agent self-submit REFUSED (code=$A_CODE) — submission is runner-owned in factory context"
 else
@@ -181,8 +181,8 @@ echo "== PART D: an EXPLICIT claim_token agent submit is REFUSED in factory cont
 # submission is runner-owned; the agent cannot complete its own claim.
 seed_claimed "Explicit-token delivery" > "$WORK/seed3"; IFS=$'\t' read -r NUM3 TID3 TOKEN3 < "$WORK/seed3"
 D_OUT="$(GAFFER_CLAIM_TOKEN="$TOKEN3" EXPLICIT_TOKEN="$TOKEN3" agent_mcp_submit "$TID3")"
-D_ERR="$(printf '%s' "$D_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
-D_CODE="$(printf '%s' "$D_OUT" | jget "d['code']" 2>/dev/null || echo '')"
+D_ERR="$(printf '%s' "$D_OUT" | jget 'd.isError' 2>/dev/null || echo '')"
+D_CODE="$(printf '%s' "$D_OUT" | jget 'd.code' 2>/dev/null || echo '')"
 if [ "$D_ERR" = "True" ]; then
   ok "explicit-token agent submit REFUSED in factory context (code=$D_CODE)"
 else
@@ -195,19 +195,19 @@ fi
 echo "== PART E: agent claim_next_ticket / claim_ticket are REFUSED in factory context (S-H1) =="
 # The other bypass: grab ANOTHER ready ticket and submit it, dodging the runner's gates.
 # In factory context the agent-mounted claim tools must refuse outright.
-E_NUM="$(wg ticket create -t "Grabbable ready ticket" --description "s-h1 claim probe" --policy solo_loose --risk low 2>/dev/null | jget "d['ticket']['number']")"
+E_NUM="$(wg ticket create -t "Grabbable ready ticket" --description "s-h1 claim probe" --policy solo_loose --risk low 2>/dev/null | jget 'd.ticket.number')"
 wg ac add "$E_NUM" -t "probe AC" >/dev/null 2>&1
 wg ticket ready "$E_NUM" >/dev/null 2>&1
-E_TID="$(wg ticket show "$E_NUM" 2>/dev/null | jget "d['ticket']['id']")"
+E_TID="$(wg ticket show "$E_NUM" 2>/dev/null | jget 'd.ticket.id')"
 EN_OUT="$(GAFFER_CLAIM_TOKEN="held-token-for-another-ticket" agent_mcp_claim claim_next_ticket "$E_TID")"
-EN_ERR="$(printf '%s' "$EN_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
+EN_ERR="$(printf '%s' "$EN_OUT" | jget 'd.isError' 2>/dev/null || echo '')"
 [ "$EN_ERR" = "True" ] \
-  && ok "agent claim_next_ticket REFUSED in factory context (code=$(printf '%s' "$EN_OUT" | jget "d['code']" 2>/dev/null))" \
+  && ok "agent claim_next_ticket REFUSED in factory context (code=$(printf '%s' "$EN_OUT" | jget 'd.code' 2>/dev/null))" \
   || fail "agent claim_next_ticket SUCCEEDED in factory context (got: $EN_OUT)"
 EC_OUT="$(GAFFER_CLAIM_TOKEN="held-token-for-another-ticket" agent_mcp_claim claim_ticket "$E_TID")"
-EC_ERR="$(printf '%s' "$EC_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
+EC_ERR="$(printf '%s' "$EC_OUT" | jget 'd.isError' 2>/dev/null || echo '')"
 [ "$EC_ERR" = "True" ] \
-  && ok "agent claim_ticket REFUSED in factory context (code=$(printf '%s' "$EC_OUT" | jget "d['code']" 2>/dev/null))" \
+  && ok "agent claim_ticket REFUSED in factory context (code=$(printf '%s' "$EC_OUT" | jget 'd.code' 2>/dev/null))" \
   || fail "agent claim_ticket SUCCEEDED in factory context (got: $EC_OUT)"
 [ "$(status_of "$E_NUM")" = "ready" ] \
   && ok "#$E_NUM stays ready — never claimed by the agent" \
@@ -220,7 +220,7 @@ seed_claimed "Standalone explicit-token delivery" > "$WORK/seed4"; IFS=$'\t' rea
 # Blank both factory signals explicitly (node inherits the shell env) so this asserts
 # the genuine non-factory posture regardless of the ambient environment.
 F_OUT="$(GAFFER_CLAIM_TOKEN= GAFFER_FACTORY= EXPLICIT_TOKEN="$TOKEN4" agent_mcp_submit "$TID4")"
-F_ERR="$(printf '%s' "$F_OUT" | jget "d['isError']" 2>/dev/null || echo '')"
+F_ERR="$(printf '%s' "$F_OUT" | jget 'd.isError' 2>/dev/null || echo '')"
 if [ "$F_ERR" = "False" ] && [ "$(status_of "$NUM4")" = "in_review" ]; then
   ok "non-factory explicit-token MCP submit still works (#$NUM4 → in_review)"
 else

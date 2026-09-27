@@ -10,7 +10,6 @@ below is the real, verified path — run them in order.
 - **Node 22 or 24** and **[pnpm](https://pnpm.io)** (`pnpm@10.33.0`, pinned via `packageManager`)
 - **Git** (the factory branches per ticket, so your target repos should be git repos)
 - The **`claude` CLI**, authenticated with Anthropic — the factory spawns `claude -p` agents for planning, delivery, and repo analysis; required for live runs
-- **`python3`** — used by runner helpers for JSON parsing and the portable timeout shim
 - `sqlite3` is handy for poking the stores, but not required
 
 Gaffer is **local-first**: the control plane, databases, repo state, worktrees, and evidence live on your machine, against your repos, with your keys. Live agent runs use your configured Claude Code CLI, so prompts and selected repo context are sent to that model provider — treat any connected model as part of your trust boundary.

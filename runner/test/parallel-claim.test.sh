@@ -39,7 +39,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/parallel-claim.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 DB="$WORK/dispatch.sqlite"
 cli() { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;print($1)"; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 active_claims() { # count active claims for ticket <number>
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -50,7 +50,7 @@ n=c.execute("SELECT count(*) FROM ticket_claims tc JOIN tickets t ON t.id=tc.tic
 print(n)
 PY
 }
-ticket_status() { cli ticket show "$1" 2>/dev/null | jget "json.load(sys.stdin)['ticket']['status']"; }
+ticket_status() { cli ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
 
 cli init >/dev/null 2>&1
 # Three independent ready tickets + two agents.
@@ -59,8 +59,8 @@ for i in 1 2 3; do
   cli ac add "$i" -t "T$i AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
   cli ticket ready "$i" >/dev/null 2>&1
 done
-A1="$(cli agent register -n w1 --max-risk high 2>/dev/null | jget "json.load(sys.stdin)['agent']['id']")"
-A2="$(cli agent register -n w2 --max-risk high 2>/dev/null | jget "json.load(sys.stdin)['agent']['id']")"
+A1="$(cli agent register -n w1 --max-risk high 2>/dev/null | jget 'd.agent.id')"
+A2="$(cli agent register -n w2 --max-risk high 2>/dev/null | jget 'd.agent.id')"
 [ -n "$A1" ] && [ -n "$A2" ] || { echo "SKIP: could not register agents"; exit 0; }
 
 echo "== AC1: two agents race the SAME ticket → exactly one winner =="
@@ -83,9 +83,9 @@ echo "== AC2: 2 workers + 3 ready → exactly 2 in flight, 1 waits =="
 # tickets in parallel; #P3 is left for a future tick — "one waits". Distinct
 # tickets are independent rows so both claims SUCCEED and #P3 stays ready, leaving
 # exactly two in flight — and no ticket is ever double-claimed.
-P1="$(cli ticket create -t P-a --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
-P2="$(cli ticket create -t P-b --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
-P3="$(cli ticket create -t P-c --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
+P1="$(cli ticket create -t P-a --risk low 2>/dev/null | jget 'd.ticket.number')"
+P2="$(cli ticket create -t P-b --risk low 2>/dev/null | jget 'd.ticket.number')"
+P3="$(cli ticket create -t P-c --risk low 2>/dev/null | jget 'd.ticket.number')"
 for t in "$P1" "$P2" "$P3"; do cli ac add "$t" -t "P AC" >/dev/null 2>&1; cli ticket ready "$t" >/dev/null 2>&1; done  # GUARD A: ≥1 AC to ready
 cli claim-ticket "$P1" -a "$A1" >/dev/null 2>&1 && qr1=0 || qr1=$?
 cli claim-ticket "$P2" -a "$A2" >/dev/null 2>&1 && qr2=0 || qr2=$?
@@ -109,8 +109,8 @@ for t in "$P1" "$P2" "$P3"; do [ "$(active_claims "$t")" -gt 1 ] && dbl=1; done
 [ "$dbl" = "0" ] && ok "no ticket has >1 active claim" || fail "a ticket was double-claimed"
 
 echo "== AC3: dependency gate — phase-2 unclaimable until phase-1 done =="
-PH1="$(cli ticket create -t phase1 --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
-PH2="$(cli ticket create -t phase2 --risk low 2>/dev/null | jget "json.load(sys.stdin)['ticket']['number']")"
+PH1="$(cli ticket create -t phase1 --risk low 2>/dev/null | jget 'd.ticket.number')"
+PH2="$(cli ticket create -t phase2 --risk low 2>/dev/null | jget 'd.ticket.number')"
 cli ticket dep add "$PH2" "$PH1" >/dev/null 2>&1
 cli ac add "$PH1" -t "phase1 AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
 cli ac add "$PH2" -t "phase2 AC" >/dev/null 2>&1

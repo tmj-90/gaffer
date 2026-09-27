@@ -53,8 +53,11 @@ GAFFER_LOG="$WORK/gaffer.log"; : >"$GAFFER_LOG"
 # but our stub shadows the binary — so nothing real runs.
 BIN="$WORK/bin"; mkdir -p "$BIN"
 CALLS="$WORK/node-calls.log"; : >"$CALLS"
+REAL_NODE="$(command -v node)"
 cat >"$BIN/node" <<EOF
 #!/usr/bin/env bash
+# Anything but the trust script (e.g. the runner's lib/json-tool.mjs) runs for real.
+case "\$*" in *trust-workspace.mjs*) ;; *) exec "$REAL_NODE" "\$@" ;; esac
 # Record: last path arg + whether KEY_ONLY was set in the env, one line per call.
 printf '%s KEY_ONLY=%s\n' "\${!#}" "\${GAFFER_TRUST_KEY_ONLY:-}" >> "$CALLS"
 exit 0

@@ -40,7 +40,7 @@ grep -q '^_num_pos()' "$FN" \
 source "$FN"
 
 # The deps the function closes over (mirrors tick.sh's runtime).
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 SPEND=0
 gaffer_ticket_rework_spend() { echo "$SPEND"; }
 GAFFER_BUDGET_SPENT=""; GAFFER_BUDGET_CEIL=""

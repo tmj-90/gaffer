@@ -30,7 +30,7 @@ RUN pnpm -r build
 
 FROM node:22-bookworm-slim
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates python3 ripgrep curl bash \
+  && apt-get install -y --no-install-recommends git ca-certificates ripgrep curl bash \
   && rm -rf /var/lib/apt/lists/*
 # The worker the runner spawns per ticket. Pin the version to the one your
 # safety-hook / MCP contract was tested with when you deploy for real.

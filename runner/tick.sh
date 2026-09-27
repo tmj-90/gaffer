@@ -352,7 +352,7 @@ fi
 # Ensure a stable factory agent (register once).
 if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
   wg init >/dev/null 2>&1 || true
-  if ! wg agent register -n "$GAFFER_AGENT_NAME" --max-risk high 2>/dev/null | jget "d['agent']['id']" > "$GAFFER_AGENT_ID_FILE" 2>/dev/null; then
+  if ! wg agent register -n "$GAFFER_AGENT_NAME" --max-risk high 2>/dev/null | jget 'd.agent.id' > "$GAFFER_AGENT_ID_FILE" 2>/dev/null; then
     log "could not register factory agent"; result error; exit 1
   fi
 fi
@@ -461,7 +461,7 @@ gaffer_release_or_park_nocommit() {
   # MEASURED ledger spend. A crash-looping ticket with real spend past the
   # ceiling parks immediately, even with counter headroom left.
   local _cost_exhausted=0 _ticket_budget _eff_ceiling _spent=0
-  _ticket_budget="$(printf '%s' "${SHOW:-}" | jget "d['ticket'].get('delivery_budget_usd')" 2>/dev/null || true)"
+  _ticket_budget="$(printf '%s' "${SHOW:-}" | jget 'd.ticket.delivery_budget_usd' 2>/dev/null || true)"
   case "$_ticket_budget" in ""|None|null) _ticket_budget="" ;; esac
   if [ -n "$_ticket_budget" ] && _num_pos "$_ticket_budget"; then
     _eff_ceiling="$_ticket_budget"
@@ -506,7 +506,7 @@ gaffer_release_or_park_nocommit() {
 # run would otherwise spawn one more turn before the post-attempt bound caught it.
 gaffer_budget_exhausted() {
   local _num="$1" _tb _ceil _spent
-  _tb="$(printf '%s' "${SHOW:-}" | jget "d['ticket'].get('delivery_budget_usd')" 2>/dev/null || true)"
+  _tb="$(printf '%s' "${SHOW:-}" | jget 'd.ticket.delivery_budget_usd' 2>/dev/null || true)"
   case "$_tb" in ""|None|null) _tb="" ;; esac
   if [ -n "$_tb" ] && _num_pos "$_tb"; then _ceil="$_tb"; else _ceil="${GAFFER_REWORK_BUDGET_USD:-}"; fi
   { [ -n "$_ceil" ] && _num_pos "$_ceil"; } || return 1
@@ -602,39 +602,14 @@ gaffer_distill_ticket_intent() {
   [ -n "${SHOW:-}" ] || return 0
 
   # Build the requirement draft's {title, summary} from the ticket's title + AC.
-  # python3 emits ONE JSON line (or nothing when there is no AC). Fail-soft.
+  # json-tool emits ONE JSON line (or nothing when there is no AC). Fail-soft.
   local _distill
-  _distill="$(SHOW="$SHOW" DTITLE="${TITLE:-}" DREPO="$RECALL_REPO_NAME" DNUM="$NUM" python3 - <<'PY' 2>/dev/null || true
-import os, json, sys
-MAX_TITLE = 190
-MAX_SUMMARY = 780
-try:
-    d = json.loads(os.environ.get("SHOW", "") or "{}")
-except Exception:
-    sys.exit(0)
-acs = d.get("acceptanceCriteria") or []
-lines = ["- " + (a.get("text") or "").strip() for a in acs if (a.get("text") or "").strip()]
-if not lines:
-    sys.exit(0)  # no acceptance criteria ⇒ no durable intent to harvest
-repo = os.environ.get("DREPO", "")
-num = os.environ.get("DNUM", "")
-title = os.environ.get("DTITLE", "")
-t = ("Requirement from #%s: %s" % (num, title))[:MAX_TITLE]
-body = (
-    "Why '%s' ticket #%s (\"%s\") was built — the requirement it served "
-    "(distilled at close from the delivered work):\n%s"
-    % (repo, num, title, "\n".join(lines))
-)
-if len(body) > MAX_SUMMARY:
-    body = body[: MAX_SUMMARY - 1] + "…"
-print(json.dumps({"title": t, "summary": body}))
-PY
-)"
+  _distill="$(SHOW="$SHOW" DTITLE="${TITLE:-}" DREPO="$RECALL_REPO_NAME" DNUM="$NUM" gaffer_json distill-intent 2>/dev/null || true)"
   [ -n "$_distill" ] || return 0
 
   local _dt _ds
-  _dt="$(printf '%s' "$_distill" | jget "d['title']" 2>/dev/null)" || return 0
-  _ds="$(printf '%s' "$_distill" | jget "d['summary']" 2>/dev/null)" || return 0
+  _dt="$(printf '%s' "$_distill" | jget 'd.title' 2>/dev/null)" || return 0
+  _ds="$(printf '%s' "$_distill" | jget 'd.summary' 2>/dev/null)" || return 0
   [ -n "$_dt" ] || return 0
 
   # --title/--summary/--body all supplied ⇒ `suggest` never drops into an interactive
@@ -681,14 +656,7 @@ _RESUMING=0
 RESUME_NUM=""
 if [ "${GAFFER_PAUSE_ON_CAP:-1}" = "1" ]; then
   SKIP_FILE="$GAFFER_DATA/.failed-tickets"; touch "$SKIP_FILE"
-  RESUME_NUM="$(wg ticket resume-requested 2>/dev/null | _GF_SKIP_FILE="$SKIP_FILE" python3 -c "import sys,json,os
-try: d=json.load(sys.stdin)
-except Exception: d=[]
-skip=set(open(os.environ['_GF_SKIP_FILE']).read().split())  # B-M2: path via env, not single-quoted literal
-for r in d:
-    n=r.get('number')
-    if n is not None and str(n) not in skip:
-        print(n); break" 2>/dev/null || echo '')"
+  RESUME_NUM="$(wg ticket resume-requested 2>/dev/null | gaffer_json resume-pick "$SKIP_FILE" 2>/dev/null || echo '')"
 fi
 
 # How many tickets are claimable? DISTINGUISH a real dispatch failure from a genuinely
@@ -704,7 +672,7 @@ if ! READY_JSON="$(wg ticket list -s ready 2>"$_ready_err")"; then
   exit 1
 fi
 rm -f "$_ready_err" 2>/dev/null || true
-READY_COUNT="$(echo "$READY_JSON" | jget 'len(d)' 2>/dev/null || echo 0)"
+READY_COUNT="$(echo "$READY_JSON" | jget 'd.length' 2>/dev/null || echo 0)"
 
 if [ -n "$RESUME_NUM" ]; then
   # Resolve the resume target as the delivery candidate and re-enter delivery in its
@@ -712,9 +680,9 @@ if [ -n "$RESUME_NUM" ]; then
   # the resume context for crash recovery.
   NUM="$RESUME_NUM"
   SHOW="$(wg ticket show "$NUM" 2>/dev/null)"
-  REPO_PATH="$(echo "$SHOW" | jget "(d['repositories'][0]['local_path'] if d['repositories'] else '') or ''" 2>/dev/null)"
-  STACK="$(echo "$SHOW" | jget "(d['repositories'][0]['stack'] if d['repositories'] else '') or ''" 2>/dev/null)"
-  TITLE="$(echo "$SHOW" | jget "d['ticket']['title']" 2>/dev/null)"
+  REPO_PATH="$(echo "$SHOW" | jget '(d.repositories[0]?.local_path) || ""' 2>/dev/null)"
+  STACK="$(echo "$SHOW" | jget '(d.repositories[0]?.stack) || ""' 2>/dev/null)"
+  TITLE="$(echo "$SHOW" | jget 'd.ticket.title' 2>/dev/null)"
   if wg ticket resume-begin "$NUM" >/dev/null 2>&1; then
     _RESUMING=1
     # Keep the (existing) worktree alive even if THIS resumed tick crashes mid-way —
@@ -759,7 +727,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # is one writer so this is byte-identical to before.
   BP_FILE="$GAFFER_DATA/.backpressure-repos"; : > "$BP_FILE"
   NUM=""; SHOW=""; REPO_PATH=""; STACK=""; TITLE=""
-  CANDIDATES="$(echo "$READY_JSON" | _GF_SKIP_FILE="$SKIP_FILE" python3 -c "import sys,json,os; skip=set(open(os.environ['_GF_SKIP_FILE']).read().split()); print('\n'.join(str(t['number']) for t in json.load(sys.stdin) if str(t['number']) not in skip))")"
+  CANDIDATES="$(echo "$READY_JSON" | gaffer_json pick-unskipped "$SKIP_FILE" --all)"
   # A-1: bound the candidate scan. Each candidate costs a `ticket show` + pressure
   # probe; with a per-repo cap (MAX_CONCURRENT_TICKETS_PER_REPO) in force, a tick
   # may legitimately skip several capped repos before finding a free one, so the
@@ -773,9 +741,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
       break
     fi
     _cshow="$(wg ticket show "$_cand" 2>/dev/null)"
-    _crepo="$(echo "$_cshow" | jget "(d['repositories'][0]['local_path'] if d['repositories'] else '') or ''" 2>/dev/null)"
-    _cdef="$(echo "$_cshow" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'" 2>/dev/null)"
-    _cname="$(echo "$_cshow" | jget "(d['repositories'][0]['name'] if d['repositories'] else '') or ''" 2>/dev/null)"
+    _crepo="$(echo "$_cshow" | jget '(d.repositories[0]?.local_path) || ""' 2>/dev/null)"
+    _cdef="$(echo "$_cshow" | jget '(d.repositories[0]?.default_branch) || "main"' 2>/dev/null)"
+    _cname="$(echo "$_cshow" | jget '(d.repositories[0]?.name) || ""' 2>/dev/null)"
     if [ -n "$_crepo" ] && git -C "$_crepo" rev-parse --git-dir >/dev/null 2>&1; then
       # Sweep genuinely-abandoned branches (POSITIVELY cancelled tickets with no
       # delivery record) first so they don't count against the cap. Parked
@@ -801,7 +769,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # later submit and is injected into the agent's MCP env for its evidence writes.
     if [ "$DRY_RUN" != "1" ]; then
       _CLAIM_JSON="$(wg claim-ticket "$_cand" --agent "$AGENT" --ttl "$GAFFER_CLAIM_TTL" 2>/dev/null || true)"
-      _CLAIM_TOK="$(printf '%s' "$_CLAIM_JSON" | jget "d.get('claimToken','')" 2>/dev/null || echo '')"
+      _CLAIM_TOK="$(printf '%s' "$_CLAIM_JSON" | jget 'd.claimToken ?? ""' 2>/dev/null || echo '')"
       if [ -z "$_CLAIM_TOK" ]; then
         log "candidate #$_cand — claim FAILED (lost race / ineligible); skipping and continuing the scan"
         continue
@@ -810,8 +778,8 @@ if [ "$READY_COUNT" -gt 0 ]; then
       log "claimed #$_cand for delivery (runner holds the claim; ttl=${GAFFER_CLAIM_TTL}s)"
     fi
     NUM="$_cand"; SHOW="$_cshow"; REPO_PATH="$_crepo"
-    STACK="$(echo "$_cshow" | jget "(d['repositories'][0]['stack'] if d['repositories'] else '') or ''" 2>/dev/null)"
-    TITLE="$(echo "$_cshow" | jget "d['ticket']['title']" 2>/dev/null)"
+    STACK="$(echo "$_cshow" | jget '(d.repositories[0]?.stack) || ""' 2>/dev/null)"
+    TITLE="$(echo "$_cshow" | jget 'd.ticket.title' 2>/dev/null)"
     break
   done <<< "$CANDIDATES"
   if [ -z "$NUM" ]; then
@@ -843,7 +811,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # bootstrap unblocks its dependent feature tickets. The oversized minimalism
   # HARD-fail is EXEMPTED for bootstrap (a fresh scaffold is legitimately larger)
   # — the note is still required and recorded, oversized is flagged not failed.
-  IS_BOOTSTRAP="$(echo "$SHOW" | jget "1 if d['ticket'].get('bootstrap') in (1, True) else 0" 2>/dev/null || echo 0)"
+  IS_BOOTSTRAP="$(echo "$SHOW" | jget '[1, true].includes(d.ticket.bootstrap) ? 1 : 0' 2>/dev/null || echo 0)"
   # A resume always re-enters the worktree delivery flow (pause-on-cap only fires in
   # the normal delivery path, never bootstrap), so never route a resume through the
   # create-a-repo bootstrap branch.
@@ -1052,20 +1020,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # EXEMPT for a bootstrap — a fresh scaffold is legitimately large. A missing
     # smallest-change note still FAILS; an oversized scaffold is FLAGGED only.
     read -r _BMZ_FILES _BMZ_LINES <<< "$(gaffer_diff_stats "$B_DIR" "$EMPTY_TREE")"
-    _BMZ_NOTE="$(wg ticket show "$NUM" 2>/dev/null | python3 -c "
-import sys,json,re
-try: d=json.load(sys.stdin)
-except Exception: d={}
-pat=re.compile(r'smallest[ -]change', re.I)
-hits=[]
-for e in (d.get('evidence') or []):
-    s=' '.join(str(e.get(k) or '') for k in ('summary','description','type'))
-    if pat.search(s): hits.append(s)
-for e in (d.get('events') or []):
-    s=str(e.get('summary') or e.get('payload') or '')
-    if pat.search(s): hits.append(s)
-print(hits[0] if hits else '')
-" 2>/dev/null || echo '')"
+    _BMZ_NOTE="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json smallest-change-note 2>/dev/null || echo '')"
     _BMZ_TRIM="$(printf '%s' "$_BMZ_NOTE" | tr -d '[:space:]')"
     if [ -z "$_BMZ_TRIM" ]; then
       # A greenfield bootstrap creates a repo FROM THE EMPTY TREE — there is no
@@ -1187,39 +1142,7 @@ print(hits[0] if hits else '')
   # the hook's GAFFER_WRITE_ROOTS/GAFFER_READ_ROOTS parser expects), skipping links
   # with no local_path on disk. The matching default_branch/name/path tuples are
   # emitted as TAB-separated rows for the per-write-repo branch + delivery loop.
-  WG_PARTITION="$(echo "$SHOW" | python3 -c '
-import sys, json
-d = json.load(sys.stdin)
-ACTIVE = {"confirmed", "implicit_single_repo"}
-write_paths, read_paths, write_rows = [], [], []
-for r in d.get("repositories", []) or []:
-    path = (r.get("local_path") or "").strip()
-    access = r.get("access") or ""
-    relation = r.get("relation") or ""
-    if relation in ("suggested", "rejected"):
-        continue            # never a root until confirmed; retained for audit only
-    if access == "none":
-        continue            # explicitly denied repo
-    is_write = relation in ACTIVE and access == "write"
-    if is_write:
-        if path:
-            write_paths.append(path)
-            write_rows.append("\t".join([
-                r.get("id") or "",
-                r.get("name") or "",
-                path,
-                (r.get("default_branch") or "main"),
-            ]))
-    else:
-        if path:
-            read_paths.append(path)   # read|test context, or context_only relation
-print("@@WRITE_PATHS@@")
-print("\n".join(write_paths))
-print("@@READ_PATHS@@")
-print("\n".join(read_paths))
-print("@@WRITE_ROWS@@")
-print("\n".join(write_rows))
-' 2>/dev/null || true)"
+  WG_PARTITION="$(echo "$SHOW" | gaffer_json partition 2>/dev/null || true)"
   # Slice the three sections back out (newline-delimited within each marker pair).
   WRITE_ROOTS="$(printf '%s\n' "$WG_PARTITION" | sed -n '/^@@WRITE_PATHS@@$/,/^@@READ_PATHS@@$/p' | sed '1d;$d')"
   READ_ROOTS="$(printf '%s\n' "$WG_PARTITION" | sed -n '/^@@READ_PATHS@@$/,/^@@WRITE_ROWS@@$/p' | sed '1d;$d')"
@@ -1227,26 +1150,26 @@ print("\n".join(write_rows))
 
   # R-9: detect a partition PARSE FAILURE (markers absent) vs a legitimately
   # empty partition (markers present, just no write paths — an older ticket or a
-  # ticket with only read-only repos). When the python3 partition script crashes
+  # ticket with only read-only repos). When the partition script crashes
   # or produces no output (the `|| true` swallows the exit code), WG_PARTITION has
   # no section markers, so all three variables above are empty. Distinguish:
   #   • markers PRESENT   → parse succeeded; WRITE_ROOTS empty = legitimate fallback.
-  #   • markers ABSENT    → python3/json failure; warn so a multi-repo ticket's
+  #   • markers ABSENT    → json parse failure; warn so a multi-repo ticket's
   #                         incomplete delivery is visible (not silent single-repo).
   if ! printf '%s\n' "$WG_PARTITION" | grep -qF '@@WRITE_PATHS@@'; then
-    # Parse failure (markers absent = python3/json crash). If the ticket actually links
+    # Parse failure (markers absent = json parse crash). If the ticket actually links
     # MORE THAN ONE repo, the single-repo fallback would silently deliver incomplete work
     # AND hand the safety hook an under-scoped write boundary — so fail CLOSED (park →
     # ready for re-derivation) rather than guess. A single-repo / repo-less ticket's
     # fallback IS correct, so it proceeds unchanged.
-    _SHOW_REPO_COUNT="$(echo "$SHOW" | jget "len(d.get('repositories') or [])" 2>/dev/null || echo 0)"
+    _SHOW_REPO_COUNT="$(echo "$SHOW" | jget '(d.repositories || []).length' 2>/dev/null || echo 0)"
     if [ "${_SHOW_REPO_COUNT:-0}" -gt 1 ]; then
       log "WG-002: access-boundary partition FAILED to parse for MULTI-REPO #$NUM ($_SHOW_REPO_COUNT repos) — refusing to deliver with an under-scoped single-repo boundary; parking → ready"
       gaffer_release_delivery ready "multi-repo access-boundary partition parse failed — needs re-derivation"
       gaffer_skip_ticket "$NUM"
       result error; exit 0
     fi
-    log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (python3/json failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH)."
+    log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (json parse failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH)."
   fi
 
   # Back-compat (older tickets with no WG-002 access boundary): fall back to the
@@ -1255,9 +1178,9 @@ print("\n".join(write_rows))
   if [ -z "$(printf '%s' "$WRITE_ROOTS" | tr -d '[:space:]')" ]; then
     WRITE_ROOTS="$REPO_PATH"
     READ_ROOTS=""
-    DEFAULT_BRANCH_FALLBACK="$(echo "$SHOW" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'" 2>/dev/null || echo main)"
-    REPO_NAME_FALLBACK="$(echo "$SHOW" | jget "(d['repositories'][0]['name'] if d['repositories'] else '') or ''" 2>/dev/null || echo '')"
-    REPO_ID_FALLBACK="$(echo "$SHOW" | jget "(d['repositories'][0]['id'] if d['repositories'] else '') or ''" 2>/dev/null || echo '')"
+    DEFAULT_BRANCH_FALLBACK="$(echo "$SHOW" | jget '(d.repositories[0]?.default_branch) || "main"' 2>/dev/null || echo main)"
+    REPO_NAME_FALLBACK="$(echo "$SHOW" | jget '(d.repositories[0]?.name) || ""' 2>/dev/null || echo '')"
+    REPO_ID_FALLBACK="$(echo "$SHOW" | jget '(d.repositories[0]?.id) || ""' 2>/dev/null || echo '')"
     WRITE_ROWS="$(printf '%s\t%s\t%s\t%s' "$REPO_ID_FALLBACK" "$REPO_NAME_FALLBACK" "$REPO_PATH" "$DEFAULT_BRANCH_FALLBACK")"
     MULTI_REPO=0
   else
@@ -1278,9 +1201,9 @@ print("\n".join(write_rows))
   # off-domain pack the ticket plainly calls for (a Terraform module, an SEO audit, a
   # runbook) is mounted too — those packs were otherwise unreachable from any runner
   # path. An argv, never a shell string: the untrusted text cannot inject flags.
-  _SKILL_TEXT="$(printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget "(d['ticket'].get('description') or '')[:600]" 2>/dev/null || true)")"
+  _SKILL_TEXT="$(printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget '(d.ticket.description || "").slice(0, 600)' 2>/dev/null || true)")"
   SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${SKILL_AREA:+--area "$SKILL_AREA"} --text "$_SKILL_TEXT" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
-  [ -n "$SKILLS" ] || SKILLS="$(fg skills --stack "$STACK" 2>/dev/null | jget "', '.join(s.get('id', s.get('name','')) for s in (d if isinstance(d,list) else d.get('skills',[])))" 2>/dev/null || true)"
+  [ -n "$SKILLS" ] || SKILLS="$(fg skills --stack "$STACK" 2>/dev/null | jget '(Array.isArray(d) ? d : d.skills || []).map((s) => s.id ?? s.name ?? "").join(", ")' 2>/dev/null || true)"
   [ -n "$SKILLS" ] || SKILLS="(choose the skill whose description matches the ticket)"
 
   # Always-on QUALITY LENSES (frontmatter `area: quality`) — applied to EVERY delivery,
@@ -1395,22 +1318,7 @@ print("\n".join(write_rows))
   # repeating the mistake). Pulled from ticket.transitioned events whose payload reason
   # records a rejection (to refining/ready/cancelled), newest few, deduped.
   REVIEW_FEEDBACK_BLOCK=""
-  _RF="$(wg ticket show "$NUM" 2>/dev/null | python3 -c "
-import sys,json
-try: d=json.load(sys.stdin)
-except Exception: sys.exit(0)
-out=[]
-for e in (d.get('events') or []):
-    if e.get('event_type')!='ticket.transitioned': continue
-    try: pl=json.loads(e.get('payload_json') or '{}')
-    except Exception: pl={}
-    if pl.get('to') in ('refining','ready','cancelled'):
-        r=(pl.get('reason') or '').strip()
-        if r and r.lower() not in ('review_rejected','mark ready','reopen','reopen for review','board_move','wont_do') and not r.lower().startswith('reopen'):
-            out.append(r)
-seen=set(); uniq=[x for x in out if not (x in seen or seen.add(x))]
-for r in uniq[-5:]: print('  - '+r)
-" 2>/dev/null || true)"
+  _RF="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json review-feedback 2>/dev/null || true)"
   # The reviewer feedback is UNTRUSTED (a rejection reason is free text that may
   # itself carry injected instructions) — quarantine the body inside an envelope.
   if [ -n "$_RF" ]; then
@@ -1437,7 +1345,7 @@ $_RF_Q
   [ -n "$_CARD_REAL_REPO" ] || _CARD_REAL_REPO="$REPO_PATH"
   _CARD_REPO_NAME="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' 'NR==1{print $2}')"
   [ -n "$_CARD_REPO_NAME" ] || _CARD_REPO_NAME="$(basename "$_CARD_REAL_REPO")"
-  _CARD_DESC="$(echo "$SHOW" | jget "(d['ticket'].get('description') or '')[:600]" 2>/dev/null || echo '')"
+  _CARD_DESC="$(echo "$SHOW" | jget '(d.ticket.description || "").slice(0, 600)' 2>/dev/null || echo '')"
   _CARD_QUERY="$(printf '%s %s' "$TITLE" "$_CARD_DESC")"
   # Remember the display name + ticket used for THIS delivery's recall, so the
   # outcome-feedback call below (submit / blocked-park) targets the exact
@@ -1519,11 +1427,11 @@ EOF
   # "ROUTE #N …" line and echoes the model id; an explicit GAFFER_IMPL_MODEL still
   # wins (backward-compat). With the default registry + a normal ticket this
   # resolves to mid=sonnet — exactly today's implement model.
-  ROUTE_RISK="$(echo "$SHOW" | jget "d['ticket'].get('risk_level','medium') or 'medium'" 2>/dev/null || echo medium)"
-  ROUTE_AC="$(echo "$SHOW" | jget "len(d.get('acceptanceCriteria',[]))" 2>/dev/null || echo 0)"
+  ROUTE_RISK="$(echo "$SHOW" | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
+  ROUTE_AC="$(echo "$SHOW" | jget '(d.acceptanceCriteria || []).length' 2>/dev/null || echo 0)"
   # attempt_count is 0-based (0 = first delivery); the router's attempt is 1-based
   # so a prior rejection (attempt_count≥1) escalates. Default 0 if absent.
-  ROUTE_ATTEMPT_RAW="$(echo "$SHOW" | jget "int(d['ticket'].get('attempt_count',0) or 0)" 2>/dev/null || echo 0)"
+  ROUTE_ATTEMPT_RAW="$(echo "$SHOW" | jget 'Math.trunc(Number(d.ticket.attempt_count || 0))' 2>/dev/null || echo 0)"
   ROUTE_ATTEMPT=$(( ${ROUTE_ATTEMPT_RAW:-0} + 1 ))
   # Pass the primary worktree so the router can measure diff size / file count when a
   # worktree with UNCOMMITTED work exists (a resumed delivery); on a first attempt no
@@ -1587,7 +1495,7 @@ EOF
   # DEFAULT_BRANCH = the PRIMARY write repo's base, kept for the existing
   # diff/assertion code paths below (which operate on PRIMARY_REPO = primary wt).
   DEFAULT_BRANCH="$(printf '%s\n' "$WRITE_ROWS" | grep . | head -1 | awk -F'\t' '{print ($4==""?"main":$4)}')"
-  [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="$(echo "$SHOW" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'")"
+  [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="$(echo "$SHOW" | jget '(d.repositories[0]?.default_branch) || "main"')"
 
   # Helper: tear down every worktree we may have created for this ticket and
   # (optionally) delete the gaffer/ branch. Used for (a) stale cleanup before a
@@ -1927,7 +1835,7 @@ $real
     # default (GAFFER_REWORK_BUDGET_USD). A per-ticket budget lets an operator cap one
     # expensive ticket without touching the global default.
     local _ticket_budget _eff_ceiling
-    _ticket_budget="$(printf '%s' "${SHOW:-}" | jget "d['ticket'].get('delivery_budget_usd')" 2>/dev/null || true)"
+    _ticket_budget="$(printf '%s' "${SHOW:-}" | jget 'd.ticket.delivery_budget_usd' 2>/dev/null || true)"
     case "$_ticket_budget" in ""|None|null) _ticket_budget="" ;; esac
     if [ -n "$_ticket_budget" ] && _num_pos "$_ticket_budget"; then
       _eff_ceiling="$_ticket_budget"
@@ -2138,13 +2046,7 @@ $_trail_q
     # Serialise the full worktree map (one entry per write repo) so a multi-repo
     # delivery resumes EVERY worktree, not just the primary. WT_ROWS is the runner's
     # TSV: rid \t rname \t rpath \t rbase \t rwt.
-    _WT_JSON="$(printf '%s\n' "$WT_ROWS" | python3 -c "import sys,json
-out=[]
-for ln in sys.stdin:
-    parts=ln.rstrip('\n').split('\t')
-    if len(parts)>=5 and parts[4]:
-        out.append({'repo':parts[1],'path':parts[2],'base':parts[3],'wt':parts[4]})
-print(json.dumps(out))" 2>/dev/null || echo '[]')"
+    _WT_JSON="$(printf '%s\n' "$WT_ROWS" | gaffer_json worktree-rows-json 2>/dev/null || echo '[]')"
     log "CAP: #$NUM hit the ${_PAUSE_REASON} cap mid-delivery (turns=${_CAP_TURNS:-?}, spend=${_CAP_SPEND}) — PAUSING in place; worktree + branch $WORK_BRANCH kept alive for one-click Continue"
     # Pause the delivery: transition the ticket to `paused`, persist the resume
     # context (branch, primary worktree, full worktree map, repo, attempt, turns,
@@ -2369,20 +2271,7 @@ print(json.dumps(out))" 2>/dev/null || echo '[]')"
     # The smallest-change note is whatever the agent recorded as evidence: scan the
     # ticket's evidence/event summaries for a "smallest-change"/"smallest change"
     # marker (the minimalism + record-evidence skills emit one).
-    _MZ_NOTE="$(wg ticket show "$NUM" 2>/dev/null | python3 -c "
-import sys,json,re
-try: d=json.load(sys.stdin)
-except Exception: d={}
-pat=re.compile(r'smallest[ -]change', re.I)
-hits=[]
-for e in (d.get('evidence') or []):
-    s=' '.join(str(e.get(k) or '') for k in ('summary','description','type'))
-    if pat.search(s): hits.append(s)
-for e in (d.get('events') or []):
-    s=str(e.get('summary') or e.get('payload') or '')
-    if pat.search(s): hits.append(s)
-print(hits[0] if hits else '')
-" 2>/dev/null || echo '')"
+    _MZ_NOTE="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json smallest-change-note 2>/dev/null || echo '')"
     _MZ_CHANGED="$(git -C "$PRIMARY_REPO" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | tr '\n' ' ')"
     # Run in THIS shell (stdout → file, NOT a $() subshell) so gaffer_check_minimalism's
     # GAFFER_MINIMALISM_REASON global propagates here. A $() subshell loses it, and the
@@ -2467,28 +2356,16 @@ print(hits[0] if hits else '')
     # Per-repo commands from the dispatch payload, keyed by repo id (fallback name):
     #   id|name <TAB> test_cmd <TAB> lint_cmd
     # First line is the sentinel `@@DOD_PARSE_OK@@` emitted ONLY when the payload
-    # parsed — so an unparseable payload / missing python3 is detected, never
+    # parsed — so an unparseable payload is detected, never
     # silently treated as "no commands" (which would fail the gate OPEN).
-    DOD_CMD_MAP="$(echo "$SHOW" | python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(3)          # parse failure → no sentinel, non-zero
-print("@@DOD_PARSE_OK@@")
-for r in d.get("repositories", []) or []:
-    key = (r.get("id") or r.get("name") or "").strip()
-    if not key: continue
-    tc = (r.get("test_command") or "").replace("\t", " ").replace("\n", " ")
-    lc = (r.get("lint_command") or "").replace("\t", " ").replace("\n", " ")
-    print("\t".join([key, tc, lc]))
-' 2>/dev/null || true)"
+    # parse failure → no sentinel, non-zero (exit 3)
+    DOD_CMD_MAP="$(echo "$SHOW" | gaffer_json dod-cmd-map 2>/dev/null || true)"
     if ! printf '%s\n' "$DOD_CMD_MAP" | grep -q '^@@DOD_PARSE_OK@@$'; then
-      # Could not parse the dispatch payload (or python3 is unavailable). Do NOT
+      # Could not parse the dispatch payload. Do NOT
       # fail the gate OPEN by pretending no commands are configured: surface it as a
       # visible WARNING and FAIL the delivery closed so a human looks, rather than
       # silently shipping unverified work.
-      log "DoD: WARNING — could not parse the dispatch payload for #$NUM gate commands (python3 missing or malformed SHOW); FAILING CLOSED — parking, not submitting"
+      log "DoD: WARNING — could not parse the dispatch payload for #$NUM gate commands (malformed SHOW); FAILING CLOSED — parking, not submitting"
       wg attach-evidence "$NUM" --type test_output \
         --summary "DoD: FAIL"$'\n'"$(printf '{"dod":"FAIL","gates":[{"gate":"config","repo":"-","status":"FAIL","rc":"-","note":"could not resolve DoD gate commands from the dispatch payload"}]}')" >/dev/null 2>&1 \
         && log "DoD: recorded config-FAIL evidence on #$NUM" \
@@ -2879,7 +2756,7 @@ for r in d.get("repositories", []) or []:
     if [ "$_CI_RC" = "2" ]; then
       # CI went red → auto-reject back to rework so a human never sees a broken CI.
       log "H3: CI FAILED for #$NUM — auto-rejecting delivery back to rework (ticket left for re-delivery)"
-      _CUR_CI_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+      _CUR_CI_STATUS="$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
       if [ "$_CUR_CI_STATUS" = "in_review" ]; then
         wg review reject "$NUM" --to refining --reviewer factory-ci \
           --reason "H3: CI checks failed on branch $WORK_BRANCH — see attached evidence for the failing check" \
@@ -2926,10 +2803,10 @@ if [ "${GAFFER_MAINTENANCE:-0}" = "1" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
     log "DRY_RUN: would run: fg maintain (scheduler-chosen maintenance loop)"; result no_work; exit 0
   fi
   MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain 2>>"$GAFFER_LOG")"
-  MCHOSEN="$(echo "$MOUT" | jget "d.get('report',{}).get('chosen') or 'none'" 2>/dev/null || echo none)"
-  MREASON="$(echo "$MOUT" | jget "d.get('report',{}).get('reason','')" 2>/dev/null || echo '')"
-  MSTATUS="$(echo "$MOUT" | jget "(d.get('report',{}).get('outcome') or {}).get('status') or 'no_op'" 2>/dev/null || echo no_op)"
-  MDRAFTS="$(echo "$MOUT" | jget "(d.get('report',{}).get('outcome') or {}).get('draftCount',0)" 2>/dev/null || echo 0)"
+  MCHOSEN="$(echo "$MOUT" | jget '(d.report || {}).chosen || "none"' 2>/dev/null || echo none)"
+  MREASON="$(echo "$MOUT" | jget '(d.report || {}).reason ?? ""' 2>/dev/null || echo '')"
+  MSTATUS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).status || "no_op"' 2>/dev/null || echo no_op)"
+  MDRAFTS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).draftCount ?? 0' 2>/dev/null || echo 0)"
   log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, drafts=$MDRAFTS"
   [ "${MDRAFTS:-0}" -gt 0 ] && { result maintenance_drafted; exit 0; }
   result maintenance_ran; exit 0
@@ -2944,7 +2821,7 @@ if [ "${IDLE_DRAFT_WHEN_IDLE:-0}" = "1" ] && [ -f "$CREW_DIR/dist/cli/index.js" 
     log "DRY_RUN: would run: fg idle"; result no_work; exit 0
   fi
   OUT="$(fg idle 2>>"$GAFFER_LOG")"
-  DRAFTS="$(echo "$OUT" | jget "d.get('outcome',{}).get('drafts',[]) and len(d['outcome']['drafts']) or 0" 2>/dev/null || echo 0)"
+  DRAFTS="$(echo "$OUT" | jget '((d.outcome || {}).drafts || []).length || 0' 2>/dev/null || echo 0)"
   log "idle scan created $DRAFTS draft(s)"
   [ "${DRAFTS:-0}" -gt 0 ] && { result idle_drafted; exit 0; }
 fi

@@ -72,8 +72,8 @@ source "$RUNNER_DIR/lib/hygiene.sh"
 # Redefine wg/jget AFTER sourcing so the test always hits OUR temp DB deterministically
 # (the config's own wg would do the same, but this pins the DB explicitly).
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 active_claims() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -113,17 +113,17 @@ chmod +x "$STUB"
 
 wg init >/dev/null 2>&1
 wg repo add -n demo --path "$REPO" --branch main --test "true" >/dev/null 2>&1
-AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget 'd.agent.id')"
 [ -n "$AGENT" ] || { echo "SKIP: could not register agent"; exit 0; }
 
 # Drive a ticket from create → in_review with a REAL delivered diff. Echoes "<num> <branch>".
 deliver_to_in_review() {  # $1 title, $2 marker (unique diff content)
   local title="$1" mark="$2" num acid tok branch wt
-  num="$(wg ticket create -t "$title" --description "afk ship e2e" --policy team_light --risk low 2>/dev/null | jget "d['ticket']['number']")"
-  acid="$(wg ac add "$num" -t "the line is added" 2>/dev/null | jget "d['ac_id']")"
+  num="$(wg ticket create -t "$title" --description "afk ship e2e" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
+  acid="$(wg ac add "$num" -t "the line is added" 2>/dev/null | jget 'd.ac_id')"
   wg ticket repo-access set "$num" demo --access write --relation confirmed >/dev/null 2>&1
   wg ticket ready "$num" >/dev/null 2>&1
-  tok="$(wg claim-ticket "$num" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']")"
+  tok="$(wg claim-ticket "$num" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
   branch="gaffer/t$num"
   wt="$WORK/wt-$num"
   git -C "$REPO" worktree add -q -b "$branch" "$wt" main

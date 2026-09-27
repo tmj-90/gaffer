@@ -49,8 +49,8 @@ REPO="$WORK/repo"
 export GAFFER_DATA="$WORK"
 
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 active_claims() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -72,12 +72,12 @@ git -C "$REPO" commit -qm "init"
 # ── Dispatch: repo + ready ticket + AC + runner claim (token) ────────────────
 wg init >/dev/null 2>&1
 wg repo add -n demo --path "$REPO" --branch main --test "true" >/dev/null 2>&1
-NUM="$(wg ticket create -t "Add a delivered line" --description "the factory delivers a trivial change" --policy team_light --risk low 2>/dev/null | jget "d['ticket']['number']")"
-ACID="$(wg ac add "$NUM" -t "the line is added" 2>/dev/null | jget "d['ac_id']")"
+NUM="$(wg ticket create -t "Add a delivered line" --description "the factory delivers a trivial change" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
+ACID="$(wg ac add "$NUM" -t "the line is added" 2>/dev/null | jget 'd.ac_id')"
 wg ticket repo-access set "$NUM" demo --access write --relation confirmed >/dev/null 2>&1
 wg ticket ready "$NUM" >/dev/null 2>&1
-AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget "d['agent']['id']")"
-TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']")"
+AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget 'd.agent.id')"
+TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
 { [ -n "$NUM" ] && [ -n "$TOKEN" ] && [ "$(status_of "$NUM")" = "claimed" ]; } \
   && ok "setup: #$NUM ready → claimed with a claim token" \
   || fail "setup failed (num=$NUM token=${TOKEN:+set} status=$(status_of "$NUM"))"
@@ -157,11 +157,11 @@ wg submit "$NUM" --token "$TOKEN" --reason "gates passed" >/dev/null 2>&1
   || fail "claim not completed after submit (active=$(active_claims "$NUM"))"
 
 echo "== TRACE: every event this tick wrote carries the tick id as correlation_id =="
-TRACED="$(wg events list --correlation "$GAFFER_TICK_ID" --json 2>/dev/null | jget "len(d['events'])" 2>/dev/null || echo 0)"
+TRACED="$(wg events list --correlation "$GAFFER_TICK_ID" --json 2>/dev/null | jget 'd.events.length' 2>/dev/null || echo 0)"
 [ "${TRACED:-0}" -ge 1 ] \
   && ok "dispatch events list --correlation \$GAFFER_TICK_ID → $TRACED event(s) (runner wg calls stamped)" \
   || fail "no work_event carries correlation_id=$GAFFER_TICK_ID (got $TRACED)"
-SUBMIT_TRACED="$(wg events list --correlation "$GAFFER_TICK_ID" --json 2>/dev/null | jget "sum(1 for e in d['events'] if e['event_type']=='ticket.transitioned')" 2>/dev/null || echo 0)"
+SUBMIT_TRACED="$(wg events list --correlation "$GAFFER_TICK_ID" --json 2>/dev/null | jget 'd.events.filter((e) => e.event_type === "ticket.transitioned").length' 2>/dev/null || echo 0)"
 [ "${SUBMIT_TRACED:-0}" -ge 1 ] \
   && ok "the submit's ticket.transitioned event is among them" \
   || fail "the submit transition was not stamped with the tick id"

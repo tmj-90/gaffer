@@ -321,9 +321,9 @@ gaffer_route_model() {
     return 0
   fi
   local model tier reasons
-  model="$(printf '%s' "$json" | jget "d.get('model','') or ''" 2>/dev/null || true)"
-  tier="$(printf '%s' "$json" | jget "d.get('tier','') or ''" 2>/dev/null || true)"
-  reasons="$(printf '%s' "$json" | jget "'; '.join(d.get('reasons',[]))" 2>/dev/null || true)"
+  model="$(printf '%s' "$json" | jget 'd.model || ""' 2>/dev/null || true)"
+  tier="$(printf '%s' "$json" | jget 'd.tier || ""' 2>/dev/null || true)"
+  reasons="$(printf '%s' "$json" | jget '(d.reasons || []).join("; ")' 2>/dev/null || true)"
   log "ROUTE${ticket:+ #$ticket} phase=$phase risk=${risk:-medium} ac=$ac attempt=$attempt budget=${GAFFER_BUDGET_REMAINING:-unlimited} → tier=$tier model=$model [${reasons}]"
   printf '%s' "$model"
   return 0
@@ -876,20 +876,12 @@ EOF
 #    ambient RAW inputs (mirrors runner/test/capture-context-golden.sh's inputs.json
 #    emitter). reviewFeedbackReasons is recovered from the pre-block "  - " lines in
 #    $_RF; writeRepos from WT_ROWS ($5 path, $2 name); readRoots from READ_ROOTS —
-#    the same grep/awk partition the bash WRITE_LIST/READ_LIST use. python3 is a hard
-#    tick.sh dep and json-encodes arbitrary title/path bytes safely. ──────────────
+#    the same grep/awk partition the bash WRITE_LIST/READ_LIST use. json-tool.mjs
+#    (node) json-encodes arbitrary title/path bytes safely. ─────────────────────
 _gaffer_prompt_inputs_json() {
   local variant="$1"
   if [ "$variant" = "bootstrap" ]; then
-    GF_NUM="${NUM:-}" GF_TITLE="${TITLE:-}" GF_SKILLS="${B_SKILLS:-}" GF_DIR="${B_DIR:-}" python3 -c '
-import json, os
-print(json.dumps({
-    "kind": "bootstrap",
-    "ticketNumber": os.environ.get("GF_NUM", ""),
-    "title": os.environ.get("GF_TITLE", ""),
-    "skills": os.environ.get("GF_SKILLS", ""),
-    "bootstrapDir": os.environ.get("GF_DIR", ""),
-}))'
+    GF_NUM="${NUM:-}" GF_TITLE="${TITLE:-}" GF_SKILLS="${B_SKILLS:-}" GF_DIR="${B_DIR:-}" gaffer_json prompt-inputs bootstrap
     return $?
   fi
   local resuming=false
@@ -897,50 +889,7 @@ print(json.dumps({
   GF_NUM="${NUM:-}" GF_TITLE="${TITLE:-}" GF_RESUMING="$resuming" GF_SKILLS="${SKILLS:-}" \
   GF_LENSES="${LENSES:-}" GF_RF="${_RF:-}" GF_FCB="${FILE_CARDS_BLOCK:-}" \
   GF_PCB="${PRODUCT_CONTEXT_BLOCK:-}" GF_WORK_BRANCH="${WORK_BRANCH:-}" \
-  GF_WT_ROWS="${WT_ROWS:-}" GF_READ_ROOTS="${READ_ROOTS:-}" GF_PRIMARY="${PRIMARY_REPO:-}" python3 -c '
-import json, os
-rf = os.environ.get("GF_RF", "")
-# Reconstruct the reasons array so renderReviewFeedbackBlock re-prefixes each with
-# "  - " to a block byte-identical to the bash path, which quarantines the raw
-# "  - "-prefixed $_RF verbatim. A reason may span multiple lines (a rejection
-# reason with an embedded newline): only its FIRST line carries the "  - " prefix,
-# continuation lines belong to the same reason — so group them, do NOT split every
-# newline into its own reason (that would re-prefix continuations and drift from bash).
-reasons = []
-for l in rf.split("\n"):
-    if l == "":
-        continue
-    if l.startswith("  - "):
-        reasons.append(l[4:])
-    elif reasons:
-        reasons[-1] += "\n" + l
-    else:
-        reasons.append(l)
-write_repos = []
-for l in os.environ.get("GF_WT_ROWS", "").split("\n"):
-    if l == "":
-        continue
-    cols = l.split("\t")
-    write_repos.append({
-        "worktreePath": cols[4] if len(cols) > 4 else "",
-        "name": cols[1] if len(cols) > 1 else "",
-    })
-read_roots = [l for l in os.environ.get("GF_READ_ROOTS", "").split("\n") if l != ""]
-print(json.dumps({
-    "kind": "delivery",
-    "ticketNumber": os.environ.get("GF_NUM", ""),
-    "title": os.environ.get("GF_TITLE", ""),
-    "resuming": os.environ.get("GF_RESUMING", "false") == "true",
-    "skills": os.environ.get("GF_SKILLS", ""),
-    "lenses": os.environ.get("GF_LENSES", ""),
-    "reviewFeedbackReasons": reasons,
-    "fileCardsBlock": os.environ.get("GF_FCB", ""),
-    "productContextBlock": os.environ.get("GF_PCB", ""),
-    "workBranch": os.environ.get("GF_WORK_BRANCH", ""),
-    "writeRepos": write_repos,
-    "readRoots": read_roots,
-    "primaryRepo": os.environ.get("GF_PRIMARY", ""),
-}))'
+  GF_WT_ROWS="${WT_ROWS:-}" GF_READ_ROOTS="${READ_ROOTS:-}" GF_PRIMARY="${PRIMARY_REPO:-}" gaffer_json prompt-inputs "$variant"
 }
 
 # --- Portable file lock (A-1 parallel execution) -----------------------------
@@ -1729,8 +1678,14 @@ wg() { gaffer_assert_db_vars || return 1; node "$DISPATCH_DIR/dist/cli/index.js"
 fg() { node "$CREW_DIR/dist/cli/index.js" -c "$CREW_CONFIG" "$@"; }
 lg() { gaffer_assert_db_vars || return 1; MEMORY_DB="$MEMORY_DB" node "$MEMORY_CLI_BIN" "$@"; }
 
-# Tiny JSON field reader (python3): jget '<expr starting with d>' <<< "$json"
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
+# The runner's JSON helpers (node — lib/json-tool.mjs replaces the former inline
+# python3 programs; python3 is no longer a runtime dependency).
+#   gaffer_json <subcommand> [args]   — see the table in lib/json-tool.mjs
+#   jget '<js expression over d>'      — stdin JSON → d; prints the value ("" for
+#                                        null); a parse/eval failure exits 1 with
+#                                        no output so `|| echo <default>` applies.
+gaffer_json() { node "$RUNNER_DIR/lib/json-tool.mjs" "$@"; }
+jget() { gaffer_json expr "$1"; }
 
 # GRADUATED-AUTONOMY: the read-only ship decision the AFK gate consults per ticket —
 # "is `auto` permitted for ticket $1 at gate $2 (approve|merge)?" It reuses dispatch's
@@ -1748,7 +1703,7 @@ gaffer_auto_decision() {
            DISPATCH_ALLOW_AGENT_APPROVE="${DISPATCH_ALLOW_AGENT_APPROVE:-0}"
     wg ticket auto-decision "$_ref" --gate "$_gate" 2>/dev/null
   )" || _out=""
-  _dec="$(printf '%s' "$_out" | jget "d.get('decision','deny')" 2>/dev/null || echo deny)"
+  _dec="$(printf '%s' "$_out" | jget 'd.decision ?? "deny"' 2>/dev/null || echo deny)"
   [ "$_dec" = "allow" ] && printf 'allow\n' || printf 'deny\n'
 }
 
@@ -1810,7 +1765,7 @@ gaffer_lite_trivial_reason() {
 #   $1 ticket#   $2 repo-path   $3 base-ref   $4 delivery-branch
 gaffer_ticket_is_trivial() {
   local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _stat _lines _files _paths _r
-  _risk="$(wg ticket show "$_num" 2>/dev/null | jget "(d['ticket'].get('risk_level') or 'medium')" 2>/dev/null || echo medium)"
+  _risk="$(wg ticket show "$_num" 2>/dev/null | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
   _stat="$(git -C "$_repo" diff "$_base"..."$_branch" --numstat 2>/dev/null)"
   _lines="$(printf '%s\n' "$_stat" | awk 'NF{a+=($1 ~ /^[0-9]+$/ ? $1 : 0)+($2 ~ /^[0-9]+$/ ? $2 : 0)} END{print a+0}')"
   _files="$(printf '%s\n' "$_stat" | awk 'NF' | grep -c . || true)"

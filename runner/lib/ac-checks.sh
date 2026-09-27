@@ -1,6 +1,7 @@
 # Gaffer MACHINE-CHECKABLE acceptance criteria — the runner executes each AC's
 # `check_command` in the delivery worktree and records the verdict.
 # shellcheck shell=bash
+_GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 #
 # WHY. Acceptance criteria were prose: the agent wrote whatever evidence it liked via
 # record_ac_evidence and the done gate only required a non-empty diff + a passing
@@ -23,7 +24,7 @@
 #     Returns 0 when every check passed (or there were none), 1 when ANY failed.
 #   gaffer_ac_check_count <ticket-json>   → number of ACs carrying a check_command
 #
-# Fail-soft on INFRASTRUCTURE (an unparseable ticket payload, missing python3): no
+# Fail-soft on INFRASTRUCTURE (an unparseable ticket payload, a failed parse): no
 # checks run and the function returns 0 with a logged warning — the DoD gates and the
 # human review still stand. Fail-CLOSED on the checks themselves: a check that cannot
 # spawn is a FAIL (rc 127), never a skip.
@@ -31,23 +32,7 @@
 # Emit `<ac-id>\t<check_command>\t<label>` per checked AC (TABs/newlines in the
 # command collapsed to spaces so the row stays one line). Empty output ⇒ none.
 _gaffer_ac_check_rows() {
-  printf '%s' "$1" | python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(3)
-acs = d.get("acceptanceCriteria") or d.get("acceptance_criteria") or []
-n = 0
-for i, ac in enumerate(acs, 1):
-    cmd = (ac.get("check_command") or "").strip()
-    if not cmd:
-        continue
-    n += 1
-    cmd = cmd.replace("\t", " ").replace("\n", " ").replace("\r", " ")
-    text = (ac.get("text") or "").replace("\t", " ").replace("\n", " ")[:60]
-    print("%s\t%s\tAC%d: %s" % (ac.get("id", ""), cmd, i, text))
-' 2>/dev/null
+  printf '%s' "$1" | node "$_GAFFER_JSON_TOOL" ac-check-rows 2>/dev/null
 }
 
 gaffer_ac_check_count() {

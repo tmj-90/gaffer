@@ -63,9 +63,10 @@ else
 
   # Minimal live deps the helper closes over (mirrors factory.config.sh).
   lg()   { MEMORY_DB="$MEMORY_DB" node "$MEMORY_CLI" "$@"; }
-  jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
+  gaffer_json() { node "$RUNNER_DIR/lib/json-tool.mjs" "$@"; }
+  jget() { gaffer_json expr "$1"; }
   log()  { :; }
-  export -f lg jget log 2>/dev/null || true
+  export -f lg gaffer_json jget log 2>/dev/null || true
 
   # Extract the helper straight from tick.sh and source it — genuinely drives
   # the SHIPPING function, not a copy.
@@ -89,11 +90,11 @@ else
     # human-gated DRAFT. Its inputs (ticket title + ACs) are agent-influenceable, so an
     # ungated ACTIVE write would be the cross-ticket memory poisoning the gate exists for.
     ACTIVE="$(lg search --repo app --kind requirement --json 2>/dev/null || echo '[]')"
-    AN="$(printf '%s' "$ACTIVE" | jget 'len(d)' 2>/dev/null || echo 0)"
+    AN="$(printf '%s' "$ACTIVE" | jget 'd.length' 2>/dev/null || echo 0)"
     DRAFTS="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null || echo '[]')"
-    DN="$(printf '%s' "$DRAFTS" | jget 'len(d)' 2>/dev/null || echo 0)"
+    DN="$(printf '%s' "$DRAFTS" | jget 'd.length' 2>/dev/null || echo 0)"
     if [ "$AN" = "0" ] && [ "$DN" = "1" ]; then ok "supervised default: distilled requirement is a human-gated DRAFT (not active)"; else fail "expected 0 active / 1 draft by default (got active=$AN draft=$DN)"; fi
-    AT="$(printf '%s' "$DRAFTS" | jget "d[0]['title'] if d else ''" 2>/dev/null || echo '')"
+    AT="$(printf '%s' "$DRAFTS" | jget 'd[0]?.title ?? ""' 2>/dev/null || echo '')"
     case "$AT" in
       "Requirement from #42:"*) ok "record title carries the ticket provenance ($AT)" ;;
       *) fail "record title not derived from ticket (got: $AT)" ;;
@@ -105,13 +106,13 @@ else
     NUM=62; TITLE="Add export to CSV"
     SHOW='{"ticket":{"title":"Add export to CSV"},"acceptanceCriteria":[{"text":"CSV download works","status":"pending"}]}'
     MEMORY_AUTO_APPROVE=1 gaffer_distill_ticket_intent
-    A62="$(lg search --repo app --kind requirement --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #62' in r['title']])" 2>/dev/null || echo 0)"
+    A62="$(lg search --repo app --kind requirement --json 2>/dev/null | jget 'd.filter((r) => r.title.includes("Requirement from #62")).length' 2>/dev/null || echo 0)"
     if [ "$A62" = "1" ]; then ok "MEMORY_AUTO_APPROVE=1: distilled requirement is auto-promoted ACTIVE (primes unattended runs)"; else fail "expected #62 active under MEMORY_AUTO_APPROVE=1 (got $A62)"; fi
     # GAFFER_MEMORY_AUTO_PROMOTE=1 overrides a supervised default the other way.
     NUM=72; TITLE="Add dark mode"
     SHOW='{"ticket":{"title":"Add dark mode"},"acceptanceCriteria":[{"text":"Theme toggle persists","status":"pending"}]}'
     GAFFER_MEMORY_AUTO_PROMOTE=1 gaffer_distill_ticket_intent
-    A72="$(lg search --repo app --kind requirement --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #72' in r['title']])" 2>/dev/null || echo 0)"
+    A72="$(lg search --repo app --kind requirement --json 2>/dev/null | jget 'd.filter((r) => r.title.includes("Requirement from #72")).length' 2>/dev/null || echo 0)"
     if [ "$A72" = "1" ]; then ok "GAFFER_MEMORY_AUTO_PROMOTE=1 explicitly promotes ACTIVE in supervised mode"; else fail "expected #72 active under GAFFER_MEMORY_AUTO_PROMOTE=1 (got $A72)"; fi
 
     # The human-gate is still honoured: GAFFER_MEMORY_AUTO_PROMOTE=0 keeps a distilled
@@ -119,8 +120,8 @@ else
     NUM=52; TITLE="Add rate limiting"
     SHOW='{"ticket":{"title":"Add rate limiting"},"acceptanceCriteria":[{"text":"429 on burst","status":"pending"}]}'
     GAFFER_MEMORY_AUTO_PROMOTE=0 gaffer_distill_ticket_intent
-    G_ACTIVE="$(lg search --repo app --kind requirement --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #52' in r['title']])" 2>/dev/null || echo 0)"
-    G_DRAFT="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #52' in r['title']])" 2>/dev/null || echo 0)"
+    G_ACTIVE="$(lg search --repo app --kind requirement --json 2>/dev/null | jget 'd.filter((r) => r.title.includes("Requirement from #52")).length' 2>/dev/null || echo 0)"
+    G_DRAFT="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget 'd.filter((r) => r.title.includes("Requirement from #52")).length' 2>/dev/null || echo 0)"
     if [ "$G_ACTIVE" = "0" ] && [ "$G_DRAFT" = "1" ]; then ok "GAFFER_MEMORY_AUTO_PROMOTE=0 keeps the distilled requirement a human-gated DRAFT"; else fail "gate env should draft not promote (active=$G_ACTIVE draft=$G_DRAFT)"; fi
 
     # ── C: ticket with NO acceptance criteria is a no-op ──────────────────
@@ -128,13 +129,13 @@ else
     TITLE="Trivial tweak"
     SHOW='{"ticket":{"title":"Trivial tweak"},"acceptanceCriteria":[]}'
     gaffer_distill_ticket_intent
-    D43="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #43' in r['title']])" 2>/dev/null || echo 0)"
+    D43="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget 'd.filter((r) => r.title.includes("Requirement from #43")).length' 2>/dev/null || echo 0)"
     if [ "$D43" = "0" ]; then ok "no-AC ticket harvests nothing (conservative no-op)"; else fail "no-AC ticket wrongly drafted lore"; fi
 
     # ── Fail-soft: DRY_RUN short-circuits (no draft) ──────────────────────
     DRY_RUN=1; NUM=44; TITLE="Dry"; SHOW='{"acceptanceCriteria":[{"text":"x","status":"pending"}]}'
     gaffer_distill_ticket_intent
-    D44="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget "len([r for r in d if 'Requirement from #44' in r['title']])" 2>/dev/null || echo 0)"
+    D44="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget 'd.filter((r) => r.title.includes("Requirement from #44")).length' 2>/dev/null || echo 0)"
     if [ "$D44" = "0" ]; then ok "DRY_RUN is a no-op (fail-soft)"; else fail "DRY_RUN wrongly drafted lore"; fi
   fi
 fi

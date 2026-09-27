@@ -48,10 +48,10 @@ REPO="$WORK/repo"
 export GAFFER_DATA="$WORK"
 
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of()    { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
-ac_status_of() { wg ticket show "$1" 2>/dev/null | jget "d['acceptanceCriteria'][0]['status']" 2>/dev/null || echo ''; }
-ac_id_of()     { wg ticket show "$1" 2>/dev/null | jget "d['acceptanceCriteria'][0]['id']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of()    { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
+ac_status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.acceptanceCriteria[0].status' 2>/dev/null || echo ''; }
+ac_id_of()     { wg ticket show "$1" 2>/dev/null | jget 'd.acceptanceCriteria[0].id' 2>/dev/null || echo ''; }
 
 # Clause ids are NAMESPACED under the spec on create (`<specId>:R-green`) so they
 # stay globally unique across specs. The test author supplies BASE names (R-green);
@@ -71,7 +71,7 @@ print('' if c is None else c[field])
 " "$1" "$2" "$3"
 }
 rollup_field() {
-  wg spec coverage "$1" 2>/dev/null | jget "d['rollup']['$2']"
+  wg spec coverage "$1" 2>/dev/null | jget "d.rollup[\"$2\"]"
 }
 orphan_has() {
   wg spec coverage "$1" 2>/dev/null | python3 -c "
@@ -132,9 +132,9 @@ cat > "$SPEC_DOC" <<'JSON'
   ]
 }
 JSON
-SPEC_ID="$(wg spec create "$SPEC_DOC" 2>/dev/null | jget "d['spec']['id']")"
+SPEC_ID="$(wg spec create "$SPEC_DOC" 2>/dev/null | jget 'd.spec.id')"
 [ -n "$SPEC_ID" ] && ok "created draft spec ($SPEC_ID)" || { fail "spec create failed"; }
-FROZEN="$(wg spec freeze "$SPEC_ID" 2>/dev/null | jget "d['spec']['status']")"
+FROZEN="$(wg spec freeze "$SPEC_ID" 2>/dev/null | jget 'd.spec.status')"
 [ "$FROZEN" = "frozen" ] && ok "spec frozen (immutable snapshot)" || fail "spec did not freeze (got '$FROZEN')"
 
 echo "== BASELINE: before any ticket, every clause is an orphan (gap report) =="
@@ -148,10 +148,10 @@ echo "== TICKETS: create two tickets whose ACs carry clause provenance =="
 # coverage can join them back to the frozen spec's clauses.
 NS_GREEN="$(nsid "$SPEC_ID" R-green)"
 NS_OPEN="$(nsid "$SPEC_ID" R-open)"
-NUM1="$(wg ticket create -t "Saved-card payment" --description "pay with a saved card" --policy team_light --risk low 2>/dev/null | jget "d['ticket']['number']")"
+NUM1="$(wg ticket create -t "Saved-card payment" --description "pay with a saved card" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
 wg ac add "$NUM1" -t "pays with saved card" --clause "$NS_GREEN" >/dev/null 2>&1
 wg ticket repo-access set "$NUM1" demo --access write --relation confirmed >/dev/null 2>&1
-NUM2="$(wg ticket create -t "Refund worker" --description "process refunds" --policy team_light --risk low 2>/dev/null | jget "d['ticket']['number']")"
+NUM2="$(wg ticket create -t "Refund worker" --description "process refunds" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
 wg ac add "$NUM2" -t "refund within 24h" --clause "$NS_OPEN" >/dev/null 2>&1
 wg ticket repo-access set "$NUM2" demo --access write --relation confirmed >/dev/null 2>&1
 [ -n "$NUM1" ] && [ -n "$NUM2" ] && ok "created #$NUM1 (→R-green) and #$NUM2 (→R-open)" || fail "ticket/AC setup failed"
@@ -162,10 +162,10 @@ echo "== both clauses are now COVERED but not yet satisfied (OPEN) =="
 [ "$(orphan_has "$SPEC_ID" R-green)" = "no" ] && ok "R-green left the gap report once covered" || fail "R-green still orphan after AC add"
 
 echo "== DELIVER #$NUM1: the RUNNER claims; the STUB agent satisfies R-green's AC =="
-AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget 'd.agent.id')"
 wg ticket ready "$NUM1" >/dev/null 2>&1
 [ "$(status_of "$NUM1")" = "ready" ] && ok "#$NUM1 reached ready" || fail "#$NUM1 not ready (got '$(status_of "$NUM1")')"
-TOK1="$(wg claim-ticket "$NUM1" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']")"
+TOK1="$(wg claim-ticket "$NUM1" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
 AC1="$(ac_id_of "$NUM1")"
 BR1="gaffer/t$NUM1"; WT1="$WORK/wt-$NUM1"
 git -C "$REPO" worktree add -q -b "$BR1" "$WT1" main
@@ -180,7 +180,7 @@ echo "== REJECT #$NUM2: its delivery is refused → R-open stays OPEN =="
 # Claim then RELEASE the delivery to the visible blocked column (rework exhausted):
 # the AC is never satisfied, so the clause it covers must remain OPEN.
 wg ticket ready "$NUM2" >/dev/null 2>&1
-TOK2="$(wg claim-ticket "$NUM2" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']")"
+TOK2="$(wg claim-ticket "$NUM2" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
 wg runner-release "$NUM2" --to blocked --token "$TOK2" --reason "rejected in review" --reason-code rework_exhausted --attempt 3 --max 3 >/dev/null 2>&1
 [ "$(status_of "$NUM2")" = "blocked" ] && ok "#$NUM2 parked to blocked (rejected delivery)" || fail "#$NUM2 not blocked (got '$(status_of "$NUM2")')"
 [ "$(clause_field "$SPEC_ID" R-open covered)" = "True" ] && ok "R-open remains covered" || fail "R-open lost coverage"

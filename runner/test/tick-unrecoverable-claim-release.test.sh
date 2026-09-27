@@ -66,10 +66,10 @@ DRY_RUN=0                           # a live delivery holds a token; DRY_RUN nev
 # The runner wraps the CLI as `wg`; jget reads stdin JSON as `d` — byte-identical to
 # factory.config.sh, so the extracted functions run EXACTLY as they do in tick.sh.
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 # `log` is the only other tick.sh helper the extracted functions call; keep it quiet.
 log()  { :; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 active_claims() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -109,14 +109,14 @@ declare -F gaffer_release_delivery >/dev/null && declare -F gaffer_skip_ticket >
   || { echo "FAIL: the real tick.sh functions did not source"; exit 1; }
 
 # One ready, claimable ticket → returns its number with the runner holding a token.
-AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget 'd.agent.id')"
 [ -n "$AGENT" ] || { echo "SKIP: could not register agent"; exit 0; }
 make_claimed_ticket() {  # echoes "<num> <token>"
   local title="$1" num tok
-  num="$(wg ticket create -t "$title" --risk low 2>/dev/null | jget "d['ticket']['number']")"
+  num="$(wg ticket create -t "$title" --risk low 2>/dev/null | jget 'd.ticket.number')"
   wg ac add "$num" -t "AC" >/dev/null 2>&1
   wg ticket ready "$num" >/dev/null 2>&1
-  tok="$(wg claim-ticket "$num" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']" 2>/dev/null)"
+  tok="$(wg claim-ticket "$num" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken' 2>/dev/null)"
   printf '%s %s\n' "$num" "$tok"
 }
 
@@ -147,7 +147,7 @@ for reason in \
   [ "$(active_claims "$NUM")" = "0" ] \
     && ok "A2/path$i: #$NUM carries ZERO active claims (lease released, not stranded)" \
     || fail "A2/path$i: #$NUM still has $(active_claims "$NUM") active claim(s)"
-  RETOK="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']" 2>/dev/null || echo '')"
+  RETOK="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken' 2>/dev/null || echo '')"
   [ -n "$RETOK" ] \
     && ok "A3/path$i: #$NUM is re-claimable on a later tick (clean retry)" \
     || fail "A3/path$i: #$NUM not re-claimable after release"

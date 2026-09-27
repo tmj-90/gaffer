@@ -159,35 +159,7 @@ done
 printf "\n  ${c_dim}safety (deterministic hook blocks)${c_off}\n"
 BLOCK_LEDGER="${GAFFER_BLOCK_LEDGER:-$GAFFER_DATA/safety-blocks.jsonl}"
 if [ -s "$BLOCK_LEDGER" ]; then
-  SUMMARY_SINCE="${SUMMARY_SINCE:-}" python3 - "$BLOCK_LEDGER" <<'PY'
-import sys, json, os
-since = os.environ.get("SUMMARY_SINCE", "")
-cats, total, secret = {}, 0, 0
-for ln in open(sys.argv[1], encoding="utf-8"):
-    ln = ln.strip()
-    if not ln:
-        continue
-    try:
-        e = json.loads(ln)
-    except Exception:
-        continue
-    if since and str(e.get("ts", "")) < since:
-        continue
-    total += 1
-    c = e.get("category", "other")
-    cats[c] = cats.get(c, 0) + 1
-    if c == "secret-read":
-        secret += 1
-scope = "this run" if since else "(all-time)"
-if total == 0:
-    print("    \033[1;32m✓\033[0m nothing blocked %s" % scope)
-else:
-    print("    \033[1;33m%d\033[0m attempt(s) blocked %s — every one stopped:" % (total, scope))
-    for c, n in sorted(cats.items(), key=lambda kv: -kv[1]):
-        print("      %-22s %d" % (c, n))
-    if secret:
-        print("    \033[1;31m!\033[0m %d secret-read attempt(s) blocked — worth a glance" % secret)
-PY
+  SUMMARY_SINCE="${SUMMARY_SINCE:-}" node "$HERE/lib/json-tool.mjs" summary-blocks "$BLOCK_LEDGER"
 else
   printf "    ${c_grn}✓${c_off} no blocks recorded (clean run, or no risky tool calls)\n"
 fi
@@ -203,106 +175,7 @@ fi
 printf "\n  ${c_dim}usage (headless agent calls — honest)${c_off}\n"
 USAGE_LEDGER="${GAFFER_USAGE_LEDGER:-$GAFFER_DATA/usage-ledger.jsonl}"
 if [ -s "$USAGE_LEDGER" ]; then
-  SUMMARY_SINCE="${SUMMARY_SINCE:-}" python3 - "$USAGE_LEDGER" <<'PY'
-import sys, json, os
-since = os.environ.get("SUMMARY_SINCE", "")
-UNKNOWN = "unknown"
-
-def as_num(v):
-    """Token/cost value: a real number, or None when 'unknown' (never inferred as 0)."""
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
-
-def hum(n):
-    """Human-readable token magnitude: 11442211 -> '11.4M', 4309 -> '4.3k', 800 -> '800'."""
-    n = float(n)
-    if n >= 1e6: return "%.1fM" % (n / 1e6)
-    if n >= 1e3: return "%.1fk" % (n / 1e3)
-    return "%d" % int(n)
-
-measured = unknown = 0
-tok_in = tok_out = tok_cache_r = tok_cache_c = 0.0          # summed measured tokens
-cost_total = 0.0
-cost_any = False                                            # did we relay any $ figure?
-# Model split: classify each model id as plan (opus) / impl (sonnet) / other, by
-# the token volume attributed to it. Kept honest — pure passthrough of API tokens.
-split = {"opus-plan": 0.0, "sonnet-impl": 0.0, "other": 0.0}
-
-for ln in open(sys.argv[1], encoding="utf-8"):
-    ln = ln.strip()
-    if not ln:
-        continue
-    try:
-        e = json.loads(ln)
-    except Exception:
-        continue
-    if since and str(e.get("ts", "")) < since:
-        continue
-    if e.get("measured") is True:
-        measured += 1
-    else:
-        unknown += 1
-        continue                                            # unknown rows contribute NO numbers
-    models = e.get("models")
-    if isinstance(models, dict):
-        for model, mu in models.items():
-            if not isinstance(mu, dict):
-                continue
-            mi = as_num(mu.get("input")); mo = as_num(mu.get("output"))
-            mr = as_num(mu.get("cache_read")); mc = as_num(mu.get("cache_create"))
-            if mi: tok_in += mi
-            if mo: tok_out += mo
-            if mr: tok_cache_r += mr
-            if mc: tok_cache_c += mc
-            mlc = (model or "").lower()
-            vol = (mi or 0) + (mo or 0)
-            if "opus" in mlc:        split["opus-plan"] += vol
-            elif "sonnet" in mlc:    split["sonnet-impl"] += vol
-            else:                    split["other"] += vol
-    c = as_num(e.get("total_cost_usd"))
-    if c is not None:
-        cost_total += c
-        cost_any = True
-
-scope = "this run" if since else "(all-time)"
-total_calls = measured + unknown
-if total_calls == 0:
-    print("    \033[1;32m✓\033[0m no agent calls recorded %s" % scope)
-else:
-    # (d) measured-vs-unknown — printed FIRST so a partial run never reads as cheap.
-    if unknown:
-        print("    \033[1;33m%d measured, %d unknown\033[0m %s — 'unknown' = unmeasurable (timeout/crash/no-usage), NOT zero" % (measured, unknown, scope))
-    else:
-        print("    %d call(s) measured, 0 unknown %s" % (measured, scope))
-    if measured == 0:
-        print("    nothing measurable %s — every agent call was unmeasured; no token/cost figure can be honestly reported" % scope)
-    else:
-        # (a) BILLED tokens as ground truth — LEAD with the real cost driver.
-        # Total billed INCLUDES cache: an agentic delivery re-sends its whole growing
-        # context every turn, so the unchanged prefix is re-billed at the cheap
-        # cache-read rate. That cache-read volume — not the tiny in+out — is what the
-        # dollar figure below actually reflects, so it must be the headline number.
-        tok_billed = tok_in + tok_out + tok_cache_r + tok_cache_c
-        print("    billed tokens: ~%s  (in %s · out %s · cache-read %s · cache-write %s)" % (
-            hum(tok_billed), hum(tok_in), hum(tok_out), hum(tok_cache_r), hum(tok_cache_c)))
-        # Name the driver so $cost never looks like it came from in+out alone.
-        if tok_billed > 0:
-            share_r = 100 * tok_cache_r / tok_billed
-            if share_r >= 50:
-                print("    \033[2mcost is dominated by cache-read (%d%% of billed): the agent re-reads its cached context each turn\033[0m" % round(share_r))
-        # (b) opus-plan vs sonnet-impl split (by in+out token volume).
-        tot_vol = sum(split.values()) or 1
-        print("    model split (plan vs impl, by in+out tokens):")
-        for label in ("opus-plan", "sonnet-impl", "other"):
-            v = split[label]
-            if v:
-                print("      %-14s %d tokens (%d%%)" % (label, int(v), round(100 * v / tot_vol)))
-        # (c) API-equivalent cost — RELAYED, never computed. Labelled + caveated.
-        if cost_any:
-            print("    API-equivalent cost (Claude Code's own figure): $%.4f" % cost_total)
-            print("    \033[2mnote: on a Max/Pro subscription the marginal cost is the flat plan fee, not this number\033[0m")
-        else:
-            print("    API-equivalent cost: unknown (Claude Code reported no cost figure)")
-PY
+  SUMMARY_SINCE="${SUMMARY_SINCE:-}" node "$HERE/lib/json-tool.mjs" summary-usage "$USAGE_LEDGER"
 else
   printf "    ${c_grn}✓${c_off} no agent usage recorded (clean idle run, or no agent calls)\n"
 fi

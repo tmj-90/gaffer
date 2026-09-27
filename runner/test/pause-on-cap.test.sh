@@ -40,7 +40,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 export DISPATCH_DB="$WORK/dispatch.db"
 wg() { node "$CLI" --db "$DISPATCH_DB" "$@"; }
-jget() { python3 -c "import sys,json; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 
 # A real repo + a worktree on the ticket branch (mirrors tick.sh's worktree setup),
 # rooted under the deterministic GAFFER_DATA/worktrees/ticket-<N> layout.
@@ -59,16 +59,16 @@ wg repo add -n svc --path "$REPO" --branch "$BASE" >/dev/null 2>&1
 # Helper: drive a fresh ticket to `claimed`, returning its number.
 make_claimed() {
   local num
-  num="$(wg ticket create -t "big ticket" -d "lots of work" 2>/dev/null | jget "d['ticket']['number']")"
+  num="$(wg ticket create -t "big ticket" -d "lots of work" 2>/dev/null | jget 'd.ticket.number')"
   wg ac add "$num" -t "do the thing" >/dev/null 2>&1
   wg repo link "$num" svc >/dev/null 2>&1
   wg ticket ready "$num" >/dev/null 2>&1
-  local agent; agent="$(wg agent register -n factory --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+  local agent; agent="$(wg agent register -n factory --max-risk high 2>/dev/null | jget 'd.agent.id')"
   wg claim-ticket "$num" -a "$agent" >/dev/null 2>&1
   echo "$num"
 }
 
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
 
 echo "== 1. wg ticket pause -> paused, resume context persisted, WORKTREE KEPT =="
 NUM="$(make_claimed)"
@@ -91,9 +91,9 @@ wg ticket pause "$NUM" --reason cap_hit --branch "$WORK_BRANCH" \
 [ -f "$WT/wip.txt" ] && ok "UNCOMMITTED work preserved in the worktree" || fail "uncommitted work lost"
 git -C "$REPO" show-ref --verify --quiet "refs/heads/$WORK_BRANCH" && ok "the delivery branch survives the pause" || fail "branch was dropped on pause"
 
-CTXWT="$(wg ticket paused-context "$NUM" 2>/dev/null | jget "d['context']['worktree_path']")"
+CTXWT="$(wg ticket paused-context "$NUM" 2>/dev/null | jget 'd.context.worktree_path')"
 [ "$CTXWT" = "$WT" ] && ok "resume context records the worktree path" || fail "resume context worktree path wrong ($CTXWT)"
-CTXREASON="$(wg ticket paused-context "$NUM" 2>/dev/null | jget "d['context']['reason']")"
+CTXREASON="$(wg ticket paused-context "$NUM" 2>/dev/null | jget 'd.context.reason')"
 [ "$CTXREASON" = "cap_hit" ] && ok "resume context records the pause reason" || fail "resume context reason wrong ($CTXREASON)"
 
 echo "== 2. orphan-recovery PROTECTS a paused ticket's worktree =="
@@ -126,18 +126,18 @@ unset -f gaffer_cleanup_worktrees gaffer_crash_cleanup
 
 echo "== 4. Continue -> resume-requested; the loop's resume queue lists it =="
 wg ticket continue "$NUM" >/dev/null 2>&1
-RR="$(wg ticket paused-context "$NUM" 2>/dev/null | jget "d['context']['resume_requested']")"
+RR="$(wg ticket paused-context "$NUM" 2>/dev/null | jget 'd.context.resume_requested')"
 [ "$RR" = "1" ] && ok "Continue marked the ticket resume-requested" || fail "Continue did not set resume_requested ($RR)"
-QNUM="$(wg ticket resume-requested 2>/dev/null | jget "d[0]['number'] if d else ''")"
+QNUM="$(wg ticket resume-requested 2>/dev/null | jget 'd[0]?.number ?? ""')"
 [ "$QNUM" = "$NUM" ] && ok "resume queue lists #$NUM (number enriched for the loop)" || fail "resume queue missing #$NUM (got '$QNUM')"
 
 echo "== 5. resume-begin re-enters delivery in the SAME worktree (-> in_progress) =="
-RB_WT="$(wg ticket resume-begin "$NUM" 2>/dev/null | jget "d['context']['worktree_path']")"
+RB_WT="$(wg ticket resume-begin "$NUM" 2>/dev/null | jget 'd.context.worktree_path')"
 [ "$(status_of "$NUM")" = "in_progress" ] && ok "resume-begin moved #$NUM paused -> in_progress" || fail "resume-begin did not reach in_progress (got '$(status_of "$NUM")')"
 [ "$RB_WT" = "$WT" ] && ok "INVARIANT: resume re-enters the SAME worktree path" || fail "resume worktree path changed ($RB_WT)"
 [ -d "$WT" ] && ok "the worktree is still present for the resumed delivery" || fail "worktree vanished before resume"
 # resume-begin cleared the resume-requested flag.
-[ -z "$(wg ticket resume-requested 2>/dev/null | jget "d[0]['number'] if d else ''")" ] && ok "resume queue is drained after resume-begin" || fail "resume queue still lists the ticket after resume-begin"
+[ -z "$(wg ticket resume-requested 2>/dev/null | jget 'd[0]?.number ?? ""')" ] && ok "resume queue is drained after resume-begin" || fail "resume queue still lists the ticket after resume-begin"
 
 echo "== 6. Stop abandons a paused delivery (-> cancelled) + drops the context =="
 NUM2="$(make_claimed)"
@@ -145,7 +145,7 @@ wg ticket pause "$NUM2" --reason budget_cap --branch "gaffer/ticket-$NUM2-x" --a
 [ "$(status_of "$NUM2")" = "paused" ] && ok "second ticket #$NUM2 paused (budget_cap)" || fail "second ticket not paused"
 wg ticket stop "$NUM2" --reason "not worth it" >/dev/null 2>&1
 [ "$(status_of "$NUM2")" = "cancelled" ] && ok "Stop abandoned #$NUM2 -> cancelled" || fail "Stop did not cancel the ticket (got '$(status_of "$NUM2")')"
-CTX2="$(wg ticket paused-context "$NUM2" 2>/dev/null | jget "d['context']")"
+CTX2="$(wg ticket paused-context "$NUM2" 2>/dev/null | jget 'd.context')"
 [ "$CTX2" = "None" ] && ok "Stop dropped the resume context" || fail "Stop left a stale resume context ($CTX2)"
 
 echo

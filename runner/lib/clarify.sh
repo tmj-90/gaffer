@@ -25,17 +25,17 @@ _gaffer_clarify_pass() {
 # opt-in. Set CLARIFY_DRAFTS_WHEN_IDLE=1 to have idle ticks clarify un-specified drafts.
 # Default keeps an idle factory at ~0 token cost (it just polls + stops).
 DRAFT_JSON="$(wg ticket list -s draft 2>/dev/null || echo '[]')"
-DRAFT_COUNT="$(echo "$DRAFT_JSON" | jget 'len(d)' 2>/dev/null || echo 0)"
+DRAFT_COUNT="$(echo "$DRAFT_JSON" | jget 'd.length' 2>/dev/null || echo 0)"
 if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; then
   CLARIFIED_FILE="$GAFFER_DATA/.clarified-tickets"; touch "$CLARIFIED_FILE"
   # FINDING B-M2: pass the skip-file path via the environment, not interpolated into
   # the single-quoted Python literal — a path containing a `'` would break the string
   # (silent parse failure → the clarified-skip set is lost and the draft re-clarifies).
-  CNUM="$(echo "$DRAFT_JSON" | _GF_SKIP_FILE="$CLARIFIED_FILE" python3 -c "import sys,json,os; skip=set(open(os.environ['_GF_SKIP_FILE']).read().split()); c=[str(t['number']) for t in json.load(sys.stdin) if str(t['number']) not in skip]; print(c[0] if c else '')" 2>/dev/null)"
+  CNUM="$(echo "$DRAFT_JSON" | gaffer_json pick-unskipped "$CLARIFIED_FILE" 2>/dev/null)"
   if [ -n "$CNUM" ]; then
     CSHOW="$(wg ticket show "$CNUM" 2>/dev/null)"
-    CREPO="$(echo "$CSHOW" | jget "(d['repositories'][0]['local_path'] if d['repositories'] else '') or ''" 2>/dev/null)"
-    CTITLE="$(echo "$CSHOW" | jget "d['ticket']['title']" 2>/dev/null || echo '')"
+    CREPO="$(echo "$CSHOW" | jget '(d.repositories[0]?.local_path) || ""' 2>/dev/null)"
+    CTITLE="$(echo "$CSHOW" | jget 'd.ticket.title' 2>/dev/null || echo '')"
     if [ -n "$CREPO" ] && [ -d "$CREPO" ]; then
       log "no ready tickets → intake: clarifying draft #$CNUM ('$CTITLE') in $CREPO"
       if [ "$DRY_RUN" = "1" ]; then
@@ -98,7 +98,7 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
       # File-card context for the intake agent — orients it on the repo before
       # it reads the ticket and spots ambiguities. FAIL-SOFT via gaffer_prime_context_block.
-      _CDESC="$(echo "$CSHOW" | jget "(d['ticket'].get('description') or '')[:400]" 2>/dev/null || echo '')"
+      _CDESC="$(echo "$CSHOW" | jget '(d.ticket.description || "").slice(0, 400)' 2>/dev/null || echo '')"
       _CLARIFY_CARDS="$(gaffer_prime_context_block "$CREPO" "$(basename "$CREPO")" \
         "$(printf '%s %s' "$CTITLE" "$_CDESC")" 2>/dev/null || true)"
       read -r -d '' CPROMPT <<EOF || true

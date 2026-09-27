@@ -54,8 +54,8 @@ source "$RUNNER_DIR/lib/dod.sh"
 source "$RUNNER_DIR/lib/hygiene.sh"
 
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 active_claims() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -118,16 +118,16 @@ echo "== SETUP: one ticket with WRITE access to TWO repos, one claim =="
 wg init >/dev/null 2>&1
 wg repo add -n repoA --path "$REPO_A" --branch main --test "true" >/dev/null 2>&1
 wg repo add -n repoB --path "$REPO_B" --branch main --test "true" >/dev/null 2>&1
-NUM="$(wg ticket create -t "spans two repos" --description "one ticket, two write repos" --policy team_light --risk low 2>/dev/null | jget "d['ticket']['number']")"
-ACID="$(wg ac add "$NUM" -t "both repos updated" 2>/dev/null | jget "d['ac_id']")"
+NUM="$(wg ticket create -t "spans two repos" --description "one ticket, two write repos" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
+ACID="$(wg ac add "$NUM" -t "both repos updated" 2>/dev/null | jget 'd.ac_id')"
 wg ticket repo-access set "$NUM" repoA --access write --relation confirmed >/dev/null 2>&1
 wg ticket repo-access set "$NUM" repoB --access write --relation confirmed >/dev/null 2>&1
-WRITE_REPOS="$(wg ticket show "$NUM" 2>/dev/null | jget "len([r for r in d.get('repositories',[]) if r.get('access')=='write'])" 2>/dev/null || echo 0)"
+WRITE_REPOS="$(wg ticket show "$NUM" 2>/dev/null | jget '(d.repositories || []).filter((r) => r.access === "write").length' 2>/dev/null || echo 0)"
 [ "$WRITE_REPOS" = "2" ] && ok "ticket #$NUM has WRITE access to both repos" || fail "expected 2 write repos, got $WRITE_REPOS"
 wg ticket ready "$NUM" >/dev/null 2>&1
 [ "$(status_of "$NUM")" = "ready" ] && ok "#$NUM is ready (multi-repo ready gate satisfied)" || fail "#$NUM not ready (got '$(status_of "$NUM")')"
-AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget "d['agent']['id']")"
-TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']")"
+AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget 'd.agent.id')"
+TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
 { [ -n "$TOKEN" ] && [ "$(active_claims "$NUM")" = "1" ]; } \
   && ok "the runner holds ONE claim for the whole multi-repo ticket" \
   || fail "expected exactly one active claim (got $(active_claims "$NUM"))"

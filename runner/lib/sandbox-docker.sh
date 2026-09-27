@@ -171,7 +171,7 @@ done
 # so the link resolves inside the container ONLY if its target is mounted too — bind
 # each resolved target ro (dedup'd, skipped when an existing mount already covers it).
 # Depth 4 mirrors tick.sh's workspace-package sweep (`find -maxdepth 3 -name node_modules`).
-_readlink_f() { readlink -f "$1" 2>/dev/null || python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null; }
+_readlink_f() { readlink -f "$1" 2>/dev/null || node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]) + "\n")' "$1" 2>/dev/null; }
 for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   while IFS= read -r _lnk; do
     _tgt="$(_readlink_f "$_lnk")"

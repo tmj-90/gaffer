@@ -43,8 +43,8 @@ DB="$WORK/dispatch.sqlite"
 # The runner wraps the CLI as `wg`; jget reads stdin JSON as `d` — identical to
 # factory.config.sh, so the snippets below are byte-for-byte what tick.sh runs.
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 active_claims() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -62,7 +62,7 @@ runner_claim() {   # $1 = ticket number, $2 = agent id → echoes the captured t
   local _cand="$1" AGENT="$2" GAFFER_CLAIM_TTL=900
   local _CLAIM_JSON _CLAIM_TOK
   _CLAIM_JSON="$(wg claim-ticket "$_cand" --agent "$AGENT" --ttl "$GAFFER_CLAIM_TTL" 2>/dev/null || true)"
-  _CLAIM_TOK="$(printf '%s' "$_CLAIM_JSON" | jget "d.get('claimToken','')" 2>/dev/null || echo '')"
+  _CLAIM_TOK="$(printf '%s' "$_CLAIM_JSON" | jget 'd.claimToken ?? ""' 2>/dev/null || echo '')"
   printf '%s' "$_CLAIM_TOK"   # empty ⇒ the tick would `continue` (skip this candidate)
 }
 
@@ -72,8 +72,8 @@ for i in 1 2 3; do
   wg ac add "$i" -t "T$i AC" >/dev/null 2>&1
   wg ticket ready "$i" >/dev/null 2>&1
 done
-A1="$(wg agent register -n w1 --max-risk high 2>/dev/null | jget "d['agent']['id']")"
-A2="$(wg agent register -n w2 --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+A1="$(wg agent register -n w1 --max-risk high 2>/dev/null | jget 'd.agent.id')"
+A2="$(wg agent register -n w2 --max-risk high 2>/dev/null | jget 'd.agent.id')"
 [ -n "$A1" ] && [ -n "$A2" ] || { echo "SKIP: could not register agents"; exit 0; }
 
 echo "== (a) SELECTION: the runner claims the ticket before the agent runs =="

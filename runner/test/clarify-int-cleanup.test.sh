@@ -26,7 +26,6 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_RUNNER="$(cd "$HERE/.." && pwd)"   # where the real lib/clarify.sh lives
 
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 required"; exit 0; }
 
 PASS=0
 FAILURES=()
@@ -65,7 +64,8 @@ export RUNNER_DIR="$FAKE_RUNNER"   # clarify checks "$RUNNER_DIR/safety-hook.mjs
 # ── Stub collaborators ───────────────────────────────────────────────────────
 log()   { printf '%s\n' "$*" >> "$GAFFER_LOG"; }
 result(){ printf 'TICK_RESULT=%s\n' "$1" >> "$GAFFER_LOG"; }
-jget()  { python3 -c "import sys,json; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1" 2>/dev/null; }
+gaffer_json() { node "$REAL_RUNNER/lib/json-tool.mjs" "$@"; }
+jget()  { gaffer_json expr "$1" 2>/dev/null; }
 wg() {
   case "$*" in
     "ticket list -s draft") printf '[{"number":42,"title":"Ambiguous draft"}]' ;;

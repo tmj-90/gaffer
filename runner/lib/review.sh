@@ -23,19 +23,19 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
   # FINDING B-M2: pass the skip-file path via the environment, not interpolated into
   # the single-quoted Python literal — a path containing a `'` would break the string
   # (silent parse failure → the reviewed-skip set is lost and the ticket re-reviews).
-  RNUM="$(echo "$RJSON" | _GF_SKIP_FILE="$REVIEWED_FILE" python3 -c "import sys,json,os; skip=set(open(os.environ['_GF_SKIP_FILE']).read().split()); c=[str(t['number']) for t in json.load(sys.stdin) if str(t['number']) not in skip]; print(c[0] if c else '')" 2>/dev/null)"
+  RNUM="$(echo "$RJSON" | gaffer_json pick-unskipped "$REVIEWED_FILE" 2>/dev/null)"
   if [ -n "$RNUM" ]; then
     RSHOW="$(wg ticket show "$RNUM" 2>/dev/null)"
-    RREPO="$(echo "$RSHOW" | jget "(d['repositories'][0]['local_path'] if d['repositories'] else '') or ''" 2>/dev/null)"
+    RREPO="$(echo "$RSHOW" | jget '(d.repositories[0]?.local_path) || ""' 2>/dev/null)"
     if [ -n "$RREPO" ] && [ -d "$RREPO" ]; then
       # Resolve the delivered branch from Dispatch (persisted by delivery-artifact)
       # rather than grepping local git — the reviewer trusts the recorded branch_name.
       # Fall back to the git-branch grep only if branch_name was never recorded.
-      RBRANCH="$(echo "$RSHOW" | jget "(d['ticket']['branch_name'] or '')" 2>/dev/null)"
+      RBRANCH="$(echo "$RSHOW" | jget 'd.ticket.branch_name || ""' 2>/dev/null)"
       [ -n "$RBRANCH" ] || RBRANCH="$(git -C "$RREPO" branch 2>/dev/null | grep -oE "gaffer/ticket-$RNUM-[a-z0-9-]*" | head -1)"
       # The repo's default branch — used as the diff base in the reviewer prompt so
       # we never hardcode 'main' for repos whose default is master/develop/etc.
-      RDEFAULT="$(echo "$RSHOW" | jget "(d['repositories'][0]['default_branch'] if d['repositories'] else 'main') or 'main'")"
+      RDEFAULT="$(echo "$RSHOW" | jget '(d.repositories[0]?.default_branch) || "main"')"
       log "review_mode=$REVIEW_MODE → agent-reviewing in_review #$RNUM in $RREPO (branch ${RBRANCH:-unknown}, base $RDEFAULT)"
       if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run a reviewer agent on #$RNUM (branch ${RBRANCH:-unknown})"; result reviewed; exit 0; fi
       # BLOCKING 1 fix: run the reviewer in a THROWAWAY git worktree so the
@@ -121,8 +121,8 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # before it inspects the diff. FAIL-SOFT via gaffer_prime_context_block.
       # Cards are keyed off the REAL repo ($RREPO) canonical identity, not the
       # throwaway worktree, so they match what onboard indexed.
-      _RSHOW_TITLE="$(echo "$RSHOW" | jget "d['ticket']['title']" 2>/dev/null || echo '')"
-      _RDESC="$(echo "$RSHOW" | jget "(d['ticket'].get('description') or '')[:400]" 2>/dev/null || echo '')"
+      _RSHOW_TITLE="$(echo "$RSHOW" | jget 'd.ticket.title' 2>/dev/null || echo '')"
+      _RDESC="$(echo "$RSHOW" | jget '(d.ticket.description || "").slice(0, 400)' 2>/dev/null || echo '')"
       _REVIEW_CARDS="$(gaffer_prime_context_block "$RREPO" "$(basename "$RREPO")" \
         "$(printf '%s %s' "$_RSHOW_TITLE" "$_RDESC")" 2>/dev/null || true)"
       read -r -d '' RPROMPT <<EOF || true
@@ -178,7 +178,7 @@ EOF
       # "changes": an ambiguous or empty verdict must NEVER auto-approve. Read the file BY
       # PATH (not stdin): the usage JSON must never be piped as stdin (prompt-injection
       # guard, enforced by tick-prompt-wiring.test.sh) — parsing its result is output-read.
-      R_RESULT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('result',''))" "$R_USAGE_JSON" 2>/dev/null || echo '')"
+      R_RESULT="$(gaffer_json expr 'd.result ?? ""' --file "$R_USAGE_JSON" 2>/dev/null || echo '')"
       rm -f "$R_USAGE_JSON"
       # S-H2: resolve the verdict from the reviewer's OUT-OF-BAND STRUCTURED last line
       # ({"verdict":"APPROVE"|"CHANGES"}) — NOT a free-text grep over its prose. Text an
@@ -186,7 +186,7 @@ EOF
       # force an AFK approve+merge. gaffer_review_verdict falls back to the legacy grep only
       # when no structured line is present, and stays fail-closed (ambiguous/empty → changes).
       R_VERDICT="$(gaffer_review_verdict "$R_RESULT")"
-      NEWSTATUS="$(wg ticket show "$RNUM" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo '')"
+      NEWSTATUS="$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
 
       # ── AFK auto-completion — GRADUATED per-repo/risk autonomy ───────────────────
       # By default an agent review is ADVISORY: the ticket stays in_review for a HUMAN,

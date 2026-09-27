@@ -11,6 +11,8 @@
 # Source AFTER factory.config.sh.
 # ─────────────────────────────────────────────────────────────────────────────
 
+_GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+
 # FIX 2: Ensure gaffer_quarantine is available.  factory.config.sh sources
 # quarantine.sh before this file, so it's normally already defined.  When
 # this file is sourced directly (e.g. in tests), source quarantine.sh now.
@@ -88,65 +90,18 @@ gaffer_prime_context_block() {
   # stderr (the runner log) — NEVER into the agent prompt (stdout).  A silent
   # empty packet when cards demonstrably exist under a different key is exactly
   # the bug this guards against.
-  printf '%s' "$_gpc_json" | python3 -c '
-import sys, json
-try:
-    p = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for d in (p.get("diagnostics") or []):
-    sys.stderr.write("WARN[file-cards]: " + str(d) + "\n")
-' 2>/dev/null || true
+  printf '%s' "$_gpc_json" | node "$_GAFFER_JSON_TOOL" diagnostics-warn 2>/dev/null || true
 
-  # Render the packet into a compact, agent-facing block.  python3 is
-  # fail-soft: bad JSON or zero cards AND no digest yields no output.
+  # Render the packet into a compact, agent-facing block (json-tool.mjs
+  # context-file-cards, pinned to the checked-in golden). Fail-soft: bad JSON or
+  # zero cards AND no digest yields no output.
   # FIX 2: strip all <untrusted-*> delimiter tokens from card field values
   # before rendering.  Card tldr/overview/symbols are model-derived from
   # untrusted repo content and may contain prompt-injection attempts.
   # Stripping here is belt-and-suspenders — gaffer_quarantine below also
   # strips the specific file-cards envelope tag when it wraps the body.
   local _gpc_body
-  _gpc_body="$(printf '%s' "$_gpc_json" | python3 -c '
-import sys, json, re
-def sanitize(s):
-    """Strip embedded <untrusted-*> tags so card content cannot close the envelope early."""
-    return re.sub(r"</?untrusted-[^>]*>", "", str(s or ""), flags=re.I)
-try:
-    p = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-cards = p.get("cards") or []
-order = {e["path"]: e["tier"] for e in (p.get("selectionOrder") or [])}
-dg    = p.get("digest")
-lines = []
-if dg and dg.get("overview"):
-    lines.append("Repo digest: " + sanitize(dg["overview"]).strip())
-for c in cards:
-    tier = order.get(c.get("path"), "fts")
-    head = "  - [%s] %s" % (tier, sanitize(c.get("path", "")))
-    if c.get("tldr"):
-        # FINDING 14: "—" is the em dash as a real CODEPOINT. The old
-        # "\xe2\x80\x94" escape was UTF-8 BYTES written as codepoints (U+00E2
-        # U+0080 U+0094), which re-encoded to the mojibake "â€”" in every card line.
-        head += " — " + sanitize(c["tldr"]).strip()
-    lines.append(head)
-    syms = c.get("symbols") or []
-    if syms:
-        lines.append("      symbols: " + ", ".join(sanitize(s) for s in syms[:8]))
-cov     = p.get("coverage") or {}
-missing = cov.get("missing") or []
-tr      = p.get("truncationReason")
-foot    = []
-if missing:
-    foot.append("no card yet for: " + ", ".join(sanitize(s) for s in missing[:8]))
-if tr:
-    foot.append(sanitize(tr))
-if not lines:
-    sys.exit(0)
-print("\n".join(lines))
-if foot:
-    print("  (" + "; ".join(foot) + ")")
-' 2>/dev/null)" || return 0
+  _gpc_body="$(printf '%s' "$_gpc_json" | node "$_GAFFER_JSON_TOOL" context-file-cards 2>/dev/null)" || return 0
 
   [ -n "$_gpc_body" ] || return 0
 
@@ -158,21 +113,7 @@ if foot:
   # what it primed) + FAIL-SOFT — a recording failure never affects the prime/delivery.
   if [ -n "${GAFFER_RECALL_TICKET:-}" ] && command -v wg >/dev/null 2>&1; then
     local _gpc_primed
-    _gpc_primed="$(printf '%s' "$_gpc_json" | python3 -c '
-import sys, json
-try:
-    p = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-paths = [c.get("path", "") for c in (p.get("cards") or []) if c.get("path")]
-digest = bool(p.get("digest"))
-if not paths and not digest:
-    sys.exit(0)
-head = ("%d card%s: %s" % (len(paths), "" if len(paths) == 1 else "s", ", ".join(paths[:8])))
-if len(paths) > 8:
-    head += ", +%d more" % (len(paths) - 8)
-print(("repo-digest + " if digest else "") + head)
-' 2>/dev/null)"
+    _gpc_primed="$(printf '%s' "$_gpc_json" | node "$_GAFFER_JSON_TOOL" context-primed 2>/dev/null)"
     if [ -n "$_gpc_primed" ]; then
       wg attach-evidence "$GAFFER_RECALL_TICKET" --type memory_primed \
         --summary "Memory primed into the delivery agent — $_gpc_primed" >/dev/null 2>&1 || true
@@ -181,7 +122,7 @@ print(("repo-digest + " if digest else "") + head)
 
   # FIX 2: wrap the rendered card data in an <untrusted-file-cards> envelope
   # via gaffer_quarantine (which also strips any remaining </untrusted-file-cards>
-  # or <untrusted-*> the python pass may have missed due to encoding).  This
+  # or <untrusted-*> the render pass may have missed due to encoding).  This
   # makes the agent's model treat all card data as retrieval DATA, never as
   # instructions.  The outer framing ("a card is a guide…") stays OUTSIDE the
   # envelope — it is agent instruction, not untrusted content.
@@ -237,36 +178,13 @@ gaffer_product_context_block() {
   _pc_json="$(lg search --kind decision,requirement,non-goal --repo "$_pc_display" --limit 6 --json 2>/dev/null)" || return 0
   [ -n "$_pc_json" ] || return 0
 
-  # Render the intent records into a compact block. python3 is fail-soft: bad
-  # JSON or an empty array yields no output. Strip any embedded <untrusted-*>
+  # Render the intent records into a compact block (json-tool.mjs context-product,
+  # pinned to the golden). Fail-soft: bad JSON or an empty array yields no output.
+  # Strip any embedded <untrusted-*>
   # tags so a record's text cannot close the envelope early (belt-and-suspenders
   # with gaffer_quarantine below).
   local _pc_body
-  _pc_body="$(printf '%s' "$_pc_json" | python3 -c '
-import sys, json, re
-def sanitize(s):
-    return re.sub(r"</?untrusted-[^>]*>", "", str(s or ""), flags=re.I)
-try:
-    rows = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-if not isinstance(rows, list) or not rows:
-    sys.exit(0)
-lines = []
-for r in rows:
-    kind = sanitize(r.get("kind", "")).strip() or "other"
-    title = sanitize(r.get("title", "")).strip()
-    summ = sanitize(r.get("summary", "")).strip()
-    head = "  - [%s] %s" % (kind, title)
-    if summ:
-        # FINDING 14: real em-dash codepoint, not the "\xe2\x80\x94" byte-escape
-        # mojibake (see gaffer_prime_context_block above).
-        head += " — " + summ
-    lines.append(head)
-if not lines:
-    sys.exit(0)
-print("\n".join(lines))
-' 2>/dev/null)" || return 0
+  _pc_body="$(printf '%s' "$_pc_json" | node "$_GAFFER_JSON_TOOL" context-product 2>/dev/null)" || return 0
   [ -n "$_pc_body" ] || return 0
 
   # QUARANTINE the rendered intent in the untrusted envelope. The outer framing

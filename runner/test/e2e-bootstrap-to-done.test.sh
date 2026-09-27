@@ -59,8 +59,8 @@ source "$RUNNER_DIR/lib/greenfield.sh"
 source "$RUNNER_DIR/lib/automerge.sh"
 
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 repo_registered() {  # count of registered repositories with the given name
   python3 - "$DB" "$1" <<'PY'
 import sqlite3,sys
@@ -71,9 +71,9 @@ PY
 
 echo "== SETUP: create the --bootstrap ticket (no repo exists yet) =="
 wg init >/dev/null 2>&1
-NUM="$(wg ticket create -t "Gym Tracker" --description "bootstrap a brand-new gym tracker repo" --policy team_light --risk low --bootstrap 2>/dev/null | jget "d['ticket']['number']")"
-ACID="$(wg ac add "$NUM" -t "the new repo is scaffolded" 2>/dev/null | jget "d['ac_id']")"
-IS_BOOT="$(wg ticket show "$NUM" 2>/dev/null | jget "1 if d['ticket'].get('bootstrap') else 0" 2>/dev/null || echo 0)"
+NUM="$(wg ticket create -t "Gym Tracker" --description "bootstrap a brand-new gym tracker repo" --policy team_light --risk low --bootstrap 2>/dev/null | jget 'd.ticket.number')"
+ACID="$(wg ac add "$NUM" -t "the new repo is scaffolded" 2>/dev/null | jget 'd.ac_id')"
+IS_BOOT="$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.bootstrap ? 1 : 0' 2>/dev/null || echo 0)"
 [ "$IS_BOOT" = "1" ] && ok "#$NUM is flagged bootstrap (create-a-repo)" || fail "#$NUM not flagged bootstrap"
 
 echo "== CREATE: the bootstrap helpers derive the name/dir + git-init a README BASELINE =="
@@ -97,7 +97,7 @@ gaffer_bootstrap_onboard "$NUM" "$NAME" "$DIR" "" >/dev/null 2>&1; ORC=$?
 [ "$(repo_registered "$NAME")" = "1" ] && ok "the new repo '$NAME' is registered in dispatch (link target exists)" || fail "'$NAME' not registered in dispatch"
 # The bootstrap ticket delivers into its own new repo → link it write.
 wg ticket repo-access set "$NUM" "$NAME" --access write --relation confirmed >/dev/null 2>&1
-WRITE_OK="$(wg ticket show "$NUM" 2>/dev/null | jget "any(r.get('name')=='$NAME' and r.get('access')=='write' for r in d.get('repositories',[]))" 2>/dev/null || echo False)"
+WRITE_OK="$(wg ticket show "$NUM" 2>/dev/null | jget "(d.repositories || []).some((r) => r.name === '$NAME' && r.access === 'write')" 2>/dev/null || echo False)"
 [ "$WRITE_OK" = "True" ] && ok "linked the bootstrap ticket to its new repo with write access" || fail "ticket not linked write to '$NAME'"
 
 echo "== READY+CLAIM: the bootstrap ticket now enters the ordinary claim-gated lane =="
@@ -105,8 +105,8 @@ wg ticket ready "$NUM" >/dev/null 2>&1
 [ "$(status_of "$NUM")" = "ready" ] \
   && ok "the bootstrap ticket reached ready once its new repo was linked" \
   || fail "#$NUM not ready (got '$(status_of "$NUM")')"
-AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget "d['agent']['id']")"
-TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget "d['claimToken']")"
+AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget 'd.agent.id')"
+TOKEN="$(wg claim-ticket "$NUM" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
 { [ -n "$TOKEN" ] && [ "$(status_of "$NUM")" = "claimed" ]; } \
   && ok "the runner claimed the bootstrap ticket (token held for the delivery)" \
   || fail "bootstrap ticket not claimed (status=$(status_of "$NUM"))"

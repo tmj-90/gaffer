@@ -31,7 +31,7 @@ export GAFFER_DOD_TIMEOUT=30 GAFFER_DOD_OUTPUT_TAIL=40
 log(){ :; }
 wg(){ node "$CLI" --db "$DISPATCH_DB" "$@"; }
 gaffer_assert_db_vars(){ return 0; }
-jget(){ python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
+jget(){ node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 # The real primitives the lib composes: the gate runner + distiller from lib/dod.sh.
 # Faithful relay (same shim the dod-gate + e2e tests use): the bound is not under test
 # here, and GNU `timeout` does not exist on macOS — the previous stub made every check
@@ -44,7 +44,7 @@ source "$RUNNER_DIR/lib/ac-checks.sh"
 
 WT="$WORK/wt"; mkdir -p "$WT"
 T="$(wg ticket create --title "Checked delivery" --json 2>/dev/null || wg ticket create --title "Checked delivery")"
-NUM="$(printf '%s' "$T" | jget "d.get('number') or d.get('ticket',{}).get('number')" 2>/dev/null)"
+NUM="$(printf '%s' "$T" | jget 'd.number ?? d.ticket?.number' 2>/dev/null)"
 [ -n "$NUM" ] && [ "$NUM" != "None" ] || { echo "SKIP: could not create a ticket via the CLI (got: ${T:0:120})"; exit 0; }
 
 echo "== 1: passing + failing checks, prose AC untouched =="
@@ -64,19 +64,19 @@ grep -q "boom-detail" "$RES" && ok "the failing check's output tail is framed in
 ! grep -q "prose only" "$RES" && ok "the prose AC produced no GATE row" || no "prose AC was run"
 
 AFTER="$(wg ticket show "$NUM")"
-S1="$(printf '%s' "$AFTER" | jget "[a for a in d['acceptanceCriteria'] if a['text']=='marker written'][0]['status']")"
-V1="$(printf '%s' "$AFTER" | jget "[a for a in d['acceptanceCriteria'] if a['text']=='marker written'][0]['verified_by']")"
-S2="$(printf '%s' "$AFTER" | jget "[a for a in d['acceptanceCriteria'] if a['text']=='this one fails'][0]['status']")"
-S3="$(printf '%s' "$AFTER" | jget "[a for a in d['acceptanceCriteria'] if a['text']=='prose only'][0]['status']")"
+S1="$(printf '%s' "$AFTER" | jget 'd.acceptanceCriteria.find((a) => a.text === "marker written").status')"
+V1="$(printf '%s' "$AFTER" | jget 'd.acceptanceCriteria.find((a) => a.text === "marker written").verified_by')"
+S2="$(printf '%s' "$AFTER" | jget 'd.acceptanceCriteria.find((a) => a.text === "this one fails").status')"
+S3="$(printf '%s' "$AFTER" | jget 'd.acceptanceCriteria.find((a) => a.text === "prose only").status')"
 [ "$S1" = "satisfied" ] && [ "$V1" = "runner:check" ] && ok "passing AC → satisfied, verified_by=runner:check" || no "passing AC state wrong (status=$S1 verified_by=$V1)"
 [ "$S2" = "failed" ] && ok "failing AC → failed" || no "failing AC status=$S2"
 [ "$S3" = "pending" ] && ok "prose AC stays pending" || no "prose AC status=$S3"
-EVN="$(printf '%s' "$AFTER" | jget "len([e for e in d.get('evidence',[]) if e.get('evidence_type')=='test_output' and 'AC check' in (e.get('summary') or '')])" 2>/dev/null || echo 0)"
+EVN="$(printf '%s' "$AFTER" | jget '(d.evidence || []).filter((e) => e.evidence_type === "test_output" && (e.summary || "").includes("AC check")).length' 2>/dev/null || echo 0)"
 [ "$EVN" = "2" ] && ok "two test_output evidence rows (one per executed check)" || no "expected 2 AC-check evidence rows (got $EVN)"
 
 echo "== 2: all checks pass ⇒ returns 0 =="
 T2="$(wg ticket create --title "All green")"
-N2="$(printf '%s' "$T2" | jget "d.get('number') or d.get('ticket',{}).get('number')")"
+N2="$(printf '%s' "$T2" | jget 'd.number ?? d.ticket?.number')"
 wg ac add "$N2" -t "true passes" --check 'true' >/dev/null
 RES2="$WORK/ac2.results"; : > "$RES2"
 gaffer_run_ac_checks "$N2" "$(wg ticket show "$N2")" "$WT" "$RES2" && ok "returns 0 when every check passes" || no "expected rc 0"
@@ -84,7 +84,7 @@ gaffer_run_ac_checks "$N2" "$(wg ticket show "$N2")" "$WT" "$RES2" && ok "return
 
 echo "== 3: no checked ACs ⇒ count 0, no-op =="
 T3="$(wg ticket create --title "Prose only")"
-N3="$(printf '%s' "$T3" | jget "d.get('number') or d.get('ticket',{}).get('number')")"
+N3="$(printf '%s' "$T3" | jget 'd.number ?? d.ticket?.number')"
 wg ac add "$N3" -t "prose" >/dev/null
 [ "$(gaffer_ac_check_count "$(wg ticket show "$N3")")" = "0" ] && ok "count 0 for a ticket with no checked ACs" || no "count should be 0"
 RES3="$WORK/ac3.results"; : > "$RES3"

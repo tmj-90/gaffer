@@ -1,5 +1,6 @@
 # Gaffer orphaned-worktree recovery (A-1 parallel execution).
 # shellcheck shell=bash
+_GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 #
 # A killed worker (SIGKILL, a crashed host, an OOM) leaves its per-ticket worktree
 # dir under $GAFFER_DATA/worktrees/ticket-<NUM>/ behind, and its claim is reaped
@@ -39,9 +40,7 @@ _orphan_wg_show() {
 }
 
 _orphan_ticket_status() {
-  _orphan_wg_show "$1" 2>/dev/null | python3 -c "import sys,json
-try: print(json.load(sys.stdin)['ticket']['status'])
-except Exception: print('')" 2>/dev/null
+  _orphan_wg_show "$1" 2>/dev/null | node "$_GAFFER_JSON_TOOL" ticket-status 2>/dev/null
 }
 
 # Remove one worktree base dir (and detach its git worktree registrations). The

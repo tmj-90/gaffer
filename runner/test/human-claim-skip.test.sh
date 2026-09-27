@@ -40,15 +40,15 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/human-claim-skip.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 DB="$WORK/dispatch.sqlite"
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
-jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-status_of() { wg ticket show "$1" 2>/dev/null | jget "d['ticket']['status']" 2>/dev/null || echo ''; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 
 # The EXACT candidate list tick.sh builds: numbers from `wg ticket list -s ready`.
-ready_numbers() { wg ticket list -s ready 2>/dev/null | jget "' '.join(str(t['number']) for t in d)" 2>/dev/null || echo ''; }
+ready_numbers() { wg ticket list -s ready 2>/dev/null | jget 'd.map((t) => String(t.number)).join(" ")' 2>/dev/null || echo ''; }
 # The EXACT claim-at-selection step (empty token ⇒ the tick skips the candidate).
 runner_claim() { # $1 = number, $2 = agent → echoes captured token ('' ⇒ skip)
   local j; j="$(wg claim-ticket "$1" --agent "$2" --ttl 900 2>/dev/null || true)"
-  printf '%s' "$j" | jget "d.get('claimToken','')" 2>/dev/null || echo ''
+  printf '%s' "$j" | jget 'd.claimToken ?? ""' 2>/dev/null || echo ''
 }
 
 wg init >/dev/null 2>&1
@@ -58,7 +58,7 @@ for i in 1 2; do
   wg ac add "$i" -t "T$i AC" >/dev/null 2>&1
   wg ticket ready "$i" >/dev/null 2>&1
 done
-A1="$(wg agent register -n w1 --max-risk high 2>/dev/null | jget "d['agent']['id']")"
+A1="$(wg agent register -n w1 --max-risk high 2>/dev/null | jget 'd.agent.id')"
 [ -n "$A1" ] || { echo "SKIP: could not register agent"; exit 0; }
 
 echo "== human takes #1 by hand =="
@@ -76,7 +76,7 @@ TOK="$(runner_claim 1 "$A1")"
 [ "$(status_of 1)" = "in_progress" ] && ok "#1 is still human-owned in_progress (untouched by the claim attempt)" || fail "#1 status changed after a claim attempt (got '$(status_of 1)')"
 
 echo "== (c) CLAIM-NEXT: the loop picks the OTHER ready ticket, never the human's =="
-CLAIMED="$(wg claim --agent "$A1" --ttl 900 2>/dev/null | jget "d.get('ticketId','') or (d.get('claimed') and '') or ''" 2>/dev/null || echo '')"
+CLAIMED="$(wg claim --agent "$A1" --ttl 900 2>/dev/null | jget 'd.ticketId || ""' 2>/dev/null || echo '')"
 # Resolve the claimed ticket's NUMBER via its status flip: #2 should now be claimed, #1 still human.
 [ "$(status_of 2)" = "claimed" ] && ok "claim-next selected #2 (the agent-shaped ticket)" || fail "#2 not claimed by claim-next (got '$(status_of 2)')"
 [ "$(status_of 1)" = "in_progress" ] && ok "claim-next left the human's #1 alone" || fail "#1 was disturbed by claim-next (got '$(status_of 1)')"

@@ -25,7 +25,7 @@ State (dbs, config, logs) lives **outside** the packages, in `<repo-root>/.gaffe
 ## 0. Prerequisites
 
 - macOS or Linux. OS-level containment: `sandbox-exec` (macOS, write-only) or `docker` (any host with a daemon; read + egress isolation) — auto-detected, see `STRICT_MODE.md`
-- Node ≥ 22 (`.nvmrc`; `engines` is enforced) · pnpm 10 · git · python3 (the runner uses small python helpers)
+- Node ≥ 22 (`.nvmrc`; `engines` is enforced) · pnpm 10 · git · perl (the portable timeout shim; present on macOS and every mainstream Linux)
 - Claude Code CLI (`claude`) — only needed to run the *live* factory
 
 ```bash
@@ -165,7 +165,7 @@ node packages/crew/dist/cli/index.js -c .gaffer/crew.yaml \
 ```bash
 WG="node packages/dispatch/dist/cli/index.js --db .gaffer/dispatch.sqlite"
 $WG repo add -n myservice --path ~/git/myservice --branch main --test "pnpm test"
-NODE=$($WG scope node create -n "My Product" -t product | python3 -c 'import sys,json;print(json.load(sys.stdin)["node"]["id"])')
+NODE=$($WG scope node create -n "My Product" -t product | node runner/lib/json-tool.mjs expr 'd.node.id')
 $WG scope repo link "$NODE" myservice --relation owns --access write
 ```
 

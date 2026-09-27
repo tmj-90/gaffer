@@ -71,7 +71,7 @@ describe("idleModeFromEnv / boolFromEnv", () => {
 });
 
 describe("applyIdleLoopEnvOverrides", () => {
-  const base = () => parseConfig(defaultConfigYaml("t"));
+  const base = () => parseConfig(defaultConfigYaml({ factoryName: "t" }));
 
   it("leaves the config byte-identical when neither knob is set", () => {
     const cfg = base();

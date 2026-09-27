@@ -25,6 +25,10 @@ export default tseslint.config(
       // Runtime factory worktrees (delivery scratch + vendored/generated code
       // from delivered repos, e.g. jacoco resources). Gitignored, never source.
       ".gaffer/**",
+      // Claude Code's per-agent git worktrees (gitignored copies of the repo made
+      // by isolated subagents). Linting them double-counts every file and breaks the
+      // type-aware parser ("multiple candidate TSConfigRootDirs").
+      ".claude/**",
       // Vendored browser SPA — plain ES module, not part of the TS program.
       // Linted with browser globals in the dedicated override below.
     ],

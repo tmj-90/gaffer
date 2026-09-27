@@ -9,56 +9,53 @@ Tests: `runner/test/select-skills.test.mjs`.
 
 ---
 
-## 1. The model we just shipped: broad-inclusion (denylist)
+## 1. The model: broad-inclusion for task packs, stack-aware for stack packs
 
-### What changed
-
-Selection flipped from an **allowlist** (mount a pack only if the repo's `stack`
-string names it) to **broad-inclusion** (mount every plausibly-relevant pack by
-default; only *off-domain* packs stay opt-in). A skill's `area:` frontmatter tag
-now sorts it into one of three buckets:
+A skill's `area:` frontmatter tag sorts it into one of four buckets
+(`skillMatches`, `UNIVERSAL_AREAS`, `DELIVERY_AREAS`, `STACK_PACK_AREAS` in
+`select-skills.mjs`):
 
 | Bucket | Areas | Rule |
 | --- | --- | --- |
 | **Universal** | `quality`, `testing`, `review`, `workflow`, `security` | Always eligible — the delivery mechanics fire on every ticket. |
-| **Delivery** | `language`, `frontend`, `mobile`, `backend`, `data`, `refactor`, `docs` | Always eligible — every code-relevant pack fires regardless of stack. |
-| **Off-domain** | `marketing`, `product`, `planning`, `devops`, `infra`, `meta`, `security-ops` | Opt-in — mounted only if the skill is stack-tagged and the ticket's stack intersects, or an explicit `--area` names it. |
+| **Delivery** | `backend`, `data`, `refactor`, `docs` | Always eligible — every task-shaped pack fires regardless of stack (broad inclusion). |
+| **Stack packs** | `language`, `frontend`, `mobile` | Follow the repo's **stack**: the stack's own conventions pack; the web design bar when the stack has a web token (`react`, `web`, `next`, `vue`, `svelte`, `angular`…); the mobile pack when it has a mobile token (`react-native`, `expo`, `ios`, `android`, `swift`, `kotlin`). **Fail-open**: an empty stack, or one made only of tokens the library does not recognise, mounts every stack pack. The ticket text pulls a pack in by name ("port the Kotlin client" → `kotlin-conventions`). |
+| **Off-domain** | `marketing`, `product`, `planning`, `devops`, `infra`, `meta`, `security-ops` | Opt-in — mounted only if the skill is stack-tagged and the ticket's stack intersects, an explicit `--area` names it, or the ticket text plainly calls for it. |
 
-A skill with **no `area:`** is treated as fully cross-cutting and is always
-eligible. See `skillMatches`, `UNIVERSAL_AREAS`, and `DELIVERY_AREAS` in
-`select-skills.mjs`.
+Two refinements apply across buckets:
 
-### Why — the exclusion bug
+- A **stack tag on an always-on skill** is its author's applicability statement
+  and is honoured once the stack is known: `frontend-testing` (tagged
+  `react, web, …`) and the `accessibility-review` lens (web/mobile) stay off a
+  Node or Python backend; `contract-test` and `e2e-browser-test` (tagged `node`)
+  ride a Node service. Unknown stack → fail-open, as above.
+- A skill with **no `area:`** and no stack tag is fully cross-cutting and always
+  eligible.
 
-The old allowlist gated language/frontend/mobile packs on the repo's `stack`
-string. When that string was mis-registered or incomplete it *silently
-excluded* the pack the files in front of the agent actually needed:
+### Why broad inclusion for the task packs
 
-- `java-conventions` never mounted on a Java-backend ticket whose repo `stack`
-  didn't list `java`.
-- `mobile-ui` / `brand` never mounted on a mobile app whose compound `stack`
-  string didn't spell out `react-native`.
+The earlier allowlist gated packs on the repo's `stack` string, and when that
+string was mis-registered or incomplete it *silently excluded* the pack the
+files in front of the agent needed (`java-conventions` never mounted on a Java
+ticket whose repo `stack` didn't list `java`). An excluded skill is invisible:
+the agent cannot ask for what it cannot see. Claude Code's progressive
+disclosure loads only a mounted skill's name + description until it is invoked,
+so an unused task pack costs one cached description line, while a missing one
+costs the delivery its guidance. For the task-shaped packs (API endpoint,
+migration, caching, webhooks…) the agent, not the selector, makes the final
+call on what to open.
 
-An excluded skill is **invisible**: the agent can't ask for what it can't see,
-and the delivery silently skips the conventions/UI guidance it should have had.
+### Why the stack packs are stack-aware anyway
 
-### Why broad-inclusion is cheap — progressive-disclosure economics
-
-Claude Code uses *progressive disclosure*: for a mounted skill it loads only the
-name + one-line description into context until the agent actually invokes it.
-Listing **all the bundled skill descriptions is a few thousand tokens**, and that prefix is stable
-across ticks so it is almost entirely **prompt-cached**. So the cost delta of
-mounting a pack the agent never uses is negligible.
-
-The two error modes are therefore wildly asymmetric:
-
-- **Over-inclusion** (mount an unused pack): ~one cached description line. Nearly free.
-- **Under-inclusion** (exclude a needed pack): invisible, and the delivery ships
-  without guidance it needed. Costly, and hard to detect after the fact.
-
-Given that asymmetry the correct default is *include*. Precise stack detection
-stops being load-bearing: the agent, not the selector, makes the final call on
-which mounted skill to open.
+A wrong-language conventions pack is not a harmless extra line: it *contradicts*
+the files in front of the agent (casing, layout, tooling, test runner), and with
+nine language packs plus thirteen web and mobile packs on every ticket the one
+that fits is one of 92 near-identical "conventions" lines. A live audit found
+every Node delivery being handed `csharp-conventions`, `swift-conventions`,
+`mobile-ui` and the React state-management pack. The mis-registration concern
+that motivated broad inclusion is kept in a narrower form: the stack packs fail
+**open** only when the stack is genuinely unknown, and the ticket text can still
+pull a foreign pack in by naming its language.
 
 ### Why off-domain packs still stay opt-in
 
@@ -66,7 +63,8 @@ The denylist keeps marketing / product / planning / devops / infra / meta /
 security-ops packs off a normal feature delivery. A backend feature ticket
 should not be handed a slide-deck, an SEO audit, or a Terraform pattern pack —
 those belong to different kinds of work and are pulled in explicitly via
-`--area` (or a stack tag like `terraform` / `kubernetes` for the infra packs).
+`--area`, a stack tag like `terraform` / `kubernetes`, or ticket text that names
+them.
 
 ---
 
@@ -94,7 +92,11 @@ though `review-ticket` tells it to "review Java like Java") or the whole library
 "Language packs" are the `area: language` skills whose `stack` tags intersect the
 repo's stack (`typescript-conventions` for a TS repo, `java-conventions` for Java…).
 "Surface packs" are the `frontend` / `mobile` packs, added when the stack is a web or
-mobile one. Names a profile lists that are not in the library are dropped silently, so
+mobile one. Both fail open — every pack — when the stack is unknown (§1), and a lens
+whose own stack tag rules the stack out (`accessibility-review` on a backend) is skipped.
+The headless runners mount their role's set through `runner/lib/agent-home.mjs`
+(`mountRoleSkills`): decompose → `plan`, spec-author → `spec`, product-owner-run →
+`product`, tester-run → `test`; before this they symlinked the whole library. Names a profile lists that are not in the library are dropped silently, so
 a trimmed library is safe. `review.sh` and `clarify.sh` mount their role's set (without
 the delivery mechanics) and the reviewer's prompt names the lenses mounted for it.
 
@@ -134,18 +136,12 @@ stack still matches. It works, but it is a lexical hack:
    Attaching a stack to a scope node lets a ticket resolve stacks from the
    *paths it actually touches* — real monorepo routing, not a repo-wide blob.
 
-### The key insight: it's a later refinement, not urgent
+### The key insight: it's a refinement, not a prerequisite
 
-**Broad-inclusion makes precise stack detection non-critical.** Because delivery
-and universal packs mount regardless of stack, a wrong or coarse `stack` value
-no longer *excludes* the right pack — at worst it mounts a few extra cached
-description lines. The only thing stack precision still gates is off-domain,
-stack-tagged packs (terraform / kubernetes / docker), which are a small,
-low-stakes set.
-
-So `stack[]` / per-path scope-graph routing is worth doing, but as a refinement
-that pays off **when the skill library grows large enough that
-descriptions-in-context actually strain the budget** — at which point tighter
-selection (mount fewer, more precisely) starts to matter again. Until then,
-broad-inclusion buys us correctness cheaply and lets stack modelling mature on
-its own timeline.
+Broad inclusion of the task packs and fail-open stack packs mean a wrong or
+coarse `stack` value cannot *exclude* a pack: an unrecognised label mounts every
+stack pack, a partially right compound label still reaches its own conventions
+pack via `expandStacks`. What stack precision buys is a *tighter* mount — the
+one conventions pack instead of nine, no design bar on a backend service — and
+that is exactly what a structured `stack[]` or per-path scope routing would
+sharpen further. Worth doing; not load-bearing for correctness.

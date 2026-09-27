@@ -50,15 +50,7 @@
 //   the (detached) log and exits non-zero.
 // =====================================================================
 
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  writeFileSync,
-  symlinkSync,
-  rmSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,6 +62,7 @@ import {
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
+import { mountRoleSkills } from "../lib/agent-home.mjs";
 import { Worker } from "../lib/worker.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -336,14 +329,10 @@ function installProjectLocalWiring(repoName) {
   const claudeDir = resolve(agentHome, ".claude");
   mkdirSync(claudeDir, { recursive: true });
 
-  // Skills symlink → the factory's skills dir (so `product-owner` resolves).
-  const skillsLink = resolve(claudeDir, "skills");
-  try {
-    rmSync(skillsLink, { force: true });
-  } catch {
-    /* nothing to remove */
-  }
-  symlinkSync(CONFIG.skillsDir, skillsLink, "dir");
+  // Skills: the PRODUCT role's set (product-owner, product-discovery, rice, user-story,
+  // prd + the product area) — not the whole library. Falls back to the full library
+  // symlink when nothing resolves, so `product-owner` always resolves.
+  mountRoleSkills(claudeDir, { role: "product" });
 
   // settings.json with the safety hook path resolved for THIS checkout (the shipped
   // file carries a ${RUNNER_DIR} placeholder; copying it verbatim would point the

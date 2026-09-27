@@ -37,8 +37,9 @@
 //   DISPATCH_TESTER_VERDICT_CMD  the operator/test seam used to RECORD the verdict
 //                  back through dispatch (mirrors how the runner shells to `wg`).
 //                  It is invoked as: <cmd...> <ticket> <verdict> <summary>. When
-//                  unset, the runner falls back to the bundled `wg` CLI tester-pass
-//                  / tester-fail. A STUB command here makes the verdict→transition
+//                  unset, the runner falls back to the bundled dispatch CLI
+//                  (DISPATCH_CLI_BIN, else packages/dispatch/dist/cli/index.js) with
+//                  `--db $DISPATCH_DB ticket tester-pass|tester-fail`. A STUB command here makes the verdict→transition
 //                  wiring fully testable with no live model.
 //
 // FLAGS:
@@ -89,6 +90,10 @@ const GAFFER_DATA = process.env.GAFFER_DATA || resolve(GAFFER_HOME, ".gaffer");
 
 const CONFIG = {
   dispatchDb: process.env.DISPATCH_DB || resolve(GAFFER_DATA, "dispatch.sqlite"),
+  // The dispatch CLI used to RECORD the verdict (`wg` is a shell function in
+  // factory.config.sh, not an executable — spawning it by name fails with ENOENT).
+  dispatchCliBin:
+    process.env.DISPATCH_CLI_BIN || resolve(GAFFER_HOME, "packages/dispatch/dist/cli/index.js"),
   memoryDb: process.env.MEMORY_DB || resolve(GAFFER_DATA, "memory.sqlite"),
   mcpConfig: process.env.MCP_CONFIG || resolve(RUNNER_DIR, ".mcp.json"),
   dispatchMcpBin:
@@ -288,7 +293,25 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env)
     const [bin, ...rest] = tokens;
     argv = [bin, [...rest, String(ticketNumber), verdict, summary]];
   } else {
-    argv = ["wg", ["ticket", action, String(ticketNumber), "--summary", summary, "--as", "agent"]];
+    // The bundled dispatch CLI, addressed by path and pinned to this run's DB — never
+    // the `wg` shell function by name (it is not on PATH for a spawned process).
+    const cli = (env.DISPATCH_CLI_BIN ?? "").trim() || CONFIG.dispatchCliBin;
+    const db = (env.DISPATCH_DB ?? "").trim() || CONFIG.dispatchDb;
+    argv = [
+      process.execPath,
+      [
+        cli,
+        "--db",
+        db,
+        "ticket",
+        action,
+        String(ticketNumber),
+        "--summary",
+        summary,
+        "--as",
+        "agent",
+      ],
+    ];
   }
   const res = spawnSync(argv[0], argv[1], { encoding: "utf8" });
   if (res.error) return { ok: false, code: null, error: String(res.error.message ?? res.error) };

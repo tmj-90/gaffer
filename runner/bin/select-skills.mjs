@@ -124,55 +124,165 @@ const UNIVERSAL_AREAS = new Set(["quality", "testing", "review", "workflow", "se
 
 /**
  * DOMAIN areas that are relevant to ANY code delivery — mounted regardless of the repo's
- * stack label. This is a deliberate BROAD-INCLUSION (denylist) model: the previous
- * allowlist gated language/frontend/mobile packs on the stack string, which silently
- * EXCLUDED `java-conventions` from a Java-backend ticket and `mobile-ui`/`brand` from a
- * mobile app when the stack was mis-registered. Progressive disclosure means Claude Code
- * only loads a skill's name+description (~one line) until the agent invokes it, so an
- * unused mounted skill is nearly free — whereas a wrongly-EXCLUDED skill is invisible and
- * costly. So every plausibly-relevant pack is mounted and the agent chooses. Off-domain
+ * stack label. This is a deliberate BROAD-INCLUSION (denylist) model for the
+ * task-shaped packs: an unused mounted skill costs one description line under
+ * progressive disclosure, whereas a wrongly-EXCLUDED skill is invisible. Off-domain
  * packs (marketing / product / planning / devops / infra / meta / security-ops) are NOT
- * here — they stay opt-in (stack-tagged or an explicit --area) so a feature ticket isn't
- * handed a slide-deck, SEO, or Terraform skill. See {@link skillMatches}.
+ * here — they stay opt-in (an explicit --area, or the ticket text calling for them) so a
+ * feature ticket isn't handed a slide-deck, SEO, or Terraform skill. See {@link skillMatches}.
  */
-const DELIVERY_AREAS = new Set([
-  "language",
-  "frontend",
-  "mobile",
-  "backend",
-  "data",
-  "refactor",
-  "docs",
+const DELIVERY_AREAS = new Set(["backend", "data", "refactor", "docs"]);
+
+/**
+ * STACK-PACK areas: the language conventions packs and the web / mobile surface packs.
+ * These follow the repo's STACK, not the broad-inclusion rule — a Node service must not
+ * be handed `csharp-conventions`, `swift-conventions` or `mobile-ui` (a wrong-language
+ * conventions pack actively misleads: its casing, layout and tooling rules contradict
+ * the files in front of the agent, and 20+ irrelevant packs dilute the one that fits).
+ * The mis-registration concern that motivated broad inclusion is kept as FAIL-OPEN:
+ * when the stack label is EMPTY or carries no token the library recognises (nothing a
+ * language pack or a surface list names), every stack pack is mounted, exactly as
+ * before. The ticket text still pulls a pack in by name ("port the Kotlin client").
+ */
+const STACK_PACK_AREAS = new Set(["language", "frontend", "mobile"]);
+
+/** Stack tokens that mark a web / mobile SURFACE, used to add the design-bar packs. */
+const WEB_STACKS = new Set([
+  "react",
+  "web",
+  "next",
+  "nextjs",
+  "vue",
+  "svelte",
+  "angular",
+  "html",
+  "css",
+]);
+const MOBILE_STACKS = new Set([
+  "react-native",
+  "native",
+  "expo",
+  "ios",
+  "android",
+  "swift",
+  "kotlin",
 ]);
 
 /**
- * A skill matches when it is in an always-eligible area (UNIVERSAL or DELIVERY), OR its
- * stack intersects the wanted stack(s) AND its area constraint is satisfied.
+ * Stack tokens the library RECOGNISES: every tag a language pack carries plus the web /
+ * mobile surface tokens. A stack made only of tokens outside this set (or an empty
+ * stack) is UNKNOWN, and the stack packs fail open for it. The static seed keeps
+ * `skillMatches` usable without a loaded library; {@link knownStackTokens} unions in the
+ * library's own tags so a new language pack extends the set without editing this file.
+ */
+const KNOWN_STACK_TOKENS = new Set([
+  ...WEB_STACKS,
+  ...MOBILE_STACKS,
+  "typescript",
+  "javascript",
+  "node",
+  "python",
+  "go",
+  "java",
+  "jvm",
+  "csharp",
+  "dotnet",
+  "aspnet",
+  "ruby",
+  "rails",
+  "rust",
+  "bash",
+  "shell",
+  "sh",
+  "zsh",
+  "macos",
+]);
+
+/** The recognised stack tokens for a loaded library (static seed ∪ language-pack tags). */
+export function knownStackTokens(library = []) {
+  const out = new Set(KNOWN_STACK_TOKENS);
+  for (const skill of library) {
+    if (skill.area === "language") for (const t of skill.stack) out.add(t);
+  }
+  return out;
+}
+
+/** True when the (expanded) stack names at least one token the library recognises. */
+export function stackIsKnown(stacks = [], library = []) {
+  const known = knownStackTokens(library);
+  return stacks.some((t) => known.has(t));
+}
+
+/**
+ * Does a STACK-PACK skill (language / frontend / mobile) fit the stack? Fail-open when
+ * the stack is unknown; otherwise a language pack needs a tag match, a frontend pack a
+ * web surface token (or a tag match), a mobile pack a mobile surface token (or a tag
+ * match).
+ */
+export function stackPackFits(skill, stacks = [], { stackKnown } = {}) {
+  const known = stackKnown ?? stackIsKnown(stacks);
+  if (!known) return true;
+  const tagged = skill.stack.some((t) => stacks.includes(t));
+  if (skill.area === "language") return tagged;
+  if (skill.area === "frontend") return tagged || stacks.some((t) => WEB_STACKS.has(t));
+  if (skill.area === "mobile") return tagged || stacks.some((t) => MOBILE_STACKS.has(t));
+  return tagged;
+}
+
+/**
+ * A skill matches when it is in an always-eligible area (UNIVERSAL or DELIVERY), OR it is
+ * a STACK PACK that fits the stack (fail-open on an unknown stack), OR its stack
+ * intersects the wanted stack(s) AND its area constraint is satisfied.
  *
  * Area handling:
  *   - No `area:`, a UNIVERSAL area, or a DELIVERY area → always eligible, regardless of
- *     stack. The core delivery flow plus every code-relevant pack (language conventions,
- *     frontend/mobile/backend, refactor, docs) fires on every delivery so the agent is
- *     never missing a skill it needs for the files in front of it.
+ *     stack. The core delivery flow plus every task-shaped pack (backend, data, refactor,
+ *     docs) fires on every delivery so the agent is never missing a skill it needs for
+ *     the files in front of it.
+ *   - STACK-PACK area (language / frontend / mobile) → {@link stackPackFits}; an explicit
+ *     `area` query equal to the pack's area mounts it regardless (the runner derives
+ *     `frontend` from a web stack label).
  *   - OFF-DOMAIN area (marketing/product/planning/devops/infra/meta/security-ops) +
  *     explicit `area` query → must equal the requested area.
  *   - OFF-DOMAIN area + stack-only query → opt-in: included only if ALSO stack-tagged, so
  *     these packs don't leak onto a normal feature delivery.
  */
-export function skillMatches(skill, { stacks = [], area = "" } = {}) {
+/**
+ * ROLE PROCEDURES: the skill that IS another agent's job. They live in universal areas
+ * (review / testing / workflow / product / planning) so the role profiles can mount them
+ * as core, but the DELIVERY selection never hands the builder the reviewer's, tester's,
+ * intake's or planner's procedure — a builder that opens `review-ticket` reviews itself.
+ */
+const ROLE_ONLY_SKILLS = new Set([
+  "review-ticket",
+  "adversarial-reviewer",
+  "black-box-test",
+  "clarify",
+  "plan-build",
+  "spec-author",
+  "product-owner",
+]);
+
+export function skillMatches(skill, { stacks = [], area = "", stackKnown } = {}) {
+  // A role procedure is reachable only through its role profile or an explicit --area.
+  if (ROLE_ONLY_SKILLS.has(skill.name) && !(area && skill.area === area)) return false;
+  const known = stackKnown ?? stackIsKnown(stacks);
+  const hasStackTag = skill.stack.length > 0;
+  const tagged = skill.stack.some((s) => stacks.includes(s));
   const alwaysEligible =
     !skill.area || UNIVERSAL_AREAS.has(skill.area) || DELIVERY_AREAS.has(skill.area);
-  const hasStackTag = skill.stack.length > 0;
-  const stackOk =
-    alwaysEligible ||
-    !hasStackTag ||
-    stacks.length === 0 ||
-    skill.stack.some((s) => stacks.includes(s));
-  let areaOk;
   if (alwaysEligible) {
-    // No area, a cross-cutting universal area, or a code-delivery area — every delivery.
-    areaOk = true;
-  } else if (area) {
+    // A stack tag on an always-on skill is its author's applicability statement (e.g.
+    // `frontend-testing` is React/web only): honoured once the stack is known.
+    return !hasStackTag || !known || tagged || (Boolean(area) && skill.area === area);
+  }
+  if (STACK_PACK_AREAS.has(skill.area)) {
+    if (area && skill.area === area) return true;
+    return stackPackFits(skill, stacks, { stackKnown: known });
+  }
+  const stackOk = !hasStackTag || stacks.length === 0 || tagged;
+  let areaOk;
+  if (area) {
     // Explicit area query: an off-domain skill must match the requested area.
     areaOk = skill.area === area;
   } else {
@@ -225,9 +335,27 @@ export function textMatches(skill, text = "") {
   if (nameParts.length > 0 && nameParts.every((p) => words.has(p))) return true;
   const phrase = skill.name.replace(/[-_]/g, " ").toLowerCase();
   if (phrase.length >= 5 && String(text).toLowerCase().includes(phrase)) return true;
+  // A LANGUAGE pack is pulled in when the text names its language ("port the Kotlin
+  // client", "the Rust worker"): its stack tags are the language's names. Only tags
+  // that are unambiguous language names count (not `node`, `shell`, a platform name).
+  if (
+    skill.area === "language" &&
+    skill.stack.some((t) => t.length >= 4 && !LANGUAGE_TAGS_TOO_GENERIC.has(t) && words.has(t))
+  )
+    return true;
+  // Two shared description words pull in an OFF-DOMAIN pack only. A stack pack or an
+  // always-on pack is decided by the stack rules above; ordinary ticket words ("test",
+  // "module", "login") would otherwise drag `typescript-conventions` onto a Python
+  // ticket through its description.
+  if (STACK_PACK_AREAS.has(skill.area) || ROLE_ONLY_SKILLS.has(skill.name)) return false;
+  if (!skill.area || UNIVERSAL_AREAS.has(skill.area) || DELIVERY_AREAS.has(skill.area))
+    return false;
   const descHits = [...relevanceTokens(skill.description)].filter((t) => words.has(t));
   return descHits.length >= 2;
 }
+
+/** Language-pack stack tags that also occur in ordinary ticket text — never a text pull. */
+const LANGUAGE_TAGS_TOO_GENERIC = new Set(["node", "shell", "macos", "android", "rails"]);
 
 /**
  * Select skills from the library by stack + area (+ optional ticket text). Compound
@@ -243,8 +371,11 @@ export function selectSkills({
   text = "",
 } = {}) {
   const expanded = expandStacks(stacks);
-  return loadSkills(skillsDir).filter(
-    (skill) => skillMatches(skill, { stacks: expanded, area }) || textMatches(skill, text),
+  const library = loadSkills(skillsDir);
+  const stackKnown = stackIsKnown(expanded, library);
+  return library.filter(
+    (skill) =>
+      skillMatches(skill, { stacks: expanded, area, stackKnown }) || textMatches(skill, text),
   );
 }
 
@@ -395,28 +526,6 @@ export const ROLE_PROFILES = Object.freeze({
 
 export const ROLE_NAMES = Object.freeze(Object.keys(ROLE_PROFILES));
 
-/** Stack tokens that mark a web / mobile SURFACE, used to add the design-bar packs. */
-const WEB_STACKS = new Set([
-  "react",
-  "web",
-  "next",
-  "nextjs",
-  "vue",
-  "svelte",
-  "angular",
-  "html",
-  "css",
-]);
-const MOBILE_STACKS = new Set([
-  "react-native",
-  "native",
-  "expo",
-  "ios",
-  "android",
-  "swift",
-  "kotlin",
-]);
-
 /**
  * Select the skills for an agent ROLE. Returns the ordered, de-duplicated list of
  * skill descriptors: core first, then lens areas, then the stack's packs, then the
@@ -430,6 +539,7 @@ export function selectForRole(
   const library = loadSkills(skillsDir);
   const byName = new Map(library.map((s) => [s.name, s]));
   const expanded = expandStacks(stacks);
+  const stackKnown = stackIsKnown(expanded, library);
   const out = [];
   const seen = new Set();
   const push = (skill) => {
@@ -439,28 +549,35 @@ export function selectForRole(
   };
   for (const name of profile.core) push(byName.get(name));
   for (const skill of library) {
-    if (profile.lensAreas.includes(skill.area)) push(skill);
+    // A whole LENS area, minus the lenses whose own stack tag rules the stack out
+    // (`accessibility-review` is a web/mobile lens; a known backend stack skips it).
+    if (
+      profile.lensAreas.includes(skill.area) &&
+      (skill.stack.length === 0 || !stackKnown || skill.stack.some((t) => expanded.includes(t)))
+    )
+      push(skill);
   }
   if (profile.languagePacks) {
-    // The stack's LANGUAGE pack(s): stack-tagged language skills whose tags intersect.
+    // The stack's LANGUAGE pack(s): stack-tagged language skills whose tags intersect —
+    // every language pack when the stack is unknown (fail-open, see STACK_PACK_AREAS).
     for (const skill of library) {
-      if (skill.area === "language" && skill.stack.some((t) => expanded.includes(t))) push(skill);
+      if (skill.area === "language" && stackPackFits(skill, expanded, { stackKnown })) push(skill);
     }
   }
   if (profile.surfacePacks) {
-    // The stack's SURFACE packs: the frontend / mobile design bar when the stack is one.
-    const isWeb = expanded.some((t) => WEB_STACKS.has(t));
-    const isMobile = expanded.some((t) => MOBILE_STACKS.has(t));
+    // The stack's SURFACE packs: the frontend / mobile design bar when the stack is one
+    // (or unknown — fail-open).
     for (const skill of library) {
-      if (skill.area === "frontend" && (isWeb || skill.stack.some((t) => expanded.includes(t))))
-        push(skill);
-      if (skill.area === "mobile" && (isMobile || skill.stack.some((t) => expanded.includes(t))))
+      if (
+        (skill.area === "frontend" || skill.area === "mobile") &&
+        stackPackFits(skill, expanded, { stackKnown })
+      )
         push(skill);
     }
   }
   if (profile.deliverySelection) {
     for (const skill of library) {
-      if (skillMatches(skill, { stacks: expanded, area })) push(skill);
+      if (skillMatches(skill, { stacks: expanded, area, stackKnown })) push(skill);
     }
   }
   if (profile.textPacks && text) {

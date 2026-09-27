@@ -72,6 +72,9 @@ else
   # the SHIPPING function, not a copy.
   FN="$TMP/distill.fn.sh"
   awk '/^gaffer_distill_ticket_intent\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TICK" > "$FN"
+  # The distiller normalises its promote flag through factory.config.sh's _gaffer_flag_on
+  # (1/true/yes/on). Extract that helper the same way so the shipping function runs whole.
+  awk '/^_gaffer_flag_on\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$RUNNER_DIR/factory.config.sh" >> "$FN"
   if ! grep -q 'gaffer_distill_ticket_intent()' "$FN"; then
     fail "could not extract gaffer_distill_ticket_intent from tick.sh"
   else

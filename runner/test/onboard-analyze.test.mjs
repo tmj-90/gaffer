@@ -44,6 +44,8 @@ const {
   writeUnderstanding,
   analyzeAndWrite,
   validateLore,
+  ONBOARD_LORE_KINDS,
+  DEFAULT_ONBOARD_LORE_KIND,
   parseLoreTitles,
   normalizeDedupKey,
   isSourceUrl,
@@ -509,6 +511,43 @@ console.log("== AC13: validateLore enforces the skill's hard rules ==");
   );
 }
 
+console.log("== AC13b: every onboard draft carries a lore KIND (never untyped) ==");
+{
+  // Regression: onboarding suggested lore with no --kind, so Memory stored it as
+  // `other` and the delivery primer's decision/requirement/non-goal filter never
+  // surfaced it. A valid model kind is honoured; absent/unknown → convention.
+  const kinds = validateLore([
+    { title: "Decided", summary: "s", body: "Source: ADR-1\n\nd", kind: "decision" },
+    { title: "Trap", summary: "s", body: "Source: README\n\nd", kind: "GOTCHA" },
+    { title: "Untyped", summary: "s", body: "Source: README\n\nd" },
+    { title: "Nonsense", summary: "s", body: "Source: README\n\nd", kind: "wisdom" },
+    { title: "Other", summary: "s", body: "Source: README\n\nd", kind: "other" },
+  ]);
+  eq(
+    "kind honoured / normalised / defaulted for every record",
+    kinds.map((r) => [r.title, r.kind]),
+    [
+      ["Decided", "decision"],
+      ["Trap", "gotcha"],
+      ["Untyped", DEFAULT_ONBOARD_LORE_KIND],
+      ["Nonsense", DEFAULT_ONBOARD_LORE_KIND],
+      ["Other", DEFAULT_ONBOARD_LORE_KIND], // `other` is exactly the untyped bucket — never chosen
+    ],
+  );
+  assert("default kind is convention", DEFAULT_ONBOARD_LORE_KIND === "convention");
+  assert(
+    "every record has a kind from the onboard set",
+    kinds.every((r) => ONBOARD_LORE_KINDS.has(r.kind)),
+  );
+  const promptWithKind = buildAnalysisPrompt(
+    gatherMaterial(mavenRepo(), { name: "demo", stack: "java", testCommand: "mvn test" }),
+  );
+  assert(
+    "the analysis prompt asks the model for a kind",
+    /"kind":\s+"decision \| requirement \| non-goal \| convention \| gotcha"/.test(promptWithKind),
+  );
+}
+
 console.log("== AC14: validateLore drops UNCITED lore + dedupes by title ==");
 {
   const lore = validateLore([
@@ -604,6 +643,12 @@ console.log("== AC16/AC17: writeUnderstanding drafts lore via `suggest` (DRAFT) 
   assert(
     "AC16: draft scoped to the repo",
     suggestCall.includes("--repo") && suggestCall.includes("demo"),
+  );
+  // The draft above carries no kind (the shape older validateLore produced), so the
+  // write path must still classify it — an unkinded suggest lands as `other`.
+  assert(
+    "AC16: draft carries --kind (defaulted to convention when the record has none)",
+    suggestCall[suggestCall.indexOf("--kind") + 1] === DEFAULT_ONBOARD_LORE_KIND,
   );
 
   // Simulate the store now containing that draft (what `search … --include-drafts` returns).

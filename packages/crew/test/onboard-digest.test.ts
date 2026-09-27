@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DryRunGitAdapter } from "../src/adapters/gitAdapter.js";
 import { RepoContextStore, type RepoMapping } from "../src/onboarding/contextStore.js";
-import { onboardRepo } from "../src/onboarding/onboard.js";
+import { onboardRepo, rescanRepo } from "../src/onboarding/onboard.js";
 import { deriveRepoUnderstanding } from "../src/onboarding/repoDigest.js";
 import { scanRepoForOnboarding } from "../src/onboarding/onboardScan.js";
 import { flushRepoUnderstanding } from "../src/memory/prefetch.js";
@@ -257,6 +257,31 @@ describe("onboardRepo is idempotent — a re-onboard refreshes instead of throwi
     // The digest is STILL produced on the re-run (no features any more).
     expect(second.understanding.digest.source).toBe("onboard");
     expect(second.understanding.features).toEqual([]);
+  });
+
+  it("a rescan's change suggestion is a KINDED draft (never untyped)", () => {
+    // Regression: the repo-context-changed suggestion carried no `kind`, so Memory
+    // stored it as `other` and every kind-filtered reader (the delivery primer's
+    // decision/requirement/non-goal search included) skipped it.
+    const clock = new TestClock();
+    const wg = new FakeDispatchClient();
+    const store = new RepoContextStore({ root, factoryId: "f", clock });
+    const git = new DryRunGitAdapter({ isRepo: false });
+    onboardRepo(
+      repoDir,
+      { repoId: "stub", name: "stub", mapping: { mode: "unmapped" } },
+      { store, dispatch: wg, git },
+    );
+    // The lint command disappears between scans (commands key on script PRESENCE)
+    // → the rescan derives a "context changed" suggestion.
+    writeFileSync(
+      join(repoDir, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest", build: "tsc" } }),
+    );
+    const rescan = rescanRepo(repoDir, { store, dispatch: wg, git, repoId: "stub" });
+    expect(rescan.changed).toBe(true);
+    expect(rescan.loreSuggestions.length).toBeGreaterThan(0);
+    for (const s of rescan.loreSuggestions) expect(s.kind).toBe("convention");
   });
 });
 

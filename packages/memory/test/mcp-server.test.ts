@@ -406,6 +406,78 @@ describe("MCP — get_lore + restricted gate", () => {
   });
 });
 
+describe("MCP — suggest_lore defaults repos from the factory ticket scope", () => {
+  // Regression: a delivery agent's suggest_lore without `repos` landed UNTAGGED, and
+  // the delivery primer only surfaces repo-tagged lore (`memory search --repo <r>`),
+  // so agent-captured knowledge never reached a later agent through that path.
+  it("in factory context (GAFFER_FACTORY=1) an omitted repos falls back to GAFFER_TICKET_REPOS", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "payments-svc:auth";
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Retries cap at 2h",
+      summary: "s",
+      body: "b",
+    });
+    expect(json.status).toBe("draft");
+    const got = await callJson(client, "get_lore", { id: json.id });
+    expect([...got.json.repos].sort()).toEqual(["auth", "payments-svc"]);
+  });
+
+  it("an explicit non-empty repos always wins over the ticket scope", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "payments-svc";
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Org-wide rule",
+      summary: "s",
+      body: "b",
+      repos: ["platform"],
+    });
+    const got = await callJson(client, "get_lore", { id: json.id });
+    expect(got.json.repos).toEqual(["platform"]);
+  });
+
+  it("an explicit EMPTY repos in factory context is treated as omitted (tagged, not lost)", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "payments-svc";
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Empty repos",
+      summary: "s",
+      body: "b",
+      repos: [],
+    });
+    const got = await callJson(client, "get_lore", { id: json.id });
+    expect(got.json.repos).toEqual(["payments-svc"]);
+  });
+
+  it("standalone memory-mcp (no GAFFER_FACTORY) is unchanged: no repos stays untagged", async () => {
+    process.env["GAFFER_TICKET_REPOS"] = "payments-svc"; // present but not in factory context
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "Standalone",
+      summary: "s",
+      body: "b",
+    });
+    const got = await callJson(client, "get_lore", { id: json.id });
+    expect(got.json.repos).toEqual([]);
+  });
+
+  it("factory context with NO ticket scope leaves the draft untagged rather than failing", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    client = await connectClient(db);
+    const { json } = await callJson(client, "suggest_lore", {
+      title: "No scope",
+      summary: "s",
+      body: "b",
+    });
+    expect(json.status).toBe("draft");
+    const got = await callJson(client, "get_lore", { id: json.id });
+    expect(got.json.repos).toEqual([]);
+  });
+});
+
 describe("MCP — suggest_lore", () => {
   it("creates a draft hidden from default search until approved", async () => {
     client = await connectClient(db);

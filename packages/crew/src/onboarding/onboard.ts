@@ -277,6 +277,10 @@ function buildChangeSuggestions(
       `A rescan of '${repoId}' detected changes that may warrant a lore update (suggest-only; ` +
       `not auto-promoted):\n- ${changes.join("\n- ")}`,
     tags: ["repo-context", "onboarding"],
+    // Always classified: an unkinded draft lands as `other` and is excluded from
+    // every `kind` filter Memory's readers apply. A stack/command change is a
+    // how-we-do-it-here fact, so it is a convention.
+    kind: "convention",
   });
   return suggestions;
 }

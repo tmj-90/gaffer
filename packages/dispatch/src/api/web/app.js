@@ -9484,13 +9484,16 @@ function openPlanBuild(opts = {}) {
   // its clauses ride along on every plan-build POST so the decomposer satisfies each
   // clause and stamps spec_clause_id provenance on the ACs — without this the whole
   // spec→plan→coverage traceability chain is dead (the spec never reaches decompose).
+  // `repo` (from a spec's target_repo): start in "extend" mode targeting that repo
+  // so the first turn's context carries it and decompose takes the brownfield path.
+  const seededRepo = typeof opts.repo === "string" && opts.repo.trim() ? opts.repo.trim() : null;
   planBuildState = {
     history: [],
     plan: null,
     busy: false,
     brief: opts.brief || null,
-    mode: "new",
-    target: null,
+    mode: seededRepo ? "extend" : "new",
+    target: seededRepo ? { kind: "repo", id: seededRepo, name: seededRepo } : null,
     nodes: [],
     repos: [],
     sessionId: null,
@@ -10418,6 +10421,10 @@ function openSpecBuild() {
   // `history` accumulates clarify turns; `draft` is the editable clause set once
   // the author returns a spec; `createdSpec` is the persisted spec (with id) after
   // Create; once `createdSpec` exists the flow shows the Freeze action.
+  // `targetRepo` is the repo the spec is FOR: it rides on POST /specs as
+  // `target_repo`, so the lore the freeze seeds is tagged with that repo and the
+  // delivery primer's per-repo `memory search --repo <name>` can surface it —
+  // untagged clauses never reached a delivery agent. `repos` feeds its picker.
   specBuildState = {
     history: [],
     draft: null,
@@ -10425,11 +10432,24 @@ function openSpecBuild() {
     busy: false,
     brief: null,
     title: "",
+    targetRepo: "",
+    repos: [],
   };
   renderSpecBuildLog();
   scrim.classList.add("open");
   document.addEventListener("keydown", specBuildKeydown);
   setTimeout(() => input.focus(), 50);
+  loadSpecBuildRepos();
+}
+
+/** Best-effort: populate the target-repo picker. The panel works without it. */
+function loadSpecBuildRepos() {
+  guard(async () => {
+    const res = await api("GET", "/repositories").catch(() => null);
+    if (!specBuildState || !res) return; // panel closed / repos unavailable
+    specBuildState.repos = res.repositories || [];
+    if (specBuildState.draft) renderSpecBuildLog();
+  });
 }
 
 function startNewSpecBuild() {
@@ -10441,6 +10461,8 @@ function startNewSpecBuild() {
     busy: false,
     brief: null,
     title: "",
+    targetRepo: "",
+    repos: specBuildState.repos || [],
   };
   renderSpecBuildLog();
   if (specBuildEls) specBuildEls.input.focus();
@@ -10587,6 +10609,40 @@ function renderSpecDraft(draft) {
     updateSpecCreateEnabled();
   });
   wrap.appendChild(field("Title", titleInput, { class: "sb-title-field" }));
+
+  // Target repo — which repo this spec is FOR. Sent as `target_repo` on Create so
+  // the clauses the freeze seeds into Memory carry that repo tag; the delivery
+  // primer searches lore per repo, so an untagged clause never reaches an agent.
+  // Optional (an org-wide spec may span repos), locked once the spec is created.
+  const repos = specBuildState.repos || [];
+  const repoSel = el(
+    "select",
+    {
+      class: "select sb-target-repo",
+      "aria-label": "Target repo",
+      disabled: created ? "" : undefined,
+    },
+    [
+      el("option", { value: "" }, repos.length ? "No target repo (org-wide)" : "No repos known"),
+      ...repos.map((r) =>
+        el(
+          "option",
+          { value: r.name, selected: specBuildState.targetRepo === r.name ? "" : undefined },
+          r.name,
+        ),
+      ),
+    ],
+  );
+  if (created && created.target_repo && !repos.some((r) => r.name === created.target_repo)) {
+    repoSel.appendChild(
+      el("option", { value: created.target_repo, selected: "" }, created.target_repo),
+    );
+  }
+  repoSel.addEventListener("change", () => {
+    specBuildState.targetRepo = repoSel.value;
+  });
+  repoSel.title = "Tags the lore seeded at freeze so this repo's delivery agents see it.";
+  wrap.appendChild(field("Target repo", repoSel, { class: "sb-target-repo-field" }));
 
   const list = el("ol", { class: "pb-tickets sb-clauses" });
   clauses.forEach((clause, i) => list.appendChild(renderSpecClauseRow(clause, i, !!created)));
@@ -10863,6 +10919,10 @@ async function createSpecFromDraft() {
       title,
       ...(specBuildState.brief ? { brief: specBuildState.brief } : {}),
       clauses,
+      // The repo this spec is for. The freeze tags every seeded clause with it so the
+      // delivery primer's per-repo lore search surfaces the clauses to that repo's
+      // agents; omitted (org-wide) when none was picked.
+      ...(specBuildState.targetRepo ? { target_repo: specBuildState.targetRepo } : {}),
     });
     specBuildState.createdSpec = res.spec || null;
     // Reflect the server-assigned clause ids/order back into the editable draft.
@@ -10933,7 +10993,9 @@ function buildFromFrozenSpec() {
     spec.title ||
     "Build from the frozen spec.";
   closeSpecBuild();
-  openPlanBuild({ spec: clauses, brief });
+  // Carry the spec's target repo into the plan: the decomposer then takes the
+  // existing-repo (brownfield) path for that repo instead of scaffolding a new one.
+  openPlanBuild({ spec: clauses, brief, ...(spec.target_repo ? { repo: spec.target_repo } : {}) });
 }
 
 // --- View: Memory (Repo Digest · Feature ledger · Lore) ---------------------

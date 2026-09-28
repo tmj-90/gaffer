@@ -50,7 +50,7 @@ It works in two directions:
 - **Greenfield** — no target repo: the plan opens with a single bootstrap ticket (`git init` + scaffold) that every other ticket depends on, so a one-liner becomes a brand-new, properly-structured repo.
 - **Brownfield** — an existing repo or scope: zero bootstrap, every ticket stamped onto the target repo, so the plan *extends* what's already there instead of rebuilding it.
 
-> **Greenfield delivery has a couple of honest first-run steps** — the brand-new repo's dependencies must be present for the test gate, and hands-off delivery is opt-in. See [**Build a whole new app from one line**](quickstart.md#5-build-a-whole-new-app-from-one-line-greenfield) in the quickstart before your first run.
+> **Greenfield delivery has a couple of honest first-run steps** — the brand-new repo's dependencies must be present for the test gate, and hands-off delivery is opt-in. See [**Build a whole new app from one line**](quickstart.md#6-build-a-whole-new-app-from-one-line-greenfield) in the quickstart before your first run.
 
 <p align="center">
   <img src="docs/img/plan-build.png" alt="The Plan-a-build chat that decomposes a one-line brief into a dependency-ordered epic" width="900">
@@ -176,10 +176,13 @@ Or in a container: `docker compose up -d` builds the image and starts the dashbo
 ## Quickstart
 
 ```bash
-runner/setup.sh                 # initialise factory state (DBs, config, agent identity)
-DRY_RUN=1 runner/tick.sh        # preview one tick — never invokes Claude or touches a repo
-runner/gaffer dashboard          # open the control-room dashboard
-runner/loop.sh                  # run the factory loop (DRY_RUN=1 by default)
+runner/setup.sh                                  # install + build + initialise factory state (DBs, config, agent identity)
+runner/gaffer onboard /path/to/your/repo         # scan + register a repo, seed its memory
+runner/gaffer dashboard                          # open the control-room dashboard
+runner/gaffer wg ticket create -t "…" -d "…"     # your first ticket (then: ac add · repo-access set · ready)
+runner/gaffer demo                               # watch the whole loop, dry-run — never invokes Claude or touches a repo
+runner/gaffer run                                # go live: one pass delivers the ready queue to Review
+runner/gaffer approve 1 && runner/gaffer merge 1 # the human gate, from the terminal (or the Review view)
 ```
 
 See [`quickstart.md`](quickstart.md) for the guided walkthrough and [`runner/README.md`](runner/README.md) for the full runbook.

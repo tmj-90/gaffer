@@ -127,6 +127,18 @@ roll_doctor memory  "$LG_DOCTOR_CMD"
 # No eval: argv-array invocation (mirrors run-summary.sh / roll_doctor above).
 read -ra _stats_c <<<"$STATS_CMD"; STATS_JSON="$("${_stats_c[@]}" 2>/dev/null)"
 review="$(read_count in_review)"; blocked="$(read_count blocked)"; ready="$(read_count ready)"
+# What's REGISTERED: the repos the factory can deliver into (name → path → default
+# branch → stack → DoD gates). `gaffer help` promises "what's registered + what's
+# running"; a fresh operator needs the repo NAME here for `wg ticket repo-access set`.
+# Env-overridable seam (REPOS_CMD) so the pane stays testable without the real CLI;
+# degrades to a hint when nothing is registered or the source is unavailable.
+: "${REPOS_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB repo list}"
+read -ra _repos_c <<<"$REPOS_CMD"; REPOS_JSON="$("${_repos_c[@]}" 2>/dev/null)"
+repo_lines="$(printf '%s' "$REPOS_JSON" | node "$HERE/lib/json-tool.mjs" status-repo-lines 2>/dev/null)"
+printf "\n  ${c_dim}repos (registered)${c_off}\n"
+if [ -n "$repo_lines" ]; then printf '%s\n' "$repo_lines"
+else printf "    ${c_dim}(none — \`gaffer onboard <path>\` registers one)${c_off}\n"; fi
+
 printf "\n  ${c_dim}work${c_off}\n"
 printf "    needs review: %s    blocked: %s    ready: %s\n" "$review" "$blocked" "$ready"
 

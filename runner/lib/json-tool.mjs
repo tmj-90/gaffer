@@ -783,6 +783,21 @@ switch (cmd) {
     break;
   }
   // status-hq-lines: stdin = human-queue JSON → "    #N  reason" per pending decision.
+  case "status-repo-lines": {
+    // `dispatch repo list` JSON → one line per registered repo for the status pane:
+    //     <name>  <local_path or remote>  [<default_branch>] <stack>  gates: test ✓/–  lint ✓/–
+    const p = tryParse(readStdin());
+    if (!p.ok || !Array.isArray(p.value)) process.exit(0);
+    for (const r of p.value) {
+      if (!r || typeof r.name !== "string") continue;
+      const where = r.local_path || r.remote_url || "(no path)";
+      const gates = `test ${r.test_command ? "✓" : "–"}  lint ${r.lint_command ? "✓" : "–"}`;
+      println(
+        `    ${r.name}  ${where}  [${r.default_branch || "?"}] ${r.stack || "?"}  gates: ${gates}`,
+      );
+    }
+    break;
+  }
   case "status-hq-lines": {
     const p = tryParse(readStdin());
     if (!p.ok) process.exit(0);

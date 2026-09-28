@@ -47,6 +47,7 @@ echo "  $HERE/gaffer dashboard                    # open the web UI (http://127.
 echo "                                            #   → 'Plan a build' turns one line into a NEW app (greenfield)"
 echo "  $HERE/gaffer demo                         # watch the whole loop (dry-run)"
 echo "  $HERE/gaffer status                       # what's registered + running"
-echo "  $HERE/gaffer skills install --user        # (optional) add the 66 skills to your own Claude Code"
+echo "  $HERE/gaffer wg ticket create -t \"<title>\" -d \"<what + why>\"   # your first ticket (then: ac add · repo-access set · ready — see quickstart §4)"
+echo "  $HERE/gaffer skills install --user        # (optional) add the $(find "$HERE/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d " ") skills to your own Claude Code"
 echo
 echo "  go live when ready:  DRY_RUN=0 bash $HERE/loop.sh   (review preflight.sh first)"

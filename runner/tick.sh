@@ -243,7 +243,14 @@ _gaffer_locked() {
     "$@"
   fi
 }
-_gaffer_log_line() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" | tee -a "$GAFFER_LOG" >&2; }
+# The agent's stderr streams into the same log and its last line may end without a
+# newline (claude -p's final text), which glued the next timestamped line onto it in
+# `gaffer status` ("…review.2026-09-28T18:32:29 delivery tick …"). Start a fresh line
+# when the log's last byte is not one. (`$(tail -c1)` is empty exactly when it is.)
+_gaffer_log_line() {
+  if [ -s "$GAFFER_LOG" ] && [ -n "$(tail -c1 "$GAFFER_LOG" 2>/dev/null)" ]; then printf '\n' >>"$GAFFER_LOG"; fi
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" | tee -a "$GAFFER_LOG" >&2
+}
 log() { _gaffer_locked .log.lock _gaffer_log_line "$*"; }
 # The safety hook AND its deny-list sibling must BOTH be present before we launch a
 # live agent: a missing lib/dangerous-commands.mjs would make the hook fail-closed at

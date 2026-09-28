@@ -71,6 +71,29 @@ wait "$DPID" 2>/dev/null || true
   || fail "daemon ran no passes before SIGTERM"
 if kill -0 "$DPID" 2>/dev/null; then kill -KILL "$DPID" 2>/dev/null; fail "daemon still running after SIGTERM (not graceful)"; else ok "daemon exited on SIGTERM (graceful stop)"; fi
 
+# 5. GO LIVE BY DEFAULT: `gaffer run` is the go-live command. factory.config.sh defaults
+#    DRY_RUN=1 for every other entry point; the front door must capture the OPERATOR's
+#    DRY_RUN before sourcing it, so an unset DRY_RUN → a LIVE pass (DRY_RUN=0) and an
+#    explicit DRY_RUN=1 stays dry. (Regression: every `gaffer run` used to preview only.)
+DRYSEEN="$WORK/dry-seen"
+cat > "$STUB" <<STUBSH
+#!/usr/bin/env bash
+printf '%s\n' "\${DRY_RUN-unset}" >> "$DRYSEEN"
+STUBSH
+chmod +x "$STUB"
+: > "$DRYSEEN"
+( unset DRY_RUN; GAFFER_LOOP_SH="$STUB" GAFFER_DATA="$WORK/data-live" bash "$RUNNER_DIR/gaffer" run >/dev/null 2>&1 )
+[ "$(tail -n1 "$DRYSEEN" 2>/dev/null)" = "0" ] && ok "'gaffer run' with no DRY_RUN in the env runs the loop LIVE (DRY_RUN=0)" \
+  || fail "'gaffer run' should default to DRY_RUN=0, loop saw: '$(tail -n1 "$DRYSEEN" 2>/dev/null)'"
+: > "$DRYSEEN"
+( DRY_RUN=1 GAFFER_LOOP_SH="$STUB" GAFFER_DATA="$WORK/data-dry" bash "$RUNNER_DIR/gaffer" run >/dev/null 2>&1 )
+[ "$(tail -n1 "$DRYSEEN" 2>/dev/null)" = "1" ] && ok "'DRY_RUN=1 gaffer run' stays a dry run (operator's explicit choice wins)" \
+  || fail "'DRY_RUN=1 gaffer run' should pass DRY_RUN=1 through, loop saw: '$(tail -n1 "$DRYSEEN" 2>/dev/null)'"
+: > "$DRYSEEN"
+( unset DRY_RUN; GAFFER_LOOP_SH="$STUB" GAFFER_DATA="$WORK/data-daemon" GAFFER_DAEMON_MAX_CYCLES=1 bash "$RUNNER_DIR/gaffer" run --daemon --interval 0 >/dev/null 2>&1 )
+[ "$(tail -n1 "$DRYSEEN" 2>/dev/null)" = "0" ] && ok "'gaffer run --daemon' is live by default too (DRY_RUN=0 reaches the loop)" \
+  || fail "'gaffer run --daemon' should pass DRY_RUN=0, loop saw: '$(tail -n1 "$DRYSEEN" 2>/dev/null)'"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "gaffer-run-daemon: ALL $PASS checks passed"

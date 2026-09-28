@@ -143,6 +143,27 @@ export function registerRepo(program: Command): void {
     });
 
   repo
+    .command("list")
+    .description("List registered repositories (name, path, default branch, stack, DoD gates)")
+    .option("--all", "include hidden repositories", false)
+    .action((opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      printJson(
+        wg.listRepositories(Boolean(opts.all)).map((r) => ({
+          id: r.id,
+          name: r.name,
+          local_path: r.local_path,
+          default_branch: r.default_branch,
+          stack: r.stack,
+          risk_level: r.risk_level,
+          test_command: r.test_command,
+          lint_command: r.lint_command,
+          hidden: r.hidden === 1,
+        })),
+      );
+      wg.db.close();
+    });
+  repo
     .command("hidden")
     .description("List hidden repositories")
     .action((_opts, cmd) => {

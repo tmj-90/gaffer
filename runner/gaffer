@@ -10,12 +10,25 @@
 #   gaffer demo                       run the Factory Map showcase (DRY_RUN)
 #   gaffer skills [install]           list the skill library / install it into your Claude Code
 #   gaffer eval [--json]              delivery-quality metrics (pass rate · memory lift · cost/pass)
+#   gaffer run [--daemon] [--interval N]
+#                                     go live: one supervisor pass (drains the ready queue), or
+#                                     --daemon = re-run it every N seconds until SIGINT/SIGTERM
+#   gaffer wg <dispatch args…>        the dispatch CLI against THIS factory's database
+#                                     (e.g. gaffer wg ticket create -t "…" -d "…"; gaffer wg ticket show 1)
+#   gaffer approve <ticket> [--reviewer <you>]   the human review gate: approve a ticket in Review
+#   gaffer merge <ticket>             land an approved ticket (what the dashboard's Merge button runs)
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
 #   gaffer help
 #
 # Everything uses the factory's own config/state under $GAFFER_DATA — no flags to remember.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The operator's OWN DRY_RUN, captured BEFORE factory.config.sh fills in its default
+# (DRY_RUN=1). `gaffer run` is the go-live command: it must default to a LIVE pass, and
+# only an explicit DRY_RUN=1 in the caller's environment keeps it dry. Reading DRY_RUN
+# after the source made every `gaffer run` a dry run while help, README and quickstart
+# all called it "go live".
+_GAFFER_OP_DRY_RUN="${DRY_RUN-}"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 
@@ -219,6 +232,30 @@ eval)
   fi
   ;;
 
+wg)
+  # The dispatch CLI, pinned to THIS factory's database — the "your first ticket" path
+  # without a dashboard: create → ac add → repo-access set → ready → (after delivery)
+  # review approve. Same binary the runner uses; nothing hidden.
+  exec node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"
+  ;;
+
+approve)
+  # The human review gate from the CLI: `gaffer approve <ticket> [--reviewer <you>]`.
+  # Records a HUMAN approval (in_review → ready_for_merge). The agent still cannot do this.
+  _t="${1:-}"; [ -n "$_t" ] || { echo "usage: gaffer approve <ticket> [--reviewer <you>]"; exit 2; }; shift || true
+  _rev="${USER:-human}"
+  while [ $# -gt 0 ]; do case "$1" in --reviewer) shift; _rev="${1:-$_rev}" ;; --reviewer=*) _rev="${1#--reviewer=}" ;; esac; shift || true; done
+  exec node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" review approve "$_t" --reviewer "$_rev"
+  ;;
+
+merge)
+  # Land an approved ticket — exactly what the dashboard's Merge button runs
+  # (merge-ticket.mjs: conflict-safe merge; a conflict spawns the resolver agent and
+  # sends the ticket back for re-approval, never a force-merge).
+  _t="${1:-}"; [ -n "$_t" ] || { echo "usage: gaffer merge <ticket>"; exit 2; }
+  exec env GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" node "$HERE/bin/merge-ticket.mjs" --ticket "$_t"
+  ;;
+
 run)
   # Live run. Without --daemon: ONE supervisor pass (drains the ready queue, honours
   # the per-day cap, then exits). With --daemon: the portable AFK loop — re-run the pass
@@ -234,11 +271,15 @@ run)
     esac
     shift || true
   done
-  if [ "$_daemon" = 0 ]; then exec env DRY_RUN="${DRY_RUN:-0}" bash "$HERE/loop.sh"; fi
+  _live_dry="${_GAFFER_OP_DRY_RUN:-0}"
+  [ "$_live_dry" = 1 ] && warn "DRY_RUN=1 is set in your environment — this pass previews only; unset it to deliver for real"
+  # GAFFER_LOOP_SH: the supervisor pass to run (test seam; the real loop by default).
+  _loop_sh="${GAFFER_LOOP_SH:-$HERE/loop.sh}"
+  if [ "$_daemon" = 0 ]; then exec env DRY_RUN="$_live_dry" bash "$_loop_sh"; fi
   say "gaffer daemon: re-running the loop every ${_interval}s — SIGINT/SIGTERM stops cleanly (finishes the current pass); MAX_TICKS_PER_DAY caps the day"
   # shellcheck source=lib/daemon.sh
   source "$HERE/lib/daemon.sh"
-  GAFFER_LOOP_SH="$HERE/loop.sh" DRY_RUN="${DRY_RUN:-0}" gaffer_run_daemon "$_interval"
+  GAFFER_LOOP_SH="$_loop_sh" DRY_RUN="$_live_dry" gaffer_run_daemon "$_interval"
   ;;
 
 skills)
@@ -289,6 +330,7 @@ skills)
   ;;
 
 help|*)
-  sed -n '2,12p' "$HERE/gaffer" | sed 's/^# \{0,1\}//'
+  # The header comment block above, up to and including the `gaffer help` line.
+  awk 'NR < 2 { next } /^#   gaffer help/ { sub(/^# ?/, ""); print; exit } { sub(/^# ?/, ""); print }' "$HERE/gaffer"
   ;;
 esac

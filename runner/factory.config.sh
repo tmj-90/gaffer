@@ -88,8 +88,19 @@ export SKILLS_DIR
 # ticket. An override is an EXPLICIT operator-set value: we capture "was it set
 # before config applied a default?" HERE, before the `=` default, so the router
 # (gaffer_route_model) can honour a pinned model while still routing otherwise.
-[ -n "${GAFFER_PLAN_MODEL+x}" ] && GAFFER_PLAN_MODEL_EXPLICIT=1 || GAFFER_PLAN_MODEL_EXPLICIT=0
-[ -n "${GAFFER_IMPL_MODEL+x}" ] && GAFFER_IMPL_MODEL_EXPLICIT=1 || GAFFER_IMPL_MODEL_EXPLICIT=0
+# Computed ONCE, in the outermost shell that sources this file. The defaults below are
+# exported, so every child that re-sources the config (tick.sh under loop.sh, the
+# review/tester/merge helpers) sees GAFFER_*_MODEL set and would otherwise mark the
+# config's own default as an operator override — which is exactly what happened: on a
+# plain `bash runner/loop.sh` the router never ran and every tick logged
+# "model=sonnet (explicit GAFFER_*_MODEL override)". A parent that already decided
+# exports the decision; a child keeps it.
+if [ -z "${GAFFER_PLAN_MODEL_EXPLICIT+x}" ]; then
+  [ -n "${GAFFER_PLAN_MODEL+x}" ] && GAFFER_PLAN_MODEL_EXPLICIT=1 || GAFFER_PLAN_MODEL_EXPLICIT=0
+fi
+if [ -z "${GAFFER_IMPL_MODEL_EXPLICIT+x}" ]; then
+  [ -n "${GAFFER_IMPL_MODEL+x}" ] && GAFFER_IMPL_MODEL_EXPLICIT=1 || GAFFER_IMPL_MODEL_EXPLICIT=0
+fi
 export GAFFER_PLAN_MODEL_EXPLICIT GAFFER_IMPL_MODEL_EXPLICIT
 : "${GAFFER_PLAN_MODEL=opus}"
 : "${GAFFER_IMPL_MODEL=sonnet}"

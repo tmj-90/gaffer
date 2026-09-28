@@ -49,6 +49,13 @@ into the memory store. Re-running it is idempotent — it refreshes rather than 
 > Lore lands as **drafts** (gated). Approve what's worth keeping with the memory CLI;
 > nothing is auto-promoted.
 
+Onboarding also files one **decision** for you — *"Onboarding intake for '<repo>'"* — a
+short bundle of questions the scan could not answer from the code (what the product is
+for, who it serves, what is deliberately out of scope). It blocks nothing. Answer it from
+the dashboard's **Overview** ("what needs you") when you have a minute, or resolve it
+without an answer; the answers become lore drafts for review, never facts the agent
+asserts on its own.
+
 ---
 
 ## 3. Open the control room
@@ -84,7 +91,36 @@ runner/gaffer status     # what's registered + running
 
 ---
 
-## 4. Run the factory
+## 4. Give it your first ticket
+
+Everything the factory delivers starts as a ticket. `runner/gaffer wg …` is the
+dispatch CLI pinned to *this* factory's database, so no `--db` flag is needed. Four
+commands take a ticket from nothing to **ready** (create it in the **Work** view instead
+if you prefer the UI — same four steps):
+
+```bash
+runner/gaffer wg ticket create -t "Add listNotes: newest-first listing" \
+  -d "Export listNotes(notes) from src/notes.js: sorted newest-first by createdAt, input untouched, with a node:test test."
+runner/gaffer wg ac add 1 -t "listNotes returns a new array sorted newest-first and leaves the input unchanged"
+runner/gaffer wg ac add 1 -t "test/notes.test.js covers the new function and the suite passes" --check "npm test"
+runner/gaffer wg ticket repo-access set 1 <repo-name>     # the name you onboarded (see `runner/gaffer status`)
+runner/gaffer wg ticket ready 1
+runner/gaffer wg ticket show 1                             # status, criteria, repo access
+```
+
+Rules the `ready` gate enforces, so you don't discover them by failing:
+- **at least one acceptance criterion** — the agent proves each one, and a criterion with
+  `--check '<cmd>'` is run by the runner itself in the delivery worktree (exit 0 ⇒ satisfied);
+- **a confirmed repo** (`repo-access set … --access write` is the default) — without it the
+  runner has nowhere to branch;
+- the default policy pack is `solo_loose`; the strict packs also need a reviewer (see the
+  note in the next section).
+
+The ticket number (`1`) is what every later command takes.
+
+---
+
+## 5. Run the factory
 
 The factory works tickets through **plan → implement → test → review**, each in a throwaway
 git worktree, behind a deterministic safety hook.
@@ -98,10 +134,36 @@ When you're ready to let it deliver for real, read **`runner/preflight.sh`** fir
 
 ```bash
 bash runner/preflight.sh              # verify the environment
-DRY_RUN=0 bash runner/loop.sh         # go live — ONE pass: drains the ready queue, then exits
+runner/gaffer run                     # go live — ONE pass: drains the ready queue, then exits
+                                      #   (the same as DRY_RUN=0 bash runner/loop.sh)
 runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (Linux + macOS),
                                       #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
 ```
+
+A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a
+`gaffer/ticket-1-…` branch in a throwaway worktree, runs the Definition-of-Done gates and
+your `--check` commands, and **submits it for review** (`in_review`). The run summary
+printed at the end says so ("in-review: 1 awaiting review"), and `runner/gaffer wg ticket
+show 1` shows the branch name and each criterion's verdict.
+
+### Approve and merge
+
+By default **the loop never merges** — that is the human gate. Approve and land the
+ticket from the **Review** view (inspect the diff, arm + confirm Approve, then Merge), or
+from the terminal:
+
+```bash
+runner/gaffer approve 1 --reviewer <your-name>   # in_review → ready_for_merge (a HUMAN approval)
+runner/gaffer merge 1                            # the same conflict-safe merge the dashboard's Merge button runs
+```
+
+`merge` fast-forwards your repo's default branch from the ticket branch, marks the
+ticket **done**, refreshes the repo's digest + feature ledger, and deletes the merged
+branch. A merge conflict is never forced: the ticket goes back for rework and re-approval.
+Run your repo's tests afterwards; the change is on your default branch, in your checkout.
+
+For hands-off runs (the agent reviewer approves, the merge lane lands) see the autonomy
+flags under **Safety** below — off by default.
 
 > **Readying a ticket needs a reviewer under the strict policy packs.** The default
 > policy pack is `solo_loose`, which readies freely. But tickets under
@@ -122,7 +184,7 @@ runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (L
 
 ---
 
-## 5. Build a whole new app from one line (greenfield)
+## 6. Build a whole new app from one line (greenfield)
 
 You don't need an existing repo. From the dashboard, the **Plan a build** chat turns a
 one-line brief into a phased, dependency-ordered epic — including a **bootstrap** ticket
@@ -133,14 +195,16 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
    API that evaluates arithmetic expressions and a web front-end that calls it"*) → send.
    Review the proposed phases → **Create these tickets** (they land as **draft**).
 2. **Ready them.** Move the epic's tickets `draft → ready` (drag on the board, or
-   `runner/gaffer` / the CLI). Phase 1 is the bootstrap; the rest are gated behind it.
-3. **Deliver.** Run the loop (`DRY_RUN=0 bash runner/loop.sh`). The bootstrap ticket
+   `runner/gaffer wg ticket ready <n>` for each). Phase 1 is the bootstrap; the rest are
+   gated behind it.
+3. **Deliver.** Run the loop (`runner/gaffer run`, or `--daemon`). The bootstrap ticket
    creates the new repo at `<repo-parent>/<slug>`, the factory registers + onboards it,
    and the dependent tickets deliver into it in dependency order.
 
 > **The loop delivers to `in_review`; it does not merge.** Approve each ticket in the
-> **Review** view (or enable the opt-in autonomy flags below for hands-off runs). The
-> bootstrap ticket has no delivery branch — approving it marks it merged directly.
+> **Review** view or with `runner/gaffer approve <n>` + `runner/gaffer merge <n>` (or
+> enable the opt-in autonomy flags below for hands-off runs). The bootstrap ticket has
+> no delivery branch — approving it marks it merged directly.
 
 ### Greenfield gotchas (things you currently have to do)
 

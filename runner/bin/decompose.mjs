@@ -361,10 +361,14 @@ export function normalizeAc(a, clauseIds = null) {
   return text ? text : null;
 }
 
-// An acceptance criterion phrased in terms of commit structure/history. Matched
-// case-insensitively against each GREENFIELD bootstrap AC (see validateResult).
+// An acceptance criterion phrased in terms of commit structure/history — the root
+// commit's contents, or a check that reads history. Matched case-insensitively
+// against each GREENFIELD bootstrap AC (see validateResult). Deliberately NARROW:
+// "make the first commit" / "scaffold + first commit" describe the agent committing
+// its work on the branch and are fine; only "in the initial/first commit", "the root
+// commit contains" and history-reading checks are unsatisfiable by construction.
 export const GIT_HISTORY_AC_RE =
-  /\b(initial|first|root|single|one)\s+commit\b|\bcommit\s+history\b|\bgit\s+log\b|\brev-list\b/i;
+  /\b(initial|root)\s+commit\b|\bin\s+the\s+first\s+commit\b|\bfirst\s+commit\s+(contains|holds|includes|has)\b|\bcommit\s+history\b|\bgit\s+log\b|\brev-list\b/i;
 
 export function validateResult(
   obj,

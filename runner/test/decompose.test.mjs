@@ -1139,6 +1139,20 @@ console.log("== AC12: greenfield bootstrap ACs may not assert on git history =="
     ).phase,
     "plan",
   );
+  // "scaffold + first commit" (the agent committing its work) is NOT a history assertion.
+  eq(
+    "'scaffold + first commit' is not a history assertion",
+    validateResult(
+      mk("Repo scaffolded: package.json, tsconfig, eslint, .gitignore; scaffold + first commit"),
+      20,
+    ).phase,
+    "plan",
+  );
+  eq(
+    "'in the first commit' IS a history assertion",
+    validateResult(mk("package.json is in the first commit"), 20).phase,
+    "error",
+  );
   // A criterion that merely mentions committing on the branch is fine.
   eq(
     "'committed on the delivery branch' is not a history assertion",

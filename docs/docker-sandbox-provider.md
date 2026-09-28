@@ -129,8 +129,9 @@ agent spawn under the docker provider, `lib/worker.sh`:
    same server names, each replaced by `node mcp-bridge.mjs connect --socket <sock>
    --server <name>`, with **no env** — the claim token and DB paths never enter the
    container's config;
-2. starts `mcp-bridge.mjs serve --socket $GAFFER_DATA/mcp-bridge.<pid>.<rand>.sock
-   --config <runtime.json>` on the host (one per spawn; the servers are spawned from
+2. starts `mcp-bridge.mjs serve --socket /tmp/gaffer-mcp.XXXXXX/b.sock --config
+   <runtime.json>` on the host (a short private mode-700 dir, because a unix socket
+   path is capped at 104 bytes on macOS and `$GAFFER_DATA` can sit under a deep path) (one per spawn; the servers are spawned from
    the real config, with its env, on the first connection for each name);
 3. exports `GAFFER_MCP_BRIDGE_SOCKET`, which `sandbox-docker.sh` reads to mount **only
    the socket** (rw), the bridged config (ro), the hook's two telemetry ledgers (rw), the

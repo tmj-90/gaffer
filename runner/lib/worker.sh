@@ -106,7 +106,7 @@ worker_deliver() {
   # The MCP config the AGENT is handed. Under the docker provider with the bridge on,
   # this becomes the BRIDGED copy (every server = `mcp-bridge.mjs connect`) while the
   # real servers — and their env, including the claim token — run host-side in `serve`.
-  local _mcp_for_agent="$mcp_config" _bridge_pid="" _bridge_sock="" _rc=0
+  local _mcp_for_agent="$mcp_config" _bridge_pid="" _bridge_sock="" _bridge_dir="" _rc=0
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
     claude-code)
       # ── The real provider — BYTE-IDENTICAL to the pre-Phase-3 invocation. ──
@@ -158,10 +158,20 @@ worker_deliver() {
         # GAFFER_MCP_BRIDGE_SOCKET) then mounts the socket instead of $GAFFER_DATA.
         # FAIL CLOSED: if the bridge cannot be rendered or does not come up, no spawn.
         if _worker_mcp_bridge_on && [ -n "$mcp_config" ] && [ -f "$mcp_config" ]; then
-          _bridge_sock="$GAFFER_DATA/mcp-bridge.$$.$RANDOM.sock"
+          # The socket lives in a SHORT private dir, not under $GAFFER_DATA: a unix socket
+          # path is capped at 104 bytes on macOS (108 on Linux) and a data dir under a
+          # deep path (macOS TMPDIR, a nested checkout) pushed it over — `serve` could
+          # not listen and every spawn was refused. /tmp/gaffer-mcp.XXXXXX is mode 700.
+          _bridge_dir="$(mktemp -d /tmp/gaffer-mcp.XXXXXX 2>/dev/null)" || {
+            : > "$out_json"
+            printf 'worker: mcp bridge: could not create a private socket dir under /tmp — refusing to spawn the agent (fail closed)\n' >&2
+            return 76
+          }
+          _bridge_sock="$_bridge_dir/b.sock"
           _mcp_for_agent="${mcp_config%.json}.bridge.json"
           if ! node "$RUNNER_DIR/lib/mcp-bridge.mjs" render --config "$mcp_config" --out "$_mcp_for_agent" \
                  --socket "$_bridge_sock" --bridge "$RUNNER_DIR/lib/mcp-bridge.mjs" 2>>"$GAFFER_LOG"; then
+            rm -rf "$_bridge_dir"
             : > "$out_json"
             printf 'worker: mcp bridge: could not render the bridged MCP config from %s — refusing to spawn the agent (fail closed)\n' "$mcp_config" >&2
             return 76
@@ -173,6 +183,7 @@ worker_deliver() {
           _nsrv="$(node -e 'const c=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(Object.keys(c.mcpServers||{}).length))' "$_mcp_for_agent" 2>/dev/null || echo 0)"
           if [ "${_nsrv:-0}" -eq 0 ] 2>/dev/null; then
             rm -f "$_mcp_for_agent"; _mcp_for_agent="$mcp_config"; _bridge_sock=""
+            rmdir "$_bridge_dir" 2>/dev/null || true; _bridge_dir=""
             unset GAFFER_MCP_BRIDGE_SOCKET
             export GAFFER_SANDBOX_DATA_PLANE=none
           else
@@ -182,7 +193,7 @@ worker_deliver() {
             while [ ! -S "$_bridge_sock" ] && [ "$_bw" -lt 100 ]; do sleep 0.05; _bw=$((_bw + 1)); done
             if [ ! -S "$_bridge_sock" ]; then
               kill "$_bridge_pid" 2>/dev/null || true
-              rm -f "$_mcp_for_agent"
+              rm -f "$_mcp_for_agent"; rm -rf "$_bridge_dir"
               : > "$out_json"
               printf 'worker: mcp bridge did not start on %s — refusing to spawn the agent (fail closed)\n' "$_bridge_sock" >&2
               return 76
@@ -210,6 +221,7 @@ worker_deliver() {
         wait "$_bridge_pid" 2>/dev/null || true
         rm -f "$_bridge_sock" "$_mcp_for_agent" 2>/dev/null || true
       fi
+      [ -n "$_bridge_dir" ] && rm -rf "$_bridge_dir" 2>/dev/null || true
       unset GAFFER_MCP_BRIDGE_SOCKET GAFFER_SANDBOX_DATA_PLANE
       return "$_rc"
       ;;

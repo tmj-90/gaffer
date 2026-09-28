@@ -45,7 +45,7 @@
 //   Returns the Node `SpawnSyncReturns` verbatim ({ status, stdout, stderr, error, … }).
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { platform } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -187,10 +187,27 @@ function sleepMs(ms) {
 export function startMcpBridge({ mcpConfig, gafferData, env = process.env }) {
   const noop = () => {};
   if (!mcpConfig || !existsSync(mcpConfig)) return { ok: true, dataPlane: "none", stop: noop };
-  const sock = resolve(
-    gafferData,
-    `mcp-bridge.${process.pid}.${Math.floor(Math.random() * 1e9)}.sock`,
-  );
+  // A SHORT private dir, not $GAFFER_DATA: unix socket paths are capped at 104 bytes on
+  // macOS (108 on Linux) and a deep data dir pushed the path over, so `serve` could not
+  // listen and every spawn was refused. mkdtemp ⇒ mode 700.
+  void gafferData;
+  let sockDir;
+  try {
+    sockDir = mkdtempSync("/tmp/gaffer-mcp.");
+  } catch (e) {
+    return {
+      ok: false,
+      message: `worker: mcp bridge: could not create a private socket dir under /tmp — refusing to spawn the agent (fail closed): ${e.message}`,
+    };
+  }
+  const sock = resolve(sockDir, "b.sock");
+  const rmDir = () => {
+    try {
+      rmSync(sockDir, { recursive: true, force: true });
+    } catch {
+      /* gone */
+    }
+  };
   const bridged = mcpConfig.replace(/\.json$/, "") + ".bridge.json";
   const r = spawnSync(
     process.execPath,
@@ -212,6 +229,7 @@ export function startMcpBridge({ mcpConfig, gafferData, env = process.env }) {
     },
   );
   if (r.status !== 0) {
+    rmDir();
     return {
       ok: false,
       message: `worker: mcp bridge: could not render the bridged MCP config from ${mcpConfig} — refusing to spawn the agent (fail closed): ${(r.stderr || "").trim()}`,
@@ -229,6 +247,7 @@ export function startMcpBridge({ mcpConfig, gafferData, env = process.env }) {
     } catch {
       /* gone */
     }
+    rmDir();
     return { ok: true, dataPlane: "none", stop: noop };
   }
   const child = spawn(
@@ -252,6 +271,7 @@ export function startMcpBridge({ mcpConfig, gafferData, env = process.env }) {
         /* gone */
       }
     }
+    rmDir();
   };
   for (let i = 0; i < 100 && !existsSync(sock); i++) sleepMs(50);
   if (!existsSync(sock)) {

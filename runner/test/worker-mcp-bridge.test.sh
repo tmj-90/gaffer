@@ -74,10 +74,11 @@ grep -qx -- "$MCP" "$WORK/claude.argv" && fail "claude also received the host co
 [ -f "$WORK/claude.mcp.json" ] && grep -q '"connect"' "$WORK/claude.mcp.json" && ok "bridged config server is a mcp-bridge connect stub" || fail "bridged config not a connect stub"
 grep -q 'TOPSECRET_CLAIM\|"env"' "$WORK/claude.mcp.json" && fail "bridged config leaks env / the claim token" || ok "bridged config carries no env and no claim token"
 sock="$(cat "$WORK/wrap.sock" 2>/dev/null)"
-case "$sock" in "$GAFFER_DATA"/mcp-bridge.*.sock) ok "the wrap saw GAFFER_MCP_BRIDGE_SOCKET under GAFFER_DATA" ;; *) fail "wrap saw '$sock'" ;; esac
+case "$sock" in /tmp/gaffer-mcp.*/b.sock) ok "the wrap saw GAFFER_MCP_BRIDGE_SOCKET in a short private /tmp dir (macOS 104-byte sun_path)" ;; *) fail "wrap saw '$sock'" ;; esac
 grep -q '"echo":"{\\"probe\\":1}"' "$WORK/wrap.roundtrip" 2>/dev/null && ok "a round trip through the socket reached the HOST-side server during the spawn" || fail "no round trip through the bridge: $(cat "$WORK/wrap.roundtrip" 2>/dev/null)"
 grep -q '"tok":"TOPSECRET_CLAIM"' "$WORK/wrap.roundtrip" 2>/dev/null && ok "…and that server had the claim token from the host config env" || fail "host server lacked the token"
 [ ! -e "$sock" ] && ok "socket removed after the spawn" || fail "socket left behind: $sock"
+[ ! -d "$(dirname "$sock")" ] && ok "private socket dir removed after the spawn" || fail "socket dir left behind: $(dirname "$sock")"
 [ ! -e "$GAFFER_DATA/mcp-runtime.4242.bridge.json" ] && ok "bridged config removed after the spawn" || fail "bridged config left behind"
 pgrep -f "mcp-bridge.mjs serve --socket $sock" >/dev/null 2>&1 && fail "bridge server still running" || ok "bridge server process gone"
 [ -z "${GAFFER_MCP_BRIDGE_SOCKET:-}" ] && ok "GAFFER_MCP_BRIDGE_SOCKET unset after the spawn" || fail "GAFFER_MCP_BRIDGE_SOCKET leaked: $GAFFER_MCP_BRIDGE_SOCKET"
@@ -98,6 +99,7 @@ rm -f "$WORK"/claude.* "$WORK"/wrap.*
 BAD="$GAFFER_DATA/mcp-runtime.bad.json"; printf 'not json\n' > "$BAD"
 GAFFER_MCP_BRIDGE=1 worker_deliver "$CWD" "p" "" "$BAD" "$WORK/out4.json" "$WRAP" 2>"$WORK/err4"; rc=$?
 [ "$rc" -eq 76 ] && ok "rc 76" || fail "expected rc 76 (got $rc)"
+[ "$(ls -d /tmp/gaffer-mcp.* 2>/dev/null | wc -l | tr -d ' ')" = "0" ] && ok "no private socket dir left behind by the refusal" || fail "refusal leaked a /tmp/gaffer-mcp.* dir"
 [ ! -f "$WORK/claude.argv" ] && ok "claude was NOT spawned" || fail "claude spawned despite the bridge failure"
 grep -q 'fail closed' "$WORK/err4" && ok "the refusal is explained" || fail "no fail-closed message: $(cat "$WORK/err4")"
 

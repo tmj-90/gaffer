@@ -12,7 +12,15 @@
 //   • an unrenderable config ⇒ status 76, no spawn;
 //   • Worker exposes mcpBridgeOn / startMcpBridge.
 // Run: node test/worker-mjs-bridge.test.mjs
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,7 +122,7 @@ console.log("== bridge on + real MCP config ⇒ bridged argv, socket mounted, no
     r.status === 0,
     `docker dry-run wrap ran (status ${r.status}) ${(r.stderr || "").slice(0, 200)}`,
   );
-  const sockMount = L.find((l) => /mcp-bridge\.\d+\.\d+\.sock:.*:rw$/.test(l));
+  const sockMount = L.find((l) => /^\/tmp\/gaffer-mcp\.[^/:]+\/b\.sock:.*:rw$/.test(l));
   check(!!sockMount, `the bridge socket is mounted rw (${sockMount || "missing"})`);
   check(
     L.includes(
@@ -135,6 +143,11 @@ console.log("== bridge on + real MCP config ⇒ bridged argv, socket mounted, no
   check(
     leftovers.length === 0,
     `socket + bridged config removed after the spawn (${leftovers.join(",") || "none left"})`,
+  );
+  const sockDir = sockMount ? sockMount.split(":")[0].replace(/\/b\.sock$/, "") : "";
+  check(
+    sockDir !== "" && !existsSync(sockDir),
+    `private socket dir removed after the spawn (${sockDir})`,
   );
 }
 

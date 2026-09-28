@@ -164,6 +164,10 @@ run: git add -A && git commit -m "deliver #${i.ticketNumber}: <summary>". An unc
 delivery. Then use the record-evidence skill to evidence each AC and the prepare-digest-delta
 skill, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the gates,
 records the delivery, and submits. Never self-approve.
+WORK ECONOMY (the turn budget is real): finish the remaining ACs, run the repo's gates ONCE
+when the change is complete and once more after a fix — not after every edit. Installs only
+in the FOREGROUND with --ignore-scripts, never in the background. Commit before anything
+optional; stop when the ACs are met.
 ${LORE_REFLECTION_NUDGE}
 If blocked, mark_ticket_blocked with a reason.
 
@@ -204,6 +208,12 @@ record-evidence skill to evidence each AC, then the prepare-digest-delta skill t
 (INERT, applied post-review by the merge) how the Repo Digest should move + which feature
 this ships, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the
 gates, records the delivery, pushes/opens the PR, and submits. Never self-approve.
+WORK ECONOMY (the turn budget is real): read the files the cards point at, implement, then
+run the repo's gates ONCE when the change is complete and once more after a fix — not after
+every edit, and not build, lint and test as three separate rounds when one script covers
+them. Installs: only the repo's own install command, in the FOREGROUND, with
+--ignore-scripts, never in the background (background work dies when your turn ends).
+Commit before anything optional. Stop when the ACs are met — extra polish is not a delivery.
 ${LORE_REFLECTION_NUDGE}
 If blocked, mark_ticket_blocked with a reason.
 

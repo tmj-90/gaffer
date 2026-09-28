@@ -27,6 +27,12 @@ record-evidence skill to evidence each AC, then the prepare-digest-delta skill t
 (INERT, applied post-review by the merge) how the Repo Digest should move + which feature
 this ships, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the
 gates, records the delivery, pushes/opens the PR, and submits. Never self-approve.
+WORK ECONOMY (the turn budget is real): read the files the cards point at, implement, then
+run the repo's gates ONCE when the change is complete and once more after a fix — not after
+every edit, and not build, lint and test as three separate rounds when one script covers
+them. Installs: only the repo's own install command, in the FOREGROUND, with
+--ignore-scripts, never in the background (background work dies when your turn ends).
+Commit before anything optional. Stop when the ACs are met — extra polish is not a delivery.
 BEFORE STOPPING, reflect on WHY this was built this way. If this ticket established a
 durable DECISION (why this approach over the alternatives), a REQUIREMENT (what it
 needed), or a NON-GOAL (what it deliberately did NOT do), call the Memory `suggest_lore`

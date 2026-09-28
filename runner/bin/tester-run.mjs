@@ -367,11 +367,18 @@ export function buildTesterPrompt({ context, worktree, repoName }) {
     `(git add -A && git commit -m "black-box tests for #${context.number}"). Record a short note per`,
     "acceptance criterion via the dispatch MCP record_ac_evidence (evidence_type manual_note; you",
     "hold no claim — the runner scoped this server to this ticket). Do NOT change the ticket's status.",
+    "BUDGET — the turn budget is real. Write ONE test file with one test per acceptance criterion;",
+    "run the repo's test command ONCE after writing it and once more after a fix, not after every",
+    "edit. Stand the system up with the repo's own scripts once; do not re-install or rebuild",
+    "repeatedly. Stop probing when every criterion has a result.",
     "Then print a one-line summary starting with PASS: or FAIL: (name the AC and the observed vs",
     "expected behaviour on a FAIL), and as your VERY LAST line, on its own, EXACTLY one of:",
     '  {"verdict":"PASS"}',
     '  {"verdict":"FAIL"}',
     "The runner reads ONLY that final token. Default to FAIL when any criterion cannot be demonstrated.",
+    "The token is MANDATORY even when you could not finish: a turn that ends without it HOLDS the",
+    "ticket for a human, which costs more than a FAIL. If you are running out of budget or are",
+    "unsure, stop, print the summary and the token now.",
   ].join("\n");
 }
 

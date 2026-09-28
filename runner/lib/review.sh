@@ -167,7 +167,7 @@ for its acceptance criteria and recorded evidence; inspect the delivered change 
 \`git diff $RDEFAULT...HEAD\` in $WT; judge whether each AC is genuinely met and the
 change is sound (tests, scope, quality). Review the diff in its own stack's terms and
 through the review lenses mounted for you — open the ones that apply to this diff and use
-their checklists: ${_RLENSES:-the stack's conventions pack}. A lens finding counts only when
+their checklists: ${_RLENSES:-the stack conventions pack}. A lens finding counts only when
 it is a CONCRETE defect under the bar below. Then RECORD YOUR VERDICT as evidence via the
 dispatch MCP record_ac_evidence (one entry per AC: PASS/FAIL + the specific reasoning),
 and finish with a one-line overall recommendation. Apply THIS BAR EXACTLY — never raise it:
@@ -178,9 +178,18 @@ Say "RECOMMEND CHANGES" ONLY for a CONCRETE defect: a specific AC that is not me
 missing test for an AC's OWN behaviour, or a genuine correctness/security bug — always naming
 the AC and the single concrete fix so a rework resolves it in one pass.
 You MUST NOT withhold approval for anything OUTSIDE the acceptance criteria: refactors,
-de-duplication, extra coverage beyond the ACs, naming, file structure, or maintainability
-wishes are OPTIONAL. You may list them prefixed "(optional)" but they are NEVER grounds for
-CHANGES. When in doubt and the ACs are met with tests passing, APPROVE.
+de-duplication, extra coverage beyond the ACs, naming, file structure, maintainability
+wishes, and the WORDING of README text, comments, examples, log lines or error messages are
+OPTIONAL (unless an AC names that exact text). You may list them prefixed "(optional)" but
+they are NEVER grounds for CHANGES. When in doubt and the ACs are met with tests passing, APPROVE.
+BUDGET — this is a READ-and-JUDGE pass, not a build. The runner already ran the repo's
+Definition-of-Done gates (tests, lint) and recorded the verdict as evidence on the ticket:
+read that evidence via get_ticket instead of re-running the gates; run the test command at
+most ONCE, and only when that evidence is missing or you have a concrete reason to doubt it.
+Read the diff once, open only the files it touches, and stop when every AC has a verdict —
+aim for well under 20 tool calls. Keep the report SHORT: one line per AC (PASS or FAIL plus
+at most two sentences), then at most three "(optional)" notes, then the RECOMMEND line. Do
+not restate the diff, quote code at length, or narrate what you read.
 Your VERY LAST line of output MUST be a single machine-read verdict token, on its own line,
 EXACTLY one of these two — nothing after it:
   {"verdict":"APPROVE"}
@@ -271,6 +280,9 @@ SSRF or traversal, or a weakened security default — naming the file, the line 
 single concrete fix. Hardening wishes, style, and anything outside the diff are NOTES,
 listed "(optional)", and are NEVER grounds for CHANGES. If the checklist yields no
 blocking or should-fix finding, say "RECOMMEND APPROVE".
+BUDGET — read-only: do not run the tests or the build (the first reviewer and the DoD
+gates already did); read the diff once, open only the files it touches, and stop when the
+checklist is walked — aim for under 12 tool calls and a report of at most ten lines.
 Your VERY LAST line of output MUST be a single machine-read verdict token, on its own line,
 EXACTLY one of these two — nothing after it:
   {"verdict":"APPROVE"}

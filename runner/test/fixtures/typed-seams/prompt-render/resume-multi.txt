@@ -19,6 +19,10 @@ run: git add -A && git commit -m "deliver #1: <summary>". An uncommitted edit is
 delivery. Then use the record-evidence skill to evidence each AC and the prepare-digest-delta
 skill, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the gates,
 records the delivery, and submits. Never self-approve.
+WORK ECONOMY (the turn budget is real): finish the remaining ACs, run the repo's gates ONCE
+when the change is complete and once more after a fix — not after every edit. Installs only
+in the FOREGROUND with --ignore-scripts, never in the background. Commit before anything
+optional; stop when the ACs are met.
 BEFORE STOPPING, reflect on WHY this was built this way. If this ticket established a
 durable DECISION (why this approach over the alternatives), a REQUIREMENT (what it
 needed), or a NON-GOAL (what it deliberately did NOT do), call the Memory `suggest_lore`

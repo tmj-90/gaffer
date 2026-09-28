@@ -121,16 +121,46 @@ grep -q '"GAFFER_DAILY_BUDGET_USD"' "$RUNNER_DIR/../packages/dispatch/src/api/se
 
 echo "== fail closed: a configured cap with an UNMEASURABLE spend halts (was: read as \$0) =="
 export GAFFER_DAILY_BUDGET_USD=1.00
-_lib_save="$GAFFER_ESTIMATE_LIB"; export GAFFER_ESTIMATE_LIB="$WORK/no-such-estimate-lib.mjs"
-[ "$(gaffer_day_usd_spent)" = "unknown" ] && ok "missing estimate lib ⇒ spend reads 'unknown', not 0" || fail "missing lib should yield 'unknown' (got '$(gaffer_day_usd_spent)')"
-if gaffer_day_usd_cap_ok 2>/dev/null; then fail "cap set + unknown spend should HALT (fail closed)"; else ok "cap set + unknown spend ⇒ NOT OK (halt, fail closed)"; fi
+# The reader needs node; with no node on PATH the spend is unknowable (the strict reader
+# no longer depends on estimate.mjs — a corrupt ledger is its own failure mode, below).
+_path_save="$PATH"
+[ "$(PATH=/nonexistent gaffer_day_usd_spent)" = "unknown" ] && ok "no node on PATH ⇒ spend reads 'unknown', not 0" || fail "missing node should yield 'unknown' (got '$(PATH=/nonexistent gaffer_day_usd_spent)')"
+if PATH=/nonexistent gaffer_day_usd_cap_ok 2>/dev/null; then fail "cap set + unknown spend should HALT (fail closed)"; else ok "cap set + unknown spend ⇒ NOT OK (halt, fail closed)"; fi
 unset GAFFER_DAILY_BUDGET_USD
-gaffer_day_usd_cap_ok 2>/dev/null && ok "no cap + unknown spend ⇒ OK (the guard is OFF, nothing to enforce)" || fail "unknown spend must not block when no cap is set"
-export GAFFER_ESTIMATE_LIB="$_lib_save" GAFFER_DAILY_BUDGET_USD=1.00
+PATH=/nonexistent gaffer_day_usd_cap_ok 2>/dev/null && ok "no cap + unknown spend ⇒ OK (the guard is OFF, nothing to enforce)" || fail "unknown spend must not block when no cap is set"
+export PATH="$_path_save" GAFFER_DAILY_BUDGET_USD=1.00
 _ledger_save="$GAFFER_USAGE_LEDGER"; export GAFFER_USAGE_LEDGER="$WORK/never-written.jsonl"
 [ "$(gaffer_day_usd_spent)" = "0" ] && ok "NO ledger yet ⇒ 0 (a fresh factory is never blocked)" || fail "missing ledger should read 0 (got '$(gaffer_day_usd_spent)')"
 gaffer_day_usd_cap_ok && ok "cap set + no ledger ⇒ OK" || fail "no ledger must not halt"
 export GAFFER_USAGE_LEDGER="$_ledger_save"; unset GAFFER_DAILY_BUDGET_USD
+
+echo "== fail closed: a MALFORMED ledger is an unknown spend (was: corrupt lines skipped ⇒ \$0) =="
+export GAFFER_DAILY_BUDGET_USD=1.00
+BAD="$WORK/bad-ledger.jsonl"
+printf '{"ts":"%s","kind":"delivery","total_cost_usd":100}\nthis is not json\n' "$TODAY" > "$BAD"
+[ "$(GAFFER_USAGE_LEDGER="$BAD" gaffer_day_usd_spent)" = "unknown" ] && ok "a non-JSON line ⇒ 'unknown' (never a partial sum)" || fail "malformed ledger should read unknown (got '$(GAFFER_USAGE_LEDGER="$BAD" gaffer_day_usd_spent)')"
+if GAFFER_USAGE_LEDGER="$BAD" gaffer_day_usd_cap_ok 2>/dev/null; then fail "malformed ledger + cap should HALT"; else ok "malformed ledger + cap ⇒ NOT OK (halt)"; fi
+printf '[1,2,3]\n' > "$BAD"
+[ "$(GAFFER_USAGE_LEDGER="$BAD" gaffer_day_usd_spent)" = "unknown" ] && ok "a non-object record ⇒ 'unknown'" || fail "non-object record should read unknown"
+
+echo "== fail closed: an EXISTING but UNREADABLE ledger is an unknown spend (was: read error swallowed ⇒ \$0) =="
+UNR="$WORK/unreadable-ledger.jsonl"
+printf '{"ts":"%s","kind":"delivery","total_cost_usd":100}\n' "$TODAY" > "$UNR"
+chmod 000 "$UNR"
+if [ "$(id -u)" != "0" ]; then
+  [ "$(GAFFER_USAGE_LEDGER="$UNR" gaffer_day_usd_spent)" = "unknown" ] && ok "mode-000 ledger ⇒ 'unknown'" || fail "unreadable ledger should read unknown (got '$(GAFFER_USAGE_LEDGER="$UNR" gaffer_day_usd_spent)')"
+  if GAFFER_USAGE_LEDGER="$UNR" gaffer_day_usd_cap_ok 2>/dev/null; then fail "unreadable ledger + cap should HALT"; else ok "unreadable ledger + cap ⇒ NOT OK (halt)"; fi
+elif command -v setpriv >/dev/null 2>&1; then
+  # root reads anything: probe as an unprivileged uid (the reviewer's harness did the same).
+  chmod 711 "$WORK"
+  _probe="$(setpriv --reuid=65534 --regid=65534 --clear-groups env GAFFER_USAGE_LEDGER="$UNR" GAFFER_DAILY_BUDGET_USD=1.00 DAILY_COUNTER_FILE="$WORK/.dc" \
+    bash -c 'source "'"$RUNNER_DIR"'/lib/budget.sh"; s="$(gaffer_day_usd_spent)"; if gaffer_day_usd_cap_ok 2>/dev/null; then d=ALLOW; else d=HALT; fi; printf "%s %s" "$s" "$d"' 2>/dev/null)"
+  [ "$_probe" = "unknown HALT" ] && ok "unprivileged reader: mode-000 ledger ⇒ 'unknown' ⇒ HALT" || fail "unprivileged probe should be 'unknown HALT' (got '$_probe')"
+else
+  ok "SKIP unreadable-ledger probe (running as root without setpriv)"
+fi
+chmod 644 "$UNR" 2>/dev/null || true
+unset GAFFER_DAILY_BUDGET_USD
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

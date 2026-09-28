@@ -53,7 +53,7 @@ echo "== Mode-2 docker sandbox — red-team containment gate =="
 # than fail red, and do it before the assertions so a pull limit can't masquerade as a
 # broken sandbox.
 _IMG="gaffer-sbx-redteam-test"
-if ! printf 'FROM alpine:3.20\nRUN apk add --no-cache curl git\n' | docker build -q -t "$_IMG" - >/dev/null 2>&1; then
+if ! printf 'FROM alpine:3.20\nRUN apk add --no-cache curl git nodejs\n' | docker build -q -t "$_IMG" - >/dev/null 2>&1; then
   _skip "could not build the test image (docker registry/infra unavailable) — containment not exercised"
 fi
 if ! docker build -q -t gaffer-egress-proxy "$RUNNER_DIR/sandbox/egress-proxy" >/dev/null 2>&1; then
@@ -136,6 +136,58 @@ fi
 # And the host's canonical settings.json was not touched by the mask.
 grep -q TOPSECRET_SETTINGS "$GAFFER_DATA/settings.json" && echo "  ok   host settings.json intact after masking" || { echo "  FAIL host settings.json damaged"; fail=1; }
 
+# ── BRIDGE MODE (lib/mcp-bridge.mjs): the MCP data plane on the HOST, DBs unmounted ──
+# The round above is the LEGACY layout (GAFFER_MCP_BRIDGE off: the DB directory mounted,
+# masked). With the bridge, the host runs the MCP servers and the container reaches them
+# over ONE mounted unix socket — so the assertions flip: no database, no ledger, no
+# settings/token file exists in the container at all, the claim token never enters it,
+# and a bridged round trip still works from inside.
+echo "== bridge mode: MCP servers on the host, nothing of \$GAFFER_DATA in the container =="
+STUB="$WORK/stub-mcp.mjs"
+cat > "$STUB" <<'JS'
+import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (l) => process.stdout.write(JSON.stringify({ echo: l, db: process.env.DISPATCH_DB || null, tok: (process.env.GAFFER_CLAIM_TOKEN || "").length }) + "\n"));
+rl.on("close", () => process.exit(0));
+JS
+BCFG="$GAFFER_DATA/mcp-runtime.bridge-src.json"
+printf '{"mcpServers":{"dispatch":{"command":"%s","args":["%s"],"env":{"DISPATCH_DB":"%s/dispatch.sqlite","GAFFER_CLAIM_TOKEN":"TOPSECRET_CLAIM"}}}}\n' \
+  "$(command -v node)" "$STUB" "$GAFFER_DATA" > "$BCFG"
+SOCK="$GAFFER_DATA/mcp-bridge.test.sock"
+BRIDGED="$GAFFER_DATA/mcp-runtime.self.bridge.json"
+node "$RUNNER_DIR/lib/mcp-bridge.mjs" render --config "$BCFG" --out "$BRIDGED" --socket "$SOCK" --bridge "$RUNNER_DIR/lib/mcp-bridge.mjs" \
+  || { echo "  FAIL bridge render failed"; fail=1; }
+node "$RUNNER_DIR/lib/mcp-bridge.mjs" serve --socket "$SOCK" --config "$BCFG" >"$WORK/bridge.log" 2>&1 &
+BPID=$!
+for _ in $(seq 1 100); do [ -S "$SOCK" ] && break; sleep 0.05; done
+if [ -S "$SOCK" ]; then
+  PAYLOAD2="
+    if [ -e '$GAFFER_DATA/dispatch.sqlite' ] || [ -e '$GAFFER_DATA/memory.sqlite' ]; then echo DB_VISIBLE; else echo DB_UNMOUNTED; fi
+    if cat '$GAFFER_DATA/settings.json' '$GAFFER_DATA/dashboard-token' '$GAFFER_DATA/mcp-runtime.other.json' '$SIB/secret' 2>/dev/null | grep -q TOPSECRET; then echo BDATA_LEAK; else echo BDATA_ABSENT; fi
+    if [ -e '$GAFFER_DATA/settings.json' ] || [ -e '$GAFFER_DATA/dashboard-token' ] || [ -e '$GAFFER_DATA/mcp-runtime.other.json' ]; then echo BFILES_PRESENT; else echo BFILES_ABSENT; fi
+    if grep -q TOPSECRET_CLAIM '$BRIDGED' 2>/dev/null || env | grep -q TOPSECRET_CLAIM; then echo TOKEN_LEAK; else echo TOKEN_ABSENT; fi
+    if env | grep -q '^DISPATCH_DB='; then echo DBENV_PRESENT; else echo DBENV_ABSENT; fi
+    r=\$(echo '{\"ping\":1}' | node '$RUNNER_DIR/lib/mcp-bridge.mjs' connect --socket '$SOCK' --server dispatch 2>/dev/null)
+    case \"\$r\" in *'\"db\":\"$GAFFER_DATA/dispatch.sqlite\"'*'\"tok\":15'*) echo BRIDGE_OK;; *) echo \"BRIDGE_FAIL:\$r\";; esac
+    if echo '{}' | node '$RUNNER_DIR/lib/mcp-bridge.mjs' connect --socket '$SOCK' --server nosuch >/dev/null 2>&1; then echo UNKNOWN_ACCEPTED; else echo UNKNOWN_REFUSED; fi
+    if echo canary2 > '$WT/canary2' 2>/dev/null; then echo BWRITE_OK; else echo BWRITE_FAIL; fi
+  "
+  OUT2="$(GAFFER_MCP_BRIDGE_SOCKET="$SOCK" timeout 120 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$PAYLOAD2" gaffer-sbx --mcp-config "$BRIDGED" 2>&1)"
+  echo "$OUT2" | sed 's/^/    /'
+  for want in DB_UNMOUNTED BDATA_ABSENT BFILES_ABSENT TOKEN_ABSENT DBENV_ABSENT BRIDGE_OK UNKNOWN_REFUSED BWRITE_OK; do
+    if echo "$OUT2" | grep -q "$want"; then echo "  ok   $want"; else echo "  FAIL expected $want"; fail=1; fi
+  done
+  for bad in DB_VISIBLE BDATA_LEAK BFILES_PRESENT TOKEN_LEAK DBENV_PRESENT BRIDGE_FAIL UNKNOWN_ACCEPTED BWRITE_FAIL; do
+    if echo "$OUT2" | grep -q "$bad"; then echo "  FAIL saw $bad"; fail=1; fi
+  done
+  # The legacy round must have WARNED that the data plane ran inside; the bridge round not.
+  if echo "$OUT" | grep -q 'MCP data plane runs INSIDE the container'; then echo "  ok   legacy layout warns that the DBs are reachable"; else echo "  FAIL legacy layout did not warn"; fail=1; fi
+  if echo "$OUT2" | grep -q 'MCP data plane runs INSIDE the container'; then echo "  FAIL bridge round still warned"; fail=1; else echo "  ok   bridge round: no data-plane-inside warning"; fi
+else
+  echo "  FAIL bridge socket never appeared: $(cat "$WORK/bridge.log" 2>/dev/null)"; fail=1
+fi
+kill "$BPID" 2>/dev/null || true; wait "$BPID" 2>/dev/null || true
+
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
 rm -rf "$WORK"
-if [ "$fail" -eq 0 ]; then echo "PASS (Mode-2 containment holds: secret unreadable, egress denied, worktree writable, data dir masked, git works)"; exit 0; else echo "FAILED"; exit 1; fi
+if [ "$fail" -eq 0 ]; then echo "PASS (Mode-2 containment holds: secret unreadable, egress denied, worktree writable, data dir masked, git works; bridge mode: databases unmounted, token absent, MCP round-trips over the socket)"; exit 0; else echo "FAILED"; exit 1; fi

@@ -125,6 +125,33 @@ case "$F1" in "$GAFFER_DATA/sandbox-write-roots.$$."*) ok "per-call file is PID-
 [ ! -e "$GAFFER_DATA/sandbox-write-roots" ] && ok "the old FIXED shared path is no longer written" || fail "fixed shared roots file still written"
 grep -q 'sandbox-write-roots.\$\$\.\*' "$RUNNER_DIR/tick.sh" && ok "tick.sh's exit cleanup sweeps this tick's roots files" || fail "tick.sh should sweep sandbox-*-roots.\$\$.* on exit"
 
+echo "== (d) BRIDGE MODE: the MCP data plane is on the host — nothing of \$GAFFER_DATA is mounted =="
+printf '%s\n' "$WT" > "$WRF"                            # back to the linked worktree (section (c) above swapped in the full repo)
+SOCK="$GAFFER_DATA/mcp-bridge.1111.sock"; : > "$SOCK"     # stands in for the bridge's socket
+BRIDGED="$GAFFER_DATA/mcp-runtime.1111.bridge.json"; printf '{"mcpServers":{}}\n' > "$BRIDGED"
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE_SOCKET="$SOCK" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- \
+  claude -p hi --mcp-config "$BRIDGED" 2>"$WORK/stderr.bridge")"
+has_mount "$GAFFER_DATA:$GAFFER_DATA:rw" && fail "bridge mode still mounts GAFFER_DATA rw" || ok "GAFFER_DATA is NOT mounted"
+printf '%s\n' "$ARGV" | grep -q 'dispatch.sqlite\|memory.sqlite' && fail "a database path appears in the docker argv" || ok "no database path anywhere in the argv (DBs unreachable)"
+has_mount "$SOCK:$SOCK:rw"        && ok "the bridge socket is mounted rw (the only data-plane path)" || fail "bridge socket mount missing"
+has_mount "$BRIDGED:$BRIDGED:ro"  && ok "this call's BRIDGED --mcp-config is mounted ro" || fail "bridged mcp-config mount missing"
+has_mount "$WT:$WT:rw"            && ok "delivery worktree still mounted rw" || fail "worktree rw mount missing in bridge mode"
+has_mount "$GAFFER_DATA/safety-blocks.jsonl:$GAFFER_DATA/safety-blocks.jsonl:rw" && ok "safety hook ledger mounted rw (telemetry only)" || fail "safety-blocks.jsonl mount missing"
+has_mount "$GAFFER_DATA/events.jsonl:$GAFFER_DATA/events.jsonl:rw" && ok "crew events log mounted rw" || fail "crew events mount missing"
+has_mount "$GAFFER_DATA/skills-mounts/delivery-7:$GAFFER_DATA/skills-mounts/delivery-7:ro" && ok "skills mount target mounted ro" || fail "skills target mount missing"
+for f in settings.json dashboard-token usage-ledger.jsonl mcp-runtime.2222.json mcp-runtime.1111.json; do
+  printf '%s\n' "$ARGV" | grep -qF -- "$GAFFER_DATA/$f" && fail "$f is referenced in bridge mode (should be absent, not masked)" || ok "$f absent from the container (not mounted, not masked)"
+done
+has_arg DISPATCH_DB && fail "DISPATCH_DB forwarded into the container in bridge mode" || ok "DISPATCH_DB not forwarded"
+has_arg MEMORY_DB   && fail "MEMORY_DB forwarded in bridge mode" || ok "MEMORY_DB not forwarded"
+has_arg DISPATCH_MCP_BIN && fail "DISPATCH_MCP_BIN forwarded in bridge mode" || ok "MCP server bins not forwarded"
+has_arg GAFFER_DATA && ok "GAFFER_DATA env still forwarded (the hook's ledger paths)" || fail "GAFFER_DATA env missing"
+grep -q 'MCP data plane runs INSIDE' "$WORK/stderr.bridge" && fail "bridge round warned about the data plane inside" || ok "no data-plane-inside warning in bridge mode"
+grep -q 'MCP data plane runs INSIDE' "$WORK/stderr" && ok "legacy round (no bridge) WARNS that the DBs are reachable" || fail "legacy round should warn"
+# A missing socket is a hard refusal (the host bridge is not up ⇒ never launch uncontained).
+if GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE_SOCKET="$GAFFER_DATA/no-such.sock" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi >/dev/null 2>&1; then
+  fail "a missing bridge socket should refuse to run"; else ok "missing bridge socket ⇒ refused (fail closed)"; fi
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 113 |
+| Knobs with a runner default | 114 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 64 |
+| Env reads in code with no default and no UI entry | 65 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -73,6 +73,7 @@ computed from other knobs at runtime.
 | `GAFFER_DOD_TIMEOUT` | `900` |  | runner | wall-clock cap (seconds) per gate and per AC check command |
 | `GAFFER_DOD_SANDBOX` | `1` |  | runner | Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent (they execute agent-modified code). |
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
+| `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the wor |
 | `GAFFER_DOD_OUTPUT_TAIL` | `40` |  | crew, runner | lines of gate output kept as evidence / rework feedback |
 | `GAFFER_REWORK_HISTORY_BYTES` | `8000` |  | runner | prior-attempt feedback carried into a rework prompt |
 | `GAFFER_JUDGE_DIFF_BYTES` | `120000` |  | runner | diff bytes handed to the eval judge |
@@ -329,6 +330,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_TEST_MODEL` |  | `runner/bin/tester-run.mjs` |
 | `GAFFER_TESTER_TIMEOUT_MS` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `GAFFER_TICKET` |  | `runner/safety-hook.mjs` |
+| `GAFFER_TODAY_OVERRIDE` | _(empty)_ | `runner/lib/budget.sh` |
 | `GAFFER_TRUST_LOCK_SLEEP_MS` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_LOCK_TRIES` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_WORKTREE_ROOT` |  | `runner/lib/trust-workspace.mjs` |

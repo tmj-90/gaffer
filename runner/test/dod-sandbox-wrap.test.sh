@@ -15,7 +15,7 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-wrap.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-wrap.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"; trap 'rm -rf "$WORK"' EXIT   # canonical: macOS TMPDIR ends in "/" and /var → /private/var
 
 gaffer_timeout() { shift; "$@"; }   # the gate runner's timeout seam — inert here
 export GAFFER_DOD_TIMEOUT=30
@@ -26,7 +26,7 @@ WT="$WORK/wt"; mkdir -p "$WT"
 # A wrap stub: records that it ran + its cwd, then executes the wrapped command.
 cat > "$WORK/wrap.sh" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "wrapped cwd=$(pwd) argv=$*" >> "${WRAP_LOG:?}"
+printf '%s\n' "wrapped cwd=$(pwd -P) argv=$*" >> "${WRAP_LOG:?}"
 exec "$@"
 STUB
 chmod +x "$WORK/wrap.sh"
@@ -42,7 +42,7 @@ echo "== 2: GAFFER_DOD_WRAP set ⇒ every gate runs THROUGH the wrap, in the wor
 : > "$WRAP_LOG"; export GAFFER_DOD_WRAP="$WORK/wrap.sh"
 gaffer_dod_run_one "$WT" "$WORK/out" 'echo wrapped-ok; exit 0'; rc=$?
 [ "$rc" -eq 0 ] && grep -q wrapped-ok "$WORK/out" && ok "gate output + rc pass through the wrap" || fail "wrapped gate should pass (rc=$rc)"
-grep -q "wrapped cwd=$(cd "$WT" && pwd -P)" "$WRAP_LOG" || grep -q "wrapped cwd=$WT" "$WRAP_LOG" \
+grep -qF "wrapped cwd=$(cd "$WT" && pwd -P) " "$WRAP_LOG" \
   && ok "the wrap ran with the delivery worktree as cwd" || fail "wrap cwd was not the worktree: $(cat "$WRAP_LOG")"
 grep -q 'argv=bash -c echo wrapped-ok; exit 0' "$WRAP_LOG" && ok "the wrap received bash -c plus the gate command" || fail "wrap argv unexpected: $(cat "$WRAP_LOG")"
 gaffer_dod_run_one "$WT" "$WORK/out" 'echo boom >&2; exit 3'; rc=$?

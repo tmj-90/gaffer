@@ -414,6 +414,13 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 # for a human; "done" means the PR merged upstream.
 : "${GAFFER_PR_LOCAL_FALLBACK:=0}"
 export GAFFER_DOD_SANDBOX GAFFER_PR_LOCAL_FALLBACK   # read by lib/dod.sh, lib/land.sh and bin/merge-ticket.mjs (a child process)
+# docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and
+# bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database,
+# ledger, claim token or settings file is in the worker's filesystem. auto = on, except
+# on macOS (Docker Desktop cannot bind-mount a host unix socket) where it is off and the
+# wrapper logs that the data plane runs inside. 1 forces on, 0 forces off.
+: "${GAFFER_MCP_BRIDGE:=auto}"
+export GAFFER_MCP_BRIDGE
 : "${GAFFER_DOD_OUTPUT_TAIL:=40}"    # lines of gate output kept as evidence / rework feedback
 : "${GAFFER_REWORK_HISTORY_BYTES:=8000}"   # prior-attempt feedback carried into a rework prompt
 : "${GAFFER_JUDGE_DIFF_BYTES:=120000}"     # diff bytes handed to the eval judge

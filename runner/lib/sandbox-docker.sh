@@ -252,7 +252,46 @@ fi
 # mounts nested inside the GAFFER_DATA mount; docker applies mounts parent-first, so a
 # write root that lives UNDER a masked dir (the default `$GAFFER_DATA/worktrees/ticket-N`
 # layout) is bind-mounted back on top of the tmpfs that hides its siblings.
-if [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && ! _covered "$GAFFER_DATA"; then
+_BRIDGED=0
+if [ -n "${GAFFER_MCP_BRIDGE_SOCKET:-}" ]; then
+  # ── BRIDGE MODE (lib/mcp-bridge.mjs; external review, finding 2) ─────────────
+  # The MCP data plane runs on the HOST. NOTHING under $GAFFER_DATA is mounted except:
+  #   • the bridge's unix socket (rw) — the container's only path to dispatch/memory;
+  #   • THIS call's bridged --mcp-config (ro; token-free: every server is `connect`);
+  #   • the safety hook's two append-only ledgers (rw) — telemetry, not decision state;
+  #   • the crew events log the hook appends to (rw), if it lives there;
+  #   • the agent's skills mount target (ro).
+  # No database, usage ledger, settings.json, dashboard token or other worker's claim
+  # token exists in the container's filesystem, and the write root (the worktree under
+  # $GAFFER_DATA/worktrees/) is mounted on its own above.
+  [ -e "$GAFFER_MCP_BRIDGE_SOCKET" ] || _die "GAFFER_MCP_BRIDGE_SOCKET=$GAFFER_MCP_BRIDGE_SOCKET does not exist — the host-side MCP bridge is not up"
+  _add_mount "$GAFFER_MCP_BRIDGE_SOCKET" rw
+  _prev=""
+  for _a in "$@"; do
+    if [ "$_prev" = "--mcp-config" ] && [ -f "$_a" ]; then _covered "$_a" || _add_mount "$_a" ro; fi
+    _prev="$_a"
+  done
+  if [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ]; then
+    for _f in "$GAFFER_DATA/safety-blocks.jsonl" "$GAFFER_DATA/tool-metrics.jsonl"; do
+      [ -e "$_f" ] || : > "$_f" 2>/dev/null || true
+      [ -f "$_f" ] && ! _covered "$_f" && _add_mount "$_f" rw
+    done
+    case "${GAFFER_CREW_EVENTS:-}" in
+      "$GAFFER_DATA"/*) [ -e "$GAFFER_CREW_EVENTS" ] || : > "$GAFFER_CREW_EVENTS" 2>/dev/null || true
+                        [ -f "$GAFFER_CREW_EVENTS" ] && ! _covered "$GAFFER_CREW_EVENTS" && _add_mount "$GAFFER_CREW_EVENTS" rw ;;
+    esac
+    for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+      _sk="$(readlink "$_wr/.claude/skills" 2>/dev/null || true)"
+      [ -n "$_sk" ] && [ -d "$_sk" ] && ! _covered "$_sk" && _add_mount "$_sk" ro
+    done
+  fi
+  _BRIDGED=1
+elif [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && ! _covered "$GAFFER_DATA"; then
+  # ── LEGACY MODE: the MCP servers run INSIDE the container ──────────────────────
+  # Only when the bridge is off (GAFFER_MCP_BRIDGE=0, or macOS Docker Desktop, which
+  # cannot bind-mount a host unix socket). Say so loudly: the databases are reachable
+  # from the worker's shell here (SECURITY.md, residual limits).
+  printf 'sandbox-docker: WARNING — MCP data plane runs INSIDE the container (GAFFER_MCP_BRIDGE off): %s is mounted rw with the dispatch/memory databases reachable by the worker; set GAFFER_MCP_BRIDGE=1 on a Linux host to keep them out (SECURITY.md)\n' "$GAFFER_DATA" >&2
   _add_mount "$GAFFER_DATA" rw
   _keep=()
   for _db in "${DISPATCH_DB:-$GAFFER_DATA/dispatch.sqlite}" "${MEMORY_DB:-$GAFFER_DATA/memory.sqlite}"; do
@@ -311,8 +350,11 @@ fi
 # block (sed-substituted in tick.sh), which sets it only for that server subprocess. This
 # matches the non-docker agent-env design, where `*_TOKEN` is denied to the agent.
 _envs=()
-for k in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY \
-         DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN; do
+# In bridge mode the container runs NO MCP server, so the DB paths and server bins are
+# not forwarded either — nothing inside names the databases.
+_fwd=( ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY )
+[ "$_BRIDGED" = 1 ] || _fwd+=( DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN )
+for k in "${_fwd[@]}"; do
   [ -n "${!k:-}" ] && _envs+=( -e "$k" )
 done
 # Fallback: if the operator has placed a Claude credentials file, mount it read-only into

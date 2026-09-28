@@ -108,7 +108,26 @@ out="$(run_pool 4 2 EMPTY_POLL_LIMIT=1)"
 [ ! -f "$DAILY_COUNTER_FILE" ] || [ "$(awk '{print $2}' "$DAILY_COUNTER_FILE")" = "0" ] \
   && ok "idle pool leaves the day counter at 0 (reserve + refund)" || fail "idle pool left the day counter at '$(cat "$DAILY_COUNTER_FILE")'"
 
-echo "== 5: source pins =="
+echo "== 5: a refund is bound to its reservation DAY (midnight rollover) =="
+# Reviewer's reproduction: yesterday's tick reserves, today's tick reserves today's only
+# slot, then yesterday's no_work tick refunds — and used to re-open today at its cap.
+rm -f "$DAILY_COUNTER_FILE"; export MAX_TICKS_PER_DAY=1
+old_day="$(GAFFER_TODAY_OVERRIDE=2026-01-01 gaffer_reserve_day_tick)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$old_day" = "2026-01-01" ] && ok "old-day reservation admitted and reports its day" || fail "old-day reservation: rc=$rc day='$old_day'"
+new_day="$(GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_reserve_day_tick)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_day_count)" = "1" ] && ok "new day: first reservation admitted (count 1)" || fail "new-day reservation: rc=$rc count=$(GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_day_count)"
+GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_refund_day_tick "$old_day"
+[ "$(GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_day_count)" = "1" ] && ok "the OLD day's refund does not touch the new day's count" || fail "stale refund decremented the new day (count=$(GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_day_count))"
+GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_reserve_day_tick >/dev/null; rc=$?
+[ "$rc" -eq 1 ] && ok "a second new-day admission is still refused at cap 1" || fail "second new-day reservation should be refused (rc=$rc)"
+GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_refund_day_tick "$new_day"
+[ "$(GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_day_count)" = "0" ] && ok "the new day's own refund still works" || fail "same-day refund failed"
+export MAX_TICKS_PER_DAY=0; unset GAFFER_TODAY_OVERRIDE
+grep -q '_day_rsv_on="$(gaffer_reserve_day_tick)"' "$RUNNER_DIR/worker.sh" && grep -q 'gaffer_refund_day_tick "$_day_rsv_on"' "$RUNNER_DIR/worker.sh" \
+  && grep -q 'gaffer_refund_day_tick "$_day_rsv_on"' "$RUNNER_DIR/loop.sh" && grep -q 'gaffer_refund_day_tick "$_day_rsv_on"' "$RUNNER_DIR/bin/poll-once.sh" \
+  && ok "worker.sh, loop.sh and poll-once.sh refund with the reservation's day" || fail "a caller refunds without its reservation day"
+
+echo "== 6: source pins =="
 grep -q 'gaffer_reserve_run_tick "$GAFFER_RUN_TICKS_FILE" "$MAX_TICKS"' "$RUNNER_DIR/worker.sh" \
   && ok "worker.sh reserves against the shared per-run counter" || fail "worker.sh should reserve run ticks atomically"
 grep -q 'gaffer_reserve_day_tick' "$RUNNER_DIR/worker.sh" && grep -q 'gaffer_reserve_day_tick' "$RUNNER_DIR/loop.sh" \

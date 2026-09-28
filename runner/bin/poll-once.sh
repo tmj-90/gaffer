@@ -36,7 +36,7 @@ if [ "$DRY_RUN" != "1" ]; then
   # read-modify-write BEFORE the tick — a Poll racing a daemon loop (or a pool) used
   # to check-then-bump and both admitted themselves against the same last slot. A
   # no_work poll hands the slot back below.
-  gaffer_reserve_day_tick; _rsv=$?
+  _day_rsv_on="$(gaffer_reserve_day_tick)"; _rsv=$?
   case "$_rsv" in
     0) _day_reserved=1 ;;
     1) echo "gaffer poll: per-day cap (MAX_TICKS_PER_DAY=$MAX_TICKS_PER_DAY, used $(gaffer_day_count)) reached — not polling." >&2
@@ -70,6 +70,6 @@ res="$(sed -n 's/^TICK_RESULT=//p' "${_POLL_OUT:-/dev/null}" 2>/dev/null | tail 
 # logged loudly: the cap can no longer be enforced for this day.
 # The slot was reserved up front; a poll that provably spent nothing gives it back.
 if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
-  gaffer_refund_day_tick || true
+  gaffer_refund_day_tick "$_day_rsv_on" || true
 fi
 exit "$rc"

@@ -91,8 +91,22 @@ _worker_sandbox_wanted() {
   return 1
 }
 
+# GAFFER_MCP_BRIDGE: auto (default) ⇒ on except on macOS (Docker Desktop cannot
+# bind-mount a host unix socket into the VM); 1/0 force. See lib/mcp-bridge.mjs.
+_worker_mcp_bridge_on() {
+  case "${GAFFER_MCP_BRIDGE:-auto}" in
+    1 | true | yes | on) return 0 ;;
+    0 | false | no | off) return 1 ;;
+    *) [ "$(uname -s 2>/dev/null)" != "Darwin" ] ;;
+  esac
+}
+
 worker_deliver() {
   local cwd="$1" prompt="$2" model_flag="$3" mcp_config="$4" out_json="$5" wrap="${6:-}"
+  # The MCP config the AGENT is handed. Under the docker provider with the bridge on,
+  # this becomes the BRIDGED copy (every server = `mcp-bridge.mjs connect`) while the
+  # real servers — and their env, including the claim token — run host-side in `serve`.
+  local _mcp_for_agent="$mcp_config" _bridge_pid="" _bridge_sock="" _rc=0
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
     claude-code)
       # ── The real provider — BYTE-IDENTICAL to the pre-Phase-3 invocation. ──
@@ -134,6 +148,39 @@ worker_deliver() {
         _sbx_claude_bin="${GAFFER_SANDBOX_CLAUDE_BIN:-claude}"
         _sbx_env=( "HOME=${GAFFER_SANDBOX_HOME:-/root}"
                    "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
+        # ── MCP DATA PLANE ON THE HOST (external review, finding 2) ──────────────
+        # The dispatch/memory MCP servers used to run INSIDE the container and write
+        # the canonical SQLite files, which forced $GAFFER_DATA to be mounted rw.
+        # Now `mcp-bridge.mjs serve` runs them here, on the host, from the rendered
+        # runtime config (with its env + claim token), listening on a per-spawn unix
+        # socket; the container gets a bridged config whose servers are
+        # `mcp-bridge.mjs connect` over that socket. sandbox-docker.sh (reading
+        # GAFFER_MCP_BRIDGE_SOCKET) then mounts the socket instead of $GAFFER_DATA.
+        # FAIL CLOSED: if the bridge cannot be rendered or does not come up, no spawn.
+        if _worker_mcp_bridge_on && [ -n "$mcp_config" ] && [ -f "$mcp_config" ]; then
+          _bridge_sock="$GAFFER_DATA/mcp-bridge.$$.$RANDOM.sock"
+          _mcp_for_agent="${mcp_config%.json}.bridge.json"
+          if ! node "$RUNNER_DIR/lib/mcp-bridge.mjs" render --config "$mcp_config" --out "$_mcp_for_agent" \
+                 --socket "$_bridge_sock" --bridge "$RUNNER_DIR/lib/mcp-bridge.mjs" 2>>"$GAFFER_LOG"; then
+            : > "$out_json"
+            printf 'worker: mcp bridge: could not render the bridged MCP config from %s — refusing to spawn the agent (fail closed)\n' "$mcp_config" >&2
+            return 76
+          fi
+          node "$RUNNER_DIR/lib/mcp-bridge.mjs" serve --socket "$_bridge_sock" --config "$mcp_config" >>"$GAFFER_LOG" 2>&1 &
+          _bridge_pid=$!
+          local _bw=0
+          while [ ! -S "$_bridge_sock" ] && [ "$_bw" -lt 100 ]; do sleep 0.05; _bw=$((_bw + 1)); done
+          if [ ! -S "$_bridge_sock" ]; then
+            kill "$_bridge_pid" 2>/dev/null || true
+            rm -f "$_mcp_for_agent"
+            : > "$out_json"
+            printf 'worker: mcp bridge did not start on %s — refusing to spawn the agent (fail closed)\n' "$_bridge_sock" >&2
+            return 76
+          fi
+          export GAFFER_MCP_BRIDGE_SOCKET="$_bridge_sock"
+        else
+          unset GAFFER_MCP_BRIDGE_SOCKET
+        fi
       fi
       # CLAUDE_BIN is rebound INSIDE the invocation subshell only (the docker case above
       # swaps in the image's binary; otherwise it is unchanged), so the single pinned
@@ -141,8 +188,18 @@ worker_deliver() {
       ( cd "$cwd" && CLAUDE_BIN="$_sbx_claude_bin" \
         && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
            env -i "${GAFFER_AGENT_ENV[@]}" "${WORKER_CALL_ENV[@]}" ${_sbx_env[@]+"${_sbx_env[@]}"} \
-             "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$mcp_config" $CLAUDE_FLAGS $model_flag $GAFFER_MAX_TURNS_FLAG \
+             "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$_mcp_for_agent" $CLAUDE_FLAGS $model_flag $GAFFER_MAX_TURNS_FLAG \
       ) >"$out_json" 2>>"$GAFFER_LOG"
+      _rc=$?
+      # Tear the bridge down with the agent: the host-side servers exit with their
+      # connections; the socket + the bridged config (token-free, but per-spawn) go too.
+      if [ -n "$_bridge_pid" ]; then
+        kill "$_bridge_pid" 2>/dev/null || true
+        wait "$_bridge_pid" 2>/dev/null || true
+        rm -f "$_bridge_sock" "$_mcp_for_agent" 2>/dev/null || true
+        unset GAFFER_MCP_BRIDGE_SOCKET
+      fi
+      return "$_rc"
       ;;
     *)
       # ── codex / local / any non-Claude provider — honest stub, FAIL CLOSED. ──

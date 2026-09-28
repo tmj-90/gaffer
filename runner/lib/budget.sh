@@ -8,11 +8,15 @@
 # is exempt (gaffer_tick_counts_toward_day_cap), so an idle daemon cannot burn the cap.
 # shellcheck shell=bash
 
+# The calendar day every helper below keys on. GAFFER_TODAY_OVERRIDE is a TEST seam
+# (the midnight-rollover proof in test/budget-admission.test.sh); production never sets it.
+_gaffer_today() { if [ -n "${GAFFER_TODAY_OVERRIDE:-}" ]; then printf '%s' "$GAFFER_TODAY_OVERRIDE"; else date +%Y-%m-%d; fi; }
+
 # Echo today's persisted tick count — 0 if there is no record, or the record is
 # from an earlier day (a new calendar day resets the count).
 gaffer_day_count() {
   local today d c
-  today="$(date +%Y-%m-%d)"
+  today="$(_gaffer_today)"
   if [ -f "$DAILY_COUNTER_FILE" ]; then
     read -r d c < "$DAILY_COUNTER_FILE" || true
     if [ "$d" = "$today" ]; then echo "${c:-0}"; return; fi
@@ -40,7 +44,7 @@ gaffer_bump_day_count() {
 # lock primitive is defined, e.g. a unit test sourcing budget.sh standalone).
 _gaffer_bump_day_count_unlocked() {
   local today c
-  today="$(date +%Y-%m-%d)"
+  today="$(_gaffer_today)"
   c=$(( $(gaffer_day_count) + 1 ))
   printf '%s %s\n' "$today" "$c" > "$DAILY_COUNTER_FILE"
 }
@@ -54,7 +58,8 @@ _gaffer_bump_day_count_unlocked() {
 # (`no_work`) gives its slot back (gaffer_refund_day_tick), so the counter still
 # means "ticks that may have paid" exactly as before.
 #
-# gaffer_reserve_day_tick → 0 slot reserved (count advanced); 1 at/over the cap
+# gaffer_reserve_day_tick → 0 slot reserved (count advanced) and PRINTS the
+# reservation's calendar day (the caller keeps it for the refund); 1 at/over the cap
 # (nothing written); 2 could not persist (the caller must STOP — the cap can no
 # longer be enforced, the same fail-stop as a failed bump).
 gaffer_reserve_day_tick() {
@@ -67,29 +72,39 @@ gaffer_reserve_day_tick() {
 }
 _gaffer_reserve_day_tick_unlocked() {
   local today c
-  today="$(date +%Y-%m-%d)"
+  today="$(_gaffer_today)"
   c="$(gaffer_day_count)"
   if [ "${MAX_TICKS_PER_DAY:-0}" -gt 0 ] 2>/dev/null && [ "$c" -ge "$MAX_TICKS_PER_DAY" ]; then
     return 1
   fi
   printf '%s %s\n' "$today" "$((c + 1))" > "$DAILY_COUNTER_FILE" || return 2
+  printf '%s' "$today"
   return 0
 }
-# gaffer_refund_day_tick — give back ONE reserved slot (floor 0, same day only).
+# gaffer_refund_day_tick <reservation-day> — give back ONE reserved slot, ONLY if the
+# counter still belongs to the day the slot was reserved on. A refund is bound to its
+# reservation: a tick reserved before midnight that finishes (no_work) after it must not
+# decrement the NEW day's count — that let a stale refund re-open a day at its cap
+# (external recheck, "old-day reservation refunded after a new-day reservation").
+# No argument ⇒ today (the pre-existing callers' meaning); floor 0.
 gaffer_refund_day_tick() {
+  local day="${1:-}"
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "${GAFFER_DATA:-$(dirname "$DAILY_COUNTER_FILE")}/.daycount.lock" \
-      _gaffer_refund_day_tick_unlocked
+      _gaffer_refund_day_tick_unlocked "$day"
   else
-    _gaffer_refund_day_tick_unlocked
+    _gaffer_refund_day_tick_unlocked "$day"
   fi
 }
 _gaffer_refund_day_tick_unlocked() {
-  local today c
-  today="$(date +%Y-%m-%d)"
-  c="$(gaffer_day_count)"
-  [ "$c" -gt 0 ] || return 0
-  printf '%s %s\n' "$today" "$((c - 1))" > "$DAILY_COUNTER_FILE"
+  local day="${1:-}" d c
+  [ -n "$day" ] || day="$(_gaffer_today)"
+  [ -f "$DAILY_COUNTER_FILE" ] || return 0
+  read -r d c < "$DAILY_COUNTER_FILE" || return 0
+  [ "$d" = "$day" ] || return 0          # the counter has rolled to another day: no-op
+  c="${c:-0}"
+  [ "$c" -gt 0 ] 2>/dev/null || return 0
+  printf '%s %s\n' "$d" "$((c - 1))" > "$DAILY_COUNTER_FILE"
 }
 
 # gaffer_reserve_run_tick <counter-file> <max> — the PER-RUN pool budget, atomically.
@@ -179,23 +194,32 @@ gaffer_day_cap_ok() {
 # matches the ledger's ISO `ts` prefix regardless of the host timezone.
 gaffer_day_usd_spent() {
   local ledger="${GAFFER_USAGE_LEDGER:-${GAFFER_DATA:+$GAFFER_DATA/usage-ledger.jsonl}}"
-  [ -n "$ledger" ] && [ -f "$ledger" ] || { printf '0'; return 0; }   # no ledger ⇒ nothing spent
+  [ -n "$ledger" ] && [ -e "$ledger" ] || { printf '0'; return 0; }   # no ledger ⇒ nothing spent
+  # An EXISTING ledger we cannot read is an unknown spend, never 0 (the external recheck
+  # reproduced a mode-000 $100 ledger reading as $0 and admitting work under a $1 cap).
+  [ -f "$ledger" ] && [ -r "$ledger" ] || { printf 'unknown'; return 0; }
   command -v node >/dev/null 2>&1 || { printf 'unknown'; return 0; }
-  [ -f "${GAFFER_ESTIMATE_LIB:-}" ] || { printf 'unknown'; return 0; }
+  # STRICT reader, deliberately NOT estimate.mjs's tolerant parseLedger: for a spending
+  # CEILING a record we cannot read or parse is not "zero", it is "unknown". Any read
+  # error or any non-empty line that is not a JSON object ⇒ `unknown` ⇒ the cap halts.
   GAFFER_DAY_LEDGER="$ledger" node --input-type=module -e '
     import { readFileSync } from "node:fs";
-    import { pathToFileURL } from "node:url";
-    const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
     const today = new Date().toISOString().slice(0,10); // UTC calendar day
-    let text="";
-    try { text=readFileSync(process.env.GAFFER_DAY_LEDGER,"utf8"); } catch {}
-    let spend=0;
-    for (const r of parseLedger(text)) {
-      if (typeof r.ts!=="string" || r.ts.slice(0,10)!==today) continue;
-      const c=r.total_cost_usd;
-      if (typeof c==="number" && Number.isFinite(c) && c>=0) { spend+=c; continue; }
-      const e=r.estimated_cost_usd; // Part A killed/timeout estimate counts too
-      if (typeof e==="number" && Number.isFinite(e) && e>=0) spend+=e;
+    let text;
+    try { text = readFileSync(process.env.GAFFER_DAY_LEDGER, "utf8"); }
+    catch { process.stdout.write("unknown"); process.exit(0); }
+    let spend = 0;
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      let r;
+      try { r = JSON.parse(line); } catch { process.stdout.write("unknown"); process.exit(0); }
+      if (!r || typeof r !== "object" || Array.isArray(r)) { process.stdout.write("unknown"); process.exit(0); }
+      if (typeof r.ts !== "string" || r.ts.slice(0,10) !== today) continue;
+      const c = r.total_cost_usd;
+      if (typeof c === "number" && Number.isFinite(c) && c >= 0) { spend += c; continue; }
+      const e = r.estimated_cost_usd; // Part A killed/timeout estimate counts too
+      if (typeof e === "number" && Number.isFinite(e) && e >= 0) spend += e;
     }
     process.stdout.write(spend.toFixed(6));
   ' 2>/dev/null || printf 'unknown'
@@ -210,13 +234,14 @@ gaffer_day_usd_spent() {
 gaffer_day_usd_cap_ok() {
   local cap="${GAFFER_DAILY_BUDGET_USD:-}"
   [ -z "$cap" ] && return 0
-  command -v awk >/dev/null 2>&1 || return 0
+  # FAIL CLOSED: a cap is configured but awk (the comparator) is missing ⇒ halt, not OFF.
+  command -v awk >/dev/null 2>&1 || { echo "gaffer: GAFFER_DAILY_BUDGET_USD=$cap is set but awk is unavailable to compare it — halting rather than spending against an unenforceable cap" >&2; return 1; }
   awk -v c="$cap" 'BEGIN{exit !(c+0 > 0)}' 2>/dev/null || return 0   # cap<=0/garbage ⇒ OFF
   local spent; spent="$(gaffer_day_usd_spent)"
   # FAIL CLOSED: a cap is configured but today's spend cannot be measured ⇒ halt.
   # (A missing ledger is `0`, not `unknown` — a fresh factory is never blocked.)
   if [ "$spent" = "unknown" ]; then
-    echo "gaffer: GAFFER_DAILY_BUDGET_USD=$cap is set but today's spend cannot be measured (node or the estimate lib unavailable, or the ledger unreadable) — halting rather than spending against an unenforceable cap" >&2
+    echo "gaffer: GAFFER_DAILY_BUDGET_USD=$cap is set but today's spend cannot be established (node unavailable, or the usage ledger unreadable / malformed) — halting rather than spending against an unenforceable cap" >&2
     return 1
   fi
   awk -v s="$spent" -v c="$cap" 'BEGIN{exit !(s+0 < c+0)}' 2>/dev/null

@@ -120,21 +120,35 @@ applies inside.
 4. Honest docs: `STRICT_MODE.md` + `SECURITY.md` updated to describe Mode 2 as the
    read+egress boundary, Mode 1 as the write sandbox.
 
-## Known gap: the data plane lives inside the worker's filesystem
+## The data plane stays on the host (`lib/mcp-bridge.mjs`)
 
-`$GAFFER_DATA` is bind-mounted read-write (with every non-DB entry masked) because the
-MCP servers run *inside* the container and write the canonical SQLite files. That
-means the worker's shell and the services enforcing ticket/approval rules share a
-filesystem: a process that ignores the MCP tools can open `dispatch.sqlite` directly.
-The intended fix is to run the MCP data plane on the **host** and expose it to the
-container over a unix socket (or a loopback TCP port on the internal network), so the
-DBs are never mounted. Until then the provider contains the *host* (reads, egress,
-credentials) — it does not make the factory's decision state tamper-proof against
-the agent. `SECURITY.md` states this under residual limits.
+The dispatch and memory MCP servers do **not** run inside the container. For each
+agent spawn under the docker provider, `lib/worker.sh`:
 
-The DoD gates and AC checks now run under the same wrap as the agent
-(`GAFFER_DOD_WRAP`, from `tick.sh`), so validation of agent-modified code happens
-inside the container too, with the verdict read on the host.
+1. renders a **bridged** copy of the runtime MCP config (`mcp-bridge.mjs render`): the
+   same server names, each replaced by `node mcp-bridge.mjs connect --socket <sock>
+   --server <name>`, with **no env** — the claim token and DB paths never enter the
+   container's config;
+2. starts `mcp-bridge.mjs serve --socket $GAFFER_DATA/mcp-bridge.<pid>.<rand>.sock
+   --config <runtime.json>` on the host (one per spawn; the servers are spawned from
+   the real config, with its env, on the first connection for each name);
+3. exports `GAFFER_MCP_BRIDGE_SOCKET`, which `sandbox-docker.sh` reads to mount **only
+   the socket** (rw), the bridged config (ro), the hook's two telemetry ledgers (rw), the
+   crew events log (rw) and the skills mount (ro) — `$GAFFER_DATA` itself is not mounted
+   and the DB env vars are not forwarded;
+4. tears the bridge down with the agent (socket + bridged config removed).
+
+Failure to render or start the bridge is a **refusal to spawn** (rc 76), never a bare
+run. `GAFFER_MCP_BRIDGE=auto` (default) is on except on macOS Docker Desktop, which
+cannot bind-mount a host unix socket into its VM; there the wrapper falls back to the
+legacy layout (DB directory mounted rw, masked) and logs a WARNING naming the gap.
+Force with `1`/`0`.
+
+The DoD gates and AC checks run under the same wrap as the agent (`GAFFER_DOD_WRAP`
+from `tick.sh`), so validation of agent-modified code happens inside the container too,
+with the verdict read on the host. The containment gate covers both rounds: the legacy
+layout (masking) and the bridge (databases absent, token absent, MCP round trip over
+the socket).
 
 ## Constraints / open questions
 

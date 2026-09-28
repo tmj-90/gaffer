@@ -69,7 +69,7 @@ while _reserve_run_tick; do
   # DRY_RUN ticks never spend, so they neither reserve nor count (BUG 6).
   _day_reserved=0
   if [ "${DRY_RUN:-0}" != "1" ]; then
-    gaffer_reserve_day_tick; _rsv=$?
+    _day_rsv_on="$(gaffer_reserve_day_tick)"; _rsv=$?
     case "$_rsv" in
       0) _day_reserved=1 ;;
       1) echo "worker $WORKER_ID: per-day cap reached — stopping." >&2; _refund_run_tick; break ;;
@@ -105,7 +105,7 @@ while _reserve_run_tick; do
   # The slot was reserved up front (atomic admission); a tick that provably spent
   # nothing (`no_work`) gives it back so the counter still means "may have paid".
   if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
-    gaffer_refund_day_tick || true
+    gaffer_refund_day_tick "$_day_rsv_on" || true
   fi
   case "${res:-unknown}" in
     worked)            worked=$((worked + 1)); empties=0 ;;

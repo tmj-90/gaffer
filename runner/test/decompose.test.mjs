@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { writeFileSync, mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { buildPrompt as buildSpecPrompt } from "../bin/spec-author.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = resolve(HERE, "..", "bin", "decompose.mjs");
@@ -349,6 +350,42 @@ console.log("== AC11: forcePlan forces a plan (never clarify) + respects max-tic
   assert(
     "forcePlan prompt drops the first-turn clarify steer",
     !fp.includes("THIS IS THE FIRST TURN"),
+  );
+
+  // The size cap is enforced AFTER the paid turn (validateResult), so the prompt must
+  // state it — a 12-ticket plan against a cap of 7, and a 32/42-clause spec against
+  // caps of 30/40, were each paid for and then rejected in the live experiments.
+  const capped = buildPrompt({ brief: "an app", history: [], forcePlan: true, maxTickets: 7 });
+  assert(
+    "plan prompt states the ticket cap (AT MOST 7 tickets)",
+    /SIZE LIMIT: the plan must have AT MOST 7 tickets/.test(capped),
+  );
+  assert("plan prompt without a cap carries no SIZE LIMIT block", !fp.includes("SIZE LIMIT"));
+  const specCapped = buildSpecPrompt({
+    brief: "an app",
+    history: [],
+    forcePlan: true,
+    maxClauses: 30,
+  });
+  assert(
+    "spec prompt states the clause cap (AT MOST 30 clauses)",
+    /SIZE LIMIT: the spec must have AT MOST 30 clauses/.test(specCapped),
+  );
+  assert(
+    "spec prompt without a cap carries no SIZE LIMIT block",
+    !buildSpecPrompt({ brief: "an app", history: [], forcePlan: true }).includes("SIZE LIMIT"),
+  );
+  // The real CLI wires its --max-* option into the prompt (not only into validateResult).
+  const decomposeSrc = readFileSync(resolve(HERE, "..", "bin", "decompose.mjs"), "utf8");
+  const specSrc = readFileSync(resolve(HERE, "..", "bin", "spec-author.mjs"), "utf8");
+  assert(
+    "decompose.mjs passes opts.maxTickets into buildPrompt at both call sites",
+    (decomposeSrc.match(/buildPrompt\(\{ \.\.\.req, maxTickets: opts\.maxTickets \}\)/g) || [])
+      .length === 2,
+  );
+  assert(
+    "spec-author.mjs passes opts.maxClauses into buildPrompt",
+    /buildPrompt\(\{ \.\.\.req, maxClauses: opts\.maxClauses \}\)/.test(specSrc),
   );
   const noFp = buildPrompt({ brief: "an app", history: [] });
   assert(

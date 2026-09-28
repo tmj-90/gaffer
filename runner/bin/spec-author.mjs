@@ -359,6 +359,19 @@ export function buildPrompt(req) {
   const context = String(req.context ?? "").trim();
   const forcePlan = req.forcePlan === true;
   const history = Array.isArray(req.history) ? req.history : [];
+  // The size cap is ENFORCED after the turn (validateResult) — so the model must be
+  // TOLD it, or a 32-clause spec against a cap of 30 is paid for and then thrown away
+  // (the second live experiment's first turn did exactly that).
+  const maxClauses =
+    Number.isFinite(req.maxClauses) && req.maxClauses > 0 ? Math.trunc(req.maxClauses) : null;
+  const sizeBlock = maxClauses
+    ? [
+        "",
+        `SIZE LIMIT: the spec must have AT MOST ${maxClauses} clauses — a larger spec is`,
+        "REJECTED after your turn and the work is lost. Prefer fewer, sharper clauses;",
+        "fold minor points into a clause's rationale rather than adding clauses.",
+      ].join("\n")
+    : "";
   // History is serialised JSON of prior turns — still untrusted free text inside;
   // envelope the whole block (multi-line preserved, delimiters stripped).
   const historyText = history.length
@@ -415,6 +428,7 @@ export function buildPrompt(req) {
     QUARANTINE_NOTICE,
     clarifyFirst,
     forcePlanBlock,
+    sizeBlock,
     "",
     `Product brief: ${quarantine("product-brief", brief, { singleLine: true })}`,
     contextBlock,
@@ -552,7 +566,7 @@ function main() {
   } else {
     let run;
     try {
-      run = runClaudeTurn(buildPrompt(req), opts);
+      run = runClaudeTurn(buildPrompt({ ...req, maxClauses: opts.maxClauses }), opts);
     } catch (e) {
       fail(`failed to spawn claude: ${e?.message ?? e}`);
       return;

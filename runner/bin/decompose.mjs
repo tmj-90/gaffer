@@ -587,6 +587,19 @@ export function buildPrompt(req) {
   const targetRepo = String(req.repo ?? "").trim();
   const forcePlan = req.forcePlan === true;
   const history = Array.isArray(req.history) ? req.history : [];
+  // The plan-size cap is ENFORCED after the turn (validateResult) — so the model must
+  // be TOLD it, or a 12-ticket plan against a cap of 7 is paid for and then thrown away
+  // (seen live: the first experiment's planning turns).
+  const maxTickets =
+    Number.isFinite(req.maxTickets) && req.maxTickets > 0 ? Math.trunc(req.maxTickets) : null;
+  const sizeBlock = maxTickets
+    ? [
+        "",
+        `SIZE LIMIT: the plan must have AT MOST ${maxTickets} tickets (the bootstrap ticket`,
+        "included) — a larger plan is REJECTED after your turn and the work is lost. Merge",
+        "small steps into one ticket rather than exceeding the limit.",
+      ].join("\n")
+    : "";
   // History is serialised JSON of prior turns — still untrusted free text inside;
   // envelope the whole block (multi-line preserved, delimiters stripped).
   const historyText = history.length
@@ -687,6 +700,7 @@ export function buildPrompt(req) {
     cardContext,
     specBlock,
     forcePlanBlock,
+    sizeBlock,
     "",
     `App brief: ${quarantine("app-brief", brief, { singleLine: true })}`,
     historyText,
@@ -893,7 +907,7 @@ export function parseCritique(text) {
  * revision, stopping at cfg.maxRounds or when the critic raises no material issue.
  */
 export function runDebate(req, opts, cfg, turn) {
-  const proposerPrompt = buildPrompt(req);
+  const proposerPrompt = buildPrompt({ ...req, maxTickets: opts.maxTickets });
   const first = turn(proposerPrompt, cfg.proposer);
   if (first.timedOut) return { timedOut: true, text: "" };
   let planText = first.stdout;
@@ -1122,7 +1136,7 @@ function main() {
   } else {
     let run;
     try {
-      run = runClaudeTurn(buildPrompt(req), opts);
+      run = runClaudeTurn(buildPrompt({ ...req, maxTickets: opts.maxTickets }), opts);
     } catch (e) {
       fail(`failed to spawn claude: ${e?.message ?? e}`);
       return;

@@ -211,7 +211,7 @@ fi
 [ "$(count_kind review)" = 1 ] && ok "2: exactly one primary review turn" || fail "2: primary review turns = $(count_kind review)"
 [ "$(st "$A1")" = "in_testing" ] && ok "2: approved → in_testing (GAFFER_TESTING lane, ticket testable)" || fail "2: #$A1 is '$(st "$A1")' after approval (expected in_testing)"
 # The approve must NOT start the merge while the tester's verdict is pending.
-if git -C "$A" log --oneline main 2>/dev/null | grep -q "helper$A1"; then fail "2: the delivery was merged to main before the tester's verdict"; else ok "2: nothing merged before the tester's verdict (main carries no helper$A1 commit)"; fi
+if [[ "$(git -C "$A" log --oneline main 2>/dev/null)" == *"helper$A1"* ]]; then fail "2: the delivery was merged to main before the tester's verdict"; else ok "2: nothing merged before the tester's verdict (main carries no helper$A1 commit)"; fi
 _A1B="$(wg ticket show "$A1" 2>/dev/null | jget 'd.ticket.branch_name || ""')"
 [ -n "$_A1B" ] && git -C "$A" rev-parse --verify -q "refs/heads/$_A1B" >/dev/null 2>&1 && ok "2: the delivery branch $_A1B still exists for the tester (not deleted by a premature landing)" || fail "2: delivery branch '$_A1B' is gone before the tester ran"
 grep -q "AFK: #$A1 approved → in_testing (tester lane) — NOT landing" "$GAFFER_DATA/factory.log" && ok "2: the review pass logged that it left the landing to the tester lane" || fail "2: no 'NOT landing' log line for #$A1"

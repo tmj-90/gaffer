@@ -86,7 +86,8 @@ wg review approve "$A" --reviewer human1 >/dev/null 2>&1
 MAIN0="$(git -C "$R" rev-parse main)"
 OUT="$(GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick)"
 [ "$(st "$A")" = "done" ] && ok "A: merge lane landed #$A → done" || fail "A: after tick status=$(st "$A") ($OUT)"
-if [ "$(git -C "$R" rev-parse main)" != "$MAIN0" ] && git -C "$R" log --oneline main | grep -q "helper$A"; then ok "A: main now carries the helper commit"; else fail "A: main did not gain the helper commit (main $(git -C "$R" rev-parse --short main) vs before $(printf '%s' "$MAIN0" | cut -c1-7); log: $(git -C "$R" log --oneline -3 main | tr '\n' '|'); stub commits: $(grep -l . "$CALLS"/*/kind 2>/dev/null | xargs -I{} cat {} 2>/dev/null | tr '\n' ','))"; fi
+_MLOG="$(git -C "$R" log --oneline main)"   # string match, not `| grep -q`: under pipefail grep's early exit can SIGPIPE git (seen on macOS CI)
+if [ "$(git -C "$R" rev-parse main)" != "$MAIN0" ] && [[ "$_MLOG" == *"helper$A"* ]]; then ok "A: main now carries the helper commit"; else fail "A: main did not gain the helper commit (main $(git -C "$R" rev-parse --short main) vs before $(printf '%s' "$MAIN0" | cut -c1-7); log: $(git -C "$R" log --oneline -3 main | tr '\n' '|'); stub commits: $(grep -l . "$CALLS"/*/kind 2>/dev/null | xargs -I{} cat {} 2>/dev/null | tr '\n' ','))"; fi
 git -C "$R" rev-parse --verify -q "refs/heads/$BA" >/dev/null 2>&1 && fail "A: merged branch $BA still exists" || ok "A: merged branch deleted"
 grep -q "MERGE: #$A ready_for_merge + merge gate earned → landing $BA → main" "$LOGF" && ok "A: lane logged the landing" || fail "A: no landing log line"
 grep -q "MERGE: #$A merged ($BA → main, via local) and marked done" "$LOGF" && ok "A: shared landing logged under the MERGE prefix" || fail "A: no MERGE-prefixed merged line: $(grep "#$A" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-300)"

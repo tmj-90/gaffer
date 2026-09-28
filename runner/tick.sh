@@ -869,6 +869,18 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # the normal delivery path, never bootstrap), so never route a resume through the
   # create-a-repo bootstrap branch.
   [ "$_RESUMING" = "1" ] && IS_BOOTSTRAP=0
+  # WASTE CONTROL — a bootstrap REWORK is a normal delivery. Once the scaffold has
+  # been reviewed the repo IS registered (the bootstrap path onboarded it and linked
+  # the ticket), so a CHANGES verdict must re-enter the worktree flow: the existing
+  # gaffer/ticket-N-… branch is reused with its commits, the prompt carries the
+  # reviewer's feedback, and the gates run against the registered repo. The
+  # create-a-repo path has no feedback block at all — a live run sent the agent back
+  # into it blind, paying for a second scaffold pass that could not know what the
+  # reviewer had asked for.
+  if [ "$IS_BOOTSTRAP" = "1" ] && [ -n "${REPO_PATH:-}" ] && git -C "$REPO_PATH" rev-parse --git-dir >/dev/null 2>&1; then
+    log "BOOTSTRAP #$NUM: repo already registered at $REPO_PATH — rework runs as a normal delivery on the existing branch (reviewer feedback carried)"
+    IS_BOOTSTRAP=0
+  fi
   if [ "$IS_BOOTSTRAP" = "1" ]; then
     B_NAME="$(gaffer_bootstrap_repo_name "$SHOW")"
     if [ -z "$B_NAME" ]; then
@@ -954,7 +966,19 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # on the current branch (its prompt already says "commit on the current branch").
     B_SLUG="$(gaffer_ticket_slug "$TITLE")"
     B_WORK_BRANCH="gaffer/ticket-$NUM-$B_SLUG"
-    if ! git -C "$B_DIR" checkout -B "$B_WORK_BRANCH" >/dev/null 2>&1; then
+    # WASTE CONTROL: on a RESUME the branch may already carry a prior attempt's scaffold
+    # commits (auto-committed or the agent's own). `checkout -B` re-points it at HEAD
+    # (main after the post-onboard checkout) and silently discards them — a live run
+    # lost a complete scaffold that way and paid for it again. Re-enter the existing
+    # branch unless GAFFER_RETRY_FRESH_BRANCH=1 asks for the clean-slate reset.
+    _B_KEPT=0
+    if [ "${GAFFER_RETRY_FRESH_BRANCH:-0}" != "1" ] \
+       && git -C "$B_DIR" rev-parse --verify -q "refs/heads/$B_WORK_BRANCH" >/dev/null 2>&1; then
+      _B_KEPT="$(git -C "$B_DIR" rev-list --count "$B_DEFAULT_BRANCH..$B_WORK_BRANCH" 2>/dev/null || echo 0)"
+    fi
+    if [ "${_B_KEPT:-0}" -gt 0 ] 2>/dev/null && git -C "$B_DIR" checkout "$B_WORK_BRANCH" >/dev/null 2>&1; then
+      log "BOOTSTRAP #$NUM: re-entered EXISTING branch $B_WORK_BRANCH — $_B_KEPT prior commit(s) kept (set GAFFER_RETRY_FRESH_BRANCH=1 for a clean-slate retry)"
+    elif ! git -C "$B_DIR" checkout -B "$B_WORK_BRANCH" >/dev/null 2>&1; then
       log "BOOTSTRAP: #$NUM could not create delivery branch $B_WORK_BRANCH — failing"
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi

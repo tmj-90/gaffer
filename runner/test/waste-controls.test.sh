@@ -95,7 +95,8 @@ sed -i.bak "s|__CALLS__|$CALLS|; s|__MODE__|$MODE|; s|__REVIEW__|$REVIEW|" "$WOR
 
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_MAX_TURNS=3 GAFFER_TICK_TIMEOUT=60 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
-       REVIEW_MODE=human DRY_RUN=0 GAFFER_MAINTENANCE=0 AUTO_MERGE=0 GAFFER_STRICT_REQUIRE=0 GAFFER_SECURITY_REVIEW=0 GAFFER_TESTING=0
+       REVIEW_MODE=human DRY_RUN=0 GAFFER_MAINTENANCE=0 AUTO_MERGE=0 GAFFER_STRICT_REQUIRE=0 GAFFER_SECURITY_REVIEW=0 GAFFER_TESTING=0 \
+       MAX_OPEN_AGENT_BRANCHES_PER_REPO=10 MAX_IN_REVIEW_PER_REPO=10   # five cases leave five open branches; keep backpressure out of the way
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
 wg init >/dev/null 2>&1; lg init >/dev/null 2>&1
@@ -148,6 +149,9 @@ D2="$(last_delivery)"
 grep -q "reused worktree for repo .* on EXISTING branch $BC .* prior commit(s) kept" "$GAFFER_DATA/factory.log" && ok "C: runner logged the branch reuse" || fail "C: no reuse log: $(grep -E 'worktree for repo' "$GAFFER_DATA/factory.log" | tail -2 | tr '\n' '|' | cut -c1-300)"
 grep -q "previous attempt's commits are\|prior\nattempt's commits\|ALREADY on this branch" "$D2/prompt" && ok "C: rework prompt tells the agent the prior commits are on the branch" || fail "C: rework prompt lacks the kept-commits note"
 [ "$(st "$C")" = "in_review" ] && ok "C: rework re-delivered → in_review" || fail "C: rework status=$(st "$C")"
+# Clear the review lane before the next case (a tick reviews the OLDEST in_review ticket first).
+review_tick >/dev/null
+[ "$(st "$C")" = "ready_for_merge" ] && ok "C: rework approved → ready_for_merge" || fail "C: after approve status=$(st "$C")"
 
 echo "== D. GAFFER_RETRY_FRESH_BRANCH=1 restores the clean-slate reset =="
 echo deliver > "$MODE"; echo changes > "$REVIEW"
@@ -158,6 +162,34 @@ echo approve > "$REVIEW"
 GAFFER_RETRY_FRESH_BRANCH=1 run_tick >/dev/null
 D3="$(last_delivery)"
 [ -n "$D3" ] && [ "$(cat "$D3/commits-at-spawn")" = "0" ] && ok "D: with the override the retry spawned on a branch reset to base (0 prior commits)" || fail "D: override did not reset (commits-at-spawn=$(cat "$D3/commits-at-spawn" 2>/dev/null))"
+review_tick >/dev/null   # clear the review lane before case E
+
+echo "== E. a bootstrap REWORK (repo already registered) runs as a normal delivery with feedback =="
+# LIVE FINDING: after the scaffold was reviewed (CHANGES) the ticket still carried
+# bootstrap=1, so the retry re-entered the create-a-repo path — whose prompt has no
+# review-feedback block — and paid for a second blind scaffold pass. Once the repo is
+# registered and linked, a bootstrap rework is a normal delivery on the kept branch.
+echo deliver > "$MODE"; echo approve > "$REVIEW"
+F="$(wg ticket create -t "Bootstrap the r repo" -d "scaffold the repo" --risk low --bootstrap 2>/dev/null | jget 'd.ticket.number')"
+wg ac add "$F" -t "helper added" >/dev/null 2>&1
+wg ticket repo-access set "$F" repo --access write --relation confirmed >/dev/null 2>&1
+# Simulate the prior bootstrap pass: its scaffold commit already sits on the ticket branch.
+ticket_slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' | sed -E 's/^-+//; s/-+$//' | cut -d- -f1-6 | cut -c1-50 | sed -E 's/-+$//'; }  # mirrors tick.sh gaffer_ticket_slug
+BF="gaffer/ticket-$F-$(ticket_slug "Bootstrap the r repo")"
+git -C "$R" branch "$BF" main >/dev/null 2>&1
+git -C "$R" worktree add -q "$WORK/wt-f" "$BF" >/dev/null 2>&1
+printf 'export const scaffold = 1;\n' > "$WORK/wt-f/src/scaffold.js"
+git -C "$WORK/wt-f" -c user.email=t@t -c user.name=t add -A >/dev/null 2>&1
+git -C "$WORK/wt-f" -c user.email=t@t -c user.name=t commit -qm "deliver #$F: scaffold" >/dev/null 2>&1
+git -C "$R" worktree remove --force "$WORK/wt-f" >/dev/null 2>&1
+wg ticket ready "$F" >/dev/null 2>&1
+[ "$(wg ticket show "$F" | jget '[1, true].includes(d.ticket.bootstrap) ? 1 : 0')" = "1" ] && ok "E: #$F is a bootstrap ticket with a REGISTERED repo linked" || fail "E: fixture is not a bootstrap ticket"
+run_tick >/dev/null
+grep -q "BOOTSTRAP #$F: repo already registered at .* rework runs as a normal delivery" "$GAFFER_DATA/factory.log" && ok "E: runner routed the bootstrap rework to the normal delivery path" || fail "E: no routing log line"
+grep -q "BOOTSTRAP #$F ('Bootstrap the r repo') → create new repo" "$GAFFER_DATA/factory.log" && fail "E: the create-a-repo path ran for a registered repo" || ok "E: the create-a-repo path did NOT run"
+D4="$(last_delivery)"
+[ -n "$D4" ] && [ "$(cat "$D4/commits-at-spawn")" -ge 1 ] && ok "E: the rework agent saw the prior scaffold commit at spawn (branch $BF kept)" || fail "E: rework did not keep the scaffold commit (commits-at-spawn=$(cat "$D4/commits-at-spawn" 2>/dev/null))"
+[ "$(st "$F")" = "in_review" ] && ok "E: bootstrap rework re-delivered → in_review" || fail "E: status=$(st "$F")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

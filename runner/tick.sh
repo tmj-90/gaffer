@@ -1285,7 +1285,16 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # runbook) is mounted too — those packs were otherwise unreachable from any runner
   # path. An argv, never a shell string: the untrusted text cannot inject flags.
   _SKILL_TEXT="$(printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget '(d.ticket.description || "").slice(0, 600)' 2>/dev/null || true)")"
-  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${SKILL_AREA:+--area "$SKILL_AREA"} --text "$_SKILL_TEXT" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+  # PER-PATH ROUTING: file paths the ticket NAMES narrow the stack to their ecosystems on a
+  # mixed repo ("… in api/Shop.Api/Controllers/TasksController.cs" → the C# pack, not the
+  # React bar). No path named → the repo's full stack. The full description is scanned
+  # (paths are often below the 600-char head the text relevance uses).
+  _SKILL_PATHS="$(mktemp "${TMPDIR:-/tmp}/skill-paths.XXXXXX")"
+  printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget '(d.ticket.description || "")' 2>/dev/null || true)" \
+    | grep -oE '[A-Za-z0-9_][A-Za-z0-9_./-]*\.(cs|csproj|sln|razor|cshtml|ts|tsx|js|jsx|mjs|cjs|vue|svelte|py|go|rs|java|kt|kts|swift|rb|sh|bash|html|css|scss)\b' \
+    > "$_SKILL_PATHS" 2>/dev/null || : > "$_SKILL_PATHS"
+  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${SKILL_AREA:+--area "$SKILL_AREA"} --text "$_SKILL_TEXT" --paths-file "$_SKILL_PATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+  rm -f "$_SKILL_PATHS"
   [ -n "$SKILLS" ] || SKILLS="$(fg skills --stack "$STACK" 2>/dev/null | jget '(Array.isArray(d) ? d : d.skills || []).map((s) => s.id ?? s.name ?? "").join(", ")' 2>/dev/null || true)"
   [ -n "$SKILLS" ] || SKILLS="(choose the skill whose description matches the ticket)"
 

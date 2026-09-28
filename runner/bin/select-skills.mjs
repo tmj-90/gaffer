@@ -198,6 +198,102 @@ const KNOWN_STACK_TOKENS = new Set([
   "macos",
 ]);
 
+/**
+ * PER-PATH STACK ROUTING. A mixed repo carries one compound label (`csharp-typescript-react`)
+ * and every agent used to get every ecosystem's packs. When the files a job touches are
+ * known — the reviewer's diff, the paths a ticket names — the stack is NARROWED to the
+ * ecosystems those files belong to, so a .NET-only change is reviewed with the C# pack and
+ * not the React design bar. Tokens group into ECOSYSTEMS; a repo token survives narrowing
+ * when its ecosystem is touched (so `node`-tagged packs still ride a `.ts` change).
+ */
+const ECOSYSTEMS = Object.freeze({
+  js: [
+    "typescript",
+    "javascript",
+    "node",
+    "react",
+    "next",
+    "nextjs",
+    "vue",
+    "svelte",
+    "angular",
+    "web",
+    "html",
+    "css",
+    "react-native",
+    "native",
+    "expo",
+  ],
+  dotnet: ["csharp", "dotnet", "aspnet"],
+  python: ["python"],
+  go: ["go"],
+  rust: ["rust"],
+  jvm: ["java", "kotlin", "jvm", "android"],
+  swift: ["swift", "ios", "macos"],
+  ruby: ["ruby", "rails"],
+  shell: ["bash", "shell", "sh", "zsh"],
+});
+const TOKEN_ECOSYSTEM = new Map(
+  Object.entries(ECOSYSTEMS).flatMap(([eco, tokens]) => tokens.map((t) => [t, eco])),
+);
+
+/** File path → the stack tokens it implies (extension and a few manifest names). */
+const PATH_STACK_RULES = [
+  [/\.(cs|csproj|fsproj|vbproj|sln|slnx|razor|cshtml)$/i, ["csharp"]],
+  [/\.(tsx)$/i, ["typescript", "react", "web"]],
+  [/\.(jsx)$/i, ["javascript", "react", "web"]],
+  [/\.(ts|mts|cts)$/i, ["typescript"]],
+  [/\.(js|mjs|cjs)$/i, ["javascript"]],
+  [/\.vue$/i, ["vue", "web", "typescript"]],
+  [/\.svelte$/i, ["svelte", "web", "typescript"]],
+  [/\.(html|htm|css|scss|sass|less)$/i, ["web"]],
+  [/\.py$/i, ["python"]],
+  [/\.go$/i, ["go"]],
+  [/\.rs$/i, ["rust"]],
+  [/\.java$/i, ["java"]],
+  [/\.(kt|kts)$/i, ["kotlin"]],
+  [/\.swift$/i, ["swift"]],
+  [/\.rb$|(^|\/)(Gemfile|Rakefile)$/i, ["ruby"]],
+  [/\.(sh|bash|zsh)$/i, ["bash"]],
+];
+
+/** Stack tokens implied by a list of file paths (empty when nothing is recognised). */
+export function stacksFromPaths(paths = []) {
+  const out = new Set();
+  for (const raw of paths) {
+    const path = String(raw ?? "").trim();
+    if (!path) continue;
+    for (const [re, tokens] of PATH_STACK_RULES) {
+      if (re.test(path)) {
+        for (const t of tokens) out.add(t);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Narrow a repo's (expanded) stack tokens to the ecosystems the given paths touch.
+ *   - no path implies a stack (docs, config, unknown extensions) → the repo stack, unchanged;
+ *   - otherwise every repo token whose ecosystem is touched survives, and the path-implied
+ *     tokens are added (so a `.tsx` change on a `csharp-typescript-react` repo keeps
+ *     `typescript`/`react` and drops `csharp`; a `.cs` change keeps `csharp` only);
+ *   - a repo whose tokens name none of the touched ecosystems (mis-registered or unknown)
+ *     gets the path tokens ADDED to its own — never fewer packs than before.
+ */
+export function narrowStacks(stacks = [], paths = []) {
+  const expanded = expandStacks(stacks);
+  const implied = stacksFromPaths(paths);
+  if (implied.size === 0) return expanded;
+  const touched = new Set([...implied].map((t) => TOKEN_ECOSYSTEM.get(t)).filter(Boolean));
+  const kept = expanded.filter((t) => touched.has(TOKEN_ECOSYSTEM.get(t)));
+  const base = kept.length > 0 ? kept : expanded;
+  const out = [...base];
+  for (const t of implied) if (!out.includes(t)) out.push(t);
+  return out;
+}
+
 /** The recognised stack tokens for a loaded library (static seed ∪ language-pack tags). */
 export function knownStackTokens(library = []) {
   const out = new Set(KNOWN_STACK_TOKENS);
@@ -606,6 +702,7 @@ function parseArgs(argv) {
     json: false,
     listAreas: false,
     role: "",
+    paths: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -632,6 +729,25 @@ function parseArgs(argv) {
       case "--role":
         opts.role = (next() ?? "").trim();
         break;
+      // PER-PATH ROUTING: the files this job touches (the reviewer's diff, the paths a
+      // ticket names). The stack is narrowed to their ecosystems before selection.
+      case "--path":
+        opts.paths.push(...parseInlineList(next() ?? ""));
+        break;
+      case "--paths-file": {
+        const file = next() ?? "";
+        try {
+          opts.paths.push(
+            ...readFileSync(file, "utf8")
+              .split("\n")
+              .map((l) => l.trim())
+              .filter(Boolean),
+          );
+        } catch {
+          /* unreadable → no narrowing */
+        }
+        break;
+      }
       default:
         break;
     }
@@ -648,10 +764,23 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (opts.listAreas) {
     process.stdout.write(listAreas(opts.skillsDir).join("\n") + "\n");
   } else {
+    if (opts.paths.length > 0) {
+      opts.stacks = narrowStacks(opts.stacks, opts.paths);
+      // An explicit surface area derived from the FULL repo label (tick.sh maps a web
+      // stack to --area frontend) must not re-mount the design bar the narrowing dropped:
+      // keep it only while the narrowed stack still carries that surface.
+      if (opts.area === "frontend" && !opts.stacks.some((t) => WEB_STACKS.has(t))) opts.area = "";
+      if (opts.area === "mobile" && !opts.stacks.some((t) => MOBILE_STACKS.has(t))) opts.area = "";
+    }
     const selected = opts.role ? selectForRole(opts.role, opts) : selectSkills(opts);
     if (opts.json) {
       process.stdout.write(
-        JSON.stringify({ ok: true, count: selected.length, skills: selected }) + "\n",
+        JSON.stringify({
+          ok: true,
+          count: selected.length,
+          stacks: opts.stacks,
+          skills: selected,
+        }) + "\n",
       );
     } else {
       process.stdout.write(selected.map((s) => s.name).join(", ") + "\n");

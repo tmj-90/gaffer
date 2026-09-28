@@ -11,6 +11,8 @@ import {
   expandStacks,
   textMatches,
   relevanceTokens,
+  stacksFromPaths,
+  narrowStacks,
   selectForRole,
   ROLE_PROFILES,
   ROLE_NAMES,
@@ -446,6 +448,75 @@ check("a mixed .NET + TypeScript repo (compound label) mounts BOTH conventions p
     "reviewer gets both packs",
   );
 });
+
+check("per-path: file paths imply stack tokens; unknown extensions imply nothing", () => {
+  eq([...stacksFromPaths(["api/Shop.Api/Program.cs"])], ["csharp"], ".cs → csharp");
+  eq(
+    [...stacksFromPaths(["web/src/App.tsx"])],
+    ["typescript", "react", "web"],
+    ".tsx → typescript + react + web",
+  );
+  eq([...stacksFromPaths(["svc/main.go", "lib/x.py"])], ["go", "python"], "mixed paths");
+  eq([...stacksFromPaths(["README.md", "docs/a.png", ""])], [], "docs imply nothing");
+});
+
+check("per-path: narrowing keeps the touched ecosystems' tokens and drops the rest", () => {
+  const repo = ["csharp-typescript-react"];
+  eq(narrowStacks(repo, ["api/Shop.Api/Program.cs"]), ["csharp"], ".cs only → csharp");
+  eq(
+    narrowStacks(repo, ["web/src/App.tsx"]),
+    ["typescript", "react", "web"],
+    ".tsx only → the JS ecosystem tokens (csharp dropped)",
+  );
+  eq(
+    narrowStacks(repo, ["api/Program.cs", "web/src/App.tsx"]),
+    ["csharp", "typescript", "react", "web"],
+    "both touched → both kept",
+  );
+  eq(narrowStacks(repo, ["README.md"]), expandStacks(repo), "no paths → the repo stack, unchanged");
+  // A node repo touched via .ts keeps its `node` token (same ecosystem): node-tagged packs ride.
+  eq(narrowStacks(["node"], ["src/a.ts"]), ["node", "typescript"], "node + .ts keeps node");
+  // A mis-registered repo (python label, .cs change) gains the path tokens — never fewer packs.
+  eq(
+    narrowStacks(["python"], ["a.cs"]),
+    ["python", "csharp"],
+    "no touched ecosystem → add, not drop",
+  );
+  eq(narrowStacks([], ["a.rs"]), ["rust"], "unknown repo stack → the path's tokens");
+});
+
+check(
+  "per-path: a .NET-only change on a .NET + React repo gets the C# pack, not the React bar",
+  () => {
+    const narrowed = narrowStacks(
+      ["csharp-typescript-react"],
+      ["api/Controllers/TasksController.cs"],
+    );
+    const delivery = selectSkills({ stacks: narrowed }).map((s) => s.name);
+    assert(delivery.includes("csharp-conventions"), "csharp-conventions mounted");
+    for (const dropped of [
+      "typescript-conventions",
+      "react-patterns",
+      "frontend-design",
+      "mobile-ui",
+    ]) {
+      assert(!delivery.includes(dropped), `${dropped} must not ride a .cs-only change`);
+    }
+    const review = selectForRole("review", { stacks: narrowed }).map((s) => s.name);
+    assert(
+      review.includes("csharp-conventions") && !review.includes("typescript-conventions"),
+      "reviewer too",
+    );
+    const web = selectSkills({
+      stacks: narrowStacks(["csharp-typescript-react"], ["web/src/App.tsx"]),
+    }).map((s) => s.name);
+    assert(
+      web.includes("typescript-conventions") && web.includes("react-patterns"),
+      "the React half",
+    );
+    assert(!web.includes("csharp-conventions"), "csharp dropped on a .tsx-only change");
+  },
+);
 
 check("the ticket text pulls a foreign language pack in by name", () => {
   const plain = selectSkills({ stacks: ["node"] }).map((s) => s.name);

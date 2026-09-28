@@ -129,6 +129,30 @@ in an if/else chain and had no .NET detector at all, so a .NET + TypeScript repo
 was labelled `typescript-react` and, being a *known* stack, never received the
 C# pack.
 
+### Per-path routing: what a job touches narrows the stack
+
+A mixed repo's compound label mounts every ecosystem's packs. When the files a job
+touches are known, `select-skills.mjs` **narrows** the stack to their ecosystems
+(`narrowStacks`, `stacksFromPaths`; CLI `--path` / `--paths-file`):
+
+- the **reviewer** passes the diff's file list (`git diff --name-only base...branch`),
+  so a `.cs`-only change on a `csharp-typescript-react` repo is reviewed with the C#
+  pack and no React design bar, and a `.tsx`-only change the other way round;
+- the **delivery** agent passes the file paths the ticket *names* in its title or
+  description ("… in `api/Shop.Api/Controllers/TasksController.cs`"); a ticket that
+  names no file gets the full compound stack;
+- the **tester** keeps the repo stack (its context is contract-only by design).
+
+Tokens group into ecosystems (JS/TS incl. React and Node, .NET, Python, Go, Rust,
+JVM, Swift, Ruby, shell): a repo token survives narrowing when its ecosystem is
+touched, so `node`-tagged packs still ride a `.ts` change; paths that imply nothing
+(docs, config) leave the stack unchanged; a repo whose label names none of the
+touched ecosystems gains the path tokens rather than losing any. A surface area
+derived from the full label (`--area frontend` for a web stack) is dropped when the
+narrowed stack no longer carries that surface.
+`runner/test/e2e-per-path-stack-routing.test.sh` proves it on a live .NET + React
+repo for the builder and the reviewer.
+
 ### Today's hack
 
 `repositories.stack` is a single nullable **compound string**
@@ -158,7 +182,7 @@ stack still matches. It works, but it is a lexical hack:
 Broad inclusion of the task packs and fail-open stack packs mean a wrong or
 coarse `stack` value cannot *exclude* a pack: an unrecognised label mounts every
 stack pack, a partially right compound label still reaches its own conventions
-pack via `expandStacks`. What stack precision buys is a *tighter* mount — the
-one conventions pack instead of nine, no design bar on a backend service — and
-that is exactly what a structured `stack[]` or per-path scope routing would
-sharpen further. Worth doing; not load-bearing for correctness.
+pack via `expandStacks`, and per-path narrowing already gives the reviewer and a
+path-naming ticket a single-ecosystem mount. What a structured `stack[]` or
+scope-node paths would add is narrowing for tickets that name no file, from the
+paths their scope node owns. Worth doing; not load-bearing for correctness.

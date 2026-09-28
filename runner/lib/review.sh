@@ -105,7 +105,13 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # ONE shared installer (lib/agent-env.sh) every spawn site uses; any failure
       # refuses the live review (fail closed) — the same posture as the delivery site.
       RSTACK="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
-      RSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role review --stack "$RSTACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+      # PER-PATH ROUTING: the reviewer's stack is narrowed to the ecosystems the DIFF touches
+      # (a .NET-only change on a .NET + React repo is reviewed with the C# pack, not the
+      # React design bar). No recognisable files → the repo's full stack, as before.
+      _RPATHS="$(mktemp "${TMPDIR:-/tmp}/review-paths.XXXXXX")"
+      git -C "$RREPO" diff --name-only "$RDEFAULT...$RBRANCH" -- > "$_RPATHS" 2>/dev/null || : > "$_RPATHS"
+      RSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role review --stack "$RSTACK" --paths-file "$_RPATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+      rm -f "$_RPATHS"
       [ -n "$RSKILLS" ] || RSKILLS="review-ticket, adversarial-reviewer, submit-review, record-evidence"
       GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$WT" "$RSKILLS" "review-$RNUM" \
         || { log "SAFETY: reviewer agent env install failed for #$RNUM — refusing live review (fail closed)"; result error; exit 1; }

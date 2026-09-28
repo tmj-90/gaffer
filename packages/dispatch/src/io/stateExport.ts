@@ -295,7 +295,9 @@ function insertRow(db: Db, table: string, row: Record<string, unknown>): void {
  * Load a validated {@link StateBundle} into `db`, which MUST be a Dispatch DB
  * whose schema has been applied (call {@link migrate} / open via the normal path
  * first). Refuses a non-empty DB unless `force` is set; with `force` it clears
- * every export table first. All inserts run in ONE transaction in FK-safe order,
+ * every export table first. All inserts AND the integrity check run in ONE
+ * transaction in FK-safe order — an inconsistent bundle is rejected before commit,
+ * so the destination (including a force-cleared one) is never left half-restored.
  * so a failure rolls the whole import back and the DB is never left half-loaded.
  */
 export function importState(
@@ -347,24 +349,28 @@ export function importState(
       // log now so `dispatch events verify` passes on the imported board. Rows
       // that arrived WITH hashes keep them (the export carried the chain over).
       backfillEventChain(db);
+      // A foreign_keys=OFF bulk load can leave a dangling reference if the bundle is
+      // internally inconsistent. Verify integrity INSIDE the transaction, before it
+      // commits: throwing here rolls the whole load back, so a rejected bundle leaves
+      // the destination exactly as it was — under `force` too, where the prior rows
+      // were deleted at the top of this same transaction. (Checking after the commit
+      // reported INCONSISTENT_BUNDLE with the original data already gone and the
+      // inconsistent rows already in place — the external review's restore finding.)
+      // `PRAGMA foreign_key_check` works with enforcement OFF. A self-consistent export
+      // always passes (every child's parent was exported alongside it).
+      const violations = db.pragma("foreign_key_check") as unknown[];
+      if (violations.length > 0) {
+        throw new DispatchError(
+          "INCONSISTENT_BUNDLE",
+          `Imported bundle has ${violations.length} dangling foreign-key reference(s); ` +
+            "the source export was internally inconsistent — nothing was changed.",
+          { violations: violations.length },
+        );
+      }
     });
     tx();
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON");
-  }
-
-  // A foreign_keys=OFF bulk load can leave a dangling reference if the bundle is
-  // internally inconsistent. Verify integrity AFTER the load so a corrupt bundle
-  // is reported rather than silently accepted. A self-consistent export always
-  // passes (every child's parent was exported alongside it).
-  const violations = db.pragma("foreign_key_check") as unknown[];
-  if (violations.length > 0) {
-    throw new DispatchError(
-      "INCONSISTENT_BUNDLE",
-      `Imported bundle has ${violations.length} dangling foreign-key reference(s); ` +
-        "the source export was internally inconsistent.",
-      { violations: violations.length },
-    );
   }
 
   return {

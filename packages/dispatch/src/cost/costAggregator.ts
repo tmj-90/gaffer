@@ -162,22 +162,50 @@ export function resolveLedgerPath(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 /**
- * Read and parse all rows from the ledger file. Returns an empty array when the
- * file is missing, unreadable, or has no valid rows — never throws.
+ * Why a ledger read produced the rows it did. `missing` (no file yet — nothing has
+ * been spent) and `unreadable` (a file exists but could not be read) are DIFFERENT
+ * facts: a view that showed both as $0 turned "we cannot establish usage" into "this
+ * cost nothing" (external review, run-detail finding).
  */
-export function readLedgerRows(ledgerPath: string): LedgerRow[] {
+export type LedgerStatus = "ok" | "missing" | "unreadable";
+
+/**
+ * Read and parse the ledger file, reporting HOW it was read. Never throws.
+ *   ok          the file was read (rows may still be empty)
+ *   missing     no file at that path — nothing recorded yet
+ *   unreadable  the file exists but reading it failed (permissions, I/O)
+ */
+export function readLedger(ledgerPath: string): { rows: LedgerRow[]; status: LedgerStatus } {
   try {
-    if (!existsSync(ledgerPath)) return [];
+    if (!existsSync(ledgerPath)) return { rows: [], status: "missing" };
     const content = readFileSync(ledgerPath, "utf8");
     const rows: LedgerRow[] = [];
     for (const line of content.split("\n")) {
       const row = parseLedgerLine(line);
       if (row !== null) rows.push(row);
     }
-    return rows;
+    return { rows, status: "ok" };
   } catch {
-    return [];
+    return { rows: [], status: "unreadable" };
   }
+}
+
+/**
+ * Read and parse all rows from the ledger file. Returns an empty array when the
+ * file is missing, unreadable, or has no valid rows — never throws. Callers that
+ * must tell "missing" from "unreadable" use {@link readLedger}.
+ */
+export function readLedgerRows(ledgerPath: string): LedgerRow[] {
+  return readLedger(ledgerPath).rows;
+}
+
+/**
+ * True for a row whose usage could NOT be established: unmeasured and carrying no
+ * labelled estimate either (a killed/timeout row with an estimate is accounted, not
+ * unknown). Views count these so an unmeasured call is never shown as $0.
+ */
+export function isUnknownUsageRow(row: LedgerRow): boolean {
+  return !row.measured && (row.estimated_cost_usd ?? 0) === 0;
 }
 
 /**

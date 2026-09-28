@@ -215,6 +215,55 @@ describe("dispatch state export", () => {
     );
   });
 
+  it("a FORCED import of an inconsistent bundle is rejected AND leaves the destination intact", () => {
+    // External review (restore finding): the FK integrity check ran after the load had
+    // committed, so INCONSISTENT_BUNDLE was reported with the original rows already
+    // deleted (force) and the dangling rows already in place. The check now runs inside
+    // the transaction: rejection rolls everything back.
+    const src = freshWg();
+    seedBoard(src);
+    const bundle = exportState(src.db);
+    // Tamper: an acceptance criterion pointing at a ticket that does not exist.
+    const acRows = (bundle.tables.acceptance_criteria ?? []) as Record<string, unknown>[];
+    expect(acRows.length).toBeGreaterThan(0);
+    const orphan = { ...acRows[0]!, id: "orphan-ac-0000", ticket_id: "no-such-ticket" };
+    const tampered: StateBundle = {
+      ...bundle,
+      tables: { ...bundle.tables, acceptance_criteria: [...acRows, orphan] },
+    };
+
+    const dst = new Dispatch(openDatabase(":memory:"), new TestClock(), nonEmptyDiffRunner);
+    seedBoard(dst);
+    const extra = dst.createTicket({ title: "must survive a rejected restore" }, human);
+    const before = dst
+      .list()
+      .map((t) => t.id)
+      .sort();
+
+    try {
+      importState(dst.db, tampered, { force: true });
+      expect.unreachable("should have rejected the inconsistent bundle");
+    } catch (err) {
+      expect((err as DispatchError).code).toBe("INCONSISTENT_BUNDLE");
+    }
+    // Nothing changed: the original tickets (incl. the extra one) are still there and the
+    // orphan row never landed.
+    expect(
+      dst
+        .list()
+        .map((t) => t.id)
+        .sort(),
+    ).toEqual(before);
+    expect(dst.view(extra.id).ticket.title).toBe("must survive a rejected restore");
+    const orphanCount = dst.db
+      .prepare("SELECT COUNT(*) AS n FROM acceptance_criteria WHERE id = ?")
+      .get("orphan-ac-0000") as { n: number };
+    expect(orphanCount.n).toBe(0);
+    expect((dst.db.pragma("foreign_key_check") as unknown[]).length).toBe(0);
+    // FK enforcement is back on after the failed attempt.
+    expect(dst.db.pragma("foreign_keys", { simple: true })).toBe(1);
+  });
+
   it("rejects a bundle with an incompatible (too-new) schema_version", () => {
     const src = freshWg();
     seedBoard(src);

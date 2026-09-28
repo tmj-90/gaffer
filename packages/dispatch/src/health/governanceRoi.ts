@@ -15,10 +15,15 @@
  *   - merge rate         = merged / (merged + rejected)         over tickets that
  *                          reached a terminal review decision in the window.
  *   - rework rate        = (merged tickets that needed ≥1 rework) / merged.
- *   - unattended-safe    = (unattended merges that stayed merged) / unattended merges,
- *                          where "unattended" = the review was APPROVED by an `agent`
- *                          actor (no human crossed the gate) and "stayed merged" =
- *                          it was not later reopened. This is the honest "when the
+ *   - unattended-safe    = (unattended merge CYCLES that stayed merged) / unattended
+ *                          merge cycles, where "unattended" = the review before that
+ *                          merge was APPROVED by an `agent` actor (no human crossed the
+ *                          gate; the approve may predate the window — association uses
+ *                          the full history) and "stayed merged" = no reopen (out of
+ *                          `done`) followed it before the next merge / now. A ticket
+ *                          re-merged after a reopen contributes BOTH cycles (1 unsafe,
+ *                          1 pending) — the earlier failure is never erased by the
+ *                          repair. This is the honest "when the
  *                          factory shipped without a human, did it not burn us?".
  */
 
@@ -59,8 +64,16 @@ export interface GovernanceRoi {
     readonly merged: number;
     readonly rejected: number;
     readonly reworked: number;
+    /** Agent-approved merge CYCLES in the window (a re-merged ticket counts each cycle). */
     readonly unattendedMerges: number;
+    /** Of those cycles, how many were reopened (out of `done`) before the next merge / now. */
     readonly unattendedReopened: number;
+    /**
+     * Age of the most recent unattended merge in ms, or null when there is none. A
+     * cycle a few minutes old is "not reopened YET", not evidence of reliability —
+     * the UI shows the observation age next to the rate.
+     */
+    readonly youngestUnattendedMergeAgeMs: number | null;
   };
 }
 
@@ -86,10 +99,15 @@ export function governanceRoi(
   windowDays: number = DEFAULT_WINDOW_DAYS,
 ): GovernanceRoi {
   const windowStart = nowMs - windowDays * DAY_MS;
-  // Group the in-window transitions per ticket, oldest → newest.
+  const inWindow = (t: GovTransition) => t.atMs >= windowStart && t.atMs <= nowMs;
+  // Group the FULL history per ticket, oldest → newest. The window selects the
+  // COHORT (which merges / rejects are reported), never the facts used to classify
+  // them: an approval a minute before the window still decides whether the merge
+  // just inside it was unattended, and a reopen is attributed to the merge cycle it
+  // actually followed.
   const byTicket = new Map<string, GovTransition[]>();
   for (const t of transitions) {
-    if (t.atMs < windowStart || t.atMs > nowMs) continue;
+    if (t.atMs > nowMs) continue;
     const list = byTicket.get(t.ticketId);
     if (list) list.push(t);
     else byTicket.set(t.ticketId, [t]);
@@ -100,30 +118,52 @@ export function governanceRoi(
   let reworked = 0;
   let unattendedMerges = 0;
   let unattendedReopened = 0;
+  let youngestUnattendedMergeAgeMs: number | null = null;
 
   for (const [ticketId, evs] of byTicket) {
     evs.sort((a, b) => a.atMs - b.atMs);
-    const mergeEv = [...evs].reverse().find((e) => e.reason === "merge_completed");
-    if (mergeEv) {
+    const merges = evs.filter((e) => e.reason === "merge_completed");
+    const mergesInWindow = merges.filter(inWindow);
+    if (mergesInWindow.length > 0) {
+      // Ticket-level outcome counts (a ticket merged in the window is one merged
+      // ticket, whatever its cycle count).
       merged += 1;
       if ((reworkByTicketId.get(ticketId) ?? 0) > 0) reworked += 1;
-      // Unattended ⇔ the last approve BEFORE the merge was by an `agent` actor (no human
-      // crossed the gate). markMerged is system-only, so the autonomy signal is the
-      // APPROVE actor, not the merge actor.
-      const approve = [...evs]
+    } else if (
+      evs.some(
+        (e) => inWindow(e) && e.fromStatus === "in_review" && REJECT_TARGETS.has(e.toStatus ?? ""),
+      )
+    ) {
+      // Not merged in the window: a terminal REJECT ⇔ it left in_review back to
+      // rework/ready or was cancelled.
+      rejected += 1;
+    }
+    // Unattended-safe is a PER-MERGE-CYCLE measure: every agent-approved merge in the
+    // window is a cohort member, and it is "unsafe" when a reopen (out of `done`)
+    // followed it BEFORE the next merge (or up to now). A repair that re-merges does
+    // not erase the earlier cycle — the latest-merge-only version did, so an
+    // "approve → merge → reopen → approve → merge" ticket read 1/1 safe.
+    for (let i = 0; i < merges.length; i++) {
+      const mergeEv = merges[i]!;
+      if (!inWindow(mergeEv)) continue;
+      // Unattended ⇔ the last approve BEFORE this merge was by an `agent` actor (no
+      // human crossed the gate). markMerged is system-only, so the autonomy signal
+      // is the APPROVE actor, not the merge actor. Full history: the approve may
+      // predate the window.
+      const approve = evs
         .filter((e) => APPROVE_REASONS.has(e.reason ?? "") && e.atMs <= mergeEv.atMs)
         .pop();
-      if (approve && approve.actorType === "agent") {
-        unattendedMerges += 1;
-        // "Unsafe" ⇔ it was reopened after merging (came back out of `done`).
-        const reopened = evs.some((e) => e.fromStatus === "done" && e.atMs > mergeEv.atMs);
-        if (reopened) unattendedReopened += 1;
+      if (!approve || approve.actorType !== "agent") continue;
+      unattendedMerges += 1;
+      const nextMergeAt = i + 1 < merges.length ? merges[i + 1]!.atMs : Number.POSITIVE_INFINITY;
+      const reopened = evs.some(
+        (e) => e.fromStatus === "done" && e.atMs > mergeEv.atMs && e.atMs <= nextMergeAt,
+      );
+      if (reopened) unattendedReopened += 1;
+      const age = nowMs - mergeEv.atMs;
+      if (youngestUnattendedMergeAgeMs === null || age < youngestUnattendedMergeAgeMs) {
+        youngestUnattendedMergeAgeMs = age;
       }
-      continue;
-    }
-    // Not merged: a terminal REJECT ⇔ it left in_review back to rework/ready or was cancelled.
-    if (evs.some((e) => e.fromStatus === "in_review" && REJECT_TARGETS.has(e.toStatus ?? ""))) {
-      rejected += 1;
     }
   }
 
@@ -133,6 +173,13 @@ export function governanceRoi(
     mergeRate: rate(merged, merged + rejected),
     reworkRate: rate(reworked, merged),
     unattendedSafeRate: rate(unattendedMerges - unattendedReopened, unattendedMerges),
-    counts: { merged, rejected, reworked, unattendedMerges, unattendedReopened },
+    counts: {
+      merged,
+      rejected,
+      reworked,
+      unattendedMerges,
+      unattendedReopened,
+      youngestUnattendedMergeAgeMs,
+    },
   };
 }

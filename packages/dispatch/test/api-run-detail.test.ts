@@ -8,7 +8,7 @@
  *   - full detail assembly       (buildRunDetail)
  */
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -260,7 +260,74 @@ describe("ticketCostInfo", () => {
 
     const info = ticketCostInfo(5, { GAFFER_DATA: tmpDir });
     expect(info.cost_usd).toBeCloseTo(0.15, 6);
+    expect(info.measured_usd).toBeCloseTo(0.15, 6);
+    expect(info.estimated_usd).toBe(0);
+    expect(info.unknown_calls).toBe(0);
+    expect(info.ledger_status).toBe("ok");
     expect(info.num_turns).toBe(6);
+  });
+
+  it("counts a killed/timeout ESTIMATE the way the aggregate views and the caps do, and labels it", () => {
+    // External review: rowSpend (aggregate) said $3 for this ticket, the run detail $1.
+    const ledgerPath = join(tmpDir, "usage-ledger.jsonl");
+    const rows = [
+      {
+        ts: "2026-01-01T00:00:00.000Z",
+        ticket: 7,
+        kind: "delivery",
+        measured: true,
+        total_cost_usd: 1,
+        num_turns: 10,
+        duration_ms: 1000,
+      },
+      {
+        ts: "2026-01-01T01:00:00.000Z",
+        ticket: 7,
+        kind: "delivery",
+        measured: false,
+        estimated: true,
+        estimated_cost_usd: 2,
+        estimate_basis: "flat-floor",
+        total_cost_usd: "unknown",
+      },
+    ];
+    writeFileSync(ledgerPath, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const info = ticketCostInfo(7, { GAFFER_DATA: tmpDir });
+    expect(info.cost_usd).toBe(3); // measured + estimate, as rowSpend / the Cost view / the day cap
+    expect(info.measured_usd).toBe(1);
+    expect(info.estimated_usd).toBe(2);
+    expect(info.unknown_calls).toBe(0); // the estimate IS an accounting, not an unknown
+  });
+
+  it("an unmeasured call with no estimate is counted as UNKNOWN, never as $0", () => {
+    const ledgerPath = join(tmpDir, "usage-ledger.jsonl");
+    writeFileSync(
+      ledgerPath,
+      JSON.stringify({
+        ts: "2026-01-01T00:00:00.000Z",
+        ticket: 8,
+        kind: "delivery",
+        measured: false,
+        total_cost_usd: "unknown",
+        num_turns: "unknown",
+      }) + "\n",
+    );
+    const info = ticketCostInfo(8, { GAFFER_DATA: tmpDir });
+    expect(info.cost_usd).toBe(0);
+    expect(info.unknown_calls).toBe(1);
+    expect(info.ledger_status).toBe("ok");
+  });
+
+  it("a MISSING ledger reads `missing` (nothing spent); an UNREADABLE one reads `unreadable` (usage unknown)", () => {
+    const absent = ticketCostInfo(1, { GAFFER_DATA: join(tmpDir, "nonexistent") });
+    expect(absent.ledger_status).toBe("missing");
+    expect(absent.cost_usd).toBe(0);
+    // A directory where the ledger file should be: exists, cannot be read as a file.
+    mkdirSync(join(tmpDir, "usage-ledger.jsonl"));
+    const unreadable = ticketCostInfo(1, { GAFFER_DATA: tmpDir });
+    expect(unreadable.ledger_status).toBe("unreadable");
+    expect(unreadable.cost_usd).toBe(0); // the zero is NOT a measurement — the status says so
+    expect(ticketCostInfo(1, {}).ledger_status).toBe("unconfigured");
   });
 });
 

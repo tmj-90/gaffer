@@ -19,7 +19,13 @@
  *    (hygiene-flagged), `FAILED` (hard fail), or null while still running.
  */
 
-import { readLedgerRows, resolveLedgerPath } from "../cost/costAggregator.js";
+import {
+  isUnknownUsageRow,
+  readLedger,
+  resolveLedgerPath,
+  rowSpend,
+  type LedgerStatus,
+} from "../cost/costAggregator.js";
 import type { Run } from "../domain/types.js";
 
 // ── ROUTE parsing ────────────────────────────────────────────────────────────
@@ -141,20 +147,43 @@ export function detectOutcome(logText: string, runStatus: Run["status"]): RunOut
 // ── Per-ticket cost join ──────────────────────────────────────────────────────
 
 /**
- * Per-ticket cost and turns from the usage ledger for ONE ticket.
- * Zero-state when the ticket has no ledger rows.
+ * Per-ticket usage from the ledger for ONE ticket — the SAME accounting the
+ * aggregate views and the runner's caps use ({@link rowSpend}: measured PLUS the
+ * labelled killed/timeout estimate), with the estimate and the unmeasured calls kept
+ * visible so a figure is never read as more certain than it is.
  */
 export interface TicketCostInfo {
+  /** measured_usd + estimated_usd — the accounted spend (what the caps count). */
   cost_usd: number;
+  /** Spend the CLI actually reported. */
+  measured_usd: number;
+  /** The runner's labelled estimates for killed / timed-out calls (never measured). */
+  estimated_usd: number;
   num_turns: number;
+  /** Calls whose usage could not be established at all (unmeasured, no estimate). */
+  unknown_calls: number;
+  /**
+   * How the ledger was read: `ok` (rows summed), `missing` (no ledger yet — nothing
+   * spent), `unreadable` (a ledger exists but could not be read — usage UNKNOWN, the
+   * zeros above are not a measurement), `unconfigured` (no ledger path in the env).
+   */
+  ledger_status: LedgerStatus | "unconfigured";
 }
 
+const ZERO_COST: TicketCostInfo = {
+  cost_usd: 0,
+  measured_usd: 0,
+  estimated_usd: 0,
+  num_turns: 0,
+  unknown_calls: 0,
+  ledger_status: "unconfigured",
+};
+
 /**
- * Sum cost and turns from the usage ledger for a single ticket number.
- * Reads the ledger file path from the process environment each call (the file
- * path is env-bound; keeping it hot is the caller's concern, not ours).
- * Returns { cost_usd: 0, num_turns: 0 } when the ticket isn't found or the
- * ledger is absent — never throws.
+ * Sum the usage ledger for a single ticket number. Reads the ledger file path from
+ * the process environment each call. Never throws: a missing ledger reports
+ * `missing` (nothing spent), an unreadable one `unreadable` (usage unknown) — the
+ * caller decides how to show each; neither is silently "$0".
  */
 export function ticketCostInfo(
   ticketNumber: number,
@@ -162,22 +191,33 @@ export function ticketCostInfo(
 ): TicketCostInfo {
   try {
     const ledgerPath = resolveLedgerPath(env);
-    if (!ledgerPath) return { cost_usd: 0, num_turns: 0 };
-    const rows = readLedgerRows(ledgerPath);
-    let cost = 0;
+    if (!ledgerPath) return { ...ZERO_COST };
+    const { rows, status } = readLedger(ledgerPath);
+    let measured = 0;
+    let estimated = 0;
     let turns = 0;
+    let unknown = 0;
     for (const row of rows) {
-      if (row.ticket === ticketNumber) {
-        cost += row.total_cost_usd;
-        turns += row.num_turns;
-      }
+      if (row.ticket !== ticketNumber) continue;
+      measured += row.total_cost_usd;
+      estimated += row.estimated_cost_usd ?? 0;
+      turns += row.num_turns;
+      if (isUnknownUsageRow(row)) unknown += 1;
     }
+    const r6 = (n: number) => Math.round(n * 1e6) / 1e6;
+    const cost = rows
+      .filter((row) => row.ticket === ticketNumber)
+      .reduce((acc, row) => acc + rowSpend(row), 0);
     return {
-      cost_usd: Math.round(cost * 1e6) / 1e6,
+      cost_usd: r6(cost),
+      measured_usd: r6(measured),
+      estimated_usd: r6(estimated),
       num_turns: turns,
+      unknown_calls: unknown,
+      ledger_status: status,
     };
   } catch {
-    return { cost_usd: 0, num_turns: 0 };
+    return { ...ZERO_COST, ledger_status: "unreadable" };
   }
 }
 
@@ -207,10 +247,22 @@ export interface RunDetail {
   phase: string | null;
   /** Model id (latest), e.g. "claude-sonnet-4-6". Null when log absent. */
   model: string | null;
-  /** Turns consumed (from ledger) for this ticket. 0 when unknown. */
+  /** Turns consumed (from ledger) for this ticket. 0 when none recorded. */
   num_turns: number;
-  /** Cost in USD (from ledger) for this ticket. 0 when unknown. */
+  /**
+   * Accounted spend for this ticket: measured PLUS the labelled killed/timeout
+   * estimates — the same figure the Cost view and the runner's caps use.
+   */
   cost_usd: number;
+  /** The estimated share of cost_usd (0 when every call was measured). */
+  estimated_usd: number;
+  /** Calls whose usage could not be established (unmeasured, no estimate). */
+  unknown_calls: number;
+  /**
+   * `ok` | `missing` | `unreadable` | `unconfigured` | `no_ticket` — whether the
+   * numbers above are a measurement. `unreadable` means usage is UNKNOWN, not $0.
+   */
+  cost_status: TicketCostInfo["ledger_status"] | "no_ticket";
   /** Capped log tail (last 50 lines of the per-run log). Null when absent. */
   log_tail: string | null;
   /** Settled outcome, or null when still running / not determinable. */
@@ -237,16 +289,19 @@ export function buildRunDetail(
   const outcome = logText ? detectOutcome(logText, run.status) : null;
   const logTail = logText !== null ? logTailLines(logText) : null;
 
-  const costInfo =
-    ticketNumber !== null ? ticketCostInfo(ticketNumber, env) : { cost_usd: 0, num_turns: 0 };
+  const costInfo: TicketCostInfo | null =
+    ticketNumber !== null ? ticketCostInfo(ticketNumber, env) : null;
 
   return {
     run,
     ticket_number: ticketNumber,
     phase,
     model,
-    num_turns: costInfo.num_turns,
-    cost_usd: costInfo.cost_usd,
+    num_turns: costInfo?.num_turns ?? 0,
+    cost_usd: costInfo?.cost_usd ?? 0,
+    estimated_usd: costInfo?.estimated_usd ?? 0,
+    unknown_calls: costInfo?.unknown_calls ?? 0,
+    cost_status: costInfo ? costInfo.ledger_status : "no_ticket",
     log_tail: logTail,
     outcome,
   };

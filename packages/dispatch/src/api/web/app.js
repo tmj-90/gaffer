@@ -1847,7 +1847,13 @@ async function renderOverview() {
           tile(
             "Unattended-safe",
             gov.unattendedSafeRate,
-            (r) => `${r.numerator} of ${r.denominator} agent-approved merges stayed shipped`,
+            (r) =>
+              `${r.numerator} of ${r.denominator} agent-approved merge cycle${r.denominator === 1 ? "" : "s"} stayed shipped` +
+              // Observation age: a cycle merged minutes ago is "not reopened YET".
+              (Number.isFinite(gov.counts?.youngestUnattendedMergeAgeMs) &&
+              gov.counts.youngestUnattendedMergeAgeMs !== null
+                ? ` · newest ${fmtDuration(gov.counts.youngestUnattendedMergeAgeMs)} ago`
+                : ""),
           ),
         ]),
       );
@@ -2834,6 +2840,32 @@ function viewRunDetail(runId, kindLabel) {
     if (turns) chips.push(el("span", { class: "run-detail-chip dim" }, turns));
     const cost = fmtCost(detail.cost_usd);
     if (cost) chips.push(el("span", { class: "run-detail-chip tabnum" }, cost));
+    // Honest cost: an estimate is labelled, an unmeasured call is counted, an
+    // unreadable ledger is "unknown" — never a silent $0.
+    if (detail.estimated_usd > 0) {
+      chips.push(
+        el(
+          "span",
+          {
+            class: "run-detail-chip dim",
+            title: "includes the runner's estimate for killed / timed-out calls",
+          },
+          `incl. $${detail.estimated_usd.toFixed(4)} est.`,
+        ),
+      );
+    }
+    if (detail.unknown_calls > 0) {
+      chips.push(
+        el(
+          "span",
+          { class: "run-detail-chip warn", title: "calls whose usage the CLI did not report" },
+          `${detail.unknown_calls} call${detail.unknown_calls === 1 ? "" : "s"} unmeasured`,
+        ),
+      );
+    }
+    if (detail.cost_status === "unreadable") {
+      chips.push(el("span", { class: "run-detail-chip warn" }, "cost unknown (ledger unreadable)"));
+    }
     if (detail.outcome) {
       const tone =
         detail.outcome === "in_review"

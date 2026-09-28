@@ -98,8 +98,63 @@ gaffer_land_delivery() {
       fi
       ;;
     3) log "$_WHO: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;
-    1) log "$_WHO: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human" ;;
+    1)
+      # CONFLICT: the branch forked before a sibling landed on the same files (two
+      # tickets in flight touching one module). Under autonomy this used to be the end
+      # of the run — the ticket held at ready_for_merge, every dependent starved behind
+      # it, and the loop stopped on empty polls. Hand it to the conflict resolver
+      # (bin/merge-ticket.mjs, the dashboard Merge button's path): it merges the default
+      # branch INTO the delivery branch in a throwaway worktree, resolves preserving both
+      # sides, and reopens the ticket for RE-REVIEW of the resolved diff — never a
+      # silent landing. Once per ticket; a second conflict after a resolver pass waits
+      # for a human.
+      if _gaffer_land_conflict_resolve "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_WHO"; then
+        _mrc=5
+      else
+        log "$_WHO: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human"
+      fi ;;
     *) log "$_WHO: #$RNUM approved but merge could not run (rc=$_mrc) — left in ready_for_merge for a human" ;;
   esac
   return "${_mrc:-1}"
+}
+
+# _gaffer_land_conflict_resolve <num> <repo_dir> <branch> <default_branch> [who]
+# The conflict failure-mode of a landing. Spawns the resolver through bin/merge-ticket.mjs
+# (its own conflict-safe merge attempt, then the resolve-merge-conflict agent in a
+# throwaway worktree of the branch, then `wg ticket reopen-for-review` → in_review).
+#   → 0  the resolver ran and the ticket is back in review (or the helper landed it)
+#   → 1  not attempted (lane off, DRY_RUN, second conflict for this ticket) or the
+#        resolver did not resolve — the caller holds the ticket for a human.
+# Bounded: GAFFER_MERGE_TIMEOUT_MS kills the resolver; $GAFFER_DATA/.merge-conflict-resolved
+# remembers every ticket that had its one resolver pass (NOT reset per run — a ticket that
+# conflicts again after a resolution is a human's, not a loop).
+_gaffer_land_conflict_resolve() {
+  local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" _WHO="${5:-AFK}"
+  case "$(printf '%s' "${GAFFER_CONFLICT_RESOLVER:-1}" | tr '[:upper:]' '[:lower:]')" in
+    0|false|no|off) log "$_WHO: #$RNUM conflict — the resolver lane is off (GAFFER_CONFLICT_RESOLVER=0)"; return 1 ;;
+  esac
+  if [ "${DRY_RUN:-0}" = "1" ]; then log "DRY_RUN: $_WHO would spawn the conflict resolver for #$RNUM ($RBRANCH ← $RDEFAULT)"; return 1; fi
+  local _marker="$GAFFER_DATA/.merge-conflict-resolved"
+  touch "$_marker" 2>/dev/null || true
+  if grep -qx "$RNUM" "$_marker" 2>/dev/null; then
+    log "$_WHO: #$RNUM conflicted AGAIN after a resolver pass — not spawning a second resolver"
+    return 1
+  fi
+  _gaffer_locked .skip.lock _gaffer_append_line "$_marker" "$RNUM"
+  log "$_WHO: #$RNUM conflict — spawning the conflict resolver (bin/merge-ticket.mjs): merge $RDEFAULT into $RBRANCH on the branch, then reopen for re-review"
+  local _out _rc _phase
+  _out="$(env GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
+      node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$RNUM" --timeout-ms "${GAFFER_MERGE_TIMEOUT_MS:-600000}" \
+      2>>"$GAFFER_DATA/merge-digest.log")"; _rc=$?
+  _phase="$(printf '%s' "$_out" | tail -n 1 | jget 'd.phase || ""' 2>/dev/null || echo '')"
+  case "$_phase" in
+    merged)
+      log "$_WHO: #$RNUM landed by the merge helper after all (phase=merged)"; return 0 ;;
+    conflict_resolved_pending_reapproval)
+      log "$_WHO: #$RNUM conflict resolved ON $RBRANCH by the resolver — reopened for re-review (→ in_review); the review pass re-reads the resolved diff and it lands after approval"
+      return 0 ;;
+    *)
+      log "$_WHO: #$RNUM conflict resolver did not resolve (rc=$_rc, phase='${_phase:-?}') — left on $RBRANCH for a human: $(printf '%s' "$_out" | tail -n 1 | cut -c1-300)"
+      return 1 ;;
+  esac
 }

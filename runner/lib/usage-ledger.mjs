@@ -68,6 +68,9 @@ export const VALID_KINDS = new Set([
   // The post-delivery quality judge's model turn (lib/eval-judge.sh) — paid work
   // that must count toward the day-USD cap and the cost tiles like any other call.
   "eval-judge",
+  // The merge-conflict resolver agent (bin/merge-ticket.mjs) — spawned when a landing
+  // conflicts; paid work that counts toward the caps like any other call.
+  "merge-resolver",
 ]);
 
 // parseClaudeJson / extractResultText / the numeric extractors (numOrUnknown,

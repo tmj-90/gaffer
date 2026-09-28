@@ -15,7 +15,12 @@
 #      the second tick stays silent (skip file), loop.sh resets the skip file;
 #   C  GAFFER_MERGE_LANE=0 disables the lane (nothing merged, nothing logged);
 #   D  wiring: tick.sh sources lib/land.sh + lib/merge-lane.sh and runs the lane before
-#      the candidate scan; review.sh lands through the shared function.
+#      the candidate scan; review.sh lands through the shared function;
+#   E  a merge CONFLICT spawns the conflict resolver (bin/merge-ticket.mjs) once: the
+#      branch gets the resolution, the ticket returns to in_review, main is untouched,
+#      the spend is ledgered; re-approval lands it with both sides intact;
+#   F  a second conflict after a resolver pass is held for a human; the knob turns the
+#      resolver off.
 # Run: bash runner/test/merge-lane.test.sh
 # =====================================================================
 set -uo pipefail
@@ -48,6 +53,17 @@ set -uo pipefail
 CALLS="__CALLS__"
 n="$(ls -1 "$CALLS" 2>/dev/null | wc -l | tr -d ' ')"; n=$((n + 1)); D="$CALLS/$(printf '%03d' "$n")"; mkdir -p "$D"
 prompt=""; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done; printf '%s' "$prompt" > "$D/prompt"
+if printf '%s' "$prompt" | grep -q 'resolve-merge-conflict skill'; then
+  # Conflict RESOLVER turn (case E): merge main INTO the branch in this worktree, keep
+  # both sides' helpers, commit the merge on the branch, report a summary.
+  echo resolver > "$D/kind"
+  def="$(printf '%s' "$prompt" | sed -n 's/.*Merge the default branch "\([^"]*\)".*/\1/p' | head -1)"; def="${def:-main}"
+  if ! git -c user.email=s@s -c user.name=s merge --no-edit "$def" >/dev/null 2>&1; then
+    { git show ":2:src/a.js" 2>/dev/null; git show ":3:src/a.js" 2>/dev/null; } | awk '!seen[$0]++' > src/a.js.merged && mv src/a.js.merged src/a.js
+    git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "resolve: keep both helpers" >/dev/null 2>&1 || true
+  fi
+  printf '{"type":"result","subtype":"success","is_error":false,"result":"resolved: kept both helpers; tests pass.","total_cost_usd":0.03,"num_turns":2}\n'; exit 0
+fi
 if [ -e .git ]; then
   fn="helper${GAFFER_TICKET:-0}"; echo "$fn" > "$D/kind"
   grep -q "$fn" src/a.js || printf 'export function %s(){return 2;}\n' "$fn" >> src/a.js
@@ -119,6 +135,52 @@ AUTO_MERGE=0 run_tick >/dev/null; wg review approve "$C" --reviewer human1 >/dev
 GAFFER_MERGE_LANE=0 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
 [ "$(st "$C")" = "ready_for_merge" ] && ok "C: lane off → #$C stays ready_for_merge" || fail "C: status=$(st "$C")"
 grep -q "MERGE: #$C" "$LOGF" && fail "C: lane logged with the switch off" || ok "C: lane silent with the switch off"
+
+resolver_turns() { grep -l "resolve a merge conflict on the delivery branch" "$CALLS"/*/prompt 2>/dev/null | xargs -r grep -l "(ticket #$1)" 2>/dev/null | wc -l | tr -d ' '; }
+echo "== E. autonomous: a CONFLICT spawns the resolver once, the ticket returns to review, and lands after re-approval =="
+E="$(new_ticket "Conflicting helper" "deliver a helper that will conflict")"; wg ticket ready "$E" >/dev/null 2>&1
+AUTO_MERGE=0 run_tick >/dev/null
+[ "$(st "$E")" = "in_review" ] && ok "E: #$E delivered → in_review" || fail "E: status=$(st "$E")"
+BE="$(branch_of "$E")"
+# A sibling lands on main touching the SAME line region (append to src/a.js) → conflict.
+( cd "$R" && printf 'export function mainSide() { return 3; }\n' >> src/a.js && git -c user.email=t@t -c user.name=t commit -qam "feat: mainSide" )
+wg review approve "$E" --reviewer human1 >/dev/null 2>&1
+[ "$(st "$E")" = "ready_for_merge" ] && ok "E: human approve → ready_for_merge" || fail "E: after approve status=$(st "$E")"
+MAIN_E="$(git -C "$R" rev-parse main)"
+GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 GAFFER_MERGE_TIMEOUT_MS=60000 run_tick >/dev/null
+grep -q "MERGE: #$E conflict — spawning the conflict resolver" "$LOGF" && ok "E: the lane spawned the resolver on the conflict" || fail "E: no resolver spawn logged: $(grep "#$E" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
+[ "$(st "$E")" = "in_review" ] && ok "E: resolved ticket reopened for RE-REVIEW (in_review), not landed" || fail "E: status=$(st "$E") after the resolver"
+[ "$(git -C "$R" rev-parse main)" = "$MAIN_E" ] && ok "E: main untouched by the resolver (proposed on the branch only)" || fail "E: main moved during resolution"
+[ "$(git -C "$R" rev-list --merges --count "main..$BE")" -ge 1 ] && ok "E: the branch carries the resolver's merge commit" || fail "E: no merge commit on $BE"
+grep -qx "$E" "$GAFFER_DATA/.merge-conflict-resolved" && ok "E: #$E recorded in .merge-conflict-resolved (one resolver pass per ticket)" || fail "E: marker file lacks #$E"
+[ "$(resolver_turns "$E")" = "1" ] && ok "E: exactly one resolver turn spawned for #$E" || fail "E: resolver turns for #$E = $(resolver_turns "$E")"
+grep -q '"kind":"merge-resolver"' "$GAFFER_DATA/usage-ledger.jsonl" 2>/dev/null && ok "E: the resolver's spend is ledgered as kind=merge-resolver" || fail "E: no merge-resolver ledger row"
+# Re-approval of the resolved diff → the lane lands it cleanly on the next tick.
+wg review approve "$E" --reviewer human1 >/dev/null 2>&1
+rm -f "$GAFFER_DATA/.merge-held-tickets"
+GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
+[ "$(st "$E")" = "done" ] && ok "E: re-approved resolved branch lands → done" || fail "E: status=$(st "$E") after re-approval"
+_ME="$(git -C "$R" show main:src/a.js)"; [[ "$_ME" == *"helper$E"* ]] && [[ "$_ME" == *"mainSide"* ]] && ok "E: main carries BOTH sides after the landing" || fail "E: main lost a side: $(printf '%s' "$_ME" | tr '\n' '|')"
+
+echo "== F. a SECOND conflict for a ticket that already had its resolver pass is held for a human; GAFFER_CONFLICT_RESOLVER=0 never spawns =="
+F="$(new_ticket "Twice-conflicting helper" "deliver a helper")"; wg ticket ready "$F" >/dev/null 2>&1
+AUTO_MERGE=0 run_tick >/dev/null; BF="$(branch_of "$F")"
+( cd "$R" && printf 'export function mainSide2() { return 4; }\n' >> src/a.js && git -c user.email=t@t -c user.name=t commit -qam "feat: mainSide2" )
+wg review approve "$F" --reviewer human1 >/dev/null 2>&1
+echo "$F" >> "$GAFFER_DATA/.merge-conflict-resolved"   # pretend a resolver pass already happened
+rm -f "$GAFFER_DATA/.merge-held-tickets"
+GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
+[ "$(st "$F")" = "ready_for_merge" ] && ok "F: second conflict → held at ready_for_merge for a human" || fail "F: status=$(st "$F")"
+grep -q "MERGE: #$F conflicted AGAIN after a resolver pass" "$LOGF" && ok "F: the hold says why (no second resolver)" || fail "F: no 'conflicted AGAIN' line"
+grep -q "MERGE: #$F approved but merge hit a CONFLICT — left on $BF for a human" "$LOGF" && ok "F: the classic conflict hold line is still logged" || fail "F: no conflict hold line"
+[ "$(resolver_turns "$F")" = "0" ] && ok "F: no resolver turn for #$F" || fail "F: resolver turns for #$F = $(resolver_turns "$F")"
+G="$(new_ticket "Lane-off conflicting helper" "deliver a helper")"; wg ticket ready "$G" >/dev/null 2>&1
+AUTO_MERGE=0 run_tick >/dev/null
+( cd "$R" && printf 'export function mainSide3() { return 5; }\n' >> src/a.js && git -c user.email=t@t -c user.name=t commit -qam "feat: mainSide3" )
+wg review approve "$G" --reviewer human1 >/dev/null 2>&1; rm -f "$GAFFER_DATA/.merge-held-tickets"
+GAFFER_CONFLICT_RESOLVER=0 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
+[ "$(st "$G")" = "ready_for_merge" ] && grep -q "MERGE: #$G conflict — the resolver lane is off" "$LOGF" && ok "F: GAFFER_CONFLICT_RESOLVER=0 → held, resolver never spawned" || fail "F: lane-off status=$(st "$G")"
+[ "$(resolver_turns "$G")" = "0" ] && ok "F: lane off spawned no resolver for #$G" || fail "F: resolver turns for #$G = $(resolver_turns "$G")"
 
 echo "== D. wiring =="
 grep -q 'source "$HERE/lib/land.sh"' "$RUNNER_DIR/tick.sh" && grep -q 'source "$HERE/lib/merge-lane.sh"' "$RUNNER_DIR/tick.sh" && ok "D: tick.sh sources lib/land.sh + lib/merge-lane.sh" || fail "D: tick.sh does not source the lane libs"

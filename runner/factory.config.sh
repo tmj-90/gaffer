@@ -1788,6 +1788,13 @@ gaffer_ticket_is_trivial() {
 # so dependents unblock without the dashboard's Merge button. 0 = off (a ready_for_merge
 # ticket then waits for a human to merge — the pre-lane behaviour).
 : "${GAFFER_MERGE_LANE:=1}"
+# CONFLICT RESOLVER (lib/land.sh): when a landing hits a merge CONFLICT (the branch forked
+# before a sibling landed on the same files), spawn bin/merge-ticket.mjs's resolver agent
+# ONCE per ticket: it merges the default branch into the delivery branch in a throwaway
+# worktree, resolves preserving both sides, and reopens the ticket for re-review of the
+# resolved diff (never a silent landing). 0 = off (a conflict holds the ticket at
+# ready_for_merge for a human, and its dependents wait). Bounded by GAFFER_MERGE_TIMEOUT_MS.
+: "${GAFFER_CONFLICT_RESOLVER:=1}"
 gaffer_needs_security_review() {
   local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _paths _re
   GAFFER_SECURITY_REVIEW_REASON=""

@@ -98,6 +98,13 @@ import {
 } from "../lib/feature-digest.mjs";
 import { refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
 import { Worker } from "../lib/worker.mjs";
+import {
+  appendUsageRecord,
+  buildUsageRecord,
+  extractResultText,
+  parseClaudeJson,
+  unknownRecord,
+} from "../lib/usage-ledger.mjs";
 import { agentChildEnv } from "./product-owner-run.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -1119,11 +1126,14 @@ function main() {
     return;
   }
 
+  // USAGE LEDGER: ask for the JSON envelope so the resolver's spend is measured like
+  // every other agent turn (it used to be the one paid call the ledger never saw); the
+  // agent's text summary is taken from `.result` below.
   const argv = buildClaudeArgv({
     prompt: resolverPrompt,
     mcpConfig: mcpRuntime,
     flags: CONFIG.claudeFlags,
-  });
+  }).concat(["--output-format", "json"]);
   // Route through the ONE worker spawn seam (lib/worker.mjs): it applies the same
   // containment decision as the bash seam (OS-sandbox wrap under STRICT_MODE /
   // GAFFER_STRICT_REQUIRE, fail closed when the host cannot supply one) and the
@@ -1145,6 +1155,13 @@ function main() {
   if (res.error) {
     removeWorktree(repo.localPath, worktree);
     if (res.error.code === "ETIMEDOUT") {
+      appendUsageRecord(
+        unknownRecord({
+          ticket: resolved.number,
+          kind: "merge-resolver",
+          reason: "resolver claude call timed out",
+        }),
+      );
       fail(`resolver agent timed out after ${opts.timeoutMs}ms`);
       return;
     }
@@ -1176,7 +1193,21 @@ function main() {
     return;
   }
 
-  const summary = (res.stdout || "").trim();
+  // Ledger the turn (measured when the envelope parses; an honest "unknown" row
+  // otherwise) and reduce the envelope to the agent's text for the re-approval summary.
+  const resolverJson = parseClaudeJson(res.stdout || "");
+  appendUsageRecord(
+    resolverJson === null
+      ? unknownRecord({
+          ticket: resolved.number,
+          kind: "merge-resolver",
+          reason: "no parseable --output-format json on stdout",
+        })
+      : buildUsageRecord({ json: resolverJson, ticket: resolved.number, kind: "merge-resolver" }),
+  );
+  const summary = (
+    resolverJson === null ? res.stdout || "" : extractResultText(resolverJson)
+  ).trim();
   if (summary) log(summary);
 
   // The resolution lives on the branch (the resolver committed to it in the worktree).

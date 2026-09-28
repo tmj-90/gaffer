@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 114 |
+| Knobs with a runner default | 115 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 65 |
+| Env reads in code with no default and no UI entry | 66 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -205,6 +205,7 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_SECURITY_REVIEW` | `1` |  | runner | SECURITY SECOND OPINION — decides whether a ticket gets a SECOND, security-focused reviewer pass after the primary reviewer APPROVEs (lib/review.sh). |
 | `GAFFER_MERGE_LANE` | `1` |  | runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the |
+| `GAFFER_CONFLICT_RESOLVER` | `1` |  | runner | CONFLICT RESOLVER (lib/land.sh): when a landing hits a merge CONFLICT (the branch forked before a sibling landed on the same files), spawn bin/merge-ticket.mjs's resolver agent ONCE per ticket: it merges the default bran |
 | `CLARIFY_DRAFTS_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria. |
 | `IDLE_DRAFT_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run ALL enabled crew idle loops in one pass (drafts only). Superseded by the maintenance lane below, which runs one prioritised lane per idle tick and can promote its own drafts. |
 | `GAFFER_MAINTENANCE` | _(empty)_ |  | crew, dispatch, runner | env override for the idle maintenance lane: empty = crew.yaml decides, 0 = off, 1 = force |
@@ -311,6 +312,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_LITE_MAX_FILES` | `4` | `runner/factory.config.sh` |
 | `GAFFER_LITE_MAX_LINES` | `60` | `runner/factory.config.sh` |
 | `GAFFER_LITE_SENSITIVE_RE` | `(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
+| `GAFFER_MERGE_TIMEOUT_MS` | `600000` | `runner/lib/land.sh` |
 | `GAFFER_ONBOARD_SYNTH_MODEL` |  | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_PLAN_BUILD_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |

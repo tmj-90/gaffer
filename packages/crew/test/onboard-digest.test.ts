@@ -153,7 +153,7 @@ describe("deriveRepoUnderstanding (from the same scan, no second pass)", () => {
     // Digest prose survives as the offline fallback.
     expect(digest.source).toBe("onboard");
     expect(digest.repo).toBe("stub");
-    expect(digest.stack).toBe("typescript-react");
+    expect(digest.stack).toBe("typescript");
     expect(digest.overview).toContain("stub");
     expect(digest.structure).toContain("package.json");
     expect(digest.conventions).toContain("pnpm test");

@@ -184,6 +184,36 @@ gaffer_bootstrap_init() {
 #   node (pnpm/yarn/npm) → "<pm> test"   when package.json declares a "test" script
 #   python               → "pytest"      when pytest config / a tests/ dir is present
 #   go                   → "go test ./..."
+# The scaffold's STACK label and lint command, detected from what the agent actually
+# wrote (the crew scanner, fail-soft: no crew dist / no manifest → empty). A bootstrap
+# ticket carries no stack — the repo does not exist when the plan is made — so the
+# repo used to be registered with NONE: every later delivery on it mounted the
+# fail-open "every stack pack" skill set and the lint DoD gate never ran (seen live:
+# 10 tickets delivered on a repo whose stack was null and whose lint command was
+# unset although package.json had one).
+#   gaffer_bootstrap_detect_stack <dir>      → e.g. "typescript" (or empty)
+#   gaffer_bootstrap_detect_lint_cmd <dir>   → e.g. "npm run lint" (or empty)
+_gaffer_bootstrap_scan_field() {
+  local dir="$1" field="$2" _scan
+  [ -d "$dir" ] || return 0
+  _scan="${CREW_DIR:-${RUNNER_DIR:-$(dirname "${BASH_SOURCE[0]}")/..}/../packages/crew}/dist/scan/repoScan.js"
+  [ -f "$_scan" ] || return 0
+  node -e 'import(process.argv[1]).then(m => { const r = m.detectStack(process.argv[2]); const v = r && r[process.argv[3]]; process.stdout.write(typeof v === "string" ? v : ""); }).catch(() => {})' \
+    "$_scan" "$dir" "$field" 2>/dev/null || true
+}
+gaffer_bootstrap_detect_stack() { _gaffer_bootstrap_scan_field "$1" stack; }
+gaffer_bootstrap_detect_lint_cmd() {
+  local dir="$1" _v
+  _v="$(_gaffer_bootstrap_scan_field "$dir" lintCommand)"
+  if [ -z "$_v" ] && [ -f "$dir/package.json" ] \
+     && node -e "process.exit(((require('$dir/package.json').scripts)||{}).lint?0:1)" 2>/dev/null; then
+    if   [ -f "$dir/pnpm-lock.yaml" ]; then _v="pnpm run lint"
+    elif [ -f "$dir/yarn.lock" ]; then _v="yarn lint"
+    else _v="npm run lint"; fi
+  fi
+  printf '%s' "$_v"
+}
+
 gaffer_bootstrap_detect_test_cmd() {
   local dir="$1"
   [ -d "$dir" ] || return 0
@@ -295,6 +325,9 @@ gaffer_bootstrap_onboard() {
   # 1) Register in dispatch (the link target for the dependent feature tickets).
   if command -v wg >/dev/null 2>&1 || type wg >/dev/null 2>&1; then
     local add_args=(repo add -n "$name" --path "$dir" --branch "$branch")
+    # No stack on the ticket (a greenfield repo has none until it is scaffolded): read
+    # it off the scaffold the agent just wrote, so skills route and gates run for it.
+    [ -n "$stack" ] || stack="$(gaffer_bootstrap_detect_stack "$dir")"
     [ -n "$stack" ]  && add_args+=(--stack "$stack")
     [ -n "$remote" ] && add_args+=(--remote "$remote")
     # DELIVERABILITY: register a test command so the repo the factory JUST CREATED is
@@ -305,6 +338,8 @@ gaffer_bootstrap_onboard() {
     # left unset and relies on the DoD's no-gate handling).
     local test_cmd; test_cmd="$(gaffer_bootstrap_detect_test_cmd "$dir")"
     [ -n "$test_cmd" ] && add_args+=(--test "$test_cmd")
+    local lint_cmd; lint_cmd="$(gaffer_bootstrap_detect_lint_cmd "$dir")"
+    [ -n "$lint_cmd" ] && add_args+=(--lint "$lint_cmd")
     local add_out add_rc
     add_out="$(wg "${add_args[@]}" 2>&1)"; add_rc=$?
     if [ "$add_rc" -eq 0 ]; then

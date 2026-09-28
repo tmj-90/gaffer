@@ -47,7 +47,16 @@ function detectNode(dir: string): DetectedStack {
     // also matches the broad "typescript"/"react" packs, and "expo" routes the mobile pack.
     if ("expo" in deps) stack = "typescript-react-native-expo";
     else if ("react-native" in deps) stack = "typescript-react-native";
-    else if ("react" in deps || hasScript(scripts, "build")) stack = "typescript-react";
+    else if ("react" in deps) stack = "typescript-react";
+    // A build script is NOT React: a plain TypeScript service/CLI (tsc, tsconfig, or the
+    // typescript dependency) was labelled "typescript-react" and pulled the React design
+    // and frontend packs into every delivery on it (seen live on a bootstrapped CLI).
+    else if (
+      "typescript" in deps ||
+      fileExists(dir, "tsconfig.json") ||
+      /\btsc\b/.test(scripts.build ?? "")
+    )
+      stack = "typescript";
     else stack = "node";
   }
   const runner = packageManager === "npm" ? "npm run" : packageManager;

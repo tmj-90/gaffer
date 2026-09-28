@@ -70,7 +70,7 @@ describe("scanRepoForOnboarding (manifest detection, no git)", () => {
     writeFile(dir, "pnpm-lock.yaml", "");
 
     const scan = scanRepoForOnboarding(dir, new DryRunGitAdapter({ isRepo: false }));
-    expect(scan.stack).toBe("typescript-react");
+    expect(scan.stack).toBe("typescript");
     expect(scan.packageManager).toBe("pnpm");
     expect(scan.testCommand).toBe("pnpm test");
     expect(scan.lintCommand).toBe("pnpm lint");

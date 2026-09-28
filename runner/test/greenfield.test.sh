@@ -158,6 +158,17 @@ printf '# theirs\n' > "$FOREIGN/README.md"; echo "console.log(1)" > "$FOREIGN/in
 git -C "$FOREIGN" add -A >/dev/null 2>&1; git -C "$FOREIGN" -c user.email=t@t -c user.name=t commit -qm "initial" >/dev/null 2>&1
 if gaffer_bootstrap_target_ok "$FOREIGN" >/dev/null 2>&1; then fail "a foreign repo with real commits must be refused"; else ok "foreign repo (no factory baseline root) + real commit refused"; fi
 
+echo "== AC6e: onboard detects the scaffold's stack + lint command (a bootstrap ticket carries none) =="
+SC="$WORK/git/scaffolded"; mkdir -p "$SC/src"
+printf '{ "name": "scaffolded", "private": true, "scripts": { "test": "node --test", "lint": "eslint .", "build": "tsc -p tsconfig.json" } }\n' > "$SC/package.json"
+printf '{ "compilerOptions": { "strict": true } }\n' > "$SC/tsconfig.json"; printf 'export const a = 1;\n' > "$SC/src/index.ts"
+_st="$(gaffer_bootstrap_detect_stack "$SC")"
+case "$_st" in *typescript*|*node*) ok "detected stack from the scaffold ($_st)" ;; *) fail "stack not detected from a TypeScript scaffold (got '$_st')" ;; esac
+[ "$(gaffer_bootstrap_detect_lint_cmd "$SC")" = "npm run lint" ] && ok "detected the lint command (npm run lint)" || fail "lint command not detected (got '$(gaffer_bootstrap_detect_lint_cmd "$SC")')"
+[ -z "$(gaffer_bootstrap_detect_lint_cmd "$WORK/git/nowhere")" ] && ok "no dir → empty (fail-soft)" || fail "missing dir should yield empty"
+grep -q 'stack="$(gaffer_bootstrap_detect_stack "$dir")"' "$RUNNER_DIR/lib/greenfield.sh" && grep -q 'add_args+=(--lint "$lint_cmd")' "$RUNNER_DIR/lib/greenfield.sh" \
+  && ok "gaffer_bootstrap_onboard registers the detected stack + lint command" || fail "onboard does not use the detectors"
+
 echo "== AC6b: bootstrap default-branch capture is clean on an UNBORN repo (E2E regression) =="
 # REGRESSION: tick.sh captures B_DEFAULT_BRANCH BEFORE the agent's first commit — i.e.
 # on an UNBORN repo. There `git rev-parse --abbrev-ref HEAD` prints "HEAD" to stdout AND

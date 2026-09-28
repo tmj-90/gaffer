@@ -176,9 +176,42 @@ _newbr="$(git -C "$UNB" symbolic-ref --short HEAD 2>/dev/null || echo main)"
 [ "$(printf '%s' "$_newbr" | wc -l | tr -d ' ')" = "0" ] \
   && ok "captured branch has no embedded newline (the exact failure signature)" \
   || fail "captured branch must be single-line (got '$(printf %q "$_newbr")')"
-grep -q 'B_DEFAULT_BRANCH="\$(git -C "\$B_DIR" symbolic-ref --short HEAD' "$RUNNER_DIR/tick.sh" \
-  && ok "tick.sh captures B_DEFAULT_BRANCH via symbolic-ref (fix guarded in place)" \
-  || fail "tick.sh must use symbolic-ref for B_DEFAULT_BRANCH (regression guard)"
+grep -q 'B_DEFAULT_BRANCH="\$(gaffer_bootstrap_base_branch "\$B_DIR")"' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh captures B_DEFAULT_BRANCH via gaffer_bootstrap_base_branch (fix guarded in place)" \
+  || fail "tick.sh must capture B_DEFAULT_BRANCH via gaffer_bootstrap_base_branch (regression guard)"
+grep -q 'symbolic-ref --short HEAD' "$RUNNER_DIR/lib/greenfield.sh" \
+  && ok "gaffer_bootstrap_base_branch reads symbolic-ref (never the HEAD\\nmain garbage)" \
+  || fail "gaffer_bootstrap_base_branch must read symbolic-ref --short HEAD"
+
+echo "== AC6d: gaffer_bootstrap_base_branch is RESUME-safe (delivery branch is never the base) =="
+# LIVE FINDING: on a resume HEAD is the prior attempt's gaffer/ticket-N-… branch, so a
+# raw symbolic-ref made base == delivery branch and the "scaffold commit beyond the
+# baseline?" check compared HEAD with itself → a complete scaffold parked as "no
+# scaffold commit", twice. The base is the branch the baseline lives on: main.
+RB="$WORK/git/resume-base"
+gaffer_bootstrap_init "$RB" "resume-base" "seed" >/dev/null 2>&1
+[ "$(gaffer_bootstrap_base_branch "$RB")" = "main" ] \
+  && ok "fresh baseline (HEAD=main) → main" || fail "fresh baseline should resolve to main (got '$(gaffer_bootstrap_base_branch "$RB")')"
+git -C "$RB" checkout -q -B gaffer/ticket-7-scaffold-the-app >/dev/null 2>&1
+echo "x" > "$RB/index.js"; git -C "$RB" add index.js >/dev/null 2>&1
+git -C "$RB" -c user.email=t@t -c user.name=t commit -qm "deliver #7: scaffold" >/dev/null 2>&1
+[ "$(gaffer_bootstrap_base_branch "$RB")" = "main" ] \
+  && ok "resume (HEAD=gaffer/ticket-7-…, scaffold committed on it) → main, not the delivery branch" \
+  || fail "resume must resolve the base to main (got '$(gaffer_bootstrap_base_branch "$RB")')"
+[ "$(git -C "$RB" rev-parse HEAD)" != "$(git -C "$RB" rev-parse "$(gaffer_bootstrap_base_branch "$RB")")" ] \
+  && ok "with that base the scaffold check sees HEAD != base (the scaffold is NOT parked)" \
+  || fail "HEAD must differ from the resolved base on a resumed scaffold"
+# A repo whose baseline lives on a non-main branch (operator init.defaultBranch) still
+# resolves via the root commit when HEAD is a delivery branch.
+RT="$WORK/git/resume-trunk"; mkdir -p "$RT"; git -C "$RT" init -q -b trunk 2>/dev/null || git -C "$RT" init -q 2>/dev/null
+printf '# t\n' > "$RT/README.md"; git -C "$RT" add README.md >/dev/null 2>&1
+git -C "$RT" -c user.email=t@t -c user.name=t commit -qm "chore: initialise resume-trunk" >/dev/null 2>&1
+_trunk="$(git -C "$RT" symbolic-ref --short HEAD)"
+[ "$(gaffer_bootstrap_base_branch "$RT")" = "$_trunk" ] && ok "non-delivery HEAD ($_trunk) → itself" || fail "non-delivery HEAD should be returned as-is"
+git -C "$RT" checkout -q -B gaffer/ticket-8-x >/dev/null 2>&1
+[ "$(gaffer_bootstrap_base_branch "$RT")" = "$_trunk" ] \
+  && ok "delivery HEAD with no main/master → the non-delivery branch carrying the root commit ($_trunk)" \
+  || fail "should fall back to the branch carrying the root commit (got '$(gaffer_bootstrap_base_branch "$RT")')"
 
 echo "== AC7: bootstrap config keys present + commented =="
 grep -Eq '^: "\$\{GAFFER_BOOTSTRAP_ROOT:=' "$RUNNER_DIR/factory.config.sh" \

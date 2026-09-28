@@ -113,6 +113,34 @@ gaffer_bootstrap_target_ok() {
   echo "bootstrap: target dir already exists and is non-empty: $dir"; return 1
 }
 
+# The branch the factory BASELINE lives on — the onboard branch and the diff/review
+# base for a bootstrap. On a FRESH bootstrap HEAD is still `main` when tick.sh asks,
+# so the symbolic ref is the answer. On a RESUME (a prior attempt's scaffold kept in
+# place) HEAD is that attempt's `gaffer/ticket-N-…` delivery branch: reading the
+# symbolic ref there made the base branch == the delivery branch, so the "scaffold
+# commit beyond the baseline?" check compared HEAD with itself and parked a complete,
+# auto-committed scaffold as "no scaffold commit" — twice in one live run. A delivery
+# branch is never the base: fall back to main, then master, then any non-delivery
+# branch that carries the root commit, then main.
+#   gaffer_bootstrap_base_branch <dir>   → prints the branch name (never empty)
+gaffer_bootstrap_base_branch() {
+  local dir="$1" _head _b _root
+  _head="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+  case "$_head" in
+    gaffer/*) ;;                       # a delivery branch → resolve the real base below
+    *) printf '%s\n' "$_head"; return 0 ;;
+  esac
+  for _b in main master; do
+    if git -C "$dir" rev-parse --verify -q "refs/heads/$_b" >/dev/null 2>&1; then printf '%s\n' "$_b"; return 0; fi
+  done
+  _root="$(git -C "$dir" rev-list --max-parents=0 HEAD 2>/dev/null | tail -1)"
+  if [ -n "$_root" ]; then
+    _b="$(git -C "$dir" branch --format='%(refname:short)' --contains "$_root" 2>/dev/null | grep -v '^gaffer/' | head -1)"
+    [ -n "$_b" ] && { printf '%s\n' "$_b"; return 0; }
+  fi
+  printf 'main\n'
+}
+
 # Create the new repo dir, `git init` it, and seed ONE minimal baseline commit on
 # `main` (idempotent: a re-run on an already-baselined dir is a no-op). The baseline
 # is what lets a bootstrap DELIVER LIKE EVERY OTHER TICKET: with a non-empty `main`

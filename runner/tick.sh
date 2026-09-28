@@ -938,11 +938,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
 
     # Capture the repo's DEFAULT branch (`main`, where the baseline lives) from the
     # freshly-baselined repo — used as the onboard branch + the diff/review base.
-    # `symbolic-ref --short HEAD` returns a clean "main" (never the "HEAD\nmain" garbage
-    # `rev-parse --abbrev-ref … || echo main` yields on an unborn repo) — see the
-    # greenfield E2E regression test. Captured HERE, while HEAD is still `main`, BEFORE
-    # we branch off it below.
-    B_DEFAULT_BRANCH="$(git -C "$B_DIR" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+    # gaffer_bootstrap_base_branch reads `symbolic-ref --short HEAD` (a clean "main",
+    # never the "HEAD\nmain" garbage `rev-parse --abbrev-ref … || echo main` yields on an
+    # unborn repo — see the greenfield E2E regression test) — captured HERE, BEFORE we
+    # branch off below — and on a RESUME, where HEAD is already the prior attempt's
+    # gaffer/ticket-N-… branch, resolves the real base (main) instead of the delivery
+    # branch itself (which made the scaffold check below compare HEAD with HEAD and
+    # park a complete scaffold as "no scaffold commit").
+    B_DEFAULT_BRANCH="$(gaffer_bootstrap_base_branch "$B_DIR")"
     # DELIVER LIKE EVERY OTHER TICKET: create + check out the SAME `gaffer/ticket-N-<slug>`
     # branch shape a normal delivery uses (shared gaffer_ticket_slug), so the scaffold
     # lands on a branch the agent reviewer can diff against `main` and auto-approve+merge

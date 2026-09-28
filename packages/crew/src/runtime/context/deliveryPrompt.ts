@@ -246,6 +246,15 @@ smallest-change note (minimalism lens) describing the scaffold and evidence each
 via the record-evidence skill, then STOP. Do NOT submit for review, push, or open a
 PR — the runner runs the gates, records the delivery, and submits. Never self-approve.
 
+The install: run it ONCE, in the FOREGROUND, as \`<pm> install --ignore-scripts\` (the
+ONLY permitted form — an install without --ignore-scripts is blocked by the safety
+hook, and dependency lifecycle scripts never run here). Give it a long timeout and
+WAIT for it; never run it in the background and never end your turn while it runs —
+when your turn ends, background work is killed and nothing unverified survives. If it
+is slow, wait. If it fails, still COMMIT the scaffold and say so in the
+smallest-change note: a committed scaffold with a failed install is recoverable, an
+uncommitted one is not.
+
 Your working directory IS the new repo and the ONLY writable root: ${i.bootstrapDir}
 Do NOT write or read outside it. Do NOT create your own branch and do NOT switch
 branches — you are already on the delivery branch; just commit on it.`;

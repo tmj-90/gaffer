@@ -65,7 +65,7 @@ grep -q '_gaffer_flag_on "${GAFFER_MEMORY_AUTO_PROMOTE:-${MEMORY_AUTO_APPROVE:-0
   && ok "tick.sh: memory auto-promote flag normalised before it reaches the memory CLI" || fail "tick.sh promote flag not normalised"
 
 echo "== 4 (B20d): runner rejections carry --as, so they are not recorded as HUMAN decisions =="
-grep -q 'wg review reject "$RNUM" --reason "$_rreason" --to ready --as agent --reviewer "$AGENT/reviewer"' "$RUNNER_DIR/lib/review.sh" \
+grep -q 'wg review reject "$RNUM" --reason "$_rreason" --to ready --as agent --reviewer "$REVIEWER_AGENT"' "$RUNNER_DIR/lib/review.sh" \
   && ok "review.sh: the reviewer agent's CHANGES rework rejects --as agent (reviewer principal)" \
   || fail "review.sh rework reject lacks --as agent"
 grep -q 'wg review reject "$NUM" --to refining --reviewer factory-ci --as system' "$RUNNER_DIR/tick.sh" \

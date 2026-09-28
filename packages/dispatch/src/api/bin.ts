@@ -64,7 +64,9 @@ program
 
     const dbPath = resolveDbPath(opts.db);
     const port = resolvePort(opts.port);
-    const wg = Dispatch.open(dbPath);
+    const wg = Dispatch.open(dbPath, undefined, undefined, {
+      requireRegisteredAgentApprover: true,
+    });
     // RUN-ACTIVITY: reconcile orphaned runs left `running` by a previous API
     // process that died mid-run (its child's exit listener died with it). Any
     // such row whose pid is no longer alive is flipped to `unknown` so the

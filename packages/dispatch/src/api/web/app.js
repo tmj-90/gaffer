@@ -3300,10 +3300,10 @@ const TICKET_ACTION_KEYS = {
   blocked: ["wont_do"],
   // Review surface: approve takes the ticket to `ready_for_merge` (merging).
   in_review: ["approve", "rework", "wont_do"],
-  // BBT-001: independent testing lane. The tester agent owns the verdict
-  // (pass → ready_for_merge, fail → refining); a human has no board button here,
-  // mirroring the live/claimed states.
-  in_testing: [],
+  // BBT-001: independent testing lane. The tester agent owns the verdict (pass →
+  // ready_for_merge, fail → refining); a human can also record it from here when the
+  // lane is off, held (no verdict token) or the operator tested by hand.
+  in_testing: ["tester_pass", "tester_fail"],
   // Approved-and-merging: the merge runner is working. A human can mark it merged
   // (admin override) or send it back for rework — but NOT "mark ready".
   ready_for_merge: ["merge_now", "mark_merged", "rework"],
@@ -4049,6 +4049,58 @@ async function renderTicket(id) {
     // Merge an approved ticket whose branch has not landed (the runner held the merge
     // gate, lite mode, or a merge attempt hit a conflict). Fires the merge runner —
     // the same one the Approve path uses — instead of marking done without code.
+    tester_pass: () =>
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          title:
+            "Record a tester PASS for this in_testing ticket (→ ready_for_merge). Use when you verified the acceptance criteria yourself or the tester lane is held.",
+          onclick: () =>
+            guard(async () => {
+              const summary = window.prompt(
+                "Tester PASS — what was verified? (recorded as test evidence)",
+                "Verified by hand against the acceptance criteria",
+              );
+              if (summary == null || summary.trim() === "") {
+                toast("Tester verdict cancelled — a summary is required", {});
+                return;
+              }
+              await api("POST", `/tickets/${t.id}/tester`, {
+                verdict: "pass",
+                summary: summary.trim(),
+              });
+              toast("Tester PASS recorded — ready to merge", { ok: true });
+              router();
+            }),
+        },
+        "Record tester PASS",
+      ),
+    tester_fail: () =>
+      el(
+        "button",
+        {
+          class: "btn",
+          type: "button",
+          title:
+            "Record a tester FAIL for this in_testing ticket (→ refining; the failing observation becomes the rework feedback)",
+          onclick: () =>
+            openRejectDialog({
+              verb: "recording a tester FAIL",
+              onConfirm: (reason) =>
+                guard(async () => {
+                  await api("POST", `/tickets/${t.id}/tester`, {
+                    verdict: "fail",
+                    summary: reason,
+                  });
+                  toast("Tester FAIL recorded — sent back for rework", { ok: true });
+                  router();
+                }),
+            }),
+        },
+        "Record tester FAIL",
+      ),
     merge_now: () =>
       el(
         "button",

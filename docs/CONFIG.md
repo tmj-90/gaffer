@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 108 |
+| Knobs with a runner default | 109 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 64 |
@@ -118,6 +118,7 @@ computed from other knobs at runtime.
 | `DISPATCH_TESTER_CMD` | _derived_ (`node $RUNNER_DIR/bin/tester-run.mjs`) |  | dispatch, runner | BBT-001: the independent black-box tester runner. |
 | `GAFFER_AGENT_NAME` | `gaffer-factory` |  | runner | Factory identity + bookkeeping |
 | `GAFFER_AGENT_ID_FILE` | _derived_ (`$GAFFER_DATA/agent_id`) |  | runner |  |
+| `GAFFER_REVIEWER_ID_FILE` | _derived_ (`$GAFFER_DATA/agent_reviewer_id`) |  | runner | The runner's REVIEWER principal: a second, separately registered agent whose id the review pass presents on `review approve\|reject --as agent`. |
 | `GAFFER_LOG` | _derived_ (`$GAFFER_DATA/factory.log`) |  | runner |  |
 
 ### Self-operation ban

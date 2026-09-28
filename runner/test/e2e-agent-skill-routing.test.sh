@@ -202,6 +202,8 @@ if [ -z "$S1" ]; then fail "2: the security reviewer did not run for a risk=high
 fi
 [ "$(count_kind review)" = 1 ] && ok "2: exactly one primary review turn" || fail "2: primary review turns = $(count_kind review)"
 [ "$(st "$A1")" = "in_testing" ] && ok "2: approved → in_testing (GAFFER_TESTING lane, ticket testable)" || fail "2: #$A1 is '$(st "$A1")' after approval (expected in_testing)"
+# The approve must NOT start the merge while the tester's verdict is pending.
+if git -C "$A" log --oneline main 2>/dev/null | grep -q "helper$A1"; then fail "2: the delivery was merged to main before the tester's verdict"; else ok "2: nothing merged before the tester's verdict (main carries no helper$A1 commit)"; fi
 
 echo "== 3. TESTER: the test role with a CONTRACT-ONLY prompt =="
 ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true

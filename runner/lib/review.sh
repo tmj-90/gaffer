@@ -351,7 +351,7 @@ EOF
       case "$_SHIP_PLAN" in
         ship|approve_hold)
           # Approve gate EARNED + clean APPROVE verdict → cross the review gate. Approve as
-          # the runner's REVIEWER principal (--as agent --reviewer "$AGENT/reviewer"), NOT
+          # the runner's REVIEWER principal (--as agent --reviewer "$REVIEWER_AGENT", a
           # human and NOT the bare delivering agent id: this keeps the audit provenance honest,
           # satisfies the server's reviewer≠author rule (an agent actor whose id equals the
           # ticket's delivering claim agent is refused — the implementer and the reviewer are
@@ -361,8 +361,8 @@ EOF
           # passes via the DB policy with the floor off; an unearned ticket the server REFUSES.
           _AP_ERR=""
           if _AP_ERR="$( ( export DISPATCH_ALLOW_AGENT_APPROVE="${DISPATCH_ALLOW_AGENT_APPROVE:-0}"; \
-               wg review approve "$RNUM" --as agent --reviewer "$AGENT/reviewer" 2>&1 >/dev/null ) )"; then
-            log "AFK: runner (reviewer principal $AGENT/reviewer) approved #$RNUM on a clean verdict + earned approve grant (→ ready_for_merge)"
+               wg review approve "$RNUM" --as agent --reviewer "$REVIEWER_AGENT" 2>&1 >/dev/null ) )"; then
+            log "AFK: runner (reviewer principal $REVIEWER_AGENT) approved #$RNUM on a clean verdict + earned approve grant (→ ready_for_merge)"
             # LITE self-instrumentation: mark auto-approved-trivial tickets so the gate-skip
             # is measurable — if a lite-auto-approved ticket later needs rework/revert, the
             # marker attributes it to a mis-classified skip (the honest "did the gates earn
@@ -467,7 +467,7 @@ EOF
           # --as agent (the reviewer principal): this is the REVIEWER AGENT's verdict, not a
           # human's — recorded as human it counted toward the autonomy recommendations'
           # human-agreement rate, so runner rework inflated the case for more autonomy.
-          if wg review reject "$RNUM" --reason "$_rreason" --to ready --as agent --reviewer "$AGENT/reviewer" >/dev/null 2>&1; then
+          if wg review reject "$RNUM" --reason "$_rreason" --to ready --as agent --reviewer "$REVIEWER_AGENT" >/dev/null 2>&1; then
             log "AFK: #$RNUM → CHANGES; re-queued to ready for rework with reviewer feedback (retry-cap parks to blocked at the threshold)"
           else
             log "AFK: #$RNUM CHANGES but reject failed — left in_review"

@@ -34,6 +34,7 @@ import { writeEvent } from "../events/eventWriter.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
 import { TicketRepository } from "../repositories/ticketRepository.js";
+import type { AgentRepository } from "../repositories/agentRepository.js";
 import type { TransitionResult, TransitionService } from "./transitionService.js";
 import type { TicketService } from "./ticketService.js";
 import type { Clock } from "../util/clock.js";
@@ -108,6 +109,14 @@ export interface ReviewGateServiceDeps {
   readonly maxAttempts: number;
   /** Per-instance override for the GAFFER_TESTING toggle (undefined = read env). */
   readonly testingEnabledOverride?: boolean | undefined;
+  /** The agents table — lets the approve path verify an agent approver is REGISTERED. */
+  readonly agents?: AgentRepository | undefined;
+  /**
+   * When true, an `agent` actor may approve only if `agents.findById(actor.id)` exists:
+   * the reviewer-not-author rule then compares two registered principals rather than a
+   * free string. Production entry points turn this on; fixtures leave it off.
+   */
+  readonly requireRegisteredAgentApprover?: boolean | undefined;
   /**
    * Called after rejectReview parks a ticket (retry cap reached).
    * Best-effort — errors are swallowed so notifications never break callers.
@@ -152,6 +161,8 @@ export class ReviewGateService {
   private readonly ticketSvc: TicketService;
   private readonly maxAttempts: number;
   private readonly testingEnabledOverride: boolean | undefined;
+  private readonly agents: AgentRepository | undefined;
+  private readonly requireRegisteredAgentApprover: boolean;
   private readonly onTicketParked:
     ((ticket: import("../domain/types.js").Ticket, detail: string) => void) | undefined;
   private readonly approvalShaResolver: ApprovalShaResolver | undefined;
@@ -168,6 +179,8 @@ export class ReviewGateService {
     this.ticketSvc = deps.ticketSvc;
     this.maxAttempts = deps.maxAttempts;
     this.testingEnabledOverride = deps.testingEnabledOverride;
+    this.agents = deps.agents;
+    this.requireRegisteredAgentApprover = deps.requireRegisteredAgentApprover ?? false;
     this.onTicketParked = deps.onTicketParked;
     this.approvalShaResolver = deps.approvalShaResolver;
     this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
@@ -226,6 +239,19 @@ export class ReviewGateService {
     // reviewer) could self-approve. The runner's reviewer pass now presents a distinct
     // reviewer principal (`<agent>/reviewer`), so the autonomous path is unaffected.
     if (actor.type === "agent") {
+      // The approving agent must be a REGISTERED principal (production entry points): a
+      // bare string like "<agent>/reviewer" trivially differs from the author id and
+      // would otherwise pass the not-author rule below on string inequality alone.
+      if (
+        this.requireRegisteredAgentApprover &&
+        (actor.id === undefined || !this.agents || !this.agents.findById(actor.id))
+      ) {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          "An agent may approve only as a REGISTERED agent principal: the approving actor id is not a registered agent (register a distinct reviewer agent and approve as its id, or approve as a human).",
+          { actor_type: actor.type, actor_id: actor.id ?? null },
+        );
+      }
       const author = this.deliveringAgentId(ticket.id);
       if (author !== null && actor.id !== undefined && actor.id === author) {
         throw new DispatchError(

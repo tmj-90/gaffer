@@ -347,6 +347,7 @@ export class Dispatch {
    * process env.
    */
   private readonly testingEnabledOverride: boolean | undefined;
+  private readonly requireRegisteredAgentApprover: boolean;
 
   /**
    * H2 human-gate notifier — the opt-in seam that pings the operator when a
@@ -361,12 +362,25 @@ export class Dispatch {
     db: Db,
     readonly clock: Clock = systemClock,
     gitRunner?: GitRunner,
-    options: { maxAttempts?: number; testingEnabled?: boolean; notifier?: Notifier } = {},
+    options: {
+      maxAttempts?: number;
+      testingEnabled?: boolean;
+      notifier?: Notifier;
+      /**
+       * REVIEWER ≠ AUTHOR, strengthened: when true an `agent` actor may approve a review
+       * only if its id is a REGISTERED agent (a bare string such as "<agent>/reviewer" is
+       * refused), so the not-author rule compares two registered principals. Every
+       * production entry point (CLI, REST, MCP) opens with this on; the library default
+       * is off so in-memory fixtures can approve with literal actor ids.
+       */
+      requireRegisteredAgentApprover?: boolean;
+    } = {},
   ) {
     this.db = db;
     this.gitRunner = gitRunner;
     this.maxAttempts = options.maxAttempts ?? resolveMaxAttempts();
     this.testingEnabledOverride = options.testingEnabled;
+    this.requireRegisteredAgentApprover = options.requireRegisteredAgentApprover ?? false;
     this.notifier = options.notifier ?? buildNotifierFromEnv();
     this.tickets = new TicketRepository(db);
     this.acs = new AcRepository(db);
@@ -491,6 +505,10 @@ export class Dispatch {
       ticketSvc: this.ticketSvc,
       maxAttempts: this.maxAttempts,
       testingEnabledOverride: this.testingEnabledOverride,
+      // REVIEWER ≠ AUTHOR: the agents table, so an agent approver can be checked to be a
+      // registered principal (see requireRegisteredAgentApprover).
+      agents: this.agents,
+      requireRegisteredAgentApprover: this.requireRegisteredAgentApprover,
       onTicketParked: (ticket, detail) => {
         this.emitGate("ticket_parked", ticket, { status: "blocked", detail });
       },
@@ -544,7 +562,19 @@ export class Dispatch {
     path: string,
     clock: Clock = systemClock,
     gitRunner?: GitRunner,
-    options: { maxAttempts?: number; testingEnabled?: boolean; notifier?: Notifier } = {},
+    options: {
+      maxAttempts?: number;
+      testingEnabled?: boolean;
+      notifier?: Notifier;
+      /**
+       * REVIEWER ≠ AUTHOR, strengthened: when true an `agent` actor may approve a review
+       * only if its id is a REGISTERED agent (a bare string such as "<agent>/reviewer" is
+       * refused), so the not-author rule compares two registered principals. Every
+       * production entry point (CLI, REST, MCP) opens with this on; the library default
+       * is off so in-memory fixtures can approve with literal actor ids.
+       */
+      requireRegisteredAgentApprover?: boolean;
+    } = {},
   ): Dispatch {
     return new Dispatch(openDatabase(path), clock, gitRunner, options);
   }

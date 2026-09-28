@@ -127,7 +127,7 @@ structural barrier the whole design hangs on.
   recorded and its acceptance criteria reset.
 - The **reviewer is never the author**, even when agent approval is allowed: the
   server refuses an approval from the agent that delivered the ticket, and the
-  factory's own review pass approves as a distinct reviewer principal.
+  factory's own review pass approves as a distinct, registered reviewer agent (a bare reviewer string is refused).
 - The **event log is tamper-evident.** Every event is chained by a SHA-256 hash,
   so a row rewritten, deleted or re-ordered after the fact breaks every hash
   after it; `dispatch events verify`, `dispatch doctor` and the Health view's

@@ -362,6 +362,16 @@ if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
   fi
 fi
 AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
+# The REVIEWER principal (a distinct registered agent) — the review pass approves and
+# rejects as this id, never as the delivering agent and never as a bare string.
+if [ ! -s "$GAFFER_REVIEWER_ID_FILE" ]; then
+  if ! wg agent register -n "${GAFFER_AGENT_NAME}-reviewer" --max-risk high 2>/dev/null | jget 'd.agent.id' > "$GAFFER_REVIEWER_ID_FILE" 2>/dev/null \
+     || [ ! -s "$GAFFER_REVIEWER_ID_FILE" ]; then
+    rm -f "$GAFFER_REVIEWER_ID_FILE"; log "could not register the reviewer principal"; result error; exit 1
+  fi
+fi
+REVIEWER_AGENT="$(cat "$GAFFER_REVIEWER_ID_FILE")"
+export REVIEWER_AGENT
 
 # GRADUATED-AUTONOMY: per-repo `auto` policies only act inside the agent review pass;
 # under REVIEW_MODE=human they are inert. Say so once per run (factory.config.sh).

@@ -1363,6 +1363,36 @@ console.log("== refreshFileCards: changed file gets re-carded + watermark advanc
     calls.some((c) => c[0] === "card" && c[1] === "sync" && c.includes("--commit")),
   );
   assert(
+    "a refresh WITH model fields does not pass --keep-model (the new summary replaces the old)",
+    !calls.some((c) => c[0] === "card" && c[1] === "upsert" && c.includes("--keep-model")),
+  );
+  // B20: a FAILED model turn must not wipe the card's existing summary — the mechanical
+  // refresh carries the model half forward with --keep-model.
+  writeFileSync(logFile, "");
+  const rFail = refreshFileCards(repoDir, ["src/util.ts"], {
+    cfg,
+    env,
+    log: () => {},
+    repo: "test-repo",
+    canonical: "file://" + repoDir,
+    runTurn: () => {
+      throw new Error("model unavailable");
+    },
+  });
+  const failCalls = readFS(logFile, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+  assert("failed model turn still refreshes the mechanical half", rFail.refreshed === 1);
+  assert(
+    "failed model turn upserts with --keep-model (existing summary preserved, not nulled)",
+    failCalls.some(
+      (c) =>
+        c[0] === "card" && c[1] === "upsert" && c.includes("--keep-model") && !c.includes("--tldr"),
+    ),
+  );
+  assert(
     "non-source files in changedPaths are skipped",
     (() => {
       // .md and .json should not produce upsert calls — refreshed count stays 0

@@ -163,10 +163,20 @@ PLAN="$(gaffer_afk_ship_plan "$V" allow allow)"
   && ok "self-approval refused: the DELIVERING agent id cannot approve its own ticket (still in_review)" \
   || fail "#$NUM left in_review by a self-approval attempt (got '$(status_of "$NUM")')"
 
-# The runner crosses the review gate AS ITS REVIEWER PRINCIPAL under the approve floor — the
-# EXACT call lib/review.sh makes (--as agent --reviewer \$AGENT/reviewer, floor exported).
+# A reviewer that is NOT a registered agent is refused too: the reviewer-not-author rule
+# compares registered principals, never a free string like "<agent>/reviewer".
 ( export DISPATCH_ALLOW_AGENT_APPROVE=1
   wg review approve "$NUM" --as agent --reviewer "$AGENT/reviewer" >/dev/null 2>&1 )
+[ "$(status_of "$NUM")" = "in_review" ] \
+  && ok "unregistered reviewer string refused: an agent approver must be a registered agent (still in_review)" \
+  || fail "#$NUM approved by an unregistered reviewer string (got '$(status_of "$NUM")')"
+
+# The runner crosses the review gate AS ITS REVIEWER PRINCIPAL — a second REGISTERED agent —
+# under the approve floor: the EXACT call lib/review.sh makes (--as agent --reviewer
+# "$REVIEWER_AGENT", floor exported).
+REVIEWER_AGENT="$(wg agent register -n "afk-test-reviewer" --max-risk high 2>/dev/null | jget 'd.agent.id')"
+( export DISPATCH_ALLOW_AGENT_APPROVE=1
+  wg review approve "$NUM" --as agent --reviewer "$REVIEWER_AGENT" >/dev/null 2>&1 )
 [ "$(status_of "$NUM")" = "ready_for_merge" ] \
   && ok "runner (reviewer principal) approved under the floor → ready_for_merge (autonomous, no human)" \
   || fail "#$NUM not ready_for_merge after agent-approve (got '$(status_of "$NUM")')"

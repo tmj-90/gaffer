@@ -2088,7 +2088,11 @@ function runCardBatchTurn(prompt, count, env = process.env) {
 }
 
 /** Run `memory card upsert` for one file. Returns the spawnSync result. */
-function upsertCardCli(cfg, { canonical, repo, repoRoot, rel, head, fields }, env = process.env) {
+function upsertCardCli(
+  cfg,
+  { canonical, repo, repoRoot, rel, head, fields, keepModel = false },
+  env = process.env,
+) {
   const args = [
     "card",
     "upsert",
@@ -2105,6 +2109,10 @@ function upsertCardCli(cfg, { canonical, repo, repoRoot, rel, head, fields }, en
     "--json",
   ];
   if (head) args.push("--synced-commit", head);
+  // A MECHANICAL-ONLY refresh (no model fields: the model turn failed or was not run)
+  // carries the card's existing summary forward. Without --keep-model the memory CLI
+  // nulls the model half, so one failed turn on the merge path wiped a good card.
+  if (keepModel && !fields) args.push("--keep-model");
   if (fields) {
     if (fields.tldr) args.push("--tldr", fields.tldr);
     if (fields.rolePrimary) args.push("--role-primary", fields.rolePrimary);
@@ -2686,7 +2694,11 @@ export function refreshFileCards(
     } catch (err) {
       log(`card model turn failed for ${rel} (${err?.message ?? err}) — mechanical-only`);
     }
-    const res = upsertCardCli(cfg, { canonical, repo, repoRoot: repoPath, rel, head, fields }, env);
+    const res = upsertCardCli(
+      cfg,
+      { canonical, repo, repoRoot: repoPath, rel, head, fields, keepModel: !fields },
+      env,
+    );
     if (res.error || (res.status ?? 0) !== 0) {
       result.failed += 1;
       log(

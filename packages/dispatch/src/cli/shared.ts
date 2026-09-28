@@ -34,7 +34,9 @@ export function testerActor(as: string): Actor {
 }
 
 export function open(opts: { db?: string }): Dispatch {
-  return Dispatch.open(resolveDbPath(opts.db));
+  return Dispatch.open(resolveDbPath(opts.db), undefined, undefined, {
+    requireRegisteredAgentApprover: true,
+  });
 }
 
 export function printJson(value: unknown): void {

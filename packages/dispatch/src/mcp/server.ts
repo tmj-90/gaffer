@@ -286,7 +286,7 @@ export async function runStdioServer(): Promise<void> {
   // (which MCP clients surface on launch failure) and exit cleanly instead.
   let wg: Dispatch;
   try {
-    wg = Dispatch.open(dbPath, systemClock);
+    wg = Dispatch.open(dbPath, systemClock, undefined, { requireRegisteredAgentApprover: true });
   } catch (err) {
     if (err instanceof DatabaseTooNewError || err instanceof DatabaseOpenError) {
       process.stderr.write(`dispatch-mcp: ${err.message}\n`);

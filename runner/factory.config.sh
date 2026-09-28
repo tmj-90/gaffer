@@ -1115,6 +1115,11 @@ gaffer_agent_env() {
 # Factory identity + bookkeeping
 : "${GAFFER_AGENT_NAME:=gaffer-factory}"
 : "${GAFFER_AGENT_ID_FILE:=$GAFFER_DATA/agent_id}"
+# The runner's REVIEWER principal: a second, separately registered agent whose id the
+# review pass presents on `review approve|reject --as agent`. Registered once (like the
+# delivery agent) so the reviewer-not-author rule compares two REGISTERED actors, not a
+# free string; dispatch refuses an agent approver that is not a registered agent.
+: "${GAFFER_REVIEWER_ID_FILE:=$GAFFER_DATA/agent_reviewer_id}"
 : "${GAFFER_LOG:=$GAFFER_DATA/factory.log}"
 
 # --- Self-operation ban (refuse to deliver to Gaffer's own source) ------------

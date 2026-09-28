@@ -54,6 +54,10 @@ function fail(label) {
 function assert(label, cond) {
   cond ? ok(label) : fail(label);
 }
+function ok2(label, cond) {
+  if (cond) ok(label);
+  else fail(label);
+}
 function eq(label, got, want) {
   if (JSON.stringify(got) === JSON.stringify(want)) ok(label);
   else fail(`${label} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
@@ -1090,6 +1094,72 @@ console.log(
   )
     ok("empty context stays greenfield (bootstrap ticket present)");
   else fail(`empty context changed greenfield (out=${JSON.stringify(green.out)})`);
+}
+
+console.log("== AC12: greenfield bootstrap ACs may not assert on git history ==");
+{
+  // The factory creates the new repo's root commit (a README baseline) BEFORE the
+  // bootstrap agent runs, so "in the initial commit" can never hold. The prompt says
+  // so in greenfield mode only, and validateResult rejects such a bootstrap AC.
+  const green = buildPrompt({ brief: "a bookmark manager", forcePlan: true });
+  ok2(
+    "greenfield prompt explains the factory baseline commit",
+    green.includes("NEW-REPO (GREENFIELD) MODE") && green.includes("NEVER git history"),
+  );
+  const brown = buildPrompt({ brief: "add dark mode", repo: "acme-web", forcePlan: true });
+  ok2(
+    "brownfield prompt carries no greenfield baseline note",
+    !brown.includes("NEW-REPO (GREENFIELD) MODE"),
+  );
+  const mk = (ac) => ({
+    phase: "plan",
+    plan: {
+      epic: { name: "E" },
+      tickets: [
+        { title: "Bootstrap", acceptanceCriteria: [ac], bootstrap: true, dependsOn: [] },
+        { title: "Core", acceptanceCriteria: ["`bm add` stores a bookmark"], dependsOn: [0] },
+      ],
+    },
+  });
+  const bad = validateResult(mk("package.json and tsconfig.json are in the initial commit"), 20);
+  eq("bootstrap AC pinned to the initial commit → error", bad.phase, "error");
+  ok2("the error names the offending criterion", /git history/.test(bad.error ?? ""));
+  eq(
+    "bootstrap AC about the root commit → error",
+    validateResult(mk("The root commit contains the scaffold"), 20).phase,
+    "error",
+  );
+  eq(
+    "bootstrap AC describing the resulting files → plan",
+    validateResult(
+      mk(
+        "The repo contains package.json, tsconfig.json, an eslint config and .gitignore; `npm test` passes",
+      ),
+      20,
+    ).phase,
+    "plan",
+  );
+  // A criterion that merely mentions committing on the branch is fine.
+  eq(
+    "'committed on the delivery branch' is not a history assertion",
+    validateResult(mk("The scaffold is committed on the delivery branch"), 20).phase,
+    "plan",
+  );
+  // Brownfield plans have no bootstrap ticket, so the rule cannot fire there.
+  const brownPlan = {
+    phase: "plan",
+    plan: {
+      epic: { name: "E" },
+      tickets: [
+        { title: "Survey", acceptanceCriteria: ["the first commit is reviewed"], dependsOn: [] },
+      ],
+    },
+  };
+  eq(
+    "brownfield non-bootstrap ticket unaffected",
+    validateResult(brownPlan, 20, "acme-web").phase,
+    "plan",
+  );
 }
 
 if (failures.length === 0) {

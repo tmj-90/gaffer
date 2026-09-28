@@ -110,6 +110,21 @@ OUT="$(gaffer_ensure_node_modules "$HAVE")"
 [ -e "$HAVE/node_modules/.marker" ] && ok "existing node_modules untouched" ||
   fail "existing node_modules untouched"
 
+# --- Case 4b: an EMPTY node_modules is NOT "present" → primes again -----------
+# An agent's `npm ci` through a worktree's node_modules symlink empties the primary's
+# install; `-e` alone called that "present" and nothing re-primed (seen live).
+echo "== case 4b: EMPTY node_modules dir → re-primes (not treated as present) =="
+EMPTY="$WORK/empty"
+mkdir -p "$EMPTY/node_modules"
+printf '{"name":"empty","version":"1.0.0","private":true,"dependencies":{"localdep":"file:../localdep"}}\n' \
+  >"$EMPTY/package.json"
+printf '{"name":"empty","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{}}\n' \
+  >"$EMPTY/package-lock.json"
+OUT="$(gaffer_ensure_node_modules "$EMPTY")"
+[ "$OUT" = "npm" ] && ok "echoes pm (install ran for the empty dir)" || fail "echoes pm for the empty dir (got '$OUT')"
+[ -e "$EMPTY/node_modules/localdep" ] && ok "empty node_modules re-primed (localdep installed)" ||
+  fail "empty node_modules re-primed"
+
 # --- Case 5: opt-out via GAFFER_GREENFIELD_INSTALL=0 -------------------------
 echo "== case 5: GAFFER_GREENFIELD_INSTALL=0 disables priming =="
 OFF="$WORK/off"

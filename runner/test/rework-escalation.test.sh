@@ -140,6 +140,26 @@ grep -q 'gaffer_ticket_rework_spend "\$NUM"' "$TICK" \
 grep -q '_cost_exhausted' "$TICK" \
   && ok "C a hit cost ceiling parks (even with attempts remaining)" \
   || fail "C tick.sh missing the cost-ceiling park branch"
+# FIX-BRANCH (park path): _recover_or_park raises branch retention BEFORE anything
+# else, so the EXIT trap after `result error; exit 0` on the park path tears down the
+# worktree only. Without it the trap `drop-branch`ed the branch the log called PRESERVED.
+RP_SRC="$(extract_fn "$TICK" "_recover_or_park" "  }")"
+[ -n "$RP_SRC" ] && ok "C extracted _recover_or_park from tick.sh (real source)" \
+  || fail "C could not extract _recover_or_park"
+printf '%s\n' "$RP_SRC" | grep -q '^ *GAFFER_KEEP_DELIVERY_BRANCH=1' \
+  && ok "C _recover_or_park raises GAFFER_KEEP_DELIVERY_BRANCH=1 (park/retry never drop-branch via the trap)" \
+  || fail "C _recover_or_park must raise GAFFER_KEEP_DELIVERY_BRANCH=1"
+# The retention line must come BEFORE the first cleanup/release call in the function.
+_keep_ln="$(printf '%s\n' "$RP_SRC" | grep -n '^ *GAFFER_KEEP_DELIVERY_BRANCH=1' | head -1 | cut -d: -f1)"
+_first_cleanup_ln="$(printf '%s\n' "$RP_SRC" | grep -n 'gaffer_cleanup_worktrees\|gaffer_release_delivery' | head -1 | cut -d: -f1)"
+[ -n "$_keep_ln" ] && [ -n "$_first_cleanup_ln" ] && [ "$_keep_ln" -lt "$_first_cleanup_ln" ] \
+  && ok "C retention is raised before the first teardown/release in _recover_or_park" \
+  || fail "C retention must precede teardown/release in _recover_or_park (keep=$_keep_ln cleanup=$_first_cleanup_ln)"
+# AGENT-SIDE PARK: a ticket the agent itself moved to `blocked` (a decision it opened)
+# ends the loop — no further paid attempt, branch preserved, ticket left where it is.
+printf '%s\n' "$RP_SRC" | grep -q '_cur_status" = "blocked"' \
+  && ok "C _recover_or_park stops the loop when the agent already parked the ticket to blocked" \
+  || fail "C _recover_or_park must detect an agent-side park (status blocked)"
 # GAFFER_MAX_DELIVERY_ATTEMPTS default is raised 2 → 3.
 grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS:-3' "$TICK" \
   && ok "C the attempt cap default is raised to 3 (room for the ladder)" \

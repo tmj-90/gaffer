@@ -426,6 +426,28 @@ console.log("== AC12: no verdict token → HELD (exit 2), nothing recorded ==");
 rmSync(WORKDIR, { recursive: true, force: true });
 
 console.log("");
+console.log("== prompt: the tester never asserts on git history ==");
+{
+  // The root commit is the factory's baseline; a criterion phrased as "in the initial
+  // commit" is demonstrated by the files present, never by inspecting commits (a live
+  // tester ran `git rev-list --max-parents=0` and encoded an unsatisfiable check).
+  const { buildTesterPrompt } = await import(HELPER);
+  const p = buildTesterPrompt({
+    context: {
+      number: 7,
+      title: "Bootstrap",
+      acceptanceCriteria: [{ text: "files in the initial commit" }],
+      testContract: {},
+      mode: "black-box",
+    },
+    worktree: "/tmp/wt",
+    repoName: "r",
+  });
+  if (/Do not run git at all/.test(p) && /FILES PRESENT/.test(p))
+    ok("prompt forbids git and verifies history-phrased ACs by the files present");
+  else fail("prompt should forbid git and redirect history-phrased ACs to the checkout's files");
+}
+
 if (failures.length === 0) {
   console.log(`tester-run: all ${passed} checks passed`);
   process.exit(0);

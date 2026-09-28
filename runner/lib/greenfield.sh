@@ -253,7 +253,15 @@ gaffer_ensure_node_modules() {
   local dir="$1"
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   [ -f "$dir/package.json" ] || return 0
-  [ -e "$dir/node_modules" ] && return 0 # already present — nothing to do
+  # "Present" means NON-EMPTY. An agent's `npm ci` in a delivery worktree runs THROUGH
+  # the worktree's node_modules symlink: npm removes the contents (emptying the primary
+  # repo's install) and re-installs into the worktree, which teardown then deletes. The
+  # primary is left with an EMPTY node_modules that `-e` called "present", so nothing
+  # re-primed and every later gate died "cannot find package" (seen live: one paid
+  # rework attempt lost). An empty dir must prime again.
+  if [ -e "$dir/node_modules" ] && [ -n "$(ls -A "$dir/node_modules" 2>/dev/null)" ]; then
+    return 0 # already present — nothing to do
+  fi
   # Optional escape hatch for operators who manage deps themselves.
   [ "${GAFFER_GREENFIELD_INSTALL:-1}" = "0" ] && return 0
 
@@ -295,7 +303,7 @@ gaffer_ensure_node_modules() {
   # the install was ATTEMPTED but failed: surface the captured reason on stderr and
   # echo a `FAILED:<pm>` sentinel so the caller logs an accurate, ticket-scoped warning
   # (vs. an early no-op, which echoes nothing). Still non-fatal — the test gate decides.
-  if [ -e "$dir/node_modules" ]; then
+  if [ -e "$dir/node_modules" ] && [ -n "$(ls -A "$dir/node_modules" 2>/dev/null)" ]; then
     echo "$pm"
   else
     printf 'gaffer: greenfield: %s install did not prime deps in %s (non-fatal; the test gate will surface it):\n' \

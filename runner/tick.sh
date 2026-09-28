@@ -430,7 +430,18 @@ gaffer_release_delivery() {
     fi
     [ "$_try" -lt 3 ] && sleep "$_try"
   done
-  log "WARNING — $_fail #$NUM → $to ($reason); needs a human — 3 attempts failed, last error: $(printf '%s' "$_out" | tail -n 3 | tr '\n' ' ' | cut -c1-300)"
+  # DIAGNOSABLE: a release that fails because the claim is already gone is usually the
+  # AGENT having moved the ticket itself (it parked to `blocked` on a decision it opened,
+  # which drops the claim). Say so — "needs a human — 3 attempts failed" for a ticket that
+  # is already correctly parked and visible sent an operator chasing a phantom.
+  local _now_status
+  _now_status="$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
+  case "$_now_status" in
+    claimed|in_progress|"")
+      log "WARNING — $_fail #$NUM → $to ($reason); needs a human — 3 attempts failed, last error: $(printf '%s' "$_out" | tail -n 3 | tr '\n' ' ' | cut -c1-300)" ;;
+    *)
+      log "NOTE — $_fail #$NUM → $to: the ticket is already '$_now_status' (moved during the attempt — typically the agent parked it on a decision it opened); nothing further to release. Last error: $(printf '%s' "$_out" | tail -n 1 | cut -c1-200)" ;;
+  esac
   # The claim is now resolved by the normal flow (a release we tried and already
   # logged). Mark it so the EXIT crash trap does NOT re-attempt the release with
   # the now-void token and page a spurious "needs a human" (N3).
@@ -1998,6 +2009,29 @@ EOF
     # caller captured one, else the human summary. This is the crux of (b) — the agent
     # sees the actual failing test, not just "tests@repo failed".
     local real="${detail:-$feedback}"
+    # FIX-BRANCH (rework + park): from here on the branch carries ≥1 commit — it is
+    # salvageable work whatever happens next (a retry, the park, a kill mid-rework).
+    # Raise retention NOW so the EXIT trap tears down only the worktree. The park path
+    # used to `exit` with KEEP=0 (retention is otherwise raised just before submit,
+    # AFTER the gates), and the trap `drop-branch`ed the very branch the log had just
+    # called PRESERVED — a live run lost a five-commit bootstrap branch that way.
+    GAFFER_KEEP_DELIVERY_BRANCH=1
+    # AGENT-SIDE PARK: the agent may itself have moved the ticket to `blocked` during
+    # this attempt (a human_required decision it opened through the dispatch MCP). Its
+    # claim is gone with that transition, so another attempt burns a paid agent turn on
+    # a ticket that already waits on a human, and the runner's own release then fails
+    # CLAIM_INVALID. End the loop instead: keep the branch, drop the worktree, leave the
+    # ticket where the agent parked it, and skip it for the rest of this run.
+    local _cur_status
+    _cur_status="$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
+    if [ "$_cur_status" = "blocked" ]; then
+      GAFFER_CLAIM_RESOLVED=1
+      gaffer_cleanup_worktrees
+      gaffer_skip_ticket "$NUM"
+      log "RECOVER: #$NUM is already 'blocked' (the agent parked it on a decision during attempt $_DELIV_ATTEMPT) — ending the rework loop without another attempt; branch $WORK_BRANCH PRESERVED, worktree removed"
+      _DELIV_OUTCOME="parked"
+      return 0
+    fi
     # Accumulate the full trail so the FINAL (stronger-model) attempt sees every prior
     # failure, not just the latest — bounded so a chatty run can't unbound the prompt.
     _REWORK_HISTORY="${_REWORK_HISTORY}

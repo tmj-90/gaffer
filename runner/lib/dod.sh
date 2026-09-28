@@ -95,7 +95,13 @@ gaffer_dod_install_deps() {
   local dir="$1"
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   [ -f "$dir/package.json" ] || return 0        # non-node repo → skip
-  [ -e "$dir/node_modules" ] && return 0         # deps already present → no-op
+  # Deps "present" = node_modules exists AND is non-empty (a dir, or a symlink to a
+  # non-empty shared install). An EMPTY node_modules — the primary's install wiped by
+  # an agent's `npm ci` through the worktree symlink — must install, or the gate fails
+  # "cannot find package" for a reason that has nothing to do with the code.
+  if [ -e "$dir/node_modules" ] && [ -n "$(ls -A "$dir/node_modules/" 2>/dev/null)" ]; then
+    return 0                                     # deps already present → no-op
+  fi
 
   local pm=""
   if [ -f "$dir/pnpm-lock.yaml" ]; then

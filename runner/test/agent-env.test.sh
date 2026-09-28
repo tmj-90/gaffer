@@ -51,6 +51,12 @@ gaffer_link_node_modules "$REPO" "$LWT" && ok "idempotent second call returns 0"
 PY="$WORK/py"; mkdir -p "$PY"; PWT="$WORK/pwt"; mkdir -p "$PWT"
 gaffer_link_node_modules "$PY" "$PWT"; [ -z "$(ls -A "$PWT")" ] && ok "non-JS repo: nothing linked" || fail "non-JS repo got links"
 gaffer_link_node_modules "" "$PWT" && ok "empty args are a no-op (rc 0)" || fail "empty args failed"
+# An EMPTY primary node_modules (wiped by an agent's `npm ci` through an earlier
+# worktree's link) is NOT linked — a link would make the DoD pre-gate installer see
+# "deps present" and skip its per-worktree install (seen live).
+ENM="$WORK/enm"; mkdir -p "$ENM/node_modules"; EWT="$WORK/ewt"; mkdir -p "$EWT"
+gaffer_link_node_modules "$ENM" "$EWT"
+[ ! -e "$EWT/node_modules" ] && ok "EMPTY primary node_modules is not linked into the worktree" || fail "empty node_modules was linked"
 
 echo "== 6: gaffer_install_agent_dir — mount + verified settings + trust + brief, fail closed =="
 CLAUDE_SETTINGS="$RUNNER_DIR/claude/settings.json"

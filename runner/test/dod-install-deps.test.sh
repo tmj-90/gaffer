@@ -133,6 +133,28 @@ OUT="$(gaffer_dod_install_deps "$SYM")"
 [ -L "$SYM/node_modules" ] && ok "node_modules symlink left intact" ||
   fail "node_modules symlink left intact"
 
+# An EMPTY node_modules (the primary's install wiped by an agent's `npm ci` through an
+# earlier worktree's symlink) is NOT "present": the installer must run, or the gate
+# fails "cannot find package" for a reason unrelated to the code (seen live).
+echo "== case 4b: EMPTY node_modules dir → installs (not treated as present) =="
+EMPTYNM="$WORK/emptynm"
+mkdir -p "$EMPTYNM/node_modules"
+printf '{"name":"emptynm","version":"1.0.0","private":true,"dependencies":{"localdep":"file:../localdep"}}\n' >"$EMPTYNM/package.json"
+printf '{"name":"emptynm","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{}}\n' >"$EMPTYNM/package-lock.json"
+OUT="$(gaffer_dod_install_deps "$EMPTYNM")"
+[ "$OUT" = "npm" ] && ok "echoes pm (install ran for the empty dir)" || fail "echoes pm for the empty dir (got '$OUT')"
+[ -e "$EMPTYNM/node_modules/localdep" ] && ok "empty node_modules installed into (localdep present)" ||
+  fail "empty node_modules installed into"
+# A symlink to an EMPTY shared install is equally not "present".
+SYMEMPTY="$WORK/symempty"
+mkdir -p "$SYMEMPTY" "$WORK/shared_empty"
+printf '{"name":"symempty","version":"1.0.0"}\n' >"$SYMEMPTY/package.json"
+printf '{"lockfileVersion":3}\n' >"$SYMEMPTY/package-lock.json"
+ln -s "$WORK/shared_empty" "$SYMEMPTY/node_modules"
+OUT="$(gaffer_dod_install_deps "$SYMEMPTY" 2>/dev/null)"
+[ -n "$OUT" ] && ok "a symlink to an EMPTY install triggers the installer (got '$OUT')" ||
+  fail "a symlink to an empty install should not count as present"
+
 # --- Case 5: opt-out knobs make the pre-gate step inert ----------------------
 echo "== case 5: opt-out knobs (GAFFER_DOD_INSTALL / GAFFER_GREENFIELD_INSTALL) =="
 if gaffer_dod_install_enabled; then

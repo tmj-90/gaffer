@@ -361,6 +361,11 @@ export function normalizeAc(a, clauseIds = null) {
   return text ? text : null;
 }
 
+// An acceptance criterion phrased in terms of commit structure/history. Matched
+// case-insensitively against each GREENFIELD bootstrap AC (see validateResult).
+export const GIT_HISTORY_AC_RE =
+  /\b(initial|first|root|single|one)\s+commit\b|\bcommit\s+history\b|\bgit\s+log\b|\brev-list\b/i;
+
 export function validateResult(
   obj,
   maxTickets,
@@ -427,6 +432,20 @@ export function validateResult(
         };
       }
       if (bootstrap) bootstrapCount += 1;
+      // GREENFIELD bootstrap ACs must not assert on git history: the factory owns the
+      // root commit (its README baseline), so "in the initial commit" can never hold.
+      // The prompt states this; a plan that ignores it is rejected here rather than
+      // paid for again at delivery (three attempts + a human decision, seen live).
+      if (bootstrap && !brownfield) {
+        const bad = acs.find((a) => GIT_HISTORY_AC_RE.test(typeof a === "string" ? a : a.text));
+        if (bad) {
+          const text = typeof bad === "string" ? bad : bad.text;
+          return {
+            phase: "error",
+            error: `bootstrap ticket ${i} ("${title}") acceptance criterion asserts on git history ("${text.slice(0, 80)}") — the factory owns the root commit (a README baseline); describe the resulting files/behaviour instead`,
+          };
+        }
+      }
       // dependsOn: integer indexes pointing at EARLIER tickets only (no forward
       // refs, no cycles — a plan is a DAG ordered by index).
       const dependsOn = Array.isArray(t.dependsOn)
@@ -651,6 +670,27 @@ export function buildPrompt(req) {
         "    touch — NOT stack/platform (those are fixed by the existing repo).",
       ].join("\n")
     : "";
+  // GREENFIELD: the factory itself creates the new repo BEFORE the bootstrap agent
+  // runs — `git init` + ONE baseline commit ("chore: initialise <repo>", README.md
+  // only) on main — and the scaffold lands on a delivery branch on top of it. An AC
+  // that pins the scaffold to "the initial commit" is therefore unsatisfiable by
+  // construction (seen live: the tester encoded it, the agent could not pass it
+  // without rewriting main, three paid attempts and a human decision later the
+  // ticket was parked). Tell the planner, and validateResult rejects such an AC.
+  const greenfieldBlock = targetRepo
+    ? ""
+    : [
+        "",
+        "NEW-REPO (GREENFIELD) MODE — how the bootstrap lands: the factory creates the",
+        "repository BEFORE the bootstrap agent runs (git init + one baseline commit,",
+        '"chore: initialise <repo>", containing README.md only, on main); the agent then',
+        "scaffolds on a delivery branch on top of that baseline, and the branch is",
+        "reviewed and merged like any other ticket. So acceptance criteria describe the",
+        'RESULTING files and behaviour ("the repo contains package.json, tsconfig.json,',
+        'an eslint config and .gitignore; `npm test` passes") — NEVER git history',
+        '("in the initial commit", "the root/first commit contains", "a single commit"):',
+        "the root commit is the factory's baseline and such a criterion can never pass.",
+      ].join("\n");
   // FORCE-PLAN: the user pressed "Build the tickets now" (or the advisory turn cap
   // was hit). Stop asking questions and emit the best plan possible from what we
   // have so far. The model MUST return a plan, never a clarify — any open unknowns
@@ -697,6 +737,7 @@ export function buildPrompt(req) {
     QUARANTINE_NOTICE,
     clarifyFirst,
     brownfieldBlock,
+    greenfieldBlock,
     cardContext,
     specBlock,
     forcePlanBlock,

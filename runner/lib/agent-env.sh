@@ -69,7 +69,12 @@ gaffer_install_agent_dir() {
 gaffer_link_node_modules() {
   local rpath="$1" rwt="$2" _nm _rel
   [ -n "$rpath" ] && [ -n "$rwt" ] && [ -d "$rpath" ] && [ -d "$rwt" ] || return 0
-  [ -e "$rpath/node_modules" ] && [ ! -e "$rwt/node_modules" ] && ln -sfn "$rpath/node_modules" "$rwt/node_modules"
+  # Link the ROOT install only when it is non-empty: linking an EMPTY primary
+  # node_modules (wiped by an agent's `npm ci` through an earlier worktree's link) would
+  # make the DoD pre-gate installer see "deps present" and skip its per-worktree install.
+  if [ -e "$rpath/node_modules" ] && [ -n "$(ls -A "$rpath/node_modules" 2>/dev/null)" ] && [ ! -e "$rwt/node_modules" ]; then
+    ln -sfn "$rpath/node_modules" "$rwt/node_modules"
+  fi
   # Workspaces (pnpm/yarn/npm monorepos) keep test/build binaries in PER-PACKAGE
   # node_modules/.bin, not the root — so also link each sub-package's node_modules,
   # or `vitest`/`tsc` are unresolvable in the worktree and the DoD gate fails to RUN.

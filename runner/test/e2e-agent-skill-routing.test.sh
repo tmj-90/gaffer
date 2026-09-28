@@ -261,7 +261,14 @@ read -r N_AUTO S_AUTO <<< "$(tester_fail_case auto 1)"
 _FB="$(wg ticket show "$N_AUTO" 2>/dev/null | jget 'd.ticket.last_review_feedback || ""')"
 case "$_FB" in *tester_failed:*"habit add is a no-op"*) ok "3b: the tester's observation is the rework feedback" ;; *) fail "3b: feedback lacks the tester's observation: '$(printf '%s' "$_FB" | cut -c1-200)'" ;; esac
 grep -q "TESTER: #$N_AUTO FAIL re-queued for REWORK" "$GAFFER_DATA/factory.log" && ok "3b: the lane logged the rework route" || fail "3b: no rework log line for #$N_AUTO"
-wg wont-do "$N_AUTO" --reason "fixture" >/dev/null 2>&1 || true
+# The rework comes back through review into in_testing IN THE SAME RUN: the tester must
+# test it again (a recorded verdict is not a per-run skip — that deadlocked a live run).
+echo PASS > "$WORK/tester-verdict"
+run_tick >/dev/null; review_tick >/dev/null
+[ "$(st "$N_AUTO")" = "in_testing" ] && ok "3b: the reworked #$N_AUTO is back in_testing" || fail "3b: reworked #$N_AUTO is '$(st "$N_AUTO")' (expected in_testing)"
+( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true
+case "$(st "$N_AUTO")" in ready_for_merge|done) ok "3b: the tester RE-TESTED the reworked ticket in the same run (now $(st "$N_AUTO"))" ;; *) fail "3b: reworked #$N_AUTO was not re-tested (status '$(st "$N_AUTO")')" ;; esac
+echo FAIL > "$WORK/tester-verdict"
 read -r N_SUP S_SUP <<< "$(tester_fail_case supervised 0)"
 [ "$S_SUP" = "refining" ] && ok "3b: supervised — tester FAIL holds #$N_SUP in refining for a human (unchanged)" || fail "3b: supervised tester FAIL left #$N_SUP '$S_SUP' (expected refining)"
 echo PASS > "$WORK/tester-verdict"

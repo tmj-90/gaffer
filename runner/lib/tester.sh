@@ -41,7 +41,13 @@ _gaffer_tester_pass() {
     held)    log "TESTER: #$TNUM HELD in_testing — the tester produced no verdict token (rc=$_trc); a human decides${_T_BRANCH:+ (tests kept on $_T_BRANCH)}" ;;
     *)       log "TESTER: #$TNUM tester did not run cleanly (rc=$_trc, phase=${_T_PHASE:-none}) — left in_testing for a human; see tester.log" ;;
   esac
-  # One attempt per ticket per run: a held or errored ticket is not re-spun every tick.
-  _gaffer_locked .skip.lock _gaffer_append_line "$TESTED_FILE" "$TNUM"
+  # One attempt per ticket per run for a ticket the tester could NOT decide (held /
+  # errored): it is not re-spun every tick. A RECORDED verdict moves the ticket out of
+  # in_testing, and if it comes back this run (a FAIL reworked and re-approved) that is
+  # a new attempt that must be tested again — marking it here skipped the retest and
+  # deadlocked the run: the ticket sat in_testing, its dependents stayed blocked, and
+  # the loop gave up on empty polls (seen live). Mirrors review.sh, which marks only
+  # the held outcomes.
+  [ "$_T_PHASE" = "verdict" ] || _gaffer_locked .skip.lock _gaffer_append_line "$TESTED_FILE" "$TNUM"
   result tested; exit 0
 }

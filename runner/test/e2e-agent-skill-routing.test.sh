@@ -129,7 +129,12 @@ wg repo add -n beta  --path "$B" --branch main --stack python --test "true" --li
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 review_tick() {
   rm -f "$GAFFER_DATA/.reviewed-tickets"
+  # The full AUTONOMOUS ship posture (approve + merge env floors ON): the approve must
+  # still route to in_testing and the review pass must NOT land the branch under the
+  # tester's feet — a live run merged and deleted the branch here, leaving the ticket
+  # in_testing with nothing to test.
   ( cd "$RUNNER_DIR" && REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 GAFFER_TESTING=1 \
+      GAFFER_MODE=autonomous AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=1 \
       bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT='
 }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
@@ -204,6 +209,9 @@ fi
 [ "$(st "$A1")" = "in_testing" ] && ok "2: approved → in_testing (GAFFER_TESTING lane, ticket testable)" || fail "2: #$A1 is '$(st "$A1")' after approval (expected in_testing)"
 # The approve must NOT start the merge while the tester's verdict is pending.
 if git -C "$A" log --oneline main 2>/dev/null | grep -q "helper$A1"; then fail "2: the delivery was merged to main before the tester's verdict"; else ok "2: nothing merged before the tester's verdict (main carries no helper$A1 commit)"; fi
+_A1B="$(wg ticket show "$A1" 2>/dev/null | jget 'd.ticket.branch_name || ""')"
+[ -n "$_A1B" ] && git -C "$A" rev-parse --verify -q "refs/heads/$_A1B" >/dev/null 2>&1 && ok "2: the delivery branch $_A1B still exists for the tester (not deleted by a premature landing)" || fail "2: delivery branch '$_A1B' is gone before the tester ran"
+grep -q "AFK: #$A1 approved → in_testing (tester lane) — NOT landing" "$GAFFER_DATA/factory.log" && ok "2: the review pass logged that it left the landing to the tester lane" || fail "2: no 'NOT landing' log line for #$A1"
 
 echo "== 3. TESTER: the test role with a CONTRACT-ONLY prompt =="
 ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true

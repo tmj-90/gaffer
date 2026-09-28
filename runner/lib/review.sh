@@ -378,7 +378,17 @@ EOF
               wg attach-evidence "$RNUM" --type manual_note \
                 --summary "lite: auto-approved trivial — no human review (risk=low, ${GAFFER_LITE_LINES:-?} lines/${GAFFER_LITE_FILES:-?} files). Rework after this = a lite gate-skip that should have held." >/dev/null 2>&1 || true
             fi
-            if [ "$_SHIP_PLAN" = "ship" ]; then
+            # WHERE did the approve route the ticket? Under the tester lane (GAFFER_TESTING,
+            # ticket testable) dispatch routes an approve to in_testing, NOT ready_for_merge —
+            # the independent tester must pass it first, and the merge lane lands it after the
+            # PASS. Landing here regardless merged the branch under the tester's feet and
+            # deleted it, leaving the ticket in_testing with nothing to test (seen live).
+            _POST_APPROVE="$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status || ""' 2>/dev/null || echo '')"
+            if [ "$_POST_APPROVE" = "in_testing" ]; then
+              log "AFK: #$RNUM approved → in_testing (tester lane) — NOT landing; the independent tester decides and the merge lane lands it after a PASS"
+            elif [ "$_SHIP_PLAN" = "ship" ] && [ -n "$_POST_APPROVE" ] && [ "$_POST_APPROVE" != "ready_for_merge" ]; then
+              log "AFK: #$RNUM approved but now '$_POST_APPROVE' (not ready_for_merge) — NOT landing; left for the merge lane / a human"
+            elif [ "$_SHIP_PLAN" = "ship" ]; then
               # Merge gate ALSO earned → land the delivery branch on the default branch.
               # The landing (PR or local safe-merge, mark-merged, card refresh, digest, push,
               # branch delete) is the SHARED gaffer_land_delivery (lib/land.sh) — the same

@@ -1098,7 +1098,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # ── Minimalism note: REQUIRED (same as normal delivery) but oversized is
     # EXEMPT for a bootstrap — a fresh scaffold is legitimately large. A missing
     # smallest-change note still FAILS; an oversized scaffold is FLAGGED only.
-    read -r _BMZ_FILES _BMZ_LINES <<< "$(gaffer_diff_stats "$B_DIR" "$EMPTY_TREE")"
+    # Stats are the scaffold vs the BASELINE branch (what the reviewer diffs): the
+    # empty tree is not a commit, so `<empty-tree>...HEAD` has no merge base and the
+    # stat silently read "0 files / 0 lines" for every bootstrap.
+    read -r _BMZ_FILES _BMZ_LINES <<< "$(gaffer_diff_stats "$B_DIR" "$B_DEFAULT_BRANCH")"
     _BMZ_NOTE="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json smallest-change-note 2>/dev/null || echo '')"
     _BMZ_TRIM="$(printf '%s' "$_BMZ_NOTE" | tr -d '[:space:]')"
     if [ -z "$_BMZ_TRIM" ]; then

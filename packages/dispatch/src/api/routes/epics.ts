@@ -30,6 +30,9 @@ export async function routeEpics(
   sendCreated(res, `/scope/nodes/${result.epicNodeId}`, {
     epic_node_id: result.epicNodeId,
     ticket_numbers: result.ticketNumbers,
+    // Greenfield: tickets naming a repo that is not registered yet carry the name on
+    // `source`; the link is deferred to the bootstrap onboard. Count of such tickets.
+    deferred_repo_links: result.deferredRepoLinks,
   });
   return true;
 }

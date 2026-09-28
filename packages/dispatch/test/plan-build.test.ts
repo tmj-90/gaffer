@@ -571,10 +571,13 @@ describe("plan → create_epic confirm path", () => {
     }
   });
 
-  it("greenfield seam: create_epic rejects an unknown repo, accepts once it is stripped", async () => {
-    // A bootstrap plan names a repo that does not exist yet (the runner registers
-    // it later). The confirm path drops `repo`/`access` for unknown repos before
-    // POSTing; this guards that contract end to end.
+  it("greenfield seam: create_epic accepts an unknown repo — the name rides onto source and the link is deferred", async () => {
+    // A bootstrap plan names a repo that does not exist yet (the runner registers it
+    // at bootstrap). The SERVER applies one rule for every caller (dashboard confirm,
+    // CLI, MCP): an unregistered repo is never a 404 — its name is carried on
+    // `source` and the repo link is deferred (`deferred_repo_links`), so the plan the
+    // dashboard used to pre-strip and the plan `wg epic create` used to reject now
+    // create identically.
     const h = await startHarness({ phase: "error", error: "unused" });
     try {
       const greenfield = {
@@ -584,30 +587,34 @@ describe("plan → create_epic confirm path", () => {
           { title: "feature", repo: "brand-new-repo", dependsOn: [0] },
         ],
       };
-
-      // As-is, the unknown repo is rejected — this is shipped create_epic policy.
-      const rejected = await call(h.baseUrl, "POST", "/epics", greenfield);
-      expect(rejected.status).toBe(404);
-
-      // Strip repo/access for the (unknown) repo, exactly as confirmPlanBuild does.
-      const known = new Set(
-        (
-          (await call(h.baseUrl, "GET", "/repositories")).body.repositories as Array<{
-            name: string;
-          }>
-        ).map((r) => r.name),
-      );
-      const tickets = greenfield.tickets.map((t) => {
-        if (t.repo && !known.has(t.repo)) {
-          const { repo, ...rest } = t;
-          void repo;
-          return rest;
-        }
-        return t;
-      });
-      const created = await call(h.baseUrl, "POST", "/epics", { epic: greenfield.epic, tickets });
+      const created = await call(h.baseUrl, "POST", "/epics", greenfield);
       expect(created.status).toBe(201);
       expect(created.body.ticket_numbers).toHaveLength(2);
+      expect(created.body.deferred_repo_links).toBe(2);
+
+      const all = (await call(h.baseUrl, "GET", "/tickets")).body.tickets as Array<{
+        id: string;
+        number: number;
+        source: string | null;
+      }>;
+      for (const n of created.body.ticket_numbers as number[]) {
+        const row = all.find((t) => t.number === n)!;
+        expect(row.source).toBe("brand-new-repo");
+        const view = await call(h.baseUrl, "GET", `/tickets/${row.id}`);
+        expect((view.body.repositories ?? []) as unknown[]).toHaveLength(0);
+      }
+
+      // A plan with the repo already stripped (the pre-fix dashboard shape) still creates.
+      const stripped = greenfield.tickets.map(({ repo, ...rest }) => {
+        void repo;
+        return rest;
+      });
+      const again = await call(h.baseUrl, "POST", "/epics", {
+        epic: greenfield.epic,
+        tickets: stripped,
+      });
+      expect(again.status).toBe(201);
+      expect(again.body.deferred_repo_links).toBe(0);
     } finally {
       await h.close();
     }

@@ -46,7 +46,7 @@ export type TicketStatus = (typeof TICKET_STATUSES)[number];
  * Both are recoverable checkpoints, not failures — the work is preserved and the
  * ticket waits for a human Continue/Stop.
  */
-export const PAUSE_REASONS = ["cap_hit", "budget_cap"] as const;
+export const PAUSE_REASONS = ["cap_hit", "budget_cap", "timeout"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 /**

@@ -79,6 +79,11 @@ export class RepoService {
 
   // --- Repositories --------------------------------------------------------
 
+  /** Look a repository up by name or id; undefined when it is not registered (yet). */
+  findRepository(ref: string): Repository | undefined {
+    return this.repos.findByName(ref) ?? this.repos.findById(ref);
+  }
+
   registerRepository(raw: unknown, actor: Actor): Repository {
     const input = registerRepoInput.parse(raw);
     const now = this.clock.now();

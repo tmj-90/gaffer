@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -522,7 +522,7 @@ CREATE INDEX IF NOT EXISTS idx_plan_sessions_status_created
 
 CREATE TABLE IF NOT EXISTS paused_deliveries (
   ticket_id        TEXT PRIMARY KEY REFERENCES tickets(id) ON DELETE CASCADE,
-  reason           TEXT NOT NULL CHECK (reason IN ('cap_hit','budget_cap')),
+  reason           TEXT NOT NULL CHECK (reason IN ('cap_hit','budget_cap','timeout')),
   branch_name      TEXT,
   worktree_path    TEXT,
   worktrees_json   TEXT,

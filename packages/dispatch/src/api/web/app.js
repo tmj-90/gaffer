@@ -4234,7 +4234,12 @@ async function renderTicket(id) {
     t.status === "paused"
       ? (() => {
           const p = pausedInfo(events);
-          const reasonLabel = p.reason === "budget_cap" ? "budget cap reached" : "hit the turn cap";
+          const reasonLabel =
+            p.reason === "budget_cap"
+              ? "budget cap reached"
+              : p.reason === "timeout"
+                ? "hit the wall-clock timeout"
+                : "hit the turn cap";
           const bits = [
             p.spend ? `spend so far ${p.spend}` : null,
             p.turns != null ? `${p.turns} turns` : null,

@@ -12,6 +12,8 @@ import type { RepoService } from "./repoService.js";
 /** Result of createEpic (EP-001). */
 export interface CreateEpicResult {
   epicNodeId: string;
+  /** Tickets whose named repo does not exist yet (greenfield): link deferred to bootstrap. */
+  deferredRepoLinks: number;
   ticketNumbers: number[];
 }
 
@@ -82,7 +84,12 @@ export class EpicsService {
       // the epic node.
       const createdIds: string[] = [];
       const createdNumbers: number[] = [];
+      let deferredRepoLinks = 0;
       for (const spec of input.tickets) {
+        // Does the named repo exist yet? (Greenfield plans name the repo their bootstrap
+        // ticket will create.) Matched by name or id, like every other repo reference.
+        const repoKnown = !spec.repo || this.repos.findRepository(spec.repo) !== undefined;
+        const sourceName = spec.source ?? (spec.repo && !repoKnown ? spec.repo : undefined);
         const ticket = this.tickets.createTicket(
           {
             title: spec.title,
@@ -94,7 +101,7 @@ export class EpicsService {
             // Greenfield: the intended new-repo name rides on `source` so the runner
             // bootstraps a cleanly-named repo (not a slug of the ticket title) when
             // the target repo does not exist yet and `repo` was stripped upstream.
-            ...(spec.source !== undefined ? { source: spec.source } : {}),
+            ...(sourceName !== undefined ? { source: sourceName } : {}),
             // TRACK-3a: per-ticket budget wins; else inherit the epic-level budget.
             ...(spec.delivery_budget_usd !== undefined
               ? { delivery_budget_usd: spec.delivery_budget_usd }
@@ -123,7 +130,15 @@ export class EpicsService {
           );
         }
 
-        if (spec.repo) {
+        if (spec.repo && !repoKnown) {
+          // GREENFIELD (server-side, mirroring the dashboard's confirmPlanBuild): the plan
+          // names a repo the bootstrap ticket will CREATE, so there is nothing to link yet.
+          // The name already rode onto `source` above; the link is established when the
+          // runner registers the repo at bootstrap and inherits it onto the siblings.
+          // Before this the CLI/API path failed the whole epic with NOT_FOUND while the
+          // dashboard quietly deferred the link — two behaviours for one plan.
+          deferredRepoLinks += 1;
+        } else if (spec.repo) {
           // Internal seed of the epic ticket's repo link — uses the unguarded core
           // so an agent-driven epic-create (the factory flow) still links its repo.
           // The PUBLIC setTicketRepoAccess stays human/admin-only (P0 authz).
@@ -168,7 +183,7 @@ export class EpicsService {
         payload: { name: input.epic.name, ticket_count: n, ticket_numbers: createdNumbers },
       });
 
-      return { epicNodeId: node.id, ticketNumbers: createdNumbers };
+      return { epicNodeId: node.id, ticketNumbers: createdNumbers, deferredRepoLinks };
     });
   }
 

@@ -174,6 +174,11 @@ export function migrate(db: Db): void {
   // on a table whose CHECK already lists 'paused'. The new `paused_deliveries` table
   // is created by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS — no ADD COLUMN migration.
   widenTicketStatusCheckForPaused(db);
+  // WASTE CONTROL (v24→v25): widen `paused_deliveries.reason` to accept `timeout` — a
+  // wall-clock kill mid-delivery now pauses in place like a turn cap instead of
+  // burning the attempt. Same SQLite recipe (CHECK cannot be altered in place); no-op
+  // on a fresh DB and on an already-widened table.
+  widenPausedReasonCheckForTimeout(db);
   // RUN-ACTIVITY (v9→v10): the `runs` control-plane registry. A brand-new
   // standalone table created idempotently by SCHEMA_SQL's CREATE TABLE IF NOT
   // EXISTS (like ticket_dependencies / ticket_repo_delivery), so — having no
@@ -911,6 +916,76 @@ function widenTicketStatusCheckForPaused(db: Db): void {
       );
       db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level)");
       db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack)");
+    })();
+  } finally {
+    if (fkWasOn) db.pragma("foreign_keys = ON");
+  }
+}
+
+/**
+ * WASTE CONTROL (v24→v25): rebuild `paused_deliveries` so its `reason` CHECK also
+ * accepts 'timeout'. SQLite cannot ALTER a CHECK in place, so a genuine prior-version
+ * table is rebuilt via the supported recipe (new table → copy → drop → rename),
+ * atomically inside a transaction with foreign keys toggled off outside it. Must run
+ * BEFORE SCHEMA_SQL so its CREATE INDEX re-attaches to the rebuilt table. No-op on a
+ * fresh DB (SCHEMA_SQL creates the widened table) and on an already-widened one.
+ */
+function widenPausedReasonCheckForTimeout(db: Db): void {
+  const ddlRow = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'paused_deliveries'")
+    .get() as { sql: string } | undefined;
+  if (!ddlRow) return;
+  if (ddlRow.sql.includes("'timeout'")) return;
+  const existingCols = new Set(
+    (db.prepare("PRAGMA table_info(paused_deliveries)").all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    ),
+  );
+  const NEW_COLS = [
+    "ticket_id",
+    "reason",
+    "branch_name",
+    "worktree_path",
+    "worktrees_json",
+    "repo",
+    "attempt",
+    "turns",
+    "spend",
+    "resume_requested",
+    "created_at",
+    "updated_at",
+  ];
+  const copyList = NEW_COLS.filter((c) => existingCols.has(c)).join(", ");
+  const newTableDdl = `
+    CREATE TABLE paused_deliveries_new (
+      ticket_id        TEXT PRIMARY KEY REFERENCES tickets(id) ON DELETE CASCADE,
+      reason           TEXT NOT NULL CHECK (reason IN ('cap_hit','budget_cap','timeout')),
+      branch_name      TEXT,
+      worktree_path    TEXT,
+      worktrees_json   TEXT,
+      repo             TEXT,
+      attempt          INTEGER NOT NULL DEFAULT 0,
+      turns            INTEGER,
+      spend            TEXT,
+      resume_requested INTEGER NOT NULL DEFAULT 0,
+      created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )`;
+  const fkWasOn = (db.pragma("foreign_keys", { simple: true }) as number) === 1;
+  if (fkWasOn) db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS paused_deliveries_new");
+      db.exec(newTableDdl);
+      db.exec(
+        `INSERT INTO paused_deliveries_new (${copyList})
+         SELECT ${copyList} FROM paused_deliveries`,
+      );
+      db.exec("DROP TABLE paused_deliveries");
+      db.exec("ALTER TABLE paused_deliveries_new RENAME TO paused_deliveries");
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_paused_deliveries_resume ON paused_deliveries(resume_requested, created_at ASC)",
+      );
     })();
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON");

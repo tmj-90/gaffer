@@ -420,6 +420,9 @@ export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 # (GAFFER_REWORK_STRONG_MODEL) with the full feedback history. Set to 1 to disable
 # rework entirely (one attempt, then park to `blocked`).
 : "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"
+# WASTE CONTROL: a retry (rework / gate retry / timeout) keeps the ticket branch's
+# previous commits and re-enters on them; 1 = the old clean-slate reset to base.
+: "${GAFFER_RETRY_FRESH_BRANCH:=0}"
 : "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
 export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
 # DISPATCH_MAX_ATTEMPTS — Dispatch's OWN reject-loop cap (packages/dispatch/src/core.ts

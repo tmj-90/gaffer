@@ -543,10 +543,12 @@ export function registerTicket(program: Command): void {
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       const reason = opts.reason as string;
-      if (reason !== "cap_hit" && reason !== "budget_cap") {
-        throw new DispatchError("VALIDATION_ERROR", "--reason must be 'cap_hit' or 'budget_cap'.", {
-          reason,
-        });
+      if (reason !== "cap_hit" && reason !== "budget_cap" && reason !== "timeout") {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "--reason must be 'cap_hit', 'budget_cap' or 'timeout'.",
+          { reason },
+        );
       }
       const toInt = (v: string | undefined): number | null =>
         v === undefined || v === "" ? null : Number.parseInt(v, 10);

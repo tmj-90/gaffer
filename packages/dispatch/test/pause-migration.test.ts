@@ -84,6 +84,61 @@ describe("PAUSE-ON-CAP: additive migration (v11 → v12)", () => {
     db.close();
   });
 
+  it("WASTE CONTROL (v24→v25): widens paused_deliveries.reason to accept 'timeout' without data loss", () => {
+    const db = new Database(":memory:");
+    migrate(db); // a current schema…
+    // …then hand-roll a v24-shaped paused_deliveries (the CHECK without 'timeout') with a row.
+    db.exec(`
+      DROP TABLE paused_deliveries;
+      CREATE TABLE paused_deliveries (
+        ticket_id TEXT PRIMARY KEY REFERENCES tickets(id) ON DELETE CASCADE,
+        reason TEXT NOT NULL CHECK (reason IN ('cap_hit','budget_cap')),
+        branch_name TEXT, worktree_path TEXT, worktrees_json TEXT, repo TEXT,
+        attempt INTEGER NOT NULL DEFAULT 0, turns INTEGER, spend TEXT,
+        resume_requested INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+    `);
+    db.prepare("UPDATE schema_meta SET value = '24' WHERE key = 'schema_version'").run();
+    db.prepare(
+      "INSERT INTO tickets (id, number, title, status) VALUES ('p1', 1, 'capped', 'paused')",
+    ).run();
+    db.prepare(
+      "INSERT INTO paused_deliveries (ticket_id, reason, attempt, spend) VALUES ('p1', 'budget_cap', 2, '$3.10')",
+    ).run();
+    expect(() =>
+      db
+        .prepare("INSERT INTO paused_deliveries (ticket_id, reason) VALUES ('p1x', 'timeout')")
+        .run(),
+    ).toThrow();
+
+    migrate(db);
+
+    const legacy = db
+      .prepare("SELECT reason, attempt, spend FROM paused_deliveries WHERE ticket_id = 'p1'")
+      .get() as { reason: string; attempt: number; spend: string };
+    expect(legacy).toEqual({ reason: "budget_cap", attempt: 2, spend: "$3.10" });
+    db.prepare(
+      "INSERT INTO tickets (id, number, title, status) VALUES ('p2', 2, 'timed out', 'paused')",
+    ).run();
+    db.prepare(
+      "INSERT INTO paused_deliveries (ticket_id, reason, attempt) VALUES ('p2', 'timeout', 1)",
+    ).run();
+    expect(
+      (
+        db.prepare("SELECT reason FROM paused_deliveries WHERE ticket_id = 'p2'").get() as {
+          reason: string;
+        }
+      ).reason,
+    ).toBe("timeout");
+    const ver = db.prepare("SELECT value FROM schema_meta WHERE key='schema_version'").get() as {
+      value: string;
+    };
+    expect(Number(ver.value)).toBe(SCHEMA_VERSION);
+    db.close();
+  });
+
   it("re-running migrate() on an already-current DB is a no-op (idempotent)", () => {
     const db = new Database(":memory:");
     migrate(db);

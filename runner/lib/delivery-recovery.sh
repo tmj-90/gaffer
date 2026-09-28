@@ -47,6 +47,42 @@ gaffer_branch_has_commits() {
 # Across all write-repo rows (id\tname\tpath\tbase\tworktree), true iff ANY
 # write repo's branch carries ≥1 commit. Used to classify a multi-repo delivery:
 # RECOVERABLE if any repo produced a commit.
+# gaffer_wip_checkpoint <wt_rows> <ticket> <title>
+# WASTE CONTROL: before a cap / budget / timeout PAUSE, commit whatever the agent left
+# UNCOMMITTED in every write worktree (same exclusions as the submit-path auto-commit:
+# never node_modules, build output or the runner's own .claude / MCP files). A paused
+# delivery is only worth keeping if its work is on the branch; the brief tells the
+# agent to commit at the END, so a long ticket that hit the cap mid-way used to have no
+# commit, no pause, and a retry that started from scratch. Returns 0 when at least one
+# checkpoint commit was made.
+# gaffer_autocommit_dir <dir> <message>
+# Stage everything the agent left uncommitted in <dir> — minus the runner's own files
+# and build/dependency output — and commit it with <message>. Returns 0 when a commit
+# was made, 1 when there was nothing to commit (or <dir> is not a git checkout).
+gaffer_autocommit_dir() {
+  local dir="$1" msg="${2:-wip: checkpoint}"
+  [ -n "$dir" ] && git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  git -C "$dir" add -A -- . \
+    ':(exclude)node_modules' ':(exclude,glob)**/node_modules/**' \
+    ':(exclude).claude' ':(exclude)CLAUDE.factory.md' \
+    ':(exclude).mcp.json' ':(exclude,glob)mcp-runtime*.json' ':(exclude)dist' ':(exclude)build' \
+    ':(exclude).next' ':(exclude)coverage' >/dev/null 2>&1 || true
+  git -C "$dir" diff --cached --quiet 2>/dev/null && return 1
+  git -C "$dir" -c user.email=gaffer@factory -c user.name=gaffer commit -q -m "$msg" >/dev/null 2>&1
+}
+
+gaffer_wip_checkpoint() {
+  local rows="$1" num="${2:-?}" title="${3:-}"
+  local _rid _rname _rpath _rbase _rwt made=1
+  while IFS=$'\t' read -r _rid _rname _rpath _rbase _rwt; do
+    [ -n "$_rwt" ] || continue
+    if gaffer_autocommit_dir "$_rwt" "wip #$num: checkpoint at cap${title:+ — $title} (agent had not committed)"; then
+      made=0
+    fi
+  done <<< "$rows"
+  return $made
+}
+
 gaffer_any_branch_has_commits() {
   local rows="$1"
   local _rid _rname _rpath _rbase _rwt

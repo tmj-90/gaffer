@@ -81,6 +81,25 @@ touch "$SCAF/CLAUDE.factory.md"
 gaffer_bootstrap_target_ok "$SCAF" 2>/dev/null \
   && ok "scaffold (git, no commits, factory files only) → resume in place" \
   || fail "resumable scaffold should be allowed"
+# WASTE CONTROL: the factory's OWN baselined repo is resumable even when the agent left
+# uncommitted scaffold files in it (the parked "no scaffold commit" case) …
+OURS="$WORK/git/ours-app"; mkdir -p "$OURS/src"
+( cd "$OURS" && git init -q && printf '# ours-app\n' > README.md \
+  && git -c user.email=g@f -c user.name=g add README.md && git -c user.email=g@f -c user.name=g commit -q -m "chore: initialise ours-app" \
+  && printf '{"name":"ours-app"}\n' > package.json && printf 'export const x = 1;\n' > src/index.ts )
+gaffer_bootstrap_target_ok "$OURS" 2>/dev/null \
+  && ok "our baselined repo with the agent's UNCOMMITTED scaffold → resume in place" \
+  || fail "a baselined repo with uncommitted agent work must be resumable"
+# … and when a prior partial bootstrap COMMITTED on top of the baseline …
+( cd "$OURS" && git -c user.email=g@f -c user.name=g add -A && git -c user.email=g@f -c user.name=g commit -q -m "wip scaffold" )
+gaffer_bootstrap_target_ok "$OURS" 2>/dev/null \
+  && ok "our baselined repo with committed partial scaffold → resume in place" \
+  || fail "a baselined repo with a committed partial scaffold must be resumable"
+# … but a FOREIGN repo (no factory baseline root commit) is still refused.
+FOREIGN="$WORK/git/foreign"; mkdir -p "$FOREIGN/src"
+( cd "$FOREIGN" && git init -q && printf 'real\n' > src/app.js && printf '# real project\n' > README.md \
+  && git -c user.email=x@y -c user.name=x add -A && git -c user.email=x@y -c user.name=x commit -q -m "initial import" )
+if gaffer_bootstrap_target_ok "$FOREIGN" >/dev/null 2>&1; then fail "a foreign repo must still be refused"; else ok "a foreign repo (no factory baseline) is still refused"; fi
 # A non-factory file in it → real content → must refuse (never clobber real work).
 echo "console.log(1)" > "$SCAF/index.js"
 if gaffer_bootstrap_target_ok "$SCAF" >/dev/null 2>&1; then fail "scaffold + real file should be refused"; else ok "scaffold + a real file refused"; fi
@@ -124,10 +143,20 @@ gaffer_bootstrap_init "$BASE" "baseline-resume" "seed" >/dev/null 2>&1
 gaffer_bootstrap_target_ok "$BASE" 2>/dev/null \
   && ok "baseline-only repo (main == {README.md}) → resume in place" \
   || fail "a baseline-only repo must be resumable"
-# But a real source file committed on top → real work → must refuse (never clobber).
+# WASTE CONTROL: a real source file committed ON TOP of OUR baseline is the agent's
+# own partial bootstrap (root commit == the factory's `chore: initialise <name>`
+# README-only seed) → resume in place, keeping that work, rather than refusing the
+# dir as "non-empty" and starving every dependent ticket. A FOREIGN repo (no factory
+# baseline root) with the same file is still refused — never clobber someone's work.
 echo "console.log(1)" > "$BASE/index.js"; git -C "$BASE" add index.js >/dev/null 2>&1
 git -C "$BASE" -c user.email=t@t -c user.name=t commit -qm feat >/dev/null 2>&1
-if gaffer_bootstrap_target_ok "$BASE" >/dev/null 2>&1; then fail "baseline + real commit should be refused"; else ok "baseline + a real committed file refused"; fi
+gaffer_bootstrap_target_ok "$BASE" >/dev/null 2>&1 \
+  && ok "our baseline + a real committed file → resumable (agent's own partial bootstrap kept)" \
+  || fail "a factory-baselined repo with agent commits must be resumable"
+FOREIGN="$WORK/git/foreign-with-commit"; mkdir -p "$FOREIGN"; git -C "$FOREIGN" init -q -b main 2>/dev/null || git -C "$FOREIGN" init -q 2>/dev/null
+printf '# theirs\n' > "$FOREIGN/README.md"; echo "console.log(1)" > "$FOREIGN/index.js"
+git -C "$FOREIGN" add -A >/dev/null 2>&1; git -C "$FOREIGN" -c user.email=t@t -c user.name=t commit -qm "initial" >/dev/null 2>&1
+if gaffer_bootstrap_target_ok "$FOREIGN" >/dev/null 2>&1; then fail "a foreign repo with real commits must be refused"; else ok "foreign repo (no factory baseline root) + real commit refused"; fi
 
 echo "== AC6b: bootstrap default-branch capture is clean on an UNBORN repo (E2E regression) =="
 # REGRESSION: tick.sh captures B_DEFAULT_BRANCH BEFORE the agent's first commit — i.e.

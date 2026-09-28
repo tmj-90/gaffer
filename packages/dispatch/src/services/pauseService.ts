@@ -133,7 +133,9 @@ export class PauseService {
       detail =
         input.reason === "budget_cap"
           ? `paused: budget cap reached mid-delivery (spend ${ctx.spend ?? "unknown"}); worktree preserved`
-          : `paused: hit the turn cap mid-delivery (turns ${ctx.turns ?? "unknown"}, spend ${ctx.spend ?? "unknown"}); worktree preserved`;
+          : input.reason === "timeout"
+            ? `paused: the wall-clock timeout ended the agent turn mid-delivery (spend ${ctx.spend ?? "unknown"}); worktree preserved`
+            : `paused: hit the turn cap mid-delivery (turns ${ctx.turns ?? "unknown"}, spend ${ctx.spend ?? "unknown"}); worktree preserved`;
       return res;
     });
     try {

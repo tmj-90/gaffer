@@ -187,7 +187,10 @@ describe("review-feedback block", () => {
     expect(renderReviewFeedbackBlock(["missed AC 2", "tests not run"])).toBe(
       "\nPRIOR REVIEW FEEDBACK — this ticket was sent back before. Each line inside the\n" +
         "envelope below is why a previous attempt was rejected; you MUST address every one\n" +
-        "before re-delivering, and must NOT repeat them:\n" +
+        "before re-delivering, and must NOT repeat them. The previous attempt's commits are\n" +
+        "ALREADY on this branch: fix them in place rather than re-implementing from scratch\n" +
+        "(run `git log --oneline` first; reset to the base deliberately only if the approach\n" +
+        "itself was wrong).\n" +
         "<untrusted-review-feedback>  - missed AC 2\n  - tests not run</untrusted-review-feedback>\n",
     );
   });

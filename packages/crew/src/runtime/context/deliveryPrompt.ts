@@ -96,7 +96,10 @@ export function renderReviewFeedbackBlock(reasons: string[]): string {
   return `
 PRIOR REVIEW FEEDBACK — this ticket was sent back before. Each line inside the
 envelope below is why a previous attempt was rejected; you MUST address every one
-before re-delivering, and must NOT repeat them:
+before re-delivering, and must NOT repeat them. The previous attempt's commits are
+ALREADY on this branch: fix them in place rather than re-implementing from scratch
+(run \`git log --oneline\` first; reset to the base deliberately only if the approach
+itself was wrong).
 ${quarantined}
 `;
 }

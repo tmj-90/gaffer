@@ -1040,6 +1040,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
       result error; exit 0
     fi
 
+    # WASTE CONTROL: the bootstrap agent often writes the whole scaffold and stops
+    # without `git commit` (the delivery path has auto-committed that case for a long
+    # time; the bootstrap path parked it as "no scaffold commit" and threw the work
+    # away — a live run lost a complete four-minute scaffold that way). Commit the
+    # uncommitted scaffold first, exactly like the delivery path.
+    if gaffer_autocommit_dir "$B_DIR" "deliver #$NUM: $TITLE (scaffold; agent had not committed)"; then
+      log "BOOTSTRAP #$NUM: auto-committed the uncommitted scaffold (agent edited but did not commit)"
+    fi
     # Empty delivery: the scaffold must add at least one commit ON TOP of the README
     # baseline. The delivery branch HEAD identical to the baseline `main` ⇒ the agent
     # produced nothing to onboard (a bare baseline is not a scaffold).
@@ -1414,7 +1422,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     REVIEW_FEEDBACK_BLOCK="
 PRIOR REVIEW FEEDBACK — this ticket was sent back before. Each line inside the
 envelope below is why a previous attempt was rejected; you MUST address every one
-before re-delivering, and must NOT repeat them:
+before re-delivering, and must NOT repeat them. The previous attempt's commits are
+ALREADY on this branch: fix them in place rather than re-implementing from scratch
+(run \`git log --oneline\` first; reset to the base deliberately only if the approach
+itself was wrong).
 $_RF_Q
 "
   fi
@@ -1687,7 +1698,27 @@ EOF
     fi
     # A stale checkout of $WORK_BRANCH in another worktree would block -B; cleanup
     # above should have removed ours, but force-prune once more then add.
-    if git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
+    # WASTE CONTROL: a retry (review CHANGES rework, a gate retry, a timeout) used to
+    # `worktree add -B`, RESETTING the ticket branch to base and discarding the previous
+    # attempt's commits — the reviewer's feedback then described a diff that no longer
+    # existed and the agent re-implemented from scratch. The existing branch is now kept
+    # (the agent builds on it, or resets deliberately); GAFFER_RETRY_FRESH_BRANCH=1
+    # restores the old clean-slate reset.
+    _KEPT_COMMITS=""
+    if [ "${GAFFER_RETRY_FRESH_BRANCH:-0}" != "1" ] \
+       && git -C "$rpath" rev-parse --verify --quiet "refs/heads/$WORK_BRANCH" >/dev/null 2>&1; then
+      _KEPT_COMMITS="$(git -C "$rpath" rev-list --count "$rbase..$WORK_BRANCH" 2>/dev/null || echo 0)"
+    fi
+    if [ -n "$_KEPT_COMMITS" ] && [ "$_KEPT_COMMITS" -gt 0 ] 2>/dev/null \
+       && git -C "$rpath" worktree add "$rwt" "$WORK_BRANCH" >/dev/null 2>&1; then
+      log "reused worktree for ${rname:-repo} ($rpath) at $rwt on EXISTING branch $WORK_BRANCH for #$NUM — $_KEPT_COMMITS prior commit(s) kept (set GAFFER_RETRY_FRESH_BRANCH=1 for a clean-slate retry)"
+      _pm_primed="$(gaffer_ensure_node_modules "$rpath")"
+      case "$_pm_primed" in
+        FAILED:*) log "greenfield: WARN — ${_pm_primed#FAILED:} install did not prime ${rname:-repo} deps (retry); test gate may fail #$NUM (see the diagnostic above)" ;;
+        ?*) log "greenfield: primed ${rname:-repo} deps via '$_pm_primed install' (retry) for #$NUM" ;;
+      esac
+      gaffer_link_node_modules "$rpath" "$rwt"
+    elif git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
       log "created worktree for ${rname:-repo} ($rpath) at $rwt on branch $WORK_BRANCH off $rbase for #$NUM"
       # GREENFIELD FIRST-RUN: a freshly-bootstrapped repo has a package.json+lockfile
       # but no node_modules, so the symlink below no-ops and the first ticket's test
@@ -2017,7 +2048,9 @@ $real
     _REWORK_BLOCK="
 REVIEW FEEDBACK — THIS DELIVERY WAS REWORKED. $posture
 The block below is the ACTUAL failure(s) from your prior attempt(s) on this SAME
-branch (the failing test name + the assertion/error), not a summary. Fix EXACTLY this:
+branch (the failing test name + the assertion/error), not a summary. The prior
+attempt's commits are still on this branch — keep what is right and fix what failed.
+Fix EXACTLY this:
 $_trail_q
 "
   }
@@ -2115,6 +2148,11 @@ $_trail_q
   # path below (no false pause of a worktree with nothing in it).
   _CAP_HIT=0
   if gaffer_is_cap_hit "$USAGE_JSON" "$rc"; then _CAP_HIT=1; fi
+  # WASTE CONTROL: the wall-clock kill (rc 124) used to be a plain failure — the work
+  # on the branch survived but the attempt was burned and the retry started over. It is
+  # now pause-eligible like a turn cap: the human sees WHY and presses Continue.
+  _TIMEOUT_HIT=0
+  [ "$rc" = "124" ] && _TIMEOUT_HIT=1
   # Budget is the HARD ceiling: if the live USD headroom is exhausted, pause even when
   # the turn cap wasn't reached, so the factory never silently keeps spending past it.
   # B28(b): GAFFER_BUDGET_REMAINING was summed from the ledger when this tick was
@@ -2131,12 +2169,23 @@ $_trail_q
   if [ -n "$_LIVE_REMAINING" ] && _num_le "$_LIVE_REMAINING" 0; then
     _BUDGET_HIT=1
   fi
-  if { [ "$_CAP_HIT" = "1" ] || [ "$_BUDGET_HIT" = "1" ]; } \
+  # WASTE CONTROL: a cap that lands before the agent's first commit used to mean no
+  # pause (nothing on the branch to keep) and a from-scratch retry. Checkpoint the
+  # uncommitted work first, so the pause below has commits to preserve.
+  if { [ "$_CAP_HIT" = "1" ] || [ "$_BUDGET_HIT" = "1" ] || [ "$_TIMEOUT_HIT" = "1" ]; } \
+     && [ "${GAFFER_PAUSE_ON_CAP:-1}" = "1" ]; then
+    if gaffer_wip_checkpoint "$WT_ROWS" "$NUM" "$TITLE"; then
+      log "CAP: #$NUM had uncommitted work at the cap — WIP checkpoint committed on $WORK_BRANCH so the pause keeps it"
+    fi
+  fi
+  if { [ "$_CAP_HIT" = "1" ] || [ "$_BUDGET_HIT" = "1" ] || [ "$_TIMEOUT_HIT" = "1" ]; } \
      && [ "${GAFFER_PAUSE_ON_CAP:-1}" = "1" ] \
      && gaffer_any_branch_has_commits "$WT_ROWS"; then
     _CAP_SPEND="$(gaffer_delivery_spend "$USAGE_JSON")"
     _CAP_TURNS="$(gaffer_cap_num_turns "$USAGE_JSON")"
-    _PAUSE_REASON="cap_hit"; [ "$_BUDGET_HIT" = "1" ] && _PAUSE_REASON="budget_cap"
+    _PAUSE_REASON="cap_hit"
+    [ "$_TIMEOUT_HIT" = "1" ] && _PAUSE_REASON="timeout"
+    [ "$_BUDGET_HIT" = "1" ] && _PAUSE_REASON="budget_cap"
     gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
     rm -f "$USAGE_JSON"
     # Serialise the full worktree map (one entry per write repo) so a multi-repo

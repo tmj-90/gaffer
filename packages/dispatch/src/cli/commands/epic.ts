@@ -20,7 +20,12 @@ export function registerEpic(program: Command): void {
       const plan = readJsonInput(file);
       const wg = open(cmd.optsWithGlobals());
       const res = wg.createEpic(plan, cliActor());
-      printJson({ ok: true, epic_node_id: res.epicNodeId, ticket_numbers: res.ticketNumbers });
+      printJson({
+        ok: true,
+        epic_node_id: res.epicNodeId,
+        ticket_numbers: res.ticketNumbers,
+        deferred_repo_links: res.deferredRepoLinks,
+      });
       wg.db.close();
     });
 }

@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 109 |
+| Knobs with a runner default | 110 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 64 |
@@ -80,6 +80,7 @@ computed from other knobs at runtime.
 | `GAFFER_DAEMON_INTERVAL` | `30` |  | runner | seconds between `gaffer run --daemon` cycles |
 | `GAFFER_DAEMON_MAX_CYCLES` | `0` |  | runner | 0 = unbounded |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many times a ticket may be re-worked after a rejected review before it parks to blocked. |
+| `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a retry (rework / gate retry / timeout) keeps the ticket branch's previous commits and re-enters on them; 1 = the old clean-slate reset to base. |
 | `GAFFER_CLAIM_TTL` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))`) |  | runner |  |
 | `DISPATCH_MAX_ATTEMPTS` | _derived_ (`$GAFFER_MAX_DELIVERY_ATTEMPTS`) | yes (int) | dispatch, runner | Dispatch's own cap on how many times a delivery may be rejected back into the queue before the ticket is parked (blocked) for a human — the server-side wallet guard against an unbounded reject loop, enforced on every reject transition regardless of which runner drove it. Defaults to Max delivery attempts so the two caps agree; set it only to make the server stricter or looser than the runner's rework ladder. |
 | `GAFFER_TICK_OUTER_TIMEOUT` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))`) |  | runner | FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around the WHOLE tick.sh. |

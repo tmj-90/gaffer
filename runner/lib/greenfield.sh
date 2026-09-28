@@ -55,6 +55,20 @@ gaffer_bootstrap_repo_dir() {
 _gaffer_bootstrap_is_resumable_scaffold() {
   local dir="$1"
   git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 1            # not git → real content
+  # WASTE CONTROL: a repo whose ROOT commit is the factory's own baseline — the
+  # `chore: initialise <name>` commit of README.md alone that gaffer_bootstrap_init
+  # writes — is OURS, whatever the agent left in it since (committed scaffold from a
+  # partial bootstrap, or uncommitted files it wrote before it stopped). Resume in
+  # place: a live run parked a complete scaffold as "no commit", then refused to
+  # re-enter the same dir as "non-empty", starving every dependent ticket. A foreign
+  # repo never has that root commit and still falls through to the strict checks.
+  local _root
+  _root="$(git -C "$dir" rev-list --max-parents=0 HEAD 2>/dev/null | tail -1)"
+  if [ -n "$_root" ] \
+     && [ "$(git -C "$dir" show -s --format=%s "$_root" 2>/dev/null)" = "chore: initialise $(basename "$dir")" ] \
+     && [ "$(git -C "$dir" ls-tree -r --name-only "$_root" 2>/dev/null)" = "README.md" ]; then
+    return 0
+  fi
   local allow=" .git .claude CLAUDE.factory.md .mcp.json mcp-runtime.json .gitignore README.md "
   # A BORN HEAD is resumable ONLY when it is exactly our factory BASELINE commit — a
   # tree of README.md alone (the seed gaffer_bootstrap_init writes so a bootstrap can

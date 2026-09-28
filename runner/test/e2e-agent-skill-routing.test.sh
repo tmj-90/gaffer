@@ -243,6 +243,7 @@ fi
 wg wont-do "$A1DEP" --reason "fixture for the blocked-queue tester path" >/dev/null 2>&1 || true
 
 echo "== 3b. TESTER FAIL: autonomous → REWORK (ready, feedback carried); supervised → refining (human) =="
+grep -q '"\$GAFFER_DATA/.tested-tickets"' "$RUNNER_DIR/loop.sh" && ok "3b: loop.sh resets .tested-tickets each run (a held ticket is retried next run; it was never reset before)" || fail "3b: loop.sh does not reset .tested-tickets"
 echo FAIL > "$WORK/tester-verdict"
 tester_fail_case() { # $1 label, $2 autonomous(1|0) → prints the final status
   local n; n="$(new_ticket alpha "Add a CSV export endpoint ($1)" "GET /export returns CSV" medium)"

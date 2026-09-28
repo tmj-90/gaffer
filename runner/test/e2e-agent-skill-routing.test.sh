@@ -93,6 +93,9 @@ case "$prompt" in
     printf '{"type":"result","subtype":"success","is_error":false,"result":"RECOMMEND APPROVE\\n{\\"verdict\\":\\"APPROVE\\"}","total_cost_usd":0.01,"num_turns":2}\n'; exit 0 ;;
   *"INDEPENDENT TESTER agent"*)
     echo tester > "$D/kind"
+    if [ "$(cat "__TVERDICT__" 2>/dev/null || echo PASS)" = "FAIL" ]; then
+      printf '{"type":"result","subtype":"success","is_error":false,"result":"FAIL: habit add is a no-op through the real CLI.\\n{\\"verdict\\":\\"FAIL\\"}","total_cost_usd":0.01,"num_turns":2}\n'; exit 0
+    fi
     printf '{"type":"result","subtype":"success","is_error":false,"result":"Probed the contract; every AC holds.\\n{\\"verdict\\":\\"PASS\\"}","total_cost_usd":0.01,"num_turns":2}\n'; exit 0 ;;
   *"INTAKE agent"*)
     echo clarify > "$D/kind"
@@ -115,7 +118,7 @@ fi
 echo other > "$D/kind"
 printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'
 STUB
-sed -i.bak "s|__CALLS__|$CALLS|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
+sed -i.bak "s|__CALLS__|$CALLS|; s|__TVERDICT__|$WORK/tester-verdict|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
 
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_TICK_TIMEOUT=60 GAFFER_MAX_TURNS=10 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
@@ -238,6 +241,30 @@ fi
 # The blocked fixture has served its purpose: retire it so the later steps' ticks (which
 # expect an EMPTY ready queue for the clarify pass) are not steered by it.
 wg wont-do "$A1DEP" --reason "fixture for the blocked-queue tester path" >/dev/null 2>&1 || true
+
+echo "== 3b. TESTER FAIL: autonomous → REWORK (ready, feedback carried); supervised → refining (human) =="
+echo FAIL > "$WORK/tester-verdict"
+tester_fail_case() { # $1 label, $2 autonomous(1|0) → prints the final status
+  local n; n="$(new_ticket alpha "Add a CSV export endpoint ($1)" "GET /export returns CSV" medium)"
+  wg ticket set-testable "$n" >/dev/null 2>&1; wg ticket ready "$n" >/dev/null 2>&1
+  run_tick >/dev/null; review_tick >/dev/null
+  [ "$(st "$n")" = "in_testing" ] || { echo "$n setup:$(st "$n")"; return; }
+  if [ "$2" = 1 ]; then
+    ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true
+  else
+    ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true
+  fi
+  echo "$n $(st "$n")"   # "<number> <status>" — the caller splits it (a $() cannot export)
+}
+read -r N_AUTO S_AUTO <<< "$(tester_fail_case auto 1)"
+[ "$S_AUTO" = "ready" ] && ok "3b: autonomous — tester FAIL re-queued #$N_AUTO for rework (ready), not parked" || fail "3b: autonomous tester FAIL left #$N_AUTO '$S_AUTO' (expected ready)"
+_FB="$(wg ticket show "$N_AUTO" 2>/dev/null | jget 'd.ticket.last_review_feedback || ""')"
+case "$_FB" in *tester_failed:*"habit add is a no-op"*) ok "3b: the tester's observation is the rework feedback" ;; *) fail "3b: feedback lacks the tester's observation: '$(printf '%s' "$_FB" | cut -c1-200)'" ;; esac
+grep -q "TESTER: #$N_AUTO FAIL re-queued for REWORK" "$GAFFER_DATA/factory.log" && ok "3b: the lane logged the rework route" || fail "3b: no rework log line for #$N_AUTO"
+wg wont-do "$N_AUTO" --reason "fixture" >/dev/null 2>&1 || true
+read -r N_SUP S_SUP <<< "$(tester_fail_case supervised 0)"
+[ "$S_SUP" = "refining" ] && ok "3b: supervised — tester FAIL holds #$N_SUP in refining for a human (unchanged)" || fail "3b: supervised tester FAIL left #$N_SUP '$S_SUP' (expected refining)"
+echo PASS > "$WORK/tester-verdict"
 
 echo "== 4. DELIVERY on beta (Python): the python pack, not the TS one =="
 B1="$(new_ticket beta "Fix the login bug in the auth module" "login() accepts an empty password; reproduce with a failing test first." medium)"

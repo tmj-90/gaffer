@@ -1207,7 +1207,7 @@ export class Dispatch {
 
   testerFail(
     ticketRef: string,
-    input: { summary: string; uri?: string },
+    input: { summary: string; uri?: string; to?: "refining" | "ready" },
     actor: Actor,
   ): TransitionResult {
     return this.reviewGateSvc.testerFail(ticketRef, input, actor);

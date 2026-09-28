@@ -316,11 +316,23 @@ export function registerTicket(program: Command): void {
       "failing-test summary (recorded as evidence + reject reason)",
     )
     .option("--uri <uri>", "evidence uri")
+    .option(
+      "--to <status>",
+      "where the FAIL lands below the retry cap: refining (hold for a human, default) or ready (re-queue for rework with the failing observation as feedback)",
+      "refining",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
+      if (opts.to !== "refining" && opts.to !== "ready") {
+        throw new DispatchError("VALIDATION_ERROR", "--to must be refining or ready");
+      }
       const wg = open(cmd.optsWithGlobals());
       const actor = testerActor(opts.as);
-      const res = wg.testerFail(ref, { summary: opts.summary, uri: opts.uri }, actor);
+      const res = wg.testerFail(
+        ref,
+        { summary: opts.summary, uri: opts.uri, to: opts.to as "refining" | "ready" },
+        actor,
+      );
       printJson({ ok: true, status: res.ticket.status, event: res.eventId });
       wg.db.close();
     });

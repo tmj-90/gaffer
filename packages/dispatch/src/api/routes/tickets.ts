@@ -383,7 +383,7 @@ export async function routeTickets(
     const result =
       body.verdict === "pass"
         ? wg.testerPass(id, verdictInput, testerActor)
-        : wg.testerFail(id, verdictInput, testerActor);
+        : wg.testerFail(id, { ...verdictInput, ...(body.to ? { to: body.to } : {}) }, testerActor);
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }

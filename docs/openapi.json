@@ -10070,6 +10070,13 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 2000
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "refining",
+              "ready"
+            ]
           }
         },
         "required": [

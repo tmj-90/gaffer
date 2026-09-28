@@ -75,6 +75,11 @@ const ALLOWED: ReadonlySet<string> = new Set([
   "in_review->in_testing",
   "in_testing->ready_for_merge",
   "in_testing->refining",
+  // The tester FAILED and the caller asked for REWORK rather than a human hold
+  // (`testerFail(..., { to: "ready" })` — the autonomous runner's choice, mirroring
+  // `review reject --to ready`): straight back to the queue with the failing
+  // observation as the rework feedback. Guarded by the same `testerVerdict` flag.
+  "in_testing->ready",
   // Park a testing ticket whose retry budget is exhausted, mirroring the review
   // park; guarded by the `park` flag.
   "in_testing->blocked",
@@ -375,7 +380,12 @@ export const GUARDED_EDGES: readonly GuardedEdge[] = [
     why: "Retry-cap park is reachable only once a delivery has exhausted its retry budget.",
   },
   {
-    edges: ["in_review->in_testing", "in_testing->ready_for_merge", "in_testing->refining"],
+    edges: [
+      "in_review->in_testing",
+      "in_testing->ready_for_merge",
+      "in_testing->refining",
+      "in_testing->ready",
+    ],
     anyOf: ["testerVerdict"],
     message: "A ticket can only move into or out of testing via the testing-lane paths.",
     why: "BBT-001: into the lane on approval, out of it on a tester verdict — never a drag.",

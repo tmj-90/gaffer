@@ -535,20 +535,25 @@ export class ReviewGateService {
    */
   testerFail(
     ticketRef: string,
-    input: { summary: string; uri?: string },
+    input: { summary: string; uri?: string; to?: "refining" | "ready" },
     actor: Actor,
   ): TransitionResult {
     const summary = input.summary.trim();
     if (summary.length === 0) {
       throw new DispatchError("VALIDATION_ERROR", "A failing-test summary is required.");
     }
+    // Where a FAIL lands (below the retry cap): `refining` holds the ticket for a human
+    // (the default, unchanged); `ready` re-queues it for REWORK with the failing
+    // observation as feedback — the autonomous runner's choice, mirroring
+    // `review reject --to ready`, so a tester FAIL is a bounded retry, not a stall.
+    const failTo: TicketStatus = input.to === "ready" ? "ready" : "refining";
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_testing") {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
           "Only a ticket in testing can be failed by the tester.",
-          { from: ticket.status, to: "refining" },
+          { from: ticket.status, to: failTo },
         );
       }
       // Record the failing test as evidence BEFORE the AC reset / transition.
@@ -570,7 +575,7 @@ export class ReviewGateService {
       });
 
       const { nextAttempt, capReached } = capRetry(ticket.attempt_count, this.maxAttempts);
-      const target: TicketStatus = capReached ? "blocked" : "refining";
+      const target: TicketStatus = capReached ? "blocked" : failTo;
       const reason = `tester_failed:${summary}`;
       const result = this.transitions.transition({
         ticketId: ticket.id,

@@ -310,6 +310,12 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env)
         summary,
         "--as",
         "agent",
+        // GAFFER_TESTER_FAIL_TO=ready (set by lib/tester.sh when the autonomy policy lets
+        // the runner drive the review gate): a FAIL re-queues for REWORK with the
+        // failing observation as feedback instead of holding for a human.
+        ...(action === "tester-fail" && (env.GAFFER_TESTER_FAIL_TO ?? "").trim() === "ready"
+          ? ["--to", "ready"]
+          : []),
       ],
     ];
   }

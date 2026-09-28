@@ -204,6 +204,8 @@ export const testerVerdictBody = z.object({
   verdict: z.enum(["pass", "fail"]),
   summary: z.string().trim().min(1).max(20_000),
   uri: z.string().trim().min(1).max(2_000).optional(),
+  /** fail only: where the FAIL lands below the retry cap (default refining = hold for a human). */
+  to: z.enum(["refining", "ready"]).optional(),
 });
 export type TesterVerdictBody = z.infer<typeof testerVerdictBody>;
 

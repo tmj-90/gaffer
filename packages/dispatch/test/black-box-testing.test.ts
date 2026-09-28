@@ -413,6 +413,33 @@ describe("BBT-001 tester verdict", () => {
     expect(park).toBeDefined();
   });
 
+  it("testerFail with to:'ready' re-queues for REWORK (feedback carried) instead of holding in refining", () => {
+    const wg = freshWg({ testingEnabled: true });
+    const { ticketId } = inReviewReadyTicket(wg);
+    wg.setTestable(ticketId, true, human);
+    wg.approveReview(ticketId, reviewer);
+    expect(wg.view(ticketId).ticket.status).toBe("in_testing");
+    const res = wg.testerFail(
+      ticketId,
+      { summary: "habit add is a no-op through the real CLI", to: "ready" },
+      testerAgent,
+    );
+    expect(res.ticket.status).toBe("ready");
+    const fb = JSON.parse(wg.view(ticketId).ticket.last_review_feedback ?? "{}") as {
+      reason?: string;
+    };
+    expect(fb.reason).toContain("tester_failed:habit add is a no-op");
+    expect(wg.view(ticketId).ticket.attempt_count).toBe(1);
+    // The default is unchanged: no `to` → refining.
+    const wg2 = freshWg({ testingEnabled: true });
+    const again = inReviewReadyTicket(wg2);
+    wg2.setTestable(again.ticketId, true, human);
+    wg2.approveReview(again.ticketId, reviewer);
+    expect(wg2.testerFail(again.ticketId, { summary: "fails" }, testerAgent).ticket.status).toBe(
+      "refining",
+    );
+  });
+
   it("rejects a tester verdict on a ticket that is not in_testing", () => {
     const wg = freshWg({ testingEnabled: true });
     const { ticketId } = inReviewReadyTicket(wg);

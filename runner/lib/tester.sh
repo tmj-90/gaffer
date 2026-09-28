@@ -19,13 +19,25 @@ _gaffer_tester_pass() {
   [ -n "$TNUM" ] || return 0
   [ -f "$RUNNER_DIR/bin/tester-run.mjs" ] || { log "TESTER: bin/tester-run.mjs missing — cannot run the tester lane"; return 0; }
   log "TESTER: independent black-box tester for in_testing #$TNUM (lane on)"
-  _T_OUT="$(GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
+  # Where a FAIL lands: when the autonomy policy lets the runner drive the review gate
+  # for this ticket (the same approve decision the review pass asks), a FAIL is a
+  # bounded REWORK (→ ready, the failing observation as feedback, the retry cap parks
+  # at the threshold) — exactly like a reviewer's CHANGES. Otherwise (supervised /
+  # unearned) it holds in refining for a human, as before. A live run parked a
+  # tester FAIL for a human in autonomous mode and the ticket never moved again.
+  _T_FAIL_TO=""
+  [ "$(gaffer_auto_decision "$TNUM" approve)" = "allow" ] && _T_FAIL_TO=ready
+  _T_OUT="$(GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" GAFFER_TESTER_FAIL_TO="$_T_FAIL_TO" \
     node "$RUNNER_DIR/bin/tester-run.mjs" --ticket "$TNUM" --live 2>>"$GAFFER_DATA/tester.log")"; _trc=$?
   _T_PHASE="$(printf '%s' "$_T_OUT" | jget 'd.phase || ""' 2>/dev/null || echo '')"
   _T_VERDICT="$(printf '%s' "$_T_OUT" | jget 'd.verdict || ""' 2>/dev/null || echo '')"
   _T_BRANCH="$(printf '%s' "$_T_OUT" | jget 'd.testsBranch || ""' 2>/dev/null || echo '')"
   case "$_T_PHASE" in
-    verdict) log "TESTER: #$TNUM verdict=${_T_VERDICT} recorded${_T_BRANCH:+ (tests kept on $_T_BRANCH)} → $(wg ticket show "$TNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '?')" ;;
+    verdict)
+      _T_NOW="$(wg ticket show "$TNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '?')"
+      log "TESTER: #$TNUM verdict=${_T_VERDICT} recorded${_T_BRANCH:+ (tests kept on $_T_BRANCH)} → $_T_NOW"
+      [ "$_T_NOW" = "ready" ] && log "TESTER: #$TNUM FAIL re-queued for REWORK with the tester's observation as feedback (autonomous; the retry cap parks at the threshold)"
+      ;;
     held)    log "TESTER: #$TNUM HELD in_testing — the tester produced no verdict token (rc=$_trc); a human decides${_T_BRANCH:+ (tests kept on $_T_BRANCH)}" ;;
     *)       log "TESTER: #$TNUM tester did not run cleanly (rc=$_trc, phase=${_T_PHASE:-none}) — left in_testing for a human; see tester.log" ;;
   esac

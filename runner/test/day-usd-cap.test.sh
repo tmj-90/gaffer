@@ -123,12 +123,18 @@ echo "== fail closed: a configured cap with an UNMEASURABLE spend halts (was: re
 export GAFFER_DAILY_BUDGET_USD=1.00
 # The reader needs node; with no node on PATH the spend is unknowable (the strict reader
 # no longer depends on estimate.mjs — a corrupt ledger is its own failure mode, below).
-_path_save="$PATH"
-[ "$(PATH=/nonexistent gaffer_day_usd_spent)" = "unknown" ] && ok "no node on PATH ⇒ spend reads 'unknown', not 0" || fail "missing node should yield 'unknown' (got '$(PATH=/nonexistent gaffer_day_usd_spent)')"
-if PATH=/nonexistent gaffer_day_usd_cap_ok 2>/dev/null; then fail "cap set + unknown spend should HALT (fail closed)"; else ok "cap set + unknown spend ⇒ NOT OK (halt, fail closed)"; fi
+# A PATH with awk but NO node, in a SUBSHELL with the command hash cleared: a temporary
+# `PATH=… func` assignment plus bash's hashed-command table behaved differently on macOS
+# bash 3.2 (the hashed awk/node survived the PATH change), which made this check
+# non-deterministic across CI runners. The subshell + `hash -r` is unambiguous.
+NONODE="$WORK/bin-nonode"; mkdir -p "$NONODE"; ln -sf "$(command -v awk)" "$NONODE/awk"
+_probe_spent="$( PATH="$NONODE"; hash -r; gaffer_day_usd_spent )"
+[ "$_probe_spent" = "unknown" ] && ok "no node on PATH ⇒ spend reads 'unknown', not 0" || fail "missing node should yield 'unknown' (got '$_probe_spent')"
+if ( PATH="$NONODE"; hash -r; gaffer_day_usd_cap_ok 2>/dev/null ); then fail "cap set + unknown spend should HALT (fail closed)"; else ok "cap set + unknown spend ⇒ NOT OK (halt, fail closed)"; fi
+if ( PATH=/nonexistent; hash -r; gaffer_day_usd_cap_ok 2>/dev/null ); then fail "cap set + no awk should HALT (fail closed)"; else ok "cap set + no awk to compare ⇒ NOT OK (halt, fail closed)"; fi
 unset GAFFER_DAILY_BUDGET_USD
-PATH=/nonexistent gaffer_day_usd_cap_ok 2>/dev/null && ok "no cap + unknown spend ⇒ OK (the guard is OFF, nothing to enforce)" || fail "unknown spend must not block when no cap is set"
-export PATH="$_path_save" GAFFER_DAILY_BUDGET_USD=1.00
+( PATH="$NONODE"; hash -r; gaffer_day_usd_cap_ok 2>/dev/null ) && ok "no cap + unknown spend ⇒ OK (the guard is OFF, nothing to enforce)" || fail "unknown spend must not block when no cap is set"
+export GAFFER_DAILY_BUDGET_USD=1.00
 _ledger_save="$GAFFER_USAGE_LEDGER"; export GAFFER_USAGE_LEDGER="$WORK/never-written.jsonl"
 [ "$(gaffer_day_usd_spent)" = "0" ] && ok "NO ledger yet ⇒ 0 (a fresh factory is never blocked)" || fail "missing ledger should read 0 (got '$(gaffer_day_usd_spent)')"
 gaffer_day_usd_cap_ok && ok "cap set + no ledger ⇒ OK" || fail "no ledger must not halt"

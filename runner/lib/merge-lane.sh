@@ -43,7 +43,11 @@ _gaffer_merge_lane() {
     fi
     log "MERGE: #$_n ready_for_merge + merge gate earned → landing $_branch → $_def in $_repo"
     gaffer_land_delivery "$_n" "$_repo" "$_branch" "$_def" "$_show" MERGE; _rc=$?
-    [ "$_rc" -eq 0 ] || _gaffer_locked .skip.lock _gaffer_append_line "$_HELD_FILE" "$_n"
+    # rc 5 = a conflict the resolver just fixed ON the branch; the ticket is back in
+    # review and returns to ready_for_merge in THIS run once re-approved (and tested).
+    # It must not be held for the run — that stranded a resolved ticket at
+    # ready_for_merge until the next run while its dependents starved (seen live).
+    case "$_rc" in 0|5) ;; *) _gaffer_locked .skip.lock _gaffer_append_line "$_HELD_FILE" "$_n" ;; esac
   done
   return 0
 }

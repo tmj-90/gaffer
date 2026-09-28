@@ -105,7 +105,7 @@ import {
   parseClaudeJson,
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
-import { agentChildEnv } from "./product-owner-run.mjs";
+import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -125,6 +125,12 @@ const CONFIG = {
   dispatchDb: process.env.DISPATCH_DB || resolve(GAFFER_DATA, "dispatch.sqlite"),
   memoryDb: process.env.MEMORY_DB || resolve(GAFFER_DATA, "memory.sqlite"),
   mcpConfig: process.env.MCP_CONFIG || resolve(RUNNER_DIR, ".mcp.json"),
+  // The built MCP server bins the template's ${DISPATCH_MCP_BIN}/${MEMORY_MCP_BIN} resolve
+  // to (the same defaults factory.config.sh / tester-run.mjs use).
+  dispatchMcpBin:
+    process.env.DISPATCH_MCP_BIN || resolve(GAFFER_HOME, "packages/dispatch/dist/mcp/bin.js"),
+  memoryMcpBin:
+    process.env.MEMORY_MCP_BIN || resolve(GAFFER_HOME, "packages/memory/dist/bin/memory-mcp.js"),
   claudeSettings: process.env.CLAUDE_SETTINGS || resolve(RUNNER_DIR, "claude", "settings.json"),
   skillsDir: process.env.SKILLS_DIR || resolve(RUNNER_DIR, "skills"),
   claudeBin: process.env.CLAUDE_BIN || "claude",
@@ -492,7 +498,7 @@ export function buildChildEnv(baseEnv, { dispatchDb, memoryDb, writeRoot }) {
  * product-owner-run.mjs do — so the headless run gets the same safety boundary and the
  * dispatch/memory MCP servers. Returns the runtime MCP config path.
  */
-function installProjectLocalWiring(worktreePath) {
+export function installProjectLocalWiring(worktreePath, ticketNumber, repoName) {
   const claudeDir = resolve(worktreePath, ".claude");
   mkdirSync(claudeDir, { recursive: true });
 
@@ -511,18 +517,30 @@ function installProjectLocalWiring(worktreePath) {
 
   mkdirSync(GAFFER_DATA, { recursive: true });
   const mcpRuntime = resolve(GAFFER_DATA, "mcp-merge-ticket-runtime.json");
-  // The merge-ticket run is NOT a delivery, so there is no recall ticket:
-  // neutralise ${GAFFER_RECALL_TICKET} to EMPTY (memory's read path treats "" as
-  // no-ticket ⇒ inert) so the literal placeholder never leaks into the memory
-  // server env and buckets these reads under a fake ticket.
-  const mcp = readFileSync(CONFIG.mcpConfig, "utf8")
-    .split("${DISPATCH_DB}")
-    .join(CONFIG.dispatchDb)
-    .split("${MEMORY_DB}")
-    .join(CONFIG.memoryDb)
-    .split("${GAFFER_RECALL_TICKET}")
-    .join("");
-  writeFileSync(mcpRuntime, mcp);
+  // Render the SAME way the tester and the product-owner run do (renderPoMcpRuntime:
+  // every placeholder substituted, fail closed on a leftover). This used to replace only
+  // ${DISPATCH_DB}/${MEMORY_DB}/${GAFFER_RECALL_TICKET}, so the server command was the
+  // literal string "${DISPATCH_MCP_BIN}", both servers died at start-up
+  // (CONNECTION_CLOSED) and the resolver could not record its resolution as evidence
+  // (seen live). No claim token (the resolver holds no delivery claim); memory's
+  // direct-apply scope is the ticket's repo; the recall ticket is empty (not a delivery).
+  const rendered = renderPoMcpRuntime(readFileSync(CONFIG.mcpConfig, "utf8"), {
+    dispatchDb: CONFIG.dispatchDb,
+    memoryDb: CONFIG.memoryDb,
+    dispatchMcpBin: CONFIG.dispatchMcpBin,
+    memoryMcpBin: CONFIG.memoryMcpBin,
+    repoName,
+  });
+  const mcp = JSON.parse(rendered);
+  // The resolver holds no claim: scope its evidence writes to THIS ticket (the same
+  // claimless path the reviewer and the tester use — dispatch accepts a note for that
+  // ticket only; it never satisfies an AC). It creates no tickets: no default repo link.
+  mcp.mcpServers.dispatch.env = {
+    ...(mcp.mcpServers.dispatch.env || {}),
+    GAFFER_REVIEW_TICKET: String(ticketNumber),
+  };
+  delete mcp.mcpServers.dispatch.env.GAFFER_DEFAULT_TICKET_REPO;
+  writeFileSync(mcpRuntime, JSON.stringify(mcp, null, 2) + "\n", { mode: 0o600 });
   return mcpRuntime;
 }
 
@@ -1119,7 +1137,7 @@ function main() {
 
   let mcpRuntime;
   try {
-    mcpRuntime = installProjectLocalWiring(worktree);
+    mcpRuntime = installProjectLocalWiring(worktree, resolved.number, repo.name);
   } catch (e) {
     removeWorktree(repo.localPath, worktree);
     fail(`failed to install project-local wiring: ${e?.message ?? e}`);

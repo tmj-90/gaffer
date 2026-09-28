@@ -155,9 +155,11 @@ grep -q "MERGE: #$E conflict — spawning the conflict resolver" "$LOGF" && ok "
 grep -qx "$E" "$GAFFER_DATA/.merge-conflict-resolved" && ok "E: #$E recorded in .merge-conflict-resolved (one resolver pass per ticket)" || fail "E: marker file lacks #$E"
 [ "$(resolver_turns "$E")" = "1" ] && ok "E: exactly one resolver turn spawned for #$E" || fail "E: resolver turns for #$E = $(resolver_turns "$E")"
 grep -q '"kind":"merge-resolver"' "$GAFFER_DATA/usage-ledger.jsonl" 2>/dev/null && ok "E: the resolver's spend is ledgered as kind=merge-resolver" || fail "E: no merge-resolver ledger row"
-# Re-approval of the resolved diff → the lane lands it cleanly on the next tick.
+# Re-approval of the resolved diff → the lane lands it cleanly on the next tick OF THE
+# SAME RUN: a resolved conflict must not sit in the run's held file (it did, live: the
+# re-approved ticket waited at ready_for_merge until the next run).
+grep -qx "$E" "$GAFFER_DATA/.merge-held-tickets" 2>/dev/null && fail "E: a resolved conflict was added to .merge-held-tickets (would not land this run)" || ok "E: resolved ticket is NOT held for the run"
 wg review approve "$E" --reviewer human1 >/dev/null 2>&1
-rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
 [ "$(st "$E")" = "done" ] && ok "E: re-approved resolved branch lands → done" || fail "E: status=$(st "$E") after re-approval"
 _ME="$(git -C "$R" show main:src/a.js)"; [[ "$_ME" == *"helper$E"* ]] && [[ "$_ME" == *"mainSide"* ]] && ok "E: main carries BOTH sides after the landing" || fail "E: main lost a side: $(printf '%s' "$_ME" | tr '\n' '|')"

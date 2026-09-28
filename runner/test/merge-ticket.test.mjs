@@ -62,6 +62,7 @@ const {
   buildPrMergeArgv,
   resolvePrMergeMethod,
   inspectWorkingTree,
+  installProjectLocalWiring,
 } = await import(HELPER);
 
 let passed = 0;
@@ -1231,6 +1232,56 @@ try {
 }
 
 console.log();
+
+console.log("== W: the resolver's MCP runtime is fully rendered and scoped to the ticket ==");
+{
+  // Every ${PLACEHOLDER} substituted (the server command used to be the literal string
+  // "${DISPATCH_MCP_BIN}" → both servers died at start-up → the resolver could not
+  // record its resolution), no claim token, evidence scoped to the ticket, memory
+  // direct-apply scoped to the repo.
+  const wt = mkdtempSync(resolve(tmpdir(), "mt-wiring-"));
+  try {
+    const runtime = installProjectLocalWiring(wt, 42, "demo-repo");
+    const text = readFileSync(runtime, "utf8");
+    assert("W: no leftover ${PLACEHOLDER} in the rendered runtime", !/\$\{[A-Z_]+\}/.test(text));
+    const cfg = JSON.parse(text);
+    const d = cfg.mcpServers.dispatch;
+    const mem = cfg.mcpServers.memory;
+    assert(
+      "W: dispatch server command is a real bin path",
+      /dispatch\/dist\/mcp\/bin\.js$/.test(d.args[0]),
+    );
+    assert(
+      "W: memory server command is a real bin path",
+      /memory\/dist\/bin\/memory-mcp\.js$/.test(mem.args[0]),
+    );
+    assert(
+      "W: dispatch env carries the ticket for claimless evidence",
+      d.env.GAFFER_REVIEW_TICKET === "42",
+    );
+    assert("W: dispatch env carries NO claim token", (d.env.GAFFER_CLAIM_TOKEN ?? "") === "");
+    assert(
+      "W: dispatch env has no default ticket repo (the resolver creates no tickets)",
+      !("GAFFER_DEFAULT_TICKET_REPO" in d.env),
+    );
+    assert(
+      "W: memory direct-apply scope is the ticket's repo",
+      mem.env.GAFFER_TICKET_REPOS === "demo-repo",
+    );
+    assert(
+      "W: memory recall ticket is empty (not a delivery)",
+      (mem.env.GAFFER_RECALL_TICKET ?? "") === "",
+    );
+    assert(
+      "W: settings.json + skills link installed in the worktree",
+      existsSync(resolve(wt, ".claude", "settings.json")) &&
+        existsSync(resolve(wt, ".claude", "skills")),
+    );
+  } finally {
+    rmSync(wt, { recursive: true, force: true });
+  }
+}
+
 if (failures.length === 0) {
   console.log(`PASS — ${passed} checks passed (runner: ${HELPER})`);
   process.exit(0);

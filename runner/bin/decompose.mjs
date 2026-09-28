@@ -76,6 +76,7 @@
 //                    "title":"...", "description":"...",
 //                    "acceptanceCriteria":[ "..." | { "text":"...", "clauseRef":"<clause_id>" } ],
 //                    "priority": <int>, "repo":"<new-repo-name>",
+//                    "risk": "low"|"medium"|"high"|"critical"   (optional → risk_level),
 //                    "bootstrap": <bool>, "dependsOn":[ <ticket-index>, ... ]
 //                 }, ... ] } }
 //   (SPEC-DRIVEN: an AC is a bare string as before, OR — when the planner mapped it to
@@ -447,6 +448,15 @@ export function validateResult(
         description: String(t.description ?? ""),
         acceptanceCriteria: acs,
         priority: Number.isFinite(t.priority) ? t.priority : 0,
+        // Declared risk, when the planner gave one (→ dispatch risk_level). Absent, the
+        // server defaults it (medium; HIGH for a bootstrap, whose scaffold diff is large
+        // by construction — an under-declared bootstrap was held by the observed-risk
+        // gate on every autonomous greenfield run).
+        ...(["low", "medium", "high", "critical"].includes(
+          String(t.risk ?? t.risk_level ?? "").toLowerCase(),
+        )
+          ? { risk_level: String(t.risk ?? t.risk_level).toLowerCase() }
+          : {}),
         // BROWNFIELD: stamp the target repo on EVERY ticket (whatever the model
         // proposed), so the whole epic lands on the existing repo. GREENFIELD:
         // keep the model's chosen new-repo name.

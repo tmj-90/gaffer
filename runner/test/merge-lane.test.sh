@@ -75,9 +75,11 @@ LOGF="$GAFFER_DATA/factory.log"
 
 echo "== A. autonomous: a HUMAN-approved ticket lands at the start of the next tick; its dependent delivers in the same tick =="
 A="$(new_ticket "Landed helper" "deliver a helper")"; wg ticket ready "$A" >/dev/null 2>&1
-DEP="$(new_ticket "Dependent helper" "deliver a helper after #$A")"; wg dep add "$DEP" "$A" >/dev/null 2>&1 || wg ticket depends "$DEP" "$A" >/dev/null 2>&1; wg ticket ready "$DEP" >/dev/null 2>&1
+DEP="$(new_ticket "Dependent helper" "deliver a helper after #$A")"; wg ticket dep add "$DEP" "$A" >/dev/null 2>&1; wg ticket ready "$DEP" >/dev/null 2>&1
 AUTO_MERGE=0 run_tick >/dev/null
 [ "$(st "$A")" = "in_review" ] && ok "A: #$A delivered → in_review" || fail "A: status=$(st "$A")"
+AUTO_MERGE=0 run_tick >/dev/null
+[ "$(st "$DEP")" = "ready" ] && ok "A: dependent #$DEP is NOT deliverable while #$A is unmerged (the edge is real)" || fail "A: dependent status=$(st "$DEP") before the merge — the dependency edge did not hold"
 BA="$(branch_of "$A")"; [ -n "$BA" ] && ok "A: delivery branch recorded ($BA)" || fail "A: no branch_name recorded"
 wg review approve "$A" --reviewer human1 >/dev/null 2>&1
 [ "$(st "$A")" = "ready_for_merge" ] && ok "A: human approve → ready_for_merge (nobody has merged yet)" || fail "A: after approve status=$(st "$A")"

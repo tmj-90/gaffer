@@ -126,7 +126,9 @@ clarifications — pick a sane default and note it in an acceptance criterion.
    bootstrapped repo; brownfield: the existing target repo on every ticket — the helper
    also stamps it), `bootstrap` (greenfield: true ONLY on Phase 0; brownfield: NEVER —
    always false/omitted), `dependsOn` (array of *ticket indexes* within this plan, 0-based,
-   referring to earlier tickets — Phase 0 has `[]`).
+   referring to earlier tickets — Phase 0 has `[]`), and optionally `risk`
+   (`low` | `medium` | `high` | `critical`: what the change touches and how much — auth,
+   secrets, migrations, CI and lockfiles are high; a bootstrap scaffold is high by size).
 7. **Bound the plan.** Keep it to a sensible number of tickets (the helper caps it).
    Prefer fewer, well-scoped tickets over many thin ones. Never exceed the cap.
 8. **Sanity-check.** Phase 0 has no deps and every other ticket transitively depends on

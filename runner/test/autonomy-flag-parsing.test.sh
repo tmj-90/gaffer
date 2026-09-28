@@ -59,8 +59,10 @@ HITS="$(grep -nE "\\\$\\{?(${FLAGS})(:-[^}]*)?\\}?\"? *!?= *\"?1\"?" \
   "$RUNNER_DIR"/tick.sh "$RUNNER_DIR"/loop.sh "$RUNNER_DIR"/gaffer "$RUNNER_DIR"/status.sh \
   "$RUNNER_DIR"/factory.config.sh "$RUNNER_DIR"/lib/*.sh "$RUNNER_DIR"/bin/*.sh 2>/dev/null || true)"
 [ -z "$HITS" ] && ok "no bare-\"1\" comparison of an autonomy flag in the runner" || fail "bare-\"1\" comparisons remain:"$'\n'"$HITS"
-grep -q '_gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"' "$RUNNER_DIR/lib/review.sh" \
-  && ok "review.sh: AFK push gate goes through _gaffer_flag_on" || fail "review.sh push gate not normalised"
+# The AFK push gate moved with the landing block into lib/land.sh (shared by the review
+# pass and the merge lane) — pin it there.
+grep -q '_gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"' "$RUNNER_DIR/lib/land.sh" \
+  && ok "land.sh: the landing's push gate goes through _gaffer_flag_on" || fail "land.sh push gate not normalised"
 grep -q '_gaffer_flag_on "${GAFFER_MEMORY_AUTO_PROMOTE:-${MEMORY_AUTO_APPROVE:-0}}"' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh: memory auto-promote flag normalised before it reaches the memory CLI" || fail "tick.sh promote flag not normalised"
 

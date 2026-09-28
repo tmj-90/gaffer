@@ -17,7 +17,7 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2154  # globals provided by tick.sh at call time
 _gaffer_merge_lane() {
-  [ "${GAFFER_MERGE_LANE:-1}" = "1" ] || return 0
+  case "$(printf '%s' "${GAFFER_MERGE_LANE:-1}" | tr '[:upper:]' '[:lower:]')" in 0|false|no|off) return 0 ;; esac
   declare -F gaffer_land_delivery >/dev/null 2>&1 || return 0
   local _HELD_FILE="$GAFFER_DATA/.merge-held-tickets"; touch "$_HELD_FILE"
   local _MJSON _MNUMS _n _show _repo _branch _def _dec _rc

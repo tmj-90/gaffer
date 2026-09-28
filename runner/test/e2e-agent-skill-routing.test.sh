@@ -214,7 +214,15 @@ _A1B="$(wg ticket show "$A1" 2>/dev/null | jget 'd.ticket.branch_name || ""')"
 grep -q "AFK: #$A1 approved → in_testing (tester lane) — NOT landing" "$GAFFER_DATA/factory.log" && ok "2: the review pass logged that it left the landing to the tester lane" || fail "2: no 'NOT landing' log line for #$A1"
 
 echo "== 3. TESTER: the test role with a CONTRACT-ONLY prompt =="
+# A READY ticket that depends on the in_testing one: the candidate scan finds it, cannot
+# claim it ("nothing deliverable"), and that branch used to exit the tick WITHOUT the
+# tester pass — so a queue blocked behind an in_testing ticket stalled until the loop
+# gave up on empty polls (seen live). The tester must run on that path too.
+A1DEP="$(new_ticket alpha "Follow-up on the endpoint" "depends on the endpoint ticket" low)"
+wg ticket dep add "$A1DEP" "$A1" >/dev/null 2>&1; wg ticket ready "$A1DEP" >/dev/null 2>&1
 ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true
+grep -q "all ready tickets failed delivery this run — nothing deliverable" "$GAFFER_DATA/factory.log" && ok "3: the tick hit the nothing-deliverable path (dependent blocked behind in_testing #$A1)" || fail "3: fixture did not exercise the nothing-deliverable path"
+[ "$(st "$A1DEP")" = "ready" ] && ok "3: the dependent stayed ready (blocked, not delivered)" || fail "3: dependent status=$(st "$A1DEP")"
 T1="$(last_call tester)"
 if [ -z "$T1" ]; then fail "3: the independent tester did not run"; else
   ok "3: the independent tester ran"
@@ -227,6 +235,9 @@ if [ -z "$T1" ]; then fail "3: the independent tester did not run"; else
   grep -q "\"GAFFER_REVIEW_TICKET\": *\"$A1\"" "$T1/mcp.json" 2>/dev/null && ok "3: tester's MCP runtime scoped to #$A1" || fail "3: tester MCP runtime not scoped"
   [ "$(st "$A1")" = "ready_for_merge" ] && ok "3: PASS recorded → ready_for_merge" || fail "3: #$A1 is '$(st "$A1")' after the tester"
 fi
+# The blocked fixture has served its purpose: retire it so the later steps' ticks (which
+# expect an EMPTY ready queue for the clarify pass) are not steered by it.
+wg wont-do "$A1DEP" --reason "fixture for the blocked-queue tester path" >/dev/null 2>&1 || true
 
 echo "== 4. DELIVERY on beta (Python): the python pack, not the TS one =="
 B1="$(new_ticket beta "Fix the login bug in the auth module" "login() accepts an empty password; reproduce with a failing test first." medium)"

@@ -66,6 +66,14 @@ describe("createEpic: greenfield plans that name a not-yet-existing repo", () =>
     expect(res.deferredRepoLinks).toBe(2);
   });
 
+  it("a bootstrap ticket declares HIGH risk by default; an explicit risk and non-bootstrap tickets are untouched", () => {
+    const res = d.createEpic(plan("habit-ledger"), human);
+    expect(d.view(String(res.ticketNumbers[0])).ticket.risk_level).toBe("high");
+    expect(d.view(String(res.ticketNumbers[1])).ticket.risk_level).toBe("medium");
+    const res2 = d.createEpic(plan("other-app", { risk_level: "low" }), human);
+    expect(d.view(String(res2.ticketNumbers[0])).ticket.risk_level).toBe("low");
+  });
+
   it("links a REGISTERED repo exactly as before (nothing deferred)", () => {
     d.registerRepository(
       { name: "habit-ledger", default_branch: "main", local_path: process.cwd() },

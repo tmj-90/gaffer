@@ -859,6 +859,12 @@ if [ "$READY_COUNT" -gt 0 ]; then
     if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       _gaffer_agent_review_pass
     fi
+    # The SAME deadlock one lane further: the blocker may be in_testing (approved,
+    # waiting for the independent tester). Without this the tester ran only in the
+    # end-of-tick flow, which this branch never reaches, so a queue whose every ready
+    # ticket depends on an in_testing one stalled until the loop gave up on empty
+    # polls (seen live). Exits the tick when it tests one; otherwise falls through.
+    declare -F _gaffer_tester_pass >/dev/null 2>&1 && _gaffer_tester_pass
     result no_work; exit 0
   fi
   fi   # end: ready-candidate scan (skipped when _RESUMING=1)

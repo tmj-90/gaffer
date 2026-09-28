@@ -148,6 +148,7 @@ const planObj = {
         acceptanceCriteria: ["Workout persists"],
         repo: "gym",
         priority: 90,
+        risk: "High",
         dependsOn: [0],
       },
     ],
@@ -157,6 +158,17 @@ const planObj = {
 console.log("== AC4: plan result validates + normalises ==");
 {
   const r = validateResult(planObj, 20);
+  if (
+    r.plan?.tickets?.[1]?.risk_level === "high" &&
+    !("risk_level" in (r.plan?.tickets?.[0] ?? {}))
+  )
+    ok(
+      "AC4: a per-ticket `risk` passes through as risk_level (case-normalised); absent stays absent",
+    );
+  else
+    fail(
+      `AC4: risk passthrough wrong: ${JSON.stringify(r.plan?.tickets?.map((t) => t.risk_level))}`,
+    );
   if (
     r.phase === "plan" &&
     r.plan.tickets.length === 2 &&

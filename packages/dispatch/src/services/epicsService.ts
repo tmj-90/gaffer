@@ -95,7 +95,17 @@ export class EpicsService {
             title: spec.title,
             description: spec.description,
             ...(spec.priority !== undefined ? { priority: spec.priority } : {}),
-            ...(spec.risk_level !== undefined ? { risk_level: spec.risk_level } : {}),
+            // A BOOTSTRAP declares HIGH risk unless the plan says otherwise: a fresh
+            // scaffold is a large diff that adds a lockfile, so the server-observed risk
+            // is high by construction — left at the default "medium" the observed-risk
+            // gate escalated EVERY autonomous bootstrap to a human hold (seen live), and
+            // its dependents starved. Declaring what will be observed lets the autonomy
+            // policy decide, as it does for every other ticket.
+            ...(spec.risk_level !== undefined
+              ? { risk_level: spec.risk_level }
+              : spec.bootstrap
+                ? { risk_level: "high" as const }
+                : {}),
             ...(spec.policy_pack !== undefined ? { policy_pack: spec.policy_pack } : {}),
             ...(spec.bootstrap !== undefined ? { bootstrap: spec.bootstrap } : {}),
             // Greenfield: the intended new-repo name rides on `source` so the runner

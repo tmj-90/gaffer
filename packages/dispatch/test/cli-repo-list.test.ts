@@ -75,7 +75,7 @@ describe("dispatch repo list", () => {
   it("lists the visible repos with the fields an operator needs (path, branch, stack, gates)", () => {
     const rows = runCli(dbPath);
     expect(rows.map((r) => r.name)).toEqual(["notes-cli"]);
-    const [r] = rows;
+    const r = rows[0]!;
     expect(r.local_path).toBe("/srv/repos/notes-cli");
     expect(r.default_branch).toBe("main");
     expect(r.stack).toBe("node");

@@ -1816,6 +1816,27 @@ gaffer_review_verdict() {
   printf '%s\n' "$_verdict"
 }
 
+# The REWORK REASON handed back to the delivery agent on a CHANGES verdict. The
+# reviewer's prompt ends its report with the "RECOMMEND CHANGES: <the concrete fix>"
+# line, so the actionable part is the TAIL of the result — but `tail -c 480` cut a
+# long report mid-word and kept the verdict token, so the agent read "…viour and is
+# acceptable… {"verdict":"CHANGES"}" with the actual ask truncated (seen live). Keep
+# the text FROM the last RECOMMEND CHANGES marker (the reviewer's own summary of what
+# to fix), drop the structured verdict token, collapse whitespace, cap from the FRONT
+# at 600 chars; with no marker fall back to the last 480 chars as before.
+#   gaffer_review_reason <reviewer result>   → one line, never empty
+gaffer_review_reason() {
+  local _result="$1" _flat _from _reason
+  _flat="$(printf '%s' "$_result" | tr '\n' ' ' \
+    | sed -E 's/[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"[A-Za-z]+"[[:space:]]*[}]//g' \
+    | tr -s ' ')"
+  _from="$(printf '%s' "$_flat" | grep -oiE 'RECOMMEND[ _-]*CHANGES.*$' | tail -n 1)"
+  if [ -n "$_from" ]; then _reason="$(printf '%s' "$_from" | cut -c1-600)"; else _reason="$(printf '%s' "$_flat" | tail -c 480)"; fi
+  _reason="$(printf '%s' "$_reason" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  [ -n "$_reason" ] || _reason="agent review recommended changes"
+  printf '%s\n' "$_reason"
+}
+
 # Strict-execution-mode provider seam (defines sandbox_wrap_cmd). Sourced last so
 # it can read the GAFFER_DATA / STRICT_* config above. Best-effort: a missing file
 # must not break the suite, but it ships in-tree so this is just defensive.

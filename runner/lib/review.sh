@@ -402,8 +402,9 @@ EOF
         rework)
           # CHANGES verdict on an EARNED ticket → reject to rework with the reviewer's reason.
           # The feedback loop (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
-          _rreason="$(printf '%s' "$R_RESULT" | tr '\n' ' ' | tail -c 480)"
-          [ -n "${_rreason// /}" ] || _rreason="agent review recommended changes"
+          # The concrete ask from the reviewer's RECOMMEND CHANGES line, verdict token
+          # stripped, front-capped (gaffer_review_reason) — not a mid-word tail.
+          _rreason="$(gaffer_review_reason "$R_RESULT")"
           # --as agent (the reviewer principal): this is the REVIEWER AGENT's verdict, not a
           # human's — recorded as human it counted toward the autonomy recommendations'
           # human-agreement rate, so runner rework inflated the case for more autonomy.

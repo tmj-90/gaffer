@@ -1755,6 +1755,12 @@ gaffer_ticket_is_trivial() {
 # GAFFER_SECURITY_REVIEW_REASON for the log. Returns 0 (needs it) / 1 (does not).
 #   $1 ticket number  $2 repo path  $3 base branch  $4 delivery branch
 : "${GAFFER_SECURITY_REVIEW:=1}"
+# MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge
+# ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate
+# held at review time and since earned) through the same landing the review pass uses,
+# so dependents unblock without the dashboard's Merge button. 0 = off (a ready_for_merge
+# ticket then waits for a human to merge — the pre-lane behaviour).
+: "${GAFFER_MERGE_LANE:=1}"
 gaffer_needs_security_review() {
   local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _paths _re
   GAFFER_SECURITY_REVIEW_REASON=""

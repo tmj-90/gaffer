@@ -84,6 +84,7 @@ gaffer_timeout_preflight || { echo "gaffer factory: aborting — no timeout prim
 # this rm fails, a prior run's markers could wrongly suppress work this run — so
 # surface it rather than letting the run proceed on a dirty slate.
 rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" "$GAFFER_DATA/.clarified-tickets" \
+      "$GAFFER_DATA/.merge-held-tickets" \
       "$GAFFER_DATA/.backpressure-repos" "$GAFFER_DATA/.ci-gate-needs-pr-warned" \
       "$GAFFER_DATA/.autonomy-policy-inert-warned" \
   || echo "gaffer factory: WARNING — could not clear stale run markers in $GAFFER_DATA; this run may wrongly skip work." >&2

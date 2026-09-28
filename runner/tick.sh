@@ -17,6 +17,10 @@ source "$HERE/factory.config.sh"
 [ -f "$HERE/lib/clarify.sh" ] && source "$HERE/lib/clarify.sh"
 # shellcheck source=lib/tester.sh
 [ -f "$HERE/lib/tester.sh" ] && source "$HERE/lib/tester.sh"
+# shellcheck source=lib/land.sh
+[ -f "$HERE/lib/land.sh" ] && source "$HERE/lib/land.sh"
+# shellcheck source=lib/merge-lane.sh
+[ -f "$HERE/lib/merge-lane.sh" ] && source "$HERE/lib/merge-lane.sh"
 # $GAFFER_DATA holds the DB copies + the per-tick mcp-runtime file (which carries the
 # live claim token). Lock it to the owner so another local user can't read the token
 # or DBs. 0700 on the dir blocks traversal to any file inside regardless of file mode.
@@ -694,6 +698,11 @@ gaffer_distill_ticket_intent() {
 # ── Agent-review pass ── extracted to lib/review.sh (B-H3, monolith paydown).
 # _gaffer_agent_review_pass is sourced at the top of this file and invoked at two
 # sites below: the no_work juncture and the end-of-tick flow.
+
+# ── MERGE LANE ── lib/merge-lane.sh. Land every ready_for_merge ticket the merge
+# policy permits (human approve, tester PASS, a held gate since earned) BEFORE the
+# candidate scan, so a merge frees its dependents in this same tick. Never exits.
+declare -F _gaffer_merge_lane >/dev/null 2>&1 && _gaffer_merge_lane
 
 # ── PAUSE-ON-CAP: resume-requested paused tickets take priority ──────────────
 # A human pressed Continue on a paused (cap-hit) delivery: re-enter delivery IN THE

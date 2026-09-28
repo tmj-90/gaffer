@@ -379,78 +379,12 @@ EOF
                 --summary "lite: auto-approved trivial — no human review (risk=low, ${GAFFER_LITE_LINES:-?} lines/${GAFFER_LITE_FILES:-?} files). Rework after this = a lite gate-skip that should have held." >/dev/null 2>&1 || true
             fi
             if [ "$_SHIP_PLAN" = "ship" ]; then
-              # Merge gate ALSO earned → safe-merge the delivery branch into the default.
-              # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an
-              # ancestor of RDEFAULT, so merge-base would collapse to RBRANCH (empty diff).
-              _CR_BASE="$(git -C "$RREPO" merge-base "$RBRANCH" "$RDEFAULT" 2>/dev/null || true)"
-              # PR MODE: when the delivery opened a PR (GAFFER_CREATE_PR → pr_url on the
-              # ticket), land it THROUGH the PR (gaffer_pr_merge: `gh pr merge` + a local
-              # fast-forward) — a local merge left the PR open and the branch unpushed. gh
-              # failing/absent falls back to the local merge with the reason logged.
-              _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
-              _MERGED_VIA=local; _mrc=""
-              if [ -n "$_RPR" ]; then
-                gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT"; _prc=$?
-                case "$_prc" in
-                  0) _mrc=0; _MERGED_VIA=pr
-                     log "AFK: #$RNUM merged THROUGH its PR $_RPR (gh pr merge --${GAFFER_PR_MERGE_METHOD:-merge} --delete-branch); local $RDEFAULT fast-forwarded" ;;
-                  3|4) _mrc=0; _MERGED_VIA=pr-stale
-                     log "AFK: #$RNUM merged THROUGH its PR $_RPR but the local $RDEFAULT was NOT fast-forwarded (rc=$_prc: checked out dirty, or the fetch failed) — pull it by hand" ;;
-                  *) log "AFK: #$RNUM has PR $_RPR but the PR merge did not run (rc=$_prc: '${GAFFER_GH_BIN:-gh}' failed or unavailable) — falling back to a LOCAL merge; the PR stays open, close it by hand" ;;
-                esac
-              fi
-              if [ -z "$_mrc" ]; then gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; _mrc=$?; fi
-              case "$_mrc" in
-                0)
-                  wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
-                    && log "AFK: #$RNUM merged ($RBRANCH → $RDEFAULT, via $_MERGED_VIA) and marked done" \
-                    || log "AFK: #$RNUM merged but mark-merged failed — verify state"
-                  # MEMORY FRESHNESS: write-through the delivered change into the file cards
-                  # (refresh changed, add new, drop deleted, advance the watermark) so priming
-                  # stays current instead of decaying. Fail-soft — never blocks the merge.
-                  # (Skipped when the local default branch is stale after a PR merge — the
-                  # range would be wrong; the next merge re-cards it.)
-                  [ "$_MERGED_VIA" = "pr-stale" ] || \
-                  gaffer_refresh_cards "$RREPO" "$(basename "$RREPO")" "$_CR_BASE" "$RBRANCH" \
-                    "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
-                  # POST-MERGE MEMORY WORK — the SAME step the dashboard merge (merge-ticket.mjs)
-                  # runs: apply the digest delta the delivery agent prepared (or stamp
-                  # freshness) and advance the linked feature → shipped. Without this the
-                  # unattended AFK merge left the Repo Digest stale and the feature at
-                  # `building` in every autonomous mode. Best-effort, never blocks the merge.
-                  if [ "${GAFFER_DIGEST_DISABLE:-0}" != "1" ]; then
-                    if node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$RNUM" --apply-digest-only \
-                         >>"$GAFFER_DATA/merge-digest.log" 2>&1; then
-                      log "AFK: #$RNUM digest/feature applied post-merge (see merge-digest.log)"
-                    else
-                      log "AFK: #$RNUM digest/feature apply did not run (rc=$?) — memory not updated for this merge; see merge-digest.log"
-                    fi
-                  fi
-                  # A PR merge already landed upstream: nothing to push (and never push a
-                  # stale local default over it).
-                  if [ "$_MERGED_VIA" = "local" ] && _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"; then
-                    gaffer_auto_push "$RREPO" "$RDEFAULT" \
-                      && log "AFK: pushed $RDEFAULT to origin" \
-                      || log "AFK: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push"
-                  fi
-                  # The delivery branch is now fully merged: drop it so branches don't pile
-                  # up (mirrors merge-ticket.mjs). The review worktree still has it checked
-                  # out (git refuses to delete a checked-out branch), and the reviewer is done,
-                  # so tear the worktree down first (idempotent; the exit trap re-runs it).
-                  # `-d` refuses an unmerged branch, so this can never lose work.
-                  _review_cleanup
-                  if [ "$_MERGED_VIA" = "pr-stale" ]; then
-                    log "AFK: merged branch $RBRANCH left in place (local $RDEFAULT is stale — delete after pulling)"
-                  elif git -C "$RREPO" branch -d "$RBRANCH" >/dev/null 2>&1; then
-                    log "AFK: deleted merged branch $RBRANCH"
-                  else
-                    log "AFK: merged branch $RBRANCH left in place (not deletable right now)"
-                  fi
-                  ;;
-                3) log "AFK: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;
-                1) log "AFK: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human" ;;
-                *) log "AFK: #$RNUM approved but merge could not run (rc=$_mrc) — left in ready_for_merge for a human" ;;
-              esac
+              # Merge gate ALSO earned → land the delivery branch on the default branch.
+              # The landing (PR or local safe-merge, mark-merged, card refresh, digest, push,
+              # branch delete) is the SHARED gaffer_land_delivery (lib/land.sh) — the same
+              # code the merge lane runs for a ticket that reached ready_for_merge by any
+              # other route (human approve, tester PASS).
+              gaffer_land_delivery "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$RSHOW" AFK || true
             else
               # Approve gate earned but the MERGE gate is HELD for this repo/risk (graduated:
               # env floor off + no `auto` merge row). The ticket is approved and waits at

@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 110 |
+| Knobs with a runner default | 111 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 64 |
@@ -201,6 +201,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_SECURITY_REVIEW` | `1` |  | runner | SECURITY SECOND OPINION — decides whether a ticket gets a SECOND, security-focused reviewer pass after the primary reviewer APPROVEs (lib/review.sh). |
+| `GAFFER_MERGE_LANE` | `1` |  | runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the |
 | `CLARIFY_DRAFTS_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria. |
 | `IDLE_DRAFT_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run ALL enabled crew idle loops in one pass (drafts only). Superseded by the maintenance lane below, which runs one prioritised lane per idle tick and can promote its own drafts. |
 | `GAFFER_MAINTENANCE` | _(empty)_ |  | crew, dispatch, runner | env override for the idle maintenance lane: empty = crew.yaml decides, 0 = off, 1 = force |

@@ -164,8 +164,23 @@ gaffer_dod_run_one() {
   # credentials that gaffer_agent_env deliberately scrubbed — making the DoD gate
   # non-reproducible and re-leaking the ambient environment. `bash -c` runs the gate
   # in the scrubbed env the runner already established.
+  # VALIDATION ISOLATION: GAFFER_DOD_WRAP (exported by tick.sh when an OS sandbox
+  # provider wraps the agent — `sandbox-exec -f <profile>` or the docker wrapper
+  # prefix) runs the gate command inside the SAME containment the agent had, with the
+  # same write roots. The gate executes agent-modified code (test files, imports,
+  # config); before this it ran bare with the runner's privileges. The verdict is still
+  # read and recorded HERE, outside the gate process. Empty ⇒ the pre-existing bare
+  # invocation, byte-for-byte. Word-split deliberately: the wrap is a command prefix.
+  # Under the docker provider the image's own PATH/HOME must apply (the host's do not
+  # exist inside) — mirrors lib/worker.sh's substitution for the agent spawn.
+  local _wrap="${GAFFER_DOD_WRAP:-}" _env=()
+  if [ -n "$_wrap" ] && [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ]; then
+    _env=( env "HOME=${GAFFER_SANDBOX_HOME:-/root}"
+               "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
+  fi
+  # shellcheck disable=SC2086  # $_wrap is a command prefix, split on purpose
   ( cd "$wt" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_TIMEOUT" bash -c "$cmd" ) >"$outfile" 2>&1
+    gaffer_timeout "$GAFFER_DOD_TIMEOUT" $_wrap ${_env[@]+"${_env[@]}"} bash -c "$cmd" ) >"$outfile" 2>&1
   return $?
 }
 

@@ -119,6 +119,19 @@ grep -q '"GAFFER_DAILY_BUDGET_USD"' "$RUNNER_DIR/../packages/dispatch/src/api/se
   && ok "GAFFER_DAILY_BUDGET_USD is a dashboard Setting (SETTING_DEFS)" \
   || fail "GAFFER_DAILY_BUDGET_USD should be in SETTING_DEFS"
 
+echo "== fail closed: a configured cap with an UNMEASURABLE spend halts (was: read as \$0) =="
+export GAFFER_DAILY_BUDGET_USD=1.00
+_lib_save="$GAFFER_ESTIMATE_LIB"; export GAFFER_ESTIMATE_LIB="$WORK/no-such-estimate-lib.mjs"
+[ "$(gaffer_day_usd_spent)" = "unknown" ] && ok "missing estimate lib ⇒ spend reads 'unknown', not 0" || fail "missing lib should yield 'unknown' (got '$(gaffer_day_usd_spent)')"
+if gaffer_day_usd_cap_ok 2>/dev/null; then fail "cap set + unknown spend should HALT (fail closed)"; else ok "cap set + unknown spend ⇒ NOT OK (halt, fail closed)"; fi
+unset GAFFER_DAILY_BUDGET_USD
+gaffer_day_usd_cap_ok 2>/dev/null && ok "no cap + unknown spend ⇒ OK (the guard is OFF, nothing to enforce)" || fail "unknown spend must not block when no cap is set"
+export GAFFER_ESTIMATE_LIB="$_lib_save" GAFFER_DAILY_BUDGET_USD=1.00
+_ledger_save="$GAFFER_USAGE_LEDGER"; export GAFFER_USAGE_LEDGER="$WORK/never-written.jsonl"
+[ "$(gaffer_day_usd_spent)" = "0" ] && ok "NO ledger yet ⇒ 0 (a fresh factory is never blocked)" || fail "missing ledger should read 0 (got '$(gaffer_day_usd_spent)')"
+gaffer_day_usd_cap_ok && ok "cap set + no ledger ⇒ OK" || fail "no ledger must not halt"
+export GAFFER_USAGE_LEDGER="$_ledger_save"; unset GAFFER_DAILY_BUDGET_USD
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

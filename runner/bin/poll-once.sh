@@ -26,15 +26,24 @@ mkdir -p "$GAFFER_DATA"
 
 # Same caps as loop.sh, checked BEFORE any paid work. DRY_RUN never spends, so it is
 # never gated (a preview must always be possible).
+_day_reserved=0
 if [ "$DRY_RUN" != "1" ]; then
-  if ! gaffer_day_cap_ok; then
-    echo "gaffer poll: per-day cap (MAX_TICKS_PER_DAY=$MAX_TICKS_PER_DAY, used $(gaffer_day_count)) reached — not polling." >&2
-    echo "TICK_RESULT=no_work"; exit 0
-  fi
   if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
     echo "gaffer poll: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — not polling." >&2
     echo "TICK_RESULT=no_work"; exit 0
   fi
+  # ATOMIC ADMISSION (lib/budget.sh): reserve today's slot in one locked
+  # read-modify-write BEFORE the tick — a Poll racing a daemon loop (or a pool) used
+  # to check-then-bump and both admitted themselves against the same last slot. A
+  # no_work poll hands the slot back below.
+  gaffer_reserve_day_tick; _rsv=$?
+  case "$_rsv" in
+    0) _day_reserved=1 ;;
+    1) echo "gaffer poll: per-day cap (MAX_TICKS_PER_DAY=$MAX_TICKS_PER_DAY, used $(gaffer_day_count)) reached — not polling." >&2
+       echo "TICK_RESULT=no_work"; exit 0 ;;
+    *) echo "gaffer poll: ERROR — could not persist the per-day tick count; the day cap can no longer be enforced — not polling." >&2
+       echo "TICK_RESULT=error"; exit 1 ;;
+  esac
 fi
 # R-10: fail closed before spawning — the tick's own agent calls need a timeout
 # primitive, and so does the outer bound below.
@@ -59,8 +68,8 @@ res="$(sed -n 's/^TICK_RESULT=//p' "${_POLL_OUT:-/dev/null}" 2>/dev/null | tail 
 # Persist the day count for a tick that may have spent — the same rule as loop.sh
 # (gaffer_tick_counts_toward_day_cap: a no_work poll is exempt). A failed bump is
 # logged loudly: the cap can no longer be enforced for this day.
-if [ "$DRY_RUN" != "1" ] && gaffer_tick_counts_toward_day_cap "$res"; then
-  gaffer_bump_day_count \
-    || echo "gaffer poll: ERROR — could not persist the per-day tick count; the day cap can no longer be enforced." >&2
+# The slot was reserved up front; a poll that provably spent nothing gives it back.
+if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
+  gaffer_refund_day_tick || true
 fi
 exit "$rc"

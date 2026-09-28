@@ -25,8 +25,9 @@
 #
 # Stop conditions per worker:
 #   • EMPTY_POLL_LIMIT consecutive no_work ticks (the queue is drained for us), or
-#   • MAX_TICKS ticks (shared per-run cost guard, divided across the pool by
-#     loop.sh — see WORKER_MAX_TICKS), or
+#   • the shared per-run MAX_TICKS budget is exhausted (one counter for the whole
+#     pool, reserved atomically per tick — GAFFER_RUN_TICKS_FILE; a hand-run worker
+#     without it falls back to its static WORKER_MAX_TICKS share), or
 #   • the per-day tick cap (gaffer_day_cap_ok) or the per-day USD cap
 #     (gaffer_day_usd_cap_ok, GAFFER_DAILY_BUDGET_USD) is hit.
 set -uo pipefail
@@ -48,18 +49,40 @@ W_MAX_TICKS="${WORKER_MAX_TICKS:-$MAX_TICKS}"
 worked=0; reviewed=0; clarified=0; idle=0; nowork=0; errors=0; ticks=0
 empties=0
 
-while [ "$ticks" -lt "$W_MAX_TICKS" ]; do
+# Shared per-run budget (loop.sh exports GAFFER_RUN_TICKS_FILE): each tick is RESERVED
+# atomically against MAX_TICKS before it starts, so the pool total is bounded exactly.
+# Without the shared counter (a worker run by hand) the static per-worker share applies.
+_reserve_run_tick() {
+  if [ -n "${GAFFER_RUN_TICKS_FILE:-}" ]; then
+    gaffer_reserve_run_tick "$GAFFER_RUN_TICKS_FILE" "$MAX_TICKS"
+  else
+    [ "$ticks" -lt "$W_MAX_TICKS" ]
+  fi
+}
+_refund_run_tick() { [ -n "${GAFFER_RUN_TICKS_FILE:-}" ] && gaffer_refund_run_tick "$GAFFER_RUN_TICKS_FILE" || true; }
+
+while _reserve_run_tick; do
   # Per-day cost cap is a SHARED guard — honour it inside every worker so the pool
-  # can't collectively blow past MAX_TICKS_PER_DAY.
-  if ! gaffer_day_cap_ok; then
-    echo "worker $WORKER_ID: per-day cap reached — stopping." >&2
-    break
+  # can't collectively blow past MAX_TICKS_PER_DAY. ATOMIC ADMISSION: the slot is
+  # reserved in one locked read-modify-write BEFORE the tick (lib/budget.sh); the old
+  # check-then-bump let N workers all admit themselves against the same last slot.
+  # DRY_RUN ticks never spend, so they neither reserve nor count (BUG 6).
+  _day_reserved=0
+  if [ "${DRY_RUN:-0}" != "1" ]; then
+    gaffer_reserve_day_tick; _rsv=$?
+    case "$_rsv" in
+      0) _day_reserved=1 ;;
+      1) echo "worker $WORKER_ID: per-day cap reached — stopping." >&2; _refund_run_tick; break ;;
+      *) echo "worker $WORKER_ID: ERROR — could not persist per-day tick count; stopping." >&2; _refund_run_tick; break ;;
+    esac
   fi
   # B28(d): the per-UTC-day USD ceiling (GAFFER_DAILY_BUDGET_USD) is a SHARED guard
   # too. loop.sh's serial path and the daemon consulted it, but a worker pool did not
   # — so at GAFFER_CONCURRENCY>1 the USD cap was silently ignored. Same clean stop.
   if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
     echo "worker $WORKER_ID: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — stopping." >&2
+    [ "$_day_reserved" = 1 ] && gaffer_refund_day_tick || true
+    _refund_run_tick
     break
   fi
   ticks=$((ticks + 1))
@@ -79,11 +102,10 @@ while [ "$ticks" -lt "$W_MAX_TICKS" ]; do
   # budget — skip the bump entirely when DRY_RUN=1.
   # B28: a `no_work` tick spawned no agent either — it is exempt, so an idle pool
   # cannot burn the day cap (gaffer_tick_counts_toward_day_cap, lib/budget.sh).
-  if [ "${DRY_RUN:-0}" != "1" ] && gaffer_tick_counts_toward_day_cap "$res"; then
-    if ! gaffer_bump_day_count; then
-      echo "worker $WORKER_ID: ERROR — could not persist per-day tick count; stopping." >&2
-      break
-    fi
+  # The slot was reserved up front (atomic admission); a tick that provably spent
+  # nothing (`no_work`) gives it back so the counter still means "may have paid".
+  if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
+    gaffer_refund_day_tick || true
   fi
   case "${res:-unknown}" in
     worked)            worked=$((worked + 1)); empties=0 ;;
@@ -110,7 +132,7 @@ while [ "$ticks" -lt "$W_MAX_TICKS" ]; do
     echo "worker $WORKER_ID: $empties consecutive empty polls — stopping." >&2
     break
   fi
-  [ "$ticks" -lt "$W_MAX_TICKS" ] && sleep "$TICK_SLEEP"
+  sleep "$TICK_SLEEP"
 done
 
 printf '%s %s %s %s %s %s %s\n' "$worked" "$reviewed" "$clarified" "$idle" "$nowork" "$errors" "$ticks" > "$RESULT_FILE"

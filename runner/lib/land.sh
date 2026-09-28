@@ -34,7 +34,19 @@ gaffer_land_delivery() {
          log "$_WHO: #$RNUM merged THROUGH its PR $_RPR (gh pr merge --${GAFFER_PR_MERGE_METHOD:-merge} --delete-branch); local $RDEFAULT fast-forwarded" ;;
       3|4) _mrc=0; _MERGED_VIA=pr-stale
          log "$_WHO: #$RNUM merged THROUGH its PR $_RPR but the local $RDEFAULT was NOT fast-forwarded (rc=$_prc: checked out dirty, or the fetch failed) — pull it by hand" ;;
-      *) log "$_WHO: #$RNUM has PR $_RPR but the PR merge did not run (rc=$_prc: '${GAFFER_GH_BIN:-gh}' failed or unavailable) — falling back to a LOCAL merge; the PR stays open, close it by hand" ;;
+      *)
+        # PR MODE means "done = the PR merged upstream". A failed PR merge (gh absent,
+        # auth failed, PR not mergeable / checks red / review required) must NOT be
+        # redefined as success by landing the branch locally — that marks the ticket
+        # done while the PR sits open and the remote default branch never gets the
+        # change. HOLD at ready_for_merge for a human. GAFFER_PR_LOCAL_FALLBACK=1 is
+        # the explicit operator choice to keep the old local fallback.
+        if _gaffer_flag_on "${GAFFER_PR_LOCAL_FALLBACK:-0}"; then
+          log "$_WHO: #$RNUM has PR $_RPR but the PR merge did not run (rc=$_prc: '${GAFFER_GH_BIN:-gh}' failed or unavailable) — GAFFER_PR_LOCAL_FALLBACK=1: falling back to a LOCAL merge; the PR stays open, close it by hand"
+        else
+          log "$_WHO: #$RNUM has PR $_RPR but the PR merge FAILED (rc=$_prc: '${GAFFER_GH_BIN:-gh}' failed, unauthenticated or the PR is not mergeable) — HELD in ready_for_merge for a human; merge the PR by hand (or set GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)"
+          return 4
+        fi ;;
     esac
   fi
   if [ -z "$_mrc" ]; then gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; _mrc=$?; fi

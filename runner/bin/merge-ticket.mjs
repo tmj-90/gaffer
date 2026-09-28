@@ -928,6 +928,9 @@ function main() {
   //    left the PR open and the default branch unpushed. If gh fails, fall back to the
   //    local conflict-safe merge (gaffer_auto_merge semantics) and say why.
   const ghBin = process.env.GAFFER_GH_BIN || "gh";
+  // GAFFER_PR_LOCAL_FALLBACK=1: the operator's explicit choice to land a PR-mode ticket
+  // LOCALLY when the PR merge cannot run. Off by default — a failed PR merge holds.
+  const prLocalFallback = /^(1|true|yes|on)$/i.test(process.env.GAFFER_PR_LOCAL_FALLBACK || "");
   let landed = null;
   if (resolved.prUrl) {
     if (ghAvailable(ghBin)) {
@@ -953,17 +956,33 @@ function main() {
               `fast-forwarded (${pr.ffReason}) — pull it by hand`,
           );
         }
-      } else {
+      } else if (prLocalFallback) {
         log(
-          `PR merge for #${resolved.number} failed — ${pr.reason}; falling back to a LOCAL merge of ` +
-            `${branch} (the PR ${resolved.prUrl} stays open — close it by hand)`,
+          `PR merge for #${resolved.number} failed — ${pr.reason}; GAFFER_PR_LOCAL_FALLBACK=1: falling back to a ` +
+            `LOCAL merge of ${branch} (the PR ${resolved.prUrl} stays open — close it by hand)`,
         );
+      } else {
+        // PR MODE means "done = the PR merged upstream". Do not redefine a failed PR
+        // merge as success by landing locally: the ticket would read done while the PR
+        // sits open and the remote default branch never gets the change. Hold.
+        fail(
+          `PR merge for #${resolved.number} failed — ${pr.reason}; ticket HELD in ready_for_merge for a human ` +
+            `(merge ${resolved.prUrl} by hand, or set GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)`,
+        );
+        return;
       }
-    } else {
+    } else if (prLocalFallback) {
       log(
         `#${resolved.number} has PR ${resolved.prUrl} but '${ghBin}' is not available (GAFFER_GH_BIN) — ` +
-          `falling back to a LOCAL merge of ${branch} (the PR stays open — close it by hand)`,
+          `GAFFER_PR_LOCAL_FALLBACK=1: falling back to a LOCAL merge of ${branch} (the PR stays open — close it by hand)`,
       );
+    } else {
+      fail(
+        `#${resolved.number} has PR ${resolved.prUrl} but '${ghBin}' is not available (GAFFER_GH_BIN) — ` +
+          `ticket HELD in ready_for_merge for a human (install/authenticate gh and merge the PR, or set ` +
+          `GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)`,
+      );
+      return;
     }
   }
   if (!landed) {

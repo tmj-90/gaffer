@@ -147,7 +147,7 @@ gaffer_crash_cleanup() {
   [ -n "${MCP_RUNTIME:-}" ] && rm -f "$MCP_RUNTIME" 2>/dev/null || true
   # B25(a): the docker sandbox's per-call root files are named with THIS tick's PID
   # (lib/sandbox.sh) so they can be swept here without touching a concurrent worker's.
-  rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* 2>/dev/null || true
+  rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* "$GAFFER_DATA"/strict-profile.$$.* 2>/dev/null || true
   # A paused delivery keeps its worktree + branch ALIVE for the one-click resume —
   # the crash-cleanup must never tear it down. This is the load-bearing PAUSE-ON-CAP
   # invariant: a paused worktree survives the tick's exit.
@@ -1916,6 +1916,16 @@ EOF
   # containment; worktree isolation + safety hook still apply). STRICT_MODE=0
   # leaves WRAP empty, so the invocation below is byte-for-byte as before.
   WRAP=""
+  # VALIDATION ISOLATION: the DoD gates (tests / typecheck / lint) and the AC check
+  # commands run code the agent has just modified — a test file, an import, a config —
+  # with the RUNNER's privileges. Sandboxing only `claude -p` left that step bare. The
+  # same OS wrap the agent gets is handed to lib/dod.sh (gaffer_dod_run_one) through
+  # GAFFER_DOD_WRAP, so under an active provider the gate commands run inside the same
+  # container / profile with the same write roots. Empty when no provider wraps the
+  # agent (then the gates are only as contained as the agent was — documented in
+  # SECURITY.md). GAFFER_DOD_SANDBOX=0 opts a repo out (a gate that cannot run inside
+  # the image); the verdict is still recorded by the runner, outside the gate process.
+  export GAFFER_DOD_WRAP=""
   # Consult the provider when the sandbox is ON (STRICT_MODE=1) OR REQUIRED
   # (GAFFER_STRICT_REQUIRE — auto-set by every autonomy flag). Gating this on
   # STRICT_MODE alone let `GAFFER_MODE=autonomous` announce "fails closed without an
@@ -1927,6 +1937,11 @@ EOF
     if WRAP="$(sandbox_wrap_cmd "$WRITE_ROOTS" "$READ_ROOTS" 2>>"$GAFFER_LOG")"; then
       if [ -n "$WRAP" ]; then
         log "STRICT_MODE active: wrapping live agent via provider '${SANDBOX_PROVIDER:-sandbox-exec}' ($WRAP)"
+        case "${GAFFER_DOD_SANDBOX:-1}" in
+          0|false|no|off) log "STRICT_MODE: GAFFER_DOD_SANDBOX=0 — DoD gates + AC checks run OUTSIDE the OS sandbox (operator opt-out)" ;;
+          *) export GAFFER_DOD_WRAP="$WRAP"
+             log "STRICT_MODE: DoD gates + AC checks will run under the same OS sandbox as the agent" ;;
+        esac
       else
         log "STRICT_MODE active but provider '${SANDBOX_PROVIDER:-sandbox-exec}' added no OS sandbox — worktree isolation + safety hook still apply"
       fi

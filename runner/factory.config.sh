@@ -405,6 +405,15 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 : "${GAFFER_DOD_TYPECHECK:=1}"       # 1 = run the typecheck gate (auto-detected command)
 : "${GAFFER_DOD_TYPECHECK_CMD:=}"    # override the auto-detected typecheck command
 : "${GAFFER_DOD_TIMEOUT:=900}"       # wall-clock cap (seconds) per gate and per AC check command
+# Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent
+# (they execute agent-modified code). 0 opts out (a gate that cannot run inside the
+# image) and is logged; the verdict is always recorded by the runner outside the gate.
+: "${GAFFER_DOD_SANDBOX:=1}"
+# PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR
+# stays open — the previous behaviour). Default 0: HOLD the ticket at ready_for_merge
+# for a human; "done" means the PR merged upstream.
+: "${GAFFER_PR_LOCAL_FALLBACK:=0}"
+export GAFFER_DOD_SANDBOX GAFFER_PR_LOCAL_FALLBACK   # read by lib/dod.sh, lib/land.sh and bin/merge-ticket.mjs (a child process)
 : "${GAFFER_DOD_OUTPUT_TAIL:=40}"    # lines of gate output kept as evidence / rework feedback
 : "${GAFFER_REWORK_HISTORY_BYTES:=8000}"   # prior-attempt feedback carried into a rework prompt
 : "${GAFFER_JUDGE_DIFF_BYTES:=120000}"     # diff bytes handed to the eval judge

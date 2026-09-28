@@ -120,6 +120,22 @@ applies inside.
 4. Honest docs: `STRICT_MODE.md` + `SECURITY.md` updated to describe Mode 2 as the
    read+egress boundary, Mode 1 as the write sandbox.
 
+## Known gap: the data plane lives inside the worker's filesystem
+
+`$GAFFER_DATA` is bind-mounted read-write (with every non-DB entry masked) because the
+MCP servers run *inside* the container and write the canonical SQLite files. That
+means the worker's shell and the services enforcing ticket/approval rules share a
+filesystem: a process that ignores the MCP tools can open `dispatch.sqlite` directly.
+The intended fix is to run the MCP data plane on the **host** and expose it to the
+container over a unix socket (or a loopback TCP port on the internal network), so the
+DBs are never mounted. Until then the provider contains the *host* (reads, egress,
+credentials) — it does not make the factory's decision state tamper-proof against
+the agent. `SECURITY.md` states this under residual limits.
+
+The DoD gates and AC checks now run under the same wrap as the agent
+(`GAFFER_DOD_WRAP`, from `tick.sh`), so validation of agent-modified code happens
+inside the container too, with the verdict read on the host.
+
 ## Constraints / open questions
 
 - **Cannot be validated on the current dev machine** — Docker/VMs don't boot here

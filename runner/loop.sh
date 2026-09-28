@@ -115,15 +115,25 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
   # (rounded up) so the pool's TOTAL ticks still honour MAX_TICKS. Each worker
   # carries the SAME per-tick wall-clock cap as the serial path.
   N="$GAFFER_CONCURRENCY"
-  WORKER_MAX_TICKS=$(( (MAX_TICKS + N - 1) / N ))
-  export WORKER_MAX_TICKS
   WORKERS_DIR="$GAFFER_DATA/.workers"
   rm -rf "$WORKERS_DIR"; mkdir -p "$WORKERS_DIR"
-  echo "gaffer factory: parallel mode — spawning $N worker(s) (each up to $WORKER_MAX_TICKS tick(s); MAX_TICKS=$MAX_TICKS total)."
+  # The per-run MAX_TICKS is ONE shared budget, reserved atomically per tick by every
+  # worker (gaffer_reserve_run_tick, lib/budget.sh) — so the pool's total can never
+  # exceed MAX_TICKS. The old static split gave each worker ceil(MAX_TICKS/N) ticks,
+  # which admits N×ceil(MAX_TICKS/N): 10 ticks across 3 workers ran 12, 1 tick across
+  # 4 workers ran 4. The per-worker WORKER_MAX_TICKS is kept only as a hand-run
+  # fallback (worker.sh without the shared counter) and is now the honest
+  # quotient-plus-remainder share whose sum is exactly MAX_TICKS.
+  GAFFER_RUN_TICKS_FILE="$WORKERS_DIR/ticks"
+  : > "$GAFFER_RUN_TICKS_FILE"
+  export GAFFER_RUN_TICKS_FILE
+  _q=$(( MAX_TICKS / N )); _r=$(( MAX_TICKS % N ))
+  echo "gaffer factory: parallel mode — spawning $N worker(s) sharing MAX_TICKS=$MAX_TICKS (atomic per-tick reservation; pool total ≤ $MAX_TICKS)."
   pids=()
   i=0
   while [ "$i" -lt "$N" ]; do
-    bash "$HERE/worker.sh" "$i" &
+    _share=$_q; [ "$i" -lt "$_r" ] && _share=$((_q + 1))
+    WORKER_MAX_TICKS="$_share" bash "$HERE/worker.sh" "$i" &
     pids+=("$!")
     i=$((i + 1))
   done
@@ -188,6 +198,21 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
     echo "gaffer factory: per-day USD cap (GAFFER_DAILY_BUDGET_USD=$GAFFER_DAILY_BUDGET_USD, spent \$$(gaffer_day_usd_spent)) reached — stopping."
     break
   fi
+  # ATOMIC ADMISSION (lib/budget.sh): reserve today's slot BEFORE the tick runs, in one
+  # locked read-modify-write, instead of check-now/bump-later. At N=1 this is the same
+  # count; it matters when a daemon loop and a dashboard Poll (or a pool) share the
+  # counter — check-then-bump let every caller admit itself against the same last
+  # slot. A tick that spends nothing (`no_work`) hands its slot back below. DRY_RUN
+  # ticks never spend, so they neither reserve nor count (BUG 6).
+  _day_reserved=0
+  if [ "${DRY_RUN:-0}" != "1" ]; then
+    gaffer_reserve_day_tick; _rsv=$?
+    case "$_rsv" in
+      0) _day_reserved=1 ;;
+      1) echo "gaffer factory: per-day cap (MAX_TICKS_PER_DAY=$MAX_TICKS_PER_DAY, used $(gaffer_day_count)) reached — stopping."; break ;;
+      *) echo "gaffer factory: ERROR — could not persist the per-day tick count; the day cap can no longer be enforced. Stopping to avoid unbounded spend." >&2; break ;;
+    esac
+  fi
   ticks=$((ticks + 1))
   # Wrap the whole tick in an outer wall-clock cap so a tick wedged anywhere can't
   # burn unbounded wall-clock. FINDING-6 (a): the bound is GAFFER_TICK_OUTER_TIMEOUT
@@ -209,11 +234,10 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # daemon burn the whole day cap in ~37 min at the defaults, then sit out the day.
   # Only ticks that did (or may have done) paid work advance the counter
   # (gaffer_tick_counts_toward_day_cap, lib/budget.sh).
-  if [ "${DRY_RUN:-0}" != "1" ] && gaffer_tick_counts_toward_day_cap "$res"; then
-    if ! gaffer_bump_day_count; then
-      echo "gaffer factory: ERROR — could not persist the per-day tick count; the day cap can no longer be enforced. Stopping to avoid unbounded spend." >&2
-      break
-    fi
+  # The slot was reserved up front (atomic admission). A tick that provably spent
+  # nothing gives it back so the counter still means "ticks that may have paid".
+  if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
+    gaffer_refund_day_tick || true
   fi
   echo "tick $ticks/$MAX_TICKS → ${res:-unknown}"
 

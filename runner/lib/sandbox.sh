@@ -158,7 +158,17 @@ sandbox_wrap_cmd() {
         return 0
       fi
       mkdir -p "${GAFFER_DATA:-/tmp}" 2>/dev/null || true
-      local profile_path="${GAFFER_DATA:-/tmp}/strict-profile.sb"
+      # PER-CALL profile file, never a fixed shared path. Every invocation used to write
+      # `$GAFFER_DATA/strict-profile.sb` and hand back a command that loads it LATER —
+      # under GAFFER_CONCURRENCY>1 worker B could overwrite it between worker A composing
+      # its wrap and A's sandbox-exec starting, so A ran under B's write roots. Same
+      # pattern as the docker branch below: mktemp'd, prefixed with the tick's PID so
+      # tick.sh's exit cleanup sweeps exactly its own files.
+      local profile_path
+      profile_path="$(mktemp "${GAFFER_DATA:-/tmp}/strict-profile.$$.XXXXXX" 2>/dev/null)" || {
+        printf 'strict-mode: sandbox-exec provider could not create the per-call profile file under %s\n' "${GAFFER_DATA:-/tmp}" >&2
+        return 1
+      }
       _sandbox_exec_profile "$write_roots" "$profile_path"
       printf 'sandbox-exec -f %s' "$profile_path"
       return 0

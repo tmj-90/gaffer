@@ -22,8 +22,9 @@
 //   AC12 the resolve-merge-conflict SKILL.md exists with the expected frontmatter name
 //   B14  PR MODE: a ticket with a pr_url is merged THROUGH the PR (`gh pr merge <url>
 //        --<GAFFER_PR_MERGE_METHOD> --delete-branch`, stub gh) and the local default
-//        branch is fast-forwarded — checked out or not; gh failing / absent falls back
-//        to the local merge with the reason logged; no pr_url ⇒ no gh call at all
+//        branch is fast-forwarded — checked out or not; gh failing / absent
+//        HOLDS the ticket with the reason logged (GAFFER_PR_LOCAL_FALLBACK=1 opts into
+//        the local merge instead); no pr_url ⇒ no gh call at all
 //
 // Zero deps (node:sqlite ships with Node 22+; needs git on PATH). No live claude.
 // Run: node test/merge-ticket.test.mjs
@@ -1056,11 +1057,35 @@ console.log("== B14: GAFFER_PR_MERGE_METHOD=squash reaches gh ==");
   );
 }
 
-console.log("== B14: gh FAILS → falls back to the local merge with the reason logged ==");
+console.log(
+  "== B14: gh FAILS → the ticket is HELD (no silent local merge; PR mode means the PR merges) ==",
+);
 {
   const f = prFixture("pr-ghfail");
   const { code, out, err } = runLive({ DISPATCH_DB: f.db, STUB_GH_FAIL: "1" }, ["--ticket", "7"]);
-  assert("still merged (exit 0)", code === 0 && out && out.phase === "merged");
+  assert("exit non-zero, nothing merged", code !== 0 && !(out && out.phase === "merged"));
+  assert(
+    "the hold and its reason are logged (with the opt-in named)",
+    /HELD in ready_for_merge/.test(err) &&
+      /not mergeable/.test(err) &&
+      /GAFFER_PR_LOCAL_FALLBACK/.test(err),
+  );
+  assert(
+    "main does NOT have the change (no local merge happened)",
+    !readFileSync(resolve(f.repo, "file.txt"), "utf8").includes("feature"),
+  );
+}
+
+console.log(
+  "== B14: gh FAILS + GAFFER_PR_LOCAL_FALLBACK=1 → the explicit local fallback (old behaviour, opted in) ==",
+);
+{
+  const f = prFixture("pr-ghfail-fallback");
+  const { code, out, err } = runLive(
+    { DISPATCH_DB: f.db, STUB_GH_FAIL: "1", GAFFER_PR_LOCAL_FALLBACK: "1" },
+    ["--ticket", "7"],
+  );
+  assert("merged (exit 0)", code === 0 && out && out.phase === "merged");
   assert("via:local", out && out.via === "local");
   assert(
     "the fallback and its reason are logged",
@@ -1072,15 +1097,24 @@ console.log("== B14: gh FAILS → falls back to the local merge with the reason 
   );
 }
 
-console.log("== B14: gh NOT available → local merge, logged ==");
+console.log(
+  "== B14: gh NOT available → HELD, logged (install gh or opt into the local fallback) ==",
+);
 {
   const f = prFixture("pr-nogh");
-  const { out, err } = runLive(
+  const { code, out, err } = runLive(
     { DISPATCH_DB: f.db, GAFFER_GH_BIN: resolve(WORKDIR, "no-such-gh") },
     ["--ticket", "7"],
   );
-  assert("via:local", out && out.via === "local");
-  assert("logged that gh is not available", /not available/.test(err) && /GAFFER_GH_BIN/.test(err));
+  assert("exit non-zero, nothing merged", code !== 0 && !(out && out.phase === "merged"));
+  assert(
+    "logged that gh is not available and the ticket is held",
+    /not available/.test(err) && /GAFFER_GH_BIN/.test(err) && /HELD in ready_for_merge/.test(err),
+  );
+  assert(
+    "main does NOT have the change",
+    !readFileSync(resolve(f.repo, "file.txt"), "utf8").includes("feature"),
+  );
 }
 
 console.log("== B14: no pr_url → the local merge, byte-identical to before (no gh call) ==");

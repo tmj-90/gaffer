@@ -45,6 +45,95 @@ _gaffer_bump_day_count_unlocked() {
   printf '%s %s\n' "$today" "$c" > "$DAILY_COUNTER_FILE"
 }
 
+# ── ATOMIC ADMISSION (reserve, then refund) ──────────────────────────────────
+# Checking the cap, running the tick and THEN bumping the count is not atomic: N
+# workers that all read "one slot left" all admit themselves against it, and the pool
+# overshoots MAX_TICKS_PER_DAY by up to N-1. Reservation folds the check and the
+# increment into ONE locked read-modify-write: a worker either owns a slot before it
+# spawns anything, or it does not run. A tick that turns out to have spent nothing
+# (`no_work`) gives its slot back (gaffer_refund_day_tick), so the counter still
+# means "ticks that may have paid" exactly as before.
+#
+# gaffer_reserve_day_tick → 0 slot reserved (count advanced); 1 at/over the cap
+# (nothing written); 2 could not persist (the caller must STOP — the cap can no
+# longer be enforced, the same fail-stop as a failed bump).
+gaffer_reserve_day_tick() {
+  if declare -F gaffer_with_lock >/dev/null 2>&1; then
+    gaffer_with_lock "${GAFFER_DATA:-$(dirname "$DAILY_COUNTER_FILE")}/.daycount.lock" \
+      _gaffer_reserve_day_tick_unlocked
+  else
+    _gaffer_reserve_day_tick_unlocked
+  fi
+}
+_gaffer_reserve_day_tick_unlocked() {
+  local today c
+  today="$(date +%Y-%m-%d)"
+  c="$(gaffer_day_count)"
+  if [ "${MAX_TICKS_PER_DAY:-0}" -gt 0 ] 2>/dev/null && [ "$c" -ge "$MAX_TICKS_PER_DAY" ]; then
+    return 1
+  fi
+  printf '%s %s\n' "$today" "$((c + 1))" > "$DAILY_COUNTER_FILE" || return 2
+  return 0
+}
+# gaffer_refund_day_tick — give back ONE reserved slot (floor 0, same day only).
+gaffer_refund_day_tick() {
+  if declare -F gaffer_with_lock >/dev/null 2>&1; then
+    gaffer_with_lock "${GAFFER_DATA:-$(dirname "$DAILY_COUNTER_FILE")}/.daycount.lock" \
+      _gaffer_refund_day_tick_unlocked
+  else
+    _gaffer_refund_day_tick_unlocked
+  fi
+}
+_gaffer_refund_day_tick_unlocked() {
+  local today c
+  today="$(date +%Y-%m-%d)"
+  c="$(gaffer_day_count)"
+  [ "$c" -gt 0 ] || return 0
+  printf '%s %s\n' "$today" "$((c - 1))" > "$DAILY_COUNTER_FILE"
+}
+
+# gaffer_reserve_run_tick <counter-file> <max> — the PER-RUN pool budget, atomically.
+# loop.sh used to give each of N workers ceil(MAX_TICKS/N) ticks, which admits
+# N×ceil(MAX_TICKS/N) in total (10 ticks across 3 workers ⇒ 12; 1 tick across 4
+# workers ⇒ 4). The pool now shares ONE counter: a worker reserves a run tick under
+# the counter's lock before it starts one, and the pool total can never exceed <max>.
+# Slots freed by an idle worker are naturally used by a busy one (no static shares).
+# → 0 reserved; 1 budget exhausted; 2 could not persist (stop).
+gaffer_reserve_run_tick() {
+  local file="$1" max="$2"
+  [ -n "$file" ] && [ -n "$max" ] || return 2
+  if declare -F gaffer_with_lock >/dev/null 2>&1; then
+    gaffer_with_lock "$file.lock" _gaffer_reserve_run_tick_unlocked "$file" "$max"
+  else
+    _gaffer_reserve_run_tick_unlocked "$file" "$max"
+  fi
+}
+_gaffer_reserve_run_tick_unlocked() {
+  local file="$1" max="$2" c
+  c="$(cat "$file" 2>/dev/null | tr -dc '0-9')"; c="${c:-0}"
+  [ "$c" -lt "$max" ] 2>/dev/null || return 1
+  printf '%s\n' "$((c + 1))" > "$file" || return 2
+  return 0
+}
+# gaffer_refund_run_tick <counter-file> — a reservation the worker could not use
+# (e.g. it then failed the day-cap reservation) is handed back so the pool does not
+# under-run its budget by the failed attempts.
+gaffer_refund_run_tick() {
+  local file="$1"
+  [ -n "$file" ] || return 0
+  if declare -F gaffer_with_lock >/dev/null 2>&1; then
+    gaffer_with_lock "$file.lock" _gaffer_refund_run_tick_unlocked "$file"
+  else
+    _gaffer_refund_run_tick_unlocked "$file"
+  fi
+}
+_gaffer_refund_run_tick_unlocked() {
+  local file="$1" c
+  c="$(cat "$file" 2>/dev/null | tr -dc '0-9')"; c="${c:-0}"
+  [ "$c" -gt 0 ] || return 0
+  printf '%s\n' "$((c - 1))" > "$file"
+}
+
 # gaffer_tick_counts_toward_day_cap <TICK_RESULT> — true when a finished tick may
 # have spent (invoked a paid `claude -p`), so it must be counted against
 # MAX_TICKS_PER_DAY. A `no_work` tick never spawns an agent: it polls the queue,
@@ -78,16 +167,21 @@ gaffer_day_cap_ok() {
 # any node/ledger/parse failure yields 0 spend (never blocks a tick), mirroring
 # gaffer_ticket_rework_spend's degrade path.
 
-# Echo today's (UTC) USD spend from the ledger as a decimal (0 when unmeasured, no
-# ledger, or node/estimate-lib unavailable). Reuses the ONE shared JSONL reader
+# Echo today's (UTC) USD spend from the ledger as a decimal — 0 when there is no
+# ledger yet (nothing has been spent), or the literal `unknown` when the spend CANNOT
+# be measured (node missing, the estimate lib missing, the reader failing). It used to
+# print 0 in every failure case, which made the dollar cap availability-first: a
+# broken reader read as "nothing spent" and never halted. With a cap configured,
+# `unknown` now HALTS (gaffer_day_usd_cap_ok below) — fail closed, like the tick cap
+# stopping when its counter cannot be persisted. Reuses the ONE shared JSONL reader
 # (estimate.mjs parseLedger); the COST summation stays here (estimate.mjs's honesty
 # contract forbids it from reading cost). "today" is the UTC date so the window
 # matches the ledger's ISO `ts` prefix regardless of the host timezone.
 gaffer_day_usd_spent() {
-  command -v node >/dev/null 2>&1 || { printf '0'; return 0; }
   local ledger="${GAFFER_USAGE_LEDGER:-${GAFFER_DATA:+$GAFFER_DATA/usage-ledger.jsonl}}"
-  [ -n "$ledger" ] && [ -f "$ledger" ] || { printf '0'; return 0; }
-  [ -f "${GAFFER_ESTIMATE_LIB:-}" ] || { printf '0'; return 0; }
+  [ -n "$ledger" ] && [ -f "$ledger" ] || { printf '0'; return 0; }   # no ledger ⇒ nothing spent
+  command -v node >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+  [ -f "${GAFFER_ESTIMATE_LIB:-}" ] || { printf 'unknown'; return 0; }
   GAFFER_DAY_LEDGER="$ledger" node --input-type=module -e '
     import { readFileSync } from "node:fs";
     import { pathToFileURL } from "node:url";
@@ -104,7 +198,7 @@ gaffer_day_usd_spent() {
       if (typeof e==="number" && Number.isFinite(e) && e>=0) spend+=e;
     }
     process.stdout.write(spend.toFixed(6));
-  ' 2>/dev/null || printf '0'
+  ' 2>/dev/null || printf 'unknown'
 }
 
 # Return 0 (true) if starting new paid work today stays within the UTC-day USD cap.
@@ -119,5 +213,11 @@ gaffer_day_usd_cap_ok() {
   command -v awk >/dev/null 2>&1 || return 0
   awk -v c="$cap" 'BEGIN{exit !(c+0 > 0)}' 2>/dev/null || return 0   # cap<=0/garbage ⇒ OFF
   local spent; spent="$(gaffer_day_usd_spent)"
+  # FAIL CLOSED: a cap is configured but today's spend cannot be measured ⇒ halt.
+  # (A missing ledger is `0`, not `unknown` — a fresh factory is never blocked.)
+  if [ "$spent" = "unknown" ]; then
+    echo "gaffer: GAFFER_DAILY_BUDGET_USD=$cap is set but today's spend cannot be measured (node or the estimate lib unavailable, or the ledger unreadable) — halting rather than spending against an unenforceable cap" >&2
+    return 1
+  fi
   awk -v s="$spent" -v c="$cap" 'BEGIN{exit !(s+0 < c+0)}' 2>/dev/null
 }

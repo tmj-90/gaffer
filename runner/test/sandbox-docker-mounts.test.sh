@@ -57,7 +57,9 @@ export DISPATCH_DB="$GAFFER_DATA/dispatch.sqlite" MEMORY_DB="$GAFFER_DATA/memory
 
 WRF="$WORK/wroots"; printf '%s\n' "$WT" > "$WRF"
 RRF="$WORK/rroots"; : > "$RRF"
-ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- \
+# GAFFER_MCP_BRIDGE=0: the LEGACY layout must be asked for explicitly — with the bridge on
+# (the default on Linux) a config-carrying spawn with no socket is REFUSED (section f).
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- \
   claude -p hi --mcp-config "$GAFFER_DATA/mcp-runtime.1111.json" 2>"$WORK/stderr")"
 has_arg() { printf '%s\n' "$ARGV" | grep -qxF -- "$1"; }
 # A mount line is `-v` followed by `src:dst:mode` on the NEXT line (one arg per line).
@@ -101,7 +103,7 @@ masked_dir worktrees && has_mount "$WT:$WT:rw" && ok "sibling worktrees hidden w
 echo "== (c) a full-repo write root (.git is a directory) needs no extra git mounts =="
 FULL="$WORK/fullrepo"; mkdir -p "$FULL"; git -C "$FULL" init -q -b main
 printf '%s\n' "$FULL" > "$WRF"
-ARGV2="$(GAFFER_SANDBOX_DRY_RUN=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c true 2>/dev/null)"
+ARGV2="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c true 2>/dev/null)"
 printf '%s\n' "$ARGV2" | grep -qxF -- "$FULL:$FULL:rw" && ok "full repo mounted rw" || fail "full repo rw mount missing"
 printf '%s\n' "$ARGV2" | grep -qF -- "$FULL/.git/objects" && fail "a full repo got redundant .git sub-mounts" || ok "no redundant .git sub-mounts for a full repo"
 
@@ -151,6 +153,34 @@ grep -q 'MCP data plane runs INSIDE' "$WORK/stderr" && ok "legacy round (no brid
 # A missing socket is a hard refusal (the host bridge is not up ⇒ never launch uncontained).
 if GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE_SOCKET="$GAFFER_DATA/no-such.sock" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi >/dev/null 2>&1; then
   fail "a missing bridge socket should refuse to run"; else ok "missing bridge socket ⇒ refused (fail closed)"; fi
+
+echo "== (e) VALIDATION PROFILE: no data plane, no credential — independent of the agent bridge =="
+export ANTHROPIC_API_KEY="sk-ant-TEST-not-a-real-key" GAFFER_SANDBOX_CLAUDE_CREDENTIALS="$WORK/creds.json"; printf '{}' > "$WORK/creds.json"
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none \
+  bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- bash -c 'pnpm test' 2>"$WORK/stderr.val")"
+# The worktree itself lives under $GAFFER_DATA/worktrees — that rw mount is the point;
+# NOTHING ELSE under $GAFFER_DATA may be referenced.
+printf '%s\n' "$ARGV" | grep -F -- "$GAFFER_DATA" | grep -vF -- "$WT" | grep -q . && fail "validation profile references GAFFER_DATA beyond the worktree: $(printf '%s\n' "$ARGV" | grep -F -- "$GAFFER_DATA" | grep -vF -- "$WT" | head -3 | tr '\n' ' ')" || ok "validation: NOTHING under GAFFER_DATA but the worktree is mounted (no DBs, no ledgers, no socket)"
+has_mount "$WT:$WT:rw" && ok "validation: the worktree (the tests) is mounted rw" || fail "validation: worktree mount missing"
+has_arg ANTHROPIC_API_KEY && fail "validation profile forwards the model credential" || ok "validation: ANTHROPIC_API_KEY NOT forwarded (a test suite needs no model)"
+printf '%s\n' "$ARGV" | grep -q 'credentials.json' && fail "validation profile mounts the credentials file" || ok "validation: no credentials file mounted"
+has_arg DISPATCH_DB && fail "validation forwards DISPATCH_DB" || ok "validation: no DB env"
+grep -q 'no model credential' "$WORK/stderr.val" && fail "validation profile nagged about a missing credential" || ok "validation: no credential warning (none is wanted)"
+
+echo "== (f) bridge ON + MCP config + NO socket ⇒ REFUSED (never an implicit legacy layout) =="
+if GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi --mcp-config "$GAFFER_DATA/mcp-runtime.1111.json" >/dev/null 2>"$WORK/stderr.refuse"; then
+  fail "bridge on + config + no socket should REFUSE"; else ok "refused (non-zero) — the wrapper does not infer legacy from an absent socket"; fi
+grep -q 'refusing to run with the databases mounted' "$WORK/stderr.refuse" && ok "the refusal names the reason and the opt-out" || fail "refusal message missing: $(cat "$WORK/stderr.refuse")"
+
+echo "== (g) NO MCP config (or an empty data plane) ⇒ 'none': no databases, credentials kept =="
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>"$WORK/stderr.none")"
+has_mount "$GAFFER_DATA:$GAFFER_DATA:rw" && fail "'none' mode mounted GAFFER_DATA rw" || ok "none: GAFFER_DATA not mounted"
+printf '%s\n' "$ARGV" | grep -q 'dispatch.sqlite\|memory.sqlite' && fail "none: a database path appears" || ok "none: no database path in the argv"
+has_mount "$GAFFER_DATA/safety-blocks.jsonl:$GAFFER_DATA/safety-blocks.jsonl:rw" && ok "none: the hook's telemetry ledger is mounted" || fail "none: ledger mount missing"
+has_arg ANTHROPIC_API_KEY && ok "none: the model credential IS forwarded (an agent without MCP still needs it)" || fail "none: credential missing"
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 GAFFER_SANDBOX_DATA_PLANE=none bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi --mcp-config "$GAFFER_DATA/mcp-runtime.1111.json" 2>/dev/null)"
+has_mount "$GAFFER_DATA:$GAFFER_DATA:rw" && fail "empty data plane (GAFFER_SANDBOX_DATA_PLANE=none) mounted GAFFER_DATA rw" || ok "an EMPTY MCP config declared by the launcher ⇒ no databases either"
+unset ANTHROPIC_API_KEY GAFFER_SANDBOX_CLAUDE_CREDENTIALS
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

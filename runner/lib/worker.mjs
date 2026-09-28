@@ -44,8 +44,9 @@
 //     env       interface: env — the credential-stripped child env
 //   Returns the Node `SpawnSyncReturns` verbatim ({ status, stdout, stderr, error, … }).
 
-import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { platform } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -155,6 +156,113 @@ export function sandboxWrapArgv({ writeRoots, readRoots, env = process.env }) {
 
 // The bash seam's refusal status for a required-but-unavailable sandbox.
 const SANDBOX_REFUSED_STATUS = 75;
+// The bash seam's refusal status when the MCP bridge cannot be rendered / started.
+const BRIDGE_REFUSED_STATUS = 76;
+const BRIDGE = resolve(RUNNER_DIR, "lib", "mcp-bridge.mjs");
+
+/** worker.sh's `_worker_mcp_bridge_on`: auto ⇒ on except macOS (Docker Desktop cannot bind-mount a host unix socket). */
+export function mcpBridgeOn(env = process.env) {
+  const v = String(env.GAFFER_MCP_BRIDGE ?? "auto")
+    .trim()
+    .toLowerCase();
+  if (["1", "true", "yes", "on"].includes(v)) return true;
+  if (["0", "false", "no", "off"].includes(v)) return false;
+  return platform() !== "darwin";
+}
+
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * MCP DATA PLANE ON THE HOST for a docker-wrapped spawn — the mjs twin of the
+ * lifecycle in lib/worker.sh (worker_deliver): render the token-free bridged config,
+ * start `mcp-bridge.mjs serve` on a per-spawn unix socket, and hand back what the
+ * spawn needs (the socket for the wrapper's env, the bridged path for the argv) plus
+ * a `stop()` that tears it all down. An EMPTY data plane (no servers) needs no bridge
+ * and reports `dataPlane: "none"` so the wrapper mounts no databases either.
+ *   → { ok: true, socket, bridgedConfig, dataPlane: "bridge"|"none", stop() }
+ *   → { ok: false, message }   (the caller refuses to spawn — fail closed)
+ */
+export function startMcpBridge({ mcpConfig, gafferData, env = process.env }) {
+  const noop = () => {};
+  if (!mcpConfig || !existsSync(mcpConfig)) return { ok: true, dataPlane: "none", stop: noop };
+  const sock = resolve(
+    gafferData,
+    `mcp-bridge.${process.pid}.${Math.floor(Math.random() * 1e9)}.sock`,
+  );
+  const bridged = mcpConfig.replace(/\.json$/, "") + ".bridge.json";
+  const r = spawnSync(
+    process.execPath,
+    [
+      BRIDGE,
+      "render",
+      "--config",
+      mcpConfig,
+      "--out",
+      bridged,
+      "--socket",
+      sock,
+      "--bridge",
+      BRIDGE,
+    ],
+    {
+      encoding: "utf8",
+      env,
+    },
+  );
+  if (r.status !== 0) {
+    return {
+      ok: false,
+      message: `worker: mcp bridge: could not render the bridged MCP config from ${mcpConfig} — refusing to spawn the agent (fail closed): ${(r.stderr || "").trim()}`,
+    };
+  }
+  let servers;
+  try {
+    servers = Object.keys(JSON.parse(readFileSync(bridged, "utf8")).mcpServers || {}).length;
+  } catch {
+    servers = 0;
+  }
+  if (servers === 0) {
+    try {
+      unlinkSync(bridged);
+    } catch {
+      /* gone */
+    }
+    return { ok: true, dataPlane: "none", stop: noop };
+  }
+  const child = spawn(
+    process.execPath,
+    [BRIDGE, "serve", "--socket", sock, "--config", mcpConfig],
+    {
+      env,
+      stdio: ["ignore", "ignore", "inherit"],
+    },
+  );
+  const stop = () => {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* gone */
+    }
+    for (const f of [sock, bridged]) {
+      try {
+        unlinkSync(f);
+      } catch {
+        /* gone */
+      }
+    }
+  };
+  for (let i = 0; i < 100 && !existsSync(sock); i++) sleepMs(50);
+  if (!existsSync(sock)) {
+    stop();
+    return {
+      ok: false,
+      message: `worker: mcp bridge did not start on ${sock} — refusing to spawn the agent (fail closed)`,
+    };
+  }
+  return { ok: true, socket: sock, bridgedConfig: bridged, dataPlane: "bridge", stop };
+}
 
 export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env }) {
   const provider = workerProvider(process.env);
@@ -166,6 +274,7 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env }) {
   let spawnBin = bin;
   let spawnArgv = argv;
   let spawnEnv = env;
+  let bridgeStop = () => {};
   if (sandboxWanted(process.env)) {
     // Derive the wrap from the per-call boundary vars (the cwd is the write root
     // when none is named), exactly like worker_deliver's WORKER_CALL_ENV scan.
@@ -199,25 +308,55 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env }) {
       // still runs with the host PATH so it can find `docker`.
       let inner = [spawnBin, ...argv];
       if ((process.env.SANDBOX_PROVIDER || "sandbox-exec") === "docker") {
+        // ── MCP DATA PLANE ON THE HOST (same lifecycle as lib/worker.sh) ──────────
+        // The wrapper never infers a layout from an absent socket: with the bridge on
+        // and an MCP config in the argv it REFUSES unless the socket is set, so the
+        // launcher must start the bridge (or declare the data plane empty) itself.
+        let agentArgv = argv;
+        const i = argv.indexOf("--mcp-config");
+        const mcpConfig = i >= 0 ? argv[i + 1] : undefined;
+        if (mcpBridgeOn(process.env) && mcpConfig) {
+          const b = startMcpBridge({
+            mcpConfig,
+            gafferData: spawnEnv.GAFFER_DATA,
+            env: process.env,
+          });
+          if (!b.ok) {
+            const r = failClosedResult(b.message);
+            r.status = BRIDGE_REFUSED_STATUS;
+            return r;
+          }
+          bridgeStop = b.stop;
+          if (b.dataPlane === "bridge") {
+            spawnEnv = { ...spawnEnv, GAFFER_MCP_BRIDGE_SOCKET: b.socket };
+            agentArgv = argv.map((a, k) => (k === i + 1 ? b.bridgedConfig : a));
+          } else {
+            spawnEnv = { ...spawnEnv, GAFFER_SANDBOX_DATA_PLANE: "none" };
+          }
+        }
         inner = [
           "env",
           `HOME=${process.env.GAFFER_SANDBOX_HOME || "/root"}`,
           `PATH=${process.env.GAFFER_SANDBOX_PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
           process.env.GAFFER_SANDBOX_CLAUDE_BIN || "claude",
-          ...argv,
+          ...agentArgv,
         ];
       }
       spawnArgv = [...wrapped.wrap.slice(1), ...inner];
       spawnBin = wrapped.wrap[0];
     }
   }
-  return spawnSync(spawnBin, spawnArgv, {
-    cwd,
-    encoding: "utf8",
-    timeout: timeoutMs,
-    maxBuffer,
-    env: spawnEnv,
-  });
+  try {
+    return spawnSync(spawnBin, spawnArgv, {
+      cwd,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer,
+      env: spawnEnv,
+    });
+  } finally {
+    bridgeStop(); // the host-side servers, the socket and the bridged config go with the agent
+  }
 }
 
 // =====================================================================
@@ -420,6 +559,8 @@ export const Worker = {
   sandboxWanted,
   sandboxRequired,
   sandboxWrapArgv,
+  mcpBridgeOn,
+  startMcpBridge,
 };
 
 // =====================================================================

@@ -252,8 +252,37 @@ fi
 # mounts nested inside the GAFFER_DATA mount; docker applies mounts parent-first, so a
 # write root that lives UNDER a masked dir (the default `$GAFFER_DATA/worktrees/ticket-N`
 # layout) is bind-mounted back on top of the tmpfs that hides its siblings.
+# ── DATA-PLANE MODE ──────────────────────────────────────────────────────────────
+#   validation  GAFFER_SANDBOX_PROFILE=validation (the DoD gates / AC checks): NOTHING
+#               from $GAFFER_DATA and NO model credential — a gate needs neither.
+#   bridge      GAFFER_MCP_BRIDGE_SOCKET set: MCP servers on the host, only the socket.
+#   none        no --mcp-config in the argv, or GAFFER_SANDBOX_DATA_PLANE=none (an
+#               empty MCP config): no databases; the hook's ledgers + skills only.
+#   legacy      --mcp-config present, no socket, GAFFER_MCP_BRIDGE OFF: the DB dir
+#               mounted rw + masked, servers inside (WARNED).
+#   refused     --mcp-config present, no socket, bridge ON: the caller wanted the data
+#               plane but the host-side bridge is not up — never fall back to mounting
+#               the databases silently (fail closed).
+_bridge_wanted() {
+  case "${GAFFER_MCP_BRIDGE:-auto}" in
+    1 | true | yes | on) return 0 ;;
+    0 | false | no | off) return 1 ;;
+    *) [ "$(uname -s 2>/dev/null)" != "Darwin" ] ;;
+  esac
+}
+_HAS_MCP=0; _prev=""
+for _a in "$@"; do [ "$_prev" = "--mcp-config" ] && _HAS_MCP=1; _prev="$_a"; done
+if [ "${GAFFER_SANDBOX_PROFILE:-}" = "validation" ]; then _MODE=validation
+elif [ -n "${GAFFER_MCP_BRIDGE_SOCKET:-}" ]; then _MODE=bridge
+elif [ "${GAFFER_SANDBOX_DATA_PLANE:-}" = "none" ] || [ "$_HAS_MCP" = 0 ]; then _MODE=none
+elif _bridge_wanted; then
+  _die "the command carries an MCP config but GAFFER_MCP_BRIDGE_SOCKET is unset — the host-side MCP bridge is not up (GAFFER_MCP_BRIDGE=${GAFFER_MCP_BRIDGE:-auto}); refusing to run with the databases mounted (set GAFFER_MCP_BRIDGE=0 to accept the legacy layout)"
+else _MODE=legacy
+fi
 _BRIDGED=0
-if [ -n "${GAFFER_MCP_BRIDGE_SOCKET:-}" ]; then
+if [ "$_MODE" = "validation" ]; then
+  : # nothing from $GAFFER_DATA is mounted; the write roots (the worktree) carry the tests
+elif [ "$_MODE" = "bridge" ] || [ "$_MODE" = "none" ]; then
   # ── BRIDGE MODE (lib/mcp-bridge.mjs; external review, finding 2) ─────────────
   # The MCP data plane runs on the HOST. NOTHING under $GAFFER_DATA is mounted except:
   #   • the bridge's unix socket (rw) — the container's only path to dispatch/memory;
@@ -264,8 +293,10 @@ if [ -n "${GAFFER_MCP_BRIDGE_SOCKET:-}" ]; then
   # No database, usage ledger, settings.json, dashboard token or other worker's claim
   # token exists in the container's filesystem, and the write root (the worktree under
   # $GAFFER_DATA/worktrees/) is mounted on its own above.
-  [ -e "$GAFFER_MCP_BRIDGE_SOCKET" ] || _die "GAFFER_MCP_BRIDGE_SOCKET=$GAFFER_MCP_BRIDGE_SOCKET does not exist — the host-side MCP bridge is not up"
-  _add_mount "$GAFFER_MCP_BRIDGE_SOCKET" rw
+  if [ "$_MODE" = "bridge" ]; then
+    [ -e "$GAFFER_MCP_BRIDGE_SOCKET" ] || _die "GAFFER_MCP_BRIDGE_SOCKET=$GAFFER_MCP_BRIDGE_SOCKET does not exist — the host-side MCP bridge is not up"
+    _add_mount "$GAFFER_MCP_BRIDGE_SOCKET" rw
+  fi
   _prev=""
   for _a in "$@"; do
     if [ "$_prev" = "--mcp-config" ] && [ -f "$_a" ]; then _covered "$_a" || _add_mount "$_a" ro; fi
@@ -286,9 +317,9 @@ if [ -n "${GAFFER_MCP_BRIDGE_SOCKET:-}" ]; then
     done
   fi
   _BRIDGED=1
-elif [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && ! _covered "$GAFFER_DATA"; then
+elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && ! _covered "$GAFFER_DATA"; then
   # ── LEGACY MODE: the MCP servers run INSIDE the container ──────────────────────
-  # Only when the bridge is off (GAFFER_MCP_BRIDGE=0, or macOS Docker Desktop, which
+  # Only when the bridge is OFF (GAFFER_MCP_BRIDGE=0, or macOS Docker Desktop, which
   # cannot bind-mount a host unix socket). Say so loudly: the databases are reachable
   # from the worker's shell here (SECURITY.md, residual limits).
   printf 'sandbox-docker: WARNING — MCP data plane runs INSIDE the container (GAFFER_MCP_BRIDGE off): %s is mounted rw with the dispatch/memory databases reachable by the worker; set GAFFER_MCP_BRIDGE=1 on a Linux host to keep them out (SECURITY.md)\n' "$GAFFER_DATA" >&2
@@ -352,16 +383,23 @@ fi
 _envs=()
 # In bridge mode the container runs NO MCP server, so the DB paths and server bins are
 # not forwarded either — nothing inside names the databases.
-_fwd=( ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY )
-[ "$_BRIDGED" = 1 ] || _fwd+=( DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN )
+# The validation profile forwards NO model credential (a test suite never needs one)
+# and no data-plane vars; only the legacy layout forwards the DB paths + server bins.
+case "$_MODE" in
+  validation) _fwd=( GAFFER_FACTORY ) ;;
+  legacy)     _fwd=( ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN ) ;;
+  *)          _fwd=( ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY ) ;;
+esac
 for k in "${_fwd[@]}"; do
   [ -n "${!k:-}" ] && _envs+=( -e "$k" )
 done
 # Fallback: if the operator has placed a Claude credentials file, mount it read-only into
 # the container's home so claude authenticates. The runner never reads its contents.
+# Never under the validation profile.
 _cred="${GAFFER_SANDBOX_CLAUDE_CREDENTIALS:-}"
+[ "$_MODE" = "validation" ] && _cred=""
 [ -n "$_cred" ] && [ -f "$_cred" ] && _mounts+=( -v "$_cred:/root/.claude/.credentials.json:ro" )
-if [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ ! -f "${_cred:-/nonexistent}" ]; then
+if [ "$_MODE" != "validation" ] && [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ ! -f "${_cred:-/nonexistent}" ]; then
   printf 'sandbox-docker: no model credential — set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), ANTHROPIC_API_KEY, or GAFFER_SANDBOX_CLAUDE_CREDENTIALS; claude will not authenticate inside the container\n' >&2
 fi
 # The bind-mounted worktree + repo `.git` are owned by the HOST uid while the guest runs

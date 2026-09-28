@@ -81,7 +81,7 @@ while _reserve_run_tick; do
   # — so at GAFFER_CONCURRENCY>1 the USD cap was silently ignored. Same clean stop.
   if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
     echo "worker $WORKER_ID: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — stopping." >&2
-    [ "$_day_reserved" = 1 ] && gaffer_refund_day_tick || true
+    [ "$_day_reserved" = 1 ] && gaffer_refund_day_tick "$_day_rsv_on" || true
     _refund_run_tick
     break
   fi

@@ -113,7 +113,7 @@ PAYLOAD="
 
 # The wrapped argv names THIS call's --mcp-config so the wrapper keeps that one file
 # visible (sh ignores the extra positional args).
-OUT="$(timeout 120 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$PAYLOAD" gaffer-sbx --mcp-config "$GAFFER_DATA/mcp-runtime.self.json" 2>&1)"
+OUT="$(GAFFER_MCP_BRIDGE=0 timeout 120 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$PAYLOAD" gaffer-sbx --mcp-config "$GAFFER_DATA/mcp-runtime.self.json" 2>&1)"
 echo "$OUT" | sed 's/^/    /'
 
 fail=0
@@ -187,6 +187,33 @@ else
   echo "  FAIL bridge socket never appeared: $(cat "$WORK/bridge.log" 2>/dev/null)"; fail=1
 fi
 kill "$BPID" 2>/dev/null || true; wait "$BPID" 2>/dev/null || true
+
+# ── VALIDATION PROFILE: what the DoD gates / AC checks run under (lib/dod.sh) ────────
+# No data plane at all and NO model credential, whatever the agent's bridge did before.
+echo "== validation profile: no databases, no credential, worktree writable =="
+PAYLOAD3="
+  if [ -e '$GAFFER_DATA/dispatch.sqlite' ] || [ -e '$GAFFER_DATA/memory.sqlite' ]; then echo VDB_VISIBLE; else echo VDB_ABSENT; fi
+  if [ -e '$GAFFER_DATA/settings.json' ] || [ -e '$GAFFER_DATA/dashboard-token' ] || [ -e '$GAFFER_DATA/safety-blocks.jsonl' ]; then echo VDATA_PRESENT; else echo VDATA_ABSENT; fi
+  if env | grep -q TOPSECRET_KEY; then echo VKEY_LEAK; else echo VKEY_ABSENT; fi
+  if [ -e /root/.claude/.credentials.json ]; then echo VCRED_PRESENT; else echo VCRED_ABSENT; fi
+  if echo canary3 > '$WT/canary3' 2>/dev/null; then echo VWRITE_OK; else echo VWRITE_FAIL; fi
+"
+printf '{}' > "$WORK/fake-creds.json"
+OUT3="$(ANTHROPIC_API_KEY=TOPSECRET_KEY GAFFER_SANDBOX_CLAUDE_CREDENTIALS="$WORK/fake-creds.json" GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none \
+  timeout 120 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$PAYLOAD3" 2>&1)"
+echo "$OUT3" | sed 's/^/    /'
+for want in VDB_ABSENT VDATA_ABSENT VKEY_ABSENT VCRED_ABSENT VWRITE_OK; do
+  if echo "$OUT3" | grep -q "$want"; then echo "  ok   $want"; else echo "  FAIL expected $want"; fail=1; fi
+done
+for bad in VDB_VISIBLE VDATA_PRESENT VKEY_LEAK VCRED_PRESENT VWRITE_FAIL; do
+  if echo "$OUT3" | grep -q "$bad"; then echo "  FAIL saw $bad"; fail=1; fi
+done
+# And the refusal: bridge on + an MCP config + no socket must not run at all.
+if GAFFER_MCP_BRIDGE=1 timeout 60 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c 'echo RAN' gaffer-sbx --mcp-config "$GAFFER_DATA/mcp-runtime.self.json" >"$WORK/refuse.out" 2>&1; then
+  echo "  FAIL bridge on + MCP config + no socket RAN: $(cat "$WORK/refuse.out")"; fail=1
+else
+  grep -q 'refusing to run with the databases mounted' "$WORK/refuse.out" && echo "  ok   bridge on + MCP config + no socket ⇒ refused before any container ran" || { echo "  FAIL refusal without the expected reason: $(cat "$WORK/refuse.out")"; fail=1; }
+fi
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
 rm -rf "$WORK"

@@ -45,12 +45,13 @@ gaffer_refund_run_tick "$CNT"; [ "$(cat "$CNT")" = "9" ] && ok "a refund hands o
 echo "== 2: day slot — MAX_TICKS_PER_DAY=1 with 4 concurrent reservers admits ONE =="
 rm -f "$DAILY_COUNTER_FILE"; : > "$WINS"
 export MAX_TICKS_PER_DAY=1
-for w in 1 2 3 4; do ( gaffer_reserve_day_tick && echo "$w" >> "$WINS" ) & done
+for w in 1 2 3 4; do ( gaffer_reserve_day_tick >/dev/null && echo "$w" >> "$WINS" ) & done
 wait
+_today="$(date +%Y-%m-%d)"
 [ "$(wc -l < "$WINS" | tr -d ' ')" = "1" ] && ok "exactly one worker owns the last day slot" || fail "expected 1 admission, got $(wc -l < "$WINS")"
 [ "$(gaffer_day_count)" = "1" ] && ok "day counter = 1" || fail "day counter should be 1, got '$(gaffer_day_count)'"
-gaffer_refund_day_tick; [ "$(gaffer_day_count)" = "0" ] && ok "refund (a no_work tick) returns the slot" || fail "refund should leave 0"
-gaffer_refund_day_tick; [ "$(gaffer_day_count)" = "0" ] && ok "refund floors at 0" || fail "refund went negative"
+gaffer_refund_day_tick "$_today"; [ "$(gaffer_day_count)" = "0" ] && ok "refund (a no_work tick) returns the slot" || fail "refund should leave 0"
+gaffer_refund_day_tick "$_today"; [ "$(gaffer_day_count)" = "0" ] && ok "refund floors at 0" || fail "refund went negative"
 export MAX_TICKS_PER_DAY=0
 gaffer_reserve_day_tick && ok "cap 0 (unlimited) always admits" || fail "cap 0 should admit"
 
@@ -122,7 +123,13 @@ GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_reserve_day_tick >/dev/null; rc=$?
 [ "$rc" -eq 1 ] && ok "a second new-day admission is still refused at cap 1" || fail "second new-day reservation should be refused (rc=$rc)"
 GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_refund_day_tick "$new_day"
 [ "$(GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_day_count)" = "0" ] && ok "the new day's own refund still works" || fail "same-day refund failed"
+GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_reserve_day_tick >/dev/null
+if GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_refund_day_tick 2>/dev/null; then fail "a DATE-LESS refund should be refused"; else ok "a date-less refund is refused (rc non-zero), not defaulted to today"; fi
+[ "$(GAFFER_TODAY_OVERRIDE=2026-01-02 gaffer_day_count)" = "1" ] && ok "…and changes nothing" || fail "date-less refund changed the counter"
 export MAX_TICKS_PER_DAY=0; unset GAFFER_TODAY_OVERRIDE
+grep -qE 'gaffer_refund_day_tick( \|\| true|$| *;)' "$RUNNER_DIR/worker.sh" "$RUNNER_DIR/loop.sh" "$RUNNER_DIR/bin/poll-once.sh" \
+  && fail "a caller still refunds without its reservation day" || ok "no caller refunds without a day (worker.sh USD-stop included)"
+[ "$(grep -c 'gaffer_refund_day_tick "$_day_rsv_on"' "$RUNNER_DIR/worker.sh")" = "2" ] && ok "worker.sh: both refunds (USD-stop + no_work) pass the day" || fail "worker.sh should pass the day on both refunds"
 grep -q '_day_rsv_on="$(gaffer_reserve_day_tick)"' "$RUNNER_DIR/worker.sh" && grep -q 'gaffer_refund_day_tick "$_day_rsv_on"' "$RUNNER_DIR/worker.sh" \
   && grep -q 'gaffer_refund_day_tick "$_day_rsv_on"' "$RUNNER_DIR/loop.sh" && grep -q 'gaffer_refund_day_tick "$_day_rsv_on"' "$RUNNER_DIR/bin/poll-once.sh" \
   && ok "worker.sh, loop.sh and poll-once.sh refund with the reservation's day" || fail "a caller refunds without its reservation day"

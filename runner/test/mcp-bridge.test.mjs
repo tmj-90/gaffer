@@ -179,16 +179,28 @@ server.kill("SIGTERM");
 await new Promise((r2) => server.on("close", r2));
 assert(!existsSync(SOCK), "socket removed on shutdown");
 
-console.log("== render refuses a config without mcpServers ==");
-writeFileSync(join(WORK, "bad.json"), "{}");
+console.log(
+  "== render: `{}` is an EMPTY data plane (claude accepts it); a non-object is refused ==",
+);
+writeFileSync(join(WORK, "empty.json"), "{}");
+const emp = spawnSync(
+  process.execPath,
+  [BRIDGE, "render", "--config", join(WORK, "empty.json"), "--out", OUT, "--socket", SOCK],
+  { encoding: "utf8" },
+);
+assert(
+  emp.status === 0 && Object.keys(JSON.parse(readFileSync(OUT, "utf8")).mcpServers).length === 0,
+  "`{}` renders to zero bridged servers (nothing to bridge)",
+);
+writeFileSync(join(WORK, "bad.json"), "[1,2]");
 const bad = spawnSync(
   process.execPath,
   [BRIDGE, "render", "--config", join(WORK, "bad.json"), "--out", OUT, "--socket", SOCK],
   { encoding: "utf8" },
 );
 assert(
-  bad.status === 2 && /mcpServers/.test(bad.stderr),
-  "render exits 2 naming the missing mcpServers",
+  bad.status === 2 && /not a JSON object/.test(bad.stderr),
+  "a non-object config is refused (exit 2)",
 );
 
 rmSync(WORK, { recursive: true, force: true });

@@ -173,14 +173,21 @@ gaffer_dod_run_one() {
   # invocation, byte-for-byte. Word-split deliberately: the wrap is a command prefix.
   # Under the docker provider the image's own PATH/HOME must apply (the host's do not
   # exist inside) — mirrors lib/worker.sh's substitution for the agent spawn.
-  local _wrap="${GAFFER_DOD_WRAP:-}" _env=()
+  local _wrap="${GAFFER_DOD_WRAP:-}" _env=() _profile=()
+  if [ -n "$_wrap" ]; then
+    # VALIDATION PROFILE (explicit, independent of the agent bridge's lifetime): the
+    # wrapper mounts NO data plane (no databases, no ledgers, no bridge socket — the
+    # agent's bridge is gone by now and must not be inferred) and forwards NO model
+    # credential. A gate never needs either. Set as env for the wrapper process itself.
+    _profile=( env GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none )
+  fi
   if [ -n "$_wrap" ] && [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ]; then
     _env=( env "HOME=${GAFFER_SANDBOX_HOME:-/root}"
                "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
   fi
   # shellcheck disable=SC2086  # $_wrap is a command prefix, split on purpose
   ( cd "$wt" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_TIMEOUT" $_wrap ${_env[@]+"${_env[@]}"} bash -c "$cmd" ) >"$outfile" 2>&1
+    gaffer_timeout "$GAFFER_DOD_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap ${_env[@]+"${_env[@]}"} bash -c "$cmd" ) >"$outfile" 2>&1
   return $?
 }
 

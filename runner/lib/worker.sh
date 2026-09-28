@@ -166,20 +166,32 @@ worker_deliver() {
             printf 'worker: mcp bridge: could not render the bridged MCP config from %s — refusing to spawn the agent (fail closed)\n' "$mcp_config" >&2
             return 76
           fi
-          node "$RUNNER_DIR/lib/mcp-bridge.mjs" serve --socket "$_bridge_sock" --config "$mcp_config" >>"$GAFFER_LOG" 2>&1 &
-          _bridge_pid=$!
-          local _bw=0
-          while [ ! -S "$_bridge_sock" ] && [ "$_bw" -lt 100 ]; do sleep 0.05; _bw=$((_bw + 1)); done
-          if [ ! -S "$_bridge_sock" ]; then
-            kill "$_bridge_pid" 2>/dev/null || true
-            rm -f "$_mcp_for_agent"
-            : > "$out_json"
-            printf 'worker: mcp bridge did not start on %s — refusing to spawn the agent (fail closed)\n' "$_bridge_sock" >&2
-            return 76
+          # An EMPTY data plane (a config with no servers, e.g. `{}`) needs no bridge:
+          # hand the original config through and tell the wrapper there is no data
+          # plane to mount (GAFFER_SANDBOX_DATA_PLANE=none ⇒ $GAFFER_DATA stays out).
+          local _nsrv
+          _nsrv="$(node -e 'const c=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(Object.keys(c.mcpServers||{}).length))' "$_mcp_for_agent" 2>/dev/null || echo 0)"
+          if [ "${_nsrv:-0}" -eq 0 ] 2>/dev/null; then
+            rm -f "$_mcp_for_agent"; _mcp_for_agent="$mcp_config"; _bridge_sock=""
+            unset GAFFER_MCP_BRIDGE_SOCKET
+            export GAFFER_SANDBOX_DATA_PLANE=none
+          else
+            node "$RUNNER_DIR/lib/mcp-bridge.mjs" serve --socket "$_bridge_sock" --config "$mcp_config" >>"$GAFFER_LOG" 2>&1 &
+            _bridge_pid=$!
+            local _bw=0
+            while [ ! -S "$_bridge_sock" ] && [ "$_bw" -lt 100 ]; do sleep 0.05; _bw=$((_bw + 1)); done
+            if [ ! -S "$_bridge_sock" ]; then
+              kill "$_bridge_pid" 2>/dev/null || true
+              rm -f "$_mcp_for_agent"
+              : > "$out_json"
+              printf 'worker: mcp bridge did not start on %s — refusing to spawn the agent (fail closed)\n' "$_bridge_sock" >&2
+              return 76
+            fi
+            unset GAFFER_SANDBOX_DATA_PLANE
+            export GAFFER_MCP_BRIDGE_SOCKET="$_bridge_sock"
           fi
-          export GAFFER_MCP_BRIDGE_SOCKET="$_bridge_sock"
         else
-          unset GAFFER_MCP_BRIDGE_SOCKET
+          unset GAFFER_MCP_BRIDGE_SOCKET GAFFER_SANDBOX_DATA_PLANE
         fi
       fi
       # CLAUDE_BIN is rebound INSIDE the invocation subshell only (the docker case above
@@ -197,8 +209,8 @@ worker_deliver() {
         kill "$_bridge_pid" 2>/dev/null || true
         wait "$_bridge_pid" 2>/dev/null || true
         rm -f "$_bridge_sock" "$_mcp_for_agent" 2>/dev/null || true
-        unset GAFFER_MCP_BRIDGE_SOCKET
       fi
+      unset GAFFER_MCP_BRIDGE_SOCKET GAFFER_SANDBOX_DATA_PLANE
       return "$_rc"
       ;;
     *)

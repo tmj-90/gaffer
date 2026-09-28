@@ -41,6 +41,7 @@ WRAP="$WORK/fake-wrap"
 cat > "$WRAP" <<EOS
 #!/usr/bin/env bash
 printf '%s\n' "\${GAFFER_MCP_BRIDGE_SOCKET:-<unset>}" > "$WORK/wrap.sock"
+printf 'profile=%s plane=%s\n' "\${GAFFER_SANDBOX_PROFILE:-<unset>}" "\${GAFFER_SANDBOX_DATA_PLANE:-<unset>}" > "$WORK/wrap.profile"
 if [ -S "\${GAFFER_MCP_BRIDGE_SOCKET:-/nonexistent}" ]; then
   # prove the host bridge is serving: one round trip through connect
   echo '{"probe":1}' | node "$RUNNER_DIR/lib/mcp-bridge.mjs" connect --socket "\$GAFFER_MCP_BRIDGE_SOCKET" --server dispatch > "$WORK/wrap.roundtrip" 2>/dev/null
@@ -99,6 +100,28 @@ GAFFER_MCP_BRIDGE=1 worker_deliver "$CWD" "p" "" "$BAD" "$WORK/out4.json" "$WRAP
 [ "$rc" -eq 76 ] && ok "rc 76" || fail "expected rc 76 (got $rc)"
 [ ! -f "$WORK/claude.argv" ] && ok "claude was NOT spawned" || fail "claude spawned despite the bridge failure"
 grep -q 'fail closed' "$WORK/err4" && ok "the refusal is explained" || fail "no fail-closed message: $(cat "$WORK/err4")"
+
+echo "== 5: an EMPTY MCP config ({}) ⇒ no bridge, data plane declared 'none' (the wrapper mounts no DBs) =="
+rm -f "$WORK"/claude.* "$WORK"/wrap.*
+EMPTY="$GAFFER_DATA/mcp-runtime.empty.json"; printf '{}' > "$EMPTY"
+GAFFER_MCP_BRIDGE=1 worker_deliver "$CWD" "p" "" "$EMPTY" "$WORK/out5.json" "$WRAP" 2>"$WORK/err5"; rc=$?
+[ "$rc" -eq 0 ] && grep -qx -- "$EMPTY" "$WORK/claude.argv" && ok "empty config: spawn ran (rc 0) with the original config" || fail "empty config should spawn with the original config (rc=$rc; $(cat "$WORK/err5"))"
+[ "$(cat "$WORK/wrap.sock")" = "<unset>" ] && ok "empty config: no bridge socket" || fail "empty config started a bridge: $(cat "$WORK/wrap.sock")"
+grep -q 'plane=none' "$WORK/wrap.profile" && ok "empty config: the wrapper is told GAFFER_SANDBOX_DATA_PLANE=none" || fail "data plane not declared none: $(cat "$WORK/wrap.profile")"
+[ ! -e "$GAFFER_DATA/mcp-runtime.empty.bridge.json" ] && ok "empty config: no bridged file left behind" || fail "bridged file left behind for an empty config"
+[ -z "${GAFFER_SANDBOX_DATA_PLANE:-}" ] && ok "GAFFER_SANDBOX_DATA_PLANE unset after the spawn" || fail "GAFFER_SANDBOX_DATA_PLANE leaked"
+
+echo "== 6: VALIDATION after the agent: the DoD gate runs under the validation profile, not the (gone) bridge =="
+# shellcheck source=../lib/dod.sh
+source "$RUNNER_DIR/lib/dod.sh"
+rm -f "$WORK"/wrap.*
+GAFFER_MCP_BRIDGE=1 worker_deliver "$CWD" "p" "" "$MCP" "$WORK/out6.json" "$WRAP" >/dev/null 2>&1   # a real bridged spawn first…
+WT="$WORK/wt"; mkdir -p "$WT"
+GAFFER_DOD_WRAP="$WRAP" GAFFER_DOD_TIMEOUT=30 gaffer_dod_run_one "$WT" "$WORK/gate.out" 'echo gate-ok'; rc=$?   # …then the gate
+[ "$rc" -eq 0 ] && grep -q gate-ok "$WORK/gate.out" && ok "gate ran through the wrap after the agent" || fail "gate did not run (rc=$rc)"
+grep -q 'profile=validation' "$WORK/wrap.profile" && ok "gate wrapper env: GAFFER_SANDBOX_PROFILE=validation" || fail "gate did not carry the validation profile: $(cat "$WORK/wrap.profile")"
+grep -q 'plane=none' "$WORK/wrap.profile" && ok "gate wrapper env: data plane none" || fail "gate data plane not none: $(cat "$WORK/wrap.profile")"
+[ "$(cat "$WORK/wrap.sock")" = "<unset>" ] && ok "gate wrapper env: no bridge socket inherited from the agent's run" || fail "gate saw a bridge socket: $(cat "$WORK/wrap.sock")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "worker-mcp-bridge: ALL $PASS checks passed"; exit 0

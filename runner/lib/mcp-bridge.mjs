@@ -67,9 +67,12 @@ function readConfig(path) {
   } catch (e) {
     usage(`cannot read config ${path}: ${e && e.message ? e.message : e}`);
   }
-  if (!cfg || typeof cfg !== "object" || !cfg.mcpServers || typeof cfg.mcpServers !== "object") {
-    usage(`config ${path} has no mcpServers object`);
-  }
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg))
+    usage(`config ${path} is not a JSON object`);
+  // No `mcpServers` (claude accepts `{}`) ⇒ an EMPTY data plane: nothing to bridge.
+  if (cfg.mcpServers === undefined || cfg.mcpServers === null) cfg.mcpServers = {};
+  if (typeof cfg.mcpServers !== "object" || Array.isArray(cfg.mcpServers))
+    usage(`config ${path}: mcpServers is not an object`);
   return cfg;
 }
 

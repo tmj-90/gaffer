@@ -86,9 +86,15 @@ _gaffer_reserve_day_tick_unlocked() {
 # reservation: a tick reserved before midnight that finishes (no_work) after it must not
 # decrement the NEW day's count — that let a stale refund re-open a day at its cap
 # (external recheck, "old-day reservation refunded after a new-day reservation").
-# No argument ⇒ today (the pre-existing callers' meaning); floor 0.
+# The day is MANDATORY: a date-less refund used to default to today, which is exactly
+# the stale-refund defect in disguise (a caller that forgets the day refunds whatever
+# day the counter is on). Missing ⇒ rc 2, a WARNING, and no change. Floor 0.
 gaffer_refund_day_tick() {
   local day="${1:-}"
+  if [ -z "$day" ]; then
+    echo "gaffer_refund_day_tick: refusing a refund with no reservation day (pass the day gaffer_reserve_day_tick printed)" >&2
+    return 2
+  fi
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "${GAFFER_DATA:-$(dirname "$DAILY_COUNTER_FILE")}/.daycount.lock" \
       _gaffer_refund_day_tick_unlocked "$day"
@@ -98,7 +104,7 @@ gaffer_refund_day_tick() {
 }
 _gaffer_refund_day_tick_unlocked() {
   local day="${1:-}" d c
-  [ -n "$day" ] || day="$(_gaffer_today)"
+  [ -n "$day" ] || return 2
   [ -f "$DAILY_COUNTER_FILE" ] || return 0
   read -r d c < "$DAILY_COUNTER_FILE" || return 0
   [ "$d" = "$day" ] || return 0          # the counter has rolled to another day: no-op

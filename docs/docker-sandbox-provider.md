@@ -139,16 +139,25 @@ agent spawn under the docker provider, `lib/worker.sh`:
 4. tears the bridge down with the agent (socket + bridged config removed).
 
 Failure to render or start the bridge is a **refusal to spawn** (rc 76), never a bare
-run. `GAFFER_MCP_BRIDGE=auto` (default) is on except on macOS Docker Desktop, which
-cannot bind-mount a host unix socket into its VM; there the wrapper falls back to the
-legacy layout (DB directory mounted rw, masked) and logs a WARNING naming the gap.
-Force with `1`/`0`.
+run. The Node launcher (`lib/worker.mjs`, used by decompose, product-owner, merge
+resolver, tester and onboarding analysis) runs the identical lifecycle. `GAFFER_MCP_BRIDGE=auto`
+(default) is on except on macOS Docker Desktop, which cannot bind-mount a host unix
+socket into its VM; there the wrapper falls back to the legacy layout (DB directory
+mounted rw, masked) and logs a WARNING naming the gap. Force with `1`/`0`.
 
-The DoD gates and AC checks run under the same wrap as the agent (`GAFFER_DOD_WRAP`
-from `tick.sh`), so validation of agent-modified code happens inside the container too,
-with the verdict read on the host. The containment gate covers both rounds: the legacy
-layout (masking) and the bridge (databases absent, token absent, MCP round trip over
-the socket).
+### Data-plane modes (decided by the wrapper, never inferred from an absent socket)
+
+| mode | when | what of `$GAFFER_DATA` is in the container |
+|---|---|---|
+| `validation` | `GAFFER_SANDBOX_PROFILE=validation` — the DoD gates / AC checks (`lib/dod.sh`) | nothing but the worktree; **no model credential** forwarded or mounted |
+| `bridge` | `GAFFER_MCP_BRIDGE_SOCKET` set by the launcher | the socket (rw), the bridged config (ro), the hook's telemetry ledgers, the crew events log, the skills mount |
+| `none` | no `--mcp-config` in the argv, or the launcher declared `GAFFER_SANDBOX_DATA_PLANE=none` (an empty MCP config) | the hook's telemetry ledgers, the crew events log, the skills mount |
+| `legacy` | `--mcp-config` present, no socket, **bridge off** | the DB directory rw with every non-DB entry masked (WARNED) |
+| refused | `--mcp-config` present, no socket, bridge **on** | the wrapper exits non-zero before any container runs |
+
+The containment gate covers the legacy round (masking), the bridge round (databases
+absent, token absent, MCP round trip over the socket), the validation profile
+(databases and credential absent, worktree writable) and the refusal.
 
 ## Constraints / open questions
 

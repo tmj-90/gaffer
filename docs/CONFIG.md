@@ -302,7 +302,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
-| `GAFFER_DEFAULT_TICKET_REPO` |  | `packages/dispatch/src/mcp/tools.ts`, `runner/bin/tester-run.mjs` |
+| `GAFFER_DEFAULT_TICKET_REPO` |  | `packages/dispatch/src/mcp/tools.ts`, `runner/bin/merge-ticket.mjs`, `runner/bin/tester-run.mjs` |
 | `GAFFER_EGRESS_ALLOW` | _(empty)_ | `runner/lib/egress-allowlist.mjs` |
 | `GAFFER_EGRESS_ALLOW_FILE` | `$data/egress-allow.txt` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | `runner/gaffer`, `runner/lib/eval-judge.sh` |

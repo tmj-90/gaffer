@@ -1006,8 +1006,12 @@ console.log("== B14: pr_url + gh → merged THROUGH the PR, local default fast-f
   assert("via:pr with the PR url", out && out.via === "pr" && out.prUrl === f.prUrl);
   assert("local default fast-forwarded", out && out.fastForwarded === true);
   assert(
-    "gh pr merge <url> --merge --delete-branch was the merge",
-    ghCalls.some((c) => c.join(" ") === `pr merge ${f.prUrl} --merge --delete-branch`),
+    "gh pr merge <url> --merge --delete-branch --match-head-commit <the approved head> was the merge",
+    ghCalls.some(
+      (c) =>
+        c.join(" ") ===
+        `pr merge ${f.prUrl} --merge --delete-branch --match-head-commit ${f.featureSha}`,
+    ),
   );
   assert(
     "local main is EXACTLY the branch tip (fast-forward, no local merge commit)",

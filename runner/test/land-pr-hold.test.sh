@@ -29,6 +29,9 @@ _gaffer_flag_on() { case "${1:-}" in 1|true|yes|on) return 0 ;; *) return 1 ;; e
 export GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA"; export RUNNER_DIR
 # shellcheck source=../lib/land.sh
 source "$RUNNER_DIR/lib/land.sh"
+# The landing decision (lib/tester-binding.mjs) has its own suite (land-tester-binding);
+# this one is about the PR-merge hold, on a non-git scratch dir — stub the decision in.
+_gaffer_land_tester_binding() { _TB_PIN="0123456789abcdef0123456789abcdef01234567"; _TB_KIND="no-tester"; return 0; }
 
 echo "== 1: gh merge fails ⇒ HELD (rc 4), no local merge, no mark-merged =="
 : > "$CALLS"; : > "$LOGF"; unset GAFFER_PR_LOCAL_FALLBACK

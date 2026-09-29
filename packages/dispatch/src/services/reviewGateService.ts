@@ -43,6 +43,12 @@ import { AC_CHECK_VERIFIER } from "../policy/policy.js";
 import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
+import {
+  contractHash,
+  REPLAY_STATES,
+  type ReplayState,
+  type VerdictBinding,
+} from "../util/contractHash.js";
 
 // Re-export so consumers don't need to reach into core directly.
 export { isTestingEnabled, testerProvenance };
@@ -152,20 +158,67 @@ export interface ReviewGateServiceDeps {
 }
 
 /**
- * ACCEPTANCE GATE: the structured binding a tester verdict carries — the exact commit the
- * tester ran against and a hash of the contract it tested (title + description + criteria
- * + test_contract, see `contractHash`). Both optional (a human waiver records neither);
- * validated to a git sha / hex shape so the payload never carries free text here.
+ * ACCEPTANCE GATE: validate the structured binding a tester verdict carries — the exact
+ * commit the tester ran against, the hash of the contract it tested (see
+ * util/contractHash) and the runner's clean-replay outcome. A binding that is PRESENT but
+ * malformed is refused (never silently dropped: a verdict must not look bound when it is
+ * not). For an epic's ACCEPTANCE ticket, a non-human PASS must carry all three, the hash
+ * must be the contract on record, and the replay must have passed — anything less could be
+ * reported as a verified build. A human verdict is a waiver: allowed without a binding and
+ * reported as `waived`, never as verified.
  */
-function testedBinding(input: { tested_commit?: string; contract_hash?: string }): {
-  tested_commit?: string;
-  contract_hash?: string;
-} {
-  const out: { tested_commit?: string; contract_hash?: string } = {};
-  const sha = (input.tested_commit ?? "").trim();
-  if (/^[0-9a-f]{7,64}$/i.test(sha)) out.tested_commit = sha.toLowerCase();
-  const h = (input.contract_hash ?? "").trim();
-  if (/^[0-9a-f]{16,128}$/i.test(h)) out.contract_hash = h.toLowerCase();
+function validatedBinding(
+  input: { tested_commit?: string; contract_hash?: string; replay?: string },
+  opts: { strict: boolean; currentHash: string | null; verdict: "pass" | "fail" },
+): VerdictBinding {
+  const out: VerdictBinding = {};
+  if (input.tested_commit !== undefined) {
+    const sha = input.tested_commit.trim();
+    if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/i.test(sha)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "tested_commit must be a full git commit id (40 or 64 hex characters).",
+      );
+    }
+    out.tested_commit = sha.toLowerCase();
+  }
+  if (input.contract_hash !== undefined) {
+    const h = input.contract_hash.trim();
+    if (!/^[0-9a-f]{64}$/i.test(h)) {
+      throw new DispatchError("VALIDATION_ERROR", "contract_hash must be a sha256 hex digest.");
+    }
+    out.contract_hash = h.toLowerCase();
+  }
+  if (input.replay !== undefined) {
+    if (!(REPLAY_STATES as readonly string[]).includes(input.replay)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `replay must be one of ${REPLAY_STATES.join(", ")}.`,
+      );
+    }
+    out.replay = input.replay as ReplayState;
+  }
+  if (out.contract_hash && opts.currentHash && out.contract_hash !== opts.currentHash) {
+    throw new DispatchError(
+      "CONTRACT_MISMATCH",
+      "The verdict was recorded against a different contract than the one on record (the ticket's title, description, criteria or test contract changed since the tester started). Re-test.",
+      { recorded: out.contract_hash, current: opts.currentHash },
+    );
+  }
+  if (opts.strict && opts.verdict === "pass") {
+    const missing = [
+      ...(out.tested_commit ? [] : ["tested_commit"]),
+      ...(out.contract_hash ? [] : ["contract_hash"]),
+      ...(out.replay === "passed" ? [] : ["replay=passed"]),
+    ];
+    if (missing.length > 0) {
+      throw new DispatchError(
+        "BINDING_REQUIRED",
+        `An automated PASS on an acceptance ticket must be bound to what was tested; missing: ${missing.join(", ")}. A human can waive instead (tester-pass --as human), which is reported as waived, not verified.`,
+        { missing },
+      );
+    }
+  }
   return out;
 }
 
@@ -499,7 +552,13 @@ export class ReviewGateService {
    */
   testerPass(
     ticketRef: string,
-    input: { summary: string; uri?: string; tested_commit?: string; contract_hash?: string },
+    input: {
+      summary: string;
+      uri?: string;
+      tested_commit?: string;
+      contract_hash?: string;
+      replay?: string;
+    },
     actor: Actor,
   ): TransitionResult {
     const summary = input.summary.trim();
@@ -515,6 +574,11 @@ export class ReviewGateService {
           { from: ticket.status, to: "ready_for_merge" },
         );
       }
+      const binding = validatedBinding(input, {
+        strict: ticket.acceptance === 1 && testerProvenance(actor) !== "human",
+        currentHash: contractHash(this.db, ticket.id),
+        verdict: "pass",
+      });
       // Record the passing test result as evidence so it is visible in review.
       const evidenceId = newId();
       const now = this.clock.now();
@@ -533,7 +597,7 @@ export class ReviewGateService {
         payload_json: JSON.stringify({
           verdict: "pass",
           provenance: testerProvenance(actor),
-          ...testedBinding(input),
+          ...binding,
         }),
         created_by: actor.id ?? actor.type,
         recorded_by_actor_type: actor.type,
@@ -570,6 +634,7 @@ export class ReviewGateService {
       to?: "refining" | "ready";
       tested_commit?: string;
       contract_hash?: string;
+      replay?: string;
     },
     actor: Actor,
   ): TransitionResult {
@@ -591,6 +656,11 @@ export class ReviewGateService {
           { from: ticket.status, to: failTo },
         );
       }
+      const binding = validatedBinding(input, {
+        strict: false, // a FAIL never certifies anything; a present binding is still validated
+        currentHash: contractHash(this.db, ticket.id),
+        verdict: "fail",
+      });
       // Record the failing test as evidence BEFORE the AC reset / transition.
       const evidenceId = newId();
       const now = this.clock.now();
@@ -606,7 +676,7 @@ export class ReviewGateService {
         payload_json: JSON.stringify({
           verdict: "fail",
           provenance: testerProvenance(actor),
-          ...testedBinding(input),
+          ...binding,
         }),
         created_by: actor.id ?? actor.type,
         recorded_by_actor_type: actor.type,

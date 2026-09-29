@@ -106,6 +106,7 @@ import {
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
+import { landingDecision } from "../lib/tester-binding.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -313,8 +314,25 @@ export function resolveTicket(dbPath, number) {
  * spawning the resolver (there is nothing on the branch to resolve). Honoured only on
  * the live path; --dry-run never calls this.
  */
-export function attemptMerge(repoPath, branch, defaultBranch) {
+export function attemptMerge(repoPath, branch, defaultBranch, pin = null) {
   const git = (...args) => spawnSync("git", ["-C", repoPath, ...args], { encoding: "utf8" });
+  // ACCEPTANCE GATE: when the landing decision pinned a commit, refuse if the branch has
+  // moved off it, and merge the pinned commit itself (not whatever the name resolves to).
+  if (pin) {
+    const now = git(
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${branch}^{commit}`,
+    ).stdout.trim();
+    if (now !== pin) {
+      return {
+        clean: false,
+        checkoutFailed: true,
+        reason: `${branch} moved between the landing check and the merge (approved ${pin.slice(0, 12)}, now ${now.slice(0, 12) || "missing"})`,
+      };
+    }
+  }
   const co = git("checkout", defaultBranch);
   if (co.status !== 0) {
     return {
@@ -323,7 +341,9 @@ export function attemptMerge(repoPath, branch, defaultBranch) {
       reason: `could not checkout ${defaultBranch}: ${(co.stderr || co.stdout || "").trim().slice(0, 200)}`,
     };
   }
-  const merge = git("merge", "--no-edit", branch);
+  const merge = pin
+    ? git("merge", "--no-edit", "-m", `Merge branch '${branch}'`, pin)
+    : git("merge", "--no-edit", branch);
   if (merge.status === 0) return { clean: true };
   // Conflict (or other merge failure): abort so the default branch is restored and the
   // delivery branch is left intact for the resolver.
@@ -346,8 +366,17 @@ export function resolvePrMergeMethod(raw) {
 }
 
 /** The exact `gh` argv the PR path runs: `pr merge <url> --<method> --delete-branch`. */
-export function buildPrMergeArgv({ prUrl, method }) {
-  return ["pr", "merge", String(prUrl), `--${resolvePrMergeMethod(method)}`, "--delete-branch"];
+export function buildPrMergeArgv({ prUrl, method, matchHeadCommit }) {
+  return [
+    "pr",
+    "merge",
+    String(prUrl),
+    `--${resolvePrMergeMethod(method)}`,
+    "--delete-branch",
+    // ACCEPTANCE GATE: merge only if the PR head is still the commit the landing
+    // decision approved — never silently merge a different PR head.
+    ...(matchHeadCommit ? ["--match-head-commit", String(matchHeadCommit)] : []),
+  ];
 }
 
 /** True when `bin` resolves to an executable (`gh` present + on PATH, or an absolute stub). */
@@ -391,8 +420,16 @@ export function inspectWorkingTree(repoPath) {
  * local fast-forward failed is still ok:true (the change landed upstream) with
  * fastForwarded:false so the caller can log it.
  */
-export function mergeViaPr({ repoPath, prUrl, defaultBranch, ghBin, method, remote }) {
-  const argv = buildPrMergeArgv({ prUrl, method });
+export function mergeViaPr({
+  repoPath,
+  prUrl,
+  defaultBranch,
+  ghBin,
+  method,
+  remote,
+  matchHeadCommit,
+}) {
+  const argv = buildPrMergeArgv({ prUrl, method, matchHeadCommit });
   const gh = spawnSync(ghBin, argv, {
     cwd: repoPath,
     encoding: "utf8",
@@ -947,6 +984,30 @@ function main() {
     return;
   }
 
+  // 0b. ACCEPTANCE GATE — the SAME landing decision lib/land.sh applies (one module,
+  //     lib/tester-binding.mjs): never land code the tester did not run; an acceptance
+  //     ticket needs a bound tester PASS (or a human waiver); fail closed. The decision
+  //     names the exact commit to land, which both merge routes below are pinned to.
+  const decision = landingDecision({
+    dbPath: CONFIG.dispatchDb,
+    ticketNumber: resolved.number,
+    repoPath: repo.localPath,
+    branch,
+  });
+  if (!decision.ok) {
+    fail(
+      `refusing to merge #${resolved.number}: landing check ${decision.kind}: ${decision.reason}` +
+        (decision.kind === "moved"
+          ? ` (tested ${String(decision.tested).slice(0, 12)}, head is now ${String(decision.head).slice(0, 12)}) — re-test the branch or record a human verdict`
+          : "") +
+        `; ticket left ready_for_merge, nothing merged`,
+      4,
+    );
+    return;
+  }
+  if (decision.kind === "waived") log(`#${resolved.number}: landing on a HUMAN tester waiver`);
+  const pin = decision.pin;
+
   // 1. Land the delivery. PR MODE first: when the ticket carries a pr_url (the runner
   //    opened a PR under GAFFER_CREATE_PR) and `gh` is available, merge THROUGH the PR
   //    and fast-forward the local default branch from the remote — a local merge here
@@ -966,6 +1027,7 @@ function main() {
         ghBin,
         method: process.env.GAFFER_PR_MERGE_METHOD,
         remote: process.env.GAFFER_PR_REMOTE,
+        matchHeadCommit: pin,
       });
       if (pr.ok) {
         landed = { via: "pr", prUrl: resolved.prUrl, fastForwarded: pr.fastForwarded };
@@ -1011,7 +1073,7 @@ function main() {
     }
   }
   if (!landed) {
-    const merge = attemptMerge(repo.localPath, branch, repo.defaultBranch);
+    const merge = attemptMerge(repo.localPath, branch, repo.defaultBranch, pin);
     if (merge.clean) {
       landed = { via: "local" };
       log(`merged #${resolved.number} (${branch} → ${repo.defaultBranch}) cleanly`);

@@ -69,6 +69,46 @@ function planWithTwoTickets(wg: Dispatch, extra: Record<string, unknown> = {}) {
   );
 }
 
+const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+/** The binding the runner's tester records on an automated PASS (see tester-run.mjs). */
+function boundPass(wg: Dispatch, ticketId: string) {
+  return {
+    summary: "acceptance suite 16/16",
+    tested_commit: SHA,
+    contract_hash: contractHash(wg.db, ticketId)!,
+    replay: "passed",
+  };
+}
+
+function expectCode(fn: () => unknown, code: string): void {
+  try {
+    fn();
+  } catch (err) {
+    expect((err as { code?: string }).code).toBe(code);
+    return;
+  }
+  throw new Error(`expected ${code}, but the call succeeded`);
+}
+
+/** Drive a two-ticket epic to the point where its acceptance ticket sits in_review. */
+function epicToReviewWith(wg: Dispatch, extra: Record<string, unknown> = {}) {
+  const res = planWithTwoTickets(wg, extra);
+  const agent = wg.registerAgent({ display_name: "a" }, human);
+  const [n1, n2, nAcc] = res.ticketNumbers as [number, number, number];
+  const id = (n: number) => wg.view(String(n)).ticket.id;
+  for (const n of [n1, n2]) {
+    wg.markReady(id(n), human);
+    deliverToReview(wg, id(n), agent.id);
+    wg.approveReview(id(n), reviewer);
+    wg.markMerged(id(n), systemActor);
+    expect(wg.view(id(n)).ticket.status).toBe("done");
+  }
+  wg.markReady(id(nAcc), human);
+  deliverToReview(wg, id(nAcc), agent.id);
+  return { accId: id(nAcc), implIds: [id(n1), id(n2)] };
+}
+
 describe("acceptance gate: every epic gets a factory-created acceptance ticket", () => {
   it("appends the acceptance ticket last: testable, contract, criteria, behind every implementation ticket", () => {
     const wg = freshWg();
@@ -139,20 +179,7 @@ describe("acceptance gate: every epic gets a factory-created acceptance ticket",
 
 describe("acceptance gate: approval always routes an acceptance ticket to the tester", () => {
   function epicToReview(wg: Dispatch) {
-    const res = planWithTwoTickets(wg);
-    const agent = wg.registerAgent({ display_name: "a" }, human);
-    const [n1, n2, nAcc] = res.ticketNumbers as [number, number, number];
-    const id = (n: number) => wg.view(String(n)).ticket.id;
-    for (const n of [n1, n2]) {
-      wg.markReady(id(n), human);
-      deliverToReview(wg, id(n), agent.id);
-      wg.approveReview(id(n), reviewer);
-      wg.markMerged(id(n), systemActor);
-      expect(wg.view(id(n)).ticket.status).toBe("done");
-    }
-    wg.markReady(id(nAcc), human);
-    deliverToReview(wg, id(nAcc), agent.id);
-    return { accId: id(nAcc), implIds: [id(n1), id(n2)] };
+    return epicToReviewWith(wg);
   }
 
   it("GAFFER_TESTING OFF: an ordinary testable ticket goes to ready_for_merge, the acceptance ticket goes to in_testing", () => {
@@ -206,107 +233,135 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
     expect(a.accepted).toBe(0);
   });
 
-  it("tester PASS → ready_for_merge → done: the build reads accepted and drops out of the attention count", () => {
+  it("an automated PASS on an acceptance ticket WITHOUT a binding is refused (BINDING_REQUIRED) — it cannot become verified", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
     wg.approveReview(accId, reviewer);
-    const pass = wg.testerPass(
-      accId,
-      { summary: "acceptance suite 13/13 [tested commit abc123]" },
-      testerAgent,
-    );
+    for (const input of [
+      { summary: "acceptance suite 13/13" },
+      { summary: "no hash", tested_commit: SHA },
+      { summary: "no replay", tested_commit: SHA, contract_hash: contractHash(wg.db, accId)! },
+      {
+        summary: "replay failed",
+        tested_commit: SHA,
+        contract_hash: contractHash(wg.db, accId)!,
+        replay: "failed",
+      },
+    ]) {
+      expectCode(() => wg.testerPass(accId, input, testerAgent), "BINDING_REQUIRED");
+    }
+    expect(wg.view(accId).ticket.status).toBe("in_testing");
+  });
+
+  it("a bound PASS (commit + current contract + clean replay) → done reads accepted (verified) and leaves the attention count", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    const pass = wg.testerPass(accId, boundPass(wg, accId), testerAgent);
     expect(pass.ticket.status).toBe("ready_for_merge");
     wg.markMerged(accId, systemActor);
     const a = computeStats(wg.db).acceptance;
     expect(a.epics[0]!.result).toBe("accepted");
+    expect(a.epics[0]!.accepted_commit).toBe(SHA);
+    expect(a.epics[0]!.replay).toBe("passed");
     expect(a.accepted).toBe(1);
     expect(a.unaccepted).toBe(0);
+  });
+
+  it("a HUMAN tester-pass is a waiver: allowed without a binding, reported as waived — never as verified", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    wg.testerPass(accId, { summary: "waived: acceptance reviewed by hand" }, human);
+    wg.markMerged(accId, systemActor);
+    const a = computeStats(wg.db).acceptance;
+    expect(a.epics[0]!.result).toBe("waived");
+    expect(a.epics[0]!.pass_provenance).toBe("human");
+    expect(a.waived).toBe(1);
+    expect(a.accepted).toBe(0);
+    expect(a.unaccepted).toBe(0); // an explicit human decision is not pending attention
+  });
+
+  it("a done acceptance ticket with NO PASS evidence (or a legacy unbound one) reads unverified and needs attention", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    // Simulate a legacy row: a PASS recorded before bindings existed, then merged.
+    wg.db
+      .prepare(
+        "INSERT INTO evidence (id, ticket_id, evidence_type, summary, payload_json, created_by, recorded_by_actor_type, created_at) VALUES (?, ?, 'test_output', 'legacy pass', ?, 'tester-1', 'agent', ?)",
+      )
+      .run(
+        "legacy-ev",
+        accId,
+        JSON.stringify({ verdict: "pass", provenance: "agent" }),
+        "2099-01-01T00:00:00.000Z",
+      );
+    wg.db.prepare("UPDATE tickets SET status = 'done' WHERE id = ?").run(accId);
+    const a = computeStats(wg.db).acceptance;
+    expect(a.epics[0]!.result).toBe("unverified");
+    expect(a.unverified).toBe(1);
+    expect(a.unaccepted).toBe(1);
   });
 });
 
 describe("acceptance gate: a verdict is bound to the tested commit and contract", () => {
-  const SHA = "0123456789abcdef0123456789abcdef01234567";
-
-  it("testerPass records tested_commit + contract_hash; stats expose the accepted commit", () => {
+  it("the binding is stored; a contract edited after the PASS makes the build stale (unaccepted)", () => {
     const wg = freshWg({ testingEnabled: false });
-    const res = planWithTwoTickets(wg, { brief: "Bookmark Vault brief v1" });
-    const agent = wg.registerAgent({ display_name: "a" }, human);
-    const [n1, n2, nAcc] = res.ticketNumbers as [number, number, number];
-    const id = (n: number) => wg.view(String(n)).ticket.id;
-    for (const n of [n1, n2]) {
-      wg.markReady(id(n), human);
-      deliverToReview(wg, id(n), agent.id);
-      wg.approveReview(id(n), reviewer);
-      wg.markMerged(id(n), systemActor);
-    }
-    wg.markReady(id(nAcc), human);
-    deliverToReview(wg, id(nAcc), agent.id);
-    wg.approveReview(id(nAcc), reviewer);
-    const hash = contractHash(wg.db, id(nAcc));
-    expect(hash).toMatch(/^[0-9a-f]{64}$/);
-    wg.testerPass(
-      id(nAcc),
-      { summary: "acceptance 14/14", tested_commit: SHA, contract_hash: hash! },
-      testerAgent,
-    );
+    const { accId } = epicToReviewWith(wg, { brief: "Bookmark Vault brief v1" });
+    wg.approveReview(accId, reviewer);
+    const bound = boundPass(wg, accId);
+    wg.testerPass(accId, bound, testerAgent);
     const ev = wg
-      .view(id(nAcc))
-      .evidence.filter((e) => e.evidence_type === "test_output")
-      .pop();
-    if (!ev || typeof ev.payload_json !== "string") throw new Error("expected tester evidence");
-    const payload = JSON.parse(ev.payload_json) as {
-      tested_commit?: string;
-      contract_hash?: string;
-    };
-    expect(payload.tested_commit).toBe(SHA);
-    expect(payload.contract_hash).toBe(hash);
-    wg.markMerged(id(nAcc), systemActor);
-    let a = computeStats(wg.db).acceptance;
-    expect(a.epics[0]!.result).toBe("accepted");
-    expect(a.epics[0]!.accepted_commit).toBe(SHA);
-    expect(a.epics[0]!.contract_changed).toBe(false);
-    expect(a.epics[0]!.repo_path).toBeDefined();
-    // The contract changes after the PASS → the acceptance is STALE, and counted as unaccepted.
-    wg.db
-      .prepare(
-        "UPDATE tickets SET description = description || ' (edited after PASS)' WHERE id = ?",
-      )
-      .run(id(nAcc));
-    a = computeStats(wg.db).acceptance;
-    expect(a.epics[0]!.result).toBe("stale");
-    expect(a.epics[0]!.contract_changed).toBe(true);
-    expect(a.accepted).toBe(0);
-    expect(a.unaccepted).toBe(1);
-  });
-
-  it("malformed bindings are dropped, never stored as free text", () => {
-    const wg = freshWg({ testingEnabled: false });
-    const res = planWithTwoTickets(wg);
-    const agent = wg.registerAgent({ display_name: "a" }, human);
-    const [n1, n2, nAcc] = res.ticketNumbers as [number, number, number];
-    const id = (n: number) => wg.view(String(n)).ticket.id;
-    for (const n of [n1, n2]) {
-      wg.markReady(id(n), human);
-      deliverToReview(wg, id(n), agent.id);
-      wg.approveReview(id(n), reviewer);
-      wg.markMerged(id(n), systemActor);
-    }
-    wg.markReady(id(nAcc), human);
-    deliverToReview(wg, id(nAcc), agent.id);
-    wg.approveReview(id(nAcc), reviewer);
-    wg.testerPass(
-      id(nAcc),
-      { summary: "ok", tested_commit: "not a sha; rm -rf", contract_hash: "zz" },
-      testerAgent,
-    );
-    const ev = wg
-      .view(id(nAcc))
+      .view(accId)
       .evidence.filter((e) => e.evidence_type === "test_output")
       .pop();
     if (!ev || typeof ev.payload_json !== "string") throw new Error("expected tester evidence");
     const payload = JSON.parse(ev.payload_json) as Record<string, unknown>;
-    expect(payload.tested_commit).toBeUndefined();
-    expect(payload.contract_hash).toBeUndefined();
+    expect(payload.tested_commit).toBe(SHA);
+    expect(payload.contract_hash).toBe(bound.contract_hash);
+    expect(payload.replay).toBe("passed");
+    wg.markMerged(accId, systemActor);
+    expect(computeStats(wg.db).acceptance.epics[0]!.result).toBe("accepted");
+    wg.db
+      .prepare(
+        "UPDATE tickets SET description = description || ' (edited after PASS)' WHERE id = ?",
+      )
+      .run(accId);
+    const a = computeStats(wg.db).acceptance;
+    expect(a.epics[0]!.result).toBe("stale");
+    expect(a.epics[0]!.contract_changed).toBe(true);
+    expect(a.accepted).toBe(0);
+    expect(a.stale).toBe(1);
+    expect(a.unaccepted).toBe(1);
+  });
+
+  it("a verdict recorded against a DIFFERENT contract than the one on record is refused (CONTRACT_MISMATCH)", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReviewWith(wg);
+    wg.approveReview(accId, reviewer);
+    const stale = { ...boundPass(wg, accId), contract_hash: "f".repeat(64) };
+    expectCode(() => wg.testerPass(accId, stale, testerAgent), "CONTRACT_MISMATCH");
+  });
+
+  it("malformed bindings are REFUSED (never silently dropped) — on PASS and FAIL, acceptance or not", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReviewWith(wg);
+    wg.approveReview(accId, reviewer);
+    const good = boundPass(wg, accId);
+    for (const bad of [
+      { tested_commit: "not a sha; rm -rf" },
+      { tested_commit: "abc123" }, // abbreviated: not a full commit id
+      { contract_hash: "zz" },
+      { replay: "maybe" },
+    ]) {
+      expectCode(() => wg.testerPass(accId, { ...good, ...bad }, testerAgent), "VALIDATION_ERROR");
+      expectCode(
+        () => wg.testerFail(accId, { summary: "f", ...bad }, testerAgent),
+        "VALIDATION_ERROR",
+      );
+    }
+    expect(wg.view(accId).ticket.status).toBe("in_testing");
   });
 
   it("contractHash is the canonical sha256 over title, description, criteria and raw contract (same as the runner's tester)", () => {

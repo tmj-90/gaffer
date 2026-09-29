@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 118 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 66 |
+| Env reads in code with no default and no UI entry | 68 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -338,6 +338,8 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_SLACK_WEBHOOK` | _(empty)_ | `runner/status.sh` |
 | `GAFFER_SPEC_AUTHOR_MOCK` | _(empty)_ | `runner/bin/spec-author.mjs` |
 | `GAFFER_TEST_MODEL` |  | `runner/bin/tester-run.mjs` |
+| `GAFFER_TESTER_REPLAY` | `1` | `runner/bin/tester-run.mjs` |
+| `GAFFER_TESTER_REPLAY_TIMEOUT_MS` |  | `runner/bin/tester-run.mjs` |
 | `GAFFER_TESTER_TIMEOUT_MS` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `GAFFER_TICKET` |  | `runner/safety-hook.mjs` |
 | `GAFFER_TODAY_OVERRIDE` | _(empty)_ | `runner/lib/budget.sh` |

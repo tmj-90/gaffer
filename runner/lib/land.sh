@@ -13,22 +13,29 @@
 #       RUNNER_DIR, gaffer_auto_merge, gaffer_pr_merge, gaffer_refresh_cards, …).
 # shellcheck shell=bash
 # shellcheck disable=SC2154  # globals provided by tick.sh at call time
-# ACCEPTANCE GATE — _gaffer_land_tester_binding <num> <repo> <branch> <show_json>
-# The independent tester's PASS is evidence about ONE commit (evidence payload
-# tested_commit, written by bin/tester-run.mjs). Landing a branch whose head is no longer
-# that commit would merge code the tester never ran. → 0 when no PASS binding is recorded
-# (a human verdict, an older ticket) or the head matches · 1 when the branch moved.
-# Sets _TB_TESTED / _TB_HEAD for the caller's log line.
+# ACCEPTANCE GATE — _gaffer_land_tester_binding <num> <repo> <branch>
+# The landing decision lives in ONE place, lib/tester-binding.mjs, shared with
+# bin/merge-ticket.mjs (the dashboard / `gaffer merge` path), and reads the dispatch DB —
+# never ticket JSON an agent could shape. → 0 land (sets _TB_PIN: the exact commit to
+# merge) · 1 hold. Fail CLOSED: node or the helper missing, an unreadable DB, an unknown
+# ticket or an unresolvable branch head all HOLD. Sets _TB_KIND / _TB_REASON /
+# _TB_TESTED / _TB_HEAD for the caller's log line.
 _gaffer_land_tester_binding() {
-  local num="$1" repo="$2" branch="$3" show="${4:-}"
-  _TB_TESTED=""; _TB_HEAD=""
-  [ -n "$show" ] || return 0
-  _TB_TESTED="$(printf '%s' "$show" | jget '(() => { const ev = (d.evidence || []).filter(e => e && e.evidence_type === "test_output" && typeof e.payload_json === "string" && e.payload_json.includes("\"verdict\":\"pass\"")); ev.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))); const last = ev[ev.length - 1]; if (!last) return ""; try { return String(JSON.parse(last.payload_json).tested_commit || ""); } catch { return ""; } })()' 2>/dev/null || echo '')"
-  [ -n "$_TB_TESTED" ] || return 0
-  _TB_HEAD="$(git -C "$repo" rev-parse "$branch" 2>/dev/null || echo '')"
-  [ -n "$_TB_HEAD" ] || return 0
-  case "$_TB_HEAD" in "$_TB_TESTED"*) return 0 ;; esac
-  case "$_TB_TESTED" in "$_TB_HEAD"*) return 0 ;; esac
+  local num="$1" repo="$2" branch="$3" out rc=0
+  _TB_PIN=""; _TB_KIND=""; _TB_REASON=""; _TB_TESTED=""; _TB_HEAD=""
+  local helper="${RUNNER_DIR:-}/lib/tester-binding.mjs"
+  if [ ! -f "$helper" ] || ! command -v node >/dev/null 2>&1; then
+    _TB_KIND="unavailable"; _TB_REASON="the landing check (lib/tester-binding.mjs) cannot run"
+    return 1
+  fi
+  out="$(node "$helper" landing --db "${DISPATCH_DB:-}" --ticket "$num" --repo "$repo" --branch "$branch" 2>/dev/null)" || rc=$?
+  _TB_PIN="$(printf '%s' "$out" | jget 'd.pin || ""' 2>/dev/null || echo '')"
+  _TB_KIND="$(printf '%s' "$out" | jget 'd.kind || ""' 2>/dev/null || echo '')"
+  _TB_REASON="$(printf '%s' "$out" | jget 'd.reason || ""' 2>/dev/null || echo '')"
+  _TB_TESTED="$(printf '%s' "$out" | jget 'd.tested || ""' 2>/dev/null || echo '')"
+  _TB_HEAD="$(printf '%s' "$out" | jget 'd.head || ""' 2>/dev/null || echo '')"
+  [ "$rc" -eq 0 ] && [ -n "$_TB_PIN" ] && return 0
+  [ -n "$_TB_KIND" ] || { _TB_KIND="unreadable"; _TB_REASON="the landing check produced no decision (rc=$rc)"; }
   return 1
 }
 
@@ -36,11 +43,19 @@ gaffer_land_delivery() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}"
   local _CR_BASE _RPR _MERGED_VIA _mrc _prc
   [ -n "$RNUM" ] && [ -n "$RREPO" ] && [ -n "$RBRANCH" ] && [ -n "$RDEFAULT" ] || { log "$_WHO: land: missing ticket/repo/branch/default — refusing"; return 2; }
-  # ACCEPTANCE GATE: never land code the tester did not run (see _gaffer_land_tester_binding).
-  if ! _gaffer_land_tester_binding "$RNUM" "$RREPO" "$RBRANCH" "$RSHOW"; then
-    log "$_WHO: #$RNUM HELD — $RBRANCH moved since the tester's PASS (tested ${_TB_TESTED:0:12}, head is now ${_TB_HEAD:0:12}); re-test the branch (move it back to in_review) or record a human verdict"
+  # ACCEPTANCE GATE: never land code the tester did not run, and merge exactly the commit
+  # the decision names (_TB_PIN) — see lib/tester-binding.mjs, shared with merge-ticket.mjs.
+  if ! _gaffer_land_tester_binding "$RNUM" "$RREPO" "$RBRANCH"; then
+    case "$_TB_KIND" in
+      moved) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the tester's PASS (tested ${_TB_TESTED:0:12}, head is now ${_TB_HEAD:0:12}); re-test the branch (move it back to in_review) or record a human verdict" ;;
+      *)     log "$_WHO: #$RNUM HELD — landing check: ${_TB_KIND:-?}: ${_TB_REASON:-no decision}; nothing merged" ;;
+    esac
     return 4
   fi
+  case "$_TB_KIND" in
+    waived) log "$_WHO: #$RNUM landing on a HUMAN tester waiver (pinned ${_TB_PIN:0:12})" ;;
+    legacy-unbound) log "$_WHO: #$RNUM tester PASS predates commit binding — landing the current head ${_TB_PIN:0:12}" ;;
+  esac
   # Merge gate ALSO earned → safe-merge the delivery branch into the default.
   # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an
   # ancestor of RDEFAULT, so merge-base would collapse to RBRANCH (empty diff).
@@ -52,7 +67,7 @@ gaffer_land_delivery() {
   _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
   _MERGED_VIA="local"; _mrc=""
   if [ -n "$_RPR" ]; then
-    gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT"; _prc=$?
+    gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT" "$_TB_PIN"; _prc=$?
     case "$_prc" in
       0) _mrc=0; _MERGED_VIA=pr
          log "$_WHO: #$RNUM merged THROUGH its PR $_RPR (gh pr merge --${GAFFER_PR_MERGE_METHOD:-merge} --delete-branch); local $RDEFAULT fast-forwarded" ;;
@@ -73,7 +88,7 @@ gaffer_land_delivery() {
         fi ;;
     esac
   fi
-  if [ -z "$_mrc" ]; then gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT"; _mrc=$?; fi
+  if [ -z "$_mrc" ]; then gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN"; _mrc=$?; fi
   case "$_mrc" in
     0)
       wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
@@ -129,6 +144,8 @@ gaffer_land_delivery() {
       fi
       ;;
     3) log "$_WHO: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;
+    6) log "$_WHO: #$RNUM HELD — $RBRANCH moved between the landing check and the merge (approved ${_TB_PIN:0:12}); nothing merged"
+       _mrc=4 ;;
     1)
       # CONFLICT: the branch forked before a sibling landed on the same files (two
       # tickets in flight touching one module). Under autonomy this used to be the end

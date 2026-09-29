@@ -63,7 +63,11 @@ sleep 1
 CHILD_PID="$(cat "$CHILD_PIDFILE" 2>/dev/null || true)"
 if [ -z "$CHILD_PID" ]; then
   fail "the grandchild never recorded its PID (test setup)"
-elif kill -0 "$CHILD_PID" 2>/dev/null; then
+elif kill -0 "$CHILD_PID" 2>/dev/null && ! ps -o stat= -p "$CHILD_PID" 2>/dev/null | grep -q Z; then
+  # A ZOMBIE is dead (the group KILL landed); it only lingers until its new parent reaps
+  # it. Its parent (the foreground bash) exited first, so it is reparented to PID 1, and
+  # a container whose PID 1 is not a reaping init leaves it as Z — `kill -0` still
+  # succeeds on a zombie. Only a RUNNING process is a surviving orphan.
   fail "ORPHAN: TERM-ignoring grandchild (MCP-server stand-in) $CHILD_PID survived the timeout"
   kill -KILL "-$CHILD_PID" 2>/dev/null; kill -KILL "$CHILD_PID" 2>/dev/null || true
 else

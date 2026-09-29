@@ -16,16 +16,26 @@
 # explicitly-gated step (gaffer_auto_push). On conflict it aborts and leaves the delivery
 # branch intact for a human.
 #
-#   gaffer_auto_merge <repo_dir> <branch> <default_branch>
+#   gaffer_auto_merge <repo_dir> <branch> <default_branch> [pin_commit]
 #     → 0  merged cleanly into <default_branch>
 #     → 1  conflict — merge aborted, branch left intact for a human
 #     → 2  bad arguments / missing ref — nothing attempted
 #     → 3  skipped: the default branch is checked out with uncommitted changes (unsafe)
+#     → 6  refused: <branch> no longer points at <pin_commit> (the commit the landing
+#          decision approved) — nothing merged
 gaffer_auto_merge() {
-  local repo="$1" branch="$2" def="$3"
+  local repo="$1" branch="$2" def="$3" pin="${4:-}"
   [ -n "$repo" ] && [ -n "$branch" ] && [ -n "$def" ] || return 2
   git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1 || return 2
   git -C "$repo" rev-parse --verify --quiet "refs/heads/$def" >/dev/null 2>&1 || return 2
+  # PINNED MERGE (acceptance gate): when the landing decision names the exact commit to
+  # land, merge THAT commit — and refuse if the branch no longer points at it — instead
+  # of whatever the branch name resolves to by the time the merge runs.
+  local src="$branch"
+  if [ -n "$pin" ]; then
+    [ "$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null)" = "$pin" ] || return 6
+    src="$pin"
+  fi
 
   local head_branch
   head_branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || echo '')"
@@ -35,7 +45,7 @@ gaffer_auto_merge() {
     if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]; then
       return 3   # dirty live checkout on the target — never merge over active edits
     fi
-    if git -C "$repo" merge --no-edit "$branch" >/dev/null 2>&1; then return 0; fi
+    if git -C "$repo" merge --no-edit -m "Merge branch '$branch'" "$src" >/dev/null 2>&1; then return 0; fi
     git -C "$repo" merge --abort 2>/dev/null || true
     return 1
   fi
@@ -45,7 +55,7 @@ gaffer_auto_merge() {
   local wt rc=1
   wt="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-merge.XXXXXX")" || return 2
   if git -C "$repo" worktree add --quiet "$wt" "$def" >/dev/null 2>&1; then
-    if git -C "$wt" merge --no-edit "$branch" >/dev/null 2>&1; then
+    if git -C "$wt" merge --no-edit -m "Merge branch '$branch'" "$src" >/dev/null 2>&1; then
       rc=0
     else
       git -C "$wt" merge --abort 2>/dev/null || true
@@ -75,7 +85,7 @@ gaffer_auto_merge() {
 #   → 3  PR merged upstream but the local default branch is checked out DIRTY — not touched
 #   → 4  PR merged upstream but the local fast-forward failed — pull by hand
 gaffer_pr_merge() {
-  local repo="$1" pr_url="$2" def="$3"
+  local repo="$1" pr_url="$2" def="$3" pin="${4:-}"
   [ -n "$repo" ] && [ -n "$pr_url" ] && [ -n "$def" ] || return 2
   local gh_bin="${GAFFER_GH_BIN:-gh}" remote="${GAFFER_PR_REMOTE:-origin}"
   command -v "$gh_bin" >/dev/null 2>&1 || return 2
@@ -85,7 +95,7 @@ gaffer_pr_merge() {
     rebase) method=rebase ;;
     *)      method=merge ;;   # default — a typo can never pick an unintended method
   esac
-  ( cd "$repo" 2>/dev/null && GH_PROMPT_DISABLED=1 "$gh_bin" pr merge "$pr_url" "--$method" --delete-branch ) \
+  ( cd "$repo" 2>/dev/null && GH_PROMPT_DISABLED=1 "$gh_bin" pr merge "$pr_url" "--$method" --delete-branch ${pin:+--match-head-commit "$pin"} ) \
     >/dev/null 2>&1 || return 1
 
   local head_branch

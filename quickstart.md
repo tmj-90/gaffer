@@ -243,7 +243,11 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   exact commit and contract it tested: the merge lane will not land a branch that moved
   after the PASS, an accepted build whose acceptance ticket was edited afterwards reads
   **stale**, and `gaffer status` says when the default branch has moved past the tested
-  commit. A tester that changes implementation files is held, not passed. To waive or decide by hand,
+  commit. A tester that changes implementation files is held, not passed, and a tester
+  PASS only counts after the runner re-runs the tester's tests itself on a clean checkout
+  of the tested commit (the repo's registered test command). `wg stats` reports a build as
+  **accepted** only when that bound, replayed PASS exists; a human `tester-pass --as human`
+  is reported as **waived**, and a done acceptance ticket without either as **unverified**. To waive or decide by hand,
   record the verdict yourself: `runner/gaffer wg ticket tester-pass <n> --as human
   --summary "<why>"` (or `tester-fail`), which is kept as evidence.
 - **Behind a corporate / TLS-intercepting proxy.** The agent runs in an allowlisted

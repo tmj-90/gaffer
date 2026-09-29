@@ -195,6 +195,22 @@ function parseContract(raw) {
  * `in_testing`. `mode` is "harness" when the contract's harness_ready is false (the
  * tester stands the rig up once), else "black-box".
  */
+/** The repo's registered test command (repositories.test_command), or "" when none / unreadable. */
+export function repoTestCommand(dbPath, repoName) {
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const r = db.prepare("SELECT test_command FROM repositories WHERE name = ?").get(repoName);
+      return r && r.test_command ? String(r.test_command) : "";
+    } finally {
+      db.close();
+    }
+  } catch {
+    return "";
+  }
+}
+
 export function assembleContext(dbPath, number) {
   const num = parseInt(String(number ?? "").trim(), 10);
   if (!Number.isInteger(num) || num <= 0) return null;
@@ -211,12 +227,22 @@ export function assembleContext(dbPath, number) {
     // NOTE: branch_name / pr_url are intentionally NOT selected — the tester must
     // never receive a pointer to the implementation. Only the operational contract
     // + the acceptance criteria reach it.
-    const ticket = db
-      .prepare(
-        "SELECT id, number, title, description, status, can_be_tested AS canBeTested, " +
-          "test_contract AS testContract FROM tickets WHERE number = ?",
-      )
-      .get(num);
+    let ticket;
+    try {
+      ticket = db
+        .prepare(
+          "SELECT id, number, title, description, status, can_be_tested AS canBeTested, " +
+            "test_contract AS testContract, acceptance FROM tickets WHERE number = ?",
+        )
+        .get(num);
+    } catch {
+      ticket = db // pre-v26 schema / minimal fixture: no acceptance column
+        .prepare(
+          "SELECT id, number, title, description, status, can_be_tested AS canBeTested, " +
+            "test_contract AS testContract FROM tickets WHERE number = ?",
+        )
+        .get(num);
+    }
     if (!ticket || !ticket.id) return null;
     if (String(ticket.status) !== "in_testing") return null;
 
@@ -240,7 +266,8 @@ export function assembleContext(dbPath, number) {
       title: String(ticket.title || ""),
       description: String(ticket.description || ""),
       status: String(ticket.status),
-      // Raw column for the contract hash (must match dispatch's ops.ts contractHash).
+      acceptance: Number(ticket.acceptance || 0) === 1,
+      // Raw column for the contract hash (must match dispatch's util/contractHash.ts).
       testContractRaw: ticket.testContract == null ? "" : String(ticket.testContract),
       acceptanceCriteria: acs.map((a) => ({
         id: String(a.id),
@@ -278,6 +305,7 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
   const bindArgs = [
     ...(binding.testedCommit ? ["--tested-commit", String(binding.testedCommit)] : []),
     ...(binding.contractHash ? ["--contract-hash", String(binding.contractHash)] : []),
+    ...(binding.replay ? ["--replay", String(binding.replay)] : []),
   ];
   const override = (env.DISPATCH_TESTER_VERDICT_CMD ?? "").trim();
   let argv;
@@ -377,20 +405,130 @@ export function isTestPath(p) {
   return /\.(test|spec)\.[cm]?[jt]sx?$/i.test(n) || /(^|\/)test[-_.][^/]*$/i.test(n);
 }
 
-/** Files the tester changed that are NOT tests — the implementation under test moved. */
-export function implementationChanges(worktree, baseCommit) {
+/**
+ * What the tester changed relative to the tested commit, split into implementation and
+ * test files. `ok:false` when git could not answer (worktree gone, not a repository):
+ * the caller HOLDS then — an uninspectable worktree is never read as "nothing changed".
+ * Ignored files (build output) are deliberately not judged here: a tester legitimately
+ * builds. What ran is established by the clean REPLAY instead (see `replayTesterTests`).
+ */
+export function inspectTesterChanges(worktree, baseCommit) {
   const changed = new Set();
-  const diff = git(worktree, "diff", "--name-only", baseCommit).stdout || "";
-  for (const l of diff.split("\n")) if (l.trim()) changed.add(l.trim());
-  const status = git(worktree, "status", "--porcelain", "--untracked-files=all").stdout || "";
-  for (const l of status.split("\n")) {
+  const diff = git(worktree, "diff", "--name-only", baseCommit);
+  const status = git(worktree, "status", "--porcelain", "--untracked-files=all");
+  if (diff.status !== 0 || status.status !== 0 || diff.error || status.error) {
+    return {
+      ok: false,
+      reason: `git could not inspect the tester worktree (diff exit ${diff.status ?? "?"}, status exit ${status.status ?? "?"})`,
+      implementation: [],
+      tests: [],
+    };
+  }
+  for (const l of (diff.stdout || "").split("\n")) if (l.trim()) changed.add(l.trim());
+  for (const l of (status.stdout || "").split("\n")) {
     const path = l.slice(3).trim();
     if (path) changed.add(path.includes(" -> ") ? path.split(" -> ").pop() : path);
   }
-  return [...changed].filter((p) => !isTestPath(p)).sort();
+  const all = [...changed].sort();
+  return {
+    ok: true,
+    implementation: all.filter((p) => !isTestPath(p)),
+    tests: all.filter(
+      (p) => isTestPath(p) && !/^(\.claude\/|CLAUDE\.factory\.md$|\.mcp\.json$)/.test(p),
+    ),
+  };
 }
 
-const MAX_BRIEF_CHARS = 12000;
+/** Back-compat: the implementation files the tester changed (throws nothing; [] when uninspectable). */
+export function implementationChanges(worktree, baseCommit) {
+  return inspectTesterChanges(worktree, baseCommit).implementation;
+}
+
+/**
+ * ACCEPTANCE GATE — the clean REPLAY. A tester's PASS is only evidence about the candidate
+ * if the candidate, untouched, passes the tester's tests. The tester's worktree is writable
+ * (it builds, it may write output git ignores), so its own run cannot establish that. The
+ * runner re-runs the repo's test command in a FRESH detached checkout of the tested commit
+ * with only the tester's TEST files copied in (deleted candidate tests are not deleted —
+ * the candidate's own tests still run), dependencies linked from the primary checkout.
+ * → { state: "passed" | "failed" | "skipped", reason, tail }
+ */
+export function replayTesterTests({
+  repoPath,
+  testedCommit,
+  testerWorktree,
+  testFiles,
+  testCommand,
+  n,
+}) {
+  if (!/^(1|true|yes|on)$/i.test(process.env.GAFFER_TESTER_REPLAY ?? "1"))
+    return { state: "skipped", reason: "GAFFER_TESTER_REPLAY=0" };
+  const cmd = String(testCommand || "").trim();
+  if (!cmd) return { state: "skipped", reason: "the repo has no test command registered" };
+  const replay = resolve(GAFFER_DATA, "worktrees", `tester-replay-${n}`);
+  git(repoPath, "worktree", "remove", "--force", replay);
+  rmSync(replay, { recursive: true, force: true });
+  const add = git(repoPath, "worktree", "add", "--force", "--detach", replay, testedCommit);
+  if (add.status !== 0)
+    return {
+      state: "failed",
+      reason: `could not check out ${testedCommit.slice(0, 12)} for the replay`,
+    };
+  try {
+    for (const f of testFiles) {
+      const src = resolve(testerWorktree, f);
+      if (!existsSync(src)) continue; // the tester deleted it: the candidate's copy still runs
+      const dst = resolve(replay, f);
+      mkdirSync(dirname(dst), { recursive: true });
+      copyFileSync(src, dst);
+    }
+    const nm = resolve(repoPath, "node_modules");
+    if (existsSync(nm) && !existsSync(resolve(replay, "node_modules"))) {
+      try {
+        symlinkSync(nm, resolve(replay, "node_modules"), "dir");
+      } catch {
+        /* best-effort: the test command may install */
+      }
+    }
+    const timeout =
+      Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS) > 0
+        ? Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS)
+        : 10 * 60 * 1000;
+    const r = spawnSync("bash", ["-c", cmd], {
+      cwd: replay,
+      encoding: "utf8",
+      timeout,
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...agentChildEnv(), CI: "1" },
+    });
+    const tail = `${r.stdout || ""}\n${r.stderr || ""}`.trim().split("\n").slice(-12).join("\n");
+    if (r.error)
+      return {
+        state: "failed",
+        reason: `replay did not complete (${r.error.code ?? r.error.message})`,
+        tail,
+      };
+    return r.status === 0
+      ? {
+          state: "passed",
+          reason: `${cmd} passed on a clean checkout of ${testedCommit.slice(0, 12)}`,
+          tail,
+        }
+      : {
+          state: "failed",
+          reason: `${cmd} exited ${r.status} on a clean checkout of ${testedCommit.slice(0, 12)}`,
+          tail,
+        };
+  } finally {
+    git(repoPath, "worktree", "remove", "--force", replay);
+    git(repoPath, "worktree", "prune");
+    rmSync(replay, { recursive: true, force: true });
+  }
+}
+
+// The dispatch schema caps a ticket description at 20,000 characters, so rendering up to
+// that cap means a validated description — the whole brief — always reaches the tester.
+const MAX_BRIEF_CHARS = 20000;
 
 export function buildTesterPrompt({ context, worktree, repoName }) {
   const acs = context.acceptanceCriteria
@@ -626,10 +764,25 @@ function runLiveTester(context) {
     verdict = parseTesterVerdict(text);
   }
 
-  // ACCEPTANCE GATE: the tester tests the implementation, it never changes it. If any
-  // non-test file differs from the tested commit, the verdict describes code that is not
-  // the candidate — HOLD instead of recording it (the tests are still kept below).
-  const implChanged = testedCommit ? implementationChanges(worktree, testedCommit) : [];
+  // ACCEPTANCE GATE: the tester tests the implementation, it never changes it. Inspect what
+  // it changed (hold if git cannot answer), and replay a PASS on a clean checkout of the
+  // tested commit before it is recorded — both BEFORE the worktree is torn down.
+  const inspection = testedCommit
+    ? inspectTesterChanges(worktree, testedCommit)
+    : { ok: false, reason: "the tested commit could not be read", implementation: [], tests: [] };
+  const implChanged = inspection.implementation;
+  let replay = null;
+  if (verdict === "pass" && inspection.ok && implChanged.length === 0) {
+    replay = replayTesterTests({
+      repoPath: repo.localPath,
+      testedCommit,
+      testerWorktree: worktree,
+      testFiles: inspection.tests,
+      testCommand: repoTestCommand(CONFIG.dispatchDb, repo.name),
+      n,
+    });
+    log(`clean replay of the tester's tests: ${replay.state} (${replay.reason})`);
+  }
   // Preserve the tester's tests WITHOUT rewriting the reviewed delivery branch: any
   // work left in the worktree lands on gaffer/ticket-<n>-tests (branch of the delivery
   // head), so a human can merge or read them. Nothing is pushed.
@@ -668,6 +821,13 @@ function runLiveTester(context) {
     emit({ phase: "held", ticket: n, reason: "tester produced no verdict token", testsBranch }, 2);
     return;
   }
+  if (!inspection.ok) {
+    log(
+      `${inspection.reason} — HOLDING in_testing for a human (an uninspectable run is never recorded)`,
+    );
+    emit({ phase: "held", ticket: n, reason: inspection.reason, testsBranch, testedCommit }, 2);
+    return;
+  }
   if (implChanged.length > 0) {
     log(
       `the tester changed implementation files (${implChanged.slice(0, 8).join(", ")}${implChanged.length > 8 ? ", …" : ""}) — its verdict is not about the candidate; HOLDING in_testing for a human`,
@@ -678,6 +838,41 @@ function runLiveTester(context) {
         ticket: n,
         reason: `tester modified implementation files: ${implChanged.join(", ")}`,
         implementationChanges: implChanged,
+        testsBranch,
+        testedCommit,
+      },
+      2,
+    );
+    return;
+  }
+  if (verdict === "pass" && replay && replay.state === "failed") {
+    log(
+      `the tester's PASS did not survive a clean replay (${replay.reason}) — what it ran is not the candidate; HOLDING in_testing for a human`,
+    );
+    emit(
+      {
+        phase: "held",
+        ticket: n,
+        reason: `clean replay failed: ${replay.reason}`,
+        replay,
+        testsBranch,
+        testedCommit,
+      },
+      2,
+    );
+    return;
+  }
+  if (verdict === "pass" && context.acceptance && (!replay || replay.state !== "passed")) {
+    const why = replay ? replay.reason : "no replay ran";
+    log(
+      `acceptance ticket #${n}: a PASS needs a clean replay and none passed (${why}) — HOLDING for a human`,
+    );
+    emit(
+      {
+        phase: "held",
+        ticket: n,
+        reason: `acceptance PASS without a clean replay: ${why}`,
+        replay,
         testsBranch,
         testedCommit,
       },
@@ -697,6 +892,7 @@ function runLiveTester(context) {
   const recorded = recordVerdict(n, verdict, summary, process.env, {
     testedCommit,
     contractHash: testedContractHash,
+    ...(verdict === "pass" && replay ? { replay: replay.state } : {}),
   });
   if (!recorded.ok) {
     fail(
@@ -715,6 +911,7 @@ function runLiveTester(context) {
       summary,
       testedCommit,
       contractHash: testedContractHash,
+      replay: replay ? replay.state : null,
     },
     0,
   );

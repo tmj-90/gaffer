@@ -78,7 +78,7 @@ const CONTRACT = {
   db.exec(
     "CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, title TEXT NOT NULL, " +
       "description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, branch_name TEXT, pr_url TEXT, " +
-      "can_be_tested INTEGER NOT NULL DEFAULT 0, test_contract TEXT);" +
+      "can_be_tested INTEGER NOT NULL DEFAULT 0, test_contract TEXT, acceptance INTEGER NOT NULL DEFAULT 0);" +
       "CREATE TABLE acceptance_criteria (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, " +
       "text TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending');",
   );
@@ -287,6 +287,12 @@ const LIVE = (() => {
     '{"name":"live","type":"module","scripts":{"test":"node --test"}}\n',
   );
   writeFileSync(resolve(repo, "src", "w.js"), "export const w = 1;\n");
+  // A build step whose output git ignores — the clean replay rebuilds it from src.
+  writeFileSync(
+    resolve(repo, "build.js"),
+    'import { mkdirSync, writeFileSync } from "node:fs"; import { w } from "./src/w.js"; mkdirSync("dist", { recursive: true }); writeFileSync("dist/out.js", `export const out = ${w};\\n`);\n',
+  );
+  writeFileSync(resolve(repo, ".gitignore"), "dist/\nnode_modules/\n");
   g("add", "-A");
   g("commit", "-q", "-m", "base");
   g("checkout", "-q", "-b", "gaffer/ticket-1-widgets");
@@ -297,12 +303,12 @@ const LIVE = (() => {
   const { DatabaseSync } = require("node:sqlite");
   const db = new DatabaseSync(DB_PATH);
   db.exec(
-    "CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, local_path TEXT, default_branch TEXT NOT NULL DEFAULT 'main', stack TEXT);" +
+    "CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, local_path TEXT, default_branch TEXT NOT NULL DEFAULT 'main', stack TEXT, test_command TEXT);" +
       "CREATE TABLE IF NOT EXISTS ticket_repos (ticket_id TEXT, repo_id TEXT, role TEXT DEFAULT 'primary', branch_name TEXT, access TEXT DEFAULT 'write');",
   );
   db.prepare(
-    "INSERT INTO repositories (id,name,local_path,default_branch,stack) VALUES (?,?,?,?,?)",
-  ).run("r1", "live", repo, "main", "typescript-node");
+    "INSERT INTO repositories (id,name,local_path,default_branch,stack,test_command) VALUES (?,?,?,?,?,?)",
+  ).run("r1", "live", repo, "main", "typescript-node", "node build.js && node --test");
   db.prepare(
     "INSERT INTO ticket_repos (ticket_id,repo_id,role,branch_name,access) VALUES (?,?,?,?,?)",
   ).run("t1", "r1", "primary", "gaffer/ticket-1-widgets", "write");
@@ -318,6 +324,11 @@ const LIVE = (() => {
       'prompt=""; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done\n' +
       `node -e 'const fs=require("node:fs");fs.writeFileSync(process.argv[1],JSON.stringify({cwd:process.cwd(),prompt:process.argv[2],skills:fs.existsSync(".claude/skills")?fs.readdirSync(".claude/skills").sort():null,settings:fs.existsSync(".claude/settings.json"),brief:fs.existsSync("CLAUDE.factory.md")}))' ${JSON.stringify(capture)} "$prompt"\n` +
       'mkdir -p test && printf \'import test from "node:test"; import assert from "node:assert/strict"; import { w } from "../src/w.js"; test("bb", () => assert.equal(w, 2));\\n\' > test/bb.test.js\n' +
+      // TESTER_STUB_DIST=1: the agent edits IGNORED build output (dist/) and tests against
+      // it — invisible to git status; only the clean replay (which rebuilds) can catch it.
+      '[ "${TESTER_STUB_DIST:-0}" = "1" ] && mkdir -p dist && printf \'export const out = 3;\\n\' > dist/out.js && printf \'import test from "node:test"; import assert from "node:assert/strict"; import { out } from "../dist/out.js"; test("dist", () => assert.equal(out, 3));\\n\' > test/dist.test.js\n' +
+      // TESTER_STUB_BREAKGIT=1: the worktree's git link disappears — uninspectable.
+      '[ "${TESTER_STUB_BREAKGIT:-0}" = "1" ] && rm -f .git\n' +
       // TESTER_STUB_MUTATE=1: the agent "fixes" the implementation to make its test pass —
       // the verdict is then not about the candidate and must be HELD, never recorded.
       '[ "${TESTER_STUB_MUTATE:-0}" = "1" ] && printf \'export const w = 2; // tester edit\\n\' > src/w.js\n' +
@@ -371,6 +382,9 @@ function runLive(verdictMode, extraEnv = {}) {
   /"--contract-hash","[0-9a-f]{64}"/.test(logged)
     ? ok("verdict carries --contract-hash <sha256 of the contract>")
     : fail(`no contract-hash binding in the verdict argv: ${logged}`);
+  logged.includes('"--replay","passed"') && out && out.replay === "passed"
+    ? ok("the PASS survived a clean replay on the tested commit (--replay passed)")
+    : fail(`replay not passed/recorded: ${logged} / ${JSON.stringify(out && out.replay)}`);
   out && out.testedCommit === LIVE.deliverySha && /^[0-9a-f]{64}$/.test(out.contractHash || "")
     ? ok("emitted JSON names the tested commit and contract hash")
     : fail(
@@ -465,6 +479,60 @@ console.log(
     : fail("delivery branch moved");
 }
 
+console.log(
+  "== AC15: a PASS whose tester changed IGNORED build output fails the clean replay → HELD ==",
+);
+{
+  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  const { code, out, logged } = runLive("PASS", { TESTER_STUB_DIST: "1" });
+  code === 2 && out && out.phase === "held" && /clean replay failed/.test(out.reason || "")
+    ? ok(
+        "tampered dist/ (git-ignored) is caught: the replay rebuilds from src and the tester's test fails → held",
+      )
+    : fail(`dist tamper not caught (code=${code}, out=${JSON.stringify(out)})`);
+  logged === "" ? ok("no verdict recorded") : fail(`a verdict was recorded: ${logged}`);
+  out && out.replay && out.replay.state === "failed" && /exited/.test(out.replay.reason || "")
+    ? ok("the held output names the failed replay and its exit")
+    : fail(`replay detail: ${JSON.stringify(out && out.replay)}`);
+}
+console.log(
+  "== AC16: an uninspectable tester worktree (git fails) HOLDS — never read as 'nothing changed' ==",
+);
+{
+  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  const { code, out, logged } = runLive("PASS", { TESTER_STUB_BREAKGIT: "1" });
+  code === 2 && out && out.phase === "held" && /could not inspect/.test(out.reason || "")
+    ? ok("git inspection failure → held (exit 2)")
+    : fail(`broken git not held (code=${code}, out=${JSON.stringify(out)})`);
+  logged === "" ? ok("no verdict recorded") : fail(`a verdict was recorded: ${logged}`);
+  LIVE.g("worktree", "prune");
+}
+console.log("== AC17: an ACCEPTANCE ticket's PASS without a replay that ran HOLDS ==");
+{
+  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(DB_PATH);
+  db.prepare("UPDATE tickets SET acceptance = 1 WHERE id = 't1'").run();
+  db.prepare("UPDATE repositories SET test_command = NULL WHERE id = 'r1'").run();
+  db.close();
+  const { code, out, logged } = runLive("PASS");
+  code === 2 &&
+  out &&
+  out.phase === "held" &&
+  /acceptance PASS without a clean replay/.test(out.reason || "")
+    ? ok("no test command to replay → the acceptance PASS is held, not recorded unbound")
+    : fail(`acceptance without replay not held (code=${code}, out=${JSON.stringify(out)})`);
+  logged === "" ? ok("no verdict recorded") : fail(`a verdict was recorded: ${logged}`);
+  const db2 = new DatabaseSync(DB_PATH);
+  db2.prepare("UPDATE tickets SET acceptance = 0 WHERE id = 't1'").run();
+  db2
+    .prepare(
+      "UPDATE repositories SET test_command = 'node build.js && node --test' WHERE id = 'r1'",
+    )
+    .run();
+  db2.close();
+}
+
 rmSync(WORKDIR, { recursive: true, force: true });
 
 console.log("");
@@ -518,6 +586,14 @@ console.log(
   p1 !== p2 && p2.includes("COMPLETELY_DIFFERENT_BRIEF")
     ? ok("two briefs with identical title, criteria and contract produce DIFFERENT prompts")
     : fail("changing only the brief did not change the prompt");
+  const long = { ...base, description: "x".repeat(19000) + "END_OF_BRIEF_SENTINEL" };
+  buildTesterPrompt({
+    context: long,
+    worktree: "/tmp/fixture",
+    repoName: "bookmark-vault",
+  }).includes("END_OF_BRIEF_SENTINEL")
+    ? ok("a description up to the schema's 20,000-character cap reaches the tester untruncated")
+    : fail("a long brief was truncated");
   /never change it/.test(p1)
     ? ok("the prompt forbids editing the implementation")
     : fail("no do-not-modify instruction");

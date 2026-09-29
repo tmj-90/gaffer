@@ -313,6 +313,10 @@ export function registerTicket(program: Command): void {
       "--contract-hash <hex>",
       "hash of the contract tested (title + description + criteria + test_contract)",
     )
+    .option(
+      "--replay <state>",
+      "the runner's clean replay of the tester's tests on the tested commit: passed | failed | skipped",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
@@ -324,6 +328,7 @@ export function registerTicket(program: Command): void {
           uri: opts.uri,
           ...(opts.testedCommit ? { tested_commit: String(opts.testedCommit) } : {}),
           ...(opts.contractHash ? { contract_hash: String(opts.contractHash) } : {}),
+          ...(opts.replay ? { replay: String(opts.replay) } : {}),
         },
         actor,
       );
@@ -354,6 +359,10 @@ export function registerTicket(program: Command): void {
       "--contract-hash <hex>",
       "hash of the contract tested (title + description + criteria + test_contract)",
     )
+    .option(
+      "--replay <state>",
+      "the runner's clean replay of the tester's tests on the tested commit: passed | failed | skipped",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       if (opts.to !== "refining" && opts.to !== "ready") {
@@ -369,6 +378,7 @@ export function registerTicket(program: Command): void {
           to: opts.to as "refining" | "ready",
           ...(opts.testedCommit ? { tested_commit: String(opts.testedCommit) } : {}),
           ...(opts.contractHash ? { contract_hash: String(opts.contractHash) } : {}),
+          ...(opts.replay ? { replay: String(opts.replay) } : {}),
         },
         actor,
       );

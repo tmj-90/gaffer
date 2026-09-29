@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 
 import type { Db } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
 import { verifyEventChain } from "../events/eventChain.js";
+import { contractHash } from "../util/contractHash.js";
 import type { HumanQueue } from "../services/humanQueueService.js";
 import { VERSION } from "../version.js";
 
@@ -220,18 +220,25 @@ export interface EpicAcceptance {
   readonly implementation_done: number;
   readonly implementation_total: number;
   /**
-   * accepted  — the acceptance ticket is done (a tester verdict was recorded) and the
-   *             contract it tested is the contract on record;
-   * stale     — done, but the acceptance ticket's contract (title / description / criteria /
-   *             test_contract) changed after the tester's PASS: the verdict describes an
-   *             earlier contract, not this one;
-   * testing   — it is in the tester's hands (in_testing);
-   * failed    — the tester failed it or it was parked (refining / blocked / failed);
-   * pending   — not yet reached (draft / ready / claimed / in_progress / in_review / paused).
+   * accepted   — VERIFIED: done, and the latest PASS is an agent/system verdict bound to a
+   *              tested commit, the contract on record (hash matches) and a clean replay;
+   * waived     — done on a HUMAN tester-pass (an explicit decision, shown as such — never
+   *              the same evidence as a revision-bound test);
+   * stale      — done, but the contract changed after the bound PASS;
+   * unverified — done without a bound PASS (no PASS evidence, a legacy PASS with no commit /
+   *              hash, or no clean replay): nothing certifies what was accepted;
+   * testing    — in the tester's hands (in_testing);
+   * failed     — the tester failed it or it was parked (refining / blocked / failed);
+   * pending    — not yet reached (draft / ready / claimed / in_progress / in_review / paused).
    */
-  readonly result: "accepted" | "stale" | "testing" | "failed" | "pending";
-  /** True when every implementation ticket is done but the build is NOT accepted (stale counts). */
+  readonly result:
+    "accepted" | "waived" | "stale" | "unverified" | "testing" | "failed" | "pending";
+  /** True when every implementation ticket is done and the build is neither accepted nor waived. */
   readonly unaccepted: boolean;
+  /** Provenance of the latest PASS (agent / system / human), or null when none was recorded. */
+  readonly pass_provenance: string | null;
+  /** Replay outcome recorded on the latest PASS (passed / failed / skipped), or null. */
+  readonly replay: string | null;
   /** The exact commit the tester's PASS ran against (from its evidence), when recorded. */
   readonly accepted_commit: string | null;
   /** The contract hash the tester's PASS recorded, and whether the ticket's contract still matches it. */
@@ -242,43 +249,18 @@ export interface EpicAcceptance {
   readonly default_branch: string | null;
 }
 
-/**
- * ACCEPTANCE GATE: the canonical contract hash — sha256 over the ticket's title,
- * description, acceptance-criterion texts (in sort order) and raw test_contract, joined by
- * NUL. The runner's tester computes the SAME hash (runner/bin/tester-run.mjs
- * `contractHash`) from the same raw rows before it runs, and records it on its verdict;
- * a later edit to any of those fields makes an accepted build read `stale`.
- */
-export function contractHash(db: Db, ticketId: string): string | null {
-  try {
-    const t = db
-      .prepare("SELECT title, description, test_contract FROM tickets WHERE id = ?")
-      .get(ticketId) as
-      { title: string; description: string; test_contract: string | null } | undefined;
-    if (!t) return null;
-    const acs = db
-      .prepare("SELECT text FROM acceptance_criteria WHERE ticket_id = ? ORDER BY sort_order ASC")
-      .all(ticketId) as Array<{ text: string }>;
-    return createHash("sha256")
-      .update(
-        [
-          t.title ?? "",
-          t.description ?? "",
-          ...acs.map((a) => a.text ?? ""),
-          t.test_contract ?? "",
-        ].join("\u0000"),
-      )
-      .digest("hex");
-  } catch {
-    return null;
-  }
-}
+export { contractHash } from "../util/contractHash.js";
 
 export interface AcceptanceSummary {
-  /** Epics whose implementation has fully merged but whose build is not accepted — human attention. */
+  /** Epics whose implementation has fully merged but whose build is neither accepted nor waived — human attention. */
   readonly unaccepted: number;
   readonly testing: number;
+  /** VERIFIED acceptances only (bound, current contract, clean replay). */
   readonly accepted: number;
+  /** Human waivers — accepted by decision, not by a revision-bound test. */
+  readonly waived: number;
+  readonly stale: number;
+  readonly unverified: number;
   readonly failed: number;
   readonly epics: readonly EpicAcceptance[];
 }
@@ -298,7 +280,16 @@ export interface StatsReport {
  * the column (a hand-rolled fixture) reports an empty summary.
  */
 export function computeAcceptance(db: Db): AcceptanceSummary {
-  const empty: AcceptanceSummary = { unaccepted: 0, testing: 0, accepted: 0, failed: 0, epics: [] };
+  const empty: AcceptanceSummary = {
+    unaccepted: 0,
+    testing: 0,
+    accepted: 0,
+    waived: 0,
+    stale: 0,
+    unverified: 0,
+    failed: 0,
+    epics: [],
+  };
   let rows: Array<{
     id: string;
     number: number | null;
@@ -333,23 +324,30 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     return empty;
   }
   const epics: EpicAcceptance[] = rows.map((r) => {
-    // The tester's latest PASS evidence carries the commit and contract hash it tested.
+    // The tester's latest PASS evidence carries the binding (commit, contract hash, replay)
+    // and the provenance of whoever recorded it.
     let acceptedCommit: string | null = null;
     let acceptedHash: string | null = null;
+    let provenance: string | null = null;
+    let replay: string | null = null;
     try {
       const ev = db
         .prepare(
           `SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output'
-             AND payload_json LIKE '%"verdict":"pass"%' ORDER BY created_at DESC LIMIT 1`,
+             AND payload_json LIKE '%"verdict":"pass"%' ORDER BY created_at DESC, rowid DESC LIMIT 1`,
         )
         .get(r.id) as { payload_json: string | null } | undefined;
       if (ev?.payload_json) {
         const p = JSON.parse(ev.payload_json) as {
           tested_commit?: unknown;
           contract_hash?: unknown;
+          provenance?: unknown;
+          replay?: unknown;
         };
         if (typeof p.tested_commit === "string") acceptedCommit = p.tested_commit;
         if (typeof p.contract_hash === "string") acceptedHash = p.contract_hash;
+        if (typeof p.provenance === "string") provenance = p.provenance;
+        if (typeof p.replay === "string") replay = p.replay;
       }
     } catch {
       /* no binding recorded */
@@ -357,17 +355,22 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     const currentHash = contractHash(db, r.id);
     const contractChanged =
       acceptedHash !== null && currentHash !== null && acceptedHash !== currentHash;
-    const result: EpicAcceptance["result"] =
-      r.status === "done"
-        ? contractChanged
-          ? "stale"
-          : "accepted"
-        : r.status === "in_testing"
-          ? "testing"
-          : r.status === "refining" || r.status === "blocked" || r.status === "failed"
-            ? "failed"
-            : "pending";
-    const unaccepted = r.impl_total > 0 && r.impl_done === r.impl_total && result !== "accepted";
+    let result: EpicAcceptance["result"];
+    if (r.status === "done") {
+      if (provenance === "human") result = "waived";
+      else if (contractChanged) result = "stale";
+      else if (acceptedCommit !== null && acceptedHash !== null && replay === "passed")
+        result = "accepted";
+      else result = "unverified";
+    } else if (r.status === "in_testing") result = "testing";
+    else if (r.status === "refining" || r.status === "blocked" || r.status === "failed")
+      result = "failed";
+    else result = "pending";
+    const unaccepted =
+      r.impl_total > 0 &&
+      r.impl_done === r.impl_total &&
+      result !== "accepted" &&
+      result !== "waived";
     return {
       epic_node_id: r.epic_id,
       epic_name: r.epic_name,
@@ -377,6 +380,8 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       implementation_total: r.impl_total,
       result,
       unaccepted,
+      pass_provenance: provenance,
+      replay,
       accepted_commit: acceptedCommit,
       accepted_contract_hash: acceptedHash,
       contract_changed: contractChanged,
@@ -388,6 +393,9 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     unaccepted: epics.filter((e) => e.unaccepted).length,
     testing: epics.filter((e) => e.result === "testing").length,
     accepted: epics.filter((e) => e.result === "accepted").length,
+    waived: epics.filter((e) => e.result === "waived").length,
+    stale: epics.filter((e) => e.result === "stale").length,
+    unverified: epics.filter((e) => e.result === "unverified").length,
     failed: epics.filter((e) => e.result === "failed").length,
     epics,
   };
@@ -439,11 +447,11 @@ export function renderStats(stats: StatsReport): string {
   if (a && a.epics.length > 0) {
     lines.push("");
     lines.push(
-      `Builds:  ${a.accepted} accepted · ${a.testing} in acceptance testing · ${a.failed} failed acceptance · ${a.unaccepted} NOT accepted with implementation merged`,
+      `Builds:  ${a.accepted} accepted (verified) · ${a.waived} waived by a human · ${a.unverified} unverified · ${a.stale} stale · ${a.testing} in acceptance testing · ${a.failed} failed acceptance · ${a.unaccepted} NOT accepted with implementation merged`,
     );
     for (const e of a.epics) {
       lines.push(
-        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
+        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.result === "unverified" ? "  ← no revision-bound PASS (commit + contract + clean replay); re-test, or waive: tester-pass --as human" : e.result === "waived" ? "  (human waiver — not a revision-bound test)" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
       );
     }
   }

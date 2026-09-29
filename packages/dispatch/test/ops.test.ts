@@ -169,6 +169,9 @@ describe("stats --json projection shape", () => {
       unaccepted: 0,
       testing: 0,
       accepted: 0,
+      waived: 0,
+      stale: 0,
+      unverified: 0,
       failed: 0,
       epics: [],
     });

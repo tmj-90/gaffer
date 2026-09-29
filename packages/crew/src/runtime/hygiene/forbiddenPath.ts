@@ -14,7 +14,7 @@
 
 /** The bash default, kept in sync with hygiene.sh:30 / factory.config.sh. */
 export const DEFAULT_FORBIDDEN_PATHS =
-  "node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.";
+  "node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime. .terraform/";
 
 /** Split HYGIENE_FORBIDDEN_PATHS on whitespace (the bash `set -f; for f in $raw`). */
 export function parseFragments(raw: string): string[] {

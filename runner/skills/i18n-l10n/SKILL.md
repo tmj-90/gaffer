@@ -1,59 +1,92 @@
 ---
 name: i18n-l10n
-description: Use when a ticket adds user-facing text or must support more than one language, locale, or region — translations, plurals, dates and numbers, currencies, right-to-left layout, time zones — and the implementation must externalise every string, format by locale with the platform's APIs, and never concatenate sentences. Invoke for "add German", "translate the new screen", "the date shows in the wrong format", or whenever you type a user-visible string.
+description: Use when a ticket adds user-facing text or must support more than one language, locale, or region — translations, plurals, dates and numbers, currencies, right-to-left layout, time zones — and the implementation must externalise every string, use ICU/CLDR plural rules, format by locale with the platform's APIs, and never concatenate sentences. Invoke for "add German", "translate the new screen", "the date shows in the wrong format", or whenever you type a user-visible string.
 stack: [react, web, next, vue, svelte, angular, node, python, java, kotlin, swift, csharp]
 area: frontend
 ---
 
 # Internationalise and localise correctly
 
-A hard-coded string is a bug that appears the day a second locale ships. Externalise
-every user-visible string with a stable key and an ICU-style message, format dates,
-numbers and currencies with the locale APIs, design layouts that survive longer words and
-right-to-left, and keep the source-language file as the single place text is written.
+A hard-coded string or a hand-built plural is a bug that surfaces the day a second locale
+ships. Externalise every user-visible string as a whole message with named arguments,
+let CLDR data (through ICU MessageFormat and the `Intl` APIs or the language's
+equivalents) decide plurals and formats, and build layouts that survive longer text and
+right-to-left scripts.
 
 ## Steps
 
-1. **Use the repo's i18n framework.** The library (i18next, FormatJS/react-intl,
-   vue-i18n, Angular i18n, gettext, ICU MessageFormat on the server), the message-file
-   layout, the key naming scheme, and how locale is detected and persisted. Call
-   `search_lore`. Never add a second mechanism or a parallel strings file.
-2. **Externalise every string.** Each user-visible string gets a stable, namespaced key
-   and a source-language message; no string literals in components, error messages the
-   user sees, emails, or validation messages. Keys describe meaning
-   (`ticket.actions.approve`), not the English text.
-3. **Write messages that translators can translate.** Whole sentences with named
-   placeholders (`{count} tickets ready`), never concatenated fragments or values
-   inserted by position; plurals and genders through ICU `plural`/`select`, never
-   `count + " item(s)"`; no HTML inside messages unless the framework supports rich
-   text tags.
-4. **Format by locale with the platform.** `Intl.DateTimeFormat`, `Intl.NumberFormat`,
-   `Intl.RelativeTimeFormat`, `Intl.ListFormat` (or the language's equivalents); currency
-   with the currency code, never a hard-coded symbol; store times in UTC and render in
-   the user's time zone; sort with `Intl.Collator`.
-5. **Design for expansion and direction.** Layouts tolerate 30–50% longer strings
-   (German, Finnish) and shorter ones (Chinese) without truncation or overflow; use
-   logical CSS properties (`margin-inline-start`) and `dir="rtl"` support where the
-   repo targets RTL locales; icons with direction (arrows) flip.
-6. **Keep the source file honest.** Add new keys to the source-language file in the
-   same change; run the repo's extraction/lint for missing or unused keys; never ship a
-   key without its source message. Translations arrive through the repo's translation
-   workflow; a missing translation falls back to the source language visibly in
-   development.
-7. **Test** with a pseudo-locale or a second real locale: every new string renders from
-   its key (no untranslated literals), plurals switch correctly at 0/1/many, dates and
-   numbers format per locale, layout holds with expanded text, RTL mirrors where
-   supported. Evidence with the `record-evidence` skill.
+1. **Use the repo's mechanism.** Library (i18next, FormatJS/react-intl, vue-i18n,
+   Angular i18n, Lingui, gettext, ICU4J/ICU4X, .NET resources, Apple String Catalogs,
+   Android resources), message file layout, key scheme, locale detection and persistence.
+   Call `search_lore`. Never add a second mechanism or a parallel strings file.
+2. **Externalise every string** users can see or hear: labels, placeholders, `alt` and
+   `aria-label` text, validation and error messages, emails, notifications, page titles.
+   Keys describe meaning and location (`ticket.actions.approve`), never the English text.
+   APIs return error **codes** and parameters; the client localises them.
+3. **Write translatable messages.**
+   - Whole sentences with named arguments: `{name} approved {count, plural, one {# ticket}
+     other {# tickets}}` — never `"Approved " + n + " ticket(s)"`.
+   - Plurals use CLDR categories (`zero`, `one`, `two`, `few`, `many`, `other`). English
+     uses only `one`/`other`, but Polish needs `few`/`many` and Arabic all six, so never
+     branch on `n === 1` in code. `other` is always present. `=0 {No tickets}` is an exact
+     match, distinct from the `zero` category.
+   - Ordinals use `selectordinal` ("1st, 2nd"); gendered text uses `select`.
+   - Rich text uses the library's tag syntax (`<b>{name}</b>`), not HTML concatenation.
+   - Give translators a description for ambiguous short strings ("Open" verb or
+     adjective?).
+   - Unicode MessageFormat 2 is stable in CLDR 47, but most libraries still use ICU
+     MessageFormat 1 syntax; write what the repo's library parses.
+4. **Format with the locale APIs.** `Intl.DateTimeFormat` (prefer `dateStyle`/`timeStyle`
+   over pattern strings), `Intl.NumberFormat` (including `style: 'currency'` with an ISO
+   4217 code, `'percent'`, `'unit'`, `notation: 'compact'`), `Intl.RelativeTimeFormat`,
+   `Intl.ListFormat`, `Intl.PluralRules`, `Intl.Collator` for sorting,
+   `Intl.Segmenter` for truncating text by grapheme or word, `Intl.DisplayNames` for
+   language/region names. Reuse formatter instances; they are costly to construct.
+5. **Money and time.** Money is integer minor units plus the currency code; minor units
+   vary (JPY 0, USD 2, KWD 3) — take them from the formatter or ISO 4217, not a constant
+   100. Past instants are stored as UTC and displayed in the user's IANA time zone
+   (`Europe/Berlin`, not "CET" or an offset). A future local event (a 09:00 meeting) is
+   stored as local date-time plus IANA zone, so a DST rule change does not move it. Use
+   `Temporal` where the runtime supports it, else the repo's date library; never parse
+   locale-formatted strings back into dates.
+6. **Locale selection.** BCP 47 tags (`pt-BR`, `zh-Hant-TW`); negotiate from the user's
+   saved preference, then `Accept-Language`/`navigator.languages`, then the default; fall
+   back through the chain (`de-AT` → `de` → default). Never infer language from IP or
+   country. Set `<html lang>` and `dir`, and `lang` on inline passages in another
+   language (WCAG 3.1.1, 3.1.2).
+7. **Layout for expansion and direction.** Allow roughly 30–40% longer text (more for
+   short labels) without clipping; no fixed-width buttons around text. Use CSS logical
+   properties (`margin-inline-start`, `inset-inline-end`, `text-align: start`) and
+   flex/grid, which mirror automatically under `dir="rtl"`. Mirror directional icons
+   (back/forward arrows), not universal ones (play, checkmark, logos). Isolate
+   user-generated text inside messages (`<bdi>` or the library's bidi isolation) so an
+   Arabic name does not reorder the sentence.
+8. **Keep the catalogue honest.** Add new keys to the source-locale file in the same
+   change; run the repo's extraction and missing/unused-key check; remove keys you
+   orphaned. Translations arrive through the repo's workflow — do not machine-translate
+   into production catalogues unless the ticket says to.
+9. **Test** (the `frontend-testing` skill), per AC:
+   - render under a pseudo-locale (accented, ~40% longer, bracketed: `[Ţîçķéţš ~~]`) or a
+     long real locale (de, fi) → no raw keys, no untranslated literals, no clipping;
+   - plurals at 0, 1, 2, 5, 21 and 22 in a locale with `few`/`many` (pl or ru);
+   - dates, numbers and currency snapshot for two locales and a non-UTC time zone
+     (set `TZ` in the test run);
+   - `dir="rtl"` renders mirrored where the repo supports RTL.
+   Record per-AC evidence with the `record-evidence` skill, then stop.
 
-## Rules
+## Done when
 
-- No user-visible string literal in code; every string has a namespaced key and a
-  source message.
-- Whole-sentence messages with named placeholders; ICU plural/select; no concatenation.
-- Dates, numbers, currencies, lists and sorting via the locale APIs; UTC stored.
-- Layout tolerates expansion and direction; logical properties over left/right.
-- Extraction/lint clean; source file updated in the same change.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+No user-visible literal remains in the changed code; every new key exists in the source
+catalogue and the extraction check is clean; plural, date, number and currency output is
+produced by CLDR-backed APIs and tested in at least two locales.
+
+## Anti-patterns
+
+- String concatenation or template literals building sentences; `n === 1 ? '' : 's'`.
+- Hard-coded `$`, `,` or `.` separators; `toFixed(2)` for money; `MM/DD/YYYY` patterns.
+- Storing local wall-clock times without a zone; using fixed offsets for zones.
+- `margin-left` for spacing that should follow text direction; flipping every icon.
+- Keys named after the English text; one giant catalogue key reused in two meanings.
 
 ## Capture lore
 

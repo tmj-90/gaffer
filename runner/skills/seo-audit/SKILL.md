@@ -7,63 +7,103 @@ area: marketing
 
 # Audit SEO systematically
 
-Three layers in impact order: technical (crawl/index/speed) → on-page (titles/headings/links) → content (intent match / E-E-A-T / thin pages). Fix the highest layer first.
+Work through the layers in impact order. First, can Google **crawl and index** the page?
+Then does the page **match the searcher's intent** with helpful content? Then are titles,
+links and page experience in order? A fix in a lower layer is worthless while a higher one
+is broken. Base findings on Google Search Central (Search Essentials, the SEO Starter
+Guide, the helpful-content guidance) and on real-user data, not folklore.
 
-## Core Web Vitals pass/fail thresholds (75th percentile real-user data)
+## Layer 1 — Crawl and index (blocking issues)
 
-| Metric | Good | Needs work | Poor |
-|--------|------|-----------|------|
-| LCP | ≤ 2.5s | 2.5–4.0s | > 4.0s |
-| INP | ≤ 200ms | 200–500ms | > 500ms |
-| CLS | ≤ 0.1 | 0.1–0.25 | > 0.25 |
+- **Status.** Pages meant to rank return 200. Moved pages use a single 301 hop to the
+  final URL. Soft 404s ("not found" served with a 200) are fixed.
+- **robots.txt.** It does not disallow pages that should rank, nor the CSS/JS needed to
+  render them. Remember that robots.txt stops crawling, not indexing: use `noindex` to
+  keep a page out.
+- **Meta robots and `X-Robots-Tag`.** No stray `noindex` or `nosnippet` on pages that
+  should rank.
+- **Canonicals.** Each indexable page carries a self-referencing absolute
+  `rel=canonical`, and duplicates point to one preferred URL. No canonical points at a
+  redirect, a 404 or a noindexed URL.
+- **Sitemap.** It contains only canonical 200 URLs, is referenced from robots.txt and is
+  submitted in Search Console.
+- **Rendering.** The main content and the links appear in the rendered HTML (URL
+  Inspection → View crawled page). Links are real `<a href>` elements, not JS click
+  handlers.
+- **Search Console Page indexing report.** Explain each "Not indexed" reason that
+  affects important URLs.
 
-## Technical layer (check first)
+## Layer 2 — Content and intent
 
-- **Crawlability** — `robots.txt` not blocking important paths; XML sitemap present and submitted to Search Console; no orphan pages (no internal links).
-- **Indexation** — `noindex` not set on pages that should rank; canonical tags point to the correct URL; HTTPS on all pages.
-- **Speed** — LCP from real-user data (Search Console → Core Web Vitals report); identify LCP element; check image optimisation + CDN + render-blocking resources.
-- **Mobile** — Google uses mobile-first indexing; test with Mobile-Friendly Test.
+- **Intent match.** The page format is what the top results show for the query:
+  a guide, a product page, a comparison or a tool.
+- **Helpful, people-first content.** It shows first-hand experience or expertise,
+  original information, sources, and a clear author and date. Word count is **not** a
+  ranking factor. Judge thinness by whether the query is actually answered, not by a
+  word threshold.
+- **Duplication and cannibalisation.** Several pages targeting the same query should be
+  consolidated or differentiated.
+- **Scaled or low-value pages.** Mass-generated pages made to rank violate the spam
+  policies. Improve them, consolidate them or noindex them.
 
-## On-page layer
+## Layer 3 — On-page and experience
 
-- **Title tags** — ≤ 60 chars; primary keyword near the front; unique per page; describes content accurately.
-- **Meta descriptions** — ≤ 160 chars; includes a CTA-like phrase; unique per page.
-- **H1** — one per page; matches or closely mirrors the title tag; primary keyword present.
-- **Heading hierarchy** — H1 → H2 → H3 without gaps; no keyword stuffing.
-- **Internal linking** — key pages linked from multiple internal pages; anchor text descriptive (not "click here").
+- **Title element.** Every page has a unique, descriptive title that leads with the
+  topic. Google shows about 50–60 characters, so front-load; there is no hard limit.
+- **Meta description.** Unique, and it summarises the page. It does not affect ranking,
+  but it can raise clicks. Google may rewrite it.
+- **Headings.** One clear `<h1>` for the topic, with a logical h2/h3 structure.
+- **Internal links.** Important pages are reachable within a few clicks and linked with
+  descriptive anchor text. No orphan pages.
+- **Images.** Descriptive `alt` text. `width` and `height` set to prevent layout shift.
+  Modern formats.
+- **Core Web Vitals** (field data, 75th percentile, from the Search Console CWV report
+  or CrUX):
+  - LCP ≤ 2.5 s
+  - INP ≤ 200 ms
+  - CLS ≤ 0.1
 
-## Content layer
-
-- **Search intent match** — is the page format what the searcher expects? (Informational → guide/article; transactional → product/pricing page; navigational → homepage).
-- **E-E-A-T signals** — author bio with credentials; publication date + last-updated date; primary-source citations; specific examples and data.
-- **Thin/duplicate content** — pages with < 300 words of unique content; pages with duplicated sections across the site.
-- **Keyword targeting** — primary keyword in title + H1 + first 100 words + URL slug; LSI terms used naturally in body.
+  Lighthouse is lab data, useful for diagnosis but not for pass/fail. Google's
+  mobile-friendly test was retired in December 2023: check mobile rendering with URL
+  Inspection and a 375 px viewport instead.
+- **HTTPS** everywhere, with no mixed content. `hreflang` is reciprocal where the site
+  is multilingual.
 
 ## Steps
 
-1. **Scope the audit.** Full site or specific pages? Technical + on-page, or one focus? Access to Search Console and analytics? Establish baseline: current organic traffic trend, target keywords, known issues.
-2. **Technical audit.** Crawl with Screaming Frog or Search Console; flag crawl errors, indexation issues, redirect chains, broken internal links.
-3. **Core Web Vitals.** Pull from Search Console → Core Web Vitals report (real-user data). Identify pages failing LCP/CLS; prioritise by traffic volume.
-4. **On-page audit.** Check title tags, H1s, meta descriptions for top 20 pages by traffic. Flag duplicates, over-length, keyword mismatches.
-5. **Content audit.** Identify thin pages (< 300 words unique); spot intent mismatches; E-E-A-T gaps.
-6. **Prioritised recommendations.** Order by: impact × effort. Technical blocking issues first; then on-page quick wins; then content investment.
-7. **Verify.** After implementing: recheck Search Console for crawl/index errors; re-run Lighthouse for CWV; confirm fixes appear in next crawl.
+1. **Scope.** Decide between the whole site and a page set. Note which access you have
+   (Search Console, analytics, a crawler). In the factory you have only the repo and a
+   local build: audit the rendered output locally, and list every check that needs
+   production, Search Console or field data as a follow-up for a human. Record the baseline: clicks, impressions,
+   indexed pages and the target queries.
+2. **Crawl.** Use Screaming Frog, `curl -sI` for status and headers, or a sitemap
+   walk. Export status codes, canonicals, titles, h1s, meta robots and link depth.
+3. **Work Layer 1**, then Layers 2 and 3, using
+   `references/seo-audit-checklist.md`. Every finding records the URL(s), the evidence
+   (a header, a screenshot or a report row) and the rule it breaks.
+4. **Prioritise** by traffic affected × severity ÷ effort. Indexing blockers come
+   first.
+5. **Write the recommendations.** For each: what to change, where, the expected effect
+   and how to verify it. In a repo, add automated checks where they are cheap. For
+   example, a test asserting one `<h1>`, a canonical and a unique `<title>` per route,
+   and a sitemap test asserting that every URL returns 200.
+6. **Verify after the fix.** Use URL Inspection → "Test live URL", validate the fix in
+   the Page indexing report, and compare field CWV after 28 days. In the factory these
+   are post-deploy follow-ups; your verification is the in-repo tests from step 5.
 
-## Review checklist
+## Done when
 
-- **No pages blocked in robots.txt that should rank.**
-- **Sitemap submitted and valid** — no 4xx/5xx URLs in sitemap.
-- **Title tags unique and ≤ 60 chars** on all indexed pages.
-- **LCP ≤ 2.5s** on mobile for highest-traffic pages.
-- **No thin-content pages** (< 300 words unique) ranking for commercial queries.
-- **Internal links to key pages** from multiple relevant pages with descriptive anchor text.
+- Every important URL is confirmed crawlable, indexable and canonical, or its blocker
+  is listed with evidence.
+- Findings are ranked, each with a location, evidence, a fix and a verification step.
+- Nothing in the report relies on retired or myth signals (see below).
 
-## Rules
+## Anti-patterns (myths to drop)
 
-- Technical issues that block crawl/index are fixed before content work — no point optimising a page Google can't read.
-- Never recommend keyword stuffing — intent match and E-E-A-T outperform density in modern search.
-- Core Web Vitals from real-user data (Search Console) override Lighthouse scores — both matter but prioritise the real-user signal.
-
-## References
-
-`references/seo-audit-checklist.md` — full 80-point checklist by layer.
+- "LSI keywords", keyword density targets and "keyword in the first 100 words".
+- Minimum word counts, or the idea that a longer page ranks better.
+- `rel=prev/next` as a Google signal: Google does not use it (it said so in 2019, having
+  ignored it for years).
+- Treating a Lighthouse score as the CWV verdict.
+- Using robots.txt to de-index a page. The page must be crawlable for Google to see
+  its `noindex`.

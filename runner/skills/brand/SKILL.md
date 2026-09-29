@@ -8,109 +8,100 @@ area: frontend
 # Establish or audit the brand
 
 A factory that ships UI without a brand ships templates. This skill gives the product a
-**deliberate, specific** visual and verbal identity so everything built afterwards looks
-intentional. It either **audits and extends** an existing brand in its own idiom, or
-**commits to one direction** — never a vague "clean minimal" default that means nothing.
+**specific** visual and verbal identity — or audits and extends the one it has — and
+writes it down in a form delivery agents can consume: `BRAND.md` plus tokens. It owns
+identity (direction, palette, type pairing, voice). The token *structure* belongs to the
+`design-system` skill; surface execution to the `frontend-design` skill.
 
-Run it two ways: as a **delivery skill** when a ticket asks for brand work (branch,
-implement, evidence, submit like any other ticket), or as a **lore seed** when you want the
-brand to govern future work — `suggest_lore` it so every later ticket inherits it.
-
-This skill owns the *identity* (direction, palette, type pairing, voice). The **structural**
-layer it feeds into — the three-tier token architecture and component state specs — lives in
-the `design-system` pack; the *visual execution* of surfaces lives in `frontend-design`. Keep
-`SKILL.md` lean and load the craft depth on demand:
-
-| Topic | Reference |
+| Depth | Reference |
 |-------|-----------|
-| Colour system (tiers, 60/30/10, `oklch` tokens, contrast) + typography (pairing, fluid scale) | `references/color-and-typography.md` |
-| Voice (spectrums, traits, do/don't), messaging hierarchy, consistency/approval checklist | `references/voice-and-messaging.md` |
+| Palette tiers, `oklch` tokens, contrast, type pairing and fluid scale | `references/color-and-typography.md` |
+| Voice spectrums, traits, messaging hierarchy, consistency checklist | `references/voice-and-messaging.md` |
 
 ## Steps
 
-1. **Consult and detect, in parallel.** Call `search_lore` (Memory MCP) for any existing
-   brand, positioning, voice, or design ADRs. In the repo, look for `BRAND.md`,
-   `tokens.css`, a `styles/tokens.css`, a `.brand/` dir, or a `:root` block of CSS custom
-   properties. Decide: **does a brand already exist?**
-2. **If a brand exists → AUDIT and EXTEND in its idiom.** Do not overwrite it with your
-   taste. Read its palette, type, and voice, then:
-   - Check it against the **required-qualities** bar below and name where it falls short.
-   - Fill gaps and add missing tokens *in the existing direction* (e.g. derive a hover/
-     focus state, a missing surface tier, a dark variant) — extend, don't replace.
-   - Record the audit findings and the additions in `BRAND.md`.
-3. **If no brand exists → COMMIT to one specific direction.** Pick a real direction the
-   product actually wants and say why — editorial/magazine, neo-brutalism, glassmorphism
-   with real depth, light/dark luxury, bento, Swiss/International, retro-futurism. Never
-   "clean minimal", never default to dark mode reflexively. Then define all of:
-   - **Palette** as `oklch` design tokens — surface, text, accent, plus semantic roles
-     (success/warning/danger) and at least one depth/surface tier. Color used semantically,
-     not one decorative accent on gray-on-white. (Tiers, 60/30/10, contrast →
-     `references/color-and-typography.md`.)
-   - **Type pairing** — a deliberate display + text pairing with a stated rationale and a
-     fluid scale (`clamp()` tokens), not a default system stack used by accident. (Scale +
-     loading → `references/color-and-typography.md`.)
-   - **Voice & positioning** — who it's for, the one-line promise, and 3–5 voice
-     attributes with a do/don't example each. (Spectrums, traits, messaging hierarchy →
-     `references/voice-and-messaging.md`.)
-   - **Anti-template checklist** — list which of the required qualities the brand delivers.
-4. **Write the artifacts.** Output a `BRAND.md` (direction + rationale, palette, type,
-   voice, checklist) and, when the work is visual, a `tokens.css` sketch of the custom
-   properties so delivery agents have something concrete to consume:
+1. **Detect.** Call `search_lore` for brand, positioning, voice and design ADRs. In the
+   repo look for `BRAND.md`, `DESIGN.md`, token files (`*.tokens.json`, `tokens.css`,
+   `theme.ts`), a `:root` block of custom properties, logo assets, and marketing copy.
+   Read the product's README and the ticket for audience and purpose. Decide: does a
+   brand exist?
+2. **Brand exists → audit and extend in its idiom.** Do not replace it with your taste.
+   - Score it against the required qualities (step 4) and the banned list below; name
+     each gap with the file and value.
+   - Measure every text/background pair the brand uses, in every theme, against WCAG
+     contrast (4.5:1 body, 3:1 large text and UI) — compute the ratio; `oklch` lightness
+     is not a contrast ratio. A brand colour that fails as text gets a darker text-safe
+     variant, not a waiver.
+   - Fill gaps in the existing direction: hover/active steps, a missing surface tier, a
+     dark variant, a text-safe accent, missing semantic roles.
+3. **No brand → commit to one direction** and write why it fits this product and
+   audience: editorial/magazine, Swiss/International, neo-brutalism, bento, glassmorphism
+   with real depth, light or dark luxury, retro-futurism. "Clean minimal" is not a
+   direction; dark mode is chosen for the users, not by habit. Then define:
+   - **Palette** as `oklch` tokens with a stated job per colour: surfaces (at least two
+     tiers), text (primary, muted), accent, and the semantic roles success / warning /
+     danger / info — each with a text-safe variant where the fill colour fails as text.
+   - **Type pairing** — display + text families with a reason (and mono if the product
+     shows code or data), a `clamp()` fluid scale, and a loading plan: self-hosted,
+     subset, one critical weight preloaded, metric-matched fallback.
+   - **Voice** — audience, the one-line promise, 3–5 voice traits each with a "we say / we
+     don't say" pair, and how voice shifts in errors and empty states.
+4. **Check the required qualities.** The brand must let delivered UI show at least four of
+   the ten qualities listed in the `frontend-design` skill (scale hierarchy, spacing
+   rhythm, depth, typographic character, semantic colour, designed states, composition,
+   atmosphere, clarifying motion, data-viz in the system). Name the four-plus in
+   `BRAND.md`.
+5. **Write the artifacts.** `BRAND.md`: direction and rationale, palette table (token,
+   value, job, contrast result), type pairing and scale, voice, qualities delivered, open
+   questions. When the work is visual, a token file in the repo's format (DTCG JSON or
+   CSS custom properties — see the `design-system` skill), for example:
 
    ```css
    :root {
      --color-surface: oklch(98% 0.01 95);
-     --color-text:    oklch(22% 0.02 265);
-     --color-accent:  oklch(64% 0.19 28);   /* used semantically, not decoratively */
-     --text-display:  clamp(2.5rem, 1rem + 6vw, 6rem);
-     --text-base:     clamp(1rem, 0.94rem + 0.3vw, 1.125rem);
+     --color-text: oklch(22% 0.02 265);
+     --color-accent: oklch(64% 0.19 28); /* fill only; text uses --color-accent-text */
+     --color-accent-text: oklch(50% 0.19 28);
+     --text-display: clamp(2.5rem, 1rem + 6vw, 6rem);
+     --text-base: clamp(1rem, 0.94rem + 0.3vw, 1.125rem);
      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
    }
    ```
-5. **Flag, don't invent, when strategy is unknown.** If the product's positioning or
-   audience is genuinely undecided, do not fabricate one to look complete. Surface it as a
-   drafted decision: as a delivery skill, `mark_ticket_blocked` with the open question; as a
-   lore seed, `suggest_lore` the brand *with the open questions named* — a human resolves
-   them. Guessing a strategy is worse than naming the gap.
-6. **Land it.** As a **delivery skill**: you came in via `create-branch`, so commit, then
-   use `record-evidence` (the `BRAND.md` diff + the checklist is your evidence) and STOP —
-   the runner records the delivery and submits for review; never self-approve. As a **lore
-   seed**: `suggest_lore` (Memory MCP) the brand so future tickets inherit it; it stays a
-   suggestion until a human ratifies it.
 
-## Required qualities (the bar to clear)
-
-The brand must enable output that demonstrates at least four. Name which in `BRAND.md`:
-
-1. Clear hierarchy through scale contrast
-2. Intentional spacing rhythm, not uniform padding everywhere
-3. Depth or layering — overlap, surfaces, shadow, or motion
-4. Typography with character and a real pairing strategy
-5. Color used semantically, not just decoratively
-6. Hover, focus, and active states that feel designed
-7. Grid-breaking editorial or bento composition where it fits
-8. Texture, grain, or atmosphere when the direction calls for it
-9. Motion that clarifies flow rather than distracts
-10. Data visualization treated as part of the system, not an afterthought
+6. **Flag, don't invent, unknown strategy.** If positioning or audience is genuinely
+   undecided and the ticket does not settle it, do not fabricate one. As a delivery skill,
+   `mark_ticket_blocked` with the specific question; as a lore seed, `suggest_lore` the
+   brand with the open questions named.
+7. **Land it.** As a delivery skill (you are on the ticket's worktree branch — the
+   `create-branch` skill verifies), commit, record per-AC evidence with the
+   `record-evidence` skill (the `BRAND.md` diff, contrast table, qualities list), then
+   stop; the runner submits for review. As a lore seed, `suggest_lore` the brand; it
+   stays a suggestion until a human ratifies it.
 
 ## Banned (an audit must catch these)
 
-- Default card grids with uniform spacing and no hierarchy
-- Stock centered-headline + gradient-blob hero with a generic CTA
-- Unmodified library/Tailwind/shadcn defaults passed off as finished design
-- Uniform radius, spacing, and shadow across every component
-- Safe gray-on-white with one decorative accent color
-- Default font stacks used without a deliberate reason
-- Reflexive dark mode chosen by habit rather than fit
+- Default card grids with uniform spacing and no hierarchy.
+- The centred headline + gradient-blob hero with a generic CTA.
+- Unmodified library/Tailwind/shadcn defaults passed off as finished design.
+- Identical radius, spacing and shadow on every component.
+- Grey-on-white with one decorative accent colour.
+- Default font stacks with no stated reason; more than two families without a reason.
+- An accent colour used for body-size text when it fails 4.5:1.
+- Reflexive dark mode chosen by habit rather than fit.
+
+## Done when
+
+`BRAND.md` states one direction with its rationale; every palette pair has a measured
+contrast result that passes in every theme; the type pairing, scale and loading plan are
+defined; voice has traits with examples; four or more required qualities are named;
+open strategic questions are listed rather than guessed; tokens exist in the repo's
+format.
 
 ## Rules
 
-- Commit to a direction — "clean minimal" is not a direction. State the choice and the why.
-- Tokens, not hardcoded values: `oklch` palette and `clamp()` type scale as custom
-  properties so delivery agents reuse them instead of re-inventing styling per component.
-- Extend an existing brand in its own idiom; never overwrite it with your preference.
-- Animate compositor-friendly properties (`transform`, `opacity`, `clip-path`); never
-  bake layout-bound animation (`width`, `top`, `margin`) into the system.
-- Flag unknown strategy as a drafted decision — never fabricate positioning to look done.
-- As a delivery skill, stay on a feature branch and never self-approve; as a lore seed,
-  `suggest_lore` only — a human ratifies.
+- Commit to a direction and state why; never "clean minimal".
+- Tokens, not literals, so delivery agents reuse them.
+- Extend an existing brand in its idiom; never overwrite it with preference.
+- Motion tokens are for `transform`/`opacity`; never bake layout-bound animation into the
+  system.
+- Unknown strategy is a named open question, never an invented answer.

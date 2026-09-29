@@ -5,74 +5,108 @@ stack: []
 area: marketing
 ---
 
-# Implement structured data that earns rich results
+# Implement structured data that is valid and eligible
 
-JSON-LD is the recommended format (Google's preference). Schema.org types are the vocabulary. Rich results in Google and citations in AI search engines are the outcomes.
+Structured data uses the schema.org vocabulary to describe a page's content to machines.
+Google supports JSON-LD, Microdata and RDFa, and **recommends JSON-LD**. Valid markup makes
+a page *eligible* for a rich result. It never guarantees one, and it is not a ranking
+factor in its own right. The two rules that matter most, from Google's structured data
+guidelines:
 
-## High-value schema types (implement these first)
+- **Markup must describe content visible on the page.** A price, rating or FAQ that
+  exists only in JSON-LD is a policy violation and can draw a manual action.
+- **Use the most specific type that fits, and include every required property** listed
+  on that feature's Google documentation page.
 
-| Type | Rich result earned | Required fields |
-|------|--------------------|----------------|
-| `Organization` | Knowledge panel, sitelinks search | `name`, `url`, `logo` |
-| `WebSite` | Sitelinks search box | `url`, `potentialAction` (SearchAction) |
-| `FAQPage` | FAQ dropdowns in SERP | `mainEntity` → `Question` → `acceptedAnswer` |
-| `Article` | Top stories, rich snippet | `headline`, `author`, `datePublished`, `image` |
-| `Product` | Product snippet with price/rating | `name`, `offers`, `aggregateRating` |
-| `HowTo` | How-to steps in SERP | `name`, `step` array |
-| `BreadcrumbList` | Breadcrumb in SERP URL | `itemListElement` array |
-| `LocalBusiness` | Local pack, knowledge panel | `name`, `address`, `telephone` |
+## Current Google support (verify the gallery before promising anything)
 
-## JSON-LD placement
+Google keeps retiring features, so check the Search Gallery and the documentation
+changelog at developers.google.com/search before quoting a rich result to anyone.
 
-Prefer `<head>` as a `<script type="application/ld+json">` block. Google also supports JSON-LD placed in the `<body>` (including markup injected by JavaScript), so in-body placement is valid when `<head>` injection isn't practical — `<head>` is simply the cleaner default. One `<script>` block per schema type per page (or a `@graph` array for multiple types).
+| Type | Still useful for | Required (Google) — check the feature page |
+|---|---|---|
+| `Organization` | logo and knowledge panel details | none strictly; add `name`, `url`, `logo`, `sameAs` |
+| `WebSite` (homepage) | the **site name** shown in results | `name`, `url` (the sitelinks search box was retired Nov 2024) |
+| `BreadcrumbList` | breadcrumb trail in results | `itemListElement` of `ListItem` with `position`, `name`, `item` |
+| `Article` / `BlogPosting` | article understanding, dates, author | none strictly; add `headline`, `image`, `datePublished`, `dateModified`, `author` |
+| `Product` (+ `Offer`, `AggregateRating`, `Review`) | product snippets and merchant listings | `name`, plus one of `offers`, `review` or `aggregateRating` |
+| `LocalBusiness` | local business details | `name`, `address` |
+| `Event`, `Recipe`, `JobPosting`, `VideoObject`, `ProfilePage`, `DiscussionForumPosting` | their respective features | see each feature page |
+
+**Retired or restricted:**
+
+- **HowTo** rich results were removed in 2023.
+- **FAQ** rich results were limited to authoritative government and health sites in
+  2023, then stopped showing in Search on 7 May 2026. Existing `FAQPage` markup is
+  harmless (other consumers may still read it), but it earns no Google rich result.
+- **Sitelinks search box**: `WebSite` + `SearchAction` no longer does anything (retired
+  November 2024).
+- **Retired in Google's 2025 "simplifying search results" rounds:** e.g. Course Info,
+  Claim Review, Estimated Salary, Learning Video, Special Announcement, Vehicle Listing
+  and Practice Problems. The list has changed since (Book Actions was reinstated), so
+  check the Search Gallery rather than this list.
+
+## Placement
+
+Use one `<script type="application/ld+json">` block per page, containing either one
+entity or a `@graph` array that links the entities by `@id`. JSON-LD can go in `<head>` or
+`<body>`, and Google also reads it when JavaScript injects it. Server-rendered markup is
+still the safer default, because other consumers may not run JS.
 
 ```html
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
-  "@type": "FAQPage",
-  "mainEntity": [
-    {
-      "@type": "Question",
-      "name": "What is your refund policy?",
-      "acceptedAnswer": {
-        "@type": "Answer",
-        "text": "We offer a 30-day full refund, no questions asked."
-      }
-    }
+  "@graph": [
+    { "@type": "Organization", "@id": "https://example.com/#org", "name": "Example", "url": "https://example.com/", "logo": "https://example.com/logo.png" },
+    { "@type": "WebSite", "@id": "https://example.com/#site", "name": "Example", "url": "https://example.com/", "publisher": { "@id": "https://example.com/#org" } }
   ]
 }
 </script>
 ```
 
-## Common mistakes that block rich results
-
-- **Content mismatch** — schema claims a `price` or `rating` that doesn't appear on the page. Google requires visible content to match.
-- **Missing required fields** — check Google's required/recommended fields per type at developers.google.com/search/docs/appearance.
-- **Incorrect `datePublished` format** — must be ISO 8601 (`2026-06-17T09:00:00+00:00`).
-- **Markup on 404/noindex pages** — Google won't process structured data on non-indexable pages.
-- **Multiple conflicting types** — use `@graph` array to combine without conflict.
-
 ## Steps
 
-1. **Audit existing markup.** Paste page source into Google Rich Results Test; review Search Console → Enhancements for errors. Identify what's present, what's broken, what's missing.
-2. **Prioritise by page type.** Homepage → Organization + WebSite. Blog posts → Article. FAQs → FAQPage. Product pages → Product. All inner pages → BreadcrumbList.
-3. **Implement in JSON-LD.** Populate all required fields; add recommended fields for richer results. Confirm all schema claims match visible page content.
-4. **Validate.** Run through Google Rich Results Test (schema.googleapis.com/v1/richResults); fix any `errors` (not just `warnings`).
-5. **Monitor.** After deployment, check Search Console → Enhancements in 48–72 hours for indexation of new schema.
-6. **Record evidence.** Screenshot Rich Results Test passing; note which enhancements are expected.
+**In the factory** the Rich Results Test, the Schema Markup Validator, Search Console
+and URL Inspection are out of reach (no production access; WebFetch is denied). The
+in-repo test in step 4 is your gate. List steps 1, 5 and 6 as follow-ups for a human
+after deploy, and never claim a validator result you did not see.
 
-## Review checklist
+1. **Inventory the current markup.** Run the Rich Results Test
+   (search.google.com/test/rich-results) and the Schema Markup Validator
+   (validator.schema.org), and review Search Console → Enhancements. List
+   each page type with its markup, errors and warnings.
+2. **Map page types to types**, using the table above:
+   - homepage: `Organization` + `WebSite`
+   - articles: `Article`
+   - products: `Product`
+   - inner pages: `BreadcrumbList`
+   - anything else: the matching supported feature
+3. **Generate the markup from the same data that renders the page**, such as a template
+   or component props. Never hand-type values that could drift from the visible text.
+   Dates are ISO 8601 with a timezone. URLs are absolute.
+4. **Test it in the repo.** Add a test that parses the rendered HTML, `JSON.parse`s
+   every `ld+json` block, and asserts that the required properties exist and that key
+   values (name, price, date) equal the visible text. Invalid JSON silently drops the
+   whole block.
+5. **Validate** in the Rich Results Test with zero errors. Warnings concern recommended
+   properties: fix the cheap ones.
+6. **Monitor.** After deploy, use URL Inspection on a sample page. Over the following
+   weeks, confirm that the Search Console enhancement report shows the pages as valid.
 
-- **JSON-LD in `<head>`** — not inline or in body.
-- **All required fields present** — per Google's type documentation.
-- **Content matches page** — every schema claim visible on the rendered page.
-- **Rich Results Test passes** — zero errors (warnings acceptable).
-- **BreadcrumbList on all inner pages** — not just the homepage.
-- **Search Console errors cleared** — no existing structured data errors before adding new.
+## Done when
 
-## Rules
+- Every targeted page type emits parseable JSON-LD with the required properties.
+- Every marked-up value is visible on the rendered page, and a test asserts this.
+- The Rich Results Test reports zero errors (in the factory: listed as a post-deploy
+  follow-up).
+- No markup is added in the expectation of a retired feature (FAQ, HowTo, sitelinks
+  search box).
 
-- Schema that describes content not visible on the page is spam — Google may penalise it.
-- Fix Search Console errors on existing schema before adding new types.
-- Never use Microdata or RDFa — JSON-LD only (maintainable and Google's preference).
+## Anti-patterns
+
+- Markup on content the user cannot see, or on `noindex` pages expecting results.
+- Reviews or ratings the site wrote about itself (self-serving reviews on
+  `LocalBusiness`/`Organization` are not eligible).
+- Copy-pasted markup with stale prices or dates.
+- Promising clients a specific rich result.

@@ -649,9 +649,81 @@ console.log("== prompt: the tester never asserts on git history ==");
     worktree: "/tmp/wt",
     repoName: "r",
   });
-  if (/Do not run git at all/.test(p) && /FILES PRESENT/.test(p))
-    ok("prompt forbids git and verifies history-phrased ACs by the files present");
+  if (/Run no git command except the/.test(p) && /FILES PRESENT/.test(p))
+    ok(
+      "prompt forbids git (bar committing the tests) and verifies history-phrased ACs by the files present",
+    );
   else fail("prompt should forbid git and redirect history-phrased ACs to the checkout's files");
+}
+
+console.log(
+  "== AC19: the tester checkout gets the installed deps, never counted as its changes ==",
+);
+{
+  const { linkNodeModules, inspectTesterChanges } = await import(HELPER);
+  const fs = require("node:fs");
+  const repo = resolve(WORKDIR, "nm-repo");
+  const g = (...a) => spawnSync("git", ["-C", repo, ...a], { encoding: "utf8" });
+  fs.mkdirSync(resolve(repo, "packages", "a"), { recursive: true });
+  spawnSync("git", ["init", "-q", "-b", "main", repo]);
+  g("config", "user.email", "t@t");
+  g("config", "user.name", "t");
+  writeFileSync(resolve(repo, "package.json"), '{"name":"nm"}\n');
+  writeFileSync(resolve(repo, "packages", "a", "package.json"), '{"name":"a"}\n');
+  // A .gitignore with the common trailing-slash form, which does NOT match a symlink.
+  writeFileSync(resolve(repo, ".gitignore"), "node_modules/\n");
+  g("add", "-A");
+  g("commit", "-q", "-m", "base");
+  const base = g("rev-parse", "HEAD").stdout.trim();
+  fs.mkdirSync(resolve(repo, "node_modules", "vitest"), { recursive: true });
+  fs.mkdirSync(resolve(repo, "packages", "a", "node_modules", "pkg"), { recursive: true });
+  const wt = resolve(WORKDIR, "nm-wt");
+  g("worktree", "add", "-q", "--detach", wt, "HEAD");
+  const linked = linkNodeModules(repo, wt);
+  if (
+    existsSync(resolve(wt, "node_modules", "vitest")) &&
+    existsSync(resolve(wt, "packages", "a", "node_modules", "pkg"))
+  )
+    ok("root and workspace-package node_modules are linked in");
+  else fail(`node_modules not linked (linked=${JSON.stringify(linked)})`);
+  const st = spawnSync("git", ["-C", wt, "status", "--porcelain", "--untracked-files=all"], {
+    encoding: "utf8",
+  }).stdout;
+  if (!/node_modules/.test(st)) ok("git does not see the links (excluded)");
+  else fail(`git status shows the links: ${st}`);
+  const insp = inspectTesterChanges(wt, base);
+  if (insp.ok && insp.implementation.length === 0)
+    ok("the links are not read as the tester changing the implementation");
+  else fail(`links read as changes: ${JSON.stringify(insp)}`);
+  // A root install that is itself a symlink (a shared store) is still linked.
+  const repo2 = resolve(WORKDIR, "nm-repo2");
+  const store = resolve(WORKDIR, "nm-store");
+  fs.mkdirSync(resolve(store, "vitest"), { recursive: true });
+  spawnSync("git", ["init", "-q", "-b", "main", repo2]);
+  const g2 = (...a) => spawnSync("git", ["-C", repo2, ...a], { encoding: "utf8" });
+  g2("config", "user.email", "t@t");
+  g2("config", "user.name", "t");
+  writeFileSync(resolve(repo2, "package.json"), '{"name":"nm2"}\n');
+  fs.mkdirSync(resolve(repo2, "pkg"), { recursive: true });
+  writeFileSync(resolve(repo2, "pkg", "package.json"), '{"name":"pkg"}\n');
+  g2("add", "-A");
+  g2("commit", "-q", "-m", "base");
+  fs.symlinkSync(store, resolve(repo2, "node_modules"), "dir");
+  fs.mkdirSync(resolve(repo2, "pkg", "node_modules", "dep"), { recursive: true });
+  const wt2 = resolve(WORKDIR, "nm-wt2");
+  g2("worktree", "add", "-q", "--detach", wt2, "HEAD");
+  // The checkout's `pkg` is turned into a symlink pointing OUTSIDE it.
+  const outside = resolve(WORKDIR, "nm-outside");
+  fs.mkdirSync(outside, { recursive: true });
+  fs.rmSync(resolve(wt2, "pkg"), { recursive: true, force: true });
+  fs.symlinkSync(outside, resolve(wt2, "pkg"), "dir");
+  linkNodeModules(repo2, wt2);
+  if (existsSync(resolve(wt2, "node_modules", "vitest")))
+    ok("a symlinked root install is linked too");
+  else fail("symlinked root node_modules was not linked");
+  if (!existsSync(resolve(outside, "node_modules")))
+    ok("no link is created outside the checkout through a symlinked directory");
+  else fail("a node_modules link escaped the checkout");
 }
 
 if (failures.length === 0) {

@@ -1176,6 +1176,29 @@ console.log("== AC12: greenfield bootstrap ACs may not assert on git history =="
   );
 }
 
+console.log("== AC-noSpecClauseRef: a clauseRef with no driving spec is dropped (CLI) ==");
+{
+  const withRef = JSON.parse(JSON.stringify(planObj));
+  withRef.plan.tickets[0].acceptanceCriteria = [{ text: "the list persists", clauseRef: "c2" }];
+  const mock = "```json\n" + JSON.stringify(withRef) + "\n```";
+  const noSpec = runCli({ brief: "gym", mockOutput: mock });
+  eq(
+    "no spec → the AC is a plain string (no spec_clause_id can be persisted)",
+    noSpec.out?.plan?.tickets?.[0]?.acceptanceCriteria?.[0],
+    "the list persists",
+  );
+  const withSpec = runCli({
+    brief: "gym",
+    spec: [{ clause_id: "c2", kind: "requirement", text: "The list persists." }],
+    mockOutput: mock,
+  });
+  eq(
+    "a frozen spec naming c2 → the clauseRef is kept",
+    withSpec.out?.plan?.tickets?.[0]?.acceptanceCriteria?.[0],
+    { text: "the list persists", clauseRef: "c2" },
+  );
+}
+
 if (failures.length === 0) {
   console.log(`PASS — ${passed} checks passed (helper: ${HELPER})`);
   process.exit(0);

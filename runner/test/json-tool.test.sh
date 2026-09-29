@@ -87,6 +87,14 @@ echo "== 5: notes, feedback, rows, slug =="
 # summary + " " + description("") + " " + type — the two spaces are the python's exact output.
 [ "$(printf '%s' "$SHOW" | jt smallest-change-note)" = "Smallest-change: touched app.js only  manual_note" ] && ok "smallest-change-note joins summary/description/type" || no "note: $(printf '%s' "$SHOW" | jt smallest-change-note)"
 [ "$(printf '{}' | jt smallest-change-note)" = "" ] && ok "smallest-change-note none → empty" || no "note none"
+# A rework: the runner's own flag row and the first attempt's note come first; the
+# agent's fresh note for the new diff is the one the gate must read.
+REWORK='{"evidence":[{"summary":"smallest-change check: old.js only","type":"manual_note"},{"summary":"needs_human_review: missing smallest-change note (no note) — judge minimality from the diff","type":"manual_note"},{"summary":"smallest-change check: new.js and new.test.js","type":"manual_note"}]}'
+[ "$(printf '%s' "$REWORK" | jt smallest-change-note)" = "smallest-change check: new.js and new.test.js  manual_note" ] && ok "smallest-change-note: newest agent note wins on a rework" || no "rework note: $(printf '%s' "$REWORK" | jt smallest-change-note)"
+FLAGONLY='{"evidence":[{"summary":"needs_human_review: missing smallest-change note (x)","type":"manual_note"}]}'
+[ "$(printf '%s' "$FLAGONLY" | jt smallest-change-note)" = "" ] && ok "smallest-change-note: the runner's flag row alone is not a note" || no "flag only: $(printf '%s' "$FLAGONLY" | jt smallest-change-note)"
+REWORKEV='{"evidence":[],"events":[{"event_type":"ticket.reworking","payload":"minimalism post-condition failed — record a smallest-change note and re-deliver"}]}'
+[ "$(printf '%s' "$REWORKEV" | jt smallest-change-note)" = "" ] && ok "smallest-change-note: a runner rework event is never the note" || no "rework event: $(printf '%s' "$REWORKEV" | jt smallest-change-note)"
 RF="$(printf '%s' "$SHOW" | jt review-feedback)"
 [ "$RF" = "  - tests missing" ] && ok "review-feedback: dedupes, drops review_rejected and reopen*" || no "review-feedback: '$RF'"
 [ "$(printf 'id\tapp\t/repos/app\tmain\t/wt/app\nid2\tlib\t/repos/lib\tmain\t\n' | jt worktree-rows-json)" = '[{"repo":"app","path":"/repos/app","base":"main","wt":"/wt/app"}]' ] && ok "worktree-rows-json keeps rows with a worktree" || no "worktree-rows-json"

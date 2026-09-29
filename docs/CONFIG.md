@@ -188,7 +188,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `HYGIENE_ENFORCE` | `1` | yes (boolean) | dispatch, runner | Reject deliveries that touch forbidden paths (node_modules, .claude/, factory internals). On by default. |
-| `HYGIENE_FORBIDDEN_PATHS` | `node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.` |  | crew, runner | Newline/space-separated glob fragments that, if ADDED or DELETED by the diff, fail the hygiene check. |
+| `HYGIENE_FORBIDDEN_PATHS` | `node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime. .terraform/` |  | crew, runner | Newline/space-separated glob fragments that, if ADDED or DELETED by the diff, fail the hygiene check. |
 | `MINIMALISM_ENFORCE` | `1` | yes (boolean) | crew, dispatch, runner | Flag oversized/sprawling diffs against the caps below, so a ticket ships a focused change. |
 | `OVERSIZED_MAX_LINES` | `400` | yes (int) | crew, dispatch, runner | A diff changing more than this many lines trips the minimalism check. |
 | `OVERSIZED_MAX_FILES` | `12` | yes (int) | crew, dispatch, runner | A diff touching more than this many files trips the minimalism check. |

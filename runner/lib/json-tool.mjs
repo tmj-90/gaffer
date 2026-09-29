@@ -381,22 +381,24 @@ switch (cmd) {
     }
     break;
   }
-  // smallest-change-note: stdin = ticket show → the first evidence/event text carrying
-  // a "smallest change" marker, or "".
+  // smallest-change-note: stdin = ticket show → the MOST RECENT evidence text carrying a
+  // "smallest change" marker, or "". Only evidence rows count: an agent's note can only
+  // arrive as evidence, while events carry runner text (a rework event's payload says
+  // "record a smallest-change note", which must never pass as the note). The runner's
+  // own "needs_human_review: missing smallest-change note" flag rows are skipped too: on
+  // a rework they would otherwise shadow the agent's fresh note for the new diff.
   case "smallest-change-note": {
     const p = tryParse(readStdin());
     const d = p.ok && p.value ? p.value : {};
     const pat = /smallest[ -]change/i;
-    const hits = [];
-    for (const e of d.evidence || []) {
-      const s = ["summary", "description", "type"].map((k) => pyStr((e ?? {})[k] ?? "")).join(" ");
-      if (pat.test(s)) hits.push(s);
-    }
-    for (const e of d.events || []) {
-      const s = pyStr((e ?? {}).summary || (e ?? {}).payload || "");
-      if (pat.test(s)) hits.push(s);
-    }
-    println(hits[0] ?? "");
+    const runnerFlag = /^\s*needs_human_review\b/i;
+    const pick = (texts) => texts.filter((s) => pat.test(s) && !runnerFlag.test(s)).pop();
+    const fromEvidence = pick(
+      (d.evidence || []).map((e) =>
+        ["summary", "description", "type"].map((k) => pyStr((e ?? {})[k] ?? "")).join(" "),
+      ),
+    );
+    println(fromEvidence ?? "");
     break;
   }
   // review-feedback: stdin = ticket show → "  - <reason>" lines for the last five

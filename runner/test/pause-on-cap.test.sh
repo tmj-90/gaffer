@@ -139,6 +139,19 @@ RB_WT="$(wg ticket resume-begin "$NUM" 2>/dev/null | jget 'd.context.worktree_pa
 # resume-begin cleared the resume-requested flag.
 [ -z "$(wg ticket resume-requested 2>/dev/null | jget 'd[0]?.number ?? ""')" ] && ok "resume queue is drained after resume-begin" || fail "resume queue still lists the ticket after resume-begin"
 
+echo "== 5b. the resumed agent's final report is recorded as evidence the gates read =="
+# The function under test, extracted from factory.config.sh (this harness defines its own
+# wg/jget over the built CLI instead of sourcing the whole config).
+gaffer_json() { node "$RUNNER_DIR/lib/json-tool.mjs" "$@"; }
+eval "$(sed -n '/^gaffer_record_resume_report() {/,/^}/p' "$RUNNER_DIR/factory.config.sh")"
+USAGE="$WORK/usage-resume.json"
+printf '%s' '{"result":"AC 1 -> test/store.test.js::persists — asserts the note survives a restart\nsmallest-change check: src/store.js only; cut nothing"}' > "$USAGE"
+gaffer_record_resume_report "$NUM" "$USAGE" && ok "resume report recorded (rc 0)" || fail "resume report write failed"
+NOTE="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json smallest-change-note)"
+case "$NOTE" in *"resume agent report:"*"smallest-change check: src/store.js"*) ok "the minimalism gate reads the resumed agent's note" ;; *) fail "note not visible to the gate: '$NOTE'" ;; esac
+: > "$WORK/empty.json"
+gaffer_record_resume_report "$NUM" "$WORK/empty.json" && ok "no report text → nothing recorded, rc 0" || fail "empty usage should be a no-op"
+
 echo "== 6. Stop abandons a paused delivery (-> cancelled) + drops the context =="
 NUM2="$(make_claimed)"
 wg ticket pause "$NUM2" --reason budget_cap --branch "gaffer/ticket-$NUM2-x" --attempt 1 --spend 'unknown' >/dev/null 2>&1

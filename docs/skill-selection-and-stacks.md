@@ -80,7 +80,7 @@ though `review-ticket` tells it to "review Java like Java") or the whole library
 | Role | Core (always) | Lens areas | Stack packs | Text packs |
 | --- | --- | --- | --- | --- |
 | `delivery` | the universal mechanics (`run-tests`, `run-lint`, `run-coverage`, `minimalism`, `self-review`, `submit-review`, `record-evidence`, `create-branch`, `prepare-digest-delta`, `plan-change`) | — (the legacy stack/area selection, byte-identical) | language + surface | yes |
-| `review` | `review-ticket`, `adversarial-reviewer`, `submit-review`, `record-evidence`, `engineering-craft`, `minimalism` | `review` (the lenses: `security-review`, `performance-review`, `accessibility-review`, `test-quality-review`, `migration-review`, `api-design-reviewer`), `security` | language + surface | no |
+| `review` | `review-ticket`, `adversarial-reviewer`, `submit-review`, `record-evidence`, `engineering-craft`, `minimalism` | `review` (the lenses: `security-review`, `performance-review`, `accessibility-review`, `test-quality-review`, `migration-review`, `concurrency-review`, `api-design-reviewer`), `security` | language + surface | no |
 | `clarify` | `clarify`, `record-evidence`, `user-story`, `prd` | `security` | language | no |
 | `test` | `black-box-test`, `run-tests`, `add-integration-test`, `e2e-browser-test`, `contract-test`, `test-fixtures-and-factories`, `record-evidence` | `testing` | language | no |
 | `plan` | `plan-build`, `spec-author`, `user-story`, `rice`, `prd`, `product-discovery`, `database-schema-designer`, `api-design-reviewer`, `design-system`, `write-adr` | `planning` | language + surface | yes |

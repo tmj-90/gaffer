@@ -7,50 +7,89 @@ area: docs
 
 # Write an Architecture Decision Record
 
-An ADR records one decision: the context that forced it, the options that were live, the
-choice, and what it costs. Its value is that a future reader can see why, judge whether
-the reasons still hold, and supersede it deliberately instead of by accident. Keep it
-short, dated, and immutable once accepted.
+An ADR records one architecturally significant decision in Michael Nygard's format — Title,
+Status, Context, Decision, Consequences — so a future reader can see why, judge whether the
+reasons still hold, and supersede it deliberately. Keep it to one or two pages, dated,
+numbered, and immutable once accepted.
 
-## Steps
+## Template
 
-1. **Find the repo's ADR convention.** Look for `docs/adr/`, `docs/decisions/`,
-   `architecture/decisions`, or an existing numbered `NNNN-title.md` series. Match its
-   template and numbering. If there is none, create `docs/adr/0001-record-architecture-decisions.md`
-   describing the convention, then your decision as `0002-...`. Check `search_lore` for
-   decisions already captured as lore so you neither duplicate nor contradict them.
-2. **State the decision in one sentence** in the title, in the imperative
-   ("Use SQLite as the control-plane store"). If you cannot, you have two decisions;
-   write two ADRs.
-3. **Write the context honestly.** The forces at play: requirements, constraints,
-   deadlines, the thing that hurt. Enough that a reader in a year understands why the
-   question came up. No marketing.
-4. **List the options actually considered**, each with the concrete reason it lost.
-   "Considered Postgres; rejected because the factory must run with zero services on a
-   laptop" is useful; "considered alternatives" is not.
-5. **Record the decision and its consequences**: what becomes easier, what becomes
-   harder, what is now forbidden, what would make you revisit it. Consequences are the
-   most valuable section and the one most often skipped.
-6. **Set the status**: Proposed, Accepted, Deprecated, or Superseded by NNNN. An
-   accepted ADR is never edited except to change its status; a new decision gets a new
-   ADR that links back.
-7. **Link both ways.** Reference the ADR from the code or doc it governs (a comment at
-   the module boundary, a line in the README section) so it is found from where the
-   decision bites.
-8. **Mirror the decision into memory.** Call `suggest_lore` with kind `decision`
-   summarising the choice and its reason, citing the ADR path, so agents that never
-   open `docs/` still see it in `search_lore`. Evidence the file with the
-   `record-evidence` skill.
+```markdown
+# NNNN. <Imperative decision, e.g. "Use SQLite as the control-plane store">
 
-## Rules
+Date: YYYY-MM-DD
+Status: Proposed | Accepted | Rejected | Deprecated | Superseded by [NNNN](NNNN-slug.md)
 
-- One decision per ADR; one sentence title; dated and numbered.
-- Options are the ones really weighed, each with its rejection reason.
-- Consequences section is mandatory and names what gets harder.
-- Accepted ADRs are immutable; supersede, do not rewrite history.
-- Every ADR is mirrored as `decision` lore; every lore decision of lasting weight should
-  have an ADR.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+## Context
+The forces: requirements, constraints, what hurt, what is uncertain. Facts, not advocacy.
+
+## Options considered
+- **<Option A>** — why it lost, concretely.
+- **<Option B>** — why it lost.
+
+## Decision
+We will <do X>. <Scope: where it applies and where it does not.>
+
+## Consequences
+Easier: … Harder: … Now forbidden: … Revisit if: <measurable trigger>.
+```
+
+"Options considered" extends Nygard's format; keep it unless the repo's template
+omits it.
+
+## Procedure
+
+When you cannot write files (planning and spec roles), do not draft the file: put the
+decision and its options in your output instead, as a ticket or acceptance criterion in
+a plan or a `decision` clause in a spec, so a delivery ticket writes the ADR.
+
+1. **Find the convention.** Look for `docs/adr/`, `docs/decisions/`, `doc/adr/`,
+   `architecture/decisions`, or a numbered `NNNN-title.md` series; match its template,
+   numbering, and status vocabulary. If none exists, create
+   `docs/adr/0001-record-architecture-decisions.md` (the convention itself) and write yours
+   as `0002-…`. Numbers are sequential and never reused. `search_lore` for decisions
+   already recorded so you neither duplicate nor silently contradict one.
+2. **One decision, one sentence.** The title is the decision in the imperative. If you need
+   "and", write two ADRs.
+3. **Context honestly.** Enough that a reader in a year understands why the question arose:
+   the requirement, constraint or incident that forced it, with links to the ticket or
+   spec. Include the non-functional forces that actually mattered (consistency under
+   concurrent writers, durability of acknowledged writes, operability, cost).
+4. **Options actually weighed**, each with the concrete reason it lost. "Considered
+   Postgres; rejected because the factory must run with zero services on a laptop" is
+   useful; "considered alternatives" is not. Include "do nothing" when it was viable.
+5. **Decision in active voice** ("We will…"), with its scope.
+6. **Consequences — all of them.** What becomes easier, what becomes harder, what is now
+   forbidden, new risks and how they are mitigated, and a measurable revisit trigger. This
+   is the most valuable section and the most often skipped.
+7. **Set status truthfully.** An agent-made choice within the ticket's authority may be
+   `Accepted` and is flagged with `request_decision` at `log_only`/`agent_can_choose`. A
+   product, architecture or security call you cannot make is `Proposed` and escalated with
+   `request_decision` as `human_required`; do not mark it accepted yourself. To change an
+   accepted decision, write a new ADR that says "Supersedes NNNN" and change only the old
+   one's status line to "Superseded by …".
+8. **Link both ways.** Reference the ADR from where the decision bites (module header
+   comment, README section, config file) and from the ADR index if the repo keeps one.
+9. **Mirror into memory and evidence.** Call `suggest_lore` with kind `decision`
+   summarising the choice and reason, citing the ADR path in the body (the `source`
+   field takes only a URL). Evidence the file with the `record-evidence` skill, then
+   stop.
+
+## Done when
+
+- The file is in the repo's ADR directory with the next free number, the date, and a status.
+- Context, options (each with its rejection reason), decision and consequences (including
+  what gets harder and a revisit trigger) are present.
+- Links exist from the governed code/doc to the ADR; a superseded ADR's status is updated.
+- Formatting passes the repo's markdown check if configured (e.g. `npx --no -- prettier --check`).
+
+## Review checklist (concrete defects only)
+
+- More than one decision in one record, or a title that is a topic, not a decision.
+- An option listed without why it lost; consequences with no downside.
+- An accepted ADR's body edited instead of superseded; a reused number.
+- `Accepted` status on a decision that needed human sign-off.
+- The ADR contradicts an existing ADR or lore decision without superseding it.
 
 ## Capture lore
 

@@ -1,72 +1,95 @@
 ---
 name: react-patterns
-description: Use when a ticket adds or changes React code — components, hooks, effects, context, server components, suspense boundaries — and it must follow modern React idioms correctly (effects only for synchronisation, derived state computed not stored, stable keys, composition over configuration) as the framework pack for any React or Next.js change. Invoke for "build this in React", "the effect runs twice", "too many re-renders", or as the React layer on top of typescript-conventions.
+description: Use when a ticket adds or changes React code — components, hooks, effects, context, actions and forms, server components, suspense boundaries — and it must follow the Rules of React and modern React 19 idioms (pure render, effects only for synchronisation, derived state computed not stored, stable keys, composition over configuration) as the framework pack for any React or Next.js change. Invoke for "build this in React", "the effect runs twice", "too many re-renders", or as the React layer on top of typescript-conventions.
 stack: [react, next, nextjs, web]
 area: frontend
 ---
 
 # Write React the way React wants to be written
 
-Most React bugs are misuses of its model: effects used as event handlers, state that
-mirrors props, keys that change identity, context that re-renders the world. Model UI as
-a function of state, keep effects for synchronising with the outside, and compose small
-components. This pack sits on top of `typescript-conventions`; the design bar is
-`frontend-design` and `frontend-foundations`.
+Most React bugs break the **Rules of React**: components and hooks must be pure
+(same inputs → same output, no side effects during render), props and state are
+immutable snapshots, and hooks are called unconditionally at the top level of a
+component or custom hook. Model UI as a function of state, keep effects for
+synchronising with systems outside React, and compose small components. This pack sits
+on top of the `typescript-conventions` skill; the design bar is `frontend-foundations`.
 
 ## Steps
 
-1. **Read the repo's React conventions first.** Function components only, the state and
-   data libraries in use (the `frontend-state-management` and `frontend-data-fetching`
-   skills), server vs client component rules in Next.js, the folder pattern
-   (feature-first or by kind). Call `search_lore` and copy a sibling component's shape.
-2. **Model state, not effects.** Derived values are computed during render (or
-   `useMemo`ed when expensive), never stored in a second `useState` synced by an effect.
-   An effect exists only to synchronise with something outside React (a subscription, a
-   DOM measurement, a non-React widget); if the effect is reacting to a user event, the
-   code belongs in the event handler. Every effect returns a cleanup when it subscribes
-   or starts anything.
-3. **Get dependencies right, honestly.** Dependency arrays list everything the effect
-   reads; never silence the lint rule. If the array is wrong because a function identity
-   changes, stabilise the function (`useCallback`, move it outside, or a ref for the
-   latest value), do not omit it.
-4. **Keys are stable identities.** Never an array index for reorderable or removable
-   lists; use the item's id. Changing a key deliberately is how you reset a component's
-   state, and that intent gets a comment.
-5. **Compose instead of configuring.** Prefer children and slot props to boolean props
-   that multiply variants; extract hooks for reusable stateful logic and components for
-   reusable UI; keep components under a screenful. Context is for genuinely shared,
-   rarely-changing values (theme, session); split contexts by change frequency so a
-   ticking clock does not re-render everything.
-6. **Handle async safely.** Data through the data layer, not raw effects; suspense and
-   error boundaries at route or section level with real fallbacks; no state updates
-   after unmount (cleanup or the data layer handles it); no `async` directly in
-   `useEffect` without an inner function and cancellation.
-7. **Server and client components (Next.js App Router).** Default to server components;
-   add `"use client"` only where interactivity or browser APIs are needed and push it to
-   the leaf; never import server-only modules into client components; pass serialisable
-   props; fetch on the server where possible.
-8. **Measure re-renders when the ticket is about them** with the profiler (the
-   `frontend-performance` skill); memoise components only when the profiler shows the
-   cost. Test with the `frontend-testing` skill; evidence with the `record-evidence`
-   skill.
+1. **Read the repo's React set-up.** React version (19.x adds Actions, `use`, ref-as-prop;
+   19.2 adds `useEffectEvent` and `<Activity>`), whether the **React Compiler** is enabled
+   (babel/SWC plugin in the build config), `eslint-plugin-react-hooks` config, framework
+   (Next.js App Router, Remix/React Router, Vite SPA), and the state/data libraries (the
+   `frontend-state-management` and `frontend-data-fetching` skills). Call `search_lore`
+   and copy a sibling component's shape.
+2. **Keep render pure.** No fetches, subscriptions, `Math.random()`/`Date.now()` for
+   output, or mutation of props, state or module variables during render. Never mutate
+   state in place (`items.push`); create a new value. Strict Mode double-invokes render and
+   effects in development precisely to expose impurity — "the effect runs twice" means the
+   effect lacks a correct cleanup, not that Strict Mode should be removed.
+3. **You probably don't need that effect.** Before writing `useEffect`, check:
+   - Derived from props/state? Compute it during render (`useMemo` only if measured as
+     expensive and the Compiler is off).
+   - Caused by a user action? Put it in the event handler.
+   - Reset when an id changes? Key the component by the id.
+   - Fetching? Use the data layer, a loader, or a Server Component.
+   Effects remain for synchronisation: subscriptions, timers, imperative widgets, DOM
+   measurement (`useLayoutEffect` only when you must measure before paint). Every effect
+   that starts something returns a cleanup that stops it.
+4. **Honest dependencies.** The array lists every reactive value the effect reads; never
+   disable `react-hooks/exhaustive-deps`. Logic that must read the latest value without
+   re-running the effect (logging, analytics, a callback prop) goes in `useEffectEvent`
+   (React 19.2+) or a ref updated in an effect on older versions. Move pure helpers outside
+   the component instead of wrapping them in `useCallback`.
+5. **Memoisation policy.** With the React Compiler on, do not add `memo`/`useMemo`/
+   `useCallback` by hand unless profiling shows the Compiler bailed out; fix the lint
+   diagnostics that cause bail-outs instead. With it off, memoise only what the profiler
+   shows is costly (the `frontend-performance` skill).
+6. **Keys are identities.** Use stable ids from the data; never array indexes for lists
+   that reorder, filter or delete, and never generated keys (`Math.random()`) — both lose
+   input state and focus.
+7. **Compose instead of configuring.** `children` and slot props over boolean variant
+   props; custom hooks (named `useX`, calling hooks) for reusable stateful logic; context
+   for rarely changing shared values, split by change frequency. In React 19 `ref` is a
+   prop (no `forwardRef`) and `<Context value>` is the provider.
+8. **Forms and mutations with Actions** where the repo uses them: `useActionState` for
+   submit-with-result, `useFormStatus` for a pending button in a child, `useOptimistic`
+   for an optimistic value that reverts when the action settles. Otherwise follow the
+   repo's form library (the `frontend-forms-and-validation` skill).
+9. **Async boundaries.** `<Suspense>` with a real fallback around the part that waits and
+   an error boundary at route or section level; `startTransition`/`useDeferredValue` for
+   non-urgent updates so typing stays responsive. No `async` function passed directly to
+   `useEffect`; an inner async function checks a cancelled flag or `AbortSignal`.
+10. **Server Components (Next.js App Router, RSC).** Server by default. `"use client"`
+    marks a module boundary — push it to the interactive leaves; everything passed across
+    it must be serialisable. Import server-only code through modules guarded with
+    `import 'server-only'`. `"use server"` functions (Server Functions/Actions) are public
+    HTTP endpoints: authenticate, authorise and validate their arguments inside the
+    function every time (the `security-authz` and `security-input-validation` skills).
+    Render nothing that differs between server and client (time, locale, `window`) without
+    a client-only boundary, or hydration fails.
+11. **Test and evidence.** Per AC, a component test through the rendered UI (the
+    `frontend-testing` skill); run type-check, lint (hooks rules included) and tests.
+    Record per-AC evidence with the `record-evidence` skill, then stop.
 
-## Review checklist (a React reviewer must check)
+## Review checklist
 
-- No effect that merely mirrors props or state into other state; derived values computed.
-- Every subscribing effect cleans up; dependency arrays complete, lint rule not silenced.
-- Keys are stable ids, never indexes on mutable lists.
-- Context split by change frequency; no giant provider re-rendering the tree.
-- Client boundaries at the leaves; no server-only imports in client components.
-- Async through the data layer; boundaries with real fallbacks.
+A reviewer blocks on an item only when it causes a bug (stale value, leak, lost input,
+hydration failure, missing auth), breaks an AC or leaves one untested; the memoisation
+item is guidance.
 
-## Rules
+- Render is pure; no state mutated in place; no side effects outside effects/handlers.
+- No effect that mirrors props or state into other state, or handles a user event.
+- Every effect that subscribes or starts a timer cleans up; dependency lint not silenced.
+- Keys are stable data ids.
+- Manual memoisation justified by the Compiler being off plus a profile.
+- Client boundaries at the leaves; Server Functions check auth and validate input.
+- Suspense/error boundaries have real fallbacks; no hydration-mismatching output.
 
-- Effects synchronise with the outside; they are not event handlers or state syncs.
-- Compute derived state; never store it twice.
-- Complete dependency arrays; stabilise identities rather than omit them.
-- Stable keys; composition over boolean-prop configuration.
-- Server components by default in the App Router; client at the leaves.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+## Done when
+
+Lint (including `react-hooks`) and type-check are clean with no new suppressions, each AC
+has a behaviour test, and the review checklist holds for the diff.
 
 ## Capture lore
 

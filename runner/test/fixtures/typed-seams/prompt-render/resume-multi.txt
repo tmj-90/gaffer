@@ -16,12 +16,18 @@ run `get_ticket` and `git log --oneline` + `git status` to see what is already d
 then CONTINUE from there and FINISH it: implement the remaining acceptance criteria, run
 the repo's tests, and COMMIT any new work on the current branch —
 run: git add -A && git commit -m "deliver #1: <summary>". An uncommitted edit is NOT a
-delivery. Then use the record-evidence skill to evidence each AC and the prepare-digest-delta
-skill, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the gates,
-records the delivery, and submits. Never self-approve.
+delivery. A resumed delivery holds NO claim, so record_ac_evidence, the digest delta and
+mark_ticket_blocked are refused here — do not call or retry them. Instead END your message
+with one line per AC naming the test that proves it, then one line starting exactly
+"smallest-change check:" (the changed files by name, what you cut, why this is the floor):
+the runner records the end of your final message as evidence and its gate looks for that
+marker. Then STOP. Do NOT submit for
+review, push, or open a PR — the runner runs the gates, records the delivery, and submits.
+Never self-approve.
 WORK ECONOMY (the turn budget is real): finish the remaining ACs, run the repo's gates ONCE
-when the change is complete and once more after a fix — not after every edit. Installs only
-in the FOREGROUND with --ignore-scripts, never in the background. Commit before anything
+when the change is complete and once more after a fix — not after every edit. Never install,
+update or remove dependencies (the safety hook blocks it; node_modules is shared with the
+main checkout) — if the change needs one, raise it as below. Commit before anything
 optional; stop when the ACs are met.
 BEFORE STOPPING, reflect on WHY this was built this way. If this ticket established a
 durable DECISION (why this approach over the alternatives), a REQUIREMENT (what it
@@ -29,7 +35,10 @@ needed), or a NON-GOAL (what it deliberately did NOT do), call the Memory `sugge
 tool ONCE with an explicit `kind` (decision / requirement / non-goal). Capture only
 intent the NEXT agent should start from — skip per-ticket trivia. This lands a gated
 DRAFT a human approves; nothing is auto-applied.
-If blocked, mark_ticket_blocked with a reason.
+If blocked, request_decision (ticket_id #1, severity human_required) with the
+reason: it files the question for a human and stops the ticket being claimed again until it
+is answered, but the runner still gates and submits what you committed — so commit only
+work you stand behind.
 
 REPO ACCESS BOUNDARY (enforced by the safety hook — not just guidance):
 WRITABLE repos — already checked out on branch 'gaffer/ticket-1-add-password-reset-flow' with your prior work:

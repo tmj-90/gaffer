@@ -57,6 +57,24 @@ Positioning:   [Brand] is the [category] for [audience] who want [outcome]
                because [reason to believe].
 ```
 
+## Voice in product UI
+
+Most brand copy a delivery agent writes is microcopy. Define it in `BRAND.md` with one
+example each:
+
+- **Buttons** — a verb naming the outcome ("Save changes", "Send invoice"), not "OK"/"Submit".
+- **Errors** — what happened and what to do next, in plain words, no blame, no codes alone:
+  "We couldn't save your changes. Check your connection and try again."
+- **Empty states** — why it is empty and the first action ("No invoices yet. Create your
+  first invoice.").
+- **Confirmations of destructive actions** — name the object and the consequence ("Delete
+  3 invoices? This can't be undone.").
+- **Tone shifts** — playful voices go plain in errors, payments, security and anything
+  involving loss.
+
+Write with localisation in mind: whole sentences, no idioms or puns that carry meaning, no
+text baked into images (the `i18n-l10n` skill).
+
 ## Consistency checklist (audit copy + visuals against this)
 
 **Visual**

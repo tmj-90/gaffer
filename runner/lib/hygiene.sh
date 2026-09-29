@@ -30,7 +30,7 @@
 # bare-substring match hard-rejected a legit delivered source dir such as
 # `src/mcp-runtime/index.ts`. Keep in sync with factory.config.sh's default.
 _hygiene_forbidden_fragments() {
-  local raw="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.}"
+  local raw="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime. .terraform/}"
   # FINDING B-H2: split on whitespace WITHOUT glob-expanding. An unquoted `$raw`
   # both word-splits AND pathname-expands, so a fragment like `*.events.jsonl`
   # would glob against the cwd — if a matching file exists it is replaced by that
@@ -64,7 +64,7 @@ gaffer_exclude_runner_config() {
     grep -qsxF '# gaffer non-deliverables — never commit (added by gaffer_exclude_runner_config)' "$excl" 2>/dev/null \
       || printf '%s\n' '# gaffer non-deliverables — never commit (added by gaffer_exclude_runner_config)' >> "$excl" 2>/dev/null
     for entry in '.claude/' 'CLAUDE.factory.md' '.mcp.json' 'mcp-runtime*.json' \
-                 'node_modules' 'dist/' 'build/' '.next/' 'coverage/' '.turbo/'; do
+                 'node_modules' 'dist/' 'build/' '.next/' 'coverage/' '.turbo/' '.terraform/'; do
       grep -qsxF "$entry" "$excl" 2>/dev/null || printf '%s\n' "$entry" >> "$excl" 2>/dev/null
     done
   ) 2>/dev/null || true

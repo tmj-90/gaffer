@@ -7,52 +7,82 @@ area: backend
 
 # Instrument code with structured logs, metrics and traces
 
-Observability is designed at the point where the code knows what happened. Emit events
-a machine can filter and a human can read, carry one correlation id through every hop,
-measure the few things that matter, and never write a secret or a person's data into a
-log that lives for ninety days.
+Observability is designed where the code knows what happened. Emit events a machine can
+filter and a human can read, carry one trace context through every hop, measure the few
+things an alert needs, and never write a secret or a person's data into a log that lives
+for ninety days. Sources: W3C Trace Context (Recommendation); OpenTelemetry semantic
+conventions (HTTP spans and metrics, log data model); OWASP Logging Cheat Sheet; Google
+SRE book ch. 6 (four golden signals).
 
 ## Steps
 
-1. **Use the repo's instrumentation, not a new one.** Find the structured logger, the
-   metrics client, the tracing SDK and the correlation-id convention (a header, an env
-   var, a context object). Call `search_lore` for field names the repo standardises on
-   (`ticket`, `request_id`, `duration_ms`). Adding a second logger is a defect.
-2. **Log events, not sentences.** One structured record per meaningful event with a
-   stable event name and typed fields (`{"event":"claim.released","ticket":42,
-   "reason":"ttl_expired"}`), not `console.log("released ticket " + n)`. Sentences are
-   for the message field; facts are fields.
-3. **Choose levels deliberately.** `error` for a failure someone must act on, `warn` for
-   a degraded-but-handled path, `info` for state transitions an operator wants to
-   follow, `debug` for the rest. Logging every request at `info` is noise; logging an
-   ignored failure at `debug` is a cover-up.
-4. **Propagate the correlation id.** Read it at the edge (request header, job payload,
-   the tick id the runner sets), attach it to every log record and span in that unit of
-   work, and pass it to every downstream call and spawned process. A log you cannot
-   join to its request is a log you cannot use.
-5. **Add spans for the slow or flaky boundaries**: outbound HTTP, database queries,
-   queue operations, agent spawns. Name spans by operation, add the identifying
-   attributes (not payloads), and record the error status on failure.
-6. **Measure what an alert would use.** A counter for outcomes by result, a histogram for
-   latency of the operation, a gauge for a queue depth. Labels are low-cardinality
-   (status, kind), never a user id or a ticket number. See the `observability-designer`
-   skill for the alerting side.
-7. **Redact by construction.** Never log secrets, tokens, passwords, full request bodies,
-   or personal data. Use the repo's redaction helper or allow-list the fields you emit.
-   Assume every log line will be read by someone who should not see the payload.
-8. **Test the instrumentation** where it carries meaning: the event is emitted with the
-   right fields, the correlation id survives a hop, the metric increments on the
-   outcome. Evidence with the `record-evidence` skill, including a sample record.
+1. **Use the repo's instrumentation.** Find the structured logger, metrics client,
+   tracing SDK (OpenTelemetry if present) and the correlation convention. Call
+   `search_lore` for standard field names (`request_id`, `ticket`, `duration_ms`). A
+   second logger or tracer is a defect.
+2. **Log events, not sentences.** One record per meaningful event: stable event name
+   plus typed fields, e.g. `{"event":"claim.released","ticket":42,"reason":"ttl_expired"}`,
+   not `"released ticket " + n`. Units in field names (`duration_ms`, `size_bytes`).
+   The logger's serialiser escapes values, which also stops log injection (CR/LF in
+   user input forging lines); never build log lines by concatenation.
+3. **Choose levels deliberately.** `error`: a failure someone must act on. `warn`:
+   degraded but handled. `info`: state transitions an operator follows. `debug`: the
+   rest. A swallowed exception is logged with its error class and cause, never at
+   `debug` only.
+4. **Propagate trace context across every hop.** Accept and emit W3C `traceparent`
+   (`00-<32 hex trace-id>-<16 hex span-id>-<flags>`) and `tracestate` on HTTP; put the
+   same fields in queue message headers and job payloads, and pass them to spawned
+   processes (env or argument). Stamp `trace_id` and `span_id` on every log record in
+   that unit of work (OTel log correlation). If the repo also has a `request_id`, carry
+   both. Do not put secrets or personal data in `baggage`; it travels to third parties.
+5. **Add spans at slow or flaky boundaries** — inbound requests, outbound HTTP, DB
+   queries, queue publish/consume, subprocesses — using the SDK's auto-instrumentation
+   where it exists. Follow semantic conventions: HTTP span name `{method} {route}`
+   (`GET /tickets/{id}`, never the raw URL with ids), attributes `http.request.method`,
+   `http.route`, `http.response.status_code`, `server.address`, `error.type`. Status:
+   server spans mark `5xx` as Error and leave `4xx` unset; client spans mark both `4xx`
+   and `5xx` as Error. Record the exception on the span; never attach payloads.
+6. **Measure what an alert would use.** The golden signals for the operation: a
+   duration histogram (OTel: `http.server.request.duration`, seconds), a counter of
+   outcomes by result, and saturation gauges (queue depth, pool in-use). Metric labels
+   are low-cardinality (route template, status class, kind); user ids, ticket numbers,
+   URLs and error messages go on spans or logs, never labels. Alert design: the
+   `observability-designer` skill.
+7. **Log the security-relevant events** (OWASP): authentication success and failure,
+   authorisation denials, input-validation failures at trust boundaries, admin and
+   permission changes, with who, what, when, from where and outcome.
+8. **Redact by construction.** Never log passwords, tokens, session ids, API keys,
+   `Authorization`/`Cookie` headers, full request or response bodies, or personal data
+   beyond need. Allow-list emitted fields or use the repo's redaction helper; hash an
+   identifier if correlation is needed (the `data-privacy` skill).
 
-## Rules
+## Tests (in-memory exporters and a captured logger)
 
-- One logger, one metrics client, one tracer: the repo's.
-- Structured records with stable event names and typed fields; no string concatenation.
-- Correlation id on every record and every hop.
-- Low-cardinality labels; no ids in metric labels.
-- No secrets, bodies, or personal data in logs or spans, ever.
-- Levels mean something; a handled failure is never silent and never `error`.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- The event is emitted once with the expected name, level and fields.
+- **Propagation:** an inbound `traceparent` produces child spans with the same trace id,
+  the outbound call and the enqueued job carry it, and the worker's logs show that trace id.
+- **Concurrency:** two interleaved requests (parallel, not sequential) each log only
+  their own `trace_id`/`request_id` — context does not leak between async tasks
+  (AsyncLocalStorage, `contextvars`, `context.Context`).
+- A failure path sets span status Error, records the exception, and increments the
+  failure counter.
+- **Redaction:** a request carrying a token, password and email produces no log or span
+  containing those values (assert on the captured output).
+
+## Done when
+
+The tests above pass for the instrumented path, a sample record and span are captured
+in the evidence, and each acceptance criterion has evidence via the `record-evidence`
+skill.
+
+## Review checklist
+
+- [ ] The repo's logger/metrics/tracer only; structured records with stable names.
+- [ ] Trace context propagated over HTTP, queues and subprocesses; ids on every record.
+- [ ] Span names low-cardinality; status rules per semantic conventions.
+- [ ] Metric labels low-cardinality; units stated.
+- [ ] No secrets, tokens, bodies or unnecessary personal data; redaction tested.
+- [ ] Handled failures visible at the right level, never silent.
 
 ## Capture lore
 

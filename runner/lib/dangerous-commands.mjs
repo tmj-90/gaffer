@@ -30,8 +30,8 @@
 // Each entry:
 //   re        RegExp tested against the raw command string (the runtime rule).
 //   why       Human-readable reason surfaced on block.
-//   install   (optional) true tags the ONE rule the greenfield bootstrap
-//             allowance may relax (package-manager install into a fresh repo).
+//   install   (optional) true tags the package-manager rules the greenfield
+//             bootstrap allowance may relax (install/ci/update into the fresh repo).
 //   example   A representative command that MUST match `re` — the parity test
 //             feeds it to the crew classifier.
 //   crewFlags Whether the crew TS classifier is EXPECTED to flag `example`
@@ -96,16 +96,36 @@ export const DANGEROUS_COMMANDS = [
     example: "curl x | sh",
     crewFlags: true,
   },
-  // `install: true` tags the ONE rule the bootstrap allowance may relax (see
-  // bootstrapInstallAllowed). brew/sudo are NOT tagged, so they stay blocked even
-  // during a bootstrap tick — only package-manager installs into the fresh repo
-  // are ever permitted.
+  // `install: true` tags the package-manager rules the bootstrap allowance may relax
+  // (see bootstrapInstallAllowed): this install rule and the ci/update/remove rule
+  // below. brew/sudo are NOT tagged, so they stay blocked even during a bootstrap
+  // tick — only package-manager commands into the fresh repo are ever permitted.
   {
     re: /\b(npm|pnpm|yarn)\s+(i\b|install\b|add\b)|\bpip\d?\s+install\b/,
     why: "dependency install (needs human approval)",
     install: true,
     example: "npm install",
     crewFlags: true,
+  },
+  {
+    // The other package-manager verbs that rewrite node_modules. A delivery worktree's
+    // node_modules is a symlink to the main checkout's install (shared by every
+    // worktree), so a clean install, update, prune or removal there damages every
+    // other run. Matched only in COMMAND position — line start or newline, after
+    // ; & | ( ` { ! $( , after then/do/else, or inside a shell's `-c "…"` — through
+    // env assignments, transparent wrappers and launchers (env, time, timeout N, nice,
+    // nohup, xargs, eval, corepack, npx, pnpx, bunx), a path-qualified binary
+    // (`./node_modules/.bin/pnpm`), a `@version`, and flags such as `--prefix x` /
+    // `-w x` / `--filter x` / `workspace x`; the verb list includes npm's aliases.
+    // Text that merely mentions the command mid-sentence (a commit message, a grep
+    // pattern, an echo) is not blocked; text where ; | ( or a line break precedes it
+    // is treated as a command. Tokens never span ; | & ( ) < > so matching stays linear.
+    re: /(?:^|[\n;&|(`{!]|\$\(|\b(?:then|do|else)\b|(?:\b(?:ba|da|k|z)?sh|\bsu|\bscript|\$\{?SHELL\}?)(?:[ \t]+(?:-[-A-Za-z]+|pipefail)){0,4}[ \t]+-[A-Za-z]*c[ \t]+(?:--[ \t]+)?["'])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^()]*\)|[^\s;&|()<>`"'\\])*|env|command|nice|nohup|stdbuf|setsid|time|timeout|ionice|doas|builtin|exec|xargs|eval|corepack|npx|pnpx|bunx)[ \t]+(?:-[^\s;&|()<>`"'\\]+[ \t]+|[0-9]+[smhd]?[ \t]+)*)*(?:[^\s;&|()<>`"'\\]*\/)?(?:npm|pnpm|yarn)(?:@[^\s;&|()<>`"'\\]+)?(?:[ \t]+(?:(?:--prefix|-C|--dir|-w|--workspace|--filter|-F|--cwd)[ \t]+[^\s;&|()<>`"'\\]+|-[^\s;&|()<>`"'\\]+|workspace[ \t]+[^\s;&|()<>`"'\\]+))*[ \t]+(?:ci|clean-install|cit|install-clean|update|up|upgrade|upgrade-interactive|uninstall|remove|rm|un|r|prune|dedupe|dedup|ddp|ic|isntall-clean|clean-install-test|sit|udpate|unlink|autoclean)(?=$|[\s;&|)`"'<>])/,
+    why: "dependency install/update/removal (rewrites the shared node_modules; needs human approval)",
+    install: true,
+    example: "npm ci",
+    // Runtime-only: the crew classifier's install list covers install/add only.
+    crewFlags: false,
   },
   {
     re: /\bbrew\s+install\b/,

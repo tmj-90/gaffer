@@ -8,48 +8,69 @@ area: testing
 # Write an end-to-end browser test
 
 An end-to-end test proves a user journey works through the real UI against a real (or
-faithfully stubbed) backend. It is the most expensive test in the suite, so it earns its
-place by covering a whole journey and by being deterministic: no sleeps, no order
-dependence, no reliance on data another test created.
+faithfully stubbed) backend. It is the slowest and most flake-prone test in the suite —
+Google's data shows flakiness grows with test size and with WebDriver-style tooling — so
+it earns its place by covering a journey no cheaper test can, and by being deterministic:
+no sleeps, no order dependence, no data another test created.
 
-## Steps
+## Procedure
 
-1. **Find the harness.** Locate the repo's browser test setup (Playwright config, Cypress
-   folder, a `scripts/ui-regression` harness, a `test:e2e` script). Use it exactly; do not
-   introduce a second framework. If there is none and the ticket does not ask you to add
-   one, raise `request_decision` with the smallest viable setup.
-2. **Define the journey as the user sees it.** Write the steps in plain words first: start
-   state → actions → what the user must observe. Map each acceptance criterion to one
-   observable outcome on screen or in a response.
-3. **Own your data.** Create the fixtures the test needs inside the test (an API call, a
-   seed script, a factory), and tear them down. Never depend on another test's leftovers
-   or a shared account.
-4. **Select by role and accessible name.** Prefer `getByRole`, `getByLabel`,
-   `getByText` over CSS selectors and test ids; a selector that only a developer would
-   write is a selector that breaks on the next refactor. Add a `data-testid` only when
-   no accessible handle exists, and say why.
-5. **Wait for state, never for time.** Use the framework's auto-waiting assertions
-   (`expect(locator).toBeVisible()`, `toHaveText`, `waitForResponse`). Any `sleep` or
-   fixed timeout in the test is a flake waiting to happen and a reviewer will send it
-   back.
-6. **Assert the outcome, not the implementation.** Check what the user sees and what
-   the system persisted (a row, an email in the stub outbox, a redirect), not internal
-   function calls or DOM structure.
-7. **Capture evidence on failure.** Enable the harness's trace / screenshot / video on
-   failure so a CI failure is diagnosable from the artifact.
-8. **Run it three times.** Locally, headless, and in the CI command. A test that passes
-   once is not done; three consecutive green runs is the bar. Evidence the command and
-   result with the `record-evidence` skill (evidence type `test_output`).
+1. **Find the harness.** Locate the repo's browser setup (`playwright.config.*`,
+   `cypress/`, a `test:e2e` script). Use it exactly — its browsers, base URL, `webServer`
+   block and CI command. Do not add a second framework. If none exists and the ticket does
+   not ask for one, raise `request_decision` with the smallest viable setup. (Independent
+   tester: never raise `request_decision`; follow `black-box-test` — scaffold a disposable
+   rig in a test directory only with what the repo already has installed, run the spec
+   once, and record `manual_note` rows.)
+2. **Push coverage down first.** For each acceptance criterion ask whether a component or
+   integration test proves it (the `frontend-testing` and `add-integration-test` skills).
+   Only journeys that need the real browser, routing, cookies or the full stack belong
+   here.
+3. **Write the journey in plain words:** start state → user actions → what the user must
+   observe. Map each AC to one observable outcome on screen or one persisted result. Name
+   the test after the journey and cite the AC.
+4. **Own your data.** Create what the test needs through an API call, seed script or
+   factory inside the test (or a fixture), with unique values, and clean up. Never depend
+   on another test's leftovers or a shared account; each test gets a fresh browser context.
+   Save authenticated state once (`storageState`) rather than logging in through the UI in
+   every test.
+5. **Locate like a user.** `getByRole` with the accessible name, then `getByLabel`,
+   `getByText`; chain and `filter({ hasText })` to scope. `getByTestId` only when no
+   accessible handle exists, with a comment why. No XPath or styling-class CSS selectors.
+6. **Use web-first assertions; never wait for time.** `await expect(locator).toBeVisible()`,
+   `toHaveText`, `toHaveURL`, `page.waitForResponse`. Never `waitForTimeout`/`cy.wait(ms)`,
+   and never `expect(await locator.isVisible()).toBe(true)` — it does not retry. Every
+   Playwright call is awaited (`@typescript-eslint/no-floating-promises` catches misses).
+7. **Assert the outcome, not the DOM.** What the user sees, and what the system persisted:
+   reload the page or query the API to prove a save survived, check the stub outbox for the
+   email. A toast saying "Saved" is not proof the data was saved.
+8. **Stub only what you do not control.** Third-party services go through
+   `page.route(...)`/`cy.intercept` with recorded responses; your own backend stays real.
+9. **When an AC concerns concurrent users or failure,** drive it for real: two browser
+   contexts editing the same record (assert the documented conflict behaviour, no silent
+   overwrite); the backend returning an error or going offline via `page.route` →
+   `abort()`; the user sees the documented error and can retry.
+10. **Keep failures diagnosable.** Traces on first retry (`trace: 'on-first-retry'`),
+    screenshots on failure. Retries may be on in CI to _collect_ traces, but a test that
+    passes only on retry is flaky and not done.
+11. **Run it until stable:** the spec three times in a row headless, e.g.
+    `npx --no -- playwright test <spec> --repeat-each=3`, then the repo's CI command. Record the
+    command and result with the `record-evidence` skill (`test_output`) per AC.
+
+## Done when
+
+- Each AC that needs a browser has a journey test asserting its observable outcome.
+- The spec passes three consecutive headless runs without retries, and in the CI command.
+- No fixed sleeps, CSS-structure selectors, shared accounts or order dependence remain.
 
 ## Rules
 
 - One journey per test; keep the count small and the coverage wide.
-- No fixed sleeps, no order dependence, no shared mutable fixtures.
-- Selectors by role and label; test ids are the fallback, explained in a comment.
-- The backend under test is real or a faithful stub declared in the test; never mock
-  the browser side to make the assertion pass.
+- The backend under test is real or a faithful stub declared in the test; never mock the
+  browser side to make the assertion pass.
 - Match the repo's harness, browser pins and CI command exactly.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- Work on the delivery branch the runner prepared (the `create-branch` skill verifies),
+  never a protected branch.
 
 ## Capture lore
 

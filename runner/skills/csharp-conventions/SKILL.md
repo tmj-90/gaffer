@@ -1,70 +1,123 @@
 ---
 name: csharp-conventions
-description: Use when a ticket adds or changes C#/.NET code — ASP.NET Core services, libraries, workers — and it must follow the repo's C# conventions — nullable reference types on and honoured, async all the way with cancellation tokens, dependency injection through the container, records for values, analyzers clean — as the language pack for any C# change. Invoke for "add this in C#", "fix the async void", "the nullable warnings", or when reviewing a .NET diff.
+description: Use when a ticket adds or changes C#/.NET code — ASP.NET Core services, libraries, workers — and it must follow the repo's C# conventions — the .NET coding conventions, nullable reference types on and honoured, async all the way with cancellation tokens, dependency injection through the container with correct lifetimes, records for values, IDisposable and thread safety handled, Roslyn analyzers and dotnet format clean — as the language pack for any C# change. Invoke for "add this in C#", "fix the async void", "the nullable warnings", or when reviewing a .NET diff.
 stack: [csharp, dotnet, aspnet]
 area: language
 ---
 
 # Write idiomatic modern C#
 
-Modern C# gives you nullability in the type system, records for values, pattern
-matching, and a first-class async model. Code that turns warnings off, blocks on tasks,
-or news up its dependencies gives that back. Match the solution's conventions and keep
-the analyzers clean at the level the build enforces.
+Modern C# puts nullability in the type system, values in records, and asynchrony in a
+first-class model with cancellation. Code that suppresses warnings, blocks on tasks, or
+news up its dependencies gives that back. For the builder and the reviewer of a .NET diff; the solution's config and existing code win over it.
 
-## Steps
+## Procedure
 
-1. **Read the solution's conventions.** Target framework and language version,
-   `Nullable` and `TreatWarningsAsErrors` settings, the analyzer set (`.editorconfig`,
-   StyleCop, Roslyn analyzers), the DI and configuration patterns, the test framework
-   (xUnit/NUnit) and mocking library. Call `search_lore`; copy a sibling's shape.
-2. **Model with types.** `record` (or `record struct`) for immutable values, `enum` for
-   fixed sets, strongly-typed ids over raw `Guid`/`int` where the repo does so,
-   `required` members and `init` setters instead of mutable DTOs; pattern matching and
-   switch expressions over type checks and casts.
-3. **Honour nullable reference types.** `Nullable` enabled and warnings fixed, not
-   suppressed; `?` where absence is real; `ArgumentNullException.ThrowIfNull` at public
-   boundaries; no `!` null-forgiving operator outside a proven case with a comment.
-4. **Async all the way.** `async Task`/`Task<T>` (never `async void` outside event
-   handlers), `await` not `.Result`/`.Wait()`, a `CancellationToken` parameter threaded
-   through every async method and passed to every call, `ConfigureAwait(false)` in
-   library code per the repo's rule, `IAsyncEnumerable` for streams, `ValueTask` only
-   with a measured reason.
-5. **Depend through the container.** Constructor injection of interfaces registered in
-   the composition root with the right lifetime (singleton/scoped/transient — no scoped
-   service captured by a singleton); `IOptions<T>` for configuration bound from a typed
-   section; no static service locators or `new` for collaborators.
-6. **Handle errors the .NET way.** Exceptions for exceptional paths with specific types;
-   a `Result`-style type where the repo uses one for expected failures; never catch
-   `Exception` to swallow; `ProblemDetails` for API errors; structured logging with
-   message templates (`_logger.LogInformation("Claimed {TicketId}", id)`), never
-   string interpolation into the log call.
-7. **ASP.NET specifics**: minimal APIs or controllers per the repo, model validation at
-   the boundary, `[Authorize]` policies not ad-hoc checks, `IHttpClientFactory` for
-   outbound calls, `IHostedService`/`BackgroundService` for workers with graceful
-   shutdown.
-8. **Test with the repo's framework**: arrange/act/assert, `WebApplicationFactory` for
-   API tests, fakes over mocks where practical; `dotnet build -warnaserror` (as
-   configured), `dotnet format --verify-no-changes`, `dotnet test`. Evidence with the
-   `record-evidence` skill.
+1. **Discover the solution's conventions first.** Call `search_lore` for .NET conventions.
+   Read `global.json` (SDK pin), `Directory.Build.props` and `Directory.Packages.props`
+   (central package versions; a new or bumped package is a blocker, see the
+   `dependency-upgrade` skill), the `.csproj`
+   (`TargetFramework`, `LangVersion`, `Nullable`, `TreatWarningsAsErrors`,
+   `AnalysisLevel`/`AnalysisMode`, `ImplicitUsings`), `.editorconfig` (naming and
+   diagnostic severities), `.config/dotnet-tools.json`, and the CI workflow. Identify the
+   test framework (xUnit v2/v3, NUnit, MSTest), assertion and mocking libraries, the
+   error policy (exceptions vs a `Result` type) and minimal APIs vs controllers. Copy a
+   sibling class and its test.
+2. **Pin the exact commands** from CI (the `run-tests` and `run-lint` skills). Use the
+   defaults below only when the repo defines none.
+3. **Write the change with the idioms below**, then walk the concurrency section for every
+   task, disposable, shared field, `DbContext` and outbound call you touched.
+4. **Test each acceptance criterion's own behaviour.** One test (or `[Theory]` row) per AC
+   that fails without your change, plus its error path; `WebApplicationFactory` for API
+   behaviour. If the AC involves shared state or persistence, add a test that runs N
+   concurrent calls (`Task.WhenAll` over `Enumerable.Range`) and asserts the invariant.
+   Use `TimeProvider`/`FakeTimeProvider` instead of real delays.
+5. **Verify, then stop.** Done when: the build has no new warnings at the configured
+   level, `dotnet format --verify-no-changes --no-restore` is clean, tests are green, and every AC has
+   a test. Record the output with the `record-evidence` skill; the runner submits the work.
 
-## Review checklist (a C# reviewer must check)
+## Commands
 
-- Nullable honoured: no suppressed warnings, no unexplained `!`.
-- No `async void`, no `.Result`/`.Wait()`; cancellation tokens threaded everywhere.
-- DI lifetimes correct; no captured scoped services; no service locators.
-- Records for values; `required`/`init` over mutable DTOs.
-- Logging uses message templates; exceptions specific and not swallowed.
-- Analyzers and `dotnet format` clean at the build's level.
+- Build: `dotnet build --no-restore` against the already-restored packages (add
+  `-warnaserror` if CI does); a failed restore is an environment problem to report, not
+  a package install to attempt.
+- Format and style analyzers: `dotnet format --verify-no-changes --no-restore`.
+- Test: `dotnet test --no-build`; one test: `dotnet test --no-build --filter
+  "FullyQualifiedName~ClassName.Method"` (VSTest), or the xUnit v3 / Microsoft.Testing.Platform
+  options (`dotnet test --no-build … --filter-method`) when the repo runs on MTP; without
+  `--no-build`, `dotnet test` restores and can download packages.
+- Dependencies: `dotnet list package --vulnerable --include-transitive` to inspect; never
+  `dotnet add package` or `dotnet tool restore`.
 
-## Rules
+## Idioms that matter
 
-- Nullable on and honoured; types model absence.
-- Async end to end with cancellation; never block on tasks.
-- Constructor injection with correct lifetimes; typed options.
-- Records and pattern matching over mutable classes and casts.
-- Analyzers, format and tests as CI runs them.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- **Nullable reference types**: `<Nullable>enable</Nullable>` honoured; `?` only where
+  absence is real; `ArgumentNullException.ThrowIfNull` at public boundaries; no `!`
+  (null-forgiving) or `default!` without a proven reason; `[NotNullWhen]` on try-pattern
+  methods.
+- **Types**: `record`/`record struct` for values, `required` and `init` members instead of
+  mutable DTOs, pattern matching and switch expressions over casts, enums for fixed sets.
+- **Async naming and shape**: methods returning `Task` end in `Async`; `async Task`, never
+  `async void` outside event handlers; a `CancellationToken` parameter threaded through
+  and passed to every call; `ValueTask` only with a measured reason.
+- **DI**: constructor (or primary-constructor) injection of registered services;
+  `IOptions<T>` bound from a typed section; no service locator or `new` for collaborators.
+- **Errors**: specific exception types; never catch `Exception` to swallow; don't treat
+  `OperationCanceledException` as a failure; `ProblemDetails` for API errors.
+- **Logging**: message templates (`logger.LogInformation("Claimed {TicketId}", id)`), not
+  interpolated strings; no secrets or PII.
+- **Naming** (.NET conventions): PascalCase types and members, camelCase locals and
+  parameters, `_camelCase` private fields, `I` prefix for interfaces — or the repo's
+  `.editorconfig` rules.
+
+## Concurrency and resource safety
+
+- **Never block on async**: `.Result`, `.Wait()` and `GetAwaiter().GetResult()` cause
+  thread-pool starvation and deadlocks. Await it.
+- **Fire-and-forget loses exceptions**: `_ = DoAsync();` in a request dies with the
+  request scope. Hand background work to a `BackgroundService`/channel with its own scope.
+- **Dispose what you own**: `using`/`await using` for streams, `DbContext` you create,
+  `SemaphoreSlim`, `CancellationTokenSource`. Use `IHttpClientFactory`/typed clients; a
+  new `HttpClient` per call exhausts sockets. Outbound calls have timeouts.
+- **Lifetimes**: a scoped service (e.g. `DbContext`) captured by a singleton is a captive
+  dependency shared across requests; `DbContext` is not thread-safe — no parallel
+  operations on one instance.
+- **Locks and async**: `lock` cannot contain `await`; use `SemaphoreSlim(1, 1)` with
+  `try`/`finally { Release(); }`. Hold one lock across the whole read-modify-write.
+  `ConcurrentDictionary.GetOrAdd` may run the factory twice; wrap costly values in `Lazy<T>`.
+  Mutable `static` state and singleton fields are shared by all requests.
+- **Lost updates in the database**: read-modify-write of a row needs a concurrency token
+  (`[Timestamp]`/`rowversion`, `IsConcurrencyToken`) and handling of
+  `DbUpdateConcurrencyException`, or an atomic `ExecuteUpdateAsync`.
+- **Files other requests read**: write to `Path.Combine(dir, Path.GetRandomFileName())`
+  (unique, same volume), flush, then `File.Move(tmp, target, overwrite: true)` or
+  `File.Replace`. Cross-process exclusion uses `FileShare.None`, a named mutex or the
+  database; a time-only lease lets a paused holder write late, so writes must check a
+  version.
+- **Time**: `DateTimeOffset.UtcNow` or an injected `TimeProvider`, not `DateTime.Now`.
+
+## Review checklist — flag as defects
+
+Walk this against the diff. An item is grounds for CHANGES only when, in changed code, it
+causes a concrete failure (wrong result, crash, lost or corrupted data, security hole) or
+leaves an AC's own behaviour untested: cite the line and that failure. Otherwise it is an
+`(optional)` note. Formatting the tools would fix, and preferences the repo
+does not enforce, are not findings. Do not patch the code under review.
+
+- [ ] A new nullable warning, `#pragma warning disable`, `!` or `default!` without a reason;
+      `Nullable` or analyzer levels lowered.
+- [ ] `async void`; `.Result`/`.Wait()`; a discarded task; a `CancellationToken` accepted but
+      not passed on.
+- [ ] A disposable not disposed; `new HttpClient()` per call; an outbound call without a timeout.
+- [ ] A scoped service captured by a singleton; a `DbContext` used concurrently; mutable
+      static or singleton state without synchronisation.
+- [ ] `await` needed inside a critical section but a `lock` used, or a read-modify-write
+      (memory or row) without a lock, atomic update or concurrency token.
+- [ ] A shared file written in place or via a fixed temp name; a time-only lock lease.
+- [ ] `catch (Exception)` that swallows; cancellation logged as an error.
+- [ ] Interpolated strings in log calls; secrets or PII logged.
+- [ ] A package version added outside central package management when the repo uses it.
+- [ ] An AC has no test, or the test replaces the behaviour under test with a mock.
 
 ## Capture lore
 

@@ -21,6 +21,7 @@ describe("parseFragments", () => {
       "CLAUDE.factory.md",
       ".mcp.json",
       "mcp-runtime.",
+      ".terraform/",
     ]);
   });
 });

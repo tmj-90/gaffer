@@ -499,11 +499,20 @@ console.log(
   const DATA = resolve(WORKDIR, "live-data");
   const MARKER = resolve(WORKDIR, "resolver-spawned.marker");
   const FAKE = resolve(WORKDIR, "fake-claude.sh");
+  // The fake resolver really merges the default branch in (keeping the branch's side),
+  // so the runner's "was it actually resolved?" check passes.
   writeFileSync(
     FAKE,
-    `#!/usr/bin/env bash\n: > ${JSON.stringify(MARKER)}\nprintf '%s\\n' '{"result":"resolved both intents"}'\n`,
+    `#!/usr/bin/env bash\n: > ${JSON.stringify(MARKER)}\ngit merge -q -X ours --no-edit main >/dev/null 2>&1\nprintf '%s\\n' '{"result":"resolved both intents"}'\n`,
   );
   require("node:fs").chmodSync(FAKE, 0o755);
+  // A resolver that gives up (merges nothing) and still exits 0.
+  const NOOP = resolve(WORKDIR, "fake-claude-noop.sh");
+  writeFileSync(
+    NOOP,
+    `#!/usr/bin/env bash\nprintf '%s\\n' '{"result":"could not resolve safely; aborted"}'\n`,
+  );
+  require("node:fs").chmodSync(NOOP, 0o755);
   // A stub dispatch CLI for the re-approval signal (a JS file, spawned via node).
   const STUB_WG = resolve(WORKDIR, "stub-wg.js");
   writeFileSync(STUB_WG, `process.stdout.write('{"ok":true}\\n');\n`);
@@ -552,6 +561,33 @@ console.log(
       git(repo, "status", "--porcelain").stdout.trim() === "",
   );
 
+  // A resolver that gives up (merges nothing) and exits 0 must not signal re-approval.
+  const SPY_MARK = resolve(WORKDIR, "reapproval-signalled.marker");
+  const SPY_WG = resolve(WORKDIR, "spy-wg.js");
+  writeFileSync(
+    SPY_WG,
+    `require("node:fs").writeFileSync(${JSON.stringify(SPY_MARK)}, "x");\nprocess.stdout.write('{"ok":true}\\n');\n`,
+  );
+  const gaveUp = runLive({
+    GAFFER_STRICT_REQUIRE: "0",
+    STRICT_MODE: "0",
+    SANDBOX_PROVIDER: "none",
+    CLAUDE_BIN: NOOP,
+    DISPATCH_CLI: SPY_WG,
+  });
+  assert("no-op resolver (exit 0): the runner exits 1", gaveUp.code === 1);
+  assert(
+    "no-op resolver: phase conflict_unresolved, naming the unmerged default branch",
+    gaveUp.out &&
+      gaveUp.out.phase === "conflict_unresolved" &&
+      /not merged/.test(String(gaveUp.out.reason || "")),
+  );
+  assert("no-op resolver: re-approval was NOT signalled", !existsSync(SPY_MARK));
+  assert(
+    "no-op resolver: default branch untouched",
+    git(repo, "rev-parse", "main").stdout.trim() === mainBefore,
+  );
+
   const spawned = runLive({
     GAFFER_STRICT_REQUIRE: "0",
     STRICT_MODE: "0",
@@ -563,6 +599,10 @@ console.log(
     spawned.code === 0 &&
       spawned.out &&
       spawned.out.phase === "conflict_resolved_pending_reapproval",
+  );
+  assert(
+    "a real resolution: the default branch is merged into the branch head",
+    git(repo, "merge-base", "--is-ancestor", "main", "gaffer/ticket-7-x").status === 0,
   );
 }
 

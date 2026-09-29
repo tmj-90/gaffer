@@ -7,35 +7,79 @@ area: frontend
 
 # Add or change a UI component
 
-Build a component that follows the repo's existing composition, styling, and state
-conventions, with the behaviour proven by tests and the markup kept accessible.
+Build a component that looks like it was always part of the repo: same framework idioms,
+same styling system, same file shape — with a small, honest API, every state the ticket
+implies, and tests that exercise each acceptance criterion's own behaviour.
 
 ## Steps
 
-1. **Read the lore first.** Call `search_lore` (Memory MCP) for the repo's
-   component conventions: framework idioms, styling system (CSS modules, tokens,
-   utility classes), state management, and file organisation. Honour any ADRs.
-2. **Find a sibling component** and copy its shape — props/typing, file layout,
-   styling approach, and how it is exported and consumed.
-3. **Keep it presentational where possible.** Push data loading and side effects to
-   a container/hook; let the component render from props so it stays pure and testable.
-4. **Use semantic HTML and design tokens.** Prefer real elements (`button`, `nav`,
-   `header`) over generic `div` stacks, and reference the repo's spacing/colour/type
-   tokens instead of hardcoded values.
-5. **Design the states.** Cover hover/focus/active, loading, empty, and error states
-   the ticket implies — not just the happy path.
-6. **Test the behaviour** with the repo's component test tooling (e.g. Testing
-   Library): render, assert on roles/labels and interaction, not on brittle markup.
-7. **Verify + evidence.** Run the repo's tests and lint, then use the
-   `record-evidence` skill to record `test_output` against the AC and submit for review.
+1. **Read the conventions.** Call `search_lore` for the component rules (styling system,
+   tokens, state library, folder layout, Storybook or not). Open two sibling components and
+   the design-system primitives (`Button`, `Input`, `Stack`…). Reuse a primitive before
+   writing a new one; a second button implementation is a defect.
+2. **Write the API before the markup.** List props with types. Rules that keep APIs small:
+   - Name props for meaning (`variant="danger"`), not appearance (`red`); one `variant`
+     enum instead of several booleans that can conflict (`primary` + `secondary`).
+   - Content goes through `children` or named slots, not string props that later need
+     markup.
+   - Form-like components support controlled use (`value` + `onChange`) and match the
+     repo's uncontrolled convention if it has one.
+   - Forward the ref and spread remaining native attributes onto the root element so
+     callers can add `id`, `aria-*`, `data-testid`, `className` (React 19: `ref` is a
+     normal prop; earlier versions use `forwardRef`).
+   - Callbacks are named for the event (`onSelect`, `onDismiss`) and receive data, not the
+     DOM event, unless the sibling components do otherwise.
+3. **Keep it presentational.** Data loading, mutations and routing live in a container,
+   hook or route loader (the `frontend-data-fetching` skill); the component renders from
+   props. Global stores are read at the container level (the
+   `frontend-state-management` skill).
+4. **Semantic markup and tokens.** Real elements (`button`, `a`, `ul`, `label`), the right
+   heading level passed in or derived, and only design tokens for colour, space, type,
+   radius, shadow, motion (the `design-system` skill). No raw hex or pixel font sizes.
+5. **Enumerate and build the states.** From the ACs and the sibling components list which
+   apply: default, hover, focus-visible, active, disabled, loading, empty, error, overflow
+   (very long text, 0 and 1000 items), and right-to-left if the repo supports RTL. Each
+   listed state renders deliberately; state precedence is disabled > loading > error >
+   default.
+6. **Accessibility in the same change.** Keyboard operation, accessible name, focus
+   handling and APG pattern for any composite widget (the `frontend-a11y` skill).
+7. **Test per AC.** With the repo's runner and Testing Library (the `frontend-testing`
+   skill): for each AC, a test that renders the component in the AC's situation and
+   asserts the user-visible outcome — found by role and name, driven by `userEvent`.
+   Include the non-happy states the ACs name. If the repo uses Storybook, add a story per
+   state; if it runs visual regression, update baselines only for intended changes.
+8. **Verify and evidence.** Run the repo's type-check, lint and tests (the `run-tests` and
+   `run-lint` skills). Record per-AC `test_output` with the `record-evidence` skill, then
+   stop.
 
-## Rules
+## Review checklist
 
-- Match the existing framework and styling system — never add a competing one.
-- No hardcoded palette/spacing/type; use the project's tokens.
-- Animate compositor-friendly properties (`transform`, `opacity`) — avoid layout-bound ones.
-- Keep components focused; extract sub-components rather than growing one file past ~200 lines.
-- Pair with the `frontend-a11y` and `frontend-responsive` skills for non-trivial UI.
+Walk it before recording evidence. A reviewer blocks on an item only when it breaks an AC,
+leaves an AC untested, or is a correctness or WCAG A/AA defect; the rest is guidance.
+
+- Reuses existing primitives; no second styling system, icon set or UI library.
+- Props are typed, minimal, meaning-named; no conflicting boolean variants.
+- Ref forwarded and native attributes passed through on the root element.
+- No data fetching or global-store writes inside a presentational component.
+- Tokens only; no hardcoded colours, spacing or font sizes.
+- Every state the ACs imply is rendered and tested; tests query by role, not class or
+  test id when a role exists.
+- Animation uses `transform`/`opacity` and respects `prefers-reduced-motion`.
+- File stays focused (roughly one screenful); sub-parts extracted when it grows.
+
+## Done when
+
+Each AC has a passing test that exercises that AC's behaviour through the rendered
+component; lint, types and the existing suite are green; the component is exported the
+way siblings are and used at the call site the ticket names.
+
+## Anti-patterns
+
+- `isPrimary`, `isSecondary`, `isLarge`, `isCompact` accumulating on one component.
+- Copying a sibling and diverging silently instead of extending the shared primitive.
+- `useEffect` fetching inside a leaf component; props mirrored into state.
+- Tests that assert on class names or snapshot the whole tree as the only proof.
+- `div` with `onClick` for a button; `outline: none` without a focus replacement.
 
 ## Capture lore
 

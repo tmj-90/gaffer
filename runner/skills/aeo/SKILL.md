@@ -1,74 +1,111 @@
 ---
 name: aeo
-description: Use when optimising content to be cited by AI language models (ChatGPT, Perplexity, Claude, Gemini) as an authoritative source — distinct from SEO. Triggers on "AEO audit", "optimize for ChatGPT", "get cited by Perplexity", "LLM citation strategy", "answer engine optimization", "content for AI search", or "E-E-A-T audit". For click-through SEO, use `seo-audit`. For structured data, use `schema-markup`.
+description: Use when optimising content to be cited by AI answer engines and LLM search (ChatGPT search, Perplexity, Claude, Gemini, AI Overviews) as an authoritative source — distinct from click-through SEO. Triggers on "AEO audit", "generative engine optimisation", "optimize for ChatGPT", "get cited by Perplexity", "LLM citation strategy", "answer engine optimization", "content for AI search", or "E-E-A-T audit". For click-through SEO, use `seo-audit`. For structured data, use `schema-markup`.
 stack: []
 area: marketing
 ---
 
-# Optimise content for LLM citation
+# Optimise content to be cited by answer engines
 
-AEO (Answer Engine Optimisation) optimises content to be **cited** in LLM-generated responses — distinct from SEO, which optimises for click-through rankings. The signal sets differ.
+Answer engines (ChatGPT search, Perplexity, Claude with web search, Google AI Overviews and
+AI Mode) mostly answer by **retrieving live pages from a search index** and citing them.
+They are not recalling training data. A page gets cited when three things hold:
 
-## AEO vs SEO
+1. The engine's crawler can fetch it.
+2. It ranks in the engine's retrieval for the question.
+3. It contains a clear, quotable answer the model can attribute.
 
-| | SEO | AEO |
-|--|-----|-----|
-| Optimises for | Click-through ranking | Citation as authoritative source |
-| Success metric | Position 1-10, organic traffic | Citation count across LLMs |
-| Key signals | Backlinks, keywords, page speed | E-E-A-T, structured facts, primary-source signals |
-| Update cadence | Weeks–months | Days–weeks (LLM training cycles) |
+AEO is therefore mostly **SEO fundamentals plus extractable answers**. Treat claims of a
+secret ranking signal as unproven.
 
-Both coexist — a page can rank #1 on Google AND be cited by Perplexity.
+What primary sources say:
 
-## E-E-A-T signals for LLM citation
+- **Google (Search Central, "AI features and your website"):** AI Overviews and AI Mode
+  have *no additional technical requirements*. A page must be indexed and eligible for a
+  snippet. The usual advice applies: helpful, reliable, people-first content, and
+  structured data that matches visible text.
+- **GEO study (Aggarwal et al., KDD 2024):** adding **cited sources, quotations and
+  statistics** raised visibility in generative answers by up to ~40% on their benchmark,
+  with effects varying by domain. Keyword stuffing did not help.
 
-LLMs prefer content that looks like a primary source to their training data:
+## Crawler access (check first — blocked means uncitable)
 
-| Signal | Implementation |
-|--------|---------------|
-| **Experience** | First-person case studies; dated real examples ("In our 2026 audit of 50 repos…") |
-| **Expertise** | Author bio with credentials; technical depth; cite primary sources |
-| **Authoritativeness** | External backlinks from authority domains; schema.org markup; Wikipedia presence |
-| **Trustworthiness** | HTTPS; contact info; transparent corrections; verifiable claims with data |
+| Engine | Search/citation crawler (allow for citation) | Training-only crawler (independent choice) |
+|---|---|---|
+| OpenAI / ChatGPT search | `OAI-SearchBot` (plus `ChatGPT-User` for user-triggered fetches) | `GPTBot` |
+| Anthropic / Claude | `Claude-SearchBot` (plus `Claude-User`) | `ClaudeBot` |
+| Perplexity | `PerplexityBot` (plus `Perplexity-User`) | n/a |
+| Google AI Overviews / AI Mode | `Googlebot` (normal Search indexing) | `Google-Extended` (Gemini training; does not affect Search) |
+| Microsoft Copilot | `Bingbot` | n/a |
 
-**Factual density** — LLMs prefer pages with a high ratio of verifiable claims per 1,000 words. Prose that states facts > prose that describes opinions.
+Blocking a training crawler does not block citation, and the reverse also holds. Check
+robots.txt, the WAF/CDN bot rules and any `noindex` or `nosnippet`. A CDN "block AI bots"
+toggle often blocks the search crawlers too. No major engine has confirmed that it uses
+`llms.txt`, so treat that file as optional and never as a fix.
 
-## Content structure for citation
+## Page patterns that get cited
 
-LLMs extract from:
-1. **Direct-answer paragraphs** — a question as a heading followed immediately by a 1–2 sentence direct answer.
-2. **Structured data** — FAQPage and HowTo schema (see `schema-markup`).
-3. **Definition blocks** — "X is [concise definition]" sentences at the start of sections.
-4. **Comparison tables** — LLMs reproduce tables well; use for vs. comparisons and feature matrices.
+- **Question-shaped heading followed by a direct 1–2 sentence answer**, with detail after
+  it (inverted pyramid).
+- **Definition sentences**: "X is …" at the start of a section.
+- **Specific, sourced facts**: numbers, dates, named sources and links to the primary
+  source. Original data, benchmarks and first-hand testing are the strongest
+  differentiator.
+- **Tables and ordered steps** for comparisons and procedures.
+- **Visible authorship and dates**: an author with credentials, a published date and an
+  updated date, matching any `Article` markup.
+- **Server-rendered text.** Content that only appears after client-side JavaScript
+  runs, or behind a login or paywall, is often not retrieved.
 
-## Citation-hostile patterns to avoid
-
-- Gated content (LLMs can't read it during training crawls).
-- JavaScript-rendered text (crawlers often miss it).
-- Opinion without evidence ("we believe X is important").
-- Content updated without a `dateModified` schema field.
-- No author or institutional attribution.
+Structured data helps engines understand a page, but it earns no special AI placement.
+FAQ rich results are retired in Google Search, and HowTo rich results have been removed.
+Use the `schema-markup` skill only where the markup matches visible content.
 
 ## Steps
 
-1. **Identify citation-worthy content.** Pages that answer specific questions with unique data, first-party case studies, or authoritative comparisons are candidates. Brand-voice content without factual claims is not.
-2. **Audit E-E-A-T gaps.** For each target page: score Experience (0–3), Expertise (0–3), Authoritativeness (0–3), Trustworthiness (0–3). Identify the lowest-scoring dimension and fix it first.
-3. **Add direct-answer structure.** Rewrite the first paragraph of each target section as a direct answer to the implied question. Add schema (FAQPage/HowTo where appropriate).
-4. **Improve factual density.** Replace opinion sentences with evidence sentences. Add specific numbers, dates, and attributable sources.
-5. **Track citations.** Query each target LLM (ChatGPT, Perplexity, Claude) with the exact question the page answers. Note whether your domain is cited. Repeat monthly.
-6. **Verify.** Rich Results Test for schema; check `dateModified` is present and accurate; confirm author bio is visible and crawlable.
+**In the factory** you reach the repo and a local build only: no production site, Search
+Console, analytics, CDN settings or answer engines (WebFetch and WebSearch are denied).
+Do steps 4–6 in the repo, and check crawler access in the repo's own robots.txt, meta
+robots and locally built HTML. List steps 1, 3 and 7 and every production or CDN check as
+follow-ups for a human in your evidence; never claim a check you could not run.
 
-## Review checklist
+1. **Pick the target questions.** Choose 10–30 real questions the page should answer,
+   drawn from Search Console queries, support tickets and sales calls. Map each
+   question to one page.
+2. **Check crawler access** against the table above. For each engine, check
+   robots.txt, the CDN/WAF rules and the meta robots tags. Fetch the page with curl and
+   confirm the answer text is in the raw HTML:
+   `curl -sA "OAI-SearchBot" https://example.com/page | grep -c "<answer phrase>"`
+   A spoofed user agent only exercises UA-string rules. CDNs that verify bots by IP can
+   still block the real crawler, so also check the CDN's bot/firewall log or settings.
+3. **Check indexing and ranking basics.** The page must be indexed in Google and Bing,
+   carry a canonical and return 200. Use the `seo-audit` skill for anything deeper.
+4. **Restructure for extraction.** For each target question, add a question heading
+   with a direct answer, then the supporting detail, a table or steps, and sources.
+5. **Raise evidence density.** Replace unsupported adjectives with sourced numbers,
+   quotes and first-hand results. Never fabricate a statistic, quote or case study.
+6. **Add attribution.** Show the author bio, the organisation and dates on the page.
+   Where markup exists, keep it consistent with the visible content.
+7. **Measure.** Run each target question in each engine monthly (logged-out, same
+   wording) and record whether you are cited and at what URL. Watch the referral
+   traffic from `chatgpt.com`, `perplexity.ai` and similar in analytics.
 
-- **Direct-answer paragraph in each target section** — question heading + immediate direct answer.
-- **E-E-A-T score ≥ 2/3 in all four dimensions** — no dimension at 0.
-- **FAQPage or HowTo schema** on pages with question-and-answer structure.
-- **Author bio visible and crawlable** — not loaded via JavaScript after parse.
-- **`dateModified` in Article schema** and visible on page.
-- **No gated content for citation-target pages** — if it needs a login, it won't be cited.
+## Done when
 
-## Rules
+- The search crawlers for each target engine get 200 and the answer text appears in the
+  raw HTML (in the factory: the repo's robots rules allow them and the answer text is in
+  the locally built HTML; the live check is a listed follow-up).
+- Every target question has a direct-answer block on exactly one page.
+- Every factual claim on target pages has a source or first-party evidence.
+- Author and dates are visible, and any markup matches them.
+- A baseline citation log exists, so later runs can be compared against it, or (in the
+  factory) it is listed as a follow-up for a human.
 
-- AEO applies only to pages with verifiable factual content — brand/opinion content is out of scope.
-- Never fabricate statistics or case studies to improve E-E-A-T — citation by LLMs of false claims is a liability.
-- Track citation rates monthly; treat uncited priority pages as an audit finding.
+## Anti-patterns
+
+- Blocking all AI user agents at the CDN, then wondering why nothing is cited.
+- Rewriting prose for bots at the expense of readers. Google's people-first guidance
+  still governs ranking.
+- Adding FAQ markup expecting AI citations, or `llms.txt` expecting any effect.
+- Fabricated or unsourced statistics: engines may cite them, and the error is then
+  attributed to you.

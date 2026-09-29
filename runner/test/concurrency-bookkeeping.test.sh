@@ -291,7 +291,18 @@ else
 fi
 { [ "$(status_of "$NE")" = in_review ] && [ "$(status_of "$NF")" = in_review ]; } \
   && ok "D3: both tickets reached in_review — fail-safe isolation preserved with the fix" \
-  || fail "D3: expected both in_review (E=$(status_of "$NE") F=$(status_of "$NF"))"
+  || {
+    fail "D3: expected both in_review (E=$(status_of "$NE") F=$(status_of "$NF"))"
+    # Diagnostics for an intermittent CI failure (both deliveries exited 0 yet one ticket
+    # stayed `claimed`): what each delivery printed, whether each claim token was
+    # captured, and each ticket's event history, so a recurrence can be root-caused.
+    echo "  D3 diagnostics: NE=$NE NF=$NF TOKE=${TOKE:+set} TOKF=${TOKF:+set}"
+    for x in E F; do echo "  --- log.$x"; sed 's/^/    /' "$WORK/log.$x" 2>/dev/null; done
+    for n in "$NE" "$NF"; do
+      echo "  --- events #$n"
+      wg ticket show "$n" 2>/dev/null | jget '(d.events||[]).map(e=>`${e.created_at} ${e.event_type} ${JSON.stringify(e.payload??"")}`).join("\n")' 2>/dev/null | sed 's/^/    /'
+    done
+  }
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

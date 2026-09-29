@@ -30,8 +30,10 @@ text, no bg), `destructive` (destructive bg, on-destructive text).
 | disabled | muted | muted-fg | 0.5 | not-allowed |
 | loading | bg | fg | 0.7 | wait |
 
-Anatomy: `[leading icon] Label [trailing icon]` — keep a min 44×44px hit target even when the
-visual is smaller.
+Anatomy: `[leading icon] Label [trailing icon]`. Hit target at least 24×24 CSS px (WCAG 2.2
+2.5.8) and 44×44 on touch-primary UI, extended with padding when the visual is smaller. An
+icon-only button needs an accessible name (`aria-label` or visually hidden text). Loading keeps
+the button's width and name stable.
 
 ## Input (text / textarea / select / checkbox / radio / switch)
 
@@ -41,14 +43,17 @@ visual is smaller.
 
 | State | Border | Background | Ring |
 |-------|--------|------------|------|
-| default | border | card | none |
-| hover | border (one step stronger) | card | none |
-| focus | primary | card | primary @ ~20% |
-| error | destructive | card | destructive @ ~20% |
+| default | input | card | none |
+| hover | input (one step stronger) | card | none |
+| focus | primary | card | solid ring, ≥ 3:1 vs background |
+| error | destructive | card | destructive ring when focused |
 | disabled | muted | muted | none |
 
 Anatomy: optional label above · `[icon] value/placeholder [action]` · helper **or** error text
-below. Never use the placeholder as the only label.
+below. Never use the placeholder as the only label. The default border (`--color-input`, not
+the decorative `--color-border`) must reach 3:1 against the surface (WCAG 1.4.11) so the field
+is identifiable; a translucent tinted glow alone does not
+meet the focus-visibility bar.
 
 ## Card
 
@@ -89,12 +94,19 @@ the icon carries it too.
 | full | `100% − 32px` | full-screen on mobile |
 
 Anatomy: header (title + description + `[×]`) · scrollable content · footer (`[Cancel] [Confirm]`).
-Trap focus, restore it on close, and close on `Esc`.
+Prefer the native `<dialog>` opened with `showModal()` (built-in focus containment, `Esc`, inert
+background); label it with `aria-labelledby` pointing at the title. Move focus in on open (the
+first field, or the least destructive action), keep it inside, close on `Esc`, and return focus
+to the trigger on close (WAI-ARIA APG dialog pattern).
 
 ## Table
 
 Row states: default (surface), hover (muted), selected (primary @ ~10%), striped (alternating).
-Alignment: text left, numbers right, status/badge centre, actions right.
+Alignment: text at the inline start, numbers at the end (tabular figures), status/badge
+centre, actions at the end — use logical alignment so RTL mirrors. Use a real `<table>` with
+`<th scope="col">` headers and a `<caption>`; sortable headers are buttons inside the `th`, with
+`aria-sort` on the sorted column. Wide tables scroll inside a labelled, focusable container, not
+the page.
 Density: cell padding `12px 16px`; row height compact 40px / default 48px / comfortable 56px.
 
 ---

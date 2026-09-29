@@ -7,52 +7,68 @@ area: testing
 
 # Test frontend code by behaviour, not implementation
 
-A good component test does what a user does — renders with realistic props, finds
-things by role and label, clicks and types — and asserts what the user sees. It survives
-refactors because it never reaches for internals. Full-journey coverage belongs to the
-`e2e-browser-test` skill; this skill covers everything below it.
+Testing Library's guiding principle: the more your tests resemble the way your software
+is used, the more confidence they give you. A good component test renders with realistic
+props and providers, finds things by role and label, clicks and types, and asserts what
+the user sees or what the app sent. It survives refactors because it never reaches for
+internals. Full journeys belong to the `e2e-browser-test` skill; this covers everything
+below it, where most UI confidence is cheapest to buy.
 
-## Steps
+## Procedure
 
 1. **Use the repo's runner and library.** Vitest/Jest with Testing Library (React, Vue,
-   Svelte, Angular flavours), the repo's render helper that wires providers (router,
-   query client, theme, i18n), and its network mocking layer (MSW or fetch mocks). Call
-   `search_lore` for conventions. Never add a second runner or a snapshot-everything
-   habit.
-2. **Render realistically.** Use the shared render helper so the component gets the
-   providers it has in the app; pass realistic props from a factory (the
-   `test-fixtures-and-factories` skill); mock the network at the fetch boundary, not the
-   component's data hook.
-3. **Query like a user.** `getByRole` with the accessible name first, then
-   `getByLabelText`, `getByText`; `getByTestId` only when there is no accessible handle
-   and with a comment. A query that a screen reader could not perform is a query the test
-   should not perform.
-4. **Cover every state the ticket introduces**: default, loading, empty, error, success,
-   disabled, and each interaction path (click, type, keyboard-only, submit). Use
-   `userEvent` for interactions (real event sequences), not `fireEvent`.
-5. **Assert visible outcomes.** Text shown, role present, attribute set (`aria-invalid`,
-   `disabled`), navigation called with the right path, mutation called with the right
-   payload. Never assert on internal state, implementation-specific class names, or
-   the number of renders unless the ticket is about renders.
-6. **Add accessibility assertions** where UI is new: `axe` on the rendered output (the
-   repo's helper), keyboard reachability of every control, focus management after
-   dialogs open and close (the `frontend-a11y` skill).
-7. **Use snapshots sparingly.** A small, reviewed snapshot for a stable, presentational
-   fragment is fine; a 400-line snapshot of a page is noise nobody reads. Visual
-   regression belongs to the repo's visual tooling if it has one.
-8. **Test hooks through a component or `renderHook`**, asserting the returned behaviour;
-   test async behaviour with `findBy*`/`waitFor`, never fixed timers except with fake
-   timers explicitly enabled. Run the suite; evidence with the `record-evidence` skill.
+   Svelte, Angular flavours) or the framework's own harness, the repo's render helper that
+   wires providers (router, query client, store, theme, i18n), and its network mock layer
+   (MSW or a fetch mock). Call `search_lore` for conventions. Never add a second runner.
+2. **Map each acceptance criterion to a user-visible outcome** — "shows an error under
+   the email field when it is invalid", "disables Submit while saving". Each gets a test
+   named after that outcome; that test must fail if the criterion's behaviour breaks.
+3. **Render realistically.** The shared render helper, realistic props from a factory
+   (the `test-fixtures-and-factories` skill), the network mocked at the fetch/HTTP
+   boundary — not the component's own data hook, which would skip the code under test.
+4. **Query like a user**, in Testing Library's priority order: `getByRole` with `name`,
+   `getByLabelText`, `getByPlaceholderText`, `getByText`, `getByDisplayValue`; then
+   `getByAltText`/`getByTitle`; `getByTestId` last, with a comment. Use `getBy*` when the
+   element must exist, `queryBy*` only to assert absence, `findBy*` for anything async.
+5. **Interact with `userEvent`** (`const user = userEvent.setup()`; `await user.click`,
+   `await user.type`, `await user.keyboard('{Tab}')`) rather than `fireEvent`, so focus,
+   keyboard and pointer sequences are real.
+6. **Cover every state the ticket introduces:** default, loading, empty, error, success,
+   disabled, and each interaction path including keyboard-only and submit. For data
+   components, make the mocked request fail (500, network error) and assert the error UI
+   and the retry path, not only the happy render.
+7. **Cover the async races the UI can hit** when an AC touches them: a double-click on
+   Submit sends one request; a slow response for an old search does not overwrite a newer
+   one (resolve mocked responses out of order); unmounting mid-request produces no update
+   or warning; optimistic updates roll back when the request fails.
+8. **Assert visible outcomes.** Text, roles, `aria-invalid`, `disabled`, focus position,
+   navigation to the right path, the request sent with the right payload. Never internal
+   state, CSS class names, or render counts (unless the ticket is about renders).
+9. **Add accessibility checks for new UI:** the repo's `axe` helper on each new state,
+   keyboard reachability of every control, focus moved into and restored after dialogs
+   (the `frontend-a11y` skill). Axe finds a subset of issues; it does not replace the
+   role-based queries above.
+10. **Keep snapshots small.** A reviewed snapshot of a stable presentational fragment is
+    fine; a page-sized snapshot nobody reads is noise. Visual regression belongs to the
+    repo's visual tooling.
+11. **Test hooks through a component or `renderHook`**, asserting returned behaviour; async
+    with `findBy*`/`waitFor`, fake timers only when explicitly enabled and advanced.
+    Run the suite, then record evidence with the `record-evidence` skill (`test_output`).
+
+## Done when
+
+- Every AC in scope has a named test asserting its user-visible outcome.
+- Every introduced state (including error and empty) and interaction path is covered.
+- New UI has axe and keyboard checks; the suite passes with no `act()` warnings, no
+  unhandled promise rejections and no fixed sleeps.
 
 ## Rules
 
 - The repo's runner, Testing Library, render helper and network mock; nothing parallel.
 - Queries by role and label; test ids are justified exceptions.
-- Every introduced state and interaction has a test; `userEvent` for interaction.
-- Assert what the user sees or what the app called; never internals.
-- Axe and keyboard checks for new UI.
-- Small snapshots only; no fixed `sleep`s.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- Assert what the user sees or what the app sent; never internals.
+- Work on the delivery branch the runner prepared (the `create-branch` skill verifies),
+  never a protected branch.
 
 ## Capture lore
 

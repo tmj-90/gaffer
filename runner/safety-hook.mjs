@@ -840,7 +840,7 @@ const READ_TOOL_VERBS = new Set([
 //   GAFFER_BOOTSTRAP_INSTALL=1     — this tick is a bootstrap delivery
 //   GAFFER_BOOTSTRAP_DIR=<absdir>  — the fresh repo dir the install must target
 // The relaxation is intentionally NARROW: it applies ONLY to the install-tagged
-// DENY rule, ONLY when the flag is set, AND ONLY when the command runs inside the
+// package-manager DENY rules (install/add, and ci/update/remove), ONLY when the flag is set, AND ONLY when the command runs inside the
 // bootstrap dir (cwd is inside it, and the command does not `cd` out of it). Every
 // other blocked op (brew, sudo, rm -rf, force-push, secret reads, writes/reads
 // outside roots) stays fully gated. A plain `npm install` with no flag, or one
@@ -1857,7 +1857,7 @@ function branchCreationBoundaryReason(cmd, roots) {
 
 function checkCommand(cmd) {
   // A bootstrap tick (GAFFER_BOOTSTRAP_INSTALL=1) may relax ONLY the install-tagged
-  // DENY rule, and ONLY for an install inside the fresh bootstrap dir. Compute it
+  // package-manager DENY rules, and ONLY for a command inside the fresh bootstrap dir. Compute it
   // once; every other rule (and the install rule itself, when not a scoped
   // bootstrap install) stays in force.
   const allowInstall = bootstrapInstallAllowed(cmd);

@@ -74,6 +74,16 @@
 //              — the merge conflicted; the resolver committed a resolution ON THE
 //                BRANCH and the ticket was signalled for re-approval. The branch is
 //                NOT landed to the default branch.
+//   conflict_resolver_failed:
+//              { "phase":"conflict_resolver_failed", ticket, repo, branch, defaultBranch,
+//                resolver_exit, resolver_stderr, error }   (exit 1)
+//              — the resolver agent itself exited non-zero; re-approval is not signalled.
+//   conflict_unresolved:
+//              { "phase":"conflict_unresolved", ticket, repo, branch, defaultBranch,
+//                reason, resolver_summary, error }   (exit 1)
+//              — the resolver exited 0 but the default branch is not merged into the
+//                branch's committed head (aborted, left in progress, unmerged paths);
+//                re-approval is not signalled and the branch is left for a human.
 //   dry-run:   { "phase":"dry-run", ticket, repo, branch, defaultBranch, timeoutMs,
 //                claudeBin, mergeTarget, resolverArgv }
 //   error:     { "phase":"error", error }   (exit 1)
@@ -491,10 +501,13 @@ export function buildResolverPrompt({ ticketNumber, repoName, worktree, branch, 
     `or push the default branch "${defaultBranch}" — the resolution is PROPOSED on the`,
     "branch only; a human re-reviews and re-approves it before it ever lands.",
     "",
-    "When done, record a SHORT summary of what you resolved and why (which conflicts, how",
-    "you preserved each side, test result) as the ticket's resolution evidence via the",
-    "dispatch MCP, and print that summary as the last line of your message. Do NOT",
-    "approve the ticket yourself — re-approval is a human's call.",
+    "When done, END your message with a SHORT summary of what you resolved and why (which",
+    "conflicts, how you preserved each side, test result): the runner records that final",
+    "message as the ticket's resolution. Do not call record_ac_evidence (you hold no claim",
+    "on this approved ticket, so it is refused). If you cannot resolve the conflict",
+    "safely, abort the merge and say why — the runner checks that the default branch was",
+    "really merged in and never signals re-approval otherwise.",
+    "Do NOT approve the ticket yourself — re-approval is a human's call.",
   ].join("\n");
 }
 
@@ -582,6 +595,29 @@ export function installProjectLocalWiring(worktreePath, ticketNumber, repoName) 
 }
 
 const git = (cwd, ...args) => spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+
+/**
+ * Did the resolver really merge `defaultBranch` into the branch checked out in
+ * `worktree`? True only when no merge is in progress, nothing is left unmerged, and
+ * the default branch's tip is an ancestor of the committed HEAD.
+ */
+export function resolutionLanded(worktree, defaultBranch) {
+  if (git(worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD").status === 0)
+    return { ok: false, reason: "the merge was left in progress (not committed)" };
+  const unmerged = git(worktree, "diff", "--name-only", "--diff-filter=U");
+  if (unmerged.status !== 0) return { ok: false, reason: "the worktree could not be inspected" };
+  if (unmerged.stdout.trim())
+    return {
+      ok: false,
+      reason: `unmerged paths remain: ${unmerged.stdout.trim().split("\n").join(", ")}`,
+    };
+  const anc = git(worktree, "merge-base", "--is-ancestor", defaultBranch, "HEAD");
+  if (anc.status === 1)
+    return { ok: false, reason: `"${defaultBranch}" is not merged into the branch head` };
+  if (anc.status !== 0)
+    return { ok: false, reason: `could not compare "${defaultBranch}" with the branch head` };
+  return { ok: true, reason: "" };
+}
 
 // Call the Dispatch CLI directly. `wg` is a bash FUNCTION (factory.config.sh), not a
 // binary on PATH, so it does NOT resolve inside this Node runner — spawn the CLI here.
@@ -1289,6 +1325,29 @@ function main() {
     resolverJson === null ? res.stdout || "" : extractResultText(resolverJson)
   ).trim();
   if (summary) log(summary);
+
+  // A resolver that aborted, gave up, or left the merge uncommitted still exits 0.
+  // Re-approval is signalled only when the default branch really is merged into the
+  // branch's committed head; otherwise a human would re-approve an unchanged branch
+  // that conflicts again at the next merge.
+  const resolution = resolutionLanded(worktree, repo.defaultBranch);
+  if (!resolution.ok) {
+    removeWorktree(repo.localPath, worktree);
+    emit(
+      {
+        phase: "conflict_unresolved",
+        ticket: resolved.number,
+        repo: repo.name,
+        branch,
+        defaultBranch: repo.defaultBranch,
+        reason: resolution.reason,
+        resolver_summary: summary.slice(0, 500),
+        error: `resolver finished without resolving: ${resolution.reason} — re-approval suppressed; branch ${branch} preserved for manual resolution`,
+      },
+      1,
+    );
+    return;
+  }
 
   // The resolution lives on the branch (the resolver committed to it in the worktree).
   // Tear the worktree down — the branch ref keeps the commits.

@@ -63,16 +63,20 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveTicket } from "./merge-ticket.mjs";
@@ -397,6 +401,79 @@ export function contractHash(context) {
     .digest("hex");
 }
 
+/**
+ * Link the primary checkout's installed dependencies into a tester or replay checkout,
+ * like delivery's gaffer_link_node_modules (runner/lib/agent-env.sh): the root
+ * node_modules when non-empty, plus each workspace package's own node_modules (up to
+ * three levels deep), where monorepos keep their test binaries. Nothing is installed.
+ * `node_modules` is added to the repository's git exclude so the links are never
+ * staged or read as the tester's changes. Best-effort; returns the linked paths.
+ */
+export function linkNodeModules(repoPath, checkout) {
+  const linked = [];
+  if (!repoPath || !checkout || !existsSync(repoPath) || !existsSync(checkout)) return linked;
+  const excl = (git(checkout, "rev-parse", "--git-path", "info/exclude").stdout || "").trim();
+  if (excl) {
+    const exclPath = resolve(checkout, excl);
+    try {
+      const cur = existsSync(exclPath) ? readFileSync(exclPath, "utf8") : "";
+      if (!cur.split("\n").some((l) => l.trim() === "node_modules")) {
+        mkdirSync(dirname(exclPath), { recursive: true });
+        appendFileSync(exclPath, `${cur && !cur.endsWith("\n") ? "\n" : ""}node_modules\n`);
+      }
+    } catch {
+      /* best-effort: inspectTesterChanges ignores node_modules regardless */
+    }
+  }
+  const walk = (rel, depth) => {
+    const abs = resolve(repoPath, rel);
+    let entries;
+    try {
+      entries = readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name === ".git") continue;
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (e.name === "node_modules") {
+        // The install may itself be a symlink (a shared store): follow it for the check.
+        const src = resolve(repoPath, childRel);
+        const dst = resolve(checkout, childRel);
+        let nonEmpty = false;
+        try {
+          nonEmpty = statSync(src).isDirectory() && readdirSync(src).length > 0;
+        } catch {
+          /* unreadable */
+        }
+        // Never create a link outside the checkout: the delivery branch may have turned
+        // a parent directory into a symlink pointing elsewhere.
+        let inside = false;
+        try {
+          const root = realpathSync(checkout);
+          const parent = realpathSync(dirname(dst));
+          inside = parent === root || parent.startsWith(root + sep);
+        } catch {
+          /* parent missing */
+        }
+        if (nonEmpty && inside && !existsSync(dst)) {
+          try {
+            symlinkSync(src, dst, "dir");
+            linked.push(childRel);
+          } catch {
+            /* best-effort */
+          }
+        }
+        continue; // never descend into an install
+      }
+      // Descend only into real directories (never follow a symlinked directory).
+      if (e.isDirectory() && depth < 3) walk(childRel, depth + 1);
+    }
+  };
+  walk("", 1);
+  return linked;
+}
+
 /** Paths a tester may legitimately create or change: tests and its own installed wiring. */
 export function isTestPath(p) {
   const n = String(p).replace(/\\/g, "/").replace(/^\.\//, "");
@@ -429,7 +506,8 @@ export function inspectTesterChanges(worktree, baseCommit) {
     const path = l.slice(3).trim();
     if (path) changed.add(path.includes(" -> ") ? path.split(" -> ").pop() : path);
   }
-  const all = [...changed].sort();
+  // node_modules is the runner's own dependency link (linkNodeModules), never the tester's work.
+  const all = [...changed].filter((p) => !/(^|\/)node_modules(\/|$)/.test(p)).sort();
   return {
     ok: true,
     implementation: all.filter((p) => !isTestPath(p)),
@@ -482,14 +560,7 @@ export function replayTesterTests({
       mkdirSync(dirname(dst), { recursive: true });
       copyFileSync(src, dst);
     }
-    const nm = resolve(repoPath, "node_modules");
-    if (existsSync(nm) && !existsSync(resolve(replay, "node_modules"))) {
-      try {
-        symlinkSync(nm, resolve(replay, "node_modules"), "dir");
-      } catch {
-        /* best-effort: the test command may install */
-      }
-    }
+    linkNodeModules(repoPath, replay);
     const timeout =
       Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS) > 0
         ? Number(process.env.GAFFER_TESTER_REPLAY_TIMEOUT_MS)
@@ -549,7 +620,8 @@ export function buildTesterPrompt({ context, worktree, repoName }) {
     "You did NOT implement it. Use the black-box-test skill: you test from the OUTSIDE, from the",
     "operational test contract and the acceptance criteria ONLY — never from the implementation",
     "diff. Do NOT read `git log`, `git diff`, or the delivery branch's history; treat the checkout",
-    "in front of you as an opaque system to stand up and probe. Do not run git at all: the",
+    "in front of you as an opaque system to stand up and probe. Run no git command except the",
+    "single add + commit of your tests described below: the",
     "repository's history belongs to the factory (its root commit is a factory baseline; every",
     "delivery lands on a branch on top of it). A criterion phrased in terms of commits or history",
     '("in the initial commit", "the root commit contains") is demonstrated by the FILES PRESENT',
@@ -679,6 +751,9 @@ function runLiveTester(context) {
     );
     return;
   }
+  // The tester runs the repo's test command in this checkout, so it needs the installed
+  // dependencies exactly as a delivery worktree has them (it may never install).
+  linkNodeModules(repo.localPath, worktree);
   const cleanup = () => {
     git(repo.localPath, "worktree", "remove", "--force", worktree);
     git(repo.localPath, "worktree", "prune");

@@ -7,94 +7,67 @@ area: workflow
 
 # Get onto the working branch
 
-All work happens on a prefixed feature branch — never on a protected branch
-(`main`/`master`/`release/*`). The safety hook blocks pushes to protected branches.
+All work happens on a `gaffer/` feature branch, never on a protected branch
+(`main`, `master`, `release/*`). In the factory the runner has already created that
+branch in a throwaway git worktree and put you in it, so this skill is a short
+**verification**, not a branching step. Only outside the factory do you create the
+branch yourself.
 
-**Two paths — know which one you're in:**
+## Factory path — verify, do not create
 
-- **In the factory (the normal case):** the runner has ALREADY created your
-  `gaffer/…` branch and checked you out onto its worktree. You do **not** create or
-  switch branches — you **verify** you're on the right kind of branch and stop if you
-  aren't. See *Factory path* below.
-- **Standalone / non-factory:** no branch was prepared for you, so you create one
-  yourself with the exact convention. See *Standalone path* below.
+1. **Read the expected branch and path** from the REPO ACCESS BOUNDARY block of your
+   prompt ("WRITABLE repos … on branch 'gaffer/ticket-<n>-…'").
+2. **Check where you are:** `git rev-parse --abbrev-ref HEAD` must print exactly that
+   branch name. `HEAD` (detached), a protected name, or a different `gaffer/` branch
+   means the environment is not what the factory guarantees: `mark_ticket_blocked`
+   ("on <actual>, expected <branch>") and stop (on a resume, where that call is refused,
+   `request_decision` with the `ticket_id` and severity `human_required` instead). Do not "fix" it with `git switch -c` or
+   `git checkout -b` — a new branch diverges from the one the runner will push and review.
+3. **Check the tree against the kind of run you are in:**
+   - **Fresh delivery** — `git status --porcelain` should be empty. Runner files
+     (`.claude/`, `CLAUDE.factory.md`, `.mcp.json`, the `node_modules` symlink) are
+     git-excluded and will not show. If
+     other uncommitted or untracked files are present, you did not create them:
+     `mark_ticket_blocked` ("worktree dirty on arrival: <files>") rather than building on
+     unknown state.
+   - **Rework** (your prompt shows why a previous attempt was rejected) — the branch
+     carries the previous attempt's commits. That is expected: `git log --oneline
+     <default>..HEAD` shows them. Build on them and address every rejection reason.
+   - **Resume** (your prompt says you are RESUMING) — prior work may be committed AND
+     uncommitted. A dirty tree is expected: read `git status` and `git diff`, then
+     continue. Never discard it.
+4. **Proceed.** Implement on this branch and commit to it
+   (`git add -A && git commit -m "deliver #<n>: <summary>"`). Never push or open a PR:
+   after its gates the runner does that itself when the operator has enabled it.
 
-## Factory path — VERIFY, do not create
-
-The runner already created and checked you out onto your `gaffer/ticket-<number>-…`
-worktree branch. Your job is to confirm the ground is safe, not to branch:
-
-1. **Confirm you're on a non-protected branch.** Check the current branch
-   (`git branch --show-current` / `git rev-parse --abbrev-ref HEAD`). It must NOT be
-   `main`/`master`/`release/*`. The `gaffer/` prefix is expected.
-2. **Do NOT run `git switch -c` / `git checkout -b`.** A branch already exists; creating
-   another one diverges from the worktree the runner set up and the factory expects.
-3. **Check the working tree is clean.** Run `git status --porcelain`. If it is dirty —
-   uncommitted or untracked state left over from a prior partial run on this worktree —
-   do **not** branch over it or start editing on top of it. **Stop and
-   `mark_ticket_blocked`** with a clear reason ("worktree dirty on arrival: <files>");
-   a human resolves the stale state. Fabricating a clean start over dirty state corrupts
-   the delivery.
-4. **If you are somehow on a protected branch** (the runner's setup didn't take), do **not**
-   "fix" it by creating your own branch — `mark_ticket_blocked` and report it, because the
-   environment isn't what the factory guarantees.
-
-Once you've verified a clean tree on a non-protected `gaffer/…` branch, implement directly
-on it. The rest of this skill (the naming convention) applies to the *standalone* case.
+**Done when:** the current branch equals the expected `gaffer/…` branch and the tree
+state matches the run type. This takes two or three commands; do not repeat it later.
 
 ## Standalone path — create the branch yourself
 
-Only when **no** branch was prepared for you (running this skill outside the factory):
-build the name from the convention below, confirm a clean tree, then `git switch -c <name>`.
+Only when no branch was prepared for you (running outside the factory):
 
-## The branch name (exact convention)
+1. Confirm the base branch (the repository's `default_branch` from `get_ticket`, unless
+   the ticket names another) and that `git status --porcelain` is empty; if not, stop
+   and `mark_ticket_blocked` rather than carrying uncommitted state onto a new branch.
+2. Build the name `gaffer/ticket-<number>-<short-slug>`:
+   - the `gaffer/` prefix is mandatory — the runner rejects a delivery whose branch
+     lacks it;
+   - `ticket-<number>` is the literal word, a hyphen, the ticket number;
+   - `<short-slug>` is the title in lowercase, hyphen-separated, at most about six words,
+     no punctuation.
 
-Use this shape, exactly:
-
-```
-gaffer/ticket-<number>-<short-slug>
-```
-
-- **`gaffer/` prefix is mandatory.** The safety hook and the factory both expect it; a branch
-  without it is wrong and can fail review or get hook-blocked.
-- **`ticket-<number>`** — the literal word `ticket`, a hyphen, then the ticket number
-  (e.g. `ticket-412`).
-- **`<short-slug>`** — a lowercase, hyphenated slug derived from the ticket title:
-  ≤ ~6 words, no spaces, no uppercase, no punctuation beyond the hyphens.
-
-Example: ticket #412 "Add rate limiting to login" → `gaffer/ticket-412-add-rate-limiting`.
-
-**Wrong** (do not produce these): ad-hoc names, UUIDs or random suffixes
-(`gaffer/3f9a-…`), the prefix omitted, or `ticket/…` without the `gaffer/` prefix.
-
-## Steps (standalone path only)
-
-1. **Confirm the base branch** from the context packet (e.g. `default_branch`). Branch from
-   it unless the ticket explicitly says otherwise.
-2. **Build the branch name** as `gaffer/ticket-<number>-<short-slug>` per the convention
-   above — ticket number from the claimed ticket, slug from its title.
-3. **Confirm the current tree is clean and based on the right ref** before branching.
-   If `git status --porcelain` is non-empty, stop (`mark_ticket_blocked`) rather than
-   branching over uncommitted state.
-4. **Create and switch to the branch** with the repo's VCS (`git switch -c <name>`).
-   Do not push yet — pushing happens at review time, and force-push is blocked.
-5. **Verify** you are on the new branch and not on a protected one before editing.
-
-> In the **factory path** you skip steps 2 and 4 entirely — the branch already exists.
-> You only verify (current branch is a non-protected `gaffer/…`) and confirm a clean tree.
+   Example: #412 "Add rate limiting to login" → `gaffer/ticket-412-add-rate-limiting`.
+   Wrong: no prefix, `ticket/412`, UUIDs or random suffixes, uppercase.
+3. `git switch -c <name> <base>`, then verify with `git rev-parse --abbrev-ref HEAD`.
+   Do not push.
 
 ## Rules
 
-- **In the factory, VERIFY — never `git switch -c`.** The runner already created and
-  checked you out onto your `gaffer/…` worktree branch; creating another diverges from it.
-  Branch creation is for the standalone case only.
-- **Use the exact convention: `gaffer/ticket-<number>-<short-slug>`.** The `gaffer/` prefix is
-  mandatory — the safety hook and factory depend on it. Ad-hoc names, UUIDs, or `ticket/…`
-  without the prefix are wrong and can fail review.
-- **A dirty working tree on arrival is a blocker, not a thing to branch over.** Leftover
-  uncommitted/untracked state from a prior partial run → `mark_ticket_blocked`, don't build
-  on top of it.
-- Never create or commit on a protected branch (`main`/`master`/`release/*`) — the hook will
-  block the push and the work will be wasted.
-- One ticket, one branch. Do not reuse a branch from an unrelated ticket.
-- Do not install dependencies or write outside the repo — the hook blocks both.
+- In the factory, verify; never create or switch branches.
+- One ticket, one branch; never reuse a branch from an unrelated ticket.
+- Never commit on a protected branch; never push, force-push, or delete branches.
+- A dirty tree on a fresh delivery is a blocker; on a resume it is your prior work.
+- Do not install dependencies in any ecosystem (the hook blocks npm/pnpm/yarn/pip
+  installs; your prompt forbids the rest) and do not write outside the worktree
+  (hook-blocked).

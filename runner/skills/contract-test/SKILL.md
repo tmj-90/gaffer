@@ -1,6 +1,6 @@
 ---
 name: contract-test
-description: Use when a ticket changes the boundary between two components or services — an HTTP API and its client, a message producer and consumer, a public module interface — and both sides must keep agreeing. Invoke for "don't break the client", "add a contract test", a consumer-driven contract, or whenever a change touches a schema another team or repo depends on.
+description: Use when a ticket changes the boundary between two components or services — an HTTP API and its client, a message producer and consumer, a public module interface — and both sides must keep agreeing. Invoke for "don't break the client", "add a contract test", a consumer-driven contract (Pact), schema validation against OpenAPI/JSON Schema/protobuf, or whenever a change touches a schema another team or repo depends on.
 stack: [node, python, go, java, rust, csharp, kotlin, ruby]
 area: testing
 ---
@@ -8,50 +8,80 @@ area: testing
 # Write a contract test for a boundary
 
 A contract test pins the agreement at a boundary so either side can change safely: the
-provider proves it still produces what consumers rely on, the consumer proves it still
-accepts what the provider produces. It is the cheapest way to catch "we renamed a field
-and broke the mobile app" before it ships.
+provider proves it still produces what consumers rely on; the consumer proves it still
+handles what the provider produces. It catches "we renamed a field and broke the mobile
+app" before deploy, without a slow end-to-end environment.
 
-## Steps
+A contract test checks the **shape and meaning of messages**, not side effects. Pact's
+own guidance: contract tests are not functional tests of the provider — whether the order
+was actually persisted, or every validation rule, belongs in the provider's own
+integration tests (the `add-integration-test` skill). Mixing them makes contracts brittle
+and still leaves the behaviour untested.
 
-1. **Name the boundary and both parties.** Identify the provider (the API, the message
-   producer, the exported module) and every consumer you can find: `grep` the repo, check
-   `search_lore` for declared boundaries and dependents (`find_dependents` in the Memory
-   MCP when the repo map has them). The contract belongs to the consumers' needs, not to
-   everything the provider happens to emit.
-2. **Find the existing contract artefact.** An OpenAPI/JSON Schema file, protobuf
-   definitions, a Pact directory, a TypeScript type shared through a package, a
-   versioned event schema. If one exists, the test validates against IT; if none exists,
-   the test becomes the contract and you should propose committing a schema (see the
-   `openapi-contract` skill for HTTP).
-3. **Write the provider side.** For each consumer-relied-upon shape: a test that calls the
-   real provider (route handler, publish function, exported API) and validates the
-   response/message against the schema — field presence, types, enums, nullability,
-   pagination envelope, error envelope. Cover the error responses too; consumers depend
-   on them.
-4. **Write the consumer side** when the consumer lives in this repo: a test that feeds
-   the consumer the provider's documented examples (from the schema or recorded
-   fixtures) and asserts it parses and behaves. Record fixtures from the real provider
-   output, never hand-typed guesses.
-5. **Make breaking changes loud.** A removed or renamed field, a narrowed enum, a changed
-   status code must FAIL the test. Additive changes (a new optional field) must pass.
-   Assert that explicitly with one test for each rule so the next agent knows which is
-   which.
-6. **Version when you must break.** If the ticket requires a breaking change, follow the
-   `api-versioning` skill: a new version alongside the old, the contract test pinned to
-   both, and a deprecation note; never silently change the existing contract.
-7. **Run in the same command as CI**, then evidence with the `record-evidence` skill
-   (evidence type `test_output`): the contract file (or test) touched, and which
-   consumers it protects.
+## Procedure
+
+1. **Name the boundary and every consumer.** Identify the provider (API, producer,
+   exported module) and each consumer: `grep` the repo, call `search_lore` for declared
+   boundaries, and `find_dependents` (Memory MCP) where the repo map has them. The
+   contract is the union of what consumers actually use, not everything the provider
+   emits.
+2. **Find the existing contract artefact** and test against it: OpenAPI/JSON Schema,
+   protobuf/Avro, a Pact directory or broker, a shared TypeScript type package, a versioned
+   event schema. If none exists, the test becomes the contract and you should propose
+   committing a schema (the `openapi-contract` skill for HTTP).
+3. **Choose the style that fits.**
+   - _Consumer-driven (Pact):_ both sides are under your control, consumers are
+     identifiable, and the provider can set up state per interaction ("given a user
+     Mary exists"). The consumer test generates the pact; the provider verifies it
+     against the real service with provider states.
+   - _Schema-based:_ public or many-consumer APIs, or a provider you cannot seed through
+     anything but the API under test. Validate real responses against the published
+     schema; consumers validate against the same schema.
+4. **Write the provider side.** Call the real handler/publisher with each consumer-relied
+   request and validate the response or message: field presence, types, enums,
+   nullability, pagination and error envelopes (RFC 9457 problem details if the repo uses
+   them), status codes. Cover error responses — consumers branch on them.
+5. **Write the consumer side** when the consumer lives here: feed it the provider's
+   examples (from the schema or recorded from the real provider, never hand-typed guesses)
+   and assert it parses and behaves, including an unknown extra field, which it must
+   ignore (tolerant reader).
+6. **Match loosely, assert what matters.** Use type/regex matchers for values the
+   consumer does not branch on (ids, timestamps); exact values only where the consumer
+   depends on them (an enum, a status). Over-specified contracts break on harmless changes.
+7. **Make the compatibility rules executable** — one test each:
+   - removed or renamed field, narrowed enum, changed type, changed status code → FAIL;
+   - new optional field, widened enum the consumer tolerates → PASS.
+8. **Version when you must break.** Follow the `api-versioning` skill: a new version
+   beside the old, contract tests pinned to both, a deprecation note. When another repo
+   consumes the contract, raise `request_decision` before changing it. (Independent
+   tester: you never change a contract or raise `request_decision`; follow
+   `black-box-test` and record a break as a FAIL finding.)
+9. **Run in the same command CI runs**, then record evidence with the `record-evidence`
+   skill (`test_output`): the contract file or tests touched and which consumers they
+   protect. Publishing to a Pact broker and `can-i-deploy` are CI's job; you have no
+   broker credentials and no deploy step.
+
+## Done when
+
+- Every consumer-relied field, status and error shape is asserted on the provider side.
+- A deliberately removed field makes the provider test fail; an added optional field
+  does not.
+- The consumer (if in this repo) is tested against recorded provider output.
+
+## Anti-patterns
+
+- Enshrining incidental fields no consumer reads.
+- Hand-typed fixtures that drift from what the provider really sends.
+- Using contract tests (or Pact mocks) as a general stub for UI or end-to-end tests.
+- Editing the contract to make a provider change pass, without a version bump.
+- Testing a pass-through proxy's contract instead of the real downstream one.
 
 ## Rules
 
-- Contracts are written from the consumer's needs; do not enshrine incidental fields.
-- Fixtures come from real provider output, recorded and committed.
+- Contracts come from the consumer's needs; fixtures come from real provider output.
 - Breaking changes fail loudly; additive changes pass; both are asserted.
-- Never edit a contract to make a provider change pass without a version bump and a
-  decision when other repos consume it (`request_decision`).
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- Work on the delivery branch the runner prepared (the `create-branch` skill verifies),
+  never a protected branch.
 
 ## Capture lore
 

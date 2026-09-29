@@ -161,15 +161,24 @@ run \`get_ticket\` and \`git log --oneline\` + \`git status\` to see what is alr
 then CONTINUE from there and FINISH it: implement the remaining acceptance criteria, run
 the repo's tests, and COMMIT any new work on the current branch —
 run: git add -A && git commit -m "deliver #${i.ticketNumber}: <summary>". An uncommitted edit is NOT a
-delivery. Then use the record-evidence skill to evidence each AC and the prepare-digest-delta
-skill, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the gates,
-records the delivery, and submits. Never self-approve.
+delivery. A resumed delivery holds NO claim, so record_ac_evidence, the digest delta and
+mark_ticket_blocked are refused here — do not call or retry them. Instead END your message
+with one line per AC naming the test that proves it, then one line starting exactly
+"smallest-change check:" (the changed files by name, what you cut, why this is the floor):
+the runner records the end of your final message as evidence and its gate looks for that
+marker. Then STOP. Do NOT submit for
+review, push, or open a PR — the runner runs the gates, records the delivery, and submits.
+Never self-approve.
 WORK ECONOMY (the turn budget is real): finish the remaining ACs, run the repo's gates ONCE
-when the change is complete and once more after a fix — not after every edit. Installs only
-in the FOREGROUND with --ignore-scripts, never in the background. Commit before anything
+when the change is complete and once more after a fix — not after every edit. Never install,
+update or remove dependencies (the safety hook blocks it; node_modules is shared with the
+main checkout) — if the change needs one, raise it as below. Commit before anything
 optional; stop when the ACs are met.
 ${LORE_REFLECTION_NUDGE}
-If blocked, mark_ticket_blocked with a reason.
+If blocked, request_decision (ticket_id #${i.ticketNumber}, severity human_required) with the
+reason: it files the question for a human and stops the ticket being claimed again until it
+is answered, but the runner still gates and submits what you committed — so commit only
+work you stand behind.
 
 REPO ACCESS BOUNDARY (enforced by the safety hook — not just guidance):
 WRITABLE repos — already checked out on branch '${i.workBranch}' with your prior work:
@@ -207,13 +216,15 @@ An uncommitted edit is NOT a delivery; the branch MUST carry your commit. Then u
 record-evidence skill to evidence each AC, then the prepare-digest-delta skill to record
 (INERT, applied post-review by the merge) how the Repo Digest should move + which feature
 this ships, then STOP. Do NOT submit for review, push, or open a PR — the runner runs the
-gates, records the delivery, pushes/opens the PR, and submits. Never self-approve.
+gates, records the delivery and submits (pushing / opening a PR only when that is enabled).
+Never self-approve.
 WORK ECONOMY (the turn budget is real): read the files the cards point at, implement, then
 run the repo's gates ONCE when the change is complete and once more after a fix — not after
 every edit, and not build, lint and test as three separate rounds when one script covers
-them. Installs: only the repo's own install command, in the FOREGROUND, with
---ignore-scripts, never in the background (background work dies when your turn ends).
-Commit before anything optional. Stop when the ACs are met — extra polish is not a delivery.
+them. Never install, update or remove dependencies (the safety hook blocks it;
+node_modules is shared with the main checkout) — if the change needs one,
+mark_ticket_blocked naming it. Never run work in the background (it dies when your turn
+ends). Commit before anything optional. Stop when the ACs are met — extra polish is not a delivery.
 ${LORE_REFLECTION_NUDGE}
 If blocked, mark_ticket_blocked with a reason.
 

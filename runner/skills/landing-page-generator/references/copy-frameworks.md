@@ -1,72 +1,61 @@
-# Copy Frameworks — Fill-in-the-blank templates
+# Copy Frameworks — fill-in templates
+
+Pick ONE framework per page, matched to the visitor's awareness level (Schwartz). Fill
+every bracket with real, provable content. A missing proof point becomes `[TODO: proof]`,
+never an invented one.
 
 ## PAS (Problem → Agitate → Solution)
 
-Best when: traffic already knows the problem exists.
+Best when the traffic already feels the problem (problem-aware).
 
 ```
-[Problem]
-[Audience] struggle with [pain point].
-
-[Agitate]
-Every [time unit], that means [concrete cost — time/money/stress].
-Without a fix, [consequence of inaction].
-
-[Solution]
-[Product] [mechanism] so you [outcome] without [main objection].
+[Problem]   [Audience] struggle with [pain, in their words].
+[Agitate]   Every [time unit], that costs [concrete cost: time/money/risk].
+            Left alone, [consequence of inaction].
+[Solution]  [Product] [mechanism, one clause] so you [outcome] without [main objection].
 ```
 
-**Headline pattern:** "Finally, [outcome] without [sacrifice]."
-
----
+**Headline pattern:** "[Outcome] without [sacrifice]."
 
 ## AIDA (Attention → Interest → Desire → Action)
 
-Best when: cold traffic; audience unaware of your product.
+Best for cold traffic that does not yet know the product (unaware or solution-aware).
 
 ```
-[Attention]
-[Surprising claim or question that matches audience's inner monologue]
-
-[Interest]
-Unlike [alternative], [product] [key differentiator] because [mechanism].
-
-[Desire]
-Customers like [persona] use [product] to [outcome].
-"[Testimonial quote]" — [Name], [Role] at [Company]
-
-[Action]
-[CTA] — [micro-commitment; what happens next in one sentence]
+[Attention] [Surprising, true claim or question that matches the reader's inner monologue]
+[Interest]  Unlike [alternative], [product] [differentiator] because [mechanism].
+[Desire]    [Persona] use [product] to [outcome].
+            "[Real testimonial]" — [Name], [Role], [Company]
+[Action]    [CTA label] — [what happens next, in one sentence]
 ```
 
-**Headline pattern:** "[Surprising number/claim] [audience] already [outcome]."
-
----
+**Headline pattern:** "[Specific number/claim]: how [audience] [outcome]."
 
 ## BAB (Before → After → Bridge)
 
-Best when: transformation product; outcome is the hook.
+Best when the outcome is the hook (transformation offers).
 
 ```
-[Before]
-Right now, [audience] [current painful state].
-
-[After]
-Imagine [transformed state] — [specific, sensory outcome].
-
-[Bridge]
-[Product] is how you get there. [Mechanism in one sentence.]
-[Primary CTA]
+[Before]  Right now, [audience] [current painful state].
+[After]   Imagine [specific, concrete after-state].
+[Bridge]  [Product] gets you there: [mechanism in one sentence]. [Primary CTA]
 ```
 
-**Headline pattern:** "From [before state] to [after state] — in [timeframe]."
+**Headline pattern:** "From [before] to [after] in [timeframe]."
 
----
+## Headline check: the 4 U's
 
-## Objection-busting FAQ (5 core objections)
+Score each variant from 1 to 4 on each of **Useful**, **Urgent**, **Unique** and
+**Ultra-specific**. Keep the highest scorer that also passes the 5-second test: a cold
+visitor knows what it is and who it is for.
 
-1. "Is this right for me?" → Describe the ideal user; explicitly name who it's NOT for.
-2. "Can I trust this?" → Social proof + data; third-party validation.
-3. "Is it worth the price?" → ROI framing; comparison to cost of the problem.
-4. "How long until I see results?" → Specific timeframe + milestone.
-5. "What if it doesn't work?" → Guarantee; refund policy; risk reversal.
+## Objection-busting FAQ (the 5 core objections)
+
+1. **"Is this for me?"** Describe the ideal user, and name who it is *not* for.
+2. **"Can I trust this?"** Named customers, data and third-party ratings or
+   certifications.
+3. **"Is it worth the price?"** Compare against the cost of the problem, and give an ROI
+   example.
+4. **"How fast will I see results?"** A specific timeframe and the first milestone.
+5. **"What if it doesn't work?"** The guarantee, refund, cancellation or trial terms.
+   State them only if they are true.

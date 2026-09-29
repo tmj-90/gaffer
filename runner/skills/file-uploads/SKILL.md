@@ -8,55 +8,85 @@ area: backend
 # Handle file uploads and downloads safely
 
 An upload is untrusted input that is large, binary, and often stored for years. Limit it
-before you read it, verify what it really is, store it under a name you chose in a place
-that cannot execute, and serve it back with headers that stop the browser guessing.
+before you read it, verify what it really is, write it under a name you chose, atomically,
+in a place that cannot execute, and serve it back with headers that stop the browser
+guessing. Source: OWASP File Upload Cheat Sheet; OWASP ASVS 5 V5 (file handling).
 
 ## Steps
 
 1. **Use the repo's storage and upload path.** Object storage with presigned URLs, a
-   local store behind an abstraction, an existing multipart middleware. Call
-   `search_lore` for conventions (bucket layout, key naming, size limits). Do not add a
-   second storage mechanism.
-2. **Limit before reading.** Enforce a maximum size at the edge (proxy or framework
-   limit), a maximum count per request, and a request timeout; reject with `413` early
-   rather than buffering a gigabyte to discover it is too big. Stream to storage; never
-   hold whole files in memory.
-3. **Validate the content, not the label.** Allow-list accepted types; detect the real
-   type from the bytes (magic numbers) and reject on mismatch with the declared type or
-   extension; for images, decode and re-encode (strips embedded payloads and metadata
-   you should not keep); for CSV/XLSX imports, parse with limits on rows and cell size
-   and treat every cell as untrusted text (formula injection: prefix `=`, `+`, `-`, `@`
-   when exporting).
-4. **Never trust the filename.** Generate the storage key yourself (an id plus a safe
-   extension derived from the detected type); keep the original name only as metadata,
-   sanitised, for display. Path traversal, null bytes, and overlong names are rejected
-   at the boundary.
-5. **Store where nothing executes.** Object storage or a directory outside the web
-   root with no execute permission and no server-side rendering of user content;
-   private by default, access-checked on every read (the `security-authz` skill).
-6. **Serve safely.** Downloads via presigned URLs or an authenticated route that sets
-   `Content-Disposition` (attachment for anything not meant to render inline), the
-   detected `Content-Type`, `X-Content-Type-Options: nosniff`, and no cookies on a
-   separate origin/CDN for user content so a malicious SVG or HTML cannot run in your
-   app's origin.
-7. **Scan and quarantine where the repo requires it** (malware scanning, moderation)
-   asynchronously through a job (the `background-jobs` skill); files are unavailable
-   until cleared.
-8. **Test**: oversize rejected early, type mismatch rejected, traversal filename
-   rejected, valid upload stored under a generated key, download headers correct,
-   unauthorised read refused, import rows capped and formula-prefixed on export.
-   Evidence with the `record-evidence` skill.
+   local store behind an abstraction, or existing multipart middleware. Call
+   `search_lore` for bucket layout, key naming and size limits. Do not add a second
+   storage mechanism.
+2. **Authorise and limit before reading.** Check the caller may upload here (the
+   `security-authz` skill) and that the form is CSRF-protected if cookie-authenticated.
+   Enforce a maximum body size at the edge (proxy and framework), a maximum part count,
+   and a request timeout; reject with `413` without buffering. Stream to storage; never
+   hold a whole file in memory. For presigned uploads, sign the exact key,
+   `Content-Type` and size limit (a `content-length-range` POST-policy condition, or a
+   signed `Content-Length` for PUT), with a short expiry.
+3. **Validate content, not labels.** Allow-list extensions (after normalising case and
+   rejecting double extensions like `x.jpg.php`, NUL bytes and `:`), check the declared
+   `Content-Type` against the allow-list, then detect the real type from the bytes
+   (magic numbers) and reject any mismatch. None of these alone is sufficient.
+4. **Defuse the dangerous formats.** Images: cap pixel dimensions before decoding
+   (decompression bombs), then decode and re-encode to strip metadata and payloads.
+   Archives: cap total uncompressed size and entry count, and reject entries whose
+   resolved path escapes the target directory (zip slip). SVG, HTML and XML are active
+   content: refuse them, sanitise them, or serve them only as attachments; parse XML with
+   external entities disabled (XXE). CSV/XLSX imports: cap rows and cell size, treat every
+   cell as untrusted text, and on export prefix cells starting with `=`, `+`, `-`, `@`,
+   tab or CR with `'` (formula injection).
+5. **Generate the storage key; never trust the filename.** Key = random id (UUID) plus
+   an extension derived from the detected type. Keep the original name only as
+   sanitised display metadata (length-capped, no path separators, no leading dot).
+6. **Write atomically and collision-free.** Concurrent uploads are normal. Write to a
+   unique temporary key (random suffix, never a timestamp or the user's name), then
+   rename/commit to the final key; object storage `PUT` is already atomic per key. Insert
+   the metadata row in the same transaction that marks the file available, or use a
+   `pending → available` status so a half-written file is never served. Replacing a file
+   (a new avatar) writes a new key and swaps the pointer with a conditional update
+   (`WHERE version = ?`); it never overwrites bytes in place. Orphaned temp objects are
+   swept by a job (the `scheduled-jobs` skill).
+7. **Store where nothing executes.** Object storage or a directory outside the web root,
+   no execute permission, no per-directory config overrides; private by default and
+   access-checked on every read.
+8. **Serve safely.** Presigned GET with a short expiry, or an authenticated route that
+   sets `Content-Disposition: attachment` for anything not meant to render inline, the
+   stored detected `Content-Type`, `X-Content-Type-Options: nosniff`, and ideally a
+   separate cookieless origin with a restrictive CSP (`default-src 'none'`) so a
+   malicious file cannot run in the app's origin.
+9. **Scan and quarantine where the repo requires it** (malware scan, CDR, moderation)
+   asynchronously through a job (the `background-jobs` skill); the file stays
+   unavailable until cleared.
 
-## Rules
+## Tests (one per behaviour, each exercising it for real)
 
-- Size, count and time limits enforced before the body is read; stream, never buffer.
-- Type detected from bytes and allow-listed; images re-encoded; imports parsed with
-  limits and cells treated as untrusted text.
-- Storage keys are generated; original names are display metadata only.
-- Stored outside any executable or app-origin path; private by default; access-checked
-  on read.
-- Served with `Content-Disposition`, detected type, `nosniff`, off the app origin.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- Oversize body rejected with `413` before the handler reads it; part-count cap enforced.
+- Extension/type mismatch, double extension, and a renamed executable are rejected.
+- Traversal filenames (`../../x`, `..\\x`, NUL) never reach the storage key.
+- Valid upload is stored under a generated key and its metadata row exists.
+- **Concurrency:** N (≥ 20) parallel uploads of the same filename by the same user all
+  succeed with distinct keys, no `500`, no truncated or cross-wired bytes (compare
+  hashes). Two concurrent replacements of the same avatar leave exactly one winner and
+  no orphaned pointer. Build it with the `concurrency-and-async` skill's step 9 recipe.
+- **Failure:** an upload aborted mid-stream leaves no `available` row and no file served.
+- Download headers are exact; another user's file is refused (`403`/`404`).
+- Import caps rows; export formula-prefixes dangerous cells; zip-slip entry rejected.
+
+## Done when
+
+Every test above that the ticket's surface touches passes, and each acceptance
+criterion has evidence recorded via the `record-evidence` skill (the command and its
+passing output, not prose).
+
+## Review checklist
+
+- [ ] Limits enforced before the body is read; streaming, not buffering.
+- [ ] Allow-list plus byte sniffing; dangerous formats re-encoded, refused, or attachment-only.
+- [ ] Generated storage keys; unique temp names; atomic commit; no in-place overwrite.
+- [ ] Private storage, authorised reads, `nosniff`, `Content-Disposition`, separate origin.
+- [ ] A concurrent-upload test and an aborted-upload test exist and pass.
 
 ## Capture lore
 

@@ -29,7 +29,8 @@ contrast and tints) and `clamp()` for fluid type.
   /* Colour — oklch(lightness chroma hue) */
   --gray-50:  oklch(98% 0.00 0);
   --gray-200: oklch(92% 0.00 0);
-  --gray-500: oklch(64% 0.01 264);
+  --gray-400: oklch(62% 0.01 264);  /* control borders: 3.6:1 on white */
+  --gray-500: oklch(50% 0.01 264);  /* muted text: 4.7:1 on gray-200, 5.7:1 on gray-50 */
   --gray-900: oklch(22% 0.02 264);
   --blue-500: oklch(62% 0.18 264);
   --blue-600: oklch(55% 0.20 264);
@@ -72,8 +73,10 @@ This is the seam you theme against. Everything below is *meaning*, not raw colou
   --color-muted:            var(--gray-200);
   --color-muted-foreground: var(--gray-500);
   --color-destructive:      var(--red-600);
+  --color-destructive-foreground: oklch(100% 0 0);  /* 5.4:1 on red-600 */
 
-  --color-border: var(--gray-200);
+  --color-border: var(--gray-200);           /* decorative dividers only (~1.2:1) */
+  --color-input:  var(--gray-400);            /* form-control borders, >= 3:1 (1.4.11) */
   --color-ring:   var(--blue-500);
 
   --spacing-component: var(--space-4);
@@ -112,7 +115,15 @@ component tokens stay put.
   --color-foreground: var(--gray-50);
   --color-card:       oklch(26% 0.02 264);
   --color-muted:      oklch(32% 0.02 264);
+  --color-muted-foreground: oklch(72% 0.01 264); /* gray-500 would be 2.1:1 here */
   --color-border:     oklch(36% 0.02 264);
+  --color-input:      oklch(58% 0.01 264);   /* 3.6:1 on the dark card */
+  /* The light-theme primary/destructive fail on a dark surface (about 3:1). */
+  --color-primary:            oklch(72% 0.14 264);  /* 6.2:1 on the dark card */
+  --color-primary-hover:      oklch(78% 0.10 264);
+  --color-primary-foreground: var(--gray-900);      /* 6.9:1 on the primary */
+  --color-destructive:        oklch(70% 0.17 27);   /* 5.4:1 on the dark card */
+  --color-destructive-foreground: var(--gray-900);
 }
 ```
 
@@ -164,9 +175,40 @@ find-and-replace. Split them:
               --button-bg: var(--color-primary);  /* component */
 ```
 
-## Interop
+## DTCG JSON and generated outputs
 
-Tokens map cleanly to the **W3C Design Tokens (DTCG)** JSON shape (`$value` / `$type`) for
-tooling, and to a Tailwind theme by feeding the semantic layer into `theme.extend`. Keep the
-CSS custom properties as the single source of truth; generate other formats from them, never
-the reverse.
+The W3C Design Tokens Community Group format (first stable version **2025.10**, October 2025)
+is the vendor-neutral interchange format that design tools and token build tools read. When a
+repo has token JSON files (`*.tokens.json`, `tokens/*.json`), **they are the source of truth**
+and CSS variables, Tailwind theme and iOS/Android values are generated from them (Style
+Dictionary or the repo's build). Edit the JSON and regenerate; never hand-edit generated files.
+When a repo has only CSS custom properties, those are the source; do not add JSON unless the
+ticket asks.
+
+```json
+{
+  "color": {
+    "blue": {
+      "600": { "$type": "color",
+               "$value": { "colorSpace": "oklch", "components": [0.55, 0.2, 264] } }
+    },
+    "primary": { "$type": "color", "$value": "{color.blue.600}",
+                 "$description": "CTAs, links, key emphasis" }
+  },
+  "space": {
+    "4": { "$type": "dimension", "$value": { "value": 1, "unit": "rem" } }
+  }
+}
+```
+
+Rules that matter in practice: every token has `$value`; `$type` is set on the token or
+inherited from its group; aliases use `{group.token}` and must not form cycles; keys starting
+with `$` are reserved; tool-specific data goes under `$extensions`; mark retired tokens with
+`$deprecated` (and a message) rather than deleting them in the same change that stops using
+them. Themes are separate token sets (or modes) that re-point the **semantic** tokens only —
+the same seam as the CSS `.dark` block above. Tailwind consumes the generated semantic
+layer (`theme.extend` in v3, `@theme` variables in v4), never primitives directly.
+
+Also set `color-scheme: light dark` (or per theme) on `:root` so native form controls and
+scrollbars match, and verify every foreground/background semantic pair meets WCAG contrast in
+each theme — `oklch` lightness is not the WCAG contrast ratio; compute it.

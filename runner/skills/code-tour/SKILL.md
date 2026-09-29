@@ -7,84 +7,92 @@ area: docs
 
 # Create persona-targeted, file-anchored code tours
 
-A great tour is a narrative — a story told to a specific person about what matters, why it matters, and what to do next. Every file path and line number must be real and verified.
+A tour is a guided explanation (Diátaxis "explanation", anchored in code): a story for one
+reader about what matters, why, and where to go next. Every anchor must resolve against the
+current tree, and the tour must stay correct as the code moves.
 
-## Persona selection
+## Persona and depth
 
-Infer silently from the request:
+| Request mentions | Persona | Depth |
+|---|---|---|
+| a PR / diff | pr-reviewer | standard, only files the diff touches plus their callers |
+| "why did X break", RCA | rca-investigator | standard, along the failing path |
+| onboarding, new joiner, contributor guide, or nothing | new-joiner | standard |
+| quick tour | vibecoder | quick |
+| architecture | architect | deep |
+| security, auth | security-reviewer | standard, trust boundaries and input handling |
 
-| User says | Persona | Depth |
-|-----------|---------|-------|
-| "tour for this PR" | pr-reviewer | standard |
-| "why did X break" / "RCA" | rca-investigator | standard |
-| "onboarding" / "new joiner" | new-joiner | standard |
-| "quick tour" / "vibe check" | vibecoder | quick |
-| "architecture" | architect | deep |
-| "security" / "auth review" | security-reviewer | standard |
-| (no qualifier) | new-joiner | standard |
+Quick: 5–8 steps, 1–2 sentences each. Standard: 10–20 steps, 3–5 sentences. Deep:
+20–40 steps including invariants, failure modes and design rationale. A repo with fewer
+than 5 source files gets a quick tour regardless.
 
-**Depth guidelines:**
-- Quick: 5–8 steps, high-level, 1–2 sentences per step.
-- Standard: 10–20 steps, full narrative, 3–5 sentences per step.
-- Deep: 20–40 steps, links between steps, covers edge cases and design rationale.
-
-## Tour file format
+## Tour file format (CodeTour schema)
 
 ```json
 {
   "$schema": "https://aka.ms/codetour-schema",
-  "title": "Tour title — persona",
-  "description": "One sentence: what this tour covers and who it's for.",
+  "title": "Request lifecycle — new joiner",
+  "description": "How an HTTP request becomes a database write, for someone new to the repo.",
+  "ref": "<commit sha the tour was verified against>",
   "steps": [
-    {
-      "file": "src/index.ts",
-      "line": 1,
-      "title": "Entry point",
-      "description": "The application starts here. The `main()` function wires together the three primary subsystems..."
-    }
+    { "directory": "src", "description": "Everything that ships lives under src/ ..." },
+    { "file": "src/server.ts", "pattern": "^export function main\\(", "title": "Entry point",
+      "description": "Execution starts here. `main()` wires config, the router and the DB pool. Next: the router." }
   ]
 }
 ```
 
-Tours live in `.tours/<name>.tour` in the repo root.
+Required: top-level `title` and `steps`; each step needs `description`. Anchor a step with
+`file` + `line` (1-based) or, preferably for code that will change, `file` + `pattern` (a
+regex matched against line content — survives line shifts). `directory` steps introduce a
+folder; a step with only `description` is a narrative interlude. Tours live in
+`.tours/<kebab-name>.tour`.
 
-**Markdown fallback.** The `.tour` JSON is the primary output. When the CodeTour
-extension or VS Code isn't available (CI, a headless agent, a reviewer reading on
-GitHub), also emit — or fall back to — a plain-markdown version: a numbered list of
-`path/to/file.ts:42 — one-line description of what happens here`, one entry per step,
-in the same order as the tour. It carries the same narrative and is readable anywhere,
-so the tour is never blocked on a specific editor being installed.
+## Procedure
 
-## Step writing principles
+1. **Map the repo.** Read the README and manifest(s); find entry points (server start,
+   CLI main, handler registration, job scheduler); list folders two levels deep. For a PR
+   tour, `git diff --name-only <base>...HEAD`.
+2. **Pick persona and depth** from the table; default new-joiner/standard.
+3. **Outline the arc in five lines**: where it starts, the path it follows (a real call
+   chain or data flow), the one or two things most likely to bite (shared state,
+   concurrency, persistence, auth checks), where it ends.
+4. **Write steps along the call graph.** Each step says what this code is for, why it is
+   shaped this way, and where the tour goes next. Don't narrate what the line literally
+   says. Flag hazards explicitly ("two requests can reach this read-modify-write at once;
+   the lock is taken in X").
+5. **End with a summary step:** the 3–5 key files and where to start for the most common
+   change types.
+6. **Emit the markdown fallback** next to it (`.tours/<name>.md` or the requested doc):
+   numbered `path/to/file.ts:42 — one line` entries in the same order, readable on GitHub
+   without VS Code.
+7. **Verify** (below), evidence with the `record-evidence` skill, then stop. Never modify
+   source code to suit a tour.
 
-1. **Start with the entry point.** Request handling / server startup / CLI entry / main module — wherever execution begins.
-2. **Follow the call graph.** Each step ends by saying where the tour goes next and why. No teleporting.
-3. **Name what matters.** Call out non-obvious decisions ("this uses a singleton because…"); don't describe what the code literally says.
-4. **Speaker notes for complexity.** For a step covering a subtle invariant, write it as if you're pair-programming — "Watch out for X here because Y."
-5. **End with a summary step.** "You've seen the full request lifecycle. The key files are A, B, and C. Start with A when you need to change X."
+## Verification (headless)
 
-## Steps
+```bash
+node -e '
+const fs=require("fs");const t=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+if(!t.title||!Array.isArray(t.steps))throw "missing title/steps";
+t.steps.forEach((s,i)=>{ if(!s.description)throw `step ${i}: no description`;
+ if(s.directory&&!fs.existsSync(s.directory))throw `step ${i}: no dir ${s.directory}`;
+ if(!s.file)return; if(!fs.existsSync(s.file))throw `step ${i}: no file ${s.file}`;
+ const L=fs.readFileSync(s.file,"utf8").split("\n");
+ if(s.line&&(s.line<1||s.line>L.length||!L[s.line-1].trim()))throw `step ${i}: bad line ${s.line}`;
+ if(s.pattern&&L.filter(l=>new RegExp(s.pattern).test(l)).length!==1)throw `step ${i}: pattern not unique`;});
+console.log("ok",t.steps.length,"steps")' .tours/<name>.tour
+```
 
-1. **Explore the repo.** List root directory; read README; identify language(s), framework, entry points; map folder structure 1–2 levels deep. Every path in the tour must exist.
-2. **Infer persona and depth.** From the request; default to new-joiner + standard.
-3. **Plan the narrative.** 5-line outline before writing steps — where do we start, what's the arc, where do we end?
-4. **Write steps.** Verify each `file` path and `line` number before including. Line numbers must point to something meaningful (a function signature, a key conditional, a type definition).
-5. **Write the summary step.** Recap the key files and where to start for the most common change types.
-6. **Output the `.tour` file.** Valid JSON; placed in `.tours/<descriptive-name>.tour`. Emit the markdown fallback alongside it (or in place of it when VS Code isn't part of the workflow).
-7. **Verify — no editor required.** Parse the `.tour` JSON to confirm it's valid, then for every step check the `file` exists and the `line` is in range and points at something meaningful (grep/read the file at that line). This works headless; opening the tour in VS Code with the CodeTour extension is a nice final confirmation, not a prerequisite.
+Then read each anchored line and confirm it is the thing the step describes (a signature,
+key conditional, type), not a blank line or comment. Record `ref` as `git rev-parse HEAD`.
 
-## Review checklist
+## Review checklist (concrete defects only)
 
-- **Every file path verified** — no paths to files that don't exist.
-- **Line numbers meaningful** — pointing to a function signature or key line, not a blank line.
-- **Narrative flows** — each step connects to the next; no teleporting between unrelated files.
-- **Persona-appropriate depth** — quick tours don't rabbit-hole; deep tours don't skip the hard parts.
-- **Summary step present** — what to read first for the most common change type.
-- **Valid JSON** — `.tour` file parses without errors.
-- **Editor-independent** — a markdown fallback exists and verification passed without opening VS Code.
-
-## Rules
-
-- A tour with a wrong file path is worse than no tour — verify every path before committing.
-- Only create `.tour` files — never modify source code to accommodate a tour.
-- If the repo has fewer than 5 source files, create a quick-depth tour regardless of persona.
+- A `file`, `directory`, `line` or `pattern` that does not resolve, or a pattern matching
+  several lines.
+- A step's description contradicts the code it points at.
+- The tour skips the path the request asked about (e.g. a PR tour that ignores changed
+  files).
+- Invalid JSON or missing required fields; no summary step; no markdown fallback.
+- Source files changed as part of the tour.

@@ -1,59 +1,84 @@
 ---
 name: frontend-state-management
-description: Use when a ticket adds or reshapes client-side state — where data lives, how it flows between components, server cache versus UI state, a store, context, URL state, optimistic updates — and the result must keep one source of truth per fact and avoid the prop-drilling or global-store sprawl that makes UIs unpredictable. Invoke for "the state is out of sync", "lift this state", "add a store for X", or "the page resets when I navigate back".
+description: Use when a ticket adds or reshapes client-side state — where data lives, how it flows between components, server cache versus UI state, a store, context, URL state, persisted drafts, optimistic updates, multiple tabs — and the result must keep one source of truth per fact and avoid the prop-drilling or global-store sprawl that makes UIs unpredictable. Invoke for "the state is out of sync", "lift this state", "add a store for X", or "the page resets when I navigate back".
 stack: [react, web, next, vue, svelte, angular]
 area: frontend
 ---
 
 # Manage frontend state deliberately
 
-Every UI bug that says "it shows the old value" or "two parts disagree" is a state
-ownership bug. Decide, for each fact, exactly one place it lives and one way it
-changes; keep server data in the server-cache layer, UI state as local as possible, and
-shareable state in the URL. Reach for a global store last, and only for state that is
-truly global.
+"It shows the old value" and "these two parts disagree" are ownership bugs: a fact was
+copied, and the copies drifted. For each fact decide one owner and one way it changes.
+Server data belongs to the server-cache layer, UI state stays as local as possible,
+shareable state lives in the URL, and a global store holds only client-owned global
+facts.
 
 ## Steps
 
-1. **Classify every piece of state the ticket touches.** Server data (fetched, cached,
-   invalidated), UI state (open/closed, selected tab, draft input), URL state (route,
-   filters, pagination, the thing a user would bookmark), session/global state (current
-   user, theme, feature flags). Call `search_lore` for the repo's chosen tools (a query
-   library, a store, a router) and conventions.
-2. **Put server data in the server-cache layer**, never copied into a store or
-   component state: the query/cache library (TanStack Query, SWR, RTK Query, Apollo, the
-   framework's loaders) owns fetching, caching, invalidation, and staleness (the
-   `frontend-data-fetching` skill). Duplicating it into local state is how "shows the
-   old value" happens.
-3. **Keep UI state as local as it can be.** Component state for what only that
-   component needs; lift to the nearest common ancestor when two siblings must agree;
-   colocate reducers with the feature. Prop drilling through two levels is fine; through
-   five is a smell that wants composition or context, not a global store.
-4. **Put shareable state in the URL.** Filters, sort, page, selected item, open panel:
-   anything a user expects to survive refresh, back, and a shared link. Use the router's
-   typed search-param helpers; parse and validate on read; keep the URL the single source
-   for that state.
-5. **Use a global store only for truly global, client-owned state** (auth session, theme,
-   an unsaved cross-page draft) and model it with the repo's existing library. Slices are
-   small, actions are named for intent, selectors are memoised, and nothing in the store
-   is a copy of server data.
-6. **Make mutations explicit.** One function per state transition, named for the user's
-   intent (`selectTicket`, not `setState`); optimistic updates roll back on failure and
-   invalidate the affected queries; derived values are computed, never stored twice.
-7. **Prove it with tests** at the level where the state lives: reducer/store tests for
-   transitions, component tests for local state and URL sync (the `frontend-testing`
-   skill), and one integration test for the optimistic/rollback path. Evidence with the
-   `record-evidence` skill.
+1. **Inventory the state the ticket touches** and classify each fact:
 
-## Rules
+   | Kind | Examples | Owner |
+   |------|----------|-------|
+   | Server data | lists, records, the current user's profile | query/cache layer |
+   | URL state | filters, sort, page, selected id, open tab | router search params / path |
+   | Local UI state | open/closed, hover, an input's draft | the component, or nearest common parent |
+   | Global client state | theme, auth session handle, cross-page draft | the repo's store |
+   | Derived | counts, filtered lists, "is valid" | computed in render, never stored |
 
-- One owner per fact; derived values are computed, never duplicated.
-- Server data lives in the server-cache layer, never mirrored into local or global state.
-- UI state local first; URL for anything shareable; global store last and only for
-  client-owned global facts.
-- Transitions are named functions; optimistic updates always have a rollback.
-- Use the repo's chosen libraries; never add a second store or query client.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+   Call `search_lore` for the chosen libraries and conventions.
+2. **Server data stays in the cache layer** (TanStack Query, SWR, RTK Query, Apollo,
+   loaders — the `frontend-data-fetching` skill). Read it where needed with the same
+   query key; do not copy it into `useState` or a store. To edit a record, keep only the
+   draft fields in form state, initialised from the query once, and submit a mutation.
+3. **Local first; lift only as far as needed.** Two siblings that must agree share the
+   nearest common parent. Passing props through two or three levels is fine; deeper
+   usually wants composition (pass the rendered child) before context. Context carries
+   rarely changing values; split fast-changing values into their own context so a
+   keystroke does not re-render the tree.
+4. **URL for anything a user would share, bookmark or expect back.** Parse search params
+   on read with a schema (unknown or invalid values fall back to defaults, never crash);
+   write with the router's API, `replace` for typing-driven changes and `push` for
+   navigations the Back button should undo. The URL is then the only copy — do not mirror
+   it into state.
+5. **A global store only for truly global client state**, using the repo's library
+   (Zustand, Redux Toolkit, Pinia, signals). Small slices, actions named for intent
+   (`selectTicket`), selectors that return the minimum so subscribers re-render only when
+   their slice changes. External stores in React are read through the library's hooks or
+   `useSyncExternalStore`, never by subscribing in an effect.
+6. **Transitions are explicit and safe under concurrency.**
+   - One named function per transition; reducers are pure (no fetches, no `Date.now()`,
+     no mutation of the previous state).
+   - Updates that depend on the previous value use the functional form
+     (`setCount(c => c + 1)`) so rapid events are not lost.
+   - Optimistic updates snapshot and roll back on failure, and a slower earlier response
+     must not overwrite a newer optimistic value (cancel or ignore superseded requests).
+7. **Persisted state (localStorage, IndexedDB) is versioned.** Store a schema version,
+   migrate or discard old shapes on read, never persist server data or secrets, and read
+   it after hydration (or with the library's hydration helper) to avoid server/client
+   mismatches. If two tabs can edit the same persisted state, sync through the `storage`
+   event or `BroadcastChannel`, or declare last-write-wins in the ticket — do not leave it
+   undefined.
+8. **Reset deliberately.** To reset a subtree's state when an entity changes, key it by
+   the entity id (`<Editor key={ticketId} />`) instead of an effect that clears fields.
+9. **Test where the state lives** (the `frontend-testing` skill): pure reducer/store
+   transition tests; a component test per AC that drives the UI and asserts what is
+   shown; a URL test (load with params → correct view; change filter → URL updated; Back
+   restores); the rollback path; and rapid repeated events (click ×5 → count is 5). Record
+   per-AC evidence with the `record-evidence` skill, then stop.
+
+## Done when
+
+Every fact the ticket touches has one named owner; no server data is duplicated in
+local or global state; shareable state survives refresh and Back; each AC has a test
+that exercises its behaviour through the UI.
+
+## Anti-patterns
+
+- `useEffect(() => setX(props.y), [props.y])` — state mirroring props or query data.
+- Storing derived values (`filteredItems`, `total`) alongside their inputs.
+- One app-wide context holding everything; a store slice per component.
+- A second store library or query client next to the existing one.
+- Persisted state with no version, restored before hydration.
 
 ## Capture lore
 

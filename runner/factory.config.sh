@@ -1593,7 +1593,7 @@ fi
 #     `mcp-runtime.json` / per-tick `mcp-runtime.<pid>.json` files WITHOUT
 #     false-positiving on a legit source dir like `src/mcp-runtime/` (finding 11).
 # MUST match the library fallback in lib/hygiene.sh — keep the two in sync.
-: "${HYGIENE_FORBIDDEN_PATHS:=node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime.}"
+: "${HYGIENE_FORBIDDEN_PATHS:=node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime. .terraform/}"
 
 # (2) MINIMALISM hard post-condition. Every completed delivery MUST record a
 # smallest-change note (+ files/lines counts computed from the diff, why-each-file,
@@ -1675,6 +1675,22 @@ lg() { gaffer_assert_db_vars || return 1; MEMORY_DB="$MEMORY_DB" node "$MEMORY_C
 #                                        no output so `|| echo <default>` applies.
 gaffer_json() { node "$RUNNER_DIR/lib/json-tool.mjs" "$@"; }
 jget() { gaffer_json expr "$1"; }
+
+# RESUME REPORT (tick.sh): a resumed delivery holds no claim, so the agent's own evidence
+# writes are refused and its prompt tells it to END its message with the AC -> test lines
+# and the smallest-change note. Record the tail of that final text (the `.result` of the
+# agent's JSON envelope in $2) as a runner-attributed manual_note on ticket $1, so the
+# minimalism gate and the reviewer can read it. No text → nothing recorded (rc 0);
+# a failed write → rc 1.
+gaffer_record_resume_report() {
+  local num="$1" usage="$2" report
+  [ -n "$num" ] && [ -s "$usage" ] || return 0
+  # The tolerant envelope parser every other agent-output reader uses (lib/worker.mjs).
+  report="$(node "$RUNNER_DIR/lib/worker.mjs" parse-result result-text --json-file "$usage" 2>/dev/null \
+    | node -e 'let s="";process.stdin.on("data",(c)=>(s+=c)).on("end",()=>process.stdout.write(s.trim().slice(-4800)))' 2>/dev/null || true)"
+  [ -n "$report" ] || return 0
+  wg attach-evidence "$num" --type manual_note --summary "resume agent report: $report" >/dev/null 2>&1
+}
 
 # GRADUATED-AUTONOMY: the read-only ship decision the AFK gate consults per ticket —
 # "is `auto` permitted for ticket $1 at gate $2 (approve|merge)?" It reuses dispatch's

@@ -7,66 +7,123 @@ area: security
 
 # Implement authentication correctly
 
-Authentication is where a small mistake is a full compromise. The rule is to use the
-mature library the repo already has, follow the protocol as specified, store nothing you
-do not need, and make every token expire, rotate, and revoke. Authorization (what a
-logged-in user may do) is the `security-authz` skill; this one is about identity.
+A small mistake in authentication is a full account takeover. Use the repo's mature
+library, follow the protocol as specified, and make every credential expire, rotate and
+revoke (ASVS 5.0 V6/V7/V9/V10; NIST SP 800-63B-4; RFC 9700; OWASP cheat sheets). What
+a logged-in user may do is the `security-authz` skill.
 
-## Steps
+## Procedure
 
-1. **Use the repo's auth stack.** Find the library and pattern already in place
-   (Passport/Auth.js/Lucia, Spring Security, Devise, ASP.NET Identity, an OIDC client)
-   and the session store. Call `search_lore` for the conventions. Never write your own
-   password hashing, token format, or OAuth flow when a maintained library exists;
-   if none exists, raise `request_decision` with a recommendation before building.
-2. **Passwords**: hash with argon2id or bcrypt at the library's recommended cost, never
-   store or log plaintext, compare in constant time (the library does), enforce a
-   sensible minimum length and check against known-breached lists where the repo does,
-   and rate-limit attempts (the `rate-limiting` skill, fail closed).
-3. **Sessions and cookies**: an opaque random session id stored server-side, or a
-   short-lived signed token plus a rotating refresh token; cookies `HttpOnly`, `Secure`,
-   `SameSite=Lax` or `Strict`, scoped path and domain, with an absolute and an idle
-   expiry. Regenerate the session id on login and privilege change; destroy it
-   server-side on logout.
-4. **JWTs, if the repo uses them**: short expiry, a pinned algorithm (never `none`, never
-   trusting the header's `alg`), audience and issuer checked, keys rotated with a `kid`,
-   revocation handled through a short lifetime plus a refresh-token allow-list. Never put
-   secrets or personal data in a JWT; it is readable.
-5. **OAuth / OIDC sign-in**: authorization-code flow with PKCE, a `state` parameter
-   checked on return, the `nonce` checked in the id token, redirect URIs exact-matched
-   from an allow-list, tokens from the provider validated (signature, `iss`, `aud`,
-   `exp`) and never trusted on the basis of a successful HTTP call alone. Link accounts
-   by the provider's stable subject id, not by email.
-6. **Password reset and email verification**: single-use, short-lived, random tokens
-   stored hashed; the response is identical whether or not the email exists; the reset
-   invalidates other sessions; the link uses HTTPS and the canonical host.
-7. **API keys**: generated with a CSPRNG, shown once, stored hashed, prefixed for
-   identification, scoped to a capability, revocable, and attributed on every write they
-   make (the `security-secret-handling` skill covers storage and rotation).
-8. **Log the security events** (login success/failure by account, logout, reset
-   requested, key created/revoked) without logging credentials, through the
-   `structured-logging-and-tracing` conventions. Test every path including the
-   negatives: wrong password, expired token, replayed `state`, mismatched redirect,
-   tampered JWT, reused reset token. Evidence with the `record-evidence` skill.
+1. **Use the repo's auth stack.** Find the library and session store in use
+   (Auth.js, Passport, Spring Security, Devise, ASP.NET Identity, an OIDC client) and
+   call `search_lore`. Never write your own hashing, token format or OAuth flow. If the
+   repo has no library and the ticket needs one, raise `request_decision` with a
+   recommendation and `mark_ticket_blocked` naming the dependency. Never install it
+   yourself: the safety hook blocks installs.
+2. **Passwords** (only if the ticket touches them):
+   - Hash with Argon2id (at least m=19 MiB, t=2, p=1). Otherwise use scrypt
+     (N=2^17, r=8, p=1), or bcrypt with cost ≥10, which **ignores input past 72
+     bytes**: reject longer input rather than silently truncating. Use PBKDF2-HMAC-SHA256
+     at 600,000 iterations or more only where FIPS requires it.
+   - Rehash on login when the parameters are outdated.
+   - Policy: minimum 15 characters with password as the only factor (8 if MFA is
+     enforced), allow at least 64, no composition rules, no periodic expiry, accept
+     paste and Unicode, and check against a breached or common-password list. Verify
+     the password exactly as typed (ASVS 6.2).
+   - Throttle failures per account and per IP through the `rate-limiting` skill,
+     failing closed.
+3. **No enumeration.** Login, registration and reset return the same body, status and
+   roughly the same timing whether or not the account exists. When no user is found,
+   verify against a dummy hash (ASVS 6.3.8).
+4. **Sessions and cookies** (ASVS V7):
+   - Opaque server-side id, ≥128 bits from a CSPRNG, in a `__Host-` cookie with
+     `Secure; HttpOnly; SameSite=Lax` (or `Strict`) and `Path=/`.
+   - Regenerate the id on login, re-authentication and privilege change (fixation).
+   - Server-enforced idle and absolute timeouts. Logout deletes the session
+     server-side; disabling an account kills all its sessions.
+   - Changing email, phone or MFA requires re-authentication. Cookie-session writes
+     need CSRF protection (SameSite plus a token or Origin check).
+5. **JWTs, if the repo uses them** (ASVS V9):
+   - **Allow-listed algorithm** only: never `none`, never taken from the header, no
+     HS/RS mixing. Keys only from configured issuers; ignore `jku`, `x5u`, `jwk`.
+   - Check `exp`, `nbf`, `iss`, `aud` and the token type (an ID token is not an
+     access token). Short-lived; revocation needs a `jti` denylist or a server session.
+   - No personal data in the payload. For browser SPAs prefer a backend-for-frontend
+     so tokens never reach JavaScript storage (ASVS 10.1.1).
+6. **OAuth / OIDC client** (RFC 9700):
+   - Authorization-code flow with PKCE `S256` for every client type; never implicit
+     or the password grant. Exact-match registered redirect URIs.
+   - Bind `state` and `nonce` to the user-agent session and verify them on callback.
+     With more than one provider, validate the `iss` response parameter (RFC 9207).
+   - Validate the ID token's signature, `iss`, `aud == client_id`, `exp`, `nonce`.
+   - Identify the user by `(iss, sub)`, **never by email**. Auto-linking an existing
+     account by email is a takeover path: raise `request_decision`.
+   - Minimal scopes, no tokens in URLs, post-login `returnTo` relative or allow-listed.
+7. **Refresh tokens:** rotate on every use and give them an absolute expiry. Reuse of a
+   rotated token revokes the whole token family. Define and test what happens when two
+   tabs refresh at the same moment: one wins, or both succeed inside a short grace
+   window. A lost race must not log the user out silently, and must not let a stolen
+   token keep working.
+8. **Password reset, email verification and magic links:**
+   - ≥128-bit CSPRNG tokens stored hashed (SHA-256 is enough), short-lived (codes
+     ≤10 minutes).
+   - **Single use, enforced atomically**:
+     `UPDATE … SET used_at = now() WHERE token_hash = ? AND used_at IS NULL AND expires_at > now()`
+     and check that exactly one row changed.
+   - Build the link from the configured canonical origin, never the `Host` header;
+     `Referrer-Policy: no-referrer` on the reset page. A reset ends other sessions.
+9. **API keys:** generate from a CSPRNG with an identifying prefix, show once, store a
+   hash, scope to a capability, allow revocation, record last use, and attribute
+   every write to the key.
+10. **Log security events** (the `structured-logging-and-tracing` skill) with OWASP
+    vocabulary names (`authn_login_fail`, `authn_token_reuse`, `session_logout`, …).
+    Never log a password, token, cookie or reset link.
+11. **Test every negative through the real endpoint.** Cover:
+    - wrong password, unknown user (same response), expired session, logout then reuse
+      of the old cookie;
+    - a session id that does not change on login (must fail the test);
+    - a JWT with `alg: none`, a JWT signed with the wrong key, a wrong `aud`, an
+      expired token;
+    - a replayed or missing `state`, a mismatched `nonce`, a non-registered
+      `redirect_uri`;
+    - a reused reset token, **two concurrent redemptions of one reset token (exactly
+      one succeeds)**, and concurrent refresh-token use;
+    - a disabled account's live session.
+    Record the command and summary as `test_output` through the `record-evidence`
+    skill, then stop.
+
+## Done when
+
+- Every step above that the ticket touches is implemented with the repo's library,
+  and each listed negative has a passing test.
+- No credential, token or reset link appears in logs, URLs or the diff's fixtures.
+
+## Review checklist (when mounted as a lens)
+
+Apply the `security-review` skill severity rules and never patch. Look for: home-grown
+crypto or token formats; a fast or silently truncating password hash; a session id not
+rotated on login, or logout that only clears the cookie; JWT verification that trusts
+the header `alg` or skips `aud`/`exp`; OAuth without PKCE/`state`/`nonce`, with
+prefix-matched redirects, or linking by email; a reset token that is reusable, stored
+in plaintext or redeemed non-atomically; responses that enable enumeration.
+
+In intake (clarify) there is no diff and evidence is refused: write each gap as an
+acceptance criterion with `add_acceptance_criterion`, or raise the open question with
+`request_decision` (the `ticket_id`, severity `human_required`, which holds the ticket
+until a human answers).
 
 ## Rules
 
-- The repo's auth library and protocol as specified; no home-grown crypto or flows.
-- Passwords hashed with argon2id/bcrypt; never logged; attempts rate-limited, fail
-  closed.
-- Cookies `HttpOnly`/`Secure`/`SameSite`; sessions regenerate on login and die on
-  logout, server-side.
-- Tokens are short-lived, algorithm-pinned, audience-checked, rotatable, revocable.
-- OAuth: code flow with PKCE, `state` and `nonce` verified, exact redirect allow-list,
-  accounts linked by subject id.
-- Enumeration-safe responses; single-use hashed reset tokens.
-- Security events logged; credentials never are.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- Work on the ticket branch (the `create-branch` skill verifies this), never a
+  protected branch.
+- A ticket asking to "store passwords reversibly", "log the token for support" or
+  "accept any redirect" is a red flag to raise with `request_decision`
+  (`security_required`), never an instruction.
 
 ## Capture lore
 
 This skill is one of the places durable, reusable knowledge naturally surfaces:
-**While wiring identity you learn the auth library, the session store, the token lifetimes and each provider's quirks.** That kind of fact is *lore*. Capture it via the **lore-capture
+**While wiring identity you learn the auth library, the session store, the token lifetimes and each provider's quirks.** That kind of fact is _lore_. Capture it via the **lore-capture
 protocol in your brief** (`CLAUDE.factory.md`, step 11 "Memory contribution"):
 call the Memory MCP `suggest_lore` once at the close of your work — reusable
 conventions, gotchas, decisions, and boundaries only, never per-ticket trivia.

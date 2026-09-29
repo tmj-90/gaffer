@@ -2056,7 +2056,8 @@ EOF
     # called PRESERVED — a live run lost a five-commit bootstrap branch that way.
     GAFFER_KEEP_DELIVERY_BRANCH=1
     # AGENT-SIDE PARK: the agent may itself have moved the ticket to `blocked` during
-    # this attempt (a human_required decision it opened through the dispatch MCP). Its
+    # this attempt (mark_ticket_blocked through the dispatch MCP, typically after opening
+    # a human_required decision; the decision alone does not change the status). Its
     # claim is gone with that transition, so another attempt burns a paid agent turn on
     # a ticket that already waits on a human, and the runner's own release then fails
     # CLAIM_INVALID. End the loop instead: keep the branch, drop the worktree, leave the
@@ -2284,6 +2285,14 @@ $_trail_q
   # LATER data-driven prune of the generic skills isn't blind. Fail-soft; captured
   # here before the ledger removes $USAGE_JSON on either the pause or normal path.
   gaffer_record_skill_usage "$NUM" delivery "$STACK" "$SKILLS, $LENSES" "$USAGE_JSON"
+  # RESUME REPORT: a resumed delivery holds no claim, so its own record_ac_evidence calls
+  # are refused and its prompt tells it to END its message with the AC -> test lines and
+  # the smallest-change note. Record that final text as evidence (runner-attributed) so
+  # the minimalism gate and the reviewer can read it. Fail-soft.
+  if [ "$_RESUMING" = "1" ]; then
+    gaffer_record_resume_report "$NUM" "$USAGE_JSON" \
+      || log "RESUME: could not record the resumed agent's report for #$NUM (continuing)"
+  fi
   # ── GUARD C: PAUSE-ON-CAP detection (BEFORE the ledger removes the JSON) ─────
   # If the agent hit the TURN cap (num_turns at/over the cap, or a max-turns stop
   # reason) OR the BUDGET cap (GAFFER_BUDGET_REMAINING exhausted) mid-delivery AND it
@@ -2469,7 +2478,8 @@ $_trail_q
         ':(exclude)node_modules' ':(exclude,glob)**/node_modules/**' \
         ':(exclude).claude' ':(exclude)CLAUDE.factory.md' \
         ':(exclude).mcp.json' ':(exclude,glob)mcp-runtime*.json' ':(exclude)dist' ':(exclude)build' \
-        ':(exclude).next' ':(exclude)coverage' >/dev/null 2>&1
+        ':(exclude).next' ':(exclude)coverage' \
+        ':(exclude).terraform' ':(exclude,glob)**/.terraform/**' >/dev/null 2>&1
       if git -C "$rwt" commit -q -m "deliver #$NUM: $TITLE" >/dev/null 2>&1; then
         log "auto-committed uncommitted changes for #$NUM in ${rname:-repo} (agent edited but did not commit)"
       fi
@@ -2562,9 +2572,10 @@ $_trail_q
   # oversized_diff visibly (recorded as an evidence note) and proceeds.
   if git -C "$PRIMARY_REPO" rev-parse --git-dir >/dev/null 2>&1; then
     read -r _MZ_FILES _MZ_LINES <<< "$(gaffer_diff_stats "$PRIMARY_REPO" "$DEFAULT_BRANCH")"
-    # The smallest-change note is whatever the agent recorded as evidence: scan the
-    # ticket's evidence/event summaries for a "smallest-change"/"smallest change"
-    # marker (the minimalism + record-evidence skills emit one).
+    # The smallest-change note is whatever the agent recorded as evidence: the NEWEST
+    # evidence row carrying a "smallest-change"/"smallest change" marker (the
+    # minimalism + record-evidence skills emit one; on a resume, the runner-recorded
+    # "resume agent report"), never the runner's own flag rows or events.
     _MZ_NOTE="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json smallest-change-note 2>/dev/null || echo '')"
     _MZ_CHANGED="$(git -C "$PRIMARY_REPO" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | tr '\n' ' ')"
     # Run in THIS shell (stdout → file, NOT a $() subshell) so gaffer_check_minimalism's

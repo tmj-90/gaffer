@@ -1,69 +1,91 @@
 ---
 name: adversarial-reviewer
-description: Use when you want a genuinely critical review of recent changes — before merging a PR, after a sprint, or when you suspect the review is being too agreeable. Forces perspective shifts through three hostile reviewer personas that catch blind spots the author's mental model shares with the reviewer. Triggers on "adversarial review", "break my code", "what could go wrong", "devil's advocate review", or "pre-merge review".
+description: Use when you want a genuinely critical review of recent changes — before merging a PR, after a sprint, or when you suspect the review is being too agreeable. Forces perspective shifts through three hostile reviewer personas (Saboteur, New Hire, Security Auditor) that play concurrent, crash, retry and malicious-input schedules to catch blind spots the author's mental model shares with the reviewer. Triggers on "adversarial review", "break my code", "what could go wrong", "devil's advocate review", or "pre-merge review".
 stack: []
 area: review
 ---
 
-# Break the self-review monoculture
+# Break the review monoculture
 
-When an agent reviews code it just wrote, it shares the author's assumptions and blind spots. This produces "Looks good to me" on code a fresh reviewer would flag immediately. Three hostile personas; each must find at least one issue.
+A reviewer reading a diff tends to adopt the author's story of how it works and approve
+it. Live runs showed the cost: reviewers twice gave correctness 4/5 to code that lost
+updates under two concurrent writers and lost an acknowledged write when a lock holder
+was paused. The cure is to stop reading the story and **attack** the code from three
+hostile positions. Each persona must make real attempts — and must report only what
+actually breaks. An attack that fails is written down as "tried X — holds because
+<line>"; it is not dressed up as a finding.
 
 ## The three personas
 
-**Saboteur** — wants to break this in production. Asks: what input crashes this? What race condition emerges under load? What happens when a dependency is down? What deploy order causes data corruption?
+**Saboteur** — wants to break this in production. Plays schedules, not vibes:
+- two callers at once on every write (lost update, temp-file collision, double insert);
+- the process paused past any timeout or lock lease, then resuming;
+- a crash between two writes, or after the write but before the acknowledgement;
+- the request retried after a timeout, a message delivered twice;
+- a dependency slow, down or returning garbage; a disk full; a clock jump;
+- inputs at the edges: empty, huge, negative, unicode, duplicate keys, wrong type;
+- old code running against the new schema mid-deploy.
 
-**New Hire** — joined last week. Asks: what does this variable name actually mean? Why was this chosen over the obvious alternative? Where does this function get called? Could I maintain this at 2 AM?
+**New Hire** — joined last week and must change this code at 2 AM. Asks: what does this
+name actually mean, where is this called from, why this over the obvious alternative,
+which test tells me I broke it? Their findings are usually notes; they become defects
+only when the confusion hides a real bug (a misleading name that led to a wrong call, a
+test named for an AC it does not exercise).
 
-**Security Auditor** — OWASP Top 10 + supply chain. Asks: where is user input validated? Where could injection occur? What happens if this secret leaks? Are dependencies pinned and scanned?
+**Security Auditor** — OWASP ASVS 5.0 plus supply chain. Traces each new input to its
+sinks: injection, missing object-level authorization, SSRF, path traversal, mass
+assignment, secrets in code or logs, unsafe deserialisation; checks any new or bumped
+dependency is pinned and comes from the expected registry.
 
-## Severity classification
+## Severity
 
-| Level | Meaning | Action |
-|-------|---------|--------|
-| **BLOCK** | Production break, data loss, security vulnerability | Must fix before merge |
-| **CONCERN** | Quality, maintainability, or performance issue | Should fix before merge |
-| **NOTE** | Suggestion, style, minor smell | Optional; document if skipping |
+| Level | Meaning | Effect on a Gaffer review |
+|-------|---------|---------------------------|
+| **BLOCK** | A reproducible schedule or input that loses or corrupts data, breaks an AC, crashes, or bypasses a security control | Grounds for `RECOMMEND CHANGES` |
+| **CONCERN** | A real defect needing an unusual but possible condition | Grounds for `RECOMMEND CHANGES` only when it is a correctness or security bug |
+| **NOTE** | Maintainability, naming, style, hardening with no exploit | Listed "(optional)"; never grounds for CHANGES |
 
-**Severity promotion:** a finding caught by 2+ personas is promoted one level (CONCERN → BLOCK; NOTE → CONCERN). Cross-persona findings reveal a systemic blind spot.
+A finding raised independently by two personas is promoted one level — but never to
+BLOCK without a concrete schedule or input that reproduces it.
 
 ## Steps
 
-1. **Read the diff.** `git diff` against the merge target. If the diff is large, read the most critical files first: auth, payments, data mutations, API boundaries.
-2. **Adopt the Saboteur.** Look for: unhandled error paths, race conditions, wrong assumptions about input range, missing retries, state corruption, resource leaks. The Saboteur must find at least one finding.
-3. **Adopt the New Hire.** Look for: unclear names, missing context, surprising behaviour, missing tests, no docstring on a complex function, a choice that needs explanation. The New Hire must find at least one finding.
-4. **Adopt the Security Auditor.** Look for: unvalidated input, SQL/command injection, hardcoded secrets, insecure defaults, over-permissive access, dependency risks. The Auditor must find at least one finding.
-5. **Deduplicate and promote.** Merge findings; promote cross-persona findings one severity level.
-6. **Emit the verdict.** BLOCK (any BLOCK finding) / CONCERNS (CONCERN only) / CLEAN (notes only). Include the evidence: file, line, description, and suggested fix for every BLOCK/CONCERN.
+1. **Read the diff** once against the merge target (`git diff <base>...HEAD`); for a
+   large diff start with writes, auth, money, persistence and API boundaries.
+2. **Saboteur pass.** For each write path and external call, play the schedules above
+   and write each as numbered steps ending in the observable result (lost write, 500,
+   duplicate charge, torn file). Walk the `concurrency-review` checklist for shared
+   state and persistence.
+3. **New Hire pass.** Note what is unclear; promote only confusion that hides a bug.
+   Check each AC's test is named for and exercises that AC (the `test-quality-review`
+   skill).
+4. **Security Auditor pass.** Map sources to sinks with the `security-review`
+   checklist. For new or bumped dependencies, run the repo's existing audit command if
+   it has one (`npm audit`, `pip-audit`, `govulncheck`); never install tools.
+5. **Deduplicate and promote.** Merge findings; apply the promotion rule.
+6. **Emit the result.** Every BLOCK and CONCERN gets file, line, the reproducing
+   schedule or input, and one suggested fix. In a Gaffer review, record them with
+   `record_ac_evidence` (`evidence_type: manual_note`) and let the `review-ticket`
+   bar decide the verdict; outside Gaffer, emit BLOCK / CONCERNS / CLEAN.
 
 ## Output format
 
 ```
-## Adversarial Review — <scope>
-
+## Adversarial review — <scope>
 ### Saboteur
-- [BLOCK] `src/auth.ts:42` — JWT verified without checking `exp` claim; expired tokens accepted.
-
+- [BLOCK] store.ts:42 — 1) A reads todos.json 2) B reads 3) A writes +x 4) B writes +y → x lost.
+  Fix: hold the file lock across read and write.
+- tried: crash mid-write — holds (unique temp file + rename, store.ts:57)
 ### New Hire
-- [CONCERN] `processPayment()` — 120 lines; no inline doc; unclear why retry limit is 3. Extract and document.
-
+- [NOTE] `sync()` also deletes stale rows; name hides that.
 ### Security Auditor
-- [BLOCK] `src/auth.ts:42` — (shared with Saboteur — promoted from CONCERN)
-- [CONCERN] `package.json` — `axios@0.27.2` has known SSRF CVE (CVE-2023-45857); upgrade to 1.6+.
-
-### Verdict: BLOCK
-Fix `src/auth.ts:42` before merge.
+- tried: path traversal on `name` — holds (allow-list regex, routes.ts:18)
+### Verdict: BLOCK — fix store.ts:42
 ```
-
-## Review checklist
-
-- **Every persona has at least one finding** — no persona is allowed a clean pass.
-- **Every BLOCK includes a suggested fix** — not just a description of the problem.
-- **Cross-persona findings promoted** — check for overlap before finalising severity.
-- **Verdict matches the highest severity** — BLOCK if any BLOCK; CONCERNS if any CONCERN.
 
 ## Rules
 
-- No "looks good" without running all three personas.
-- BLOCK findings must be fixed before merge — the reviewer must re-check after the fix.
-- Security Auditor always checks dependencies for known CVEs, not just the diff.
+- Every persona records its attempts; no persona is required to invent a finding.
+- No BLOCK without a reproducing schedule or input; no CHANGES for a NOTE.
+- Re-check each BLOCK after the fix lands.
+- As a reviewer you never patch the code under review.

@@ -31,7 +31,7 @@ Give every colour a name, a value, and a *usage* — a swatch with no stated job
   /* Neutral */
   --color-background: oklch(98% 0.00 0);
   --color-text:       oklch(22% 0.02 264);
-  --color-muted:      oklch(64% 0.01 264);        /* captions, secondary text */
+  --color-muted:      oklch(50% 0.01 264);        /* captions, secondary text — 5.7:1 */
   --color-border:     oklch(92% 0.00 0);
 
   /* Semantic — fixed meanings, do not repurpose */
@@ -42,9 +42,18 @@ Give every colour a name, a value, and a *usage* — a swatch with no stated job
 }
 ```
 
-Why `oklch`: perceptually uniform lightness means tints/shades and hover steps are predictable,
-and contrast is easier to reason about than with hex. State each pair's contrast against its
-background (text ≥ 4.5:1, large/UI ≥ 3:1) in the brand doc.
+Why `oklch`: perceptually uniform lightness means tints/shades and hover steps are predictable.
+It does **not** give you the WCAG contrast ratio — that is computed from relative luminance, so
+measure every pair actually used (a script, the repo's checker, or a browser devtools contrast
+readout) and record it in the brand doc: body text ≥ 4.5:1, large text (≥ 24px, or ≥ 18.66px
+bold) ≥ 3:1, UI boundaries, icons and focus rings ≥ 3:1. Do it per theme — a pair that passes in
+light often fails in dark.
+
+Fill colours are not text colours. Bright semantic hues (the warning yellow above) typically fail
+4.5:1 as text on a light surface; give each role a text-safe variant (`--color-warning-text`,
+lower lightness) and use the bright value for fills, borders and icons with a text label. Keep
+chroma within sRGB for key UI colours unless the repo targets wide-gamut displays deliberately —
+out-of-gamut `oklch` values are clipped differently across browsers.
 
 ## Typography framework
 
@@ -59,8 +68,12 @@ used by accident. Cap it at two families (plus optional mono) unless there's a r
 --font-mono:    'JetBrains Mono', ui-monospace, monospace;
 ```
 
-Load with `font-display: swap`, `preconnect` to the font host, and preload **only** the single
-critical weight.
+Self-host the fonts (faster than a third-party host, no cross-origin connection, no visitor data
+sent to a font CDN), subset to the scripts the product ships, and use WOFF2. Preload **only** the
+single critical weight used above the fold. Use `font-display: swap` with a metric-matched
+fallback (`size-adjust`, `ascent-override`, `descent-override` on a local fallback `@font-face`)
+so the swap does not shift layout, or `font-display: optional` when the brand can tolerate the
+fallback on a slow first visit. Variable fonts replace several static weights with one file.
 
 ### Type scale
 
@@ -78,4 +91,8 @@ fluid tokens so they scale with the viewport without media queries.
 | Small | 0.875rem | 400 | 1.5 |
 | Caption | 0.75rem | 400 | 1.4 |
 
-Body text never below 16px; line-height ~1.5 for body, tighter (1.1–1.3) for large headings.
+Body text never below 16px (1rem, so user font settings apply); line-height ~1.5 for body,
+tighter (1.1–1.3) for large headings; 45–75 characters per line. Fluid `clamp()` sizes must keep a
+`rem` component in the preferred value (`1rem + 2vw`, not `4vw` alone) so text still grows with
+browser zoom (WCAG 1.4.4). The layout must survive the WCAG 1.4.12 text-spacing overrides
+(line-height 1.5, letter-spacing 0.12em, word-spacing 0.16em) without clipping.

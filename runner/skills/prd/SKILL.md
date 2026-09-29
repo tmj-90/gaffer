@@ -7,61 +7,108 @@ area: product
 
 # Write evidence-gated product requirements
 
-A PRD without a real problem, a specific user, and a measurable metric is a feature wish. Refuse to draft until those three are answered.
+Without a real problem, a specific user and a measurable metric, a PRD is only a feature
+wish. Without explicit quality requirements it is also a trap. Live factory runs showed
+that a brief's "must never be corrupted" became one mechanism in the plan, and concurrent
+writers shipped broken twice. A PRD states **outcomes and guarantees**. It leaves
+solutions to the engineers (Cagan, *Inspired*: product teams are given problems to solve,
+not features to build).
 
-## Forcing questions (walk one at a time — do not batch)
+## Forcing questions
 
-1. **Problem** — What user problem does this solve, and how do you know it exists? (Support tickets, interview quotes, funnel data — "the CEO wants it" is not evidence.)
-2. **User** — Who specifically has this problem? (Segment, role, frequency of pain. "Everyone" is not a user.)
-3. **Metric** — What single number moves if this works, by how much, measured where?
-4. **Alternatives** — What do these users do today instead? Why is that not enough?
-5. **Non-goals** — What adjacent asks are explicitly out of scope for v1?
+1. **Problem.** What user problem does this solve, and what is the evidence? Examples:
+   support tickets, interview quotes, funnel data. "The CEO wants it" is not evidence.
+2. **User.** Who has the problem? Give the segment, role and how often it hurts.
+   "Everyone" is not a user.
+3. **Metric.** What single number moves if this works? By how much, measured where, and
+   by when?
+4. **Alternatives.** What do these users do today, and why is that not enough?
+5. **Non-goals.** Which adjacent asks are out of scope for v1?
+6. **Quality bar.** Which of these matter, and at what level?
+   - data durability across a restart or a crash mid-write
+   - concurrent users or processes writing the same data
+   - error behaviour
+   - supported runtimes, browsers and OSes
+   - security and privacy
+   - performance under a stated load
+
+In a conversation, ask these one at a time. **Unattended (a factory agent)**, never wait.
+Take the answers from the ticket, the brief, the lore (`search_lore`) and the repo. List
+whatever is still unknown under Open questions. In the factory's clarify pass, raise an
+unknown that blocks delivery with `request_decision` as the `clarify` skill describes;
+never `mark_ticket_blocked` (it is refused without a claim).
 
 ## Drafting gate
 
-**Refuse to draft if Q1 (problem), Q2 (user), or Q3 (metric) is unknown, circular, or "we'll figure it out."**
+**Do not draft** if Q1, Q2 or Q3 is unknown, circular, or "we'll figure it out". Output the
+open questions instead, each with the cheapest way to answer it: five problem interviews, a
+funnel query, a fake-door test, or a one-day prototype. See the `product-discovery` skill.
 
-Instead: output the open questions and the cheapest way to answer each (5 customer interviews, a funnel query, a fake-door test, a 1-day prototype). A week of discovery is cheaper than shipping the wrong feature.
+## Required sections
 
-## Required sections (every PRD must have all of these)
+- [ ] **Problem statement**, with the evidence from Q1.
+- [ ] **Target user and segment**, including who is explicitly NOT the target.
+- [ ] **Goals and non-goals**.
+- [ ] **User stories with acceptance criteria.** One story per unit of user value (INVEST,
+      see the `user-story` skill). Each has at least one happy-path AC and at least one
+      error or edge AC.
+- [ ] **Quality requirements.** Each is a testable statement with a concrete load or
+      schedule. State the guarantee, never the mechanism:
+  - _Persistence:_ an acknowledged write survives a restart, and a write killed mid-way
+    leaves the prior data readable.
+  - _Concurrency:_ N concurrent writes through every entry point all succeed and none are
+    lost. This also holds across processes, and when a lock holder pauses, if more than
+    one process can write.
+  - _Failure behaviour:_ documented errors, no crash, and no state change on invalid
+    input.
+  - _Runtime support:_ the pinned versions are the ones tested.
+  - _Security:_ authn/authz rules, cross-user isolation, no secrets in logs.
+  - _Performance:_ a threshold under a stated load, only if speed matters.
 
-- [ ] **Problem statement** — with the evidence from Q1.
-- [ ] **Target user and segment** — from Q2; who is explicitly NOT the target.
-- [ ] **Goals and explicit non-goals** — from Q5.
-- [ ] **User stories with acceptance criteria** — "As a [user], I want [action] so that [outcome]. Done when [testable condition]."
-- [ ] **Success metric + threshold + measurement source** — from Q3; how and when you'll measure.
-- [ ] **Open questions** — unresolved assumptions that need an answer before or during build.
-- [ ] **Out of scope** — explicit list; protects from scope creep in delivery.
+  If a quality does not apply, say so and give the reason.
+- [ ] **Success metric**, with a threshold, a measurement source and a review date.
+- [ ] **Open questions**, each with an owner and the cheapest way to resolve it.
+- [ ] **Out of scope**, as an explicit list.
 
 ## Acceptance criteria format
 
 ```
-Given [context / precondition]
-When [action]
-Then [observable outcome]
+Given [precondition/state]
+When  [one action, with concrete data or load]
+Then  [observable outcome: response, stored state, message]
 ```
 
-Every user story has at least one AC. ACs are testable — a QA engineer can verify them without asking questions.
+Each AC is one behaviour. A tester must be able to automate it without asking the PM.
+"Works correctly", "is robust" and "handles errors" are not ACs.
 
 ## Steps
 
-1. **Ask the forcing questions** one at a time. Wait for answers. Don't proceed if answers to Q1–3 are vague.
-2. **Apply the drafting gate.** If blocked, output the open questions + cheapest resolution path.
-3. **Draft the PRD** in the required-sections format.
-4. **Emit the completion checklist** at the end — mark each section done or flag what's missing.
-5. **Review with stakeholders** before handing to engineering — especially the success metric.
+1. **Collect answers** to the forcing questions, interactively or from the ticket, brief,
+   lore and repo.
+2. **Apply the drafting gate.** If it blocks, output the open questions and their
+   cheapest resolution, then stop.
+3. **Draft every required section.** Derive the quality requirements from the product
+   shape as well as from the words in the brief. A server with a store implies
+   concurrent writers. Two binaries sharing data implies cross-process writers.
+4. **Trace.** Every goal maps to at least one story. Every quality requirement is a
+   testable AC or a stated "not applicable".
+5. **Emit the completion checklist** at the end. Mark each section done, or name what
+   is missing.
 
 ## Review checklist
 
-- **Problem has evidence** — not intuition or executive preference.
-- **User is specific** — a segment and role, not "users" or "everyone".
-- **Metric is single and measurable** — not "improve UX" or "users will like it".
-- **Acceptance criteria are testable** — a QA engineer can verify without asking the PM.
-- **Non-goals are explicit** — not implied.
-- **Completion checklist emitted** — all sections accounted for.
+- The problem has evidence, not opinion.
+- The user is a specific segment and role.
+- There is one metric, with a threshold, a source and a date.
+- Every AC is a Given/When/Then a test can automate, and it covers errors as well as the
+  happy path.
+- Quality requirements are explicit and measurable, with no mechanism standing in for a
+  guarantee.
+- Non-goals and out-of-scope items are listed, not implied.
+- Open questions have owners.
 
 ## Rules
 
-- "The CEO wants it" is not a problem statement — push back and ask for user evidence.
-- One success metric per PRD. Multiple metrics split attention and make post-launch evaluation ambiguous.
-- Non-goals protect the team — be explicit and specific.
+- One success metric per PRD. Guardrail metrics (e.g. error rate) may accompany it.
+- Describe the problem and the guarantees. Do not dictate the implementation.
+- Never invent evidence, users or numbers. Mark an unknown as unknown.

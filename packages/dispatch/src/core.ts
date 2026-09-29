@@ -1127,7 +1127,13 @@ export class Dispatch {
     input: { title: string; question: string; severity?: DecisionSeverity; ticketId?: string },
     actor: Actor,
   ): Decision {
-    return this.decisionSvc.createDecision(input, actor);
+    // Accept any ticket reference (id, 15, #15, T-15) like every other ticket tool; the
+    // link table stores the id, so an unresolved number would fail its foreign key.
+    const ticketId = input.ticketId ? this.resolveTicket(input.ticketId).id : undefined;
+    return this.decisionSvc.createDecision(
+      { ...input, ...(ticketId !== undefined ? { ticketId } : {}) },
+      actor,
+    );
   }
 
   listPendingDecisions(): Decision[] {

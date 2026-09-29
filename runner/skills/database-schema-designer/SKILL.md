@@ -7,86 +7,105 @@ area: data
 
 # Design schemas that survive production
 
-Normalise first. Index for query patterns. Never sacrifice data integrity for convenience.
-
-## Design process
-
-### Step 1 — Requirements → Entities
-
-Extract nouns from the requirement. Each noun that has attributes and participates in relationships is likely an entity. Resist making everything a single wide table.
-
-### Step 2 — Relationships
-
-Identify cardinality before choosing the table structure:
-
-| Relationship | Implementation |
-|-------------|---------------|
-| 1:1 | Foreign key on the less-common side (or same table if always loaded together) |
-| 1:N | Foreign key on the N side |
-| M:N | Junction table with FK to both sides; add attributes to the junction if needed |
-
-### Step 3 — Normalisation
-
-Target 3NF for transactional data:
-
-1. **1NF** — atomic values; no repeating groups; primary key identifies each row.
-2. **2NF** — no partial dependencies (non-key column depends on the whole PK, not a subset).
-3. **3NF** — no transitive dependencies (non-key column depends only on the PK, not on another non-key column).
-
-Denormalise deliberately for read-heavy analytics tables — document the trade-off.
-
-## Standard conventions
-
-- Primary key: `id` (UUID v7 for distributed systems; BIGSERIAL for single-node).
-- Timestamps: `created_at TIMESTAMPTZ DEFAULT now()`, `updated_at TIMESTAMPTZ DEFAULT now()`.
-- Soft delete: `deleted_at TIMESTAMPTZ` nullable — add a partial index `WHERE deleted_at IS NULL`.
-- Audit trail: separate `audit_log` table with `entity_type`, `entity_id`, `action`, `actor_id`, `changed_at`, `before`, `after`.
-- Multi-tenancy: `tenant_id` on every tenant-scoped table; composite primary key or FK constraint; RLS policy.
-
-## Index strategy
-
-- Index every foreign key (databases do not do this automatically).
-- Add composite indexes for the most common `WHERE col1 = ? AND col2 = ?` patterns.
-- Partial indexes for filtered queries (`WHERE deleted_at IS NULL`, `WHERE status = 'active'`).
-- Covering indexes (`INCLUDE (col)`) to avoid heap lookups on hot read paths.
-- Drop indexes that are never used — they slow writes.
-
-## Migration safety
-
-| Change | Safe? | Notes |
-|--------|-------|-------|
-| Add nullable column | Yes | |
-| Add NOT NULL with default | Risky on large tables | Add nullable, backfill, add constraint |
-| Rename column | No | Add new, backfill, drop old — across deploys |
-| Drop column | No | Mark unused, deploy, then drop |
-| Add index | Yes (CONCURRENT) | `CREATE INDEX CONCURRENTLY` — never blocking |
-| Change column type | No | New column + backfill pattern |
+A schema is the one place an invariant holds no matter which code path, process or
+concurrent request writes. Normalise first, let constraints enforce the rules, index for
+the real query patterns, and change it in steps that never block production. Sources:
+PostgreSQL docs (constraints, `CREATE INDEX`, `ALTER TABLE`, transaction isolation, row
+security); MySQL 8 reference (InnoDB locking, online DDL); Codd's normal forms as taught
+in standard database texts.
 
 ## Steps
 
-1. **Read the lore + existing schema.** `search_lore` for ORM conventions, migration tool (Drizzle/Prisma/Alembic), naming rules, and existing patterns. Extend; don't contradict.
-2. **Extract entities and relationships** from the requirements. Draw the ERD (Mermaid is fine) before writing DDL.
-3. **Normalise to 3NF.** Document any deliberate denormalisation.
-4. **Write migrations.** Use the repo's migration tool. Each migration: one logical change, reversible (`up`/`down`), idempotent.
-5. **Add indexes.** At minimum: every FK; composite for the top query patterns identified from the ticket.
-6. **Generate types.** Derive TypeScript interfaces or Python Pydantic models from the schema — do not hand-write them separately.
-7. **Verify.** Run migrations against a real database; confirm `EXPLAIN ANALYZE` on the primary query patterns shows index scans, not sequential scans. Record evidence.
+1. **Read the existing schema and conventions.** `search_lore` for the ORM, migration
+   tool, naming, key strategy and tenancy model. Extend them; never introduce a second
+   pattern.
+2. **Model entities and relationships.** Nouns with attributes become tables. State
+   cardinality before structure: 1:N → FK on the N side; M:N → junction table with a
+   composite primary or unique key on the two FKs; 1:1 → FK with a UNIQUE constraint.
+   Sketch the ERD (Mermaid is fine) in the plan or the evidence summary.
+3. **Normalise to 3NF for transactional data.** 1NF: atomic values, no repeating groups.
+   2NF: no column depends on part of a composite key. 3NF: no column depends on another
+   non-key column. Denormalise only for a measured read need, and document who keeps the
+   copy consistent (trigger, same-transaction write, or rebuild job).
+4. **Write every invariant as a constraint** — the application check alone is a race.
+   Under Read Committed (Postgres default) and Repeatable Read (MySQL InnoDB default),
+   two transactions can both "check, then insert" and both succeed:
+   - uniqueness → `UNIQUE`; conditional ("one active subscription per user") → partial
+     unique index `WHERE status = 'active'` (Postgres) or a generated column (MySQL);
+   - no overlapping ranges (bookings) → Postgres `EXCLUDE USING gist (room_id WITH =,
+     during WITH &&)` with `btree_gist`, or serialise via `SELECT … FOR UPDATE` on a parent;
+   - value rules (`amount >= 0`, allowed states) → `CHECK`; references → FK with an
+     explicit `ON DELETE` (`RESTRICT` unless cascade is truly intended);
+   - counters and balances → a single `UPDATE … SET n = n + :d WHERE … AND n + :d >= 0`,
+     never read-modify-write in application code; concurrent edits to one row →
+     optimistic `version` column (`UPDATE … WHERE id = ? AND version = ?`, 0 rows → `409`).
+   Map constraint violations to a domain error (`409`/`422`), not a `500`. If you use
+   `SERIALIZABLE`, retry on SQLSTATE `40001`.
+5. **Choose types that cannot drift.** Timestamps `timestamptz` (MySQL: UTC `DATETIME`
+   by convention); money as `numeric`/integer minor units, never float; `text` with a
+   `CHECK` length over arbitrary `varchar(n)` in Postgres; enums via `CHECK` or a lookup
+   table (easier to extend than a native enum). Keys: `bigint` identity for single-node,
+   UUIDv7 (time-ordered, index-friendly; Postgres 18 has `uuidv7()`) when ids are
+   generated outside the database. `NOT NULL` by default; nullable only with a meaning.
+   Absent a repo convention: `created_at`/`updated_at timestamptz NOT NULL DEFAULT now()`
+   on every table; soft delete as a nullable `deleted_at` with partial indexes and
+   unique keys `WHERE deleted_at IS NULL`; and an append-only audit table (`entity_type`,
+   `entity_id`, `action`, `actor_id`, `changed_at`, `before`, `after`) for user-facing
+   data with compliance implications.
+6. **Tenancy.** `tenant_id NOT NULL` on every tenant-scoped table, leading in composite
+   unique keys and indexes; composite FKs `(tenant_id, parent_id)` make cross-tenant
+   references impossible. With Postgres RLS: `ENABLE` and `FORCE ROW LEVEL SECURITY`
+   (owners bypass otherwise) and connect as a non-owner role.
+7. **Index for the query patterns in the ticket.** Postgres does not index FK columns
+   automatically (InnoDB does): add them. Composite indexes: equality columns, then range,
+   then sort. Partial indexes for hot subsets. Every index costs every write; add none
+   without a query that needs it (the `sql-query-performance` skill).
+8. **Migrate without blocking** (mechanics: the `add-db-migration` skill; review: the
+   `migration-review` skill). Set `lock_timeout` for DDL. See the table below.
+9. **Generate types from the schema** (Prisma/Drizzle/sqlc/SQLAlchemy/pydantic tooling
+   the repo uses); never hand-write a parallel model.
+
+## Migration safety (Postgres; MySQL: prefer `ALGORITHM=INSTANT/INPLACE, LOCK=NONE`)
+
+| Change                               | Safe pattern                                                                                          |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Add nullable column                  | Safe.                                                                                                 |
+| Add column with constant default     | Safe on PG 11+ (metadata only); volatile defaults rewrite the table.                                  |
+| Make column `NOT NULL`               | Backfill in batches; `ADD CHECK (c IS NOT NULL) NOT VALID`; `VALIDATE`; then `SET NOT NULL` (PG 12+). |
+| Add FK or CHECK                      | `ADD CONSTRAINT … NOT VALID`, then `VALIDATE CONSTRAINT` in a later step.                             |
+| Add index                            | `CREATE INDEX CONCURRENTLY`, outside a transaction; if it fails, drop the `INVALID` index and retry.  |
+| Rename / drop column, change type    | Expand-contract across deploys: add new, dual-write, backfill, switch reads, drop old.                |
+
+## Tests
+
+- Migrations apply up (and down, if the repo supports it) on a fresh database and on
+  one seeded with representative data.
+- **Concurrency per invariant:** N parallel transactions attempting to violate it (two
+  active subscriptions, overlapping bookings, overdraft) → exactly the allowed number
+  commit; the rest get the domain error, none a `500`. Run against the real engine, not
+  an in-memory substitute with different semantics (the `concurrency-and-async` skill's
+  step 9 recipe).
+- `EXPLAIN` on the ticket's main queries shows the intended indexes.
+
+## Done when
+
+The ERD and DDL match the requirements, every invariant is a constraint with a
+concurrency test, migrations follow the safety table, types are generated, and each
+acceptance criterion has evidence via the `record-evidence` skill.
 
 ## Review checklist
 
-- **3NF achieved** — no partial or transitive dependencies, or denormalisation is documented.
-- **Every FK indexed** — check `pg_indexes` or equivalent.
-- **Migrations reversible** — `down` migration exists and tested.
-- **No blocking DDL** — index creation uses `CONCURRENTLY`; large table alterations use the add-backfill-constraint pattern.
-- **Timestamps on every table** — `created_at`, `updated_at`.
-- **Types generated** — not hand-written from the schema.
-
-## Rules
-
-- Never rename a column in a single migration on a live table — three-deploy pattern only.
-- `CREATE INDEX CONCURRENTLY` always — blocking index creation on production tables is a SEV2.
-- Audit trail for every table that stores user-facing data with compliance implications.
+- [ ] 3NF, or denormalisation documented with its consistency mechanism.
+- [ ] Every business invariant enforced by a constraint, not only application code.
+- [ ] FKs indexed (Postgres) with an explicit `ON DELETE`.
+- [ ] Types: `timestamptz`, exact money, `NOT NULL` by default.
+- [ ] Tenant id in keys, composite FKs, RLS forced if used.
+- [ ] Non-blocking migration steps; `lock_timeout` set.
 
 ## Capture lore
 
-ORM choice, migration tool, naming conventions, UUID strategy, and RLS policy are high-value schema lore — call `suggest_lore` with `tags: [database, schema, migrations]`.
+This skill is one of the places durable, reusable knowledge naturally surfaces:
+**While modelling tables you learn the ORM, the migration tool, the key strategy, the tenancy and RLS model and the invariants the schema enforces.** That kind of fact is *lore*. Capture it via the **lore-capture
+protocol in your brief** (`CLAUDE.factory.md`, step 11 "Memory contribution"):
+call the Memory MCP `suggest_lore` once at the close of your work — reusable
+conventions, gotchas, decisions, and boundaries only, never per-ticket trivia.

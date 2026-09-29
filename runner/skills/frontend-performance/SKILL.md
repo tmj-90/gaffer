@@ -7,52 +7,103 @@ area: frontend
 
 # Make the frontend fast, measurably
 
-Frontend performance is measured by what a user's browser does: bytes shipped, work on
-the main thread, layout shifts, and time to interactive. Profile in the browser, find the
-biggest cost, do less of it (ship less, render less, load later), and show the same
-measurement afterwards. Cleverness comes after subtraction.
+Performance is what the user's browser does: bytes shipped, main-thread work, layout
+shifts. Measure the right metric, find the biggest cost, subtract it, and measure again
+the same way. A change with no before/after number is not a performance fix.
+
+## The targets (web.dev Core Web Vitals)
+
+Assessed on **field data at the 75th percentile**, mobile and desktop separately:
+
+| Metric | Good | Poor | What it measures |
+|--------|------|------|------------------|
+| LCP | ≤ 2.5 s | > 4 s | when the largest image/text block in the viewport renders |
+| INP | ≤ 200 ms | > 500 ms | slowest-ish input → next paint across the visit (replaced FID in 2024) |
+| CLS | ≤ 0.1 | > 0.25 | unexpected layout shift, largest session window |
+
+Lab tools (Lighthouse) cannot measure INP; use **Total Blocking Time** as the lab proxy
+and a scripted interaction trace for the specific slow input.
 
 ## Steps
 
-1. **Pick the metric and measure it.** LCP, INP, CLS, TTFB, bundle bytes (gzipped, per
-   route), or a component's render time. Use the repo's tooling (Lighthouse CI, the
-   bundle analyzer, a performance budget, `web-vitals` reporting) and record the
-   baseline with the exact command/URL and conditions (throttling profile, cold cache).
-   Call `search_lore` for budgets and past decisions.
-2. **Profile in the browser.** The Performance panel for long tasks and layout thrash,
-   the React/Vue devtools profiler for re-renders, the Network panel for the waterfall,
-   the bundle analyzer for what ships. Find the top item; fix that.
-3. **Ship less.** Code-split by route and by heavy component; import only the pieces
-   you use from large libraries (or replace them); tree-shake; remove polyfills modern
-   browsers do not need; defer third-party scripts; compress and cache static assets
-   with long TTLs and hashed names (the `caching-strategy` skill).
-4. **Render less.** Memoise expensive derived values and components that re-render with
-   unchanged props; move state down so a keystroke does not re-render the page;
-   virtualise long lists; avoid layout reads in loops; batch DOM writes. Verify with the
-   profiler that the re-render count actually dropped.
-5. **Load media right.** Responsive images with `srcset`/`sizes`, modern formats, width
-   and height set (no CLS), lazy-loading below the fold, the LCP image preloaded and
-   never lazy; fonts self-hosted, subsetted, `font-display: swap` or `optional`, and
-   preloaded when they are in the first paint.
-6. **Protect the main thread.** Move heavy computation to a worker or the server; debounce
-   input handlers that trigger work; use `requestIdleCallback`/scheduling for non-urgent
-   work; keep INP under the target by keeping event handlers short.
-7. **Measure again** under the same conditions, repeated runs, and report before/after
-   with variance. Add or update the performance budget so the win is guarded in CI.
-8. **Evidence** with the `record-evidence` skill: baseline and after numbers, the
-   profile's top item, the bundle diff.
+1. **Pin the metric and the conditions.** Name one metric from the ticket (LCP, INP, CLS,
+   route JS bytes gzipped, a component's commit time). Call `search_lore` for budgets and
+   the measurement set-up. Record the baseline command and conditions, e.g.
+   `npx --no -- lighthouse <url> --preset=perf --form-factor=mobile
+   --throttling-method=simulate --chrome-flags="--headless=new" --output=json` run 5 times
+   (report the median), or the repo's Lighthouse CI / bundle analyzer / `web-vitals`
+   report. Use a production build, never the dev server. Use only tools already installed
+   (installs are hook-blocked; headless, plain `npx` downloads a missing package, so write
+   `npx --no -- <tool>`) — if none can measure the metric, say so in the evidence rather than
+   guessing.
+2. **Diagnose by sub-part, not by guess.**
+   - **LCP** = TTFB + resource load delay + resource load duration + element render delay.
+     Find which part dominates from the Lighthouse JSON (the LCP element and its phase
+     breakdown) or a Playwright/Chrome trace — you have no interactive DevTools. Common causes: the LCP image is
+     discovered late (CSS background, client-rendered, `loading="lazy"`), render-blocking
+     CSS/fonts/JS, slow server response.
+   - **INP** = input delay + processing duration + presentation delay. Script the slow
+     interaction (Playwright plus a trace, or the `web-vitals` attribution build); look
+     for long tasks (> 50 ms) before or inside
+     the handler and for large re-renders or style/layout work after it. The `web-vitals`
+     attribution build (`onINP(cb, { reportAllChanges: true })`) names the element and
+     phase.
+   - **CLS**: the Lighthouse layout-shift audit or the `web-vitals` attribution shows
+     which node moved. Usual causes: images/iframes/
+     ads without dimensions, late web fonts with different metrics, content injected above
+     existing content, animations of layout properties.
+   - **Bundle**: the analyzer (`vite-bundle-visualizer`, `@next/bundle-analyzer`,
+     `source-map-explorer`) shows the top modules per route.
+3. **Fix the dominant cost — subtract first.**
+   - LCP: server-render or statically render the hero; make the LCP image discoverable in
+     the HTML with `fetchpriority="high"` and never lazy; `preload` only it and the one
+     critical font; inline critical CSS or cut render-blocking CSS; cache the HTML/CDN
+     where the data allows (the `caching-strategy` skill).
+   - INP: do less in the handler (update the visible state first, defer the rest); yield
+     between chunks of work (`await scheduler.yield()` where supported, else
+     `setTimeout(0)`); in React mark non-urgent updates with `startTransition` /
+     `useDeferredValue`; virtualise long lists; avoid forced synchronous layout (reading
+     `offsetHeight` after writing styles in a loop); move heavy pure work to a Web Worker.
+   - CLS: `width`/`height` or `aspect-ratio` on all media and embeds; reserve space for
+     late content (skeletons at the final size); fonts with `font-display: optional` or a
+     metric-matched fallback (`size-adjust`, `ascent-override`); animate only `transform`
+     and `opacity`.
+   - Bytes: route- and component-level code splitting (`import()`); replace or deep-import
+     heavy libraries; drop unneeded polyfills; defer third-party scripts; responsive images
+     (`srcset`/`sizes`, AVIF/WebP) sized to their rendered box.
+   - Also check back/forward cache eligibility (no `unload` handlers,
+     no `Cache-Control: no-store` on HTML without reason) — bfcache makes back navigations
+     instant.
+4. **Re-render storms (React/Vue).** Count renders in a test (React `<Profiler>`
+   `onRender`, or the framework's equivalent) rather than interactive devtools; fix the cause
+   (state too high, unstable props, context carrying fast-changing values) before adding
+   memoisation. If the React Compiler is enabled, do not hand-add `memo`/`useMemo`; if it
+   is not, memoise only what the profiler shows is costly.
+5. **Measure again** with the identical command and conditions, same number of runs;
+   report median before/after and the spread. A change within run-to-run noise is not a
+   win — say so.
+6. **Guard it.** Add or tighten the budget the repo uses (Lighthouse CI assertion,
+   `size-limit`, bundle-size check) for the metric you improved, so a regression fails CI.
+7. **Evidence** via the `record-evidence` skill: the command, baseline and after medians,
+   the dominant cost you removed, the bundle diff. Then stop.
 
-## Rules
+## Done when
 
-- A baseline in the browser before any change; the same measurement after.
-- Subtract first: fewer bytes, fewer renders, later loads; algorithms last.
-- Images and fonts sized, formatted, and preloaded/lazy-loaded correctly; zero CLS
-  from media.
-- Memoisation is verified by the profiler, not assumed.
-- Budgets exist and are enforced in CI for what you improved.
-- Never trade accessibility or correctness for a score (no removing focus styles, no
-  skipping validation to "feel faster").
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- The ticket's metric improved beyond noise under identical conditions, and meets the
+  stated budget or the "good" threshold above if the ticket names none.
+- No other Core Web Vital or route bundle regressed.
+- Where the repo has budget tooling, a budget guards the improvement; otherwise the
+  evidence names the missing guard (adding one is a `dependency-upgrade` decision).
+  Functional tests still pass.
+
+## Anti-patterns
+
+- Measuring on the dev build, on a fast desktop only, or with one run.
+- `loading="lazy"` or a fade-in animation on the LCP element; preloading many resources.
+- Blanket `useMemo`/`React.memo` without a profile; debouncing a click instead of making
+  the handler cheap.
+- Skeletons whose size differs from the loaded content (they cause the shift they hide).
+- Removing focus styles, labels or validation to improve a score.
 
 ## Capture lore
 

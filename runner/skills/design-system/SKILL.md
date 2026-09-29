@@ -1,127 +1,103 @@
 ---
 name: design-system
-description: Use when a ticket needs a *systematic* token + component foundation for a frontend — the three-layer token architecture (primitive → semantic → component), component specs with full state coverage, or a recommendation for which design system a product should have. Invoke for "set up design tokens", "define the component system", "we keep hardcoding colours — fix it", "what design system should this product use", or as the structural backbone that `frontend-design` and `brand` build distinctive UI on top of.
+description: Use when a ticket needs a *systematic* token + component foundation for a frontend — the three-layer token architecture (primitive → semantic → component), W3C DTCG design-token files, theming and dark mode, component specs with full state coverage, or a recommendation for which design system a product should have. Invoke for "set up design tokens", "define the component system", "we keep hardcoding colours — fix it", "what design system should this product use", or as the structural backbone that `frontend-design` and `brand` build distinctive UI on top of.
 stack: [react, web]
 area: frontend
 ---
 
 # Build a systematic design system
 
-`frontend-design` decides *how the product should look*; this pack decides *how that look is
-structured so it scales*. A design system is the disciplined layer underneath the aesthetic:
-a **three-tier token architecture**, **component specs that cover every interactive state**,
-and a deliberate match between the product's needs and the system it gets. Get this right and
-every later surface reuses tokens instead of re-inventing styling per component.
-
-Keep `SKILL.md` lean — the depth lives in the references; load the one you need on demand:
+The `brand` skill decides the identity; the `frontend-design` skill decides how a surface
+looks. This pack decides how that look is **structured so it scales**: a three-layer
+token architecture with one source of truth, component specs that cover every state, and
+checks that stop raw values leaking back in. Load a reference when you need depth:
 
 | Topic | Reference |
 |-------|-----------|
-| Three-layer token architecture (primitive → semantic → component), dark mode, naming | `references/token-architecture.md` |
-| Component specs — variants, sizes, full state matrices for button/input/card/etc. | `references/component-specs.md` |
-| Interactive states + variant patterns — state priority, focus rings, error/loading, a11y | `references/states-and-variants.md` |
+| Layers, naming, dark mode, DTCG JSON, migration from flat tokens | `references/token-architecture.md` |
+| Variants, sizes and state matrices for button/input/card/badge/alert/dialog/table | `references/component-specs.md` |
+| State priority, focus rings, error/loading patterns, ARIA per state | `references/states-and-variants.md` |
 
-## The token architecture in one breath
-
-Three layers, each referencing the one below — never skip a layer:
+## The architecture in one breath
 
 ```css
 /* PRIMITIVE — raw values, no meaning. Change rarely. */
---blue-600: oklch(55% 0.20 264);
-/* SEMANTIC — purpose aliases. This is the theme-switch seam. */
+--blue-600: oklch(55% 0.2 264);
+/* SEMANTIC — purpose. The theme seam: light/dark/brand override only this layer. */
 --color-primary: var(--blue-600);
-/* COMPONENT — per-component knobs. Change freely. */
+/* COMPONENT — per-component knobs, referencing semantic tokens. */
 --button-bg: var(--color-primary);
 ```
 
-Why it matters: **theming happens at the semantic layer** (override `--color-primary`, every
-component follows). **Per-component tweaks happen at the component layer** without disturbing
-anyone else. Components reference *component or semantic* tokens — **never a primitive
-directly**, and **never a raw hex/`px`**. See `references/token-architecture.md`.
+Components consume component or semantic tokens — **never a primitive, never a literal**.
+Themes (dark, high contrast, a second brand) re-point semantic tokens and nothing else.
 
-> House idiom: Gaffer uses **`oklch`** for colour and **`clamp()`** for fluid type at the
-> primitive layer (perceptual uniformity, predictable contrast). Adapt the references' hex
-> examples to `oklch` to stay consistent with `brand` and `frontend-design`.
-
-## Recommend a tailored design system
-
-When the ask is open-ended ("what should this product use?"), don't reach for a generic kit.
-Reason from the product to a *specific* system across four axes:
-
-1. **Pattern / structure** — content-first marketing site, data-dense dashboard/admin, a
-   transactional flow, or a component-library/SaaS surface. This sets density, the spacing
-   rhythm, and how much the grid is allowed to break.
-2. **Style direction** — defer to `brand` if one exists; otherwise pick a real one
-   (editorial, Swiss, neo-brutalism, glassmorphism-with-depth, light/dark luxury, bento) and
-   say *why it fits this product*. Never "clean minimal".
-3. **Palette posture** — how many primitives, which semantic roles (primary + secondary +
-   muted + the four status colours), and whether dark mode is a real requirement or a habit.
-   Use the 60/30/10 dominant/secondary/accent ratio as a sanity check, not a law.
-4. **A11y + performance posture** — contrast floors (4.5:1 text, 3:1 large/UI), visible focus,
-   `prefers-reduced-motion`, plus the CWV/bundle budgets from `frontend-design`. State these
-   as targets up front so they constrain the system, not get bolted on after.
-
-Output the recommendation as a short rationale + the token + component scaffold it implies —
-then hand off to `frontend-design` for the visual execution and `brand` for the identity.
-
-## Component spec discipline
-
-A component isn't "done" until every state is specified, not just the default. For each
-component define **variants** (default/secondary/outline/ghost/destructive…), **sizes**
-(sm/default/lg with explicit height + padding + font), and the **full state matrix**:
-
-| State | Trigger | Treatment |
-|-------|---------|-----------|
-| default | — | base |
-| hover | pointer over | one step darker/raised |
-| focus | keyboard/click | **visible** focus ring (never `outline:none` alone) |
-| active | pointer down | darkest |
-| disabled | `disabled`/`aria-disabled` | muted + `not-allowed`, opacity ~0.5 |
-| loading | async | `aria-busy`, spinner, reduced opacity, no pointer events |
-| error | invalid | error border + ring + message, never colour alone |
-
-State **priority** when several apply: disabled > loading > active > focus > hover > default.
-The full matrices for button/input/card/badge/alert/dialog/table live in
-`references/component-specs.md`; the cross-component state + variant rules in
-`references/states-and-variants.md`.
+**Source of truth.** If the repo keeps tokens as W3C Design Tokens Community Group
+(DTCG) JSON — the format reached its first stable version, 2025.10, in October 2025 —
+those files are the source: tokens carry `$value` and `$type`, aliases are written
+`{color.blue.600}`, and a build tool (Style Dictionary or the repo's equivalent)
+generates CSS variables, Tailwind theme and native values. Edit the JSON and regenerate;
+never hand-edit generated output. If the repo has only CSS custom properties, those are
+the source. Do not introduce a second source.
 
 ## Steps
 
-1. **Read the lore + existing tokens first.** `search_lore` (Memory MCP) for the design
-   system and any token ADRs; inspect `tokens.css`/theme files and a sibling component. If a
-   token system or `brand` already exists, **extend it in its idiom** — do not introduce a
-   competing one.
-2. **Establish the three layers** (or audit the existing set against them). Primitives as raw
-   `oklch`/`clamp()` values; semantic aliases for every role; component tokens per component.
-   Add a `.dark` block that overrides **semantic** tokens only.
-3. **Refuse primitive/hardcoded leaks in components.** Components consume semantic/component
-   tokens exclusively — no raw hex, no `px` font sizes, no primitive references.
-4. **Specify components fully** — variants, sizes, and the complete state matrix above, with
-   accessible focus and ARIA states. An unspecified state is a bug waiting to happen.
-5. **If asked to recommend a system**, run the four-axis reasoning above and output a
-   rationale + scaffold; hand visual execution to `frontend-design`, identity to `brand`.
-6. **Verify + evidence.** Run the repo's tests + lint; for token work, grep components for
-   raw hex / `px` font-size leaks. Record `test_output` via `record-evidence` and submit for
-   review — never self-approve.
+1. **Read what exists.** `search_lore` for design-system ADRs; find token files
+   (`*.tokens.json`, `tokens/`, `theme.ts`, `:root` blocks, Tailwind config), the build
+   command that generates outputs, and two sibling components. Extend the existing system
+   in its idiom; never add a competing one.
+2. **Audit before adding.** Count literals in component styles (commands below). Every
+   leak you touch is either replaced by an existing token or justifies a new one.
+3. **Place each new token in its layer.** Primitive only for a genuinely new raw value;
+   semantic for a new purpose (`--color-surface-raised`, `--space-section`); component
+   only when one component must diverge. Names describe purpose, not appearance
+   (`--color-danger`, not `--color-red`). Colour primitives in `oklch` (house idiom), type
+   in a `clamp()` fluid scale, spacing on one base unit (4px or 8px).
+4. **Theme at the semantic seam.** Dark mode and other themes override semantic tokens in
+   one block (`[data-theme="dark"]`, `.dark` or `@media (prefers-color-scheme: dark)`, per
+   the repo) and set `color-scheme` so native controls and scrollbars follow. A theme that
+   overrides a primitive or a component token means the seam is in the wrong place.
+5. **Verify contrast per theme.** For every foreground/background semantic pair actually
+   used (text on surface, text on primary, border on surface, focus ring on surface),
+   compute the WCAG contrast ratio in each theme: 4.5:1 for body text, 3:1 for large text,
+   UI boundaries and focus indicators. `oklch` lightness is not the WCAG ratio — compute
+   it (a script, the repo's checker, or a test). Record the table.
+6. **Specify components fully.** Variants, sizes (explicit height, padding, font token),
+   and the state matrix — default, hover, focus-visible, active, disabled, loading, error,
+   plus selected/checked where relevant — with the ARIA each state exposes. Priority when
+   several apply: disabled > loading > error > active > focus > hover > default. Focus is
+   always visible (`:focus-visible` ring from `--color-ring`, never `outline: none` alone).
+   Details: the references.
+7. **Recommending a system for a new product:** reason from the product, not a kit —
+   (a) pattern and density (marketing, data-dense dashboard, transactional flow),
+   (b) direction (defer to `brand`), (c) palette posture (semantic roles incl. success/
+   warning/danger/info; dark mode only if users need it), (d) accessibility and
+   performance targets stated up front. Output a short rationale plus the token and
+   component scaffold; hand visual execution to `frontend-design`.
+8. **Verify and evidence.** Regenerate token outputs if the repo builds them and confirm
+   the diff is only what you intended; run lint, type-check and tests; run the leak
+   checks; render the changed components in every theme through the repo's component or
+   screenshot tests where they exist. Record per-AC evidence with the
+   `record-evidence` skill (leak count before/after, contrast table), then stop.
 
-## Build / Test
+## Leak checks
 
-- Run the repo's configured test + lint; type-check (`tsc --noEmit`) for TS surfaces.
-- Token-compliance check: grep component styles for raw hex and `px` font sizes — they should
-  reference tokens, not literals.
-- Verify focus is visible on every interactive component and that `.dark` only overrides
-  semantic tokens (not primitives or component tokens).
-- The DoD is verified by the repo's configured commands — record the output as evidence.
+Run on changed component and style files (exclude the token files themselves):
 
-## Rules
+- raw colours: `grep -rEn '#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|oklch\(' src/components`
+- raw type sizes: `grep -rEn 'font-size:\s*[0-9.]+px' src/components`
+- primitives referenced from components: `grep -rEn 'var\(--(gray|blue|red|green)-[0-9]+' src/components`
+- Tailwind arbitrary values where tokens exist: `grep -rEn '\[(#|[0-9]+px)' src/components`
 
-- Three layers, no skipping: components reference semantic/component tokens, **never** a
-  primitive or a raw hex/`px`.
-- Theme at the **semantic** layer; tweak at the **component** layer; touch primitives rarely.
-- Every component spec covers the full state matrix with a **visible, accessible focus ring**.
-- Recommend a *specific* system from product → pattern + style + palette + a11y/perf — defer
-  to `brand` for identity and `frontend-design` for visual execution; never duplicate them.
-- `oklch` colour + `clamp()` type at the primitive layer to stay consistent with the house packs.
+Adjust paths and primitive names to the repo. New matches in your diff are defects for the
+builder to fix unless the line is itself a token definition; a reviewer lists them as
+`(optional)` unless one breaks an AC or a theme's contrast.
+
+## Done when
+
+No new literal or primitive reference in components; every theme overrides only semantic
+tokens; the contrast table passes in every theme; each touched component's state matrix
+is implemented with visible focus; generated outputs match the source.
 
 ## Capture lore
 

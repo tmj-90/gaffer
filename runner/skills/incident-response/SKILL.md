@@ -7,56 +7,88 @@ area: devops
 
 # Manage declared incidents end-to-end
 
-Triage fast, escalate correctly, contain early, learn systematically. An incident not reviewed is an incident that will recur.
+Mitigate first, understand second, learn always. Structure follows the Google SRE book
+("Managing Incidents", "Postmortem Culture") and, for security incidents, NIST SP 800-61
+Rev. 3 (detect → respond → recover, feeding back into preparation). In Gaffer you usually
+act on artefacts — classification notes, the incident timeline, the postmortem, the
+follow-up tickets — not on production: you cannot deploy, roll back or reach cloud
+consoles, and never run a production-changing command. Mitigations are recommendations a
+human executes; if one is needed now, raise `request_decision` with
+`severity: human_required` (or `security_required` for a security incident).
 
-## Severity framework
+## Severity and declaration
 
-| Severity | Impact | Response time | Escalation |
-|---------|--------|--------------|-----------|
-| **SEV1** | Customer data loss, full outage, SLA breach | Immediate — wake on-call lead | Engineering director + comms |
-| **SEV2** | Major feature degraded, >20% error rate | < 15 min | On-call lead + affected team |
-| **SEV3** | Minor degradation, workaround available | < 1h | Team Slack channel |
-| **SEV4** | Low impact, no SLO breach | Next business day | Ticket only |
+| Sev | Impact | Examples |
+|---|---|---|
+| SEV1 | Data loss or corruption, security breach, full outage | acknowledged writes lost, credentials leaked |
+| SEV2 | Major user journey broken or SLO fast-burn page firing | checkout 30% errors |
+| SEV3 | Degradation with workaround, slow-burn budget consumption | one region slow |
+| SEV4 | No user impact yet | a single replica crash-looping |
 
-## NIST SP 800-61 lifecycle
+Declare an incident (SRE book criteria) if any is true: a second team is needed; the
+problem is user-visible; it is unresolved after an hour of focused work. When in doubt,
+declare at the higher severity and downgrade later. **Any loss of acknowledged data is
+SEV1** regardless of how few users saw it.
 
-```
-Detect → Triage → Contain → Eradicate → Recover → Post-mortem
-```
+## Procedure
 
-## Steps
+1. **Confirm it is real.** Compare the firing signal to its baseline; check whether the
+   alert rule, the deploy, or the telemetry pipeline changed recently. A false positive
+   ends here: record why, and file an alert-tuning follow-up. Do not silence without a
+   record.
+2. **Classify and assign roles.** Severity from the table. Roles: Incident Commander
+   (coordinates, decides, owns the state document), Operations lead (the only one changing
+   systems), Communications lead (stakeholder updates on a fixed cadence), Planning lead
+   (tracks follow-ups, handoffs). One person may hold several roles for SEV3/4; the IC
+   role is always explicit and handed off explicitly.
+3. **Open a live state document** and keep a UTC timeline: every observation, decision,
+   and action with who/when. It becomes the postmortem's timeline.
+4. **Mitigate before root cause.** Fastest safe action that stops user harm: roll back the
+   last change, disable the feature flag, shift traffic, shed load, stop the writer that is
+   corrupting data. For suspected data loss, stop further writes to the affected store
+   before anything else. For security incidents, contain (revoke credentials, isolate
+   hosts) while **preserving evidence** — snapshot logs and disks before restarting or
+   deleting anything. Write the chosen action into the state document for a human to
+   execute; you do not execute it.
+5. **Diagnose from the first anomaly forward.** Which golden signal moved first, in which
+   component, right after which change? Check deploys, config changes, dependency status,
+   traffic shape. For data-integrity incidents look specifically for concurrent writers,
+   read-modify-write without locking or versioning, temp-file name collisions, and
+   time-based locks or leases that another process could break while the holder was paused
+   (GC, SIGSTOP, VM migration) — the class of defect that shipped twice in live runs.
+6. **Recover and verify.** The code fix goes on this ticket's branch; a human deploys it.
+   Write the recovery check into the state document: the SLI back within SLO over a full
+   short window and, for data incidents, what was acknowledged reconciled against what
+   was persisted. State the impact numerically from the data you were given.
+7. **Postmortem** — mandatory for SEV1/SEV2, any data loss, any on-call intervention
+   (rollback, traffic reroute), any incident found by a human rather than monitoring.
+   Draft within 2 business days. Sections: summary; impact (users, duration, error budget
+   consumed, data affected); UTC timeline; root cause(s) and trigger; contributing factors;
+   detection (how, how fast, what would have caught it sooner); what went well; where we
+   got lucky; action items.
+8. **Action items** each have an owner, a priority, a due date, and a tracking reference;
+   at least one per contributing factor; prefer items that prevent a class of failure
+   (a test schedule that pauses the lock holder, an alert on lease takeovers) over "be
+   more careful". Evidence the postmortem with the `record-evidence` skill, then stop.
 
-1. **Detect and classify.** Is this a real incident or a false positive? Check: baseline metrics normal? Alert recently changed? If false positive → suppress alert and file a tuning ticket; stop here.
-2. **Declare severity.** Apply the severity framework above. When in doubt, escalate up and downgrade later — under-escalation costs more than over-escalation.
-3. **Assign roles.** Incident commander (owns comms + decisions), tech lead (owns diagnosis + fix), comms lead (stakeholder updates). One person can cover multiple roles for SEV3/4.
-4. **Contain.** Isolate blast radius before root-cause analysis. Feature flag off? Rollback? Kill canary? Do the fastest safe contain action first.
-5. **Diagnose.** Read logs and traces chronologically from the first anomaly. Golden signals: which of latency/traffic/errors/saturation broke first? Follow the causal chain.
-6. **Eradicate + recover.** Apply the fix; verify with health checks and SLI recovery; confirm SLO is back inside budget.
-7. **Post-mortem (mandatory for SEV1/2).** Blameless — systems and processes, not people. Template: timeline, impact, root cause, contributing factors, action items with owners + due dates. Review within 5 business days.
+## Review checklist (concrete defects only)
 
-## Post-mortem template (key sections)
+- Timeline has UTC timestamps from first signal to recovery and names the trigger.
+- Impact is quantified; data loss is stated explicitly (or explicitly ruled out, with how).
+- Root cause is a system condition, not a person; no individual is blamed.
+- Every contributing factor maps to at least one action item with owner and date.
+- A regression test or detection signal is among the actions for any correctness bug.
+- Security incident: evidence preservation and credential rotation are recorded.
 
-- **Timeline** — minute-by-minute from first signal to resolution.
-- **Impact** — affected users, revenue impact, SLO budget consumed.
-- **Root cause** — the specific technical failure; one sentence.
-- **Contributing factors** — conditions that made root cause possible.
-- **What went well** — detection speed, escalation, comms.
-- **Action items** — owner + due date + tracking issue; at least one per contributing factor.
+## Anti-patterns
 
-## Review checklist
-
-- **Severity assessed within 5 min** — not retrospectively at resolution.
-- **Roles assigned** — commander, tech lead, and comms lead identified at declaration.
-- **Contain before diagnose** — blast-radius reduction happened before deep RCA.
-- **Post-mortem scheduled** — calendar invite within 24h of resolution for SEV1/2.
-- **Action items tracked** — every item has an owner and a due date in the issue tracker.
-
-## Rules
-
-- Blame the system, not the person. A post-mortem that names individuals as the cause is wrong.
-- Never close a SEV1/2 without a scheduled post-mortem.
-- Contain first, diagnose second — preserving customer experience beats knowing the root cause faster.
+- Debugging for an hour while users are still failing and a rollback was available.
+- Several people changing production at once without the Operations lead.
+- "Root cause: human error." Ask why the system allowed the error.
+- Closing the incident when the graph recovers but acknowledged writes were never
+  reconciled.
 
 ## Capture lore
 
-Escalation contacts, on-call rotation, incident Slack channel, and post-mortem process are high-value facts — call `suggest_lore` with `tags: [incidents, on-call, post-mortem]`.
+Escalation contacts, on-call rotation, incident channel and postmortem location are
+high-value facts: call `suggest_lore` with `tags: [incidents, on-call, post-mortem]`.

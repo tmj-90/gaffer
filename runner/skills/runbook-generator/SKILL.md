@@ -7,51 +7,86 @@ area: devops
 
 # Generate operational runbooks
 
-A runbook exists so the on-call engineer who has never touched this service can keep it alive at 2 AM. Every section must be executable, not aspirational.
+A runbook lets an on-call engineer who has never seen this service diagnose and mitigate
+it at 3am. It is a how-to guide in Diátaxis terms: task-first, numbered, copy-pasteable,
+with the expected result after each step. A wrong command is worse than a missing one.
 
-## Standard sections (every runbook)
+## Required sections
 
 | Section | Contents |
-|---------|---------|
-| **Overview** | What this service does; who owns it; criticality (P1/P2/P3) |
-| **Architecture** | Dependencies in + out; SLOs; data store(s); diagram link |
-| **Start / Stop / Restart** | Exact commands with flags; expected stdout on success |
-| **Health checks** | How to confirm the service is healthy; which endpoint / metric to check |
-| **Common alerts** | Alert name → probable cause → remediation steps → escalation threshold |
-| **Deployment** | Branch-to-deploy flow; how to roll back; known deploy risks |
-| **Rollback** | Step-by-step; blast radius of a bad deploy; who to notify |
-| **Escalation** | Tier-1 (on-call) → tier-2 (team lead) → tier-3 (vendor / SRE) contacts + SLA |
-| **Post-incident checklist** | What to capture; blameless post-mortem template link |
+|---|---|
+| Overview | What the service does, owner team, criticality, SLO link |
+| Dependencies | Upstream/downstream services, data stores, queues; what breaks if each fails |
+| Health | How to tell it is healthy: endpoint, metric, dashboard; the expected healthy output |
+| Alerts | One subsection per alert, anchored so the alert can link to it (below) |
+| Routine operations | Start, stop, restart, scale, rotate a credential — exact commands |
+| Deploy and rollback | How a release goes out; the exact rollback command and how to confirm it worked |
+| Data safety | Backups, restore procedure, what must never be done to the data store |
+| Escalation | Who next, how to reach them, when (time or severity threshold); postmortem template link |
 
-## Steps
+## Per-alert template
 
-1. **Read the lore + existing runbooks.** `search_lore` for any existing runbook, ADR, or on-call guide for this service. Extend the existing one rather than creating a duplicate.
-2. **Inspect the service.** Read the Dockerfile/deployment config, health-check endpoint, environment variables, and alert rules. Every command in the runbook must be real.
-3. **Draft from the standard template.** Fill every section. Placeholder (`TODO:`) is acceptable only if you mark it clearly — a missing command is better than a wrong one.
-4. **Verify commands.** Run start/stop/health commands in a staging environment or against the repo's CI; confirm the expected output matches.
-5. **Link to the service.** Store the runbook in version control alongside the service code (e.g. `docs/runbooks/<service>.md`). Link it from the monitoring alert annotations.
-6. **Record evidence.** Commit the runbook; record `test_output` via `record-evidence`; submit for review.
+```markdown
+### <AlertName>
+**Means:** <user impact in one sentence>
+**Check:** <command/query> → healthy looks like <output>
+**Likely causes:** <ranked, each with the check that confirms it>
+**Mitigate:** 1. <command> → expect <output>  2. ...
+**Escalate if:** <condition or elapsed time> → <team/channel>
+```
 
-## Build / Test
+## Procedure
 
-- Lint for placeholder-only sections — every `TODO:` must have a GitHub issue tracking the gap.
-- Verify every `kubectl`/`docker`/`systemctl` command runs without error in staging before the runbook is considered done.
-- Confirm the alert → runbook link is live in the alerting platform.
+1. **Gather facts, not memories.** `search_lore` for existing runbooks and on-call
+   conventions; find existing runbooks in the repo (`docs/runbooks/`, `ops/`, `README`).
+   Extend one if it exists. Read the deployment manifests, Dockerfile/compose, health
+   endpoints, config keys, and alert rule files — the alert names and thresholds come from
+   there, not from invention.
+2. **List every alert** defined for the service and give each a subsection with a stable
+   anchor. An alert without a runbook section is a gap to report.
+3. **Write every command against the real service**: real binary names, flags, namespaces,
+   label selectors, metric names. Parameterise only what varies (`<pod-name>`), and say how
+   to obtain it (`kubectl get pods -l app=api -n prod`). Mark destructive commands
+   (delete, restore, force-unlock, failover) with a warning and a precondition check.
+4. **Make lock and lease recovery safe.** If the service uses locks, leases or leader
+   election, the runbook must say how to prove the holder is dead (process gone, node
+   drained, fencing token advanced) before breaking the lock — never "delete the stale lock
+   file". Breaking a lock held by a paused-but-alive process lost acknowledged writes in
+   live runs.
+5. **Include rollback as steps**, with the verification that it worked (version endpoint,
+   error ratio back under threshold), not "revert the deploy".
+6. **Verify what you can** (below). Anything you could not execute is marked
+   `UNVERIFIED:` with the reason; do not present it as tested.
+7. **Link both ways.** Put the runbook next to the code (`docs/runbooks/<service>.md`
+   unless the repo has a convention) and add or update each alert's `runbook_url`
+   annotation to point at its anchor. Evidence with the `record-evidence` skill, then
+   stop.
 
-## Review checklist
+## Verification
 
-- **Every section complete** — no untouched template headers.
-- **Commands are real** — tested in staging or CI; not copy-pasted from memory.
-- **Rollback is documented** — step-by-step, not "revert the deploy".
-- **Escalation contacts are current** — names + channels, not just role titles.
-- **Post-incident template linked** — blameless, structured, time-bounded.
+- Read-only commands (status, logs, health, queries) run locally or against the dev
+  compose/kind stack if the repo provides one; record the command and output. Check
+  `kubectl config current-context` first, and never run anything against a shared,
+  staging or production environment, even read-only; mark those steps `UNVERIFIED:`.
+- Destructive commands are verified by `--help`/syntax only. A `kubectl … --dry-run`
+  still talks to the API server, so run one only after `kubectl config current-context`
+  names a local kind/minikube cluster; otherwise mark the step `UNVERIFIED:`. Never
+  execute a destructive command against a shared environment.
+- Every alert name in the runbook exists in the alert rules, and vice versa (grep both).
+- Every link and anchor resolves; markdown renders (`npx --no -- prettier --check` if the repo
+  uses it).
 
-## Rules
+## Review checklist (concrete defects only)
 
-- A runbook with wrong commands is worse than no runbook. Verify before committing.
-- Keep every runbook in the repo next to the service it documents — not in a separate wiki that drifts.
-- Every alert annotation must link to the relevant runbook section, not the root page.
+- A command references a binary, flag, namespace, metric or endpoint that does not exist
+  in the repo.
+- An alert has no section, or a section has no "Escalate if".
+- Rollback or restore is prose instead of steps with a verification.
+- A destructive step has no precondition check or warning.
+- Lock/lease recovery lacks a "prove the holder is dead" step.
+- Secrets appear inline instead of a reference to where they are stored.
 
 ## Capture lore
 
-Alert-to-runbook links, on-call rotation structure, and escalation contacts are high-value lore — call `suggest_lore` when you learn them with `tags: [runbook, on-call, incidents]`.
+Alert-to-runbook links, escalation paths and on-call structure are high-value lore: call
+`suggest_lore` with `tags: [runbook, on-call, incidents]`.

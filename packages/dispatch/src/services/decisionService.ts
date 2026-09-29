@@ -65,7 +65,12 @@ export class DecisionService {
       };
       this.decisions.insert(created);
       if (input.ticketId) {
-        this.decisions.link(input.ticketId, created.id, "blocks", now);
+        // An informational (log_only) or agent-decidable (agent_can_choose) decision
+        // informs the ticket; only a decision that needs a human answer blocks it
+        // (readiness / claim policy counts `blocks` links).
+        const informational =
+          created.severity === "log_only" || created.severity === "agent_can_choose";
+        this.decisions.link(input.ticketId, created.id, informational ? "informs" : "blocks", now);
       }
       writeEvent(this.db, {
         entity_type: "decision",

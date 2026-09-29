@@ -7,45 +7,75 @@ area: workflow
 
 # Add a feature flag
 
-A flag decouples deploy from release: the code ships dark, is switched on deliberately,
-and can be switched off in seconds. Every flag is also debt with an expiry date. Add it
-so both paths are tested, the default is safe, and its removal is already planned.
+A flag decouples deploy from release: code ships dark, is switched on deliberately, and
+can be switched off in seconds. Every flag is also a branch in the code that someone must
+test and later delete. Add it so both paths are correct, the default is safe, and its
+removal is already planned.
 
 ## Steps
 
-1. **Find the repo's flag mechanism.** A flags service SDK, a config-driven module, env
-   vars, a settings table. Use it; do not add a second system. Call `search_lore` for
-   naming conventions and where flags are declared. If the repo has none and the ticket
-   needs one, propose the smallest (a typed config module with defaults) via
-   `request_decision` before building infrastructure.
-2. **Name and type it.** A descriptive, namespaced name (`checkout.new-address-form`),
-   a boolean unless the ticket needs variants, a documented default. The default is the
-   SAFE state — the old behaviour — so an unset flag never surprises production.
-3. **Declare once, read at one boundary.** Register the flag in the repo's declaration
-   point with its owner, purpose, and intended removal date. Evaluate it at the edge of
-   the feature (the route, the component, the job entry) and pass the decision down;
-   sprinkling `isEnabled()` calls through the call stack makes removal a hunt.
-4. **Keep both paths correct.** The new path and the old path must both work, both be
-   tested, and never share a half-migrated state. Run the suite with the flag off and
-   with it on (a test parameter or two test cases), and assert the default explicitly.
-5. **Make the decision observable.** Log or tag the flag state where the behaviour
-   diverges (a structured field, a metric label) so an incident can be tied to a
-   rollout; never log user data with it.
-6. **Plan the removal in the same change.** A removal ticket, the date in the flag's
-   declaration, and a note in the evidence. A flag that is 100% on for a month is dead
-   code wearing a disguise; the `deprecate-and-remove` skill retires it.
-7. **Evidence** with the `record-evidence` skill: the flag name, default, owner,
-   removal date, and the test output for both states.
+1. **Classify the flag** (Pete Hodgson, "Feature Toggles"); the category sets its
+   lifetime and how dynamic it must be:
+   - **release** — hides unfinished or unreleased work; lives days to weeks; usually a
+     static per-deploy value. The common case.
+   - **ops / kill switch** — lets operators turn off a costly or risky path under load;
+     may live long; must be changeable at runtime without a deploy.
+   - **experiment** — A/B cohorts; decided per request/user; needs consistent bucketing.
+   - **permission** — per-user or per-plan access; long-lived; this is product logic, so
+     treat it as an entitlement, not a temporary flag.
+2. **Use the repo's flag mechanism.** A flags-service SDK, a config-driven module, env
+   vars, a settings table. Call `search_lore` for naming and where flags are declared. If
+   there is none, propose the smallest one (a typed config module with defaults, see the
+   `add-config-option` skill) via `request_decision` before building infrastructure.
+3. **Name, type and default it.** A descriptive, namespaced name
+   (`checkout.new-address-form`), boolean unless variants are required. Never reuse a
+   retired flag's name: old code still reading it will wake up. The default is the SAFE
+   state — the current behaviour — and it is also what the code does when the flag
+   source is unreachable or the value is malformed.
+4. **Declare once; decide at one point.** Register the flag with owner, purpose, category
+   and removal date. Evaluate it at the edge of the feature (the route, the component, the
+   job entry) through one router function, and pass the decision (or the chosen
+   implementation) inward. Scattered `isEnabled()` calls deep in the call stack make both
+   testing and removal a hunt.
+5. **Keep both paths correct.** Old and new paths must never share half-migrated state:
+   if the new path writes a new data shape, the old path must still read it, or the
+   rollout needs an expand/contract migration (the `add-db-migration` skill). A flag may
+   ADD a security check; it must never switch one off.
+6. **Test the combinations that ship.** Run the affected tests with the flag OFF (today's
+   production) and ON (the intended release), plus an explicit test that an unset or
+   unreadable flag yields the default. You do not need every combination of every flag —
+   test the configurations you will actually run.
+7. **Make the decision observable.** Record the flag state where behaviour diverges (a
+   structured log field or metric label) so an incident can be tied to a rollout; never
+   log user data alongside it.
+8. **Plan the removal now.** The removal date in the declaration, a note in the evidence,
+   and a follow-up the human can file. A flag that has been 100% on for weeks is dead code;
+   the `deprecate-and-remove` skill retires it (delete the flag, the losing path and its
+   tests together).
+
+## Done when
+
+The flag has one declaration with owner, category and removal date; the default equals
+current behaviour and is asserted by a test; tests pass with the flag off and on; the
+decision is made at one point; evidence (via the `record-evidence` skill) lists name,
+default, owner, removal date and both test runs. On a resume that call is refused: do
+not retry; put this, the AC → test map and the smallest-change note in your final
+message.
+
+## Stop and escalate when
+
+- The ticket needs percentage rollout, targeting or runtime changes that the repo's
+  mechanism cannot do: `request_decision` rather than building a flag service.
+- The two paths cannot coexist without a data migration the ticket did not mention:
+  `request_decision` with the migration it would need.
 
 ## Rules
 
 - One flag system per repo; use the existing one.
-- Default is the old, safe behaviour; the flag turns the new thing ON.
-- Evaluate at one boundary; do not scatter checks.
-- Both paths tested in the same suite run; the default asserted.
-- Every flag has an owner and a removal date recorded where it is declared.
-- Flags never gate security controls off (a flag may add a check, never remove one).
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- Default = old, safe behaviour, also on evaluation failure.
+- Decide at one boundary; no scattered checks; never reuse a flag name.
+- Both shipping configurations tested in the same run.
+- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
 
 ## Capture lore
 

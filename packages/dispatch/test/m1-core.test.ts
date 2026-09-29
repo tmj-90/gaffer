@@ -118,4 +118,38 @@ describe("M1: transition rules", () => {
     expect(res?.allowed).toBe(false);
     expect(res?.failures.map((f) => f.code)).toContain("HUMAN_BLOCKER_OPEN");
   });
+
+  it("an informational (log_only / agent_can_choose) decision informs, never blocks, under factory_strict", () => {
+    const wg = freshWg();
+    const t = wg.createTicket(
+      { title: "Strict", description: "d", policy_pack: "factory_strict" },
+      human,
+    );
+    const codes = () => (wg.transitions.preview(t.id, "ready")?.failures ?? []).map((f) => f.code);
+    for (const severity of ["log_only", "agent_can_choose"] as const) {
+      wg.createDecision({ title: severity, question: "fyi", severity, ticketId: t.id }, human);
+    }
+    expect(codes()).not.toContain("BLOCKING_DECISION_OPEN");
+    // A decision that wants a human answer still blocks.
+    wg.createDecision(
+      { title: "Pick one", question: "A or B?", severity: "human_preferred", ticketId: t.id },
+      human,
+    );
+    expect(codes()).toContain("BLOCKING_DECISION_OPEN");
+  });
+
+  it("a decision can name its ticket by number (15, #15, T-15) as well as by id", () => {
+    const wg = freshWg();
+    const t = wg.createTicket({ title: "Numbered", policy_pack: "team_light" }, human);
+    for (const ref of [String(t.number), `#${t.number}`, `T-${t.number}`]) {
+      wg.createDecision(
+        { title: ref, question: "?", severity: "human_required", ticketId: ref },
+        human,
+      );
+    }
+    expect(wg.decisions.blockingForTicket(t.id)).toHaveLength(3);
+    expect(() => wg.createDecision({ title: "x", question: "?", ticketId: "#999" }, human)).toThrow(
+      /not found/i,
+    );
+  });
 });

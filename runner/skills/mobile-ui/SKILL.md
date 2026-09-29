@@ -1,90 +1,113 @@
 ---
 name: mobile-ui
-description: Use when a ticket builds or reworks UI in a React Native / Expo (or React + Capacitor) mobile app and it must feel like a real, store-credible native app — not a wrapped mobile website. Covers the native-feel bar, safe-area/gesture/haptics, store-readiness, and mobile performance. Invoke for "make this screen feel native", "build the mobile X screen", "this feels like a website", "would this get approved", or as the mobile pack for any app-UI change.
+description: Use when a ticket builds or reworks UI in a React Native / Expo (or React + Capacitor) mobile app and it must feel like a real, store-credible native app — not a wrapped mobile website. Covers the native-feel bar, safe areas and edge-to-edge, gestures and back navigation, haptics, Dynamic Type and screen readers, store-readiness, and mobile performance. Invoke for "make this screen feel native", "build the mobile X screen", "this feels like a website", "would this get approved", or as the mobile pack for any app-UI change.
 stack: [react-native, native, expo]
 area: mobile
 ---
 
 # Build store-credible native-feel mobile UI
 
-Change the **skin, never the skeleton.** Build mobile UI that clears a native-feel bar and
-a store-readiness bar — without touching gameplay, navigation routes, state, scoring, or
-business logic. Where a redesign implies a structural change ("this should be a sheet, not a
-modal"), flag it as a **proposal**; do not silently implement it.
-
-## The three non-negotiable bars
-
-A "premium" mobile surface must clear all three at once — failing any one ships as
-not-premium regardless of the others.
-
-1. **Native feel.** Every hybrid/RN screen reads as a mobile website until deliberately
-   de-websified. Tells to close: centred modals (→ bottom sheets), fade transitions
-   (→ slide/shared-element), missing swipe-back and hardware-back handling, no haptics on
-   primary taps, fonts flashing, wrong scroll bounce, ignored safe-area insets, default
-   launch screen.
-2. **Maturity (indie → store-credible).** Tidying a plateau makes the plateau more visible.
-   Recommit: real type scale, brand chrome (not generic), activated margins, ambient life,
-   and **one named hero detail per screen** — the deliberate moment the user remembers.
-3. **Store readiness.** Most "wouldn't get approved" intuition is a finite checklist:
-   tap targets ≥ 44pt, privacy/permission strings present, real launch screen, Dynamic
-   Type / large-text support, working hardware back (Android), opposite colour scheme,
-   no placeholder content.
+A mobile screen is judged against the platform: Apple's Human Interface Guidelines on
+iOS, Material 3 and Android's system behaviour on Android. It must respect insets and
+system gestures, scale with the user's text size, speak to VoiceOver and TalkBack, stay
+smooth, and clear the store reviewers' checklist. Build to that bar, and change only what
+the ticket asks: a visual rework does not alter navigation routes, state, business or
+game logic. A structural idea ("this should be a sheet") goes in the evidence as a
+proposal, not into the diff.
 
 ## Steps
 
-1. **Read the lore + brand/tokens first.** `search_lore` (Memory MCP) and any
-   `BRAND.md`/`DESIGN.md`/`tokens` file. If a brand/design system exists, **extend it in
-   its idiom** (Brand-Respecting Mode) — audit + close gaps; do not re-pitch the aesthetic.
-   Confirm the stack (RN/Expo or React + Capacitor) and match its component conventions.
-2. **Audit the screen** against the three bars: score native-feel per item, diagnose
-   maturity, pre-screen store-rejection triggers. Note gameplay/logic surfaces to leave alone.
-3. **Respect safe areas.** Use the safe-area insets (`react-native-safe-area-context` /
-   the env-inset equivalent) for top/bottom/notch; never hardcode status-bar heights.
-4. **Gestures + navigation feel native.** Swipe-back, hardware back (Android), bottom
-   sheets over centred modals, slide/shared-element transitions over fades. Keep the
-   navigation routes and actions exactly as they are.
-5. **Haptics + sound hooks** on primary interactions (selection, confirm, error) via the
-   platform haptics API — subtle, consistent, behind a tokenised hook.
-6. **Tokens drive presentation** — colour, type scale, spacing, motion, radius. No raw hex
-   or magic numbers in components; scrolls hide scrollbars, use momentum, and disable global
-   pull-to-refresh except where intended.
-7. **Performance:** keep the main interaction loop at 60fps; animate on the native driver
-   (`useNativeDriver: true` / Reanimated worklets); virtualise long lists (`FlatList`/
-   `FlashList`); avoid layout thrash and oversized images.
-8. **Verify + evidence.** Run the repo's tests + lint; a migration ends **green** — a
-   failing gameplay test means logic changed (roll back, never edit the test to pass). Add
-   tests for new visual contracts (component states, screen smoke tests). Record
-   `test_output` via `record-evidence` and submit for review.
+1. **Read the set-up.** Call `search_lore`; read `BRAND.md`/tokens (the `design-system`
+   skill) and a sibling screen. Confirm the stack and versions: React Native (0.82+ runs
+   only the New Architecture), Expo SDK, navigation library (React Navigation / Expo
+   Router), animation (Reanimated), list (FlatList/FlashList), or Capacitor with a web
+   UI. Extend the existing design language; do not re-pitch it.
+2. **Insets and edge-to-edge.** Android apps targeting Android 15+ draw edge-to-edge,
+   and targeting Android 16 removes the opt-out. Use `react-native-safe-area-context`
+   (`SafeAreaProvider` + `useSafeAreaInsets` or its `SafeAreaView`; React Native's own
+   `SafeAreaView` is deprecated) and apply insets per edge — backgrounds run under the
+   bars, content and touch targets do not. Capacitor/web: `viewport-fit=cover` plus
+   `env(safe-area-inset-*)`. Never hardcode status-bar or home-indicator heights.
+3. **Navigation and back.** Use the navigator's native stack and platform transitions;
+   iOS swipe-back works on every pushed screen; Android back (gesture, button, predictive
+   back) goes through the navigator or `BackHandler`, closes sheets and dialogs first,
+   and never exits the app from a nested screen. Unsaved-changes guards use the
+   navigator's prevent-remove API, not a raw back-key listener.
+4. **Platform idioms.** Bottom sheets or native modals for contextual tasks rather than
+   centred web-style dialogs; native pickers, date pickers and share sheets; tab bars with
+   3–5 destinations; pull-to-refresh only on refreshable lists. Follow the platform where
+   the two differ (iOS back chevron and large titles; Android top app bar and system
+   back) unless the brand explicitly unifies them. Close the usual web-hybrid tells:
+   fade-only screen transitions (use the platform push or a shared-element transition),
+   fonts flashing in after the splash (load them before hiding it), wrong scroll bounce,
+   the default launch screen. On a visual rework, commit to the brand: a real type scale,
+   branded chrome and one named hero detail per screen (taste items; they do not block
+   review).
+5. **Touch and feedback.** Targets at least 44×44 pt (iOS) / 48×48 dp (Android) — use
+   `hitSlop` when the visual is smaller; pressed states on every touchable (`Pressable`
+   with a style callback or Android ripple); haptics (`expo-haptics` or the repo's wrapper)
+   on meaningful moments only — selection change, success, error — through one shared
+   hook.
+6. **Text size and accessibility.** Text scales with Dynamic Type / Android font scale up
+   to at least 200%: no fixed-height text containers, layouts that wrap or scroll, and
+   `maxFontSizeMultiplier` only on chrome that truly cannot grow. Every touchable has
+   `accessibilityRole` (or `role`), an `accessibilityLabel` when it has no visible text,
+   and `accessibilityState` for selected/disabled/checked; group related text with
+   `accessible`; announce async results with `AccessibilityInfo.announceForAccessibility`.
+   Respect Reduce Motion (`AccessibilityInfo.isReduceMotionEnabled` or Reanimated's
+   `useReducedMotion`) and the system colour scheme (`useColorScheme`); check contrast in
+   both schemes (4.5:1 text, 3:1 icons and borders).
+7. **Keyboard.** Forms stay visible above the keyboard (`KeyboardAvoidingView` or the
+   repo's keyboard library), `returnKeyType` moves to the next field, correct
+   `keyboardType`/`textContentType`/`autoComplete` for email, codes and passwords, and
+   tapping outside dismisses the keyboard where expected.
+8. **Performance.** Animations on the UI thread (Reanimated worklets or
+   `useNativeDriver: true`) using transforms and opacity; long lists virtualised with
+   stable `keyExtractor` and memoised rows (FlashList where the repo uses it); images
+   sized to their box and cached; no heavy work in render or on the JS thread during
+   gestures. Frame-rate claims need a release build on a mid-range Android device or
+   emulator — dev builds are not representative; without one, list it as unverified in
+   the evidence rather than claiming smoothness.
+9. **Store readiness** (flag, do not guess, anything that needs a human decision):
+   purpose strings for every permission requested (iOS `NS…UsageDescription`, requested
+   in context, not on launch); iOS privacy manifest and Play Data safety entries kept in
+   step with new data collection; a real launch screen and app icon; no placeholder text
+   or broken links; in-app account deletion when the app creates accounts (App Review
+   5.1.1(v)); enough native functionality that the app is not a repackaged website
+   (App Review 4.2).
+10. **Verify and evidence.** Run type-check, lint and tests (React Native Testing Library:
+    query by role and label). For each AC, a test or an E2E flow (Maestro or Detox if the
+    repo has one, run only if a simulator or emulator is already available) that
+    exercises its behaviour. Where one is, screenshot small and large phone, largest text
+    size, dark mode and Android gesture back (into the repo's git-ignored test output;
+    never committed unless an AC asks); you cannot drive VoiceOver/TalkBack, so
+    assert roles, labels and states in tests and name any unchecked item in the evidence.
+    A failing existing logic test means you changed behaviour — undo
+    that change; never edit the test to pass. Record per-AC evidence with the
+    `record-evidence` skill, then stop.
 
-## Build / Test
+## Review checklist
 
-- Run the repo's configured test + lint; type-check (`tsc --noEmit`) for TS.
-- Every screen migration ends green with a successful build; default failing tests to
-  **roll back the migration**, never to modifying the test.
-- Prefer screenshot/visual checks on a real device or simulator at the supported tiers;
-  test with Reduce Motion, large text (200%), VoiceOver/TalkBack, and the opposite colour scheme.
-- The DoD is verified by the repo's configured commands — record the output as evidence.
+A reviewer blocks on an item only when it breaks an AC, leaves an AC untested, or is a
+correctness, security or WCAG A/AA defect; taste and polish items are `(optional)` notes.
 
-## Review checklist (a mobile reviewer must check)
+- Nothing under the notch, status bar or home indicator; no hardcoded bar heights.
+- Swipe-back and Android back behave natively; sheets close before screens pop.
+- Targets ≥ 44 pt / 48 dp; pressed states present; haptics sparing and consistent.
+- Text scales to 200% without clipping; every control has role, label and state.
+- Reduce Motion and dark mode respected; contrast holds in both schemes.
+- Tokens only; no raw hex or magic numbers in components.
+- UI-thread animations; virtualised lists; no jank on a release build.
+- Routes, state and logic unchanged unless the ticket asked; structural ideas raised as
+  proposals.
+- Permission strings, privacy disclosures and account deletion accounted for.
 
-- **No web-hybrid tells** — bottom sheets not centred modals, slide not fade, swipe-back +
-  hardware-back work, no font flash, scroll bounce/momentum correct.
-- **Safe-area insets honoured** — nothing under the notch / home indicator; no hardcoded bar heights.
-- **Haptics on primary taps**, consistent and subtle.
-- **Tap targets ≥ 44pt**; Dynamic Type / large-text supported; opposite colour scheme holds.
-- **One hero detail per screen** named and present; type scale + chrome are committed, not generic.
-- **Tokens, not hardcoded** colour/spacing/type; no raw hex / magic numbers in components.
-- **Performance** — native-driver animation, virtualised long lists, 60fps on the main loop.
-- **Skeleton preserved** — routes, navigation actions, state, scoring, and component
-  prop/event contracts unchanged; structural changes raised as proposals, not silently made.
-- **Store triggers cleared** — privacy strings, real launch screen, no placeholder content.
+## Anti-patterns
 
-## Rules
-
-- Change the skin, never the skeleton — no logic/navigation/state/scoring changes.
-- Clear all three bars (native feel, maturity, store readiness) — failing one fails the surface.
-- Safe-area insets, native gestures, haptics, native-driver animation — no hardcoded bar heights.
-- Tokens for all presentation; structural changes are proposals, not silent edits; tests stay green.
+- A web layout in a WebView with hover states, tiny links and centred modals.
+- `Dimensions`-based status-bar maths; `SafeAreaView` wrapping the whole app blindly.
+- `allowFontScaling={false}` app-wide; icon-only buttons with no label.
+- Haptics on every tap; permission prompts on first launch with no context.
 
 ## Capture lore
 

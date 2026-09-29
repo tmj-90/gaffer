@@ -7,49 +7,71 @@ area: backend
 
 # Add a CLI command
 
-A CLI is an API whose consumers are humans at a terminal and scripts in a pipeline. Both
-need stability: predictable arguments, a documented exit code for each outcome, output
-that is either for eyes or for machines (never a mix), and help that tells the truth.
+A CLI is an API whose consumers are humans at a terminal and scripts in a pipeline.
+Scripts depend on the exit code, the stdout format and the flag names; humans depend on
+the help text and error messages. Follow the tool's existing conventions first and the
+Command Line Interface Guidelines (clig.dev) where the tool is silent.
 
 ## Steps
 
-1. **Read a sibling command first.** Find the CLI's entry point and command registry
-   (Commander, yargs, Click, Cobra, clap, picocli); copy the shape of an existing
-   command: how it parses, validates, prints, and exits. Call `search_lore` for the
-   CLI's conventions (JSON envelope, error format, actor flags).
-2. **Design the surface before the code.** Verb-noun naming consistent with the tool
-   (`ticket create`, not `createTicket`), positional arguments only for the one thing
-   the command is about, flags for everything else with long names and short aliases
-   only where siblings have them. Write the `--help` text first; if it is hard to write,
-   the surface is wrong.
-3. **Validate inputs at the boundary** and fail with a clear message and a non-zero
-   exit before doing any work. Distinguish usage errors (exit 2) from operational
-   failures (exit 1) from success (0) if that is the tool's convention; never exit 0 on
-   failure.
-4. **Separate human and machine output.** Human-readable to stdout by default; a
-   `--json` (or the tool's equivalent) that prints exactly one JSON document and
-   nothing else on stdout. Diagnostics and progress go to stderr, always. A script must
-   be able to `cmd --json | jq` without filtering noise.
-5. **Keep the command thin.** It parses, calls the same service or core the API uses,
-   and renders the result. Business logic in a CLI handler cannot be reused or tested
-   without spawning a process.
-6. **Handle the environment honestly.** Read config through the repo's config spine
-   (the `add-config-option` skill), never raw env reads; respect `--db`/`--config`
-   style overrides the siblings offer; never print secrets.
-7. **Test at both levels.** Unit-test the handler's logic; spawn the real binary in a
-   test for the contract: exit codes, `--json` shape, error messages, `--help` output.
-   Update the CLI reference docs or usage block if the repo keeps one.
-8. **Evidence** with the `record-evidence` skill: the `--help` output, the test run,
-   and a sample invocation with its exit code.
+1. **Read a sibling command.** Find the entry point and command registry (Commander,
+   yargs, Click, Typer, Cobra, clap, picocli, System.CommandLine) and copy an existing
+   command's parsing, validation, output and exit handling. Call `search_lore` for the
+   CLI's JSON envelope, error format and exit-code table.
+2. **Design the surface and write `--help` first.** Match the tool's naming (`ticket
+   create`, not `createTicket`). Positional arguments only for the one thing the command
+   acts on; everything else is a long flag, with a short alias only where siblings use
+   one. Reuse standard names: `-h/--help`, `--version`, `--json`, `-q/--quiet`,
+   `-f/--force`, `-n/--dry-run`, `--no-input`, `--no-color`. Help leads with a usage
+   line and one or two examples. If the help is hard to write, the surface is wrong.
+3. **Validate before doing any work.** Parse and validate every argument, reject
+   unknown flags, and fail with a one-line message naming the bad input and the fix.
+   Exit codes: `0` success, non-zero on any failure, and the tool's usage-error code
+   (commonly `2`) for bad arguments. Never exit 0 after printing an error.
+4. **Separate output streams.** stdout carries the result only; errors, warnings,
+   progress and logs go to stderr. `--json` prints exactly one JSON document (or the
+   tool's documented NDJSON) on stdout and nothing else, including on failure if the
+   envelope defines an error shape. Disable colour and spinners when stdout is not a
+   TTY, when `NO_COLOR` is set, or with `--no-color`.
+5. **Be safe to script.** Prompt only when stdin is a TTY and `--no-input` is absent;
+   otherwise fail with the flag that supplies the answer. Destructive or remote-changing
+   actions confirm interactively or require `--force`; offer `--dry-run` when siblings
+   do. Make re-runs safe (idempotent where possible) and give network calls a timeout.
+   On Ctrl-C, stop promptly and exit non-zero (130 by convention).
+6. **Keep the command thin.** Parse, call the same service or core the API uses, render.
+   Business logic in the handler cannot be reused or unit-tested without a process.
+   If the command writes shared files or state that another invocation, the server or
+   a worker may write concurrently, follow the `concurrency-and-async` skill (atomic
+   temp-and-rename, a real lock).
+7. **Handle configuration and secrets.** Read config through the repo's config spine
+   (the `add-config-option` skill), never raw env reads, and honour the siblings' `--config`/`--db`
+   overrides. Never accept a secret as a flag value (it lands in shell history and `ps`);
+   read it from a file, stdin or the configured secret source. Never print secrets.
+8. **Test at both levels.** Unit-test the core logic. Spawn the real binary for the
+   contract, one test per AC that exercises the AC's own behaviour, and assert:
+   - exit code for success, a usage error and an operational failure;
+   - `--json` stdout parses as JSON with the documented shape, and stderr carries
+     diagnostics without polluting stdout;
+   - the error message for bad input; `--help` lists the new command or flag;
+   - non-TTY behaviour: no prompt, no colour; a missing answer fails with a message
+     naming the flag that supplies it.
 
-## Rules
+   Update the CLI reference or usage block if the repo keeps one.
+9. **Evidence** with the `record-evidence` skill: the test run, `--help` output, and a
+   sample invocation with its exit code.
 
-- Match the sibling commands' parser, naming, and envelope exactly.
-- Non-zero exit on any failure; usage errors distinguished when the tool does.
-- stdout is the result; stderr is everything else; `--json` is pure JSON.
-- Thin handler over the shared core; no business logic in the command.
-- Help text and docs updated in the same change.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+## Done when
+
+- The new surface matches sibling naming, parser and envelope; help and docs updated.
+- Every failure path exits non-zero; stdout under `--json` is pure JSON.
+- Spawned-binary tests cover exit codes, output shape and error text for each AC.
+
+## Anti-patterns
+
+- `console.log` of progress to stdout; mixing a banner into JSON output.
+- `process.exit(0)` in a catch block; swallowing an error and printing a warning.
+- Interactive prompts that hang in CI; secrets passed as `--token=…`.
+- Tests that only call the handler function and never the real binary.
 
 ## Capture lore
 

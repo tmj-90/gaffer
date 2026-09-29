@@ -1,77 +1,95 @@
 ---
 name: api-design-reviewer
-description: Use when reviewing a PR that adds or changes API endpoints, auditing an existing API for v2 migration, or establishing REST API standards. Triggers on "API review", "REST design review", "breaking change check", "OpenAPI audit", "endpoint review", or "API consistency".
+description: Use when reviewing a PR that adds or changes API endpoints, auditing an existing API for v2 migration, or establishing REST API standards — HTTP semantics, status codes, RFC 9457 problem-details errors, breaking-change detection, pagination, idempotency and concurrency control. Triggers on "API review", "REST design review", "breaking change check", "OpenAPI audit", "endpoint review", or "API consistency".
 stack: []
 area: review
 ---
 
 # Review APIs before they ship
 
-Catch inconsistent conventions, missing versioning, and design smells before APIs are consumed by clients. Breaking changes are permanent costs — find them in review, not after release.
-
-## REST design principles
-
-**Resource naming:**
-- Collections: plural nouns (`/users`, `/orders`)
-- Instances: `/{id}` (singular, no verb)
-- Actions that don't fit: `POST /users/{id}/activate` (not `GET /activateUser`)
-
-**HTTP method semantics:**
-- `GET` — read; must be idempotent; no side effects
-- `POST` — create or action; not idempotent
-- `PUT` — replace the whole resource; idempotent
-- `PATCH` — partial update; idempotent
-- `DELETE` — remove; idempotent
-
-**Status codes — common wrong choices:**
-
-| Situation | Wrong | Right |
-|-----------|-------|-------|
-| Resource not found | 200 with `{error}` body | 404 |
-| Validation failure | 500 | 400 with error detail |
-| Auth failure | 404 (hiding resource) | 401 (unauthenticated) or 403 (unauthorised) |
-| Created resource | 200 | 201 with `Location` header |
-| Async accepted | 200 | 202 |
-
-## Breaking change detection
-
-These changes break existing clients and require a version bump:
-
-- Remove an endpoint
-- Remove or rename a required field
-- Change a field's type
-- Add a required field to a request body
-- Change a status code a client depends on
-- Change pagination semantics
-
-These are safe (backward-compatible):
-- Add a new optional field to a response
-- Add a new endpoint
-- Add a new optional query parameter
+An API is a contract other code depends on; a breaking change costs every client and
+cannot be recalled after release. Review new and changed endpoints against HTTP
+semantics (RFC 9110), the error format (RFC 9457), and the compatibility rules of the
+Google API Improvement Proposals (AIP-180) and the Microsoft REST API Guidelines. When
+used as a review lens, a finding blocks only when it is a concrete defect: a broken
+existing contract, wrong semantics a client will act on, or an AC not met. Consistency
+wishes on new endpoints are notes.
 
 ## Steps
 
-1. **Read the OpenAPI spec or code diff.** If no spec exists, note the missing spec as a CONCERN and continue reviewing the code that exists — don't block the review on a spec that isn't there.
-2. **Check resource naming.** Plural nouns, no verbs in paths (except for actions), consistent casing.
-3. **Check HTTP method usage.** Every `GET` must be safe and idempotent. `POST` for creates and non-idempotent actions only.
-4. **Check status codes.** Map every response to the correct 2xx/4xx/5xx. 200 for errors is an automatic BLOCK.
-5. **Check for breaking changes.** Diff against the previous spec/version. List every breaking change and verify it's covered by a version bump.
-6. **Check error format.** Consistent envelope: `{ "error": { "code": "...", "message": "...", "details": [...] } }` — not ad-hoc per endpoint.
-7. **Check versioning.** Is the versioning strategy documented — a version prefix (`/v1/`), header-based versioning, or a deliberate no-version choice? A documented no-version API is fine; only an _undocumented_ or contradictory strategy is a finding.
-8. **Emit verdict.** BLOCK / CONCERNS / CLEAN with file/line evidence for each finding.
+1. **Find the contract.** Read the OpenAPI/proto spec diff if one exists, else the route
+   and handler diff. Call `search_lore` for the repo's API conventions (error envelope,
+   pagination style, versioning, casing). A missing spec is a note, not a blocker.
+2. **List every changed operation** as `METHOD path → statuses, request shape, response
+   shape`, and mark each new, changed or removed.
+3. **Check compatibility** of every changed or removed operation against the breaking
+   list below. For each break, is there a new version, a deprecation path, or an AC that
+   explicitly asks for it? If not, it is blocking.
+4. **Check semantics** — methods, status codes, errors, pagination, idempotency and
+   concurrency — against the checklist, for new and changed operations.
+5. **Check tests reach the contract.** Each AC about an endpoint has a test that calls it
+   over its real interface and asserts status and body, including the error case the AC
+   names (the `contract-test` skill when a spec exists).
+6. **Rate and record.** Blocking: an unversioned breaking change; a success status on a
+   failure (a client will treat an error as success); a side-effecting `GET`; a
+   documented behaviour the diff contradicts. Should-fix: wrong status on a new
+   endpoint that clients will branch on; an error body that departs from the envelope the
+   repo's clients already parse. Note: naming, style and other consistency wishes. As
+   a lens, record each finding with `record_ac_evidence` (`evidence_type: manual_note`:
+   operation, rule, fix) and let `review-ticket` carry the verdict; outside a Gaffer
+   review, emit BLOCK / CONCERNS / CLEAN with file and line.
 
-## Review checklist
+## Breaking changes (need a new version or explicit AC)
 
-- **Resource naming consistent** — plural nouns, no verbs in paths.
-- **HTTP methods correct** — no side-effecting `GET`; `PUT` is idempotent; `PATCH` is partial.
-- **Status codes correct** — no 200 for errors; 201 for created resources.
-- **Error format consistent** — same envelope shape across all endpoints.
-- **No undocumented breaking changes** — every breaking change has a version bump.
-- **Authentication documented** — every endpoint states its auth requirement.
-- **Pagination consistent** — same cursor/offset pattern across all list endpoints.
+- Removing or renaming an operation, field, query parameter, header or enum value.
+- Changing a field's type, format, units, default or meaning.
+- Making an optional request field required, or tightening validation (shorter max
+  length, narrower range, new required header).
+- Adding a required request field or a new required query parameter.
+- Changing a status code, error `type`/code, or the auth requirement clients rely on.
+- Changing pagination, sort order or filtering semantics; changing an idempotent
+  operation into a non-idempotent one.
+- Adding an enum value to a **response** where clients were not told enums are open
+  (Microsoft guidelines treat this as breaking unless the enum is declared extensible).
+
+Safe: new operations, new optional request fields, new response fields clients must
+ignore, relaxed validation.
+
+## Checklist
+
+- **Resources and methods**: plural nouns for collections, ids for instances, custom
+  actions as `POST /things/{id}:action` or `/things/{id}/action` per repo convention.
+  `GET`/`HEAD` safe with no side effects; `PUT` full replacement and idempotent;
+  `DELETE` idempotent; `PATCH` partial — not idempotent by definition (RFC 5789), so a
+  retried `PATCH` must be made safe with a precondition or an idempotency key.
+- **Status codes**: 201 plus `Location` on create; 202 for accepted async work with a
+  status URL; 204 for no body; 400 malformed; 401 unauthenticated with
+  `WWW-Authenticate`; 403 forbidden — or 404 to avoid revealing that a resource exists
+  (RFC 9110 permits this); 404 missing; 409 state conflict; 412 failed precondition;
+  415 wrong media type; 422 semantically invalid content; 429 with `Retry-After`; 5xx
+  only for server faults. Never 200 with an error body.
+- **Errors**: one shape everywhere, preferably RFC 9457 `application/problem+json` with
+  `type`, `title`, `status`, `detail`, `instance`, plus field-level errors as an
+  extension member; no stack traces or SQL in `detail`.
+- **Concurrency control**: updates to a resource several clients edit support
+  `ETag` + `If-Match` (412 on mismatch) or a version field, so a read-modify-write
+  cannot silently lose another client's update (the `concurrency-review` skill).
+- **Idempotency**: `POST` that creates payments, orders or other effects accepts an
+  `Idempotency-Key` (or a client-supplied id) enforced atomically, returning the original
+  result on replay (the `idempotency-and-retries` skill).
+- **Pagination and filtering**: every list paginated with a max page size; cursor
+  (opaque `next_page_token`) for large or changing sets; stable sort; same pattern on
+  every list endpoint (AIP-158).
+- **Versioning and deprecation**: one documented strategy (path `/v1`, header, or
+  deliberately unversioned with additive-only changes); deprecated operations signalled
+  (`Deprecation`/`Sunset` headers or spec flags) before removal (the `api-versioning`
+  skill).
+- **Security surface**: every operation states its auth requirement; object-level
+  authorization on ids in paths (the `security-review` skill).
 
 ## Rules
 
-- 200 for errors is a BLOCK finding, always.
-- Breaking changes without a version bump are a BLOCK finding.
-- A missing spec is a CONCERN, not a blocker — record it and review the code that exists.
+- An unversioned breaking change to an existing contract always blocks.
+- A success status on a failure always blocks; other status choices on new endpoints
+  are should-fix at most.
+- Missing spec, naming and envelope preferences are notes, never grounds for CHANGES.

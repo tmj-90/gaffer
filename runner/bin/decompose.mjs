@@ -345,8 +345,9 @@ function lastBalancedObject(text) {
  * model hallucinated (or one smuggled in via an injected clause) points at nothing,
  * so it is DROPPED — the AC survives as plain work rather than persisting a false
  * `spec_clause_id`. This mirrors how `dependsOn` is validated against the plan's own
- * ticket set. `clauseIds === null` disables the check (a non-spec-driven decompose,
- * and the back-compat default for existing callers/tests).
+ * ticket set. The CLI passes an EMPTY set when no spec drives the plan, so every
+ * clauseRef is dropped there; `clauseIds === null` (the library default for existing
+ * callers/tests) disables the check.
  */
 export function normalizeAc(a, clauseIds = null) {
   if (a && typeof a === "object" && !Array.isArray(a)) {
@@ -1192,12 +1193,12 @@ function main() {
 
   // SPEC-DRIVEN (#4): the driving spec's clause ids are the ONLY valid clauseRef
   // provenance. Build that set so validateResult can drop any AC clauseRef the model
-  // hallucinated (or an injected clause smuggled in). Null when no spec drives the
-  // plan, which disables the check (a plain decompose is unchanged).
-  const specClauseIds = Array.isArray(req.spec)
+  // hallucinated (or an injected clause smuggled in). With no spec there are no valid
+  // clause ids at all, so the set is EMPTY and every clauseRef is dropped: a plan with
+  // no frozen spec can never persist a spec_clause_id.
+  const clauseIds = Array.isArray(req.spec)
     ? new Set(req.spec.map((c) => String(c?.clause_id ?? "").trim()).filter(Boolean))
-    : null;
-  const clauseIds = specClauseIds && specClauseIds.size > 0 ? specClauseIds : null;
+    : new Set();
 
   const parsed = extractLastJsonBlock(output);
   const result = validateResult(parsed, opts.maxTickets, targetRepo, forcePlan, clauseIds);

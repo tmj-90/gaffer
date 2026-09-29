@@ -7,48 +7,72 @@ area: workflow
 
 # Add a configuration option
 
-Configuration is the operator's API. A new option must be discoverable, validated,
-defaulted safely, and documented from the same place it is defined, so the docs and the
-code cannot disagree. Half the incidents that start with "we set the env var" end with
-"in the wrong process".
+Configuration is the operator's API: everything that varies between deploys while the
+code stays the same. A new option must be declared once, parsed and validated at
+startup, defaulted to today's behaviour, and documented from the same place it is
+defined. Half the incidents that start with "we set the env var" end with "in the wrong
+process" or "in seconds, not milliseconds".
 
 ## Steps
 
-1. **Find the repo's config spine.** Where options are declared (a schema, a settings
-   table, a `config.sh`, a typed `Config` object), how precedence works (real env >
-   config file > mode preset > default is a common shape), and how docs are generated
-   from it. Call `search_lore` for the convention. Add your option THERE; never read
-   `process.env.X` from a random module.
-2. **Name it by the repo's rules.** Prefix, casing, and unit suffixes
-   (`GAFFER_TICK_TIMEOUT_MS`, not `timeout`). A name that encodes its unit and scope
-   prevents the classic seconds-vs-milliseconds outage.
-3. **Type and validate at load time.** Parse once into a typed value (integer range,
-   enum, URL, path that exists), fail fast with a message naming the option and the
-   bad value. A silently-ignored malformed setting is worse than a crash.
-4. **Choose the default deliberately.** The default is what every operator who does
-   not know the option exists will run. It must be safe and match today's behaviour
-   unless the ticket says otherwise; say why in a comment.
-5. **Thread it to every process that needs it.** If a child process, a spawned agent, or
-   a dashboard also needs the value, it must be exported or passed explicitly, and the
-   precedence must be the same there. Test that the value actually reaches the consumer,
-   not just that it parses.
-6. **Document from the source.** Regenerate the reference doc if the repo generates one
-   (a `docs/CONFIG.md` from the declarations); otherwise add the option to the config
-   table with its default, unit, and effect. If the dashboard exposes settings, add it
-   there through the existing settings definition, not a parallel form.
-7. **Test it**: default applied when unset, override honoured, invalid value rejected
-   with the right message, and (if relevant) that a child process sees it. Evidence with
-   the `record-evidence` skill.
+1. **Confirm it should be an option at all.** Twelve-factor's test: config is what varies
+   per deploy (hosts, credentials, limits, feature switches). A value that never differs
+   between environments is a constant — keep it in code (the `minimalism` skill). A
+   credential is not an ordinary option: follow the `security-secret-handling` skill.
+2. **Find the config spine.** Where options are declared (a schema, a settings module, a
+   `config.sh`, a typed `Config` object), how precedence works (commonly: CLI flag, then
+   env var, then config file, then default), and whether docs are generated from it. Call `search_lore`
+   for the convention, and search for existing env reads with the Grep tool (a Bash
+   command mentioning `process.env` is hook-blocked). Add the option THERE; never read
+   `process.env.X` or `os.environ` from a random module.
+3. **Name it by the repo's rules.** Prefix, casing, scope and unit
+   (`APP_UPLOAD_TIMEOUT_MS`, not `timeout`). The unit in the name prevents the classic
+   seconds-vs-milliseconds outage. Never reuse a retired option's name for new meaning.
+4. **Parse once, validate at load, fail fast.** Convert to a typed value (integer with a
+   range, enum, URL, duration, path) at startup and exit with a message naming the option
+   and the bad value. Treat an empty string explicitly (unset or invalid — decide and
+   test). Booleans accept a documented set (`true/false/1/0`), not "anything non-empty".
+   A silently ignored malformed setting is worse than a crash.
+5. **Choose the default deliberately.** It is what every operator who does not know the
+   option exists will run: it must be safe and preserve current behaviour unless the
+   ticket says otherwise. State why in one comment at the declaration.
+6. **Thread it to every consumer.** If a child process, worker, container or dashboard
+   needs the value, pass it explicitly (spawn env, compose file, chart values) with the
+   same precedence. Prove the value arrives at the consumer, not just that it parses.
+7. **Document from the source.** Regenerate the reference doc if the repo generates one;
+   otherwise add a row to the config table in README/docs: name, type, default, unit,
+   effect, since-version. If the dashboard or an admin UI lists settings, add it through
+   that existing settings definition, not a parallel form. The safety hook blocks every
+   `.env*` file, including
+   `.env.example`: if the repo keeps one, say in your evidence that it needs the new key
+   added by a human.
+8. **Test it:** default applied when unset; override honoured; each invalid form rejected
+   with the named message; precedence (flag beats env) when the repo has layers; the child
+   process sees it when step 6 applies. Evidence via the `record-evidence` skill (on a
+   resume that call is refused: do not retry; put this, the AC → test map and the
+   smallest-change note in your final message).
+
+## Done when
+
+One declaration exists; the default equals today's behaviour (or the ticket's stated
+value); invalid values fail at startup with a clear message; tests cover default,
+override and invalid; docs name the option, type, default and unit.
+
+## Stop and escalate when
+
+- The right default is a product or operational judgement the ticket does not settle:
+  `request_decision` with the options and their effect.
+- The repo has two competing config systems: use the one the surrounding code uses and
+  `request_decision` rather than adding a third.
 
 ## Rules
 
-- One declaration point; no ad-hoc env reads scattered through modules.
-- Name with prefix, scope, and unit; validate and fail fast.
+- One declaration point; no scattered ad-hoc environment reads.
+- Name with prefix, scope and unit; validate and fail fast.
 - Safe default that preserves current behaviour unless the ticket changes it.
-- Same precedence in every process that reads it; prove the value arrives.
-- Docs generated or updated from the declaration in the same change.
-- A secret is not a config option: use the `security-secret-handling` skill.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- Same precedence in every process; prove the value arrives.
+- Never log a config value that might be a secret; log the option name.
+- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
 
 ## Capture lore
 

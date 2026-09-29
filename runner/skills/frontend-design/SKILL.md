@@ -7,142 +7,116 @@ area: frontend
 
 # Design distinctive, production-grade frontend
 
-Build frontend that looks **intentional, opinionated, and specific to the product** — not
-a default template. The bar is: *would this look believable in a real product screenshot?*
-This pack is about visual quality and design judgement; pair it with `frontend-component`,
-`frontend-a11y`, and `frontend-responsive` for structure, semantics, and breakpoints, and
-with **`design-system`** for the structural layer beneath the aesthetic — the three-tier
-token architecture (primitive → semantic → component) and full component state specs. This
-pack decides *how it should look*; `design-system` decides *how that look is structured so it
-scales*. Don't re-derive tokens or component-state matrices here — consume them from there.
+The bar: *would this pass as a screenshot of a real, well-funded product?* This pack owns
+visual judgement — direction, hierarchy, composition, motion. It consumes, and does not
+re-derive, the identity from the `brand` skill, the token architecture and component state
+matrices from the `design-system` skill, and the depth in the `frontend-a11y`,
+`frontend-responsive` and `frontend-performance` skills.
 
-## Before you write any code — pick a direction
+## Pick a direction before code
 
-Generic defaults ("clean minimal") are not a direction. Commit to a specific one and let
-it drive every decision:
-
-- **Editorial / magazine**, **Swiss / International**, **Neo-brutalism**, **Bento layouts**,
-  **Glassmorphism with real depth**, **dark or light luxury** (disciplined contrast),
-  **Scrollytelling**, **retro-futurism**, **3D integration**.
-- Do **not** default to dark mode. Choose the direction the *product* wants.
-- Define the palette deliberately (semantic roles, not one accent on grey-on-white) and a
-  real **typography pairing strategy** — pick fonts with character, with a reason.
-- Read the repo's existing tokens/brand first. If a brand exists, **extend it in its idiom**;
-  do not re-pitch the aesthetic.
+"Clean minimal" is not a direction. If a brand exists, extend it in its idiom. If not,
+commit to one direction the product warrants and write one sentence on why: editorial /
+magazine, Swiss / International, neo-brutalism, bento, glassmorphism with real depth,
+light or dark luxury, scrollytelling, retro-futurism. Dark mode is a product decision, not
+a default. Choose a type pairing with a reason and a palette with semantic roles, not one
+accent on grey-on-white.
 
 ## Required qualities
 
-Every meaningful surface must demonstrate **at least four**:
+Each meaningful surface demonstrates **at least four**, and the evidence names which:
 
-1. **Hierarchy through scale contrast** — a real type scale, not uniform sizes.
-2. **Intentional rhythm** in spacing — not the same padding on everything.
-3. **Depth / layering** — overlap, shadows, surfaces, or motion; not a flat stack.
-4. **Typography with character** and a deliberate pairing.
-5. **Colour used semantically**, not just decoratively.
-6. **Designed hover / focus / active states** — interaction feels considered.
-7. **Grid-breaking editorial or bento composition** where it fits.
-8. **Texture, grain, or atmosphere** when the direction calls for it.
-9. **Motion that clarifies flow**, never distracts.
-10. **Data visualisation treated as part of the design system**, not an afterthought.
-
-## Decision checklist (priority order)
-
-Distilled reasoning rules — work them **top-down**; a failure high on the list outranks polish
-lower down. The token/component-state items defer to `design-system` (don't re-specify them here):
-
-1. **Accessibility (critical)** — contrast ≥ 4.5:1 text / 3:1 large+UI; visible focus rings;
-   alt text; `aria-label` on icon-only controls; tab order matches visual order; never convey
-   meaning by colour alone; respect `prefers-reduced-motion`.
-2. **Touch & interaction (critical)** — ≥ 44×44px targets with ≥ 8px gaps; don't rely on hover
-   for primary actions; every async action shows loading feedback; no instant 0ms state changes.
-3. **Performance (high)** — AVIF/WebP, lazy-load below the fold, reserve space so CLS < 0.1;
-   no layout thrash. See the budgets below.
-4. **Style selection (high)** — commit to one direction (above) and hold it consistently; SVG
-   icons, **never emoji as icons**; don't mix flat and skeuomorphic at random.
-5. **Layout & responsive (high)** — mobile-first breakpoints, viewport meta, no horizontal
-   scroll, never disable zoom, no fixed-px container widths.
-6. **Typography & colour (medium)** — body ≥ 16px, line-height ~1.5, a real type scale, and
-   **semantic colour tokens — no raw hex/`px` in components** (architecture: `design-system`).
-7. **Animation (medium)** — 150–300ms, motion conveys meaning (not decoration), compositor-only,
-   honour reduced-motion.
-8. **Forms & feedback (medium)** — visible labels (never placeholder-only), errors beside the
-   field, helper text, progressive disclosure.
-9. **Navigation (high)** — predictable back, bottom nav ≤ 5 items, deep-linkable state.
-10. **Charts & data (low)** — legends, tooltips, accessible colours, never colour-only encoding.
-
-For the **tokens** (three-tier architecture, dark-mode seam) and **component state matrices**
-(button/input/card/… across default/hover/focus/active/disabled/loading/error), use
-`design-system` — this pack assumes that structure and focuses on the visual judgement on top.
+1. Hierarchy through scale contrast — a real type scale, one obvious focal point.
+2. Intentional spacing rhythm — tight within groups, generous between them.
+3. Depth or layering — surfaces, overlap, shadow or motion, not a flat stack.
+4. Typography with character and a deliberate pairing.
+5. Colour used semantically, not decoratively.
+6. Designed hover / focus-visible / active / disabled states.
+7. Grid-breaking editorial or bento composition where it fits.
+8. Texture, grain or atmosphere when the direction calls for it.
+9. Motion that clarifies flow (entry, state change, spatial relationship).
+10. Data visualisation styled as part of the system (legends, tooltips, accessible
+    colours, never colour-only encoding).
 
 ## Steps
 
-1. **Read the lore + tokens first.** `search_lore` (Memory MCP) for the design system,
-   brand voice, and component conventions. Inspect `tokens.css`/theme files and a sibling
-   surface; match the framework and styling system — never introduce a competing one.
-2. **Commit to one direction** (above) and a palette + type pairing before building.
-3. **Define design tokens as CSS custom properties** — colour, type scale (`clamp()` for
-   fluid sizes), spacing, durations, easings, in the three-tier architecture from
-   `design-system` (primitive → semantic → component). Reference tokens everywhere;
-   **hardcode no raw hex or `px` font sizes** in component files.
-4. **Build semantic HTML first** — `header`/`nav`/`main`/`section`/`footer`, real `button`s,
-   a single `h1`, labelled landmarks. Hierarchy comes from structure + scale, not `div` soup.
-5. **Layer and compose** — use overlap, surfaces, and a grid you deliberately break for
-   editorial moments; avoid uniform card grids with no hierarchy.
-6. **Design every interactive state** — hover/focus/active/disabled — so they feel
-   designed, with visible, accessible focus rings (never `outline: none` with no replacement).
-7. **Animate on the compositor only** — `transform`, `opacity`, `clip-path`, `filter`
-   (sparingly). **Never animate** `width`/`height`/`top`/`left`/`margin`/`font-size`. Use
-   `will-change` narrowly and remove it when done; respect `prefers-reduced-motion`.
-8. **Mind performance budgets** (see below) — fluid type, optimised images with explicit
-   dimensions, deferred non-critical JS, ≤2 font families with `font-display: swap`.
-9. **Verify + evidence.** Run the repo's tests + lint; for visual-heavy work prefer
-   screenshot/visual checks at key breakpoints. Record `test_output` via `record-evidence`
-   and submit for review.
+1. **Read before designing.** `search_lore` for brand, tokens and design decisions;
+   open `BRAND.md`, the token files and a sibling surface. Match the framework and styling
+   system; never introduce a competing one.
+2. **State the direction and the four-plus qualities** you will deliver, in one short
+   note you will reuse as evidence.
+3. **Consume tokens.** Colour, type scale (`clamp()` fluid sizes), space, radius, shadow,
+   duration and easing come from the token layers (the `design-system` skill). If a value
+   you need is missing, add a token in the right layer — never a literal in a component.
+4. **Structure first.** Landmarks (`header`, `nav`, `main`, `section`, `footer`), one `h1`,
+   headings in order, real buttons and links. Hierarchy comes from structure plus scale.
+   Rich content never goes through `dangerouslySetInnerHTML`/`innerHTML` unsanitised;
+   third-party scripts load `async`/`defer`, with Subresource Integrity when served from a
+   CDN, and fit the repo's CSP (nonces, not `'unsafe-inline'`) (the `security-input-validation`
+   skill).
+5. **Compose.** Establish the grid, then break it deliberately for the focal moment.
+   Vary card size and emphasis by importance; avoid uniform grids of identical cards.
+   Keep body text at 45–75 characters per line, at least 16px, line-height about 1.5.
+6. **Design every state** the surface has: interaction states with a visible
+   `:focus-visible` ring (3:1 against its surroundings), loading at final size, empty with
+   a next action, error with recovery.
+7. **Motion on the compositor.** Animate `transform`, `opacity`, and sparingly
+   `clip-path`/`filter`; never `width`/`height`/`top`/`left`/`margin`/`font-size`.
+   150–300 ms for UI feedback, ease-out for entrances; wrap non-essential motion in
+   `@media (prefers-reduced-motion: no-preference)`; `will-change` only while animating.
+8. **Media and fonts that do not hurt Core Web Vitals.** Explicit `width`/`height` or
+   `aspect-ratio` on every image; the hero/LCP image eager with `fetchpriority="high"`,
+   everything below the fold `loading="lazy"`; AVIF/WebP via `srcset`/`sizes`; at most two
+   font families, self-hosted, subset, one critical weight preloaded, `font-display: swap`
+   with a metric-matched fallback; heavy libraries (animation, charts, 3D) loaded with
+   dynamic `import()`. If the repo sets no bundle budget, aim for roughly 150 KB JS / 30 KB
+   CSS gzipped on a landing page and 300 KB / 50 KB on app pages. Targets and measurement:
+   the `frontend-performance` skill (LCP ≤ 2.5 s, INP ≤ 200 ms, CLS ≤ 0.1 at p75).
+9. **Verify the rendered result** with the repo's browser tooling (Playwright or the
+   visual-regression setup, only if already installed): screenshot 320 / 768 / 1024 /
+   1440 and both themes if both exist, into the repo's git-ignored test output, never
+   committed unless an AC asks; update baselines only for intended changes; run axe and a
+   scripted keyboard pass (the `frontend-a11y` skill); run the repo's lint, type-check and
+   tests. If nothing can render the page, say so in the evidence.
+10. **Evidence** per AC with the `record-evidence` skill — screenshot paths, the
+    direction note, the qualities delivered, axe output — then stop.
 
-## Build / Test
+## Decision priorities
 
-- Run the repo's configured test + lint; type-check (`tsc --noEmit`) for TS surfaces.
-- **Visual regression carries more signal than brittle markup assertions** for visual work:
-  screenshot the key breakpoints (320 / 768 / 1024 / 1440) and both themes if both exist.
-- Run an automated a11y check (axe/Lighthouse) and verify keyboard nav + reduced-motion.
-- The DoD is verified by the repo's configured commands — record the output as evidence.
+When goals conflict, the higher item wins:
 
-## Performance budgets (Core Web Vitals)
+1. Accessibility — contrast 4.5:1 text and 3:1 UI, visible focus, labelled controls,
+   colour never the only signal, reduced motion honoured.
+2. Interaction — targets ≥ 24×24 CSS px (44 on touch-primary UI), primary actions never
+   hover-only, async actions show progress.
+3. Performance — no layout shift from media or fonts, nothing render-blocking that is not
+   critical.
+4. Layout and navigation — no horizontal scroll, zoom never disabled, no fixed-pixel
+   containers; predictable back, bottom nav of at most five items, deep-linkable state.
+5. Direction consistency — one style held across the surface; SVG icons from one set,
+   never emoji as icons.
+6. Polish — texture, micro-interactions, atmosphere.
 
-- Targets: **LCP < 2.5s · INP < 200ms · CLS < 0.1 · FCP < 1.5s**.
-- Bundle: landing **< 150kb JS / < 30kb CSS** gzipped (app pages < 300kb / < 50kb).
-- All images: explicit `width`/`height`; hero `loading="eager"` + `fetchpriority="high"`;
-  below-fold `loading="lazy"`; prefer AVIF/WebP; never ship images far beyond rendered size.
-- Preload only the hero image + the single critical font; defer non-critical CSS/JS;
-  dynamically import heavy libs (e.g. `await import('gsap')`).
+## Review checklist
 
-## Security (frontend)
+- Has a point of view; does not look like unmodified Tailwind/shadcn/starter defaults.
+- At least four required qualities visibly present and named in the evidence.
+- Scale-based hierarchy; rhythm varies intentionally.
+- Tokens only; no raw hex or `px` font sizes in components.
+- Designed, visible focus; compositor-only motion that respects reduced motion.
+- Landmarks, one `h1`, labelled controls; axe clean.
+- Media dimensioned; LCP image not lazy; fonts capped.
+- Both themes feel intentional if both exist.
 
-- **No unsanitised HTML** — avoid `dangerouslySetInnerHTML`/`innerHTML` unless sanitised
-  with a vetted sanitizer first; escape dynamic values.
-- Third-party scripts load `async`/`defer`, with SRI when served from a CDN.
-- A production **CSP** should be configured (prefer per-request nonce over `'unsafe-inline'`).
+Taste items on this list are guidance for the builder; a reviewer blocks only on an AC not
+met, an AC without a test of its own behaviour, or a correctness, security or WCAG A/AA
+defect (a performance miss only when an AC or the repo's budget names it).
 
-## Review checklist (a design reviewer must check)
+## Done when
 
-- **Doesn't look like a default Tailwind/shadcn/template** — has a point of view.
-- **At least four required qualities** are clearly present (hierarchy, rhythm, depth,
-  type, semantic colour, designed states, composition, atmosphere, motion, data-viz).
-- **Hierarchy via scale**, not uniform emphasis; rhythm is intentional, not uniform padding.
-- **Tokens, not hardcoded values** — no raw hex / `px` font sizes leaking into components.
-- **Designed hover/focus/active states**; focus is visible and accessible.
-- **Motion is compositor-only** and respects `prefers-reduced-motion`.
-- **Semantic HTML + a11y** — landmarks, one `h1`, labelled controls, contrast holds.
-- **Performance** — images have dimensions, no obvious render-blocking, no layout shift,
-  fonts capped and `swap`ed.
-- **Both themes feel intentional** if both exist.
-
-## Rules
-
-- Pick a specific direction and a deliberate palette + type pairing — never ship "generic clean".
-- Tokens for all colour/spacing/type; no hardcoded palette/sizes in components.
-- Animate compositor-friendly properties only; honour reduced-motion.
-- Semantic HTML, accessible focus, no unsanitised HTML; match the repo's framework + styling system.
+The direction note exists, four or more qualities are demonstrable at every checked width
+(in screenshots where the repo can render them), axe (where the repo has it; otherwise the
+evidence says so) and the repo's checks pass, and each AC is evidenced.
 
 ## Capture lore
 

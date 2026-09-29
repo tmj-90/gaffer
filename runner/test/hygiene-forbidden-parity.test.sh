@@ -60,7 +60,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/hygiene-forbidden-parity.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 CORPUS="$(printf '%s\n' \
-  'src/index.ts' 'node_modules/x/y.js' 'app/.crew/state' 'logs/run.events.jsonl' \
+  'src/index.ts' 'infra/.terraform/providers/aws' 'infra/.terraform.lock.hcl' 'node_modules/x/y.js' 'app/.crew/state' 'logs/run.events.jsonl' \
   'src/mcp-runtime/index.ts' 'mcp-runtime.123.json' '.claude/settings.json' \
   'CLAUDE.factory.md' 'src/events.jsonlx' 'README.md' 'a/b/node_modules' \
   'deep/nested/.mcp.json' 'events.jsonl' 'x.events.jsonl' 'weird path/with space.ts')"

@@ -132,8 +132,10 @@ clarify skill on DRAFT ticket #$CNUM: call get_ticket (dispatch) and search_lore
 gaps whose answer would change the implementation, scope, or acceptance). For each,
 either add_acceptance_criterion (a knowable answer or noted sane default) or
 request_decision (a genuine unmade decision). NEVER mark the ticket ready and never
-guess past a real ambiguity — if one stays unresolved, mark_ticket_blocked with the
-open question. Work only in: $CWT
+guess past a real ambiguity — if one stays unresolved, raise it with request_decision
+(ticket_id #$CNUM, severity human_required, the open question as the title): a decision
+filed against the ticket blocks it until a human answers. You hold no claim, so do not
+call mark_ticket_blocked or record_ac_evidence (both are refused). Work only in: $CWT
 EOF
       CPROMPT="${CPROMPT}${_CLARIFY_CARDS}"
       C_USAGE_JSON="$GAFFER_DATA/.usage-$CNUM.json"; : > "$C_USAGE_JSON"

@@ -1,108 +1,112 @@
-# SEO Audit Checklist — 80-point
+# SEO Audit Checklist
 
-## Technical (40 points)
+Walk this checklist in order. Each unchecked item becomes a finding that records the
+URL(s), the evidence and the fix. Sources are Google Search Central (Search Essentials,
+the SEO Starter Guide, the crawling and indexing docs, the helpful-content guidance, the
+Core Web Vitals docs) and web.dev.
 
-### Crawl & Indexation
-- [ ] robots.txt present and not blocking critical pages
-- [ ] XML sitemap present, valid, and submitted to Search Console
-- [ ] Sitemap contains only indexable URLs (no 4xx/5xx/redirected)
-- [ ] No orphan pages (every page reachable from at least one internal link)
-- [ ] Crawl depth ≤ 3 clicks from homepage for important pages
-- [ ] Pagination handled correctly (rel=next/prev or proper internal linking)
-- [ ] No noindex on pages that should rank
-- [ ] No disallow in robots.txt for pages that should rank
-- [ ] Canonical tags present and pointing to correct URL
-- [ ] No canonical to noindexed page
+## 1. Crawl & index (blocking — fix first)
 
-### HTTPS & URLs
-- [ ] HTTPS on all pages; no mixed-content warnings
-- [ ] HTTP redirects to HTTPS (301)
-- [ ] No redirect chains longer than 1 hop
-- [ ] No broken redirect loops
-- [ ] URL slugs lowercase, hyphens, no special chars, descriptive
-- [ ] No session IDs or tracking params in canonical URLs
+### Status & redirects
+- [ ] Every URL that should rank returns 200.
+- [ ] Moved URLs 301 straight to the final URL. There are no chains longer than 1 hop
+      and no loops.
+- [ ] HTTP → HTTPS and non-canonical host → canonical host each redirect in one hop.
+- [ ] No soft 404s: "not found" or empty pages do not return 200.
 
-### Speed & Core Web Vitals
-- [ ] LCP ≤ 2.5s (real-user, Search Console)
-- [ ] INP ≤ 200ms (real-user, Search Console)
-- [ ] CLS ≤ 0.1 (real-user, Search Console)
-- [ ] Hero image uses next-gen format (AVIF/WebP)
-- [ ] Hero image preloaded with `fetchpriority="high"`
-- [ ] Render-blocking CSS eliminated or deferred
-- [ ] No large layout shifts from late-loading fonts or images
-- [ ] Images have explicit width + height attributes
+### robots.txt & robots directives
+- [ ] robots.txt is reachable and does not disallow ranking pages or the CSS/JS needed
+      to render them.
+- [ ] No `noindex` (meta or `X-Robots-Tag`) on pages that should rank.
+- [ ] Pages that must stay out of the index use `noindex` and are **not**
+      robots-blocked, because Google has to crawl a page to see the tag.
+- [ ] No unintended `nosnippet` or `max-snippet:0`, which also removes a page from AI
+      features.
 
-### Mobile
-- [ ] Passes Google Mobile-Friendly Test
-- [ ] Viewport meta tag present
-- [ ] Touch targets ≥ 44×44px
-- [ ] No horizontal scroll at 375px viewport
+### Canonicalisation
+- [ ] Every indexable page has an absolute, self-referencing `rel=canonical`.
+- [ ] Duplicates and parameter variants canonicalise to one URL.
+- [ ] No canonical points to a redirect, a 404, a noindexed URL or another language.
 
-### Structured Data
-- [ ] At least one structured data type implemented (Organization, WebSite, BreadcrumbList)
-- [ ] No structured data errors in Search Console → Enhancements
-- [ ] FAQ schema on FAQ pages (if applicable)
-- [ ] Article schema on blog posts with datePublished + author
+### Sitemaps
+- [ ] The XML sitemap lists only canonical, indexable 200 URLs.
+- [ ] It is referenced in robots.txt and submitted in Search Console.
+- [ ] Its `lastmod` values are accurate: set when the page changes, not on every
+      build.
 
-### International (if applicable)
-- [ ] hreflang tags correct and bidirectional
-- [ ] No missing hreflang return tags
+### Rendering & links
+- [ ] The main content is present in the rendered HTML (URL Inspection → crawled page).
+- [ ] Navigation uses `<a href>` links that crawlers can follow.
+- [ ] Important pages sit within about 3 clicks of the homepage. No orphan pages.
+- [ ] Paginated series link to their pages with plain links. Google ignores
+      `rel=prev/next`.
 
----
+### Search Console
+- [ ] The Page indexing report's "Not indexed" reasons are explained for important
+      URLs.
+- [ ] There are no manual actions or security issues.
 
-## On-Page (25 points)
+## 2. Content & intent
 
-### Title Tags
-- [ ] Unique per page
-- [ ] ≤ 60 characters
-- [ ] Primary keyword near the front
-- [ ] Describes page content accurately
-- [ ] No keyword stuffing
+- [ ] The page type matches the dominant intent of the target query (compare against
+      the current top results).
+- [ ] The content answers the query fully, with first-hand experience, original data or
+      expertise where relevant.
+- [ ] A clear author and dates (published and updated) are shown where readers expect
+      them.
+- [ ] Claims cite their sources, and outdated statistics are updated.
+- [ ] No two pages compete for the same query (cannibalisation). Consolidate or
+      differentiate them.
+- [ ] No scaled, auto-generated or doorway pages made mainly to rank.
+- [ ] Thin pages are improved, merged or noindexed. Judge thinness by usefulness, not by
+      word count.
 
-### Meta Descriptions
-- [ ] Present on all key pages
-- [ ] ≤ 160 characters
-- [ ] Unique per page
-- [ ] Includes a soft CTA or benefit statement
+## 3. On-page
 
-### Headings
-- [ ] Exactly one H1 per page
-- [ ] H1 includes primary keyword
-- [ ] Logical heading hierarchy (H1 → H2 → H3, no gaps)
-- [ ] No keyword stuffing in headings
+### Titles & descriptions
+- [ ] Every indexable page has a unique, descriptive `<title>` that leads with its
+      topic (about 50–60 characters are shown).
+- [ ] Meta descriptions are unique summaries of the page, not boilerplate.
 
-### Internal Linking
-- [ ] Money pages linked from ≥ 3 internal pages
-- [ ] Anchor text is descriptive (no "click here")
-- [ ] No broken internal links
-- [ ] No nofollow on internal links to important pages
-- [ ] Breadcrumbs present on inner pages
+### Headings & structure
+- [ ] One clear `<h1>` states the page topic.
+- [ ] h2/h3 follow the content's logical structure.
 
-### Images
-- [ ] Alt text on all images (descriptive, not keyword-stuffed)
-- [ ] File names descriptive (product-name.jpg, not IMG_4521.jpg)
+### Internal links
+- [ ] Key pages are linked from several relevant pages with descriptive anchor text
+      (not "click here").
+- [ ] There are no broken internal links (4xx/5xx).
+- [ ] Breadcrumbs appear on deep sections, with `BreadcrumbList` markup (see the
+      schema-markup skill).
 
----
+### Images & media
+- [ ] Informative images have descriptive `alt` text. Decorative ones use `alt=""`.
+- [ ] Images declare `width`/`height`, use modern formats (AVIF/WebP) and are
+      responsive (`srcset`).
+- [ ] Video pages have an indexable watch page and `VideoObject` markup.
 
-## Content (15 points)
+### Structured data
+- [ ] JSON-LD parses and has zero errors in the Rich Results Test.
+- [ ] Every marked-up value is visible on the page.
+- [ ] No markup relies on retired features (FAQ and HowTo rich results, the sitelinks
+      search box).
 
-### Intent Match
-- [ ] Page format matches dominant search intent (informational/transactional/navigational/commercial)
-- [ ] Featured snippet opportunity identified and format matched (paragraph/list/table)
+## 4. Page experience
 
-### E-E-A-T
-- [ ] Author bio with credentials on articles
-- [ ] Publication date and last-updated date visible
-- [ ] Primary sources cited where claims are made
-- [ ] Specific examples and data (not only generic claims)
+- [ ] Field Core Web Vitals, at the 75th percentile (Search Console or CrUX), are:
+      LCP ≤ 2.5 s, INP ≤ 200 ms, CLS ≤ 0.1.
+- [ ] The LCP element is known. If it is an image, it is not lazy-loaded, has
+      `fetchpriority="high"` and is served from a fast origin or CDN.
+- [ ] No layout shift from late fonts, ads or embeds (reserve their space).
+- [ ] Pages render correctly at a 375 px viewport with the viewport meta tag, have no
+      horizontal scroll, and have tap targets ≥ 24×24 px (WCAG 2.2 AA; 44 px is
+      preferred).
+- [ ] HTTPS is on every page, with no mixed content.
+- [ ] No intrusive interstitials cover the content on mobile.
 
-### Quality
-- [ ] No thin pages (< 300 words unique content) targeting commercial queries
-- [ ] No duplicate content (use canonical or consolidate)
-- [ ] Primary keyword in: title + H1 + first 100 words + URL slug
-- [ ] LSI/related terms used naturally in body
-- [ ] No keyword stuffing
+## 5. International (if applicable)
 
-### Freshness
-- [ ] Evergreen pages reviewed and updated in last 12 months
-- [ ] Outdated statistics replaced with current data
+- [ ] `hreflang` annotations are reciprocal, include self-references and use valid
+      language/region codes.
+- [ ] `x-default` is set for language pickers or global pages.
+- [ ] Each language version is canonical to itself, not to another language.

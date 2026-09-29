@@ -7,63 +7,96 @@ area: marketing
 
 # Write marketing copy that converts
 
-Clarity beats cleverness every time. If you have to choose, choose clear.
+Clarity beats cleverness. Good copy meets the reader where their awareness is, speaks in
+their words, makes specific claims it can prove, and asks for one clear action.
 
-## Gather before writing (ask for missing pieces — one at a time)
+## Inputs (collect before writing)
 
-1. **Page type** — homepage, landing, pricing, feature, about?
-2. **Primary action** — the ONE thing visitors should do.
-3. **Audience** — who they are; what problem they're trying to solve; what language they use.
-4. **Differentiation** — what makes this meaningfully different from the obvious alternative?
-5. **Proof points** — numbers, testimonials, case studies, recognisable customers.
-6. **Traffic source** — organic, paid, email, direct? Awareness level changes the angle.
+1. **Page type and the ONE primary action.**
+2. **Audience**: who they are, the job they are trying to get done, and the words they
+   use for it. Pull those words from reviews, support tickets, interview notes and
+   sales calls (voice-of-customer).
+3. **Awareness level** (Eugene Schwartz, *Breakthrough Advertising*). This decides
+   where the copy opens:
+   - **Unaware**: open on a story or insight about the situation.
+   - **Problem-aware**: open on the problem (PAS).
+   - **Solution-aware**: open on why this approach beats the others.
+   - **Product-aware**: open on the proof and the offer.
+   - **Most aware**: open on the offer and the CTA, and not much else.
+4. **Differentiation**: why this rather than the obvious alternative, including "do
+   nothing".
+5. **Proof you actually have**: numbers, named customers, testimonials, guarantees.
+6. **Traffic source**: it sets the awareness level and the message the headline must
+   match.
 
-## Core principles
+When running unattended, take these from the ticket, the repo (`BRAND.md`, existing
+pages) and the lore (`search_lore`). **Never invent proof.** A missing testimonial or
+number becomes a clearly marked `[TODO: proof]` placeholder and is listed in your
+report. It is never a fabricated quote or statistic.
 
-**Benefits, not features.** Feature: "256-bit encryption". Benefit: "Your files are private — we can't read them, and neither can anyone else." Always translate mechanism → outcome → feeling.
+## Principles
 
-**Customer language.** Use the words your users use to describe their problem. If interviews say "it's a nightmare to reconcile", the headline says "Stop the reconciliation nightmare" — not "Streamline financial operations."
+- **Outcome over mechanism.** Translate each feature into what the user gets. "256-bit
+  encryption" becomes "Only you can read your files".
+- **Customer language.** If users say "reconciliation is a nightmare", write that, not
+  "streamline financial operations".
+- **Specific over general.** "Save 2 hours a week" beats "save time". "4,200 teams"
+  beats "thousands". Specific claims are believed, and they must be true.
+- **One idea per section.** Each section answers one question a visitor has, in the
+  order they would ask it.
+- **Plain words.** Use short sentences and active voice, and cut filler ("we're
+  passionate about…", "world-class", "seamless").
 
-**Specificity > generality.** "Save 2 hours a week" > "Save time". "4,200 teams" > "thousands of teams". Specific claims are more believable.
+## Frameworks
 
-**One idea per section.** Each section of a page answers one question. Don't layer messages.
+| Framework | Shape | Use when |
+|---|---|---|
+| **PAS** | Problem → Agitate → Solution | problem-aware readers |
+| **AIDA** | Attention → Interest → Desire → Action | cold or unaware readers; long pages |
+| **BAB** | Before → After → Bridge | transformation-led offers |
+| **4 U's** (headline test) | Useful, Urgent, Unique, Ultra-specific | scoring headline variants |
 
-## Headline formula bank
+`landing-page-generator/references/copy-frameworks.md` has fill-in templates.
 
-| Formula | Example | When to use |
-|---------|---------|-------------|
-| Outcome + timeframe | "Profitable in 90 days or your money back" | Strong guarantee; outcome is measurable |
-| Problem reversal | "Stop losing deals to follow-up gaps" | Pain-aware audience |
-| Social proof + outcome | "4,200 teams use Gaffer to ship twice as fast" | Strong install base |
-| Who + outcome | "For developers who hate waiting on CI" | Niche audience; resonance over reach |
-| Contrast | "The Stripe fees dashboard you always wanted" | Competitor-aware or category-aware audience |
+## Headlines and CTAs
 
-## CTA copy rules
-
-- State what happens next: "Start free trial" (not "Get started"), "Book a 20-min demo" (not "Contact us").
-- Match the commitment level to the page: cold traffic → low-commitment CTA (free trial, see pricing); warm traffic → higher-commitment CTA (book demo, talk to sales).
-- Avoid: "Submit", "Click here", "Learn more" as primary CTAs.
+- Test headline formulas:
+  - outcome + timeframe
+  - problem reversal ("Stop losing deals to slow follow-up")
+  - who + outcome ("For teams who hate waiting on CI")
+  - proof + outcome
+- CTAs state what happens next and match the commitment level. Cold traffic gets "See
+  pricing" or "Start free". Warm traffic gets "Book a 20-min demo". Avoid "Submit",
+  "Click here" and "Learn more" as the primary CTA.
+- Put risk reducers next to the CTA: "No card required", "Cancel anytime". Use them only
+  if they are true.
 
 ## Steps
 
-1. **Read existing copy if present.** Identify what's working (don't throw away specificity) and what's broken (vague, feature-first, wrong audience language).
-2. **Write 5 headline variants.** Apply different formulas; don't self-edit until all 5 are drafted.
-3. **Pick the clearest one.** Read it cold — does a first-time visitor understand what they get and for whom? If not, it's not clear enough yet.
-4. **Write body copy section by section.** Each section: one idea, benefit-first, with supporting proof.
-5. **Write the CTA.** State the action; reduce friction; match commitment level to audience temperature.
-6. **Self-review.** Read every sentence aloud. Cut any sentence that doesn't move the reader one step closer to the primary action.
+1. **Read the existing copy.** Keep what is specific and working. Flag what is vague,
+   feature-first, or written for the company rather than the reader.
+2. **Set the awareness level and the framework.**
+3. **Draft 5+ headline variants** across different formulas before judging any of them.
+   Score each on the 4 U's and on the 5-second test: would a cold visitor know what
+   this is and who it is for? Pick the clearest.
+4. **Write the sections in visitor-question order.** For each section: one idea,
+   benefit first, then the proof.
+5. **Write the CTA and its microcopy**, including any risk reducer.
+6. **Edit.** Read it aloud. Cut every sentence that does not move the reader toward the
+   action. Replace hedges ("may help you") with a specific claim or remove them. Check
+   that every claim has proof.
 
-## Review checklist
+## Done when
 
-- **Headline states outcome, not product** — a new visitor with no context can understand the benefit.
-- **Customer language used** — words from user interviews/reviews, not internal jargon.
-- **Every claim specific** — no "faster", "better", "smarter" without a number or proof.
-- **CTA states what happens next** — not a generic verb.
-- **No hedging language** — "may", "could", "help you" weaken the value prop.
-- **Mobile readable** — headline is ≤ 12 words; no wall-of-text paragraphs (max 3 lines).
+- A cold reader can state the outcome and the audience from the headline and subhead.
+- Every claim is specific and backed by real proof, or marked `[TODO: proof]`.
+- There is one primary CTA, labelled with its outcome, on the page.
+- The copy uses the customer's words, has no filler, and on mobile no paragraph runs
+  past about three lines.
 
-## Rules
+## Anti-patterns
 
-- Clarity first, always. A clever headline that makes someone re-read it has already lost them.
-- Never write for the company — write for the specific person arriving at this page.
-- No fluff: "We're passionate about X" is filler; cut it.
+- Clever or punny headlines that need a second read.
+- Superlatives without proof ("best", "fastest", "#1").
+- Fabricated testimonials, logos or numbers. These are a legal and trust risk.
+- Several competing CTAs of equal weight.

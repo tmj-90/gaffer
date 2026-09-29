@@ -1,80 +1,121 @@
 ---
 name: java-conventions
-description: Use when a ticket adds or changes Java code and it must follow the repo's Java conventions — modern Java (records, sealed types, pattern matching, switch expressions), Optional discipline, immutability, Spring Boot constructor injection, and JUnit 5 + Mockito tests. Invoke for "add this in Java", "fix the Java build", "add a Spring endpoint/service", or as the language pack for any Java change.
+description: Use when a ticket adds or changes Java code and it must follow the repo's Java conventions — Effective Java, modern Java (records, sealed types, pattern matching, switch expressions), Optional discipline, immutability, try-with-resources, thread safety and virtual threads, Spring Boot constructor injection, and JUnit 5 + Mockito tests. Invoke for "add this in Java", "fix the Java build", "add a Spring endpoint/service", or as the language pack for any Java change or Java review.
 stack: [java]
 area: language
 ---
 
 # Write idiomatic, modern Java
 
-Add Java that uses the current language toolset, models data immutably, and matches the
-repo's existing idioms — provably correct and conventional, not just compiling.
+Java stays correct when data is immutable, resources close themselves, absence is typed
+and shared state is guarded. For the builder and the reviewer of a Java diff; the repo's config and existing code win over it.
 
-## Steps
+## Procedure
 
-1. **Read the lore first.** Call `search_lore` (Memory MCP) for the repo's Java
-   conventions and target version, and respect the build config (`pom.xml` /
-   `build.gradle`), the formatter (Spotless / google-java-format), and any
-   architecture ADRs. Match the Java version the project already compiles against —
-   do not assume the newest.
-2. **Find a sibling class** and copy its patterns — package layout, naming, error
-   handling, how DTOs/entities are modelled, and how tests are organised.
-3. **Use modern language features where the version allows.** Prefer **records** for
-   data carriers over hand-written getters/setters or Lombok `@Data`/`@Value`/`@Builder`.
-   Use **sealed** interfaces + **pattern matching** and **switch expressions** to model
-   closed hierarchies exhaustively; use text blocks for multi-line literals.
-4. **Discipline with `Optional`.** Represent absence with `Optional` rather than `null`;
-   never call `.get()` without an `isPresent()` guard — prefer `.map()`, `.orElseThrow()`,
-   `.orElseGet()`. Never use `Optional` for fields or method parameters.
-5. **Favour immutability.** Final fields, immutable collections (`List.copyOf`),
-   defensive copies at boundaries. Prefer composition over inheritance; extract an
-   interface when it improves testability.
-6. **Spring Boot idioms (if applicable).** Constructor injection (no field `@Autowired`);
-   keep controllers thin and push logic to services; validate request bodies at the
-   boundary (`@Valid` + Bean Validation). Log via **SLF4J** (`LoggerFactory.getLogger`) —
-   **never log secrets, tokens, or PII**.
-7. **Streams over loops** where readability isn't sacrificed; keep methods small and
-   single-purpose.
-8. **Test with JUnit 5 + Mockito.** Use `@ExtendWith(MockitoExtension.class)`, `@Mock`/
-   `@InjectMocks`, AssertJ-style assertions, and cover happy path, edge cases, and error
-   conditions. Use Testcontainers for integration tests touching real infrastructure.
-9. **Verify + evidence.** Run the build's test goal, record `test_output` via the
-   `record-evidence` skill, and submit for review.
+1. **Discover the repo's conventions first.** Call `search_lore` for Java conventions.
+   Read the build file (`pom.xml` `maven.compiler.release`, or `build.gradle(.kts)`
+   toolchain) for the Java version — features below are gated on it — and the wrapper
+   (`mvnw`/`gradlew`: always use it). Find the style and analysis tools: Spotless /
+   google-java-format, Checkstyle, Error Prone + NullAway, SpotBugs, PMD, and the
+   nullness annotations in use (JSpecify `@NullMarked`, JetBrains, jakarta). Note whether
+   the repo uses Lombok (`lombok.config`) — follow the repo, do not mix styles. Copy a
+   sibling class and its test.
+2. **Pin the exact commands** from CI (the `run-tests` and `run-lint` skills). Use the
+   defaults below only when the repo defines none.
+3. **Write the change with the idioms below**, then walk the concurrency section for
+   every executor, shared field, stream, connection and file you touched.
+4. **Test each acceptance criterion's own behaviour.** One JUnit 5 test (or
+   `@ParameterizedTest` case) per AC that fails without your change, plus its error path.
+   If the AC involves shared state or persistence, add a test that runs N concurrent
+   callers (an `ExecutorService` plus a `CountDownLatch` start gate) and asserts the
+   invariant. Use Testcontainers for real databases where the repo does.
+5. **Verify, then stop.** Done when: the formatter check and static analysis are clean, the
+   build's verify/check goal is green with the repo's coverage gate, and every AC has a
+   test. Record the output with the `record-evidence` skill; the runner submits the work.
 
-## Build / Test
+## Commands
 
-- **Maven:** `mvn test` (unit), `mvn verify` (full, incl. coverage), `mvn package`.
-- **Gradle:** `./gradlew test`, `./gradlew jacocoTestReport`, `./gradlew build`.
-- The DoD is verified by the repo's configured test/coverage commands — run them and
-  record the output; a green run with coverage is the evidence, not a claim that it passes.
-- Follow the Google Java Style Guide; run the project's formatter (Spotless /
-  google-java-format) so the diff is style-clean before review.
+- Maven: `./mvnw -B verify` (compile, tests, coverage, checks); one test:
+  `./mvnw -Dtest='ClassTest#method' test`; format: `./mvnw spotless:check`.
+- Gradle: `./gradlew check` (or `build`); one test: `./gradlew test --tests 'pkg.ClassTest'`;
+  format: `./gradlew spotlessCheck`; coverage: `./gradlew jacocoTestReport`.
+- Dependencies: a new or bumped dependency is a blocker, not an edit to the build file
+  (the `dependency-upgrade` skill); `./gradlew dependencies` or `./mvnw dependency:tree`
+  shows what is already on the classpath.
 
-## Review checklist (a Java reviewer must check)
+## Idioms that matter
 
-- **Records over Lombok** for data carriers; no new `@Data`/`@Value`/`@Builder`.
-- **`Optional` used correctly** — no unguarded `.get()`, no `Optional` fields/params,
-  no `null` where `Optional` fits.
-- **Sealed hierarchies are exhaustive** — switch expressions over a sealed type have no
-  default that hides a missing case.
-- **Immutability** — fields `final` where possible, collections defensively copied at
-  boundaries; no leaking internal mutable state.
-- **Spring:** constructor injection (not field `@Autowired`); controllers thin; inputs
-  validated; no business logic in controllers.
-- **Logging:** SLF4J, parameterised (`log.info("x={}", x)`), and **no secrets/PII** in
-  logs or exception messages.
-- **No swallowed exceptions** — caught exceptions are handled or rethrown with context,
-  never silently dropped.
-- **Tests** use JUnit 5 + Mockito (`@ExtendWith(MockitoExtension.class)`) and cover error
-  paths, not only the happy path.
+- **Records** (16+) for data carriers; validate and defensively copy in the compact
+  constructor (`items = List.copyOf(items);`) — a record holding a mutable list or array
+  leaks its state.
+- **Sealed interfaces + pattern-matching `switch`** (21+) for closed hierarchies, with no
+  `default` branch so a new subtype fails to compile.
+- **Minimise mutability** (Effective Java 17): `final` fields, `List.of`/`copyOf`, no
+  setters on value types; favour composition over inheritance (18).
+- **`Optional`** as a return type for "may be absent" (55); never `.get()` without a
+  guard (use `orElseThrow`/`map`/`orElseGet`), never for fields or parameters; return
+  empty collections, not `null` (54).
+- **Nullness**: honour the repo's annotations; `Objects.requireNonNull` at public boundaries.
+- **Exceptions**: never ignore one (77); rethrow with the cause
+  (`new ServiceException("…", e)`); catch specific types; restore the interrupt flag
+  (`Thread.currentThread().interrupt()`) when catching `InterruptedException`.
+- **`equals` and `hashCode` together** (11); compare strings and boxed numbers with
+  `equals`, never `==`; `BigDecimal` with `compareTo`.
+- **Spring**: constructor injection (no field `@Autowired`); thin controllers; `@Valid` +
+  Bean Validation on request bodies; `@Transactional` does not apply to self-invocation.
+- **Logging**: SLF4J parameterised (`log.info("claimed {}", id)`); no secrets or PII.
 
-## Rules
+## Concurrency and resource safety
 
-- Match the repo's Java version, build tool, and formatter exactly — never widen them to
-  silence an error.
-- Records over Lombok; `Optional` not `null`; sealed + pattern matching for closed sets.
-- Constructor injection in Spring; never log secrets or PII.
-- No empty catch blocks — handle or rethrow with context.
+- **try-with-resources** for every `AutoCloseable`: streams, readers, JDBC connections,
+  `Files.lines`/`Files.walk` streams, and `ExecutorService` (19+).
+- **Spring beans are singletons**: a mutable instance field in a `@Service`/`@Controller`
+  is shared by every request thread. Keep beans stateless or guard the state.
+- **Atomic compound operations**: `ConcurrentHashMap` check-then-put is a race; use
+  `compute`/`merge`/`putIfAbsent`; counters use `AtomicLong`/`LongAdder`; a
+  read-modify-write holds one lock throughout. `HashMap`, `ArrayList` and
+  `SimpleDateFormat` are not thread-safe.
+- **Lost updates in the database**: read-modify-write of a row needs `@Version` optimistic
+  locking, `SELECT … FOR UPDATE`, or an atomic `UPDATE … SET n = n + 1`.
+- **Files other requests read**: write to `Files.createTempFile(targetDir, "x", ".tmp")`
+  (unique, same filesystem), then `Files.move(tmp, target, ATOMIC_MOVE, REPLACE_EXISTING)`.
+  Cross-process exclusion uses `FileChannel.lock()` or the database; a time-only lease lets
+  a paused holder write late, so writes must verify a fencing token or version.
+- **Virtual threads** (21+): `Executors.newVirtualThreadPerTaskExecutor()` in
+  try-with-resources; never pool them; limit concurrency to a downstream with a
+  `Semaphore`, not a pool size; avoid heavy `ThreadLocal` caches. Before JDK 24
+  (JEP 491), blocking inside `synchronized` pins the carrier — prefer `ReentrantLock`
+  around blocking I/O on 21–23.
+- **`CompletableFuture`**: pass an explicit executor (the common pool is shared and small);
+  join or handle every future so exceptions are not lost; set timeouts (`orTimeout`).
+- **Outbound HTTP** has connect and request timeouts (`HttpClient`, `RestClient`,
+  `WebClient` configuration).
+
+## Review checklist — flag as defects
+
+Walk this against the diff. An item is grounds for CHANGES only when, in changed code, it
+causes a concrete failure (wrong result, crash, lost or corrupted data, security hole) or
+leaves an AC's own behaviour untested: cite the line and that failure. Otherwise it is an
+`(optional)` note. Formatting the tools would fix, and preferences the repo
+does not enforce (Lombok versus records in a Lombok codebase), are not findings. Do not
+patch the code under review.
+
+- [ ] An empty or log-and-continue `catch`; a cause dropped on rethrow; an
+      `InterruptedException` swallowed without restoring the flag.
+- [ ] `Optional.get()` without a guard; `null` returned where the API promises a value or
+      a collection.
+- [ ] A resource not in try-with-resources (stream, connection, `Files.lines`, executor).
+- [ ] Mutable state in a singleton bean, or a shared non-thread-safe collection/formatter.
+- [ ] A check-then-act on a concurrent map, or a read-modify-write (in memory or on a
+      row) without a lock, atomic operation or version check.
+- [ ] A shared file written in place or via a fixed temp name; a time-only lock lease.
+- [ ] A record exposing a mutable component without a defensive copy; `equals` without
+      `hashCode`; `==` on strings or boxed values.
+- [ ] A switch over a sealed type with a `default` that hides a missing case.
+- [ ] Field injection, unvalidated request bodies, or secrets/PII in logs.
+- [ ] A `CompletableFuture` never joined, on the common pool for blocking work, or without
+      a timeout; an outbound call without timeouts.
+- [ ] An AC has no test, or the test mocks away the behaviour the AC describes.
 
 ## Capture lore
 

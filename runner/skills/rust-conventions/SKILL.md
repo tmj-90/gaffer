@@ -1,6 +1,6 @@
 ---
 name: rust-conventions
-description: Use when a ticket adds or changes Rust code and it must follow the repo's Rust conventions — ownership and borrowing done right, explicit error handling with Result and typed errors, no needless unsafe or clones, idiomatic traits and iterators, clippy-clean — as the language pack for any Rust change. Invoke for "add this in Rust", "fix the borrow checker error", "remove the unwraps", or when reviewing a Rust diff.
+description: Use when a ticket adds or changes Rust code and it must follow the repo's Rust conventions — ownership and borrowing done right, explicit error handling with Result and typed errors, no needless unsafe or clones, idiomatic traits and iterators per the Rust API Guidelines, async/tokio used without blocking or lock-across-await bugs, clippy- and rustfmt-clean — as the language pack for any Rust change. Invoke for "add this in Rust", "fix the borrow checker error", "remove the unwraps", or when reviewing a Rust diff.
 stack: [rust]
 area: language
 ---
@@ -8,58 +8,105 @@ area: language
 # Write idiomatic, safe Rust
 
 Rust rewards code that makes ownership and failure explicit and punishes code that
-fights the compiler with clones, `unwrap`, and `unsafe`. Match the crate's existing
-structure, let the type system carry invariants, and keep `clippy` and `rustfmt` clean
-in the same configuration CI uses.
+fights the compiler with clones, `unwrap` and `unsafe`. For the builder and the reviewer of a Rust diff; the crate's config and existing code win over it.
 
-## Steps
+## Procedure
 
-1. **Read the crate's conventions.** Edition, MSRV, error strategy (`thiserror` for
-   libraries, `anyhow` at the binary edge, or a hand-rolled enum), async runtime
-   (`tokio` vs `async-std`), module layout, and feature flags. Call `search_lore`; copy
-   a sibling module's shape.
-2. **Model with types.** Newtypes for ids and units, enums for closed sets, `Option`
-   for absence, builders or typed state for multi-step construction; make invalid
-   states unrepresentable rather than validated at runtime everywhere.
-3. **Own and borrow deliberately.** Take `&str`/`&[T]`/`impl AsRef` in APIs, return owned
-   values when the caller needs them; avoid `clone()` to appease the borrow checker —
-   restructure ownership or use references/`Rc`/`Arc` where sharing is real. Lifetimes in
-   signatures only when elision cannot express them.
-4. **Handle errors with `Result`.** Library code returns typed errors (`thiserror`
-   enums with context); binaries may use `anyhow` with `.context()`; `?` everywhere;
-   `unwrap`/`expect` only where impossibility is proven and stated in the `expect`
-   message; never `panic!` on user or network input.
-5. **Prefer iterators and the standard library.** Iterator chains over index loops;
-   `match`/`if let`/`let else` over nested conditionals; `impl Trait` and generics over
-   `dyn` unless dynamic dispatch is needed; no `unsafe` without a `// SAFETY:` comment
-   proving the invariant and a test.
-6. **Async correctly.** No blocking calls in async contexts (`spawn_blocking`);
-   `Send` bounds where tasks cross threads; cancellation-safe futures; bounded channels
-   and `select!` with care for lost data.
-7. **Test in the Rust way.** Unit tests in `#[cfg(test)] mod tests`, integration tests in
-   `tests/`, doc tests for public APIs, property tests with `proptest` where inputs are
-   wide (the `property-based-test` skill). `cargo test`, `cargo clippy -- -D warnings`
-   (or the repo's level), `cargo fmt --check`, and `cargo doc` for public items.
-8. **Evidence** with the `record-evidence` skill: the test, clippy and fmt runs.
+1. **Discover the crate's conventions first.** Call `search_lore` for Rust conventions.
+   Read `Cargo.toml` (`edition`, `rust-version` MSRV, `[lints]`/`[workspace.lints]`,
+   features), `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml`, `deny.toml`,
+   `.cargo/config.toml` and the CI workflow. Identify the error strategy (`thiserror`
+   enums in libraries, `anyhow` at the binary edge, or hand-rolled), the async runtime,
+   and the policy on `unsafe` (`#![forbid(unsafe_code)]`?). Copy a sibling module and its
+   tests.
+2. **Pin the exact commands** from CI, `Makefile`/`justfile` or `xtask` (the `run-tests`
+   and `run-lint` skills). Use the defaults below only when the repo defines none; match
+   CI's feature flags.
+3. **Write the change with the idioms below**, then walk the concurrency section for
+   every task, lock, channel, file and outbound call you touched.
+4. **Test each acceptance criterion's own behaviour.** One test per AC that fails without
+   your change, plus its error path. If the AC involves shared state or persistence, add
+   a test that spawns N threads or tasks against it and asserts the invariant; use
+   `proptest` for wide inputs (the `property-based-test` skill).
+5. **Verify, then stop.** Done when: `cargo fmt --check` and clippy are clean at CI's
+   level, tests pass with CI's features, public items are documented, and every AC has a
+   test. Record the output with the `record-evidence` skill; the runner submits the work.
 
-## Review checklist (a Rust reviewer must check)
+## Commands
 
-- No `unwrap`/`expect` on fallible paths reachable from input; `expect` messages state
-  the invariant.
-- Errors are typed with context; `?` used; no stringly-typed errors.
-- No gratuitous `clone()`; ownership restructured instead.
-- `unsafe` has a `// SAFETY:` proof and a test, or does not exist.
-- No blocking in async; bounds and cancellation handled.
-- Public items documented; clippy and rustfmt clean at the repo's level.
+- Format: `cargo fmt --all -- --check`.
+- Lint: `cargo clippy --all-targets --all-features -- -D warnings` (or CI's feature set).
+- Test: `cargo test --all-features` (or `cargo nextest run` where configured; nextest
+  skips doctests, so also run `cargo test --doc`); one test: `cargo test name -- --exact`.
+- Docs: `cargo doc --no-deps` with `RUSTDOCFLAGS="-D warnings"` if CI sets it.
+- Dependencies: never `cargo add`/`cargo update`; a new or bumped crate is a blocker (the
+  `dependency-upgrade` skill). `cargo deny check` where CI runs it.
+- Unsafe: `cargo +nightly miri test` for code with `unsafe`, only if the repo uses Miri
+  and the nightly toolchain is already installed.
 
-## Rules
+## Idioms that matter
 
-- Types carry invariants; enums and newtypes over primitives.
-- `Result` and `?`; panics only for proven-impossible states.
-- Borrow first, clone with a reason, `Arc` when sharing is real.
-- No `unsafe` without proof; no blocking in async.
-- Clippy, rustfmt and tests as CI runs them.
-- Run on the ticket branch (the `create-branch` skill verifies), never a protected branch.
+- **Types carry invariants**: newtypes for ids and units, enums for closed sets, `Option`
+  for absence, constructors that validate so invalid states cannot be built.
+- **Borrow in, own out**: take `&str`, `&[T]`, `impl AsRef<Path>`; return owned values;
+  restructure instead of `clone()` to appease the borrow checker; `Arc` only when sharing
+  is real.
+- **Errors**: `Result` and `?`; library errors are typed (`thiserror`), implement
+  `std::error::Error + Send + Sync + 'static`, and carry context; `anyhow::Context` at the
+  binary edge. `unwrap`/`expect` only for proven-impossible states, with the invariant in
+  the `expect` message; never panic on input from users, files or the network.
+- **API Guidelines naming**: `as_` (cheap borrow), `to_` (costly conversion), `into_`
+  (consuming); `iter`/`iter_mut`/`into_iter`; derive the common traits (`Debug`, `Clone`,
+  `PartialEq`, `Default` where meaningful); document `# Errors`, `# Panics` and `# Safety`
+  on public functions.
+- **Iterators and pattern matching** over index loops; `let … else` for early return;
+  generics/`impl Trait` over `dyn` unless dynamic dispatch is needed.
+- **Integer arithmetic** on untrusted values uses `checked_`/`saturating_` methods (release
+  builds wrap silently); `as` casts that can truncate use `try_from`.
+- **`unsafe`** only with a `// SAFETY:` comment proving each invariant and a test.
+
+## Concurrency and resource safety
+
+- **No blocking in async**: file I/O, `std::thread::sleep`, CPU-heavy work and sync
+  clients go through `tokio::task::spawn_blocking` or async equivalents.
+- **No lock guard across `.await`**: holding a `std::sync::Mutex` guard over an await can
+  deadlock and makes the future `!Send` (clippy `await_holding_lock`). Scope the guard
+  so it drops first, or use `tokio::sync::Mutex` when the lock must span the await.
+- **Read-modify-write in one critical section**: read, compute and write under the same
+  guard, or use atomics/`compare_exchange`; releasing between read and write loses updates.
+- **`tokio::select!`** drops the losing branches: only use cancel-safe futures there
+  (the tokio docs list which methods are), or pin the future outside the loop.
+- **Tasks have owners**: a dropped `JoinHandle` does not cancel the task; keep handles in a
+  `JoinSet` or abort them, propagate shutdown with a `CancellationToken`, and bound channels.
+- **Files other requests read**: `std::fs::write` is not atomic. Use
+  `tempfile::NamedTempFile::new_in(dir)` (unique, same filesystem), write, `sync_all`,
+  then `persist(target)`. Flush `BufWriter` explicitly: its `Drop` swallows write errors.
+  Cross-process exclusion needs an OS lock or the database; a time-only lease lets a paused
+  holder write late, so writes must check a fencing token or version.
+- **`RefCell`/`RwLock` re-entry** panics or deadlocks; never re-borrow inside a borrow.
+
+## Review checklist — flag as defects
+
+Walk this against the diff. An item is grounds for CHANGES only when, in changed code, it
+causes a concrete failure (wrong result, crash, lost or corrupted data, security hole) or
+leaves an AC's own behaviour untested: cite the line and that failure. Otherwise it is an
+`(optional)` note. Formatting the tools would fix, and preferences the crate
+does not enforce, are not findings. Do not patch the code under review.
+
+- [ ] `unwrap`/`expect`/indexing/`panic!` reachable from external input.
+- [ ] An error is discarded (`let _ =` on a `Result`, `.ok()` dropping the cause) or
+      stringly typed where callers need to match on it.
+- [ ] A lock guard is held across `.await`; blocking I/O runs on the async runtime.
+- [ ] A read-modify-write releases its lock between read and write; shared state is
+      mutated without synchronisation through `unsafe` or interior mutability.
+- [ ] A non-cancel-safe future sits in `select!`; a spawned task is detached with no
+      shutdown path; a channel is unbounded on user-driven input.
+- [ ] A shared file is written in place or through a fixed temp name; `BufWriter` is not
+      flushed; a lock relies on a time-only lease.
+- [ ] `unsafe` without a `// SAFETY:` proof and a test.
+- [ ] Unchecked arithmetic or truncating `as` on untrusted values.
+- [ ] A new `#[allow(clippy::…)]` without a reason, or lints loosened in config.
+- [ ] An AC has no test, or the test does not exercise the AC's code path.
 
 ## Capture lore
 

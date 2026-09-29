@@ -99,7 +99,11 @@ const server = spawn(process.execPath, [BRIDGE, "serve", "--socket", SOCK, "--co
 });
 server.stdout.on("data", (b) => serveLog.push(String(b)));
 server.stderr.on("data", (b) => serveLog.push(String(b)));
-for (let i = 0; i < 100 && !existsSync(SOCK); i++) await sleep(50);
+// The socket file exists as soon as listen() binds; the "listening" line is written in
+// listen()'s callback and still has to cross the stdout pipe. Wait for BOTH (bounded),
+// or a slow runner sees the socket before the announcement arrives.
+for (let i = 0; i < 100 && !(existsSync(SOCK) && serveLog.join("").includes("listening")); i++)
+  await sleep(50);
 assert(existsSync(SOCK), "socket appears");
 assert(serveLog.join("").includes("listening"), "serve announces listening");
 

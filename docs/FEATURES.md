@@ -30,8 +30,9 @@ The "Plan a build" panel runs a real, multi-turn decomposer (the dashboard's
    **acceptance criteria**, a target repo, a priority, and an explicit
    **`dependsOn`** edge naming the tickets it can't start before.
 3. **Confirm.** The plan is *proposed only* — nothing is created until you press
-   **"Create these tickets"**. Confirmed tickets land as **draft**, so the
-   planning step never sneaks work into the queue.
+   **"Create as draft"** or **"Create & ready"**. Drafts never sneak work into the
+   queue; "Create & ready" readies only the tickets that pass the `ready` gate
+   (a criterion-less ticket stays draft).
 
 You are never trapped in the clarify loop: **"Build the tickets"** forces the
 best plan from the brief and answers so far, and a long conversation

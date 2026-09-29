@@ -142,6 +142,26 @@ console.log("== 2) invalid target refused, config left byte-identical ==");
     "config unchanged after out-of-root refusal",
     readFileSync(confPath(home2), "utf8") === seed,
   );
+
+  // 2c: the REVIEWER's throwaway worktree (`<data>/worktrees/review-wt-<n>`, lib/review.sh)
+  //     is accepted by the layout convention alone — no root var reaches the child on a
+  //     live run, and before the shape was listed every review pass logged "refusing …
+  //     not under an expected factory worktree root" and ran the reviewer untrusted.
+  const home3 = freshHome();
+  writeFileSync(confPath(home3), JSON.stringify({ projects: {} }, null, 2));
+  const reviewWt = makeWorktree(join(ROOT, "live", ".gaffer", "worktrees"), "review-wt-7");
+  const r3 = runTrust(reviewWt, { home: home3, root: join(ROOT, "unrelated", "worktrees") });
+  assert("review-wt-<n> worktree accepted by the layout convention (exit 0)", r3.status === 0);
+  assert(
+    "review-wt-<n> marked trusted",
+    readConf(home3).projects[reviewWt]?.hasTrustDialogAccepted === true,
+  );
+  // …while a sibling with an unknown shape is still refused.
+  const home4 = freshHome();
+  writeFileSync(confPath(home4), seed);
+  const odd = makeWorktree(join(ROOT, "live2", ".gaffer", "worktrees"), "scratch-7");
+  const r4 = runTrust(odd, { home: home4, root: join(ROOT, "unrelated", "worktrees") });
+  assert("an unknown worktrees/<shape> is still refused", r4.status !== 0);
 }
 
 // ---------------------------------------------------------------------

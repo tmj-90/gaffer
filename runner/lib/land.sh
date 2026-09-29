@@ -79,9 +79,16 @@ gaffer_land_delivery() {
       # A PR merge already landed upstream: nothing to push (and never push a
       # stale local default over it).
       if [ "$_MERGED_VIA" = "local" ] && _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"; then
-        gaffer_auto_push "$RREPO" "$RDEFAULT" \
-          && log "$_WHO: pushed $RDEFAULT to origin" \
-          || log "$_WHO: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push"
+        local _push_rc=0
+        gaffer_auto_push "$RREPO" "$RDEFAULT" || _push_rc=$?
+        case "$_push_rc" in
+          0) log "$_WHO: pushed $RDEFAULT to origin" ;;
+          # rc 2 = the repo has no origin (a greenfield repo the factory created, a local-only
+          # checkout): there is nothing to push to, so this is not a failure — say so instead
+          # of logging a rejected push on every merge of an autonomous run.
+          2) log "$_WHO: $RDEFAULT merged locally — no origin remote, nothing to push" ;;
+          *) log "$_WHO: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push" ;;
+        esac
       fi
       # The delivery branch is now fully merged: drop it so branches don't pile
       # up (mirrors merge-ticket.mjs). The review worktree still has it checked

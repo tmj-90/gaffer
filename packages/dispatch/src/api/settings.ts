@@ -150,8 +150,9 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "When on, an approved testable ticket routes through the independent testing " +
       "lane (in_review → in_testing) instead of straight to merge. The lane, the " +
       "contract, and the runner seam are live; the seam hands an independent tester " +
-      "the contract + AC (never the diff). The live tester invocation is a documented " +
-      "follow-up. Off → review approval goes straight to merge.",
+      "the contract + AC (never the diff). Only tickets carrying the testable flag are " +
+      "routed (`wg ticket set-testable <n>`; the planner does not set it) — the rest go " +
+      "straight from approval to merge, as does everything when this is off.",
   },
 
   // --- Idle loops: the between-work background loops + their mode ---

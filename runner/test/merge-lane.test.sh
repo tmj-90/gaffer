@@ -107,6 +107,9 @@ if [ "$(git -C "$R" rev-parse main)" != "$MAIN0" ] && [[ "$_MLOG" == *"helper$A"
 git -C "$R" rev-parse --verify -q "refs/heads/$BA" >/dev/null 2>&1 && fail "A: merged branch $BA still exists" || ok "A: merged branch deleted"
 grep -q "MERGE: #$A ready_for_merge + merge gate earned → landing $BA → main" "$LOGF" && ok "A: lane logged the landing" || fail "A: no landing log line"
 grep -q "MERGE: #$A merged ($BA → main, via local) and marked done" "$LOGF" && ok "A: shared landing logged under the MERGE prefix" || fail "A: no MERGE-prefixed merged line: $(grep "#$A" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-300)"
+# autonomous turns auto-push on; the fixture repo has no origin. That is "nothing to push",
+# never a rejected push (seen live: every merge of a greenfield run logged a failed push).
+grep -q "MERGE: main merged locally — no origin remote, nothing to push" "$LOGF" && ok "A: no-origin repo logs 'nothing to push' (not a failed push)" || fail "A: no-origin push line missing or wrong: $(grep -i 'push' "$LOGF" | tail -2 | tr '\n' '|' | cut -c1-300)"
 [ "$(st "$DEP")" = "in_review" ] && ok "A: dependent #$DEP was unblocked AND delivered in the SAME tick (lane runs before the scan)" || fail "A: dependent status=$(st "$DEP") — expected in_review"
 echo "$OUT" | grep -q '^TICK_RESULT=worked$' && ok "A: the tick still reports its delivery (lane never exits the tick)" || fail "A: tick result $OUT"
 

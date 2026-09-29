@@ -193,10 +193,13 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
 1. **Plan it (UI).** Command palette (`Jump to…`) → **Plan a build** → keep **New app —
    greenfield** selected → type one line (e.g. *"a full-stack calculator: a backend HTTP
    API that evaluates arithmetic expressions and a web front-end that calls it"*) → send.
-   Review the proposed phases → **Create these tickets** (they land as **draft**).
-2. **Ready them.** Move the epic's tickets `draft → ready` (drag on the board, or
-   `runner/gaffer wg ticket ready <n>` for each). Phase 1 is the bootstrap; the rest are
-   gated behind it.
+   The planner may first ask a few clarifying questions; answer them, or press **Build the
+   tickets** (enabled after your first message) to plan with what it has. Review the proposed
+   phases → **Create & ready** (or **Create as draft** to inspect the tickets first).
+   Plan a build is a dashboard flow (`POST /plan-build` behind it); there is no CLI for it yet.
+2. **Ready them (drafts only).** If you created them as drafts, move the epic's tickets
+   `draft → ready` (drag on the board, or `runner/gaffer wg ticket ready <n>` for each).
+   Phase 1 is the bootstrap; the rest are gated behind it.
 3. **Deliver.** Run the loop (`runner/gaffer run`, or `--daemon`). The bootstrap ticket
    creates the new repo at `<repo-parent>/<slug>`, the factory registers + onboards it,
    and the dependent tickets deliver into it in dependency order.
@@ -224,6 +227,15 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   `DISPATCH_ALLOW_AGENT_APPROVE=1` (and, if you want auto-merge, `AUTO_MERGE=1`).
 - **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
   re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.
+- **The tester lane needs the ticket marked testable.** `GAFFER_TESTING=1` only routes tickets
+  that carry the testable flag, and the planner does not set it. Mark the ones you want
+  black-box tested with `runner/gaffer wg ticket set-testable <n>` before readying them (and
+  optionally record a `test-contract`); unmarked tickets go straight from approval to merge.
+- **Behind a corporate / TLS-intercepting proxy.** The agent runs in an allowlisted
+  environment. The proxy route and trust store (`HTTPS_PROXY`, `NO_PROXY`,
+  `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, …) are passed
+  through, so exporting them for the runner is enough; credentials are not. npm reads its
+  CA from its own config, so for a custom CA also run `npm config set cafile <bundle>`.
 
 ---
 
@@ -253,7 +265,7 @@ Gaffer runs shell-capable agents, so containment is first-class — but it is **
 - Every ticket runs in a **throwaway git worktree** — your real checkout is never touched.
 - The **review/merge gate is server-side** — by default a human approves every merge and an agent **structurally cannot** ship its own work.
 
-Full autonomy is **opt-in**, off by default: `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `MEMORY_AUTO_APPROVE`. See [`SECURITY.md`](SECURITY.md) for the threat model and honest residual limits.
+Full autonomy is **opt-in**, off by default. `GAFFER_MODE=autonomous` sets the whole cluster at once (agent approval, auto-merge, auto-push, memory auto-approve); `GAFFER_MODE=strict` adds the OS sandbox on top. The individual flags — `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE`, `GAFFER_AUTO_PUSH`, `MEMORY_AUTO_APPROVE` — override the preset. For an unattended run also set `GAFFER_DAILY_BUDGET_USD` (the spend cap) and, if you want a scored quality trail, `GAFFER_EVAL_JUDGE=1` (see [`docs/eval-harness.md`](docs/eval-harness.md)). All knobs: [`docs/CONFIG.md`](docs/CONFIG.md). See [`SECURITY.md`](SECURITY.md) for the threat model and honest residual limits.
 
 ---
 

@@ -988,6 +988,10 @@ _gaffer_lock_age() {
 #     The per-call boundary vars are layered on top by the caller AFTER this array,
 #     so they always win.
 #   - npm_config_* — the scoped/locked bootstrap install knobs.
+#   - NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / SSL_CERT_DIR / CURL_CA_BUNDLE /
+#     REQUESTS_CA_BUNDLE / GIT_SSL_CAINFO and HTTPS_PROXY / HTTP_PROXY / NO_PROXY /
+#     ALL_PROXY (+ lowercase) — the trust store and proxy route the agent's installs
+#     and fetches need behind a corporate / TLS-intercepting proxy. Not credentials.
 # Everything NOT named here is dropped — in particular GITHUB_TOKEN, AWS access
 # keys/secrets/session tokens, DISPATCH_API_TOKEN, any *_TOKEN / *_SECRET /
 # *_KEY (besides ANTHROPIC_API_KEY) / *_PASSWORD, and the outbound-endpoint class
@@ -1047,6 +1051,15 @@ gaffer_agent_env() {
     LANG LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC TERM TZ COLUMNS LINES
     MCP_CONFIG DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN
     GAFFER_WRITE_ROOTS GAFFER_READ_ROOTS
+    # Trust store + proxy routing. These name the machine's network PATH, not a
+    # credential: behind a TLS-intercepting corporate proxy the agent's `npm install`,
+    # `git fetch`, curl and node tooling all fail (SELF_SIGNED_CERT_IN_CHAIN) without
+    # them, while the runner itself — which does inherit them — works fine. Seen live:
+    # a greenfield bootstrap spun on npm TLS retries for the whole 30-min tick timeout.
+    # (NODE_TLS_REJECT_UNAUTHORIZED is deliberately NOT here — that disables TLS.)
+    NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE REQUESTS_CA_BUNDLE
+    GIT_SSL_CAINFO
+    HTTPS_PROXY HTTP_PROXY NO_PROXY ALL_PROXY https_proxy http_proxy no_proxy all_proxy
   )
   # Provider-agnostic prefixes:
   #   GAFFER_*  → factory knobs (models, caps, skill/quarantine wiring, boundary).
@@ -2036,8 +2049,15 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # shellcheck source=lib/ci-gate.sh
 [ -f "$RUNNER_DIR/lib/ci-gate.sh" ] && source "$RUNNER_DIR/lib/ci-gate.sh"
 
+# EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge
+# scores the diff against the ticket on the crew rubric (AC coverage, correctness,
+# minimalism, test adequacy, security) into $GAFFER_DATA/eval-ledger.jsonl with a
+# per-dimension rationale; the EVAL log line names the weak dimensions. Advisory only:
+# it never blocks, parks or reworks a ticket. One extra model call per delivery
+# (ledgered as kind eval-judge). 0 = off. See docs/eval-harness.md.
+: "${GAFFER_EVAL_JUDGE:=0}"
 # Post-delivery quality judging (gaffer_eval_judge_delivery): scores a submitted
 # delivery on the crew rubric into the eval ledger (pass rate / cost-per-pass /
-# memory-lift telemetry). Opt-in via GAFFER_EVAL_JUDGE=1, always fail-soft.
+# memory-lift telemetry). Always fail-soft.
 # shellcheck source=lib/eval-judge.sh
 [ -f "$RUNNER_DIR/lib/eval-judge.sh" ] && source "$RUNNER_DIR/lib/eval-judge.sh"

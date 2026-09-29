@@ -46,6 +46,12 @@ AGENT_ENV="$(
     GAFFER_NOTIFY_SLACK_URL="https://hooks.slack.com/T123/secret-LEAK" \
     GAFFER_DASHBOARD_URL="http://127.0.0.1:8787-LEAK" \
     GAFFER_SLACK_WEBHOOK="https://hooks.slack.com/legacy-LEAK" \
+    NODE_EXTRA_CA_CERTS="/etc/corp/ca-bundle.crt" SSL_CERT_FILE="/etc/corp/ca-bundle.crt" \
+    SSL_CERT_DIR="/etc/ssl/certs" CURL_CA_BUNDLE="/etc/corp/ca-bundle.crt" \
+    REQUESTS_CA_BUNDLE="/etc/corp/ca-bundle.crt" GIT_SSL_CAINFO="/etc/corp/ca-bundle.crt" \
+    HTTPS_PROXY="http://proxy.corp:3128" HTTP_PROXY="http://proxy.corp:3128" NO_PROXY="localhost,127.0.0.1" \
+    https_proxy="http://proxy.corp:3128" no_proxy="localhost" \
+    NODE_TLS_REJECT_UNAUTHORIZED="0" \
     RUNNER_DIR="$RUNNER_DIR" \
     bash -c '
       source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
@@ -73,6 +79,15 @@ for keep in PATH HOME ANTHROPIC_API_KEY ANTHROPIC_BASE_URL MCP_CONFIG DISPATCH_D
             CLAUDE_BIN CLAUDE_FLAGS GAFFER_PLAN_MODEL GAFFER_MAX_TURNS AWS_REGION; do
   if has "$keep"; then ok "$keep is preserved"; else fail "$keep was dropped (would break the agent)"; fi
 done
+
+echo "== trust store + proxy route SURVIVE (installs behind a TLS-intercepting proxy) =="
+# Seen live: the runner inherited these, the agent did not, and a greenfield bootstrap's
+# `npm install` retried SELF_SIGNED_CERT_IN_CHAIN for the whole 30-min tick timeout.
+for keep in NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE REQUESTS_CA_BUNDLE GIT_SSL_CAINFO \
+            HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy no_proxy; do
+  if has "$keep"; then ok "$keep is preserved (network path, not a credential)"; else fail "$keep was dropped (agent installs fail behind a corporate proxy)"; fi
+done
+if has NODE_TLS_REJECT_UNAUTHORIZED; then fail "NODE_TLS_REJECT_UNAUTHORIZED leaked (it disables TLS verification)"; else ok "NODE_TLS_REJECT_UNAUTHORIZED is still stripped (a trust store is passed, TLS is never disabled)"; fi
 
 echo "== ANTHROPIC_API_KEY survives despite ending in _KEY =="
 if has ANTHROPIC_API_KEY; then ok "ANTHROPIC_API_KEY kept (claude auth)"; else fail "ANTHROPIC_API_KEY wrongly stripped"; fi

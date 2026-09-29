@@ -88,14 +88,19 @@ function expectedRoots() {
 }
 
 /** True iff `norm` sits under an explicit expected root OR matches the factory's
- *  deterministic throwaway-worktree layout (.../worktrees/ticket-<id>/...). */
+ *  deterministic throwaway-worktree layouts: the delivery worktree
+ *  (.../worktrees/ticket-<id>/<key>) and the reviewer's (.../worktrees/review-wt-<id>). */
 function isUnderExpectedRoot(norm) {
   for (const r of expectedRoots()) {
     if (norm === r || norm.startsWith(r + sep)) return true;
   }
   // The factory always lays worktrees out as `<data>/worktrees/ticket-<num>/<key>`
-  // (tick.sh WORKTREES_BASE) — accept that shape even when no root var reaches us.
-  return /[/\\]worktrees[/\\]ticket-[^/\\]+[/\\]/.test(norm + sep);
+  // (tick.sh WORKTREES_BASE) or `<data>/worktrees/review-wt-<num>` (lib/review.sh's
+  // throwaway reviewer worktree) — accept those shapes even when no root var reaches
+  // us. GAFFER_DATA is not exported to this child on a live run, so before the
+  // review shape was listed every review pass logged "refusing … not under an
+  // expected factory worktree root" and the reviewer ran untrusted.
+  return /[/\\]worktrees[/\\](ticket|review-wt)-[^/\\]+[/\\]/.test(norm + sep);
 }
 
 /** True iff `dir` is a LINKED git worktree: its `.git` is a FILE holding a

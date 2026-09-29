@@ -100,6 +100,20 @@ ping="$(cat "$SINK")"
 has "$ping" "2 blocked" && ok "blocked-only ping carries the blocked count" \
   || fail "blocked-only ping missing blocked count; got: $(printf '%s' "$ping" | tr '\n' ' ')"
 
+# --- AC3b: APPROVED BUT NOT MERGED fires too -----------------------------
+# A conflict-held / gate-held ticket sits at ready_for_merge with its dependents
+# starving; the human queue lists it. The closing report used to read "all clear"
+# over it (seen live). No review, no blocked, no decisions — only the held merge.
+: > "$SINK"
+out="$(run_loop '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready_for_merge":1,"ready":2}}' \
+                '{"items":[{"kind":"awaiting_merge"}]}')"
+[ -s "$SINK" ] && ok "a ready_for_merge-only run fires the closing ping" \
+              || fail "ready_for_merge-only run stayed silent (read 'all clear' over a held merge)"
+ping="$(cat "$SINK")"
+has "$ping" "1 approved but not merged" && ok "ping names the approved-but-unmerged ticket" \
+  || fail "ping missing the approved-but-unmerged count; got: $(printf '%s' "$ping" | tr '\n' ' ')"
+has "$out" "all clear" && fail "run log said 'all clear' over a held merge" || ok "run log does not claim all clear"
+
 # --- AC4: BUG #6 — the ping deep-links to the PERSISTED LAN url --------
 # `gaffer dashboard --lan` persists http://<LAN>:<port> to $GAFFER_DATA/dashboard-url;
 # factory.config.sh reads it so the SEPARATE loop process deep-links to the same

@@ -127,6 +127,9 @@ roll_doctor memory  "$LG_DOCTOR_CMD"
 # No eval: argv-array invocation (mirrors run-summary.sh / roll_doctor above).
 read -ra _stats_c <<<"$STATS_CMD"; STATS_JSON="$("${_stats_c[@]}" 2>/dev/null)"
 review="$(read_count in_review)"; blocked="$(read_count blocked)"; ready="$(read_count ready)"
+# Approved but not merged (a conflict a human must resolve, a held merge gate): a
+# human's, and its dependents wait behind it — count it toward attention.
+merge="$(read_count ready_for_merge)"; [ "$merge" -eq "$merge" ] 2>/dev/null || merge=0
 # What's REGISTERED: the repos the factory can deliver into (name → path → default
 # branch → stack → DoD gates). `gaffer help` promises "what's registered + what's
 # running"; a fresh operator needs the repo NAME here for `wg ticket repo-access set`.
@@ -167,11 +170,12 @@ else
   warn "dashboard not running (\`gaffer dashboard\`)"
 fi
 
-# A ticket needing review or blocked means a human is wanted → notify.
-attention=$(( review + blocked ))
+# A ticket needing review, blocked, or approved-but-unmerged means a human is wanted → notify.
+attention=$(( review + blocked + merge ))
 if [ "$attention" -gt 0 ]; then
   reasons=""; [ "$review" -gt 0 ] && reasons="$review awaiting review"
   [ "$blocked" -gt 0 ] && reasons="${reasons:+$reasons, }$blocked blocked"
+  [ "$merge" -gt 0 ] && reasons="${reasons:+$reasons, }$merge approved but not merged"
   notify "gaffer: $reasons — a human is needed"
 else
   ok "nothing needs a human right now"

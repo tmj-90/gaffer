@@ -1990,6 +1990,12 @@ EOF
   #                      escalation posture (rethink / stronger model). Empty on attempt 1.
   _REWORK_HISTORY=""
   _REWORK_BLOCK=""
+  #   _LAST_REAL_FAILURE — the distilled failure of the previous attempt. An attempt
+  #                        that reproduces it BYTE-FOR-BYTE is not converging; the loop
+  #                        parks then instead of paying the remaining attempts (WASTE
+  #                        CONTROL — a live run paid three turns against one unchanged
+  #                        failing assertion).
+  _LAST_REAL_FAILURE=""
 
   # _recover_or_park <gate-name> <feedback-text> [real-failure-detail]
   # A RECOVERABLE gate failure (branch carries ≥1 commit). PRESERVES the branch —
@@ -2032,6 +2038,14 @@ EOF
       _DELIV_OUTCOME="parked"
       return 0
     fi
+    # NOT CONVERGING: the same distilled failure as the previous attempt (identical text)
+    # means the rework changed nothing that mattered. Park now — the next attempt would
+    # be a third paid turn against the same wall, and a human is the right reader.
+    local _repeat=0
+    if [ "$_DELIV_ATTEMPT" -ge 2 ] && [ -n "$_LAST_REAL_FAILURE" ] && [ "$real" = "$_LAST_REAL_FAILURE" ]; then
+      _repeat=1
+    fi
+    _LAST_REAL_FAILURE="$real"
     # Accumulate the full trail so the FINAL (stronger-model) attempt sees every prior
     # failure, not just the latest — bounded so a chatty run can't unbound the prompt.
     _REWORK_HISTORY="${_REWORK_HISTORY}
@@ -2071,7 +2085,7 @@ $real
       fi
     fi
 
-    if [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ] && [ "$_cost_exhausted" -eq 0 ]; then
+    if [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ] && [ "$_cost_exhausted" -eq 0 ] && [ "$_repeat" -eq 0 ]; then
       # VISIBILITY: keep the ticket in its live column but surface the rework state +
       # the latest real failure on the card ("Reworking · attempt N/M"). No status
       # change — it stays claimed/in_progress (visible), never routed to refining.
@@ -2102,6 +2116,7 @@ $real
     # (the runner submits only AFTER the gate passes); if one ever occurred the
     # runner-release transition is a no-op that logs a loud WARNING — fail-safe.
     local _why="rework budget"; [ "$_cost_exhausted" -eq 0 ] && _why="$_MAX_DELIVERY_ATTEMPTS attempts"
+    [ "$_repeat" -eq 1 ] && _why="an identical failure on attempts $((_DELIV_ATTEMPT - 1)) and $_DELIV_ATTEMPT (not converging; $((_MAX_DELIVERY_ATTEMPTS - _DELIV_ATTEMPT)) attempt(s) not spent)"
     local _reason="$gate failed after $_why: $real (branch $WORK_BRANCH preserved)"
     gaffer_release_delivery blocked "$_reason" rework_exhausted "$_DELIV_ATTEMPT" "$_MAX_DELIVERY_ATTEMPTS"
     # MEMORY FEEDBACK LOOP: this ticket exhausted rework and parked to blocked —

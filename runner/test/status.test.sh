@@ -84,6 +84,12 @@ run_status '{"ticketsByStatus":{"in_review":0,"blocked":1,"ready":3}}' >/dev/nul
 [ -s "$SINK" ] && ok "notification channel invoked on blocked" || fail "channel NOT invoked on blocked"
 has "$(cat "$SINK")" "blocked" && ok "alert message names blocked reason" || fail "alert missing blocked reason"
 
+# --- 4b: approved but NOT merged counts as needing a human ------------
+: > "$SINK"
+out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready_for_merge":1,"ready":3}}')"
+[ -s "$SINK" ] && ok "approved-but-unmerged ticket triggers the notification" || fail "ready_for_merge ticket did not notify"
+case "$out$(cat "$SINK")" in *"1 approved but not merged"*) ok "reason names the unmerged approval" ;; *) fail "reason missing 'approved but not merged'" ;; esac
+
 # --- 5: no notification when nothing needs a human ------------------
 : > "$SINK"
 out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":3}}')"

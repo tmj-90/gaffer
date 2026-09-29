@@ -160,6 +160,17 @@ _first_cleanup_ln="$(printf '%s\n' "$RP_SRC" | grep -n 'gaffer_cleanup_worktrees
 printf '%s\n' "$RP_SRC" | grep -q '_cur_status" = "blocked"' \
   && ok "C _recover_or_park stops the loop when the agent already parked the ticket to blocked" \
   || fail "C _recover_or_park must detect an agent-side park (status blocked)"
+# NOT CONVERGING: an attempt that reproduces the previous attempt's distilled failure
+# byte-for-byte parks at once instead of spending the remaining paid attempts.
+printf '%s\n' "$RP_SRC" | grep -q '_LAST_REAL_FAILURE' \
+  && ok "C _recover_or_park compares the failure with the previous attempt's" \
+  || fail "C _recover_or_park must track _LAST_REAL_FAILURE"
+printf '%s\n' "$RP_SRC" | grep -q '\[ "\$_repeat" -eq 0 \]' \
+  && ok "C a repeated identical failure skips the retry branch (parks)" \
+  || fail "C the retry condition must require _repeat=0"
+printf '%s\n' "$RP_SRC" | grep -q 'not converging' \
+  && ok "C the park reason says the loop was not converging" \
+  || fail "C park reason should name non-convergence"
 # GAFFER_MAX_DELIVERY_ATTEMPTS default is raised 2 → 3.
 grep -q 'GAFFER_MAX_DELIVERY_ATTEMPTS:-3' "$TICK" \
   && ok "C the attempt cap default is raised to 3 (room for the ladder)" \

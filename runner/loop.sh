@@ -57,17 +57,26 @@ gaffer_loop_end_ping() {
   # the SAME `blocked` count here so both agree on what needs a human.
   blocked="$(printf '%s' "$stats_json" | node "$HERE/lib/json-tool.mjs" loop-count blocked 2>/dev/null || echo 0)"
   decisions="$(printf '%s' "$hq_json" | node "$HERE/lib/json-tool.mjs" loop-count decisions 2>/dev/null || echo 0)"
+  # APPROVED BUT NOT MERGED: a ticket the lane could not land (a merge conflict a
+  # human must resolve, a held merge gate) sits at ready_for_merge with its dependents
+  # starving behind it. The human queue lists it ("awaiting_merge"); the closing report
+  # used to read "all clear" over it (seen live: a conflict-held ticket, two dependents
+  # waiting, "nothing awaiting a human"). Count it like status.sh now does.
+  local merge
+  merge="$(printf '%s' "$stats_json" | node "$HERE/lib/json-tool.mjs" loop-count ready_for_merge 2>/dev/null || echo 0)"
   # Coerce to integers; any non-numeric parse degrades to 0 (stay silent, never crash).
   [ "$review" -eq "$review" ] 2>/dev/null || review=0
   [ "$blocked" -eq "$blocked" ] 2>/dev/null || blocked=0
   [ "$decisions" -eq "$decisions" ] 2>/dev/null || decisions=0
+  [ "$merge" -eq "$merge" ] 2>/dev/null || merge=0
 
-  if [ "$review" -eq 0 ] && [ "$blocked" -eq 0 ] && [ "$decisions" -eq 0 ]; then
+  if [ "$review" -eq 0 ] && [ "$blocked" -eq 0 ] && [ "$decisions" -eq 0 ] && [ "$merge" -eq 0 ]; then
     echo "gaffer factory: all clear — nothing awaiting a human; no closing ping."
     return 0
   fi
 
   local detail="$review awaiting review, $blocked blocked, $decisions decisions"
+  [ "$merge" -gt 0 ] && detail="$detail, $merge approved but not merged"
   echo "gaffer factory: $detail — sending closing ping."
   read -ra _nc <<<"$LOOP_NOTIFY_EMIT_CMD"
   "${_nc[@]}" --kind review_needed --detail "$detail" \

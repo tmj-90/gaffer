@@ -210,6 +210,10 @@ export function migrate(db: Db): void {
   // creates it) and idempotent on an already-migrated one. Runs AFTER every prior
   // tickets rebuild so the rebuilt table is backfilled too.
   alterTicketsAddHumanDelivered(db);
+  // ACCEPTANCE GATE (v25→v26): add the `acceptance` marker column to an EXISTING
+  // tickets table — a plain additive ALTER (0/1, default 0, no CHECK to widen), so no
+  // rebuild. No-op on a fresh DB (SCHEMA_SQL creates it) and idempotent afterwards.
+  alterTicketsAddAcceptance(db);
   // Spec-Driven Development (v16→v17): the `specs` table. A brand-new standalone
   // table (no FKs — a spec outlives the repo/scope it references) created
   // idempotently by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS (like runs /
@@ -343,6 +347,15 @@ function alterTicketsAddLastReviewFeedback(db: Db): void {
  * tickets are all claimable by the factory. On a fresh DB `tickets` doesn't exist yet,
  * so this is a no-op and SCHEMA_SQL creates the column.
  */
+function alterTicketsAddAcceptance(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("acceptance")) {
+    db.exec("ALTER TABLE tickets ADD COLUMN acceptance INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
 function alterTicketsAddHumanOwner(db: Db): void {
   const info = db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>;
   if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.

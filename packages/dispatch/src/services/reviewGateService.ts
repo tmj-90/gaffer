@@ -268,7 +268,11 @@ export class ReviewGateService {
     // BBT-001: when the testing lane is ON and this ticket is eligible, route
     // through the independent tester (`in_review -> in_testing`) instead of
     // straight to merge. testerVerdict:true guards this transition.
-    if (this.testingEnabled() && ticket.can_be_tested === 1) {
+    // ACCEPTANCE GATE: an epic's acceptance ticket ALWAYS takes this route — the
+    // GAFFER_TESTING toggle does not apply. Acceptance is a gate, not an option: the
+    // only ways out of in_testing are a recorded tester verdict or a human's
+    // tester-pass / tester-fail (auditable evidence), never a plain approve.
+    if (ticket.acceptance === 1 || (this.testingEnabled() && ticket.can_be_tested === 1)) {
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
@@ -283,7 +287,7 @@ export class ReviewGateService {
         entity_id: ticket.id,
         actor,
         event_type: "ticket.routed_to_testing",
-        payload: { from: "in_review" },
+        payload: { from: "in_review", ...(ticket.acceptance === 1 ? { acceptance: true } : {}) },
       });
       return result;
     }

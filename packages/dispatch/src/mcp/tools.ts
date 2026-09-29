@@ -218,6 +218,8 @@ export const toolSchemas = {
     epic: z.object({
       name: z.string().min(1),
       description: z.string().optional(),
+      brief: z.string().optional(),
+      acceptance: z.boolean().optional(),
     }),
     tickets: z
       .array(

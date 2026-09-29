@@ -11,14 +11,25 @@
 # shellcheck disable=SC2154  # globals provided by tick.sh at call time
 
 _gaffer_tester_pass() {
-  case "${GAFFER_TESTING:-0}" in 1|true|yes|on) ;; *) return 0 ;; esac
+  local _lane_on=0
+  case "${GAFFER_TESTING:-0}" in 1|true|yes|on) _lane_on=1 ;; esac
   [ "${DRY_RUN:-0}" = "1" ] && return 0
   TESTED_FILE="$GAFFER_DATA/.tested-tickets"; touch "$TESTED_FILE"
   TJSON="$(wg ticket list -s in_testing 2>/dev/null || echo '[]')"
+  # ACCEPTANCE GATE: an epic's ACCEPTANCE ticket (tickets.acceptance = 1) is tested even
+  # when the lane is OFF — dispatch routes it to in_testing regardless of GAFFER_TESTING,
+  # so leaving it there would strand the build as "not accepted" for a human with nothing
+  # said. With the lane off, only acceptance tickets are picked; everything else in
+  # in_testing (a human's manual routing) is left alone as before.
+  if [ "$_lane_on" -eq 0 ]; then
+    TJSON="$(printf '%s' "$TJSON" | jget 'JSON.stringify((Array.isArray(d) ? d : []).filter(t => t && (t.acceptance === 1 || t.acceptance === true)))' 2>/dev/null || echo '[]')"
+    case "$TJSON" in ""|"[]"|"null") return 0 ;; esac
+  fi
   TNUM="$(echo "$TJSON" | gaffer_json pick-unskipped "$TESTED_FILE" 2>/dev/null)"
   [ -n "$TNUM" ] || return 0
   [ -f "$RUNNER_DIR/bin/tester-run.mjs" ] || { log "TESTER: bin/tester-run.mjs missing — cannot run the tester lane"; return 0; }
-  log "TESTER: independent black-box tester for in_testing #$TNUM (lane on)"
+  if [ "$_lane_on" -eq 1 ]; then log "TESTER: independent black-box tester for in_testing #$TNUM (lane on)"
+  else log "TESTER: independent black-box tester for ACCEPTANCE #$TNUM (lane off — acceptance is a gate, not an option)"; fi
   # Where a FAIL lands: when the autonomy policy lets the runner drive the review gate
   # for this ticket (the same approve decision the review pass asks), a FAIL is a
   # bounded REWORK (→ ready, the failing observation as feedback, the retry cap parks

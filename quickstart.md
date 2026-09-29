@@ -197,6 +197,11 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
    tickets** (enabled after your first message) to plan with what it has. Review the proposed
    phases → **Create & ready** (or **Create as draft** to inspect the tickets first).
    Plan a build is a dashboard flow (`POST /plan-build` behind it); there is no CLI for it yet.
+   The plan always ends with one ticket the factory adds itself: **Acceptance: <epic>**.
+   It depends on every other ticket, runs last against the integrated build, and carries
+   the brief as its contract plus cross-cutting criteria (persistence, concurrent writers,
+   failure behaviour, runtime support). It is the only thing that turns "all tickets
+   merged" into "build accepted".
 2. **Ready them (drafts only).** If you created them as drafts, move the epic's tickets
    `draft → ready` (drag on the board, or `runner/gaffer wg ticket ready <n>` for each).
    Phase 1 is the bootstrap; the rest are gated behind it.
@@ -231,6 +236,12 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   that carry the testable flag, and the planner does not set it. Mark the ones you want
   black-box tested with `runner/gaffer wg ticket set-testable <n>` before readying them (and
   optionally record a `test-contract`); unmarked tickets go straight from approval to merge.
+  **The exception is the epic's Acceptance ticket:** it is always testable and always goes
+  through the independent tester on approval, whatever `GAFFER_TESTING` says. Until the
+  tester passes it, `gaffer status`, the loop's closing report and `wg stats` say the build
+  is **not accepted**, even with every other ticket merged. To waive or decide by hand,
+  record the verdict yourself: `runner/gaffer wg ticket tester-pass <n> --as human
+  --summary "<why>"` (or `tester-fail`), which is kept as evidence.
 - **Behind a corporate / TLS-intercepting proxy.** The agent runs in an allowlisted
   environment. The proxy route and trust store (`HTTPS_PROXY`, `NO_PROXY`,
   `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, …) are passed

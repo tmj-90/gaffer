@@ -56,6 +56,8 @@ export const createTicketInput = z.object({
   created_by: z.string().max(200).optional(),
   /** EP-001 greenfield marker — true ⇒ a bootstrap (create-a-repo) ticket. */
   bootstrap: z.boolean().default(false),
+  /** ACCEPTANCE GATE — true ⇒ an epic's build-level acceptance ticket (see Ticket.acceptance). */
+  acceptance: z.boolean().default(false),
   /**
    * TRACK-3a: optional per-ticket delivery-budget ceiling in USD. A positive figure
    * caps this ticket's cumulative measured delivery spend; omitted/null ⇒ the
@@ -488,6 +490,19 @@ export const createEpicInput = z.object({
      * budget is inherited by its tickets (each ticket then carries + enforces it).
      */
     delivery_budget_usd: z.number().positive().nullable().optional(),
+    /**
+     * ACCEPTANCE GATE: the brief the epic was planned from. It becomes the contract
+     * of the epic's ACCEPTANCE ticket (verbatim, quarantined by the runner like every
+     * other ticket text). Optional — the epic description stands in when absent.
+     */
+    brief: z.string().max(20_000).optional(),
+    /**
+     * ACCEPTANCE GATE: `false` opts an epic OUT of the appended acceptance ticket (a
+     * docs-only or single-chore epic). Default ON: the factory creates the ticket
+     * itself, marks it testable and wires it behind every implementation ticket, so
+     * the build cannot be reported as accepted because a planner forgot a flag.
+     */
+    acceptance: z.boolean().optional(),
   }),
   tickets: z
     .array(epicTicketInput)

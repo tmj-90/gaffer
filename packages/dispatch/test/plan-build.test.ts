@@ -541,7 +541,8 @@ describe("plan → create_epic confirm path", () => {
       expect(created.status).toBe(201);
       const epicNodeId = created.body.epic_node_id as string;
       const numbers = created.body.ticket_numbers as number[];
-      expect(numbers).toHaveLength(2);
+      // 2 plan tickets + the factory-created ACCEPTANCE ticket (always last).
+      expect(numbers).toHaveLength(3);
 
       // The epic surfaces as a scope node of type "epic".
       const nodes = await call(h.baseUrl, "GET", "/scope/nodes");
@@ -589,8 +590,9 @@ describe("plan → create_epic confirm path", () => {
       };
       const created = await call(h.baseUrl, "POST", "/epics", greenfield);
       expect(created.status).toBe(201);
-      expect(created.body.ticket_numbers).toHaveLength(2);
-      expect(created.body.deferred_repo_links).toBe(2);
+      // 2 plan tickets + the acceptance ticket; each defers its repo link to bootstrap.
+      expect(created.body.ticket_numbers).toHaveLength(3);
+      expect(created.body.deferred_repo_links).toBe(3);
 
       const all = (await call(h.baseUrl, "GET", "/tickets")).body.tickets as Array<{
         id: string;

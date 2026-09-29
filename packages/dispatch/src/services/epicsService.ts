@@ -14,7 +14,57 @@ export interface CreateEpicResult {
   epicNodeId: string;
   /** Tickets whose named repo does not exist yet (greenfield): link deferred to bootstrap. */
   deferredRepoLinks: number;
+  /** Every created ticket in plan order; the acceptance ticket (when created) is LAST. */
   ticketNumbers: number[];
+  /** ACCEPTANCE GATE: the number of the epic's build-level acceptance ticket, or null when opted out. */
+  acceptanceTicketNumber: number | null;
+}
+
+/**
+ * ACCEPTANCE GATE — the build-level acceptance ticket the factory appends to every epic.
+ *
+ * Why it is created HERE, deterministically, and not asked of the planner: a live run
+ * delivered 13/13 tickets, every one reviewed and judged 4+/5, and the finished
+ * application still failed a brief-level check (20 concurrent writes → 8 × HTTP 500).
+ * No ticket criterion covered concurrent writers because the planner decomposed
+ * "never corrupted by a failed write" into "atomic temp-file + rename". Asking the
+ * same planner to also remember an acceptance ticket leaves the same omission
+ * possible. So the application creates it: dependent on every implementation ticket
+ * (it runs last, against the integrated default branch), marked testable with a
+ * contract, and — via Ticket.acceptance — always routed through the independent
+ * tester on approval. "Implementation tickets merged" and "build accepted" become
+ * different states (`stats.acceptance`).
+ *
+ * The criteria are cross-cutting behaviours a ticket decomposition tends to drop.
+ * Each is phrased for the build as a whole and conditioned ("where the build …") so
+ * it is verifiable — or plainly not applicable — for any kind of build.
+ */
+export const ACCEPTANCE_CRITERIA: readonly string[] = [
+  "Brief coverage: the integrated build (the default branch after every implementation ticket of this epic has merged) satisfies every capability the brief names, exercised end to end through its real entry points (CLI, HTTP, files, UI) by automated acceptance tests that run under the repository's normal test command",
+  "Persistence: where the build stores data, every acknowledged write is durable across a process restart, and a failed or interrupted write leaves the previously committed data intact",
+  "Concurrent writers: where the build stores data, concurrent mutations through every entry point — and across processes where more than one can write — never fail because of each other and never lose an acknowledged update",
+  "Failure behaviour: invalid input and error paths return the documented errors without crashing or corrupting state",
+  "Runtime support: the declared runtime version is pinned and exercised by the tests, and the build declares no runtime dependency it does not use",
+];
+
+export function acceptanceTicketTitle(epicName: string): string {
+  return `Acceptance: ${epicName}`.slice(0, 300);
+}
+
+export function acceptanceTicketDescription(epicName: string, brief: string | undefined): string {
+  const contract = (brief ?? "").trim();
+  return [
+    "BUILD-LEVEL ACCEPTANCE (created by the factory for every epic; the only way this build is reported as accepted).",
+    "",
+    `This ticket depends on every implementation ticket of the epic "${epicName}" and runs last, against the integrated default branch.`,
+    "",
+    "Deliver: a brief-level acceptance test suite in the repository, under its normal test command, that exercises the build end to end through its real entry points — including the cross-cutting behaviours in the acceptance criteria (persistence, concurrent writers, failure behaviour, runtime support) — and fix any defect the suite finds with the smallest change that makes it pass. Never weaken or delete an existing test. The independent tester then verifies the build from this ticket's contract and criteria only, never from the diff; the build is accepted when that verdict is recorded.",
+    "",
+    contract
+      ? `Brief (the contract):
+${contract}`
+      : "Brief: (none recorded — the epic description is the contract)",
+  ].join("\n");
 }
 
 export interface EpicsServiceDeps {
@@ -175,6 +225,74 @@ export class EpicsService {
         });
       }
 
+      // ACCEPTANCE GATE: append the build-level acceptance ticket (see the module doc
+      // above). Created through the same createTicket path (draft, policy validated),
+      // linked to the plan's repo exactly like its siblings (a greenfield repo's link
+      // is inherited at bootstrap, the same deferred path), contained by the epic,
+      // testable with a contract, and wired behind EVERY implementation ticket below.
+      let acceptanceTicketNumber: number | null = null;
+      if (input.epic.acceptance !== false) {
+        const repoSpec = input.tickets.find((t) => t.repo);
+        const repoKnown = !repoSpec?.repo || this.repos.findRepository(repoSpec.repo) !== undefined;
+        const acceptance = this.tickets.createTicket(
+          {
+            title: acceptanceTicketTitle(input.epic.name),
+            description: acceptanceTicketDescription(
+              input.epic.name,
+              input.epic.brief ?? input.epic.description,
+            ),
+            risk_level: "medium",
+            acceptance: true,
+            ...(repoSpec?.repo && !repoKnown ? { source: repoSpec.repo } : {}),
+            ...(input.epic.delivery_budget_usd !== undefined
+              ? { delivery_budget_usd: input.epic.delivery_budget_usd }
+              : {}),
+          },
+          actor,
+        );
+        for (const text of ACCEPTANCE_CRITERIA) {
+          this.tickets.addAcceptanceCriterion({ ticket_id: acceptance.id, text }, actor);
+        }
+        if (repoSpec?.repo && repoKnown) {
+          this.repos.applyTicketRepoAccess(
+            {
+              ticket_id: acceptance.id,
+              repo_id: repoSpec.repo,
+              ...(repoSpec.access !== undefined ? { access: repoSpec.access } : {}),
+            },
+            actor,
+          );
+        } else if (repoSpec?.repo) {
+          deferredRepoLinks += 1;
+        }
+        this.tickets.setTestable(acceptance.id, true, actor);
+        this.tickets.setTestContract(
+          acceptance.id,
+          {
+            changed_surfaces: [
+              `the whole build of epic "${input.epic.name}": every user-facing entry point`,
+            ],
+            runtime_deps: [],
+            env_vars: [],
+            run_command: "",
+            harness_ready: false,
+          },
+          actor,
+        );
+        this.ticketScopes.upsert({
+          ticket_id: acceptance.id,
+          scope_node_id: node.id,
+          relation: "secondary",
+          confidence: null,
+          reasons_json: JSON.stringify([`acceptance ticket of epic '${input.epic.name}'`]),
+          created_at: this.clock.now(),
+          updated_at: this.clock.now(),
+        });
+        createdIds.push(acceptance.id);
+        createdNumbers.push(acceptance.number ?? 0);
+        acceptanceTicketNumber = acceptance.number ?? null;
+      }
+
       // Now wire the dependency edges by resolving each plan index to its id.
       for (let i = 0; i < n; i++) {
         for (const depIndex of input.tickets[i]!.dependsOn) {
@@ -184,16 +302,34 @@ export class EpicsService {
           );
         }
       }
+      // The acceptance ticket depends on every implementation ticket: it can only be
+      // claimed once the whole plan has merged, so it tests the integrated build.
+      if (acceptanceTicketNumber !== null) {
+        const acceptanceId = createdIds[createdIds.length - 1]!;
+        for (let i = 0; i < n; i++) {
+          this.tickets.addDependency({ ticket: acceptanceId, depends_on: createdIds[i]! }, actor);
+        }
+      }
 
       writeEvent(this.db, {
         entity_type: "scope_node",
         entity_id: node.id,
         actor,
         event_type: "epic.created",
-        payload: { name: input.epic.name, ticket_count: n, ticket_numbers: createdNumbers },
+        payload: {
+          name: input.epic.name,
+          ticket_count: n,
+          ticket_numbers: createdNumbers,
+          ...(acceptanceTicketNumber !== null ? { acceptance_ticket: acceptanceTicketNumber } : {}),
+        },
       });
 
-      return { epicNodeId: node.id, ticketNumbers: createdNumbers, deferredRepoLinks };
+      return {
+        epicNodeId: node.id,
+        ticketNumbers: createdNumbers,
+        deferredRepoLinks,
+        acceptanceTicketNumber,
+      };
     });
   }
 

@@ -10424,7 +10424,16 @@ async function confirmPlanBuild(plan, opts = {}) {
       }
       return t;
     });
-    const res = await api("POST", "/epics", { epic: plan.epic, tickets });
+    // ACCEPTANCE GATE: the brief this plan came from rides on the epic so the
+    // factory-created acceptance ticket carries it as its contract. The session's
+    // recorded brief wins; else the first user turn of this chat.
+    const firstTurn = ((planBuildState && planBuildState.history) || []).find(
+      (h) => h && h.role === "user" && typeof h.brief === "string" && h.brief.trim(),
+    );
+    const brief =
+      (planBuildState && planBuildState.brief) || (firstTurn ? firstTurn.brief : null) || null;
+    const epic = brief ? { ...plan.epic, brief: String(brief).slice(0, 20000) } : plan.epic;
+    const res = await api("POST", "/epics", { epic, tickets });
     // Archive the session as confirmed now that the epic has been created.
     await archivePlanBuildSession("confirmed");
     const numbers = res.ticket_numbers || [];

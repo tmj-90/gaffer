@@ -898,6 +898,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # HARD-fail is EXEMPTED for bootstrap (a fresh scaffold is legitimately larger)
   # — the note is still required and recorded, oversized is flagged not failed.
   IS_BOOTSTRAP="$(echo "$SHOW" | jget '[1, true].includes(d.ticket.bootstrap) ? 1 : 0' 2>/dev/null || echo 0)"
+  # ACCEPTANCE GATE: the epic's build-level acceptance ticket (lib/acceptance.sh) — a
+  # normal delivery on the integrated default branch, with an acceptance prompt block.
+  IS_ACCEPTANCE="$(echo "$SHOW" | jget '[1, true].includes(d.ticket.acceptance) ? 1 : 0' 2>/dev/null || echo 0)"
   # A resume always re-enters the worktree delivery flow (pause-on-cap only fires in
   # the normal delivery path, never bootstrap), so never route a resume through the
   # create-a-repo bootstrap branch.
@@ -1565,6 +1568,15 @@ $_RF_Q
   PRODUCT_CONTEXT_BLOCK="$(gaffer_product_context_block "$_CARD_REPO_NAME" 2>/dev/null || true)"
   if [ -n "$PRODUCT_CONTEXT_BLOCK" ]; then
     log "product-context: primed delivery #$NUM with product-intent lore"
+  fi
+  # ACCEPTANCE GATE: the acceptance ticket's instructions ride ahead of the product
+  # context (same prompt slot, no renderer change): write the brief-level suite, fix
+  # what it finds, never weaken a test. The ticket's own text still arrives quarantined.
+  if [ "${IS_ACCEPTANCE:-0}" = "1" ] && declare -F gaffer_acceptance_prompt_block >/dev/null 2>&1; then
+    PRODUCT_CONTEXT_BLOCK="$(gaffer_acceptance_prompt_block)${PRODUCT_CONTEXT_BLOCK:+
+
+$PRODUCT_CONTEXT_BLOCK}"
+    log "ACCEPTANCE: #$NUM is the epic's acceptance ticket — brief-level acceptance suite against the integrated build; the independent tester decides"
   fi
 
   # ── LORE-REFLECTION NUDGE (Track 1c) — appended to the delivery brief ─────────

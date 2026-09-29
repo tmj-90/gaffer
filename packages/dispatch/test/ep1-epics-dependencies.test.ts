@@ -249,7 +249,9 @@ describe("EP-001: create_epic", () => {
       human,
     );
 
-    expect(res.ticketNumbers).toHaveLength(3);
+    // 3 plan tickets + the factory-created ACCEPTANCE ticket (always last).
+    expect(res.ticketNumbers).toHaveLength(4);
+    expect(res.acceptanceTicketNumber).toBe(res.ticketNumbers[3]);
 
     // The epic node exists and is of type 'epic'.
     const node = wg.getScopeNode(res.epicNodeId);

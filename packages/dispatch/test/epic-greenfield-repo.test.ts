@@ -49,8 +49,9 @@ describe("createEpic: greenfield plans that name a not-yet-existing repo", () =>
 
   it("creates the epic, carries the repo NAME onto source, and defers every repo link", () => {
     const res = d.createEpic(plan("habit-ledger"), human);
-    expect(res.ticketNumbers).toHaveLength(2);
-    expect(res.deferredRepoLinks).toBe(2);
+    // 2 plan tickets + the acceptance ticket; every one defers its link to bootstrap.
+    expect(res.ticketNumbers).toHaveLength(3);
+    expect(res.deferredRepoLinks).toBe(3);
     for (const n of res.ticketNumbers) {
       const view = d.view(String(n));
       expect(view.ticket.source).toBe("habit-ledger");
@@ -63,7 +64,7 @@ describe("createEpic: greenfield plans that name a not-yet-existing repo", () =>
     const res = d.createEpic(plan("habit-ledger", { source: "ledger-app" }), human);
     expect(d.view(String(res.ticketNumbers[0])).ticket.source).toBe("ledger-app");
     expect(d.view(String(res.ticketNumbers[1])).ticket.source).toBe("habit-ledger");
-    expect(res.deferredRepoLinks).toBe(2);
+    expect(res.deferredRepoLinks).toBe(3);
   });
 
   it("a bootstrap ticket declares HIGH risk by default; an explicit risk and non-bootstrap tickets are untouched", () => {

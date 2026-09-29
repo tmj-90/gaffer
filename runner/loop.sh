@@ -64,19 +64,26 @@ gaffer_loop_end_ping() {
   # waiting, "nothing awaiting a human"). Count it like status.sh now does.
   local merge
   merge="$(printf '%s' "$stats_json" | node "$HERE/lib/json-tool.mjs" loop-count ready_for_merge 2>/dev/null || echo 0)"
+  # ACCEPTANCE GATE: implementation merged is not build accepted. An epic whose
+  # acceptance ticket has no tester PASS at the end of the run needs a human (or the
+  # next run with the tester) — never "all clear".
+  local unaccepted
+  unaccepted="$(printf '%s' "$stats_json" | node "$HERE/lib/json-tool.mjs" loop-count acceptance_unaccepted 2>/dev/null || echo 0)"
+  [ "$unaccepted" -eq "$unaccepted" ] 2>/dev/null || unaccepted=0
   # Coerce to integers; any non-numeric parse degrades to 0 (stay silent, never crash).
   [ "$review" -eq "$review" ] 2>/dev/null || review=0
   [ "$blocked" -eq "$blocked" ] 2>/dev/null || blocked=0
   [ "$decisions" -eq "$decisions" ] 2>/dev/null || decisions=0
   [ "$merge" -eq "$merge" ] 2>/dev/null || merge=0
 
-  if [ "$review" -eq 0 ] && [ "$blocked" -eq 0 ] && [ "$decisions" -eq 0 ] && [ "$merge" -eq 0 ]; then
+  if [ "$review" -eq 0 ] && [ "$blocked" -eq 0 ] && [ "$decisions" -eq 0 ] && [ "$merge" -eq 0 ] && [ "$unaccepted" -eq 0 ]; then
     echo "gaffer factory: all clear — nothing awaiting a human; no closing ping."
     return 0
   fi
 
   local detail="$review awaiting review, $blocked blocked, $decisions decisions"
   [ "$merge" -gt 0 ] && detail="$detail, $merge approved but not merged"
+  [ "$unaccepted" -gt 0 ] && detail="$detail, $unaccepted build(s) not accepted"
   echo "gaffer factory: $detail — sending closing ping."
   read -ra _nc <<<"$LOOP_NOTIFY_EMIT_CMD"
   "${_nc[@]}" --kind review_needed --detail "$detail" \

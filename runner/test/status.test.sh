@@ -90,6 +90,13 @@ out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"r
 [ -s "$SINK" ] && ok "approved-but-unmerged ticket triggers the notification" || fail "ready_for_merge ticket did not notify"
 case "$out$(cat "$SINK")" in *"1 approved but not merged"*) ok "reason names the unmerged approval" ;; *) fail "reason missing 'approved but not merged'" ;; esac
 
+# --- 4c: an UNACCEPTED build (implementation merged, acceptance not passed) counts ---
+: > "$SINK"
+out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":0},"acceptance":{"unaccepted":1,"testing":0,"accepted":0,"failed":1,"epics":[]}}')"
+[ -s "$SINK" ] && ok "an unaccepted build triggers the notification (implementation merged is not build accepted)" || fail "unaccepted build did not notify"
+case "$out$(cat "$SINK")" in *"1 build(s) not accepted"*) ok "reason names the unaccepted build" ;; *) fail "reason missing 'build(s) not accepted'" ;; esac
+has "$out" "builds NOT accepted: 1" && ok "pane shows the unaccepted-build line" || fail "pane missing the builds NOT accepted line"
+
 # --- 5: no notification when nothing needs a human ------------------
 : > "$SINK"
 out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":3}}')"

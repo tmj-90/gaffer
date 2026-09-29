@@ -460,7 +460,12 @@ function runLiveTester(context) {
   const worktree = resolve(GAFFER_DATA, "worktrees", `tester-${n}`);
   git(repo.localPath, "worktree", "remove", "--force", worktree);
   rmSync(worktree, { recursive: true, force: true });
-  const add = git(repo.localPath, "worktree", "add", "--force", worktree, branch);
+  // DETACHED at the delivery head: the tester agent must never be able to advance the
+  // REVIEWED delivery branch. Seen live: a tester committed its black-box tests in the
+  // worktree, the delivery branch moved, and the merge lane landed a commit no reviewer
+  // had seen. Detached, any commit it makes lands on a detached HEAD and is moved to
+  // gaffer/ticket-<n>-tests below; the branch under review is byte-identical after.
+  const add = git(repo.localPath, "worktree", "add", "--force", "--detach", worktree, branch);
   if (add.status !== 0) {
     fail(
       `could not check out delivery branch ${branch} into a tester worktree: ${(add.stderr || "").trim()}`,
@@ -472,6 +477,9 @@ function runLiveTester(context) {
     git(repo.localPath, "worktree", "prune");
     rmSync(worktree, { recursive: true, force: true });
   };
+  // ACCEPTANCE GATE: a verdict is evidence about ONE commit. Record which, so a later
+  // push visibly invalidates it (the summary and the emitted JSON both carry it).
+  const testedCommit = (git(worktree, "rev-parse", "HEAD").stdout || "").trim() || null;
   let skills;
   let mcpRuntime;
   try {
@@ -586,12 +594,15 @@ function runLiveTester(context) {
     emit({ phase: "held", ticket: n, reason: "tester produced no verdict token", testsBranch }, 2);
     return;
   }
-  const summary =
+  const summaryBase =
     (summaryLine ? summaryLine.slice(0, 600) : "") ||
     (verdict === "pass"
       ? "black-box tests pass against the contract"
       : "a black-box test fails against the acceptance criteria") +
       (testsBranch ? ` (tests on ${testsBranch})` : "");
+  const summary = testedCommit
+    ? `${summaryBase} [tested commit ${testedCommit.slice(0, 12)} of ${branch}]`
+    : summaryBase;
   const recorded = recordVerdict(n, verdict, summary);
   if (!recorded.ok) {
     fail(

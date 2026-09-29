@@ -1925,6 +1925,9 @@ gaffer_review_reason() {
 # report + the bootstrap gate in tick.sh). Fail-soft: skipped when npm is absent.
 # shellcheck source=lib/registry-probe.sh
 [ -f "$RUNNER_DIR/lib/registry-probe.sh" ] && source "$RUNNER_DIR/lib/registry-probe.sh"
+# Acceptance gate (runner half): the prompt block for an epic's acceptance ticket.
+# shellcheck source=lib/acceptance.sh
+[ -f "$RUNNER_DIR/lib/acceptance.sh" ] && source "$RUNNER_DIR/lib/acceptance.sh"
 
 # Minimalism post-condition (defines gaffer_diff_stats / gaffer_check_minimalism).
 # shellcheck source=lib/minimalism.sh

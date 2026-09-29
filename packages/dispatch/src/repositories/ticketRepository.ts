@@ -20,12 +20,12 @@ export class TicketRepository {
           (id, number, title, description, status, priority, risk_level, policy_pack,
            source, created_by, reviewer, branch_name, pr_url, attempt_count, row_version,
            scheduled_after, due_at, bootstrap, last_review_feedback, can_be_tested,
-           test_contract, human_owner, human_delivered, delivery_budget_usd, created_at, updated_at)
+           test_contract, acceptance, human_owner, human_delivered, delivery_budget_usd, created_at, updated_at)
          VALUES
           (@id, @number, @title, @description, @status, @priority, @risk_level, @policy_pack,
            @source, @created_by, @reviewer, @branch_name, @pr_url, @attempt_count, @row_version,
            @scheduled_after, @due_at, @bootstrap, @last_review_feedback, @can_be_tested,
-           @test_contract, @human_owner, @human_delivered, @delivery_budget_usd, @created_at, @updated_at)`,
+           @test_contract, @acceptance, @human_owner, @human_delivered, @delivery_budget_usd, @created_at, @updated_at)`,
       )
       .run(ticket);
   }

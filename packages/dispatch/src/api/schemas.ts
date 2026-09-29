@@ -503,6 +503,10 @@ export const createEpicBody = z.object({
     description: z.string().max(20_000).optional(),
     // TRACK-3a: epic-level default budget inherited by tickets without their own.
     delivery_budget_usd: z.number().positive().nullable().optional(),
+    // ACCEPTANCE GATE: the brief the plan came from (the acceptance ticket's contract)
+    // and the opt-out for epics that need no build-level acceptance.
+    brief: z.string().max(20_000).optional(),
+    acceptance: z.boolean().optional(),
   }),
   tickets: z.array(epicTicketBody).min(1).max(100),
 });

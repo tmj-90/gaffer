@@ -158,11 +158,20 @@ describe("stats --json projection shape", () => {
     const parsed = JSON.parse(json) as StatsReport;
 
     expect(Object.keys(parsed).sort()).toEqual([
+      "acceptance",
       "activeClaims",
       "openDecisions",
       "staleClaims",
       "ticketsByStatus",
     ]);
+    // ACCEPTANCE GATE: the build-acceptance summary is always present (empty when no epic).
+    expect(parsed.acceptance).toEqual({
+      unaccepted: 0,
+      testing: 0,
+      accepted: 0,
+      failed: 0,
+      epics: [],
+    });
     expect(typeof parsed.openDecisions).toBe("number");
     expect(typeof parsed.activeClaims).toBe("number");
     expect(typeof parsed.staleClaims).toBe("number");

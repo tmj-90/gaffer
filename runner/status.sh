@@ -130,6 +130,11 @@ review="$(read_count in_review)"; blocked="$(read_count blocked)"; ready="$(read
 # Approved but not merged (a conflict a human must resolve, a held merge gate): a
 # human's, and its dependents wait behind it — count it toward attention.
 merge="$(read_count ready_for_merge)"; [ "$merge" -eq "$merge" ] 2>/dev/null || merge=0
+# ACCEPTANCE GATE: an epic whose implementation has all merged but whose acceptance
+# ticket has not passed the independent tester is NOT done — "implementation merged"
+# is not "build accepted". Count it toward attention so the pane never says all clear
+# over an unaccepted build.
+unaccepted="$(read_count acceptance_unaccepted)"; [ "$unaccepted" -eq "$unaccepted" ] 2>/dev/null || unaccepted=0
 # What's REGISTERED: the repos the factory can deliver into (name → path → default
 # branch → stack → DoD gates). `gaffer help` promises "what's registered + what's
 # running"; a fresh operator needs the repo NAME here for `wg ticket repo-access set`.
@@ -144,6 +149,7 @@ else printf "    ${c_dim}(none — \`gaffer onboard <path>\` registers one)${c_o
 
 printf "\n  ${c_dim}work${c_off}\n"
 printf "    needs review: %s    blocked: %s    ready: %s\n" "$review" "$blocked" "$ready"
+[ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS — run the loop with the tester, or record a human verdict: wg ticket tester-pass <n> --as human)\n" "$unaccepted"
 
 # What the HUMAN owns: pending decisions the agent delegated, WITH their reasons
 # (why the agent needs a human) — not just a count. Env-overridable seam
@@ -171,11 +177,12 @@ else
 fi
 
 # A ticket needing review, blocked, or approved-but-unmerged means a human is wanted → notify.
-attention=$(( review + blocked + merge ))
+attention=$(( review + blocked + merge + unaccepted ))
 if [ "$attention" -gt 0 ]; then
   reasons=""; [ "$review" -gt 0 ] && reasons="$review awaiting review"
   [ "$blocked" -gt 0 ] && reasons="${reasons:+$reasons, }$blocked blocked"
   [ "$merge" -gt 0 ] && reasons="${reasons:+$reasons, }$merge approved but not merged"
+  [ "$unaccepted" -gt 0 ] && reasons="${reasons:+$reasons, }$unaccepted build(s) not accepted"
   notify "gaffer: $reasons — a human is needed"
 else
   ok "nothing needs a human right now"

@@ -118,6 +118,54 @@ INIT_LINE="$(grep -n 'if ! gaffer_bootstrap_init "\$B_DIR"' "$TICK" | head -1 | 
 grep -q 'gaffer_release_delivery blocked "\$_PROBE_WHY" env_registry_unreachable' "$TICK" && ok "unreachable → blocked with reason code env_registry_unreachable" || fail "park shape missing"
 grep -q 'python\*|go|golang|rust' "$TICK" && ok "clearly non-node stacks skip the probe" || fail "stack filter missing"
 
+echo "== 9: BEHAVIOUR — the real tick, a failing registry, a bootstrap ticket: parked, released, no agent call =="
+# Stub dispatch CLI (one ready bootstrap ticket #7, records every call) + stub claude
+# (marks a file if ever spawned) + the failing stub npm above. Requires the crew build
+# for the prompt renderers the tick loads before the gate; SKIPs the section otherwise.
+ROOT_DIR="$(cd "$RUNNER_DIR/.." && pwd)"
+if [ -f "$ROOT_DIR/packages/crew/dist/runtime/context/renderPromptCli.js" ] && command -v git >/dev/null 2>&1; then
+  DISPATCH_DIR="$WORK/dispatch"; mkdir -p "$DISPATCH_DIR/dist/cli"
+  WG_CALLS="$WORK/wg-calls.log"; : > "$WG_CALLS"
+  cat > "$DISPATCH_DIR/dist/cli/index.js" <<'JS'
+const fs = require("node:fs");
+let a = process.argv.slice(2);
+if (a[0] === "--db") a = a.slice(2);
+fs.appendFileSync(process.env.WG_CALLS, JSON.stringify(a) + "\n");
+const has = (...t) => t.every((x) => a.includes(x));
+const out = (o) => process.stdout.write(JSON.stringify(o));
+if (has("agent", "register")) out({ agent: { id: "stub-agent" } });
+else if (has("ticket", "resume-requested")) out([]);
+else if (has("ticket", "list", "-s", "ready")) out([{ number: 7, title: "Bootstrap newapp" }]);
+else if (has("ticket", "list")) out([]);
+else if (has("ticket", "show", "7"))
+  out({ ticket: { number: 7, title: "Bootstrap newapp", status: "ready", bootstrap: true, source: "newapp", risk_level: "low" }, repositories: [] });
+else if (has("claim-ticket")) out({ claimToken: "tok-7" });
+else if (has("runner-release")) out({ ok: true });
+else out({});
+JS
+  MARKER="$WORK/agent-spawned.marker"; STUB_CLAUDE="$WORK/stub-claude.sh"
+  printf '#!/usr/bin/env bash\n: > "%s"\nprintf "%%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"scaffolded\"}"\n' "$MARKER" > "$STUB_CLAUDE"; chmod +x "$STUB_CLAUDE"
+  GDATA="$WORK/data"; mkdir -p "$GDATA"; BOOT_ROOT="$WORK/git"
+  if command -v perl >/dev/null 2>&1; then BOUND=(perl -e 'alarm shift; exec @ARGV' 300); elif command -v timeout >/dev/null 2>&1; then BOUND=(timeout 300); else BOUND=(); fi
+  echo tls > "$MODE"
+  OUT="$(env WG_CALLS="$WG_CALLS" RUNNER_DIR="$RUNNER_DIR" GAFFER_DATA="$GDATA" DISPATCH_DIR="$DISPATCH_DIR" \
+        GAFFER_BOOTSTRAP_ROOT="$BOOT_ROOT" CLAUDE_BIN="$STUB_CLAUDE" CLAUDE_FLAGS="" \
+        DRY_RUN=0 REVIEW_MODE=human CLARIFY_DRAFTS_WHEN_IDLE=0 GAFFER_TESTING=0 GAFFER_MAINTENANCE=0 \
+        STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none GAFFER_TICK_TIMEOUT=120 GAFFER_REGISTRY_PROBE_TIMEOUT=5 \
+        ${BOUND[@]+"${BOUND[@]}"} bash "$RUNNER_DIR/tick.sh" 2>&1)"
+  printf '%s' "$OUT" | grep -q 'BOOTSTRAP: #7 parked before spawning — environment: the npm registry is unreachable from the agent env (SELF_SIGNED_CERT_IN_CHAIN)' \
+    && ok "tick logs the park with the npm error code" || fail "no park line (got: $(printf '%s' "$OUT" | grep -E 'BOOTSTRAP|TICK_RESULT|registry' | tail -4 | tr '\n' ' ' | cut -c1-400))"
+  grep -q '"runner-release"' "$WG_CALLS" && grep -q '"blocked"' "$WG_CALLS" && grep -q 'env_registry_unreachable' "$WG_CALLS" \
+    && ok "claim released to blocked with reason code env_registry_unreachable (the card says why)" || fail "release call missing: $(grep -c . "$WG_CALLS") wg calls"
+  grep -q 'NODE_EXTRA_CA_CERTS' "$WG_CALLS" && ok "the fix hint rides on the release reason" || fail "hint missing from the release"
+  [ ! -e "$MARKER" ] && ok "the agent was NEVER spawned (zero model calls)" || fail "stub claude ran despite the failed probe"
+  [ ! -e "$BOOT_ROOT/newapp" ] && ok "no repo dir created (gate runs before gaffer_bootstrap_init)" || fail "repo dir was created"
+  printf '%s' "$OUT" | grep -q 'TICK_RESULT=error' && ok "tick result is error (never a silent no_work)" || fail "unexpected tick result: $(printf '%s' "$OUT" | grep TICK_RESULT)"
+  echo ok > "$MODE"
+else
+  echo "  skip (crew not built or git missing)"
+fi
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "registry-probe: ALL $PASS checks passed"; exit 0; fi
 echo "registry-probe: ${#FAILURES[@]} FAILURE(S):"; for f in "${FAILURES[@]}"; do echo "  - $f"; done; exit 1

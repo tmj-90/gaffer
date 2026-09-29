@@ -209,11 +209,105 @@ export function renderDoctor(report: DoctorReport): string {
 
 // ── stats ────────────────────────────────────────────────────────────────
 
+/** ACCEPTANCE GATE: one epic's build-acceptance state, derived from its acceptance ticket. */
+export interface EpicAcceptance {
+  readonly epic_node_id: string;
+  readonly epic_name: string;
+  readonly acceptance_ticket: number | null;
+  readonly acceptance_status: string;
+  /** Implementation (non-acceptance) tickets of the epic: done / total (cancelled excluded). */
+  readonly implementation_done: number;
+  readonly implementation_total: number;
+  /**
+   * accepted  — the acceptance ticket is done (a tester verdict was recorded);
+   * testing   — it is in the tester's hands (in_testing);
+   * failed    — the tester failed it or it was parked (refining / blocked / failed);
+   * pending   — not yet reached (draft / ready / claimed / in_progress / in_review / paused).
+   */
+  readonly result: "accepted" | "testing" | "failed" | "pending";
+  /** True when every implementation ticket is done but the build is NOT accepted. */
+  readonly unaccepted: boolean;
+}
+
+export interface AcceptanceSummary {
+  /** Epics whose implementation has fully merged but whose build is not accepted — human attention. */
+  readonly unaccepted: number;
+  readonly testing: number;
+  readonly accepted: number;
+  readonly failed: number;
+  readonly epics: readonly EpicAcceptance[];
+}
+
 export interface StatsReport {
   readonly ticketsByStatus: Readonly<Record<string, number>>;
   readonly openDecisions: number;
   readonly activeClaims: number;
   readonly staleClaims: number;
+  /** ACCEPTANCE GATE: "implementation merged" vs "build accepted", per epic. */
+  readonly acceptance: AcceptanceSummary;
+}
+
+/**
+ * ACCEPTANCE GATE: derive every epic's acceptance state from its acceptance ticket
+ * (tickets.acceptance = 1) and its implementation siblings. Fail-soft: a DB without
+ * the column (a hand-rolled fixture) reports an empty summary.
+ */
+export function computeAcceptance(db: Db): AcceptanceSummary {
+  const empty: AcceptanceSummary = { unaccepted: 0, testing: 0, accepted: 0, failed: 0, epics: [] };
+  let rows: Array<{
+    number: number | null;
+    status: string;
+    epic_id: string;
+    epic_name: string;
+    impl_total: number;
+    impl_done: number;
+  }>;
+  try {
+    rows = db
+      .prepare(
+        `SELECT t.number AS number, t.status AS status, sn.id AS epic_id, sn.name AS epic_name,
+                (SELECT COUNT(*) FROM ticket_scope_nodes s2 JOIN tickets t2 ON t2.id = s2.ticket_id
+                  WHERE s2.scope_node_id = sn.id AND t2.acceptance = 0 AND t2.status <> 'cancelled') AS impl_total,
+                (SELECT COUNT(*) FROM ticket_scope_nodes s2 JOIN tickets t2 ON t2.id = s2.ticket_id
+                  WHERE s2.scope_node_id = sn.id AND t2.acceptance = 0 AND t2.status = 'done') AS impl_done
+           FROM tickets t
+           JOIN ticket_scope_nodes tsn ON tsn.ticket_id = t.id
+           JOIN scope_nodes sn ON sn.id = tsn.scope_node_id AND sn.type = 'epic'
+          WHERE t.acceptance = 1
+          ORDER BY t.number ASC`,
+      )
+      .all() as typeof rows;
+  } catch {
+    return empty;
+  }
+  const epics: EpicAcceptance[] = rows.map((r) => {
+    const result: EpicAcceptance["result"] =
+      r.status === "done"
+        ? "accepted"
+        : r.status === "in_testing"
+          ? "testing"
+          : r.status === "refining" || r.status === "blocked" || r.status === "failed"
+            ? "failed"
+            : "pending";
+    const unaccepted = r.impl_total > 0 && r.impl_done === r.impl_total && result !== "accepted";
+    return {
+      epic_node_id: r.epic_id,
+      epic_name: r.epic_name,
+      acceptance_ticket: r.number,
+      acceptance_status: r.status,
+      implementation_done: r.impl_done,
+      implementation_total: r.impl_total,
+      result,
+      unaccepted,
+    };
+  });
+  return {
+    unaccepted: epics.filter((e) => e.unaccepted).length,
+    testing: epics.filter((e) => e.result === "testing").length,
+    accepted: epics.filter((e) => e.result === "accepted").length,
+    failed: epics.filter((e) => e.result === "failed").length,
+    epics,
+  };
 }
 
 export function computeStats(db: Db, nowIso = new Date().toISOString()): StatsReport {
@@ -234,7 +328,13 @@ export function computeStats(db: Db, nowIso = new Date().toISOString()): StatsRe
     nowIso,
   );
 
-  return { ticketsByStatus, openDecisions, activeClaims, staleClaims };
+  return {
+    ticketsByStatus,
+    openDecisions,
+    activeClaims,
+    staleClaims,
+    acceptance: computeAcceptance(db),
+  };
 }
 
 export function renderStats(stats: StatsReport): string {
@@ -251,6 +351,19 @@ export function renderStats(stats: StatsReport): string {
   lines.push(`Open decisions:  ${stats.openDecisions}`);
   lines.push(`Active claims:   ${stats.activeClaims}`);
   lines.push(`Stale claims:    ${stats.staleClaims}`);
+  // ACCEPTANCE GATE: implementation merged is not build accepted.
+  const a = stats.acceptance;
+  if (a && a.epics.length > 0) {
+    lines.push("");
+    lines.push(
+      `Builds:  ${a.accepted} accepted · ${a.testing} in acceptance testing · ${a.failed} failed acceptance · ${a.unaccepted} NOT accepted with implementation merged`,
+    );
+    for (const e of a.epics) {
+      lines.push(
+        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
+      );
+    }
+  }
   return lines.join("\n");
 }
 

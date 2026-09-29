@@ -149,6 +149,7 @@ export class TicketService {
         last_review_feedback: null,
         can_be_tested: 0,
         test_contract: null,
+        acceptance: input.acceptance ? 1 : 0,
         human_owner: null,
         human_delivered: null,
         delivery_budget_usd: input.delivery_budget_usd ?? null,
@@ -165,6 +166,7 @@ export class TicketService {
           title: ticket.title,
           policy_pack: ticket.policy_pack,
           ...(ticket.bootstrap === 1 ? { bootstrap: true } : {}),
+          ...(ticket.acceptance === 1 ? { acceptance: true } : {}),
         },
       });
       return ticket;

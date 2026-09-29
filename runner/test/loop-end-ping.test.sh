@@ -114,6 +114,20 @@ has "$ping" "1 approved but not merged" && ok "ping names the approved-but-unmer
   || fail "ping missing the approved-but-unmerged count; got: $(printf '%s' "$ping" | tr '\n' ' ')"
 has "$out" "all clear" && fail "run log said 'all clear' over a held merge" || ok "run log does not claim all clear"
 
+# --- AC3c: an UNACCEPTED BUILD fires too -----------------------------------
+# Every implementation ticket merged, the epic's acceptance ticket has no tester PASS.
+# "Implementation merged" is not "build accepted": the closing report must not read
+# all clear over it.
+: > "$SINK"
+out="$(run_loop '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":0},"acceptance":{"unaccepted":1,"testing":1,"accepted":0,"failed":0,"epics":[]}}' \
+                '{"items":[]}')"
+[ -s "$SINK" ] && ok "an unaccepted-build-only run fires the closing ping" \
+              || fail "unaccepted-build run stayed silent (read 'all clear' over an unaccepted build)"
+ping="$(cat "$SINK")"
+has "$ping" "1 build(s) not accepted" && ok "ping names the unaccepted build" \
+  || fail "ping missing the unaccepted-build count; got: $(printf '%s' "$ping" | tr '\n' ' ')"
+has "$out" "all clear" && fail "run log said 'all clear' over an unaccepted build" || ok "run log does not claim all clear over an unaccepted build"
+
 # --- AC4: BUG #6 — the ping deep-links to the PERSISTED LAN url --------
 # `gaffer dashboard --lan` persists http://<LAN>:<port> to $GAFFER_DATA/dashboard-url;
 # factory.config.sh reads it so the SEPARATE loop process deep-links to the same

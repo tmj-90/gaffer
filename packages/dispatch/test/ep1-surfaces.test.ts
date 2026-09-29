@@ -34,7 +34,8 @@ describe("EP-001 MCP: create_epic + add_dependency + get_ticket dependencies", (
       }),
     );
     expect(res.epic_node_id).toBeTruthy();
-    expect(res.ticket_numbers).toHaveLength(2);
+    // 2 plan tickets + the factory-created ACCEPTANCE ticket (always last).
+    expect(res.ticket_numbers).toHaveLength(3);
 
     const numbers = res.ticket_numbers as number[];
     const feature = wg.resolveTicket(`#${numbers[1]}`);
@@ -130,7 +131,8 @@ describe("EP-001 REST: POST /epics + ticket dependencies", () => {
     });
     expect(res.status).toBe(201);
     expect(res.body.epic_node_id).toBeTruthy();
-    expect(res.body.ticket_numbers).toHaveLength(2);
+    // 2 plan tickets + the factory-created ACCEPTANCE ticket (always last).
+    expect(res.body.ticket_numbers).toHaveLength(3);
   });
 
   it("POST /tickets/:id/dependencies adds an edge; GET lists it; DELETE removes it", async () => {

@@ -196,6 +196,15 @@ export interface Ticket {
    */
   test_contract: string | null;
   /**
+   * ACCEPTANCE GATE: 1 ⇒ this is an epic's build-level acceptance ticket (created
+   * by the factory for every epic, dependent on every implementation ticket). It is
+   * always routed through the independent tester on review approval — the GAFFER_TESTING
+   * toggle does not apply — so "implementation merged" can never be reported as "build
+   * accepted" without a recorded tester verdict (or a human's, via tester-pass).
+   * Persisted as INTEGER (0/1). Default 0.
+   */
+  acceptance: number;
+  /**
    * TRACK-2b: the HUMAN-CLAIM marker. `null` ⇒ agent-shaped work the factory may
    * claim as normal. A non-null value (the human actor's id/name) ⇒ a human took the
    * ticket "by hand": it sits `in_progress` OWNED BY THE HUMAN, the agent selection

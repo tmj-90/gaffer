@@ -766,7 +766,11 @@ switch (cmd) {
     const p = tryParse(readStdin());
     if (!p.ok) process.exit(1);
     const by = (p.value && p.value.ticketsByStatus) || {};
-    println(pyStr(by[args[0]] ?? 0));
+    // ACCEPTANCE GATE: `acceptance_unaccepted` = epics whose implementation has fully
+    // merged but whose build is NOT accepted (stats.acceptance.unaccepted).
+    if (args[0] === "acceptance_unaccepted")
+      println(pyStr(Math.trunc(Number(((p.value || {}).acceptance || {}).unaccepted || 0))));
+    else println(pyStr(by[args[0]] ?? 0));
     break;
   }
   // loop-count in_review|blocked|decisions: the integers loop.sh's closing ping reads.
@@ -779,6 +783,8 @@ switch (cmd) {
     const q = p.value || {};
     if (args[0] === "decisions")
       println(String((q.items || []).filter((i) => i && i.kind === "decision").length));
+    else if (args[0] === "acceptance_unaccepted")
+      println(String(Math.trunc(Number((q.acceptance || {}).unaccepted || 0))));
     else println(String(Math.trunc(Number((q.ticketsByStatus || {})[args[0]] || 0))));
     break;
   }

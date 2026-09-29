@@ -173,7 +173,15 @@ export function registerTicket(program: Command): void {
       const wg = open(cmd.optsWithGlobals());
       const rows = wg.list(opts.status);
       printJson(
-        rows.map((t) => ({ number: t.number, status: t.status, title: t.title, id: t.id })),
+        // `acceptance` rides along so the runner's tester lane can pick an epic's
+        // acceptance ticket out of in_testing even with GAFFER_TESTING off.
+        rows.map((t) => ({
+          number: t.number,
+          status: t.status,
+          title: t.title,
+          id: t.id,
+          acceptance: t.acceptance ?? 0,
+        })),
       );
       wg.db.close();
     });

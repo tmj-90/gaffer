@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- migration backfill — pre-v9 tickets are not testable and carry no contract.
   can_be_tested INTEGER NOT NULL DEFAULT 0,
   test_contract TEXT,
+  -- ACCEPTANCE GATE (schema_version 26). 0/1; 1 ⇒ this is an epic's build-level
+  -- ACCEPTANCE ticket: created by the factory for every epic, dependent on every
+  -- implementation ticket, always testable, and routed through the independent
+  -- tester on approval whatever GAFFER_TESTING says. "Implementation merged" and
+  -- "build accepted" are different states; this column is how they are told apart.
+  -- Added by an idempotent ALTER in connection.ts for an existing DB; the default
+  -- below (0) mirrors the migration backfill — pre-v26 tickets are all work tickets.
+  acceptance    INTEGER NOT NULL DEFAULT 0,
   -- TRACK-2b (schema_version 14): the HUMAN-CLAIM marker. NULL ⇒ agent-shaped work
   -- (claimable by the factory as normal). NON-NULL ⇒ a human took this ticket "by
   -- hand" (the actor id/name); it moves to in_progress OWNED BY THE HUMAN and the

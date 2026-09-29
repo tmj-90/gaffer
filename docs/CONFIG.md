@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 116 |
+| Knobs with a runner default | 118 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 66 |
@@ -245,6 +245,13 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_PR_REMOTE` | `origin` |  | runner |  |
+
+### lib/registry-probe.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_REGISTRY_PROBE` | `1` |  | runner | REGISTRY PROBE: 1 = before a greenfield bootstrap spawns its agent (and in runner/preflight.sh) run `npm ping` inside the agent's allowlisted env, bounded by GAFFER_REGISTRY_PROBE_TIMEOUT seconds; an unreachable registry |
+| `GAFFER_REGISTRY_PROBE_TIMEOUT` | `45` |  | runner | Seconds the registry probe may take before it counts as unreachable ("timeout"). |
 
 ### lib/skills-mount.sh
 

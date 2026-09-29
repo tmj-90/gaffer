@@ -974,6 +974,27 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Fail closed: never run a live agent without the deterministic safety hook.
     gaffer_assert_safety_hook || { log "SAFETY: refusing live bootstrap (fail closed)"; result error; exit 1; }
 
+    # EXECUTION PREFLIGHT (lib/registry-probe.sh): the bootstrap's one permitted
+    # install needs the package registry from INSIDE the agent's allowlisted env.
+    # Probe it there first — bounded, no model call. A dead registry used to surface
+    # only as the agent's npm retrying TLS failures until the 30-min tick timeout,
+    # parked as a generic "timeout" (seen live). Clearly non-node stacks skip it.
+    case "$(printf '%s' "${STACK:-}" | tr '[:upper:]' '[:lower:]')" in
+      python*|go|golang|rust|java|kotlin|ruby|dotnet|csharp|php|elixir|swift|c|cpp|terraform|shell|bash) ;;
+      *)
+        if declare -F gaffer_registry_probe >/dev/null 2>&1; then
+          _PROBE_RC=0; gaffer_registry_probe || _PROBE_RC=$?
+          if [ "$_PROBE_RC" -eq 1 ]; then
+            _PROBE_WHY="environment: the npm registry is unreachable from the agent env (${GAFFER_REGISTRY_PROBE_CODE:-unknown}) — $(gaffer_registry_probe_hint "${GAFFER_REGISTRY_PROBE_CODE:-}"). No model call was spent; fix the environment (runner/preflight.sh runs the same probe) and move #$NUM back to ready."
+            log "BOOTSTRAP: #$NUM parked before spawning — $_PROBE_WHY${GAFFER_REGISTRY_PROBE_DETAIL:+ [$GAFFER_REGISTRY_PROBE_DETAIL]}"
+            wg attach-evidence "$NUM" --type manual_note \
+              --summary "ENVIRONMENT: $_PROBE_WHY" >/dev/null 2>&1 || true
+            gaffer_release_delivery blocked "$_PROBE_WHY" env_registry_unreachable
+            gaffer_skip_ticket "$NUM"; result error; exit 0
+          fi
+        fi ;;
+    esac
+
     # Create + init the new repo dir WITH a baseline README commit on `main` (repo
     # display name + the ticket's intent). A failure here leaves no half-made repo.
     if ! gaffer_bootstrap_init "$B_DIR" "$B_NAME" "$TITLE"; then

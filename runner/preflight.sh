@@ -19,6 +19,19 @@ command -v pnpm >/dev/null && ok "pnpm $(pnpm -v)" || wn "pnpm missing (needed f
 if command -v "$CLAUDE_BIN" >/dev/null; then ok "claude CLI: $($CLAUDE_BIN --version 2>/dev/null | head -1)"
 else wn "claude CLI not on PATH — required for LIVE runs (dry-run works without it)"; fi
 
+# Execution environment: can the AGENT (env -i + the allowlist) reach the package
+# registry? Tool presence says nothing about this — a TLS-intercepting proxy whose
+# CA the agent env does not trust passes every check above and then burns the
+# first delivery tick on npm retries. One bounded `npm ping` in the agent's env.
+if declare -F gaffer_registry_probe >/dev/null 2>&1; then
+  _prc=0; gaffer_registry_probe || _prc=$?
+  case "$_prc" in
+    0) ok "npm registry reachable from the agent env (npm ping)" ;;
+    1) no "npm registry UNREACHABLE from the agent env (${GAFFER_REGISTRY_PROBE_CODE}) — $(gaffer_registry_probe_hint "$GAFFER_REGISTRY_PROBE_CODE")${GAFFER_REGISTRY_PROBE_DETAIL:+ [$GAFFER_REGISTRY_PROBE_DETAIL]}" ;;
+    *) wn "npm registry probe skipped (${GAFFER_REGISTRY_PROBE_CODE}) — a greenfield bootstrap's install is unverified" ;;
+  esac
+fi
+
 # Builds
 for pair in "dispatch:$DISPATCH_DIR" "crew:$CREW_DIR"; do
   name="${pair%%:*}"; dir="${pair##*:}"

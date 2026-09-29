@@ -1921,6 +1921,10 @@ gaffer_review_reason() {
 # and the worktree node_modules linker (see lib/agent-env.sh).
 # shellcheck source=lib/agent-env.sh
 [ -f "$RUNNER_DIR/lib/agent-env.sh" ] && source "$RUNNER_DIR/lib/agent-env.sh"
+# Execution preflight: `npm ping` from INSIDE the agent's allowlisted env (preflight.sh
+# report + the bootstrap gate in tick.sh). Fail-soft: skipped when npm is absent.
+# shellcheck source=lib/registry-probe.sh
+[ -f "$RUNNER_DIR/lib/registry-probe.sh" ] && source "$RUNNER_DIR/lib/registry-probe.sh"
 
 # Minimalism post-condition (defines gaffer_diff_stats / gaffer_check_minimalism).
 # shellcheck source=lib/minimalism.sh

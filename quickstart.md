@@ -236,6 +236,11 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, …) are passed
   through, so exporting them for the runner is enough; credentials are not. npm reads its
   CA from its own config, so for a custom CA also run `npm config set cafile <bundle>`.
+  `runner/preflight.sh` proves it: it runs `npm ping` from inside the agent's environment
+  and prints the npm error code with the fix when the registry is unreachable. A greenfield
+  bootstrap runs the same probe before it spawns an agent and parks the ticket at once
+  (`blocked`, reason `env_registry_unreachable`) instead of spending a tick on install
+  retries. `GAFFER_REGISTRY_PROBE=0` skips it for an offline machine with a warm cache.
 
 ---
 

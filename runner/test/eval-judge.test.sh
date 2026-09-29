@@ -124,6 +124,7 @@ assert r["overall"] == "pass" and r["score"] == 5, r
 assert r["memoryPresent"] is True, r
 assert abs(r["costUsd"] - 0.1234) < 1e-9, r
 assert r["dims"]["security"] == 5, r
+assert r["rationale"]["security"] == "solid", r   # the judge's per-dimension rationale is ledgered
 assert r["ts"], r
 PY
 grep -q '<untrusted-delivery-diff>' "$WORK/last-prompt.txt" \

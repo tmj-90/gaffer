@@ -32,6 +32,12 @@ export interface EvalRecord {
   /** Per-dimension 0–5 scores. */
   dims: Partial<Record<RubricDimension, number>>;
   /**
+   * The judge's one-sentence rationale per dimension (capped). Without it a low
+   * score is an unactionable number: a live run's "borderline 3.2, test_adequacy 2"
+   * could not say WHICH test was missing. Absent when the judge gave none.
+   */
+  rationale?: Partial<Record<RubricDimension, string>>;
+  /**
    * Real cost of the delivery attempt in USD (from the worker's usage envelope,
    * `total_cost_usd`). Absent when the runner couldn't read a spend — never a
    * fake 0, so cost aggregates only over records that actually carried one.
@@ -112,6 +118,9 @@ export function parseLedger(jsonl: string): EvalRecord[] {
         ? { costUsd: r.costUsd }
         : {}),
       ...(typeof r.judgeModel === "string" && r.judgeModel ? { judgeModel: r.judgeModel } : {}),
+      ...(r.rationale && typeof r.rationale === "object" && Object.keys(r.rationale).length > 0
+        ? { rationale: r.rationale as Partial<Record<RubricDimension, string>> }
+        : {}),
     });
   }
   return out;

@@ -126,7 +126,7 @@ describe("evalLedgerCli", () => {
       blocking: false,
       dimensions: [
         { dimension: "correctness", score: 5 },
-        { dimension: "security", score: 4 },
+        { dimension: "security", score: 4, rationale: "  no input validation on PATCH  " },
       ],
     });
     const line = buildRecordLine(verdictJson, "2026-02-02T00:00:00Z");
@@ -137,6 +137,36 @@ describe("evalLedgerCli", () => {
     expect(r?.memoryPresent).toBe(true);
     expect(r?.dims.correctness).toBe(5);
     expect(r?.dims.security).toBe(4);
+    // The rationale rides along per dimension (trimmed); a dimension without one is absent.
+    expect(r?.rationale?.security).toBe("no input validation on PATCH");
+    expect(r?.rationale?.correctness).toBeUndefined();
+  });
+
+  it("buildRecordLine omits rationale entirely when the judge gave none, and caps a verbose one", () => {
+    const none = parseLedger(
+      buildRecordLine(
+        JSON.stringify({
+          ticketId: "1",
+          score: 4,
+          overall: "pass",
+          dimensions: [{ dimension: "security", score: 5 }],
+        }),
+        "t",
+      ),
+    )[0];
+    expect(none?.rationale).toBeUndefined();
+    const long = parseLedger(
+      buildRecordLine(
+        JSON.stringify({
+          ticketId: "2",
+          score: 3,
+          overall: "borderline",
+          dimensions: [{ dimension: "test_adequacy", score: 2, rationale: "x".repeat(900) }],
+        }),
+        "t",
+      ),
+    )[0];
+    expect(long?.rationale?.test_adequacy?.length).toBe(500);
   });
 
   it("buildRecordLine is total on garbage (fail record, never throws)", () => {

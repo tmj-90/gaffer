@@ -138,7 +138,21 @@ gaffer_eval_judge_delivery() (
   fi
 
   if type log >/dev/null 2>&1; then
-    log "EVAL: judged #$num → ${overall:-unknown} (score ${score:-?}/5, memory=$mem) → $(basename "$ledger")" || true
+    # ACTIONABLE: a borderline/fail verdict names its weak dimensions WITH the judge's
+    # rationale, so the log (and a human reading it) learns WHAT was missing, not just
+    # that a number was low. A pass stays a one-liner.
+    weak=""
+    if [ "${overall:-}" != "pass" ]; then
+      weak="$(printf '%s' "$verdict_json" | node -e '
+        let d; try { d = JSON.parse(require("fs").readFileSync(0, "utf8")); } catch { process.exit(0); }
+        const dims = Array.isArray(d.dimensions) ? d.dimensions : [];
+        const weak = dims.filter((x) => typeof x.score === "number" && x.score <= 3)
+          .sort((a, b) => a.score - b.score)
+          .map((x) => `${x.dimension} ${x.score}/5: ${String(x.rationale || "(no rationale)").replace(/\s+/g, " ").slice(0, 200)}`);
+        process.stdout.write(weak.join(" | "));
+      ' 2>/dev/null || true)"
+    fi
+    log "EVAL: judged #$num → ${overall:-unknown} (score ${score:-?}/5, memory=$mem) → $(basename "$ledger")${weak:+ — weak: $weak}" || true
   fi
   return 0
 )

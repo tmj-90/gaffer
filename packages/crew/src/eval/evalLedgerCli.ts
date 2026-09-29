@@ -46,6 +46,35 @@ function toDimsMap(input: unknown): Partial<Record<RubricDimension, number>> {
   return dims;
 }
 
+/**
+ * Pull the judge's per-dimension rationale out of the `dimensions[]` shape (or a
+ * pre-built `rationale` map). Strings only, trimmed, capped at 500 chars — the same
+ * cap parseJudgeVerdict applies — so a verbose judge cannot bloat the ledger.
+ */
+function toRationaleMap(
+  dimensions: unknown,
+  prebuilt: unknown,
+): Partial<Record<RubricDimension, string>> {
+  const out: Partial<Record<RubricDimension, string>> = {};
+  const put = (k: unknown, v: unknown) => {
+    if (typeof k !== "string" || typeof v !== "string") return;
+    const text = v.trim().slice(0, 500);
+    if (text) out[k as RubricDimension] = text;
+  };
+  if (Array.isArray(dimensions)) {
+    for (const d of dimensions) {
+      if (d && typeof d === "object") {
+        const e = d as Record<string, unknown>;
+        put(e.dimension, e.rationale);
+      }
+    }
+  }
+  if (prebuilt && typeof prebuilt === "object") {
+    for (const [k, v] of Object.entries(prebuilt as Record<string, unknown>)) put(k, v);
+  }
+  return out;
+}
+
 /** Build one JSONL ledger line from a runner-supplied record JSON + a timestamp. Pure. */
 export function buildRecordLine(recordJson: string, ts: string): string {
   let raw: Record<string, unknown> = {};
@@ -82,6 +111,8 @@ export function buildRecordLine(recordJson: string, ts: string): string {
       ? { judgeModel: raw.judgeModel.trim() }
       : {}),
   };
+  const rationale = toRationaleMap(raw.dimensions, raw.rationale);
+  if (Object.keys(rationale).length > 0) record.rationale = rationale;
   return formatRecord(record);
 }
 

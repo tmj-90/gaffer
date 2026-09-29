@@ -8715,6 +8715,13 @@
                     "type": "null"
                   }
                 ]
+              },
+              "brief": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "acceptance": {
+                "type": "boolean"
               }
             },
             "required": [

@@ -160,7 +160,7 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
     expect(res.ticket.status).toBe("in_testing");
     const ev = wg.view(accId).events.find((e) => e.event_type === "ticket.routed_to_testing");
     expect(ev).toBeDefined();
-    expect(JSON.parse(ev!.payload_json).acceptance).toBe(true);
+    expect(JSON.parse(ev!.payload_json ?? "{}").acceptance).toBe(true);
     // Control: a plain testable ticket with the toggle off still skips the lane (unchanged).
     const t = wg.createTicket(
       { title: "plain", policy_pack: "solo_loose", risk_level: "low" },

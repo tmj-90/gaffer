@@ -98,6 +98,61 @@ describe("reviewer evidence (no claim token, GAFFER_REVIEW_TICKET)", () => {
     wg.db.close();
   });
 
+  it("accepts ticket_id given as the ticket NUMBER (15, #15, T-15) — seen live: the tester's notes were all refused", () => {
+    const wg = freshWg();
+    const { ticketId, number } = inReview(wg);
+    for (const ref of [String(number), `#${number}`, `T-${number}`]) {
+      const res = wg.recordEvidence(
+        {
+          reviewOf: String(number),
+          ticket_id: ref,
+          evidence_type: "manual_note",
+          summary: `via ${ref}`,
+        },
+        reviewerAgent,
+      );
+      expect(res.evidenceId).toBeTruthy();
+    }
+    const notes = wg.view(ticketId).evidence.filter((e) => e.evidence_type === "manual_note");
+    expect(notes.map((e) => e.summary)).toEqual(
+      expect.arrayContaining([`via ${number}`, `via #${number}`, `via T-${number}`]),
+    );
+    // Resolving by number does not loosen the gate: a number naming ANOTHER ticket is still refused.
+    const other = wg.createTicket({ title: "Other", policy_pack: "team_light" }, human);
+    try {
+      wg.recordEvidence(
+        {
+          reviewOf: String(number),
+          ticket_id: String(other.number),
+          evidence_type: "manual_note",
+          summary: "nope",
+        },
+        reviewerAgent,
+      );
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DispatchError);
+      expect((err as DispatchError).code).toBe("CLAIM_INVALID");
+    }
+    // An unknown reference is still NOT_FOUND.
+    try {
+      wg.recordEvidence(
+        {
+          reviewOf: String(number),
+          ticket_id: "99999",
+          evidence_type: "manual_note",
+          summary: "nope",
+        },
+        reviewerAgent,
+      );
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DispatchError);
+      expect((err as DispatchError).code).toBe("NOT_FOUND");
+    }
+    wg.db.close();
+  });
+
   it("still rejects a claimless non-human note with NO reviewOf (CLAIM_INVALID)", () => {
     const wg = freshWg();
     const { ticketId } = inReview(wg);

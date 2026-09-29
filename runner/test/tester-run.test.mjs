@@ -521,6 +521,21 @@ console.log(
   /never change it/.test(p1)
     ? ok("the prompt forbids editing the implementation")
     : fail("no do-not-modify instruction");
+  const withIds = {
+    ...base,
+    ticketId: "tkt-uuid-123",
+    acceptanceCriteria: [{ id: "ac-uuid-9", text: "x", status: "pending" }],
+  };
+  const p3 = buildTesterPrompt({
+    context: withIds,
+    worktree: "/tmp/fixture",
+    repoName: "bookmark-vault",
+  });
+  p3.includes('ticket_id "tkt-uuid-123"') && p3.includes("[ac_id ac-uuid-9]")
+    ? ok(
+        "the prompt gives the tester the ticket id and each criterion's ac_id for record_ac_evidence",
+      )
+    : fail("ticket id / ac ids missing from the prompt (the tester's notes would be refused)");
   const h1 = contractHash(base);
   const h2 = contractHash(other);
   /^[0-9a-f]{64}$/.test(h1) && h1 !== h2

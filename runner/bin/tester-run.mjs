@@ -393,7 +393,9 @@ export function implementationChanges(worktree, baseCommit) {
 const MAX_BRIEF_CHARS = 12000;
 
 export function buildTesterPrompt({ context, worktree, repoName }) {
-  const acs = context.acceptanceCriteria.map((a, i) => `  ${i + 1}. ${a.text}`).join("\n");
+  const acs = context.acceptanceCriteria
+    .map((a, i) => `  ${i + 1}. [ac_id ${a.id}] ${a.text}`)
+    .join("\n");
   const contract = JSON.stringify(context.testContract ?? {}, null, 2);
   // The ticket's description IS the requirements contract (for an epic's acceptance ticket
   // it carries the original brief). It was missing from this prompt: a criterion could say
@@ -435,7 +437,8 @@ export function buildTesterPrompt({ context, worktree, repoName }) {
     "Write automated black-box tests that invoke each changed surface and assert every acceptance",
     "criterion; run them with the repo's test command; COMMIT your tests on the current branch",
     `(git add -A && git commit -m "black-box tests for #${context.number}"). Record a short note per`,
-    "acceptance criterion via the dispatch MCP record_ac_evidence (evidence_type manual_note; you",
+    `acceptance criterion via the dispatch MCP record_ac_evidence (ticket_id "${context.ticketId ?? context.number}", the ac_id shown`,
+    "against each criterion above, evidence_type manual_note; you",
     "hold no claim — the runner scoped this server to this ticket). Do NOT change the ticket's status.",
     "BUDGET — the turn budget is real. Write ONE test file with one test per acceptance criterion;",
     "run the repo's test command ONCE after writing it and once more after a fix, not after every",

@@ -506,7 +506,15 @@ export class ClaimService {
         : undefined;
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
+      // Accept the ticket id, or its number (`15`, `#15`, `T-15`) — the same references
+      // resolveTicket accepts everywhere else. Seen live: the independent tester passed
+      // the number, every note was refused as "ticket not found", and its per-criterion
+      // evidence never reached the record. The claim / review checks below are unchanged.
+      let ticket = this.tickets.findById(input.ticket_id);
+      if (!ticket) {
+        const n = Number(input.ticket_id.trim().replace(/^#/, "").replace(/^T-/, ""));
+        if (Number.isInteger(n) && n > 0) ticket = this.tickets.findByNumber(n);
+      }
       if (!ticket) throw notFound("ticket", input.ticket_id);
 
       // REVIEWER PATH: the reviewer agent holds no claim (the delivery claim was

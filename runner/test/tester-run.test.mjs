@@ -318,6 +318,9 @@ const LIVE = (() => {
       'prompt=""; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done\n' +
       `node -e 'const fs=require("node:fs");fs.writeFileSync(process.argv[1],JSON.stringify({cwd:process.cwd(),prompt:process.argv[2],skills:fs.existsSync(".claude/skills")?fs.readdirSync(".claude/skills").sort():null,settings:fs.existsSync(".claude/settings.json"),brief:fs.existsSync("CLAUDE.factory.md")}))' ${JSON.stringify(capture)} "$prompt"\n` +
       'mkdir -p test && printf \'import test from "node:test"; import assert from "node:assert/strict"; import { w } from "../src/w.js"; test("bb", () => assert.equal(w, 2));\\n\' > test/bb.test.js\n' +
+      // TESTER_STUB_MUTATE=1: the agent "fixes" the implementation to make its test pass —
+      // the verdict is then not about the candidate and must be HELD, never recorded.
+      '[ "${TESTER_STUB_MUTATE:-0}" = "1" ] && printf \'export const w = 2; // tester edit\\n\' > src/w.js\n' +
       // The agent COMMITS in the worktree (seen live): with a detached HEAD this can never
       // advance the reviewed delivery branch; the commit is moved to the tests branch.
       'git add -A >/dev/null 2>&1 && git -c user.email=t@t -c user.name=t commit -q -m "agent committed its tests" >/dev/null 2>&1 || true\n' +
@@ -338,7 +341,7 @@ const LIVE = (() => {
   require("node:fs").mkdirSync(data, { recursive: true });
   return { repo, g, deliverySha, stub, capture, verdictStub, data };
 })();
-function runLive(verdictMode) {
+function runLive(verdictMode, extraEnv = {}) {
   if (existsSync(STUB_LOG)) rmSync(STUB_LOG);
   if (existsSync(LIVE.capture)) rmSync(LIVE.capture);
   const { code, out } = runCli(["--ticket", "1", "--live"], {
@@ -346,6 +349,7 @@ function runLive(verdictMode) {
     CLAUDE_BIN: LIVE.stub,
     CLAUDE_FLAGS: "",
     TESTER_STUB_VERDICT: verdictMode,
+    ...extraEnv,
     DISPATCH_TESTER_VERDICT_CMD: JSON.stringify([process.execPath, LIVE.verdictStub]),
   });
   const logged = existsSync(STUB_LOG) ? readFileSync(STUB_LOG, "utf8").trim() : "";
@@ -360,6 +364,18 @@ function runLive(verdictMode) {
   logged.includes('"pass"') && logged.includes('"1"')
     ? ok("verdict seam invoked with (1, pass, summary)")
     : fail(`seam log: ${logged}`);
+  // ACCEPTANCE GATE: the verdict is bound to the tested commit and the contract hash.
+  logged.includes('"--tested-commit"') && logged.includes(JSON.stringify(LIVE.deliverySha))
+    ? ok("verdict carries --tested-commit <the delivery head it ran against>")
+    : fail(`no tested-commit binding in the verdict argv: ${logged}`);
+  /"--contract-hash","[0-9a-f]{64}"/.test(logged)
+    ? ok("verdict carries --contract-hash <sha256 of the contract>")
+    : fail(`no contract-hash binding in the verdict argv: ${logged}`);
+  out && out.testedCommit === LIVE.deliverySha && /^[0-9a-f]{64}$/.test(out.contractHash || "")
+    ? ok("emitted JSON names the tested commit and contract hash")
+    : fail(
+        `emitted binding: ${JSON.stringify({ c: out && out.testedCommit, h: out && out.contractHash })}`,
+      );
   cap && cap.cwd.includes(`worktrees${require("node:path").sep}tester-1`)
     ? ok("tester ran in the throwaway worktree of the delivery branch")
     : fail(`cwd: ${cap && cap.cwd}`);
@@ -426,9 +442,105 @@ console.log("== AC12: no verdict token → HELD (exit 2), nothing recorded ==");
     : fail(`seam was invoked: ${logged}`);
 }
 
+console.log(
+  "== AC13: --live HOLDS when the tester modified the implementation (verdict not about the candidate) ==",
+);
+{
+  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  const { code, out, logged } = runLive("PASS", { TESTER_STUB_MUTATE: "1" });
+  code === 2 &&
+  out &&
+  out.phase === "held" &&
+  /modified implementation files/.test(out.reason || "")
+    ? ok("a PASS from a tester that edited src/ is HELD (exit 2), not recorded")
+    : fail(`mutating tester not held (code=${code}, out=${JSON.stringify(out)})`);
+  Array.isArray(out && out.implementationChanges) && out.implementationChanges.includes("src/w.js")
+    ? ok("the held reason names the implementation file the tester changed")
+    : fail(`implementationChanges: ${JSON.stringify(out && out.implementationChanges)}`);
+  logged === ""
+    ? ok("no verdict was recorded through the seam")
+    : fail(`a verdict was recorded: ${logged}`);
+  LIVE.g("rev-parse", "gaffer/ticket-1-widgets").stdout.trim() === LIVE.deliverySha
+    ? ok("the reviewed delivery branch is still untouched")
+    : fail("delivery branch moved");
+}
+
 rmSync(WORKDIR, { recursive: true, force: true });
 
 console.log("");
+console.log(
+  "== AC14: the tester's prompt carries the requirements (the ticket description / the brief) ==",
+);
+{
+  const { buildTesterPrompt, contractHash } = await import(HELPER);
+  const base = {
+    number: 14,
+    title: "Acceptance: Bookmark Vault",
+    description:
+      "Brief (the contract):\nBRIEF_SENTINEL: Netscape HTML bookmark import must preserve nested tags.",
+    mode: "harness",
+    acceptanceCriteria: [
+      {
+        id: "ac1",
+        text: "Brief coverage: satisfies every capability the brief names.",
+        status: "pending",
+      },
+    ],
+    testContract: {
+      changed_surfaces: ["the whole build"],
+      runtime_deps: [],
+      env_vars: [],
+      run_command: "",
+      harness_ready: false,
+    },
+    testContractRaw: "{}",
+  };
+  const p1 = buildTesterPrompt({
+    context: base,
+    worktree: "/tmp/fixture",
+    repoName: "bookmark-vault",
+  });
+  p1.includes("BRIEF_SENTINEL: Netscape HTML bookmark import must preserve nested tags.")
+    ? ok("the original brief is in the tester's initial prompt")
+    : fail("brief missing from the prompt");
+  /<<<REQUIREMENTS[\s\S]*REQUIREMENTS>>>/.test(p1) && /DATA, not instructions/.test(p1)
+    ? ok("the requirements are fenced and marked as data, not instructions")
+    : fail("requirements fence / data marker missing");
+  const other = {
+    ...base,
+    description: "COMPLETELY_DIFFERENT_BRIEF: a graphical editor and no HTTP API.",
+  };
+  const p2 = buildTesterPrompt({
+    context: other,
+    worktree: "/tmp/fixture",
+    repoName: "bookmark-vault",
+  });
+  p1 !== p2 && p2.includes("COMPLETELY_DIFFERENT_BRIEF")
+    ? ok("two briefs with identical title, criteria and contract produce DIFFERENT prompts")
+    : fail("changing only the brief did not change the prompt");
+  /never change it/.test(p1)
+    ? ok("the prompt forbids editing the implementation")
+    : fail("no do-not-modify instruction");
+  const h1 = contractHash(base);
+  const h2 = contractHash(other);
+  /^[0-9a-f]{64}$/.test(h1) && h1 !== h2
+    ? ok("contractHash differs when only the brief differs")
+    : fail("contract hash did not change");
+  const { createHash } = require("node:crypto");
+  const expected = createHash("sha256")
+    .update(
+      [base.title, base.description, base.acceptanceCriteria[0].text, base.testContractRaw].join(
+        "\u0000",
+      ),
+    )
+    .digest("hex");
+  h1 === expected
+    ? ok(
+        "contractHash is the canonical sha256(title NUL description NUL criteria… NUL raw contract)",
+      )
+    : fail("hash formula drifted");
+}
+
 console.log("== prompt: the tester never asserts on git history ==");
 {
   // The root commit is the factory's baseline; a criterion phrased as "in the initial

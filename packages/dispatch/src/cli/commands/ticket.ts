@@ -305,11 +305,28 @@ export function registerTicket(program: Command): void {
     .description("BBT-001: record an independent tester PASS (in_testing -> ready_for_merge)")
     .requiredOption("--summary <text>", "passing test-result summary (recorded as evidence)")
     .option("--uri <uri>", "evidence uri")
+    .option(
+      "--tested-commit <sha>",
+      "the exact commit the tester ran against (binds the verdict to it)",
+    )
+    .option(
+      "--contract-hash <hex>",
+      "hash of the contract tested (title + description + criteria + test_contract)",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       const actor = testerActor(opts.as);
-      const res = wg.testerPass(ref, { summary: opts.summary, uri: opts.uri }, actor);
+      const res = wg.testerPass(
+        ref,
+        {
+          summary: opts.summary,
+          uri: opts.uri,
+          ...(opts.testedCommit ? { tested_commit: String(opts.testedCommit) } : {}),
+          ...(opts.contractHash ? { contract_hash: String(opts.contractHash) } : {}),
+        },
+        actor,
+      );
       printJson({ ok: true, status: res.ticket.status, event: res.eventId });
       wg.db.close();
     });
@@ -329,6 +346,14 @@ export function registerTicket(program: Command): void {
       "where the FAIL lands below the retry cap: refining (hold for a human, default) or ready (re-queue for rework with the failing observation as feedback)",
       "refining",
     )
+    .option(
+      "--tested-commit <sha>",
+      "the exact commit the tester ran against (binds the verdict to it)",
+    )
+    .option(
+      "--contract-hash <hex>",
+      "hash of the contract tested (title + description + criteria + test_contract)",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       if (opts.to !== "refining" && opts.to !== "ready") {
@@ -338,7 +363,13 @@ export function registerTicket(program: Command): void {
       const actor = testerActor(opts.as);
       const res = wg.testerFail(
         ref,
-        { summary: opts.summary, uri: opts.uri, to: opts.to as "refining" | "ready" },
+        {
+          summary: opts.summary,
+          uri: opts.uri,
+          to: opts.to as "refining" | "ready",
+          ...(opts.testedCommit ? { tested_commit: String(opts.testedCommit) } : {}),
+          ...(opts.contractHash ? { contract_hash: String(opts.contractHash) } : {}),
+        },
         actor,
       );
       printJson({ ok: true, status: res.ticket.status, event: res.eventId });

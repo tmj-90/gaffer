@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 
 import type { Db } from "../db/connection.js";
@@ -219,14 +220,58 @@ export interface EpicAcceptance {
   readonly implementation_done: number;
   readonly implementation_total: number;
   /**
-   * accepted  — the acceptance ticket is done (a tester verdict was recorded);
+   * accepted  — the acceptance ticket is done (a tester verdict was recorded) and the
+   *             contract it tested is the contract on record;
+   * stale     — done, but the acceptance ticket's contract (title / description / criteria /
+   *             test_contract) changed after the tester's PASS: the verdict describes an
+   *             earlier contract, not this one;
    * testing   — it is in the tester's hands (in_testing);
    * failed    — the tester failed it or it was parked (refining / blocked / failed);
    * pending   — not yet reached (draft / ready / claimed / in_progress / in_review / paused).
    */
-  readonly result: "accepted" | "testing" | "failed" | "pending";
-  /** True when every implementation ticket is done but the build is NOT accepted. */
+  readonly result: "accepted" | "stale" | "testing" | "failed" | "pending";
+  /** True when every implementation ticket is done but the build is NOT accepted (stale counts). */
   readonly unaccepted: boolean;
+  /** The exact commit the tester's PASS ran against (from its evidence), when recorded. */
+  readonly accepted_commit: string | null;
+  /** The contract hash the tester's PASS recorded, and whether the ticket's contract still matches it. */
+  readonly accepted_contract_hash: string | null;
+  readonly contract_changed: boolean;
+  /** Where the build lives, so a status pane can tell whether the default branch has moved past accepted_commit. */
+  readonly repo_path: string | null;
+  readonly default_branch: string | null;
+}
+
+/**
+ * ACCEPTANCE GATE: the canonical contract hash — sha256 over the ticket's title,
+ * description, acceptance-criterion texts (in sort order) and raw test_contract, joined by
+ * NUL. The runner's tester computes the SAME hash (runner/bin/tester-run.mjs
+ * `contractHash`) from the same raw rows before it runs, and records it on its verdict;
+ * a later edit to any of those fields makes an accepted build read `stale`.
+ */
+export function contractHash(db: Db, ticketId: string): string | null {
+  try {
+    const t = db
+      .prepare("SELECT title, description, test_contract FROM tickets WHERE id = ?")
+      .get(ticketId) as
+      { title: string; description: string; test_contract: string | null } | undefined;
+    if (!t) return null;
+    const acs = db
+      .prepare("SELECT text FROM acceptance_criteria WHERE ticket_id = ? ORDER BY sort_order ASC")
+      .all(ticketId) as Array<{ text: string }>;
+    return createHash("sha256")
+      .update(
+        [
+          t.title ?? "",
+          t.description ?? "",
+          ...acs.map((a) => a.text ?? ""),
+          t.test_contract ?? "",
+        ].join("\u0000"),
+      )
+      .digest("hex");
+  } catch {
+    return null;
+  }
 }
 
 export interface AcceptanceSummary {
@@ -255,17 +300,24 @@ export interface StatsReport {
 export function computeAcceptance(db: Db): AcceptanceSummary {
   const empty: AcceptanceSummary = { unaccepted: 0, testing: 0, accepted: 0, failed: 0, epics: [] };
   let rows: Array<{
+    id: string;
     number: number | null;
     status: string;
     epic_id: string;
     epic_name: string;
     impl_total: number;
     impl_done: number;
+    repo_path: string | null;
+    default_branch: string | null;
   }>;
   try {
     rows = db
       .prepare(
-        `SELECT t.number AS number, t.status AS status, sn.id AS epic_id, sn.name AS epic_name,
+        `SELECT t.id AS id, t.number AS number, t.status AS status, sn.id AS epic_id, sn.name AS epic_name,
+                (SELECT r.local_path FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
+                  WHERE tr.ticket_id = t.id ORDER BY tr.role = 'primary' DESC LIMIT 1) AS repo_path,
+                (SELECT r.default_branch FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
+                  WHERE tr.ticket_id = t.id ORDER BY tr.role = 'primary' DESC LIMIT 1) AS default_branch,
                 (SELECT COUNT(*) FROM ticket_scope_nodes s2 JOIN tickets t2 ON t2.id = s2.ticket_id
                   WHERE s2.scope_node_id = sn.id AND t2.acceptance = 0 AND t2.status <> 'cancelled') AS impl_total,
                 (SELECT COUNT(*) FROM ticket_scope_nodes s2 JOIN tickets t2 ON t2.id = s2.ticket_id
@@ -281,9 +333,35 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     return empty;
   }
   const epics: EpicAcceptance[] = rows.map((r) => {
+    // The tester's latest PASS evidence carries the commit and contract hash it tested.
+    let acceptedCommit: string | null = null;
+    let acceptedHash: string | null = null;
+    try {
+      const ev = db
+        .prepare(
+          `SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output'
+             AND payload_json LIKE '%"verdict":"pass"%' ORDER BY created_at DESC LIMIT 1`,
+        )
+        .get(r.id) as { payload_json: string | null } | undefined;
+      if (ev?.payload_json) {
+        const p = JSON.parse(ev.payload_json) as {
+          tested_commit?: unknown;
+          contract_hash?: unknown;
+        };
+        if (typeof p.tested_commit === "string") acceptedCommit = p.tested_commit;
+        if (typeof p.contract_hash === "string") acceptedHash = p.contract_hash;
+      }
+    } catch {
+      /* no binding recorded */
+    }
+    const currentHash = contractHash(db, r.id);
+    const contractChanged =
+      acceptedHash !== null && currentHash !== null && acceptedHash !== currentHash;
     const result: EpicAcceptance["result"] =
       r.status === "done"
-        ? "accepted"
+        ? contractChanged
+          ? "stale"
+          : "accepted"
         : r.status === "in_testing"
           ? "testing"
           : r.status === "refining" || r.status === "blocked" || r.status === "failed"
@@ -299,6 +377,11 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       implementation_total: r.impl_total,
       result,
       unaccepted,
+      accepted_commit: acceptedCommit,
+      accepted_contract_hash: acceptedHash,
+      contract_changed: contractChanged,
+      repo_path: r.repo_path ?? null,
+      default_branch: r.default_branch ?? null,
     };
   });
   return {
@@ -360,7 +443,7 @@ export function renderStats(stats: StatsReport): string {
     );
     for (const e of a.epics) {
       lines.push(
-        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
+        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
       );
     }
   }

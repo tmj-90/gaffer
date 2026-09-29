@@ -1199,7 +1199,7 @@ export class Dispatch {
 
   testerPass(
     ticketRef: string,
-    input: { summary: string; uri?: string },
+    input: { summary: string; uri?: string; tested_commit?: string; contract_hash?: string },
     actor: Actor,
   ): TransitionResult {
     return this.reviewGateSvc.testerPass(ticketRef, input, actor);
@@ -1207,7 +1207,13 @@ export class Dispatch {
 
   testerFail(
     ticketRef: string,
-    input: { summary: string; uri?: string; to?: "refining" | "ready" },
+    input: {
+      summary: string;
+      uri?: string;
+      to?: "refining" | "ready";
+      tested_commit?: string;
+      contract_hash?: string;
+    },
     actor: Actor,
   ): TransitionResult {
     return this.reviewGateSvc.testerFail(ticketRef, input, actor);

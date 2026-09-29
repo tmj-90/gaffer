@@ -151,6 +151,24 @@ export interface ReviewGateServiceDeps {
   readonly observedRiskResolver?: (ticket: Ticket) => ObservedRisk | null;
 }
 
+/**
+ * ACCEPTANCE GATE: the structured binding a tester verdict carries — the exact commit the
+ * tester ran against and a hash of the contract it tested (title + description + criteria
+ * + test_contract, see `contractHash`). Both optional (a human waiver records neither);
+ * validated to a git sha / hex shape so the payload never carries free text here.
+ */
+function testedBinding(input: { tested_commit?: string; contract_hash?: string }): {
+  tested_commit?: string;
+  contract_hash?: string;
+} {
+  const out: { tested_commit?: string; contract_hash?: string } = {};
+  const sha = (input.tested_commit ?? "").trim();
+  if (/^[0-9a-f]{7,64}$/i.test(sha)) out.tested_commit = sha.toLowerCase();
+  const h = (input.contract_hash ?? "").trim();
+  if (/^[0-9a-f]{16,128}$/i.test(h)) out.contract_hash = h.toLowerCase();
+  return out;
+}
+
 export class ReviewGateService {
   private readonly db: Db;
   private readonly clock: Clock;
@@ -481,7 +499,7 @@ export class ReviewGateService {
    */
   testerPass(
     ticketRef: string,
-    input: { summary: string; uri?: string },
+    input: { summary: string; uri?: string; tested_commit?: string; contract_hash?: string },
     actor: Actor,
   ): TransitionResult {
     const summary = input.summary.trim();
@@ -509,7 +527,14 @@ export class ReviewGateService {
         evidence_type: "test_output",
         summary,
         uri: input.uri ?? null,
-        payload_json: JSON.stringify({ verdict: "pass", provenance: testerProvenance(actor) }),
+        // ACCEPTANCE GATE: a verdict is evidence about ONE commit and ONE contract. The
+        // runner's tester records both; the merge lane refuses to land a branch whose head
+        // is not the tested commit, and stats flag an acceptance whose contract changed.
+        payload_json: JSON.stringify({
+          verdict: "pass",
+          provenance: testerProvenance(actor),
+          ...testedBinding(input),
+        }),
         created_by: actor.id ?? actor.type,
         recorded_by_actor_type: actor.type,
         created_at: now,
@@ -539,7 +564,13 @@ export class ReviewGateService {
    */
   testerFail(
     ticketRef: string,
-    input: { summary: string; uri?: string; to?: "refining" | "ready" },
+    input: {
+      summary: string;
+      uri?: string;
+      to?: "refining" | "ready";
+      tested_commit?: string;
+      contract_hash?: string;
+    },
     actor: Actor,
   ): TransitionResult {
     const summary = input.summary.trim();
@@ -572,7 +603,11 @@ export class ReviewGateService {
         evidence_type: "test_output",
         summary,
         uri: input.uri ?? null,
-        payload_json: JSON.stringify({ verdict: "fail", provenance: testerProvenance(actor) }),
+        payload_json: JSON.stringify({
+          verdict: "fail",
+          provenance: testerProvenance(actor),
+          ...testedBinding(input),
+        }),
         created_by: actor.id ?? actor.type,
         recorded_by_actor_type: actor.type,
         created_at: now,

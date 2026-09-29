@@ -239,7 +239,11 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   **The exception is the epic's Acceptance ticket:** it is always testable and always goes
   through the independent tester on approval, whatever `GAFFER_TESTING` says. Until the
   tester passes it, `gaffer status`, the loop's closing report and `wg stats` say the build
-  is **not accepted**, even with every other ticket merged. To waive or decide by hand,
+  is **not accepted**, even with every other ticket merged. A tester PASS is bound to the
+  exact commit and contract it tested: the merge lane will not land a branch that moved
+  after the PASS, an accepted build whose acceptance ticket was edited afterwards reads
+  **stale**, and `gaffer status` says when the default branch has moved past the tested
+  commit. A tester that changes implementation files is held, not passed. To waive or decide by hand,
   record the verdict yourself: `runner/gaffer wg ticket tester-pass <n> --as human
   --summary "<why>"` (or `tester-fail`), which is kept as evidence.
 - **Behind a corporate / TLS-intercepting proxy.** The agent runs in an allowlisted

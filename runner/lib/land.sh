@@ -13,10 +13,34 @@
 #       RUNNER_DIR, gaffer_auto_merge, gaffer_pr_merge, gaffer_refresh_cards, …).
 # shellcheck shell=bash
 # shellcheck disable=SC2154  # globals provided by tick.sh at call time
+# ACCEPTANCE GATE — _gaffer_land_tester_binding <num> <repo> <branch> <show_json>
+# The independent tester's PASS is evidence about ONE commit (evidence payload
+# tested_commit, written by bin/tester-run.mjs). Landing a branch whose head is no longer
+# that commit would merge code the tester never ran. → 0 when no PASS binding is recorded
+# (a human verdict, an older ticket) or the head matches · 1 when the branch moved.
+# Sets _TB_TESTED / _TB_HEAD for the caller's log line.
+_gaffer_land_tester_binding() {
+  local num="$1" repo="$2" branch="$3" show="${4:-}"
+  _TB_TESTED=""; _TB_HEAD=""
+  [ -n "$show" ] || return 0
+  _TB_TESTED="$(printf '%s' "$show" | jget '(() => { const ev = (d.evidence || []).filter(e => e && e.evidence_type === "test_output" && typeof e.payload_json === "string" && e.payload_json.includes("\"verdict\":\"pass\"")); ev.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))); const last = ev[ev.length - 1]; if (!last) return ""; try { return String(JSON.parse(last.payload_json).tested_commit || ""); } catch { return ""; } })()' 2>/dev/null || echo '')"
+  [ -n "$_TB_TESTED" ] || return 0
+  _TB_HEAD="$(git -C "$repo" rev-parse "$branch" 2>/dev/null || echo '')"
+  [ -n "$_TB_HEAD" ] || return 0
+  case "$_TB_HEAD" in "$_TB_TESTED"*) return 0 ;; esac
+  case "$_TB_TESTED" in "$_TB_HEAD"*) return 0 ;; esac
+  return 1
+}
+
 gaffer_land_delivery() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}"
   local _CR_BASE _RPR _MERGED_VIA _mrc _prc
   [ -n "$RNUM" ] && [ -n "$RREPO" ] && [ -n "$RBRANCH" ] && [ -n "$RDEFAULT" ] || { log "$_WHO: land: missing ticket/repo/branch/default — refusing"; return 2; }
+  # ACCEPTANCE GATE: never land code the tester did not run (see _gaffer_land_tester_binding).
+  if ! _gaffer_land_tester_binding "$RNUM" "$RREPO" "$RBRANCH" "$RSHOW"; then
+    log "$_WHO: #$RNUM HELD — $RBRANCH moved since the tester's PASS (tested ${_TB_TESTED:0:12}, head is now ${_TB_HEAD:0:12}); re-test the branch (move it back to in_review) or record a human verdict"
+    return 4
+  fi
   # Merge gate ALSO earned → safe-merge the delivery branch into the default.
   # Capture the branch fork point BEFORE merging — afterwards RBRANCH is an
   # ancestor of RDEFAULT, so merge-base would collapse to RBRANCH (empty diff).

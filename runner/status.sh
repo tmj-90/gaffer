@@ -150,6 +150,26 @@ else printf "    ${c_dim}(none — \`gaffer onboard <path>\` registers one)${c_o
 printf "\n  ${c_dim}work${c_off}\n"
 printf "    needs review: %s    blocked: %s    ready: %s\n" "$review" "$blocked" "$ready"
 [ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS — run the loop with the tester, or record a human verdict: wg ticket tester-pass <n> --as human)\n" "$unaccepted"
+# Per-epic acceptance: result, the commit the tester's PASS ran against, and whether the
+# repo's default branch has moved past it since (a historical acceptance, not the current build).
+acc_rows="$(printf '%s' "$STATS_JSON" | node "$HERE/lib/json-tool.mjs" status-acceptance-rows 2>/dev/null)"
+if [ -n "$acc_rows" ]; then
+  printf "\n  ${c_dim}builds (acceptance)${c_off}\n"
+  while IFS=$'\t' read -r a_name a_result a_ticket a_commit a_repo a_def; do
+    [ -n "$a_name" ] || continue
+    a_note=""
+    if [ -n "$a_commit" ] && [ -n "$a_repo" ] && [ -d "$a_repo" ]; then
+      a_head="$(git -C "$a_repo" rev-parse "${a_def:-HEAD}" 2>/dev/null || echo '')"
+      if [ -n "$a_head" ]; then
+        case "$a_head" in "$a_commit"*) ;; *)
+          a_behind="$(git -C "$a_repo" rev-list --count "$a_commit..${a_def:-HEAD}" 2>/dev/null || echo '?')"
+          a_note="  ${c_yel}(default branch moved: $a_behind commit(s) since the tester's PASS — that acceptance describes an earlier build)${c_off}" ;;
+        esac
+      fi
+    fi
+    printf "    %s: %s (acceptance #%s%s)%b\n" "$a_name" "$a_result" "$a_ticket" "${a_commit:+ @ ${a_commit:0:12}}" "$a_note"
+  done <<<"$acc_rows"
+fi
 
 # What the HUMAN owns: pending decisions the agent delegated, WITH their reasons
 # (why the agent needs a human) — not just a count. Env-overridable seam

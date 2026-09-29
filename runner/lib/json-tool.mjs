@@ -773,6 +773,28 @@ switch (cmd) {
     else println(pyStr(by[args[0]] ?? 0));
     break;
   }
+  // status-acceptance-rows: one TSV row per epic from stats.acceptance.epics —
+  // name \t result \t acceptance ticket \t accepted commit \t repo path \t default branch.
+  case "status-acceptance-rows": {
+    const p = tryParse(readStdin());
+    if (!p.ok) process.exit(0);
+    const epics = (((p.value || {}).acceptance || {}).epics || []).filter(Boolean);
+    const clean = (v) => String(v ?? "").replace(/[\t\n\r]/g, " ");
+    for (const e of epics)
+      println(
+        [
+          e.epic_name,
+          e.result,
+          e.acceptance_ticket ?? "?",
+          e.accepted_commit ?? "",
+          e.repo_path ?? "",
+          e.default_branch ?? "",
+        ]
+          .map(clean)
+          .join("\t"),
+      );
+    break;
+  }
   // loop-count in_review|blocked|decisions: the integers loop.sh's closing ping reads.
   case "loop-count": {
     const p = tryParse(readStdin());

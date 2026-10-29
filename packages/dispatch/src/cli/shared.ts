@@ -19,16 +19,33 @@ export function validateTtl(ttl: number): void {
   }
 }
 
+/**
+ * Validate a `--as <type>` flag against the types a command accepts. A typo must
+ * never silently pick a DIFFERENT actor type: `--as agnet` used to record a HUMAN
+ * approval (autonomy ground truth) and an unknown tester `--as` became agent:tester.
+ * Call it before open() so a bad value never opens the DB or writes an event.
+ */
+export function parseAs<T extends string>(value: unknown, allowed: readonly T[]): T {
+  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) {
+    return value as T;
+  }
+  throw new DispatchError(
+    "VALIDATION_ERROR",
+    `--as must be one of: ${allowed.join(", ")} (got '${String(value)}').`,
+    { as: value, allowed },
+  );
+}
+
 /** Resolve a `--as <type>` flag to an Actor (BBT-001 tester verdict commands). */
 export function testerActor(as: string): Actor {
-  switch (as) {
+  switch (parseAs(as, ["agent", "human", "admin", "system"] as const)) {
     case "human":
       return { type: "human", id: process.env.USER ?? "cli" };
     case "admin":
       return { type: "admin", id: process.env.USER ?? "cli" };
     case "system":
       return { type: "system" };
-    default:
+    case "agent":
       return { type: "agent", id: "tester" };
   }
 }

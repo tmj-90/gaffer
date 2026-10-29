@@ -49,22 +49,26 @@ runner/gaffer onboard /path/to/repo --standalone   # register as its own single-
 ## After onboarding
 
 1. **See it:** the **Factory Map → Unmapped repos** tab at <http://127.0.0.1:8787>
-   (run `runner/gaffer dashboard` if it's not up; `--restart` to refresh after a CLI onboard).
-2. **Give it work:** create a ticket in the dashboard's PO flow, or:
+   (run `runner/gaffer dashboard` if it's not up — it prints a login URL; a running
+   dashboard sees a CLI onboard straight away, no restart).
+2. **Give it work:** create a ticket in the dashboard's PO flow, or (as in quickstart §4):
    ```bash
-   WG="node packages/dispatch/dist/cli/index.js --db .gaffer/dispatch.sqlite"
-   NUM=$($WG ticket create -t "Add health endpoint" -p team_light | node runner/lib/json-tool.mjs expr 'd.ticket.number'
-   $WG ticket repo-access set $NUM <repo-name> --access write
-   $WG ticket ready $NUM
+   runner/gaffer wg ticket create -t "Add health endpoint" -d "Expose GET /health returning {status:'ok'}"
+   runner/gaffer wg ac add 1 -t "GET /health returns 200 with {status:'ok'}"
+   runner/gaffer wg ticket repo-access set 1 <repo-name> --access write
+   runner/gaffer wg ticket ready 1
    ```
-3. The factory delivers it in an **isolated worktree** when you run `DRY_RUN=0 bash loop.sh`.
+   (`1` is the number `ticket create` printed; `<repo-name>` is the name `runner/gaffer status`
+   lists under "repos (registered)".)
+3. The factory delivers it in an **isolated worktree** when you run `runner/gaffer run`.
 
 ## Handy commands
 
 ```bash
-runner/gaffer status               # what's registered + what's running
-runner/gaffer dashboard [--restart]# start/refresh the web UI
+runner/gaffer status               # what's registered + running + what needs you
+runner/gaffer dashboard            # start the web UI (prints a login URL)
 runner/gaffer demo                 # the Factory Map showcase (DRY_RUN)
+runner/gaffer wg decisions resolve <id> --answer "…"   # answer a decision from the terminal
 runner/gaffer help
 ```
 
@@ -73,7 +77,7 @@ runner/gaffer help
 | Symptom | Fix |
 |---|---|
 | `registered in Dispatch` shows **"NOT registered"** | `crew.yaml`'s `dispatch.local.sqlite_path` must point at `<repo-root>/.gaffer/dispatch.sqlite`. |
-| Repo doesn't appear in the dashboard | The web server reads the db at startup — `runner/gaffer dashboard --restart`. |
+| Repo doesn't appear in the dashboard | Check `runner/gaffer status` lists it under "repos (registered)"; if it does, reload the page (the dashboard reads the db on every request). |
 | `not a git repo` warning | The factory branches per ticket; `git init` the repo first. |
 | `CONFIG_NOT_FOUND: safety_policy.yaml` | Run from a normal shell so the factory config under `<repo-root>/.gaffer/` resolves (or use `runner/gaffer`, which handles it). |
 

@@ -90,7 +90,9 @@ EOF
 fi
 
 echo
-echo "  $pass passed · $warn warnings · $fail failures · DRY_RUN=$DRY_RUN"
-if [ "$fail" -gt 0 ]; then echo "  → fix failures (likely: bash setup.sh)"; exit 1; fi
-if command -v "$CLAUDE_BIN" >/dev/null; then echo "  → ready. Try: bash demo.sh   then   DRY_RUN=0 bash loop.sh"
-else echo "  → ready for dry-run (bash demo.sh). Install Claude Code for live runs."; fi
+# (No DRY_RUN in the summary: it showed factory.config.sh's default, 1, while the
+# `gaffer run` go-live command is LIVE unless the operator sets DRY_RUN=1.)
+echo "  $pass passed · $warn warnings · $fail failures"
+if [ "$fail" -gt 0 ]; then echo "  → fix failures (likely: $HERE/gaffer setup)"; exit 1; fi
+if command -v "$CLAUDE_BIN" >/dev/null; then echo "  → ready. Try: $HERE/gaffer demo (dry run)   then   $HERE/gaffer run (LIVE)"
+else echo "  → ready for dry-run ($HERE/gaffer demo). Install Claude Code for live runs."; fi

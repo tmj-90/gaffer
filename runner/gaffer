@@ -132,7 +132,6 @@ onboard)
   # Surface a real onboard failure loudly — ${PIPESTATUS[0]} is the node exit, not sed's.
   orc=${PIPESTATUS[0]}
   if [ "$orc" -ne 0 ]; then err "onboard failed (exit $orc) — see the output above; nothing was written to memory"; exit "$orc"; fi
-  gaffer_dashboard_pid >/dev/null 2>&1 && warn "dashboard is running — \`gaffer dashboard --restart\` to see the new repo"
   printf "  ${c_dim}next: map it to a scope in the Factory Map tab, or create a ticket against it.${c_off}\n"
   ;;
 
@@ -182,6 +181,13 @@ dashboard)
   fi
   if [ -n "$pid" ]; then
     ok "dashboard already up → http://127.0.0.1:$DASH_PORT (pid $pid)"
+    # Re-running is how an operator gets back in, so hand over the login URL again (a
+    # --lan server persisted its reachable base in dashboard-url). It used to print
+    # the bare URL, whose login gate pointed at "the terminal that started" the
+    # detached server — which had printed nothing.
+    _tok="$(tr -d ' \n' < "$GAFFER_DATA/dashboard-token" 2>/dev/null)"
+    _base="$(cat "$GAFFER_DATA/dashboard-url" 2>/dev/null)"; _base="${_base:-http://127.0.0.1:$DASH_PORT}"
+    [ -n "$_tok" ] && printf "    open with your token:\n    ${c_cya}%s/?token=%s${c_off}\n" "$_base" "$_tok"
     chmod 600 "$DASH_LOG" 2>/dev/null || true
     dash_log_leaked && warn "dashboard.log holds the running server's token — \`gaffer dashboard --restart\` rotates it"
     exit 0

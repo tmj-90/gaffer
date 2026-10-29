@@ -441,7 +441,8 @@ function renderLogin(wasWrong) {
     el(
       "p",
       { class: "login-hint" },
-      "Printed in the terminal that started Dispatch, or set as DISPATCH_API_TOKEN.",
+      "Run `gaffer dashboard` — it prints a login URL with the token. Or paste the contents " +
+        "of $GAFFER_DATA/dashboard-token (or your DISPATCH_API_TOKEN).",
     ),
   ]);
   form.addEventListener("submit", (ev) => {

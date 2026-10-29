@@ -11,7 +11,7 @@
 #   • an existing 0755 dir and 0644 log (an older install) are tightened;
 #   • a log that already leaked a token is deleted and the token ROTATED (the
 #     leaked value no longer authenticates);
-#   • the already-up path keeps the log 0600.
+#   • the already-up path keeps the log 0600 and re-prints the ?token= login URL.
 # Needs packages/dispatch built (dist/api/bin.js) and curl; skips cleanly otherwise.
 # Run: bash test/dashboard-token-log.test.sh
 # =====================================================================
@@ -63,6 +63,7 @@ chmod 644 "$DATA/dashboard.log"
 OUT="$(dash)"
 [[ "$OUT" == *"already up"* ]] && [ "$(mode "$DATA/dashboard.log")" = "600" ] \
   && ok "already-up path re-tightens the log to 0600" || fail "already up: mode $(mode "$DATA/dashboard.log") out=$OUT"
+[[ "$OUT" == *"?token=$NEW"* ]] && ok "already-up path prints the login URL again (?token=)" || fail "already up: no ?token= URL: $OUT"
 stop_server
 
 echo "== a fresh factory: nothing leaks from the first start =="

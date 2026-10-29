@@ -170,19 +170,17 @@ $WG scope repo link "$NODE" myservice --relation owns --access write
 ```
 
 Unmapped repos still work — they behave as their own single-repo scope (mono-fallback).
-**Note:** restart the dashboard (`api/bin.js`) after CLI-registering repos while it's
-running — it reads the db at startup.
+A running dashboard sees CLI-registered repos straight away (it reads the db on every
+request).
 
 ---
 
 ## 6. See the whole loop WITHOUT going live
 
 ```bash
-cd runner
-DRY_RUN=1 bash demo.sh   # setup + Factory Map + confirmed boundary, no agent
-bash demo.sh             # live showcase (needs `claude`): scope → isolated
-                                     # worktrees → real agent → tests → enforced read-only
-                                     # → clean checkout → per-repo delivery evidence
+runner/gaffer demo          # seeds a throwaway showcase factory (/tmp/gaffer-showcase), proves both
+                            # MCP servers are live, runs ONE dry-run tick — always DRY_RUN, no agent
+runner/gaffer run --dry-run # one supervisor pass over YOUR ready queue, preview only
 ```
 
 ---
@@ -190,9 +188,9 @@ bash demo.sh             # live showcase (needs `claude`): scope → isolated
 ## 7. Go LIVE — the actual factory
 
 ```bash
-cd runner
-# review claude/settings.json (permissions) and factory.config.sh first
-DRY_RUN=0 bash loop.sh               # real Claude ticks; delivers ready tickets in worktrees
+# review runner/claude/settings.json (permissions) and runner/factory.config.sh first
+runner/gaffer run                    # LIVE: one pass, delivers the ready tickets in worktrees
+runner/gaffer run --daemon           # keep going (re-run every 30 s until SIGINT/SIGTERM)
 ```
 
 - **Safety:** the PreToolUse hook (`safety-hook.mjs`) is the boundary; the human never
@@ -200,7 +198,7 @@ DRY_RUN=0 bash loop.sh               # real Claude ticks; delivers ready tickets
 - **Isolation:** each delivery runs in a throwaway git worktree — the real checkout is
   never touched; a failed run rolls back to nothing.
 - **Strict mode (optional, OS-level containment):**
-  `STRICT_MODE=1 DRY_RUN=0 bash loop.sh` — see `STRICT_MODE.md` (best-effort, provider
+  `STRICT_MODE=1 runner/gaffer run` — see `STRICT_MODE.md` (best-effort, provider
   model; `sandbox-exec` on macOS).
 
 ---

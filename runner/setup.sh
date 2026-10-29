@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Gaffer factory — one-command bootstrap. Installs + builds the three products and
 # initialises factory state (databases + Crew config). Run once on a fresh
-# checkout, then `bash preflight.sh` to verify, then `bash demo.sh` to see it work.
+# checkout (`runner/gaffer setup`), then `bash runner/preflight.sh` to verify, then
+# `runner/gaffer demo` to see it work.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh

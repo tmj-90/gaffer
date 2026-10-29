@@ -729,12 +729,16 @@ export class TransitionService {
         ...(input.correlationId ? { correlation_id: input.correlationId } : {}),
       });
 
-      // Exiting `paused` to any state other than `in_progress` (resume): the live
-      // worktree is no longer tracked; drop the stale pause context atomically so
-      // no reader sees ghost data.  The resume path keeps the context alive so a
-      // re-cap upserts over it.  PauseService.stop() (paused->cancelled) also calls
-      // delete directly; the double-delete is a no-op in SQLite.
-      if (ticket.status === "paused" && input.toStatus !== "in_progress") {
+      // The pause context describes a paused delivery and, once resumed, that same
+      // delivery while it is `in_progress`. Any move to another state (a triage of
+      // the paused ticket, the resumed delivery submitted, released or parked)
+      // ends it: drop the context atomically so no reader sees ghost data — in
+      // particular the claim-expiry sweep, which returns a lapsed `in_progress` lease
+      // to `paused` when a context exists and must never do so for a later, fresh
+      // claim of the same ticket. The resume path keeps the context alive so a re-cap
+      // upserts over it. PauseService.stop() and the runner's `paused-clear` also
+      // delete it; the double-delete is a no-op in SQLite.
+      if (input.toStatus !== "paused" && input.toStatus !== "in_progress") {
         this.pausedDeliveries?.delete(ticket.id);
       }
 

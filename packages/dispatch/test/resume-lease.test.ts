@@ -114,6 +114,26 @@ describe("resume-has-no-lease", () => {
     wg.db.close();
   });
 
+  it("a resumed delivery that is released ends its pause context, so a later fresh claim lapses to ready", () => {
+    const clock = new TestClock();
+    const { wg, ticketId, runnerId, otherId } = setup(clock);
+    wg.pauseDelivery(ticketId, CTX, system);
+    wg.continuePaused(ticketId, human);
+    const res = wg.beginResume(ticketId, system, { agentId: runnerId, ttlSeconds: 600 });
+    wg.runnerRelease({ ticket_id: ticketId, to: "ready", claimToken: res.claimToken! }, system);
+    expect(wg.pausedContext(ticketId)).toBeNull();
+
+    const fresh = wg.claimNextTicket(
+      { agentId: otherId, ttlSeconds: 600 },
+      { type: "agent", id: otherId },
+    );
+    expect(fresh?.ticketId).toBe(ticketId);
+    clock.advanceSeconds(601);
+    expect(wg.expireStaleClaims(system).expired).toBe(1);
+    expect(wg.view(ticketId).ticket.status).toBe("ready");
+    wg.db.close();
+  });
+
   it("B': a lapsed resume lease found by another agent's claim goes back to paused, not to that agent", () => {
     const clock = new TestClock();
     const { wg, ticketId, runnerId, otherId } = setup(clock);

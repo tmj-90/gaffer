@@ -103,6 +103,13 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      # The root engines.node is the Node floor the docs promise; with engine-strict a
+      # dependency that raises its own floor above it makes that floor uninstallable,
+      # and the matrix below never sees it (setup-node resolves `22` to the newest 22.x).
+      # Fails when any locked package's engines.node excludes the root's minimum version.
+      - name: Node floor admits every locked dependency
+        run: node scripts/check-engines.mjs
+
       # Build first: cross-package imports (e.g. crew's tests import the `dispatch`
       # workspace package) resolve against each package's built dist/*.d.ts, so the
       # typecheck steps must run after the build.

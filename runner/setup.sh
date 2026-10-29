@@ -8,7 +8,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/factory.config.sh"
 
 command -v pnpm >/dev/null || { echo "pnpm is required (https://pnpm.io)"; exit 1; }
-command -v node >/dev/null || { echo "node is required (>= 22)"; exit 1; }
+command -v node >/dev/null || { echo "node is required (Node 22.22.1+ or 24)"; exit 1; }
+# The Node floor is engines.node in the root package.json, and .npmrc's engine-strict
+# makes pnpm refuse below it — check first so the reason is said in one line, not
+# buried (or, with --silent, hidden) in install output. scripts/check-engines.mjs keeps
+# that floor true against every locked dependency's own engines.
+node "$HERE/../scripts/check-engines.mjs" --runtime --root "$GAFFER_HOME" || exit 1
 # The `claude` CLI is REQUIRED for any LIVE run (the factory spawns `claude -p` for
 # planning, delivery, and onboarding). Not fatal for setup — dry-run/demo work without
 # it — but warn loudly so a first live run doesn't silently spawn, fail, and park every
@@ -21,7 +26,19 @@ echo "Gaffer factory setup"
 # packages/* workspace, then `pnpm -r build` builds every package (dispatch,
 # memory, crew) in dependency order. Replaces the old per-package cd/install/build.
 echo "── install + build workspace ($GAFFER_HOME)"
-( cd "$GAFFER_HOME" && pnpm install --silent && pnpm -r build >/dev/null )
+# Output goes to a log, not /dev/null: a failed install or build used to exit 1 with
+# no message at all. On failure show its tail, plus the fix for the common cause.
+mkdir -p "$GAFFER_DATA"
+SETUP_LOG="$GAFFER_DATA/setup.log"
+if ! ( cd "$GAFFER_HOME" && pnpm install && pnpm -r build ) >"$SETUP_LOG" 2>&1; then
+  echo "  ✗ install/build failed — last lines of $SETUP_LOG:"
+  tail -n 25 "$SETUP_LOG" | sed 's/^/    /'
+  if grep -q ERR_PNPM_UNSUPPORTED_ENGINE "$SETUP_LOG"; then
+    echo "  → your Node ($(node -v)) is below a dependency's floor: install a newer Node"
+    echo "    (nvm install 22 && nvm use 22, or Node 24), then re-run setup"
+  fi
+  exit 1
+fi
 echo "  ✓ installed + built (dispatch, memory, crew)"
 
 echo "── factory state ($GAFFER_DATA)"

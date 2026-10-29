@@ -247,6 +247,29 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
+    // The `gaffer` front door: approve records a HUMAN approval, merge lands a branch,
+    // wg is the privileged dispatch CLI, run/onboard/dashboard/setup/eval/skills spawn
+    // or reconfigure the factory. Command position only (incl. `bash …/gaffer`), so
+    // `git merge gaffer/ticket-5-add-run-flag` and `git commit -m "gaffer: run tests"`
+    // are unaffected. `gaffer status` (read-only) stays allowed. The hook also refuses
+    // executing ANY file inside its own RUNNER_DIR, which catches the path forms.
+    re: cmdAt(
+      String.raw`(?:(?:ba|da|k|z)?sh[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:[^\s;&|()<>\`"'\\]*\/)?)?gaffer`,
+      String.raw`[ \t]+(?:approve|merge|wg|run|onboard|dashboard|setup|eval|skills|demo)\b`,
+    ),
+    why: "the gaffer front door (approve/merge/wg/run/onboard/…) — approving, merging and ticking are the human's and the runner's job, never the agent's",
+    example: "runner/gaffer approve 3",
+    crewFlags: false,
+  },
+  {
+    re: new RegExp(
+      String.raw`(?:\bnode\b[^\n;&|]*[\s/]|${CMD_POS})(?:merge-ticket|tester-run|product-owner-run|onboard-run|spec-author|decompose|epic-feature|inherit-repo|skill-add)\.mjs${WORD_END}|${CMD_POS}poll-once\.sh${WORD_END}`,
+    ),
+    why: "a factory runner entry point (merge-ticket / tester-run / product-owner-run / … .mjs) — lands work or spawns agents outside the gates",
+    example: "node runner/bin/merge-ticket.mjs --ticket 3",
+    crewFlags: false,
+  },
+  {
     re: /\bsqlite3\b[^\n|;&]*(?:\$\{?(?:DISPATCH_DB|MEMORY_DB)\}?|[^\s'"]*(?:dispatch|memory)[^\s'"]*\.sqlite\b)/i,
     why: "raw sqlite3 on the Dispatch/Memory database (use the scoped MCP, not the raw DB)",
     example: "sqlite3 dispatch.sqlite 'update tickets'",

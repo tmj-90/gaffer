@@ -27,6 +27,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, lstatSync, readlinkSync, realpathSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Canonical dangerous-command deny list — the SINGLE source of truth shared with
 // the crew classifier's parity test (S-3). The hook consumes `{ re, why, install? }`;
@@ -1973,6 +1974,103 @@ function branchCreationBoundaryReason(cmd, roots) {
   return null;
 }
 
+// =====================================================================
+// FACTORY FRONT DOOR (the agent must not run the factory's own code)
+// ---------------------------------------------------------------------
+// The live factory checkout holds the privileged entry points: `runner/gaffer
+// approve|merge` records a HUMAN approval / lands a branch, `bin/merge-ticket.mjs`
+// merges, `tick.sh` / `loop.sh` spawn agents, `factory.config.sh` derives the
+// real DB paths from its own location, and packages/*/dist is the control plane.
+// The hook knows where that checkout is — it lives in it — so any command that
+// EXECUTES or SOURCES a file inside this RUNNER_DIR, or inside a package `dist/`
+// next to it, is refused, however the path is spelled (absolute, `cd … && ./x`,
+// `bash x`, `node x`, `nohup`/`setsid`/subshell-deferred, `sh -c '…'`). A delivery
+// worktree is a separate checkout, so `node runner/test/x.test.mjs` or
+// `bash scripts/x.sh` inside the agent's own worktree is unaffected.
+// lib/dangerous-commands.mjs carries the path-less forms (`gaffer approve` via
+// PATH, `node …/merge-ticket.mjs`) as regex defence in depth.
+// HONEST RESIDUAL: a script path the hook cannot see (`G=…; $G approve`, a copy
+// of the script elsewhere) is not caught here; the structural gate for that is
+// the human credential on approval (see the work-package report).
+// =====================================================================
+const HOOK_RUNNER_DIR = canonicalize(dirname(fileURLToPath(import.meta.url)));
+const FACTORY_HOME = dirname(HOOK_RUNNER_DIR);
+// Interpreters whose first non-flag operand is the script they run.
+const SCRIPT_INTERPRETERS = new Set([
+  "bash",
+  "sh",
+  "zsh",
+  "dash",
+  "ksh",
+  "node",
+  "nodejs",
+  "deno",
+  "bun",
+  "python",
+  "python3",
+  "perl",
+  "ruby",
+  "source",
+  ".",
+  "exec",
+]);
+
+/** True when `abs` is the live factory's code: RUNNER_DIR or a package dist/. */
+function isFactoryCode(abs) {
+  if (isInsideRoot(HOOK_RUNNER_DIR, abs)) return true;
+  const pkgs = FACTORY_HOME + "/packages/";
+  return abs.startsWith(pkgs) && /^[^/]+\/dist(?:\/|$)/.test(abs.slice(pkgs.length));
+}
+
+function factoryExecutionReason(cmd, roots) {
+  // An agent whose write-roots contain the live runner can already rewrite it; this
+  // guard adds nothing there (and the hook's own test harness runs from RUNNER_DIR).
+  if (isInsideAny(roots.writeRoots, HOOK_RUNNER_DIR)) return null;
+  let effectiveCwd = process.cwd();
+  for (const segment of cmd.split(/(?:&&|\|\||;|\n|(?<![>&])&(?!>)|(?<!>)\|)/)) {
+    const tokens = tokenizeSegment(segment.trim().replace(/^[({]+\s*/, ""));
+    if (tokens.length === 0) continue;
+    let effective = resolveEffectiveTokens(tokens);
+    if (!effective) continue;
+    if (effective.verb === "cd" || effective.verb === "pushd") {
+      const arg = effective.operands[0];
+      const bare = arg ? unquote(arg) : "";
+      if (!bare || /[*?$`]|\$\{/.test(arg) || bare === "-" || bare.startsWith("~")) {
+        effectiveCwd = null;
+      } else if (effectiveCwd !== null) {
+        effectiveCwd = canonicalize(resolve(effectiveCwd, bare));
+      }
+      continue;
+    }
+    if (effective.verb === "popd") {
+      effectiveCwd = null;
+      continue;
+    }
+    // `exec x …` runs x: re-resolve past it.
+    if (effective.verb === "exec") effective = resolveEffectiveTokens(effective.rest.slice(1));
+    if (!effective) continue;
+    let script = "";
+    if (SCRIPT_INTERPRETERS.has(effective.verb)) {
+      script = effective.rest.slice(1).find((tk) => !tk.startsWith("-")) || "";
+    } else if (effective.verb.includes("/")) {
+      script = effective.verb;
+    }
+    if (!script) continue;
+    const p = expandTildeWord(script, effectiveCwd);
+    if (p === UNVERIFIABLE_TARGET || !p || /[$`]|\$\{/.test(p)) continue;
+    if (!p.startsWith("/") && effectiveCwd === null) continue;
+    const abs = canonicalize(resolve(effectiveCwd ?? "/", p.replace(/[)}]+$/, "")));
+    if (isFactoryCode(abs)) {
+      return `runs the factory's own code (${abs}) — approving, merging, ticking and the control plane are the runner's and the human's job, never the agent's`;
+    }
+  }
+  for (const body of extractShellDashCBodies(cmd)) {
+    const nested = factoryExecutionReason(body, roots);
+    if (nested) return nested;
+  }
+  return null;
+}
+
 function checkCommand(cmd) {
   // A bootstrap tick (GAFFER_BOOTSTRAP_INSTALL=1) may relax ONLY the install-tagged
   // package-manager DENY rules, and ONLY for a command inside the fresh bootstrap dir. Compute it
@@ -2054,6 +2152,9 @@ function checkCommand(cmd) {
 
   const branchReason = branchCreationBoundaryReason(cmd, roots);
   if (branchReason) block(`${branchReason} — "${cmd.slice(0, 120)}"`);
+
+  const frontDoor = factoryExecutionReason(cmd, roots);
+  if (frontDoor) block(`${frontDoor} — "${cmd.slice(0, 120)}"`);
 
   allow();
 }

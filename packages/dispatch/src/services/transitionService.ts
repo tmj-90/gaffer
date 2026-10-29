@@ -15,7 +15,13 @@ import {
   type RepoDeliveryContext,
   type ScopeRepoContext,
 } from "../policy/policy.js";
-import { computeTicketDiff, type GitRunner } from "./diffService.js";
+import {
+  deliveryDiffFingerprint,
+  deliveryDiffProof,
+  type DeliveryDiffProof,
+  type DiffServiceDeps,
+  type GitRunner,
+} from "./diffService.js";
 import { AcRepository } from "../repositories/acRepository.js";
 import { ClaimRepository } from "../repositories/claimRepository.js";
 import { DecisionRepository } from "../repositories/decisionRepository.js";
@@ -336,6 +342,15 @@ export interface TransitionInput {
    * or the "an agent can never approve its own work" invariant.
    */
   reviewApprove?: boolean;
+  /**
+   * Done-gate diff proof the caller computed BEFORE it opened any write transaction
+   * ({@link TransitionService.deliveryDiffProof}). The gate needs real `git`, and git
+   * must never run while the SQLite write lock is held — a slow git would make every
+   * other writer fail with SQLITE_BUSY. Inside the transaction the gate re-derives only
+   * the proof's fingerprint (no git) and uses `hasDiff` when it still matches; absent
+   * or stale, the gate falls back to computing the diff in place, so nothing can skip it.
+   */
+  deliveryDiff?: DeliveryDiffProof;
 }
 
 /**
@@ -484,7 +499,7 @@ export class TransitionService {
   /**
    * Git runner used to RECOMPUTE the real diff for the done-gate (P0). Injectable
    * so tests can drive the gate without a real repo on disk; defaults to the real
-   * `git` spawn inside {@link computeTicketDiff}.
+   * `git` spawn inside {@link deliveryDiffProof}.
    */
   private readonly gitRunner: GitRunner | undefined;
 
@@ -525,6 +540,17 @@ export class TransitionService {
     return this.evaluate(ticket, gate);
   }
 
+  /**
+   * The done gate's real-diff proof for a ticket, for a caller to compute BEFORE it
+   * opens a write transaction and hand to {@link transition} as `deliveryDiff`. Spawns
+   * git; never call it inside a transaction.
+   */
+  deliveryDiffProof(ticketId: string): DeliveryDiffProof {
+    const ticket = this.tickets.findById(ticketId);
+    if (!ticket) throw notFound("ticket", ticketId);
+    return deliveryDiffProof(this.diffDeps(), ticket);
+  }
+
   transition(input: TransitionInput): TransitionResult {
     return inTransaction(this.db, () => {
       const ticket = this.tickets.findById(input.ticketId);
@@ -563,7 +589,7 @@ export class TransitionService {
       const gate = gateFor(input.toStatus);
       let policy: PolicyResult | undefined;
       if (gate && !input.systemOverride) {
-        policy = this.evaluate(ticket, gate);
+        policy = this.evaluate(ticket, gate, input.deliveryDiff);
         if (!policy.allowed) {
           throw new DispatchError(
             "POLICY_DENIED",
@@ -664,7 +690,7 @@ export class TransitionService {
     });
   }
 
-  private evaluate(ticket: Ticket, gate: PolicyGate): PolicyResult {
+  private evaluate(ticket: Ticket, gate: PolicyGate, proof?: DeliveryDiffProof): PolicyResult {
     const ac = this.acs.listForTicket(ticket.id);
     return evaluatePolicy(ticket.policy_pack, gate, {
       ticket,
@@ -673,7 +699,9 @@ export class TransitionService {
       blockingDecisions: this.decisions.blockingForTicket(ticket.id),
       hasUnresolvedHumanRequired: this.decisions.hasUnresolvedHumanRequired(ticket.id),
       evidenceCountByAc: this.evidence.countByAc(ticket.id),
-      hasPrOrDiff: this.hasRealDeliveryDiff(ticket),
+      // Only the done gate reads this, and it costs a git spawn per write repo: the
+      // ready and claim gates (which run inside the claim transaction) never pay it.
+      hasPrOrDiff: gate === "done" ? this.hasRealDeliveryDiff(ticket, proof) : false,
       humanDelivered: ticket.human_delivered !== null,
       hasReviewer: ticket.reviewer !== null && ticket.reviewer !== "",
       humanApprovedReady: this.hasReadyApproval(ticket.id),
@@ -684,8 +712,8 @@ export class TransitionService {
 
   /**
    * P0 done-gate backing: the PR/diff requirement is satisfied ONLY by REAL git,
-   * never by agent-authored input. It requires that {@link computeTicketDiff}
-   * (real `git diff base...delivery-branch`) yields a NON-EMPTY diff for at least
+   * never by agent-authored input. It requires that {@link deliveryDiffProof}
+   * (real `git diff --numstat base...delivery-branch`) finds a NON-EMPTY diff for at least
    * one ACTIVE write repo, on the branch the factory actually recorded (per-repo
    * `ticket_repos.branch_name`/delivery row, or the ticket branch) — or, for a
    * bootstrap, a non-empty initial-commit diff.
@@ -702,21 +730,23 @@ export class TransitionService {
    * `no_branch` / `empty` / `git_error` repo contributes nothing — neither prose
    * nor an agent-supplied PR link ever qualifies.
    */
-  private hasRealDeliveryDiff(ticket: Ticket): boolean {
-    const diff = computeTicketDiff(
-      {
-        repos: this.repos,
-        tickets: this.tickets,
-        repoDeliveries: this.repoDeliveries,
-        ...(this.gitRunner ? { runGit: this.gitRunner } : {}),
-      },
-      ticket.id,
-    );
-    // A repo qualifies only when git produced a real, non-empty diff (no
-    // `unavailable` reason) on a resolved delivery branch.
-    return diff.repos.some(
-      (r) => r.unavailable === undefined && r.branch !== null && r.diff.trim() !== "",
-    );
+  private hasRealDeliveryDiff(ticket: Ticket, proof?: DeliveryDiffProof): boolean {
+    const deps = this.diffDeps();
+    // A proof computed before the transaction answers for the same repos and ranges
+    // if its fingerprint (a DB-only read) still matches; otherwise recompute here.
+    if (proof && proof.fingerprint === deliveryDiffFingerprint(deps, ticket)) {
+      return proof.hasDiff;
+    }
+    return deliveryDiffProof(deps, ticket).hasDiff;
+  }
+
+  private diffDeps(): DiffServiceDeps {
+    return {
+      repos: this.repos,
+      tickets: this.tickets,
+      repoDeliveries: this.repoDeliveries,
+      ...(this.gitRunner ? { runGit: this.gitRunner } : {}),
+    };
   }
 
   /**

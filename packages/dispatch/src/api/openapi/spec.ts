@@ -65,6 +65,12 @@ const notFound: ResponseSpec = {
   description: "No such resource (`NOT_FOUND`).",
   content: "json",
 };
+const principalAdminRequired: ResponseSpec = {
+  status: 403,
+  description:
+    "The caller authenticated with a principal token; only the shared operator token may manage principals (`PRINCIPAL_ADMIN_REQUIRED`).",
+  content: "json",
+};
 const conflict: ResponseSpec = {
   status: 409,
   description:
@@ -146,12 +152,13 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Mint a named API credential",
     description:
-      "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored.",
+      "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored. Shared operator token only: a principal token is refused.",
     capability: "full",
     body: "createPrincipalBody",
     responses: [
       created("`{ principal, token }` — the only time the token is shown."),
       invalid,
+      principalAdminRequired,
       {
         status: 409,
         description: "A principal with that name exists (`DUPLICATE`).",
@@ -165,11 +172,12 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Revoke an API credential",
     description:
-      "Stamps `revoked_at`; the row stays for the audit trail. `:id` accepts the id or the name.",
+      "Stamps `revoked_at`; the row stays for the audit trail. `:id` accepts the id or the name. Shared operator token only: a principal token is refused.",
     capability: "full",
     responses: [
       ok("`{ principal }`."),
       notFound,
+      principalAdminRequired,
       { status: 409, description: "Already revoked (`NO_OP`).", content: "json" },
     ],
   },

@@ -94,13 +94,18 @@ export async function routeApi(
   // PER-PRINCIPAL CREDENTIALS — GET/POST /api/principals, DELETE /api/principals/:id.
   // Named bearer tokens bound to an actor identity + capability. Creation returns
   // the token ONCE; the list never carries hashes. Mutations need the full tier
-  // (the capability gate upstream), so a read principal can see but not mint.
+  // (the capability gate upstream), so a read principal can see but not mint — AND
+  // the operator's own credential: a principal token may not mint or revoke
+  // principals at all. Otherwise a CI/bot credential could mint an admin identity
+  // under any actor_id (forging attribution, including admin "ground truth" for the
+  // autonomy recommendations) or revoke other people's tokens.
   if (segments.length === 2 && segments[1] === "principals") {
     if (method === "GET") {
       sendJson(res, 200, { principals: wg.listPrincipals() });
       return;
     }
     if (method === "POST") {
+      if (refuseIfPrincipal(req, res)) return;
       const body = createPrincipalBody.parse(await readJsonBody(req));
       const { principal, token } = wg.createPrincipal(
         {
@@ -118,6 +123,7 @@ export async function routeApi(
   }
   if (segments.length === 3 && segments[1] === "principals") {
     if (method !== "DELETE") return methodNotAllowed(res);
+    if (refuseIfPrincipal(req, res)) return;
     const principal = wg.revokePrincipal(segments[2] ?? "", apiActor());
     sendJson(res, 200, { principal });
     return;
@@ -336,4 +342,22 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   res.on("close", stop);
   res.on("error", stop);
   tick();
+}
+
+/**
+ * Principal management is the operator's job: only the shared token (or a server
+ * with auth disabled — no principal resolves then) may mint or revoke principals.
+ * Writes the 403 and returns true when the caller authenticated with a principal.
+ */
+function refuseIfPrincipal(req: IncomingMessage, res: ServerResponse): boolean {
+  if (requestPrincipal(req) === null) return false;
+  sendJson(
+    res,
+    403,
+    errorBody(
+      "PRINCIPAL_ADMIN_REQUIRED",
+      "Only the shared operator token (or the local CLI) may create or revoke principals.",
+    ),
+  );
+  return true;
 }

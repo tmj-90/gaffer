@@ -232,7 +232,7 @@
           "Configuration"
         ],
         "summary": "Mint a named API credential",
-        "description": "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored.",
+        "description": "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored. Shared operator token only: a principal token is refused.",
         "requestBody": {
           "required": true,
           "content": {
@@ -310,7 +310,7 @@
           "Configuration"
         ],
         "summary": "Revoke an API credential",
-        "description": "Stamps `revoked_at`; the row stays for the audit trail. `:id` accepts the id or the name.",
+        "description": "Stamps `revoked_at`; the row stays for the audit trail. `:id` accepts the id or the name. Shared operator token only: a principal token is refused.",
         "parameters": [
           {
             "name": "id",

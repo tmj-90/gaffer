@@ -12,14 +12,18 @@ runner/gaffer onboard /path/to/your/repo
 That's it. The repo is now registered, scanned, and ready to take tickets. Example:
 
 ```
-gaffer onboarding /Users/you/git/payments-service …
-  registered in Dispatch
-    stack:    node
-    test:     pnpm test
-    branch:   main    (secret files always excluded from scan + context)
-    context:  <repo-root>/.gaffer/factories/gaffer/repos/payments-service
-  next: map it to a scope in the Factory Map tab, or create a ticket against it.
+gaffer onboarding /Users/you/git/payments-service … (scan + register + claude -p analysis → memory)
+  ✓ registered: payments-service   (stack node · test "pnpm test" · branch main)
+  ✓ model analysis: digest written · features +4 · lore drafts +2 · cards 112/118 model-summarised
+  ! intake: 8 question(s) about the product, filed as decision 699ebe38 — answer in the dashboard, or: gaffer wg decisions resolve 699ebe38 --answer "…"
+  next: gaffer wg ticket create -t "…" -d "…", then ac add · repo-access set <n> payments-service · ready (quickstart §4) — or map it in the Factory Map tab
+  full log: <repo-root>/.gaffer/onboard.log
 ```
+
+Secret files are always excluded from the scan and the context. The full log (crew's
+scan JSON, every analysis step) is in `.gaffer/onboard.log`; `GAFFER_VERBOSE=1` prints
+it as it runs. If `claude` is not logged in, the model line says so
+(`! model analysis unavailable (claude: …)`) and the digest and cards are mechanical-only.
 
 ## The mental model (why it's one command)
 

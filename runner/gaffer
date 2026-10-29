@@ -127,12 +127,15 @@ onboard)
   GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" \
     MEMORY_DB="$MEMORY_DB" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" \
     GAFFER_PLAN_MODEL="${GAFFER_PLAN_MODEL:-}" GAFFER_TICK_TIMEOUT="${GAFFER_TICK_TIMEOUT:-}" GAFFER_MAX_TURNS="${GAFFER_MAX_TURNS:-}" \
-    DISPATCH_ONBOARD_REPO="$abs" node "$RUNNER_DIR/bin/onboard-run.mjs" --repo "$abs" 2>&1 \
-    | grep -vE '^\{.*\}$' | sed 's/^/  /'
+    DISPATCH_ONBOARD_REPO="$abs" node "$RUNNER_DIR/bin/onboard-run.mjs" --repo "$abs" --summary 2>&1 >/dev/null \
+    | sed 's/^/  /'
+  # --summary: a few lines here (registered name, stack/test, model analysis yes/no and
+  # why not, the intake decision, the next step); the full log (crew's scan JSON, every
+  # analysis line) goes to $GAFFER_DATA/onboard.log. GAFFER_VERBOSE=1 shows it all.
+  # stdout (the single-line JSON result, for the dashboard) is discarded here.
   # Surface a real onboard failure loudly — ${PIPESTATUS[0]} is the node exit, not sed's.
   orc=${PIPESTATUS[0]}
-  if [ "$orc" -ne 0 ]; then err "onboard failed (exit $orc) — see the output above; nothing was written to memory"; exit "$orc"; fi
-  printf "  ${c_dim}next: map it to a scope in the Factory Map tab, or create a ticket against it.${c_off}\n"
+  if [ "$orc" -ne 0 ]; then err "onboard failed (exit $orc) — see the output above and $GAFFER_DATA/onboard.log"; exit "$orc"; fi
   ;;
 
 dashboard)

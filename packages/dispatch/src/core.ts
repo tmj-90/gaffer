@@ -1181,15 +1181,33 @@ export class Dispatch {
   moveTicket(ticketRef: string, target: string, actor: Actor): TransitionResult {
     const ticket = this.resolveTicket(ticketRef);
     const toStatus = resolveMoveTarget(target);
-    return this.transitions.transition({
-      ticketId: ticket.id,
-      actor,
-      toStatus,
-      reason: "board_move",
-      // Pin the expected source so a stale board (card moved out from under the
-      // drag) fails cleanly with STATE_CONFLICT rather than silently moving a
-      // ticket the human is no longer looking at.
-      expectedFromStatus: ticket.status,
+    // Dragging a reviewed ticket back for rework IS a rejection: take the reject path
+    // (AC reset, attempt bump, feedback, retry-cap park) instead of a raw move that
+    // kept the previous delivery's satisfied ACs for the next done gate.
+    if (
+      (ticket.status === "in_review" || ticket.status === "ready_for_merge") &&
+      (toStatus === "ready" || toStatus === "refining")
+    ) {
+      return this.reviewGateSvc.rejectReview(ticket.id, toStatus, actor, "board_move");
+    }
+    return inTransaction(this.db, () => {
+      // Handing in unleased in-progress work (a by-hand delivery, a tokenless resume)
+      // by a move stays legal; dragging work an agent still holds a lease on is not.
+      const unleasedSubmit =
+        ticket.status === "in_progress" &&
+        toStatus === "in_review" &&
+        !this.claimsRepo.hasActiveForTicket(ticket.id);
+      return this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus,
+        reason: "board_move",
+        // Pin the expected source so a stale board (card moved out from under the
+        // drag) fails cleanly with STATE_CONFLICT rather than silently moving a
+        // ticket the human is no longer looking at.
+        expectedFromStatus: ticket.status,
+        ...(unleasedSubmit ? { unleasedSubmit } : {}),
+      });
     });
   }
 
@@ -1309,12 +1327,30 @@ export class Dispatch {
   /**
    * The factory loop re-entered delivery in the existing worktree (`paused ->
    * in_progress`). Returns the resume context the runner re-invokes the agent with.
+   *
+   * With `lease`, the resume is LEASED to that runner agent in the same transaction
+   * and the claim token is returned: the runner heartbeats it and submits/releases
+   * through the normal token-gated paths, and if it dies the lease lapses and the
+   * expiry sweep returns the ticket to `paused`. Without a lease (older callers) a
+   * resumed ticket is in_progress with no claim, which nothing can recover
+   * automatically — the runner always passes one.
    */
   beginResume(
     ref: string,
     actor: Actor,
-  ): { ticketId: string; eventId: string; context: PausedDelivery } {
-    return this.pauseSvc.beginResume(ref, actor);
+    lease?: { agentId: string; ttlSeconds: number },
+  ): { ticketId: string; eventId: string; context: PausedDelivery; claimToken?: string } {
+    return inTransaction(this.db, () => {
+      const res = this.pauseSvc.beginResume(ref, actor);
+      if (!lease) return res;
+      const { claimToken } = this.claims.leaseResumedDelivery(
+        res.ticketId,
+        lease.agentId,
+        lease.ttlSeconds,
+        actor,
+      );
+      return { ...res, claimToken };
+    });
   }
 
   /** Stop/abandon a paused delivery (`paused -> cancelled`); drops the resume context. */

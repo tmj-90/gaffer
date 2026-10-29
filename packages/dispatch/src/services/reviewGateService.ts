@@ -880,7 +880,7 @@ export class ReviewGateService {
         toStatus: target,
         reason: capReached ? `retry_cap_reached:${resolvedReason}` : resolvedReason,
         expectedFromStatus: ticket.status,
-        ...(isRequeue ? { patch: { attempt_count: nextAttempt } } : {}),
+        ...(isRequeue ? { patch: { attempt_count: nextAttempt }, reviewReject: true } : {}),
         ...(to === "cancelled" ? { wontDo: true } : {}),
         ...(capReached ? { park: true } : {}),
       });

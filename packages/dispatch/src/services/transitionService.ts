@@ -36,7 +36,7 @@ import type { Clock } from "../util/clock.js";
 import { DispatchError, notFound } from "../util/errors.js";
 
 /** Allowed ticket transitions (from docs/04-state-machine-policies.md). */
-const ALLOWED: ReadonlySet<string> = new Set([
+export const ALLOWED: ReadonlySet<string> = new Set([
   "draft->refining",
   "draft->ready",
   "refining->ready",
@@ -189,7 +189,8 @@ const REVIEW_LANE_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
  * claim candidate queries reject any ticket carrying an unexpired active claim, so a
  * ticket dragged `blocked -> ready` (or otherwise re-queued while still leased) would
  * otherwise be silently un-claimable until the TTL expired. Live-delivery states
- * (`claimed`/`in_progress`) and the review/`paused` lane deliberately KEEP their lease.
+ * (`claimed`/`in_progress`) and the review lane deliberately KEEP their lease; `paused`
+ * releases it too (see transition()), without the requeue semantics.
  */
 const REQUEUE_STATES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
   "ready",
@@ -343,6 +344,31 @@ export interface TransitionInput {
    */
   reviewApprove?: boolean;
   /**
+   * AGENT-SUBMIT opt-in flag the claim-gated submit path (`claimed -> in_progress ->
+   * in_review`) MUST set. Set only by {@link
+   * import("./claimService.js").ClaimService.submitForReview}, after it validated the
+   * claim token, which then completes that claim. Without it a board move could drag
+   * leased, live agent work into review: the lease dangled on an in_review ticket and
+   * the agent's own submit then failed with STATE_CONFLICT.
+   */
+  agentSubmit?: boolean;
+  /**
+   * UNLEASED-SUBMIT opt-in flag for a board move `in_progress -> in_review` of work NO
+   * agent lease backs: a human's by-hand delivery (TRACK-2b) or a tokenless resumed
+   * delivery. Set only by {@link Dispatch.moveTicket}, and only after it checked (in
+   * the same transaction) that the ticket has no active claim.
+   */
+  unleasedSubmit?: boolean;
+  /**
+   * REVIEW-REJECT opt-in flag the reject path (`in_review -> ready|refining`,
+   * `ready_for_merge -> refining`) MUST set. Set only by {@link
+   * import("./reviewGateService.js").ReviewGateService.rejectReview}, which resets the
+   * ACs, bumps attempt_count, records the feedback and parks at the retry cap. A raw
+   * drag skipped all four, so a rework could pass the done gate on the previous
+   * delivery's evidence; {@link Dispatch.moveTicket} now routes those drags through it.
+   */
+  reviewReject?: boolean;
+  /**
    * Done-gate diff proof the caller computed BEFORE it opened any write transaction
    * ({@link TransitionService.deliveryDiffProof}). The gate needs real `git`, and git
    * must never run while the SQLite write lock is held — a slow git would make every
@@ -447,6 +473,25 @@ export const GUARDED_EDGES: readonly GuardedEdge[] = [
     anyOf: ["agentClaim"],
     message: "A ticket can only be claimed via the claim path (which creates the lease).",
     why: "GHOST-CLAIM guard: `claimed` is real only when a ticket_claims lease row backs it; a ghost is stranded forever (the expiry sweeper scans active claims only).",
+  },
+  {
+    edges: ["claimed->in_progress"],
+    anyOf: ["agentSubmit"],
+    message: "A claimed ticket can only start delivery via the claim-gated submit path.",
+    why: "The lease holder's submit steps claimed -> in_progress; a drag would move leased work out from under its agent.",
+  },
+  {
+    edges: ["in_progress->in_review"],
+    anyOf: ["agentSubmit", "unleasedSubmit"],
+    message:
+      "An agent-leased delivery can only be submitted for review via its claim-gated submit path.",
+    why: "A drag of leased work left the lease dangling on an in_review ticket and broke the agent's own submit; unleased work (by hand, tokenless resume) may still be handed in by a move.",
+  },
+  {
+    edges: ["in_review->ready", "in_review->refining", "ready_for_merge->refining"],
+    anyOf: ["reviewReject"],
+    message: "A reviewed ticket can only go back for rework via the reject path.",
+    why: "Reject resets ACs, bumps the attempt, records feedback and parks at the retry cap; a raw drag skipped all of it (Dispatch.moveTicket routes the drag through reject).",
   },
   {
     edges: ["in_review->ready_for_merge"],
@@ -620,6 +665,14 @@ export class TransitionService {
       // silently un-claimable until its TTL expired. Release here so EVERY path into a
       // re-queue state clears the lease. Idempotent (no active claim → no rows changed).
       if (REQUEUE_STATES.has(input.toStatus)) {
+        this.claims.releaseActiveForTicket(ticket.id, now);
+      }
+      // A PAUSED delivery has no worker until a human presses Continue, so it holds no
+      // lease either (the worktree is protected by the paused status, not a claim).
+      // Keeping the pre-pause lease meant it lapsed DURING the resumed delivery (which
+      // could not heartbeat it), handing the live ticket to a second agent. The resume
+      // takes a fresh lease ({@link Dispatch.beginResume}).
+      if (input.toStatus === "paused") {
         this.claims.releaseActiveForTicket(ticket.id, now);
       }
 

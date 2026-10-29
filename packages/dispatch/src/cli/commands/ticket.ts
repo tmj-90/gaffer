@@ -5,7 +5,7 @@ import type { Actor } from "../../domain/types.js";
 import { TICKET_STATUSES } from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, printJson, testerActor } from "../shared.js";
+import { cliActor, open, printJson, testerActor, validateTtl } from "../shared.js";
 
 export function registerTicket(program: Command): void {
   const ticket = program.command("ticket").description("Ticket commands");
@@ -660,12 +660,26 @@ export function registerTicket(program: Command): void {
     .command("resume-begin <ref>")
     .description(
       "Factory-loop resume entry point: re-enter delivery in the EXISTING worktree " +
-        "(paused -> in_progress) and print the resume context (worktree, branch, attempt). System actor.",
+        "(paused -> in_progress) and print the resume context (worktree, branch, attempt). " +
+        "With --agent, the resume is leased to that agent and its claim_token printed. System actor.",
     )
-    .action((ref, _opts, cmd) => {
+    .option("--agent <id>", "lease the resumed delivery to this (runner) agent")
+    .option("--ttl <seconds>", "lease TTL in seconds (with --agent)", "900")
+    .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const res = wg.beginResume(ref, { type: "system" });
-      printJson({ ok: true, ticket_id: res.ticketId, event: res.eventId, context: res.context });
+      const lease =
+        typeof opts.agent === "string" && opts.agent !== ""
+          ? { agentId: opts.agent as string, ttlSeconds: Number(opts.ttl) }
+          : undefined;
+      if (lease) validateTtl(lease.ttlSeconds);
+      const res = wg.beginResume(ref, { type: "system" }, lease);
+      printJson({
+        ok: true,
+        ticket_id: res.ticketId,
+        event: res.eventId,
+        context: res.context,
+        claim_token: res.claimToken ?? null,
+      });
       wg.db.close();
     });
 

@@ -1,23 +1,81 @@
 {
-  "_comment": "Claude Code settings for the gaffer factory delivery agent. SECURITY: the PreToolUse hook (safety-hook.mjs) is the real boundary — it deterministically blocks force-push, protected-branch pushes, dependency installs, secret-file reads/writes, and out-of-repo writes BEFORE they run. The permissions.allow list below is intentionally broad so the headless agent isn't stuck on prompts; the hook (not the allow-list) is what keeps it safe. Review/tighten allow for your environment before an unattended run. NOTE: permission/tool-pattern syntax can vary by Claude Code version — verify with `claude --help` and a single supervised run first.",
+  "_comment": "Claude Code settings for the gaffer factory delivery agent. SECURITY: the PreToolUse hook (safety-hook.mjs) is the real boundary — it deterministically blocks force-push, protected-branch pushes, dependency installs, secret-file reads/writes, and out-of-repo writes BEFORE they run. Every file-touching tool in permissions.allow (Bash, Write/Edit, Read, Grep/Glob) MUST have a PreToolUse matcher here — Grep and Glob read file contents too (test/claude-settings.test.mjs pins this). The Read deny rules are recursive (**/) or absolute (//, ~/) on purpose: Claude Code turns them into ripgrep excludes for Grep/Glob, and a ./-anchored rule only covers the cwd root. The permissions.allow list below is intentionally broad so the headless agent isn't stuck on prompts; the hook (not the allow-list) is what keeps it safe. Review/tighten allow for your environment before an unattended run. NOTE: permission/tool-pattern syntax can vary by Claude Code version — verify with `claude --help` and a single supervised run first.",
   "enableAllProjectMcpServers": true,
   "permissions": {
     "allow": ["Edit", "Write", "Read", "Bash", "Glob", "Grep", "mcp__dispatch", "mcp__memory"],
-    "deny": ["Read(./.env)", "Read(./.env.*)", "WebFetch", "WebSearch"]
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/*.p12)",
+      "Read(**/id_rsa*)",
+      "Read(**/id_ed25519*)",
+      "Read(**/id_ecdsa*)",
+      "Read(**/id_dsa*)",
+      "Read(**/.netrc)",
+      "Read(**/.npmrc)",
+      "Read(**/.pypirc)",
+      "Read(**/.pgpass)",
+      "Read(**/.git-credentials)",
+      "Read(**/credentials)",
+      "Read(**/credentials.json)",
+      "Read(**/.credentials.json)",
+      "Read(**/dashboard-token*)",
+      "Read(**/mcp-runtime*.json)",
+      "Read(//**/dashboard-token*)",
+      "Read(//**/mcp-runtime*.json)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.kube/**)",
+      "Read(~/.azure/**)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.config/gcloud/**)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.claude.json)",
+      "Read(~/.claude/.credentials.json)",
+      "WebFetch",
+      "WebSearch"
+    ]
   },
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "node ${RUNNER_DIR}/safety-hook.mjs" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${RUNNER_DIR}/safety-hook.mjs"
+          }
+        ]
       },
       {
         "matcher": "Write|Edit|MultiEdit|NotebookEdit",
-        "hooks": [{ "type": "command", "command": "node ${RUNNER_DIR}/safety-hook.mjs" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${RUNNER_DIR}/safety-hook.mjs"
+          }
+        ]
       },
       {
         "matcher": "Read",
-        "hooks": [{ "type": "command", "command": "node ${RUNNER_DIR}/safety-hook.mjs" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${RUNNER_DIR}/safety-hook.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Grep|Glob|LS",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${RUNNER_DIR}/safety-hook.mjs"
+          }
+        ]
       }
     ]
   }

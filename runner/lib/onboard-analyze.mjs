@@ -58,6 +58,7 @@ import {
   parseClaudeJson,
   unknownRecord,
 } from "./usage-ledger.mjs";
+import { secretReadDenyRules } from "./agent-home.mjs";
 import { Worker } from "./worker.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1185,7 +1186,18 @@ export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
   // stay available for the file inspection the analysis needs.
   // MUST enumerate the COMPLETE write/exec set — MultiEdit is a write tool too; a denylist
   // silently permits any write tool it omits.
-  flags.push("--disallowedTools", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash");
+  // The template's recursive Read deny rules ride along too: with no project settings
+  // in RUNNER_DIR, they are what makes Claude Code exclude nested `.env`, key and
+  // token files from this agent's Grep/Glob (ripgrep runs with --hidden).
+  flags.push(
+    "--disallowedTools",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "Bash",
+    ...secretReadDenyRules(),
+  );
   if (caps.model) flags.unshift("--model", caps.model);
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   if (caps.maxTurns > 0) args.push("--max-turns", String(caps.maxTurns));

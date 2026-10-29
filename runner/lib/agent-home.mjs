@@ -89,6 +89,27 @@ export function mountRoleSkills(claudeDir, { role = "", stacks = [], text = "" }
   return mounted;
 }
 
+/**
+ * The settings template's `Read(...)` deny rules (recursive secret-file families).
+ * A spawn that runs WITHOUT the rendered project settings (onboard-analyze runs in
+ * RUNNER_DIR, where no .claude/ exists) passes these through --disallowedTools so
+ * Claude Code still turns them into ripgrep excludes for Grep/Glob and refuses the
+ * Read. Returns [] when the template cannot be read (the caller's own tool denylist
+ * still applies).
+ */
+export function secretReadDenyRules() {
+  const settingsPath =
+    process.env.CLAUDE_SETTINGS || resolve(RUNNER_DIR, "claude", "settings.json");
+  try {
+    const deny = JSON.parse(readFileSync(settingsPath, "utf8"))?.permissions?.deny;
+    return Array.isArray(deny)
+      ? deny.filter((r) => typeof r === "string" && /^Read\(/.test(r))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 export function makeAgentHome(prefix = "agent-home-", { role = "", stacks = [], text = "" } = {}) {
   const base = process.env.GAFFER_DATA || resolve(GAFFER_HOME, ".gaffer");
   let root = base;

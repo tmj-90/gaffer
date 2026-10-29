@@ -24,7 +24,7 @@
  * containment of a determined exfil needs an OS sandbox / permission boundary.
  */
 import { spawnSync } from "node:child_process";
-import { appendFileSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { appendFileSync, lstatSync, readlinkSync, realpathSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -2057,6 +2057,204 @@ function checkRead(filePath) {
   allow();
 }
 
+// =====================================================================
+// SEARCH-TOOL BOUNDARY (Grep / Glob / LS)
+// ---------------------------------------------------------------------
+// Grep and Glob read the filesystem as much as Read does: Claude Code runs
+// ripgrep with --hidden for Grep (and --no-ignore --hidden for Glob), so a Grep
+// over a directory prints the CONTENTS of nested `.env` files, the dashboard
+// token and the mcp-runtime claim-token file. They used to have no matcher in
+// settings.json and fell through this hook's `default: allow`. Now:
+//   • the search ROOT (input.path, default cwd) is canonicalised like a Read
+//     target: a secret path is denied, and with roots configured a root outside
+//     (write ∪ read) roots is denied;
+//   • a search rooted at, above or inside $HOME, $GAFFER_DATA or the MCP config
+//     dir is denied unless it sits inside an allowed root (it would walk the
+//     operator's credentials and the factory's token files);
+//   • Grep's `glob` and Glob's `pattern` are tested against the secret families
+//     (`.env*`, `**/.env`, `*.pem`, …). Grep's `pattern` is a CONTENT regex and is
+//     deliberately NOT tested — searching source for the word "token" is normal;
+//   • an allowed Grep is rewritten (hookSpecificOutput.updatedInput) to append
+//     negated exclusion globs, so ripgrep never opens a secret file that sits
+//     inside an otherwise allowed directory. A PreToolUse hook only sees the
+//     tool INPUT, never its output, so the exclusion has to reach ripgrep itself.
+//     (settings.json carries the same families as recursive Read deny rules,
+//     which Claude Code also turns into --iglob excludes — defence in depth.)
+// =====================================================================
+const SEARCH_SECRET_EXCLUDES = [
+  "!**/.env",
+  "!**/.env.*",
+  "!**/*.pem",
+  "!**/*.key",
+  "!**/*.p12",
+  "!**/id_rsa*",
+  "!**/id_ed25519*",
+  "!**/id_ecdsa*",
+  "!**/id_dsa*",
+  "!**/.netrc",
+  "!**/.npmrc",
+  "!**/.pypirc",
+  "!**/.pgpass",
+  "!**/.git-credentials",
+  "!**/credentials",
+  "!**/credentials.json",
+  "!**/.credentials.json",
+  "!**/credentials.toml",
+  "!**/credentials.tfrc.json",
+  "!**/.vault-token",
+  "!**/.claude.json",
+  "!**/dashboard-token*",
+  "!**/mcp-runtime*.json",
+  "!**/*[-_.]token",
+  "!**/*[-_.]tokens",
+  "!**/.ssh/**",
+  "!**/.aws/**",
+  "!**/.gnupg/**",
+  "!**/.kube/**",
+  "!**/.azure/**",
+  "!**/.config/gh/**",
+  "!**/.config/gcloud/**",
+  "!**/.docker/config.json",
+];
+
+/** Directories a search must not be rooted at or above (outside an allowed root). */
+function searchSensitiveDirs() {
+  const dirs = [];
+  const mcp = process.env.MCP_CONFIG;
+  for (const d of [homedir(), process.env.GAFFER_DATA, mcp ? dirname(mcp) : ""]) {
+    if (d) dirs.push(canonicalize(resolve(d)));
+  }
+  return dirs;
+}
+
+/** Expand one level of `{a,b}` brace alternatives (enough to see `{.env,x}`). */
+function braceVariants(piece) {
+  const m = piece.match(/^(.*?)\{([^{}]*)\}(.*)$/);
+  if (!m) return [piece];
+  return m[2].split(",").map((alt) => m[1] + alt + m[3]);
+}
+
+/** True when a Grep `glob` / Glob `pattern` selects a secret-file family. */
+function searchGlobNamesSecret(glob) {
+  for (const piece of String(glob).split(/\s+/)) {
+    // A negated piece (`!x`) EXCLUDES files — never a way to reach a secret.
+    if (!piece || piece.startsWith("!")) continue;
+    for (const variant of braceVariants(piece)) {
+      for (const part of variant.split(",")) {
+        if (part && (SECRET_GLOB.test(part) || SECRET_PATH.test(part))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** The literal directory prefix of a glob (`/etc/**\/x` → `/etc`, `src/*.ts` → `src`). */
+function globStaticBase(pattern) {
+  const segs = pattern.split("/");
+  const out = [];
+  for (const seg of segs) {
+    if (/[*?[{]/.test(seg)) break;
+    out.push(seg);
+  }
+  // A pattern with no wildcard names a file: its directory is the base.
+  if (out.length === segs.length) out.pop();
+  const base = out.join("/");
+  return base === "" && pattern.startsWith("/") ? "/" : base;
+}
+
+/** Deny a search root that is a secret, outside the roots, or at/above a sensitive dir. */
+function checkSearchRoot(tool, abs, shown, roots) {
+  if (SECRET_PATH.test(abs)) {
+    block(`${tool} over a secret file (keeps secrets out of model context): ${shown}`);
+  }
+  const inRoots = isInsideAny([...roots.writeRoots, ...roots.readRoots], abs);
+  if (roots.configured && !inRoots) {
+    block(
+      `${tool} outside allowed roots: ${shown} [write-roots: ${roots.writeRoots.join(", ")}; read-roots: ${roots.readRoots.join(", ")}]`,
+    );
+  }
+  if (inRoots) return;
+  // Only reachable under the unconfigured fallback (configured roots denied above):
+  // a tree walk at, above or inside HOME / GAFFER_DATA / the MCP config dir that is
+  // not the cwd repo itself reaches the operator's credentials and token files.
+  for (const dir of searchSensitiveDirs()) {
+    if (isInsideRoot(dir, abs) || abs === "/" || dir.startsWith(abs + "/")) {
+      block(
+        `${tool} over a home / factory-state directory outside the repo (it would walk credential and token files): ${shown}`,
+      );
+    }
+  }
+}
+
+function checkSearch(tool, input) {
+  const roots = resolveRoots();
+  const rawPath = input.path == null ? "" : String(input.path);
+  let base = canonicalize(process.cwd());
+  if (rawPath) {
+    const expanded = expandTildePath(rawPath);
+    if (expanded === null)
+      block(`${tool} over an unresolvable ~user path (fail closed): ${rawPath}`);
+    base = canonicalize(resolve(process.cwd(), expanded));
+  }
+  checkSearchRoot(tool, base, rawPath || base, roots);
+
+  const globField = tool === "Grep" ? input.glob : tool === "Glob" ? input.pattern : null;
+  if (globField != null && globField !== "") {
+    const glob = String(globField);
+    if (searchGlobNamesSecret(glob)) {
+      block(`${tool} glob selects a secret-file family: ${glob}`);
+    }
+    // Glob takes a pattern that may itself be absolute, `~/…` or climb with `..`:
+    // its literal prefix is a second search root and gets the same checks.
+    if (tool === "Glob") {
+      const staticBase = globStaticBase(glob);
+      if (staticBase) {
+        const expanded = expandTildePath(staticBase);
+        if (expanded === null) block(`Glob over an unresolvable ~user path (fail closed): ${glob}`);
+        checkSearchRoot(tool, canonicalize(resolve(base, expanded)), glob, roots);
+      }
+    }
+  }
+
+  if (tool === "Grep") {
+    // Allowed: rewrite the input so ripgrep skips secret files inside the tree.
+    // ripgrep gives later globs precedence, so the negations appended here win
+    // over any positive glob the agent passed. writeSync: the decision JSON must
+    // be flushed before process.exit, on every platform.
+    const glob = [input.glob, ...SEARCH_SECRET_EXCLUDES].filter(Boolean).join(" ");
+    writeSync(
+      1,
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          updatedInput: { ...input, glob },
+        },
+      }),
+    );
+  }
+  allow();
+}
+
+// Tools that reach this hook but carry no file or shell surface of their own.
+// Anything else that reaches it — a new Claude Code tool someone routed with a
+// broader matcher, a typo — is refused rather than waved through (fail closed).
+const NON_FILE_TOOLS = new Set([
+  "Task",
+  "Agent",
+  "TodoWrite",
+  "TodoRead",
+  "Skill",
+  "ToolSearch",
+  "SlashCommand",
+  "ExitPlanMode",
+  "EnterPlanMode",
+  "AskUserQuestion",
+  "BashOutput",
+  "KillShell",
+  "KillBash",
+]);
+
 // FAIL-CLOSED GLOBAL GUARD: Claude Code treats ONLY exit 2 as blocking — ANY
 // other exit (including the exit 1 an uncaught exception produces) ALLOWS the
 // tool, voiding the entire hook. So ANY error we do not otherwise handle must
@@ -2104,7 +2302,13 @@ process.stdin.on("end", () => {
     const input = payload.tool_input ?? payload.toolInput ?? {};
     CURRENT_TOOL = tool;
     CURRENT_TARGET =
-      input.command ?? input.file_path ?? input.filePath ?? input.notebook_path ?? null;
+      input.command ??
+      input.file_path ??
+      input.filePath ??
+      input.notebook_path ??
+      input.path ??
+      input.pattern ??
+      null;
     // Chunk 2b metric: record every observed tool call (telemetry only — this runs
     // BEFORE dispatch and never influences the allow/block outcome below).
     logToolCall(tool, CURRENT_TARGET);
@@ -2118,8 +2322,21 @@ process.stdin.on("end", () => {
         return checkWrite(String(input.file_path ?? input.filePath ?? input.notebook_path ?? ""));
       case "Read":
         return checkRead(String(input.file_path ?? input.filePath ?? ""));
+      case "NotebookRead":
+        return checkRead(String(input.notebook_path ?? input.file_path ?? ""));
+      case "Grep":
+      case "Glob":
+      case "LS":
+        return checkSearch(tool, input);
       default:
-        return allow();
+        // An EMPTY payload identifies no tool (it parses as {}) and stays allowed.
+        if (tool === "") return allow();
+        if (NON_FILE_TOOLS.has(tool) || /^mcp__(?:dispatch|memory)(?:__|$)/.test(tool)) {
+          return allow();
+        }
+        return block(
+          `tool "${tool}" reached the safety hook but is not on its allowlist (fail closed)`,
+        );
     }
   } catch (err) {
     // FAIL CLOSED: a crash while deciding must BLOCK, never exit 1/allow.

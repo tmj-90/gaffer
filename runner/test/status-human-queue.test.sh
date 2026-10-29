@@ -81,6 +81,48 @@ has "$out" "#12" && ok "surfaces the decision's ticket ref" || fail "ticket ref 
 out="$(trap - EXIT; run_status '{"items":[],"counts":{"total":0}}')"
 has "$out" "decisions awaiting you" && fail "showed decisions section on an empty queue" || ok "no decisions section when queue is empty"
 
+# --- 3: a ~2 KB intake question with no ticket: one short line, the decision id shown --
+LONG="Onboarding intake for 'notes'. Please answer: $(for i in $(seq 1 40); do printf '%s. [topic-%s] What is the intended behaviour here, and who owns it? ' "$i" "$i"; done)"
+DEC_ID="3f9a1c2e-7b4d-4e8a-9c1f-0a2b3c4d5e6f"
+mkq() {  # mkq <severity> <reason> [n] — n pending decisions with no ticket
+  local sev="$1" reason="$2" n="${3:-1}" i items=""
+  for i in $(seq 1 "$n"); do
+    items="${items:+$items,}{\"kind\":\"decision\",\"label\":\"Decision\",\"reason\":\"$reason\",\"ticket\":null,\"decisionId\":\"${DEC_ID%?}$i\",\"severity\":\"$sev\",\"since\":\"2026-06-01T00:00:00.000Z\",\"waitedMs\":1}"
+  done
+  printf '{"items":[%s],"counts":{"total":%s}}' "$items" "$n"
+}
+out="$(trap - EXIT; run_status "$(mkq human_required "$LONG")")"
+# Characters, not bytes (the line ends in a multi-byte "…").
+longest="$(printf '%s\n' "$out" | grep -F "${DEC_ID:0:8}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(Math.max(0,...d.split("\n").map(l=>[...l].length))))')"
+[ "$longest" -gt 0 ] && [ "$longest" -le 120 ] && ok "a 2 KB reason renders as one line of at most 120 chars ($longest)" || fail "decision line is $longest chars"
+has "$out" "${DEC_ID:0:8}" && ok "the decision id (short) is the ref when there is no ticket" || fail "decision id not shown: $out"
+has "$out" "[required]" && ok "severity shown" || fail "severity not shown"
+has "$out" "nothing needs a human" && fail "said 'nothing needs a human' over a human_required decision" || ok "no 'nothing needs a human' while a human_required decision is open"
+has "$out" "1 decision(s) a human must answer" && ok "a human_required decision counts toward attention (notify)" || fail "required decision not counted: $(printf '%s' "$out" | tail -2)"
+
+# --- 4: a human_preferred decision: not blocking, but the all-clear names it ---------
+out="$(trap - EXIT; run_status "$(mkq human_preferred "Which colour?")")"
+has "$out" "nothing blocking — 1 decision(s) open" && ok "human_preferred → 'nothing blocking — 1 decision(s) open'" || fail "preferred: $(printf '%s' "$out" | tail -2)"
+has "$out" "a human is needed" && fail "human_preferred fired the attention notify" || ok "human_preferred does not notify"
+has "$out" "decisions resolve" && ok "the all-clear line names the CLI to answer it" || fail "no resolve hint"
+
+# --- 5: many decisions: capped, with a '+N more' line ---------------------------------
+out="$(trap - EXIT; run_status "$(mkq human_preferred "q" 8)")"
+[ "$(printf '%s\n' "$out" | grep -c '\[preferred\]')" = "5" ] && ok "at most 5 decisions listed" || fail "listed $(printf '%s\n' "$out" | grep -c '\[preferred\]')"
+has "$out" "+3 more" && ok "'+3 more' line for the rest" || fail "no '+N more' line"
+
+# --- 6: a doctor warning names its first warn check -------------------------------------
+cat > "$WORK/fg_doctor_warn.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "Crew doctor" "  ✓ Config found" "  ! Repos configured — no repositories in crew.yaml" "  ! Active agents — 0 configured" "Ready (with warnings)."
+EOF
+chmod +x "$WORK/fg_doctor_warn.sh"
+out="$(trap - EXIT; HQ_JSON_FIXTURE='{"items":[]}' WG_DOCTOR_CMD="$WORK/wg_doctor.sh" FG_DOCTOR_CMD="$WORK/fg_doctor_warn.sh" \
+  LG_DOCTOR_CMD="$WORK/lg_doctor.sh" STATS_CMD="$WORK/stats.sh" HUMAN_QUEUE_CMD="$WORK/human_queue.sh" GAFFER_LOG="$LOG" \
+  bash "$RUNNER_DIR/status.sh" 2>&1)"
+has "$out" "Ready (with warnings): Repos configured — no repositories in crew.yaml" \
+  && ok "the doctor roll-up names its first warning" || fail "doctor line: $(printf '%s\n' "$out" | grep crew)"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "  ALL PASS ($PASS checks)"; exit 0
 else printf '  %d FAILURE(S), %d passed\n' "${#FAILURES[@]}" "$PASS"; exit 1; fi

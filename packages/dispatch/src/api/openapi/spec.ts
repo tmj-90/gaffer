@@ -466,9 +466,14 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets",
     tag: T.tickets,
     summary: "List tickets",
+    description:
+      "Paging is opt-in: with no `limit` every matching ticket is returned. `limit` (clamped to 1–1000) and `offset` page the list; `total` always counts the whole filtered set. `fields=summary` leaves out `description`, `test_contract` and `last_review_feedback`. Unknown query parameters are ignored.",
     capability: "read",
     query: "ticketListQuery",
-    responses: [ok("`Ticket[]`."), invalid],
+    responses: [
+      ok("`{ tickets: Ticket[], total, limit?, offset? }` (`limit`/`offset` echoed when paging)."),
+      invalid,
+    ],
   },
   {
     method: "POST",

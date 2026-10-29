@@ -1422,7 +1422,8 @@ async function buildPaletteSources() {
   ];
   let tickets = [];
   try {
-    tickets = (await api("GET", "/tickets")).tickets || [];
+    // Summary rows: the palette shows number/title/status only.
+    tickets = (await api("GET", "/tickets?fields=summary")).tickets || [];
   } catch {
     // Palette still works for navigation if the list call fails.
   }
@@ -1585,7 +1586,8 @@ async function renderOverview() {
   ] = await Promise.all([
     api("GET", "/api/dashboard"),
     api("GET", "/api/activity?limit=200"),
-    api("GET", "/tickets").catch(() => ({ tickets: [] })),
+    // Summary rows: the overview reads status and timestamps, never the long text.
+    api("GET", "/tickets?fields=summary").catch(() => ({ tickets: [] })),
     api("GET", "/decisions").catch(() => ({ decisions: [] })),
     api("GET", "/api/cost").catch(() => null),
     api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
@@ -9156,7 +9158,7 @@ async function renderEpics(param) {
 
   const [nodesRes, ticketsRes] = await Promise.all([
     api("GET", "/scope/nodes"),
-    api("GET", "/tickets"),
+    api("GET", "/tickets?fields=summary"),
   ]);
   const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
   const tickets = ticketsRes.tickets || [];
@@ -10449,7 +10451,7 @@ async function confirmPlanBuild(plan, opts = {}) {
       // gate decide per ticket. A refusal (missing AC, unmet precondition) is
       // expected for some tickets — they stay draft, counted, never surfaced as an
       // error. Bootstrap-gated tickets are readied too; the loop honours deps.
-      const all = (await api("GET", "/tickets")).tickets || [];
+      const all = (await api("GET", "/tickets?fields=summary")).tickets || [];
       const mine = all.filter((t) => numbers.includes(t.number));
       for (const t of mine) {
         try {

@@ -86,12 +86,24 @@ export async function routeTickets(
   // /tickets
   if (segments.length === 1) {
     if (method === "GET") {
+      const param = (k: string) => url.searchParams.get(k) ?? undefined;
       const q = ticketListQuery.parse({
-        status: url.searchParams.get("status") ?? undefined,
-        repo: url.searchParams.get("repo") ?? undefined,
-        risk: url.searchParams.get("risk") ?? undefined,
+        status: param("status"),
+        repo: param("repo"),
+        risk: param("risk"),
+        limit: param("limit"),
+        offset: param("offset"),
+        fields: param("fields"),
       });
-      sendJson(res, 200, { tickets: wg.listTickets(q) });
+      const page = wg.listTicketPage(
+        { status: q.status, repo: q.repo, risk: q.risk },
+        { limit: q.limit, offset: q.offset, summary: q.fields === "summary" },
+      );
+      sendJson(res, 200, {
+        tickets: page.tickets,
+        total: page.total,
+        ...(q.limit !== undefined ? { limit: q.limit, offset: q.offset ?? 0 } : {}),
+      });
       return;
     }
     if (method === "POST") {

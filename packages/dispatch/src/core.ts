@@ -73,7 +73,11 @@ import {
   TicketScopeNodeRepository,
   type TicketScopeWithNode,
 } from "./repositories/ticketScopeNodeRepository.js";
-import { TicketRepository, type TicketListFilter } from "./repositories/ticketRepository.js";
+import {
+  TicketRepository,
+  type TicketListFilter,
+  type TicketSummary,
+} from "./repositories/ticketRepository.js";
 import {
   ClaimService,
   type ClaimNextInput,
@@ -1858,6 +1862,14 @@ export class Dispatch {
   /** Filtered backlog list for the human surface (status / repo / risk). */
   listTickets(filter: TicketListFilter = {}): Ticket[] {
     return this.tickets.listFiltered(filter);
+  }
+
+  /** A page of the filtered list + its total (GET /tickets; see TicketRepository.listPage). */
+  listTicketPage(
+    filter: TicketListFilter,
+    page: { limit?: number | undefined; offset?: number | undefined; summary?: boolean },
+  ): { tickets: Array<Ticket | TicketSummary>; total: number } {
+    return this.tickets.listPage(filter, page);
   }
 
   /** Events for a ticket (resolved by id or number). */

@@ -1972,6 +1972,7 @@
           "Tickets"
         ],
         "summary": "List tickets",
+        "description": "Paging is opt-in: with no `limit` every matching ticket is returned. `limit` (clamped to 1–1000) and `offset` page the list; `total` always counts the whole filtered set. `fields=summary` leaves out `description`, `test_contract` and `last_review_feedback`. Unknown query parameters are ignored.",
         "parameters": [
           {
             "name": "status",
@@ -2018,11 +2019,42 @@
                 "critical"
               ]
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Coerced from a string."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Coerced from a string."
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "full",
+                "summary"
+              ]
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "`Ticket[]`.",
+            "description": "`{ tickets: Ticket[], total, limit?, offset? }` (`limit`/`offset` echoed when paging).",
             "content": {
               "application/json": {
                 "schema": {

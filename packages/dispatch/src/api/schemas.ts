@@ -319,10 +319,28 @@ export const resolveDecisionBody = z.object({
 export type ResolveDecisionBody = z.infer<typeof resolveDecisionBody>;
 
 /** Query-string filters for GET /tickets. */
+/** Largest page GET /tickets returns when the caller pages (`limit` is clamped to it). */
+export const TICKET_LIST_MAX_LIMIT = 1_000;
+
+/**
+ * Query for GET /tickets. Paging is OPT-IN: with no `limit` every matching row is
+ * returned, as before (callers that resolve tickets from the full list keep
+ * working). `limit` is clamped to [1, TICKET_LIST_MAX_LIMIT]; `offset` skips rows;
+ * `total` in the response counts the whole filtered set either way.
+ * `fields=summary` drops the large free-text columns (description, test_contract,
+ * last_review_feedback) a board card or picker never shows.
+ */
 export const ticketListQuery = z.object({
   status: z.enum(TICKET_STATUSES).optional(),
   repo: z.string().min(1).optional(),
   risk: z.enum(RISK_LEVELS).optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .transform((n) => Math.min(Math.max(n, 1), TICKET_LIST_MAX_LIMIT))
+    .optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+  fields: z.enum(["full", "summary"]).optional(),
 });
 export type TicketListQuery = z.infer<typeof ticketListQuery>;
 

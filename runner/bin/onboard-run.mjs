@@ -330,6 +330,14 @@ function main() {
         ...facts,
       };
       analysis = analyzeAndWrite(repoPath, scan, { log: (m) => log(`analysis: ${m}`) });
+      // The onboard still succeeds (mechanical digest + cards), but say loudly WHY the
+      // model half is missing — it used to read as a silent, degraded success.
+      if (analysis?.modelError) {
+        log(
+          `WARNING: model analysis unavailable (claude: ${analysis.modelError}) — digest and ` +
+            "cards are mechanical-only; fix claude auth (`claude`, then /login) and re-run the onboard",
+        );
+      }
     } catch (err) {
       // Defensive: the analysis is best-effort. A bug here must not fail the onboard.
       log(`analysis: skipped after error: ${err?.message ?? err}`);

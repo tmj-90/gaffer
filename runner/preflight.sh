@@ -18,6 +18,24 @@ command -v node >/dev/null && ok "node $(node -v)" || no "node missing"
 command -v pnpm >/dev/null && ok "pnpm $(pnpm -v)" || wn "pnpm missing (needed for setup/builds)"
 if command -v "$CLAUDE_BIN" >/dev/null; then ok "claude CLI: $($CLAUDE_BIN --version 2>/dev/null | head -1)"
 else wn "claude CLI not on PATH — required for LIVE runs (dry-run works without it)"; fi
+# `--version` works logged out, so it says nothing about auth: an unauthenticated claude
+# used to pass preflight and then fail every onboard / delivery call (lib/claude-auth.sh).
+if command -v "$CLAUDE_BIN" >/dev/null && declare -F gaffer_claude_auth_probe >/dev/null 2>&1; then
+  _arc=0; gaffer_claude_auth_probe || _arc=$?
+  case "$_arc" in
+    0) ok "claude credential visible ($GAFFER_CLAUDE_AUTH_SOURCE)" ;;
+    2) ok "claude credential: macOS Keychain (not inspectable here — GAFFER_PREFLIGHT_LIVE=1 verifies it with one tiny call)" ;;
+    *) wn "no claude credential visible (no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, no ${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json) — run \`claude\` and /login before a live run; GAFFER_PREFLIGHT_LIVE=1 verifies with one tiny call" ;;
+  esac
+  if [ "${GAFFER_PREFLIGHT_LIVE:-0}" = "1" ]; then
+    _lrc=0; gaffer_claude_live_probe || _lrc=$?
+    case "$_lrc" in
+      0) ok "claude answers a live call (GAFFER_PREFLIGHT_LIVE=1)" ;;
+      2) ;;
+      *) no "claude live call FAILED: $GAFFER_CLAUDE_LIVE_ERROR — fix auth (\`claude\` then /login, or ANTHROPIC_API_KEY) before a live run" ;;
+    esac
+  fi
+fi
 
 # Execution environment: can the AGENT (env -i + the allowlist) reach the package
 # registry? Tool presence says nothing about this — a TLS-intercepting proxy whose

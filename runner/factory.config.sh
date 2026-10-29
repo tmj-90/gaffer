@@ -1941,6 +1941,10 @@ gaffer_review_reason() {
 # report + the bootstrap gate in tick.sh). Fail-soft: skipped when npm is absent.
 # shellcheck source=lib/registry-probe.sh
 [ -f "$RUNNER_DIR/lib/registry-probe.sh" ] && source "$RUNNER_DIR/lib/registry-probe.sh"
+# Claude auth preflight: is a credential visible (free), or does one tiny call work
+# (GAFFER_PREFLIGHT_LIVE=1)? Report-only, used by preflight.sh.
+# shellcheck source=lib/claude-auth.sh
+[ -f "$RUNNER_DIR/lib/claude-auth.sh" ] && source "$RUNNER_DIR/lib/claude-auth.sh"
 # Acceptance gate (runner half): the prompt block for an epic's acceptance ticket.
 # shellcheck source=lib/acceptance.sh
 [ -f "$RUNNER_DIR/lib/acceptance.sh" ] && source "$RUNNER_DIR/lib/acceptance.sh"

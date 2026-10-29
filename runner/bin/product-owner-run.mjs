@@ -62,7 +62,7 @@ import {
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
-import { mountRoleSkills } from "../lib/agent-home.mjs";
+import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
 import { Worker } from "../lib/worker.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -336,11 +336,15 @@ function installProjectLocalWiring(repoName) {
 
   // settings.json with the safety hook path resolved for THIS checkout (the shipped
   // file carries a ${RUNNER_DIR} placeholder; copying it verbatim would point the
-  // hook at the author's machine and fail open elsewhere).
-  const settings = readFileSync(CONFIG.claudeSettings, "utf8")
-    .split("${RUNNER_DIR}")
-    .join(RUNNER_DIR);
-  writeFileSync(resolve(claudeDir, "settings.json"), settings);
+  // hook at the author's machine and fail open elsewhere). writeAgentSettings parses
+  // and VERIFIES the wiring and throws on an unwired template (fail closed: the
+  // caller's fail() refuses the run). Removes the half-built home on a refusal.
+  try {
+    writeAgentSettings(claudeDir, CONFIG.claudeSettings);
+  } catch (err) {
+    rmSync(agentHome, { recursive: true, force: true });
+    throw err;
+  }
 
   // MCP runtime config with the DB paths AND the MCP server bins substituted to
   // this run's wiring — all four placeholders, or the dispatch MCP won't start.

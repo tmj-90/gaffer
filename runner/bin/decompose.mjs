@@ -1086,7 +1086,14 @@ function runClaudeTurn(prompt, opts, model) {
   // project settings (same wiring as product-owner-run.mjs); it is removed after the
   // turn. The read-only denylist above is unchanged — this widens what the agent can
   // SEE, not what it can write.
-  const home = makeAgentHome("decompose-", { role: "plan" });
+  // makeAgentHome throws (fail closed) when the safety-hook settings cannot be
+  // rendered and verified; refuse the spawn through the normal error path.
+  let home;
+  try {
+    home = makeAgentHome("decompose-", { role: "plan" });
+  } catch (err) {
+    return fail(err?.message ?? String(err));
+  }
   let res;
   try {
     res = Worker.deliver({

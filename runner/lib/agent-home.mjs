@@ -15,6 +15,12 @@
 //
 // Containment is unchanged: the callers keep their unconditional write/exec
 // tool denylist; this widens what the agent can SEE, never what it can write.
+//
+// FAIL CLOSED: the rendered settings carry the PreToolUse safety hook. If they
+// cannot be rendered, parsed or verified (missing/unwired template, full disk),
+// writeAgentSettings throws, makeAgentHome removes the half-built dir and rethrows,
+// and the caller refuses the spawn — exactly like the shell writer
+// gaffer_write_agent_settings (lib/agent-env.sh).
 // =====================================================================
 import {
   existsSync,
@@ -110,6 +116,75 @@ export function secretReadDenyRules() {
   }
 }
 
+/** Does some PreToolUse matcher (a `A|B` regex) cover `tool`? */
+function hookCovers(entries, tool) {
+  return entries.some((m) => {
+    try {
+      return new RegExp(`^(?:${m.matcher})$`).test(tool);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Render the settings template into `<claudeDir>/settings.json` with ${RUNNER_DIR}
+ * resolved for THIS checkout, and VERIFY the safety-hook wiring by parsing the JSON
+ * (a "PreToolUse" string inside a _comment does not count): hooks.PreToolUse must
+ * hold entries whose command runs `${RUNNER_DIR}/safety-hook.mjs`, covering Bash,
+ * the write tools and Read. The file is read back and compared. On any failure the
+ * file is removed and an Error starting "SAFETY:" is thrown (fail closed).
+ */
+export function writeAgentSettings(
+  claudeDir,
+  settingsPath = process.env.CLAUDE_SETTINGS || resolve(RUNNER_DIR, "claude", "settings.json"),
+) {
+  const target = resolve(claudeDir, "settings.json");
+  const hookPath = resolve(RUNNER_DIR, "safety-hook.mjs");
+  const refuse = (why) => {
+    rmSync(target, { force: true });
+    throw new Error(
+      `SAFETY: ${why} — refusing to launch an agent without its safety hook (fail closed)`,
+    );
+  };
+  let rendered;
+  try {
+    rendered = readFileSync(settingsPath, "utf8").split("${RUNNER_DIR}").join(RUNNER_DIR);
+  } catch (err) {
+    return refuse(`cannot read the agent settings template ${settingsPath}: ${err.message}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(rendered);
+  } catch (err) {
+    return refuse(`agent settings template ${settingsPath} is not valid JSON: ${err.message}`);
+  }
+  const pre = parsed?.hooks?.PreToolUse;
+  const wired = Array.isArray(pre)
+    ? pre.filter(
+        (m) =>
+          m &&
+          typeof m.matcher === "string" &&
+          Array.isArray(m.hooks) &&
+          m.hooks.some((h) => typeof h?.command === "string" && h.command.includes(hookPath)),
+      )
+    : [];
+  for (const tool of ["Bash", "Write", "Edit", "Read"]) {
+    if (!hookCovers(wired, tool)) {
+      return refuse(
+        `${settingsPath} has no PreToolUse safety-hook (${hookPath}) matcher for ${tool}`,
+      );
+    }
+  }
+  try {
+    writeFileSync(target, rendered);
+    if (readFileSync(target, "utf8") !== rendered) throw new Error("read-back mismatch");
+  } catch (err) {
+    return refuse(`could not write ${target}: ${err.message}`);
+  }
+  return target;
+}
+
 export function makeAgentHome(prefix = "agent-home-", { role = "", stacks = [], text = "" } = {}) {
   const base = process.env.GAFFER_DATA || resolve(GAFFER_HOME, ".gaffer");
   let root = base;
@@ -128,13 +203,12 @@ export function makeAgentHome(prefix = "agent-home-", { role = "", stacks = [], 
   mkdirSync(claudeDir, { recursive: true });
 
   const skills = mountRoleSkills(claudeDir, { role, stacks, text });
-  const settingsPath =
-    process.env.CLAUDE_SETTINGS || resolve(RUNNER_DIR, "claude", "settings.json");
   try {
-    const settings = readFileSync(settingsPath, "utf8").split("${RUNNER_DIR}").join(RUNNER_DIR);
-    writeFileSync(resolve(claudeDir, "settings.json"), settings);
-  } catch {
-    /* no project settings to mirror */
+    writeAgentSettings(claudeDir);
+  } catch (err) {
+    // Never leave the half-built home behind on a refusal.
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
   }
   return {
     dir,

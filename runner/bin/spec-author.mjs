@@ -517,7 +517,14 @@ function runClaudeTurn(prompt, opts) {
   // headless agent can actually see the skill the prompt names — RUNNER_DIR has no
   // .claude/skills. Same wiring as product-owner-run.mjs / decompose.mjs; removed after
   // the turn. The read-only denylist above is unchanged.
-  const home = makeAgentHome("spec-author-", { role: "spec" });
+  // makeAgentHome throws (fail closed) when the safety-hook settings cannot be
+  // rendered and verified; refuse the spawn through the normal error path.
+  let home;
+  try {
+    home = makeAgentHome("spec-author-", { role: "spec" });
+  } catch (err) {
+    return fail(err?.message ?? String(err));
+  }
   let res;
   try {
     res = spawnSync(claudeBin, args, {

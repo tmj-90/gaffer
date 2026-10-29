@@ -25,6 +25,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { appendFileSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 // Canonical dangerous-command deny list — the SINGLE source of truth shared with
@@ -1169,6 +1170,49 @@ function unquote(token) {
   return token.replace(/^['"]|['"]$/g, "");
 }
 
+// =====================================================================
+// TILDE EXPANSION (operand resolution)
+// ---------------------------------------------------------------------
+// Bash expands an UNQUOTED leading `~` before the command runs: `~` and `~/x`
+// become $HOME and $HOME/x, `~+` the cwd, `~-` the previous cwd, `~user` that
+// user's home. The extractors used to resolve the raw operand, so `~/x` landed at
+// <cwd>/~/x — INSIDE the write-root — and `printf x >> ~/.zshrc`, `rm -r -f ~`,
+// `git -C ~ checkout -b x` and `cat ~/.config/gh/hosts.yml` all passed the
+// boundary while the real target sat in the operator's home.
+//
+// expandTildeWord takes the RAW shell token (quotes still on): a token whose first
+// character is a quote is a literal relative path (`"~/x"` is <cwd>/~/x, exactly
+// what bash does) and only an unquoted leading tilde expands. `~` and `~/…` map to
+// os.homedir() (the agent's HOME, inherited by this hook). `~+` maps to the
+// effective cwd when that is known. `~-` and `~user` cannot be resolved by a
+// stateless hook (no dir stack, no passwd lookup on purpose), so they return the
+// UNVERIFIABLE_TARGET sentinel and the caller fails CLOSED. Inline-interpreter
+// string literals (python/node/awk) are deliberately NOT routed through here:
+// those languages never expand `~`, so `open("~/x")` really is a cwd-relative path.
+function expandTildeWord(rawToken, cwd) {
+  const t = rawToken.trim();
+  if (!t.startsWith("~")) return unquote(t);
+  const m = t.match(/^~([^/]*)([\s\S]*)$/);
+  const user = m[1];
+  // Bash removes quotes in the rest of the word too (`~/"a b"` → $HOME/a b).
+  const rest = m[2].replace(/["']/g, "");
+  if (user === "") return homedir() + rest;
+  if (user === "+") return cwd === null ? UNVERIFIABLE_TARGET : cwd + rest;
+  return UNVERIFIABLE_TARGET; // `~-` (dir stack) or `~user` (another home)
+}
+
+/**
+ * Tilde expansion for a file-tool path (Write/Edit/Read/Grep/Glob): Claude Code
+ * expands a leading `~` to the home directory for these, so `~/.zshrc` must be
+ * checked as $HOME/.zshrc. There is no shell quoting here. A `~user` form returns
+ * null so the caller blocks it (fail closed) rather than resolving it under cwd.
+ */
+function expandTildePath(filePath) {
+  if (filePath === "~" || filePath.startsWith("~/")) return homedir() + filePath.slice(1);
+  if (filePath.startsWith("~")) return null;
+  return filePath;
+}
+
 // Normalise a VERB token to the command the shell would actually execute, so a
 // quote/backslash-obfuscated verb can't slip past the verb switches. At runtime
 // `'cp'`, `"cp"`, `\cp`, and `c'p'` all invoke `cp` — the quotes/backslashes only
@@ -1486,7 +1530,13 @@ function extractBashWriteTargets(cmd) {
   let effectiveCwd = process.cwd();
   const add = (raw) => {
     if (!raw) return;
-    const p = unquote(raw.trim());
+    // Expand an unquoted leading `~` the way bash will (see expandTildeWord); an
+    // unresolvable `~user` / `~-` fails closed.
+    const p = expandTildeWord(raw.trim(), effectiveCwd);
+    if (p === UNVERIFIABLE_TARGET) {
+      targets.push(UNVERIFIABLE_TARGET);
+      return;
+    }
     if (!p || p.startsWith("-")) return;
     // A destination carrying shell interpolation (`$HOME/x`, `${OUT}/f`,
     // `` `pwd`/x ``) is NOT a provable literal — resolving it would treat the
@@ -1758,9 +1808,21 @@ function extractBashReadTargets(cmd) {
       continue;
     }
 
-    if (!READ_TOOL_VERBS.has(verb)) continue;
-    for (const tok of operands) {
-      const raw = unquote(tok.trim());
+    // `dd if=FILE` reads FILE (the write side, `of=`, is in the write extractor).
+    const readOperands =
+      verb === "dd"
+        ? operands.filter((t) => t.startsWith("if=")).map((t) => t.slice(3))
+        : READ_TOOL_VERBS.has(verb)
+          ? operands
+          : [];
+    for (const tok of readOperands) {
+      // Expand an unquoted leading `~` exactly as bash will; `~user`/`~-` cannot be
+      // resolved here, so surface the sentinel (classified "outside" → BLOCK).
+      const raw = expandTildeWord(tok.trim(), effectiveCwd);
+      if (raw === UNVERIFIABLE_TARGET) {
+        targets.push(UNVERIFIABLE_TARGET);
+        continue;
+      }
       if (!raw) continue;
       // Skip non-path-literals: globs, interpolation, fds, sed scripts
       // like `1,5p` / `s/a/b/`, and bare option-ish tokens.
@@ -1832,7 +1894,11 @@ function branchCreationBoundaryReason(cmd, roots) {
     }
     const m = segment.match(BRANCH_CREATE);
     if (!m) continue;
-    const dir = m[1] ? unquote(m[1]) : ".";
+    // `git -C ~ …` names $HOME (bash expands the unquoted tilde); `~user` fails closed.
+    const dir = m[1] ? expandTildeWord(m[1], effectiveCwd) : ".";
+    if (dir === UNVERIFIABLE_TARGET) {
+      return `branch creation in an unverifiable repo (unresolvable ~ target): ${m[1]} [write-roots: ${roots.writeRoots.join(", ")}]`;
+    }
     // A `-C` dir carrying shell interpolation is not a provable literal → fail closed.
     if (/[$`]|\$\{/.test(dir)) {
       return `branch creation in an unverifiable repo (dynamic -C target): ${dir} [write-roots: ${roots.writeRoots.join(", ")}]`;
@@ -1946,7 +2012,10 @@ function checkWrite(filePath) {
   // boundary — allowing it would be an unbounded write escape.
   if (!filePath) block("write with an empty/missing file path — refusing (fail closed)");
   const roots = resolveRoots();
-  const abs = canonicalize(resolve(process.cwd(), filePath));
+  // `~/.zshrc` is $HOME/.zshrc to the file tools, not <cwd>/~/.zshrc.
+  const expanded = expandTildePath(filePath);
+  if (expanded === null) block(`write to an unresolvable ~user path (fail closed): ${filePath}`);
+  const abs = canonicalize(resolve(process.cwd(), expanded));
   if (SECRET_PATH.test(abs)) block(`write to a secret file: ${filePath}`);
   if (GIT_INTERNAL.test(abs)) block(`write inside .git: ${filePath}`);
   if (AGENT_SETTINGS.test(abs)) {
@@ -1967,7 +2036,10 @@ function checkRead(filePath) {
   // Fail CLOSED on a missing/empty path (a legitimate Read always carries one): a
   // malformed empty path must not slip past the secret-read boundary.
   if (!filePath) block("read with an empty/missing file path — refusing (fail closed)");
-  const abs = canonicalize(resolve(process.cwd(), filePath));
+  // `~/.config/gh/hosts.yml` is $HOME/…, not <cwd>/~/…; `~user` fails closed.
+  const expanded = expandTildePath(filePath);
+  if (expanded === null) block(`read of an unresolvable ~user path (fail closed): ${filePath}`);
+  const abs = canonicalize(resolve(process.cwd(), expanded));
   // Existing secret-file denial takes precedence and is never weakened.
   if (SECRET_PATH.test(abs)) {
     block(`read of a secret file (keeps secrets out of model context): ${filePath}`);

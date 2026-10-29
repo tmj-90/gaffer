@@ -1486,24 +1486,28 @@ export class Dispatch {
     return this.claims.recordEvidence(input, actor);
   }
 
-  submitForReview(input: SubmitForReviewInput, actor: Actor): { status: string; eventId: string } {
+  submitForReview(
+    input: SubmitForReviewInput,
+    actor: Actor,
+  ): { ticketId: string; status: string; eventId: string } {
     const result = this.claims.submitForReview(input, actor);
     // H2: the ticket has reached `in_review` and now needs a human reviewer. Fire
     // AFTER the claim transaction commits so the notification can never roll the
     // transition back; best-effort inside emitGate.
     if (result.status === "in_review") {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (ticket) this.emitGate("review_needed", ticket, { detail: input.reason });
+      // The call above already resolved the ref (id or #N), so this cannot throw.
+      const ticket = this.tickets.resolveRef(input.ticket_id);
+      this.emitGate("review_needed", ticket, { detail: input.reason });
     }
     return result;
   }
 
-  markBlocked(input: MarkBlockedInput, actor: Actor): { eventId: string } {
+  markBlocked(input: MarkBlockedInput, actor: Actor): { ticketId: string; eventId: string } {
     const result = this.claims.markBlocked(input, actor);
     // H2: the ticket is now `blocked` and needs a human to unblock it. Emit after
     // the block transaction commits, best-effort.
-    const ticket = this.tickets.findById(input.ticket_id);
-    if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+    const ticket = this.tickets.resolveRef(input.ticket_id);
+    this.emitGate("ticket_blocked", ticket, { detail: input.reason });
     return result;
   }
 
@@ -1529,8 +1533,9 @@ export class Dispatch {
     // Parking to the VISIBLE `blocked` column needs a human to unblock it — fire the
     // gate AFTER the claim transaction commits, best-effort (mirrors markBlocked).
     if (result.status === "blocked") {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+      // The call above already resolved the ref (id or #N), so this cannot throw.
+      const ticket = this.tickets.resolveRef(input.ticket_id);
+      this.emitGate("ticket_blocked", ticket, { detail: input.reason });
     }
     return result;
   }

@@ -693,7 +693,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           { claimToken: claimTokenFor(a.claim_token), ticket_id: a.ticket_id, reason: a.reason },
           actor,
         );
-        return { ticket_id: a.ticket_id, status: "blocked", event_id: res.eventId };
+        return { ticket_id: res.ticketId, status: "blocked", event_id: res.eventId };
       }),
 
     submit_ticket_for_review: (args: Args): ToolResult =>
@@ -725,7 +725,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           { claimToken: token, ticket_id: a.ticket_id, reason: a.reason },
           actor,
         );
-        return { ticket_id: a.ticket_id, status: res.status, event_id: res.eventId };
+        return { ticket_id: res.ticketId, status: res.status, event_id: res.eventId };
       }),
 
     add_dependency: (args: Args): ToolResult =>
@@ -806,7 +806,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           },
           actor,
         );
-        return { ticket_id: a.ticket_id, test_contract: contract };
+        return { ticket_id: wg.resolveTicket(a.ticket_id).id, test_contract: contract };
       }),
 
     list_pending_decisions: (_args: Args): ToolResult =>

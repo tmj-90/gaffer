@@ -1,5 +1,6 @@
 import type { Db } from "../db/connection.js";
 import type { RiskLevel, Ticket, TicketStatus } from "../domain/types.js";
+import { notFound } from "../util/errors.js";
 
 /** Optional filters for the human backlog list. */
 export interface TicketListFilter {
@@ -45,6 +46,22 @@ export class TicketRepository {
   findByNumber(number: number): Ticket | undefined {
     return this.db.prepare(`SELECT * FROM tickets WHERE number = ?`).get(number) as
       Ticket | undefined;
+  }
+
+  /**
+   * THE ticket-reference resolver every service uses: the id, else the number in any
+   * accepted spelling (`15`, `#15`, `T-15`). Throws NOT_FOUND. One shared resolver so
+   * no tool can reject a reference its siblings accept (agents pass `#N`).
+   */
+  resolveRef(ref: string): Ticket {
+    const byId = this.findById(ref);
+    if (byId) return byId;
+    const asNumber = Number(ref.trim().replace(/^#/, "").replace(/^T-/i, ""));
+    if (Number.isInteger(asNumber) && asNumber > 0) {
+      const byNumber = this.findByNumber(asNumber);
+      if (byNumber) return byNumber;
+    }
+    throw notFound("ticket", ref);
   }
 
   /**

@@ -510,12 +510,7 @@ export class ClaimService {
       // resolveTicket accepts everywhere else. Seen live: the independent tester passed
       // the number, every note was refused as "ticket not found", and its per-criterion
       // evidence never reached the record. The claim / review checks below are unchanged.
-      let ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) {
-        const n = Number(input.ticket_id.trim().replace(/^#/, "").replace(/^T-/, ""));
-        if (Number.isInteger(n) && n > 0) ticket = this.tickets.findByNumber(n);
-      }
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
 
       // REVIEWER PATH: the reviewer agent holds no claim (the delivery claim was
       // completed at submit) yet must record one note per AC. It may do so for the
@@ -587,12 +582,14 @@ export class ClaimService {
     });
   }
 
-  submitForReview(input: SubmitForReviewInput, actor: Actor): { status: string; eventId: string } {
+  submitForReview(
+    input: SubmitForReviewInput,
+    actor: Actor,
+  ): { ticketId: string; status: string; eventId: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const claim = this.activeClaimForToken(input.claimToken, now);
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
       if (claim.ticket_id !== ticket.id) {
         throw new DispatchError(
           "CLAIM_INVALID",
@@ -626,15 +623,14 @@ export class ClaimService {
         event_type: "claim.completed",
         payload: { claim_id: claim.id },
       });
-      return { status: result.ticket.status, eventId };
+      return { ticketId: ticket.id, status: result.ticket.status, eventId };
     });
   }
 
-  markBlocked(input: MarkBlockedInput, actor: Actor): { eventId: string } {
+  markBlocked(input: MarkBlockedInput, actor: Actor): { ticketId: string; eventId: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
 
       // P0-3: an agent may only mutate a ticket it holds a valid, matching claim
       // for. A missing or mismatched token from an agent is rejected — agents can
@@ -668,7 +664,7 @@ export class ClaimService {
         event_type: "ticket.blocked",
         payload: { reason: input.reason },
       });
-      return { eventId };
+      return { ticketId: ticket.id, eventId };
     });
   }
 
@@ -730,8 +726,7 @@ export class ClaimService {
   ): { status: string; eventId: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
       if (input.claimToken) {
         const claim = this.activeClaimForToken(input.claimToken, now);
         if (claim.ticket_id !== ticket.id) {
@@ -814,8 +809,7 @@ export class ClaimService {
   ): { eventId: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
       const feedback: ReviewFeedback = {
         reason: input.reason,
         reviewer: actor.id ?? null,

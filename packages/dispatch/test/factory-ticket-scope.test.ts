@@ -131,7 +131,7 @@ describe("factory ticket scope (MCP agent writes)", () => {
         "FACTORY_RUNNER_OWNED",
       );
 
-      const mine = call(h, own.id, spare.id, own.number);
+      const mine = call(h, `#${own.number}`, spare.id, own.number);
       expect(mine.isError).toBeUndefined();
     });
 
@@ -179,7 +179,7 @@ describe("factory ticket scope (MCP agent writes)", () => {
     process.env.GAFFER_SCOPE_TICKET = String(draft.number);
     const h = makeHandlers(wg, agent);
     const ac = h.add_acceptance_criterion({
-      ticket_id: draft.id,
+      ticket_id: `#${draft.number}`,
       text: "health is green",
       check_command: "npm test",
     });
@@ -218,8 +218,9 @@ describe("factory ticket scope (MCP agent writes)", () => {
     const po = makeHandlers(wg, agent);
     const created = po.create_ticket({ title: "PO draft", policy_pack: "solo_loose" });
     const id = created.structuredContent.ticket_id as string;
+    const n = created.structuredContent.number as number;
     expect(po.add_acceptance_criterion({ ticket_id: id, text: "a" }).isError).toBeUndefined();
-    expect(po.add_acceptance_criterion({ ticket_id: id, text: "b" }).isError).toBeUndefined();
+    expect(po.add_acceptance_criterion({ ticket_id: `#${n}`, text: "b" }).isError).toBeUndefined();
     const second = po.create_ticket({ title: "PO draft 2", policy_pack: "solo_loose" });
     const id2 = second.structuredContent.ticket_id as string;
     expect(po.add_dependency({ ticket: id2, depends_on: id }).isError).toBeUndefined();
@@ -233,8 +234,7 @@ describe("factory ticket scope (MCP agent writes)", () => {
     const epic = po.create_epic({ epic: { name: "E" }, tickets: [{ title: "e1" }] });
     const eNum = (epic.structuredContent.ticket_numbers as number[])[0];
     expect(
-      po.add_acceptance_criterion({ ticket_id: wg.resolveTicket(`#${eNum}`).id, text: "e" })
-        .isError,
+      po.add_acceptance_criterion({ ticket_id: `#${eNum}`, text: "e" }).isError,
     ).toBeUndefined();
   });
 

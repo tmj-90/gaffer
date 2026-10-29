@@ -51,6 +51,8 @@
 //
 // FLAGS:
 //   --ticket <number>    (required) the approved ticket whose branch is being merged.
+//                        Refused (exit 4, nothing touched) unless it is ready_for_merge
+//                        (--apply-digest-only also accepts done) — see canLand.
 //   --timeout-ms N       (GAFFER_MERGE_TIMEOUT_MS, default 600000) resolver kill-timer.
 //   --apply-digest-only  the merge already landed (review.sh AFK path): skip git + claude
 //                        and run only the post-merge memory step (digest + feature).
@@ -85,13 +87,16 @@
 //                branch's committed head (aborted, left in progress, unmerged paths);
 //                re-approval is not signalled and the branch is left for a human.
 //   dry-run:   { "phase":"dry-run", ticket, repo, branch, defaultBranch, timeoutMs,
-//                claudeBin, mergeTarget, resolverArgv }
+//                claudeBin, mergeTarget, resolverArgv, status, refused? }
+//              — `refused` carries the approval-gate refusal a live run would exit 4 on.
 //   error:     { "phase":"error", error }   (exit 1)
 //
 // EXIT: 0 on merged / conflict_resolved_pending_reapproval / dry-run; 1 on any hard
 //   failure (missing repo/branch/safety hook, spawn error, timeout, a REFUSED merge: the
 //   live checkout has uncommitted changes, or the default branch could not be checked
-//   out — neither is a conflict, so the resolver is never spawned for them).
+//   out — neither is a conflict, so the resolver is never spawned for them); 4 when a
+//   gate holds the merge: the ticket is not approved (not ready_for_merge), or the
+//   landing check (tester binding) refuses — nothing is merged either way.
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
@@ -234,19 +239,31 @@ export function resolveTicket(dbPath, number) {
     db = new DatabaseSync(dbPath, { readOnly: true });
     // pr_url is the PR the delivery opened (GAFFER_CREATE_PR, recorded by
     // `wg delivery-artifact --pr`); a schema/fixture without the column resolves
-    // without it, so a PR-less merge behaves exactly as before.
+    // without it, so a PR-less merge behaves exactly as before. status feeds the
+    // approval gate (canLand); a schema without it resolves with status null, which
+    // that gate refuses (fail closed) — it never reads as "approved".
+    const ticketSql = (withPr, withStatus) =>
+      "SELECT id, number, branch_name AS branchName" +
+      (withPr ? ", pr_url AS prUrl" : "") +
+      (withStatus ? ", status" : "") +
+      " FROM tickets WHERE number = ?";
     let ticket;
-    try {
-      ticket = db
-        .prepare(
-          "SELECT id, number, branch_name AS branchName, pr_url AS prUrl FROM tickets WHERE number = ?",
-        )
-        .get(num);
-    } catch {
-      ticket = db
-        .prepare("SELECT id, number, branch_name AS branchName FROM tickets WHERE number = ?")
-        .get(num);
+    let ticketErr;
+    for (const [withPr, withStatus] of [
+      [true, true],
+      [false, true],
+      [true, false],
+      [false, false],
+    ]) {
+      try {
+        ticket = db.prepare(ticketSql(withPr, withStatus)).get(num);
+        ticketErr = undefined;
+        break;
+      } catch (e) {
+        ticketErr = e;
+      }
     }
+    if (ticketErr) throw ticketErr;
     if (!ticket || !ticket.id) return null;
 
     // The write-access execution repo this ticket delivers into. Prefer access='write'
@@ -299,6 +316,7 @@ export function resolveTicket(dbPath, number) {
       },
       branch,
       prUrl,
+      status: ticket.status == null ? null : String(ticket.status),
     };
   } catch {
     return null;
@@ -309,6 +327,20 @@ export function resolveTicket(dbPath, number) {
       /* already closed */
     }
   }
+}
+
+/**
+ * The approval gate: may a ticket in `status` be landed? Only `ready_for_merge` (a
+ * human, or the AFK reviewer, approved the diff) — the SAME rule the dashboard's merge
+ * route enforces (packages/dispatch/src/api/routes/tickets.ts). The route runs in a
+ * different process, and `gaffer merge` execs this runner directly, so the runner
+ * checks it itself. --apply-digest-only runs AFTER a landed merge, so it also accepts
+ * `done` (mark-merged already ran). Anything else — including a missing/unreadable
+ * status — is refused (fail closed). Pure; exported for tests.
+ */
+export function canLand(status, { applyDigestOnly = false } = {}) {
+  if (status === "ready_for_merge") return true;
+  return applyDigestOnly && status === "done";
 }
 
 /**
@@ -936,6 +968,19 @@ function main() {
   }
   const { repo, branch } = resolved;
 
+  // APPROVAL GATE, before anything touches git, memory or claude: only an approved
+  // (ready_for_merge) ticket lands. `gaffer merge <n>` on an in_review ticket used to
+  // merge the unreviewed branch, delete it, and leave the board reading in_review.
+  // --dry-run still reports the plan (inspection), with the refusal flagged.
+  const landable = canLand(resolved.status, { applyDigestOnly: opts.applyDigestOnly });
+  const notApproved =
+    `refusing to merge #${resolved.number}: ticket is ${resolved.status || "of unknown status"}, ` +
+    `not ready_for_merge — approve it first (gaffer approve ${resolved.number}); nothing merged`;
+  if (!landable && (!opts.dryRun || opts.applyDigestOnly)) {
+    fail(notApproved, 4);
+    return;
+  }
+
   if (opts.applyDigestOnly) {
     // review.sh's AFK path merged + mark-merged already; this is the SAME post-merge
     // memory step the dashboard merge runs below (digest delta / stamp + feature →
@@ -991,6 +1036,8 @@ function main() {
         mergeTarget: { repo: repo.localPath, branch, defaultBranch: repo.defaultBranch },
         worktree: plannedWorktree,
         resolverArgv,
+        status: resolved.status,
+        ...(landable ? {} : { refused: notApproved }),
       },
       0,
     );

@@ -16,7 +16,8 @@
 #   gaffer wg <dispatch args…>        the dispatch CLI against THIS factory's database
 #                                     (e.g. gaffer wg ticket create -t "…" -d "…"; gaffer wg ticket show 1)
 #   gaffer approve <ticket> [--reviewer <you>]   the human review gate: approve a ticket in Review
-#   gaffer merge <ticket>             land an approved ticket (what the dashboard's Merge button runs)
+#   gaffer merge <ticket>             land an APPROVED (ready_for_merge) ticket — what the dashboard's
+#                                     Merge button runs; refuses (exit 4) a ticket not yet approved
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
 #   gaffer help
 #
@@ -251,8 +252,10 @@ approve)
 merge)
   # Land an approved ticket — exactly what the dashboard's Merge button runs
   # (merge-ticket.mjs: conflict-safe merge; a conflict spawns the resolver agent and
-  # sends the ticket back for re-approval, never a force-merge).
-  _t="${1:-}"; [ -n "$_t" ] || { echo "usage: gaffer merge <ticket>"; exit 2; }
+  # sends the ticket back for re-approval, never a force-merge). merge-ticket.mjs
+  # refuses (exit 4, nothing touched) a ticket that is not ready_for_merge — the same
+  # rule as the dashboard's merge route — so `merge` typed for `approve` lands nothing.
+  _t="${1:-}"; [ -n "$_t" ] || { echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>)"; exit 2; }
   exec env GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" node "$HERE/bin/merge-ticket.mjs" --ticket "$_t"
   ;;
 

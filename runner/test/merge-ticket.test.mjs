@@ -63,6 +63,7 @@ const {
   resolvePrMergeMethod,
   inspectWorkingTree,
   installProjectLocalWiring,
+  canLand,
 } = await import(HELPER);
 
 let passed = 0;
@@ -105,15 +106,18 @@ function newRepo(name) {
 // --- a throwaway dispatch sqlite (tickets + repositories + ticket_repos) ---------
 // Mirrors the columns resolveTicket reads — just enough for ticket NUMBER → repo +
 // branch resolution offline, with no dispatch build.
-// `legacySchema: true` builds the tables WITHOUT the pr_url columns (a pre-PR-mode DB /
-// the older fixture shape) so the resolver's column fallback is exercised too.
+// `legacySchema: true` builds the tables WITHOUT the pr_url and status columns (a
+// pre-PR-mode DB / the older fixture shape) so the resolver's column fallback is
+// exercised too. Rows default to status ready_for_merge — the approved state the
+// approval gate (canLand) requires for a live merge.
 function makeDb(rows, { legacySchema = false } = {}) {
   const dbPath = resolve(WORKDIR, `wg-${Math.random().toString(36).slice(2)}.sqlite`);
   const { DatabaseSync } = require("node:sqlite");
   const db = new DatabaseSync(dbPath);
   const pr = legacySchema ? "" : ", pr_url TEXT";
+  const st = legacySchema ? "" : ", status TEXT NOT NULL DEFAULT 'ready_for_merge'";
   db.exec(
-    `CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, branch_name TEXT${pr});` +
+    `CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, branch_name TEXT${pr}${st});` +
       "CREATE TABLE repositories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, " +
       "local_path TEXT, default_branch TEXT NOT NULL DEFAULT 'main');" +
       "CREATE TABLE ticket_repos (ticket_id TEXT, repo_id TEXT, role TEXT DEFAULT 'primary', " +
@@ -127,11 +131,14 @@ function makeDb(rows, { legacySchema = false } = {}) {
         r.ticketBranch ?? null,
       );
     } else {
-      db.prepare("INSERT INTO tickets (id,number,branch_name,pr_url) VALUES (?,?,?,?)").run(
+      db.prepare(
+        "INSERT INTO tickets (id,number,branch_name,pr_url,status) VALUES (?,?,?,?,?)",
+      ).run(
         r.ticketId,
         r.number,
         r.ticketBranch ?? null,
         r.prUrl ?? null,
+        r.status ?? "ready_for_merge",
       );
     }
     db.prepare("INSERT INTO repositories (id,name,local_path,default_branch) VALUES (?,?,?,?)").run(
@@ -1265,6 +1272,135 @@ console.log("== B20a: a failed checkout of the default branch is REFUSED, not a 
   assert(
     "no resolver worktree left behind",
     !existsSync(resolve(WORKDIR, "data", "worktrees", "merge-ticket-7")),
+  );
+}
+
+// ── APPROVAL GATE: only a ready_for_merge ticket lands ─────────────────────────────
+// `gaffer merge <n>` execs this runner directly. It used to check only the dirty tree
+// and the tester landing decision, so an in_review (never approved) ticket's branch
+// was merged into main, deleted, and the board left reading in_review.
+console.log("== APPROVAL GATE: canLand + live refusals for unapproved tickets ==");
+{
+  eq("canLand(ready_for_merge)", canLand("ready_for_merge"), true);
+  for (const s of ["in_review", "ready", "refining", "done", "blocked", null, undefined, ""]) {
+    eq(`canLand(${JSON.stringify(s)}) → false`, canLand(s), false);
+  }
+  eq("canLand(done, applyDigestOnly) → true", canLand("done", { applyDigestOnly: true }), true);
+  eq(
+    "canLand(in_review, applyDigestOnly) → false",
+    canLand("in_review", { applyDigestOnly: true }),
+    false,
+  );
+
+  // A stub dispatch CLI that records every call (mark-merged, reopen-for-review, ...).
+  const CALLS = resolve(WORKDIR, "gate-wg-calls.log");
+  const SPY = resolve(WORKDIR, "gate-spy-wg.js");
+  writeFileSync(
+    SPY,
+    `require("node:fs").appendFileSync(${JSON.stringify(CALLS)}, process.argv.slice(2).join(" ") + "\\n");\n` +
+      `process.stdout.write('{"ok":true}\\n');\n`,
+  );
+  const MARK = resolve(WORKDIR, "gate-claude.marker");
+  const FAKE = resolve(WORKDIR, "gate-fake-claude.sh");
+  writeFileSync(FAKE, `#!/usr/bin/env bash\n: > ${JSON.stringify(MARK)}\n`);
+  require("node:fs").chmodSync(FAKE, 0o755);
+
+  const gateCase = (label, { status, legacySchema = false, args = [] }) => {
+    const repo = newRepo(`gate-${label}`);
+    writeFileSync(resolve(repo, "file.txt"), "base\nunreviewed change\n");
+    git(repo, "commit", "-q", "-am", "unreviewed change");
+    git(repo, "checkout", "-q", "main");
+    const mainBefore = git(repo, "rev-parse", "main").stdout.trim();
+    const db = makeDb(
+      [
+        {
+          ticketId: `tg-${label}`,
+          number: 7,
+          repoId: `rg-${label}`,
+          repoName: "demo",
+          localPath: repo,
+          repoBranch: "gaffer/ticket-7-x",
+          status,
+        },
+      ],
+      { legacySchema },
+    );
+    rmSync(CALLS, { force: true });
+    rmSync(MARK, { force: true });
+    const res = spawnSync(process.execPath, [HELPER, "--ticket", "7", ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DISPATCH_DB: db,
+        GAFFER_DATA: resolve(WORKDIR, `gate-data-${label}`),
+        CLAUDE_BIN: FAKE,
+        DISPATCH_CLI: SPY,
+        GAFFER_DIGEST_DISABLE: "1",
+        SANDBOX_PROVIDER: "none",
+      },
+    });
+    let out = null;
+    try {
+      out = JSON.parse(res.stdout.trim().split("\n").pop());
+    } catch {
+      /* leave null */
+    }
+    return { code: res.status, out, repo, mainBefore };
+  };
+
+  for (const status of ["in_review", "ready", "refining"]) {
+    const r = gateCase(status, { status });
+    assert(`${status}: exit 4 (held, not merged)`, r.code === 4);
+    assert(
+      `${status}: error names the status and the approve step`,
+      r.out &&
+        r.out.phase === "error" &&
+        String(r.out.error).includes(`ticket is ${status}, not ready_for_merge`) &&
+        String(r.out.error).includes("gaffer approve 7"),
+    );
+    assert(
+      `${status}: main HEAD unchanged`,
+      git(r.repo, "rev-parse", "main").stdout.trim() === r.mainBefore,
+    );
+    assert(
+      `${status}: delivery branch still present`,
+      git(r.repo, "rev-parse", "--verify", "gaffer/ticket-7-x").status === 0,
+    );
+    assert(`${status}: no dispatch call (no mark-merged)`, !existsSync(CALLS));
+    assert(`${status}: no resolver spawned`, !existsSync(MARK));
+  }
+
+  const legacy = gateCase("no-status-column", { legacySchema: true });
+  assert("no status column: fail closed (exit 4)", legacy.code === 4);
+  assert(
+    "no status column: main HEAD unchanged",
+    git(legacy.repo, "rev-parse", "main").stdout.trim() === legacy.mainBefore,
+  );
+
+  const dry = gateCase("dry-in-review", { status: "in_review", args: ["--dry-run"] });
+  assert("--dry-run on in_review: still exit 0 (inspection)", dry.code === 0);
+  assert(
+    "--dry-run on in_review: reports status + the refusal a live run would hit",
+    dry.out &&
+      dry.out.phase === "dry-run" &&
+      dry.out.status === "in_review" &&
+      /not ready_for_merge/.test(String(dry.out.refused || "")),
+  );
+
+  const digestOnly = gateCase("digest-in-review", {
+    status: "in_review",
+    args: ["--apply-digest-only"],
+  });
+  assert("--apply-digest-only on in_review: refused (exit 4)", digestOnly.code === 4);
+
+  const approved = gateCase("approved", { status: "ready_for_merge" });
+  assert(
+    "ready_for_merge (control): lands cleanly",
+    approved.code === 0 && approved.out && approved.out.phase === "merged",
+  );
+  assert(
+    "ready_for_merge (control): mark-merged was called",
+    existsSync(CALLS) && readFileSync(CALLS, "utf8").includes("mark-merged"),
   );
 }
 

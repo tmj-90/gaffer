@@ -853,31 +853,100 @@ const READ_TOOL_VERBS = new Set([
 //   GAFFER_BOOTSTRAP_INSTALL=1     — this tick is a bootstrap delivery
 //   GAFFER_BOOTSTRAP_DIR=<absdir>  — the fresh repo dir the install must target
 // The relaxation is intentionally NARROW: it applies ONLY to the install-tagged
-// package-manager DENY rules (install/add, and ci/update/remove), ONLY when the flag is set, AND ONLY when the command runs inside the
-// bootstrap dir (cwd is inside it, and the command does not `cd` out of it). Every
-// other blocked op (brew, sudo, rm -rf, force-push, secret reads, writes/reads
+// package-manager DENY rules (install/add, ci/update/remove, rebuild/link), ONLY
+// when the flag is set and the cwd is inside the bootstrap dir, and each install
+// SEGMENT is then judged on its own (bootstrapInstallReason). Every other blocked
+// op (brew, sudo, rm -rf, force-push, download-and-run, secret reads, writes/reads
 // outside roots) stays fully gated. A plain `npm install` with no flag, or one
 // outside the bootstrap dir, is still BLOCKED.
-function bootstrapInstallAllowed(cmd) {
-  if (process.env.GAFFER_BOOTSTRAP_INSTALL !== "1") return false;
+function bootstrapInstallDir() {
+  if (process.env.GAFFER_BOOTSTRAP_INSTALL !== "1") return null;
   const dir = process.env.GAFFER_BOOTSTRAP_DIR;
-  if (!dir) return false;
+  if (!dir) return null;
   const bootDir = canonicalize(resolve(dir));
-  // The command must run inside the bootstrap repo dir: cwd is inside it…
+  // The command must run inside the bootstrap repo dir: cwd is inside it.
   const cwd = canonicalize(process.cwd());
-  if (!isInsideRoot(bootDir, cwd)) return false;
-  // …and the command must not relocate to a directory OUTSIDE the bootstrap dir
-  // before installing (e.g. `cd /elsewhere && npm install`). A `cd` to a path
-  // that does not resolve inside the bootstrap dir voids the allowance.
-  const cdRe = /\bcd\s+([^\s;&|]+)/g;
-  let m;
-  while ((m = cdRe.exec(cmd)) !== null) {
-    const dest = stripQuotes(m[1]);
-    if (!dest) continue;
-    const destAbs = canonicalize(resolve(cwd, dest));
-    if (!isInsideRoot(bootDir, destAbs)) return false;
+  return isInsideRoot(bootDir, cwd) ? bootDir : null;
+}
+
+// Install flags that relocate WHERE the install lands (the value is a directory).
+const INSTALL_DIR_FLAG =
+  /(?:^|\s)(?:--prefix|-C|--dir|--cwd|--modules-folder|--global-folder|--store-dir|--virtual-store-dir)(?:=|\s+)("[^"]*"|'[^']*'|[^\s;&|]+)/g;
+
+/**
+ * Judge a bootstrap tick's install command SEGMENT BY SEGMENT (the allowance used to
+ * be decided once for the whole string, so one `--ignore-scripts` anywhere covered
+ * every install, and `-g` / `--prefix /usr/local` / `pnpm -C /elsewhere` escaped the
+ * fresh repo). Returns a block reason, or null when every install segment is a
+ * scoped, script-free install into the bootstrap dir. Each install segment must:
+ *   • run with an effective cwd inside the bootstrap dir (cd/pushd replayed; a
+ *     dynamic cd, `popd` or a cd anywhere — including inside `sh -c` — that does
+ *     not provably stay inside voids the allowance);
+ *   • carry --ignore-scripts itself (and no re-enable form);
+ *   • not be global (-g, --global, --location=global, `yarn global`);
+ *   • relocate (--prefix, -C, --dir, --cwd, …) only to a literal dir inside it;
+ *   • not set a package-manager config env var (npm_config_* / yarn_*) inline.
+ * HONEST LIMIT: the hook is stateless, so "the FIRST install only" is not enforced
+ * across tool calls; the tick's npm_config_ignore_scripts=true env (whose override
+ * is deny-listed) is what keeps a later call script-free.
+ */
+function bootstrapInstallReason(cmd, bootDir) {
+  const installRules = DENY_COMMANDS.filter((r) => r.install);
+  if (!installRules.some((r) => r.re.test(cmd))) return null;
+  const outside =
+    "install relocates outside the fresh bootstrap repo — the bootstrap allowance covers only an install INSIDE it";
+  const cwd = canonicalize(process.cwd());
+  // Any directory change anywhere in the command (a nested `sh -c` body included)
+  // must provably stay inside the bootstrap dir.
+  for (const m of cmd.matchAll(
+    /(?:^|[\s;&|(`'"])(cd|pushd|popd)(?=$|[\s;&|)`'"])[ \t]*([^\s;&|)'"`]*)/g,
+  )) {
+    const dest = m[2];
+    if (m[1] === "popd" || !dest || /[$`*?]/.test(dest) || dest === "-" || dest.startsWith("~")) {
+      return outside;
+    }
+    if (!isInsideRoot(bootDir, canonicalize(resolve(cwd, dest)))) return outside;
   }
-  return true;
+  let effectiveCwd = cwd;
+  let installSegments = 0;
+  for (const segment of cmd.split(/(?:&&|\|\||;|\n|(?<![>&])&(?!>)|(?<!>)\|)/)) {
+    const tokens = tokenizeSegment(segment.trim());
+    if (tokens.length === 0) continue;
+    const effective = resolveEffectiveTokens(tokens);
+    if (effective && (effective.verb === "cd" || effective.verb === "pushd")) {
+      const arg = effective.operands[0];
+      effectiveCwd = arg ? canonicalize(resolve(effectiveCwd, unquote(arg))) : null;
+      continue;
+    }
+    if (!installRules.some((r) => r.re.test(segment))) continue;
+    installSegments += 1;
+    const shown = segment.trim().slice(0, 120);
+    if (effectiveCwd === null || !isInsideRoot(bootDir, effectiveCwd))
+      return `${outside}: "${shown}"`;
+    if (!installHasIgnoreScripts(segment)) {
+      return `permitted install must pass --ignore-scripts on EVERY install (dependency lifecycle scripts are arbitrary code execution) — "${shown}"`;
+    }
+    if (
+      /(?:^|\s)(?:-g|--global|--location[= ]global)(?=$|\s)/.test(segment) ||
+      /\byarn\s+global\b/.test(segment)
+    ) {
+      return `global install (lands on PATH outside the bootstrap repo) — "${shown}"`;
+    }
+    for (const m of segment.matchAll(INSTALL_DIR_FLAG)) {
+      const v = expandTildeWord(m[1], effectiveCwd);
+      if (v === UNVERIFIABLE_TARGET || /[$`]/.test(v)) return `${outside}: "${shown}"`;
+      if (!isInsideRoot(bootDir, canonicalize(resolve(effectiveCwd, v))))
+        return `${outside}: "${shown}"`;
+    }
+    if (/(?:^|[\s;&|(])(?:npm_config_|yarn_)\w*=/i.test(segment)) {
+      return `install sets a package-manager config variable inline (can re-enable scripts or relocate the install) — "${shown}"`;
+    }
+  }
+  // The whole command matched an install rule but no segment did (the matcher saw
+  // across a quoted separator): it cannot be judged per segment — fail closed.
+  if (installSegments === 0)
+    return `install form the per-segment check cannot isolate — "${cmd.slice(0, 120)}"`;
+  return null;
 }
 
 // =====================================================================
@@ -2076,21 +2145,17 @@ function checkCommand(cmd) {
   // package-manager DENY rules, and ONLY for a command inside the fresh bootstrap dir. Compute it
   // once; every other rule (and the install rule itself, when not a scoped
   // bootstrap install) stays in force.
-  const allowInstall = bootstrapInstallAllowed(cmd);
+  const bootDir = bootstrapInstallDir();
   for (const rule of DENY_COMMANDS) {
-    if (rule.install && allowInstall) {
-      // The bootstrap allowance would permit this install — but ONLY if it cannot
-      // run dependency lifecycle scripts (postinstall ACE). Require the explicit
-      // --ignore-scripts flag; without it the install stays BLOCKED even on a
-      // bootstrap tick (the agent must pass the flag).
-      if (rule.install && rule.re.test(cmd) && !installHasIgnoreScripts(cmd)) {
-        block(
-          `permitted install must pass --ignore-scripts (dependency lifecycle scripts are arbitrary code execution) — "${cmd.slice(0, 120)}"`,
-        );
-      }
-      continue; // scoped bootstrap install WITH --ignore-scripts — permitted
-    }
+    // On a bootstrap tick the install-tagged rules are judged per segment below.
+    if (rule.install && bootDir) continue;
     if (rule.re.test(cmd)) block(`${rule.why} — "${cmd.slice(0, 120)}"`);
+  }
+  if (bootDir) {
+    // The bootstrap allowance permits an install ONLY when every install segment is
+    // scoped to the fresh repo and cannot run lifecycle scripts (postinstall ACE).
+    const bootReason = bootstrapInstallReason(cmd, bootDir);
+    if (bootReason) block(bootReason);
   }
   const reason = secretBoundaryReason(cmd, process.cwd());
   if (reason) block(`${reason} — "${cmd.slice(0, 120)}"`);

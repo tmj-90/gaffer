@@ -1117,6 +1117,12 @@ gaffer_agent_env() {
     val="${!name}"
     GAFFER_AGENT_ENV+=( "$name=$val" )
   done < <(compgen -e)
+  # npx / `npm exec` auto-download guard: npm assumes --yes when stdin is not a TTY
+  # (every headless agent), so `npx <package that is not installed>` silently fetched
+  # and RAN registry code. npm_config_yes=false makes npm refuse instead; locally
+  # installed bins (`npx vitest`, `npx tsc`) still run. An operator who exports
+  # npm_config_yes themselves keeps their value (it rides the npm_config_ prefix).
+  [ -n "${npm_config_yes+x}" ] || GAFFER_AGENT_ENV+=( "npm_config_yes=false" )
 }
 
 # NOTE on the DISPATCH_*_CMD defaults below: these are plain command STRINGS that

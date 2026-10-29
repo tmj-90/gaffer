@@ -75,6 +75,9 @@ for sock in SSH_AUTH_SOCK DBUS_SESSION_BUS_ADDRESS DOCKER_HOST KUBECONFIG; do
   if has "$sock"; then fail "$sock leaked into the agent env"; else ok "$sock is stripped"; fi
 done
 
+echo "== npx auto-download guard is SET (npm assumes --yes without a TTY) =="
+if has npm_config_yes; then ok "npm_config_yes is set for the agent"; else fail "npm_config_yes missing (npx would fetch and run unknown packages)"; fi
+
 echo "== outbound endpoint / notify config is STRIPPED (FIX #1 — exfiltration channel) =="
 for endpoint in GAFFER_NOTIFY_WEBHOOK_URL GAFFER_NOTIFY_SLACK_URL \
                 GAFFER_DASHBOARD_URL GAFFER_SLACK_WEBHOOK; do

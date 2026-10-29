@@ -56,6 +56,10 @@ const CMD_POS = String.raw`(?:^|[\n;&|(\`{!]|\$\(|\b(?:then|do|else)\b|(?:\b(?:b
 // End of a command word: whitespace, a separator, a closing quote/paren, or EOL.
 const WORD_END = String.raw`(?=$|[\s;&|)\`"'<>])`;
 const cmdAt = (name, rest = "") => new RegExp(`${CMD_POS}(?:${name})${WORD_END}${rest}`);
+// A package manager's own arguments between its name and the verb: an `@version`,
+// flags, and the value-taking dir/workspace selectors (mirrors the ci rule below).
+const TOK = String.raw`[^\s;&|()<>\`"'\\]+`;
+const MGR_ARGS = String.raw`(?:@${TOK})?(?:[ \t]+(?:(?:--prefix|-C|--dir|-w|--workspace|--filter|-F|--cwd)[ \t]+${TOK}|-${TOK}|workspace[ \t]+${TOK}))*`;
 
 /** @type {ReadonlyArray<DangerousCommandRule>} */
 export const DANGEROUS_COMMANDS = [
@@ -114,7 +118,12 @@ export const DANGEROUS_COMMANDS = [
   // below. brew/sudo are NOT tagged, so they stay blocked even during a bootstrap
   // tick — only package-manager commands into the fresh repo are ever permitted.
   {
-    re: /\b(npm|pnpm|yarn)\s+(i\b|install\b|add\b)|\bpip\d?\s+install\b/,
+    // The second alternative catches the verb behind the manager's own flags /
+    // dir selectors (`npm --prefix /x install`, `pnpm -C /elsewhere add`) and
+    // `yarn global add`, which the adjacent-only first form missed.
+    re: new RegExp(
+      String.raw`\b(npm|pnpm|yarn)\s+(i\b|install\b|add\b)|\bpip\d?\s+install\b|${CMD_POS}(?:npm|pnpm|yarn)${WORD_END}${MGR_ARGS}(?:[ \t]+global)?[ \t]+(?:i|in|ins|inst|insta|instal|install|isnt|isnta|isntal|isntall|add)${WORD_END}`,
+    ),
     why: "dependency install (needs human approval)",
     install: true,
     example: "npm install",
@@ -138,6 +147,76 @@ export const DANGEROUS_COMMANDS = [
     install: true,
     example: "npm ci",
     // Runtime-only: the crew classifier's install list covers install/add only.
+    crewFlags: false,
+  },
+  {
+    // The install-shaped verbs the two rules above miss: lifecycle-script runners
+    // (`rebuild`, `install-test`, `it` — `i\b` never matched `it`), linkers that
+    // rewrite node_modules (`link`), bare `yarn` (yarn's default command IS install),
+    // and bun's installer. Tagged install so a bootstrap tick can still run them
+    // with --ignore-scripts inside the fresh repo. `yarn build` / `yarn test` /
+    // `bun run x` / `bun test` (script runs) stay allowed.
+    re: new RegExp(
+      [
+        String.raw`${CMD_POS}(?:npm|pnpm|yarn)${WORD_END}${MGR_ARGS}[ \t]+(?:rebuild|rb|it|install-test|install-ci-test|link|ln)${WORD_END}`,
+        String.raw`${CMD_POS}yarn${WORD_END}(?![ \t]+(?:--version|-v|--help|-h)\b)(?:[ \t]+-${TOK})*[ \t]*(?=$|[\n;&|)\`"'])`,
+        String.raw`${CMD_POS}bun${WORD_END}(?:[ \t]+-${TOK})*[ \t]+(?:install|i|add|a|update|remove|rm|link|pm)${WORD_END}`,
+      ].join("|"),
+    ),
+    why: "dependency install / rebuild / link (runs lifecycle scripts, rewrites the shared node_modules; needs human approval)",
+    install: true,
+    example: "npm rebuild",
+    crewFlags: false,
+  },
+  {
+    // Downloaders that FETCH AND RUN a registry package. Deliberately NOT tagged
+    // install: --ignore-scripts only stops lifecycle scripts, never the downloaded
+    // binary itself, so the bootstrap allowance must not relax these. Plain `npx x`
+    // / `npm exec x` of a LOCALLY installed bin stays allowed — the agent env sets
+    // npm_config_yes=false, so a missing package is refused instead of fetched
+    // (npm assumes --yes when stdin is not a TTY).
+    re: new RegExp(
+      [
+        String.raw`${CMD_POS}(?:bunx|pnpx|uvx)${WORD_END}`,
+        String.raw`${CMD_POS}npx${WORD_END}(?=[^\n;&|]*[ \t](?:-y|--yes)\b)`,
+        String.raw`${CMD_POS}npm${WORD_END}(?=[^\n;&|]*[ \t](?:exec|x)\b)(?=[^\n;&|]*[ \t](?:-y|--yes)\b)`,
+        String.raw`${CMD_POS}npm${WORD_END}${MGR_ARGS}[ \t]+(?:init|innit|create)(?:[ \t]+-${TOK})*[ \t]+[^-\s;&|()<>]`,
+        String.raw`${CMD_POS}(?:pnpm|yarn|bun)${WORD_END}${MGR_ARGS}[ \t]+(?:dlx|create|x)${WORD_END}`,
+        String.raw`${CMD_POS}pipx${WORD_END}[ \t]+(?:run|install|inject|upgrade)\b`,
+        String.raw`${CMD_POS}uv${WORD_END}[ \t]+tool[ \t]+(?:run|install)\b`,
+        String.raw`${CMD_POS}corepack${WORD_END}[ \t]+(?:enable|prepare|install|use|up|pack)\b`,
+      ].join("|"),
+    ),
+    why: "download-and-run of a registry package (npx -y / npm exec -y / create / dlx / bunx / uvx / pipx run / corepack) — runs third-party code; --ignore-scripts cannot make that safe",
+    example: "npx -y create-evil",
+    crewFlags: false,
+  },
+  {
+    // Other ecosystems' installers and dependency adds (global or system-wide, or a
+    // manifest rewrite that fetches code). Runtime-only.
+    re: new RegExp(
+      [
+        String.raw`${CMD_POS}cargo${WORD_END}[ \t]+(?:install|add)\b`,
+        String.raw`${CMD_POS}go${WORD_END}[ \t]+(?:install|get)\b`,
+        String.raw`${CMD_POS}gem${WORD_END}[ \t]+install\b`,
+        String.raw`${CMD_POS}uv${WORD_END}[ \t]+add\b`,
+        String.raw`${CMD_POS}(?:apt|apt-get|dnf|yum|zypper|snap)${WORD_END}(?:[ \t]+-${TOK})*[ \t]+install\b`,
+        String.raw`${CMD_POS}apk${WORD_END}(?:[ \t]+-${TOK})*[ \t]+add\b`,
+        String.raw`${CMD_POS}pacman${WORD_END}[ \t]+-S`,
+      ].join("|"),
+    ),
+    why: "language / system package install (cargo/go/gem/uv add, apt/dnf/yum/apk/pacman) — needs human approval",
+    example: "cargo install ripgrep",
+    crewFlags: false,
+  },
+  {
+    // Switching dependency lifecycle scripts back ON: the bootstrap tick exports
+    // npm_config_ignore_scripts=true as the env-level kill switch, so an assignment,
+    // `env -u`/`unset` of it, or `--no-ignore-scripts` on any later call would turn a
+    // separate `npm rebuild` / `npm run` into the postinstall ACE the switch exists for.
+    re: /\b(?:npm_config_ignore_scripts|yarn_ignore_scripts|yarn_enable_scripts)[ \t]*=|\b(?:unset|-u)[ \t]+(?:npm_config_ignore_scripts|yarn_ignore_scripts|yarn_enable_scripts)\b|\s--(?:no-ignore-scripts|ignore-scripts[= ](?:false|0|no))\b/i,
+    why: "re-enabling dependency lifecycle scripts (ignore-scripts override)",
+    example: "npm_config_ignore_scripts=false npm rebuild",
     crewFlags: false,
   },
   {

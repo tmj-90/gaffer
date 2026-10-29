@@ -431,7 +431,7 @@ function renderLogin(wasWrong) {
   });
   const form = el("form", { class: "login-gate" }, [
     shield("login-mark"),
-    el("h1", {}, "Dispatch"),
+    el("h1", {}, "Gaffer"),
     el("p", {}, "This factory requires an access token."),
     wasWrong ? el("p", { class: "login-error" }, "That token was rejected — try again.") : null,
     input,
@@ -1278,10 +1278,23 @@ const VIEW_TITLES = {
   ticket: "Ticket",
   repo: "Repo",
   node: "Map",
+  create: "New ticket",
+  hidden: "Hidden repos",
 };
-function setDocTitle(view, detail) {
-  const base = VIEW_TITLES[view] || "Gaffer";
-  document.title = detail ? `${detail} · Gaffer` : `${base} · Gaffer`;
+/**
+ * Set the tab title. `detail` (a detail view's own label, e.g. "#12 Add login") wins;
+ * an unknown view is plain "Gaffer" (it used to read "Gaffer · Gaffer"). A detail
+ * title is applied only while its route is still the current one, so a slow load
+ * can never retitle the view the operator has since moved to.
+ */
+function setDocTitle(view, detail, param) {
+  if (detail) {
+    const cur = parseHash();
+    if (cur.view !== view || (param !== undefined && cur.param !== param)) return;
+    document.title = `${detail} · Gaffer`;
+    return;
+  }
+  document.title = VIEW_TITLES[view] ? `${VIEW_TITLES[view]} · Gaffer` : "Gaffer";
 }
 
 /** Live, data-driven nav badges: Work shows open (in-flight) tickets, Review
@@ -3953,6 +3966,7 @@ async function renderTicket(id) {
   if (!id) return renderWork();
   const view = await api("GET", `/tickets/${id}`);
   const t = view.ticket;
+  setDocTitle("ticket", `#${t.number} ${t.title}`, id);
   const acList = view.acceptance_criteria || [];
   const blockers = view.blocking_decisions || [];
   const events = view.events || [];
@@ -8318,6 +8332,7 @@ async function renderNode(id) {
 
   const view = await api("GET", `/scope/nodes/${id}`);
   const node = view.node;
+  if (node?.name) setDocTitle("node", node.name, id);
   const repos = view.repos || [];
   const tickets = view.tickets || view.recent_tickets || null;
 
@@ -8713,6 +8728,7 @@ async function renderRepo(id) {
     return wrap;
   }
 
+  setDocTitle("repo", repo.name, id);
   const isMapped = scopes.length > 0;
   const hasWrite = scopes.some((s) => s.default_access === "write");
 

@@ -76,12 +76,14 @@ login prompt. (`runner/gaffer dashboard` without `--lan` binds loopback-only; ev
 > mis-launched dashboard is obvious. See [`.env.example`](.env.example) for the full
 > wiring + knob reference.
 
-In the dashboard (seven views):
+In the dashboard:
 - **Overview** — the factory at a glance (throughput, what needs you, stale claims).
 - **Work** — the ticket board (plan → implement → test → review).
 - **Review** — the human gate: tickets wait here for your approval before any merge occurs. This is the structural barrier that prevents the agent from shipping its own work.
 - **Epics** — group and track tickets by epic.
 - **Map** — the Factory Map: repo registration, scope nodes, and unmapped repos.
+- **Health** — ROI and factory honesty: what the factory cost, what it delivered, where it failed.
+- **Specs** — the spec library: frozen statements of product intent, each clause traced to acceptance criteria, with the coverage gaps.
 - **Memory** — pick your repo to read its digest, feature ledger, and lore. The **Onboard a repo** button does step 2 from the UI.
 - **Settings** — every operator knob, grouped: **autonomy**, the **delivery** cycle (auto-merge · push · PR · require-CI), **execution** & concurrency, **idle loops**, **budget & caps**, the **planning debate**, **quality gates**, the strict **sandbox**, and **notifications** — all editable, persisted to `settings.json` (a real env var always wins, and shows read-only when set).
 

@@ -226,7 +226,7 @@ Run-at-your-own-risk, local-first software. You run it on your machine, with you
 - Runner factory loop with curated skill library and model tiering — one pass with `runner/loop.sh`, or unattended on any platform with `runner/gaffer run --daemon` (re-runs the loop, honours the per-day cap, stops cleanly on a signal)
 - Execution preflight (`runner/preflight.sh`, and before every greenfield bootstrap): the package registry is probed from the agent's own allowlisted environment (`GAFFER_REGISTRY_PROBE`), so a proxy or CA problem fails fast with a fix, not as a half-built repo. The agent env passes through trust and proxy settings (`NODE_EXTRA_CA_CERTS`, `HTTPS_PROXY`, …)
 - Deterministic safety hook (`runner/safety-hook.mjs`) — worktree isolation, fails closed
-- Web dashboard with all seven views: Overview, Work, Review, Epics, Map, Memory, Settings
+- Web dashboard: Overview, Work, Review and Map (the loop you drive), plus Health, Epics, Specs, Memory and Settings
 - Delivery-quality **eval harness** ([docs/eval-harness.md](docs/eval-harness.md)): an independent rubric judge scores every submitted delivery into an eval ledger — pass rate, per-dimension quality, real cost-per-passing-delivery, and a **memory-lift** metric that makes the "builds you an asset" claim falsifiable (`gaffer eval`; opt-in via `GAFFER_EVAL_JUDGE=1` while it soaks). Its offline half, **gate replay** ([runner/eval/](runner/eval/README.md)), replays eleven recorded deliveries through the real hygiene / minimalism / Definition-of-Done / acceptance-check pipeline on every CI run and fails when any verdict drifts (`gaffer eval replay`)
 
 **Not yet / honest limits:**

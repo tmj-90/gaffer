@@ -149,6 +149,36 @@ describe("safety classifier parity with runner/safety-hook.mjs", () => {
       });
     }
 
+    // Real env / credential files stay denied after the false-positive fix.
+    for (const command of [
+      "cat ./.env",
+      "cat $HOME/.env",
+      "cat .env.local",
+      "cat .env.test",
+      "cat secrets.json",
+      "cat .credentials.json",
+      "cat prod.env",
+    ] as const) {
+      it(`still denies: ${command}`, () => {
+        expect(classifyCommand(command, ctx).outcome).toBe("denied");
+      });
+    }
+
+    // …while `process.env` code, `getSecret` and a secrets TEST file are not secret
+    // paths (they used to match the bare `.env\b` / `secrets?\b` fragments).
+    for (const command of [
+      'grep -rn "process.env.PORT" src',
+      "rg process.env src",
+      "sed -i 's/process.env.A/process.env.B/' src/x.ts",
+      "grep -rn getSecret src",
+      "cat test/secrets.test.ts",
+      "cat src/credentials.ts",
+    ] as const) {
+      it(`no longer flags as a secret read: ${command}`, () => {
+        expect(classifyCommand(command, ctx).outcome).toBe("allowed");
+      });
+    }
+
     // The token-family guard must NOT over-block a legitimate token-NAMED SOURCE
     // file: reading a design-token / code file is ordinary work, not an exfil.
     it("does not flag a design-token source read (TOKEN_SOURCE_EXT_GUARD)", () => {

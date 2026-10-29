@@ -45,7 +45,7 @@ for (const rule of deny) {
 }
 for (const need of [
   "Read(**/.env)",
-  "Read(**/.env.*)",
+  "Read(**/.env.local)",
   "Read(**/*.pem)",
   "Read(**/*.key)",
   "Read(**/dashboard-token*)",

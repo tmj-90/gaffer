@@ -361,9 +361,21 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
-    re: /\bnode\b[^\n|;&]*(?:-e|--eval|-p|--print|-r|--require)\b[^\n]*(?:(?:dispatch|crew|memory)[^\n]*\/dist\/|\$\{?(?:DISPATCH_DB|MEMORY_DB)\}?|(?:dispatch|memory)[^\s'"\n]*\.sqlite)/i,
+    // `\b(?:DISPATCH_DB|MEMORY_DB)\b` covers `$DISPATCH_DB` AND `process.env.DISPATCH_DB` /
+    // `process.env["MEMORY_DB"]` — the latter used to be caught only by accident, by
+    // the `.env` secret fragment that also refused every `process.env` grep.
+    re: /\bnode\b[^\n|;&]*(?:-e|--eval|-p|--print|-r|--require)\b[^\n]*(?:(?:dispatch|crew|memory)[^\n]*\/dist\/|\b(?:DISPATCH_DB|MEMORY_DB)\b|(?:dispatch|memory)[^\s'"\n]*\.sqlite)/i,
     why: "inline node (-e/--require) reaching the control-plane dist or the Dispatch/Memory DB directly — bypasses the actor/gate system; use the scoped MCP tools",
     example: "node -e \"require('…/dispatch/dist/core.js')\"",
+    crewFlags: false,
+  },
+  {
+    // The same raw-DB reach from the other inline interpreters (`python -c` with
+    // os.environ["DISPATCH_DB"] / os.getenv, `ruby -e` ENV[…], …) and from a
+    // heredoc-fed program.
+    re: /\b(?:python3?|ruby|perl|php|deno|bun)\b[^\n|;&]*\s(?:-c|-e|-E|-r|--eval)\b[^\n]*\b(?:DISPATCH_DB|MEMORY_DB)\b|\b(?:python3?|node|nodejs|ruby|perl|php|deno|bun)\b[^\n]*<<[\s\S]*\b(?:DISPATCH_DB|MEMORY_DB)\b/i,
+    why: "inline interpreter reaching the Dispatch/Memory DB directly (bypasses the actor/gate system; use the scoped MCP tools)",
+    example: "python3 -c \"import os,sqlite3; sqlite3.connect(os.environ['DISPATCH_DB'])\"",
     crewFlags: false,
   },
   {

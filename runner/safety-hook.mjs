@@ -381,9 +381,29 @@ const PROC_ENVIRON = String.raw`proc\/[^\s'"]*\/environ`;
 // listed here too so the Read/Write tools and the search tools agree.)
 const CLI_CREDENTIAL_PATHS = String.raw`\.config\/gh\/.*|\.config\/gcloud\/.*|\.docker\/config\.json|\.kube\/.*|\.azure\/.*|\.ssh\/.*|\.aws\/.*|\.gnupg\/.*|\.pypirc|\.pgpass|credentials\.tfrc\.json|\.claude\.json`;
 // Same families for matching anywhere in a raw command (not end-anchored).
-const CLI_CREDENTIAL_FRAGMENT = String.raw`\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json\b|\.kube\/|\.azure\/|\.pypirc\b|\.pgpass\b|\.claude\.json\b`;
+const CLI_CREDENTIAL_FRAGMENT = String.raw`credentials\.tfrc\.json|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json\b|\.kube\/|\.azure\/|\.pypirc\b|\.pgpass\b|\.claude\.json\b`;
+// ENV-FILE and CREDENTIAL-NAME fragments (false-positive fix). The old `\.env\b` and
+// bare `credentials\b|secrets?\b` matched ANY word, so `grep -rn "process.env.PORT"
+// src`, `sed -i s/process.env.A/process.env.B/`, `pnpm vitest run test/secrets.test.ts`
+// and `grep -rn getSecret src` were refused as secret reads. These forms match only
+// a PATH-shaped mention:
+//   ENV_FILE_FRAGMENT  `.env` / `.env.<x>` not glued to an identifier (`./.env`,
+//                      `$HOME/.env`, `.env.local` — never `process.env`), or a
+//                      `<name>.env` env-file token (`prod.env`) other than the
+//                      runtime env objects (`process.env`, `import.meta.env`, …).
+//   CRED_NAME_FRAGMENT a basename that IS `credentials[.json|.toml|…]` or
+//                      `secret(s).<data-ext>`, or a `secret(s)/` directory.
+// `*.key` stays blocked (private keys use it). Applied in lock-step to the crew
+// classifier (packages/crew/src/safety/commandGuard.ts).
+const ENV_FILE_FRAGMENT = String.raw`(?<![\w$])\.env(?:\.[\w-]+)?(?![\w-])|(?<![\w$.])(?!(?:process|import\.meta|Deno|Bun)\.env(?![\w.-]))[\w-]+(?:\.[\w-]+)*\.env(?![\w.-])`;
+const CRED_NAME_FRAGMENT = String.raw`(?<![\w$.-])\.?credentials(?:\.(?:json|toml|ya?ml|ini|txt))?(?![\w.-])|(?<![\w$.-])secrets?\.(?:json|ya?ml|txt|env|toml|ini)(?![\w.-])|(?<![\w$.-])secrets?\/`;
+// Committed env TEMPLATES (`.env.example` & co.) document variable NAMES. A TRACKED
+// one is already in history, so the agent may read, edit, diff and stage it (an AC
+// like "document the new var in .env.example" was undeliverable). An untracked one
+// could be a renamed real `.env`, so it stays a secret; see isTrackedEnvTemplate.
+const ENV_TEMPLATE = /(^|\/)\.env\.(?:example|sample|template|dist|defaults)$/i;
 const SECRET_PATH = new RegExp(
-  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|\.?credentials(\.json)?|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  String.raw`(^|\/)(\.env(\.[\w-]+)?|[\w-][\w.-]*\.env|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|\.?credentials(\.json|\.toml)?|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
   "i",
 );
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
@@ -435,7 +455,7 @@ const AGENT_SETTINGS = /(^|\/)\.claude\/settings(\.local)?\.json$/i;
 // (`npx prettier --write src/design-tokens.json`) is not flagged; the exact
 // `dashboard-token` alternative is guard-free and always fires.
 const SECRET_PATH_FRAGMENT = new RegExp(
-  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`(${ENV_FILE_FRAGMENT}|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -489,7 +509,7 @@ const FILE_READ_PRIMITIVE =
 // SOURCE file is legitimate; `f=.gaffer/dashboard-token` and extensionless
 // token files stay denied.
 const SECRET_ASSIGNMENT = new RegExp(
-  String.raw`\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|${CLI_CREDENTIAL_FRAGMENT}|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`\b[\w]+=["']?[\w./~$-]*(${ENV_FILE_FRAGMENT}|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -1021,11 +1041,17 @@ function repoHasUnstagedOrModifiedSecret(cwd) {
       timeout: 4000,
     });
     if (res.status !== 0 || typeof res.stdout !== "string") return false;
-    return res.stdout
-      .split("\n")
-      .map((line) => line.slice(3).trim()) // strip the 2-char status + space
-      .filter(Boolean)
-      .some((path) => SECRET_PATH.test(path) || SECRET_PATH_FRAGMENT.test(path));
+    return (
+      res.stdout
+        .split("\n")
+        .filter(Boolean)
+        // A MODIFIED tracked env template (status not `??`) is ordinary content; an
+        // untracked one could be a renamed real `.env` and still counts.
+        .filter((line) => !(ENV_TEMPLATE.test(line.slice(3).trim()) && !line.startsWith("??")))
+        .map((line) => line.slice(3).trim()) // strip the 2-char status + space
+        .filter(Boolean)
+        .some((path) => SECRET_PATH.test(path) || SECRET_PATH_FRAGMENT.test(path))
+    );
   } catch {
     return false;
   }
@@ -1043,11 +1069,15 @@ function repoHasStagedSecret(cwd) {
       timeout: 4000,
     });
     if (res.status !== 0 || typeof res.stdout !== "string") return false;
-    return res.stdout
-      .split("\n")
-      .map((path) => path.trim())
-      .filter(Boolean)
-      .some((path) => SECRET_PATH.test(path) || SECRET_PATH_FRAGMENT.test(path));
+    return (
+      res.stdout
+        .split("\n")
+        .map((path) => path.trim())
+        .filter(Boolean)
+        // A staged env template got into the index through the gated `git add`.
+        .filter((path) => !ENV_TEMPLATE.test(path))
+        .some((path) => SECRET_PATH.test(path) || SECRET_PATH_FRAGMENT.test(path))
+    );
   } catch {
     return false;
   }
@@ -1139,6 +1169,122 @@ function isSafelyGovernedSecretMention(cmd) {
   if (PIPE_OR_XARGS.test(trimmed)) return false;
   if (SECRET_ASSIGNMENT.test(trimmed)) return false;
   return true;
+}
+
+/**
+ * Is `abs` a TRACKED, non-symlink env template (`.env.example` & co.) in its git
+ * repo? Only then is it treated as an ordinary file. `abs` is canonicalised by the
+ * callers, so a template that is a symlink to `.env` resolves to `.env` and never
+ * reaches here as a template.
+ */
+function isTrackedEnvTemplate(abs) {
+  if (!ENV_TEMPLATE.test(abs)) return false;
+  try {
+    if (lstatSync(abs).isSymbolicLink()) return false;
+    const res = spawnSync(
+      "git",
+      ["-C", dirname(abs), "ls-files", "--error-unmatch", "--", basename(abs)],
+      { encoding: "utf8", timeout: 4000 },
+    );
+    return res.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Replace each TRACKED env-template path in a command with an inert placeholder
+ * before the secret analysis, so `git diff .env.example`, `git add .env.example`
+ * and `cat .env.example` of a committed template are not refused. Paths resolve
+ * against the hook's cwd, so a command that changes directory is left unmasked
+ * (fail closed: the path could name a different file there).
+ */
+function maskTrackedEnvTemplates(cmd) {
+  if (/(?:^|[\s;&|(])(?:cd|pushd|popd)(?=$|\s)/.test(cmd)) return cmd;
+  return cmd.replace(
+    /(?<![\w$.-])((?:[\w.~/-]*\/)?\.env\.(?:example|sample|template|dist|defaults))(?![\w.-])/gi,
+    (whole, path) => {
+      const p = expandTildeWord(path, process.cwd());
+      if (p === UNVERIFIABLE_TARGET) return whole;
+      return isTrackedEnvTemplate(canonicalize(resolve(process.cwd(), p)))
+        ? "__env_template__"
+        : whole;
+    },
+  );
+}
+
+// Search tools whose FIRST positional operand (or every -e/--regexp value) is a
+// content PATTERN, not a file. Flags whose next token is a value (not the pattern).
+const SEARCH_VERBS = new Set(["grep", "egrep", "fgrep", "rg", "ag", "ack"]);
+const SEARCH_VALUE_FLAGS = new Set([
+  "-A",
+  "-B",
+  "-C",
+  "-m",
+  "-g",
+  "-t",
+  "-T",
+  "-M",
+  "-j",
+  "--glob",
+  "--iglob",
+  "--type",
+  "--type-not",
+  "--max-count",
+  "--context",
+  "--after-context",
+  "--before-context",
+  "--include",
+  "--exclude",
+  "--exclude-dir",
+  "--max-depth",
+  "--threads",
+  "--color",
+  "--colour",
+  "--sort",
+  "--sortr",
+]);
+
+/**
+ * Replace the content PATTERN of grep-family segments with a placeholder, so a
+ * search for the WORD `credentials` / `.env` (`grep -rn credentials src/`) is not
+ * mistaken for a read of a file of that name. A pattern is never opened as a file;
+ * `-f`/`--file` values ARE files and are kept. Separators are preserved.
+ */
+function stripSearchPatterns(cmd) {
+  const parts = cmd.split(/(&&|\|\||[;&|\n])/);
+  for (let i = 0; i < parts.length; i += 2) {
+    const tokens = tokenizeSegment(parts[i].trim());
+    const eff = tokens.length ? resolveEffectiveTokens(tokens) : null;
+    if (!eff) continue;
+    let args = eff.rest.slice(1);
+    if (eff.verb === "git" && args[0] === "grep") args = args.slice(1);
+    else if (!SEARCH_VERBS.has(eff.verb)) continue;
+    const patterns = [];
+    let explicit = false;
+    for (let k = 0; k < args.length; k += 1) {
+      const tk = args[k];
+      if (tk === "-e" || tk === "--regexp") {
+        explicit = true;
+        if (args[k + 1] !== undefined) patterns.push(args[(k += 1)]);
+      } else if (tk.startsWith("--regexp=")) {
+        explicit = true;
+        patterns.push(tk);
+      } else if (tk === "-f" || tk === "--file" || SEARCH_VALUE_FLAGS.has(tk)) {
+        k += 1; // a value (for -f: a FILE — never masked)
+      } else if (tk === "--") {
+        if (!explicit && args[k + 1] !== undefined) patterns.push(args[k + 1]);
+        break;
+      } else if (!tk.startsWith("-") && !explicit) {
+        patterns.push(tk);
+        break;
+      }
+    }
+    let seg = parts[i];
+    for (const pat of patterns) seg = seg.replace(pat, "__search_pattern__");
+    parts[i] = seg;
+  }
+  return parts.join("");
 }
 
 /**
@@ -2157,7 +2303,12 @@ function checkCommand(cmd) {
     const bootReason = bootstrapInstallReason(cmd, bootDir);
     if (bootReason) block(bootReason);
   }
-  const reason = secretBoundaryReason(cmd, process.cwd());
+  // Secret analysis runs on a VIEW of the command where a search tool's content
+  // pattern and a tracked env template are masked (neither is a secret read).
+  const reason = secretBoundaryReason(
+    maskTrackedEnvTemplates(stripSearchPatterns(cmd)),
+    process.cwd(),
+  );
   if (reason) block(`${reason} — "${cmd.slice(0, 120)}"`);
 
   // Repo-access boundary for bash write ops and branch creation.
@@ -2224,7 +2375,7 @@ function checkCommand(cmd) {
   allow();
 }
 
-function checkWrite(filePath) {
+function checkWrite(filePath, tool = "Write") {
   // Fail CLOSED on a missing/empty path: a legitimate Write/Edit tool call always
   // carries a non-empty file_path, so an absent one is malformed input to a security
   // boundary — allowing it would be an unbounded write escape.
@@ -2234,7 +2385,10 @@ function checkWrite(filePath) {
   const expanded = expandTildePath(filePath);
   if (expanded === null) block(`write to an unresolvable ~user path (fail closed): ${filePath}`);
   const abs = canonicalize(resolve(process.cwd(), expanded));
-  if (SECRET_PATH.test(abs)) block(`write to a secret file: ${filePath}`);
+  // An env TEMPLATE may be written (the agent supplies the content). Edit /
+  // MultiEdit / NotebookEdit echo the file back, so they need a TRACKED template.
+  const template = ENV_TEMPLATE.test(abs) && (tool === "Write" || isTrackedEnvTemplate(abs));
+  if (SECRET_PATH.test(abs) && !template) block(`write to a secret file: ${filePath}`);
   if (GIT_INTERNAL.test(abs)) block(`write inside .git: ${filePath}`);
   if (AGENT_SETTINGS.test(abs)) {
     block(`write to the agent settings file (would strip the safety hook): ${filePath}`);
@@ -2259,7 +2413,7 @@ function checkRead(filePath) {
   if (expanded === null) block(`read of an unresolvable ~user path (fail closed): ${filePath}`);
   const abs = canonicalize(resolve(process.cwd(), expanded));
   // Existing secret-file denial takes precedence and is never weakened.
-  if (SECRET_PATH.test(abs)) {
+  if (SECRET_PATH.test(abs) && !isTrackedEnvTemplate(abs)) {
     block(`read of a secret file (keeps secrets out of model context): ${filePath}`);
   }
   // Repo-access boundary: reads are allowed inside (write-roots ∪ read-roots).
@@ -2537,7 +2691,10 @@ process.stdin.on("end", () => {
       case "Edit":
       case "MultiEdit":
       case "NotebookEdit":
-        return checkWrite(String(input.file_path ?? input.filePath ?? input.notebook_path ?? ""));
+        return checkWrite(
+          String(input.file_path ?? input.filePath ?? input.notebook_path ?? ""),
+          tool,
+        );
       case "Read":
         return checkRead(String(input.file_path ?? input.filePath ?? ""));
       case "NotebookRead":

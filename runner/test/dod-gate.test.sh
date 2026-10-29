@@ -406,6 +406,47 @@ grep -q 'GAFFER_ALLOW_NO_DOD' "$RUNNER_DIR/factory.config.sh" \
   && ok "D3 GAFFER_ALLOW_NO_DOD is documented in factory.config.sh" \
   || fail "D3 GAFFER_ALLOW_NO_DOD must be documented in factory.config.sh"
 
+echo "== PART F: a gate that reads stdin cannot swallow later rows / lose its output =="
+# F1 (stdin fail-open): repo1's test reads stdin to EOF and exits 0, repo2's test
+# fails. The gate rows are fed on stdin, so before the fix repo1's `cat` swallowed
+# repo2's row: repo2 never ran and the whole DoD PASSED (rc 0).
+RESF="$WORK/f1.results"
+{ printf 'repo1\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'cat >/dev/null; exit 0'
+  printf 'repo2\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'exit 1'; } | gaffer_run_dod_gates "$RESF"; F1_RC=$?
+[ "$F1_RC" -eq 1 ] && ok "F1 a stdin-reading gate in repo1 does not swallow repo2's row (gate FAILS, rc=1)" \
+  || fail "F1 expected rc=1 with repo2 failing (got rc=$F1_RC — repo2's row was swallowed)"
+grep -q $'^GATE\ttests\trepo2\tFAIL' "$RESF" && ok "F1 repo2's failing test gate RAN and is recorded FAIL" \
+  || fail "F1 no repo2 FAIL row: $(tr '\n' '|' < "$RESF")"
+# F2 (dead `|| tail` fallback): without the crew dist the distiller used to print
+# nothing and return 0, so the framed output block, the extract and the next
+# attempt's feedback were all empty. The raw tail must now land in all of them.
+RESF2="$WORK/f2.results"
+printf 'repo\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'echo "AssertionError: expected 2 got 3 in test_widget"; exit 1' \
+  | CREW_DIR="$WORK/no-crew" gaffer_run_dod_gates "$RESF2"
+awk '/^---DOD-OUTPUT tests@repo---/{k=1;next} /^---END-DOD-OUTPUT---/{k=0} k' "$RESF2" | grep -q 'AssertionError: expected 2 got 3' \
+  && ok "F2 no crew dist → the failing output still lands in the framed DOD-OUTPUT block (tail fallback runs)" \
+  || fail "F2 framed block is empty without the crew dist: $(tr '\n' '|' < "$RESF2")"
+F2_EX="$(CREW_DIR="$WORK/no-crew" gaffer_dod_extract_failure "$RESF2")"
+printf '%s\n' "$F2_EX" | grep -q '^failing gate: tests@repo$' && printf '%s\n' "$F2_EX" | grep -q '^  AssertionError: expected 2 got 3' \
+  && ok "F2 no crew dist → gaffer_dod_extract_failure still feeds the failure back (awk fallback)" \
+  || fail "F2 extract without the crew dist is empty/wrong: '$F2_EX'"
+# F3: a distiller that ERRORS (a crash on unusual output) is treated like a missing one.
+FAKECREW="$WORK/fake-crew"; mkdir -p "$FAKECREW/dist/runtime/dod"
+printf 'process.stdout.write("half"); process.exit(3);\n' > "$FAKECREW/dist/runtime/dod/dodDistillCli.js"
+RESF3="$WORK/f3.results"
+printf 'repo\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'echo "AssertionError: crash-case"; exit 1' \
+  | CREW_DIR="$FAKECREW" gaffer_run_dod_gates "$RESF3"
+grep -q 'AssertionError: crash-case' "$RESF3" && ! grep -q '^half' "$RESF3" \
+  && ok "F3 a crashing distiller → the raw tail is used, no half-distilled text leaks" \
+  || fail "F3 crashing distiller output wrong: $(tr '\n' '|' < "$RESF3")"
+CREW_DIR="$FAKECREW" gaffer_dod_extract_failure "$RESF3" | grep -q '^  AssertionError: crash-case' \
+  && ok "F3 a crashing extractor CLI → the awk fallback extracts the failure" \
+  || fail "F3 extract with a crashing CLI lost the failure"
+# F4: the install enabler runs with stdin closed too (its caller loops rows on stdin).
+grep -q 'bash -c "\$_script" ) </dev/null' "$RUNNER_DIR/lib/dod.sh" \
+  && ok "F4 gaffer_dod_install_deps runs the install with stdin from /dev/null" \
+  || fail "F4 the DoD install still inherits the caller's stdin"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

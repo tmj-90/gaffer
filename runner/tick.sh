@@ -2578,11 +2578,15 @@ $_trail_q
     # "resume agent report"), never the runner's own flag rows or events.
     _MZ_NOTE="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json smallest-change-note 2>/dev/null || echo '')"
     _MZ_CHANGED="$(git -C "$PRIMARY_REPO" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | tr '\n' ' ')"
-    # Run in THIS shell (stdout → file, NOT a $() subshell) so gaffer_check_minimalism's
-    # GAFFER_MINIMALISM_REASON global propagates here. A $() subshell loses it, and the
-    # references below then hit "unbound variable" under `set -u` — failing the gate OPEN.
-    gaffer_check_minimalism "${_MZ_FILES:-0}" "${_MZ_LINES:-0}" "$_MZ_NOTE" "$_MZ_CHANGED" > "$GAFFER_DATA/.mz-verdict" 2>/dev/null || true
-    _MZ_VERDICT="$(cat "$GAFFER_DATA/.mz-verdict" 2>/dev/null || echo '')"; rm -f "$GAFFER_DATA/.mz-verdict"
+    # Run in THIS shell (NOT a $() subshell) so gaffer_check_minimalism's
+    # GAFFER_MINIMALISM_REASON / GAFFER_MINIMALISM_VERDICT globals propagate here. A $()
+    # subshell loses them, and the references below then hit "unbound variable" under
+    # `set -u` — failing the gate OPEN. The verdict is read from the global, never a
+    # fixed scratch file: $GAFFER_DATA is shared by every worker under
+    # GAFFER_CONCURRENCY>1, and a shared .mz-verdict let one delivery read another's.
+    GAFFER_MINIMALISM_VERDICT=""
+    gaffer_check_minimalism "${_MZ_FILES:-0}" "${_MZ_LINES:-0}" "$_MZ_NOTE" "$_MZ_CHANGED" >/dev/null 2>&1 || true
+    _MZ_VERDICT="${GAFFER_MINIMALISM_VERDICT:-}"
     : "${GAFFER_MINIMALISM_REASON:=minimalism check produced no reason}"   # belt: never unbound under set -u
     case "$_MZ_VERDICT" in
       missing_note)

@@ -437,7 +437,13 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     create_ticket: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.create_ticket).parse(args);
-        const ticket = wg.createTicket(
+        // Link the repo the caller named, else the one this MCP server was mounted FOR
+        // (GAFFER_DEFAULT_TICKET_REPO — the product-owner run sets it): an unlinked
+        // draft cannot be delivered and was invisible to the run's own draft count.
+        // Created in one transaction with the link, so an unknown repo leaves no orphan
+        // draft behind for the agent's retry to duplicate.
+        const repo = (a.repo ?? process.env.GAFFER_DEFAULT_TICKET_REPO)?.trim();
+        const ticket = wg.createTicketWithLinks(
           {
             title: a.title,
             description: a.description ?? "",
@@ -445,13 +451,9 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
             risk_level: a.risk_level,
             policy_pack: a.policy_pack,
           },
+          { repo: repo && repo !== "" ? repo : undefined },
           actor,
         );
-        // Link the repo the caller named, else the one this MCP server was mounted FOR
-        // (GAFFER_DEFAULT_TICKET_REPO — the product-owner run sets it): an unlinked
-        // draft cannot be delivered and was invisible to the run's own draft count.
-        const repo = a.repo ?? process.env.GAFFER_DEFAULT_TICKET_REPO;
-        if (repo && repo.trim() !== "") wg.linkRepository(ticket.id, repo.trim(), "primary", actor);
         draftsCreatedHere.add(ticket.id);
         return { ticket_id: ticket.id, number: ticket.number, status: ticket.status };
       }),

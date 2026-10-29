@@ -468,10 +468,10 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Create a ticket",
     description:
-      "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo.",
+      "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind.",
     capability: "full",
     body: "createTicketBody",
-    responses: [created("The new `Ticket`."), invalid],
+    responses: [created("The new `Ticket`."), notFound, invalid],
   },
   {
     method: "GET",

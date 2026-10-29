@@ -112,7 +112,12 @@ export async function routeTickets(
           "At least one attached repo must have write access — the ticket needs a delivery target.",
         );
       }
-      const ticket = wg.createTicket(
+      // Feature A: the legacy single-repo link, the chosen scope node(s) (the first is
+      // primary so the ticket lives under a product scope) and each repo's confirmed
+      // access boundary (so the ticket is immediately deliverable) — all in ONE
+      // transaction with the create, so an unknown repo or scope node (404) leaves no
+      // orphan ticket behind for a retry to duplicate.
+      const ticket = wg.createTicketWithLinks(
         {
           title: body.title,
           description: body.description ?? "",
@@ -121,34 +126,9 @@ export async function routeTickets(
           policy_pack: body.policy_pack,
           source: body.source,
         },
+        { repo: body.repo, scopeNodeIds: body.scopeNodeIds, repoAccess: body.repoIds },
         apiActor(),
       );
-      // Legacy single-repo link (older callers / mono-fallback flows).
-      if (body.repo) wg.linkRepository(ticket.id, body.repo, "primary", apiActor());
-      // Feature A: link the chosen scope node(s) — the first is primary so the
-      // ticket lives under a product scope, the rest are secondary context.
-      if (body.scopeNodeIds) {
-        body.scopeNodeIds.forEach((scopeNodeId, i) => {
-          wg.linkTicketScope(
-            {
-              ticket_id: ticket.id,
-              scope_node_id: scopeNodeId,
-              relation: i === 0 ? "primary" : "secondary",
-            },
-            apiActor(),
-          );
-        });
-      }
-      // Feature A: confirm each repo's access boundary so the ticket is
-      // immediately deliverable (a write target exists) rather than repo-less.
-      if (body.repoIds) {
-        for (const r of body.repoIds) {
-          wg.setTicketRepoAccess(
-            { ticket_id: ticket.id, repo_id: r.repo_id, access: r.access, relation: "confirmed" },
-            apiActor(),
-          );
-        }
-      }
       sendCreated(res, `/tickets/${ticket.id}`, { ticket });
       return;
     }

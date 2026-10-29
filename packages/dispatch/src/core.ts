@@ -872,6 +872,46 @@ export class Dispatch {
     return this.ticketSvc.createTicket(raw, actor);
   }
 
+  /**
+   * Create a ticket AND its links in ONE transaction: the primary repo, the scope
+   * nodes (the first primary, the rest secondary) and the confirmed per-repo access.
+   * A bad reference (unknown repo or scope node) rolls the whole create back, so a
+   * failed POST /tickets or MCP create_ticket never leaves an orphan draft for a
+   * retry to duplicate. (better-sqlite3 nests the services' own transactions as
+   * savepoints, as createDraftTicket already relies on.)
+   */
+  createTicketWithLinks(
+    raw: unknown,
+    links: {
+      repo?: string | undefined;
+      scopeNodeIds?: readonly string[] | undefined;
+      repoAccess?: ReadonlyArray<{ repo_id: string; access: string }> | undefined;
+    },
+    actor: Actor,
+  ): Ticket {
+    return inTransaction(this.db, () => {
+      const ticket = this.ticketSvc.createTicket(raw, actor);
+      if (links.repo) this.repoSvc.linkRepository(ticket.id, links.repo, "primary", actor);
+      (links.scopeNodeIds ?? []).forEach((scopeNodeId, i) => {
+        this.scope.linkTicketScope(
+          {
+            ticket_id: ticket.id,
+            scope_node_id: scopeNodeId,
+            relation: i === 0 ? "primary" : "secondary",
+          },
+          actor,
+        );
+      });
+      for (const r of links.repoAccess ?? []) {
+        this.repoSvc.setTicketRepoAccess(
+          { ticket_id: ticket.id, repo_id: r.repo_id, access: r.access, relation: "confirmed" },
+          actor,
+        );
+      }
+      return ticket;
+    });
+  }
+
   /** TRACK-3a: set or clear a ticket's per-ticket delivery-budget ceiling (USD). */
   setDeliveryBudget(raw: unknown, actor: Actor): Ticket {
     return this.ticketSvc.setDeliveryBudget(raw, actor);

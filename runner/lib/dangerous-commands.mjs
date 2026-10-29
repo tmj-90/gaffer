@@ -44,6 +44,19 @@
 
 /** @typedef {{ re: RegExp, why: string, install?: boolean, example: string, crewFlags: boolean }} DangerousCommandRule */
 
+// COMMAND POSITION prefix shared by the command-name rules below: line start or after
+// ; & | ( ` { ! $( then/do/else, or the start of a shell's `-c "…"` body, followed by
+// any env assignments and transparent wrappers (env [-u X] [-i], command, nice, nohup,
+// setsid, time, timeout N, exec, xargs, eval, …) and an optional path qualifier
+// (`/usr/bin/gh`, `./bin/x`). Text that only MENTIONS a command (a commit message, a
+// grep pattern, an echo argument) is not in command position and is not blocked.
+// Tokens never span ; | & ( ) < > so matching stays linear. `cmdAt(name)` builds a
+// rule regex for a command name (or alternation) at that position.
+const CMD_POS = String.raw`(?:^|[\n;&|(\`{!]|\$\(|\b(?:then|do|else)\b|(?:\b(?:ba|da|k|z)?sh|\bsu|\bscript|\$\{?SHELL\}?)(?:[ \t]+(?:-[-A-Za-z]+|pipefail)){0,4}[ \t]+-[A-Za-z]*c[ \t]+(?:--[ \t]+)?["'])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^()]*\)|[^\s;&|()<>\`"'\\])*|env|command|nice|nohup|stdbuf|setsid|time|timeout|ionice|doas|builtin|exec|xargs|eval)[ \t]+(?:-u[ \t]+[^\s;&|()<>\`"'\\]+[ \t]+|-[^\s;&|()<>\`"'\\]+[ \t]+|[0-9]+[smhd]?[ \t]+)*)*(?:[^\s;&|()<>\`"'\\]*\/)?`;
+// End of a command word: whitespace, a separator, a closing quote/paren, or EOL.
+const WORD_END = String.raw`(?=$|[\s;&|)\`"'<>])`;
+const cmdAt = (name, rest = "") => new RegExp(`${CMD_POS}(?:${name})${WORD_END}${rest}`);
+
 /** @type {ReadonlyArray<DangerousCommandRule>} */
 export const DANGEROUS_COMMANDS = [
   {
@@ -255,6 +268,114 @@ export const DANGEROUS_COMMANDS = [
     re: /\bnode\b[^\n|;&]*\/trust-workspace\.mjs\b/,
     why: "node runner/lib/trust-workspace.mjs (mutates ~/.claude.json trust registry — could trust an attacker-crafted repo whose .claude/settings.json strips the hook); trust is the runner's job, not the agent's",
     example: "GAFFER_TRUST_ALLOW_REPO=1 node …/lib/trust-workspace.mjs /path",
+    crewFlags: false,
+  },
+  // ── AMBIENT-CREDENTIAL CLIs ────────────────────────────────────────────────────
+  // The agent keeps the operator's HOME, so file/keychain-based CLI logins (gh, aws,
+  // gcloud, az, docker, npm, …) authenticate AS THE OPERATOR even though the env scrub
+  // removed GITHUB_TOKEN / AWS_*. A delivery agent never needs these: pushes and PRs
+  // are the runner's job. Matched in command position (incl. `/usr/bin/gh`, `env gh`,
+  // `sh -c "gh …"`), so a commit message or grep pattern naming them is unaffected.
+  {
+    re: cmdAt("gh"),
+    why: "GitHub CLI (authenticates as the operator through their ambient gh login; pushes and PRs are the runner's job)",
+    example: "gh auth token",
+    crewFlags: false,
+  },
+  {
+    re: cmdAt("aws|gcloud|gsutil|bq|az|vault|doctl|heroku"),
+    why: "cloud / secrets-manager CLI (acts with the operator's ambient file-based credentials)",
+    example: "aws sts get-caller-identity",
+    crewFlags: false,
+  },
+  {
+    // Cluster CLIs talk to whatever cluster the operator's kubeconfig names. The
+    // offline forms (render / lint / client version) stay allowed.
+    re: cmdAt(
+      "kubectl|oc",
+      String.raw`(?![ \t]+(?:kustomize\b|version[ \t]+--client\b|completion\b|--help\b|help\b))`,
+    ),
+    why: "cluster CLI (acts on the operator's kubeconfig cluster); `kubectl kustomize` / `version --client` stay allowed",
+    example: "kubectl get secrets -A",
+    crewFlags: false,
+  },
+  {
+    re: cmdAt(
+      "helm",
+      String.raw`(?![ \t]+(?:template|lint|version|create|package|show|dependency|completion|help|--help)\b)`,
+    ),
+    why: "helm against a cluster (operator kubeconfig); `helm template|lint|show|package` stay allowed",
+    example: "helm install x ./chart",
+    crewFlags: false,
+  },
+  {
+    // terraform/tofu plan/apply/init read the operator's cloud credentials and state
+    // backend. fmt/validate/version and `init -backend=false` are local.
+    re: cmdAt(
+      "terraform|tofu",
+      String.raw`(?![ \t]+(?:-chdir=[^\s;&|]+[ \t]+)?(?:fmt|validate|version|-version|-help|--help|graph|providers)\b)(?![ \t]+(?:-chdir=[^\s;&|]+[ \t]+)?init\b[^\n;&|]*-backend=false)`,
+    ),
+    why: "terraform/tofu against real state (operator cloud credentials); `fmt|validate|version` and `init -backend=false` stay allowed",
+    example: "terraform apply -auto-approve",
+    crewFlags: false,
+  },
+  {
+    // A container runtime with host namespaces, devices, capabilities or another
+    // daemon is root on the host for a docker-group user. (Bind-mount SOURCES are
+    // checked against the write-roots by the hook itself.)
+    re: new RegExp(
+      String.raw`${CMD_POS}(?:docker|podman|nerdctl)${WORD_END}[^\n;&|]*(?:\s--privileged\b|\s--(?:pid|ipc|uts|userns|net|network|cgroupns)[= ]host\b|\s--cap-add\b|\s--device\b|\s--security-opt\b|\s-H\b|\s--host\b|\s--volumes-from\b|\s--context\b)`,
+    ),
+    why: "container runtime with host namespaces / devices / capabilities / another daemon (host root for a docker-group user)",
+    example: "docker run --privileged --pid=host alpine nsenter -t 1 -m sh",
+    crewFlags: false,
+  },
+  {
+    re: cmdAt("docker|podman|nerdctl", String.raw`[ \t]+(?:login|logout|context)\b`),
+    why: "container registry login / daemon context switch (uses or changes the operator's registry credentials)",
+    example: "docker login ghcr.io",
+    crewFlags: false,
+  },
+  {
+    re: /\bDOCKER_HOST=|\bCONTAINER_HOST=/,
+    why: "pointing the container CLI at another daemon (DOCKER_HOST)",
+    example: "DOCKER_HOST=tcp://10.0.0.1:2375 docker ps",
+    crewFlags: false,
+  },
+  {
+    // git's credential helpers hand out the operator's stored HTTPS credentials, and a
+    // global/system config write lands outside the worktree (~/.gitconfig).
+    re: /\bgit[ \t]+(?:-[cC][ \t]+[^\s;&|]+[ \t]+)*credential(?:-[\w-]+)?\b|\bgit\b[^\n|;&]*\bconfig\b[^\n|;&]*\bcredential\.|\bgit\b[^\n|;&]*\s-c\s+credential\.|\bgit[ \t]+config\b(?=[^\n;&|]*\s--(?:global|system)\b)(?![^\n;&|]*\s(?:--get(?:-all|-regexp)?|--list|-l)\b)/i,
+    why: "git credential helper / credential config / global-or-system git config write (operator credentials, writes outside the worktree)",
+    example: "printf 'host=github.com\\n' | git credential fill",
+    crewFlags: false,
+  },
+  {
+    re: cmdAt(
+      "security",
+      String.raw`[ \t]+(?:find-(?:generic|internet)-password|dump-keychain|export|find-certificate|unlock-keychain)\b`,
+    ),
+    why: "macOS keychain read (gh / git / docker store tokens there, independent of HOME)",
+    example: "security find-generic-password -s gh:github.com -w",
+    crewFlags: false,
+  },
+  {
+    // Registry ACCOUNT operations: publish as the operator, mint or read their token,
+    // or rewrite their user-level registry config (~/.npmrc, outside the worktree).
+    re: cmdAt(
+      "npm|pnpm|yarn|bun",
+      String.raw`(?:@[^\s;&|]+)?(?:[ \t]+-[^\s;&|]+)*(?:[ \t]+npm)?[ \t]+(?:publish|unpublish|login|logout|adduser|add-user|token|owner|access|deprecate|dist-tag|profile|team|org|hook|star|whoami|set|config[ \t]+(?:set|delete|edit|rm))${WORD_END}`,
+    ),
+    why: "package-registry account operation (publish / login / token / owner, or a user-level registry config write)",
+    example: "npm config set registry https://attacker.example",
+    crewFlags: false,
+  },
+  {
+    re: new RegExp(
+      String.raw`${CMD_POS}(?:(?:python3?[ \t]+-m[ \t]+)?twine[ \t]+upload|(?:cargo|gem)[ \t]+(?:publish|login|logout|owner|yank|push|signin)|(?:poetry|uv|flit|hatch|pdm)[ \t]+publish)${WORD_END}`,
+    ),
+    why: "package publish / registry login (cargo, gem, twine, poetry, uv …) as the operator",
+    example: "cargo publish",
     crewFlags: false,
   },
   {

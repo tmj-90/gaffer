@@ -370,8 +370,19 @@ const MCP_RUNTIME_FILE = String.raw`mcp-runtime(?:\.\w+)*\.json`;
 // command in lib/dangerous-commands.mjs instead. `[^\s'"]*` never crosses a
 // space/quote, so it cannot bleed across command boundaries.
 const PROC_ENVIRON = String.raw`proc\/[^\s'"]*\/environ`;
+// CLI CREDENTIAL STORES (ambient-credential boundary): the agent keeps the operator's
+// HOME, so file-based CLI logins sit on disk next to it — gh (`.config/gh/hosts.yml`),
+// docker (`.docker/config.json`), kubectl (`.kube/`), gcloud (`.config/gcloud/`), az
+// (`.azure/`), pypi (`.pypirc`), postgres (`.pgpass`), terraform cloud
+// (`credentials.tfrc.json`), and Claude's own `.claude.json`. Stripping GITHUB_TOKEN /
+// AWS_* from the env does nothing about these, so they are secret paths on every read
+// vector. (`.ssh/`, `.aws/`, `.gnupg/` were already secret FRAGMENTS for Bash; they are
+// listed here too so the Read/Write tools and the search tools agree.)
+const CLI_CREDENTIAL_PATHS = String.raw`\.config\/gh\/.*|\.config\/gcloud\/.*|\.docker\/config\.json|\.kube\/.*|\.azure\/.*|\.ssh\/.*|\.aws\/.*|\.gnupg\/.*|\.pypirc|\.pgpass|credentials\.tfrc\.json|\.claude\.json`;
+// Same families for matching anywhere in a raw command (not end-anchored).
+const CLI_CREDENTIAL_FRAGMENT = String.raw`\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json\b|\.kube\/|\.azure\/|\.pypirc\b|\.pgpass\b|\.claude\.json\b`;
 const SECRET_PATH = new RegExp(
-  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|\.?credentials(\.json)?|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  String.raw`(^|\/)(\.env(\.[\w-]+)?|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|\.?credentials(\.json)?|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
   "i",
 );
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
@@ -423,7 +434,7 @@ const AGENT_SETTINGS = /(^|\/)\.claude\/settings(\.local)?\.json$/i;
 // (`npx prettier --write src/design-tokens.json`) is not flagged; the exact
 // `dashboard-token` alternative is guard-free and always fires.
 const SECRET_PATH_FRAGMENT = new RegExp(
-  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -441,9 +452,9 @@ const SECRET_GLOB =
 //   `source .env` / `. .env`   load secrets into the environment
 //   `read ... < .env` / `mapfile < .env`  (the `<` rule catches these too)
 const REDIRECT_READ =
-  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
+  /<\s*["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json|\.kube\/|\.azure\/|\.pypirc|\.pgpass|\.claude\.json|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
 const SOURCE_SECRET =
-  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
+  /(^|[\n;&|])\s*(source|\.)\s+["']?[\w./~$-]*(\.env|\.pem|\.key|\.p12|id_rsa|id_ed25519|\.ssh\/|\.aws\/|\.npmrc|\.git-credentials|\.netrc|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json|\.kube\/|\.azure\/|\.pypirc|\.pgpass|\.claude\.json|credentials|secrets?|mcp-runtime(?:\.\w+)*\.json|proc\/[^\s'"]*\/environ|dashboard-token|[._-]tokens?)/i;
 
 // Command-substitution / pipe / xargs constructs that decouple the tool
 // from the path it operates on, hiding the data flow from static analysis.
@@ -477,7 +488,7 @@ const FILE_READ_PRIMITIVE =
 // SOURCE file is legitimate; `f=.gaffer/dashboard-token` and extensionless
 // token files stay denied.
 const SECRET_ASSIGNMENT = new RegExp(
-  String.raw`\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`\b[\w]+=["']?[\w./~$-]*(\.env\b|\.pem\b|\.key\b|\.p12\b|id_rsa\b|id_ed25519\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|${CLI_CREDENTIAL_FRAGMENT}|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|${PROC_ENVIRON}\b|dashboard-token\b|[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 
@@ -1709,6 +1720,47 @@ function extractBashWriteTargets(cmd) {
         /(?:^|\s)(?:-O\s*|--output-document[=\s]+)("[^"]+"|'[^']+'|[^\s;&|<>]+)/g,
       )) {
         add(m[1]);
+      }
+    } else if (verb === "docker" || verb === "podman" || verb === "nerdctl") {
+      // A container BIND MOUNT hands the container read/write access to its host
+      // SOURCE path — `docker run -v /:/host …` is the whole host filesystem (and,
+      // for a docker-group user, root). Treat every bind source as a write target so
+      // it must sit inside a write-root; a named volume (no `/`, `.` or `~`) is not a
+      // host path. `docker cp <ctr>:<src> <dest>` writes <dest> on the host. (Host
+      // namespaces / --privileged / -H are deny-listed in lib/dangerous-commands.mjs.
+      // A compose file's volumes are invisible here — the documented residual.)
+      const rawArgs = effective.rest.slice(1);
+      const sub = rawArgs.findIndex((tk) => !tk.startsWith("-"));
+      const subVerb = sub === -1 ? "" : rawArgs[sub];
+      if (subVerb === "run" || subVerb === "create") {
+        const bindSource = (src) => {
+          if (/^[./~$]/.test(src) || src.includes("/")) add(src);
+        };
+        for (let k = sub + 1; k < rawArgs.length; k += 1) {
+          const tk = rawArgs[k];
+          let vol = null;
+          let mount = null;
+          if (tk === "-v" || tk === "--volume") vol = rawArgs[(k += 1)];
+          else if (tk.startsWith("--volume=")) vol = tk.slice("--volume=".length);
+          else if (/^-v[^-]/.test(tk)) vol = tk.slice(2);
+          else if (tk === "--mount") mount = rawArgs[(k += 1)];
+          else if (tk.startsWith("--mount=")) mount = tk.slice("--mount=".length);
+          if (vol) bindSource(vol.replace(/["']/g, "").split(":")[0]);
+          if (mount) {
+            const kv = Object.fromEntries(
+              mount
+                .replace(/["']/g, "")
+                .split(",")
+                .map((pair) => pair.split("=")),
+            );
+            const src = kv.source ?? kv.src;
+            if (kv.type === "bind" && src) add(src);
+          }
+        }
+      } else if (subVerb === "cp") {
+        const cpOps = rawArgs.slice(sub + 1).filter((tk) => !tk.startsWith("-"));
+        const dest = cpOps.length >= 2 ? cpOps[cpOps.length - 1] : "";
+        if (dest && !/^[^/]+:/.test(unquote(dest))) add(dest);
       }
     } else if (verb === "git") {
       // `git [-C dir] worktree add [-b <branch>] <path>` creates a NEW worktree

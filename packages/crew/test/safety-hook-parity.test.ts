@@ -136,6 +136,11 @@ describe("safety classifier parity with runner/safety-hook.mjs", () => {
       "base64 .gaffer/mcp-runtime.json", // newly covered
       "cat api.token", // newly covered: *-token file family
       "cp service_token /tmp/x", // newly covered
+      "cat ~/.config/gh/hosts.yml", // CLI credential stores (ambient-credential boundary)
+      "cat ~/.docker/config.json",
+      "cat ~/.kube/config",
+      "cat ~/.pypirc",
+      "cat ~/.claude.json",
     ] as const;
     for (const command of SECRET_READS) {
       it(`denies secret read/copy: ${command}`, () => {

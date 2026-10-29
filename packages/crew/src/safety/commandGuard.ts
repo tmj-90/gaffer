@@ -74,8 +74,11 @@ const READ_COPY_TOOLS =
 const MCP_RUNTIME_FILE = String.raw`mcp-runtime(?:\.\w+)*\.json`;
 const TOKEN_CODE_EXT = String.raw`tsx|ts|jsx|js|mjs|cjs|css|scss|sass|less|vue|svelte`;
 const TOKEN_SOURCE_EXT_GUARD = String.raw`(?!(?:\.(?:${TOKEN_CODE_EXT})|(?<=design[._-]tokens?)(?:\.[\w-]+)?|(?<=\.tokens)(?:\.json)?)(?![\w.]))`;
+// CLI credential stores (gh hosts.yml, docker config.json, kubeconfig, gcloud, az,
+// .pypirc, .pgpass, .claude.json) — ported from CLI_CREDENTIAL_FRAGMENT in the hook.
+const CLI_CREDENTIAL_FRAGMENT = String.raw`\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json\b|\.kube\/|\.azure\/|\.pypirc\b|\.pgpass\b|\.claude\.json\b`;
 const SECRET_PATH_FRAGMENT = new RegExp(
-  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 

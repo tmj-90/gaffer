@@ -488,7 +488,7 @@ export class ClaimService {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const claim = this.activeClaimForToken(claimToken, now);
-      const expiresAt = isoPlusSeconds(this.ttlForClaim(claim, now), now);
+      const expiresAt = isoPlusSeconds(this.ttlForClaim(claim), now);
       const ok = this.claims.extend(claim.id, expiresAt, now);
       if (!ok) {
         throw new DispatchError("CLAIM_INVALID", "Claim is no longer active.");
@@ -925,12 +925,15 @@ export class ClaimService {
     return claim;
   }
 
-  /** Preserve the original lease length when extending on heartbeat. */
-  private ttlForClaim(claim: TicketClaim, nowIso: string): number {
-    const originalTtlMs =
-      new Date(claim.expires_at).getTime() - new Date(claim.created_at).getTime();
-    const seconds = Math.max(1, Math.round(originalTtlMs / 1000));
-    void nowIso;
-    return seconds;
+  /**
+   * The claim's lease length, preserved across heartbeats. Invariant: every write of
+   * `expires_at` (the claim insert and {@link ClaimRepository.extend}) stamps
+   * `heartbeat_at` with the same instant, so `expires_at - heartbeat_at` is the lease
+   * length. (Measuring from `created_at` instead grew the lease by the time elapsed
+   * since the claim on every beat, so a crashed delivery held its ticket for hours.)
+   */
+  private ttlForClaim(claim: TicketClaim): number {
+    const leaseMs = new Date(claim.expires_at).getTime() - new Date(claim.heartbeat_at).getTime();
+    return Math.max(1, Math.round(leaseMs / 1000));
   }
 }

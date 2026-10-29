@@ -490,8 +490,9 @@ function runClaudeTurn(prompt, opts) {
     .filter(Boolean);
   // CONTAINMENT (audit blocker): spec authoring reasons from the (untrusted) brief and
   // returns the spec as TEXT (--output-format json → .result) — it never edits files or
-  // runs commands. This spawn runs with cwd = a throwaway agent home + acceptEdits and the
-  // project hook does not load in an untrusted dir, so run the agent READ-ONLY: deny every write/exec
+  // runs commands. This spawn runs with cwd = a throwaway agent home + acceptEdits; the
+  // home carries the verified safety-hook settings, but whether Claude Code loads project
+  // hooks there is not pinned by a test, so run the agent READ-ONLY: deny every write/exec
   // tool UNCONDITIONALLY (even under a CLAUDE_FLAGS override) so a prompt-injected clause
   // can't write into factory source (denying only the edit tools is defeated by a Bash `>`
   // fallback). Read/Grep/Glob + MCP stay available.

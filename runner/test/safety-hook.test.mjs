@@ -1254,6 +1254,11 @@ for (const [label, cmd] of [
   ["fg approve-ready", "fg approve-ready 5"],
   ["wg repo-access grant", "wg repo-access grant some/repo"],
   ["crew repo-access", "crew repo-access list"],
+  // Gate inputs the MCP scope check guards must not be reachable through the CLI either.
+  ["wg ticket set-testable --off", "wg ticket set-testable 5 --off"],
+  ["dispatch ticket test-contract", "dispatch ticket test-contract 5 --run 'npm start'"],
+  ["wg ticket tester-pass", "wg ticket tester-pass 5 --summary ok"],
+  ["wg ticket repo-delivery record", "wg ticket repo-delivery record 5 app --status done"],
   [
     "raw sqlite3 on DISPATCH_DB path",
     `sqlite3 ${CP_ROOT}/dispatch.sqlite "update tickets set status=1"`,

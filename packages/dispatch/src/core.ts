@@ -1470,6 +1470,11 @@ export class Dispatch {
     return this.ticketSvc.listRequiredCapabilities(ref);
   }
 
+  /** The ticket id an active claim token is held against (undefined if none). */
+  claimTicketIdForToken(claimToken: string): string | undefined {
+    return this.claims.ticketIdForToken(claimToken);
+  }
+
   heartbeat(claimToken: string): { expiresAt: string } {
     return this.claims.heartbeat(claimToken);
   }

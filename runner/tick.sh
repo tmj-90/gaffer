@@ -1081,6 +1081,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # must abort the bootstrap before the agent launch — the bare sed never did.
     gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
       || { log "MCP-RENDER: failed to render bootstrap runtime .mcp.json — refusing live bootstrap (fail closed)"; result error; exit 1; }
+    # FACTORY TICKET SCOPE: bind the ticket this agent works so the dispatch server
+    # refuses its writes on any OTHER ticket (it no longer depends on the claim token
+    # alone, which is empty on a resume). Fail closed like the render above.
+    gaffer_mcp_runtime_set_env "$MCP_RUNTIME" dispatch GAFFER_SCOPE_TICKET "$NUM" \
+      || { log "MCP-RENDER: failed to bind GAFFER_SCOPE_TICKET into the bootstrap runtime .mcp.json — refusing live bootstrap (fail closed)"; result error; exit 1; }
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
 
@@ -1921,6 +1926,11 @@ EOF
   # must abort the delivery before the agent launch — the bare sed never did.
   gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "$NUM" \
     || { log "MCP-RENDER: failed to render delivery runtime .mcp.json — refusing live run (fail closed)"; result error; exit 1; }
+  # FACTORY TICKET SCOPE: bind the delivery ticket so the dispatch server refuses the
+  # agent's writes (ACs, dependencies, test contract, decisions…) on any other ticket —
+  # also on a resume, where the claim token is empty.
+  gaffer_mcp_runtime_set_env "$MCP_RUNTIME" dispatch GAFFER_SCOPE_TICKET "$NUM" \
+    || { log "MCP-RENDER: failed to bind GAFFER_SCOPE_TICKET into the delivery runtime .mcp.json — refusing live run (fail closed)"; result error; exit 1; }
   chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
   # ── P1b GOLDEN CAPTURE (docs/tick-sh-runtime-migration.md) ──────────────────
   # Default-OFF dump of the assembled context (the delivery PROMPT + the rendered

@@ -914,6 +914,16 @@ export class ClaimService {
     return claim;
   }
 
+  /**
+   * The ticket an active claim token is held against, or undefined for an unknown,
+   * released or completed token. Lease expiry is deliberately NOT checked: this only
+   * answers "which ticket is this mount bound to" for the MCP factory scope check —
+   * every claim-gated write still validates the live lease itself.
+   */
+  ticketIdForToken(claimToken: string): string | undefined {
+    return this.claims.findByTokenHash(hashClaimToken(claimToken))?.ticket_id;
+  }
+
   // --- Helpers -------------------------------------------------------------
 
   /** Resolve an active, unexpired claim for a token or throw CLAIM_INVALID. */

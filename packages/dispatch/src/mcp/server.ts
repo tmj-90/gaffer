@@ -203,7 +203,9 @@ const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "internal-util change that can shift a surface's underlying behaviour (so it is " +
     "NOT 'is this an API ticket'). When on AND the GAFFER_TESTING toggle is enabled, " +
     "review approval routes the ticket through an INDEPENDENT tester before merge. " +
-    "Marking it testable only ADDS scrutiny — it never bypasses a gate.",
+    "Marking it testable only ADDS scrutiny. In the factory an agent may only turn it " +
+    "ON: clearing it (`can_be_tested: false`) is a human/runner decision and is refused " +
+    "with FACTORY_RUNNER_OWNED.",
   set_test_contract:
     "**Record the testing HANDOVER the independent tester reads to stand the system " +
     "up and probe the changed surfaces — never the implementation diff.** Pass " +

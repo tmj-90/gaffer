@@ -139,12 +139,31 @@ onboard)
 dashboard)
   want_lan=0; want_restart=0; want_fg=0
   for a in "$@"; do case "$a" in --lan) want_lan=1;; --restart) want_restart=1;; --foreground) want_fg=1;; *) bad_arg dashboard "unknown option '$a'";; esac; done
+  # Owner-only state dir (it holds the token file): installs from before setup.sh made
+  # it 0700 are tightened here too.
+  mkdir -p "$GAFFER_DATA" && chmod 700 "$GAFFER_DATA" 2>/dev/null || true
+  DASH_LOG="$GAFFER_DATA/dashboard.log"
+  # A server from before the fix echoed a freshly generated token into dashboard.log,
+  # created 0644 (a `>` redirect keeps an existing file's mode). True when that log
+  # still holds one — a credential any local user could read.
+  dash_log_leaked() { grep -Eq 'Authorization: Bearer [A-Za-z0-9_-]{20,}' "$DASH_LOG" 2>/dev/null; }
+  # dash_log_reset — called only when no server of ours is running: a leaked log is
+  # deleted AND the token rotated (the next start generates a new one; `gaffer dashboard`
+  # prints its login URL), then the log is recreated empty and 0600.
+  dash_log_reset() {
+    if dash_log_leaked; then
+      rm -f "$GAFFER_DATA/dashboard-token"
+      warn "an old dashboard.log held the dashboard token — rotated it (open the new login URL below)"
+    fi
+    rm -f "$DASH_LOG"; ( umask 077; : > "$DASH_LOG" )
+  }
   if [ "$want_fg" = 1 ]; then
     # FOREGROUND (compose / systemd / any supervisor): the SAME env wiring as the
     # detached paths below, exec'd in this process so the supervisor owns the lifetime
     # and the logs. Always token-protected (a container binds every interface; the
     # compose file maps the port to loopback on the host). Bind 0.0.0.0 with --lan,
     # loopback otherwise. Prints the login URL first so `docker compose logs` shows it.
+    dash_log_leaked && { rm -f "$GAFFER_DATA/dashboard-token" "$DASH_LOG"; warn "an old dashboard.log held the dashboard token — rotated it"; }
     TOKFILE="$GAFFER_DATA/dashboard-token"
     [ -s "$TOKFILE" ] || { umask 077; (openssl rand -hex 16 2>/dev/null || head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n') > "$TOKFILE"; }
     TOK="$(tr -d ' \n' < "$TOKFILE")"
@@ -161,7 +180,13 @@ dashboard)
     kill "$pid" 2>/dev/null && say "restarting dashboard"
     rm -f "$(gaffer_dashboard_pidfile)" 2>/dev/null || true; pid=""
   fi
-  if [ -n "$pid" ]; then ok "dashboard already up → http://127.0.0.1:$DASH_PORT (pid $pid)"; exit 0; fi
+  if [ -n "$pid" ]; then
+    ok "dashboard already up → http://127.0.0.1:$DASH_PORT (pid $pid)"
+    chmod 600 "$DASH_LOG" 2>/dev/null || true
+    dash_log_leaked && warn "dashboard.log holds the running server's token — \`gaffer dashboard --restart\` rotates it"
+    exit 0
+  fi
+  dash_log_reset
 
   if [ "$want_lan" = 1 ]; then
     # LAN bind, made safe by a bearer token (generated once, stored 0600).
@@ -185,7 +210,7 @@ dashboard)
     # loop (and status.sh) read it back, so every notify deep-links to the SAME URL
     # the dashboard serves under --lan. (factory.config.sh reads this file.)
     ( umask 077; printf '%s\n' "$GAFFER_DASHBOARD_URL" > "$GAFFER_DATA/dashboard-url" ) 2>/dev/null || true
-    nohup env $(gaffer_dashboard_env_unset_flags) GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" DISPATCH_API_TOKEN="$TOK" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host 0.0.0.0 >"$GAFFER_DATA/dashboard.log" 2>&1 &
+    nohup env $(gaffer_dashboard_env_unset_flags) GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" DISPATCH_API_TOKEN="$TOK" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host 0.0.0.0 >>"$DASH_LOG" 2>&1 &
     gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
     if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/healthz" >/dev/null 2>&1; then
       ok "dashboard up on your LAN (token-protected)"
@@ -210,7 +235,7 @@ dashboard)
   # stale persisted LAN url — the loop then falls back to the loopback default rather
   # than deep-linking to a LAN address that is no longer being served.
   rm -f "$GAFFER_DATA/dashboard-url" 2>/dev/null || true
-  nohup env $(gaffer_dashboard_env_unset_flags) GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" >"$GAFFER_DATA/dashboard.log" 2>&1 &
+  nohup env $(gaffer_dashboard_env_unset_flags) GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_TESTER_CMD="$TESTER_CMD" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" >>"$DASH_LOG" 2>&1 &
   gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
   if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/api/dashboard" >/dev/null 2>&1; then
     ok "dashboard up → http://127.0.0.1:$DASH_PORT"

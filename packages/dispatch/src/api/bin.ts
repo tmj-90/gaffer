@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 
-import { authConfigured, deriveReadToken, ensureApiToken } from "./auth.js";
+import { authConfigured, deriveReadToken, describeApiToken, ensureApiToken } from "./auth.js";
 import { Dispatch } from "../core.js";
 import { resolveDbPath } from "../util/paths.js";
 import { DEFAULT_API_PORT, assertSafeBind, createApiServer } from "./server.js";
@@ -82,27 +82,9 @@ program
       process.stdout.write(
         `dispatch-api listening on http://${opts.host}:${port} (db: ${dbPath}, token-auth)\n`,
       );
-      // Tell the operator how to authenticate. A freshly generated token is
-      // printed once so it can be copied into the dashboard / curl; a reused or
-      // env-supplied token is only referenced, never echoed.
-      if (ensured.source === "generated") {
-        process.stdout.write(
-          `dispatch-api: generated a new dashboard token (saved 0600 to ${ensured.path}).\n` +
-            `  Authenticate mutating requests with:  Authorization: Bearer ${ensured.token}\n`,
-        );
-      } else if (ensured.source === "file") {
-        process.stdout.write(
-          `dispatch-api: using the saved dashboard token at ${ensured.path} ` +
-            `(delete it to rotate).\n`,
-        );
-      } else {
-        // An operator-SET token switches auth to the strict posture (see
-        // isRequestAuthorized): loopback reads are gated too, so say so.
-        process.stdout.write(
-          `dispatch-api: using DISPATCH_API_TOKEN from the environment ` +
-            `(strict auth: every request, including loopback reads, requires the token).\n`,
-        );
-      }
+      // Tell the operator how to authenticate — by reference only. The token is
+      // never echoed: this stdout is the dashboard.log the runner writes.
+      process.stdout.write(describeApiToken(ensured));
     });
 
     const shutdown = (): void => {

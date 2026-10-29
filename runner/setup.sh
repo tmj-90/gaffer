@@ -28,7 +28,9 @@ echo "Gaffer factory setup"
 echo "── install + build workspace ($GAFFER_HOME)"
 # Output goes to a log, not /dev/null: a failed install or build used to exit 1 with
 # no message at all. On failure show its tail, plus the fix for the common cause.
-mkdir -p "$GAFFER_DATA"
+# Owner-only factory state: it holds the dashboard token, the databases and the logs
+# (and the doctors recommend 0700). An existing 0755 dir from an older setup is tightened.
+( umask 077; mkdir -p "$GAFFER_DATA" ); chmod 700 "$GAFFER_DATA"
 SETUP_LOG="$GAFFER_DATA/setup.log"
 if ! ( cd "$GAFFER_HOME" && pnpm install && pnpm -r build ) >"$SETUP_LOG" 2>&1; then
   echo "  ✗ install/build failed — last lines of $SETUP_LOG:"
@@ -42,7 +44,6 @@ fi
 echo "  ✓ installed + built (dispatch, memory, crew)"
 
 echo "── factory state ($GAFFER_DATA)"
-mkdir -p "$GAFFER_DATA"
 node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" init >/dev/null
 lg init >/dev/null   # memory-mcp: MEMORY_DB env, own bin
 if [ ! -f "$CREW_CONFIG" ]; then

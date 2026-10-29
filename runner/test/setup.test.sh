@@ -8,7 +8,9 @@
 #   • a failing install exits non-zero AND prints pnpm's own error line plus a
 #     remedy, and keeps the full output in $GAFFER_DATA/setup.log;
 #   • a Node below the root engines.node floor is refused BEFORE pnpm runs, with
-#     the running version, the floor and the fix named.
+#     the running version, the floor and the fix named;
+#   • the factory state dir is created (or tightened to) owner-only 0700 — it holds
+#     the dashboard token.
 # Run: bash test/setup.test.sh   (bash 3.2 safe)
 # =====================================================================
 set -uo pipefail
@@ -56,6 +58,12 @@ grep -q ERR_PNPM_UNSUPPORTED_ENGINE "$WORK/data/setup.log" 2>/dev/null \
   && ok "the full output is kept in \$GAFFER_DATA/setup.log" || fail "setup.log missing the install output"
 grep -q '^install' "$CALLS" && ! grep -q -- '--silent' "$CALLS" \
   && ok "pnpm install ran without --silent" || fail "pnpm calls: $(cat "$CALLS")"
+[ "$(stat -c %a "$WORK/data" 2>/dev/null || stat -f %Lp "$WORK/data")" = "700" ] \
+  && ok "the factory state dir is created 0700" || fail "state dir mode $(stat -c %a "$WORK/data" 2>/dev/null)"
+mkdir -p "$WORK/data-old"; chmod 755 "$WORK/data-old"
+run_setup "$HOME_OK" "$WORK/data-old"
+[ "$(stat -c %a "$WORK/data-old" 2>/dev/null || stat -f %Lp "$WORK/data-old")" = "700" ] \
+  && ok "an existing 0755 state dir is tightened to 0700" || fail "old state dir mode $(stat -c %a "$WORK/data-old" 2>/dev/null)"
 
 echo "== a Node below the root floor is refused before pnpm runs =="
 run_setup "$HOME_HIGH" "$WORK/data-high"

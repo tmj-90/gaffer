@@ -176,13 +176,21 @@ export function runDoctor(db: Db, dbPath: string, nowIso = new Date().toISOStrin
   if (tableExists(db, "work_events")) {
     const chain = verifyEventChain(db);
     if (chain.ok) {
-      checks.push({ label: `Event log hash chain: intact (${chain.checked} events)`, level: "ok" });
+      checks.push({
+        label: `Event log hash chain: intact (${chain.checked} events)`,
+        level: "ok",
+        // The chain has no key: anchor it by recording the head outside this DB.
+        detail: `head ${chain.headHash}`,
+      });
     } else {
       checks.push({
         label: `Event log hash chain: BROKEN at seq ${chain.brokenAtSeq} (${chain.reason})`,
         level: "fail",
         detail: `event ${chain.brokenEventId}; ${chain.checked} rows checked before the break`,
-        fix: "The log was altered after it was written. Restore from a trusted export bundle; `dispatch events verify --json` names the row.",
+        fix:
+          chain.reason === "unhashed"
+            ? "Rows lost their hashes after the log was chained (opening the DB no longer re-chains them). Inspect the named row; restore from a trusted export bundle, or re-anchor with `dispatch events rechain --confirm` (recorded in the log)."
+            : "The log was altered after it was written. Restore from a trusted export bundle; `dispatch events verify --json` names the row.",
       });
     }
   }

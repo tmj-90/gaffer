@@ -34,7 +34,12 @@ import {
   isActiveTicketRepoRelation,
   parseTestContract,
 } from "./domain/types.js";
-import { verifyEventChain, type ChainVerification } from "./events/eventChain.js";
+import {
+  backfillEventChain,
+  latestEventHash,
+  verifyEventChain,
+  type ChainVerification,
+} from "./events/eventChain.js";
 import { listEvents, writeEvent } from "./events/eventWriter.js";
 import { AcRepository } from "./repositories/acRepository.js";
 import { AgentRepository } from "./repositories/agentRepository.js";
@@ -2039,5 +2044,42 @@ export class Dispatch {
    */
   verifyEventChain(): ChainVerification {
     return verifyEventChain(this.db);
+  }
+
+  /**
+   * The EXPLICIT repair path for unhashed work_events rows (`dispatch events rechain
+   * --confirm`). Opening the DB no longer re-chains them: on a chained DB a NULL
+   * hash means the row was blanked, and silently re-hashing it is what let an edit
+   * plus "blank the hashes after it" verify clean. An operator who has checked the
+   * rows can re-anchor the chain here; the re-anchor is itself appended to the log
+   * (`events.rechained`, with the old and new head hashes and what was broken), so
+   * it never happens without a trace. Rows that already carry a hash are untouched.
+   */
+  rechainEventLog(actor: Actor): {
+    rechained: number;
+    oldHead: string;
+    newHead: string;
+    verification: ChainVerification;
+  } {
+    return inTransaction(this.db, () => {
+      const before = verifyEventChain(this.db);
+      const oldHead = latestEventHash(this.db);
+      const rechained = backfillEventChain(this.db);
+      const newHead = latestEventHash(this.db);
+      writeEvent(this.db, {
+        entity_type: "event_log",
+        entity_id: "work_events",
+        actor,
+        event_type: "events.rechained",
+        payload: {
+          rechained,
+          old_head: oldHead,
+          new_head: newHead,
+          was_broken_at_seq: before.brokenAtSeq,
+          was_reason: before.reason,
+        },
+      });
+      return { rechained, oldHead, newHead, verification: verifyEventChain(this.db) };
+    });
   }
 }

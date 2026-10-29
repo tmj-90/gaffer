@@ -8,10 +8,9 @@
  */
 export const SCHEMA_VERSION = 26;
 
+// No PRAGMAs here: migrate() runs this inside a transaction, where SQLite ignores
+// them. migrate() and openDatabase() set journal_mode/foreign_keys themselves.
 export const SCHEMA_SQL = `
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS schema_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

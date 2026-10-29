@@ -9,6 +9,16 @@ import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
 export type Db = Database.Database;
 
 /**
+ * How to upgrade, for "this DB is newer than this build" messages. Never a bare
+ * `npm i -g <name>`: the npm names `dispatch` and `memory-mcp` belong to unrelated
+ * third-party packages, so that command installs a stranger's code and fixes nothing.
+ * Gaffer ships from a git checkout or a GitHub release tarball.
+ */
+export const DISPATCH_UPGRADE_HINT =
+  "from a checkout: git pull && pnpm install && pnpm -r build; from a release: " +
+  "npm install -g <the newer dispatch-X.tgz from https://github.com/tmj-90/gaffer/releases>";
+
+/**
  * Thrown when the database on disk records a `schema_version` NEWER than this
  * build understands — i.e. it was written by a newer Dispatch. Refusing to
  * open is deliberate: Dispatch is designed to be shared (CLI + MCP server +
@@ -27,7 +37,7 @@ export class DatabaseTooNewError extends Error {
       "this Dispatch database was written by a newer version of Dispatch.\n" +
         `  On-disk schema_version is ${found}; this build supports up to ${supported}.\n` +
         "  Upgrade Dispatch before opening it:\n" +
-        "    npm i -g dispatch@latest\n" +
+        `    ${DISPATCH_UPGRADE_HINT}\n` +
         "  (Refusing to open — an older schema could corrupt newer data.)",
     );
     this.name = "DatabaseTooNewError";

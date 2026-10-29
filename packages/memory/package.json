@@ -1,6 +1,7 @@
 {
   "name": "memory-mcp",
   "version": "0.2.0",
+  "private": true,
   "description": "Reviewed project memory for AI coding agents. SQLite-backed MCP server + CLI: agents can suggest reusable project knowledge; humans decide what becomes trusted lore.",
   "keywords": [
     "mcp",

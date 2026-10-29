@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 
-import type { Db } from "../db/connection.js";
+import { DISPATCH_UPGRADE_HINT, type Db } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
 import { verifyEventChain } from "../events/eventChain.js";
 import { contractHash } from "../util/contractHash.js";
@@ -73,7 +73,7 @@ export function runDoctor(db: Db, dbPath: string, nowIso = new Date().toISOStrin
       label: `Schema version: ${found} is NEWER than this build (${SCHEMA_VERSION})`,
       level: "fail",
       detail: "Database was written by a newer Dispatch.",
-      fix: "Upgrade Dispatch: npm i -g dispatch@latest",
+      fix: `Upgrade Dispatch — ${DISPATCH_UPGRADE_HINT}`,
     });
   }
 
@@ -118,24 +118,36 @@ export function runDoctor(db: Db, dbPath: string, nowIso = new Date().toISOStrin
   }
 
   // 5. Integrity: tickets in a 'claimed'/'in_progress' status with NO active
-  //    claim — an inconsistency between ticket state and the claim ledger.
-  const orphanWorking = count(
-    db,
-    `SELECT COUNT(*) AS n FROM tickets t
-     WHERE t.status IN ('claimed','in_progress')
-       AND NOT EXISTS (
-         SELECT 1 FROM ticket_claims c
-         WHERE c.ticket_id = t.id AND c.status = 'active'
-       )`,
-  );
-  if (orphanWorking === 0) {
+  //    claim — an inconsistency between ticket state and the claim ledger. A
+  //    ticket a HUMAN took by hand (human_owner set) is in_progress with no claim BY
+  //    DESIGN and is not counted. `expire-claims` cannot help here (it walks claims,
+  //    and these tickets have none), so the fix names the hand-back that does.
+  const orphanRefs = (
+    db
+      .prepare(
+        `SELECT t.number AS number FROM tickets t
+         WHERE t.status IN ('claimed','in_progress')
+           AND t.human_owner IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM ticket_claims c
+             WHERE c.ticket_id = t.id AND c.status = 'active'
+           )
+         ORDER BY t.number`,
+      )
+      .all() as Array<{ number: number | null }>
+  ).map((r) => `#${r.number ?? "?"}`);
+  if (orphanRefs.length === 0) {
     checks.push({ label: "Working tickets with active claim: consistent", level: "ok" });
   } else {
     checks.push({
-      label: `Integrity: ${orphanWorking} working ticket(s) with no active claim`,
+      label: `Integrity: ${orphanRefs.length} working ticket(s) with no active claim`,
       level: "warn",
-      detail: "Ticket status says claimed/in_progress but no active claim exists.",
-      fix: "Run `dispatch expire-claims`, or inspect with `dispatch ticket show <ref>`.",
+      detail:
+        `Ticket status says claimed/in_progress but no agent lease backs it: ${orphanRefs.join(", ")}. ` +
+        "Nothing will recover these automatically (no lease to expire).",
+      fix:
+        "Check no runner is still working it (`dispatch ticket show <ref>`, the factory log), then hand it back: " +
+        "`dispatch runner-release <ref> --to ready` (or `--to refining` to keep its branch for triage).",
     });
   }
 

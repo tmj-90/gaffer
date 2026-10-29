@@ -73,7 +73,10 @@ describe("migration version ceiling", () => {
       expect((err as DatabaseTooNewError).code).toBe("MEMORY_DB_TOO_NEW");
       expect((err as DatabaseTooNewError).unknownMigrations).toContain("999-from-the-future");
       // Message must point the user at the upgrade, not at "corrupt file".
-      expect((err as Error).message).toMatch(/npm i -g memory-mcp@latest/);
+      expect((err as Error).message).toMatch(/git pull && pnpm install/);
+      expect((err as Error).message).toMatch(/github\.com\/tmj-90\/gaffer\/releases/);
+      // The bare npm name is someone else's package: never tell anyone to install it.
+      expect((err as Error).message).not.toMatch(/npm i(nstall)? -g memory-mcp/);
     }
   });
 });

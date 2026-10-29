@@ -16,7 +16,7 @@ import { makeHandlers, toolSchemas, type ToolResult } from "./tools.js";
  * backlog's integrity depends on agents following these, so the prose is
  * deliberately imperative and concrete.
  */
-const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
+export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
   create_ticket:
     "**Create a unit of work as a DRAFT.** Use this to capture a discrete, " +
     "independently-shippable task — not a vague epic and not a sub-step of a " +

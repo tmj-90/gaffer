@@ -262,7 +262,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.events,
     summary: "Live event stream (Server-Sent Events)",
     description:
-      "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`.",
+      "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`.",
     capability: "read",
     query: {
       since: {

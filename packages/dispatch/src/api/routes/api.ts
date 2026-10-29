@@ -285,6 +285,12 @@ const STREAM_HEARTBEAT_MS = 15_000;
 const STREAM_BATCH = 200;
 /** Concurrent stream cap: this is a single-operator control plane, not a broadcast bus. */
 const STREAM_MAX_CLIENTS = 16;
+/**
+ * Hard lifetime of one stream (ms). The credential is re-checked on every tick, so
+ * this is the backstop that forces a periodic re-authentication; the dashboard
+ * reconnects with ?since=<last seq> and loses nothing.
+ */
+const STREAM_MAX_LIFETIME_MS = 60 * 60 * 1000;
 let streamClients = 0;
 
 function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerResponse): void {
@@ -314,10 +320,21 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
     streamClients -= 1;
     clearInterval(poll);
     clearInterval(beat);
+    clearTimeout(lifetime);
     if (!res.writableEnded) res.end();
   };
+  // The bearer gate ran once, when the stream opened. Re-resolve the SAME request's
+  // credential before every write, so revoking a principal (or rotating the token)
+  // cuts off a live feed at once instead of when the connection happens to drop.
+  // A named frame tells the client why, so it does not read it as a network blip.
+  const stillAuthorised = (): boolean => {
+    if (requestCapability(req) !== null) return true;
+    if (!res.writableEnded) res.write("event: auth_revoked\ndata: {}\n\n");
+    stop();
+    return false;
+  };
   const tick = (): void => {
-    if (closed) return;
+    if (closed || !stillAuthorised()) return;
     let rows: ReturnType<typeof wg.events.listSince>;
     try {
       rows = wg.events.listSince(cursor, STREAM_BATCH);
@@ -333,11 +350,13 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   };
   const poll = setInterval(tick, STREAM_POLL_MS);
   const beat = setInterval(() => {
-    if (!closed) res.write(": ping\n\n");
+    if (!closed && stillAuthorised()) res.write(": ping\n\n");
   }, STREAM_HEARTBEAT_MS);
+  const lifetime = setTimeout(stop, STREAM_MAX_LIFETIME_MS);
   // Timers must never keep the process alive on their own (tests, shutdown).
   poll.unref?.();
   beat.unref?.();
+  lifetime.unref?.();
   req.on("close", stop);
   res.on("close", stop);
   res.on("error", stop);

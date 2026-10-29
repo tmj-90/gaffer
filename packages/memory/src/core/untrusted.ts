@@ -14,13 +14,23 @@
  * ISOLATION: no imports from dispatch or crew.
  */
 
-/** Matches an opening or closing `<untrusted-…>` delimiter token. */
-export const UNTRUSTED_TOKEN_RE = /<\/?untrusted-[^>]*>/gi;
+// Escape (never delete) the `<` of every untrusted-* delimiter — opening or closing,
+// any tag, any case, padded with whitespace / zero-width characters, terminated or
+// not. Deleting a delimiter in one pass let a nested token reassemble itself:
+// `</untrus</untrusted-a>ted-x>` minus the inner token IS `</untrusted-x>`, which
+// closed the envelope early. Escaping removes no text, so nothing can rejoin and one
+// pass is safe (and idempotent). Same rule as crew's deliveryJudge.
+/** Matches the `<` that opens any `<untrusted…` / `</untrusted…` delimiter. */
+export const UNTRUSTED_TOKEN_RE =
+  // eslint-disable-next-line no-control-regex -- the C0 separators are whitespace to python and to a model reading the prompt
+  /<(?=[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*\/?[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*untrusted)/gi;
 
 /**
- * Strip embedded envelope delimiter tokens from an untrusted string so it
- * cannot close the quarantine envelope early. Null/undefined collapse to "".
+ * Neutralise embedded envelope delimiters in an untrusted string (escape their
+ * `<` to `&lt;`) so it cannot close the quarantine envelope early. The name is
+ * historical — it used to delete the tokens, which a nested token defeated.
+ * Null/undefined collapse to "".
  */
 export function stripEnvelopeTokens(value: string | null | undefined): string {
-  return String(value ?? "").replace(UNTRUSTED_TOKEN_RE, "");
+  return String(value ?? "").replace(UNTRUSTED_TOKEN_RE, "&lt;");
 }

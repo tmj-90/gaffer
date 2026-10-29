@@ -2,7 +2,8 @@
 # gaffer — friendly front door to the factory.
 #
 #   gaffer setup                      nothing → running: build + init + open the UI
-#   gaffer onboard <path> [--standalone]   scan + register a repo (standalone scope; map to a wider scope in the Factory Map UI)
+#   gaffer onboard <path> [--standalone]   scan + register a repo (standalone scope — the default; map to a
+#                                     wider scope in the Factory Map UI)
 #   gaffer dashboard [--restart|--lan|--foreground]
 #                                     start the web dashboard (--lan = token-protected, on your LAN;
 #                                     --foreground = run in THIS process for containers/supervisors)
@@ -10,16 +11,19 @@
 #   gaffer demo                       run the Factory Map showcase (DRY_RUN)
 #   gaffer skills [install]           list the skill library / install it into your Claude Code
 #   gaffer eval [--json]              delivery-quality metrics (pass rate · memory lift · cost/pass)
-#   gaffer run [--daemon] [--interval N]
+#   gaffer run [--dry-run] [--daemon] [--interval N]
 #                                     go live: one supervisor pass (drains the ready queue), or
-#                                     --daemon = re-run it every N seconds until SIGINT/SIGTERM
+#                                     --daemon = re-run it every N seconds until SIGINT/SIGTERM;
+#                                     --dry-run (-n) = preview only, nothing spent
 #   gaffer wg <dispatch args…>        the dispatch CLI against THIS factory's database
 #                                     (e.g. gaffer wg ticket create -t "…" -d "…"; gaffer wg ticket show 1)
 #   gaffer approve <ticket> [--reviewer <you>]   the human review gate: approve a ticket in Review
 #   gaffer merge <ticket>             land an APPROVED (ready_for_merge) ticket — what the dashboard's
 #                                     Merge button runs; refuses (exit 4) a ticket not yet approved
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
-#   gaffer help
+#   gaffer help | --version
+#
+#   Every command takes -h/--help; an unknown command or option exits 2 and does nothing.
 #
 # Everything uses the factory's own config/state under $GAFFER_DATA — no flags to remember.
 set -uo pipefail
@@ -39,6 +43,28 @@ say() { printf "${c_cya}gaffer${c_off} %s\n" "$*"; }
 ok()  { printf "  ${c_grn}✓${c_off} %s\n" "$*"; }
 warn(){ printf "  ${c_yel}!${c_off} %s\n" "$*"; }
 err() { printf "  ${c_red}✗${c_off} %s\n" "$*" >&2; }
+
+# One usage line per command — what `gaffer <cmd> --help` prints, and what a bad
+# argument is pointed at. Kept next to the header block above, which is `gaffer help`.
+usage() {
+  case "$1" in
+    onboard)   echo "usage: gaffer onboard <path> [--standalone]   (standalone scope is the default; map it to a wider scope in the Factory Map UI)" ;;
+    dashboard) echo "usage: gaffer dashboard [--restart] [--lan] [--foreground]" ;;
+    status)    echo "usage: gaffer status   (doctors + work counts + what needs a human)" ;;
+    setup)     echo "usage: gaffer setup   (install + build + init state + open the dashboard)" ;;
+    demo)      echo "usage: gaffer demo   (the Factory Map showcase; always DRY_RUN, nothing spent)" ;;
+    eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>]" ;;
+    approve)   echo "usage: gaffer approve <ticket> [--reviewer <you>]" ;;
+    merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>)" ;;
+    run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
+    skills)    echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]" ;;
+  esac
+}
+# wants_help "$@" — true when any argument asks for help. Checked before a command
+# does anything, wherever the flag sits, so `gaffer run --daemon --help` never runs.
+wants_help() { local a; for a in "$@"; do case "$a" in -h|--help) return 0 ;; esac; done; return 1; }
+# bad_arg <cmd> <message> — refuse a bad argument: message + usage on stderr, exit 2.
+bad_arg() { err "$2"; usage "$1" >&2; exit 2; }
 
 DASH_PORT="${DISPATCH_API_PORT:-8787}"
 # JSON-encode one string for embedding in a JSON array literal (escape \ and ").
@@ -75,10 +101,22 @@ TESTER_CMD="${DISPATCH_TESTER_CMD:-$(dispatch_cmd node tester-run.mjs)}"
 
 cmd="${1:-help}"; shift || true
 case "$cmd" in
+  onboard|dashboard|status|setup|demo|eval|approve|merge|run|skills)
+    if wants_help "$@"; then usage "$cmd"; exit 0; fi ;;
+esac
+case "$cmd" in
 
 onboard)
-  path="${1:-}"; [ -n "$path" ] && shift || true
-  if [ -z "$path" ]; then echo "usage: gaffer onboard <path> [--standalone]   (standalone scope; map to a wider scope in the Factory Map UI)"; exit 1; fi
+  # --standalone is the default scope (accepted, a no-op); any other option is refused.
+  path=""
+  for a in "$@"; do
+    case "$a" in
+      --standalone) ;;
+      -*) bad_arg onboard "unknown option '$a'" ;;
+      *) [ -z "$path" ] || bad_arg onboard "one path only (got '$path' and '$a')"; path="$a" ;;
+    esac
+  done
+  if [ -z "$path" ]; then usage onboard; exit 1; fi
   abs="$(cd "$path" 2>/dev/null && pwd -P)" || { echo "  no such directory: $path"; exit 1; }
   git -C "$abs" rev-parse --git-dir >/dev/null 2>&1 || warn "not a git repo (the factory branches per ticket — you'll want one)"
   # Route through onboard-run.mjs — the SAME path the dashboard's "Onboard a repo"
@@ -100,7 +138,7 @@ onboard)
 
 dashboard)
   want_lan=0; want_restart=0; want_fg=0
-  for a in "$@"; do case "$a" in --lan) want_lan=1;; --restart) want_restart=1;; --foreground) want_fg=1;; esac; done
+  for a in "$@"; do case "$a" in --lan) want_lan=1;; --restart) want_restart=1;; --foreground) want_fg=1;; *) bad_arg dashboard "unknown option '$a'";; esac; done
   if [ "$want_fg" = 1 ]; then
     # FOREGROUND (compose / systemd / any supervisor): the SAME env wiring as the
     # detached paths below, exec'd in this process so the supervisor owns the lifetime
@@ -199,22 +237,27 @@ dashboard)
 status)
   # Single-pane roll-up: all three doctors + work counts + recent ticks, and a
   # notification when a human is needed. Lives in status.sh to keep it testable.
-  bash "$HERE/status.sh" "$@"
+  [ $# -eq 0 ] || bad_arg status "status takes no arguments (got '$1')"
+  bash "$HERE/status.sh"
   ;;
 
 setup)
   # nothing → running: build everything, init state (with the right config), open the UI.
-  bash "$HERE/setup.sh" "$@" || { echo "setup failed"; exit 1; }
+  [ $# -eq 0 ] || bad_arg setup "setup takes no arguments (got '$1')"
+  bash "$HERE/setup.sh" || { echo "setup failed"; exit 1; }
   "$HERE/gaffer" dashboard
   printf "\n${c_grn}Ready.${c_off} Onboard a repo:  ${c_cya}gaffer onboard /path/to/your/repo${c_off}\n"
   ;;
 
-demo) DRY_RUN="${DRY_RUN:-1}" bash "$HERE/demo.sh" ;;
+demo)
+  [ $# -eq 0 ] || bad_arg demo "demo takes no arguments (got '$1')"
+  DRY_RUN="${DRY_RUN:-1}" bash "$HERE/demo.sh" ;;
 
 eval)
   # `gaffer eval replay` — the offline half of the harness: recorded deliveries
   # through the real gates, verdicts checked against each fixture (runner/eval/).
   if [ "${1:-}" = "replay" ]; then shift; exec bash "$HERE/eval/replay.sh" "$@"; fi
+  case "$#:${1:-}" in 0:|1:--json) ;; *) bad_arg eval "unknown eval argument '$1'" ;; esac
   # Delivery-quality metrics from the eval ledger (docs/eval-harness.md):
   # pass rate, per-dimension means, MEMORY LIFT (does the durable memory
   # measurably improve deliveries?), and cost-per-passing-delivery.
@@ -243,9 +286,17 @@ wg)
 approve)
   # The human review gate from the CLI: `gaffer approve <ticket> [--reviewer <you>]`.
   # Records a HUMAN approval (in_review → ready_for_merge). The agent still cannot do this.
-  _t="${1:-}"; [ -n "$_t" ] || { echo "usage: gaffer approve <ticket> [--reviewer <you>]"; exit 2; }; shift || true
+  _t="${1:-}"; [ -n "$_t" ] || { usage approve; exit 2; }; shift || true
+  case "$_t" in -*) bad_arg approve "the ticket comes first (got option '$_t')" ;; esac
   _rev="${USER:-human}"
-  while [ $# -gt 0 ]; do case "$1" in --reviewer) shift; _rev="${1:-$_rev}" ;; --reviewer=*) _rev="${1#--reviewer=}" ;; esac; shift || true; done
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --reviewer) shift; [ -n "${1:-}" ] || bad_arg approve "--reviewer needs a name"; _rev="$1" ;;
+      --reviewer=*) _rev="${1#--reviewer=}" ;;
+      *) bad_arg approve "unknown option '$1'" ;;
+    esac
+    shift || true
+  done
   exec node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" review approve "$_t" --reviewer "$_rev"
   ;;
 
@@ -255,7 +306,9 @@ merge)
   # sends the ticket back for re-approval, never a force-merge). merge-ticket.mjs
   # refuses (exit 4, nothing touched) a ticket that is not ready_for_merge — the same
   # rule as the dashboard's merge route — so `merge` typed for `approve` lands nothing.
-  _t="${1:-}"; [ -n "$_t" ] || { echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>)"; exit 2; }
+  _t="${1:-}"; [ -n "$_t" ] || { usage merge; exit 2; }
+  case "$_t" in -*) bad_arg merge "the ticket comes first (got option '$_t')" ;; esac
+  [ $# -le 1 ] || bad_arg merge "merge takes one ticket (got '$*')"
   exec env GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" node "$HERE/bin/merge-ticket.mjs" --ticket "$_t"
   ;;
 
@@ -265,16 +318,23 @@ run)
   # every --interval seconds (default 30) until SIGINT/SIGTERM, which finish the CURRENT
   # pass then exit cleanly. This is the "walk away and it keeps working" path on Linux,
   # not just macOS. MAX_TICKS_PER_DAY still caps the day. (Read preflight.sh first.)
-  _daemon=0; _interval="${GAFFER_DAEMON_INTERVAL:-30}"
+  # Every argument is parsed (and a bad one refused, exit 2) BEFORE anything runs: an
+  # unknown flag used to be dropped silently, so `gaffer run --dry-run` (or a typo like
+  # --deamon) started a LIVE, paid pass. --help is handled above, wherever it sits.
+  _daemon=0; _interval="${GAFFER_DAEMON_INTERVAL:-30}"; _flag_dry=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --daemon) _daemon=1 ;;
-      --interval) shift; _interval="${1:-30}" ;;
+      -n|--dry-run) _flag_dry=1 ;;
+      --interval) shift; _interval="${1:-}" ;;
       --interval=*) _interval="${1#--interval=}" ;;
+      *) bad_arg run "unknown option '$1'" ;;
     esac
     shift || true
   done
+  case "$_interval" in ''|*[!0-9]*) bad_arg run "--interval needs a whole number of seconds (got '$_interval')" ;; esac
   _live_dry="${_GAFFER_OP_DRY_RUN:-0}"
+  [ "$_flag_dry" = 1 ] && _live_dry=1
   [ "$_live_dry" = 1 ] && warn "DRY_RUN=1 is set in your environment — this pass previews only; unset it to deliver for real"
   # GAFFER_LOOP_SH: the supervisor pass to run (test seam; the real loop by default).
   _loop_sh="${GAFFER_LOOP_SH:-$HERE/loop.sh}"
@@ -300,7 +360,7 @@ skills)
       ;;
     install)
       scope="project"; force=0
-      for a in "$@"; do case "$a" in --user) scope="user";; --project) scope="project";; --force) force=1;; esac; done
+      for a in "$@"; do case "$a" in --user) scope="user";; --project) scope="project";; --force) force=1;; *) bad_arg skills "unknown option '$a'";; esac; done
       [ "$scope" = user ] && dest="$HOME/.claude/skills" || dest="$PWD/.claude/skills"
       mkdir -p "$dest"
       n=0; skipped=0
@@ -321,19 +381,30 @@ skills)
       # pick it per-ticket like any bundled skill. Rejects invalid skills with a
       # reason and installs nothing.
       if [ $# -eq 0 ]; then
-        echo "usage: gaffer skills add <path|git-url> [--force]"
+        usage skills; exit 2
       elif SKILLS_DIR="$SKILLS_DIR" node "$HERE/bin/skill-add.mjs" "$@"; then
         printf "  ${c_dim}the factory can now select this skill for an agent whose role, stack, area or ticket text matches its frontmatter. \`gaffer skills list\` to confirm.${c_off}\n"
       else
         exit 1
       fi
       ;;
-    *) echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]";;
+    *) bad_arg skills "unknown skills subcommand '$sub'" ;;
   esac
   ;;
 
-help|*)
-  # The header comment block above, up to and including the `gaffer help` line.
-  awk 'NR < 2 { next } /^#   gaffer help/ { sub(/^# ?/, ""); print; exit } { sub(/^# ?/, ""); print }' "$HERE/gaffer"
+help|-h|--help)
+  # The header comment block above, up to (not including) the "Everything uses" line.
+  awk 'NR < 2 { next } /^# Everything uses/ { exit } { sub(/^# ?/, ""); print }' "$HERE/gaffer"
+  ;;
+
+-V|--version|version)
+  node -p 'require(process.argv[1]).version' "$GAFFER_HOME/package.json" 2>/dev/null \
+    | sed 's/^/gaffer /' || { err "could not read the version from $GAFFER_HOME/package.json"; exit 1; }
+  ;;
+
+*)
+  # A typo used to print help and exit 0, so a script with a misspelt command
+  # "succeeded" having done nothing.
+  err "unknown command '$cmd' (see gaffer help)"; exit 2
   ;;
 esac

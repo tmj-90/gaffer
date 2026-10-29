@@ -591,7 +591,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/mark-merged",
     tag: T.review,
     summary: "Merge-complete callback",
-    description: "ready_for_merge → done. Acts as the system actor.",
+    description:
+      "ready_for_merge → done. A human principal acts as admin under its own id (the event " +
+      "names who marked it merged); a system or admin principal keeps its type.",
     capability: "full",
     responses: [ok("The updated `Ticket`."), notFound, conflict],
   },
@@ -601,7 +603,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Reopen a done ticket for re-review",
     description:
-      "The auto-merge re-approval callback (done → in_review). Acts as the system actor.",
+      "The auto-merge re-approval callback (done → in_review). Attributed like " +
+      "mark-merged: a human principal acts as admin under its own id.",
     capability: "full",
     body: "reopenForReviewBody",
     responses: [ok("The updated `Ticket`."), notFound, conflict, invalid],
@@ -658,7 +661,12 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/tester",
     tag: T.review,
     summary: "Record the independent tester's verdict",
-    description: "pass → ready_for_merge, fail → refining. Acts as the system actor.",
+    description:
+      "pass → ready_for_merge, fail → refining, recorded as the calling principal. On an " +
+      "acceptance ticket a human PASS is a waiver; an automated PASS must carry " +
+      "`tested_commit`, `contract_hash` and `replay: passed` (422 `BINDING_REQUIRED`), and a " +
+      "`contract_hash` that no longer matches the contract on record is a 409 " +
+      "`CONTRACT_MISMATCH`.",
     capability: "full",
     body: "testerVerdictBody",
     responses: [ok("The updated `Ticket`."), notFound, conflict, invalid],

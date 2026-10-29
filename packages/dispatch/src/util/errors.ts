@@ -1,13 +1,57 @@
 /**
+ * Every code a {@link DispatchError} may carry. A closed list so a new code cannot
+ * ship without being declared here — and, through the REST status table in
+ * api/http.ts (a `Record<DispatchErrorCode, number>`), without an HTTP status. Before
+ * this, an unmapped domain refusal fell through to a 500 that clients, monitors and
+ * retry logic read as a server crash.
+ */
+export const DISPATCH_ERROR_CODES = [
+  "NOT_FOUND",
+  "VALIDATION_ERROR",
+  "POLICY_DENIED",
+  "STATE_CONFLICT",
+  "CONCURRENCY_CONFLICT",
+  "ILLEGAL_TRANSITION",
+  "NO_OP",
+  "DUPLICATE",
+  "CLAIM_INVALID",
+  "CLAIM_REQUIRED",
+  "TICKET_NOT_CLAIMABLE",
+  "TICKET_NOT_HUMAN_OWNED",
+  "DEPENDENCY_BLOCKED",
+  "AGENT_NOT_ELIGIBLE",
+  "SCOPE_NODE_IN_USE",
+  "REPO_NOT_LINKED",
+  "INVALID_EDGE",
+  "INVALID_DEPENDENCY",
+  "ADVANCED_RELATION_REQUIRED",
+  "ACTOR_NOT_PERMITTED",
+  "FACTORY_RUNNER_OWNED",
+  "NOT_CONFIGURED",
+  "TEST_CONTRACT_LEAK",
+  "BINDING_REQUIRED",
+  "CONTRACT_MISMATCH",
+  "OBSERVED_RISK_ESCALATED",
+  "DB_NOT_EMPTY",
+  "INCOMPATIBLE_BUNDLE",
+  "INCONSISTENT_BUNDLE",
+  "FILE_NOT_FOUND",
+  "IO_ERROR",
+  "UNSAFE_BIND",
+  "INTERNAL_ERROR",
+] as const;
+export type DispatchErrorCode = (typeof DISPATCH_ERROR_CODES)[number];
+
+/**
  * Structured Dispatch error. The `code` is a stable machine-readable string so
  * the CLI and MCP layers can return predictable, typed failures rather than
  * leaking raw exceptions.
  */
 export class DispatchError extends Error {
-  readonly code: string;
+  readonly code: DispatchErrorCode;
   readonly details: Readonly<Record<string, unknown>>;
 
-  constructor(code: string, message: string, details: Record<string, unknown> = {}) {
+  constructor(code: DispatchErrorCode, message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.name = "DispatchError";
     this.code = code;

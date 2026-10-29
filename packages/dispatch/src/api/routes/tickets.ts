@@ -29,7 +29,7 @@ import {
   ticketListQuery,
   wontDoBody,
 } from "../schemas.js";
-import { apiActor } from "./context.js";
+import { apiActor, operatorActor } from "./context.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -327,10 +327,11 @@ export async function routeTickets(
 
   // /tickets/:id/mark-merged — MERGE-COMPLETE callback (ready_for_merge -> done).
   // The merge runner calls this once the git merge of the delivery branch lands,
-  // so `done` means actually merged. System/admin only (the REST surface acts as
-  // the system actor); a user/board-drag can never reach this.
+  // so `done` means actually merged. The service allows only system/admin (a board
+  // drag can never reach this); a full-capability REST caller acts as admin under its
+  // OWN principal id, so the event names who marked it merged.
   if (segments.length === 3 && sub === TICKET_SUB.MARK_MERGED && method === "POST") {
-    const result = wg.markMerged(id, { type: "system", id: "dispatch-api" });
+    const result = wg.markMerged(id, operatorActor());
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -374,16 +375,23 @@ export async function routeTickets(
   }
 
   // BBT-001: /tickets/:id/tester — record a tester verdict (pass → ready_for_merge,
-  // fail → refining). The REST surface acts as the system actor here, recording the
-  // tester's reported result; the actual merge stays the guarded mark-merged path.
+  // fail → refining) as the calling principal. A human principal (the dashboard
+  // button) records a WAIVER on an acceptance ticket, as the gate intends; an
+  // automated caller must send the binding (tested_commit / contract_hash / replay)
+  // or gets a 422 BINDING_REQUIRED. The merge stays the guarded mark-merged path.
   if (segments.length === 3 && sub === TICKET_SUB.TESTER && method === "POST") {
     const body = testerVerdictBody.parse(await readJsonBody(req));
-    const testerActor = { type: "system" as const, id: "dispatch-api" };
-    const verdictInput = { summary: body.summary, ...(body.uri ? { uri: body.uri } : {}) };
+    const verdictInput = {
+      summary: body.summary,
+      ...(body.uri ? { uri: body.uri } : {}),
+      ...(body.tested_commit ? { tested_commit: body.tested_commit } : {}),
+      ...(body.contract_hash ? { contract_hash: body.contract_hash } : {}),
+      ...(body.replay ? { replay: body.replay } : {}),
+    };
     const result =
       body.verdict === "pass"
-        ? wg.testerPass(id, verdictInput, testerActor)
-        : wg.testerFail(id, { ...verdictInput, ...(body.to ? { to: body.to } : {}) }, testerActor);
+        ? wg.testerPass(id, verdictInput, apiActor())
+        : wg.testerFail(id, { ...verdictInput, ...(body.to ? { to: body.to } : {}) }, apiActor());
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -416,14 +424,14 @@ export async function routeTickets(
   }
 
   // /tickets/:id/reopen-for-review — auto-merge re-approval callback
-  // (done -> in_review). System/admin only; records the resolver's resolution.
+  // (done -> in_review). System/admin only; records the resolver's resolution under
+  // the calling principal's id (see operatorActor).
   if (segments.length === 3 && sub === TICKET_SUB.REOPEN_FOR_REVIEW && method === "POST") {
     const body = reopenForReviewBody.parse(await readJsonBody(req));
     const result = wg.reopenForReview(
       id,
       { reason: body.reason, resolution: body.resolution },
-      // The REST surface acts as the system actor for this machine-driven path.
-      { type: "system", id: "dispatch-api" },
+      operatorActor(),
     );
     sendJson(res, 200, {
       ticket_id: result.ticketId,

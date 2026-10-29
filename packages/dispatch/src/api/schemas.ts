@@ -21,6 +21,7 @@ import {
   TICKET_SCOPE_RELATIONS,
   TICKET_STATUSES,
 } from "../domain/types.js";
+import { REPLAY_STATES } from "../util/contractHash.js";
 
 /**
  * Zod schemas for the HTTP request bodies + query parameters. These validate the
@@ -206,6 +207,23 @@ export const testerVerdictBody = z.object({
   uri: z.string().trim().min(1).max(2_000).optional(),
   /** fail only: where the FAIL lands below the retry cap (default refining = hold for a human). */
   to: z.enum(["refining", "ready"]).optional(),
+  /**
+   * The ACCEPTANCE binding an automated tester sends with its verdict: the commit it
+   * tested, the sha256 of the contract it read, and its clean-replay outcome. Required
+   * for a non-human PASS on an acceptance ticket (else 422 BINDING_REQUIRED); a hash
+   * that no longer matches the contract on record is a 409 CONTRACT_MISMATCH.
+   */
+  tested_commit: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/i)
+    .optional(),
+  contract_hash: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-f]{64}$/i)
+    .optional(),
+  replay: z.enum(REPLAY_STATES).optional(),
 });
 export type TesterVerdictBody = z.infer<typeof testerVerdictBody>;
 

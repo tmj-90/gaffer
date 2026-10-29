@@ -174,8 +174,8 @@ flags under **Safety** below — off by default.
 > button for this is planned):
 >
 > ```bash
-> # use the FULL ticket id (the 8-char short ref won't resolve here)
-> node packages/dispatch/dist/cli/index.js ticket set-reviewer <FULL-TICKET-ID> --reviewer <your-name> --admin
+> # use the ticket number (#n) or the full id; the 8-char short ref on cards won't resolve
+> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name> --admin
 > ```
 >
 > Then **Mark ready** succeeds, and the ticket flows plan → implement → test →

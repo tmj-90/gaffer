@@ -88,10 +88,10 @@ person (or CI job) their own credential whose writes are attributed to them in t
 event log, mint a principal — from Settings → Access in the dashboard, or:
 
 ```bash
-node packages/dispatch/dist/cli/index.js principal create alice            # full: read + write
-node packages/dispatch/dist/cli/index.js principal create ci-viewer --read # GET routes only
-node packages/dispatch/dist/cli/index.js principal list
-node packages/dispatch/dist/cli/index.js principal revoke ci-viewer
+runner/gaffer wg principal create alice            # full: read + write
+runner/gaffer wg principal create ci-viewer --read # GET routes only
+runner/gaffer wg principal list
+runner/gaffer wg principal revoke ci-viewer
 ```
 
 The token (`gfp_…`) is printed once; only its hash is stored. `GET /api/whoami` tells

@@ -50,7 +50,7 @@ FAKE_RUNNER="$WORK/runner"; mkdir -p "$FAKE_RUNNER/claude"
 # Wired like the real template: the shared writer (lib/agent-env.sh) VERIFIES the
 # PreToolUse safety-hook wiring and fails closed without it.
 printf '{"hooks":{"PreToolUse":[{"command":"node ${RUNNER_DIR}/safety-hook.mjs"}]}}\n' > "$FAKE_RUNNER/settings.tmpl.json"
-printf '{"mcp":"${DISPATCH_DB}"}\n'      > "$FAKE_RUNNER/mcp.tmpl.json"
+printf '{"mcpServers":{"dispatch":{"env":{"DISPATCH_DB":"${DISPATCH_DB}"}}}}\n' > "$FAKE_RUNNER/mcp.tmpl.json"
 printf '# brief\n'                        > "$FAKE_RUNNER/claude/CLAUDE.md"
 
 # Globals the clarify body reads (normally provided by tick.sh at call time).
@@ -95,6 +95,12 @@ gaffer_render_mcp_runtime() {
       -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "${GAFFER_TICKET_REPOS:-}")#g" \
       -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "$recall")#g" \
       "$tmpl" > "$out" || return 1
+}
+# Clarify binds GAFFER_SCOPE_TICKET into the rendered runtime (factory.config.sh's
+# gaffer_mcp_runtime_set_env); stand in with the same JSON env merge.
+gaffer_mcp_runtime_set_env() {
+  GAFFER_MCP_SET_FILE="$1" GAFFER_MCP_SET_SERVER="$2" GAFFER_MCP_SET_KEY="$3" GAFFER_MCP_SET_VALUE="$4" \
+    node -e 'const fs=require("node:fs");const e=process.env;const j=JSON.parse(fs.readFileSync(e.GAFFER_MCP_SET_FILE,"utf8"));const s=j.mcpServers[e.GAFFER_MCP_SET_SERVER];s.env={...(s.env||{}),[e.GAFFER_MCP_SET_KEY]:e.GAFFER_MCP_SET_VALUE};fs.writeFileSync(e.GAFFER_MCP_SET_FILE,JSON.stringify(j,null,2)+"\n");'
 }
 gaffer_trust_workspace() { :; }
 gaffer_assert_db_vars()  { return 0; }

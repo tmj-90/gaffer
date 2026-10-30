@@ -46,7 +46,9 @@ export const memorySchema = z
         command: z.string().nullable().default(null),
       })
       .default({}),
+    // DEPRECATED — no consumer (config/inertKeys.ts); accepted so old configs load.
     required_before: z.object({ tags: z.array(z.string()).default([]) }).default({}),
+    // DEPRECATED — no consumer (config/inertKeys.ts).
     suggestion_policy: z
       .object({
         after_ticket_done: z.boolean().default(true),
@@ -100,9 +102,9 @@ export const mutationModeSchema = z.enum([
  */
 export const definitionOfDoneSchema = z
   .object({
-    // Master switch for this DoD block. Mirrors `GAFFER_DOD`. When false the
-    // runner skips DoD enforcement for the repo (today's behaviour). The env
-    // toggle, when set, wins over this value at runtime.
+    // NOT READ BY THE LIVE RUNNER: its gates are toggled by GAFFER_DOD /
+    // GAFFER_DOD_* env vars (config/inertKeys.ts; `crew doctor` warns on a change).
+    // Master switch for this DoD block. Mirrors `GAFFER_DOD`.
     enabled: z.boolean().default(true),
     // Run the repo's test_command as a gate.
     tests: z.boolean().default(true),
@@ -157,6 +159,8 @@ export const safetyRefSchema = z
   .object({
     policy_file: z.string().default("./safety_policy.yaml"),
     default_idle_loop_mode: z.string().default("create_draft_tickets"),
+    // DEPRECATED — the next three have no consumer (config/inertKeys.ts); they are
+    // accepted so old configs load, and `crew doctor` names them.
     require_clean_worktree_before_start: z.boolean().default(true),
     redact_secrets_in_context: z.boolean().default(true),
     model_may_read_secret_files: z.boolean().default(false),
@@ -368,8 +372,8 @@ export const loopsSchema = z
  *  - `product_context_limit` — max product-intent lore records (decisions /
  *    requirements / non-goals) surfaced in the packet's `productContext`
  *    section, budgeted separately so recall can be aimed at "why".
- *  - `token_budget` — optional soft budget; when set, packets over it are
- *    flagged (never silently truncated) so an operator can tighten the caps.
+ *  - `token_budget` — DEPRECATED, no consumer (config/inertKeys.ts); accepted
+ *    so old configs load.
  */
 export const contextSchema = z
   .object({

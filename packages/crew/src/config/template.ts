@@ -49,16 +49,6 @@ memory:
   # No MCP server is spawned. Env (MEMORY_CLI_BIN) wins over this value.
   cli:
     command: null # e.g. "/path/to/memory/dist/bin/memory.js"; or set MEMORY_CLI_BIN
-  required_before:
-    tags:
-      - auth
-      - payments
-      - migrations
-      - public_api
-      - security
-  suggestion_policy:
-    after_ticket_done: true
-    auto_approve: false # never auto-approve durable knowledge
 
 # Register your repositories here. 'crew scan' can detect branch + stack.
 repos: []
@@ -75,18 +65,12 @@ repos: []
 #   coverage_command: poetry run pytest --cov=auth_service
 #   mutation_mode: branch_only
 #   risk_level: high
-#   # Per-repo Definition-of-Done override (I3). Omit to inherit the factory
-#   # default below. A gate with no matching command is SKIPPED, not failed.
-#   definition_of_done:
-#     enabled: true   # set false (or run with GAFFER_DOD=0) to disable enforcement
-#     tests: true
-#     typecheck: true
-#     lint: true
 
-# Factory-wide Definition of Done (I3). The runner runs these gates on every
-# non-empty delivery BEFORE it can reach the human review lane; a failing gate
-# auto-rejects the delivery back to rework. A repo's own definition_of_done
-# overrides this. Shipped gates: tests / typecheck / lint.
+# Definition of Done — NOT READ BY THE LIVE RUNNER (yet). The runner's DoD gates
+# (tests / typecheck / lint on every non-empty delivery, before review) are
+# toggled by the GAFFER_DOD / GAFFER_DOD_TESTS / GAFFER_DOD_TYPECHECK / GAFFER_DOD_LINT
+# env vars (docs/CONFIG.md). This block, and any per-repo definition_of_done override,
+# is accepted but has no effect; \`crew doctor\` warns when you change it.
 definition_of_done:
   enabled: true
   tests: true
@@ -104,9 +88,6 @@ agents: []
 safety:
   policy_file: ./safety_policy.yaml
   default_idle_loop_mode: create_draft_tickets
-  require_clean_worktree_before_start: true
-  redact_secrets_in_context: true
-  model_may_read_secret_files: false # secrets never enter model context
 
 loops:
   # Factory-wide default delivered-ticket threshold for the idle SCAN loops
@@ -122,9 +103,10 @@ loops:
     requires_claim: true
     submit_for_review: true
     claim_ttl_seconds: 900
-    # Verifiable delivery post-conditions. When enabled, a delivery missing a
-    # required step (branch prefix, test evidence, AC evidence, lint clean) is
-    # blocked instead of submitted for review — enforced, not just trusted.
+    # Verifiable delivery post-conditions — crew run (MOCK runtime) only, not read
+    # by the live runner. When enabled, a mock-loop delivery missing a required
+    # step (branch prefix, test evidence, AC evidence, lint clean) is blocked
+    # instead of submitted for review.
     post_conditions:
       enabled: false
       require_branch_prefix: true
@@ -217,13 +199,11 @@ loops:
 
 # Context-packet token hygiene. Caps keep each per-ticket packet lean and
 # pre-filtered to the ticket's stack/area. Token cost per packet is measured and
-# reported on the 'context_packet_built' event; set token_budget to flag (never
-# silently truncate) packets that exceed your target.
+# reported on the 'context_packet_built' event.
 context:
   lore_limit: 8 # max ratified lore records pulled into a packet
   max_skills: 12 # max skills selected after stack filtering
   product_context_limit: 6 # max product-intent lore (decisions/requirements/non-goals) in the productContext section
-  token_budget: null # e.g. 4000; soft budget, packets over it are flagged
 
 # GitHub issue ingest: the on-ramp so teammates can file Dispatch work by
 # labelling a GitHub issue instead of writing a ticket by hand. Off by default.
@@ -245,8 +225,9 @@ ingest:
     # jql: null # optional JQL override; default scopes to labels = "<label>"
     # repo: null # optional repo name to attach created drafts to
 
-# Hooks are advisory: they may veto a claim or emit events/warnings, but they
-# can never bypass safety policy. Disabled by default; opt into built-ins here.
+# Hooks — crew run (MOCK runtime) only, not read by the live runner. They may
+# veto a claim or emit events/warnings, but can never bypass safety policy.
+# Disabled by default; opt into built-ins here.
 hooks:
   enabled: false
   builtins:

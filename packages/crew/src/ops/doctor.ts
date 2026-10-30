@@ -1,7 +1,10 @@
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { parse as parseYaml } from "yaml";
+
 import { isAuditDisabled, resolveAuditPath } from "../audit/index.js";
+import { findInertKeys } from "../config/inertKeys.js";
 import { resolveSqlitePath } from "../config/loader.js";
 import { resolveAsyncMemory, hasRealMemory } from "../memory/factory.js";
 import type { FactoryContext } from "../runtime/wiring.js";
@@ -161,6 +164,9 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   // 8. Audit log status.
   checks.push(auditCheck(ctx, env));
 
+  // 9. crew.yaml keys the live runner never reads.
+  checks.push(inertKeysCheck(ctx));
+
   const failed = checks.some((c) => c.level === "fail");
   return { ok: !failed, checks };
 }
@@ -195,6 +201,43 @@ function safetyPolicyCheck(ctx: FactoryContext): DoctorCheck {
     detail: `${concerns.join("; ")} (${scope})`,
     fix: `Review safety_policy.yaml (set git.require_branch_prefix: ${RUNNER_BRANCH_PREFIX}). It shapes crew's advisory answers; the live factory's boundary is runner/safety-hook.mjs.`,
   };
+}
+
+/**
+ * Name crew.yaml keys that have no effect on the live factory (see
+ * config/inertKeys.ts). Left at their scaffolded value they are harmless and
+ * reported as ok; set deliberately (e.g. `definition_of_done.tests: false`) the
+ * operator expects an effect they will not get, so that is a warn.
+ */
+function inertKeysCheck(ctx: FactoryContext): DoctorCheck {
+  const label = "crew.yaml keys in effect";
+  let raw: unknown;
+  try {
+    raw = parseYaml(readFileSync(ctx.loaded.configPath, "utf8"));
+  } catch {
+    return ok(label, "could not re-read crew.yaml to check for unread keys");
+  }
+  const hits = findInertKeys(raw);
+  const deliberate = hits.filter((h) => h.deliberate);
+  if (deliberate.length > 0) {
+    return {
+      label,
+      level: "warn",
+      detail: deliberate
+        .map(
+          (h) => `${h.at}=${JSON.stringify(h.value)} has no effect (${h.key.scope}: ${h.key.note})`,
+        )
+        .join("; "),
+      fix: "These settings do nothing in the live factory. Delete them, or use the replacement named above.",
+    };
+  }
+  if (hits.length > 0) {
+    return ok(
+      label,
+      `unread keys at their default (safe to delete): ${hits.map((h) => h.at).join(", ")}`,
+    );
+  }
+  return ok(label, "no unread keys");
 }
 
 function auditCheck(ctx: FactoryContext, env: NodeJS.ProcessEnv): DoctorCheck {

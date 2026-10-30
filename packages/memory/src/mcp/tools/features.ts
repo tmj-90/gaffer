@@ -139,7 +139,11 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
         "This APPLIES DIRECTLY as a proposal (not routed through the lore " +
         "draft/review gate): a backlog idea is cheap and reversible, and " +
         "the ledger's value is in staying current. Use `provenance` to " +
-        "record where the idea came from.",
+        "record where the idea came from.\n\n" +
+        "A feature with the same name in the same repo (case-insensitive) is " +
+        "the SAME row: re-adding it only ever moves it forward, and only a " +
+        "re-add that advances its status replaces its summary / provenance " +
+        "(a blank summary never wipes the recorded one).",
       inputSchema: mcpToolInput({
         repo: z.string().min(1).describe("The repo this feature belongs to."),
         name: z.string().min(1).max(200).describe("Short feature name (≤ 200 chars)."),

@@ -226,7 +226,76 @@ describe("addFeature — dedupe by repo + name (one row backlog → building →
     const b = addFeature(db, { repo: "payments-svc", name: "refund FLOW", summary: "v2" });
     expect(b.id).toBe(a.id);
     expect(listFeatures(db, "payments-svc")).toHaveLength(1);
-    expect(getFeature(db, a.id)!.summary).toBe("v2");
+    // A same-status re-add does not replace the recorded summary.
+    expect(getFeature(db, a.id)!.summary).toBe("v1");
+  });
+
+  it("an advancing re-add with a BLANK summary keeps the recorded summary", () => {
+    const f = addFeature(db, { repo: "r", name: "Streaks", summary: "Hand-written summary" });
+    const again = addFeature(db, {
+      repo: "r",
+      name: "streaks",
+      summary: "  ",
+      status: "building",
+      provenance: "epic-1",
+    });
+    expect(again.id).toBe(f.id);
+    expect(again.status).toBe("building");
+    expect(again.summary).toBe("Hand-written summary");
+    expect(again.provenance).toBe("epic-1");
+  });
+
+  it("an advancing re-add with a BLANK provenance keeps the recorded provenance", () => {
+    addFeature(db, { repo: "r", name: "X", summary: "s", provenance: "onboard" });
+    const again = addFeature(db, {
+      repo: "r",
+      name: "X",
+      summary: "s2",
+      status: "building",
+      provenance: "",
+    });
+    expect(again.summary).toBe("s2");
+    expect(again.provenance).toBe("onboard");
+  });
+
+  it("a re-add that does NOT advance a SHIPPED feature leaves its summary and provenance alone", () => {
+    const f = addFeature(db, {
+      repo: "r",
+      name: "Login",
+      summary: "Shipped login",
+      status: "shipped",
+      provenance: "merge:#42",
+    });
+    const again = addFeature(db, {
+      repo: "r",
+      name: "login",
+      summary: "redo",
+      status: "building",
+      provenance: "epic-9",
+    });
+    expect(again.id).toBe(f.id);
+    expect(again.status).toBe("shipped");
+    expect(again.summary).toBe("Shipped login");
+    expect(again.provenance).toBe("merge:#42");
+    const n = db
+      .prepare("SELECT count(*) AS n FROM events WHERE lore_id = ? AND kind = 'feature_updated'")
+      .get(f.id) as { n: number };
+    expect(n.n).toBe(0);
+  });
+
+  it("a non-advancing re-add fills fields that are still empty", () => {
+    const f = addFeature(db, { repo: "r", name: "Y", summary: "" });
+    const again = addFeature(db, {
+      repo: "r",
+      name: "Y",
+      summary: "now described",
+      area: "ui",
+      provenance: "p",
+    });
+    expect(again.id).toBe(f.id);
+    expect(again.summary).toBe("now described");
+    expect(again.area).toBe("ui");
+    expect(again.provenance).toBe("p");
   });
 
   it("the merge runner filing a feature as shipped BY NAME advances the building row instead of adding a second", () => {

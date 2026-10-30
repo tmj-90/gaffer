@@ -152,7 +152,10 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   `DISPATCH_EPIC_FEATURE_CMD` (`bin/epic-feature.mjs`, wired by `gaffer dashboard`;
   detached, no shell, request values as discrete argv). It either advances an existing
   feature of that name (`backlog` → `building`, memory dedupes by repo + name) or
-  `add_feature(status:"building")`, with the **epic ref as provenance**. Deterministic,
+  `add_feature(status:"building")`, with the **epic ref as provenance**. A feature that is
+  already `building` or `shipped` is left as it is (memory only replaces a feature's
+  summary / provenance on a re-add that advances its status, and a blank epic
+  description never wipes a recorded summary). Deterministic,
   best-effort, no agent: the epic is created either way. A greenfield, mixed-repo or
   bootstrap plan writes no feature row. (`node bin/epic-feature.mjs --repo <r> --epic <ref> --name <f>`)
 - **Prepare at delivery.** The delivery agent — already running, already holding the

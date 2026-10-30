@@ -11,6 +11,10 @@
 # then reads the feature row back from the memory DB.
 #   1. a brownfield epic -> a `building` feature with the epic ref as provenance
 #   2. a greenfield epic (repo not registered) -> no feature row
+#   3. an epic with NO description on an existing backlog feature -> building, and the
+#      hand-written backlog summary survives (a blank summary used to wipe it)
+#   4. an epic whose name matches an already SHIPPED feature -> stays shipped, and its
+#      summary + merge/PR provenance are untouched (they used to be overwritten)
 #
 # Hermetic: temp DBs, a loopback port, no model calls. SKIPs when the dispatch or
 # memory dist is not built.
@@ -90,6 +94,54 @@ CODE="$(post_epic '{"epic":{"name":"Newapp"},"tickets":[{"title":"page","repo":"
 [ "$CODE" = "201" ] && ok "POST /epics created the greenfield epic (201)" || fail "greenfield POST /epics returned $CODE"
 sleep 1.5
 grep -q "Newapp" <<<"$(features newapp)" && fail "a greenfield epic wrote a feature row" || ok "a greenfield epic writes no feature row"
+
+epic_id_of_resp() {
+  node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).epic_node_id||"")' "$WORK/resp.json" 2>/dev/null
+}
+# Wait until the hook run for epic <id> has finished (its run log carries the JSON
+# result line naming the epic), so "nothing changed" is asserted AFTER the hook ran.
+wait_hook() { # <epic id>
+  local i=0
+  while [ "$i" -lt 60 ]; do
+    grep -lq "\"epic\":\"$1\"" "$GAFFER_DATA"/runs/*.log 2>/dev/null && return 0
+    i=$((i+1)); sleep 0.25
+  done
+  return 1
+}
+mem() { MEMORY_DB="$MEMORY_DB" node "$MEM_JS" "$@" >/dev/null 2>&1; }
+
+echo "== 3. epic with no description on a backlog feature keeps its summary =="
+mem feature add taskapi --name Habits --summary "Precious hand-written summary" --provenance onboard \
+  || fail "could not seed the backlog feature"
+CODE="$(post_epic '{"epic":{"name":"Habits"},"tickets":[{"title":"habit model","repo":"taskapi","acceptanceCriteria":["stores habits"]}]}')"
+[ "$CODE" = "201" ] && ok "POST /epics created the description-less epic (201)" || fail "POST /epics returned $CODE: $(cat "$WORK/resp.json")"
+H_EPIC="$(epic_id_of_resp)"
+wait_feature taskapi "\[building\] Habits" && ok "the backlog feature advanced to BUILDING" \
+  || fail "Habits not building: $(features taskapi)"
+FOUT="$(features taskapi)"
+HBLOCK="$(grep -A2 "\] Habits" <<<"$FOUT")"
+grep -q "Precious hand-written summary" <<<"$HBLOCK" \
+  && ok "the backlog summary survived an epic with no description" \
+  || fail "the backlog summary was wiped: $HBLOCK"
+[ -n "$H_EPIC" ] && grep -q "provenance: $H_EPIC" <<<"$HBLOCK" \
+  && ok "the advancing epic is the feature's provenance" || fail "provenance not the epic ($H_EPIC): $HBLOCK"
+
+echo "== 4. epic named like a SHIPPED feature leaves it untouched =="
+mem feature add taskapi --name Login --summary "Shipped login" --status shipped --provenance pr-42 \
+  || fail "could not seed the shipped feature"
+CODE="$(post_epic '{"epic":{"name":"login","description":"redo"},"tickets":[{"title":"login page","repo":"taskapi","acceptanceCriteria":["renders"]}]}')"
+[ "$CODE" = "201" ] && ok "POST /epics created the epic named like a shipped feature (201)" || fail "POST /epics returned $CODE: $(cat "$WORK/resp.json")"
+L_EPIC="$(epic_id_of_resp)"
+[ -n "$L_EPIC" ] && wait_hook "$L_EPIC" && ok "the feature hook ran for the epic" \
+  || fail "the feature hook never ran for epic '$L_EPIC' (runs: $(ls "$GAFFER_DATA/runs" 2>/dev/null | tr '\n' ' '))"
+FOUT="$(features taskapi)"
+LBLOCK="$(grep -i -A2 "\] Login" <<<"$FOUT")"
+grep -q "\[shipped\] Login" <<<"$LBLOCK" && ok "the shipped feature stays SHIPPED" || fail "Login not shipped: $LBLOCK"
+grep -q "Shipped login" <<<"$LBLOCK" && ! grep -q "redo" <<<"$LBLOCK" \
+  && ok "the shipped summary is untouched" || fail "the shipped summary was overwritten: $LBLOCK"
+grep -q "provenance: pr-42" <<<"$LBLOCK" \
+  && ok "the shipped merge/PR provenance is untouched" || fail "the shipped provenance was overwritten: $LBLOCK"
+[ "$(grep -ci "\] login" <<<"$FOUT")" = "1" ] && ok "still ONE Login row" || fail "duplicate Login rows: $FOUT"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

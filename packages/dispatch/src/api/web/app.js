@@ -872,8 +872,13 @@ function statusBadge(status) {
   ]);
 }
 /** Risk: outlined condensed caps ("HIGH RISK" reads on its own, not by hue). */
-function riskBadge(risk) {
-  return el("span", { class: `badge risk-${risk}`, title: `${risk} risk` }, risk);
+/** Risk chip. `long` says "high risk" (a page's meta line, where "high" alone is ambiguous). */
+function riskBadge(risk, { long = false } = {}) {
+  return el(
+    "span",
+    { class: `badge risk-${risk}`, title: `${risk} risk` },
+    long ? `${risk} risk` : risk,
+  );
 }
 function accessBadge(access) {
   return badge(access, `access-${access}`);
@@ -1039,9 +1044,10 @@ function focusableIn(root) {
     ),
   ].filter((e) => e.offsetParent !== null || e === document.activeElement);
 }
-function openSheet(title, contentNode) {
+function openSheet(title, contentNode, { focus } = {}) {
   const { scrim, sheet, head, body } = ensureSheet();
-  sheetReturnFocus = document.activeElement; // so focus returns here on close
+  // A sheet opened from inside an open sheet keeps the ORIGINAL trigger to return to.
+  if (!sheet.classList.contains("open")) sheetReturnFocus = document.activeElement;
   clear(head);
   clear(body);
   head.appendChild(el("h2", { id: "sheet-title" }, title));
@@ -1056,20 +1062,31 @@ function openSheet(title, contentNode) {
   scrim.classList.add("open");
   sheet.classList.add("open");
   document.addEventListener("keydown", sheetKeydown);
-  // Move focus INTO the dialog so keyboard/AT users aren't stranded behind it.
-  const first = focusableIn(sheet)[0];
+  // Move focus INTO the dialog so keyboard/AT users aren't stranded behind it:
+  // to the field the sheet is for when it names one, else its first control.
+  const first = focus || focusableIn(sheet)[0];
   (first || sheet).focus();
 }
-function closeSheet() {
+/**
+ * Close the sheet. Focus goes back to the control that opened it; `restore: false`
+ * (a route change) leaves focus to the new page. A click handler passes its event
+ * here, which has no `restore`, so a Close or Cancel button restores focus.
+ */
+function closeSheet({ restore = true } = {}) {
   if (!sheetEls) return;
+  const wasOpen = sheetEls.sheet.classList.contains("open");
   sheetEls.scrim.classList.remove("open");
   sheetEls.sheet.classList.remove("open");
   document.removeEventListener("keydown", sheetKeydown);
   // Restore focus to whatever opened the sheet (the trigger), not the body.
-  if (sheetReturnFocus && typeof sheetReturnFocus.focus === "function") {
-    sheetReturnFocus.focus();
-  }
+  const back = sheetReturnFocus;
   sheetReturnFocus = null;
+  if (!restore || !wasOpen) return;
+  if (back && back.isConnected && typeof back.focus === "function") back.focus();
+}
+/** Is the shared sheet showing? */
+function sheetOpen() {
+  return Boolean(sheetEls && sheetEls.sheet.classList.contains("open"));
 }
 function sheetKeydown(e) {
   if (e.key === "Escape") {
@@ -3051,7 +3068,7 @@ function renderOwnedItem(it, i = 0, f = null) {
 }
 
 /** A bottom sheet / side panel with a short intro, a form and its actions. */
-function actionSheet(title, { intro, body, actions }) {
+function actionSheet(title, { intro, body, actions, focus }) {
   openSheet(
     title,
     el("div", { class: "act-sheet" }, [
@@ -3059,7 +3076,186 @@ function actionSheet(title, { intro, body, actions }) {
       body || null,
       el("div", { class: "btn-row act-actions" }, actions),
     ]),
+    { focus },
   );
+}
+
+/** The ticket a sheet acts on, named at its top: glyph, number and title. */
+function sheetTicket(t) {
+  if (!t) return null;
+  return el("p", { class: "rs-ticket" }, [
+    t.status ? glyph(t.status, 16, statusLabel(t.status)) : null,
+    t.number != null ? el("b", { class: "rs-num tabnum" }, `#${t.number}`) : null,
+    t.title ? el("span", { class: "rs-title" }, t.title) : null,
+  ]);
+}
+
+/**
+ * The one place a reason is collected: Send back, Won't do, a tester's verdict, Stop,
+ * a repo ruled off the boundary. It opens in the shared sheet (side panel at desktop,
+ * bottom sheet on a phone), so it wears the kit in both themes, traps focus, gives
+ * focus back to its trigger on Cancel or Esc, and closes when the route changes.
+ *
+ *   title    names the act and the ticket ("Send #15 back")
+ *   ticket   the ticket it acts on (shown under the title), or null
+ *   intro    what happens when you confirm, from what the server does
+ *   presets  quick reasons: a tap fills the box (one-handed on a phone)
+ *   required when true the confirm stays disabled until there is a reason, and
+ *            the submit re-checks (a reason is REQUIRED for these endpoints)
+ *   confirm  the button word, the same verb as the button that opened it
+ *   tone     "primary" or "danger"
+ *   capture  offer "also capture as a lore draft" (Review's send back / won't do)
+ *   onConfirm(reason, captureLore) does the work; the sheet closes when it
+ *            resolves and stays open (reason kept) when it throws.
+ *
+ * Hooks: `.reject-dialog` (the form), `.reject-chip`, `.reject-reason-input`,
+ * `.reject-dialog-actions .reject-submit`, `.reject-capture-cb`.
+ */
+function reasonSheet({
+  title,
+  ticket = null,
+  intro,
+  label = "Reason",
+  hint,
+  presets = [],
+  placeholder,
+  required = true,
+  confirm,
+  tone = "primary",
+  capture = false,
+  onConfirm,
+}) {
+  const hintId = `rs-hint-${++fieldSeq}`;
+  const input = el("textarea", {
+    class: "reject-reason-input",
+    name: "reason",
+    rows: 4,
+    maxlength: "20000",
+    placeholder: placeholder || null,
+    required: required ? "" : null,
+    "aria-describedby": hintId,
+  });
+  const chips = presets.length
+    ? el(
+        "div",
+        { class: "reject-chips", role: "group", "aria-label": "Quick reasons" },
+        presets.map((text) =>
+          el(
+            "button",
+            {
+              class: "chip reject-chip",
+              type: "button",
+              "aria-pressed": "false",
+              onclick: () => {
+                input.value = text;
+                sync();
+                input.focus();
+              },
+            },
+            text,
+          ),
+        ),
+      )
+    : null;
+  const submit = el(
+    "button",
+    {
+      class: `btn ${tone === "danger" ? "danger" : "primary"} reject-submit`,
+      type: "submit",
+      // aria-disabled, not disabled: the confirm stays focusable and, pressed with an
+      // empty box, says why instead of doing nothing silently.
+      "aria-disabled": required ? "true" : null,
+    },
+    confirm,
+  );
+  const captureBox = capture
+    ? el("input", { type: "checkbox", class: "reject-capture-cb", name: "capture" })
+    : null;
+  const hintText =
+    hint ||
+    (required
+      ? "Required. It is kept on the ticket."
+      : "Optional. It is kept on the ticket if you write one.");
+  const hintEl = el("p", { class: "act-hint", id: hintId }, hintText);
+  const form = el(
+    "form",
+    {
+      class: "act-sheet reject-dialog",
+      novalidate: "",
+      onsubmit: (e) => {
+        e.preventDefault();
+        void send();
+      },
+    },
+    [
+      sheetTicket(ticket),
+      intro ? el("p", { class: "act-intro" }, intro) : null,
+      chips,
+      field(label, input),
+      hintEl,
+      captureBox
+        ? el("label", { class: "reject-capture" }, [
+            captureBox,
+            el("span", {}, [
+              el("b", {}, "Also file it as a lore draft. "),
+              "It waits in the memory review queue for you; it is never approved on its own.",
+            ]),
+          ])
+        : null,
+      el("div", { class: "btn-row act-actions reject-dialog-actions" }, [
+        submit,
+        el("button", { class: "btn", type: "button", onclick: () => closeSheet() }, "Cancel"),
+      ]),
+    ],
+  );
+  function sync() {
+    const v = input.value.trim();
+    if (required) submit.setAttribute("aria-disabled", String(!v));
+    input.removeAttribute("aria-invalid");
+    hintEl.classList.remove("is-error");
+    hintEl.textContent = hintText;
+    if (chips)
+      for (const c of chips.children)
+        c.setAttribute("aria-pressed", String(c.textContent === input.value));
+  }
+  let busy = false;
+  async function send() {
+    if (busy) return;
+    const reason = input.value.trim();
+    // Backstop the invariant even if the disabled state were bypassed.
+    if (required && !reason) {
+      input.setAttribute("aria-invalid", "true");
+      hintEl.classList.add("is-error");
+      hintEl.textContent = `Write a reason first: ${confirm} needs one.`;
+      input.focus();
+      return;
+    }
+    busy = true;
+    submit.setAttribute("aria-disabled", "true");
+    submit.setAttribute("aria-busy", "true");
+    try {
+      await onConfirm(reason, captureBox ? captureBox.checked : false);
+      // Close only if this form is still what the sheet shows.
+      if (form.isConnected && sheetOpen()) closeSheet();
+    } catch (e) {
+      if (!e || e.code !== "ABORTED")
+        toast((e && e.message) || "That did not go through.", { code: e && e.code });
+      submit.setAttribute("aria-disabled", String(required && !input.value.trim()));
+    } finally {
+      busy = false;
+      submit.removeAttribute("aria-busy");
+    }
+  }
+  input.addEventListener("input", sync);
+  // Ctrl/Cmd+Enter sends from the box (Enter alone is a new line).
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void send();
+    }
+  });
+  openSheet(title, form, { focus: input });
+  return form;
 }
 
 /** Unblock: move a blocked ticket back to Ready (another go) or Refining (rewrite first). */
@@ -7222,7 +7418,7 @@ function parseFailure(text) {
 }
 
 /** The referee's card at the head of a ticket that is out: red (blocked/failed) or yellow (needs you). */
-function refCard(kind) {
+function refCard(kind, status) {
   return svgEl(
     "svg",
     {
@@ -7236,9 +7432,12 @@ function refCard(kind) {
     [
       svgEl("rect", { x: 10, y: 8, width: 100, height: 134, rx: 6, class: "ref-card-shadow" }),
       svgEl("rect", { x: 4, y: 2, width: 100, height: 134, rx: 6, class: "ref-card-face" }),
-      kind === "red"
-        ? svgEl("rect", { x: 40, y: 55, width: 28, height: 28, rx: 2, class: "ref-card-glyph" })
-        : null,
+      // The card carries the status glyph's shape: blocked is a square, failed a triangle.
+      kind === "red" && status === "failed"
+        ? svgEl("path", { d: "M54 50 L72 84 H36 Z", class: "ref-card-glyph" })
+        : kind === "red"
+          ? svgEl("rect", { x: 40, y: 55, width: 28, height: 28, rx: 2, class: "ref-card-glyph" })
+          : null,
     ],
   );
 }
@@ -7265,7 +7464,7 @@ function ticketLede(t, trail, events, doneAt) {
       return [
         el("b", { class: "is-red" }, "Failed. "),
         last ? `It failed the ${last.gate} gate.` : "It failed its gates.",
-        " Send it back, or mark it won't do.",
+        " It needs you.",
       ];
     case "paused": {
       const p = pausedInfo(events);
@@ -7579,6 +7778,7 @@ async function renderTicket(id) {
   }
   await ensureAgents();
   const t = view.ticket;
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
   const acList = view.acceptance_criteria || [];
   const blockers = view.blocking_decisions || [];
   const events = view.events || [];
@@ -7654,18 +7854,21 @@ async function renderTicket(id) {
           type: "button",
           title: "Send this ticket back for rework",
           onclick: () =>
-            guard(async () => {
-              const reason = window.prompt("Reason for sending back to rework?");
-              if (reason == null || reason.trim() === "") {
-                toast("Rework cancelled — a reason is required", {});
-                return;
-              }
-              await api("POST", `/tickets/${t.id}/review/reject`, {
-                to: "refining",
-                reason: reason.trim(),
-              });
-              toast("Sent back to rework", { ok: true });
-              router();
+            reasonSheet({
+              title: `Send ${ref} back`,
+              ticket: t,
+              intro:
+                t.status === "ready_for_merge"
+                  ? `${ref} is approved but has not merged. This pulls it back to Refining with your reason, and its acceptance criteria reset to not met.`
+                  : `${ref} goes back to Refining with your reason, and its acceptance criteria reset to not met.`,
+              label: "What should change?",
+              presets: REJECT_REASON_PRESETS,
+              confirm: "Send back",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/review/reject`, { to: "refining", reason });
+                toast(`${ref} sent back to Refining.`, { ok: true });
+                router();
+              },
             }),
         },
         "Send back to rework",
@@ -7682,21 +7885,22 @@ async function renderTicket(id) {
           title:
             "Record a tester PASS for this in_testing ticket (→ ready_for_merge). Use when you verified the acceptance criteria yourself or the tester lane is held.",
           onclick: () =>
-            guard(async () => {
-              const summary = window.prompt(
-                "Tester PASS — what was verified? (recorded as test evidence)",
-                "Verified by hand against the acceptance criteria",
-              );
-              if (summary == null || summary.trim() === "") {
-                toast("Tester verdict cancelled — a summary is required", {});
-                return;
-              }
-              await api("POST", `/tickets/${t.id}/tester`, {
-                verdict: "pass",
-                summary: summary.trim(),
-              });
-              toast("Tester PASS recorded — ready to merge", { ok: true });
-              router();
+            reasonSheet({
+              title: `Tester pass ${ref}`,
+              ticket: t,
+              intro: `Records an independent tester PASS for ${ref}. It moves to Ready for merge, and what you checked is kept as test evidence.`,
+              label: "What did you check?",
+              presets: [
+                "Checked every acceptance criterion by hand",
+                "Ran the black-box checks against a running build",
+              ],
+              hint: "Required. It is kept as the test evidence.",
+              confirm: "Record PASS",
+              onConfirm: async (summary) => {
+                await api("POST", `/tickets/${t.id}/tester`, { verdict: "pass", summary });
+                toast(`Tester PASS recorded: ${ref} is ready to merge.`, { ok: true });
+                router();
+              },
             }),
         },
         "Record tester PASS",
@@ -7710,17 +7914,24 @@ async function renderTicket(id) {
           title:
             "Record a tester FAIL for this in_testing ticket (→ refining; the failing observation becomes the rework feedback)",
           onclick: () =>
-            openRejectDialog({
-              verb: "recording a tester FAIL",
-              onConfirm: (reason) =>
-                guard(async () => {
-                  await api("POST", `/tickets/${t.id}/tester`, {
-                    verdict: "fail",
-                    summary: reason,
-                  });
-                  toast("Tester FAIL recorded — sent back for rework", { ok: true });
-                  router();
-                }),
+            reasonSheet({
+              title: `Tester fail ${ref}`,
+              ticket: t,
+              intro: `Records an independent tester FAIL for ${ref}. It goes back to Refining, and what you saw becomes the rework feedback.`,
+              label: "What failed?",
+              presets: [
+                "An acceptance criterion does not hold",
+                "Breaks a flow that worked before",
+                "Errors on empty or unusual input",
+              ],
+              hint: "Required. The next attempt reads it.",
+              confirm: "Record FAIL",
+              tone: "danger",
+              onConfirm: async (summary) => {
+                await api("POST", `/tickets/${t.id}/tester`, { verdict: "fail", summary });
+                toast(`Tester FAIL recorded: ${ref} is back in Refining.`, { ok: true });
+                router();
+              },
             }),
         },
         "Record tester FAIL",
@@ -7766,15 +7977,19 @@ async function renderTicket(id) {
           type: "button",
           title: "Mark this ticket won't do (won't be built)",
           onclick: () =>
-            guard(async () => {
-              const reason = window.prompt("Reason for marking won't do?");
-              if (reason == null || reason.trim() === "") {
-                toast("Won't do cancelled — a reason is required", {});
-                return;
-              }
-              await api("POST", `/tickets/${t.id}/wont-do`, { reason: reason.trim() });
-              toast("Marked won't do", { ok: true });
-              router();
+            reasonSheet({
+              title: `Won't do ${ref}`,
+              ticket: t,
+              intro: `${ref} closes without being built and goes to Won't do. You can reopen it into Refining later.`,
+              label: "Why not?",
+              presets: WONT_DO_PRESETS,
+              confirm: "Won't do",
+              tone: "danger",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/wont-do`, { reason });
+                toast(`${ref} closed as won't do.`, { ok: true });
+                router();
+              },
             }),
         },
         "Won't do",
@@ -7822,32 +8037,28 @@ async function renderTicket(id) {
           type: "button",
           title: "Stop this paused delivery — abandon it and tear down its worktree",
           onclick: () =>
-            guard(async () => {
-              const reason = window.prompt("Reason for stopping this paused delivery? (optional)");
-              if (reason === null) return; // cancelled the prompt
-              const body = reason.trim() === "" ? {} : { reason: reason.trim() };
-              await api("POST", `/tickets/${t.id}/stop`, body);
-              toast("Stopped — paused delivery abandoned", { ok: true });
-              router();
+            reasonSheet({
+              title: `Stop ${ref}`,
+              ticket: t,
+              intro: `Abandons the paused delivery of ${ref}: the ticket is cancelled and its resume point is dropped, so it cannot carry on. Continue resumes it where it stopped instead.`,
+              label: "Why stop it?",
+              required: false,
+              confirm: "Stop",
+              tone: "danger",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/stop`, reason ? { reason } : {});
+                toast(`Stopped ${ref}: the paused delivery is abandoned.`, { ok: true });
+                router();
+              },
             }),
         },
         "Stop",
       ),
   };
 
-  // "Merging…" — a passive indicator on the approved-and-merging state, shown
-  // alongside the admin/rework actions so the human sees the runner is working.
-  const mergingPill =
-    t.status === "ready_for_merge"
-      ? el(
-          "span",
-          { class: "badge no-dot", title: "The merge runner is merging the delivery branch" },
-          "merging…",
-        )
-      : null;
-
+  // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
+  // runner may be held. The status ("Approved · merging") and the lede say where it is.
   const headActions = [
-    mergingPill,
     ...ticketActionKeys(t.status).map((key) => (actionButtons[key] ? actionButtons[key]() : null)),
   ].filter(Boolean);
 
@@ -7889,7 +8100,7 @@ async function renderTicket(id) {
   const needsYou = ["in_review", "ready_for_merge", "paused"].includes(t.status);
   const doneAt = t.status === "done" ? sinceStatus(events, "done") || t.updated_at : null;
   const mark = out
-    ? refCard("red")
+    ? refCard("red", t.status)
     : needsYou
       ? refCard("yellow")
       : t.status === "done"
@@ -7906,7 +8117,7 @@ async function renderTicket(id) {
         el("p", { class: "tk-meta" }, [
           statusBadge(t.status),
           repoW ? repoTag(repoW.name, 20) : null,
-          riskBadge(t.risk_level),
+          riskBadge(t.risk_level, { long: true }),
           epicScope
             ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
             : null,
@@ -8027,7 +8238,7 @@ async function renderTicket(id) {
   ]);
 
   // The boundary: which repos this ticket may write, read or test. Read-only once merged.
-  const sideRepos = renderRepoPanel(t.id, claimBox, { readOnly: t.status === "done" });
+  const sideRepos = renderRepoPanel(t.id, claimBox, { readOnly: t.status === "done", ticket: t });
 
   // The diff: the delivery once it is in review (or shipped), and the work in
   // progress of a parked or capped delivery when it left a branch. Files fold
@@ -8357,6 +8568,14 @@ function eventSentence(ev, repos) {
  * who did it, and the tick it was written in. The raw payload is one switch away.
  */
 function ticketMatchReport(events, repos) {
+  // Creating a ticket writes its criteria and repo links in the same instant, some a
+  // few ms before the ticket.created row itself; the report opens on the kick-off.
+  const created = events.findIndex((e) => e.event_type === "ticket.created");
+  if (
+    created > 0 &&
+    Date.parse(events[created].created_at) - Date.parse(events[0].created_at) < 1000
+  )
+    events = [events[created], ...events.slice(0, created), ...events.slice(created + 1)];
   let day = "";
   const list = el(
     "ol",
@@ -8431,7 +8650,9 @@ function ticketMatchReport(events, repos) {
  * run says so plainly (the #88 hung-claim case).
  */
 function ticketRunsPanel(t, events) {
-  const delivering = ["in_progress", "claimed", "in_testing"].includes(t.status);
+  // In testing is not delivering: the tester lane runs outside the delivery runs read here,
+  // so "no live run" would wrongly say a ticket under test may be stuck.
+  const delivering = ["in_progress", "claimed"].includes(t.status);
   const panel = el("section", { class: "card panel tk-runs", "aria-label": "Runs" });
   const body = el("div", { class: "tk-runs-body" }, [
     el("p", { class: "dim" }, delivering ? "Finding the live run…" : "Reading the runner's logs…"),
@@ -8628,7 +8849,14 @@ function renderTestingCard(t, evidence) {
   const contract = parseTicketTestContract(t.test_contract);
   const testable = t.can_be_tested === 1;
 
-  const toggle = el("input", { type: "checkbox", role: "switch", "aria-label": "Testable" });
+  // A merged or closed ticket's testing route is its record: it can no longer change.
+  const closed = t.status === "done" || t.status === "cancelled";
+  const toggle = el("input", {
+    type: "checkbox",
+    role: "switch",
+    "aria-label": "Testable",
+    disabled: closed ? "" : null,
+  });
   toggle.checked = testable;
   toggle.addEventListener("change", () =>
     guard(async () => {
@@ -8701,7 +8929,9 @@ function renderTestingCard(t, evidence) {
         el(
           "p",
           { class: "setting-help dim" },
-          "When on (and GAFFER_TESTING is enabled), review approval routes this ticket through an independent tester before merge.",
+          closed
+            ? `${t.status === "done" ? "Merged" : "Closed"}: this records whether it went through the independent tester. It can no longer change.`
+            : "When on (and GAFFER_TESTING is enabled), review approval routes this ticket through an independent tester before merge.",
         ),
       ]),
       el("label", { class: "switch" }, [
@@ -8834,7 +9064,14 @@ const REPO_GROUPS = [
  * write, read or test. Suggestions are not a boundary until confirmed. Once the
  * ticket is merged the boundary is its record and reads only (no controls).
  */
-function renderRepoPanel(ticketId, claimBox, { readOnly = false } = {}) {
+// The ticket each boundary editor belongs to, so its sheets can name it.
+const boundaryTickets = new Map();
+function boundaryRef(ticketId) {
+  const t = boundaryTickets.get(ticketId);
+  return t && t.number != null ? `#${t.number}` : "this ticket";
+}
+function renderRepoPanel(ticketId, claimBox, { readOnly = false, ticket = null } = {}) {
+  if (ticket) boundaryTickets.set(ticketId, ticket);
   const body = el("div", { class: "repo-panel-body" }, el("p", { class: "dim" }, "Loading repos…"));
   const card = el(
     "section",
@@ -8902,7 +9139,9 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload, readOnly = fal
     const links = work[group.key] || [];
     if (!links.length) continue;
     anyRepo = true;
-    body.appendChild(renderRepoGroup(ticketId, group, links, suggMeta, reload, readOnly));
+    body.appendChild(
+      renderRepoGroup(ticketId, group, links, suggMeta, reload, readOnly, write.length),
+    );
   }
   const denied = work.deniedRepos || [];
   if (denied.length) {
@@ -8951,10 +9190,21 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload, readOnly = fal
       ),
     );
   }
-  if (!readOnly) body.appendChild(renderAddRepoForm(ticketId, reload));
+  if (!readOnly)
+    body.appendChild(
+      renderAddRepoForm(ticketId, reload, { linked: linkedIds, hasWrite: write.length > 0 }),
+    );
 }
 
-function renderRepoGroup(ticketId, group, links, suggMeta, reload, readOnly = false) {
+function renderRepoGroup(
+  ticketId,
+  group,
+  links,
+  suggMeta,
+  reload,
+  readOnly = false,
+  writeCount = 0,
+) {
   const isRejected = group.tone === "rejected";
   const isSuggested = group.tone === "suggested";
   const rows = links.map((r) => {
@@ -8965,7 +9215,7 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload, readOnly = fa
     if (readOnly) {
       controls.push(accessBadge(r.access || "none"));
     } else if (!isRejected) {
-      controls.push(renderAccessControl(ticketId, r, reload));
+      controls.push(renderAccessControl(ticketId, r, reload, writeCount));
       controls.push(
         el(
           "button",
@@ -8984,7 +9234,7 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload, readOnly = fa
           {
             class: "btn small",
             type: "button",
-            onclick: () => setRepoAccess(ticketId, r.id, "write", "confirmed", reload),
+            onclick: () => setRepoAccess(ticketId, r.id, "write", "confirmed", reload, r.name),
           },
           "Restore → write",
         ),
@@ -9097,15 +9347,47 @@ function renderSuggestionGroup(ticketId, suggestions, reload) {
   ]);
 }
 
-function renderAccessControl(ticketId, repo, reload) {
+function renderAccessControl(ticketId, repo, reload, writeCount = 0) {
+  const name = repo.name || repo.id;
   const sel = el(
     "select",
-    { class: "access-select", "aria-label": `Access for ${repo.name || repo.id}` },
+    { class: "access-select", "aria-label": `Access for ${name}` },
     TICKET_REPO_ACCESS.map((a) => el("option", { value: a, selected: repo.access === a }, a)),
   );
-  sel.addEventListener("change", () =>
-    setRepoAccess(ticketId, repo.id, sel.value, "confirmed", reload),
-  );
+  sel.addEventListener("change", () => {
+    const to = sel.value;
+    // Taking away the ticket's only write repo leaves nowhere to deliver code: ask first.
+    if (repo.access === "write" && to !== "write" && writeCount <= 1) {
+      sel.value = repo.access; // nothing changes unless the sheet confirms it
+      const ref = boundaryRef(ticketId);
+      const keep = el(
+        "button",
+        { class: "btn", type: "button", onclick: () => closeSheet() },
+        "Keep write",
+      );
+      actionSheet(`Take ${name} off write?`, {
+        focus: keep, // the safe choice has focus: Enter keeps the boundary as it is
+        intro: `${name} is the only repo ${ref} may write. Set it to ${to} and no agent can deliver code for ${ref} until you give it a write repo again.`,
+        actions: [
+          keep,
+          el(
+            "button",
+            {
+              class: "btn danger",
+              type: "button",
+              onclick: () => {
+                closeSheet();
+                setRepoAccess(ticketId, repo.id, to, "confirmed", reload, name);
+              },
+            },
+            `Set to ${to}`,
+          ),
+        ],
+      });
+      return;
+    }
+    setRepoAccess(ticketId, repo.id, to, "confirmed", reload, name);
+  });
   return sel;
 }
 
@@ -9118,65 +9400,97 @@ function confidenceMeter(value) {
   ]);
 }
 
-function setRepoAccess(ticketId, repoId, access, relation, reload) {
+function setRepoAccess(ticketId, repoId, access, relation, reload, name) {
   guard(async () => {
     await api("PUT", `/tickets/${ticketId}/repo-access`, { repo_id: repoId, access, relation });
-    toast(`Repo set to ${access}`, { ok: true });
+    toast(`${name || "Repo"}: ${access} on ${boundaryRef(ticketId)}.`, { ok: true });
     reload();
   });
 }
 
 function rejectRepo(ticketId, repo, reload) {
-  guard(async () => {
-    const reason = window.prompt(`Reason for rejecting ${repo.name || repo.id}?`);
-    if (reason == null || reason.trim() === "") {
-      toast("Reject cancelled — a reason is required");
-      return;
-    }
-    await api("PUT", `/tickets/${ticketId}/repo-access`, {
-      repo_id: repo.id,
-      access: "none",
-      relation: "rejected",
-      reasons: [reason.trim()],
-    });
-    toast("Repo rejected", { ok: true });
-    reload();
+  const name = repo.name || repo.id;
+  const ref = boundaryRef(ticketId);
+  reasonSheet({
+    title: `Reject ${name}`,
+    ticket: boundaryTickets.get(ticketId) || null,
+    intro: `${name} comes off the boundary of ${ref}: agents on this ticket may not write, read or test it. Restore it to write later if you change your mind.`,
+    label: `Why is ${name} out of bounds?`,
+    presets: [
+      "This change does not touch it",
+      "Wrong repo suggested",
+      "Another ticket owns this work",
+    ],
+    hint: "Required. It is kept with the boundary.",
+    confirm: "Reject repo",
+    tone: "danger",
+    onConfirm: async (reason) => {
+      await api("PUT", `/tickets/${ticketId}/repo-access`, {
+        repo_id: repo.id,
+        access: "none",
+        relation: "rejected",
+        reasons: [reason],
+      });
+      toast(`${name} is off the boundary of ${ref}.`, { ok: true });
+      reload();
+    },
   });
 }
 
-function renderAddRepoForm(ticketId, reload) {
+/**
+ * Add a repo to the boundary. It offers only repos NOT already on it (written, read,
+ * tested or rejected): changing a listed repo's access is its own row's control, so
+ * this form can never quietly turn a confirmed write into a read. With no write repo
+ * yet, write is the default; otherwise read.
+ */
+function renderAddRepoForm(ticketId, reload, { linked = new Set(), hasWrite = false } = {}) {
   const repoSel = el("select", { required: "" }, [el("option", { value: "" }, "Loading repos…")]);
-  guard(async () => {
-    const repos = (await api("GET", "/repositories")).repositories || [];
-    clear(repoSel);
-    repoSel.appendChild(el("option", { value: "" }, "Add a repo…"));
-    repos.forEach((r) => repoSel.appendChild(el("option", { value: r.id }, r.name)));
-  });
   const access = el(
     "select",
     {},
-    TICKET_REPO_ACCESS.map((a) => el("option", { value: a, selected: a === "read" }, a)),
+    TICKET_REPO_ACCESS.map((a) =>
+      el("option", { value: a, selected: a === (hasWrite ? "read" : "write") }, a),
+    ),
   );
-  return el(
+  const submit = el("button", { class: "btn", type: "submit" }, "Add repo");
+  const form = el(
     "form",
     {
-      class: "inline-form",
+      class: "inline-form add-repo-form",
       onsubmit: (e) => {
         e.preventDefault();
         if (!repoSel.value) {
           toast("Pick a repo first");
           return;
         }
-        setRepoAccess(ticketId, repoSel.value, access.value, "confirmed", reload);
+        if (linked.has(repoSel.value)) return; // listed above: change it there
+        const name = repoSel.selectedOptions?.[0]?.textContent || null;
+        setRepoAccess(ticketId, repoSel.value, access.value, "confirmed", reload, name);
         repoSel.value = "";
       },
     },
-    [
-      field("Repo", repoSel),
-      field("Access", access),
-      el("button", { class: "btn", type: "submit" }, "Add repo"),
-    ],
+    [field("Repo", repoSel), field("Access", access), submit],
   );
+  guard(async () => {
+    const repos = (await api("GET", "/repositories")).repositories || [];
+    const free = repos.filter((r) => !linked.has(r.id));
+    clear(repoSel);
+    if (!free.length) {
+      form.replaceChildren(
+        el(
+          "p",
+          { class: "dim add-repo-none" },
+          repos.length
+            ? "Every repo the factory knows is already on this boundary. Change one above."
+            : "The factory has no repos yet.",
+        ),
+      );
+      return;
+    }
+    repoSel.appendChild(el("option", { value: "" }, "Add a repo…"));
+    free.forEach((r) => repoSel.appendChild(el("option", { value: r.id }, r.name)));
+  });
+  return form;
 }
 
 function loadClaimability(ticketId, box) {
@@ -11258,6 +11572,12 @@ function splitDiffFiles(diffText) {
   return files;
 }
 
+/** A file path with a break chance after each "/": a narrow head wraps at a folder, not mid-name. */
+function pathBreaks(p) {
+  const parts = String(p).split("/");
+  return parts.flatMap((part, i) => (i < parts.length - 1 ? [`${part}/`, el("wbr")] : [part]));
+}
+
 /** A single repo's diff section: header (repo/branch/stats) + per-file file
  *  strip (jumper) + one collapsible `<details>` per file. `repoIdx` scopes the
  *  DOM ids to indices — a path is NEVER used to build an id or selector. */
@@ -11348,7 +11668,7 @@ function repoDiffSection(rd, repoIdx = 0, { collapsed = false } = {}) {
       },
       [
         el("span", { class: "dfj-flag" }, ann ? ycard(14, "diff-file-risk") : null),
-        el("code", { class: "mono diff-filejump-path" }, f.path),
+        el("code", { class: "mono diff-filejump-path" }, pathBreaks(f.path)),
         el("span", { class: "diff-filejump-stat" }, [
           el("span", { class: "diff-add-stat" }, `+${f.additions}`),
           el("span", { class: "diff-del-stat" }, `−${f.deletions}`),
@@ -11362,7 +11682,7 @@ function repoDiffSection(rd, repoIdx = 0, { collapsed = false } = {}) {
     // file's lines. The id is index-scoped, never derived from the path.
     const summaryChildren = [
       icon("chevron", "diff-file-chev"),
-      el("code", { class: "mono diff-file-path" }, f.path),
+      el("code", { class: "mono diff-file-path" }, pathBreaks(f.path)),
       isNew ? el("span", { class: "diff-file-tag" }, "new file") : null,
       isGone ? el("span", { class: "diff-file-tag" }, "deleted") : null,
       el("span", { class: "diff-filejump-stat" }, [
@@ -11717,129 +12037,12 @@ const REJECT_REASON_PRESETS = [
   "Scope creep",
   "Needs cleanup first",
 ];
-
-/**
- * Modal reject-reason picker that replaces `window.prompt` (a blocking dialog
- * footgun in automation, and a keyboard-only flow on mobile). Presents preset
- * reason chips + a free-text fallback and resolves the trimmed reason via
- * `onConfirm`. The submit control is HELD DISABLED until a reason exists (chip
- * tapped or text typed) and the confirm handler re-checks — preserving the
- * invariant that a reject reason is REQUIRED. Resolves nothing (dialog just
- * closes) on cancel/escape/scrim.
- */
-function openRejectDialog({ verb, onConfirm }) {
-  const input = el("input", {
-    class: "reject-reason-input",
-    type: "text",
-    placeholder: "Reason…",
-    "aria-label": "Reject reason",
-  });
-
-  const chipRow = el(
-    "div",
-    { class: "reject-chips" },
-    REJECT_REASON_PRESETS.map((reason) =>
-      el(
-        "button",
-        {
-          class: "chip reject-chip",
-          type: "button",
-          onclick: () => selectChip(reason),
-        },
-        reason,
-      ),
-    ),
-  );
-
-  const submitBtn = el(
-    "button",
-    { class: "btn danger", type: "button", disabled: "", onclick: confirm },
-    "Reject",
-  );
-
-  // Opt-in: capture this rejection reason as a lore DRAFT — the highest-signal human
-  // correction the factory ever gets. Human-gated (lands in the memory review queue,
-  // never auto-approved). Off by default.
-  const captureCheckbox = el("input", {
-    type: "checkbox",
-    class: "reject-capture-cb",
-    id: "reject-capture-lore",
-  });
-  const captureRow = el(
-    "label",
-    {
-      class: "reject-capture",
-      for: "reject-capture-lore",
-      title:
-        "Files your reason as a DRAFT lore record in the memory review queue — human-gated, never auto-approved. Compounds your correction into the factory's memory.",
-    },
-    [captureCheckbox, el("span", {}, "Also capture as a lore draft for the team")],
-  );
-
-  const dialog = el(
-    "div",
-    { class: "reject-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Reject reason" },
-    [
-      el("h2", { class: "reject-dialog-title" }, `Reason for ${verb}`),
-      el("p", { class: "reject-dialog-hint" }, "Tap a reason or type your own."),
-      chipRow,
-      input,
-      captureRow,
-      el("div", { class: "reject-dialog-actions btn-row" }, [
-        el("button", { class: "btn", type: "button", onclick: close }, "Cancel"),
-        submitBtn,
-      ]),
-    ],
-  );
-
-  const scrim = el("div", { class: "reject-scrim open" }, [dialog]);
-  dialog.addEventListener("click", (e) => e.stopPropagation());
-  scrim.addEventListener("click", close);
-
-  function reason() {
-    return input.value.trim();
-  }
-  function syncSubmit() {
-    if (reason()) submitBtn.removeAttribute("disabled");
-    else submitBtn.setAttribute("disabled", "");
-  }
-  function selectChip(text) {
-    input.value = text;
-    chipRow.querySelectorAll(".reject-chip").forEach((c) => {
-      c.classList.toggle("chip-active", c.textContent === text);
-    });
-    syncSubmit();
-  }
-  function close() {
-    document.removeEventListener("keydown", onKey);
-    scrim.remove();
-  }
-  function confirm() {
-    const value = reason();
-    // Backstop the invariant even if the disabled state were bypassed.
-    if (!value) {
-      toast("A reason is required", {});
-      return;
-    }
-    const captureLore = captureCheckbox.checked;
-    close();
-    onConfirm(value, captureLore);
-  }
-  function onKey(e) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-    } else if (e.key === "Enter" && document.activeElement === input) {
-      e.preventDefault();
-      confirm();
-    }
-  }
-
-  input.addEventListener("input", syncSubmit);
-  document.addEventListener("keydown", onKey);
-  document.body.appendChild(scrim);
-  input.focus();
-}
+const WONT_DO_PRESETS = [
+  "No longer needed",
+  "Covered by another ticket",
+  "Not worth the risk",
+  "Out of scope for this campaign",
+];
 
 /**
  * Single source of truth for "is a blocking modal open right now?".
@@ -12161,26 +12364,35 @@ async function renderReview(param) {
       updateNavBadges();
     });
   const reject = (to) => {
-    const verb = to === "cancelled" ? "abandoning (won't do)" : `rejecting to ${to}`;
-    openRejectDialog({
-      verb,
-      onConfirm: (reason, captureLore) =>
-        guard(async () => {
-          const resp = await api("POST", `/tickets/${t.id}/review/reject`, {
-            to,
-            reason,
-            captureLore,
-          });
-          toast(to === "cancelled" ? "Marked won't do" : `Rejected to ${to}`, { ok: true });
-          if (captureLore) {
-            const cap = resp && resp.lore_capture;
-            if (cap && cap.captured)
-              toast("Captured as a lore draft — approve it in memory review", { ok: true });
-            else if (cap)
-              toast("Rejected, but the lore draft could not be filed (memory unavailable)", {});
-          }
-          router();
-        }),
+    const ref = `#${t.number}`;
+    const wont = to === "cancelled";
+    reasonSheet({
+      title: wont ? `Won't do ${ref}` : `Send ${ref} back`,
+      ticket: t,
+      intro: wont
+        ? `${ref} closes without merging and goes to Won't do. Its acceptance criteria reset to not met. You can reopen it into Refining later.`
+        : `${ref} goes back to Refining with your reason, and its acceptance criteria reset to not met. You look at it there before an agent delivers it again.`,
+      label: wont ? "Why not?" : "What should change?",
+      presets: wont ? WONT_DO_PRESETS : REJECT_REASON_PRESETS,
+      confirm: wont ? "Won't do" : "Send back",
+      tone: wont ? "danger" : "primary",
+      capture: true,
+      onConfirm: async (reason, captureLore) => {
+        const resp = await api("POST", `/tickets/${t.id}/review/reject`, {
+          to,
+          reason,
+          captureLore,
+        });
+        toast(wont ? `${ref} closed as won't do.` : `${ref} sent back to Refining.`, { ok: true });
+        if (captureLore) {
+          const cap = resp && resp.lore_capture;
+          if (cap && cap.captured)
+            toast("Filed as a lore draft — approve it in Memory's review queue.", { ok: true });
+          else if (cap)
+            toast("Sent back, but the lore draft could not be filed (memory is unavailable).", {});
+        }
+        router();
+      },
     });
   };
 
@@ -12375,7 +12587,7 @@ async function renderReview(param) {
       el("p", { class: "rv-meta" }, [
         statusBadge(t.status),
         repo ? repoTag(repo.name, 20) : null,
-        riskBadge(t.risk_level),
+        riskBadge(t.risk_level, { long: true }),
         by ? el("span", { class: "rv-by" }, ["delivered by ", agentTag(by, 22)]) : null,
         since
           ? el(
@@ -17291,6 +17503,10 @@ window.addEventListener("hashchange", () => {
   // A bare fragment that names a section on this page is a jump, not a route.
   const h = location.hash || "";
   if (h.length > 1 && !h.startsWith("#/") && jumpTo(h.slice(1))) return;
+  // A sheet belongs to the page that opened it: a reason being written for #15 must
+  // never stay over #20 (Back, a link, a typed address), where confirming it would
+  // act on a ticket the reader is no longer looking at.
+  if (sheetOpen()) closeSheet({ restore: false });
   router();
 });
 router();

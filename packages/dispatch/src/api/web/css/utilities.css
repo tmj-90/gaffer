@@ -61,7 +61,7 @@
     .sheet,
     .palette,
     .movemenu,
-    .reject-dialog {
+    .rs-ticket {
       border: 2px solid CanvasText;
     }
     .btn.primary,

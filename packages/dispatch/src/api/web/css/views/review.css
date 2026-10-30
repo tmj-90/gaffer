@@ -81,8 +81,8 @@
     gap: 6px;
   }
   .rv-wait {
-    font: 600 var(--t14) var(--f-cond);
-    color: var(--ink-2);
+    font-weight: 600;
+    color: var(--ink);
   }
   .rv-branch {
     font: 600 var(--t14) / 1.4 var(--f-cond);
@@ -514,7 +514,8 @@
     outline-offset: -3px;
   }
   .diff-filejump-path {
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
+    min-width: 0;
     font-size: var(--t14);
   }
   .diff-filejump-stat {
@@ -595,7 +596,7 @@
     outline-offset: -3px;
   }
   .diff-file-path {
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
     min-width: 0;
     flex: 1;
     color: var(--board-ink);

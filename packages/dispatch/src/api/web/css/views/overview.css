@@ -194,52 +194,6 @@
     }
   }
 
-  /* Action sheets (unblock / answer / merge). */
-  .act-sheet {
-    display: grid;
-    gap: var(--s4);
-  }
-  .act-intro {
-    font-size: var(--t16);
-    line-height: 1.45;
-    overflow-wrap: anywhere;
-  }
-  .act-hint {
-    margin-top: var(--s3);
-    font-size: var(--t14);
-    color: var(--ink-2);
-  }
-  .act-actions .btn.danger {
-    margin-left: auto;
-  }
-  .choice {
-    border: 0;
-    padding: 0;
-    margin: 0;
-    display: grid;
-    gap: 8px;
-  }
-  .choice legend {
-    font: 700 var(--t14) var(--f-text);
-    margin-bottom: 6px;
-  }
-  .choice label {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-    padding: 10px 12px;
-    border: 2px solid var(--rule);
-    border-radius: var(--r);
-    cursor: pointer;
-  }
-  .choice label:has(:checked) {
-    border-color: var(--ink);
-    background: var(--sky-wash);
-  }
-  .choice input {
-    margin-top: 4px;
-  }
-
   /* --- tactics board -------------------------------------------------------- */
   .tactics {
     min-width: 0;

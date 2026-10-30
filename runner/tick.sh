@@ -67,6 +67,19 @@ MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
 # caller (loop.sh, a test) may preset it; otherwise it is time + pid, unique per tick.
 GAFFER_TICK_ID="${GAFFER_TICK_ID:-$(date -u +%Y%m%dT%H%M%SZ).$$}"
 export GAFFER_TICK_ID
+# TICK DEADLINE (factory.config.sh GAFFER_TICK_DEADLINE_GUARD): the tick's own start,
+# taken BEFORE the merge lane, so the time left until the outer per-tick bound counts
+# resolver time, setup and every attempt's gates — not only agent calls.
+_GAFFER_TICK_T0="$(date +%s)"
+# Seconds left before the outer bound, less GAFFER_TICK_DEADLINE_MARGIN. Prints a huge
+# number when there is no outer bound (0 = unbounded) or the guard is off.
+gaffer_tick_remaining() {
+  local _ob="${GAFFER_TICK_OUTER_TIMEOUT:-0}" _m="${GAFFER_TICK_DEADLINE_MARGIN:-60}"
+  case "$_ob" in ''|*[!0-9]*) _ob=0 ;; esac
+  case "$_m" in ''|*[!0-9]*) _m=60 ;; esac
+  if [ "$_ob" -le 0 ] || [ "${GAFFER_TICK_DEADLINE_GUARD:-1}" = "0" ]; then echo 999999999; return 0; fi
+  echo $(( _GAFFER_TICK_T0 + _ob - _m - $(date +%s) ))
+}
 # Reap an orphaned agent process group if one is still recorded (see above). TERM
 # the whole group, brief grace, then KILL any survivor so no `claude -p` lingers
 # burning tokens. Numeric-guarded and fully best-effort — never faults the trap.
@@ -205,6 +218,9 @@ gaffer_crash_cleanup() {
     # bug). One fixed "runner killed" reason sent operators looking for kills.
     if [ "${_GAFFER_EXIT_CAUSE:-exit}" = "signal" ]; then
       gaffer_release_delivery ready "runner killed mid-delivery (signal) — claim released by crash trap" || true
+      # The outer per-tick bound fires as a signal too: without a skip-file entry the
+      # loop's very next tick re-claimed this ticket and restarted it from attempt 1.
+      [ -n "${SKIP_FILE:-}" ] && declare -F gaffer_skip_ticket >/dev/null 2>&1 && gaffer_skip_ticket "$NUM"
     else
       gaffer_release_delivery ready "tick exited mid-delivery without resolving the claim (${_GAFFER_EXIT_CAUSE:-exit}) — claim released by crash trap" || true
     fi
@@ -573,7 +589,8 @@ _num_ge() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{exit !(a + 0 >= b + 0)}' 2>
 _num_le() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{exit !(a + 0 <= b + 0)}' 2>/dev/null; } # a <= b
 
 gaffer_release_or_park_nocommit() {
-  local reason="$1"
+  # $2 (optional) = what the parked trail says happened (default: no commits produced).
+  local reason="$1" detail="${2:-the agent produced no commits}"
   # DRY_RUN never claims → never releases and never counts; keep it side-effect-free.
   if [ "${DRY_RUN:-0}" = "1" ]; then gaffer_release_delivery ready "$reason"; return 0; fi
   local _max="${GAFFER_MAX_NOCOMMIT_FAILURES:-${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}}"
@@ -610,7 +627,7 @@ gaffer_release_or_park_nocommit() {
   # the reason-code lands on the board card (last_review_feedback) and the
   # ticket.blocked event pages a human; the durable note records the trail.
   wg attach-evidence "$NUM" --type manual_note \
-    --summary "PARKED (rework_exhausted): $reason — after $_why; the agent produced no commits, needs a human" >/dev/null 2>&1 || true
+    --summary "PARKED (rework_exhausted): $reason — after $_why; $detail, needs a human" >/dev/null 2>&1 || true
   gaffer_release_delivery blocked "$reason — parked after $_why; needs a human" rework_exhausted "$_n" "$_max"
   # MEMORY FEEDBACK LOOP: served knowledge did not help this ticket — demote + flag.
   gaffer_recall_feedback blocked
@@ -2150,6 +2167,9 @@ EOF
   #     _DELIV_OUTCOME=parked so the caller exits. The branch is NEVER dropped here.
   _recover_or_park() {
     local gate="$1" feedback="$2" detail="${3:-}"
+    # TICK DEADLINE: how long this attempt's gates took after the agent returned — the
+    # next attempt needs about as much again on top of the agent call.
+    _GATE_SECS_LAST=$(( $(date +%s) - ${_T_AGENT_DONE:-$(date +%s)} ))
     # The REAL failure fed to the next attempt: the distilled assertion/error when the
     # caller captured one, else the human summary. This is the crux of (b) — the agent
     # sees the actual failing test, not just "tests@repo failed".
@@ -2311,9 +2331,57 @@ $_trail_q
 "
   }
 
+  # ── TICK DEADLINE GUARD (GAFFER_TICK_DEADLINE_GUARD) ────────────────────────
+  # The outer per-tick bound is sized for agent calls only (attempts × timeout + 2 min)
+  # but this tick also spent the merge lane, setup and each attempt's install, gates
+  # and AC checks; a live run had its FINAL strong-model attempt killed mid-flight —
+  # spend wasted, nothing recorded, the branch at the trap's mercy, and the next tick
+  # re-claiming from attempt 1. Before starting an attempt, require the time left to
+  # cover one full agent call plus what the previous attempt's gates took; otherwise
+  # hand the ticket to the next tick with its branch kept (released to ready, bounded
+  # across runs through the same counter as a no-commit failure). Gate/AC timeouts
+  # are clamped to the time left so a gate cannot outlive the bound either.
+  _GATE_SECS_LAST=0; _T_AGENT_DONE=""
+  _DOD_TIMEOUT_CFG="${GAFFER_DOD_TIMEOUT:-900}"; _DOD_INSTALL_TIMEOUT_CFG="${GAFFER_DOD_INSTALL_TIMEOUT:-$_DOD_TIMEOUT_CFG}"
+  gaffer_deadline_short() {
+    local rem need
+    rem="$(gaffer_tick_remaining)"
+    need=$(( ${GAFFER_TICK_TIMEOUT:-1800} + ${_GATE_SECS_LAST:-0} ))
+    [ "$rem" -lt "$need" ] || return 1
+    _DEADLINE_REM="$rem"; _DEADLINE_NEED="$need"
+    return 0
+  }
+  gaffer_deadline_handoff() {
+    local why="attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS needs ~${_DEADLINE_NEED}s (GAFFER_TICK_TIMEOUT ${GAFFER_TICK_TIMEOUT:-1800}s + ${_GATE_SECS_LAST:-0}s of gates) but only ${_DEADLINE_REM}s are left before the outer per-tick bound"
+    log "DEADLINE: #$NUM $why — not starting it; the next tick continues on branch $WORK_BRANCH"
+    # Keep the branch (a retry already tore the worktree down, so its commits can only
+    # be seen on the branch itself); an empty one is simply re-created next tick.
+    GAFFER_KEEP_DELIVERY_BRANCH=1
+    gaffer_cleanup_worktrees
+    if [ "$_RESUMING" = "1" ]; then
+      gaffer_resume_abort "tick deadline: $why"
+    else
+      gaffer_release_or_park_nocommit "tick deadline: $why; branch kept for the next tick" \
+        "the rework ladder did not fit inside one tick's outer bound"
+    fi
+    gaffer_skip_ticket "$NUM"
+  }
+  gaffer_clamp_gate_timeouts() {
+    local rem; rem="$(gaffer_tick_remaining)"
+    [ "$rem" -ge 1 ] || rem=1
+    GAFFER_DOD_TIMEOUT="$_DOD_TIMEOUT_CFG"; GAFFER_DOD_INSTALL_TIMEOUT="$_DOD_INSTALL_TIMEOUT_CFG"
+    [ "$rem" -lt "$GAFFER_DOD_TIMEOUT" ] 2>/dev/null && GAFFER_DOD_TIMEOUT="$rem"
+    [ "$rem" -lt "$GAFFER_DOD_INSTALL_TIMEOUT" ] 2>/dev/null && GAFFER_DOD_INSTALL_TIMEOUT="$rem"
+    return 0
+  }
+
   while [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ]; do
   _DELIV_ATTEMPT=$((_DELIV_ATTEMPT + 1))
   _DELIV_OUTCOME=""
+  if [ "${DRY_RUN:-0}" != "1" ] && gaffer_deadline_short; then
+    gaffer_deadline_handoff
+    result error; exit 0
+  fi
   # RUNNER-OWNED-BOOKKEEPING: heartbeat the runner-held claim at the start of each
   # attempt so the lease covers the whole delivery even across retries (belt-and-
   # braces with the generously-sized GAFFER_CLAIM_TTL). No-op when the runner holds
@@ -2387,6 +2455,7 @@ $_trail_q
   )
   worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP"
   rc=$?
+  _T_AGENT_DONE="$(date +%s)"
   # SKILL TELEMETRY: record which skills were SELECTED for this delivery (and,
   # best-effort, which were APPLIED — detected from the agent's output JSON) so a
   # LATER data-driven prune of the generic skills isn't blind. Fail-soft; captured
@@ -2812,6 +2881,7 @@ $_trail_q
   # test_command/lint_command (+ GAFFER_DOD_TYPECHECK_CMD for typecheck, which has
   # no dispatch field). DoD is best-effort RESILIENT: a gate command that itself
   # errors to spawn is treated as a FAIL with a clear message, never a crash.
+  gaffer_clamp_gate_timeouts   # TICK DEADLINE: no gate outlives the outer bound
   if gaffer_dod_enabled; then
     # Per-repo commands from the dispatch payload, keyed by repo id (fallback name):
     #   id|name <TAB> test_cmd <TAB> lint_cmd
@@ -2973,6 +3043,7 @@ $_trail_q
   # A failing check is a RECOVERABLE gate failure exactly like DoD: keep the branch,
   # feed the real failure back, retry-or-park. Runs whether or not DoD is enabled —
   # the checks are per-ticket contracts, not per-repo gate config. See lib/ac-checks.sh.
+  gaffer_clamp_gate_timeouts
   if command -v gaffer_run_ac_checks >/dev/null 2>&1 && [ "$(gaffer_ac_check_count "$SHOW")" -gt 0 ]; then
     AC_RESULTS="$GAFFER_DATA/.ac-check-$NUM.results"; : > "$AC_RESULTS"
     if gaffer_run_ac_checks "$NUM" "$SHOW" "$PRIMARY_REPO" "$AC_RESULTS"; then

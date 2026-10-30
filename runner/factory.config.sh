@@ -478,6 +478,16 @@ export DISPATCH_MAX_ATTEMPTS
 # for a tick wedged OUTSIDE an agent call.
 : "${GAFFER_TICK_OUTER_TIMEOUT:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))}"
 export GAFFER_TICK_OUTER_TIMEOUT
+# TICK DEADLINE GUARD (tick.sh): the outer bound above counts only agent calls, but a
+# tick also spends merge-lane resolver time and every attempt's DoD install, gates and
+# AC checks. Before each delivery attempt the tick checks the time left until
+# (start + GAFFER_TICK_OUTER_TIMEOUT - GAFFER_TICK_DEADLINE_MARGIN); when it is less
+# than GAFFER_TICK_TIMEOUT plus the previous attempt's measured gate time, it does NOT
+# start an attempt the outer bound would kill — it keeps the branch and releases the
+# ticket for the next tick (bounded across runs like a no-commit failure). Gate and AC
+# timeouts are also clamped to the time left. 0 = off (start every attempt, as before).
+: "${GAFFER_TICK_DEADLINE_GUARD:=1}"
+: "${GAFFER_TICK_DEADLINE_MARGIN:=60}"   # seconds kept back for record / release / teardown
 
 # ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning
 # for the hardest cases before a human is pulled in). Empty → keep the routed model

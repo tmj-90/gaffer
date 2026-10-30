@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 118 |
+| Knobs with a runner default | 124 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 68 |
+| Env reads in code with no default and no UI entry | 73 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -82,6 +82,12 @@ computed from other knobs at runtime.
 | `GAFFER_SANDBOX_PIDS` | `512` |  | runner |  |
 | `GAFFER_DAEMON_INTERVAL` | `30` |  | runner | seconds between `gaffer run --daemon` cycles |
 | `GAFFER_DAEMON_MAX_CYCLES` | `0` |  | runner | 0 = unbounded |
+| `GAFFER_REVIEW_MAX_TURNS` | _(empty)_ |  | runner | reviewer agent (empty → GAFFER_MAX_TURNS) |
+| `GAFFER_SECURITY_REVIEW_MAX_TURNS` | _(empty)_ |  | runner | security second opinion (empty → the reviewer's cap) |
+| `GAFFER_TESTER_MAX_TURNS` | _(empty)_ |  | runner | independent tester (empty → no turn cap) |
+| `GAFFER_RESOLVER_MAX_TURNS` | _(empty)_ |  | runner | merge-conflict resolver (empty → no turn cap) |
+| `GAFFER_PO_MAX_TURNS` | _(empty)_ |  | runner | product-owner "Suggest work" run (empty → no turn cap) |
+| `GAFFER_JUDGE_MAX_TURNS` | `2` |  | runner | eval judge: a one-shot text grader with no tools |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many times a ticket may be re-worked after a rejected review before it parks to blocked. |
 | `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a retry (rework / gate retry / timeout) keeps the ticket branch's previous commits and re-enters on them; 1 = the old clean-slate reset to base. |
 | `GAFFER_CLAIM_TTL` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))`) |  | runner |  |
@@ -308,6 +314,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
 | `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
+| `GAFFER_DECOMPOSE_AGENT_MAX_TURNS` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
 | `GAFFER_DEFAULT_TICKET_REPO` |  | `packages/dispatch/src/mcp/tools.ts`, `runner/bin/merge-ticket.mjs`, `runner/bin/tester-run.mjs` |
@@ -316,6 +323,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | `runner/gaffer`, `runner/lib/eval-judge.sh` |
 | `GAFFER_INHERIT_AMB_TIMEOUT` | `300` | `runner/lib/greenfield.sh` |
 | `GAFFER_INHERIT_PLAN_TIMEOUT` | `60` | `runner/lib/greenfield.sh` |
+| `GAFFER_JUDGE_DENIED_TOOLS` | `Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite` | `runner/lib/eval-judge.sh` |
 | `GAFFER_JUDGE_MODEL_FLAG` | `${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-` | `runner/lib/eval-judge.sh` |
 | `GAFFER_LITE_MAX_FILES` | `4` | `runner/factory.config.sh` |
 | `GAFFER_LITE_MAX_LINES` | `60` | `runner/factory.config.sh` |
@@ -324,6 +332,8 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_ONBOARD_SYNTH_MODEL` |  | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_PLAN_BUILD_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
+| `GAFFER_REAPPROVAL_ATTEMPTS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
+| `GAFFER_REAPPROVAL_BACKOFF_MS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
 | `GAFFER_REVIEW_TICKET` |  | `packages/dispatch/src/mcp/tools.ts` |
 | `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_CLAUDE_CREDENTIALS` | _(empty)_ / `/nonexistent` | `runner/lib/sandbox-docker.sh`, `runner/sandbox/smoke-test.sh` |
@@ -336,6 +346,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_SECURITY_REVIEW_RE` | `${GAFFER_LITE_SENSITIVE_RE:-(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
 | `GAFFER_SKILL_TELEMETRY` | `$GAFFER_DATA/skills-telemetry.jsonl` | `packages/dispatch/src/health/skillsTelemetryAggregator.ts`, `runner/lib/skills-mount.sh` |
 | `GAFFER_SLACK_WEBHOOK` | _(empty)_ | `runner/status.sh` |
+| `GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS` | _(empty)_ | `runner/bin/spec-author.mjs` |
 | `GAFFER_SPEC_AUTHOR_MOCK` | _(empty)_ | `runner/bin/spec-author.mjs` |
 | `GAFFER_TEST_MODEL` |  | `runner/bin/tester-run.mjs` |
 | `GAFFER_TESTER_REPLAY` | `1` | `runner/bin/tester-run.mjs` |

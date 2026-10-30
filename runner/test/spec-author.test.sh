@@ -141,6 +141,16 @@ run_helper "$REQ_E" "$WORK/clarify.json"; OUT_E="$OUT"
   || fail "forcePlan clarify should be rejected (rc=$RC, out=$OUT_E)"
 
 # ---------------------------------------------------------------------
+echo "== AC5: an example \`\`\`json block AFTER the spec envelope does not replace it =="
+# The shared extractor (lib/agent-io.mjs) prefers the last PHASE-BEARING block; this file's
+# old copy took the last fence and failed with "unknown result phase: undefined".
+TRAIL_INNER=$'Drafting.\n```json\n{"phase":"spec","spec":{"clauses":[{"clause_id":"c1","kind":"requirement","text":"A user can log a workout."}]}}\n```\nExample record:\n```json\n{"id":1}\n```\n'
+printf '%s' "$TRAIL_INNER" | write_envelope "$WORK/spec-trail.json"
+run_helper "$REQ_B" "$WORK/spec-trail.json"; OUT_T="$OUT"
+{ [ "$RC" = "0" ] && case "$OUT_T" in *'"phase":"spec"'*'"clause_id":"c1"'*) true ;; *) false ;; esac ; } \
+  && ok "spec envelope + trailing example fence → phase spec, rc 0" || fail "trailing example fence broke the spec (rc=$RC, out=$OUT_T)"
+
+# ---------------------------------------------------------------------
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

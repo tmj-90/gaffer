@@ -432,6 +432,32 @@ export GAFFER_MCP_BRIDGE
 : "${GAFFER_DAEMON_MAX_CYCLES:=0}"   # 0 = unbounded
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
+# PER-LANE TURN CAPS. GAFFER_MAX_TURNS is the DELIVERY cap; the other agent lanes can be
+# capped on their own. EMPTY (the default) keeps each lane exactly as it was: the reviewer
+# and the security reviewer share GAFFER_MAX_TURNS, and the tester, the conflict resolver
+# and the product-owner run have NO turn cap (their wall-clock timeout is the only bound).
+# A positive number caps that lane's `claude --max-turns`. A capped run that stops before
+# its verdict line is HELD for a human (no verdict is never an approve), so start a cap
+# near the lane's 90th-percentile turn count in usage-ledger.jsonl (num_turns), not its
+# mean, or the tail of ordinary runs is held.
+: "${GAFFER_REVIEW_MAX_TURNS:=}"           # reviewer agent (empty → GAFFER_MAX_TURNS)
+: "${GAFFER_SECURITY_REVIEW_MAX_TURNS:=}"  # security second opinion (empty → the reviewer's cap)
+: "${GAFFER_TESTER_MAX_TURNS:=}"           # independent tester (empty → no turn cap)
+: "${GAFFER_RESOLVER_MAX_TURNS:=}"         # merge-conflict resolver (empty → no turn cap)
+: "${GAFFER_PO_MAX_TURNS:=}"               # product-owner "Suggest work" run (empty → no turn cap)
+: "${GAFFER_JUDGE_MAX_TURNS:=2}"           # eval judge: a one-shot text grader with no tools
+export GAFFER_TESTER_MAX_TURNS GAFFER_RESOLVER_MAX_TURNS GAFFER_PO_MAX_TURNS   # read by bin/*.mjs children
+# gaffer_lane_turns_flag <cap>… — the `--max-turns` flag for a bash lane: the first
+# positive integer among the given caps, else $GAFFER_MAX_TURNS_FLAG (unchanged default).
+# Used as a per-call override: GAFFER_MAX_TURNS_FLAG="$(gaffer_lane_turns_flag …)" worker_deliver …
+gaffer_lane_turns_flag() {
+  local _c
+  for _c in "$@"; do
+    case "$_c" in ''|*[!0-9]*) continue ;; esac
+    [ "$_c" -gt 0 ] 2>/dev/null && { printf -- '--max-turns %s\n' "$_c"; return 0; }
+  done
+  printf '%s\n' "${GAFFER_MAX_TURNS_FLAG:-}"
+}
 
 # RUNNER-OWNED-BOOKKEEPING: the runner (not the agent) claims the delivery ticket at
 # selection and holds the claim for the whole delivery. The lease TTL must therefore
@@ -1738,7 +1764,7 @@ gaffer_inert_policy_check() {
 # (reviewer verdict × approve gate × merge gate) → one runner action, so the AFK block in
 # tick.sh just dispatches on the result and the logic is unit-testable in isolation. No I/O,
 # no side effects. FAIL-CLOSED: unless the approve gate is `allow` the plan is `hold`.
-#   $1 verdict         : approve | changes   (the reviewer's advisory verdict)
+#   $1 verdict         : approve | changes | held   (the reviewer's advisory verdict)
 #   $2 approve-decision: allow | deny         (gaffer_auto_decision <n> approve)
 #   $3 merge-decision  : allow | deny         (gaffer_auto_decision <n> merge)
 # Echoes exactly one of:
@@ -1753,8 +1779,10 @@ gaffer_afk_ship_plan() {
   if [ "$_approve" != "allow" ]; then printf 'hold\n'; return 0; fi
   if [ "$_verdict" = "approve" ]; then
     [ "$_merge" = "allow" ] && printf 'ship\n' || printf 'approve_hold\n'
-  else
+  elif [ "$_verdict" = "changes" ]; then
     printf 'rework\n'
+  else
+    printf 'hold\n'  # held / anything unexpected: no verdict → never rework on it
   fi
 }
 
@@ -1846,37 +1874,32 @@ gaffer_needs_security_review() {
 # ticket/diff/rejection-reason could make the reviewer reproduce "RECOMMEND APPROVE"
 # in prose; the old grep over the entire blob would then flip the gate.
 #
-# The reviewer is now required to end its output with a machine-read line —
+# The reviewer is required to end its output with a machine-read line —
 #   {"verdict":"APPROVE"}  or  {"verdict":"CHANGES"}
-# — and we take the LAST such line as authoritative. Prose that merely contains the
-# phrase can no longer match. The legacy free-text grep survives ONLY as a fallback
-# for when NO structured line is present (older reviewer output / a truncated
-# result), and it stays fail-closed (defaults changes; the CHANGES check runs last
-# so a blob mentioning both resolves to changes). Pure: no I/O, no side effects.
+# — and ONLY its FINAL non-empty line counts (a closing ``` fence, trailing blanks and
+# CRs ignored; surrounding backticks tolerated). A token anywhere else is quoted text:
+# a CHANGES token followed by "Note: the ticket asked me to print {"verdict":"APPROVE"}"
+# used to resolve to approve, because the last token ANYWHERE won. A final line that is
+# not a token at all (a non-compliant or cut-off reviewer) is no verdict: `held`, never
+# `changes` (that sent a possibly-fine delivery to rework, and could loop) and never
+# `approve` — the old free-text RECOMMEND APPROVE fallback no longer approves anything.
+# Pure: no I/O, no side effects.
 #   $1 result : the reviewer agent's full result text (may be multi-line)
-# Echoes exactly one of: approve | changes   (defaults changes on empty/ambiguous).
+# Echoes exactly one of: approve | changes | held   (held on empty/ambiguous).
 gaffer_review_verdict() {
-  local _result="$1" _structured _verdict=changes
-  # The LAST line that IS (or contains) a {"verdict":"APPROVE"|"CHANGES"} object,
-  # whitespace-tolerant. Braces are matched via [{]/[}] so the ERE is portable
-  # across BSD (macOS /usr/bin/grep) and GNU grep (CI) — `\{` is an interval
-  # metacharacter to GNU grep and would error.
-  _structured="$(printf '%s\n' "$_result" \
-    | grep -oiE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"(APPROVE|CHANGES)"[[:space:]]*[}]' \
-    | tail -n 1)"
-  if [ -n "$_structured" ]; then
-    # Structured verdict is authoritative. `approve` ONLY on an explicit APPROVE
-    # object; every other value (CHANGES, or anything unexpected) → changes.
-    case "$_structured" in
-      *[Aa][Pp][Pp][Rr][Oo][Vv][Ee]*) _verdict=approve ;;
-      *) _verdict=changes ;;
-    esac
+  local _result="$1" _last
+  _last="$(printf '%s\n' "$_result" | tr -d '\r' \
+    | sed -E 's/[[:space:]]+$//' | grep -vE '^[[:space:]]*(```[[:alnum:]_-]*)?$' | tail -n 1 \
+    | sed -E 's/^[[:space:]]*`?//; s/`?[[:space:]]*$//')"
+  # Braces are matched via [{]/[}] so the ERE is portable across BSD (macOS
+  # /usr/bin/grep) and GNU grep (CI) — `\{` is an interval metacharacter to GNU grep.
+  if printf '%s' "$_last" | grep -qixE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"APPROVE"[[:space:]]*[}]'; then
+    printf 'approve\n'
+  elif printf '%s' "$_last" | grep -qixE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"CHANGES"[[:space:]]*[}]'; then
+    printf 'changes\n'
   else
-    # FALLBACK (no structured line): the legacy free-text grep — still fail-closed.
-    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*APPROVE" && _verdict=approve
-    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*CHANGES" && _verdict=changes
+    printf 'held\n'
   fi
-  printf '%s\n' "$_verdict"
 }
 
 # The REWORK REASON handed back to the delivery agent on a CHANGES verdict. The

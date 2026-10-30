@@ -19,10 +19,10 @@
 # never ticket JSON an agent could shape. → 0 land (sets _TB_PIN: the exact commit to
 # merge) · 1 hold. Fail CLOSED: node or the helper missing, an unreadable DB, an unknown
 # ticket or an unresolvable branch head all HOLD. Sets _TB_KIND / _TB_REASON /
-# _TB_TESTED / _TB_HEAD for the caller's log line.
+# _TB_TESTED / _TB_REVIEWED / _TB_HEAD for the caller's log line.
 _gaffer_land_tester_binding() {
   local num="$1" repo="$2" branch="$3" out rc=0
-  _TB_PIN=""; _TB_KIND=""; _TB_REASON=""; _TB_TESTED=""; _TB_HEAD=""
+  _TB_PIN=""; _TB_KIND=""; _TB_REASON=""; _TB_TESTED=""; _TB_REVIEWED=""; _TB_HEAD=""
   local helper="${RUNNER_DIR:-}/lib/tester-binding.mjs"
   if [ ! -f "$helper" ] || ! command -v node >/dev/null 2>&1; then
     _TB_KIND="unavailable"; _TB_REASON="the landing check (lib/tester-binding.mjs) cannot run"
@@ -33,6 +33,7 @@ _gaffer_land_tester_binding() {
   _TB_KIND="$(printf '%s' "$out" | jget 'd.kind || ""' 2>/dev/null || echo '')"
   _TB_REASON="$(printf '%s' "$out" | jget 'd.reason || ""' 2>/dev/null || echo '')"
   _TB_TESTED="$(printf '%s' "$out" | jget 'd.tested || ""' 2>/dev/null || echo '')"
+  _TB_REVIEWED="$(printf '%s' "$out" | jget 'd.reviewed || ""' 2>/dev/null || echo '')"
   _TB_HEAD="$(printf '%s' "$out" | jget 'd.head || ""' 2>/dev/null || echo '')"
   [ "$rc" -eq 0 ] && [ -n "$_TB_PIN" ] && return 0
   [ -n "$_TB_KIND" ] || { _TB_KIND="unreadable"; _TB_REASON="the landing check produced no decision (rc=$rc)"; }
@@ -48,6 +49,7 @@ gaffer_land_delivery() {
   if ! _gaffer_land_tester_binding "$RNUM" "$RREPO" "$RBRANCH"; then
     case "$_TB_KIND" in
       moved) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the tester's PASS (tested ${_TB_TESTED:0:12}, head is now ${_TB_HEAD:0:12}); re-test the branch (move it back to in_review) or record a human verdict" ;;
+      moved-since-review) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the agent review approved it (reviewed ${_TB_REVIEWED:0:12}, head is now ${_TB_HEAD:0:12}); nobody reviewed the new commits — move it back to in_review for a re-review" ;;
       *)     log "$_WHO: #$RNUM HELD — landing check: ${_TB_KIND:-?}: ${_TB_REASON:-no decision}; nothing merged" ;;
     esac
     return 4
@@ -130,9 +132,8 @@ gaffer_land_delivery() {
         esac
       fi
       # The delivery branch is now fully merged: drop it so branches don't pile
-      # up (mirrors merge-ticket.mjs). The review worktree still has it checked
-      # out (git refuses to delete a checked-out branch), and the reviewer is done,
-      # so tear the worktree down first (idempotent; the exit trap re-runs it).
+      # up (mirrors merge-ticket.mjs). The reviewer is done, so tear its (detached)
+      # worktree down first (idempotent; the exit trap re-runs it).
       # `-d` refuses an unmerged branch, so this can never lose work.
       declare -F _review_cleanup >/dev/null 2>&1 && _review_cleanup
       if [ "$_MERGED_VIA" = "pr-stale" ]; then
@@ -143,7 +144,7 @@ gaffer_land_delivery() {
         log "$_WHO: merged branch $RBRANCH left in place (not deletable right now)"
       fi
       ;;
-    3) log "$_WHO: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes; left in ready_for_merge for a human (never merge over live edits)" ;;
+    3) log "$_WHO: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes or untracked files the merge would overwrite; left in ready_for_merge for a human (never merge over live edits)" ;;
     6) log "$_WHO: #$RNUM HELD — $RBRANCH moved between the landing check and the merge (approved ${_TB_PIN:0:12}); nothing merged"
        _mrc=4 ;;
     1)
@@ -199,8 +200,14 @@ _gaffer_land_conflict_resolve() {
     merged)
       log "$_WHO: #$RNUM landed by the merge helper after all (phase=merged)"; return 0 ;;
     conflict_resolved_pending_reapproval)
-      log "$_WHO: #$RNUM conflict resolved ON $RBRANCH by the resolver — reopened for re-review (→ in_review); the review pass re-reads the resolved diff and it lands after approval"
-      return 0 ;;
+      # Success ONLY when the reopen really happened: an older helper reported this phase
+      # with reapproval.ok=false, and the unreviewed resolution then landed next tick.
+      if [ "$(printf '%s' "$_out" | tail -n 1 | jget 'd.reapproval && d.reapproval.ok === true ? "1" : ""' 2>/dev/null || echo '')" = "1" ]; then
+        log "$_WHO: #$RNUM conflict resolved ON $RBRANCH by the resolver — reopened for re-review (→ in_review); the review pass re-reads the resolved diff and it lands after approval"
+        return 0
+      fi
+      log "$_WHO: #$RNUM conflict resolved ON $RBRANCH but the ticket was NOT reopened for re-review — HELD for a human; do not merge the resolution unreviewed"
+      return 1 ;;
     *)
       log "$_WHO: #$RNUM conflict resolver did not resolve (rc=$_rc, phase='${_phase:-?}') — left on $RBRANCH for a human: $(printf '%s' "$_out" | tail -n 1 | cut -c1-300)"
       return 1 ;;

@@ -20,9 +20,14 @@
 # DRY_RUN is always a no-op.
 #
 # The judge's model turn goes through worker_deliver — the factory's SINGLE
-# claude -p spawn seam (env-scrubbed, timeout-bounded, safety-hooked) — with an
-# empty MCP config (the judge grades text; it gets NO tools). The reply is read
-# back via worker.mjs `parse-result result-text` (the one envelope parser).
+# claude -p spawn seam (env-scrubbed, timeout-bounded) — as a TEXT GRADER: the diff
+# is in the prompt, so it runs in its own temp dir (never the delivery worktree), with
+# only that dir as its write root, none of the delivery's DB/ticket env, an empty and
+# STRICT MCP config, every built-in tool denied, no acceptEdits, and a 2-turn cap
+# (GAFFER_JUDGE_MAX_TURNS). It used to inherit the delivery's acceptEdits, the
+# 200-turn delivery cap and the worktree as cwd + write root — so a diff carrying a
+# prompt injection could make a "one-shot" judge edit the just-submitted delivery.
+# The reply is read back via worker.mjs `parse-result result-text` (the one envelope parser).
 # =====================================================================
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 
@@ -78,7 +83,13 @@ gaffer_eval_judge_delivery() (
   # eval can take. GAFFER_JUDGE_MODEL_FLAG still overrides; the implementer flag is the
   # last resort only when no plan flag is configured.
   judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"
-  worker_deliver "$repo_dir" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" \
+  # The overrides are local: this function body is a subshell. GAFFER_MAX_TURNS_FLAG is
+  # REPLACED (an appended second --max-turns would leave the 200-turn one in effect).
+  # shellcheck disable=SC2034  # read by worker_deliver
+  WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$tmp")
+  CLAUDE_FLAGS="--strict-mcp-config --disallowedTools ${GAFFER_JUDGE_DENIED_TOOLS:-Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite}"
+  GAFFER_MAX_TURNS_FLAG="--max-turns ${GAFFER_JUDGE_MAX_TURNS:-2}"
+  worker_deliver "$tmp" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" \
     >/dev/null 2>&1
   worker_rc=$?   # a failed judge turn is fail-soft; the guard below skips
   # B28(e): the judge's model turn is PAID work — book it in the usage ledger like

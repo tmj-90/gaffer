@@ -65,6 +65,35 @@ out="$(node "$HELPER" landing --db "$DB" --ticket 77 --repo "$R" --branch gaffer
 out="$(node "$HELPER" landing --db "$DB" --ticket 9 --repo "$R" --branch no/such-branch)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "no-head" ] && ok "unresolvable branch head → hold" || fail "no head: rc=$rc $out"
 
+echo "== A2: the REVIEW PIN — a head landing is bound to the commit the agent review approved =="
+g checkout -q -b gaffer/ticket-10-y; echo r1 > "$R/g"; g add -A; g commit -q -m deliver10
+REVIEWED="$(g rev-parse gaffer/ticket-10-y)"; g checkout -q main
+DB2="$WORK/dispatch2.sqlite"
+sql2() { node --no-warnings -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1]);d.exec(process.argv[2]);d.close()' "$DB2" "$1" || { echo "FIXTURE ERROR: $1" >&2; exit 1; }; }
+sql2 "CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, acceptance INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE evidence (id TEXT PRIMARY KEY, ticket_id TEXT, evidence_type TEXT, summary TEXT, uri TEXT, payload_json TEXT, recorded_by_actor_type TEXT, created_at TEXT);
+      CREATE TABLE work_events (id TEXT PRIMARY KEY, entity_type TEXT, entity_id TEXT, event_type TEXT, payload_json TEXT, created_at TEXT);
+      INSERT INTO tickets VALUES ('t10', 10, 0);
+      INSERT INTO work_events VALUES ('w1', 'ticket', 't10', 'ticket.transitioned', '{\"from\":\"in_progress\",\"to\":\"in_review\"}', '2026-09-29T00:00:00.000Z');"
+pin() {  # $1 = sha, $2 = actor type, $3 = created_at
+  sql2 "DELETE FROM evidence WHERE evidence_type = 'commit'; INSERT INTO evidence VALUES ('p1', 't10', 'commit', 'agent review approved', 'gaffer-reviewed-commit:$1', NULL, '$2', '$3');"
+}
+decide10() { node --no-warnings "$HELPER" landing --db "$DB2" --ticket 10 --repo "$R" --branch gaffer/ticket-10-y; }
+pin "$REVIEWED" system 2026-09-29T00:05:00.000Z; out="$(decide10)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && [[ "$out" == *"\"pin\":\"$REVIEWED\""* ]] && [[ "$out" == *"\"reviewed\":\"$REVIEWED\""* ]] \
+  && ok "pin == head → land, pinned to the reviewed commit" || fail "pin == head: rc=$rc $out"
+g checkout -q gaffer/ticket-10-y; echo late > "$R/g"; g add -A; g commit -q -m "unreviewed late commit"; g checkout -q main
+out="$(decide10)"; rc=$?
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && ok "branch moved past the reviewed commit → hold (moved-since-review)" || fail "moved since review: rc=$rc $out"
+sql2 "INSERT INTO evidence VALUES ('h1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"human\"}', 'human', '2026-09-29T00:06:00.000Z');"
+out="$(decide10)"; rc=$?
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && ok "a HUMAN tester waiver does not unpin it → hold" || fail "waiver + moved: rc=$rc $out"
+sql2 "DELETE FROM evidence WHERE id = 'h1';"
+pin "$REVIEWED" agent 2026-09-29T00:05:00.000Z; out="$(decide10)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin row recorded by an AGENT is not a pin (cannot be forged through the MCP)" || fail "agent pin: rc=$rc $out"
+pin "$REVIEWED" system 2026-09-28T23:00:00.000Z; out="$(decide10)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin older than the ticket's latest entry into in_review is stale → ignored" || fail "stale pin: rc=$rc $out"
+
 # ── the Bash path: real land.sh + automerge.sh, stubbed tick globals ─────────────
 LOGF="$WORK/log"; CALLS="$WORK/calls"
 log() { printf '%s\n' "$*" >> "$LOGF"; }

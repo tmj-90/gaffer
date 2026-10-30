@@ -49,7 +49,7 @@ worktree (your only write root), scopes a Dispatch MCP server to this ticket, an
   `{"verdict":"FAIL"}` on its own. PASS → `ready_for_merge`; FAIL → back to `ready` or
   `refining` (per the autonomy policy) with your failing test as evidence; no token →
   HELD, which costs more than a FAIL. Your commit is kept on a separate
-  `gaffer/ticket-<n>-tests` branch; the reviewed delivery branch is never rewritten.
+  `gaffer-tests/ticket-<n>` branch; the reviewed delivery branch is never rewritten.
 
 You cannot approve or merge: never run `review approve`, `mark-merged` or any control-plane
 CLI, and never change the ticket's status. You hold no claim, so `mark_ticket_blocked` is

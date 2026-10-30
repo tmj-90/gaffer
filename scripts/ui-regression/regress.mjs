@@ -868,6 +868,8 @@ try {
   //     controls (Search, New, Logout) stay inside the viewport;
   //   mobile-overview-overflow: no view is wider than the viewport, down to 320px;
   //   settings-access-giant-icon: no 24-grid icon renders wider than 48px;
+  //   squashed-shirt: no sized svg (agent shirt, repo kit, card) is squeezed below
+  //     its drawn aspect ratio by a flex row (the shirt was 0px wide at 320);
   //   hero-banners-below-fold: the first board card / the team sheet are on screen;
   //   axe-gate-blind-contrast: the WCAG audit also runs at 390px.
   {
@@ -915,6 +917,19 @@ try {
           const wide = [...document.querySelectorAll('#app svg[viewBox="0 0 24 24"]')]
             .map((s) => s.getBoundingClientRect().width)
             .filter((x) => x > 48);
+          // A shown svg with a width/height attribute keeps its shape.
+          const squashed = [...document.querySelectorAll("#app svg[width][height]")]
+            .filter((s) => {
+              const r = s.getBoundingClientRect();
+              const aw = +s.getAttribute("width");
+              const ah = +s.getAttribute("height");
+              if (!r.height || !aw || !ah) return false;
+              return r.width / r.height < (aw / ah) * 0.75;
+            })
+            .map(
+              (s) =>
+                `${s.getAttribute("class") || "svg"} ${s.getBoundingClientRect().width.toFixed(1)}px`,
+            );
           const pipe = document.querySelector(".pipeline-panel .pipeline");
           const card = document.querySelector(".board-card");
           const sheet = document.getElementById("what-i-own");
@@ -926,6 +941,7 @@ try {
             newBtn: inView(".btn-new"),
             logout: inView(".logout-btn"),
             wide,
+            squashed,
             pipeDisplay: pipe ? getComputedStyle(pipe).display : null,
             card: card ? card.getBoundingClientRect().toJSON() : null,
             sheetTop: sheet ? sheet.getBoundingClientRect().top : null,
@@ -936,6 +952,10 @@ try {
         for (const k of ["search", "newBtn", "logout"])
           if (m[k] === false) problems.push(`${tag} header ${k} outside the viewport`);
         if (m.wide.length) problems.push(`${tag} ${m.wide.length} icon(s) wider than 48px`);
+        if (m.squashed.length)
+          problems.push(
+            `${tag} ${m.squashed.length} icon(s) squashed: ${m.squashed.slice(0, 3).join(", ")}`,
+          );
         if (m.pipeDisplay && m.pipeDisplay !== "flex")
           problems.push(`${tag} dev-flow strip is display:${m.pipeDisplay}`);
         if (v === "work" && m.card) {

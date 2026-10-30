@@ -317,6 +317,10 @@
     flex: none;
     color: var(--ink);
   }
+  /* The agent shirt never shrinks inside a nowrap .agent row (it vanished at 320). */
+  .shirt {
+    flex: none;
+  }
   .shirt-no {
     font: 900 15px / 1 var(--f-stencil);
     fill: var(--sky);

@@ -5625,7 +5625,8 @@ const BOARD_COLUMN_LABELS = {
   blocked: "Blocked",
   in_review: "In review",
   in_testing: "In testing",
-  ready_for_merge: "Approved · merging",
+  // The comp's lane head; one line at 1440, and the header line's own words.
+  ready_for_merge: "Ready for merge",
   done: "Done",
 };
 
@@ -6479,13 +6480,9 @@ function workSummaryLine(columns, closed = [], wontDo = []) {
   const counts = boardCounts(vis.columns, vis.closed, vis.wontDo);
   const parts = columns
     .filter((c) => counts.by[c.column] > 0)
-    // A count never wraps away from its lane name ("1 / done"), and no lane name
-    // carries the line's own "·" ("1 approved · merging" reads as two lanes).
+    // A count never wraps away from its lane name ("1 / done").
     .map((c) => {
-      const word =
-        c.column === "ready_for_merge"
-          ? "ready for merge"
-          : (BOARD_COLUMN_LABELS[c.column] || c.column).toLowerCase();
+      const word = (BOARD_COLUMN_LABELS[c.column] || c.column).toLowerCase();
       return `${counts.by[c.column]}\u00a0${word}`;
     });
   const extra = [];
@@ -6893,27 +6890,38 @@ function openMoveMenu(card, anchorEl) {
   const r = anchorEl.getBoundingClientRect ? anchorEl.getBoundingClientRect() : null;
   if (r && r.width) {
     scrim.classList.add("is-anchored");
-    const nav = document.getElementById("bottomnav");
-    const navTop = nav && nav.offsetHeight ? nav.getBoundingClientRect().top : window.innerHeight;
-    const floor = Math.min(window.innerHeight, navTop) - 8;
-    const mw = menu.offsetWidth;
-    const mh = menu.offsetHeight;
-    let top = r.bottom + 6;
-    if (top + mh > floor) top = Math.max(8, r.top - 6 - mh);
-    menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - mw - 8))}px`;
-    menu.style.top = `${top}px`;
+    const place = () => {
+      const a = anchorEl.getBoundingClientRect();
+      const nav = document.getElementById("bottomnav");
+      const navTop = nav && nav.offsetHeight ? nav.getBoundingClientRect().top : window.innerHeight;
+      const floor = Math.min(window.innerHeight, navTop) - 8;
+      // The Move button scrolled out of view: the menu has nothing to sit by.
+      if (!anchorEl.isConnected || a.bottom < 0 || a.top > floor) return false;
+      const mw = menu.offsetWidth;
+      const mh = menu.offsetHeight;
+      let top = a.bottom + 6;
+      if (top + mh > floor) top = Math.max(8, a.top - 6 - mh);
+      menu.style.left = `${Math.max(8, Math.min(a.left, window.innerWidth - mw - 8))}px`;
+      menu.style.top = `${top}px`;
+      return true;
+    };
+    place();
+    moveMenuPlace = place;
     window.addEventListener("scroll", onMoveMenuScroll, { passive: true });
   }
   items[0].focus();
 }
 let moveMenuScrim = null;
 let moveMenuReturn = null;
-// The page scrolls under an anchored menu: it closes rather than drift off its card.
+let moveMenuPlace = null;
+// The page scrolls under an anchored menu: it follows its Move button (a momentum
+// scroll no longer closes it under a tap), and closes once the button leaves view.
 function onMoveMenuScroll() {
-  closeMoveMenu();
+  if (!moveMenuPlace || !moveMenuPlace()) closeMoveMenu();
 }
 function closeMoveMenu({ restore = true } = {}) {
   window.removeEventListener("scroll", onMoveMenuScroll);
+  moveMenuPlace = null;
   if (moveMenuScrim) {
     moveMenuScrim.remove();
     moveMenuScrim = null;
@@ -6923,7 +6931,8 @@ function closeMoveMenu({ restore = true } = {}) {
     .forEach((n) => n.classList.remove("card-armed"));
   if (moveMenuReturn) {
     moveMenuReturn.setAttribute("aria-expanded", "false");
-    if (restore && moveMenuReturn.isConnected) moveMenuReturn.focus();
+    // preventScroll: a menu closed by scrolling away never yanks the page back.
+    if (restore && moveMenuReturn.isConnected) moveMenuReturn.focus({ preventScroll: true });
     moveMenuReturn = null;
   }
   document.removeEventListener("keydown", moveMenuKeydown);
@@ -6960,6 +6969,26 @@ function laneMoreLink(column, shown, total) {
   );
 }
 
+/** Phone lane order: most urgent first; lanes with no (matching) card sink last. */
+const PHONE_LANE_URGENCY = [
+  "blocked",
+  "in_review",
+  "in_progress",
+  "ready_for_merge",
+  "in_testing",
+  "ready",
+  "draft",
+  "done",
+];
+function phoneLaneOrder(columns) {
+  const rank = (c) => {
+    const i = PHONE_LANE_URGENCY.indexOf(c.column);
+    const empty = !(c.cards || []).some(workMatches);
+    return (empty ? 100 : 0) + (i < 0 ? 50 : i);
+  };
+  return [...columns].sort((a, b) => rank(a) - rank(b));
+}
+
 /** Board (kanban) — mown lanes by status; filters narrow the cards client-side. */
 function renderBoard(columns, closed, wontDo = [], needs = null) {
   const wrap = el("div", { class: "board-wrap" });
@@ -6982,10 +7011,14 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
   }
 
   const closedAll = [...closed, ...wontDo].filter(workMatches);
+  // On a phone the lanes stack in urgency order (Blocked, In review, In progress
+  // first; empty lanes last) IN THE DOM, so tab and screen-reader order match what
+  // is on screen (WCAG 2.4.3). The board re-renders when the width crosses 760px.
+  const laneCols = phone ? phoneLaneOrder(columns) : columns;
   const cols = el(
     "div",
     { class: "board" },
-    columns.map((c, laneIdx) => {
+    laneCols.map((c, laneIdx) => {
       // repo is filtered server-side via ?repo= on /api/board; status, risk and the
       // number-or-title filter narrow the cards here.
       const all = (c.cards || []).filter(workMatches);
@@ -7023,8 +7056,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
           : null;
       const headBits = [
         glyph(c.column, 18),
-        // A two-word label may wrap, but never with the separator leading the line.
-        el("h2", { class: "board-col-title" }, label.replace(" · ", "\u00a0· ")),
+        el("h2", { class: "board-col-title" }, label),
         el("span", { class: "board-col-count tabnum" }, String(all.length)),
       ];
       let inner;

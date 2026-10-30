@@ -285,9 +285,11 @@
   .card-status.st-failed {
     color: var(--red);
   }
+  /* Greedy wrapping, as the comp: a balanced title split "/repeat-orders" at its hyphen. */
   .card-title {
     font: 600 var(--t14) / 1.28 var(--f-cond);
     overflow-wrap: anywhere;
+    text-wrap: pretty;
   }
   /* The title is the card's one link, stretched over the card; the buttons sit above it. */
   .card-link {
@@ -365,6 +367,10 @@
     flex-wrap: wrap;
     font: 600 var(--t12) / 1.2 var(--f-cond);
     color: var(--ink);
+  }
+  /* The claret dot stays beside "By hand · …"; the words wrap, never the dot. */
+  .card-human-owned {
+    flex-wrap: nowrap;
   }
   .card-claim .agent {
     font-size: var(--t12);
@@ -778,35 +784,6 @@
       min-width: 36px;
       font: 700 var(--t14) / 1 var(--f-text);
       text-align: right;
-    }
-    /* Urgency order on a phone: blocked, review, in progress first. */
-    .board-col.col-blocked {
-      order: 1;
-    }
-    .board-col.col-in_review {
-      order: 2;
-    }
-    .board-col.col-in_progress {
-      order: 3;
-    }
-    .board-col.col-ready_for_merge {
-      order: 4;
-    }
-    .board-col.col-in_testing {
-      order: 5;
-    }
-    .board-col.col-ready {
-      order: 6;
-    }
-    .board-col.col-draft {
-      order: 7;
-    }
-    .board-col.col-done {
-      order: 8;
-    }
-    /* Empty lanes sink below the lanes with work. */
-    .board-col:not(:has(.board-card)) {
-      order: 20;
     }
     .board-col:not(:has(.board-card)) .board-col-head {
       min-height: 44px;

@@ -31,7 +31,7 @@
 // verbatim (it does not strip or add a trailing newline), and this writes
 // it with writeFileSync (no console.log — that would append a byte). The
 // output is therefore byte-identical to the prior bash sed render for the
-// same inputs (proven by runner/test/mcp-render-parity.test.sh).
+// same inputs (pinned by runner/test/mcp-render-golden.test.sh).
 //
 // FAIL-CLOSED: a CrewError from the renderer (leftover placeholder, invalid
 // JSON, missing dispatch/memory server) is printed to stderr and exits 1,

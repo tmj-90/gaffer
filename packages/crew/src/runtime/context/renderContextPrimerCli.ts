@@ -3,17 +3,14 @@
 // Node entrypoint for the tick.sh delivery CONTEXT-PRIMER blocks
 // (P1b context assembly, docs/tick-sh-runtime-migration.md).
 // ---------------------------------------------------------------------
-// The two live primer blocks are rendered today as inline python inside the
-// bash primer (runner/lib/context-primer.sh): gaffer_prime_context_block
-// (:39, the "PRIOR CONTEXT (file cards)" block) and gaffer_product_context_block
-// (:216, the "PRODUCT CONTEXT" block). This is the typed render seam for that
-// text: it routes the render through the golden-tested pure renderers
-// (formatFileCardsBlock / formatProductContextBlock, ./contextPrimer.ts) so the
-// crew golden test (packages/crew/test/tick-context-primer.test.ts) IS the live
-// behaviour once the bash primer routes its block render through this CLI (a
-// later, flag-gated slice — this entrypoint lands first, proven byte-identical
-// to the captured bash goldens, exactly as renderMcpCli.ts / renderPromptCli.ts
-// did before their seams were wired).
+// LIVE: the bash primer (runner/lib/context-primer.sh) fetches the memory-CLI
+// JSON and pipes it into this CLI for both delivery blocks —
+// gaffer_prime_context_block (the "PRIOR CONTEXT (file cards)" block) and
+// gaffer_product_context_block (the "PRODUCT CONTEXT" block). It routes the
+// render through the golden-tested pure renderers (formatFileCardsBlock /
+// formatProductContextBlock, ./contextPrimer.ts), so the crew golden test
+// (packages/crew/test/tick-context-primer.test.ts) IS the live behaviour. Edit
+// the block wording there, not in the bash primer.
 //
 // Dependency surface is kept as tiny as the other two entrypoints: this imports
 // ONLY ./contextPrimer.js — NOT the crew CLI, dispatch, or zod — so startup
@@ -24,8 +21,8 @@
 //   node renderContextPrimerCli.js --kind product-context [--out <path>]  < rows.json
 // The stdin payload is the EXACT memory-CLI output the bash primer already
 // captures — for file-cards the `memory cards-for-scope --json` packet, for
-// product-context the `memory search --json` rows array — so the future seam can
-// pipe it straight through with no reshaping.
+// product-context the `memory search --json` rows array — so the primer pipes it
+// straight through with no reshaping.
 //
 // BYTE-IDENTITY: the renderers return the block verbatim (no added/stripped
 // trailing newline — the bash primer's `$( … )` capture strips the trailing

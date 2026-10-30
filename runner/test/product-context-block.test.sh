@@ -7,8 +7,8 @@
 #      PRODUCT_CONTEXT_BLOCK and injects it into BOTH delivery prompts, right
 #      after FILE_CARDS_BLOCK. LIVE: the block is present, QUARANTINED, and
 #      empty/fail-soft when there is no intent.
-#   C. tick.sh appends the lore-reflection nudge (suggest_lore, explicit kind)
-#      to BOTH delivery briefs.
+#   C. the prompt seam (deliveryPrompt.ts) appends the lore-reflection nudge
+#      (suggest_lore, explicit kind) to BOTH delivery briefs; tick.sh has no copy.
 #   D. SEAL: crew's mock loop + `run` command are commented mock-only and point
 #      at runner/tick.sh; runner/CLAUDE.md carries the "features must land here" rule.
 #
@@ -22,9 +22,9 @@ TICK="$RUNNER_DIR/tick.sh"
 PRIMER_SH="$RUNNER_DIR/lib/context-primer.sh"
 # The delivery/bootstrap prompt bodies are rendered by the typed seam
 # (packages/crew/src/runtime/context/deliveryPrompt.ts via renderPromptCli.js; the
-# bash heredoc twins were deleted). tick.sh still BUILDS PRODUCT_CONTEXT_BLOCK + the
-# lore-reflection nudge; the template that INJECTS them is the typed renderer, and
-# the product-context envelope is applied by the typed primer (contextPrimer.ts).
+# bash heredoc twins were deleted). tick.sh still BUILDS PRODUCT_CONTEXT_BLOCK; the
+# template that INJECTS it (and owns the lore-reflection nudge) is the typed
+# renderer, and the product-context envelope is applied by the typed primer.
 SEAM="$GAFFER_HOME/packages/crew/src/runtime/context/deliveryPrompt.ts"
 PRIMER_TS="$GAFFER_HOME/packages/crew/src/runtime/context/contextPrimer.ts"
 RUNNER_CLAUDE="$RUNNER_DIR/CLAUDE.md"
@@ -58,15 +58,22 @@ else
 fi
 
 echo "== C. WIRING — lore-reflection nudge appended to both briefs =="
-grep -q 'LORE_REFLECTION_NUDGE' "$TICK" \
-  && grep -q 'suggest_lore' "$TICK" \
-  && ok "tick.sh defines the suggest_lore reflection nudge" \
-  || fail "tick.sh missing the suggest_lore reflection nudge"
+grep -q 'export const LORE_REFLECTION_NUDGE' "$SEAM" \
+  && grep -q 'suggest_lore' "$SEAM" \
+  && ok "the prompt seam defines the suggest_lore reflection nudge" \
+  || fail "deliveryPrompt.ts missing the suggest_lore reflection nudge"
+# The nudge lives ONLY in the renderer: a copy in tick.sh is never read, so an
+# edit there would silently change nothing for the live agent.
+if grep -q 'suggest_lore\|LORE_REFLECTION_NUDGE' "$TICK"; then
+  fail "tick.sh carries a dead copy of the lore-reflection nudge"
+else
+  ok "tick.sh carries no copy of the nudge (the renderer owns it)"
+fi
 CNT_NUDGE="$(grep -c '^\${LORE_REFLECTION_NUDGE}$' "$SEAM" 2>/dev/null || echo 0)"
 [ "$CNT_NUDGE" = "2" ] \
   && ok "nudge injected into both delivery prompts (x$CNT_NUDGE)" \
   || fail "nudge not injected into both prompts (found $CNT_NUDGE, want 2)"
-grep -qi 'decision / requirement / non-goal\|decision (why\|requirement (what\|non-goal (what' "$TICK" \
+grep -qi 'decision / requirement / non-goal\|decision (why\|requirement (what\|non-goal (what' "$SEAM" \
   && ok "nudge names the durable intent kinds (decision/requirement/non-goal)" \
   || fail "nudge does not name the intent kinds"
 

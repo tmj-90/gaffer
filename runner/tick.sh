@@ -1084,7 +1084,8 @@ if [ "$READY_COUNT" -gt 0 ]; then
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
 
-    B_TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
+    # The prompt text (and the title's quarantine envelope) is rendered by crew:
+    # packages/crew/src/runtime/context/deliveryPrompt.ts via renderPromptCli.js.
     B_PROMPT="$(gaffer_render_delivery_prompt bootstrap)" \
       || { log "PROMPT-RENDER: failed to render bootstrap prompt for #$NUM — refusing live bootstrap (fail closed)"; result error; exit 1; }
 
@@ -1489,33 +1490,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
   PRIMARY_REPO="$(printf '%s\n' "$WRITE_ROOTS" | grep . | head -1)"
   [ -n "$PRIMARY_REPO" ] || PRIMARY_REPO="$WORKTREES_BASE/primary"
 
-  # Human-readable WRITE / READ repo lists for the prompt + plan logging. The
-  # agent is told which (worktree) repos are WRITABLE (it is already on the gaffer/
-  # branch in each) and which are READ-ONLY context (never branch or write them).
-  WRITE_LIST="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '{printf "  - %s (%s) [WRITABLE worktree, on branch '"$WORK_BRANCH"']\n", $5, ($2==""?"repo":$2)}')"
-  READ_LIST="$(printf '%s\n' "$READ_ROOTS" | grep . | awk '{printf "  - %s [READ-ONLY context — do NOT write or branch]\n", $0}')"
-  [ -n "$READ_LIST" ] || READ_LIST="  (none)"
-
-  # Prior review feedback: if this ticket was sent back before, surface the reviewer's
-  # reasons so the agent ADDRESSES them this time (closes the learning loop instead of
-  # repeating the mistake). Pulled from ticket.transitioned events whose payload reason
-  # records a rejection (to refining/ready/cancelled), newest few, deduped.
-  REVIEW_FEEDBACK_BLOCK=""
+  # Prior review feedback: if this ticket was sent back before, the reviewer's
+  # reasons ride into the prompt so the agent ADDRESSES them this time. Pulled from
+  # ticket.transitioned events whose payload reason records a rejection, newest
+  # few, deduped. Only the RAW reasons are captured here: the write/read repo
+  # lists, the review-feedback framing and the quarantine envelope around
+  # the (untrusted) reasons are all rendered by crew's deliveryPrompt.ts, which
+  # reads _RF through _gaffer_prompt_inputs_json (factory.config.sh).
   _RF="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json review-feedback 2>/dev/null || true)"
-  # The reviewer feedback is UNTRUSTED (a rejection reason is free text that may
-  # itself carry injected instructions) — quarantine the body inside an envelope.
-  if [ -n "$_RF" ]; then
-    _RF_Q="$(gaffer_quarantine review-feedback "$_RF")"
-    REVIEW_FEEDBACK_BLOCK="
-PRIOR REVIEW FEEDBACK — this ticket was sent back before. Each line inside the
-envelope below is why a previous attempt was rejected; you MUST address every one
-before re-delivering, and must NOT repeat them. The previous attempt's commits are
-ALREADY on this branch: fix them in place rather than re-implementing from scratch
-(run \`git log --oneline\` first; reset to the base deliberately only if the approach
-itself was wrong).
-$_RF_Q
-"
-  fi
 
   # ── PRIOR CONTEXT (file cards) — via shared gaffer_prime_context_block ───────
   # Runner has ALREADY resolved scope (write/read partition above). Pull the
@@ -1579,21 +1561,10 @@ $PRODUCT_CONTEXT_BLOCK}"
     log "ACCEPTANCE: #$NUM is the epic's acceptance ticket — brief-level acceptance suite against the integrated build; the independent tester decides"
   fi
 
-  # ── LORE-REFLECTION NUDGE (Track 1c) — appended to the delivery brief ─────────
-  # The live-agent counterpart of crew's CaptureLoreReflectionHook: prompt the
-  # agent, before it stops, to capture any durable INTENT (decision / requirement
-  # / non-goal) this ticket established via the gated `suggest_lore` boundary —
-  # not per-ticket trivia. Advisory only; it records nothing itself.
-  read -r -d '' LORE_REFLECTION_NUDGE <<'EOF' || true
-BEFORE STOPPING, reflect on WHY this was built this way. If this ticket established a
-durable DECISION (why this approach over the alternatives), a REQUIREMENT (what it
-needed), or a NON-GOAL (what it deliberately did NOT do), call the Memory `suggest_lore`
-tool ONCE with an explicit `kind` (decision / requirement / non-goal). Capture only
-intent the NEXT agent should start from — skip per-ticket trivia. This lands a gated
-DRAFT a human approves; nothing is auto-applied.
-EOF
-
-  TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
+  # The prompt TEXT — the quarantined title, the lore-reflection nudge, the
+  # review-feedback block, the repo lists — is LIVE in
+  # packages/crew/src/runtime/context/deliveryPrompt.ts; edit it there (and
+  # rebuild crew), not here. This file only gathers the raw inputs.
   if [ "$_RESUMING" = "1" ]; then
     # PAUSE-ON-CAP continuation prompt: the prior progress is ALREADY in this worktree
     # (committed and/or working changes) — the agent CONTINUES and FINISHES it with a
@@ -1910,6 +1881,7 @@ EOF
   # a single-line, valid JSON string; empty names are skipped (an unnamed repo is
   # not a memory-write target). Paired with GAFFER_FACTORY=1 (a literal in the
   # template) which arms the guard — standalone memory-mcp never sets it.
+  # shellcheck disable=SC2034  # read by gaffer_render_mcp_runtime (factory.config.sh)
   GAFFER_TICKET_REPOS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '$2!=""{print $2}' | paste -sd: -)"
   # MEMORY ROI: the delivery ticket ref is injected as ${GAFFER_RECALL_TICKET} so
   # the memory MCP server's READ path can attribute a retrieval to this ticket
@@ -2273,6 +2245,7 @@ $_trail_q
   # C1/M2: scrub ambient credentials via an allowlist (env -i) inside worker_deliver.
   # The scrub sits INSIDE the optional OS-sandbox $WRAP so the sandbox still wraps the
   # whole agent; the per-call boundary vars in WORKER_CALL_ENV are layered on top.
+  # shellcheck disable=SC2034  # read by worker_deliver (lib/worker.sh)
   WORKER_CALL_ENV=(
     "GAFFER_WRITE_ROOTS=$WRITE_ROOTS" "GAFFER_READ_ROOTS=$READ_ROOTS"
     "GAFFER_DATA=$GAFFER_DATA" "GAFFER_TICKET=$NUM"
@@ -2944,7 +2917,6 @@ $_trail_q
     git -C "$rwt" rev-parse --git-dir >/dev/null 2>&1 || continue
     R_CUR="$(git -C "$rwt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
     [ -n "$R_CUR" ] && [ "$R_CUR" != "$rbase" ] || continue
-    R_DIFFSTAT="$(git -C "$rwt" diff "$rbase"...HEAD --stat 2>/dev/null | tail -15)"
     # GRADUATED AUTONOMY: record the delivery HEAD sha so the review-approve path can
     # compute an honest `approved_unchanged` (delivery sha vs the branch head at approval).
     # Without it the signal was permanently null and the auto-merge half never fired.

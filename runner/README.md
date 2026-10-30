@@ -29,8 +29,13 @@ There is **no long-running app and no polling daemon**. A thin driver
 claims one ready ticket, consults memory, delivers it on a branch, evidences
 every acceptance criterion, and submits for review — then stops. When nothing is
 ready, a tick first runs the **clarify intake gate** (auto-clarifies an ambiguous
-draft so it can't reach `ready` while load-bearing ambiguity remains), then idle
-ticks scan the repos and draft new tickets.
+draft so it can't reach `ready` while load-bearing ambiguity remains; a draft with
+no linked repo on disk is logged and skipped for the run, so it cannot stall the
+gate for the drafts behind it), then the opt-in **feature backlog** step
+(`GAFFER_IDLE_FEATURE_BACKLOG`, the Settings "Feature backlog" toggle: plan one memory
+`backlog` feature as a draft epic via `fg feature-backlog`, one paid
+`decompose.mjs --force-plan` call), then idle ticks scan the repos and draft new
+tickets.
 
 ### Idle maintenance lane (opt-in, deterministically prioritised)
 
@@ -141,10 +146,18 @@ The factory keeps the memory product's **Repo Digest** current and drives the
 **feature lifecycle** (`backlog → building → shipped`) as it works — *without* a fresh
 `claude -p` per merge, and *without* a rejected delivery ever polluting the digest:
 
-- **Brownfield epic → `building`.** When a brownfield (existing-repo) epic is created
-  for a feature, `bin/epic-feature.mjs` either advances an existing `backlog` feature
-  → `building` or `add_feature(status:"building")` with the **epic ref as provenance**.
-  Deterministic, best-effort, no agent. (`node bin/epic-feature.mjs --repo <r> --epic <ref> --name <f>`)
+- **Brownfield epic → `building`.** When a brownfield epic is created through the
+  dispatch API (`POST /epics`, which the dashboard's plan confirm calls) and every one
+  of its tickets targets ONE existing registered repo, the API spawns
+  `DISPATCH_EPIC_FEATURE_CMD` (`bin/epic-feature.mjs`, wired by `gaffer dashboard`;
+  detached, no shell, request values as discrete argv). It either advances an existing
+  feature of that name (`backlog` → `building`, memory dedupes by repo + name) or
+  `add_feature(status:"building")`, with the **epic ref as provenance**. A feature that is
+  already `building` or `shipped` is left as it is (memory only replaces a feature's
+  summary / provenance on a re-add that advances its status, and a blank epic
+  description never wipes a recorded summary). Deterministic,
+  best-effort, no agent: the epic is created either way. A greenfield, mixed-repo or
+  bootstrap plan writes no feature row. (`node bin/epic-feature.mjs --repo <r> --epic <ref> --name <f>`)
 - **Prepare at delivery.** The delivery agent — already running, already holding the
   diff — runs the **`prepare-digest-delta`** skill to record ONE inert evidence row
   (`GAFFER_DIGEST_DELTA_V1 {…}`): the digest section deltas + the feature note. Nothing
@@ -259,7 +272,7 @@ knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 - `skills/` — the curated skill library (each `SKILL.md` tagged by `stack` + `area`)
 - `bin/select-skills.mjs` — stack/area skill selector (used by `tick.sh`; zero-dep)
 - `lib/feature-digest.mjs` — feature-lifecycle + Repo-Digest wiring: pure builders/parser for the prepare-at-delivery / apply-at-merge mechanism (zero-dep)
-- `bin/epic-feature.mjs` — brownfield epic → feature(`building`) hook (`node bin/epic-feature.mjs --repo <r> --epic <ref> --name <f>`)
+- `bin/epic-feature.mjs` — brownfield epic → feature(`building`) hook, spawned by the dispatch API's `POST /epics` (`DISPATCH_EPIC_FEATURE_CMD`) (`node bin/epic-feature.mjs --repo <r> --epic <ref> --name <f>`)
 - `skills/prepare-digest-delta/SKILL.md` — the delivery-side **prepare** skill (records the inert `GAFFER_DIGEST_DELTA_V1` evidence the merge applies)
 - `test/feature-digest.test.mjs` — feature-lifecycle + digest wiring tests, incl. apply-on-merge + brownfield-building, no live claude (`node test/feature-digest.test.mjs`)
 - `test/select-skills.test.mjs` — selector tests (`node test/select-skills.test.mjs`)

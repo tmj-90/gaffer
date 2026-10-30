@@ -151,8 +151,13 @@ export interface DispatchFacade {
     epic?: { id?: string };
     ticketIds?: string[];
     tickets?: Array<{ id?: string; ticketId?: string }>;
+    // Dispatch's real createEpic result (EP-001): the epic scope node + ticket numbers.
+    epicNodeId?: string;
+    ticketNumbers?: number[];
   };
   markReady?(ref: string, actor?: unknown): unknown;
+  /** Resolve a ticket ref (id or number, e.g. "12") to the ticket row. */
+  resolveTicket?(ref: string): { id?: string };
   addAcceptanceCriterion?(input: unknown, actor?: unknown): unknown;
   db?: { close(): void };
 }
@@ -766,27 +771,56 @@ export class RealDispatchClient implements DispatchClient {
         index === 0 && p.findingKey
           ? `${t.description ?? ""}\n\nFinding-Key: ${p.findingKey}`
           : (t.description ?? ""),
-      acceptance_criteria: t.acceptanceCriteria ?? [],
+      // Dispatch's create_epic plan shape (domain epicTicketInput) is camelCase
+      // `acceptanceCriteria` / `dependsOn` and a PER-TICKET `policy_pack`. The
+      // snake_case keys sent here before were stripped by its schema, so every
+      // epic landed without its ACs and dependency order.
+      acceptanceCriteria: t.acceptanceCriteria ?? [],
       ...(t.priority !== undefined ? { priority: t.priority } : {}),
       ...(t.repoName ? { repo: t.repoName } : {}),
-      depends_on: t.dependsOn ?? [],
+      policy_pack: p.policyPack ?? "solo_loose",
+      dependsOn: t.dependsOn ?? [],
     }));
     const res = create.call(
       this.facade,
-      {
-        epic: { name: p.name, description: p.description ?? "" },
-        tickets,
-        ready: p.ready,
-        policy_pack: p.policyPack ?? "solo_loose",
-      },
+      { epic: { name: p.name, description: p.description ?? "" }, tickets },
       GAFFER_ACTOR,
     );
-    const epicId = res.epicId ?? res.id ?? res.epic?.id;
-    const ticketIds =
-      res.ticketIds ?? (res.tickets ?? []).map((t) => String(t.id ?? t.ticketId ?? ""));
+    // Dispatch returns `{ epicNodeId, ticketNumbers }`; reading only epicId/id used to
+    // throw AFTER the epic was created, so every filed epic was reported as a failure.
+    const epicId = res.epicNodeId ?? res.epicId ?? res.id ?? res.epic?.id;
+    const refs =
+      res.ticketIds ??
+      (res.ticketNumbers ? res.ticketNumbers.map((n) => String(n)) : undefined) ??
+      (res.tickets ?? []).map((t) => String(t.id ?? t.ticketId ?? ""));
+    // Dispatch returns ticket NUMBERS; markReady (and every id-keyed call) needs the
+    // ticket ID, so resolve each number through the facade. A ref that does not
+    // resolve is kept as-is (markReady then refuses it and the ticket stays a draft).
+    const created = refs
+      .filter((ref) => ref !== "")
+      .map((ref) => {
+        if (!this.facade.resolveTicket) return ref;
+        try {
+          return String(this.facade.resolveTicket.call(this.facade, ref).id ?? ref);
+        } catch {
+          return ref;
+        }
+      });
+    // create_epic always files DRAFTS. `create_ready_tickets` (an explicit operator
+    // opt-in) then readies each ticket through the GATE-AWARE markReady, exactly like
+    // the dashboard's "Create & ready": a ticket the intake gate refuses stays draft.
+    if (p.ready && this.facade.markReady) {
+      for (const ref of created) {
+        try {
+          this.facade.markReady.call(this.facade, ref, GAFFER_ACTOR);
+        } catch {
+          // Gate refused (e.g. no AC) — it stays a draft for a human.
+        }
+      }
+    }
     return {
       epicId: String(required(epicId, "createEpic.epicId")),
-      ticketIds: ticketIds.filter((id) => id !== ""),
+      ticketIds: created,
       ready: p.ready,
     };
   }

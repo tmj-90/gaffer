@@ -3471,6 +3471,43 @@ declare -F _gaffer_tester_pass >/dev/null 2>&1 && _gaffer_tester_pass
 # clarifies a draft; otherwise returns and the flow falls through to maintenance.
 _gaffer_clarify_pass
 
+# ── Idle feature backlog ── the Settings "Feature backlog" toggle
+# (GAFFER_IDLE_FEATURE_BACKLOG, else crew.yaml `loops.idle_feature_backlog.enabled`;
+# OFF by default). With nothing ready, crew pulls ONE `backlog` feature from the
+# memory ledger, advances it to `building`, decomposes it (bin/decompose.mjs, one
+# paid plan call, --force-plan) and files a brownfield epic — as DRAFTS behind the
+# human gate unless the idle mode says otherwise. It runs BEFORE the maintenance
+# lane: it used to be reachable only through `fg idle` (IDLE_DRAFT_WHEN_IDLE=1),
+# which never ran on a tick where the maintenance lane did. GAFFER_IDLE_FEATURE_BACKLOG=0
+# skips the crew spawn entirely; crew answers `disabled` while the switch is off.
+_FB_RAN=0
+if [ "${GAFFER_IDLE_FEATURE_BACKLOG:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] && [ -f "$CREW_CONFIG" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    [ "${GAFFER_IDLE_FEATURE_BACKLOG:-}" = "1" ] && log "DRY_RUN: would run: fg feature-backlog (plan one backlog feature as an epic)"
+  else
+    _FB_RAN=1
+    FBOUT="$(fg feature-backlog 2>>"$GAFFER_LOG")"
+    FBSTATUS="$(echo "$FBOUT" | jget '(() => { if (!d || d.ok !== true) return "error"; if (!d.featureBacklog) return "skipped:" + (d.skipped || "none"); return (d.featureBacklog.outcome || {}).status || "none"; })()' 2>/dev/null || echo error)"
+    case "$FBSTATUS" in
+      skipped:disabled) : ;;  # the switch is off — the common case, stay quiet
+      draft_created|ready_created)
+        FBDRAFTS="$(echo "$FBOUT" | jget '((d.featureBacklog || {}).outcome || {}).draftCount ?? 0' 2>/dev/null || echo 0)"
+        log "no ready tickets → feature backlog planned one feature as an epic ($FBSTATUS, $FBDRAFTS ticket(s))"
+        result idle_drafted; exit 0 ;;
+      *)
+        # A claimed feature whose decompose / create_epic failed: crew tries to roll it
+        # back to `backlog`, but memory's lifecycle is forward-only (building → backlog
+        # is refused), so it stays `building` with no epic. That is deliberately NOT
+        # retried (no paid decompose on every idle tick); say so loudly for a human.
+        if [ "$(echo "$FBOUT" | jget '(d.events || []).includes("feature_backlog_failed") ? "failed" : ""' 2>/dev/null)" = "failed" ]; then
+          log "feature backlog FAILED to plan a claimed feature — it stays 'building' with no epic and is not retried (see $GAFFER_CREW_EVENTS for the error; plan it from the dashboard)"
+        else
+          log "no ready tickets → feature backlog: $FBSTATUS"
+        fi ;;
+    esac
+  fi
+fi
+
 # Nothing ready → idle MAINTENANCE LANE (audit item A4). The lane's master switch
 # lives in crew.yaml (`loops.maintenance.enabled`, edited from the dashboard's
 # Settings → Idle loops panel), so a built crew + a crew.yaml is enough to ASK the
@@ -3536,7 +3573,12 @@ if [ "${IDLE_DRAFT_WHEN_IDLE:-0}" = "1" ] && [ -f "$CREW_DIR/dist/cli/index.js" 
   if [ "$DRY_RUN" = "1" ]; then
     log "DRY_RUN: would run: fg idle"; result no_work; exit 0
   fi
-  OUT="$(fg idle 2>>"$GAFFER_LOG")"
+  # The feature-backlog loop already had its turn above this tick — don't run it twice.
+  if [ "$_FB_RAN" = "1" ]; then
+    OUT="$(GAFFER_IDLE_FEATURE_BACKLOG=0 fg idle 2>>"$GAFFER_LOG")"
+  else
+    OUT="$(fg idle 2>>"$GAFFER_LOG")"
+  fi
   DRAFTS="$(echo "$OUT" | jget '((d.outcome || {}).drafts || []).length || 0' 2>/dev/null || echo 0)"
   log "idle scan created $DRAFTS draft(s)"
   [ "${DRAFTS:-0}" -gt 0 ] && { result idle_drafted; exit 0; }

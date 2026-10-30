@@ -1314,6 +1314,14 @@ gaffer_agent_env() {
 # follow-up; the seam + context assembly + verdict→transition wiring are real today.
 : "${DISPATCH_TESTER_CMD:=node $RUNNER_DIR/bin/tester-run.mjs}"
 
+# The BROWNFIELD epic → feature(`building`) hook. POST /epics spawns this (detached,
+# no shell, request values as discrete argv) when every ticket of a just-created
+# epic targets ONE existing registered repo: bin/epic-feature.mjs adds that feature
+# to the memory ledger with status `building` and the epic ref as provenance.
+# Best-effort and fire-and-forget — the epic is created either way. Unset/blank =
+# no feature write. Absolute path so the detached child resolves it.
+: "${DISPATCH_EPIC_FEATURE_CMD:=node $RUNNER_DIR/bin/epic-feature.mjs}"
+
 # Factory identity + bookkeeping
 : "${GAFFER_AGENT_NAME:=gaffer-factory}"
 : "${GAFFER_AGENT_ID_FILE:=$GAFFER_DATA/agent_id}"
@@ -1865,7 +1873,17 @@ gaffer_assert_db_vars() {
 wg() { gaffer_assert_db_vars || return 1; node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"; }
 # fg pins crew to the factory's $DISPATCH_DB (CREW_DISPATCH_DB beats crew.yaml's
 # sqlite_path), so a drifted crew.yaml can't send drafts to a DB nobody reads.
-fg() { CREW_DISPATCH_DB="${DISPATCH_DB:-}" node "$CREW_DIR/dist/cli/index.js" -c "$CREW_CONFIG" "$@"; }
+# It also names the factory's memory store and the brownfield decomposer, as crew
+# FALLBACKS (an explicit crew.yaml value wins): CREW_MEMORY_MCP_BIN + MEMORY_DB give
+# the async idle loops a real memory client on the factory DB, CREW_DECOMPOSE_SCRIPT
+# gives the feature-backlog loop its decomposer. Without them a `crew init` config
+# left both null and the Settings "Feature backlog" toggle could never run.
+fg() {
+  CREW_DISPATCH_DB="${DISPATCH_DB:-}" MEMORY_DB="${MEMORY_DB:-}" \
+  CREW_MEMORY_MCP_BIN="${CREW_MEMORY_MCP_BIN:-${MEMORY_MCP_BIN:-}}" \
+  CREW_DECOMPOSE_SCRIPT="${CREW_DECOMPOSE_SCRIPT:-$RUNNER_DIR/bin/decompose.mjs}" \
+    node "$CREW_DIR/dist/cli/index.js" -c "$CREW_CONFIG" "$@"
+}
 lg() { gaffer_assert_db_vars || return 1; MEMORY_DB="$MEMORY_DB" node "$MEMORY_CLI_BIN" "$@"; }
 
 # The runner's JSON helpers (node — lib/json-tool.mjs replaces the former inline

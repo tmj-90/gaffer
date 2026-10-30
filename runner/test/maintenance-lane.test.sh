@@ -22,6 +22,10 @@
 #      as FAILED and falls through to the legacy scan + no_work — never reported
 #      as a healthy maintenance_ran.
 #
+# The feature-backlog step (its own switch, run before this lane) is pinned OFF here
+# (GAFFER_IDLE_FEATURE_BACKLOG=0) so these crew-call assertions are about the lane
+# only; feature-backlog-live.test.sh covers that step.
+#
 # Hermetic: stub `dispatch` + `crew` CLIs stand in for the real servers, so no
 # real factory state is touched and Claude is never invoked. Zero deps.
 # Run: bash test/maintenance-lane.test.sh
@@ -114,6 +118,7 @@ run_tick() {
   DISPATCH_DIR="$WORK/dispatch" CREW_DIR="$WORK/crew" CREW_CONFIG="$CREW_CONFIG" \
   DRY_RUN="${DRY_RUN:-0}" REVIEW_MODE=human \
   GAFFER_MAINTENANCE="${GAFFER_MAINTENANCE-}" IDLE_DRAFT_WHEN_IDLE="${IDLE_DRAFT_WHEN_IDLE:-0}" \
+  GAFFER_IDLE_FEATURE_BACKLOG="${GAFFER_IDLE_FEATURE_BACKLOG-0}" \
     bash "$RUNNER_DIR/tick.sh" 2>>"$GAFFER_DATA/stderr.log"
 }
 reset_log() { : > "$CREW_CALLS"; : > "$GAFFER_DATA/factory.log"; }

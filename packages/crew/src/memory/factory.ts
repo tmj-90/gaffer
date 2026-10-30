@@ -12,10 +12,29 @@
  * uses {@link resolveUnderstandingSink} instead, which prefers the memory CLI
  * bridge so a fresh install populates memory with no MCP server configured.
  */
+import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
+
 import { CliMemoryClient, cliConfigFromEnv } from "./cliClient.js";
 import { McpMemoryClient, type AsyncMemoryClient } from "./mcpClient.js";
 import type { CrewConfig } from "../config/schema.js";
 import type { EventLog } from "../events/eventLog.js";
+
+/**
+ * The environment the spawned Memory MCP server runs with: the SDK's safe default
+ * (PATH, HOME, …) plus every `MEMORY_*` variable from ours. The stdio transport
+ * hands a child ONLY the SDK default when no env is given, so `MEMORY_DB` was
+ * dropped and the server opened the operator's global `~/.memory/lore.db` instead
+ * of the factory's `$GAFFER_DATA/memory.sqlite`. Nothing else is forwarded — in
+ * particular not `GAFFER_FACTORY` / the agent scope vars (this client is the
+ * operator's crew process, not a scoped agent) and no credentials.
+ */
+export function memoryServerEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = { ...getDefaultEnvironment() };
+  for (const [key, value] of Object.entries(env)) {
+    if (key.startsWith("MEMORY_") && typeof value === "string") out[key] = value;
+  }
+  return out;
+}
 
 /** True when config declares a real Memory MCP server. */
 export function hasRealMemory(config: CrewConfig): boolean {
@@ -35,7 +54,11 @@ export async function resolveAsyncMemory(
   const command = config.memory.mcp.command;
   if (command === null) return null;
   try {
-    return await McpMemoryClient.connect({ command, args: config.memory.mcp.args });
+    return await McpMemoryClient.connect({
+      command,
+      args: config.memory.mcp.args,
+      env: memoryServerEnv(),
+    });
   } catch (err) {
     events?.record("memory_unavailable", {
       stage: "connect",
@@ -91,7 +114,11 @@ export async function resolveUnderstandingSink(
   const command = config.memory.mcp.command;
   if (command === null) return null;
   try {
-    return await McpMemoryClient.connect({ command, args: config.memory.mcp.args });
+    return await McpMemoryClient.connect({
+      command,
+      args: config.memory.mcp.args,
+      env: memoryServerEnv(),
+    });
   } catch (err) {
     events?.record("memory_unavailable", {
       stage: "connect",

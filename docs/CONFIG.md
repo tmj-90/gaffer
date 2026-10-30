@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 134 |
+| Knobs with a runner default | 135 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 75 |
@@ -133,6 +133,7 @@ computed from other knobs at runtime.
 | `DISPATCH_PRODUCT_OWNER_CMD` | _derived_ (`node $RUNNER_DIR/bin/product-owner-run.mjs`) |  | dispatch, runner | NOTE on the DISPATCH_*_CMD defaults below: these are plain command STRINGS that Dispatch's parseCommand whitespace-splits. |
 | `DISPATCH_ONBOARD_CMD` | _derived_ (`node $RUNNER_DIR/bin/onboard-run.mjs`) |  | dispatch, runner | The dashboard Memory view's "Onboard a repo" button (POST /repos/onboard) spawns this command (detached, with DISPATCH_ONBOARD_REPO in its env naming the repo — a registered name/id OR a local path — to onboard). |
 | `DISPATCH_TESTER_CMD` | _derived_ (`node $RUNNER_DIR/bin/tester-run.mjs`) |  | dispatch, runner | BBT-001: the independent black-box tester runner. |
+| `DISPATCH_EPIC_FEATURE_CMD` | _derived_ (`node $RUNNER_DIR/bin/epic-feature.mjs`) |  | dispatch, runner | The BROWNFIELD epic → feature(`building`) hook. |
 | `GAFFER_AGENT_NAME` | `gaffer-factory` |  | runner | Factory identity + bookkeeping |
 | `GAFFER_AGENT_ID_FILE` | _derived_ (`$GAFFER_DATA/agent_id`) |  | runner |  |
 | `GAFFER_REVIEWER_ID_FILE` | _derived_ (`$GAFFER_DATA/agent_reviewer_id`) |  | runner | The runner's REVIEWER principal: a second, separately registered agent whose id the review pass presents on `review approve\|reject --as agent`. |
@@ -220,8 +221,8 @@ computed from other knobs at runtime.
 | `GAFFER_SECURITY_REVIEW` | `1` |  | runner | SECURITY SECOND OPINION — decides whether a ticket gets a SECOND, security-focused reviewer pass after the primary reviewer APPROVEs (lib/review.sh). |
 | `GAFFER_MERGE_LANE` | `1` |  | runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the |
 | `GAFFER_CONFLICT_RESOLVER` | `1` |  | runner | CONFLICT RESOLVER (lib/land.sh): when a landing hits a merge CONFLICT (the branch forked before a sibling landed on the same files), spawn bin/merge-ticket.mjs's resolver agent ONCE per ticket: it merges the default bran |
-| `CLARIFY_DRAFTS_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria. |
-| `IDLE_DRAFT_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run ALL enabled crew idle loops in one pass (drafts only). Superseded by the maintenance lane below, which runs one prioritised lane per idle tick and can promote its own drafts. |
+| `CLARIFY_DRAFTS_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria and raise blocking decisions (one paid agent call per draft, once per run). A draft with no linked repo on disk (a greenfield epic's tickets before the bootstrap links one) is skipped and logged, and the pass moves on to the next draft. |
+| `IDLE_DRAFT_WHEN_IDLE` | `0` | yes (boolean) | crew, dispatch, runner | When idle, run ALL enabled crew idle loops in one pass (drafts only). Superseded by the maintenance lane below, which runs one prioritised lane per idle tick and can promote its own drafts. |
 | `GAFFER_MAINTENANCE` | _(empty)_ |  | crew, dispatch, runner | env override for the idle maintenance lane: empty = crew.yaml decides, 0 = off, 1 = force |
 
 ### H4: real PR creation
@@ -288,7 +289,7 @@ consuming component applies its own default when the variable is unset.
 | Variable | Type | Group | Read by | Help |
 |---|---|---|---|---|
 | `GAFFER_TESTING` | boolean | autonomy | dispatch, runner | When on, an approved testable ticket routes through the independent testing lane (in_review → in_testing) instead of straight to merge. The lane, the contract, and the runner seam are live; the seam hands an independent tester the contract + AC (never the diff). Only tickets carrying the testable flag are routed (`wg ticket set-testable <n>`; the planner does not set it) — the rest go straight from approval to merge, as does everything when this is off. |
-| `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | crew, dispatch | When idle, pull one backlog feature from memory and plan it as an epic. Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml decides. |
+| `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | crew, dispatch, runner | When idle, pull one backlog feature from memory and plan it as an epic. Each idle tick (before the maintenance lane) claims one `backlog` feature from the factory memory ledger, moves it to `building`, makes ONE paid plan call (bin/decompose.mjs --force-plan) and files the epic as drafts (or ready tickets if the idle-loop mode says so). A plan that fails leaves the feature `building` with no epic and is not retried; plan it from the dashboard. Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml decides. |
 | `GAFFER_IDLE_MODE` | string: observe_only / create_draft_tickets / create_ready_tickets | idle-loops | crew, dispatch | How far EVERY idle loop goes with a finding: observe_only reports it and files nothing · create_draft_tickets files a draft for a human to ready (the default) · create_ready_tickets files it past the human gate. When set it overrides each loop's `mode` in crew.yaml for the crew runs the runner spawns; empty = crew.yaml decides per loop. |
 | `GAFFER_NOTIFY_WEBHOOK_URL` | string | notifications | dispatch, runner | POST each human-gate event as JSON to this URL (the generic integration). |
 | `GAFFER_NOTIFY_SLACK_URL` | string | notifications | dispatch, runner | Slack incoming-webhook URL — gates arrive as a Slack message. |

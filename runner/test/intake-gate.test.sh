@@ -50,7 +50,12 @@ const out = (o) => process.stdout.write(JSON.stringify(o));
 if (has("agent", "register")) out({ agent: { id: "stub-agent" } });
 else if (has("ticket", "list", "-s", "ready")) out([]);
 else if (has("ticket", "list", "-s", "in_review")) out([]);
-else if (has("ticket", "list", "-s", "draft")) out([{ number: 7, title: "Vague thing" }]);
+else if (has("ticket", "list", "-s", "draft"))
+  out(process.env.WG_REPOLESS_FIRST === "1"
+    ? [{ number: 1, title: "Greenfield draft" }, { number: 7, title: "Vague thing" }]
+    : [{ number: 7, title: "Vague thing" }]);
+else if (has("ticket", "show", "1"))
+  out({ ticket: { title: "Greenfield draft", status: "draft" }, repositories: [] });
 else if (has("ticket", "show", "7"))
   out({ ticket: { title: "Vague thing", status: "draft" },
         repositories: [{ local_path: process.env.WG_REPO, stack: "node" }] });
@@ -58,7 +63,7 @@ else out({});
 JS
 
 run_tick() {
-  WG_CALLS="$CALLS" WG_REPO="$REPO" \
+  WG_REPOLESS_FIRST="${WG_REPOLESS_FIRST:-0}" WG_CALLS="$CALLS" WG_REPO="$REPO" \
   RUNNER_DIR="$RUNNER_DIR" GAFFER_HOME="$WORK" GAFFER_DATA="$GAFFER_DATA" \
   DISPATCH_DIR="$WORK/dispatch" CREW_DIR="$WORK/crew-absent" \
   DRY_RUN=1 REVIEW_MODE=human CLARIFY_DRAFTS_WHEN_IDLE=1 \
@@ -90,6 +95,26 @@ OUT2="$(run_tick)"
 grep -q '^TICK_RESULT=no_work$' <<<"$OUT2" \
   && ok "already-clarified draft is skipped (per-run clarified-once)" \
   || fail "expected TICK_RESULT=no_work when draft already clarified, got: $(echo "$OUT2" | grep '^TICK_RESULT=')"
+
+# ── 4. a repo-less FIRST draft must not starve the gate ──────────────────────
+# Draft #1 has no linked repo (a greenfield epic's tickets before the bootstrap);
+# draft #7 has one. The pass used to pick #1, silently skip it without recording it,
+# and re-pick it on every tick, so #7 was never clarified. Now #1 is logged and
+# recorded in the per-run skip file and the SAME tick clarifies #7.
+: > "$GAFFER_DATA/.clarified-tickets"; : > "$GAFFER_DATA/factory.log"
+OUT3="$(WG_REPOLESS_FIRST=1 run_tick)"
+grep -q '^TICK_RESULT=clarified$' <<<"$OUT3" \
+  && ok "repo-less first draft: the tick still clarifies the next draft" \
+  || fail "expected TICK_RESULT=clarified past a repo-less draft, got: $(echo "$OUT3" | grep '^TICK_RESULT=')"
+grep -q 'clarifying draft #7' "$GAFFER_DATA/factory.log" \
+  && ok "the draft WITH a repo (#7) is the one clarified" \
+  || fail "draft #7 was not selected for clarify"
+grep -q 'draft #1 has no linked repo' "$GAFFER_DATA/factory.log" \
+  && ok "the repo-less draft's skip is logged (not silent)" \
+  || fail "repo-less draft #1 skipped silently"
+grep -qx '1' "$GAFFER_DATA/.clarified-tickets" \
+  && ok "the repo-less draft is recorded in the per-run skip file" \
+  || fail "repo-less draft #1 not recorded in .clarified-tickets"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

@@ -224,6 +224,11 @@ export interface AddFeatureInput {
  * status so the ledger's history starts from the right point even when a
  * feature is inventoried straight in as `shipped`.
  *
+ * Dedupes by repo + name (case-insensitive): a re-add returns the existing row,
+ * moved forward (never backwards). Only a re-add that ADVANCES the status replaces
+ * the summary / provenance / scope / area; any other re-add only fills fields that
+ * are still empty, and a blank incoming value never overwrites a recorded one.
+ *
  * Applies DIRECTLY as a proposal (no draft gate) — see the module header.
  */
 export function addFeature(db: Database, input: AddFeatureInput): Feature {
@@ -250,20 +255,58 @@ export function addFeature(db: Database, input: AddFeatureInput): Feature {
   // DEDUPE by repo + name (case-insensitive). The merge runner files the shipped
   // feature by NAME when no id crosses the merge; without this, every merge added a
   // second "shipped" row and stranded the original "building" one. An existing
-  // feature is moved to the requested status (never backwards) and its summary /
-  // provenance refreshed, so backlog → building → shipped is one row.
+  // feature is moved to the requested status (never backwards), so
+  // backlog → building → shipped is one row.
+  //
+  // The re-add must never LOSE ledger data:
+  //   • only a call that ADVANCES the status may replace the row's summary /
+  //     provenance / scope / area — a re-add at the same (or a lower) status, e.g.
+  //     a brownfield epic whose name matches an already SHIPPED feature, leaves the
+  //     row's facts (its merge/PR provenance) untouched and only fills fields that
+  //     are still empty;
+  //   • a blank incoming summary / provenance never overwrites a recorded one (a
+  //     brownfield epic with no description used to wipe the backlog summary).
   const existing = db
-    .prepare("SELECT id, status FROM feature WHERE repo = ? AND lower(name) = lower(?) LIMIT 1")
-    .get(repo, name) as { id: string; status: FeatureStatus } | undefined;
+    .prepare(
+      "SELECT id, status, summary, scope_node, area, provenance FROM feature WHERE repo = ? AND lower(name) = lower(?) LIMIT 1",
+    )
+    .get(repo, name) as
+    | {
+        id: string;
+        status: FeatureStatus;
+        summary: string;
+        scope_node: string | null;
+        area: string | null;
+        provenance: string | null;
+      }
+    | undefined;
   if (existing) {
     const order: FeatureStatus[] = ["backlog", "building", "shipped"];
-    const next = order.indexOf(status) > order.indexOf(existing.status) ? status : existing.status;
+    const advances = order.indexOf(status) > order.indexOf(existing.status);
+    const next = advances ? status : existing.status;
+    const blank = (v: string | null | undefined): boolean => v == null || v.trim() === "";
+    const pick = (incoming: string | null | undefined, current: string | null): string | null => {
+      if (blank(incoming)) return current;
+      if (advances || blank(current)) return incoming as string;
+      return current;
+    };
+    const nextSummary = pick(summary, existing.summary) ?? "";
+    const nextScope = pick(scopeNode, existing.scope_node);
+    const nextArea = pick(area, existing.area);
+    const nextProvenance = pick(provenance, existing.provenance);
+    const changed =
+      advances ||
+      nextSummary !== existing.summary ||
+      nextScope !== existing.scope_node ||
+      nextArea !== existing.area ||
+      nextProvenance !== existing.provenance;
+    if (!changed) return getFeature(db, existing.id)!;
     const tx0 = db.transaction(() => {
       db.prepare(
-        `UPDATE feature SET status = ?, summary = ?, scope_node = COALESCE(?, scope_node),
-           area = COALESCE(?, area), provenance = COALESCE(?, provenance), updated_at = ?
+        `UPDATE feature SET status = ?, summary = ?, scope_node = ?, area = ?, provenance = ?,
+           updated_at = ?
          WHERE id = ?`,
-      ).run(next, summary, scopeNode ?? null, area ?? null, provenance ?? null, ts, existing.id);
+      ).run(next, nextSummary, nextScope, nextArea, nextProvenance, ts, existing.id);
       db.prepare(
         "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'feature_updated', ?, ?)",
       ).run(

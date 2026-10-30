@@ -6,6 +6,21 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Fixed — feature ledger and first open
+
+- **A re-added feature no longer loses ledger data.** `add_feature` / `memory
+  feature add` dedupe by repo + name, but the dedupe overwrote the summary and
+  provenance every time. A brownfield epic with no description wiped a backlog
+  feature's summary to `""`, and an epic named like a SHIPPED feature replaced
+  its summary and its merge/PR provenance. Now only a re-add that ADVANCES the
+  status replaces summary / provenance / scope / area; any other re-add only
+  fills fields that are still empty, and a blank incoming value never
+  overwrites a recorded one.
+- **Concurrent first opens of a fresh database no longer fail.** Each process
+  applied the same migration and the losers died on "table … already exists"
+  (the dispatch API's epic hook lost its feature write this way). Migrations
+  now run under `BEGIN IMMEDIATE` with a re-check, so one process applies each.
+
 ### Added — hybrid retrieval
 
 - **`searchLore` fuses FTS5 bm25 with a dense vector per record.** Migration

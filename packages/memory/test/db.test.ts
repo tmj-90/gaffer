@@ -80,3 +80,39 @@ describe("migration version ceiling", () => {
     }
   });
 });
+
+describe("runMigrations across processes", () => {
+  // Regression: several processes opening a FRESH db at once (the dispatch API's
+  // brownfield-epic hook writing a feature while a dashboard read opens it) each
+  // ran the same migration, and the losers died on "table … already exists" — the
+  // hook's feature write was lost. Migrations now run under BEGIN IMMEDIATE with a
+  // re-check, so every concurrent opener succeeds.
+  it("concurrent first opens of a fresh db all succeed", async () => {
+    const { spawn } = await import("node:child_process");
+    const { fileURLToPath } = await import("node:url");
+    const src = fileURLToPath(new URL("../src/db/index.ts", import.meta.url));
+    const script = `import { openDb } from ${JSON.stringify(src)}; openDb(process.argv[1]).close();`;
+    const openOnce = (path: string): Promise<{ code: number | null; err: string }> =>
+      new Promise((done) => {
+        const child = spawn(
+          process.execPath,
+          ["--import", "tsx", "--input-type=module", "-e", script, path],
+          { stdio: ["ignore", "ignore", "pipe"] },
+        );
+        let err = "";
+        child.stderr.on("data", (c: Buffer) => (err += c.toString()));
+        child.on("close", (code) => done({ code, err }));
+      });
+    for (let round = 0; round < 3; round++) {
+      const path = join(dir, `race-${round}.db`);
+      const results = await Promise.all(Array.from({ length: 6 }, () => openOnce(path)));
+      for (const r of results) expect(r, r.err).toMatchObject({ code: 0 });
+      const db = openDb(path);
+      const dupes = db
+        .prepare("SELECT id, count(*) AS n FROM migrations GROUP BY id HAVING n > 1")
+        .all();
+      expect(dupes).toEqual([]);
+      db.close();
+    }
+  }, 120_000);
+});

@@ -613,13 +613,25 @@ export function runMigrations(db: Database): { applied: string[] } {
   }
   const applied: string[] = [];
   const insert = db.prepare("INSERT INTO migrations (id, applied_at) VALUES (?, ?)");
+  const isApplied = db.prepare("SELECT 1 FROM migrations WHERE id = ?");
   for (const m of MIGRATIONS) {
     if (seen.has(m.id)) continue;
-    db.transaction(() => {
-      m.up(db);
-      insert.run(m.id, new Date().toISOString());
-    })();
-    applied.push(m.id);
+    // Several processes can open a FRESH db at once (the dispatch API's
+    // brownfield-epic hook writing a feature while a dashboard / CLI read opens
+    // it). `seen` was read outside any lock, so each process would run the same
+    // migration and the loser died on "table … already exists" — losing the
+    // hook's write. Take the write lock up front (BEGIN IMMEDIATE, which waits
+    // out busy_timeout) and re-check under it, so exactly one process applies
+    // each migration and the others skip it.
+    const ran = db
+      .transaction(() => {
+        if (isApplied.get(m.id)) return false;
+        m.up(db);
+        insert.run(m.id, new Date().toISOString());
+        return true;
+      })
+      .immediate();
+    if (ran) applied.push(m.id);
   }
   return { applied };
 }

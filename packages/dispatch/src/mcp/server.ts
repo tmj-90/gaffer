@@ -91,7 +91,9 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "claim to load the ACs you must satisfy, and again before submitting to " +
     "confirm every required AC has evidence. A non-empty `blocking_decisions` " +
     "list means the ticket is gated on a human/product call — do not try to " +
-    "work around it; resolve or wait on the decision. Read-only and cheap; " +
+    "work around it; resolve or wait on the decision. `resolved_decisions` " +
+    "carries each linked decision a human has already answered (its `answer`) — " +
+    "build to that answer. Read-only and cheap; " +
     "prefer it over guessing the ticket's current state.",
   heartbeat_claim:
     "**Extend your claim's lease during long work — call it BEFORE the lease " +

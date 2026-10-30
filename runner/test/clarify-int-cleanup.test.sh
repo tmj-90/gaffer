@@ -40,6 +40,10 @@ trap 'rm -rf "$WORK"' EXIT
 export GAFFER_DATA="$WORK/data";  mkdir -p "$GAFFER_DATA"
 export GAFFER_LOG="$GAFFER_DATA/factory.log"; : > "$GAFFER_LOG"
 CREPO="$WORK/real-repo";          mkdir -p "$CREPO"
+# The wg stub serves the repo path from its OWN fixture variable: CREPO is a global the
+# clarify pass itself assigns (it clears it before walking the drafts), so a stub that
+# echoed $CREPO would see the pass's value, not the fixture's.
+FIXTURE_REPO="$CREPO"
 # A real git repo on `main`: the clarify pass now works in a THROWAWAY detached
 # worktree of the default branch (never in this checkout), so it needs a commit.
 ( cd "$CREPO" && git init -q -b main && printf "# r\n" > README.md && git -c user.email=t@t -c user.name=t add -A && git -c user.email=t@t -c user.name=t commit -qm init )
@@ -73,7 +77,7 @@ jget()  { gaffer_json expr "$1" 2>/dev/null; }
 wg() {
   case "$*" in
     "ticket list -s draft") printf '[{"number":42,"title":"Ambiguous draft"}]' ;;
-    "ticket show 42") printf '{"ticket":{"title":"Ambiguous draft","description":"d"},"repositories":[{"local_path":"%s","default_branch":"main","access":"write"}]}' "$CREPO" ;;
+    "ticket show 42") printf '{"ticket":{"title":"Ambiguous draft","description":"d"},"repositories":[{"local_path":"%s","default_branch":"main","access":"write"}]}' "$FIXTURE_REPO" ;;
     *) printf '{}' ;;
   esac
 }

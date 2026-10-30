@@ -52,7 +52,8 @@ gaffer_timeout_preflight || { echo "gaffer poll: aborting — no timeout primiti
 # Fresh poll: nothing skipped from a prior run (mirrors what loop.sh clears).
 rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" \
       "$GAFFER_DATA/.clarified-tickets" "$GAFFER_DATA/.backpressure-repos" \
-      "$GAFFER_DATA/.ci-gate-needs-pr-warned" "$GAFFER_DATA/.autonomy-policy-inert-warned"
+      "$GAFFER_DATA/.ci-gate-needs-pr-warned" "$GAFFER_DATA/.autonomy-policy-inert-warned" \
+      "$GAFFER_DATA/.merge-config-half-warned"
 wg expire-claims >/dev/null 2>&1 || true   # reap any stale claim before polling
 
 # Run the ONE tick under the same outer wall-clock cap as loop.sh / worker.sh (sized

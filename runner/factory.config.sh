@@ -1694,35 +1694,44 @@ export GAFFER_IDLE_HOST_EXEC
 # Who reviews in_review tickets before they can be approved to done:
 #   human → only a person approves (dispatch review approve, or the board)
 #   agent → a reviewer AGENT (≠ the implementer) reviews via the review-ticket skill
-#   both  → an agent screens first, then a human confirms
+#   both  → an agent screens first, then a human confirms: the agent's CHANGES verdict
+#           can bounce the delivery to rework (when the approve gate is earned), but its
+#           APPROVE is never an approval — the ticket waits in_review for the human,
+#           in every autonomy mode (gaffer_afk_ship_plan)
 : "${REVIEW_MODE:=human}"
 
-# Auto-merge an approved (done) ticket's branch into the repo's default branch.
-# 0 = off (DEFAULT — humans run the merge themselves), 1 = on (opt in per-run).
-# Auto-merge ONLY fires after a ticket reaches an APPROVED done-state via a HUMAN
-# (or server-side) approval. Agent reviews never trigger a merge — they are advisory
-# and the ticket stays in_review — unless MERGE_ON_AGENT_REVIEW=1 (see below; not a
-# safe unattended posture).
-# Conflict-safe: a clean merge lands on approval; a CONFLICT does NOT force-merge —
-# it spawns a resolver agent + re-queues the ticket for re-approval (with the
-# resolved diff). Never pushes — except in PR MODE (the ticket carries a pr_url from
-# GAFFER_CREATE_PR), where the merge happens THROUGH the PR via `gh pr merge` and the
-# local default branch is fast-forwarded from the remote (see the H4 block below).
+# AUTO_MERGE ("Auto-merge on approval") — land a HUMAN-approved ticket's branch on the
+# repo's default branch without a second click.
+#   0 = off (DEFAULT): an approval moves the ticket to ready_for_merge and it WAITS there
+#       for a human to merge it (the dashboard's "Merge now", or `gaffer merge <n>`). The
+#       dashboard Approve does NOT fire the merge runner, and the merge lane holds it.
+#   1 = on: the dashboard Approve fires the merge runner (bin/merge-ticket.mjs), and the
+#       merge lane (lib/merge-lane.sh) lands any ticket a HUMAN approved by any route
+#       (`gaffer approve`, `wg review approve`, a human approval the tester then passed).
+# An AGENT approval never lands on AUTO_MERGE alone: that also needs MERGE_ON_AGENT_REVIEW
+# (below) or an earned `auto` merge policy row.
+# Conflict-safe: a clean merge lands; a CONFLICT does NOT force-merge — it spawns a
+# resolver agent, re-gates the resolution (conflict markers + the DoD gates) and re-queues
+# the ticket for re-review of the resolved diff. Never pushes — except in PR MODE (the
+# ticket carries a pr_url from GAFFER_CREATE_PR), where the merge happens THROUGH the PR
+# via `gh pr merge` and the local default branch is fast-forwarded from the remote (see
+# the H4 block below).
 : "${AUTO_MERGE:=0}"
 
-# A MERGE REQUIRES A HUMAN APPROVAL. Even with AUTO_MERGE=1, an AGENT review
-# (REVIEW_MODE=agent/both) is ADVISORY ONLY — the reviewer records a verdict via
-# the scoped MCP and the ticket STAYS in_review; it does NOT mint an approval and
-# does NOT auto-merge. Only a HUMAN approval (the dashboard Approve action →
-# merge-ticket, or a human `dispatch review approve`) crosses the final gate.
+# MERGE_ON_AGENT_REVIEW ("Auto-merge on agent review") EXTENDS AUTO_MERGE to approvals the
+# runner made on an agent reviewer's verdict. The merge gate is AUTO_MERGE=1 AND
+# MERGE_ON_AGENT_REVIEW=1 (dispatch envAllowsAuto('merge')) — this flag on its own merges
+# nothing (agent-approved work waits at ready_for_merge, and the tick logs a once-per-run
+# warning, gaffer_half_merge_config_check). Without it an AGENT review is advisory: the
+# ticket stays in_review (or, with an earned approve gate, waits at ready_for_merge) for a
+# human.
 #
-# MERGE_ON_AGENT_REVIEW=1 is NOT A SAFE UNATTENDED POSTURE. It removes the human
-# merge gate entirely: an agent-driven 'done' may merge to the default branch with
-# NO human in the loop, so a single prompt-injected or mistaken review can land
-# code unreviewed. Do NOT set it for any factory you would leave running
-# overnight. Keep it 0 (the default) unless you are actively supervising a
-# fully-autonomous experiment and accept that risk. The tick logs a WARNING on
-# every merge it performs under this flag.
+# MERGE_ON_AGENT_REVIEW=1 (with AUTO_MERGE=1) is NOT A SAFE UNATTENDED POSTURE. It removes
+# the human merge gate entirely: an agent-approved ticket may merge to the default branch
+# with NO human in the loop, so a single prompt-injected or mistaken review can land code
+# unreviewed. Do NOT set it for any factory you would leave running overnight without an
+# OS sandbox. Keep it 0 (the default) unless you are actively supervising a
+# fully-autonomous experiment and accept that risk.
 : "${MERGE_ON_AGENT_REVIEW:=0}"
 
 # GAFFER_AUTO_PUSH=1 — the final step of the AFK cycle. After the runner auto-approves and
@@ -1949,6 +1958,27 @@ gaffer_inert_policy_check() {
   return 0
 }
 
+# HALF-CONFIGURED MERGE: MERGE_ON_AGENT_REVIEW ("Auto-merge on agent review") only
+# EXTENDS Auto-merge on approval to agent approvals — the merge gate is AUTO_MERGE AND
+# MERGE_ON_AGENT_REVIEW (dispatch's envAllowsAuto('merge')). Flipping only
+# MERGE_ON_AGENT_REVIEW gives approve-and-hold: agent-approved work waits at
+# ready_for_merge. We deliberately do NOT let one flag imply the other (that would turn
+# on more unattended merging than the operator set); say so ONCE per run instead (the
+# marker is cleared with the other per-run markers by loop.sh / poll-once.sh). Echoes
+# 1 when it warned (or would have, marker already present), else 0.
+gaffer_half_merge_config_check() {
+  local _marker="${GAFFER_DATA:+$GAFFER_DATA/.merge-config-half-warned}"
+  if _gaffer_flag_on "${MERGE_ON_AGENT_REVIEW:-0}" && ! _gaffer_flag_on "${AUTO_MERGE:-0}"; then
+    if [ -z "$_marker" ] || [ ! -f "$_marker" ]; then
+      log "AUTONOMY: WARNING — MERGE_ON_AGENT_REVIEW=1 but AUTO_MERGE is off: 'Auto-merge on agent review' needs 'Auto-merge on approval' too, so agent-approved tickets will WAIT at ready_for_merge for a human merge. Turn AUTO_MERGE on to let them land (or turn MERGE_ON_AGENT_REVIEW off to silence this)."
+      [ -n "$_marker" ] && : > "$_marker" 2>/dev/null
+    fi
+    printf '1\n'; return 0
+  fi
+  printf '0\n'
+  return 0
+}
+
 # GRADUATED-AUTONOMY: the PURE ship-decision matrix — the single source of truth mapping
 # (reviewer verdict × approve gate × merge gate) → one runner action, so the AFK block in
 # tick.sh just dispatches on the result and the logic is unit-testable in isolation. No I/O,
@@ -1956,6 +1986,7 @@ gaffer_inert_policy_check() {
 #   $1 verdict         : approve | changes | held   (the reviewer's advisory verdict)
 #   $2 approve-decision: allow | deny         (gaffer_auto_decision <n> approve)
 #   $3 merge-decision  : allow | deny         (gaffer_auto_decision <n> merge)
+#   $4 review mode     : human | agent | both (optional; REVIEW_MODE)
 # Echoes exactly one of:
 #   hold          — the runner does NOT act; the ticket waits in_review for a human
 #                   (supervised env floor, or a graduated repo/risk not yet earned).
@@ -1963,10 +1994,16 @@ gaffer_inert_policy_check() {
 #   ship          — approve AND merge earned + APPROVE verdict → approve then auto-merge.
 #   approve_hold  — approve earned + APPROVE verdict, but merge NOT earned → approve and
 #                   hold at ready_for_merge for a human to merge.
+# REVIEW_MODE=both is "an agent screens first, then a HUMAN confirms": the agent's
+# APPROVE is never an approval there, whatever the floor or an earned policy row says —
+# it HOLDS in_review for the human's confirm. The screen still bounces a CHANGES verdict
+# back to rework (when the approve gate is earned), so the human sees only work the agent
+# passed. Without this `both` behaved exactly like `agent` and shipped with no human.
 gaffer_afk_ship_plan() {
-  local _verdict="$1" _approve="$2" _merge="$3"
+  local _verdict="$1" _approve="$2" _merge="$3" _mode="${4:-}"
   if [ "$_approve" != "allow" ]; then printf 'hold\n'; return 0; fi
   if [ "$_verdict" = "approve" ]; then
+    if [ "$_mode" = "both" ]; then printf 'hold\n'; return 0; fi
     [ "$_merge" = "allow" ] && printf 'ship\n' || printf 'approve_hold\n'
   elif [ "$_verdict" = "changes" ]; then
     printf 'rework\n'

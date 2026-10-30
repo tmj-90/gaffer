@@ -8,7 +8,12 @@ _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 #     merged into the default branch). Branches preserved by PARKED tickets
 #     (blocked/refining — awaiting a human) are EXCLUDED: they are not in-flight
 #     work, and counting them would starve the repo for as long as the tickets sit
-#     parked (the resume re-claim is gated behind this same check). The claiming
+#     parked (the resume re-claim is gated behind this same check). Branches of
+#     CANCELLED (won't do) tickets are EXCLUDED too: the work is terminal, and a
+#     delivered ticket's branch is a recorded delivery artifact the abandoned sweep
+#     deliberately KEEPS (it may be the only copy, and a won't-do can be reopened),
+#     so counting it left the repo in backpressure for good after a few won't-dos
+#     on delivered work. The claiming
 #     ticket's OWN preserved branch is also excluded — a re-claim reuses that
 #     branch, it adds nothing new. Fail SAFE: a branch whose ticket cannot be
 #     resolved (unmappable name, failed status lookup) always counts.
@@ -69,6 +74,20 @@ gaffer_parked_ticket_numbers() {
   return 0
 }
 
+# Print the ticket numbers whose preserved branches are NOT in-flight work: every
+# PARKED ticket (gaffer_parked_ticket_numbers) plus every CANCELLED (won't do) one.
+# A cancelled ticket is terminal — nothing will deliver on its branch again unless a
+# human reopens it — but its branch is usually KEPT (a recorded delivery artifact is
+# never swept, see gaffer_sweep_abandoned_branches), so it must not hold the repo's
+# branch cap. Same batching and the same fail-SAFE as the parked list: a failed
+# lookup excludes nothing. Never fatal.
+#   gaffer_inactive_ticket_numbers
+gaffer_inactive_ticket_numbers() {
+  gaffer_parked_ticket_numbers
+  _bp_wg_list cancelled 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
+  return 0
+}
+
 # Count ACTIVE unmerged gaffer/* branches — the branch-pressure dimension.
 # Like gaffer_repo_unmerged_branches, but a branch is excluded when its ticket
 # (derived from the `gaffer/ticket-<n>-…` name, the same mapping the sweep uses)
@@ -77,24 +96,27 @@ gaffer_parked_ticket_numbers() {
 #     branch is not in-flight work. Counting it would starve the repo for the
 #     whole parked lifetime — the parked ticket's own resumption re-claim is
 #     gated behind this same check, so nothing could ever relieve the pressure.
+#   • CANCELLED (won't do): terminal; the branch is kept only as a record of the
+#     delivered work (the sweep never deletes a recorded delivery artifact), so it
+#     is not in-flight either — counting it starved the repo permanently.
 #   • the CLAIMING ticket itself (<self-ticket>): a re-claim reuses/resets its
 #     own preserved branch (worktree add -B), adding no new branch, so it must
 #     not be starved by its own prior work.
-# Fail SAFE: a branch that embeds no ticket number, or whose parked-status
-# lookup failed (empty parked set), CANNOT be proven inactive and still counts.
+# Fail SAFE: a branch that embeds no ticket number, or whose status lookup failed
+# (empty inactive set), CANNOT be proven inactive and still counts.
 #   gaffer_repo_active_unmerged_branches <repo-path> <default-branch> [self-ticket]
 gaffer_repo_active_unmerged_branches() {
   local repo="$1" def="${2:-main}" self="${3:-}"
   local names parked b num count=0
   names="$(_gaffer_repo_unmerged_branch_names "$repo" "$def")"
   [ -n "$names" ] || { echo 0; return 0; }
-  parked="$(gaffer_parked_ticket_numbers)"
+  parked="$(gaffer_inactive_ticket_numbers)"
   while IFS= read -r b; do
     [ -n "$b" ] || continue
     num="$(printf '%s' "$b" | sed -nE 's#^gaffer/ticket-([0-9]+).*#\1#p')"
     if [ -n "$num" ]; then
       [ -n "$self" ] && [ "$num" = "$self" ] && continue          # own branch: reused, not added
-      [ -n "$parked" ] && grep -qxF -- "$num" <<<"$parked" && continue  # parked: not in-flight
+      [ -n "$parked" ] && grep -qxF -- "$num" <<<"$parked" && continue  # parked/cancelled: not in-flight
     fi
     count=$((count + 1))
   done <<< "$names"
@@ -114,12 +136,12 @@ gaffer_repo_active_unmerged_branches() {
 #   ready · in_review · done · draft                     (other live tickets)
 # Anything we cannot POSITIVELY confirm abandoned — an unknown status, or a status
 # lookup that fails/returns empty (transient `wg` error) — is KEPT: losing
-# committed work is far worse than a lingering branch. Keeping a PARKED branch is
-# cheap because the pressure count excludes parked (blocked/refining) tickets'
-# branches (gaffer_repo_active_unmerged_branches), so preservation never throttles
-# the repo; a branch kept because its status is UNRESOLVABLE, however, DOES keep
-# counting toward the cap (fail-safe) until the status resolves. Merged branches
-# are left to the normal merged sweep. Echoes each deleted branch name.
+# committed work is far worse than a lingering branch. Keeping a PARKED or a
+# CANCELLED-but-delivered branch is cheap because the pressure count excludes
+# blocked/refining/cancelled tickets' branches (gaffer_repo_active_unmerged_branches),
+# so preservation never throttles the repo; a branch kept because its status is
+# UNRESOLVABLE, however, DOES keep counting toward the cap (fail-safe) until the
+# status resolves. Merged branches are left to the normal merged sweep. Echoes each deleted branch name.
 # Best-effort — never fatal.
 #   gaffer_sweep_abandoned_branches <repo-path> <default-branch>
 gaffer_sweep_abandoned_branches() {

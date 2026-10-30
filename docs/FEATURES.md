@@ -162,8 +162,30 @@ structural barrier the whole design hangs on.
 - The **Approve button stays disabled until that diff actually loads.** You
   can't sign off on a change you couldn't see; even the keyboard shortcut
   fails closed.
+- **Your approval is bound to the commit you read.** Approving (the dashboard,
+  `gaffer approve`, `wg review approve`) pins the delivery branch's head as the
+  reviewed commit, exactly as the factory's own agent review does; every landing
+  path (the Merge button, `gaffer merge`, the runner's merge lane) merges only
+  that commit and **holds** a branch that moved past it ("moved since the review
+  approved it") until it is re-reviewed. A tester PASS of a commit nobody
+  reviewed holds the same way.
+- **Approve does not merge unless you ask it to.** With `AUTO_MERGE` off (the
+  default) an approved ticket waits in *Ready for merge* for **Merge now**; with
+  it on, a human approval lands on its own (an agent's approval also needs
+  `MERGE_ON_AGENT_REVIEW`, or an earned per-repo grant).
+- **A merge conflict is never force-resolved.** The resolver agent merges the
+  default branch into the delivery branch, and the runner **re-gates the
+  resolution** — no conflict markers, and the repo's Definition-of-Done gates
+  (tests · typecheck · lint) green on a clean checkout of the committed
+  resolution (what would land; anything the resolver left uncommitted is
+  discarded, never gated), recorded as fresh evidence — before the ticket goes
+  back to review. A resolution that fails is
+  moved off the branch (`refs/gaffer/conflict-resolved/<n>`) and held for a
+  human.
 - **Reject** loops the ticket back for rework (or abandons it), with your reason
-  recorded and its acceptance criteria reset.
+  recorded and its acceptance criteria reset. A **won't-do** on delivered work
+  keeps its branch as a record, and that branch no longer counts against the
+  repo's open-branch cap, so abandoning work never starves the queue.
 - The **reviewer is never the author**, even when agent approval is allowed: the
   server refuses an approval from the agent that delivered the ticket, and the
   factory's own review pass approves as a distinct, registered reviewer agent (a bare reviewer string is refused).
@@ -246,7 +268,9 @@ on**:
 | Flag | Effect when on |
 |---|---|
 | `DISPATCH_ALLOW_AGENT_APPROVE` | An agent actor may approve a ticket's review (otherwise human-only). |
-| `MERGE_ON_AGENT_REVIEW` | Fire the merge when an agent — not just a human — approves. |
+| `AUTO_MERGE` | Land a human-approved ticket on the default branch without a second click (off: it waits for Merge now). |
+| `MERGE_ON_AGENT_REVIEW` | Extend `AUTO_MERGE` to approvals made on an agent reviewer's verdict. Needs `AUTO_MERGE` too — alone it merges nothing (the run says so). |
+| `REVIEW_MODE=both` | The agent screens first (a CHANGES verdict can bounce the delivery to rework) but a human still confirms every approval. |
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft. |
 
 The same panel controls the **idle loops** (background work the factory mines

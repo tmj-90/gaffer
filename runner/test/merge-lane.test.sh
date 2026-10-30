@@ -20,7 +20,9 @@
 #      branch gets the resolution, the ticket returns to in_review, main is untouched,
 #      the spend is ledgered; re-approval lands it with both sides intact;
 #   F  a second conflict after a resolver pass is held for a human; the knob turns the
-#      resolver off.
+#      resolver off;
+#   G  AUTO_MERGE alone lands a HUMAN approval (the Settings promise); an AGENT approval
+#      under AUTO_MERGE alone is held (its gate also needs MERGE_ON_AGENT_REVIEW).
 # Run: bash runner/test/merge-lane.test.sh
 # =====================================================================
 set -uo pipefail
@@ -186,6 +188,34 @@ wg review approve "$G" --reviewer human1 >/dev/null 2>&1; rm -f "$GAFFER_DATA/.m
 GAFFER_CONFLICT_RESOLVER=0 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
 [ "$(st "$G")" = "ready_for_merge" ] && grep -q "MERGE: #$G conflict — the resolver lane is off" "$LOGF" && ok "F: GAFFER_CONFLICT_RESOLVER=0 → held, resolver never spawned" || fail "F: lane-off status=$(st "$G")"
 [ "$(resolver_turns "$G")" = "0" ] && ok "F: lane off spawned no resolver for #$G" || fail "F: resolver turns for #$G = $(resolver_turns "$G")"
+
+echo "== G. AUTO_MERGE alone ('Auto-merge on approval') lands a HUMAN approval; an AGENT approval still needs the merge gate =="
+# The Settings switch promised "safe-merge into the default branch on approval" but the
+# lane only asked the AGENT ship floor (AUTO_MERGE AND MERGE_ON_AGENT_REVIEW), so a human
+# `gaffer approve` under AUTO_MERGE=1 alone was logged "NOT permitted by policy" and sat.
+H="$(new_ticket "Human-approved helper" "deliver a helper")"; wg ticket ready "$H" >/dev/null 2>&1
+AUTO_MERGE=0 run_tick >/dev/null; BH="$(branch_of "$H")"
+wg review approve "$H" --reviewer human1 >/dev/null 2>&1
+[ "$(st "$H")" = "ready_for_merge" ] && ok "G: #$H human-approved → ready_for_merge" || fail "G: status=$(st "$H")"
+rm -f "$GAFFER_DATA/.merge-held-tickets"
+GAFFER_MODE=supervised REVIEW_MODE=human AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=0 DISPATCH_ALLOW_AGENT_APPROVE=0 GAFFER_STRICT_REQUIRE=0 run_tick >/dev/null
+[ "$(st "$H")" = "done" ] && ok "G: AUTO_MERGE=1 (MERGE_ON_AGENT_REVIEW=0) → the human-approved ticket LANDS → done" || fail "G: status=$(st "$H") — $(grep "#$H" "$LOGF" | tail -2 | tr '\n' '|' | cut -c1-300)"
+grep -q "MERGE: #$H ready_for_merge + human-approved + AUTO_MERGE on → landing $BH → main" "$LOGF" && ok "G: the lane says why it landed (human-approved + AUTO_MERGE on)" || fail "G: no human-approved landing line"
+[[ "$(git -C "$R" log --oneline main)" == *"helper$H"* ]] && ok "G: main carries #$H's commit" || fail "G: main lacks helper$H"
+# An AGENT approval under AUTO_MERGE=1 alone is NOT a human approval: the lane only widens
+# the gate for an approver the event log records as human|admin (approval-actor below).
+grep -qF 'human|admin) _dec=allow; _via="human-approved + AUTO_MERGE on"' "$RUNNER_DIR/lib/merge-lane.sh" \
+  && ok "G: the lane widens the gate for human|admin approvers only (an agent approval still needs the merge gate)" \
+  || fail "G: merge-lane.sh does not restrict the AUTO_MERGE path to human|admin approvers"
+# approval-actor (lib/json-tool.mjs): the approver is read from the dispatch event log.
+aa() { printf '%s' "$1" | node "$RUNNER_DIR/lib/json-tool.mjs" approval-actor; }
+EVH='{"events":[{"event_type":"ticket.transitioned","actor_type":"agent","payload_json":"{\"to\":\"in_review\"}"},{"event_type":"ticket.transitioned","actor_type":"human","payload_json":"{\"to\":\"ready_for_merge\",\"reason\":\"review_approved\"}"}]}'
+[ "$(aa "$EVH")" = "human" ] && ok "G: approval-actor → human for a human review_approved" || fail "G: approval-actor human → '$(aa "$EVH")'"
+EVA='{"events":[{"event_type":"ticket.transitioned","actor_type":"agent","payload_json":"{\"to\":\"in_review\"}"},{"event_type":"ticket.transitioned","actor_type":"agent","payload_json":"{\"to\":\"ready_for_merge\",\"reason\":\"review_approved\"}"}]}'
+[ "$(aa "$EVA")" = "agent" ] && ok "G: approval-actor → agent for an agent approval" || fail "G: approval-actor agent → '$(aa "$EVA")'"
+EVS='{"events":[{"event_type":"ticket.transitioned","actor_type":"human","payload_json":"{\"to\":\"ready_for_merge\",\"reason\":\"review_approved\"}"},{"event_type":"ticket.transitioned","actor_type":"system","payload_json":"{\"to\":\"in_review\",\"reason\":\"reopen_for_review\"}"}]}'
+[ -z "$(aa "$EVS")" ] && ok "G: approval-actor → '' once the ticket re-entered in_review (stale approval)" || fail "G: stale approval still read as '$(aa "$EVS")'"
+[ -z "$(aa 'not json')" ] && ok "G: approval-actor → '' on junk (never grants)" || fail "G: junk → '$(aa 'not json')'"
 
 echo "== D. wiring =="
 grep -q 'source "$HERE/lib/land.sh"' "$RUNNER_DIR/tick.sh" && grep -q 'source "$HERE/lib/merge-lane.sh"' "$RUNNER_DIR/tick.sh" && ok "D: tick.sh sources lib/land.sh + lib/merge-lane.sh" || fail "D: tick.sh does not source the lane libs"

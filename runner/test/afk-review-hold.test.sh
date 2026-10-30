@@ -192,7 +192,7 @@ WTX="$WORK/wt-move"; git -C "$R" worktree add -q "$WTX" "$RBR2" >/dev/null 2>&1
 git -C "$R" worktree remove --force "$WTX" >/dev/null 2>&1
 MAINF="$(git -C "$R" rev-parse main)"
 OUTF2="$(REVIEW_MODE=human DISPATCH_ALLOW_AGENT_APPROVE=1 AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=1 GAFFER_STRICT_REQUIRE=0 run_tick)"
-grep -q "MERGE: #$N2 HELD — $RBR2 moved since the agent review approved it" "$GAFFER_DATA/factory.log" \
+grep -q "MERGE: #$N2 HELD — $RBR2 moved since the review approved it" "$GAFFER_DATA/factory.log" \
   && ok "F: the merge lane HELD #$N2 (moved-since-review)" || fail "F: no moved-since-review hold: $(grep "#$N2" "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|')"
 [ "$(git -C "$R" rev-parse main)" = "$MAINF" ] && [ "$(st "$N2")" = "ready_for_merge" ] \
   && ok "F: nothing landed; #$N2 still ready_for_merge" || fail "F: main moved or #$N2 is '$(st "$N2")'"

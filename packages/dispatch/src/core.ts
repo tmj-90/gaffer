@@ -551,6 +551,10 @@ export class Dispatch {
       // GRADUATED-AUTONOMY (Spec 2, Phase 1): resolve delivery-vs-merge SHAs so the
       // approve path can emit `approved_unchanged`. Pure read; degrades to unknown.
       approvalShaResolver: (ticket) => this.resolveApprovalShas(ticket),
+      // REVIEW PIN for a HUMAN approval: the commit the human approved (the primary write
+      // repo's delivery-branch head at approve time), recorded as system evidence so every
+      // landing path holds a branch that moved past it. Pure read; null when unknown.
+      reviewedHeadResolver: (ticket) => this.resolveApprovedHead(ticket),
       // GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate the P0 gate
       // ORs with the env flag — true iff a mode='auto' approve policy covers every
       // write repo at this ticket's risk. NO env read here (that stays in the gate).
@@ -681,6 +685,36 @@ export class Dispatch {
     if (edited) return edited; // a real edited pair → helper returns false.
     if (pairs.some((p) => !known(p))) return { deliverySha: null, mergeSha: null }; // unknown.
     return pairs[0] ?? null; // all known-and-equal → an unchanged pair.
+  }
+
+  /**
+   * REVIEW PIN (human approvals): the commit a human approves is the current head of the
+   * ticket's delivery branch in its PRIMARY write repo — the same repo + branch the
+   * landing paths resolve (the runner's merge lane and bin/merge-ticket.mjs take the first
+   * write repo with a local path, and the per-repo delivery branch, falling back to the
+   * ticket's). Returns the full commit id and branch, or null when the repo is not on disk,
+   * no branch is recorded, or git fails (the approval then records no pin and the landing
+   * check falls back to what it did before). Pure read.
+   */
+  private resolveApprovedHead(ticket: Ticket): { sha: string; branch: string } | null {
+    const runGit = this.gitRunner ?? defaultGitRunner;
+    const repo = this.repos
+      .listForTicket(ticket.id)
+      .find((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write" && l.local_path);
+    if (!repo || !repo.local_path || !existsSync(repo.local_path)) return null;
+    const branch =
+      this.repos.ticketRepoBranch(ticket.id, repo.id) ??
+      this.repoDeliveries.find(ticket.id, repo.id)?.branch_name ??
+      ticket.branch_name;
+    if (!branch) return null;
+    const res = runGit(repo.local_path, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${branch}^{commit}`,
+    ]);
+    const sha = res.status === 0 ? res.stdout.trim().toLowerCase() : "";
+    return /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha) ? { sha, branch } : null;
   }
 
   // --- Graduated Autonomy policy (Spec 2, Phase 3) -------------------------

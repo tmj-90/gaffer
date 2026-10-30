@@ -1,8 +1,9 @@
 import { type RunTracker, spawnTrackedRun } from "./runTracking.js";
 
 /**
- * Fires the configured auto-merge command when a ticket is approved (the human
- * has reviewed the diff and pressed approve, taking the ticket to `done`).
+ * Fires the configured merge command for an approved (`ready_for_merge`) ticket: from
+ * the human's Approve when AUTO_MERGE ("Auto-merge on approval") is on, and from the
+ * explicit Merge (POST /tickets/:id/merge) always.
  *
  * The runner's `bin/merge-ticket.mjs` attempts the merge of the ticket's
  * delivery branch; on a CONFLICT it spawns a resolver agent that fixes the branch

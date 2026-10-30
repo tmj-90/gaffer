@@ -126,10 +126,13 @@ function makeDb(rows, { legacySchema = false } = {}) {
   const db = new DatabaseSync(dbPath);
   const pr = legacySchema ? "" : ", pr_url TEXT";
   const st = legacySchema ? "" : ", status TEXT NOT NULL DEFAULT 'ready_for_merge'";
+  // The repo's DoD gate commands (what the conflict-resolution re-gate reads); a legacy
+  // schema has no such columns.
+  const gates = legacySchema ? "" : ", test_command TEXT, lint_command TEXT";
   db.exec(
     `CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, branch_name TEXT${pr}${st});` +
       "CREATE TABLE repositories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, " +
-      "local_path TEXT, default_branch TEXT NOT NULL DEFAULT 'main');" +
+      `local_path TEXT, default_branch TEXT NOT NULL DEFAULT 'main'${gates});` +
       "CREATE TABLE ticket_repos (ticket_id TEXT, repo_id TEXT, role TEXT DEFAULT 'primary', " +
       `branch_name TEXT, access TEXT DEFAULT 'write'${pr});`,
   );
@@ -157,6 +160,13 @@ function makeDb(rows, { legacySchema = false } = {}) {
       r.localPath,
       r.defaultBranch ?? "main",
     );
+    if (!legacySchema && (r.testCommand !== undefined || r.lintCommand !== undefined)) {
+      db.prepare("UPDATE repositories SET test_command = ?, lint_command = ? WHERE id = ?").run(
+        r.testCommand ?? null,
+        r.lintCommand ?? null,
+        r.repoId,
+      );
+    }
     if (legacySchema) {
       db.prepare(
         "INSERT INTO ticket_repos (ticket_id,repo_id,role,branch_name,access) VALUES (?,?,?,?,?)",
@@ -536,6 +546,9 @@ console.log(
       defaultBranch: "main",
       repoBranch: "gaffer/ticket-7-x",
       access: "write",
+      // The re-gate runs the repo's DoD gates on the resolution: a passing test gate here
+      // (the re-gate itself is AC9c).
+      testCommand: "true",
     },
   ]);
   const DATA = resolve(WORKDIR, "live-data");
@@ -726,6 +739,13 @@ exit 3
       spawned.out.phase === "conflict_resolved_pending_reapproval",
   );
   assert(
+    "sandbox off (control): the resolution was re-gated (DoD PASS on the resolved head, fresh evidence recorded)",
+    spawned.out &&
+      spawned.out.regate &&
+      spawned.out.regate.dod === "PASS" &&
+      spawned.out.regate.evidence_recorded === true,
+  );
+  assert(
     "a real resolution: the default branch is merged into the branch head",
     git(repo, "merge-base", "--is-ancestor", "main", "gaffer/ticket-7-x").status === 0,
   );
@@ -739,6 +759,354 @@ exit 3
     `the resolver's per-ticket MCP runtime is removed after the spawn (left: ${leftover.join(", ") || "none"})`,
     leftover.length === 0,
   );
+}
+
+console.log("== AC9c: the RE-GATE — a resolution is re-tested before it goes back to review ==");
+{
+  // The DoD gates ran once, on the delivery. A conflict resolution is NEW code: one that
+  // broke the tests (or committed raw <<<<<<< markers) used to be re-reviewed against the
+  // stale pre-resolution PASS and land. Now merge-ticket.mjs re-gates the resolved head
+  // (markers + the repo's DoD gates) BEFORE reopen-for-review; a FAIL keeps the resolution
+  // off the branch and holds the ticket for a human.
+  const { introducedConflictMarkers, resolveGateCommands } = await import(HELPER);
+  const conflictRepo = (name) => {
+    const repo = newRepo(name);
+    writeFileSync(resolve(repo, "file.txt"), "base\nbranch-line\n");
+    git(repo, "commit", "-q", "-am", "branch-edit");
+    git(repo, "checkout", "-q", "main");
+    writeFileSync(resolve(repo, "file.txt"), "base\nmain-line\n");
+    git(repo, "commit", "-q", "-am", "main-edit");
+    return repo;
+  };
+  const dbFor = (repo, gates = {}) =>
+    makeDb([
+      {
+        ticketId: "tg",
+        number: 7,
+        ticketBranch: null,
+        repoId: "rg",
+        repoName: "demo",
+        localPath: repo,
+        defaultBranch: "main",
+        repoBranch: "gaffer/ticket-7-x",
+        access: "write",
+        ...gates,
+      },
+    ]);
+  const SPY_MARK = resolve(WORKDIR, "regate-reapproval.marker");
+  const SPY_WG = resolve(WORKDIR, "regate-spy-wg.js");
+  writeFileSync(
+    SPY_WG,
+    `if (process.argv.includes("reopen-for-review")) require("node:fs").writeFileSync(${JSON.stringify(SPY_MARK)}, "x");\nprocess.stdout.write('{"ok":true}\\n');\n`,
+  );
+  // A resolver that merges cleanly (keeps the branch side)…
+  const GOOD = resolve(WORKDIR, "regate-good.sh");
+  writeFileSync(
+    GOOD,
+    `#!/usr/bin/env bash\ngit merge -q -X ours --no-edit main >/dev/null 2>&1\nprintf '%s\\n' '{"result":"resolved"}'\n`,
+  );
+  // …and one that COMMITS the raw conflict markers (seen live with a stub resolver).
+  const MARKERS = resolve(WORKDIR, "regate-markers.sh");
+  writeFileSync(
+    MARKERS,
+    `#!/usr/bin/env bash\ngit merge -q --no-edit main >/dev/null 2>&1\ngit add -A >/dev/null 2>&1\ngit -c user.email=r@r -c user.name=r commit -qm "resolved (markers left in)" >/dev/null 2>&1\nprintf '%s\\n' '{"result":"resolved"}'\n`,
+  );
+  for (const f of [GOOD, MARKERS]) require("node:fs").chmodSync(f, 0o755);
+  const runRegate = (repo, db, extraEnv) => {
+    rmSync(SPY_MARK, { force: true });
+    const res = spawnSync(process.execPath, [HELPER, "--ticket", "7", "--timeout-ms", "60000"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DISPATCH_DB: db,
+        GAFFER_DATA: resolve(WORKDIR, "regate-data"),
+        DISPATCH_CLI: SPY_WG,
+        GAFFER_STRICT_REQUIRE: "0",
+        STRICT_MODE: "0",
+        SANDBOX_PROVIDER: "none",
+        GAFFER_DOD_TIMEOUT: "60",
+        ...extraEnv,
+      },
+    });
+    let out = null;
+    try {
+      out = JSON.parse(res.stdout.trim().split("\n").pop());
+    } catch {
+      /* leave null */
+    }
+    return { code: res.status, out, stderr: res.stderr || "" };
+  };
+
+  // (1) raw conflict markers committed → gate FAIL, nothing reopened, branch restored.
+  {
+    const repo = conflictRepo("regate-markers");
+    const pre = git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim();
+    const main0 = git(repo, "rev-parse", "main").stdout.trim();
+    const r = runRegate(repo, dbFor(repo, { testCommand: "true" }), { CLAUDE_BIN: MARKERS });
+    assert(
+      "markers: phase conflict_resolution_gate_failed naming file.txt, exit 1",
+      r.code === 1 &&
+        r.out &&
+        r.out.phase === "conflict_resolution_gate_failed" &&
+        Array.isArray(r.out.regate?.markers) &&
+        r.out.regate.markers.some((m) => m.startsWith("file.txt:")),
+    );
+    assert("markers: the ticket was NOT reopened for review", !existsSync(SPY_MARK));
+    assert(
+      "markers: the branch is back at its pre-resolution head, the resolution kept aside",
+      git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim() === pre &&
+        r.out?.restored === true &&
+        r.out?.sideRef === "refs/gaffer/conflict-resolved/7" &&
+        git(repo, "rev-parse", "--verify", "-q", "refs/gaffer/conflict-resolved/7").status === 0,
+    );
+    assert(
+      "markers: default branch untouched",
+      git(repo, "rev-parse", "main").stdout.trim() === main0,
+    );
+  }
+  // (2) a clean resolution whose tests FAIL → gate FAIL (dod), held.
+  {
+    const repo = conflictRepo("regate-redtests");
+    const pre = git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim();
+    const r = runRegate(repo, dbFor(repo, { testCommand: "false" }), { CLAUDE_BIN: GOOD });
+    assert(
+      "red tests: phase conflict_resolution_gate_failed with dod FAIL",
+      r.code === 1 &&
+        r.out &&
+        r.out.phase === "conflict_resolution_gate_failed" &&
+        r.out.regate?.dod === "FAIL" &&
+        /Definition-of-Done/.test(String(r.out.error || "")),
+    );
+    assert(
+      "red tests: not reopened; branch restored",
+      !existsSync(SPY_MARK) && git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim() === pre,
+    );
+  }
+  // (3) no gate commands configured → zero gates executed is NOT a verification (fail
+  //     closed, like the delivery gate) unless GAFFER_ALLOW_NO_DOD=1 waives it.
+  {
+    const repo = conflictRepo("regate-nogates");
+    const r = runRegate(repo, dbFor(repo), { CLAUDE_BIN: GOOD });
+    assert(
+      "no gate commands: held (zero DoD gates executed on the resolution → dod FAIL)",
+      r.code === 1 &&
+        r.out?.phase === "conflict_resolution_gate_failed" &&
+        r.out?.regate?.dod === "FAIL" &&
+        !existsSync(SPY_MARK),
+    );
+    const waived = runRegate(repo, dbFor(repo), { CLAUDE_BIN: GOOD, GAFFER_ALLOW_NO_DOD: "1" });
+    assert(
+      "no gate commands + GAFFER_ALLOW_NO_DOD=1: reopened for re-review",
+      waived.code === 0 &&
+        waived.out?.phase === "conflict_resolved_pending_reapproval" &&
+        existsSync(SPY_MARK),
+    );
+  }
+  // (4) GAFFER_DOD=0: the re-gate runs the marker check only and reports dod OFF.
+  {
+    const repo = conflictRepo("regate-dodoff");
+    const r = runRegate(repo, dbFor(repo, { testCommand: "false" }), {
+      CLAUDE_BIN: GOOD,
+      GAFFER_DOD: "0",
+    });
+    assert(
+      "GAFFER_DOD=0: reopened, regate.dod OFF (markers still checked)",
+      r.code === 0 &&
+        r.out?.phase === "conflict_resolved_pending_reapproval" &&
+        r.out?.regate?.dod === "OFF",
+    );
+    const repo2 = conflictRepo("regate-dodoff-markers");
+    const m = runRegate(repo2, dbFor(repo2), { CLAUDE_BIN: MARKERS, GAFFER_DOD: "0" });
+    assert(
+      "GAFFER_DOD=0 + committed markers: still held (the marker check never turns off)",
+      m.code === 1 && m.out?.phase === "conflict_resolution_gate_failed" && !existsSync(SPY_MARK),
+    );
+  }
+  // (5) introducedConflictMarkers: only markers the resolution ADDED count — a
+  //     markdown `=======` underline that main already had is not a leftover marker.
+  {
+    const repo = newRepo("regate-underline");
+    git(repo, "checkout", "-q", "main");
+    writeFileSync(resolve(repo, "NOTES.md"), "Title\n=======\nmain text\n");
+    git(repo, "add", "NOTES.md");
+    git(repo, "commit", "-q", "-m", "notes on main");
+    const mainTip = git(repo, "rev-parse", "main").stdout.trim();
+    git(repo, "checkout", "-q", "gaffer/ticket-7-x");
+    const pre = git(repo, "rev-parse", "HEAD").stdout.trim();
+    git(repo, "merge", "-q", "--no-edit", "main");
+    const clean = introducedConflictMarkers(repo, [pre, mainTip]);
+    assert("underline on main is not an introduced marker", clean.ok && clean.markers.length === 0);
+    writeFileSync(resolve(repo, "file.txt"), "<<<<<<< HEAD\nbase\n=======\nother\n>>>>>>> main\n");
+    git(repo, "commit", "-q", "-am", "bad resolution");
+    const bad = introducedConflictMarkers(repo, [pre, mainTip]);
+    assert(
+      "markers the resolution added ARE flagged",
+      bad.ok && bad.markers.length >= 1 && bad.markers.every((x) => x.startsWith("file.txt:")),
+    );
+    assert("no parents → not ok (fail closed)", introducedConflictMarkers(repo, []).ok === false);
+    assert(
+      "resolveGateCommands: legacy schema without the columns → no commands (zero-gates rule applies)",
+      JSON.stringify(
+        resolveGateCommands(
+          makeDb(
+            [
+              {
+                ticketId: "tz",
+                number: 7,
+                repoId: "rz",
+                repoName: "demo",
+                localPath: repo,
+                repoBranch: "gaffer/ticket-7-x",
+              },
+            ],
+            { legacySchema: true },
+          ),
+          7,
+        ),
+      ) === JSON.stringify({ test: "", lint: "" }),
+    );
+    assert(
+      "resolveGateCommands: missing DB → null (caller fails closed)",
+      resolveGateCommands(resolve(WORKDIR, "nope.sqlite"), 7) === null,
+    );
+  }
+  // (6) the gates run on the COMMITTED resolution, not the resolver's working tree. A
+  //     resolver that commits a broken resolution and leaves the fix UNCOMMITTED (or the
+  //     file the tests need UNTRACKED) used to pass the re-gate: the gates ran on the
+  //     dirty tree, the worktree was force-removed (discarding the fix) and the evidence
+  //     said "green on the resolved head" for a commit whose tests fail.
+  {
+    const EVLOG = resolve(WORKDIR, "regate-evidence.log");
+    const SPY_EV = resolve(WORKDIR, "regate-spy-ev.js");
+    writeFileSync(
+      SPY_EV,
+      `const fs = require("node:fs"); const a = process.argv;\n` +
+        `if (a.includes("reopen-for-review")) fs.writeFileSync(${JSON.stringify(SPY_MARK)}, "x");\n` +
+        `if (a.includes("attach-evidence")) fs.appendFileSync(${JSON.stringify(EVLOG)}, a[a.indexOf("--summary") + 1] + "\\n----\\n");\n` +
+        `process.stdout.write('{"ok":true}\\n');\n`,
+    );
+    const commitAs = "git -c user.email=r@r -c user.name=r commit -qm";
+    // Commits value=2 (the test wants 1) and leaves value=1 in the working tree.
+    const DIRTY_FIX = resolve(WORKDIR, "regate-dirty-fix.sh");
+    writeFileSync(
+      DIRTY_FIX,
+      `#!/usr/bin/env bash\ngit merge -q -X ours --no-edit main >/dev/null 2>&1\nprintf '2\\n' > value.txt\ngit add value.txt\n${commitAs} "resolve (broken)" >/dev/null 2>&1\nprintf '1\\n' > value.txt\nprintf '%s\\n' '{"result":"resolved"}'\n`,
+    );
+    // Commits the resolution but never `git add`s the file the tests need.
+    const UNTRACKED = resolve(WORKDIR, "regate-untracked.sh");
+    writeFileSync(
+      UNTRACKED,
+      `#!/usr/bin/env bash\ngit merge -q -X ours --no-edit main >/dev/null 2>&1\nprintf '1\\n' > value.txt\nprintf '%s\\n' '{"result":"resolved"}'\n`,
+    );
+    // Control: the same fix, committed.
+    const COMMITTED = resolve(WORKDIR, "regate-committed.sh");
+    writeFileSync(
+      COMMITTED,
+      `#!/usr/bin/env bash\ngit merge -q -X ours --no-edit main >/dev/null 2>&1\nprintf '1\\n' > value.txt\ngit add value.txt\n${commitAs} "resolve" >/dev/null 2>&1\nprintf 'scratch\\n' > notes.tmp\nprintf '%s\\n' '{"result":"resolved"}'\n`,
+    );
+    for (const f of [DIRTY_FIX, UNTRACKED, COMMITTED]) require("node:fs").chmodSync(f, 0o755);
+    const testCommand = 'test "$(cat value.txt 2>/dev/null)" = 1';
+    const gateLeftovers = () =>
+      existsSync(resolve(WORKDIR, "regate-data", "worktrees"))
+        ? require("node:fs")
+            .readdirSync(resolve(WORKDIR, "regate-data", "worktrees"))
+            .filter((f) => /regate/.test(f))
+        : [];
+
+    for (const [name, bin] of [
+      ["uncommitted fix", DIRTY_FIX],
+      ["untracked file", UNTRACKED],
+    ]) {
+      const repo = conflictRepo(`regate-${name.replace(/ /g, "-")}`);
+      const pre = git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim();
+      const main0 = git(repo, "rev-parse", "main").stdout.trim();
+      rmSync(EVLOG, { force: true });
+      const r = runRegate(repo, dbFor(repo, { testCommand }), {
+        CLAUDE_BIN: bin,
+        DISPATCH_CLI: SPY_EV,
+      });
+      assert(
+        `${name}: phase conflict_resolution_gate_failed with dod FAIL (the committed head was gated)`,
+        r.code === 1 &&
+          r.out?.phase === "conflict_resolution_gate_failed" &&
+          r.out?.regate?.dod === "FAIL",
+      );
+      assert(`${name}: the ticket was NOT reopened for review`, !existsSync(SPY_MARK));
+      assert(
+        `${name}: the branch is back at its pre-resolution head, the resolution kept aside`,
+        git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim() === pre &&
+          r.out?.restored === true &&
+          git(repo, "rev-parse", "--verify", "-q", "refs/gaffer/conflict-resolved/7").status === 0,
+      );
+      const ev = existsSync(EVLOG) ? readFileSync(EVLOG, "utf8") : "";
+      assert(
+        `${name}: the evidence says FAIL and names the discarded residue (value.txt), never PASS`,
+        /^DoD: FAIL/.test(ev) &&
+          /uncommitted\/untracked path\(s\)[^\n]*value\.txt/.test(ev) &&
+          !/DoD: PASS/.test(ev),
+      );
+      assert(
+        `${name}: default branch untouched`,
+        git(repo, "rev-parse", "main").stdout.trim() === main0,
+      );
+      assert(`${name}: no gate checkout left behind`, gateLeftovers().length === 0);
+    }
+
+    // Control: the committed fix passes; residue (notes.tmp) is noted but does not count.
+    {
+      const repo = conflictRepo("regate-committed-fix");
+      rmSync(EVLOG, { force: true });
+      const r = runRegate(repo, dbFor(repo, { testCommand }), {
+        CLAUDE_BIN: COMMITTED,
+        DISPATCH_CLI: SPY_EV,
+      });
+      const head = git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim();
+      const ev = existsSync(EVLOG) ? readFileSync(EVLOG, "utf8") : "";
+      assert(
+        "committed fix (control): reopened with dod PASS",
+        r.code === 0 &&
+          r.out?.phase === "conflict_resolved_pending_reapproval" &&
+          r.out?.regate?.dod === "PASS" &&
+          existsSync(SPY_MARK),
+      );
+      assert(
+        "committed fix (control): the PASS evidence names the gated commit = the branch head",
+        new RegExp(`clean checkout of the resolved head ${head.slice(0, 12)}`).test(ev) &&
+          /notes\.tmp/.test(ev),
+      );
+      assert("committed fix (control): no gate checkout left behind", gateLeftovers().length === 0);
+    }
+
+    // Unit: a resolver checkout whose HEAD is not the branch head fails closed, nothing run.
+    {
+      const { regateResolution } = await import(HELPER);
+      const repo = conflictRepo("regate-head-mismatch");
+      const r = regateResolution({
+        repoPath: repo,
+        commit: git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim(),
+        worktree: repo, // checked out on main
+        parents: [git(repo, "rev-parse", "main").stdout.trim()],
+        label: "demo",
+        commands: { test: "true", lint: "" },
+        gateDir: resolve(WORKDIR, "regate-unit-gate"),
+      });
+      assert(
+        "HEAD mismatch: ok:false, nothing gated, no gate checkout created",
+        r.ok === false &&
+          r.dod === "NOT_RUN" &&
+          /not the branch head/.test(r.reason) &&
+          !existsSync(resolve(WORKDIR, "regate-unit-gate")),
+      );
+      const none = regateResolution({
+        repoPath: repo,
+        commit: "",
+        parents: [],
+        label: "demo",
+        commands: {},
+      });
+      assert("no resolved head: ok:false (fail closed)", none.ok === false);
+    }
+  }
 }
 
 console.log("== AC10: --dry-run is BOUNDED — timeout-ms reported ==");

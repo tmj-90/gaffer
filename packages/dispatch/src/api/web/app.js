@@ -15195,6 +15195,9 @@ async function renderReview(param) {
       }
       const r = await api("POST", `/tickets/${t.id}/review/approve`);
       const to = r && r.ticket && r.ticket.status;
+      // AUTO_MERGE off (the default): the approval does not merge; the ticket waits in
+      // Ready for merge until someone presses Merge now.
+      const heldForMerge = Boolean(r && r.merge && r.merge.skipped === "auto_merge_off");
       lastSignedOff = { id: t.id, number: t.number, at: new Date().toISOString() };
       // Stay on the diff: the button says it is done, and moving on is its own link.
       if (approveBtn) {
@@ -15228,7 +15231,13 @@ async function renderReview(param) {
       doneLine.append(
         el("span", { class: "rv-done-t" }, [
           el("b", {}, `Approved #${t.number}.`),
-          ` ${to === "in_testing" ? "It goes to the tester next." : "It is with the merge runner now."} `,
+          ` ${
+            to === "in_testing"
+              ? "It goes to the tester next."
+              : heldForMerge
+                ? "It waits in Ready for merge: Auto-merge on approval is off, so press Merge now to land it."
+                : "It is with the merge runner now."
+          } `,
         ]),
         next
           ? el("a", { class: "rv-next-link", href: `#/review/${next.id}` }, [
@@ -15244,7 +15253,9 @@ async function renderReview(param) {
       // instead of silently swapping the next change in under the reader.
       if (!param && typeof history !== "undefined" && history.replaceState)
         history.replaceState(null, "", `#/review/${t.id}`);
-      toast("Approved — merging", { ok: true });
+      toast(heldForMerge ? "Approved — waiting in Ready for merge" : "Approved — merging", {
+        ok: true,
+      });
       updateNavBadges();
     });
   const reject = (to) => {

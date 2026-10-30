@@ -82,10 +82,13 @@ export const MEMORY_AUTO_APPROVE_ENV = "MEMORY_AUTO_APPROVE";
  *               is an ADDITIONAL allow-path (env OR policy), never a subtraction.
  *
  *               SCOPE — this floor governs the AUTONOMOUS (runner/agent) merge, NOT a
- *               human's explicit approval. A human REST/dashboard approve is the human
- *               merge gate and STILL auto-merges byte-identically: the REST approve site
- *               (api/server.ts) fires the merge for a human/admin actor regardless of
- *               this floor, so tightening the floor never regresses the human path.
+ *               human's explicit approval. A human approval needs only AUTO_MERGE: the
+ *               REST approve (api/routes/tickets.ts) fires the merge runner for the human
+ *               actor when AUTO_MERGE is on, and the runner's merge lane lands a
+ *               human-approved ticket under AUTO_MERGE alone — MERGE_ON_AGENT_REVIEW is
+ *               never consulted for either, so tightening this floor never regresses the
+ *               human path. With AUTO_MERGE off a human approval waits at
+ *               ready_for_merge for the human's explicit Merge.
  *   - memory  → `MEMORY_AUTO_APPROVE === "1"` (deferred gate; wired for completeness).
  */
 export function envAllowsAuto(

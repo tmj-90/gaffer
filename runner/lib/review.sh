@@ -251,7 +251,8 @@ wishes, and the WORDING of README text, comments, examples, log lines or error m
 OPTIONAL (unless an AC names that exact text). You may list them prefixed "(optional)" but
 they are NEVER grounds for CHANGES. When in doubt and the ACs are met with tests passing, APPROVE.
 BUDGET — this is a READ-and-JUDGE pass, not a build. The runner already ran the repo's
-Definition-of-Done gates (tests, lint) and recorded the verdict as evidence on the ticket:
+Definition-of-Done gates (tests, lint) and recorded the verdict as evidence on the ticket
+(after a merge-conflict resolution, the NEWEST checklist is the re-gate of the resolved head):
 read that evidence via get_ticket instead of re-running the gates; run the test command at
 most ONCE, and only when that evidence is missing or you have a concrete reason to doubt it.
 Read the diff once, open only the files it touches, and stop when every AC has a verdict —
@@ -495,7 +496,7 @@ EOF
             log "LITE: #$RNUM NOT trivial (${GAFFER_LITE_REASON:-unknown}) — holding for HUMAN review"
           fi
         fi
-        _SHIP_PLAN="$(gaffer_afk_ship_plan "$R_VERDICT" "$_SHIP_APPROVE" "$_SHIP_MERGE")"
+        _SHIP_PLAN="$(gaffer_afk_ship_plan "$R_VERDICT" "$_SHIP_APPROVE" "$_SHIP_MERGE" "$REVIEW_MODE")"
         # No reviewer output ⇒ no plan: never approve, never rework on it.
         [ -n "$R_HELD_REASON" ] && _SHIP_PLAN=hold
       fi
@@ -586,6 +587,8 @@ EOF
             # that has NOT earned an `auto` approve grant). Leave for a human; mark
             # reviewed-this-run so we don't loop. The verdict is recorded either way.
           [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+          [ "$REVIEW_MODE" = "both" ] && [ "$R_VERDICT" = "approve" ] && [ -z "$R_HELD_REASON" ] \
+            && R_HELD_REASON="REVIEW_MODE=both: the agent screened it; a human confirms"
           log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT${R_SECURITY:+, security=$R_SECURITY}, approve_gate=$_SHIP_APPROVE) — ADVISORY/HELD; awaiting HUMAN approval${R_HELD_REASON:+ [$R_HELD_REASON]}"
           ;;
       esac

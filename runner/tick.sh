@@ -466,6 +466,8 @@ export REVIEWER_AGENT
 # GRADUATED-AUTONOMY: per-repo `auto` policies only act inside the agent review pass;
 # under REVIEW_MODE=human they are inert. Say so once per run (factory.config.sh).
 declare -F gaffer_inert_policy_check >/dev/null 2>&1 && gaffer_inert_policy_check >/dev/null
+# MERGE_ON_AGENT_REVIEW without AUTO_MERGE merges nothing on its own — warn once per run.
+declare -F gaffer_half_merge_config_check >/dev/null 2>&1 && gaffer_half_merge_config_check >/dev/null
 
 # ── RUNNER-OWNED-BOOKKEEPING: the runner holds the delivery claim ────────────
 # The runner (not the agent) claims the chosen ticket at SELECTION, holds the claim

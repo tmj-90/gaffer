@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
+import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
 import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
 import type { MemoryReader } from "../memoryReader.js";
@@ -274,23 +275,29 @@ export async function routeTickets(
     if (action === "approve") {
       const result = wg.approveReview(id, apiActor());
       // The ticket has reached `ready_for_merge` via the review-approve path (NOT
-      // `done` — `done` means the merge actually landed). Fire the configured
-      // auto-merge command (fire-and-gaffert; logged, never fatal): it does the git
-      // merge and then calls `wg ticket mark-merged <n> --as system`
-      // (ready_for_merge -> done). Skips silently when unconfigured.
+      // `done` — `done` means the merge actually landed). When AUTO_MERGE ("Auto-merge on
+      // approval") is ON, fire the configured merge command (fire-and-forget; logged,
+      // never fatal): it does the git merge and then calls `wg ticket mark-merged <n> --as
+      // system` (ready_for_merge -> done). Skips silently when unconfigured.
+      //
+      // When AUTO_MERGE is OFF (the default) the approval does NOT merge: the ticket waits
+      // at ready_for_merge for the human to press Merge (POST /tickets/:id/merge, the
+      // dashboard's "Merge now", or `gaffer merge <n>`) — what the setting promises
+      // ("Off → approved tickets wait at ready-for-merge for a human"). It used to merge
+      // regardless, so the switch did nothing in the off direction.
+      //
+      // GRADUATED-AUTONOMY: this REST approve is the HUMAN merge gate. apiActor() is the
+      // hardcoded human actor (the dashboard Approve is the ONLY REST approver; the AFK
+      // runner approves through the CLI as an agent actor, never REST). The agent ship
+      // floor (envAllowsAuto('merge') = AUTO_MERGE AND MERGE_ON_AGENT_REVIEW) governs the
+      // RUNNER's unattended merge of AGENT approvals, NOT this one: a human approval needs
+      // only AUTO_MERGE. mergeRunner still enforces DISPATCH_MERGE_CMD.
       let merge: { triggered: boolean; pid: number | null; skipped?: string } | undefined;
       const number = result.ticket.number;
-      // GRADUATED-AUTONOMY (Spec 2, Phase 3): this REST approve is the HUMAN merge gate.
-      // apiActor() is the hardcoded human actor (the dashboard Approve action is the ONLY
-      // REST approver; the AFK runner approves through the CLI as an agent actor, never
-      // REST). A human approval has ALWAYS auto-fired the configured merge, and MUST stay
-      // byte-identical (Graduated-Autonomy invariant "human path byte-identical") even now
-      // that envAllowsAuto('merge') is a BLOCKING floor — that floor governs the RUNNER's
-      // unattended merge (runner/tick.sh, `wg ticket auto-decision --gate merge` + its own
-      // git merge), NOT a human's explicit approval. So the human approve merges here
-      // unconditionally, exactly as before. mergeRunner still enforces DISPATCH_MERGE_CMD.
       if (number !== null) {
-        merge = mergeRunner.trigger({ ticketNumber: number });
+        merge = envFlagOn(process.env[AUTO_MERGE_ENV])
+          ? mergeRunner.trigger({ ticketNumber: number })
+          : { triggered: false, pid: null, skipped: "auto_merge_off" };
       }
       sendJson(res, 200, {
         ticket: result.ticket,

@@ -184,6 +184,41 @@ switch (cmd) {
     }
     break;
   }
+  // approval-actor: stdin = ticket show → the actor_type (human | admin | agent | system)
+  // of the review APPROVAL that put the ticket on its current path to merge: the last
+  // `review_approved` / `review_approved_to_testing` transition AFTER the ticket's latest
+  // entry into in_review (a rework or a conflict reopen makes an older approval stale).
+  // "" when there is none or the payload is unreadable (fail-soft: callers treat "" as
+  // "not a human approval", which never grants a merge).
+  case "approval-actor": {
+    const p = tryParse(readStdin());
+    let who = "";
+    try {
+      const evs = ((p.value && p.value.events) || [])
+        .filter((e) => e && e.event_type === "ticket.transitioned")
+        .map((e) => {
+          let pl;
+          try {
+            pl = JSON.parse(e.payload_json || "{}") || {};
+          } catch {
+            pl = {};
+          }
+          return { actor: String(e.actor_type || ""), pl };
+        });
+      let start = 0;
+      evs.forEach((e, i) => {
+        if (e.pl.to === "in_review") start = i + 1;
+      });
+      for (const e of evs.slice(start)) {
+        if (e.pl.reason === "review_approved" || e.pl.reason === "review_approved_to_testing")
+          who = e.actor;
+      }
+    } catch {
+      who = "";
+    }
+    println(who);
+    break;
+  }
   // repo-matches <target>: stdin = ticket show; exit 0 when any repository's local_path
   // or name equals target, else 1 (bad JSON → 1).
   case "repo-matches": {

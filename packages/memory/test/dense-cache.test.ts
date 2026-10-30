@@ -147,6 +147,8 @@ describe("dense vector cache", () => {
     for (const q of ["kafka consumer lag", "completely unrelated gardening topic"]) {
       const lexical = median(false, q);
       const hybrid = median(true, q);
+      // A coverage run instruments unevenly (vitest.config.ts): time it, don't judge it.
+      if (process.env["GAFFER_COVERAGE_RUN"] === "1") continue;
       expect(
         hybrid,
         `"${q}" hybrid ${hybrid.toFixed(1)}ms vs lexical ${lexical.toFixed(1)}ms`,

@@ -455,7 +455,9 @@ console.log("== AC10b: an example ```json block AFTER the analysis does not repl
   const dir = mkdtempSync(resolve(tmpdir(), "onboard-trail-"));
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(cliBin, "process.exit(0);\n");
-  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
+  // BASE_ENV, not process.env: the stubbed runTurn covers only the analysis turn, and
+  // the card pass after it would otherwise spawn the real claude on PATH.
+  const env = { ...BASE_ENV, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
   const modelJson =
     "```json\n" +
     JSON.stringify({
@@ -466,7 +468,7 @@ console.log("== AC10b: an example ```json block AFTER the analysis does not repl
   const res = analyzeAndWrite(
     repo,
     { repoId: "demo", name: "demo", stack: "java" },
-    { env, runTurn: () => ({ timedOut: false, stdout: modelJson }) },
+    { env, runTurn: () => ({ timedOut: false, stdout: modelJson }), ...noLive },
   );
   assert(
     "analysis followed by an example fence → the model analysis is used",

@@ -28,7 +28,9 @@
 #   sandbox-exec / macOS-only         Seatbelt exists only on macOS
 #   setpriv / running as root         root reads 0400 files; Linux-only drop tool
 #   flock                             not shipped on macOS
-GAFFER_SKIP_ALLOWLIST_RE='docker|sandbox-exec|macos-only|setpriv|running as root|flock'
+#   the shellcheck binary             installed only on the Linux CI jobs (ci.yml),
+#                                     which run every test that needs it
+GAFFER_SKIP_ALLOWLIST_RE='docker|sandbox-exec|macos-only|setpriv|running as root|flock|shellcheck'
 
 gaffer_skip_allowed() {
   # A here-string, not a pipe: under a caller's pipefail an early-exiting grep can

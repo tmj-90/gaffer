@@ -37,12 +37,16 @@ trap cleanup EXIT
 workers() { ps -axo pid=,command= 2>/dev/null | awk -v w="$RUNNER_DIR/worker.sh" '$2 == "bash" && $3 == w {print $1}'; }
 ticks_in() { [ -f "$1/factory.log" ] || { echo 0; return; }; wc -l < "$1/factory.log" | tr -d ' '; }
 
+# The loop starts the way a terminal starts it: in its own process group with SIGINT at
+# its default. A background job of this non-interactive script starts with SIGINT
+# ignored, and a signal ignored on entry cannot be trapped (POSIX; bash 3.2 on macOS
+# enforces it), so without the reset P1 tested a launch no user ever makes.
 start_pool() {  # <case> → sets LP (the loop pid == its own process group id), D
   D="$WORK/$1"; mkdir -p "$D/data"
   ( export GAFFER_DATA="$D/data"; cd "$RUNNER_DIR" && source ./factory.config.sh >/dev/null 2>&1 && wg init >/dev/null 2>&1 )
   ( cd "$RUNNER_DIR" && GAFFER_DATA="$D/data" DRY_RUN=1 GAFFER_CONCURRENCY=2 EMPTY_POLL_LIMIT=100000 MAX_TICKS=100000 \
       TICK_SLEEP=1 GAFFER_MAINTENANCE=0 GAFFER_REAP_GRACE=2 \
-      exec perl -e 'setpgrp(0, 0); exec @ARGV' bash ./loop.sh > "$D/loop.out" 2>&1 ) &
+      exec perl -e '$SIG{INT} = "DEFAULT"; setpgrp(0, 0); exec @ARGV' bash ./loop.sh > "$D/loop.out" 2>&1 ) &
   LP=$!
   local _
   for _ in $(seq 1 100); do [ "$(workers | wc -l | tr -d ' ')" -ge 2 ] && [ "$(ticks_in "$D/data")" -ge 2 ] && return 0; sleep 0.2; done

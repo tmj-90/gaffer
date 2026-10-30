@@ -286,6 +286,9 @@ echo "== BUG 5: worker.sh counts maintenance results correctly =="
 # Source the functions the case statement lives in (worker.sh is a script, not
 # a library, so we exercise the logic directly by simulating the same variables
 # and case statement to verify the logic pattern is correct).
+# Inside the command substitutions below every case pattern is written with its
+# leading paren: bash 3.2 (macOS) misparses the bare form there. Keep comments in
+# these blocks free of quotes and unbalanced parens for the same reason.
 BUG5_OUT="$(
   worked=0; reviewed=0; clarified=0; idle=0; nowork=0; errors=0
   empties=0
@@ -293,13 +296,13 @@ BUG5_OUT="$(
   tally_result() {
     local res="$1"
     case "${res:-unknown}" in
-      worked)            worked=$((worked + 1)); empties=0 ;;
-      reviewed)          reviewed=$((reviewed + 1)); empties=0 ;;
-      clarified)         clarified=$((clarified + 1)); empties=0 ;;
-      idle_drafted)      idle=$((idle + 1)); empties=0 ;;
-      maintenance_drafted|maintenance_ran) idle=$((idle + 1)); empties=0 ;;
-      no_work)           nowork=$((nowork + 1)); empties=$((empties + 1)) ;;
-      *)                 errors=$((errors + 1)); empties=0 ;;
+      (worked)            worked=$((worked + 1)); empties=0 ;;
+      (reviewed)          reviewed=$((reviewed + 1)); empties=0 ;;
+      (clarified)         clarified=$((clarified + 1)); empties=0 ;;
+      (idle_drafted)      idle=$((idle + 1)); empties=0 ;;
+      (maintenance_drafted|maintenance_ran) idle=$((idle + 1)); empties=0 ;;
+      (no_work)           nowork=$((nowork + 1)); empties=$((empties + 1)) ;;
+      (*)                 errors=$((errors + 1)); empties=0 ;;
     esac
   }
 
@@ -322,13 +325,13 @@ BUG5_UNKNOWN_OUT="$(
   idle=0; errors=0; empties=0
   res="completely_unknown_result"
   case "${res:-unknown}" in
-    worked)            : ;;
-    reviewed)          : ;;
-    clarified)         : ;;
-    idle_drafted)      idle=$((idle + 1)); empties=0 ;;
-    maintenance_drafted|maintenance_ran) idle=$((idle + 1)); empties=0 ;;
-    no_work)           : ;;
-    *)                 errors=$((errors + 1)); empties=0 ;;
+    (worked)            : ;;
+    (reviewed)          : ;;
+    (clarified)         : ;;
+    (idle_drafted)      idle=$((idle + 1)); empties=0 ;;
+    (maintenance_drafted|maintenance_ran) idle=$((idle + 1)); empties=0 ;;
+    (no_work)           : ;;
+    (*)                 errors=$((errors + 1)); empties=0 ;;
   esac
   [ "$errors" -eq 1 ] && echo "BUG5_UNKNOWN_PASS" || echo "BUG5_UNKNOWN_FAIL errors=$errors"
 )"

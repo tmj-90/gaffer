@@ -4,9 +4,12 @@ A longer walk through what the factory actually does, surface by surface. The
 [README](../README.md) is the scannable version; this is the deep-dive.
 
 > Every screenshot here uses a neutral **demo dataset** — a fake "TaskFlow"
-> task-management product with two repos (`taskflow-api`, `taskflow-web`). It is
-> not anyone's real code, and it's seeded purely to show the surfaces with
-> believable content.
+> task-management product with two repos (`taskflow-mini`, the task-list
+> library, and `taskflow-web`, its web client), a club named Factory Athletic and
+> a squad of named agents. It is not anyone's real code, and it's seeded purely
+> to show the surfaces with believable content. The ticket in review was
+> delivered by a stand-in worker through a real runner tick, so its gates,
+> checks and diff are real.
 
 ---
 
@@ -38,12 +41,14 @@ You are never trapped in the clarify loop: **"Build the tickets"** forces the
 best plan from the brief and answers so far, and a long conversation
 force-plans rather than dead-ending.
 
-![Plan a build mid-decompose](img/plan-build.png)
+![Plan a build mid-decompose: the team talk and the proposed draw](img/plan-build.png)
 
-*The brief "add recurring tasks" decomposed into the proposed **Recurring tasks**
-epic. Each ticket has its own acceptance criteria; ticket #2 already shows it
-`depends on #1`. The guardrail banner is explicit: proposes only, confirmed
-tickets land as draft.*
+*The team talk on the Plan-a-build page: the brief "add recurring tasks", the
+planner's three clarifying questions, your answer, and the proposed draw, the
+**Recurring tasks** epic in four rounds plus the Final acceptance ticket.
+Proposed tickets are numbered T1–T5 until you confirm, and T2 shows `after T1`.
+Each carries its repo, priority and acceptance criteria. The guardrail banner is
+explicit: proposes only, confirmed tickets land as draft.*
 
 ### Greenfield vs brownfield
 
@@ -56,8 +61,9 @@ existing repo:
 | **Brownfield** | "Extend existing", a target repo/scope is chosen | **Zero bootstrap tickets** — there's nothing to scaffold. Every ticket is stamped with the target repo, so the plan *extends* what's already there. |
 
 The TaskFlow example above is brownfield: "add recurring tasks" to the existing
-`taskflow-api` / `taskflow-web` repos — data model first, then the API surface,
-the regeneration worker, the UI, and finally the docs.
+`taskflow-mini` / `taskflow-web` repos — the data model first, then the API,
+then the next-occurrence logic and the repeat picker in parallel, and finally
+the docs.
 
 ### The epic as a first-class object
 
@@ -65,12 +71,14 @@ Once confirmed, the epic isn't just a label on a pile of tickets — it's the
 dependency graph the board enforces. Tickets are **gated phase by phase**: a
 phase can't start until the one before it is done.
 
-![The Epics view, expanded](img/epics.png)
+![The season: the Recurring tasks epic, expanded](img/epics.png)
 
-*The Recurring-tasks epic as four phases. Phase 1 (the data-model migration)
-unblocks Phase 2 (the API), which unblocks Phase 3 (the regeneration worker and
-the UI, which run in parallel), which unblocks Phase 4 (the docs). Each card
-shows what it's "blocked by" until its dependencies land.*
+*The Recurring tasks campaign on The season (`#/epics`), as four rounds and the
+Final. Round 1 (the recurrence rule on the task model) unblocks Round 2 (the
+API), which unblocks Round 3 (the next-occurrence logic and the repeat picker,
+which run in parallel), which unblocks Round 4 (the docs); the Final acceptance
+ticket waits on all of them. Each card shows the tickets it waits on until they
+land, and the footer names the next fixture: #8, the only one ready.*
 
 ---
 
@@ -128,8 +136,10 @@ benches are also listed as text under the drawing.
 
 ![The work board](img/board.png)
 
-*Tickets spread across the lanes: drafts being shaped, ready work waiting, one
-ticket claimed and in progress by the demo agent, and one delivered into review.*
+*Tickets spread across the lanes: the Recurring tasks drafts being shaped,
+ready work waiting, two tickets claimed by Bez and Mo, one blocked after three
+rework attempts, and the CSV export Kev delivered into review. On the pitch lists
+which agent holds which ticket.*
 
 ---
 
@@ -159,11 +169,13 @@ structural barrier the whole design hangs on.
   tick** that wrote it (the ticket timeline shows a `tick …` chip), so one tick's
   whole trail — the runner's calls and the agent's MCP writes — reads as one.
 
-![The review gate](img/review.png)
+![The Gaffer's Sign-off](img/review.png)
 
-*An in-review ticket: its evidence (passing tests), 3/3 satisfied acceptance
-criteria, and the server-verified diff for `taskflow-api` — the migration and
-its round-trip test. Approve / send-back are the human's alone.*
+*An in-review ticket on The Gaffer's Sign-off: no flags, the Definition-of-Done
+gates (tests and lint passed), 3 of 3 acceptance criteria satisfied by the
+runner's own checks, the evidence trail, and the server-computed diff for
+`taskflow-mini` — the new `toCsv` export and its tests. Approve / send-back are
+the human's alone.*
 
 ---
 
@@ -179,11 +191,13 @@ product owns, at exactly the access it's been granted — a boundary the runner
 enforces, not a suggestion. Repos with no mapping behave as standalone
 single-repo scopes, so nothing has to be mapped to start working.
 
-![A scope node and its mapped repos](img/factory-map.png)
+![The Factory Map: scope nodes and their mapped repos](img/factory-map.png)
 
-*The TaskFlow product node and its two `owns` / `write` repos. The panel also
-shows how nodes connect to each other (`contains` / `depends_on`) to build the
-graph.*
+*The scouting map (`#/map`): the TaskFlow product node owns both repos with
+`write` access and contains the Task list capability and the Web client system;
+`depends_on` lines run from the web client to the task list and from the task
+list to the Calendar feeds external dependency. Who plays where lists each
+repo's relation and access at every node it belongs to.*
 
 ---
 
@@ -206,9 +220,11 @@ human-gated knowledge the factory works from:
 
 ![A repo's digest and feature ledger](img/memory.png)
 
-*The Repo Digest for `taskflow-api` — overview, structure, conventions and
-stack, with its freshness line and the "verify against code" caveat. The feature
-ledger and gated lore live on the same surface.*
+*Club history (`#/memory`) for `taskflow-mini`: the Repo Digest (the scouting
+report) with overview, structure, conventions and stack, its freshness line and
+the "verify against the code" caveat; the feature ledger (the honours board) as
+shipped, building and backlog; and the lore, two drafts awaiting a human
+signature above the approved records.*
 
 Memory is also usable standalone — see
 [`packages/memory/README.md`](../packages/memory/README.md).
@@ -253,9 +269,10 @@ launch the agent rather than run it uncontained. The provider is auto-detected
 
 ![The Settings panel](img/settings.png)
 
-*Autonomy flags, all opt-in and shown off; idle loops; and planning debate.
-Nothing here is enabled by default — full hands-off autonomy is a deliberate
-choice you make, not the starting state.*
+*The boot room (`#/settings`): the Team instructions dial on Supervised and the
+Autonomy flags, all opt-in and shown off, with Planning debate, Idle loops and
+the other groups folded below. Nothing here is enabled by default — full
+hands-off autonomy is a deliberate choice you make, not the starting state.*
 
 ---
 

@@ -13,6 +13,7 @@ import {
 import type { Spec } from "../domain/types.js";
 import type { Actor } from "../domain/types.js";
 import { DispatchError } from "../util/errors.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 
 import { projectEvents } from "./eventProjection.js";
 
@@ -58,7 +59,7 @@ function guard(fn: () => Record<string, unknown>): ToolResult {
     }
     if (err instanceof z.ZodError) {
       return toolError("VALIDATION_ERROR", "Invalid tool arguments.", {
-        issues: err.issues,
+        issues: toZod3Issues(err.issues),
       });
     }
     throw err;

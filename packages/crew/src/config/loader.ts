@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 import { parse as parseYaml } from "yaml";
-import { ZodError, type ZodTypeAny, type z } from "zod";
+import { ZodError, type ZodType, type z } from "zod";
 
 import {
   defaultSafetyPolicy,
@@ -10,11 +10,12 @@ import {
   type SafetyPolicy,
 } from "../safety/policySchema.js";
 import { CrewError, invalidConfig } from "../util/errors.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 import { crewConfigSchema, type CrewConfig, type IdleLoopMode } from "./schema.js";
 
 /** Format a ZodError into a precise, multi-line, path-prefixed message. */
 function formatZodError(error: ZodError): string {
-  return error.issues
+  return toZod3Issues(error.issues)
     .map((issue) => {
       const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
       return `  - ${path}: ${issue.message}`;
@@ -22,7 +23,7 @@ function formatZodError(error: ZodError): string {
     .join("\n");
 }
 
-function parseWith<S extends ZodTypeAny>(
+function parseWith<S extends ZodType>(
   schema: S,
   raw: unknown,
   what: string,
@@ -34,7 +35,7 @@ function parseWith<S extends ZodTypeAny>(
     if (err instanceof ZodError) {
       throw invalidConfig(`Invalid ${what} (${source}):\n${formatZodError(err)}`, {
         source,
-        issues: err.issues,
+        issues: toZod3Issues(err.issues),
       });
     }
     throw err;

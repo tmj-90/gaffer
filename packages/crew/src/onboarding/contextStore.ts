@@ -280,7 +280,7 @@ export class RepoContextStore {
     appendFileSync(this.path(repoId, "scan-history.jsonl"), `${JSON.stringify(entry)}\n`, "utf8");
   }
 
-  private readJson<S extends z.ZodTypeAny>(file: string, schema: S): z.infer<S> | null {
+  private readJson<S extends z.ZodType>(file: string, schema: S): z.infer<S> | null {
     if (!existsSync(file)) return null;
     const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
     return schema.parse(parsed) as z.infer<S>;

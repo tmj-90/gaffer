@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { CrewError } from "../util/errors.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 import { ingestIssueAsDraft, shellQuote } from "./core.js";
 import type { RepoConfig } from "../config/schema.js";
 import type { IngestDeps, IngestSummary, IngestedIssue, IngestError } from "./core.js";
@@ -87,7 +88,7 @@ function parseIssueList(stdout: string, slug: string): GithubIssue[] {
   if (!parsed.success) {
     throw new CrewError("INGEST_PARSE_FAILED", `Unexpected 'gh issue list' shape for ${slug}.`, {
       slug,
-      issues: parsed.error.issues,
+      issues: toZod3Issues(parsed.error.issues),
     });
   }
   return parsed.data;

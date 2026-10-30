@@ -5,6 +5,7 @@ import { ZodError } from "zod";
 import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 import { DispatchError } from "../util/errors.js";
 import { resolveDbPath } from "../util/paths.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 import { VERSION } from "../version.js";
 import { registerAc } from "./commands/ac.js";
 import { registerAgent, registerAgentSystem } from "./commands/agent.js";
@@ -81,7 +82,7 @@ async function main(): Promise<void> {
     }
     if (err instanceof ZodError) {
       process.stderr.write(
-        `${JSON.stringify({ ok: false, code: "VALIDATION_ERROR", issues: err.issues.map((i) => ({ path: i.path, message: i.message })) })}\n`,
+        `${JSON.stringify({ ok: false, code: "VALIDATION_ERROR", issues: toZod3Issues(err.issues).map((i) => ({ path: i.path, message: i.message })) })}\n`,
       );
       process.exitCode = 1;
       return;

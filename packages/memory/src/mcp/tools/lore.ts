@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 
+import { mcpToolInput } from "../../util/zod3Compat.js";
+
 import { audit } from "../../core/audit.js";
 import { findActiveAbsence } from "../../core/absence.js";
 import {
@@ -92,7 +94,7 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         "acting on. Each hit's `retrieval` says which side found it " +
         "('lexical', 'dense' or 'both'); treat a 'dense'-only hit as a " +
         "near-miss worth a look, not an exact match.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         query: z
           .string()
           .optional()
@@ -164,7 +166,7 @@ export function registerLoreTools(server: McpServer, db: Database): void {
           .max(50)
           .optional()
           .describe("Max results. Default 10, hard cap 50."),
-      },
+      }),
     },
     async (args) => {
       try {
@@ -279,12 +281,12 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         "common case. Pulling the full body for an obvious rule wastes " +
         "tokens.\n\n" +
         "Returns null when no record matches the id.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         id: z
           .string()
           .min(1)
           .describe("The 8-char lore id, e.g. '7vk3qm9b'. Get this from search_lore."),
-      },
+      }),
     },
     async (args) => {
       try {
@@ -395,7 +397,7 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         "— if a hit looks like the same rule, your suggestion is probably " +
         "redundant; consider not calling at all, or call with a sharper " +
         "title that complements rather than duplicates.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         // Length caps live in the handler, not the schema. zod's max-cap
         // path produced "body is undefined" upstream when an over-cap
         // summary failed parsing — the cause was masked and agents
@@ -436,7 +438,6 @@ export function registerLoreTools(server: McpServer, db: Database): void {
               "deploy, conventions, gotchas, incident-lessons.",
           ),
         source: z
-          .string()
           .url()
           .optional()
           .describe(
@@ -472,7 +473,7 @@ export function registerLoreTools(server: McpServer, db: Database): void {
           .string()
           .optional()
           .describe("Structured provenance: stable clause id within spec_id. Pair with spec_id."),
-      },
+      }),
     },
     async (args) => {
       // Build a sanitised audit shape that DELIBERATELY omits the body
@@ -674,7 +675,7 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         "Distinct from the runtime `possibleConflicts` heuristic on search " +
         "results — that's shared-scope overlap detection. This is explicit, " +
         "persisted, evidence-backed disagreement.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         existingId: z
           .string()
           .min(1)
@@ -692,7 +693,6 @@ export function registerLoreTools(server: McpServer, db: Database): void {
               "additional context. ≤ 800 chars (mirrors suggest_lore.summary).",
           ),
         source: z
-          .string()
           .url()
           .optional()
           .describe(
@@ -710,7 +710,7 @@ export function registerLoreTools(server: McpServer, db: Database): void {
           .array(z.string())
           .optional()
           .describe("Extra tags. 'conflict-report' is always added automatically."),
-      },
+      }),
     },
     async (args) => {
       // Audit shape mirrors suggest_lore: never record the observation

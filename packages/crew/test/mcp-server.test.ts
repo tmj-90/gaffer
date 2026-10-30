@@ -104,6 +104,13 @@ describe("MCP server: factory tools", () => {
     expect(names).toEqual(Object.keys(toolSchemas).sort());
     expect(names).toContain("get_factory_status");
     expect(names).toContain("run_idle_loop");
+    // The zod 3 (zod-to-json-schema) rendering: a tool with arguments is a closed
+    // object; an argument-less tool keeps the bare `{ type, properties }`.
+    for (const t of tools) {
+      const schema = t.inputSchema as Record<string, unknown>;
+      const hasArgs = Object.keys((schema.properties as object | undefined) ?? {}).length > 0;
+      expect(schema.additionalProperties, t.name).toBe(hasArgs ? false : undefined);
+    }
 
     await client.close();
   });

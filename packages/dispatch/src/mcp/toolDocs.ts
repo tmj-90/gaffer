@@ -21,7 +21,7 @@ export function leadSentence(description: string): string {
 }
 
 function argList(name: ToolName): string {
-  const shape = toolSchemas[name] as Record<string, z.ZodTypeAny>;
+  const shape = toolSchemas[name] as Record<string, z.ZodType>;
   const args = Object.entries(shape).map(([k, s]) => `\`${k}${s.isOptional() ? "?" : ""}\``);
   return args.length > 0 ? args.join(", ") : "—";
 }

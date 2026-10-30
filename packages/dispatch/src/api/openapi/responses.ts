@@ -1,4 +1,4 @@
-import { z, type ZodTypeAny } from "zod";
+import { z, type ZodType } from "zod";
 
 import {
   AC_STATUSES,
@@ -60,7 +60,7 @@ export const TicketRow = z
     delivery_budget_usd: z.number().nullable(),
     created_at: str,
     updated_at: str,
-  } satisfies Record<keyof Ticket, ZodTypeAny>)
+  } satisfies Record<keyof Ticket, ZodType>)
   .describe("A ticket row.");
 
 export const AcceptanceCriterionRow = z
@@ -78,7 +78,7 @@ export const AcceptanceCriterionRow = z
     spec_clause_id: nstr,
     created_at: str,
     updated_at: str,
-  } satisfies Record<keyof AcceptanceCriterion, ZodTypeAny>)
+  } satisfies Record<keyof AcceptanceCriterion, ZodType>)
   .describe("An acceptance criterion.");
 
 export const DecisionRow = z
@@ -99,7 +99,7 @@ export const DecisionRow = z
     memory_record_id: nstr,
     created_at: str,
     updated_at: str,
-  } satisfies Record<keyof Decision, ZodTypeAny>)
+  } satisfies Record<keyof Decision, ZodType>)
   .describe("A decision.");
 
 export const PrincipalRowView = z
@@ -113,7 +113,7 @@ export const PrincipalRowView = z
     created_at: str,
     last_used_at: nstr,
     revoked_at: nstr,
-  } satisfies Record<keyof PrincipalView, ZodTypeAny>)
+  } satisfies Record<keyof PrincipalView, ZodType>)
   .describe("An API principal (never carries token material).");
 
 export const AgentDisplayView = z
@@ -124,7 +124,7 @@ export const AgentDisplayView = z
     default_display_name: str,
     shirt_number: int.nullable(),
     role: z.enum(["delivery", "reviewer", "security_reviewer", "tester"]),
-  } satisfies Record<keyof AgentDisplay, ZodTypeAny>)
+  } satisfies Record<keyof AgentDisplay, ZodType>)
   .describe("How an agent is presented (squad name, shirt number); the agent id never changes.");
 
 // Compile-time: each row schema infers EXACTLY its TypeScript row type (keys and
@@ -146,7 +146,9 @@ export const TicketEnvelope = z.object({ ticket: TicketRow }).strict();
 export const TicketList = z
   .object({
     tickets: z.array(
-      TicketRow.partial({ description: true, test_contract: true, last_review_feedback: true }),
+      TicketRow.partial({ description: true, test_contract: true, last_review_feedback: true })
+        // zod 4's .partial() returns a fresh object without the row's description.
+        .describe(TicketRow.description ?? ""),
     ),
     total: int.describe("Every ticket matching the filters, regardless of paging."),
     limit: int.optional().describe("Echoed when paging."),
@@ -158,15 +160,15 @@ export const TicketDetail = z
   .object({
     ticket: TicketRow,
     acceptance_criteria: z.array(AcceptanceCriterionRow),
-    repositories: z.array(z.record(z.unknown())),
-    scopes: z.array(z.record(z.unknown())),
+    repositories: z.array(z.record(z.string(), z.unknown())),
+    scopes: z.array(z.record(z.string(), z.unknown())),
     blocking_decisions: z.array(DecisionRow),
-    dependencies: z.array(z.record(z.unknown())),
-    evidence: z.array(z.record(z.unknown())),
-    events: z.array(z.record(z.unknown())),
-    rework_trail: z.array(z.record(z.unknown())),
+    dependencies: z.array(z.record(z.string(), z.unknown())),
+    evidence: z.array(z.record(z.string(), z.unknown())),
+    events: z.array(z.record(z.string(), z.unknown())),
+    rework_trail: z.array(z.record(z.string(), z.unknown())),
     agent_display: z
-      .record(AgentDisplayView)
+      .record(z.string(), AgentDisplayView)
       .describe("Every agent the ticket's claims and events name, keyed by agent id."),
   })
   .strict();

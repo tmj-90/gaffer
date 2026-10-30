@@ -89,3 +89,4 @@ export {
   type CommandResult,
   type NotifyLogger,
 } from "./notify/index.js";
+export { mcpToolInput, toZod3Issues, zod3JsonSchema, type Zod3Issue } from "./util/zod3Compat.js";

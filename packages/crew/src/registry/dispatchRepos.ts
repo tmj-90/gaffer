@@ -1,6 +1,7 @@
 import { repoSchema, type RepoConfig } from "../config/schema.js";
 import type { DispatchClient, DispatchRepository } from "../dispatch/client.js";
 import type { EventLog } from "../events/eventLog.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 import { RepoRegistry } from "./repoRegistry.js";
 
 /**
@@ -54,7 +55,9 @@ export function withDispatchRepos(
     if (!parsed.success) {
       events?.record("dispatch_repo_skipped", {
         repoName: r.name,
-        reason: parsed.error.issues.map((i) => i.message).join("; "),
+        reason: toZod3Issues(parsed.error.issues)
+          .map((i) => i.message)
+          .join("; "),
       });
       continue;
     }

@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { AuditOptions } from "../audit/index.js";
 import type { FactoryContext } from "../runtime/wiring.js";
 import { loadFactory, openDispatch } from "../runtime/wiring.js";
+import { mcpToolInput } from "../util/zod3Compat.js";
 import {
   makeHandlers,
   toolSchemas,
@@ -185,7 +186,7 @@ export function createCrewServer(options: ServerOptions = {}): McpServer {
       name,
       {
         description: TOOL_DESCRIPTIONS[name],
-        inputSchema: toolSchemas[name],
+        inputSchema: mcpToolInput(toolSchemas[name]),
       },
       // The SDK passes parsed args; handlers re-validate defensively and return
       // a structured ToolResult (Promise-returning, hence the async bridge).

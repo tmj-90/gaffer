@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+// Validation errors keep their zod 3 codes, fields and messages (see the module).
+import "../util/zod3Compat.js";
+
 import {
   GIT_REF_SAFE,
   GIT_REF_SAFE_MESSAGE,
@@ -74,7 +77,7 @@ export const runProductOwnerBody = z
     scopeNodeId: z.string().trim().min(1).max(200).optional(),
   })
   .refine((v) => !(v.repo !== undefined && v.scopeNodeId !== undefined), {
-    message: "Provide either repo (repo-level) or scopeNodeId (node-level), not both.",
+    error: "Provide either repo (repo-level) or scopeNodeId (node-level), not both.",
   });
 export type RunProductOwnerBody = z.infer<typeof runProductOwnerBody>;
 
@@ -119,7 +122,7 @@ export const onboardRepoBody = z.object({
     .max(1_000)
     // eslint-disable-next-line no-control-regex -- explicit control-byte guard (NUL/newline/etc.).
     .refine((v) => !/[\x00-\x1f]/.test(v), {
-      message: "Repo target must not contain control characters.",
+      error: "Repo target must not contain control characters.",
     }),
 });
 export type OnboardRepoBody = z.infer<typeof onboardRepoBody>;
@@ -165,7 +168,7 @@ export type WontDoBody = z.infer<typeof wontDoBody>;
  * Continue button just signals "resume this"); POST /tickets/:id/stop carries an
  * optional reason for the audit trail.
  */
-export const continuePausedBody = z.object({}).strip();
+export const continuePausedBody = z.object({});
 export type ContinuePausedBody = z.infer<typeof continuePausedBody>;
 
 /**
@@ -174,7 +177,7 @@ export type ContinuePausedBody = z.infer<typeof continuePausedBody>;
  * path plus the API's human actor are all that's needed. Shared empty (stripping)
  * schema so unexpected fields are dropped rather than 422'ing the action.
  */
-export const humanClaimBody = z.object({}).strip();
+export const humanClaimBody = z.object({});
 export type HumanClaimBody = z.infer<typeof humanClaimBody>;
 
 export const stopPausedBody = z.object({
@@ -267,7 +270,7 @@ export const recordDeliveryArtifactBody = z
     diff_summary: z.string().trim().min(1).max(20_000).optional(),
   })
   .refine((v) => v.branch_name !== undefined || v.pr_url !== undefined, {
-    message: "At least one of branch_name or pr_url is required.",
+    error: "At least one of branch_name or pr_url is required.",
   });
 export type RecordDeliveryArtifactBody = z.infer<typeof recordDeliveryArtifactBody>;
 
@@ -699,7 +702,7 @@ const csvEnum = <T extends readonly [string, ...string[]]>(values: T) => {
         const parts = split(s);
         return parts.length > 0 && parts.every((p) => (values as readonly string[]).includes(p));
       },
-      { message: `expected a comma-separated list of: ${values.join(", ")}` },
+      { error: `expected a comma-separated list of: ${values.join(", ")}` },
     )
     .transform(split);
 };
@@ -735,11 +738,11 @@ export type RejectLoreBody = z.infer<typeof rejectLoreBody>;
  */
 export const settingsBody = z.object({
   settings: z
-    .record(z.string().max(4_000))
+    .record(z.string(), z.string().max(4_000))
     // Bound the key count so a single POST can't hand the write loop a
     // huge-cardinality object (unknown keys are dropped later, but the loop
     // still iterates every key on this single-threaded process).
-    .refine((r) => Object.keys(r).length <= 100, { message: "Too many settings keys." })
+    .refine((r) => Object.keys(r).length <= 100, { error: "Too many settings keys." })
     .default({}),
 });
 export type SettingsBody = z.infer<typeof settingsBody>;

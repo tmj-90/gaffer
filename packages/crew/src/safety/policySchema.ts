@@ -18,7 +18,7 @@ export const gitPolicySchema = z
       .array(z.string())
       .default(["main", "master", "develop", "production", "release/*", "hotfix/*"]),
   })
-  .default({});
+  .prefault({});
 
 export const filesystemPolicySchema = z
   .object({
@@ -56,7 +56,7 @@ export const filesystemPolicySchema = z
         "migrations/**",
       ]),
   })
-  .default({});
+  .prefault({});
 
 export const commandPolicySchema = z
   .object({
@@ -94,7 +94,7 @@ export const commandPolicySchema = z
     allow: z.array(z.string()).default([]),
     allow_from_repo_config: z.boolean().default(true),
   })
-  .default({});
+  .prefault({});
 
 export const secretsPolicySchema = z
   .object({
@@ -102,7 +102,7 @@ export const secretsPolicySchema = z
     deny_secret_file_reads: z.boolean().default(true),
     high_entropy_redaction: z.boolean().default(true),
   })
-  .default({});
+  .prefault({});
 
 export const safetyPolicySchema = z.object({
   git: gitPolicySchema,

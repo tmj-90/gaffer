@@ -1,0 +1,1 @@
+{"title":"Requirement from #7: Add login","summary":"Why 'app' ticket #7 (\"Add login\") was built — the requirement it served (distilled at close from the delivered work):\n- Login works\n- Logout works"}

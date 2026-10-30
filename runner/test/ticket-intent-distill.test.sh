@@ -61,7 +61,9 @@ else
   trap 'rm -rf "$TMP"' EXIT
   export MEMORY_DB="$TMP/memory.sqlite"
 
-  # Minimal live deps the helper closes over (mirrors factory.config.sh).
+  # Minimal live deps the helper closes over (mirrors factory.config.sh). The
+  # requirement text is rendered by crew's distillIntentCli.js under CREW_DIR.
+  CREW_DIR="$GAFFER_HOME/packages/crew"
   lg()   { MEMORY_DB="$MEMORY_DB" node "$MEMORY_CLI" "$@"; }
   gaffer_json() { node "$RUNNER_DIR/lib/json-tool.mjs" "$@"; }
   jget() { gaffer_json expr "$1"; }

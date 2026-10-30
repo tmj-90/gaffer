@@ -639,17 +639,18 @@ gaffer_recall_feedback() {
 # TICKET → LORE DISTILLATION AT CLOSE (Track 1c, live-path backport).
 # A ticket's title + acceptance criteria carry the REAL product intent — WHY the
 # work exists. At close that intent evaporates: the ticket is marked done and
-# nothing durable captures it. This harvests it into a REQUIREMENT DRAFT lore
-# record so the "why" survives the ticket. DRAFT ONLY (human-gated via the
-# memory suggest boundary) — never auto-promoted. Conservative like the crew
-# mirror (packages/crew/src/context/ticketIntent.ts::distillTicketIntent): a
-# ticket with NO acceptance criteria has nothing durable to harvest, so it is a
-# no-op rather than drafting noise. (The optional DECISION draft the mirror can
-# emit needs recorded decisions/reject-reasons, which the live close path does
-# not carry — matching crew's own live call, which passes only title + AC.)
+# nothing durable captures it. This harvests it into a REQUIREMENT lore record
+# so the "why" survives the ticket: a human-gated DRAFT by default, promoted ACTIVE
+# only under MEMORY_AUTO_APPROVE=1 / GAFFER_MEMORY_AUTO_PROMOTE=1 (below). The text
+# is rendered by crew — packages/crew/src/context/ticketIntent.ts::distillTicketIntent
+# via runtime/context/distillIntentCli.js, the single source (edit it there). A
+# ticket with NO non-blank acceptance criteria has nothing durable to harvest, so
+# it is a no-op rather than drafting noise. (The optional DECISION draft the
+# distiller can emit needs recorded decisions/reject-reasons, which the live close
+# path does not carry, so the CLI emits only the requirement.)
 # Best-effort + logged: a distill error NEVER affects delivery (already
-# submitted). No-op under DRY_RUN, without the memory CLI, or with no ticket/repo
-# in scope.
+# submitted). No-op under DRY_RUN, without the memory CLI or the crew build, or
+# with no ticket/repo in scope.
 gaffer_distill_ticket_intent() {
   [ "${DRY_RUN:-0}" = "1" ] && return 0
   [ -n "${NUM:-}" ] && [ -n "${RECALL_REPO_NAME:-}" ] || return 0
@@ -657,9 +658,13 @@ gaffer_distill_ticket_intent() {
   [ -n "${SHOW:-}" ] || return 0
 
   # Build the requirement draft's {title, summary} from the ticket's title + AC.
-  # json-tool emits ONE JSON line (or nothing when there is no AC). Fail-soft.
-  local _distill
-  _distill="$(SHOW="$SHOW" DTITLE="${TITLE:-}" DREPO="$RECALL_REPO_NAME" DNUM="$NUM" gaffer_json distill-intent 2>/dev/null || true)"
+  # The crew CLI emits ONE JSON line (or nothing when there is no AC). Fail-soft.
+  local _distill _distill_cli="${CREW_DIR:-}/dist/runtime/context/distillIntentCli.js"
+  if [ ! -f "$_distill_cli" ]; then
+    log "memory: crew not built ($_distill_cli missing) — skipping the ticket-intent distillation for #$NUM"
+    return 0
+  fi
+  _distill="$(SHOW="$SHOW" DTITLE="${TITLE:-}" DREPO="$RECALL_REPO_NAME" DNUM="$NUM" node "$_distill_cli" 2>/dev/null || true)"
   [ -n "$_distill" ] || return 0
 
   local _dt _ds

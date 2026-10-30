@@ -141,7 +141,7 @@ RB_TOK="$(printf '%s' "$RB_JSON" | jget 'd.claim_token ?? ""')"
 [ -n "$RB_TOK" ] && ok "resume-begin --agent leased the resumed delivery (claim token printed)" || fail "resume-begin --agent printed no claim token"
 # On a failure, print why: the heartbeat's own error, what resume-begin returned, and
 # the ticket's claims (an intermittent failure, seen once in CI, not reproduced locally).
-if HB_OUT="$(wg heartbeat "$RB_TOK" 2>&1)"; then
+if HB_OUT="$(wg heartbeat -- "$RB_TOK" 2>&1)"; then
   ok "the resumed delivery's lease heartbeats with that token"
 else
   fail "heartbeat on the resume lease failed: $HB_OUT"

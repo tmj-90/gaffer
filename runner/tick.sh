@@ -490,7 +490,7 @@ gaffer_release_delivery() {
   # not a bare "needs a human". (Seen once on a macOS CI runner: 1 of 4 identical
   # jobs failed the release and stranded the ticket.)
   local _tok=() _verb="released claim on" _fail="could not release claim on" _out="" _try
-  if [ -n "${CLAIM_TOKEN:-}" ]; then _tok=(--token "$CLAIM_TOKEN"); else _verb="transitioned"; _fail="could not transition"; fi
+  if [ -n "${CLAIM_TOKEN:-}" ]; then _tok=(--token="$CLAIM_TOKEN"); else _verb="transitioned"; _fail="could not transition"; fi
   for _try in 1 2 3; do
     if _out="$(wg runner-release "$NUM" --to "$to" ${_tok[@]+"${_tok[@]}"} --reason "$reason" ${extra[@]+"${extra[@]}"} 2>&1)"; then
       local _suffix=""; [ "$_try" -gt 1 ] && _suffix=" after $_try attempts"
@@ -709,7 +709,7 @@ gaffer_submit_delivery() {
   # the caller's park path already handles the non-zero rc, but silently losing the
   # WHY made a transient submit failure needlessly hard to triage.
   if [ -n "${CLAIM_TOKEN:-}" ]; then
-    _err="$(wg submit "$NUM" --token "$CLAIM_TOKEN" --reason "$reason" 2>&1 >/dev/null)"
+    _err="$(wg submit "$NUM" --token="$CLAIM_TOKEN" --reason "$reason" 2>&1 >/dev/null)"
     _rc=$?
   else
     _err="$(wg ticket move "$NUM" in_review 2>&1 >/dev/null)"
@@ -2414,7 +2414,7 @@ $_trail_q
   # braces with the generously-sized GAFFER_CLAIM_TTL). No-op when the runner holds
   # no token (a tokenless resume fallback). Best-effort — a failed heartbeat is logged, and
   # the generous TTL still covers the delivery.
-  [ -n "${CLAIM_TOKEN:-}" ] && { wg heartbeat "$CLAIM_TOKEN" >/dev/null 2>&1 || log "heartbeat for #$NUM claim failed (non-fatal; TTL still covers the delivery)"; }
+  [ -n "${CLAIM_TOKEN:-}" ] && { wg heartbeat -- "$CLAIM_TOKEN" >/dev/null 2>&1 || log "heartbeat for #$NUM claim failed (non-fatal; TTL still covers the delivery)"; }
   # ESCALATION: pick THIS attempt's implement-model + rework prompt suffix from the
   # ladder (routed model + base prompt on attempt 1; rethink; then stronger model +
   # full failure trail on the final attempt).

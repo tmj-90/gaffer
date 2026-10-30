@@ -30,6 +30,9 @@ program
   .description("Agent-ready backlog control plane")
   .version(VERSION, "-v, --version", "print the Dispatch version")
   .option("--db <path>", "SQLite database path")
+  // Root options (-v, --db) are parsed only BEFORE the subcommand, so a value after
+  // it that starts with "-" (a claim token, a free-text reason) is never taken for one.
+  .enablePositionalOptions()
   .showHelpAfterError();
 
 program

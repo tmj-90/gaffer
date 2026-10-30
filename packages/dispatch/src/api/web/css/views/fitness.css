@@ -14,13 +14,16 @@
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr);
   }
 
-  /* --- development flow: five stage counters on the line ------------------- */
+  /* --- phases of play: the development flow on a strip of pitch --------------
+     One mown stripe per stage (the texture is the axis, bench to net); each stage a
+     magnet counter with its §6 glyph, the count in chalk below. */
   .pipeline {
     display: flex;
-    align-items: flex-start;
-    overflow-x: auto;
-    scrollbar-width: none;
+    align-items: stretch;
     min-width: 0;
+    border-radius: var(--r);
+    overflow: hidden;
+    background: var(--pitch);
   }
   .pl-live {
     font: 600 var(--t14) var(--f-cond);
@@ -29,56 +32,56 @@
   .pl-node {
     position: relative;
     flex: 1 1 0;
-    min-width: 72px;
+    min-width: 0;
     display: grid;
     justify-items: center;
-    gap: 6px;
-    padding: 4px 0;
-    color: inherit;
+    align-content: start;
+    gap: 8px;
+    padding: 14px 6px 12px;
+    background: var(--pitch);
+    color: var(--chalk);
     text-decoration: none;
   }
-  .pl-node:not(:first-child)::before {
-    content: "";
-    position: absolute;
-    top: 26px;
-    right: 50%;
-    left: -50%;
-    height: 2px;
-    background: var(--rule);
-    z-index: 0;
+  .pl-node:nth-child(even) {
+    background: var(--pitch-2);
+  }
+  .pl-node:focus-visible {
+    outline: 3px solid var(--yellow);
+    outline-offset: -3px;
   }
   .pl-disc {
-    position: relative;
-    z-index: 1;
-    width: 48px;
-    height: 48px;
+    width: 40px;
+    height: 40px;
     display: grid;
     place-items: center;
     border-radius: var(--r-round);
-    background: var(--paper);
-    border: 2px solid var(--rule);
-    color: var(--ink-2);
-    box-shadow: var(--counter-shadow);
+    background: #fff;
+    border: 1.5px solid #0e1726;
+    color: #0e1726;
+    box-shadow: 0 2px 0 rgb(0 0 0 / 0.3);
   }
-  .pl-disc svg {
-    width: 22px;
-    height: 22px;
-  }
-  .pl-node.active .pl-disc {
-    border-color: var(--ink);
-    color: var(--ink);
+  .pl-node.dim .pl-disc {
+    background: transparent;
+    border: 2px dashed var(--chalk);
+    color: var(--chalk);
+    box-shadow: none;
   }
   .pl-label {
-    font: 700 var(--t14) var(--f-cond);
+    font: 800 var(--t16) / 1 var(--f-display);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--ink-2);
   }
   .pl-count {
-    font: 800 var(--t34) / 1 var(--f-display);
+    font: 800 var(--t52) / 0.9 var(--f-display);
   }
-  .pl-node.dim .pl-count {
-    color: var(--ink-2);
+  .pl-node:hover .pl-count {
+    text-decoration: underline;
+    text-decoration-thickness: 3px;
+    text-underline-offset: 4px;
+  }
+  .pl-zone {
+    font: 600 var(--t12) / 1.2 var(--f-cond);
+    text-align: center;
   }
 
   /* --- needs your attention (severity rows) ---------------------------------- */
@@ -98,9 +101,9 @@
   .needs-item:first-child .ni-link {
     border-top: 0;
   }
-  .ni-icon svg {
-    width: 18px;
-    height: 18px;
+  .ni-icon {
+    display: grid;
+    place-items: center;
   }
   .needs-item[data-sev="critical"] .ni-icon,
   .needs-item[data-sev="critical"] .ni-title {
@@ -302,7 +305,20 @@
     display: grid;
   }
   .bounce-row {
+    display: grid;
     grid-template-columns: 52px minmax(0, 1fr) auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 0;
+    border-top: var(--hair);
+    color: inherit;
+    text-decoration: none;
+  }
+  .bouncing-list li:first-child .bounce-row {
+    border-top: 0;
+  }
+  .bounce-row:hover .bounce-title {
+    text-decoration: underline;
   }
   .bounce-num {
     font: 800 var(--t20) / 1 var(--f-display);
@@ -311,7 +327,13 @@
     overflow-wrap: anywhere;
   }
   .bounce-count {
-    font: 800 var(--t20) / 1 var(--f-display);
+    font: 600 var(--t14) / 1 var(--f-cond);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .bounce-count b {
+    font: 800 var(--t26) / 1 var(--f-display);
+    color: var(--ink);
   }
   .bounce-samegate {
     font: 700 var(--t12) var(--f-cond);
@@ -348,18 +370,15 @@
       border-left: 0;
       border-top: var(--hair);
     }
-    .pl-node {
-      min-width: 0;
-    }
     .pl-disc {
-      width: 40px;
-      height: 40px;
+      width: 32px;
+      height: 32px;
     }
-    .pl-node:not(:first-child)::before {
-      top: 22px;
+    .pl-label {
+      font-size: var(--t14);
     }
     .pl-count {
-      font-size: var(--t26);
+      font-size: var(--t34);
     }
     .bounce-row {
       grid-template-columns: 44px minmax(0, 1fr) auto;

@@ -15,6 +15,22 @@
   .physio-board .kpi-spark {
     color: var(--sky);
   }
+  /* what is on the table, each clause a link to where it is treated */
+  .physio-board .hl-clauses {
+    margin-top: 14px;
+    font: 700 var(--t26) / 1.25 var(--f-display);
+    color: var(--board-ink-2);
+    max-width: 60ch;
+  }
+  .physio-board .hl-clauses a {
+    color: #fff;
+    text-decoration-color: var(--yellow);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 4px;
+  }
+  .physio-board .hl-clauses a[href*="blocked"] {
+    text-decoration-color: var(--red);
+  }
   .hx-grid {
     display: grid;
     grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -31,8 +47,78 @@
   .hx-6 {
     grid-column: span 6;
   }
+  .hx-5 {
+    grid-column: span 5;
+  }
+  .hx-7 {
+    grid-column: span 7;
+  }
   .hx-8 {
     grid-column: span 8;
+  }
+  .hx-span > .card {
+    min-width: 0;
+  }
+  .hx-stack {
+    gap: var(--s5);
+    align-content: start;
+  }
+
+  /* --- the fitness test: load, queue, faults for each of the factory's limits --- */
+  .fitness-test.card {
+    padding: 0;
+  }
+  .ft-grid {
+    display: grid;
+  }
+  .ft-row {
+    display: grid;
+    grid-template-columns: minmax(96px, 0.8fr) repeat(3, minmax(0, 1fr));
+    border-top: var(--hair);
+  }
+  .ft-row:first-child {
+    border-top: 0;
+  }
+  .ft-name {
+    display: grid;
+    align-content: start;
+    gap: 2px;
+    padding: 14px 12px 14px var(--s4);
+  }
+  .ft-name b {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .ft-name span,
+  .ft-s {
+    font: 600 var(--t14) / 1.25 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .ft-cell {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    padding: 14px 12px;
+    border-left: var(--hair);
+    min-width: 0;
+  }
+  .ft-l {
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+  .ft-v {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 800 var(--t34) / 1 var(--f-display);
+  }
+  .ft-cell.is-bad .ft-v {
+    color: var(--red);
+  }
+  .ft-cell .band {
+    margin-top: 4px;
   }
   .hx-12 {
     grid-column: 1 / -1;
@@ -49,6 +135,10 @@
     .hx-8 {
       grid-column: span 6;
     }
+    .hx-5,
+    .hx-7 {
+      grid-column: 1 / -1;
+    }
   }
   @media (max-width: 760px) {
     .physio-board .sb-cells {
@@ -56,6 +146,32 @@
     }
     .physio-board .hl {
       font-size: var(--t34);
+    }
+    .physio-board .hl-clauses {
+      font-size: var(--t20);
+    }
+    .physio-board .kpi-val {
+      font-size: var(--t26);
+    }
+    .ft-row {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .ft-name {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      padding: 12px var(--s4) 0;
+    }
+    .ft-cell {
+      padding: 8px 10px 14px;
+    }
+    .ft-cell:nth-child(2) {
+      border-left: 0;
+      padding-left: var(--s4);
+    }
+    .ft-v {
+      font-size: var(--t26);
     }
     .hx-grid {
       grid-template-columns: minmax(0, 1fr);

@@ -1,0 +1,141 @@
+// @vitest-environment jsdom
+//
+// DOM test for the Health view's physio room (src/api/web/app.js renderHealth):
+//   - the Fitness test reads the squad's slots (claims vs GAFFER_CONCURRENCY), the
+//     wage bill (today vs GAFFER_DAILY_BUDGET_USD) and the delivery line, each
+//     number with its words;
+//   - all-OK collapses to one sentence: "Fit to play." and no treatment table;
+//   - something on the table leads the page and is listed as linked clauses.
+
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
+
+const HEALTH = {
+  total_usd: 10,
+  cost_per_shipped_usd: 2,
+  coverage: { coverage_pct: 100 },
+  by_kind: [{ kind: "delivery", total_cost_usd: 10 }],
+  daily_spend: [
+    { date: "2026-10-28", total_cost_usd: 30 },
+    { date: "2026-10-29", total_cost_usd: 4 },
+  ],
+  rework: { rework_cost_share_pct: 10, by_ticket: [{ ticket_id: "a" }] },
+  duration: { total_ms: 120000, measured_calls: 2, avg_ms: 60000 },
+  cycle_time: { median_days: 1, series: [] },
+  throughput: { last7: 3, prev7: 1, series: [] },
+  skills: { by_skill: [], overall_hit_rate_pct: null },
+  recall: { available: false },
+};
+
+function stubFetch(summary: Record<string, unknown>): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const json = (obj: unknown) =>
+        new Response(JSON.stringify(obj), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      if (url.includes("/api/health")) return json(HEALTH);
+      if (url.includes("/api/dashboard")) return json({ summary });
+      if (url.includes("/api/cost"))
+        return json({ total_usd: 10, today_usd: 4, today_estimated_usd: 0, ticket_count: 2 });
+      if (url.includes("/claims"))
+        return json({ claims: [{ status: "active" }, { status: "active" }] });
+      if (url.includes("/api/settings"))
+        return json({
+          settings: [
+            { key: "GAFFER_CONCURRENCY", effective: "3" },
+            { key: "GAFFER_DAILY_BUDGET_USD", effective: "25" },
+          ],
+        });
+      if (url.includes("/api/rework/bouncing")) return json({ bouncing: [] });
+      if (url.includes("/api/runs")) return json({ active: [], recent: [] });
+      return json({});
+    }),
+  );
+}
+
+function mountShell(): void {
+  document.body.innerHTML = `
+    <div id="toast" class="toast" role="alert" hidden></div>
+    <div class="shell">
+      <header id="appbar" class="appbar" hidden></header>
+      <main id="app" class="app"><p class="loading">Loading…</p></main>
+      <nav id="bottomnav" class="bottomnav" hidden></nav>
+    </div>`;
+  location.hash = "#/health";
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+async function loadApp(): Promise<void> {
+  await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}-${Math.random()}`);
+  for (let i = 0; i < 6; i++) await tick();
+}
+function ftCell(row: string, label: string): Element | undefined {
+  const r = document.querySelector(`.ft-row[aria-label="${row}"]`);
+  return Array.from(r?.querySelectorAll(".ft-cell") || []).find(
+    (c) => c.querySelector(".ft-l")?.textContent === label,
+  );
+}
+
+describe("web: Health — the physio room", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mountShell();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("reads the fitness test from claims, settings, cost and health", async () => {
+    stubFetch({ ticketsByStatus: { ready: 4 }, staleClaims: 0 });
+    await loadApp();
+    expect(ftCell("Squad", "In use")?.querySelector(".ft-v")?.textContent).toBe("2/3");
+    expect(ftCell("Squad", "In use")?.textContent).toContain("1 free");
+    expect(ftCell("Squad", "In use")?.querySelector(".band")?.getAttribute("aria-label")).toBe(
+      "2 of 3 agent slots in use",
+    );
+    expect(ftCell("Squad", "Waiting")?.querySelector(".ft-v")?.textContent).toBe("4");
+    expect(ftCell("Wage bill", "Spent today")?.querySelector(".ft-v")?.textContent).toBe("$4.00");
+    expect(ftCell("Wage bill", "Spent today")?.textContent).toContain("of $25 a day");
+    // One day in the ledger went past $25.
+    expect(ftCell("Wage bill", "Days over")?.querySelector(".ft-v")?.textContent).toBe("1");
+    expect(ftCell("Deliveries", "Rate")?.querySelector(".ft-v")?.textContent).toBe("3");
+    expect(ftCell("Deliveries", "Reworked")?.querySelector(".ft-v")?.textContent).toBe("1");
+  });
+
+  it("collapses all-OK to one sentence and leaves the treatment table out", async () => {
+    stubFetch({ ticketsByStatus: {}, staleClaims: 0, blocked: 0, openDecisions: 0 });
+    await loadApp();
+    expect(document.querySelector(".health-view h1")?.textContent).toBe("Fit to play.");
+    expect(document.querySelector(".needs-hero")).toBeNull();
+    expect(document.querySelector(".hl-clauses")).toBeNull();
+  });
+
+  it("leads with the treatment table and lists what is on it as links", async () => {
+    stubFetch({ ticketsByStatus: { in_review: 2 }, blocked: 1, staleClaims: 0, openDecisions: 0 });
+    await loadApp();
+    expect(document.querySelector(".health-view h1")?.textContent).toBe(
+      "2 things on the treatment table.",
+    );
+    const grid = document.querySelector(".hx-grid");
+    expect(grid?.firstElementChild?.querySelector(".needs-hero")).not.toBeNull();
+    const links = Array.from(document.querySelectorAll(".hl-clauses a")).map((a) => [
+      a.textContent,
+      a.getAttribute("href"),
+    ]);
+    expect(links).toEqual([
+      ["1 blocked task", "#/work?status=blocked"],
+      ["2 changes to review", "#/review"],
+    ]);
+    // Referee's marks, not line icons: a red square and a yellow card.
+    expect(document.querySelector('.needs-item[data-sev="critical"] .g-blocked')).not.toBeNull();
+    expect(document.querySelector('.needs-item[data-sev="waiting"] .ycard')).not.toBeNull();
+  });
+});

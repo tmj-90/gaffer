@@ -33,6 +33,11 @@ import { DispatchError } from "../util/errors.js";
  * none is needed: every tick re-sources the config, and a running loop or
  * `gaffer run --daemon` re-derives what its parent exported (factory.config.sh
  * "RE-SOURCE HYGIENE"), so only the operator's real env still overrides the file.
+ * The day caps (MAX_TICKS_PER_DAY, GAFFER_DAILY_BUDGET_USD) are re-read by loop.sh
+ * and every pool worker before each admission (lib/budget.sh
+ * gaffer_refresh_day_caps). The run-shape knobs a loop reads once when it starts —
+ * MAX_TICKS, GAFFER_CONCURRENCY, TICK_SLEEP, EMPTY_POLL_LIMIT — apply from the next
+ * loop pass (the next daemon pass, or the next run).
  */
 
 /** A logical grouping for the settings panel's sections. */
@@ -190,7 +195,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "int",
     group: "budget",
     label: "Max ticks (run)",
-    help: "Upper bound on factory ticks for a single run.",
+    help: "Upper bound on factory ticks for a single run. A change applies from the next loop pass.",
   },
   {
     key: "MAX_TICKS_PER_DAY",
@@ -199,7 +204,8 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Max ticks / day",
     help:
       "Daily ceiling on factory ticks that did (or may have done) paid work — a " +
-      "no-work poll does not count. 0 = unlimited.",
+      "no-work poll does not count. A running loop re-reads it before every tick. " +
+      "0 = unlimited.",
   },
   {
     key: "GAFFER_DAILY_BUDGET_USD",
@@ -417,21 +423,25 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "int",
     group: "execution",
     label: "Concurrent ticks",
-    help: "How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out.",
+    help:
+      "How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. " +
+      "A change applies from the next loop pass.",
   },
   {
     key: "TICK_SLEEP",
     type: "int",
     group: "execution",
     label: "Pause between ticks (s)",
-    help: "Seconds the loop waits between ticks.",
+    help: "Seconds the loop waits between ticks. A change applies from the next loop pass.",
   },
   {
     key: "EMPTY_POLL_LIMIT",
     type: "int",
     group: "execution",
     label: "Empty polls before idle",
-    help: "Consecutive empty polls (no ready work) before the run stops or drops into idle loops.",
+    help:
+      "Consecutive empty polls (no ready work) before the run stops or drops into idle loops. " +
+      "A change applies from the next loop pass.",
   },
   {
     key: "MAX_CONCURRENT_TICKETS_PER_REPO",

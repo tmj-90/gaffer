@@ -148,10 +148,10 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `DRY_RUN` | `1` |  | runner | DRY_RUN=1 prints what it WOULD do and never invokes Claude or mutates a repo. |
-| `MAX_TICKS` | `5` | yes (int) | dispatch, runner | Upper bound on factory ticks for a single run. |
-| `EMPTY_POLL_LIMIT` | `2` | yes (int) | dispatch, runner | Consecutive empty polls (no ready work) before the run stops or drops into idle loops. |
-| `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. |
-| `MAX_TICKS_PER_DAY` | `50` | yes (int) | dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. 0 = unlimited. |
+| `MAX_TICKS` | `5` | yes (int) | dispatch, runner | Upper bound on factory ticks for a single run. A change applies from the next loop pass. |
+| `EMPTY_POLL_LIMIT` | `2` | yes (int) | dispatch, runner | Consecutive empty polls (no ready work) before the run stops or drops into idle loops. A change applies from the next loop pass. |
+| `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. A change applies from the next loop pass. |
+| `MAX_TICKS_PER_DAY` | `50` | yes (int) | dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. A running loop re-reads it before every tick. 0 = unlimited. |
 | `DAILY_COUNTER_FILE` | _derived_ (`$GAFFER_DATA/.daily-ticks`) |  | runner |  |
 | `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it. Empty or 0 = off. |
 
@@ -159,7 +159,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_CONCURRENCY` | `1` | yes (int) | crew, dispatch, runner | How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. |
+| `GAFFER_CONCURRENCY` | `1` | yes (int) | crew, dispatch, runner | How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. A change applies from the next loop pass. |
 | `MAX_CONCURRENT_TICKETS_PER_REPO` | `1` | yes (int) | dispatch, runner | Cap on tickets worked at once within one repo. |
 | `MAX_CANDIDATES` | `25` | yes (int) | dispatch, runner | Upper bound on ready tickets the scheduler considers each tick. |
 

@@ -96,12 +96,19 @@ while ! _should_stop && _reserve_run_tick; do
   # reserved in one locked read-modify-write BEFORE the tick (lib/budget.sh); the old
   # check-then-bump let N workers all admit themselves against the same last slot.
   # DRY_RUN ticks never spend, so they neither reserve nor count (BUG 6).
+  # LIVE CAPS: re-read MAX_TICKS_PER_DAY / GAFFER_DAILY_BUDGET_USD from the CURRENT
+  # config before every admission (a dashboard edit reaches a running pool at its next
+  # tick). Fail closed: a config that cannot be re-read stops this worker.
+  if ! gaffer_refresh_day_caps "$HERE/factory.config.sh"; then
+    echo "worker $WORKER_ID: ERROR — could not re-read the per-day caps; stopping rather than admit against a stale cap." >&2
+    _refund_run_tick; break
+  fi
   _day_reserved=0
   if [ "${DRY_RUN:-0}" != "1" ]; then
     _day_rsv_on="$(gaffer_reserve_day_tick)"; _rsv=$?
     case "$_rsv" in
       0) _day_reserved=1 ;;
-      1) echo "worker $WORKER_ID: per-day cap reached — stopping." >&2; _refund_run_tick; break ;;
+      1) echo "worker $WORKER_ID: per-day cap reached (MAX_TICKS_PER_DAY=${MAX_TICKS_PER_DAY:-}) — stopping." >&2; _refund_run_tick; break ;;
       *) echo "worker $WORKER_ID: ERROR — could not persist per-day tick count; stopping." >&2; _refund_run_tick; break ;;
     esac
   fi

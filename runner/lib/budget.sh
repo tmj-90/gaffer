@@ -184,6 +184,46 @@ gaffer_day_cap_ok() {
   [ "$(gaffer_day_count)" -lt "$MAX_TICKS_PER_DAY" ]
 }
 
+# ── LIVE CAPS: re-read the day caps from the CURRENT config ──────────────────
+# loop.sh and each pool worker.sh source factory.config.sh ONCE, at start, so the
+# day caps they admit against were frozen there: lowering MAX_TICKS_PER_DAY in the
+# dashboard did not reach a running loop (seen: cap cut 40 → 1 after the first tick,
+# the loop still admitted 4). gaffer_refresh_day_caps <config> re-derives
+# MAX_TICKS_PER_DAY and GAFFER_DAILY_BUDGET_USD in a FRESH bash that re-sources the
+# config (the same pattern as the daemon's per-pass cap check, lib/daemon.sh): a
+# subshell would keep this shell's values and shadow a newly saved settings.json.
+# The re-source hygiene in factory.config.sh still applies, so the operator's real
+# env keeps winning over the file. Call it before EVERY admission.
+#
+# FAIL CLOSED: returns 1 (and changes nothing) when the config cannot be re-read or
+# yields a cap that is not an integer — the caller must STOP, never fall back to the
+# stale value or to "no cap". A cap of 0 (or less) still means unlimited, as above.
+gaffer_refresh_day_caps() {
+  local cfg="${1:-}" out cap usd
+  [ -n "$cfg" ] && [ -f "$cfg" ] || return 1
+  out="$(GAFFER_DATA="${GAFFER_DATA:-}" bash -c '
+    source "$1" >/dev/null 2>&1 || true
+    printf "caps:%s\n%s\n" "${MAX_TICKS_PER_DAY:-}" "${GAFFER_DAILY_BUDGET_USD:-}"' _ "$cfg" 2>/dev/null)" || return 1
+  case "$out" in caps:*) ;; *) return 1 ;; esac
+  cap="${out%%$'\n'*}"; cap="${cap#caps:}"
+  case "$out" in *$'\n'*) usd="${out#*$'\n'}" ;; *) usd="" ;; esac
+  [[ "$cap" =~ ^-?[0-9]+$ ]] || return 1
+  _gaffer_set_live_cap MAX_TICKS_PER_DAY "$cap"
+  _gaffer_set_live_cap GAFFER_DAILY_BUDGET_USD "$usd"
+  return 0
+}
+# Assign a refreshed cap in THIS shell. When the key is a value the config derived
+# and exported (it carries a _GAFFER_DV_<KEY> record), move the record with it: the
+# record is how a child's re-source (tick.sh, the next refresh) tells a stale derived
+# value from one a parent set on purpose, and a stale record would freeze the cap at
+# the refreshed value instead of re-deriving it from settings.json next time.
+_gaffer_set_live_cap() {
+  local key="$1" val="$2" rec="_GAFFER_DV_$1"
+  printf -v "$key" '%s' "$val"
+  if [ -n "${!rec+x}" ]; then printf -v "$rec" '%s' "$val"; export "${rec?}"; fi
+  return 0
+}
+
 # ── Per-UTC-day USD cap (Part B) ─────────────────────────────────────────────
 # MAX_TICKS_PER_DAY caps the tick COUNT; GAFFER_DAILY_BUDGET_USD caps the DOLLARS
 # spent in a UTC calendar day. The window spend is summed from the usage ledger —

@@ -246,6 +246,15 @@ _setup_error=0
 _loop_stop=0
 trap '_loop_stop=1' INT TERM HUP
 while [ "$ticks" -lt "$MAX_TICKS" ]; do
+  # LIVE CAPS: the day caps are re-read from the CURRENT config before every
+  # admission, so a dashboard edit (lower MAX_TICKS_PER_DAY / GAFFER_DAILY_BUDGET_USD)
+  # stops a running loop at its next tick — not only the next loop pass. Fail closed:
+  # a config that cannot be re-read stops the run rather than admitting against a
+  # stale or missing cap (lib/budget.sh gaffer_refresh_day_caps).
+  if ! gaffer_refresh_day_caps "$HERE/factory.config.sh"; then
+    echo "gaffer factory: ERROR — could not re-read the per-day caps from $HERE/factory.config.sh; stopping rather than admit against a stale cap." >&2
+    break
+  fi
   if ! gaffer_day_cap_ok; then
     echo "gaffer factory: per-day cap (MAX_TICKS_PER_DAY=$MAX_TICKS_PER_DAY, used $(gaffer_day_count)) reached — stopping."
     break

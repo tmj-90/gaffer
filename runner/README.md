@@ -140,7 +140,13 @@ process sources `factory.config.sh` (`_GAFFER_OPERATOR_ENV`): the values a paren
 (gaffer, `loop.sh`, a daemon pass) derived and exported are re-derived by each child,
 so a dashboard edit reaches the next tick of a running loop or `gaffer run --daemon`
 without a restart, and the dashboard launched by `gaffer dashboard` shows its own
-defaults as editable, not env-locked.
+defaults as editable, not env-locked. The day caps (`MAX_TICKS_PER_DAY`,
+`GAFFER_DAILY_BUDGET_USD`) are re-read from the current config by `loop.sh` and every
+pool `worker.sh` before each admission (`gaffer_refresh_day_caps`, lib/budget.sh), so
+lowering one stops a running loop at its next tick; a cap that cannot be re-read
+stops the run (fail closed). The run-shape knobs a loop reads once at start —
+`MAX_TICKS`, `GAFFER_CONCURRENCY`, `TICK_SLEEP`, `EMPTY_POLL_LIMIT` — apply from the
+next loop pass (the next daemon pass, or the next run).
 
 ## Feature lifecycle + a fresh Repo Digest (prepare-at-delivery / apply-at-merge)
 The factory keeps the memory product's **Repo Digest** current and drives the

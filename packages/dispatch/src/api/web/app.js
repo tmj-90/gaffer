@@ -1877,7 +1877,7 @@ function openMoreSheet() {
 // async parts (diffs) settle so the page can't shrink and clamp scroll to 0, and
 // skips the swap entirely when the view's data signature did not change.
 const AUTO_REFRESH_MS = 9000;
-const AUTO_REFRESHABLE = new Set(["overview", "work", "review", "epics", "memory"]);
+const AUTO_REFRESHABLE = new Set(["overview", "work", "review", "epics", "memory", "factory"]);
 let autoRefreshTimer;
 function busyEditing() {
   const a = document.activeElement;
@@ -5490,20 +5490,22 @@ async function renderOverview() {
  * the "keeps bouncing" list and Running now. Returns the panels in order.
  */
 async function fitnessRoomPanels(healthRes) {
-  const [{ summary }, ticketsRes, decisionsRes, costRes, bouncingRes] = await Promise.all([
-    api("GET", "/api/dashboard"),
-    api("GET", "/tickets").catch(() => ({ tickets: [] })),
-    api("GET", "/decisions").catch(() => ({ decisions: [] })),
-    api("GET", "/api/cost").catch(() => null),
-    api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
-  ]);
+  const [{ summary }, ticketsRes, decisionsRes, costRes, bouncingRes, claimsRes, settingsRes] =
+    await Promise.all([
+      api("GET", "/api/dashboard"),
+      api("GET", "/tickets").catch(() => ({ tickets: [] })),
+      api("GET", "/decisions").catch(() => ({ decisions: [] })),
+      api("GET", "/api/cost").catch(() => null),
+      api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
+      api("GET", "/claims").catch(() => null),
+      api("GET", "/api/settings").catch(() => null),
+    ]);
 
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
   const decisions = decisionsRes.decisions || [];
   const inReview = byStatus.in_review || 0;
   const blocked = summary.blocked ?? byStatus.blocked ?? 0;
-  const openDecisions = summary.openDecisions ?? decisions.length;
   const staleClaims = summary.staleClaims || 0;
   const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
   const doneTickets = tickets.filter((t) => t.status === "done");
@@ -5639,6 +5641,37 @@ async function fitnessRoomPanels(healthRes) {
           flip: "lead",
         }),
       ]),
+      // The results by day: the cycle time as a bar per day, and what flow efficiency means.
+      el("div", { class: "fg-detail" }, [
+        el("div", { class: "fg-chart" }, [
+          el("h3", { class: "fg-h" }, "Cycle time, by day"),
+          el("div", {
+            class: "chart",
+            html: svgBars(cycleLine, {
+              labels: days.map((d) => d.lbl),
+              fmt: (v) => `${(+v).toFixed(1)}d`,
+              label: "Median cycle time by day",
+              today: true,
+              // Drawn at the width it shows at, so its tick labels stay readable.
+              ...(window.matchMedia && window.matchMedia("(max-width: 760px)").matches
+                ? { width: 360, height: 130 }
+                : { width: 720, height: 150 }),
+            }),
+          }),
+        ]),
+        el("div", { class: "fg-eff flow-eff" }, [
+          el("h3", { class: "fg-h" }, [
+            "Flow efficiency ",
+            el("b", { class: "tabnum" }, `${flowEff}%`),
+          ]),
+          band(flowEff, 100, `Flow efficiency ${flowEff}% of lead time spent working`),
+          el(
+            "p",
+            { class: "section-note" },
+            "The share of each shipped ticket's lead time spent being worked on rather than waiting (the median).",
+          ),
+        ]),
+      ]),
     ]),
   );
 
@@ -5648,7 +5681,10 @@ async function fitnessRoomPanels(healthRes) {
   // the demo dataset. Window-selectable. Every rate is shown WITH the raw counts it
   // derives from, and an empty window renders an explicit note, never a fake 0%.
   {
-    const govPanel = el("div", { class: "card gov-panel" });
+    const govPanel = el("section", {
+      class: "card panel gov-panel",
+      "aria-label": "Referee's record",
+    });
     const pct = (r) => (r && typeof r.rate === "number" ? Math.round(r.rate * 100) : null);
     const tile = (label, r, subFn) => {
       const p = pct(r);
@@ -5680,17 +5716,16 @@ async function fitnessRoomPanels(healthRes) {
         }),
       );
       govPanel.appendChild(
+        panelHead("Referee's record", "does review earn its keep", null, { kit: "sky" }),
+      );
+      govPanel.appendChild(
         el("div", { class: "gov-head" }, [
           el(
-            "div",
-            {
-              class: "gov-title",
-              title:
-                "Does gaffer's governance (gates + review + opt-in autonomy) earn its overhead? Computed from YOUR real ticket transitions — not the demo dataset.",
-            },
-            "Governance ROI",
+            "p",
+            { class: "gov-note" },
+            "Governance ROI, from the factory's own ticket transitions: how often review lets a change through, and whether what it lets through stays shipped.",
           ),
-          sel,
+          el("label", { class: "gov-win" }, [el("span", { class: "sr-only" }, "Window"), sel]),
         ]),
       );
       if (!gov || gov.empty) {
@@ -5713,7 +5748,8 @@ async function fitnessRoomPanels(healthRes) {
           tile(
             "Rework rate",
             gov.reworkRate,
-            (r) => `${r.numerator} of ${r.denominator} shipped needed rework`,
+            (r) =>
+              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first`,
           ),
           tile(
             "Unattended-safe",
@@ -5733,101 +5769,114 @@ async function fitnessRoomPanels(healthRes) {
     right.appendChild(govPanel);
   }
 
-  // --- Cost banner (H1) -------------------------------------------------------
-  // One small row: total spend all-time + today. Reads from /api/cost which
-  // reads the usage-ledger. Hidden when the ledger is absent / not configured.
-  if (costRes && (costRes.total_usd > 0 || costRes.today_usd > 0 || costRes.ticket_count > 0)) {
-    const fmtUsd = money;
-    // B28(e): the totals INCLUDE the labelled estimate the runner books for a
-    // killed/timed-out call — the same sum the daemon's day-USD cap halts on, so
-    // "Today" can never read lower than the figure the factory stopped at. The
-    // estimated share is shown marked as such, never passed off as measured.
-    const estNote = (v) =>
-      typeof v === "number" && v > 0
-        ? el(
-            "span",
-            {
-              class: "cost-est",
-              title: `${money(v)} of this is a labelled estimate booked for killed/timed-out calls (not measured usage).`,
-            },
-            `incl. ${fmtUsd(v)} est.`,
-          )
-        : null;
-    right.appendChild(
-      el(
-        "div",
-        {
-          class: "cost-banner",
-          // HONESTY: this is an API-EQUIVALENT estimate from Claude Code usage, not real
-          // money — on a Max/Pro subscription the marginal cost is the flat fee. A
-          // timed-out/killed call has no measured usage; the runner books a labelled
-          // conservative estimate for it, which is counted here and marked "est.".
-          title:
-            "API-equivalent estimate from Claude Code usage — NOT real charges on a Max/Pro subscription (there the marginal cost is the flat fee). Killed/timed-out calls carry a labelled conservative estimate (marked est.) — the same figure the runner's daily budget counts.",
-        },
-        [
-          el("span", { class: "cost-item" }, [
-            el("span", { class: "cost-label" }, "All-time (API-equiv)"),
-            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
-            estNote(costRes.estimated_usd),
-          ]),
-          el("span", { class: "cost-sep" }, "·"),
-          el("span", { class: "cost-item" }, [
-            el("span", { class: "cost-label" }, "Today"),
-            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
-            estNote(costRes.today_estimated_usd),
-          ]),
-          el("span", { class: "cost-sep" }, "·"),
-          el("span", { class: "cost-item" }, [
-            el("span", { class: "cost-label" }, "Tickets costed"),
-            el("span", { class: "cost-val tabnum" }, String(costRes.ticket_count)),
-          ]),
-        ],
-      ),
-    );
+  // --- Where the wages go: the usage ledger by kind, the top earners, the totals.
+  // HONESTY: an API-equivalent estimate from Claude Code usage, not real charges on a
+  // Max/Pro subscription. A killed or timed-out call carries a labelled estimate.
+  {
+    const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
+    const maxKind = Math.max(1, ...byKind.map((k) => k.total_cost_usd || 0));
+    const top =
+      costRes && Array.isArray(costRes.top_tickets) ? costRes.top_tickets.slice(0, 3) : [];
+    const byNum = new Map(tickets.map((t) => [t.number, t]));
+    const total =
+      costRes && typeof costRes.total_usd === "number" ? costRes.total_usd : health.total_usd;
+    const est = costRes ? costRes.estimated_usd : health.estimated_usd;
+    const costed = costRes ? costRes.ticket_count : health.ticket_count;
+    if (byKind.length || top.length || total > 0)
+      right.appendChild(
+        el(
+          "section",
+          {
+            class: "card panel wages-panel",
+            "aria-label": "Where the wages go",
+            title:
+              "API-equivalent estimate from Claude Code usage, not real charges on a Max/Pro subscription. Killed or timed-out calls carry a labelled estimate.",
+          },
+          [
+            panelHead(
+              "Where the wages go",
+              typeof total === "number"
+                ? `${money(total)} all-time${est > 0 ? ` incl. ${money(est)} est.` : ""} · ${plural(costed || 0, "ticket")} costed`
+                : "usage ledger",
+              null,
+              { kit: "claret" },
+            ),
+            el("div", { class: "wg-cols" }, [
+              byKind.length
+                ? el("div", { class: "hlist" }, [
+                    el("h3", { class: "fg-h" }, "By kind of call"),
+                    ...byKind.map((k) =>
+                      healthBarRow(
+                        k.kind,
+                        money(k.total_cost_usd),
+                        (k.total_cost_usd || 0) / maxKind,
+                        "amber",
+                      ),
+                    ),
+                  ])
+                : null,
+              top.length
+                ? el("div", { class: "wg-top" }, [
+                    el("h3", { class: "fg-h" }, "Top earners"),
+                    el(
+                      "ol",
+                      { class: "clean wg-earners" },
+                      top.map((x) => {
+                        const tk = byNum.get(x.ticket);
+                        return el("li", {}, [
+                          tk
+                            ? el(
+                                "a",
+                                { class: "wg-num tabnum", href: `#/ticket/${tk.id}` },
+                                `#${x.ticket}`,
+                              )
+                            : el("span", { class: "wg-num tabnum" }, `#${x.ticket}`),
+                          el("span", { class: "wg-title" }, tk ? tk.title : ""),
+                          el("span", { class: "wg-cost tabnum" }, money(x.total_cost_usd)),
+                          el("span", { class: "wg-turns" }, plural(x.num_turns || 0, "turn")),
+                        ]);
+                      }),
+                    ),
+                  ])
+                : null,
+            ]),
+          ],
+        ),
+      );
   }
 
   // --- Development flow + Needs your attention (2-up) -----------------------
   right.appendChild(
     el("div", { class: "ov-grid ov-2" }, [
       devFlowPanel(tickets, byStatus, now),
-      needsPanel({
-        inReview,
-        blocked,
-        openDecisions,
-        staleClaims,
-        stuck: summary.stuckTickets || [],
-      }),
+      needsPanel({ tickets, byStatus, summary, decisions, claims: claimsRes }),
     ]),
   );
 
-  // --- Progress by repo + Cycle-time chart + Flow-efficiency donut (3-up) ---
-  right.appendChild(
-    el("div", { class: "ov-grid ov-3" }, [
-      repoProgressPanel(summary.repoProgress || []),
-      el("div", { class: "card panel" }, [
-        panelHead("Cycle time", "median days to ship, by day"),
-        el("div", {
-          class: "chart",
-          html: svgBars(cycleLine, {
-            labels: days.map((d) => d.lbl),
-            fmt: (v) => `${(+v).toFixed(1)}d`,
-            label: "Median cycle time by day",
-            today: true,
-          }),
-        }),
-      ]),
-      el("div", { class: "card panel flow-eff" }, [
-        panelHead("Flow efficiency", `${flowEff}%`),
-        band(flowEff, 100, `Flow efficiency ${flowEff}% of lead time spent working`),
-        el(
-          "p",
-          { class: "section-note" },
-          "Share of each shipped ticket's lead time spent being worked on, not waiting (median).",
-        ),
-      ]),
-    ]),
-  );
+  // --- Fitness test: load, queue and faults for the squad, the wage bill and deliveries.
+  {
+    const setting = (k) => {
+      const x = ((settingsRes && settingsRes.settings) || []).find((y) => y.key === k);
+      const v = x ? Number(x.effective ?? x.value) : NaN;
+      return Number.isFinite(v) && v > 0 ? v : null;
+    };
+    const activeClaims = claimsRes
+      ? (claimsRes.claims || []).filter((c) => !c.status || c.status === "active").length
+      : null;
+    right.appendChild(
+      fitnessTestPanel({
+        claims: activeClaims,
+        slots: setting("GAFFER_CONCURRENCY"),
+        ready: byStatus.ready || 0,
+        stale: staleClaims,
+        budget: setting("GAFFER_DAILY_BUDGET_USD"),
+        cost: costRes,
+        health,
+        last7,
+        tickets,
+      }),
+    );
+  }
 
   // --- "Running now" — what's in flight right now (RUN-ACTIVITY) -----------
   // Polls GET /api/runs every ~3s so a triggered background run (Suggest work /
@@ -5848,17 +5897,168 @@ async function fitnessRoomPanels(healthRes) {
 }
 
 /**
+ * The fitness test: for each of the factory's three limits (agent slots, the daily
+ * budget, the delivery line) how loaded it is, what queues behind it and what has
+ * gone wrong — the USE / RED numbers, each from a response, each with its words.
+ */
+function fitnessTestPanel({
+  claims,
+  slots,
+  ready,
+  stale,
+  budget,
+  cost,
+  health,
+  last7,
+  tickets = [],
+}) {
+  const h = health || {};
+  const today = cost && typeof cost.today_usd === "number" ? cost.today_usd : null;
+  const todayEst =
+    cost && typeof cost.today_estimated_usd === "number" ? cost.today_estimated_usd : 0;
+  const days = Array.isArray(h.daily_spend) ? h.daily_spend : [];
+  const overDays = budget ? days.filter((d) => (d.total_cost_usd || 0) > budget).length : null;
+  const rework =
+    h.rework && typeof h.rework.rework_cost_share_pct === "number"
+      ? h.rework.rework_cost_share_pct
+      : null;
+  const reworkRows = h.rework && Array.isArray(h.rework.by_ticket) ? h.rework.by_ticket : null;
+  const reworked = reworkRows ? reworkRows.length : null;
+  // Which tickets were sent back (all-time, from the ledger), and whether any shipped:
+  // the referee's record counts only tickets merged in its window.
+  const statusOf = new Map(tickets.map((t) => [t.number, t.status]));
+  const named = (reworkRows || []).filter((r) => typeof r.ticket === "number");
+  const shippedBack = named.filter((r) => statusOf.get(r.ticket) === "done").length;
+  const reworkSub =
+    rework == null
+      ? "no rework data"
+      : [
+          named.length
+            ? `all-time: ${named
+                .slice(0, 3)
+                .map((r) => `#${r.ticket} ×${r.rework_count}`)
+                .join(", ")}${named.length > 3 ? "…" : ""}`
+            : "tickets, all-time",
+          named.length && statusOf.size
+            ? shippedBack
+              ? `${shippedBack} since shipped`
+              : "none shipped yet"
+            : null,
+          `${rework}% of spend`,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+  const dur = h.duration && h.duration.measured_calls ? h.duration.avg_ms : null;
+  const cell = (label, value, sub, opts = {}) =>
+    el("div", { class: `ft-cell${opts.bad ? " is-bad" : ""}${opts.needs ? " is-needs" : ""}` }, [
+      el("span", { class: "ft-l" }, label),
+      el("span", { class: "ft-v tabnum" }, [
+        opts.bad ? glyph("failed", 16) : null,
+        opts.needs ? ycard(16) : null,
+        value,
+      ]),
+      sub ? el("span", { class: "ft-s" }, sub) : null,
+      opts.after || null,
+    ]);
+  const row = (name, what, cells) =>
+    el("div", { class: "ft-row", role: "group", "aria-label": name }, [
+      el("div", { class: "ft-name" }, [el("b", {}, name), el("span", {}, what)]),
+      ...cells,
+    ]);
+  const slotsFull = slots && claims != null && claims >= slots;
+  const overBudget = budget && today != null && today > budget;
+  return el("section", { class: "card prog fitness-test", "aria-label": "Fitness test" }, [
+    panelHead("Fitness test", "load · queue · faults", null, { kit: "ink" }),
+    el("div", { class: "ft-grid" }, [
+      row("Squad", "agent slots", [
+        cell(
+          "In use",
+          claims == null ? "—" : slots ? `${claims}/${slots}` : String(claims),
+          slots ? (slotsFull ? "every slot taken" : `${slots - claims} free`) : "no slot limit set",
+          {
+            after:
+              slots && claims != null
+                ? band(claims, slots, `${claims} of ${slots} agent slots in use`)
+                : null,
+          },
+        ),
+        cell(
+          "Waiting",
+          String(ready),
+          ready
+            ? `ready, ${slotsFull ? "queued for a slot" : "not yet claimed"}`
+            : "nothing queued",
+        ),
+        cell(
+          "Faults",
+          String(stale || 0),
+          stale ? "stale claims, leases past expiry" : "no stale claims",
+          {
+            bad: stale > 0,
+          },
+        ),
+      ]),
+      row("Wage bill", "daily budget", [
+        cell(
+          "Spent today",
+          today == null ? "—" : money(today),
+          budget ? `of ${moneyW(budget)} a day` : "no daily budget set",
+          {
+            bad: !!overBudget,
+            after:
+              budget && today != null
+                ? band(today, budget, `${money(today)} of ${moneyW(budget)} daily budget spent`)
+                : null,
+          },
+        ),
+        cell(
+          "Days over",
+          overDays == null ? "—" : String(overDays),
+          overDays == null
+            ? "set a daily budget to measure"
+            : `of ${plural(days.length, "day")} with spend`,
+          { bad: overDays > 0 },
+        ),
+        cell(
+          "Estimated",
+          money(todayEst),
+          todayEst ? "today, for killed or timed-out calls" : "no estimates today",
+        ),
+      ]),
+      row("Deliveries", "the delivery line", [
+        cell("Rate", String(last7 || 0), "shipped in 7 days"),
+        cell("Reworked", reworked == null ? "—" : String(reworked), reworkSub),
+        cell(
+          "Per call",
+          dur == null ? "—" : fmtDuration(dur),
+          dur == null
+            ? "no measured calls"
+            : `mean over ${plural(h.duration.measured_calls, "call")}`,
+        ),
+      ]),
+    ]),
+  ]);
+}
+
+/**
  * FAILURE-DIAGNOSIS: the cross-ticket "these keep bouncing" panel. Each row is a
  * ticket with a growing rework trail; the "same gate ×N" chip is the key signal —
  * a ticket stuck failing one gate repeatedly is the operator's cue to intervene.
  */
 function renderBouncingPanel(bouncing) {
   return el("div", { class: "card panel bouncing-panel" }, [
-    panelHead("Repeatedly bouncing", `${bouncing.length}`),
+    panelHead(
+      "Recurring injuries",
+      `${plural(bouncing.length, "ticket")} ${bouncing.length === 1 ? "keeps" : "keep"} bouncing`,
+      null,
+      {
+        kit: "red",
+      },
+    ),
     el(
       "p",
       { class: "dim bouncing-sub" },
-      "Tickets reworking the most — those stuck on the same gate need a human.",
+      "Tickets sent back the most. One that fails the same gate again and again needs a human.",
     ),
     el(
       "ul",
@@ -5880,10 +6080,11 @@ function renderBouncingPanel(bouncing) {
           "li",
           {},
           el("a", { class: "bounce-row", href: `#/ticket/${b.ticket_id}` }, [
-            el("span", { class: "bounce-num mono" }, ref),
+            el("span", { class: "bounce-num" }, ref),
             el("span", { class: "bounce-title" }, b.title || "(untitled)"),
             el("span", { class: "bounce-count", title: "Total rework attempts" }, [
-              `${b.rework_count}×`,
+              el("b", { class: "tabnum" }, `${b.rework_count}×`),
+              " sent back",
             ]),
             sameGate,
           ]),
@@ -6050,23 +6251,43 @@ const PIPELINE_STAGES = [
   {
     label: "Plan",
     icon: "gitbranch",
+    glyph: "draft",
+    zone: "On the bench",
     statuses: ["draft", "refining"],
     href: "#/work?status=draft",
   },
-  { label: "Ready", icon: "inbox", statuses: ["ready"], href: "#/work?status=ready" },
+  {
+    label: "Ready",
+    icon: "inbox",
+    glyph: "ready",
+    zone: "Own box",
+    statuses: ["ready"],
+    href: "#/work?status=ready",
+  },
   {
     label: "Build",
     icon: "wrench",
+    glyph: "in_progress",
+    zone: "Our half",
     statuses: ["in_progress", "claimed"],
     href: "#/work?status=in_progress",
   },
   {
     label: "Review",
     icon: "clipboardcheck",
+    glyph: "in_review",
+    zone: "Their box",
     statuses: ["in_review", "in_testing", "ready_for_merge"],
     href: "#/review",
   },
-  { label: "Deploy", icon: "diamond", statuses: ["done", "shipped"], href: "#/work?status=done" },
+  {
+    label: "Deploy",
+    icon: "diamond",
+    glyph: "done",
+    zone: "In the net",
+    statuses: ["done", "shipped"],
+    href: "#/work?status=done",
+  },
 ];
 
 function devFlowPanel(_tickets, byStatus, _now) {
@@ -6078,7 +6299,10 @@ function devFlowPanel(_tickets, byStatus, _now) {
 
   return el("div", { class: "card panel pipeline-panel" }, [
     el("div", { class: "panel-head" }, [
-      el("span", { class: "panel-title" }, "Development flow"),
+      el("h2", { class: "panel-title" }, [
+        "Phases of play",
+        el("span", { class: "panel-aux" }, "bench to net"),
+      ]),
       // When these counts were read — a fact from the response, not a "LIVE" lamp.
       el("span", { class: "pl-live", title: "The time these counts were read from the factory" }, [
         "as of ",
@@ -6099,9 +6323,10 @@ function devFlowPanel(_tickets, byStatus, _now) {
             "aria-label": `${n.label}: ${n.count}`,
           },
           [
-            el("span", { class: "pl-disc" }, icon(n.icon)),
             el("span", { class: "pl-label" }, n.label),
+            el("span", { class: "pl-disc" }, glyph(n.glyph, 20)),
             el("span", { class: "pl-count tabnum" }, String(n.count)),
+            el("span", { class: "pl-zone" }, n.zone),
           ],
         );
       }),
@@ -6110,72 +6335,172 @@ function devFlowPanel(_tickets, byStatus, _now) {
 }
 
 /**
- * Needs your attention: the human-gate queue as severity-coded alert rows. Each
- * row carries a left status icon keyed to severity — a red diamond for a
- * critical/failing condition (blocked work), an amber triangle for something
- * waiting/overdue (review queue, open decisions, at-risk/stale tickets) — a bold
- * title + a muted sub-line (the detail), and a right-aligned action link that
- * routes to the relevant view. All items derive from real overview state; when
- * nothing is owed the panel keeps its reassuring green all-clear row.
+ * The treatment table: what is wrong with the factory right now, one line per
+ * complaint, worst first. Each line is a link to where it is treated, with its
+ * tickets as numbered links under it.
  */
-function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
+function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [], claims = null }) {
+  // Each ticket is on the table once, under its worst complaint, so the lines add
+  // up to the total the header and the verdict state. With no ticket list the
+  // counts come from the dashboard summary (the lines cannot overlap there).
+  const have = tickets.length > 0;
+  const taken = new Set();
+  const take = (list) => list.filter((t) => (taken.has(t.id) ? false : taken.add(t.id)));
+  const ofStatus = (st) => take(tickets.filter((t) => t.status === st));
+  const sortOld = (list) =>
+    [...list].sort((a, b) => String(a.updated_at || "").localeCompare(String(b.updated_at || "")));
+  // The summary counts stale claims on the factory's clock; the claims that expired
+  // first are the stale ones.
+  const nStale = summary.staleClaims || 0;
+  const staleClaims =
+    claims && nStale
+      ? (claims.claims || [])
+          .filter((c) => (!c.status || c.status === "active") && c.expires_at)
+          .sort((a, b) => String(a.expires_at).localeCompare(String(b.expires_at)))
+          .slice(0, nStale)
+      : null;
+  const pendingDecisions = decisions.filter((d) => !d.resolved_at);
   const items = [];
-  if (blocked > 0)
-    items.push({
-      severity: "critical",
-      title: `${blocked} blocked ${blocked === 1 ? "task" : "tasks"}`,
-      sub: "waiting on a human to clear the path",
-      action: "View",
-      href: "#/work?status=blocked",
-    });
-  if (inReview > 0)
-    items.push({
-      severity: "waiting",
-      title: `Review queue · ${inReview}`,
-      sub: "changes waiting on your sign-off",
-      action: "Review",
-      href: "#/review",
-    });
-  if (openDecisions > 0)
-    items.push({
-      severity: "waiting",
-      title: `${openDecisions} open ${openDecisions === 1 ? "decision" : "decisions"}`,
-      sub: "a question is waiting on you",
-      action: "Review",
-      href: "#/overview",
-    });
-  if ((stuck || []).length)
-    items.push({
-      severity: "waiting",
-      title: `${stuck.length} at risk`,
-      sub: `held too long — oldest ${fmtDuration(stuck[0].stuckForMs)}`,
-      action: "View",
-      href: "#/work",
-    });
-  if (staleClaims > 0)
-    items.push({
-      severity: "waiting",
-      title: `${staleClaims} stale ${staleClaims === 1 ? "claim" : "claims"}`,
-      sub: "leases past expiry",
-      action: "View",
-      href: "#/work",
+  const add = (it) => it.count > 0 && items.push(it);
+
+  const blocked = have ? sortOld(ofStatus("blocked")) : null;
+  add({
+    severity: "critical",
+    count: blocked ? blocked.length : (summary.blocked ?? byStatus.blocked ?? 0),
+    title: (n) => `${n} blocked ${n === 1 ? "task" : "tasks"}`,
+    sub: "waiting on a human to clear the path",
+    action: "View",
+    href: "#/work?status=blocked",
+    tickets: blocked,
+  });
+  const failed = have ? sortOld(ofStatus("failed")) : null;
+  add({
+    severity: "critical",
+    count: failed ? failed.length : byStatus.failed || 0,
+    title: (n) => `${n} failed ${n === 1 ? "ticket" : "tickets"}`,
+    sub: "out of attempts: reopen it or close it",
+    action: "View",
+    href: "#/work?status=failed",
+    tickets: failed,
+  });
+  const review = have ? sortOld(ofStatus("in_review")) : null;
+  add({
+    severity: "waiting",
+    count: review ? review.length : byStatus.in_review || 0,
+    title: (n) => `${n} ${n === 1 ? "change" : "changes"} to review`,
+    sub: "waiting on your sign-off",
+    action: "Review",
+    href: "#/review",
+    tickets: review,
+  });
+  const merge = have ? sortOld(ofStatus("ready_for_merge")) : null;
+  add({
+    severity: "waiting",
+    count: merge ? merge.length : byStatus.ready_for_merge || 0,
+    title: (n) => `${n} approved, not merged`,
+    sub: "signed off and waiting to merge",
+    action: "View",
+    href: "#/work?status=ready_for_merge",
+    tickets: merge,
+  });
+  const nDec = summary.openDecisions ?? pendingDecisions.length;
+  add({
+    severity: "waiting",
+    count: nDec,
+    title: (n) => `${n} open ${n === 1 ? "decision" : "decisions"}`,
+    sub:
+      pendingDecisions.length === 1 && pendingDecisions[0].title
+        ? `“${pendingDecisions[0].title}”`
+        : "a question is waiting on you",
+    action: "Answer",
+    // The team sheet on the Overview is where a decision is answered.
+    href: "#/overview",
+  });
+  // Stale claims: a lease past expiry is a fault in the squad, not a wait on you.
+  const staleIds = staleClaims ? new Set(staleClaims.map((c) => c.ticket_id)) : null;
+  const stale = staleIds && have ? take(tickets.filter((t) => staleIds.has(t.id))) : null;
+  add({
+    severity: "fault",
+    count: stale ? stale.length : nStale,
+    title: (n) => `${n} stale ${n === 1 ? "claim" : "claims"}`,
+    sub: "an agent's lease ran out mid-ticket",
+    action: "View",
+    href: "#/work",
+    tickets: stale,
+  });
+  // Held too long: in flight (an agent has it, or it is paused), past the stuck
+  // threshold, and not already counted above. A draft or a ready ticket that has
+  // waited a day is a queue, not an injury: it goes to the phases of play as a
+  // flow note (card._waiting), so a normal backlog never keeps Health in alarm.
+  const stuckAll = (summary.stuckTickets || []).map((s) => ({ ...s, updated_at: s.since }));
+  const waiting = stuckAll.filter((s) => HELD_WAITING.has(s.status));
+  const stuck = take(stuckAll.filter((s) => !HELD_WAITING.has(s.status)));
+  const hours = summary.stuckThresholdHours;
+  if (stuck.length)
+    add({
+      severity: "held",
+      count: stuck.length,
+      title: (n) => `${n} held too long`,
+      sub: `in one state over ${hours ? `${hours}h` : "the limit"} · oldest ${fmtDuration(stuck[0].stuckForMs)} (#${stuck[0].number}, ${statusLabel(stuck[0].status).toLowerCase()})`,
+      ...(stuck.length === 1
+        ? { action: "Open", href: `#/ticket/${stuck[0].id}` }
+        : new Set(stuck.map((x) => x.status)).size === 1
+          ? { action: "View", href: `#/work?status=${stuck[0].status}` }
+          : { action: "Board", href: "#/work" }),
+      tickets: stuck,
     });
 
-  // red diamond = critical/failing · amber triangle = waiting/overdue
-  const sevIcon = (severity) => icon(severity === "critical" ? "diamond" : "alert");
+  // Referee's marks: red for blocked or failed, a yellow card for what waits on
+  // you, a stopwatch for what is held, the red triangle for a fault.
+  const sevIcon = (severity) =>
+    severity === "critical"
+      ? glyph("blocked", 18)
+      : severity === "fault"
+        ? glyph("failed", 18)
+        : severity === "held"
+          ? icon("clock", "ni-clock", 20)
+          : ycard(20);
+  const total = items.reduce((a, n) => a + n.count, 0);
+  const chips = (list, href) => {
+    if (!list || !list.length) return null;
+    const shown = list.slice(0, 5);
+    return el("span", { class: "ni-tks" }, [
+      ...shown.map((t) =>
+        el(
+          "a",
+          {
+            class: "ni-tk tabnum",
+            href: `#/ticket/${t.id}`,
+            title: t.title || "",
+            "aria-label": `#${t.number} ${t.title || ""}`,
+          },
+          `#${t.number}`,
+        ),
+      ),
+      list.length > shown.length
+        ? el(
+            "a",
+            {
+              class: "ni-tk-more",
+              href,
+              "aria-label": `${list.length - shown.length} more`,
+            },
+            `+${list.length - shown.length}`,
+          )
+        : null,
+    ]);
+  };
 
   const body = items.length
     ? el(
         "ul",
         { class: "needs-list" },
         items.map((n) =>
-          el(
-            "li",
-            { class: `needs-item`, dataset: { sev: n.severity } },
+          el("li", { class: "needs-item", dataset: { sev: n.severity, count: String(n.count) } }, [
             el("a", { class: "ni-link", href: n.href }, [
               el("span", { class: "ni-icon" }, sevIcon(n.severity)),
               el("span", { class: "ni-body" }, [
-                el("span", { class: "ni-title" }, n.title),
+                el("span", { class: "ni-title" }, n.title(n.count)),
                 el("span", { class: "ni-sub" }, n.sub),
               ]),
               el("span", { class: "ni-action" }, [
@@ -6183,57 +6508,67 @@ function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
                 el("span", { class: "ni-arrow" }, "→"),
               ]),
             ]),
-          ),
+            chips(n.tickets, n.href),
+          ]),
         ),
       )
-    : el("div", { class: "needs-empty" }, [
-        icon("check"),
-        "All clear — nothing is waiting on you.",
-      ]);
+    : el("div", { class: "needs-empty" }, [icon("check"), "All clear: nothing is waiting on you."]);
 
-  return el("div", { class: "card panel needs-hero" }, [
-    panelHead("Treatment table", items.length ? `${items.length} at risk` : "all clear", null, {
+  const card = el("div", { class: "card panel needs-hero" }, [
+    panelHead("Treatment table", items.length ? plural(total, "thing") : "all clear", null, {
       kit: items.length ? "red" : "sky",
     }),
     body,
   ]);
+  card.dataset.total = String(total);
+  card._waiting = { list: waiting, hours: summary.stuckThresholdHours };
+  return card;
 }
 
-/** Progress by repository. Repo names are real; per-repo progress is illustrative
- *  demo data until the control plane exposes per-repo completion. */
-/** Progress by repository — real per-repo completion from the control plane
- *  (DashboardSummary.repoProgress): a done-share bar + in-flight/blocked hint. */
-function repoProgressPanel(rows) {
-  const list = rows.slice(0, 6);
-  return el("div", { class: "card panel" }, [
-    panelHead("Progress by repository", `${rows.length} ${rows.length === 1 ? "repo" : "repos"}`),
-    list.length
-      ? el(
-          "div",
-          { class: "repo-prog" },
-          list.map((r) => {
-            const warn = r.blocked > 0 || r.pct < 35;
-            const note = r.blocked
-              ? `${r.blocked} blocked`
-              : r.inFlight
-                ? `${r.inFlight} in flight`
-                : `${r.done}/${r.total} done`;
-            return el("div", { class: "rp-row", title: `${r.done}/${r.total} tickets done` }, [
-              el("span", { class: `rp-dot ${warn ? "warn" : "ok"}` }),
-              el("span", { class: "rp-name" }, [
-                el("span", { class: "rp-repo" }, repoTag(r.repo, 18)),
-                el("span", { class: "rp-note" }, note),
-              ]),
-              el(
-                "span",
-                { class: "rp-bar" },
-                el("i", { class: warn ? "warn" : "", style: `width:${Math.max(3, r.pct)}%` }),
-              ),
-              el("span", { class: "rp-pct tabnum" }, `${r.pct}%`),
-            ]);
-          }),
-        )
-      : el("p", { class: "dim" }, "No repositories linked to tickets yet."),
+/** Statuses where a ticket waits its turn: held long there is a queue, not an injury. */
+const HELD_WAITING = new Set(["draft", "refining", "ready"]);
+
+/**
+ * The flow note under the phases of play: what has waited past the stuck limit on
+ * the bench or in its box, oldest first, each a link. Null when nothing has.
+ */
+function waitingNote(w) {
+  if (!w || !w.list || !w.list.length) return null;
+  const list = w.list;
+  const by = (st) => list.filter((t) => t.status === st).length;
+  const where = [
+    by("draft") + by("refining") ? `${by("draft") + by("refining")} on the bench` : null,
+    by("ready") ? `${by("ready")} ready, not yet claimed` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const shown = list.slice(0, 6);
+  return el("p", { class: "pl-wait" }, [
+    icon("clock", "pl-wait-ico", 18),
+    el("span", {}, [
+      el(
+        "b",
+        {},
+        `${plural(list.length, "ticket")} waiting over ${w.hours ? `${w.hours}h` : "a day"}`,
+      ),
+      ` (${where}). Oldest ${fmtDuration(list[0].stuckForMs)}. A queue, not an injury: `,
+      ...shown.flatMap((t, i) => [
+        i ? " " : "",
+        el(
+          "a",
+          {
+            href: `#/ticket/${t.id}`,
+            title: t.title || "",
+            "aria-label": `#${t.number} ${t.title || ""}`,
+          },
+          `#${t.number}`,
+        ),
+      ]),
+      list.length > shown.length
+        ? [" and ", el("a", { href: "#/work" }, `${list.length - shown.length} more`)]
+        : null,
+      ".",
+    ]),
   ]);
 }
 
@@ -6857,7 +7192,7 @@ function finishedRunRow(run) {
 function runActivityPanel() {
   const POLL_MS = 3000;
   const card = el("div", { class: "card panel run-activity", id: "running-now" }, [
-    panelHead("Running now", "background runs"),
+    panelHead("Running now", "background runs: polls, suggestions, merges", null, { kit: "ink" }),
   ]);
   const listWrap = el("div", { class: "run-activity-body" }, [
     el("p", { class: "dim" }, "Loading runs…"),
@@ -6875,17 +7210,18 @@ function runActivityPanel() {
       return;
     }
     if (active && active.length) {
-      listWrap.appendChild(el("ul", { class: "run-list" }, active.map(activeRunRow)));
+      listWrap.appendChild(el("div", { class: "run-recent-title dim" }, "In play now"));
+      listWrap.appendChild(el("ul", { class: "run-list run-now" }, active.map(activeRunRow)));
     }
     if (recent && recent.length) {
       listWrap.appendChild(el("div", { class: "run-recent-title dim" }, "Recently finished"));
-      // The last eight; the rest fold away (a busy day lists dozens).
-      listWrap.appendChild(el("ul", { class: "run-list" }, recent.slice(0, 8).map(finishedRunRow)));
-      if (recent.length > 8)
+      // The last six; the rest fold away (a busy day lists dozens).
+      listWrap.appendChild(el("ul", { class: "run-list" }, recent.slice(0, 6).map(finishedRunRow)));
+      if (recent.length > 6)
         listWrap.appendChild(
           el("details", { class: "run-more" }, [
-            el("summary", {}, `${recent.length - 8} more finished`),
-            el("ul", { class: "run-list" }, recent.slice(8).map(finishedRunRow)),
+            el("summary", {}, `${recent.length - 6} more finished`),
+            el("ul", { class: "run-list" }, recent.slice(6).map(finishedRunRow)),
           ]),
         );
     }
@@ -10762,7 +11098,6 @@ async function renderHealth() {
     return wrap;
   }
 
-  const fmtUsd = money;
   const skills = health.skills || {};
   const recall = health.recall || { available: false };
   const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
@@ -10856,33 +11191,18 @@ async function renderHealth() {
       : null,
   ]);
 
-  // --- Detail panels: spend-by-kind · skill hit-rate · recall trend ---------
-  const maxKind = Math.max(1, ...kindSeries);
-  const kindPanel = el("div", { class: "card panel" }, [
-    panelHead("Spend by kind", "usage ledger"),
-    byKind.length
-      ? el(
-          "div",
-          { class: "hlist" },
-          byKind.map((k) =>
-            healthBarRow(
-              k.kind,
-              fmtUsd(k.total_cost_usd),
-              (k.total_cost_usd || 0) / maxKind,
-              "amber",
-            ),
-          ),
-        )
-      : el("p", { class: "section-note dim" }, "No spend recorded yet."),
-  ]);
-
-  const skillPanel = el("div", { class: "card panel" }, [
-    panelHead(
-      "Skill hit-rate",
-      skills.total_records ? `${skills.total_records} deliveries` : "no telemetry",
-    ),
-    skillList.length
-      ? el(
+  // --- The deep reads: skill hit-rate and recall. Each is drawn only with data to
+  // show; a source that has measured nothing yet is one clause in the line below.
+  const unmeasured = [];
+  const skillPanel = skillList.length
+    ? el("section", { class: "card panel skill-panel", "aria-label": "Skill hit-rate" }, [
+        panelHead(
+          "Skill hit-rate",
+          `${plural(skills.total_records || 0, "delivery", "deliveries")} · applied of selected`,
+          null,
+          { kit: "ink" },
+        ),
+        el(
           "div",
           { class: "hlist" },
           skillList.map((s) =>
@@ -10893,49 +11213,44 @@ async function renderHealth() {
               s.hit_rate_pct >= 50 ? "ok" : "amber",
             ),
           ),
-        )
-      : el(
-          "p",
-          { class: "section-note dim" },
-          "No skill telemetry yet — selected-vs-applied hit-rate appears once deliveries mount skills.",
         ),
-  ]);
-
-  const recallPanel = el(
-    "div",
-    { class: "card panel" },
-    recall.available
-      ? [
-          panelHead("Recall effectiveness", "memory feedback"),
-          el("div", { class: "recall-figures" }, [
-            recallStat(
-              "Effectiveness",
-              recall.effectiveness_pct == null ? "—" : `${recall.effectiveness_pct}%`,
-            ),
-            recallStat("Clean", String(recall.clean || 0)),
-            recallStat("Reworked", String(recall.reworked || 0)),
-            recallStat("Blocked", String(recall.blocked || 0)),
-          ]),
-          recallSeries.length
-            ? el("div", { class: "health-spark", html: svgSpark(recallSeries) })
-            : el("p", { class: "section-note dim" }, "No recall outcomes recorded yet."),
-        ]
-      : [
-          panelHead("Recall effectiveness", "not wired"),
-          el(
-            "div",
-            { class: "health-degraded" },
-            el(
-              "p",
-              { class: "section-note dim" },
-              recall.reason || "Memory is not wired — recall effectiveness is unavailable.",
-            ),
+      ])
+    : (unmeasured.push([
+        "Skill hit-rate",
+        "no skill telemetry yet: it appears once deliveries mount skills",
+      ]),
+      null);
+  const recallHas =
+    recall.available &&
+    (recallSeries.length ||
+      recall.effectiveness_pct != null ||
+      (recall.clean || 0) + (recall.reworked || 0) + (recall.blocked || 0) > 0);
+  const recallPanel = recallHas
+    ? el("section", { class: "card panel recall-panel", "aria-label": "Recall effectiveness" }, [
+        panelHead("Recall effectiveness", "memory feedback", null, { kit: "ink" }),
+        el("div", { class: "recall-figures" }, [
+          recallStat(
+            "Effectiveness",
+            recall.effectiveness_pct == null ? "—" : `${recall.effectiveness_pct}%`,
           ),
-        ],
-  );
+          recallStat("Clean", String(recall.clean || 0)),
+          recallStat("Reworked", String(recall.reworked || 0)),
+          recallStat("Blocked", String(recall.blocked || 0)),
+        ]),
+        recallSeries.length
+          ? el("div", { class: "health-spark", html: svgSpark(recallSeries) })
+          : null,
+      ])
+    : (unmeasured.push([
+        "Recall effectiveness",
+        recall.available
+          ? "no recall outcomes recorded yet"
+          : recall.reason || "memory is not wired, so recall effectiveness is unavailable",
+      ]),
+      null);
 
   // The flow panels (form guide, governance, development flow, treatment table,
-  // running now, bouncing) — the physio's charts, read from their own endpoints.
+  // running now, bouncing, wages) — the physio's charts, read from their own endpoints.
   const panels = await fitnessRoomPanels(health).catch((e) => {
     if (e && e.code === "ABORTED") throw e;
     return [];
@@ -10948,57 +11263,146 @@ async function renderHealth() {
   const gov = pick("gov-panel");
   const running = pick("run-activity");
   const bouncing = pick("bouncing-panel");
-  const costLine = pick("cost-banner");
+  const wages = pick("wages-panel");
+  const fitness = pick("fitness-test");
   const rest = flat.filter(
-    (p) => ![formGuide, treatment, devFlow, gov, running, bouncing, costLine].includes(p),
+    (p) => ![formGuide, treatment, devFlow, gov, running, bouncing, wages, fitness].includes(p),
   );
 
-  // The verdict, in one sentence: the ledger first, then who is on the table.
-  const onTable = treatment ? treatment.querySelectorAll(".needs-item").length : 0;
-  const bounce = bouncing ? bouncing.querySelectorAll("li").length : 0;
-  const verdict =
-    eventLog && !eventLog.chain_ok
-      ? "The ledger has been altered."
-      : onTable + bounce
-        ? `${plural(onTable + bounce, "thing")} on the treatment table.`
+  // The verdict, in one sentence: the ledger first, then how much is on the table.
+  // The number is the sum of the lines below it (each ticket counted once).
+  const lines = treatment ? [...treatment.querySelectorAll(".needs-item")] : [];
+  const onTable = treatment ? Number(treatment.dataset.total || 0) : 0;
+  const injured = bouncing ? [...bouncing.querySelectorAll(".bounce-num")] : [];
+  const ledgerBroken = eventLog && !eventLog.chain_ok;
+  const verdict = ledgerBroken
+    ? "The ledger has been altered."
+    : onTable
+      ? `${plural(onTable, "thing")} on the treatment table.`
+      : injured.length
+        ? `Fit to play, with ${injured.length === 1 ? "a recurring injury" : "recurring injuries"}.`
         : "Fit to play.";
-  const facts = [
-    eventLog
-      ? eventLog.chain_ok
-        ? `event log intact (${eventLog.events} events)`
-        : `event log broken at seq ${eventLog.broken_at_seq}`
+  // What is on the table, each clause a link to where it is treated; then who keeps
+  // coming back, by number (not counted again: they are tickets already above or fit).
+  const clauses = [
+    ...lines.map((li) => {
+      const a = li.querySelector("a.ni-link");
+      return el(
+        "a",
+        { href: a.getAttribute("href"), class: `is-${li.dataset.sev}` },
+        a.querySelector(".ni-title")?.textContent || "",
+      );
+    }),
+    injured.length
+      ? el("a", { href: "#health-injuries", class: "is-injury" }, [
+          injured
+            .slice(0, 3)
+            .map((n) => n.textContent)
+            .join(", "),
+          injured.length > 3 ? ` and ${injured.length - 3} more` : "",
+          injured.length === 1 ? " keeps coming back" : " keep coming back",
+        ])
       : null,
-    costPerFeature == null ? null : `${money(costPerFeature)} per shipped ticket`,
-    `rework ${reworkShare}% of spend`,
-    `${coveragePct}% of calls measured`,
+  ].filter(Boolean);
+  const lastRead = health.last_record_at ? fmtTime(health.last_record_at) : null;
+  const facts = [
+    "read from the usage ledger and the event log",
+    lastRead
+      ? el("span", {}, ["last ledger record ", el("span", { class: "u-nowrap" }, lastRead)])
+      : null,
   ].filter(Boolean);
   wrap.appendChild(
-    el("section", { class: "scoreboard bleed physio-board", "aria-label": "Fitness" }, [
-      el("div", { class: "scoreboard-in" }, [
-        el("div", { class: "sb-main" }, [
-          el("h1", { class: "hl" }, verdict),
-          el("p", { class: "hl-sub" }, `Health, the physio room · ${facts.join(" · ")}`),
+    el(
+      "section",
+      {
+        class: `scoreboard bleed physio-board${ledgerBroken ? " is-broken" : ""}`,
+        "aria-label": "Fitness",
+      },
+      [
+        el("div", { class: "scoreboard-in" }, [
+          el("div", { class: "sb-main" }, [
+            el("h1", { class: "hl" }, verdict),
+            clauses.length
+              ? el(
+                  "p",
+                  { class: "hl-clauses" },
+                  clauses.flatMap((c, i) => (i ? [" · ", c] : [c])),
+                )
+              : null,
+            el("p", { class: "hl-sub" }, [
+              "Health, the physio room",
+              ...facts.flatMap((f) => [" · ", f]),
+            ]),
+          ]),
+          kpis,
         ]),
-        kpis,
-      ]),
-    ]),
+      ],
+    ),
   );
-  const span = (n, node) => (node ? el("div", { class: `hx-span hx-${n}` }, node) : null);
+  if (bouncing) bouncing.id = "health-injuries";
+  const wait = treatment ? waitingNote(treatment._waiting) : null;
+  if (wait && devFlow) devFlow.appendChild(wait);
+  const span = (n, ...nodes) => {
+    const kids = nodes.filter(Boolean);
+    return kids.length
+      ? el("div", { class: `hx-span hx-${n}${kids.length > 1 ? " hx-stack" : ""}` }, kids)
+      : null;
+  };
+  // Failures first, in two columns that each stack. Of three arrangements, take the
+  // one whose columns come out nearest in height, counting a hole (a short column
+  // ending in a page that cannot stretch) as worse than a stretch (the pitch strip
+  // and the fitness rows can take slack).
+  const hurt = onTable > 0 ? treatment : null;
+  const hT = hurt ? 64 + lines.length * 58 : 0;
+  const hB = bouncing ? 100 + injured.length * 64 : 0;
+  const hP = devFlow ? 200 : 0;
+  const hF = fitness ? 350 : 0;
+  const G = 24;
+  const sum = (...h) => h.filter(Boolean).reduce((a, x) => a + x + G, -G);
+  const plans = [
+    // the table beside the injuries and the fitness test; the phases full width under
+    {
+      cost: hT >= sum(hB, hF) ? hT - sum(hB, hF) : 3 * (sum(hB, hF) - hT),
+      grid: () => [span(7, hurt), span(5, bouncing, fitness), span(12, devFlow)],
+    },
+    // the table and the phases of play beside the injuries and the fitness test
+    {
+      cost: Math.abs(sum(hT, hP) - sum(hB, hF)),
+      grid: () => [span(7, hurt, devFlow), span(5, bouncing, fitness)],
+    },
+    // a short table stacked with the injuries beside the fitness test; phases under
+    {
+      cost: sum(hT, hB) >= hF ? 3 * (sum(hT, hB) - hF) : 3 * (hF - sum(hT, hB)),
+      grid: () => [span(5, hurt, bouncing), span(7, fitness), span(12, devFlow)],
+    },
+    // a short table stacked with the injuries and the phases, beside the fitness test
+    {
+      cost: Math.abs(sum(hT, hB, hP) - hF),
+      grid: () => [span(5, hurt, bouncing, devFlow), span(7, fitness)],
+    },
+  ];
+  const plan = hurt ? plans.reduce((a, b) => (b.cost < a.cost ? b : a)) : plans[3];
+  const deep = [skillPanel, recallPanel].filter(Boolean);
   wrap.appendChild(
     el("div", { class: "hx-grid" }, [
-      span(8, formGuide),
-      treatment ? el("div", { class: "hx-span hx-4 hx-tall" }, treatment) : null,
-      span(8, devFlow),
-      span(bouncing ? 6 : 12, gov),
-      span(6, bouncing),
+      ...plan.grid(),
+      span(12, formGuide),
+      // The wage bill beside the referee's record, then what is running.
+      span(7, wages),
+      span(5, gov),
       span(12, running),
-      span(4, kindPanel),
-      span(4, skillPanel),
-      span(4, recallPanel),
-      ...rest.map((r) => span(4, r)),
-      span(12, costLine),
+      ...deep.map((p) => span(deep.length > 1 ? 6 : 12, p)),
+      ...rest.map((r) => span(12, r)),
     ]),
   );
+  if (unmeasured.length)
+    wrap.appendChild(
+      el("p", { class: "hx-unmeasured" }, [
+        el("b", {}, "Not measured yet: "),
+        ...unmeasured.flatMap(([k, v], i) => [i ? " · " : "", el("span", {}, `${k}, ${v}`)]),
+        ".",
+      ]),
+    );
 
   return wrap;
 }
@@ -14127,56 +14531,385 @@ function parseTags(json) {
 function typeLabel(type) {
   return String(type || "").replace(/_/g, " ");
 }
-async function renderFactory() {
-  const [nodesRes, edgesRes, unmappedRes] = await Promise.all([
-    api("GET", "/scope/nodes"),
-    api("GET", "/scope/edges"),
-    api("GET", "/scope/unmapped-repos"),
-  ]);
-  const nodes = nodesRes.nodes || [];
-  const edges = edgesRes.edges || [];
-  const unmapped = unmappedRes.repositories || [];
+// The Map's live overlay: what each ticket on the board means at a ground.
+// Red = blocked or failed, yellow = waits on your sign-off, paused = off the pitch
+// in the dugout (held at a budget cap or by hand), in play = the rest of the pitch.
+// Drafts and refining tickets are on the bench and are not shown as counters.
+const MAP_RED = new Set(["blocked", "failed"]);
+const MAP_YELLOW = new Set(["in_review", "ready_for_merge"]);
+function mapTone(status) {
+  if (MAP_RED.has(status)) return "red";
+  if (MAP_YELLOW.has(status)) return "yellow";
+  if (status === "paused") return "paused";
+  if (ON_PITCH.has(status)) return "play";
+  return null;
+}
+const MAP_TONE_RANK = { red: 0, yellow: 1, paused: 2, play: 3 };
+/**
+ * The scope the server records for a ticket that targets a repo with no ground:
+ * an external_dependency node named "repo:<name>". It is the free agent playing
+ * as its own single-repo scope, never a third party, so the Map leaves it off the
+ * grounds and shows the repo under Free agents.
+ */
+function isImplicitScope(n) {
+  return (
+    !!n &&
+    n.type === "external_dependency" &&
+    /^repo:/.test(n.name || "") &&
+    (/^Implicit single-repo scope/i.test(n.description || "") || !n.description)
+  );
+}
+const MAP_COUNTERS = 6;
 
-  const wrap = el("div", { class: "view" });
+/** Every ticket on the board once: the live columns, the closed area and won't-do. */
+function boardCards(board) {
+  const seen = new Set();
+  const out = [];
+  for (const c of [
+    ...((board && board.columns) || []).flatMap((col) => col.cards || []),
+    ...((board && board.closed) || []),
+    ...((board && board.wontDo) || []),
+  ]) {
+    if (!c || seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push(c);
+  }
+  return out;
+}
+
+/**
+ * Who plays at each ground and which tickets are there: the ONE source the Map,
+ * a ground's page and a repo's page all count from. A ticket is at a ground when
+ * a repo it delivers to (the board's write boundary) plays there, or when the
+ * ticket is linked to the ground itself (as campaign members are). Reads: the
+ * board, each repo's scope links, and the details of the tickets in the book.
+ * `all` puts every ticket in the book (a ground's page counts its results too);
+ * the Map only needs the live ones.
+ */
+async function mapOverlay(nodes, repos, signal, { all = false } = {}) {
+  const opt = (p, fb) =>
+    api("GET", p, undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return fb;
+    });
+  const [board, ...links] = await Promise.all([
+    opt("/api/board", null),
+    ...repos.map((r) => opt(`/scope/repos?repo=${encodeURIComponent(r.id)}`, { scopes: [] })),
+  ]);
+  const every = boardCards(board);
+  const cards = every.filter((c) => mapTone(c.status));
+  const book = all ? every.filter((c) => c.status !== "cancelled") : cards;
+  // node id → [{ repo, relation, access }]
+  const reposAt = new Map(nodes.map((n) => [n.id, []]));
+  // repo id → [{ node, relation, access }]
+  const groundsOf = new Map(repos.map((r) => [r.id, []]));
+  repos.forEach((r, i) => {
+    for (const s of (links[i] && links[i].scopes) || []) {
+      if (!reposAt.has(s.id)) continue;
+      reposAt.get(s.id).push({ repo: r, relation: s.relation, access: s.default_access });
+      groundsOf.get(r.id).push({ node: s, relation: s.relation, access: s.default_access });
+    }
+  });
+  const repoIdByName = new Map(repos.map((r) => [r.name, r.id]));
+  const nodesOfRepo = new Map();
+  for (const [nid, list] of reposAt)
+    for (const { repo } of list) {
+      if (!nodesOfRepo.has(repo.id)) nodesOfRepo.set(repo.id, new Set());
+      nodesOfRepo.get(repo.id).add(nid);
+    }
+  // Direct links (a ticket scoped to a ground, as campaign members are).
+  const details = book.length
+    ? await ticketDetails(book, signal).catch((e) => {
+        if (e && e.code === "ABORTED") throw e;
+        return new Map();
+      })
+    : new Map();
+  const at = new Map(nodes.map((n) => [n.id, new Map()]));
+  const ofRepo = new Map(repos.map((r) => [r.id, new Map()]));
+  for (const c of book) {
+    const here = new Set();
+    for (const r of c.repos || []) {
+      const rid = r.id || repoIdByName.get(r.name);
+      if (ofRepo.has(rid)) ofRepo.get(rid).set(c.id, c);
+      for (const nid of nodesOfRepo.get(rid) || []) here.add(nid);
+    }
+    for (const s of (details.get(c.id) && details.get(c.id).scopes) || []) here.add(s.id);
+    for (const nid of here) if (at.has(nid)) at.get(nid).set(c.id, c);
+  }
+  const sorted = (m) =>
+    [...m.values()].sort(
+      (a, b) =>
+        (MAP_TONE_RANK[mapTone(a.status)] ?? 9) - (MAP_TONE_RANK[mapTone(b.status)] ?? 9) ||
+        (b.priority || 0) - (a.priority || 0) ||
+        (a.number || 0) - (b.number || 0),
+    );
+  const live = (list) => list.filter((c) => mapTone(c.status));
+  const ticketsAt = new Map([...at].map(([k, v]) => [k, sorted(v)]));
+  const ticketsOfRepo = new Map([...ofRepo].map(([k, v]) => [k, sorted(v)]));
+  return {
+    board: !!board,
+    cards: sorted(new Map(cards.map((c) => [c.id, c]))),
+    book: sorted(new Map(book.map((c) => [c.id, c]))),
+    reposAt,
+    groundsOf,
+    ticketsAt,
+    ticketsOfRepo,
+    liveAt: new Map([...ticketsAt].map(([k, v]) => [k, live(v)])),
+    liveOfRepo: new Map([...ticketsOfRepo].map(([k, v]) => [k, live(v)])),
+  };
+}
+
+/** The tickets at a ground, from the overlay. The club holds every ticket. */
+function groundBook(n, ov, { live = true } = {}) {
+  if (!ov) return [];
+  if (n.type === "factory") return live ? ov.cards : ov.book;
+  return (live ? ov.liveAt : ov.ticketsAt).get(n.id) || [];
+}
+
+/**
+ * Counts, each ticket in exactly one: red (blocked or failed), yellow (waits on
+ * your sign-off), paused (in the dugout) and play (the rest of the pitch).
+ * live = red + yellow + paused + play, so the words on a card add up to its
+ * counters, and live + done + bench is every ticket in the book.
+ */
+function mapTally(list) {
+  const t = { red: 0, yellow: 0, paused: 0, play: 0, live: 0, done: 0, bench: 0 };
+  for (const c of list || []) {
+    const tone = mapTone(c.status);
+    if (tone) {
+      t[tone] += 1;
+      t.live += 1;
+    } else if (c.status === "done") t.done += 1;
+    else if (ON_BENCH.has(c.status)) t.bench += 1;
+  }
+  return t;
+}
+/** A tally in words, worst first: "1 blocked · 2 to review · 1 paused · 3 in play". */
+function tallyWords(t) {
+  return [
+    t.red ? el("span", { class: "is-red" }, `${t.red} blocked`) : null,
+    t.yellow ? el("span", {}, `${t.yellow} to review`) : null,
+    t.paused ? el("span", {}, `${t.paused} paused`) : null,
+    t.play ? el("span", {}, `${t.play} in play`) : null,
+  ]
+    .filter(Boolean)
+    .flatMap((x, i) => (i ? [" · ", x] : [x]));
+}
+/** Where a counter goes: a change waiting on you opens in Review, the rest on its page. */
+function mapCounterHref(c) {
+  return c.status === "in_review" ? `#/review/${c.id}` : `#/ticket/${c.id}`;
+}
+/**
+ * A ticket as a magnet counter: its number on a disc, carded when it needs you.
+ * On the Map it is a link to the ticket (as the tactics board's are); inside a
+ * row that is already a link, pass `link: false`.
+ */
+function mapCounter(c, { link = true } = {}) {
+  const tone = mapTone(c.status);
+  const word = statusLabel(c.status);
+  const marks = [
+    el("span", { class: "mag-n tabnum" }, String(c.number ?? "?")),
+    tone === "yellow" ? ycard(12, "mag-card") : null,
+    tone === "red" ? el("span", { class: "mag-red", "aria-hidden": "true" }) : null,
+    tone === "paused" ? el("span", { class: "mag-pause", "aria-hidden": "true" }) : null,
+  ];
+  if (!link)
+    return el(
+      "span",
+      { class: `mag is-${tone}`, title: `#${c.number} ${c.title || ""} · ${word}` },
+      marks,
+    );
+  return el(
+    "a",
+    {
+      class: `mag is-${tone}`,
+      href: mapCounterHref(c),
+      title: `#${c.number} ${c.title || ""} · ${word}`,
+      "aria-label": `#${c.number} ${word}${tone === "yellow" ? ", needs you" : ""}: ${c.title || ""}`,
+    },
+    marks,
+  );
+}
+
+/** One ground on the map: name (the link), type and risk, who plays here, what is live. */
+function mapGround(n, ov, relLine) {
+  const repos = (ov && ov.reposAt.get(n.id)) || [];
+  // The club holds everything: its card tallies every live ticket, without counters.
+  const club = n.type === "factory" && ov;
+  const live = groundBook(n, ov);
+  const t = mapTally(live);
+  const search = [n.name, n.type, n.owner, ...repos.map((r) => r.repo.name)]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const shown = club ? [] : live.slice(0, MAP_COUNTERS);
+  const more = club ? 0 : live.length - shown.length;
+  return el(
+    "div",
+    {
+      class: `scope-gnode type-${n.type}${t.red ? " has-red" : ""}`,
+      dataset: { name: (n.name || "").toLowerCase(), search, node: n.id },
+    },
+    [
+      el("div", { class: "sg-top" }, [
+        el("a", { class: "sg-name", href: `#/node/${n.id}` }, n.name),
+        n.risk_level ? riskBadge(n.risk_level) : null,
+      ]),
+      el("span", { class: "sg-meta" }, [
+        el("span", { class: "sg-type" }, typeLabel(n.type)),
+        n.owner ? el("span", {}, `@${n.owner}`) : null,
+      ]),
+      relLine ? el("span", { class: "sg-rel" }, relLine) : null,
+      repos.length
+        ? el("span", { class: "sg-repos" }, [
+            ...repos.slice(0, 2).map((r) => repoTag(r.repo.name, 16)),
+            repos.length > 2 ? el("span", { class: "sg-more" }, `+${repos.length - 2}`) : null,
+          ])
+        : null,
+      live.length
+        ? el("span", { class: "sg-live" }, [
+            club
+              ? el("span", { class: "sg-club" }, [
+                  el("b", { class: "tabnum" }, String(live.length)),
+                  " live across the club",
+                ])
+              : el("span", { class: "sg-mags" }, [
+                  ...shown.map((c) => mapCounter(c)),
+                  more > 0
+                    ? el(
+                        "a",
+                        {
+                          class: "sg-more mag-more",
+                          href: `#/node/${n.id}`,
+                          "aria-label": `${more} more live at ${n.name}`,
+                        },
+                        `+${more}`,
+                      )
+                    : null,
+                ]),
+            el("span", { class: "sg-words" }, tallyWords(t)),
+          ])
+        : el("span", { class: "sg-words is-quiet" }, ov && ov.board ? "Nothing in play" : ""),
+    ],
+  );
+}
+
+/** The map key: what the lines, counters and cards mean. */
+function mapKey() {
+  const disc = (cls, extra) =>
+    el("span", { class: `mag is-${cls}`, "aria-hidden": "true" }, [
+      el("span", { class: "mag-n" }, "12"),
+      extra,
+    ]);
+  return el("ul", { class: "clean map-key", "aria-label": "Map key" }, [
+    el("li", {}, [el("span", { class: "mk-line contains" }), "contains"]),
+    el("li", {}, [el("span", { class: "mk-line dep" }), "depends on"]),
+    el("li", {}, [disc("play"), "a ticket on the pitch"]),
+    el("li", {}, [disc("yellow", ycard(12, "mag-card")), "waits on your sign-off"]),
+    el("li", {}, [
+      disc("red", el("span", { class: "mag-red", "aria-hidden": "true" })),
+      "blocked or failed",
+    ]),
+    el("li", {}, [
+      disc("paused", el("span", { class: "mag-pause", "aria-hidden": "true" })),
+      "paused, in the dugout",
+    ]),
+  ]);
+}
+
+async function renderFactory() {
+  const signal = routeSignal();
+  const soft = (p, fb) =>
+    api("GET", p, undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return fb;
+    });
+  const [nodesRes, edgesRes, unmappedRes, reposRes, hiddenRes] = await Promise.all([
+    api("GET", "/scope/nodes", undefined, { signal }),
+    api("GET", "/scope/edges", undefined, { signal }),
+    api("GET", "/scope/unmapped-repos", undefined, { signal }),
+    soft("/repositories", { repositories: [] }),
+    soft("/repositories?hidden=only", null),
+  ]);
+  const hiddenN = hiddenRes ? (hiddenRes.repositories || []).length : 0;
+  // The server's synthetic "repo:<name>" scopes are free agents, not grounds.
+  const implicitIds = new Set((nodesRes.nodes || []).filter(isImplicitScope).map((n) => n.id));
+  const nodes = (nodesRes.nodes || []).filter((n) => !implicitIds.has(n.id));
+  const edges = (edgesRes.edges || []).filter(
+    (e) => !implicitIds.has(e.from_node_id) && !implicitIds.has(e.to_node_id),
+  );
+  const unmapped = unmappedRes.repositories || [];
+  const repos = reposRes.repositories || [];
+  learnKits(repos.map((r) => r.name));
+  const ov = await mapOverlay(nodes, repos, signal);
+  const readAt = Date.now();
+
+  const wrap = el("div", { class: "view view-map" });
+  const campaigns = nodes.filter((n) => n.type === "epic").length;
   wrap.appendChild(
     viewHead(
       "The scouting map",
-      `${plural(nodes.length, "ground")} on the map · ${nodes.filter((n) => n.type === "epic").length} campaigns · ${unmapped.length} unmapped repo${unmapped.length === 1 ? "" : "s"}`,
-      el("button", { class: "btn primary", type: "button", onclick: () => navigate("#/node") }, [
-        icon("plus"),
-        "New scope node",
-      ]),
+      [
+        plural(nodes.length, "ground"),
+        plural(repos.length, "repo"),
+        campaigns ? plural(campaigns, "campaign") : null,
+        ov.board ? `${ov.cards.length} live ${ov.cards.length === 1 ? "ticket" : "tickets"}` : null,
+        unmapped.length ? plural(unmapped.length, "free agent") : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      [
+        el("button", { class: "btn", type: "button", onclick: () => navigate("#/node") }, [
+          icon("plus"),
+          "New ground",
+        ]),
+        onboardButton(repos, null, { primary: true }),
+      ],
     ),
   );
 
-  wrap.appendChild(
-    el("div", { class: "banner" }, [
-      el("strong", {}, "How the Map works. "),
-      "Scope nodes group products, systems and capabilities into a graph using ",
-      el("code", { class: "mono" }, "contains"),
-      " and ",
-      el("code", { class: "mono" }, "depends_on"),
-      " relations. Repos link to one or more nodes, each with its own access level. ",
-      el("strong", {}, "Unmapped repos behave as standalone single-repo scopes"),
-      " — they work without any mapping, and can be promoted into the graph later without breaking existing tickets.",
+  const graphCard = renderScopeGraph(nodes, edges, ov, readAt);
+  wrap.appendChild(graphCard);
+  wrap._mounted = () => graphCard._fit && graphCard._fit();
+
+  const register = renderRepoRegister(repos, unmapped, ov);
+  const freeAgents = renderUnmappedSection(unmapped, repos, hiddenN, {
+    ov,
+    grounds: nodes.length,
+  });
+  const side = el("div", { class: "stack map-side" }, [
+    unmapped.length ? null : freeAgents,
+    el("details", { class: "card map-help" }, [
+      el("summary", {}, "How the map works"),
+      el("p", {}, [
+        "A ground is a scope node: the club, a product, a service, a campaign or something outside the ground. ",
+        el("b", {}, "Contains"),
+        " lines show what sits inside what; dashed ",
+        el("b", {}, "depends on"),
+        " lines show who leans on whom.",
+      ]),
+      el(
+        "p",
+        {},
+        "Repos play at one or more grounds, each with its own access (write, read or test). A repo with no ground plays as its own single-repo scope, and can be given a ground later without touching its tickets.",
+      ),
+    ]),
+    renderFactoryFooter(),
+  ]);
+  wrap.appendChild(el("div", { class: "map-lower" }, [register, side]));
+  if (unmapped.length) wrap.appendChild(freeAgents);
+
+  wrap.dataset.sig = hashText(
+    JSON.stringify([
+      nodes.map((n) => [n.id, n.updated_at]),
+      edges.map((e) => e.id),
+      repos.map((r) => [r.id, r.updated_at]),
+      unmapped.map((r) => r.id),
+      hiddenN,
+      [...ov.reposAt].map(([k, v]) => [k, v.map((x) => `${x.repo.id}:${x.access}`)]),
+      ov.cards.map((c) => `${c.id}:${c.status}`),
     ]),
   );
-
-  const search = el("input", {
-    type: "search",
-    placeholder: "Search nodes, repos, tags, owners…",
-    value: factoryState.query,
-    "aria-label": "Search the Map",
-    oninput: (e) => {
-      factoryState.query = e.target.value;
-      applyFactoryFilter(wrap, e.target.value.trim().toLowerCase());
-    },
-  });
-  wrap.appendChild(el("div", { class: "filters" }, [field("Search", search, { style: "flex:1" })]));
-
-  wrap.appendChild(renderScopeGraph(nodes, edges));
-  wrap.appendChild(renderUnmappedSection(unmapped));
-  wrap.appendChild(renderFactoryFooter());
   applyFactoryFilter(wrap, factoryState.query.trim().toLowerCase());
   return wrap;
 }
@@ -14198,219 +14931,564 @@ function renderFactoryFooter() {
   ]);
 }
 
-function renderScopeGraph(nodes, edges) {
-  const card = el("div", { class: "card panel scope-graph" }, [
-    panelHead("The grounds", "who contains whom · who depends on whom", null, { kit: "ink" }),
-  ]);
-  if (nodes.length === 0) {
-    card.appendChild(
-      el("p", { class: "dim" }, "No scope nodes yet. Create one to start mapping your factory."),
-    );
-    return card;
-  }
+/** Column names from what stands in them (the club, its products, its services…). */
+const MAP_COL_WORD = {
+  factory: "The club",
+  domain: "Domains",
+  product: "Products",
+  capability: "Capabilities",
+  system: "Systems",
+  service: "Services",
+  library: "Libraries",
+  component: "Components",
+  external_dependency: "Outside the ground",
+  epic: "Campaigns",
+};
+/**
+ * The map's columns, by what a ground IS, so a column's name is always true and
+ * outside grounds always stand at the far touchline: the club and its campaigns,
+ * domains, products, services (and the other parts that run), outside the ground.
+ * Empty tiers are dropped.
+ */
+const MAP_TIER = {
+  factory: 0,
+  epic: 0,
+  domain: 1,
+  product: 2,
+  capability: 2,
+  system: 3,
+  service: 3,
+  library: 3,
+  component: 3,
+  external_dependency: 4,
+};
+const mapTierOf = (n) => MAP_TIER[n.type] ?? 3;
+
+/**
+ * Lay the grounds out in tiers (columns) and order each column by where the
+ * grounds it is linked to sit in the columns before it (barycentre), so contains
+ * lines cross as little as they can.
+ */
+function mapLayout(nodes, edges) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  // containment depth → graph columns (a node sits one column right of its parent)
   const parents = new Map();
   for (const e of edges) {
     if (e.relation !== "contains") continue;
     if (byId.has(e.from_node_id) && byId.has(e.to_node_id))
       parents.set(e.to_node_id, e.from_node_id);
   }
-  const depthOf = (id, seen = new Set()) => {
-    const p = parents.get(id);
-    if (!p || seen.has(id)) return 0;
-    seen.add(id);
-    return 1 + depthOf(p, seen);
-  };
-  const NODE_W = 188,
-    NODE_H = 66,
-    COLG = 76,
-    ROWG = 20,
-    PADX = 12,
-    PADT = 38,
-    PADB = 14;
-  // A node nobody contains but something depends on (Stripe, an outside service)
-  // sits one column past the deepest node that depends on it, so its dashed line
-  // runs forward instead of back across the ground.
-  const depOnly = new Map();
-  for (const e of edges) {
-    if (e.relation === "contains" || parents.has(e.to_node_id)) continue;
-    if (!byId.has(e.from_node_id) || !byId.has(e.to_node_id)) continue;
-    const isParent = edges.some(
-      (x) => x.relation === "contains" && x.from_node_id === e.to_node_id,
-    );
-    if (!isParent)
-      depOnly.set(
-        e.to_node_id,
-        Math.max(depOnly.get(e.to_node_id) || 0, depthOf(e.from_node_id) + 1),
-      );
-  }
-  const colOf = (id) => (depOnly.has(id) ? depOnly.get(id) : depthOf(id));
-  const cols = [];
-  for (const n of nodes) {
-    const d = colOf(n.id);
-    (cols[d] = cols[d] || []).push(n);
-  }
-  for (let i = 0; i < cols.length; i++) cols[i] = cols[i] || [];
-  // Order each column by where its parents sit (a barycentre pass), so contains
-  // lines run straight instead of crossing; the factory leads the first column.
+  const tiers = [...new Set(nodes.map(mapTierOf))].sort((x, y) => x - y);
+  const cols = tiers.map((tier) => nodes.filter((n) => mapTierOf(n) === tier));
+  const colOf = new Map();
+  cols.forEach((list, ci) => list.forEach((n) => colOf.set(n.id, ci)));
   const rowOf = new Map();
   const typeRank = (n) => (n.type === "factory" ? 0 : n.type === "epic" ? 2 : 1);
   cols.forEach((list, ci) => {
     const key = (n) => {
       const ups = edges
-        .filter((e) => e.to_node_id === n.id && rowOf.has(e.from_node_id))
-        .map((e) => rowOf.get(e.from_node_id));
+        .map((e) =>
+          e.to_node_id === n.id ? e.from_node_id : e.from_node_id === n.id ? e.to_node_id : null,
+        )
+        .filter((id) => id && rowOf.has(id) && colOf.get(id) < ci)
+        .map((id) => rowOf.get(id));
       return ups.length
         ? ups.reduce((x, y) => x + y, 0) / ups.length
         : ci === 0
           ? typeRank(n) * 100
           : 999;
     };
-    list.sort((a, b) => key(a) - key(b) || a.name.localeCompare(b.name));
+    const keys = new Map(list.map((n) => [n.id, key(n)]));
+    list.sort((x, y) => keys.get(x.id) - keys.get(y.id) || x.name.localeCompare(y.name));
     list.forEach((n, ri) => rowOf.set(n.id, ri));
   });
-  const pos = new Map();
-  cols.forEach((list, ci) => {
-    list.forEach((n, ri) =>
-      pos.set(n.id, { x: PADX + ci * (NODE_W + COLG), y: PADT + ri * (NODE_H + ROWG), n }),
-    );
-  });
-  // Column names from what stands in them (the club, its products, its services…).
-  const COL_WORD = {
-    factory: "The club",
-    domain: "Domains",
-    product: "Products",
-    capability: "Capabilities",
-    service: "Services",
-    component: "Components",
-    external_dependency: "Outside the ground",
-    epic: "Campaigns",
-  };
-  const colName = (list, ci) => {
+  const word = (t) => MAP_COL_WORD[t] || typeLabel(t);
+  const colName = (list) => {
     const types = [...new Set(list.map((n) => n.type))];
-    if (types.length === 1) return COL_WORD[types[0]] || typeLabel(types[0]);
-    if (ci === 0) return "The club and its campaigns";
-    return types.map((t) => COL_WORD[t] || typeLabel(t)).join(" · ");
+    if (types.length === 1) return word(types[0]);
+    if (types.includes("factory")) return "The club and its campaigns";
+    const ws = types.map(word);
+    return ws.length === 2
+      ? `${ws[0]} and ${ws[1].toLowerCase()}`
+      : `${ws.slice(0, -1).join(", ")} and ${ws[ws.length - 1].toLowerCase()}`;
   };
-  const maxRows = Math.max(1, ...cols.map((c) => (c ? c.length : 0)));
-  const width = PADX * 2 + cols.length * NODE_W + Math.max(0, cols.length - 1) * COLG;
-  const height = PADT + maxRows * (NODE_H + ROWG) - ROWG + PADB;
+  return { byId, parents, cols, colOf, rowOf, colName };
+}
 
-  let paths = "";
+/** "Part of Checkout · depends on Stripe": a ground's lines, read as words (the phone list). */
+function mapRelLine(n, edges, byId) {
+  const parts = [];
   for (const e of edges) {
-    const a = pos.get(e.from_node_id),
-      b = pos.get(e.to_node_id);
-    if (!a || !b) continue;
-    const fwd = b.x >= a.x;
-    const x1 = fwd ? a.x + NODE_W : a.x,
-      y1 = a.y + NODE_H / 2;
-    const x2 = fwd ? b.x : b.x + NODE_W,
-      y2 = b.y + NODE_H / 2;
-    const mx = (x1 + x2) / 2;
-    const cls = e.relation === "contains" ? "contains" : "dep";
-    paths += `<path class="gedge ${cls}" d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"/>`;
+    if (e.to_node_id === n.id && e.relation === "contains" && byId.has(e.from_node_id))
+      parts.push(`part of ${byId.get(e.from_node_id).name}`);
+    if (e.from_node_id === n.id && e.relation !== "contains" && byId.has(e.to_node_id))
+      parts.push(
+        `${e.relation === "depends_on" ? "depends on" : typeLabel(e.relation)} ${byId.get(e.to_node_id).name}`,
+      );
   }
-  const svg = el("div", {
-    class: "graph-edges",
-    html: `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none">${paths}</svg>`,
-  });
-  const colLabels = cols.map((_, ci) =>
-    el(
-      "div",
-      { class: "graph-collabel", style: `left:${PADX + ci * (NODE_W + COLG)}px;width:${NODE_W}px` },
-      colName(cols[ci], ci),
+  if (!parts.length) return null;
+  const s = parts.join(" · ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function renderScopeGraph(nodes, edges, ov, readAt = Date.now()) {
+  const live = ov ? ov.cards.length : 0;
+  const card = el("section", { class: "card panel scope-graph", "aria-label": "The grounds" }, [
+    panelHead(
+      "The grounds",
+      [
+        plural(nodes.length, "ground"),
+        ov && ov.board ? `${live} live` : null,
+        `as of ${clockTime(readAt)}`,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      null,
+      { kit: "ink" },
     ),
-  );
-  const gnodes = [];
-  for (const [id, { x, y, n }] of pos) {
-    gnodes.push(
-      el(
-        "a",
-        {
-          class: `scope-gnode type-${n.type}`,
-          href: `#/node/${id}`,
-          dataset: { name: (n.name || "").toLowerCase() },
-          style: `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`,
-        },
-        [
-          el("span", { class: "sg-name" }, n.name),
-          el("span", { class: "sg-meta" }, [
-            badge(typeLabel(n.type), `type-${n.type}`),
-            n.risk_level ? riskBadge(n.risk_level) : null,
-          ]),
-        ],
-      ),
-    );
-  }
-  const legend = el("div", { class: "graph-legend" }, [
-    el("span", { class: "gl-item" }, [el("span", { class: "gl-line contains" }), "contains"]),
-    el("span", { class: "gl-item" }, [el("span", { class: "gl-line dep" }), "depends on"]),
   ]);
+  const search = el("input", {
+    type: "search",
+    placeholder: "A ground, a repo, an owner…",
+    value: factoryState.query,
+    "aria-label": "Search the Map",
+    oninput: (e) => {
+      factoryState.query = e.target.value;
+      const root = e.target.closest(".view") || card;
+      applyFactoryFilter(root, e.target.value.trim().toLowerCase());
+    },
+  });
   card.appendChild(
-    el("div", { class: "graph-scroll" }, [
-      el("div", { class: "graph", style: `width:${width}px;height:${height}px` }, [
-        svg,
-        ...colLabels,
-        ...gnodes,
-      ]),
+    el("div", { class: "map-tools" }, [
+      el("label", { class: "map-find" }, [el("span", { class: "map-find-l" }, "Find"), search]),
+      nodes.length ? mapKey() : null,
     ]),
   );
-  card.appendChild(legend);
+  card.appendChild(el("p", { class: "map-found", role: "status", "aria-live": "polite" }));
+  if (nodes.length === 0) {
+    card.appendChild(
+      el("p", { class: "map-none" }, [
+        "No grounds on the map yet, so every repo plays as a free agent. ",
+        el("a", { href: "#/node" }, "Mark out the club's first ground"),
+        ": the club itself, then its products and the services they run on.",
+      ]),
+    );
+    return card;
+  }
+  const { byId, cols, colOf, rowOf, colName } = mapLayout(nodes, edges);
+  const maxRows = Math.max(1, ...cols.map((c) => c.length));
+  // The drawing is a CSS grid: a label row, then one row per rank, so a card is as
+  // tall as what it says (a long name or a second row of counters never clips) and
+  // the gaps between rows run clear across every column. The chalk lines are drawn
+  // once the cards are placed, through those gaps (see drawMapEdges).
+  const cells = [];
+  cols.forEach((list, ci) => {
+    cells.push(
+      el("div", {
+        class: `graph-lane${ci % 2 ? " is-alt" : ""}`,
+        style: `grid-column:${ci + 1};grid-row:1 / ${maxRows + 2}`,
+        "aria-hidden": "true",
+      }),
+      el(
+        "h3",
+        { class: "graph-collabel", style: `grid-column:${ci + 1};grid-row:1` },
+        colName(list),
+      ),
+    );
+    for (const n of list) {
+      const g = mapGround(n, ov, null);
+      g.style.gridColumn = String(ci + 1);
+      g.style.gridRow = String(rowOf.get(n.id) + 2);
+      cells.push(g);
+    }
+  });
+  const svgHost = el("div", { class: "graph-edges", "aria-hidden": "true" });
+  const graph = el(
+    "div",
+    {
+      class: "graph",
+      dataset: { cols: String(cols.length) },
+      style: `grid-template-columns:repeat(${cols.length}, minmax(0, 1fr));grid-template-rows:auto repeat(${maxRows}, auto)`,
+    },
+    [svgHost, ...cells],
+  );
+  const scroller = el(
+    "div",
+    {
+      class: "graph-scroll",
+      role: "region",
+      "aria-label": "The scope graph: grounds in columns, lines for contains and depends on",
+    },
+    [graph],
+  );
+  card.appendChild(scroller);
+  // The same grounds as a list, tier by tier, the lines as words: the phone reads
+  // this, and so does a desktop too narrow for every column at a readable width.
+  card.appendChild(
+    el(
+      "div",
+      { class: "map-list" },
+      cols.map((list) =>
+        el("section", { class: "ml-col", "aria-label": colName(list) }, [
+          el("h3", { class: "ml-head" }, colName(list)),
+          el(
+            "div",
+            { class: "ml-cards" },
+            list.map((n) => mapGround(n, ov, mapRelLine(n, edges, byId))),
+          ),
+        ]),
+      ),
+    ),
+  );
+  // The narrowest a column may get before the map reads as the list instead.
+  const COL_MIN = 176,
+    COL_GAP = 36,
+    PAD = 18;
+  const need = cols.length * COL_MIN + (cols.length - 1) * COL_GAP + PAD * 2;
+  let ro = null;
+  let lastW = -1;
+  const fit = () => {
+    const w = card.clientWidth;
+    if (!w || w === lastW) return;
+    lastW = w;
+    // The card's padding is inside clientWidth; the scroller sits in its content box.
+    const cs = window.getComputedStyle(card);
+    const inner = w - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    const asList = inner < need;
+    card.classList.toggle("is-list", asList);
+    card.classList.toggle("is-graph", !asList);
+    if (!asList) drawMapEdges(graph, svgHost, edges, colOf);
+  };
+  card._fit = () => {
+    fit();
+    if (!ro && typeof window.ResizeObserver === "function") {
+      ro = new window.ResizeObserver(() => {
+        lastW = -1;
+        fit();
+      });
+      ro.observe(card);
+    }
+  };
+  card._dispose = () => ro && ro.disconnect();
   return card;
 }
 
-function renderUnmappedSection(unmapped) {
-  const card = el("div", { class: "card", dataset: { section: "unmapped" } }, [
-    el("h2", {}, `Unmapped repos (${unmapped.length})`),
-    el("p", { class: "dim section-note" }, [
-      el("strong", {}, "Single-repo mode. "),
-      "These repos have no scope mapping, so Dispatch treats each as an implicit single-repo scope — agents work directly against the one repo. ",
-      el("strong", {}, "Mapped factory mode"),
-      " (above) coordinates work across multiple repos with explicit write / read / test boundaries.",
+/**
+ * Draw the chalk lines between placed cards. Neighbouring columns join with a
+ * curve through the gap between them. A line that skips a column never runs
+ * under a card: it drops down its own gap to the nearest clear gap between rows,
+ * runs along it, and climbs the gap before its target. Same-column links bow out
+ * into the gap beside them.
+ */
+function drawMapEdges(graph, host, edges, colOf) {
+  const W = graph.offsetWidth,
+    H = graph.offsetHeight;
+  if (!W || !H) return;
+  const box = new Map();
+  for (const g of graph.querySelectorAll(".scope-gnode")) {
+    box.set(g.dataset.node, {
+      x: g.offsetLeft,
+      y: g.offsetTop,
+      w: g.offsetWidth,
+      h: g.offsetHeight,
+    });
+  }
+  // Column edges, and the clear channels between rows (and above the first, below the last).
+  const colL = [],
+    colR = [];
+  const rowTop = [],
+    rowBot = [];
+  for (const g of graph.querySelectorAll(".scope-gnode")) {
+    const b = box.get(g.dataset.node);
+    const ci = colOf.get(g.dataset.node);
+    const ri = Number(g.style.gridRow) - 2;
+    colL[ci] = Math.min(colL[ci] ?? Infinity, b.x);
+    colR[ci] = Math.max(colR[ci] ?? -Infinity, b.x + b.w);
+    rowTop[ri] = Math.min(rowTop[ri] ?? Infinity, b.y);
+    rowBot[ri] = Math.max(rowBot[ri] ?? -Infinity, b.y + b.h);
+  }
+  const rows = rowTop.length;
+  const channels = [];
+  for (let r = 0; r <= rows; r++) {
+    const above = r === 0 ? null : rowBot[r - 1];
+    const below = r === rows ? null : rowTop[r];
+    if (above == null && below != null) channels.push(below - 12);
+    else if (below == null && above != null) channels.push(Math.min(H - 8, above + 12));
+    else if (above != null) channels.push((above + below) / 2);
+  }
+  const gapAfter = (ci) =>
+    colL[ci + 1] != null ? (colR[ci] + colL[ci + 1]) / 2 : Math.min(W - 6, colR[ci] + 14);
+  const gapBefore = (ci) => (ci > 0 ? (colR[ci - 1] + colL[ci]) / 2 : Math.max(6, colL[ci] - 14));
+  const used = new Map();
+  const lane = (key) => {
+    const k = used.get(key) || 0;
+    used.set(key, k + 1);
+    return (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 5;
+  };
+  // A polyline with rounded corners.
+  const round = (pts, r = 10) => {
+    let d = `M${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [x0, y0] = pts[i - 1],
+        [x1, y1] = pts[i],
+        [x2, y2] = pts[i + 1];
+      const l1 = Math.hypot(x1 - x0, y1 - y0),
+        l2 = Math.hypot(x2 - x1, y2 - y1);
+      const k = Math.min(r, l1 / 2, l2 / 2);
+      if (!k) {
+        d += ` L${x1} ${y1}`;
+        continue;
+      }
+      const ax = x1 - ((x1 - x0) / l1) * k,
+        ay = y1 - ((y1 - y0) / l1) * k;
+      const bx = x1 + ((x2 - x1) / l2) * k,
+        by = y1 + ((y2 - y1) / l2) * k;
+      d += ` L${ax.toFixed(1)} ${ay.toFixed(1)} Q${x1} ${y1} ${bx.toFixed(1)} ${by.toFixed(1)}`;
+    }
+    const last = pts[pts.length - 1];
+    return `${d} L${last[0]} ${last[1]}`;
+  };
+  let paths = "";
+  for (const e of edges) {
+    const a = box.get(e.from_node_id),
+      b = box.get(e.to_node_id);
+    if (!a || !b) continue;
+    const ca = colOf.get(e.from_node_id),
+      cb = colOf.get(e.to_node_id);
+    const cls = e.relation === "contains" ? "contains" : "dep";
+    const ya = a.y + a.h / 2,
+      yb = b.y + b.h / 2;
+    let d;
+    if (ca === cb) {
+      // Bow into the gap beside the column (the left one at the far touchline).
+      const right = colL[ca + 1] != null || ca === 0;
+      const x = right ? a.x + a.w : a.x;
+      const bow = right ? gapAfter(ca) + 8 : gapBefore(ca) - 8;
+      const xb = right ? b.x + b.w : b.x;
+      d = `M${x} ${ya} C ${bow} ${ya}, ${bow} ${yb}, ${xb} ${yb}`;
+    } else {
+      const fwd = cb > ca;
+      const x1 = fwd ? a.x + a.w : a.x,
+        x2 = fwd ? b.x : b.x + b.w;
+      if (Math.abs(cb - ca) === 1) {
+        const mx = (x1 + x2) / 2;
+        d = `M${x1} ${ya} C ${mx} ${ya}, ${mx} ${yb}, ${x2} ${yb}`;
+      } else {
+        const gx1 = (fwd ? gapAfter(ca) : gapBefore(ca)) + lane(`g${fwd ? ca : ca - 1}`);
+        const gx2 = (fwd ? gapBefore(cb) : gapAfter(cb)) + lane(`g${fwd ? cb - 1 : cb}`);
+        // The clear channel nearest the straight line between the two ends.
+        const want = (ya + yb) / 2;
+        const ch = channels.length
+          ? channels.reduce((p, c) => (Math.abs(c - want) < Math.abs(p - want) ? c : p))
+          : want;
+        const cy = ch + lane(`c${ch}`);
+        d = round([
+          [x1, ya],
+          [gx1, ya],
+          [gx1, cy],
+          [gx2, cy],
+          [gx2, yb],
+          [x2, yb],
+        ]);
+      }
+    }
+    paths += `<path class="gedge ${cls}" d="${d}"/>`;
+  }
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" focusable="false">${paths}</svg>`;
+}
+
+/** A labelled cell: the label shows on a phone, where a row stacks. */
+function regCell(label, body, cls = "") {
+  return el("td", { class: cls }, [el("span", { class: "reg-l" }, label), body]);
+}
+/** A count with its mark: red square for blocked, yellow card for review. */
+function regCount(n, tone) {
+  return el("span", { class: `reg-n${n ? "" : " is-zero"}${n && tone ? ` is-${tone}` : ""}` }, [
+    n && tone === "red" ? glyph("blocked", 14) : null,
+    n && tone === "yellow" ? ycard(14) : null,
+    n && tone === "paused" ? glyph("paused", 14) : null,
+    el("span", { class: "tabnum" }, String(n)),
+  ]);
+}
+/** The gates a repo's deliveries must pass, in words. */
+function regGates(r) {
+  const set = [
+    r.test_command ? "tests" : null,
+    r.lint_command ? "lint" : null,
+    r.coverage_command ? "coverage" : null,
+  ].filter(Boolean);
+  return set.length
+    ? el("span", { class: "reg-gates" }, set.join(" · "))
+    : el("span", { class: "reg-gates is-none" }, [glyph("failed", 14), "No gates"]);
+}
+
+/** Who plays where: every mapped repo, its grounds and what is live in it. */
+function renderRepoRegister(repos, unmapped, ov) {
+  const free = new Set(unmapped.map((r) => r.id));
+  const mapped = repos.filter((r) => !free.has(r.id));
+  const head = panelHead("Who plays where", `${plural(mapped.length, "repo")} at a ground`, null, {
+    kit: "claret",
+  });
+  if (!mapped.length)
+    return el("section", { class: "card prog map-register", "aria-label": "Who plays where" }, [
+      head,
+      el(
+        "p",
+        { class: "quiet" },
+        repos.length
+          ? "No repo plays at a ground yet. Open a repo and give it one."
+          : "No repos signed yet. Onboard a repo to bring it into the club.",
+      ),
+    ]);
+  // A Paused column only when a mapped repo has a ticket in the dugout.
+  const anyPaused = mapped.some((r) => mapTally(ov.liveOfRepo.get(r.id)).paused > 0);
+  const rows = mapped.map((r) => {
+    const t = mapTally(ov.liveOfRepo.get(r.id));
+    const grounds = ov.groundsOf.get(r.id) || [];
+    return el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
+      el("th", { scope: "row", class: "reg-repo" }, [
+        el("a", { href: `#/repo/${r.id}` }, repoTag(r.name, 22)),
+        el(
+          "span",
+          { class: "reg-sub" },
+          [r.stack, r.default_branch].filter(Boolean).join(" · ") || null,
+        ),
+      ]),
+      regCell(
+        "Grounds",
+        el(
+          "span",
+          { class: "reg-grounds" },
+          grounds.map((g) =>
+            el("span", { class: "reg-ground" }, [
+              el("a", { href: `#/node/${g.node.id}` }, g.node.name),
+              el("span", { class: "reg-acc" }, [g.relation, g.access].filter(Boolean).join(" · ")),
+            ]),
+          ),
+        ),
+      ),
+      regCell("Blocked", regCount(t.red, "red"), "reg-num"),
+      regCell("To review", regCount(t.yellow, "yellow"), "reg-num"),
+      anyPaused ? regCell("Paused", regCount(t.paused, "paused"), "reg-num") : null,
+      regCell("In play", regCount(t.play), "reg-num"),
+      regCell("Gates", regGates(r), "reg-gc"),
+    ]);
+  });
+  return el("section", { class: "card prog map-register", "aria-label": "Who plays where" }, [
+    head,
+    el("table", { class: "reg-table" }, [
+      el(
+        "thead",
+        {},
+        el("tr", {}, [
+          el("th", { scope: "col" }, "Repo"),
+          el("th", { scope: "col" }, "Plays at"),
+          el("th", { scope: "col", class: "reg-num" }, "Blocked"),
+          el("th", { scope: "col", class: "reg-num" }, "To review"),
+          anyPaused ? el("th", { scope: "col", class: "reg-num" }, "Paused") : null,
+          el("th", { scope: "col", class: "reg-num" }, "In play"),
+          el("th", { scope: "col" }, "Gates"),
+        ]),
+      ),
+      el("tbody", {}, rows),
     ]),
   ]);
+}
+
+/** Free agents: repos with no ground, each playing as its own single-repo scope. */
+function renderUnmappedSection(unmapped, repos = [], hiddenN = 0, { ov = null, grounds = 0 } = {}) {
+  const head = panelHead("Free agents", `${plural(unmapped.length, "repo")} with no ground`, null, {
+    kit: "sky",
+  });
+  const card = el(
+    "section",
+    { class: "card prog map-free", dataset: { section: "unmapped" }, "aria-label": "Free agents" },
+    [head],
+  );
   if (unmapped.length === 0) {
-    card.appendChild(el("p", { class: "dim" }, "Every known repo is mapped into the graph."));
+    card.appendChild(
+      el("div", { class: "quiet map-free-none" }, [
+        el(
+          "p",
+          {},
+          hiddenN
+            ? [
+                "Every repo in the squad has a ground. ",
+                el("a", { href: "#/hidden" }, `${plural(hiddenN, "hidden repo")}`),
+                ` ${hiddenN === 1 ? "is" : "are"} left out.`,
+              ]
+            : "Every repo in the squad has a ground.",
+        ),
+        onboardButton(repos, null),
+      ]),
+    );
     return card;
   }
-  const rows = unmapped.map((r) =>
+  card.appendChild(
     el(
-      "tr",
-      {
-        class: "clickable repo-row",
-        dataset: { kind: "repo", repoId: r.id },
-        onclick: () => navigate(`#/repo/${r.id}`),
-      },
-      [
-        el("td", { class: "title-cell" }, r.name),
-        el(
-          "td",
-          {},
-          r.local_path
-            ? el("code", { class: "mono" }, r.local_path)
-            : el("span", { class: "dim" }, "—"),
-        ),
-        el("td", { class: "dim" }, r.stack || "—"),
-        el("td", { class: "dim" }, r.default_branch || "—"),
-        el("td", {}, renderRepoCommands(r)),
-        el("td", { class: "row-actions" }, hideRepoBtn(r)),
-      ],
+      "p",
+      { class: "gr-note" },
+      grounds
+        ? "No ground yet, so each plays as its own single-repo scope and its tickets count only here. Give one a ground from its page."
+        : "No ground on the map yet, so each plays as its own single-repo scope. Mark out a ground, or give one a ground from its page.",
     ),
   );
-  const table = el("table", {}, [
-    el(
-      "thead",
-      {},
-      el(
-        "tr",
-        {},
-        ["Repo", "Path", "Stack", "Branch", "Commands", ""].map((h) => el("th", {}, h)),
+  const rows = unmapped.map((r) => {
+    const live = (ov && ov.liveOfRepo.get(r.id)) || [];
+    const t = mapTally(live);
+    return el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
+      el("th", { scope: "row", class: "reg-repo" }, [
+        el("a", { href: `#/repo/${r.id}` }, repoTag(r.name, 22)),
+        live.length
+          ? el("span", { class: "reg-live" }, [
+              el("span", { class: "sg-mags" }, [
+                ...live.slice(0, MAP_COUNTERS).map((c) => mapCounter(c)),
+                live.length > MAP_COUNTERS
+                  ? el(
+                      "a",
+                      {
+                        class: "sg-more mag-more",
+                        href: `#/repo/${r.id}`,
+                        "aria-label": `${live.length - MAP_COUNTERS} more live in ${r.name}`,
+                      },
+                      `+${live.length - MAP_COUNTERS}`,
+                    )
+                  : null,
+              ]),
+              el("span", { class: "sg-words" }, tallyWords(t)),
+            ])
+          : ov && ov.board
+            ? el("span", { class: "reg-sub" }, "Nothing in play")
+            : null,
+      ]),
+      regCell(
+        "Path",
+        r.local_path
+          ? el("code", { class: "mono reg-path" }, r.local_path)
+          : el("span", { class: "dim" }, "—"),
       ),
-    ),
-    el("tbody", {}, rows),
-  ]);
-  card.appendChild(el("div", { class: "table-wrap" }, table));
+      regCell("Stack", el("span", {}, r.stack || "—")),
+      regCell("Branch", el("span", {}, r.default_branch || "—")),
+      regCell("Gates", renderRepoCommands(r)),
+      el("td", { class: "row-actions" }, hideRepoBtn(r)),
+    ]);
+  });
+  card.appendChild(
+    el("table", { class: "reg-table reg-free" }, [
+      el(
+        "thead",
+        {},
+        el(
+          "tr",
+          {},
+          ["Repo", "Path", "Stack", "Branch", "Gate commands", ""].map((h) =>
+            el("th", { scope: "col" }, h || el("span", { class: "sr-only" }, "Actions")),
+          ),
+        ),
+      ),
+      el("tbody", {}, rows),
+    ]),
+  );
+  card.appendChild(el("div", { class: "map-free-act" }, onboardButton(repos, null)));
   return card;
 }
 
@@ -14535,45 +15613,45 @@ function backToMap() {
 // "Unhide" button that returns it to its normal place.
 async function renderHidden() {
   const repos = (await api("GET", "/repositories?hidden=only")).repositories || [];
-  const wrap = el("div", { class: "view" });
+  learnKits(repos.map((r) => r.name));
+  const wrap = el("div", { class: "view view-hidden" });
+  wrap.appendChild(backToMap());
   wrap.appendChild(
-    el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-      "← Back to Map",
+    viewHead(
+      "Hidden repos",
+      repos.length ? `${plural(repos.length, "repo")} left out of the squad` : "None hidden",
     ),
   );
-  wrap.appendChild(viewHead("Hidden repos", `${repos.length} hidden`));
   wrap.appendChild(
-    el("div", { class: "banner" }, [
-      el("strong", {}, "These repos are hidden from the dashboard. "),
-      "They stay registered and keep their links and scope mappings, but are excluded from the repo list, the Map unmapped list and repo pickers. Un-hide one to return it to its normal place.",
-    ]),
+    el(
+      "p",
+      { class: "gr-note hidden-note" },
+      "A hidden repo stays registered with its links and grounds, but is left out of the repo list, the Map's free agents and the repo pickers. Unhide one to bring it back.",
+    ),
   );
 
   if (!repos.length) {
-    wrap.appendChild(emptyState("No hidden repos", "Nothing is hidden right now.", "map"));
+    wrap.appendChild(emptyState("Nothing is hidden. Every registered repo is in the squad."));
     return wrap;
   }
 
   const rows = repos.map((r) =>
     el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
-      el("td", { class: "title-cell" }, r.name),
-      el(
-        "td",
-        {},
+      el("th", { scope: "row", class: "reg-repo" }, repoTag(r.name, 22)),
+      regCell(
+        "Path",
         r.local_path
-          ? el("code", { class: "mono" }, r.local_path)
+          ? el("code", { class: "mono reg-path" }, r.local_path)
           : el("span", { class: "dim" }, "—"),
       ),
-      el("td", { class: "dim" }, r.stack || "—"),
+      regCell("Stack", el("span", {}, r.stack || "—")),
       el(
         "td",
         { class: "row-actions" },
         el(
           "button",
           {
-            class: "btn primary small",
+            class: "btn small",
             type: "button",
             "aria-label": `Unhide ${r.name}`,
             onclick: () =>
@@ -14588,89 +15666,180 @@ async function renderHidden() {
       ),
     ]),
   );
-  const table = el("table", {}, [
-    el(
-      "thead",
-      {},
-      el(
-        "tr",
-        {},
-        ["Repo", "Path", "Stack", ""].map((h) => el("th", {}, h)),
-      ),
-    ),
-    el("tbody", {}, rows),
-  ]);
-  wrap.appendChild(el("div", { class: "card" }, el("div", { class: "table-wrap" }, table)));
+  wrap.appendChild(
+    progPage("map-free", "ink", "Left out of the squad", plural(repos.length, "repo"), [
+      el("table", { class: "reg-table reg-free" }, [
+        el(
+          "thead",
+          {},
+          el(
+            "tr",
+            {},
+            ["Repo", "Path", "Stack", ""].map((h) =>
+              el("th", { scope: "col" }, h || el("span", { class: "sr-only" }, "Actions")),
+            ),
+          ),
+        ),
+        el("tbody", {}, rows),
+      ]),
+    ]),
+  );
   return wrap;
 }
 
 function applyFactoryFilter(wrap, q) {
-  wrap.querySelectorAll(".tree-branch").forEach((branch) => {
-    const own = branch.querySelector(":scope > .tree-node");
-    const text = own ? own.textContent.toLowerCase() : "";
-    branch.dataset.self = !q || text.includes(q) ? "1" : "0";
+  // Dim the grounds that don't match (the layout stays where it is); hide repo rows.
+  const hits = new Set();
+  wrap.querySelectorAll(".scope-gnode").forEach((node) => {
+    const text = (node.dataset.search || node.dataset.name || node.textContent || "").toLowerCase();
+    const miss = !!q && !text.includes(q);
+    node.classList.toggle("is-dim", miss);
+    if (!miss) hits.add(node.dataset.name);
   });
-  wrap.querySelectorAll(".tree-branch").forEach((branch) => {
-    const selfMatch = branch.dataset.self === "1";
-    const childMatch = Array.from(branch.querySelectorAll(".tree-branch")).some(
-      (b) => b.dataset.self === "1",
-    );
-    branch.hidden = !(selfMatch || childMatch);
-  });
+  let rows = 0;
   wrap.querySelectorAll(".repo-row").forEach((row) => {
     const text = row.textContent.toLowerCase();
     row.hidden = !!q && !text.includes(q);
+    if (!row.hidden) rows += 1;
   });
-  // dim scope-graph nodes that don't match (keeps the graph layout stable)
-  wrap.querySelectorAll(".scope-gnode").forEach((node) => {
-    const text = (node.dataset.name || node.textContent || "").toLowerCase();
-    node.classList.toggle("is-dim", !!q && !text.includes(q));
-  });
+  // Say what the filter found, for everyone (a live region, not just dimming).
+  const out = wrap.querySelector(".map-found");
+  if (out) {
+    const grounds = hits.size;
+    out.textContent = !q
+      ? ""
+      : grounds || rows
+        ? `${plural(grounds, "ground")} and ${plural(rows, "repo")} match “${q}”.`
+        : `Nothing on the map matches “${q}”. Try a ground, a repo or an owner.`;
+    out.classList.toggle("is-none", !!q && !grounds && !rows);
+  }
 }
 
 // --- View: Scope node editor + detail (UI-001) ------------------------------
 
+/**
+ * Fixtures or results: each ticket a row with its counter (carded when it needs
+ * you), its title and its status. Links to the ticket.
+ */
+function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
+  if (!list || !list.length) return el("p", { class: "quiet" }, empty);
+  const rows = byTime
+    ? [...list].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
+    : list;
+  const shown = rows.slice(0, limit);
+  return el("div", { class: "repo-tickets" }, [
+    el(
+      "ul",
+      { class: "clean repo-ticket-list gr-fx-list" },
+      shown.map((t) =>
+        el(
+          "li",
+          {},
+          el("a", { class: "repo-ticket-row gr-fx-row", href: `#/ticket/${t.id}` }, [
+            mapTone(t.status)
+              ? el("span", { class: "gr-fx-mag" }, [
+                  el("span", { class: "sr-only" }, "#"),
+                  mapCounter(t, { link: false }),
+                ])
+              : el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
+            el("span", { class: "repo-ticket-title" }, t.title),
+            el("span", { class: "repo-ticket-side" }, [
+              statusBadge(t.status),
+              t.updated_at
+                ? el(
+                    "time",
+                    { class: "repo-ticket-time", datetime: t.updated_at },
+                    fmtTime(t.updated_at),
+                  )
+                : null,
+            ]),
+          ]),
+        ),
+      ),
+    ),
+    rows.length > shown.length
+      ? el("p", { class: "repo-ticket-more" }, [
+          `${rows.length - shown.length} more on the `,
+          el("a", { href: "#/work" }, "Work board"),
+          ".",
+        ])
+      : null,
+  ]);
+}
+
+/** The stat strip a ground or repo page opens on: the Map's counts, nothing else. */
+function groundStats(t) {
+  return el("div", { class: "kpi-row gr-stats" }, [
+    statCell({
+      label: "Live",
+      value: String(t.live),
+      sub: t.paused ? "the next four, added up" : "the next three, added up",
+    }),
+    statCell({ label: "Blocked", value: String(t.red), sub: "blocked or failed" }),
+    statCell({
+      label: "To review",
+      value: String(t.yellow),
+      sub: "waits on your sign-off",
+      needs: t.yellow > 0,
+    }),
+    // Paused is rare: its cell shows only when something sits in the dugout.
+    t.paused ? statCell({ label: "Paused", value: String(t.paused), sub: "in the dugout" }) : null,
+    statCell({ label: "In play", value: String(t.play), sub: "the rest of the pitch" }),
+    statCell({ label: "Done", value: String(t.done), sub: "shipped" }),
+    statCell({ label: "Bench", value: String(t.bench), sub: "drafts and refining" }),
+  ]);
+}
+
+/** One line from the same counts: "13 live here: 2 blocked · 3 to review · 8 in play. 6 done." */
+function groundCountLine(t, { club = false, where = "here" } = {}) {
+  if (!t.live && !t.done && !t.bench)
+    return el(
+      "p",
+      { class: "gr-count is-quiet" },
+      club ? "No ticket in the club yet." : `No ticket plays ${where} yet.`,
+    );
+  return el("p", { class: "gr-count" }, [
+    el("b", { class: "tabnum" }, String(t.live)),
+    club ? " live across the club" : ` live ${where}`,
+    t.live ? [": ", ...tallyWords(t)] : null,
+    ". ",
+    `${t.done} done`,
+    t.bench ? ` · ${t.bench} on the bench` : null,
+    ".",
+  ]);
+}
+
 async function renderNode(id) {
-  const [nodesRes, edgesRes] = await Promise.all([
-    api("GET", "/scope/nodes"),
-    api("GET", "/scope/edges"),
+  const signal = routeSignal();
+  const [nodesRes, edgesRes, reposRes] = await Promise.all([
+    api("GET", "/scope/nodes", undefined, { signal }),
+    api("GET", "/scope/edges", undefined, { signal }),
+    api("GET", "/repositories", undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return { repositories: [] };
+    }),
   ]);
   const allNodes = nodesRes.nodes || [];
   const allEdges = edgesRes.edges || [];
+  const allRepos = reposRes.repositories || [];
+  learnKits(allRepos.map((r) => r.name));
 
-  if (!id) {
-    const wrap = el("div", { class: "view" });
-    wrap.appendChild(
-      el(
-        "button",
-        { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-        "← Back to Map",
-      ),
-    );
-    wrap.appendChild(viewHead("New scope node"));
-    wrap.appendChild(el("div", { class: "card" }, renderNodeForm(null)));
-    return wrap;
-  }
+  if (!id) return renderNewGround(allNodes);
 
-  const view = await api("GET", `/scope/nodes/${id}`);
+  const view = await api("GET", `/scope/nodes/${id}`, undefined, { signal });
   const node = view.node;
   const repos = view.repos || [];
 
-  // The ground's fixtures: the tickets of every repo that plays here (best-effort).
-  let tickets = null;
-  try {
-    const lists = await Promise.all(
-      repos
-        .filter((r) => r.name)
-        .map((r) =>
-          api("GET", `/tickets?repo=${encodeURIComponent(r.name)}`).then((x) => x.tickets || []),
-        ),
-    );
-    const seen = new Set();
-    tickets = lists.flat().filter((t) => (seen.has(t.id) ? false : seen.add(t.id)));
-  } catch {
-    tickets = null;
-  }
+  // The ground's tickets, counted exactly as its card on the Map counts them.
+  const ov = await mapOverlay(allNodes, allRepos, signal, { all: true }).catch((e) => {
+    if (e && e.code === "ABORTED") throw e;
+    return null;
+  });
+  const isClub = node.type === "factory";
+  const book = ov && ov.board ? groundBook(node, ov, { live: false }) : null;
+  const t = book ? mapTally(book) : null;
+  const live = book ? book.filter((c) => mapTone(c.status)) : [];
+  const results = book ? book.filter((c) => c.status === "done") : [];
 
   const wrap = el("div", { class: "view view-ground" });
   wrap.appendChild(backToMap());
@@ -14678,14 +15847,13 @@ async function renderNode(id) {
   const tags = parseTags(node.tags_json);
   const loreTags = parseTags(node.lore_tags_json);
   const byId = new Map(allNodes.map((n) => [n.id, n]));
-  const outgoing = allEdges.filter((e) => e.from_node_id === node.id);
   const incoming = allEdges.filter((e) => e.to_node_id === node.id);
   const parent = incoming.find((e) => e.relation === "contains");
   const parentNode = parent ? byId.get(parent.from_node_id) : null;
 
   const editDetails = el("details", { class: "edit-panel gr-edit" }, [
-    el("summary", { class: "btn small" }, "Edit node"),
-    el("div", { class: "card gr-edit-body" }, renderNodeForm(node)),
+    el("summary", { class: "btn small" }, "Edit ground"),
+    el("div", { class: "card gr-edit-body" }, renderNodeForm(node, allNodes)),
   ]);
   const deleteBtn = el(
     "button",
@@ -14694,17 +15862,17 @@ async function renderNode(id) {
       type: "button",
       onclick: () =>
         guard(async () => {
-          if (!window.confirm(`Delete scope node “${node.name}”? This cannot be undone.`)) return;
+          if (!window.confirm(`Delete the ground “${node.name}”? This cannot be undone.`)) return;
           await api("DELETE", `/scope/nodes/${node.id}`);
-          toast("Scope node deleted", { ok: true });
+          toast("Ground deleted", { ok: true });
           navigate("#/factory");
         }),
     },
-    "Delete node",
+    "Delete ground",
   );
 
   wrap.appendChild(
-    el("header", { class: "gr-head is-node" }, [
+    el("header", { class: `gr-head is-node type-${node.type}` }, [
       el("div", { class: "gr-head-main" }, [
         el("div", { class: "tk-meta" }, [
           el("span", { class: "gr-type" }, typeLabel(node.type)),
@@ -14722,46 +15890,79 @@ async function renderNode(id) {
             : null,
         ]),
         el("h1", { class: "detail-title" }, node.name),
+        t ? groundCountLine(t, { club: isClub }) : null,
         node.description
           ? el("p", { class: "gr-lede desc" }, node.description)
           : el("p", { class: "gr-lede dim" }, "No description yet."),
         tags.length || loreTags.length
           ? el("div", { class: "tag-row" }, [
-              ...tags.map((t) => el("span", { class: "tag-chip" }, t)),
-              ...loreTags.map((t) => el("span", { class: "tag-chip lore" }, `lore:${t}`)),
+              ...tags.map((x) => el("span", { class: "tag-chip" }, x)),
+              ...loreTags.map((x) => el("span", { class: "tag-chip lore" }, `lore:${x}`)),
             ])
           : null,
-        el("div", { class: "gr-actions" }, [editDetails, deleteBtn]),
+        el("div", { class: "gr-actions" }, [
+          node.type === "epic"
+            ? el("a", { class: "btn small", href: `#/epics/${node.id}` }, "Open the campaign")
+            : null,
+          editDetails,
+          deleteBtn,
+        ]),
       ]),
     ]),
   );
+  if (isImplicitScope(node)) {
+    const repoName = node.name.slice(5);
+    const r = allRepos.find((x) => x.name === repoName);
+    wrap.appendChild(
+      el("p", { class: "gr-implicit" }, [
+        el("b", {}, "Not a ground. "),
+        "The factory records this scope when a ticket targets ",
+        r ? el("a", { href: `#/repo/${r.id}` }, repoName) : repoName,
+        ", a repo with no ground, so the ticket still has a scope. On the Map it plays as a free agent; give it a ground from its page.",
+      ]),
+    );
+  }
+  if (t) wrap.appendChild(groundStats(t));
 
-  const count = (pred) => (tickets ? tickets.filter(pred).length : 0);
-  wrap.appendChild(
-    el("div", { class: "kpi-row gr-stats" }, [
-      statCell({
-        label: "Repos",
-        value: String(repos.length),
-        sub: `${repos.filter((r) => r.default_access === "write").length} with write access`,
-      }),
-      statCell({
-        label: "Connections",
-        value: String(outgoing.length + incoming.length),
-        sub: `${outgoing.length} out · ${incoming.length} in`,
-      }),
-      tickets
-        ? statCell({ label: "In play", value: String(count((t) => ON_PITCH.has(t.status))) })
-        : null,
-      tickets
-        ? statCell({ label: "Done", value: String(count((t) => t.status === "done")) })
-        : null,
-    ]),
-  );
+  const fixtures = el("section", { class: "card gr-card", "aria-label": "Fixtures" }, [
+    panelHead(
+      "Fixtures",
+      book ? (live.length ? `${live.length} live, worst first` : "nothing live") : "",
+      null,
+      { kit: "claret" },
+    ),
+    book
+      ? fixtureList(live, {
+          limit: 12,
+          empty: isClub
+            ? "Nothing in play anywhere in the club."
+            : repos.length
+              ? "Nothing in play here. The repos that play here have no live ticket."
+              : "Nothing in play here. Link a repo, or put a ticket on this ground from its page.",
+        })
+      : el("p", { class: "quiet" }, "The board did not answer, so the fixtures are unknown."),
+  ]);
+  const resultsCard = book
+    ? el("section", { class: "card gr-card", "aria-label": "Results" }, [
+        panelHead(
+          "Results",
+          results.length ? `latest ${Math.min(8, results.length)} of ${results.length} done` : "",
+          null,
+          { kit: "ink" },
+        ),
+        fixtureList(results, { byTime: true, empty: "Nothing shipped from here yet." }),
+      ])
+    : null;
 
   const repoCard = el("section", { class: "card gr-card", "aria-label": "Who plays here" }, [
-    panelHead("Who plays here", `${repos.length} repo${repos.length === 1 ? "" : "s"}`, null, {
-      kit: "claret",
-    }),
+    panelHead("Who plays here", plural(repos.length, "repo"), null, { kit: "sky" }),
+    isClub
+      ? el(
+          "p",
+          { class: "gr-note" },
+          "The club holds every ground, so its fixtures are every live ticket. Repos play at the grounds inside it.",
+        )
+      : null,
     repos.length
       ? el(
           "ul",
@@ -14783,36 +15984,74 @@ async function renderNode(id) {
             ),
           ),
         )
-      : el("p", { class: "quiet" }, "No repos play here yet. Link one below."),
+      : el("p", { class: "quiet" }, "No repo plays here yet. Link one below."),
     el("h3", { class: "gr-sub" }, "Link a repo"),
     renderLinkRepoForm(node.id),
   ]);
-
-  const ticketCard = tickets
-    ? el("section", { class: "card gr-card", "aria-label": "Results and fixtures" }, [
-        panelHead(
-          "Results & fixtures",
-          tickets.length ? `latest ${Math.min(8, tickets.length)} of ${tickets.length}` : "",
-          null,
-          { kit: "ink" },
-        ),
-        renderRepoTickets(null, tickets),
-      ])
-    : null;
 
   const connCard = renderConnectionsCard(node, allNodes, allEdges);
 
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", { class: "stack" }, [repoCard, ticketCard]),
-      el("div", { class: "stack" }, [connCard]),
+      el("div", { class: "stack" }, [fixtures, resultsCard]),
+      el("div", { class: "stack" }, [repoCard, connCard]),
     ]),
   );
   return wrap;
 }
 
-function renderNodeForm(node) {
+/** A new ground: what it is, where it stands, then the form. */
+function renderNewGround(allNodes) {
+  const wrap = el("div", { class: "view view-ground view-new-ground" });
+  wrap.appendChild(backToMap());
+  const hasClub = allNodes.some((n) => n.type === "factory");
+  wrap.appendChild(
+    viewHead(
+      "New ground",
+      allNodes.length
+        ? `${plural(allNodes.length, "ground")} on the map already`
+        : "The first ground on the map",
+    ),
+  );
+  wrap.appendChild(
+    el("div", { class: "detail-grid" }, [
+      el("section", { class: "card gr-card", "aria-label": "The ground" }, [
+        panelHead("The ground", "name, type, owner, risk", null, { kit: "claret" }),
+        renderNodeForm(null, allNodes),
+      ]),
+      el("section", { class: "card gr-card gr-types", "aria-label": "Which type" }, [
+        panelHead("Which type", "where it stands on the map", null, { kit: "sky" }),
+        el(
+          "dl",
+          { class: "kv gr-kv gr-typekey" },
+          [
+            ["Factory", hasClub ? "The club itself. You have one already." : "The club itself."],
+            ["Product", "Something customers use: Checkout, Catalogue."],
+            ["Service", "Something products lean on: Payments, Stock sync."],
+            ["Domain or capability", "A wider area that holds products or services."],
+            ["External dependency", "Outside the ground: Stripe, an ERP."],
+          ].flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]),
+        ),
+        el(
+          "p",
+          { class: "gr-note" },
+          "After it is made, link the repos that play here and connect it to its neighbours from its page.",
+        ),
+      ]),
+    ]),
+  );
+  return wrap;
+}
+
+function renderNodeForm(node, allNodes = []) {
   const isEdit = !!node;
+  // An existing ground keeps its own type, even one this list does not offer (epic).
+  const types =
+    node && node.type && !SCOPE_NODE_TYPES.includes(node.type)
+      ? [node.type, ...SCOPE_NODE_TYPES]
+      : SCOPE_NODE_TYPES;
+  const hasClub = allNodes.some((n) => n.type === "factory");
+  const typeNow = node ? node.type : hasClub ? "product" : "factory";
   const name = el("input", {
     type: "text",
     required: "",
@@ -14822,9 +16061,7 @@ function renderNodeForm(node) {
   const type = el(
     "select",
     {},
-    SCOPE_NODE_TYPES.map((t) =>
-      el("option", { value: t, selected: node?.type === t }, typeLabel(t)),
-    ),
+    types.map((t) => el("option", { value: t, selected: typeNow === t }, typeLabel(t))),
   );
   const owner = el("input", {
     type: "text",
@@ -14838,7 +16075,7 @@ function renderNodeForm(node) {
       el("option", { value: r, selected: (node?.risk_level || "low") === r }, r),
     ),
   );
-  const desc = el("textarea", { placeholder: "What is this node, and what does it own?" });
+  const desc = el("textarea", { placeholder: "What is this ground, and what does it own?" });
   desc.value = node?.description || "";
   const tags = el("input", {
     type: "text",
@@ -14871,11 +16108,11 @@ function renderNodeForm(node) {
         guard(async () => {
           if (isEdit) {
             await api("PATCH", `/scope/nodes/${node.id}`, body);
-            toast("Scope node updated", { ok: true });
+            toast("Ground updated", { ok: true });
             router();
           } else {
             const r = await api("POST", "/scope/nodes", body);
-            toast("Scope node created", { ok: true });
+            toast("Ground created", { ok: true });
             navigate(`#/node/${r.node.id}`);
           }
         });
@@ -14894,7 +16131,7 @@ function renderNodeForm(node) {
         el(
           "button",
           { class: "btn primary", type: "submit" },
-          isEdit ? "Save changes" : "Create node",
+          isEdit ? "Save changes" : "Create ground",
         ),
       ]),
     ],
@@ -15090,21 +16327,33 @@ async function renderRepo(id) {
     );
     return wrap;
   }
-  // The repo's fixtures: every ticket whose boundary includes it (best-effort).
+  // The repo's tickets: those that deliver to it (the board's write boundary), the
+  // same source the Map's "Who plays where" counts from.
   let tickets = null;
   let ticketErr = null;
   try {
-    tickets = (await api("GET", `/tickets?repo=${encodeURIComponent(repo.name)}`)).tickets || [];
+    const board = await api("GET", "/api/board");
+    tickets = boardCards(board).filter(
+      (c) =>
+        c.status !== "cancelled" &&
+        (c.repos || []).some((r) => r.id === repo.id || r.name === repo.name),
+    );
   } catch (e) {
+    if (e && e.code === "ABORTED") throw e;
     ticketErr = e;
   }
 
   const isMapped = scopes.length > 0;
   const hasWrite = scopes.some((s) => s.default_access === "write");
-  const count = (pred) => (tickets ? tickets.filter(pred).length : null);
-  const inPlay = count((t) => ON_PITCH.has(t.status));
-  const done = count((t) => t.status === "done");
-  const held = count((t) => OFF_PITCH.has(t.status));
+  const t = tickets ? mapTally(tickets) : null;
+  const sortedT = tickets
+    ? [...tickets].sort(
+        (a, b) =>
+          (MAP_TONE_RANK[mapTone(a.status)] ?? 9) - (MAP_TONE_RANK[mapTone(b.status)] ?? 9) ||
+          (b.priority || 0) - (a.priority || 0) ||
+          (a.number || 0) - (b.number || 0),
+      )
+    : null;
 
   const hideBtn = repo.hidden
     ? el(
@@ -15145,16 +16394,7 @@ async function renderRepo(id) {
         "Hide repo",
       );
 
-  const lede = tickets
-    ? tickets.length
-      ? [
-          el("b", {}, `${tickets.length} ticket${tickets.length === 1 ? "" : "s"}`),
-          ` ${tickets.length === 1 ? "has" : "have"} played here: ${inPlay} in play, ${done} done`,
-          held ? el("span", { class: "is-red" }, `, ${held} off the pitch`) : null,
-          ".",
-        ]
-      : "No ticket has played here yet."
-    : null;
+  const lede = t ? groundCountLine(t, { where: "in this repo" }) : null;
 
   wrap.appendChild(
     el("header", { class: "gr-head" }, [
@@ -15176,25 +16416,12 @@ async function renderRepo(id) {
           repo.hidden ? badge("hidden") : null,
         ]),
         el("h1", { class: "detail-title" }, repo.name),
-        lede ? el("p", { class: "gr-lede" }, lede) : null,
+        lede,
         el("div", { class: "gr-actions" }, [hideBtn]),
       ]),
     ]),
   );
-  if (tickets && tickets.length) {
-    wrap.appendChild(
-      el("div", { class: "kpi-row gr-stats" }, [
-        statCell({ label: "Tickets", value: String(tickets.length) }),
-        statCell({ label: "In play", value: String(inPlay) }),
-        statCell({
-          label: "Done",
-          value: String(done),
-          sub: `${Math.round((done / tickets.length) * 100)}% of all`,
-        }),
-        statCell({ label: "Off the pitch", value: String(held), sub: "blocked, paused or failed" }),
-      ]),
-    );
-  }
+  if (tickets && tickets.length) wrap.appendChild(groundStats(t));
 
   const branchBtn = el(
     "button",
@@ -15290,12 +16517,14 @@ async function renderRepo(id) {
       panelHead(
         "Results & fixtures",
         tickets && tickets.length
-          ? `latest ${Math.min(8, tickets.length)} of ${tickets.length}`
+          ? `${tickets.length > 8 ? `8 of ${tickets.length}` : plural(tickets.length, "ticket")} delivering here, live first`
           : "",
         null,
         { kit: "ink" },
       ),
-      renderRepoTickets(repo, tickets, ticketErr),
+      tickets
+        ? fixtureList(sortedT, { empty: "No ticket delivers to this repo yet." })
+        : renderRepoTickets(repo, tickets, ticketErr),
     ],
   );
 

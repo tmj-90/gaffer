@@ -947,6 +947,25 @@ try {
             pipeDisplay: pipe ? getComputedStyle(pipe).display : null,
             card: card ? card.getBoundingClientRect().toJSON() : null,
             sheetTop: sheet ? sheet.getBoundingClientRect().top : null,
+            // The Map: a ground card never clips its own words, never runs off the
+            // pitch, and the server's implicit "repo:<name>" scope is not a ground.
+            grounds: [...document.querySelectorAll(".scope-graph .scope-gnode")]
+              .filter((g) => g.getBoundingClientRect().width)
+              .flatMap((g) => {
+                const r = g.getBoundingClientRect();
+                const pitch = g.closest(".graph-scroll, .map-list").getBoundingClientRect();
+                const name = g.querySelector(".sg-name")?.textContent || "?";
+                const out = [];
+                if (g.scrollHeight > g.clientHeight + 1) out.push(`${name} clips its words`);
+                if (r.right > pitch.right + 1 || r.left < pitch.left - 1)
+                  out.push(`${name} runs off the pitch`);
+                if (/^repo:/.test(name)) out.push(`${name} drawn as a ground`);
+                return out;
+              }),
+            // Health: one rule between treatment rows (the li's), not a second on the link.
+            doubleRules: [...document.querySelectorAll(".needs-item .ni-link")].filter(
+              (a) => parseFloat(getComputedStyle(a).borderTopWidth) > 0,
+            ).length,
           };
         });
         const tag = `${v}@${w}`;
@@ -965,6 +984,8 @@ try {
           if (!onScreen && (w === 390 || w === 1280 || w === 1440))
             problems.push(`${tag} first board card below the fold (${Math.round(m.card.top)})`);
         }
+        if (m.grounds.length) problems.push(`${tag} ${m.grounds.join(", ")}`);
+        if (m.doubleRules) problems.push(`${tag} ${m.doubleRules} treatment rows ruled twice`);
         if (v === "overview" && m.sheetTop != null && m.sheetTop > m.vh && w >= 390)
           problems.push(`${tag} team sheet below the fold (${Math.round(m.sheetTop)})`);
         if (runAxe && AXE_SOURCE) await auditA11y(p2, v, String(w));

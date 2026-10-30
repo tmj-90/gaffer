@@ -13,6 +13,7 @@
     min-width: 0;
   }
   .fl-facts {
+    max-width: none;
     font: 600 var(--t14) / 1.4 var(--f-cond);
     color: var(--ink-2);
   }
@@ -548,6 +549,15 @@
     }
     .fl-st-tickets {
       grid-row: 3;
+      gap: 0 4px;
+    }
+    /* a phone's thumb: every ticket link is a 44px target */
+    .fl-st-tickets a,
+    .fl-bench li > a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      min-width: 44px;
     }
   }
 }

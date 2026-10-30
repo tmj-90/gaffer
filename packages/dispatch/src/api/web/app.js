@@ -23174,12 +23174,17 @@ function floorSlots(k) {
   if (k === "loading")
     for (let i = 0; i < 3; i++)
       out.push({ x: 11.5, y: 4.95 + i * 0.85, z: 0.3, sz: 0.46, lift: i % 2 ? 46 : 22 });
-  // the lorry's deck: what was despatched today
+  // the lorry's deck: what was despatched today, loaded mid-deck first (in view)
   if (k === "despatch")
     for (let l = 0; l < 2; l++)
       for (let r = 0; r < 3; r++)
         for (let c = 0; c < 2; c++)
-          out.push({ x: 11.22 + c * 0.56, y: 10.35 + r * 0.6, z: 0.54 + l * 0.38, sz: 0.42 });
+          out.push({
+            x: 11.22 + c * 0.56,
+            y: [10.95, 10.35, 11.55][r],
+            z: 0.54 + l * 0.38,
+            sz: 0.42,
+          });
   if (k === "jam")
     for (let r = 0; r < 2; r++)
       for (let c = 0; c < 3; c++)
@@ -23237,7 +23242,7 @@ const FLOOR_KRAFT = {
  * puts its parcel in its arms. Returns { g, top } (top: above the parcel).
  */
 function floorRobot(x0, y0, no, carry) {
-  const k = 1.45;
+  const k = 1.6;
   const u = FU * k;
   const x = x0 / k;
   const y = y0 / k;
@@ -23245,17 +23250,17 @@ function floorRobot(x0, y0, no, carry) {
   const body = { top: "var(--fl-bot-t)", front: "var(--fl-bot-f)", side: "var(--fl-bot-s)" };
   const leg = { base: "var(--fl-bot-leg)" };
   g.append(fBox(x - 0.09, y - 0.12, 0, 0.08, 0.08, 0.2, leg, u));
-  if (carry) g.append(fBox(x - 0.02, y - 0.2, 0.36, 0.44, 0.06, 0.06, body, u));
+  if (carry) g.append(fBox(x - 0.02, y - 0.2, 0.23, 0.44, 0.06, 0.06, body, u));
   g.append(fBox(x - 0.09, y + 0.04, 0, 0.08, 0.08, 0.2, leg, u));
   g.append(fBox(x - 0.15, y - 0.15, 0.2, 0.3, 0.3, 0.36, body, u));
   // the chest plate on the +y face: the club shirt colour with the stencil number
   g.append(
     fFace(
       [
-        [x - 0.14, y + 0.15, 0.23],
-        [x + 0.14, y + 0.15, 0.23],
-        [x + 0.14, y + 0.15, 0.54],
-        [x - 0.14, y + 0.15, 0.54],
+        [x - 0.14, y + 0.15, 0.3],
+        [x + 0.14, y + 0.15, 0.3],
+        [x + 0.14, y + 0.15, 0.555],
+        [x - 0.14, y + 0.15, 0.555],
       ],
       "var(--claret)",
       u,
@@ -23263,7 +23268,7 @@ function floorRobot(x0, y0, no, carry) {
     ),
   );
   if (no) {
-    const [ox, oy] = fP(x - 0.14, y + 0.15, 0.54, u);
+    const [ox, oy] = fP(x - 0.14, y + 0.15, 0.555, u);
     const pw = 0.28 * u;
     g.append(
       svgEl(
@@ -23271,7 +23276,7 @@ function floorRobot(x0, y0, no, carry) {
         {
           transform: `matrix(1,0.5,0,1,${ox.toFixed(1)},${oy.toFixed(1)})`,
           x: (pw / 2).toFixed(1),
-          y: 13.4,
+          y: 12.4,
           "text-anchor": "middle",
           class: "fl-bot-no",
         },
@@ -23330,7 +23335,7 @@ function floorRobot(x0, y0, no, carry) {
       fP(x + 0.28, y + 0.16, 0.54, u),
     ];
     g.append(svgEl("polygon", { points: t.map(fPt).join(" "), class: "fl-tape" }));
-    g.append(fBox(x - 0.02, y + 0.14, 0.36, 0.44, 0.06, 0.06, body, u));
+    g.append(fBox(x - 0.02, y + 0.14, 0.23, 0.44, 0.06, 0.06, body, u));
     top = fP(x + 0.32, y, 0.56, u);
   }
   return { g, top };
@@ -23350,8 +23355,8 @@ function floorCylinder(cx, cy, z0, z1, r, cls) {
 }
 /** A tick step for the tank's scale: 3 to 6 graduations up to the budget. */
 function floorTickStep(budget) {
-  for (const s of [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000])
-    if (budget / s <= 6) return s;
+  for (const m of [0.01, 0.1, 1, 10, 100, 1000])
+    for (const k of [1, 2, 2.5, 5]) if (budget / (m * k) <= 6) return m * k;
   return Math.ceil(budget / 5);
 }
 
@@ -23416,7 +23421,14 @@ function floorModel(f) {
     despatched,
     byStation,
     robots: all.filter((p) => p.who),
-    benches: Math.max(1, Math.min(FLOOR_MAX_BENCHES, f.slots || 3)),
+    // one bench per agent slot, and one for every robot at Assembly beyond them
+    benches: Math.max(
+      1,
+      Math.min(
+        FLOOR_MAX_BENCHES,
+        Math.max(f.slots || 3, (byStation.assembly || []).filter((p) => p.who).length),
+      ),
+    ),
     decisions: f.items.filter((i) => i.kind === "decision").length,
     today,
     budget: f.budget,
@@ -23793,9 +23805,13 @@ function floorScene(m) {
       const rx = r * FU * 1.414;
       const ry = r * FU * 0.707;
       const step = floorTickStep(budget);
-      for (let v = 0; v <= budget + 1e-9; v += step) {
+      // a graduation every step, the budget itself last; only the two ends are
+      // figured, so the scale never crowds the jam bay's sign beside it
+      const marks = [];
+      for (let i = 0; i * step < budget - 1e-9; i++) marks.push(Math.round(i * step * 100) / 100);
+      marks.push(budget);
+      marks.forEach((v, i) => {
         const [, yy] = fP(cx, cy, 0.14 + (zMax * v) / budget);
-        const lab = moneyW(Math.round(v * 100) / 100);
         g.append(
           svgEl("path", {
             d: `M${(bx0 - rx).toFixed(1)},${yy.toFixed(1)} A${rx.toFixed(1)},${ry.toFixed(1)} 0 0 0 ${(bx0 + rx).toFixed(1)},${yy.toFixed(1)}`,
@@ -23805,10 +23821,12 @@ function floorScene(m) {
             d: `M${(bx0 + rx - 4).toFixed(1)},${yy.toFixed(1)}h11`,
             class: "fl-tick",
           }),
-          svgEl("text", { x: bx0 + rx + 11, y: yy + 4, class: "fl-tick-label" }, lab),
         );
+        if (i && i < marks.length - 1) return;
+        const lab = v === 0 ? "$0" : moneyW(v);
+        g.append(svgEl("text", { x: bx0 + rx + 11, y: yy + 4, class: "fl-tick-label" }, lab));
         C.obstacles.push(fRect(bx0 + rx + 9, yy - 8, lab.length * 7.6 + 4, 15));
-      }
+      });
     }
     add(cx + cy, g);
     C.tags.push({
@@ -23827,18 +23845,17 @@ function floorScene(m) {
   // the lorry at the end of the line (its deck carries today's despatches)
   {
     const g = svgEl("g", { class: "fl-lorry" });
-    g.append(fBox(10.95, 10.0, 0.32, 1.2, 2.05, 0.22, { base: "var(--fl-lorry-deck)" }));
-    for (const [wx, wy] of [
-      [10.95, 10.35],
-      [10.95, 11.6],
-      [12.15, 10.35],
-      [12.15, 11.6],
-    ]) {
+    const wheel = (wx, wy) => {
       const [ex, ey] = fP(wx, wy, 0.16);
-      g.append(svgEl("ellipse", { cx: ex, cy: ey, rx: 5.2, ry: 7, class: "fl-wheel" }));
-    }
+      return svgEl("ellipse", { cx: ex, cy: ey, rx: 5.2, ry: 7, class: "fl-wheel" });
+    };
+    // the far wheels go under the deck, the near ones over it
+    g.append(wheel(10.95, 10.35), wheel(10.95, 11.6));
+    g.append(fBox(10.95, 10.0, 0.32, 1.2, 2.05, 0.22, { base: "var(--fl-lorry-deck)" }));
+    g.append(wheel(12.15, 10.35), wheel(12.15, 11.6));
     add(22.1, g);
     const cab = svgEl("g", { class: "fl-lorry" });
+    cab.append(wheel(10.95, 12.6));
     cab.append(fBox(10.95, 12.12, 0.24, 1.2, 0.8, 0.95, { base: "var(--fl-lorry)" }));
     cab.append(
       fFace(
@@ -23853,13 +23870,7 @@ function floorScene(m) {
         "f glass",
       ),
     );
-    for (const [wx, wy] of [
-      [10.95, 12.6],
-      [12.15, 12.6],
-    ]) {
-      const [ex, ey] = fP(wx, wy, 0.16);
-      cab.append(svgEl("ellipse", { cx: ex, cy: ey, rx: 5.2, ry: 7, class: "fl-wheel" }));
-    }
+    cab.append(wheel(12.15, 12.6));
     add(24.1, cab);
   }
 
@@ -23934,7 +23945,7 @@ function floorScene(m) {
         ra.append(
           g,
           svgEl("polygon", {
-            points: fHull(rx - 0.26, ry - 0.26, 0, 0.52, 0.52, 1.35),
+            points: fHull(rx - 0.28, ry - 0.28, 0, 0.56, 0.56, 1.55),
             class: "fl-ring",
           }),
         );
@@ -23963,7 +23974,7 @@ function floorScene(m) {
     a.append(
       inner,
       svgEl("polygon", {
-        points: fHull(x - 0.26, y - 0.26, 0, 0.92, 0.52, 1.35),
+        points: fHull(x - 0.28, y - 0.28, 0, 1.08, 0.56, 1.55),
         class: "fl-ring",
       }),
     );

@@ -29,6 +29,8 @@
 # Run: bash runner/test/e2e-memory-routing.test.sh
 # =====================================================================
 set -uo pipefail
+# macOS has no coreutils `timeout`; perl's alarm is the portable bound.
+bound() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; else perl -e 'alarm shift; exec @ARGV' "$@"; fi; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
@@ -289,7 +291,7 @@ MJS
     {name:"search_file_cards",args:{repo:"alpha",query:"tasks"}},
     {name:"suggest_lore",args:{title:"E2E agent suggestion over MCP",summary:"s",body:"b",kind:"convention"}}]))' "$WTCWD" > "$WORK/calls.json"
   # (The worktree itself is gone after the tick; its path is still the agent's guess.)
-  MCPOUT="$(timeout 60 node "$WORK/mcpclient.mjs" "$D1/mcp.json" "$WORK/calls.json" 2>&1)"
+  MCPOUT="$(bound 60 node "$WORK/mcpclient.mjs" "$D1/mcp.json" "$WORK/calls.json" 2>&1)"
   [ "$(printf '%s\n' "$MCPOUT" | sed -n 1p | jget 'd.cards')" -ge 1 ] 2>/dev/null \
     && ok "6: MCP cards_for_scope with NO repoCanonical serves alpha's cards" || fail "6: cards_for_scope (no canonical): $(printf '%s\n' "$MCPOUT" | sed -n 1p)"
   [ "$(printf '%s\n' "$MCPOUT" | sed -n 2p | jget 'd.cards')" -ge 1 ] 2>/dev/null \

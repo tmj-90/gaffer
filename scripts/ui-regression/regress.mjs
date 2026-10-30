@@ -754,7 +754,7 @@ try {
     // The onboarded repo is medium risk by default; the gate's ceiling must admit it.
     await page.selectOption('select[name="self-improve-max-risk"]', "medium");
     const statusTxt = (await page.textContent('[data-testid="idle-status"]').catch(() => "")) || "";
-    /will run 1 lane/.test(statusTxt) && /promote drafts to ready/.test(statusTxt)
+    /runs ONE of the 1 enabled lane/.test(statusTxt) && /promoted to ready/.test(statusTxt)
       ? ok("Settings: Idle loops status line reflects the live selection (1 lane, promotion on)")
       : bad(`Settings: Idle loops status line unexpected: ${statusTxt.slice(0, 160)}`);
     await shot(page, "settings-idle-loops");

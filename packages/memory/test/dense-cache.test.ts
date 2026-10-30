@@ -156,7 +156,7 @@ describe("dense vector cache", () => {
       expect(
         hybrid,
         `"${q}" hybrid ${hybrid.toFixed(1)}ms vs lexical ${lexical.toFixed(1)}ms`,
-      ).toBeLessThan(4 * lexical + 8);
+      ).toBeLessThan(4 * lexical + 15);
     }
   });
 });

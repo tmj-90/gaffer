@@ -208,10 +208,17 @@ export function spawnTrackedRun(
       closeIgnore(logFd);
       logFd = null;
     }
-    tracker.markRunEnd(runId, {
-      exit_code: code,
-      ...(errDetail !== undefined ? { detail: errDetail } : {}),
-    });
+    // The child can outlive the API's database (tests close it; a shutdown races
+    // the exit event). A run row that cannot be closed is not worth crashing
+    // the process over: it is swallowed here, and the stale-run sweep ends it.
+    try {
+      tracker.markRunEnd(runId, {
+        exit_code: code,
+        ...(errDetail !== undefined ? { detail: errDetail } : {}),
+      });
+    } catch {
+      // best-effort: the database may already be closed
+    }
   };
 
   // Attach BEFORE unref so the listener still fires while the API process lives.

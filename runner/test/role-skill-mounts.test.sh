@@ -13,6 +13,8 @@
 # No model calls: CLAUDE_BIN is a stub. Run: bash test/role-skill-mounts.test.sh
 # =====================================================================
 set -uo pipefail
+# macOS has no coreutils `timeout`; perl's alarm is the portable bound.
+bound() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; else perl -e 'alarm shift; exec @ARGV' "$@"; fi; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
@@ -53,7 +55,7 @@ has() { grep -qx -- "$1" "$WORK/mounted.txt" 2>/dev/null; }
 
 echo "== 1: decompose mounts by the target repo's stack + the brief text =="
 rm -f "$WORK/mounted.txt"
-timeout 120 node "$RUNNER_DIR/bin/decompose.mjs" --repo pyapi \
+bound 120 node "$RUNNER_DIR/bin/decompose.mjs" --repo pyapi \
   --brief 'Add an orders endpoint and write a runbook for rotating the database password' \
   >/dev/null 2>&1 </dev/null
 [ -s "$WORK/mounted.txt" ] && ok "the stub agent ran in a home with a skill mount" || fail "no mount listing captured"
@@ -74,7 +76,7 @@ grep -q '"applied":\["plan-build"\]' <<<"$ROW" && ok "…and plan-build as appli
 echo "== 3: the merge resolver gets the merge role's mount, not the whole library =="
 WT="$WORK/merge-wt"; mkdir -p "$WT"
 TOTAL="$(ls -1d "$RUNNER_DIR"/skills/*/ | wc -l | tr -d ' ')"
-OUT="$(cd "$WORK" && timeout 60 node --input-type=module -e "
+OUT="$(cd "$WORK" && bound 60 node --input-type=module -e "
 import { installProjectLocalWiring } from '$RUNNER_DIR/bin/merge-ticket.mjs';
 import { readdirSync, readlinkSync } from 'node:fs';
 installProjectLocalWiring('$WT', 4242, 'pyapi', { stack: 'go' });

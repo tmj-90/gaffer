@@ -51,7 +51,7 @@ if PATH="$WORK/bin:$PATH" node "$RENDER" --data "$DATA" --out "$OUT" 2>"$WORK/re
 else
   fail "render.mjs failed: $(cat "$WORK/render.err")"
 fi
-sed -n '/<plist/,$p' "$OUT" | grep -q '__GAFFER_' && fail "a placeholder survived rendering" || ok "no __GAFFER_*__ placeholder left in the plist body"
+grep -q '__GAFFER_' <<<"$(sed -n '/<plist/,$p' "$OUT")" && fail "a placeholder survived rendering" || ok "no __GAFFER_*__ placeholder left in the plist body"
 
 # Extract the plist with a parser so the assertions read real values, not text.
 extract() {
@@ -70,7 +70,9 @@ jf() { printf '%s' "$J" | node -e 'const d=JSON.parse(require("fs").readFileSync
 PLIST_PATH="$(jf PATH)"
 case "$PLIST_PATH" in "$NODE_DIR":*) ok "PATH starts with node's dir ($NODE_DIR)" ;; *) fail "PATH does not start with node's dir: $PLIST_PATH" ;; esac
 case ":$PLIST_PATH:" in *":$WORK/bin:"*) ok "PATH includes claude's dir from the caller's PATH" ;; *) fail "PATH lacks claude's dir: $PLIST_PATH" ;; esac
-case ":$PLIST_PATH:" in *":/usr/bin:"*":/bin:"*) ok "PATH keeps the system dirs" ;; *) fail "PATH lacks /usr/bin:/bin: $PLIST_PATH" ;; esac
+# Two separate checks: a single glob with both dirs misses the usual adjacent
+# "/usr/bin:/bin" (the colon between them cannot serve both patterns).
+case ":$PLIST_PATH:" in *":/usr/bin:"*) case ":$PLIST_PATH:" in *":/bin:"*) ok "PATH keeps the system dirs" ;; *) fail "PATH lacks /bin: $PLIST_PATH" ;; esac ;; *) fail "PATH lacks /usr/bin: $PLIST_PATH" ;; esac
 [ "$(jf args | tail -1)" = "$ROOT/runner/loop.sh" ] && ok "ProgramArguments runs this checkout's loop.sh" || fail "ProgramArguments: $(jf args)"
 [ "$(jf GAFFER_DATA)" = "$DATA" ] && ok "GAFFER_DATA is the rendered data dir (XML round-trips)" || fail "GAFFER_DATA: $(jf GAFFER_DATA)"
 [ "$(jf out)" = "$DATA/launchd.out.log" ] && ok "log path under the data dir" || fail "StandardOutPath: $(jf out)"
@@ -89,8 +91,10 @@ fi
 echo "== 3. run the job the way launchd does (env -i + the plist's environment) =="
 JOB_DATA="$WORK/jobdata"; mkdir -p "$JOB_DATA"
 # The plist's own environment, with GAFFER_DATA moved to a path the stub run owns.
+# macOS has no coreutils `timeout`; perl's alarm is the portable bound.
+if command -v timeout >/dev/null 2>&1; then BOUND=(timeout 120); else BOUND=(perl -e 'alarm shift; exec @ARGV' 120); fi
 run_job() {   # $1 = PATH to run with
-  timeout 120 env -i HOME="$WORK/home" PATH="$1" GAFFER_DATA="$JOB_DATA" \
+  "${BOUND[@]}" env -i HOME="$WORK/home" PATH="$1" GAFFER_DATA="$JOB_DATA" \
     DRY_RUN="$(jf DRY_RUN)" MAX_TICKS=1 MAX_TICKS_PER_DAY=0 EMPTY_POLL_LIMIT=1 TICK_SLEEP=0 \
     /bin/bash "$(jf args | tail -1)" >"$WORK/job.out" 2>&1
 }
@@ -143,7 +147,7 @@ OUT="$DD_OUT"; J="$(extract)"
 [ "$(jf PATH)" = "$DD_PATH" ] && ok "--path is used verbatim, '--' and all" || fail "PATH: $(jf PATH)"
 HEAD_CMT="$(sed -n '1,/-->/p' "$DD_OUT")"
 case "$HEAD_CMT" in *"$DD_DATA"*|*"/a--b"*) fail "a rendered value landed in the header comment" ;; *) ok "no rendered value in the header comment" ;; esac
-printf '%s' "$HEAD_CMT" | grep -q '__GAFFER_REPO__ .*absolute path to the Gaffer' \
+grep -q '__GAFFER_REPO__ .*absolute path to the Gaffer' <<<"$HEAD_CMT" \
   && ok "the header comment still names the placeholders it documents" \
   || fail "header comment lost its placeholder names"
 # A repo checkout whose own path contains '--' (ProgramArguments is in the body).

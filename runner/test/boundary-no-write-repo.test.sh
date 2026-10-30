@@ -88,13 +88,13 @@ wg ticket ready "$B" >/dev/null 2>&1
 OUT2="$(run_tick)"
 grep -q '^TICK_RESULT=no_work$' <<<"$OUT2" && ok "tick → no_work for the pathless ticket" || fail "tick result: $OUT2"
 grep -q "ticket #$B has no local repo path" "$GAFFER_DATA/factory.log" && ok "tick logs that #$B's write repo has no local path" || fail "no 'has no local repo path' log line for #$B"
-grep -E "ticket #$B has no local repo path" "$GAFFER_DATA/factory.log" | grep -q "no_local_repo_path" \
+grep -q "no_local_repo_path" <<<"$(grep -E "ticket #$B has no local repo path" "$GAFFER_DATA/factory.log")" \
   && ok "#$B's park names reason_code no_local_repo_path" || fail "#$B's park log does not name no_local_repo_path"
 # Its access IS write: the false "read/test/context-only … set its access to write"
 # reason (an unblock just re-parks it) must not be what the human is told.
 ! grep -q "#$B has no WRITE repo" "$GAFFER_DATA/factory.log" \
   && ok "#$B is not misreported as having no WRITE repo" || fail "#$B misreported as no_write_repo: $(grep "#$B has no WRITE repo" "$GAFFER_DATA/factory.log")"
-grep -E "#$B → blocked" "$GAFFER_DATA/factory.log" | grep -q "register its path" \
+grep -q "register its path" <<<"$(grep -E "#$B → blocked" "$GAFFER_DATA/factory.log")" \
   && ok "#$B's human-queue reason says to register its path or clone it" || fail "#$B's release reason lacks the register/clone instruction"
 grep -qx "$B" "$GAFFER_DATA/.failed-tickets" 2>/dev/null && ok "#$B is skipped (no re-claim loop)" || fail "#$B not in the skip file"
 [ "$(st "$B")" = "blocked" ] && ok "#$B parked → blocked for a human" || fail "#$B ended '$(st "$B")' (want blocked)"

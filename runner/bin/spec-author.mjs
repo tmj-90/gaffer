@@ -95,7 +95,7 @@ import {
   recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
-import { roleTurnCap } from "../lib/worker.mjs";
+import { roleTurnCap, withCallBudget } from "../lib/worker.mjs";
 
 // The agent turn spawns from a throwaway agent home (lib/agent-home.mjs), so this
 // helper no longer needs its own runner-dir path.
@@ -497,13 +497,16 @@ function runClaudeTurn(prompt, opts) {
   // --output-format json makes stdout a JSON result object carrying real usage AND
   // the agent's text in `.result`. We ledger the usage and feed `.result` to the
   // existing extractLastJsonBlock parser, so the contract is preserved.
-  const args = ["-p", prompt, "--output-format", "json", ...flags];
+  let args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (denial-of-wallet): bound the agent's model round-trips in
   // addition to the wall-clock timeout on spawnSync. This helper's own cap
   // (--max-turns > GAFFER_SPEC_AUTHOR_MAX_TURNS > 20) wins; the global
   // GAFFER_MAX_TURNS is only a CEILING that can lower it (roleTurnCap).
   const maxTurns = roleTurnCap(opts.maxTurns);
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
+  // The opt-in per-call dollar cap (GAFFER_MAX_CALL_USD → --max-budget-usd). This
+  // spawn is outside Worker.deliver, so it applies the seam's cap itself.
+  args = withCallBudget(args);
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);
   // SKILLS: mount the factory's skills (spec-author) into a THROWAWAY agent home so the

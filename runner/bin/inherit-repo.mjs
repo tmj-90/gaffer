@@ -45,7 +45,7 @@ import { dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadRegistry } from "./route-model.mjs";
-import { roleTurnCap } from "../lib/worker.mjs";
+import { roleTurnCap, withCallBudget } from "../lib/worker.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -345,6 +345,8 @@ export function buildPrompt({ title, description, candidates }) {
  * listing, a 2-turn cap. `--output-format json` makes the call measurable: the bash
  * caller books it in the usage ledger (kind `inherit`) and reads `.result`. The
  * text-only flags come AFTER the operator's CLAUDE_FLAGS so they cannot be undone.
+ * The bash caller spawns this argv outside Worker.deliver, so the seam's opt-in
+ * per-call dollar cap (GAFFER_MAX_CALL_USD → --max-budget-usd) is applied here.
  */
 export const INHERIT_MAX_TURNS = 2;
 export function buildClaudeArgv({
@@ -356,12 +358,9 @@ export function buildClaudeArgv({
   const args = ["-p", prompt, "--output-format", "json"];
   if (model) args.push("--model", model);
   const turns = maxTurns > 0 ? ["--max-turns", String(maxTurns)] : [];
-  return args.concat(flags, turns, [
-    "--tools",
-    "",
-    "--strict-mcp-config",
-    "--disable-slash-commands",
-  ]);
+  return withCallBudget(
+    args.concat(flags, turns, ["--tools", "", "--strict-mcp-config", "--disable-slash-commands"]),
+  );
 }
 
 function main() {

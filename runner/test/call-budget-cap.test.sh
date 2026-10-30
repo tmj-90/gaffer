@@ -94,6 +94,31 @@ SHOW='{"ticket":{"delivery_budget_usd":5}}'; GAFFER_REWORK_BUDGET_USD=""
 SHOW='{"ticket":{}}'
 [ -z "$(gaffer_ticket_budget_remaining 7)" ] && ok "no ceiling configured → nothing (no clamp)" || fail "remaining without a ceiling"
 
+echo "== 5: the spawns outside Worker.deliver carry the cap too =="
+# spec-author spawns claude itself, and the inherit classifier's argv is spawned by
+# greenfield.sh; both used to skip the cap. decompose (through the seam) is the control.
+unset GAFFER_BUDGET_REMAINING
+for helper in decompose spec-author; do
+  rm -f "$WORK/claude.argv"
+  GAFFER_DATA="$WORK/$helper" GAFFER_MAX_CALL_USD=3 \
+    node "$RUNNER_DIR/bin/$helper.mjs" --brief x >/dev/null 2>&1 </dev/null
+  [ "$(count_flag)" = "1" ] && [ "$(budget_arg)" = "3.0000" ] \
+    && ok "$helper.mjs: GAFFER_MAX_CALL_USD=3 → --max-budget-usd 3.0000" \
+    || fail "$helper.mjs argv lacks the cap ($(count_flag), '$(budget_arg)')"
+  rm -f "$WORK/claude.argv"
+  GAFFER_DATA="$WORK/$helper" node "$RUNNER_DIR/bin/$helper.mjs" --brief x >/dev/null 2>&1 </dev/null
+  [ -f "$WORK/claude.argv" ] && [ "$(count_flag)" = "0" ] \
+    && ok "$helper.mjs: no flag with the knob off" || fail "$helper.mjs default argv changed"
+done
+inherit_cap() { node --input-type=module -e "
+import { buildClaudeArgv } from '$RUNNER_DIR/bin/inherit-repo.mjs';
+const a = buildClaudeArgv({ prompt: 'P', model: 'haiku', flags: [] });
+const i = a.indexOf('--max-budget-usd'); console.log(i < 0 ? 'none' : a[i + 1]);"; }
+[ "$(GAFFER_MAX_CALL_USD=3 inherit_cap)" = "3.0000" ] \
+  && ok "inherit classifier argv carries --max-budget-usd 3.0000" || fail "inherit argv lacks the cap"
+[ "$(inherit_cap)" = "none" ] && ok "inherit classifier argv unchanged with the knob off" \
+  || fail "inherit default argv changed"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

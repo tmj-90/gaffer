@@ -35,9 +35,14 @@ ticks scan the repos and draft new tickets.
 ### Idle maintenance lane (opt-in, deterministically prioritised)
 
 When there are no claimable tickets, the factory can do maintenance work instead
-of just polling. Set `GAFFER_MAINTENANCE=1` (OFF by default to respect token
-cost) and a quiet tick runs **one** maintenance loop chosen by a **deterministic
-priority + rotation scheduler — no LLM in the choice** (`fg maintain`):
+of just polling. Turn the lane on in **Settings → Idle loops** (crew.yaml
+`loops.maintenance.enabled`; OFF by default) **and enable at least one lane** —
+the lane only rotates through the idle loops you enabled, so the switch alone
+does nothing. A quiet tick then runs **one** maintenance loop chosen by a
+**deterministic priority + rotation scheduler — no LLM in the choice** (`fg
+maintain`). `GAFFER_MAINTENANCE` in the runner's env is only an override: `0` =
+never run the lane, `1` = run it even while the switch is off, empty = the
+switch decides.
 
 - **Priority order:** `security_hotspot` → `coverage` / `test_quality` →
   `type_quality` / `tech_debt` → `documentation` / `dependency_hygiene`. Security
@@ -48,12 +53,33 @@ priority + rotation scheduler — no LLM in the choice** (`fg maintain`):
 - **Which lanes rotate:** only the idle loops you have enabled in `crew.yaml`
   (each loop's own `enabled` flag); `loops.maintenance` only gates the lane
   itself. The chosen lane + rationale are logged every tick (`maintenance lane
-  chose '<lane>' (<reason>)`).
+  chose '<lane>' (<reason>)`). The coverage lane needs a repo `coverage_command`
+  (`wg repo set-commands <repo> --coverage '<cmd>'`) and files only when the
+  parsed total is below `minimum_gap_threshold`; the dependency lane finds
+  outdated / vulnerable packages only with an `audit_command` (the panel's
+  field), otherwise it flags floating ranges only.
+- **Also on the same tick:** GitHub / Jira issue ingest (`ingest.*.enabled`),
+  the **lore-gap** loop and the **feature backlog** (`loops.idle_lore_gap` /
+  `loops.idle_feature_backlog`) run alongside the chosen lane, against the
+  factory's own memory server and planner — no `memory.mcp` or
+  `decompose_script` hand-wiring. The feature backlog is the one idle step that
+  spends a model call (one planning call per feature, counted against
+  `MAX_TICKS_PER_DAY`); a failed plan releases the feature back to `backlog`.
 - **Observation only:** like every idle loop, the chosen lane drafts tickets and
   never edits code. The deepened `security_hotspot` lane runs three distinct
   lenses (`security-secret-handling`, `security-input-validation`,
   `security-authz`) and an adversarial default-refute verify pass before filing,
   to cut false positives.
+- **Results and caps:** a tick that filed something is `maintenance_drafted`
+  (productive). A tick whose scans found nothing new is `no_work`: the scans
+  call no model, so it counts as an empty poll (`EMPTY_POLL_LIMIT` drains the
+  pool) and stays off the day cap. Only a tick that ran the paid backlog planner
+  and filed nothing is `maintenance_ran` — counted against the day cap, but an
+  empty poll for draining.
+- **Strict containment:** under `GAFFER_STRICT_REQUIRE=1` the idle loops refuse
+  to run repo commands on the host (`coverage_command`, `audit_command`, the
+  tsc/semgrep oracles) unless `GAFFER_IDLE_HOST_EXEC=1`; the in-process scans
+  still run.
 
 Deferred (follow-up): dedicating a fraction of the A1 concurrency pool to the
 maintenance lane so it runs alongside delivery rather than only on idle ticks.

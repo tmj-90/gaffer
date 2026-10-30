@@ -20,7 +20,7 @@ computed from other knobs at runtime.
 | Metric | Count |
 |---|---|
 | Knobs with a runner default | 134 |
-| Knobs editable in the dashboard | 56 |
+| Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 75 |
 
@@ -38,7 +38,7 @@ computed from other knobs at runtime.
 | `DISPATCH_DB` | _derived_ (`$GAFFER_DATA/dispatch.sqlite`) |  | crew, dispatch, runner | Shared databases (the two MCP servers read these) |
 | `MEMORY_DB` | _derived_ (`$GAFFER_DATA/memory.sqlite`) |  | crew, dispatch, memory, runner |  |
 | `CREW_CONFIG` | _derived_ (`$GAFFER_DATA/crew.yaml`) |  | crew, dispatch, runner |  |
-| `MEMORY_AUDIT_LOG` | _derived_ (`$GAFFER_DATA/memory-audit.jsonl`) |  | memory, runner | memory's MCP/CLI audit trail. |
+| `MEMORY_AUDIT_LOG` | _derived_ (`$GAFFER_DATA/memory-audit.jsonl`) |  | crew, memory, runner | memory's MCP/CLI audit trail. |
 | `GAFFER_ESTIMATE_LIB` | _derived_ (`$RUNNER_DIR/lib/estimate.mjs`) |  | runner | Shared usage-ledger READER (lib/estimate.mjs parseLedger). |
 | `MCP_CONFIG` | _derived_ (`$RUNNER_DIR/.mcp.json`) |  | runner | Claude Code wiring |
 | `CLAUDE_SETTINGS` | _derived_ (`$RUNNER_DIR/claude/settings.json`) |  | runner |  |
@@ -150,9 +150,9 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `DRY_RUN` | `1` |  | runner | DRY_RUN=1 prints what it WOULD do and never invokes Claude or mutates a repo. |
 | `MAX_TICKS` | `5` | yes (int) | dispatch, runner | Upper bound on factory ticks for a single run. |
-| `EMPTY_POLL_LIMIT` | `2` | yes (int) | dispatch, runner | Consecutive empty polls (no ready work) before the run stops or drops into idle loops. |
+| `EMPTY_POLL_LIMIT` | `2` | yes (int) | dispatch, runner | Consecutive empty polls before the run (or a pool worker) stops: a no_work tick, or an idle maintenance tick whose scans filed nothing (they call no model, so they do not keep the run alive or consume the day cap). |
 | `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. |
-| `MAX_TICKS_PER_DAY` | `50` | yes (int) | dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. 0 = unlimited. |
+| `MAX_TICKS_PER_DAY` | `50` | yes (int) | crew, dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. 0 = unlimited. |
 | `DAILY_COUNTER_FILE` | _derived_ (`$GAFFER_DATA/.daily-ticks`) |  | runner |  |
 | `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it. Empty or 0 = off. |
 
@@ -187,7 +187,7 @@ computed from other knobs at runtime.
 | `MERGE_ON_AGENT_REVIEW` | `0` | yes (boolean) | dispatch, runner | Fire the merge command when an agent (not just a human) approves. |
 | `AUTO_MERGE` | `0` | yes (boolean) | dispatch, runner | Safe-merge into the default branch on approval. Off → approved tickets wait at ready-for-merge for a human. |
 | `GAFFER_AUTO_PUSH` | `0` | yes (boolean) | dispatch, runner | The final AFK step: push the default branch to origin after a successful auto-merge. Requires Auto-merge; off → merges stay local. |
-| `GAFFER_IDLE_HOST_EXEC` | `0` |  | crew, runner | 1 = allow idle repo commands on the host under GAFFER_STRICT_REQUIRE |
+| `GAFFER_IDLE_HOST_EXEC` | `0` |  | crew, dispatch, runner | 1 = allow idle repo commands (coverage_command, audit_command, tsc/semgrep oracles) on the host under GAFFER_STRICT_REQUIRE |
 
 ### Strict execution mode
 
@@ -221,8 +221,8 @@ computed from other knobs at runtime.
 | `GAFFER_MERGE_LANE` | `1` |  | runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the |
 | `GAFFER_CONFLICT_RESOLVER` | `1` |  | runner | CONFLICT RESOLVER (lib/land.sh): when a landing hits a merge CONFLICT (the branch forked before a sibling landed on the same files), spawn bin/merge-ticket.mjs's resolver agent ONCE per ticket: it merges the default bran |
 | `CLARIFY_DRAFTS_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria. |
-| `IDLE_DRAFT_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run ALL enabled crew idle loops in one pass (drafts only). Superseded by the maintenance lane below, which runs one prioritised lane per idle tick and can promote its own drafts. |
-| `GAFFER_MAINTENANCE` | _(empty)_ |  | crew, dispatch, runner | env override for the idle maintenance lane: empty = crew.yaml decides, 0 = off, 1 = force |
+| `IDLE_DRAFT_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle AND the maintenance lane is off (or failed), run ALL enabled crew idle loops in one pass plus GitHub/Jira ingest and the lore-gap / feature-backlog loops. Superseded by the maintenance lane in the Idle loops panel, which runs one prioritised lane per idle tick (rotating), does the same ingest + async loops, and can promote its own drafts. A tick that files nothing is an empty poll. |
+| `GAFFER_MAINTENANCE` | _(empty)_ | yes (string: 0 / 1) | crew, dispatch, runner | Overrides the Idle loops panel's master switch (crew.yaml `loops.maintenance.enabled`): 0 = kill switch, an idle tick never runs maintenance · 1 = run the lane even while the switch is off · empty = the panel decides. It only turns the LANE on: it rotates through the lanes you enabled, so with none enabled an idle tick still does nothing (and reports no_work). |
 
 ### H4: real PR creation
 
@@ -288,7 +288,7 @@ consuming component applies its own default when the variable is unset.
 | Variable | Type | Group | Read by | Help |
 |---|---|---|---|---|
 | `GAFFER_TESTING` | boolean | autonomy | dispatch, runner | When on, an approved testable ticket routes through the independent testing lane (in_review → in_testing) instead of straight to merge. The lane, the contract, and the runner seam are live; the seam hands an independent tester the contract + AC (never the diff). Only tickets carrying the testable flag are routed (`wg ticket set-testable <n>`; the planner does not set it) — the rest go straight from approval to merge, as does everything when this is off. |
-| `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | crew, dispatch | When idle, pull one backlog feature from memory and plan it as an epic. Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml decides. |
+| `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | crew, dispatch | When idle, pull one `backlog` feature from the factory's memory ledger and plan it as a draft epic (the runner's own planner — one model call per feature, counted against the day cap; a failed plan releases the feature). Runs alongside the maintenance lane on every idle tick. Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml decides. |
 | `GAFFER_IDLE_MODE` | string: observe_only / create_draft_tickets / create_ready_tickets | idle-loops | crew, dispatch | How far EVERY idle loop goes with a finding: observe_only reports it and files nothing · create_draft_tickets files a draft for a human to ready (the default) · create_ready_tickets files it past the human gate. When set it overrides each loop's `mode` in crew.yaml for the crew runs the runner spawns; empty = crew.yaml decides per loop. |
 | `GAFFER_NOTIFY_WEBHOOK_URL` | string | notifications | dispatch, runner | POST each human-gate event as JSON to this URL (the generic integration). |
 | `GAFFER_NOTIFY_SLACK_URL` | string | notifications | dispatch, runner | Slack incoming-webhook URL — gates arrive as a Slack message. |

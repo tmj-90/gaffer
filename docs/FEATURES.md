@@ -215,13 +215,20 @@ lane (security hotspots, coverage, test quality, type quality, tech debt,
 documentation, dependencies) chosen by a deterministic priority-and-rotation
 scheduler, no model in the choice. Each finding becomes a draft ticket that
 carries a behaviour-preserving acceptance criterion with the repo's own test
-command as its check, so the runner verifies the fix mechanically. The **Idle
-loops** panel holds the master switch, the lane toggles, a recommended set, and
-the **self-improve** gate: opted-in repos, a risk ceiling and a per-tick cap
-under which the tick promotes its own drafts to ready so the delivery loop fixes
-them without a human in the promote step. Off by default; the panel's status
-line says exactly what the next idle tick will do. Repos onboarded from the
-dashboard are scanned without editing `crew.yaml`.
+command as its check, so the runner verifies the fix mechanically. The same tick
+ingests labelled GitHub/Jira issues and runs the lore-gap and feature-backlog
+loops when those are on. The scans cost nothing, so a tick that finds nothing
+new is an empty poll (it drains the run and stays off the day cap); only the
+feature backlog spends a model call. The **Idle loops** panel holds the master
+switch, the lane toggles, a recommended set, the dependency lane's audit
+command, and the **self-improve** gate: opted-in repos, a risk ceiling and a
+per-tick cap under which the tick promotes its own drafts to ready so the
+delivery loop fixes them without a human in the promote step. Off by default;
+the panel's status line says what the next idle tick will do — one lane per
+tick, rotating — reading the runner's `GAFFER_MAINTENANCE`, `GAFFER_IDLE_MODE`
+and `IDLE_DRAFT_WHEN_IDLE` overrides and each lane's prerequisites (the
+coverage lane needs a repo coverage command and files only below its target).
+Repos onboarded from the dashboard are scanned without editing `crew.yaml`.
 
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to

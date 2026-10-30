@@ -239,6 +239,63 @@ describe("idleLoops module: read/write crew.yaml slice", () => {
     expect(view.loops.find((l) => l.key === "idle_coverage")!.repos).toEqual([]);
   });
 
+  it("reads and writes idle_dependencies.audit_command (null clears; other loops refuse it)", () => {
+    expect(readIdleLoops(path).loops.find((l) => l.key === "idle_dependencies")!.auditCommand).toBe(
+      null,
+    );
+    // Rows without the field leave crew.yaml's value alone.
+    expect(readIdleLoops(path).loops.find((l) => l.key === "idle_coverage")).not.toHaveProperty(
+      "auditCommand",
+    );
+    const view = writeIdleLoops(
+      path,
+      [
+        {
+          key: "idle_dependencies",
+          enabled: true,
+          repos: [],
+          audit_command: " pnpm outdated --json ",
+        },
+      ],
+      ["api", "web"],
+    );
+    expect(view.loops.find((l) => l.key === "idle_dependencies")!.auditCommand).toBe(
+      "pnpm outdated --json",
+    );
+    const doc = parseYaml(readFileSync(path, "utf8")) as {
+      loops: { idle_dependencies: { audit_command: string | null; mode: string } };
+    };
+    expect(doc.loops.idle_dependencies.audit_command).toBe("pnpm outdated --json");
+    expect(doc.loops.idle_dependencies.mode).toBe("create_draft_tickets"); // preserved
+    // Omitting the field keeps it; null clears it.
+    writeIdleLoops(path, [{ key: "idle_dependencies", enabled: true, repos: [] }], ["api"]);
+    expect(readIdleLoops(path).loops.find((l) => l.key === "idle_dependencies")!.auditCommand).toBe(
+      "pnpm outdated --json",
+    );
+    writeIdleLoops(
+      path,
+      [{ key: "idle_dependencies", enabled: true, repos: [], audit_command: null }],
+      ["api"],
+    );
+    expect(readIdleLoops(path).loops.find((l) => l.key === "idle_dependencies")!.auditCommand).toBe(
+      null,
+    );
+    expect(() =>
+      writeIdleLoops(
+        path,
+        [{ key: "idle_coverage", enabled: true, repos: [], audit_command: "x" }],
+        ["api"],
+      ),
+    ).toThrow(/only valid on idle_dependencies/);
+    expect(() =>
+      writeIdleLoops(
+        path,
+        [{ key: "idle_dependencies", enabled: true, repos: [], audit_command: "a\nb" }],
+        ["api"],
+      ),
+    ).toThrow(/control characters/);
+  });
+
   it("rejects an unknown loop key", () => {
     expect(() =>
       writeIdleLoops(path, [{ key: "idle_bogus", enabled: true, repos: [] }], ["api", "web"]),

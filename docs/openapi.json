@@ -10113,6 +10113,17 @@
                   },
                   "maxItems": 200,
                   "default": []
+                },
+                "audit_command": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 500
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [

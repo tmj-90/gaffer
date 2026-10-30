@@ -104,6 +104,13 @@ export interface IdleLoopRow {
   readonly repos: readonly string[];
   /** True when the maintenance lane's scheduler rotates through this loop. */
   readonly maintenanceLane: boolean;
+  /**
+   * `idle_dependencies` only: the read-only outdated/audit command the lane runs
+   * in each repo checkout (e.g. `pnpm outdated --json`). Null = none, so the lane
+   * flags only floating ranges (`*`, `latest`, `>`) and never finds outdated or
+   * vulnerable packages. Absent on every other loop.
+   */
+  readonly auditCommand?: string | null;
 }
 
 /** `loops.maintenance` — the lane's master switch. */
@@ -139,7 +146,17 @@ export interface IdleLoopUpdate {
   readonly key: string;
   readonly enabled: boolean;
   readonly repos: readonly string[];
+  /**
+   * `idle_dependencies` only: set (or clear with null / "") the audit command.
+   * Omitted = leave crew.yaml's value alone. Rejected on any other loop.
+   */
+  readonly audit_command?: string | null | undefined;
 }
+
+/** Hard cap on an audit command's length; one shell line, no control characters. */
+export const AUDIT_COMMAND_MAX_LENGTH = 500;
+// eslint-disable-next-line no-control-regex -- explicit control-byte guard (NUL/newline/etc.).
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
 
 /** The optional lane-level updates a PUT may carry beside the loop rows. */
 export interface IdleLaneUpdates {
@@ -169,6 +186,13 @@ export function resolveCrewConfigPath(env: NodeJS.ProcessEnv = process.env): str
 function readEnabled(loop: unknown): boolean {
   if (typeof loop !== "object" || loop === null) return false;
   return (loop as Record<string, unknown>).enabled === true;
+}
+
+/** `idle_dependencies.audit_command`, read defensively: a non-empty string or null. */
+function readAuditCommand(loop: unknown): string | null {
+  if (typeof loop !== "object" || loop === null) return null;
+  const raw = (loop as Record<string, unknown>).audit_command;
+  return typeof raw === "string" && raw.trim() !== "" ? raw : null;
 }
 
 /** A single loop's `repos` list, read defensively (only strings survive). */
@@ -226,6 +250,7 @@ export function readIdleLoops(path: string): IdleLoopsView {
       enabled: readEnabled(node),
       repos: readRepos(node),
       maintenanceLane: MAINTENANCE_LANE_KEYS.has(key),
+      ...(key === "idle_dependencies" ? { auditCommand: readAuditCommand(node) } : {}),
     };
   });
 
@@ -265,6 +290,7 @@ function notConfiguredView(): IdleLoopsView {
       enabled: false,
       repos: [],
       maintenanceLane: MAINTENANCE_LANE_KEYS.has(key),
+      ...(key === "idle_dependencies" ? { auditCommand: null } : {}),
     })),
     maintenance: { enabled: false },
     selfImprove: { enabled: false, repos: [], maxRisk: "low", maxReadyPerRun: 1 },
@@ -292,6 +318,32 @@ export function writeIdleLoops(
   for (const u of updates) {
     if (!KNOWN_KEYS.has(u.key)) {
       throw new DispatchError("VALIDATION_ERROR", `Unknown idle loop key: ${u.key}.`);
+    }
+    // The audit command is a shell line the lane runs in each repo checkout (on the
+    // host; refused under GAFFER_STRICT_REQUIRE unless the operator opts in): only
+    // the dependency lane takes one, and it must be one bounded line.
+    if (u.audit_command !== undefined && u.audit_command !== null) {
+      if (u.key !== "idle_dependencies") {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `audit_command is only valid on idle_dependencies (got ${u.key}).`,
+        );
+      }
+      if (typeof u.audit_command !== "string") {
+        throw new DispatchError("VALIDATION_ERROR", "audit_command must be a string or null.");
+      }
+      if (u.audit_command.length > AUDIT_COMMAND_MAX_LENGTH) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `audit_command must be at most ${AUDIT_COMMAND_MAX_LENGTH} characters.`,
+        );
+      }
+      if (CONTROL_CHARS.test(u.audit_command)) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "audit_command must be one line with no control characters.",
+        );
+      }
     }
   }
   // Lane-level fields: the self-improve gate names repos (must be registered — an
@@ -381,10 +433,14 @@ export function writeIdleLoops(
       typeof loopsNode[u.key] === "object" && loopsNode[u.key] !== null
         ? (loopsNode[u.key] as Record<string, unknown>)
         : {};
-    // Mutate only the two editable fields; everything else on the loop (mode,
+    // Mutate only the editable fields; everything else on the loop (mode,
     // thresholds, decompose wiring) is preserved verbatim.
     existing.enabled = u.enabled;
     existing.repos = [...u.repos];
+    if (u.audit_command !== undefined) {
+      const cmd = (u.audit_command ?? "").trim();
+      existing.audit_command = cmd === "" ? null : cmd;
+    }
     loopsNode[u.key] = existing;
   }
 

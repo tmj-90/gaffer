@@ -5,7 +5,9 @@
   ~/Library/LaunchAgents, and `launchctl load` it. Review factory.config.sh
   (especially DRY_RUN) first.
 
-  Placeholders (filled by runner/launchd/render.mjs):
+  Placeholders (filled by runner/launchd/render.mjs in the plist body below; this
+  comment is copied as-is, since a path containing a double hyphen is not allowed
+  inside an XML comment):
     __GAFFER_REPO__   absolute path to the Gaffer monorepo checkout root
     __GAFFER_DATA__   absolute path to the factory state dir (default: <repo>/.gaffer)
     __GAFFER_PATH__   the PATH the job runs with. launchd starts a job with a bare

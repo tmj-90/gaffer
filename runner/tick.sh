@@ -338,7 +338,7 @@ gaffer_trust_workspace() {
   # worktrees are still validated strictly (under the worktree root) regardless.
   # GAFFER_DATA is passed so the prune of dead worktree entries knows this factory's
   # real worktree root ($GAFFER_DATA/worktrees) under a non-default data dir.
-  GAFFER_DATA="$GAFFER_DATA" GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
+  GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
     || log "TRUST: could not pre-trust $dir (headless agent may hang on an MCP tool prompt)"
   # Claude Code keys a git WORKTREE's trust on its MAIN repo working tree (the
   # git-common-dir's parent), NOT the worktree path — so trusting only a linked
@@ -351,7 +351,7 @@ gaffer_trust_workspace() {
   local main
   main="$(gaffer_git_main_worktree "$dir")"
   if [ -n "$main" ] && [ "$main" != "$dir" ] && [ -d "$main" ]; then
-    GAFFER_DATA="$GAFFER_DATA" GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY=1 \
+    GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY=1 \
       node "$RUNNER_DIR/lib/trust-workspace.mjs" "$main" 2>>"$GAFFER_LOG" \
       || log "TRUST: could not pre-trust main repo root $main (worktree $dir)"
   fi

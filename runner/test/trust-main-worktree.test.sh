@@ -15,6 +15,9 @@
 #   AC4  gaffer_trust_workspace(worktree) invokes trust for BOTH the worktree AND the
 #        main root, and the main-root call carries GAFFER_TRUST_KEY_ONLY=1
 #   AC5  gaffer_trust_workspace(plain repo root) invokes trust ONCE (main == dir)
+#   AC6  GAFFER_DATA is forwarded to both trust calls when set (so the prune knows a
+#        non-default worktree root), and an UNSET GAFFER_DATA under `set -u` does not
+#        abort the function (it is passed as empty, which trust-workspace.mjs ignores)
 # Hermetic: real git repo + worktree; `node` is stubbed to record its argv+env, so
 # no ~/.claude.json is touched. Run: bash test/trust-main-worktree.test.sh
 # =====================================================================
@@ -59,7 +62,7 @@ cat >"$BIN/node" <<EOF
 # Anything but the trust script (e.g. the runner's lib/json-tool.mjs) runs for real.
 case "\$*" in *trust-workspace.mjs*) ;; *) exec "$REAL_NODE" "\$@" ;; esac
 # Record: last path arg + whether KEY_ONLY was set in the env, one line per call.
-printf '%s KEY_ONLY=%s\n' "\${!#}" "\${GAFFER_TRUST_KEY_ONLY:-}" >> "$CALLS"
+printf '%s KEY_ONLY=%s DATA=%s\n' "\${!#}" "\${GAFFER_TRUST_KEY_ONLY:-}" "\${GAFFER_DATA:-}" >> "$CALLS"
 exit 0
 EOF
 chmod +x "$BIN/node"
@@ -91,20 +94,24 @@ NOGIT="$WORK/plain"; mkdir -p "$NOGIT"
 GOT="$(gaffer_git_main_worktree "$NOGIT")"
 [ -z "$GOT" ] && ok "a non-git dir yields empty" || fail "non-git yielded '$GOT'"
 
+# The test's own environment must not decide the outcome: AC4/AC5 run with GAFFER_DATA
+# unset, exactly as when this file is run on its own (its documented invocation).
+unset GAFFER_DATA
+
 echo "== AC4: trust(worktree) trusts BOTH paths; main-root call is KEY_ONLY =="
 : >"$CALLS"
 gaffer_trust_workspace "$WT"
 N="$(wc -l <"$CALLS" | tr -d ' ')"
 [ "$N" = "2" ] && ok "two trust invocations (worktree + main root)" || fail "expected 2 node calls, got $N"
-grep -q "^$WT KEY_ONLY=$" "$CALLS" \
+grep -q "^$WT KEY_ONLY= DATA=" "$CALLS" \
   && ok "the worktree is trusted WITHOUT KEY_ONLY (neutralizes its own local settings)" \
   || fail "worktree trust call missing or wrongly KEY_ONLY"
-grep -qE "KEY_ONLY=1$" "$CALLS" && grep -q " KEY_ONLY=1$" "$CALLS" \
+grep -q " KEY_ONLY=1 DATA=" "$CALLS" \
   && ok "the main-root trust call carries GAFFER_TRUST_KEY_ONLY=1" \
   || fail "main-root call not marked KEY_ONLY"
 # The KEY_ONLY line must be the MAIN root, not the worktree.
-if grep -q "KEY_ONLY=1$" "$CALLS"; then
-  KL="$(grep "KEY_ONLY=1$" "$CALLS" | awk '{print $1}')"
+if grep -q " KEY_ONLY=1 DATA=" "$CALLS"; then
+  KL="$(grep " KEY_ONLY=1 DATA=" "$CALLS" | awk '{print $1}')"
   KLC="$(cd "$KL" 2>/dev/null && pwd -P)"
   [ "$KLC" = "$CANON_REPO" ] \
     && ok "the KEY_ONLY trust targets the main repo root" \
@@ -116,7 +123,22 @@ echo "== AC5: trust(plain repo root) trusts ONCE (main == dir) =="
 gaffer_trust_workspace "$REPO"
 N="$(wc -l <"$CALLS" | tr -d ' ')"
 [ "$N" = "1" ] && ok "a plain repo root is trusted exactly once" || fail "expected 1 node call, got $N"
-grep -q "KEY_ONLY=1$" "$CALLS" && fail "a plain repo root must NOT use KEY_ONLY" || ok "no gratuitous KEY_ONLY for a plain repo root"
+grep -q " KEY_ONLY=1 DATA=" "$CALLS" && fail "a plain repo root must NOT use KEY_ONLY" || ok "no gratuitous KEY_ONLY for a plain repo root"
+
+echo "== AC6: GAFFER_DATA forwarded when set; unset under set -u does not abort =="
+: >"$CALLS"
+( set -u; unset GAFFER_DATA; gaffer_trust_workspace "$WT" ); rc=$?
+N="$(wc -l <"$CALLS" | tr -d ' ')"
+[ "$rc" = 0 ] && [ "$N" = "2" ] \
+  && ok "unset GAFFER_DATA under set -u: function returns 0 and still makes both calls" \
+  || fail "unset GAFFER_DATA under set -u: rc=$rc, $N calls"
+grep -q " DATA=.\+$" "$CALLS" && fail "unset GAFFER_DATA leaked a value: $(cat "$CALLS")" || ok "unset GAFFER_DATA is passed as empty"
+: >"$CALLS"
+( export GAFFER_DATA="$WORK/my data"; gaffer_trust_workspace "$WT" ); rc=$?
+N="$(grep -c " DATA=$WORK/my data$" "$CALLS" | tr -d ' ')"
+[ "$rc" = 0 ] && [ "$N" = "2" ] \
+  && ok "a set GAFFER_DATA reaches both trust calls (worktree + KEY_ONLY main root)" \
+  || fail "set GAFFER_DATA: rc=$rc, $N of 2 calls carried it: $(cat "$CALLS")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

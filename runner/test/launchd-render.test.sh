@@ -13,7 +13,10 @@
 #   3. running the job the way launchd does (env -i, only the plist's environment)
 #      gets past SETUP, while the same run with launchd's bare PATH and node absent
 #      stops with a message naming node and PATH;
-#   4. a bad --repo is refused.
+#   4. a bad --repo is refused;
+#   5. a repo / data dir / PATH containing "--" still yields a valid plist: values
+#      are substituted only in the plist body, never in the header XML comment
+#      (where "--" is not allowed), and the header keeps the placeholder names.
 # No model calls: DRY_RUN=1 from the plist, and a stub claude first on PATH.
 # Run: bash runner/test/launchd-render.test.sh
 # =====================================================================
@@ -48,7 +51,7 @@ if PATH="$WORK/bin:$PATH" node "$RENDER" --data "$DATA" --out "$OUT" 2>"$WORK/re
 else
   fail "render.mjs failed: $(cat "$WORK/render.err")"
 fi
-grep -q '__GAFFER_' "$OUT" && fail "a placeholder survived rendering" || ok "no __GAFFER_*__ placeholder left"
+sed -n '/<plist/,$p' "$OUT" | grep -q '__GAFFER_' && fail "a placeholder survived rendering" || ok "no __GAFFER_*__ placeholder left in the plist body"
 
 # Extract the plist with a parser so the assertions read real values, not text.
 extract() {
@@ -116,6 +119,49 @@ if node "$RENDER" --repo "$WORK/not-gaffer" >/dev/null 2>"$WORK/bad.err"; then
 else
   grep -q 'not a Gaffer checkout' "$WORK/bad.err" && ok "non-Gaffer --repo refused with a reason" || fail "refusal reason: $(cat "$WORK/bad.err")"
 fi
+
+echo "== 5. values containing '--' never land in an XML comment =="
+# lint_plist FILE → 0 when a real XML/plist parser accepts it (prints the reason on failure)
+lint_plist() {
+  if command -v plutil >/dev/null 2>&1; then plutil -lint "$1" >/dev/null 2>&1 || { plutil -lint "$1" 2>&1; return 1; }; fi
+  if command -v xmllint >/dev/null 2>&1; then xmllint --noout "$1" 2>&1 || return 1; fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -I -c 'import plistlib,sys; plistlib.load(open(sys.argv[1],"rb"))' "$1" 2>&1 | tail -1; return "${PIPESTATUS[0]}"
+  fi
+  return 0
+}
+DD_DATA="$WORK/my--data"; DD_PATH="/a--b:/usr/bin:/bin"
+DD_OUT="$WORK/dashdash.plist"
+if node "$RENDER" --data "$DD_DATA" --path "$DD_PATH" --out "$DD_OUT" 2>"$WORK/dd.err"; then
+  ok "render.mjs accepts a data dir and PATH containing '--'"
+else
+  fail "render.mjs refused '--' values: $(cat "$WORK/dd.err")"
+fi
+if lint_out="$(lint_plist "$DD_OUT")"; then ok "the '--' plist parses (no 'Comment must not contain --')"; else fail "the '--' plist is invalid: $lint_out"; fi
+OUT="$DD_OUT"; J="$(extract)"
+[ "$(jf GAFFER_DATA)" = "$DD_DATA" ] && ok "GAFFER_DATA keeps its '--' value" || fail "GAFFER_DATA: $(jf GAFFER_DATA)"
+[ "$(jf PATH)" = "$DD_PATH" ] && ok "--path is used verbatim, '--' and all" || fail "PATH: $(jf PATH)"
+HEAD_CMT="$(sed -n '1,/-->/p' "$DD_OUT")"
+case "$HEAD_CMT" in *"$DD_DATA"*|*"/a--b"*) fail "a rendered value landed in the header comment" ;; *) ok "no rendered value in the header comment" ;; esac
+printf '%s' "$HEAD_CMT" | grep -q '__GAFFER_REPO__ .*absolute path to the Gaffer' \
+  && ok "the header comment still names the placeholders it documents" \
+  || fail "header comment lost its placeholder names"
+# A repo checkout whose own path contains '--' (ProgramArguments is in the body).
+DD_REPO="$WORK/check--out"; mkdir -p "$DD_REPO/runner"; : >"$DD_REPO/runner/loop.sh"
+if node "$RENDER" --repo "$DD_REPO" --data "$DD_DATA" --path "$DD_PATH" --out "$WORK/ddrepo.plist" 2>"$WORK/ddr.err" \
+  && lint_out="$(lint_plist "$WORK/ddrepo.plist")"; then
+  OUT="$WORK/ddrepo.plist"; J="$(extract)"
+  [ "$(jf args | tail -1)" = "$DD_REPO/runner/loop.sh" ] && ok "a '--' repo path renders into a valid plist" || fail "ProgramArguments: $(jf args)"
+else
+  fail "a '--' repo path: $(cat "$WORK/ddr.err") ${lint_out:-}"
+fi
+# The renderer's own fail-closed guard recognises a comment that carries '--'.
+node --input-type=module -e '
+  const { badComments } = await import(process.argv[1]);
+  const bad = badComments("<a><!-- ok --><!-- /x/my--data --></a>");
+  process.exit(bad.length === 1 && badComments("<a><!-- fine --></a>").length === 0 ? 0 : 1);
+' "$RENDER" && ok "badComments() flags a comment containing '--' (render refuses to write one)" \
+  || fail "badComments() does not detect a '--' comment"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

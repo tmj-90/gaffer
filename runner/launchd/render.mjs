@@ -81,14 +81,38 @@ export function resolvePath(env = process.env, execPath = process.execPath) {
 const xmlEscape = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+/**
+ * Split the template into its leading header comment (kept verbatim) and the body
+ * (rendered). The header documents the placeholders by name; substituting there put
+ * the real path into an XML comment, and a value containing "--" (my--data, a PATH
+ * entry like /opt/a--b) is not allowed inside one, so the plist failed to parse.
+ */
+function splitHeader(tpl) {
+  const open = tpl.indexOf("<!--");
+  const plist = tpl.indexOf("<plist");
+  if (open === -1 || (plist !== -1 && open > plist)) return { head: "", body: tpl };
+  const close = tpl.indexOf("-->", open + 4);
+  if (close === -1) throw new Error("template header comment is not closed");
+  return { head: tpl.slice(0, close + 3), body: tpl.slice(close + 3) };
+}
+
+/** Comments in `xml` whose text contains "--" (invalid XML); empty when well-formed. */
+export function badComments(xml) {
+  return [...xml.matchAll(/<!--([\s\S]*?)-->/g)].map((m) => m[1]).filter((c) => c.includes("--"));
+}
+
 export function render({ repo, data, path }) {
-  return readFileSync(TEMPLATE, "utf8")
-    .split("__GAFFER_REPO__")
-    .join(xmlEscape(repo))
-    .split("__GAFFER_DATA__")
-    .join(xmlEscape(data))
-    .split("__GAFFER_PATH__")
-    .join(xmlEscape(path));
+  const { head, body } = splitHeader(readFileSync(TEMPLATE, "utf8"));
+  return (
+    head +
+    body
+      .split("__GAFFER_REPO__")
+      .join(xmlEscape(repo))
+      .split("__GAFFER_DATA__")
+      .join(xmlEscape(data))
+      .split("__GAFFER_PATH__")
+      .join(xmlEscape(path))
+  );
 }
 
 if (
@@ -105,8 +129,12 @@ if (
     usage(`${repo} is not a Gaffer checkout (no runner/loop.sh)`);
   }
   const out = render({ repo, data, path });
-  if (/__GAFFER_[A-Z]+__/.test(out))
+  // Only the header comment may still name placeholders; the plist itself may not.
+  if (/__GAFFER_[A-Z]+__/.test(out.slice(out.indexOf("<plist"))))
     usage("template has an unknown placeholder left after rendering");
+  // Fail closed rather than write a plist launchd cannot load.
+  if (badComments(out).length > 0)
+    usage("rendered plist has an XML comment containing '--' (a value landed in a comment)");
   if (opts.out) writeFileSync(opts.out, out);
   else process.stdout.write(out);
 }

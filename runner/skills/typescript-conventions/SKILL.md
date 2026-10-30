@@ -37,8 +37,9 @@ skill, the frontend packs).
 ## Commands
 
 - Never install: `node_modules` in a delivery worktree is shared with the main checkout,
-  and `npm ci`/`pnpm install`/`yarn install` are hook-blocked (the `dependency-upgrade`
-  skill). Run the tools already installed. Headless, plain `npx x` downloads a missing
+  and `npm ci`/`pnpm install`/`yarn install` are hook-blocked; a new or bumped dependency
+  is a blocker: `mark_ticket_blocked` with the exact command a human should run. Run the tools
+  already installed. Headless, plain `npx x` downloads a missing
   package without asking (a missing `tsc` fetches an unrelated npm package), so always
   write `npx --no -- x`, which fails instead of fetching (keep the `--`: `npx --no x`
   misreads the tool name).

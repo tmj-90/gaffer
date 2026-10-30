@@ -1,5 +1,14 @@
 # Dispatch MCP tool plan
 
+> **Historical design plan — not the current tool list.** This is the original plan
+> the MCP server was built from. Some tools it sketches were never built
+> (`resolve_decision`, `record_branch`, `release_ticket_claim`, the review/admin
+> list tools), and several real tools are missing from it. The authoritative list
+> is the generated table in [the package README](../README.md#mcp-server), built
+> from `src/mcp/tools.ts` + `src/mcp/server.ts`; request/response shapes there and
+> in the tool descriptions win over the examples below. The error model at the end
+> describes what the server actually returns.
+
 ## Tool design principles
 
 1. Tools should express domain actions, not raw SQL.
@@ -438,47 +447,50 @@ Human or policy-approved system action moves `in_review` to `done`.
 
 ## Tool permission matrix
 
-| Tool | Human | Agent | Admin | Notes |
-|---|---:|---:|---:|---|
-| create_ticket | yes | optional | yes | agent-created tickets default to draft |
-| add_acceptance_criterion | yes | optional | yes | policy may require human approval |
-| mark_ticket_ready | yes | no by default | yes | can be delegated in solo mode |
-| claim_next_ticket | no | yes | yes | atomic claim |
-| heartbeat_claim | no | yes | yes | requires claim token |
-| record_ac_evidence | no | yes | yes | requires claim token |
-| mark_ticket_blocked | yes | yes | yes | agent can request blocker |
-| resolve_decision | yes | no by default | yes | security decisions may require special scope |
-| submit_ticket_for_review | no | yes | yes | requires claim token |
-| mark_ticket_done | yes | no by default | yes | can be policy automated later |
+| Tool                     | Human |         Agent | Admin | Notes                                        |
+| ------------------------ | ----: | ------------: | ----: | -------------------------------------------- |
+| create_ticket            |   yes |      optional |   yes | agent-created tickets default to draft       |
+| add_acceptance_criterion |   yes |      optional |   yes | policy may require human approval            |
+| mark_ticket_ready        |   yes | no by default |   yes | can be delegated in solo mode                |
+| claim_next_ticket        |    no |           yes |   yes | atomic claim                                 |
+| heartbeat_claim          |    no |           yes |   yes | requires claim token                         |
+| record_ac_evidence       |    no |           yes |   yes | requires claim token                         |
+| mark_ticket_blocked      |   yes |           yes |   yes | agent can request blocker                    |
+| resolve_decision         |   yes | no by default |   yes | security decisions may require special scope |
+| submit_ticket_for_review |    no |           yes |   yes | requires claim token                         |
+| mark_ticket_done         |   yes | no by default |   yes | can be policy automated later                |
 
 ## Error model
 
-Use structured errors:
+A failed tool call returns `isError: true` and a structured body (the same
+payload in `structuredContent` and as JSON text in `content`):
 
 ```json
 {
   "error": {
-    "code": "CLAIM_TOKEN_INVALID",
-    "message": "The claim token does not match the active claim for this ticket.",
-    "recoverable": false
+    "code": "CLAIM_INVALID",
+    "message": "Claim token does not match an active claim on this ticket.",
+    "details": {}
   }
 }
 ```
 
-Suggested codes:
+Invalid arguments are `VALIDATION_ERROR` with the zod `issues`. The codes are the
+closed `DISPATCH_ERROR_CODES` list in `src/util/errors.ts`; the ones an agent
+meets most often:
 
 ```text
-TICKET_NOT_FOUND
-AC_NOT_FOUND
-DECISION_NOT_FOUND
-INVALID_STATE_TRANSITION
-POLICY_CHECK_FAILED
-CLAIM_NOT_FOUND
-CLAIM_EXPIRED
-CLAIM_TOKEN_INVALID
-CAPABILITY_MISMATCH
-RISK_POLICY_BLOCKED
-BLOCKING_DECISION_EXISTS
-CONCURRENT_UPDATE_CONFLICT
-PERMISSION_DENIED
+NOT_FOUND
+VALIDATION_ERROR
+POLICY_DENIED
+ILLEGAL_TRANSITION
+STATE_CONFLICT
+CONCURRENCY_CONFLICT
+CLAIM_INVALID
+CLAIM_REQUIRED
+TICKET_NOT_CLAIMABLE
+DEPENDENCY_BLOCKED
+AGENT_NOT_ELIGIBLE
+ACTOR_NOT_PERMITTED
+FACTORY_RUNNER_OWNED
 ```

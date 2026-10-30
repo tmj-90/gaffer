@@ -48,7 +48,18 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -56,10 +67,15 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "./usage-ledger.mjs";
-import { secretReadDenyRules } from "./agent-home.mjs";
-import { Worker } from "./worker.mjs";
+import { secretReadDenyRules, writeAgentSettings } from "./agent-home.mjs";
+import { Worker, roleTurnCap } from "./worker.mjs";
+import { loadRegistry, routeModel } from "../bin/route-model.mjs";
+import {
+  extractLastJsonBlock as extractJson,
+  quarantine as sharedQuarantine,
+} from "./agent-io.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
@@ -512,21 +528,10 @@ export function gatherMaterial(repoPath, scan) {
 /**
  * Wrap an UNTRUSTED field (README / manifest content) in a delimited envelope so an
  * embedded "SYSTEM:" / "ignore previous" line lands as DATA, not as a fresh
- * instruction. Strips any literal delimiter the data tries to smuggle. (Mirrors
- * bin/decompose.mjs `quarantine`.)
+ * instruction — the shared lib/agent-io.mjs quarantine, data on its own lines.
  */
-// Escape (never delete) the `<` of every untrusted-* delimiter — opening or closing,
-// any tag, any case, padded with whitespace / zero-width characters, terminated or
-// not. Deleting a delimiter in one pass let a nested token reassemble itself:
-// `</untrus</untrusted-a>ted-x>` minus the inner token IS `</untrusted-x>`, which
-// closed the envelope early. Escaping removes no text, so nothing can rejoin and one
-// pass is safe (and idempotent). Same rule as crew's deliveryJudge.
-const UNTRUSTED_DELIMITER_RE =
-  // eslint-disable-next-line no-control-regex -- the C0 separators are whitespace to python and to a model reading the prompt
-  /<(?=[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*\/?[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*untrusted)/gi;
 export function quarantine(tag, value) {
-  const data = String(value ?? "").replace(UNTRUSTED_DELIMITER_RE, "&lt;");
-  return `<untrusted-${tag}>\n${data}\n</untrusted-${tag}>`;
+  return sharedQuarantine(tag, value, { block: true });
 }
 
 const QUARANTINE_NOTICE =
@@ -955,55 +960,16 @@ export function validateLore(rawLore) {
 }
 
 /**
- * Pull the LAST fenced ```json block (or last bare {...}) out of the model text and
- * parse it. Mirrors bin/decompose.mjs `extractLastJsonBlock`. Returns the object or
- * null when nothing parses.
+ * Pull the model's result out of its text: the LAST parseable JSON block `isResult`
+ * accepts (each call site names the shape it expects — a card has `tldr`, a review a
+ * `verdict`, the analysis a `digest`), else the last parseable object. The shared
+ * extractor (lib/agent-io.mjs): this file's copy took only the LAST fence, so an example
+ * ```json block after the real result replaced it.
  */
-export function extractLastJsonBlock(text) {
-  if (!text) return null;
-  const fenceRe = /```(?:json)?\s*\n([\s\S]*?)\n```/gi;
-  let match;
-  let lastFence = null;
-  while ((match = fenceRe.exec(text)) !== null) lastFence = match[1];
-  const candidates = [];
-  if (lastFence) candidates.push(lastFence);
-  const bare = lastBalancedObject(text);
-  if (bare) candidates.push(bare);
-  for (const c of candidates) {
-    try {
-      return JSON.parse(c);
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  return null;
+export function extractLastJsonBlock(text, isResult = null) {
+  return extractJson(text, isResult);
 }
-
-function lastBalancedObject(text) {
-  let depth = 0;
-  let start = -1;
-  let last = null;
-  let inStr = false;
-  let esc = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === "\\") esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') inStr = true;
-    else if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0 && start !== -1) last = text.slice(start, i + 1);
-    }
-  }
-  return last;
-}
+const hasKey = (k) => (o) => Boolean(o) && typeof o === "object" && !Array.isArray(o) && k in o;
 
 /**
  * Validate + normalise the model's analysis into { digest, features }. A missing
@@ -1139,6 +1105,9 @@ export function agentChildEnv(base = process.env) {
   // placeholder, which would bucket every onboarding retrieval under a fake
   // ticket that can never join to a real outcome.
   env["GAFFER_RECALL_TICKET"] = "";
+  // Likewise the dispatch server's "${GAFFER_SCOPE_TICKET}": onboarding is bound to no
+  // ticket, so pin it EMPTY rather than let an inherited value widen the agent's scope.
+  env["GAFFER_SCOPE_TICKET"] = "";
   return env;
 }
 
@@ -1147,11 +1116,50 @@ export function agentChildEnv(base = process.env) {
  *   timeout — GAFFER_ONBOARD_TIMEOUT (overrides GAFFER_TICK_TIMEOUT for onboard
  *             card calls so a tight delivery tick cap doesn't kill card generation).
  *             Falls back to GAFFER_TICK_TIMEOUT, then the hardcoded default (1800 s).
- *   maxTurns — GAFFER_MAX_TURNS (default 60).
- *   model    — GAFFER_ONBOARD_SYNTH_MODEL → GAFFER_PLAN_MODEL → Sonnet default
- *             (deep reasoning; digest/feature/lore synthesis + the card-review gate).
+ *   maxTurns — GAFFER_ONBOARD_MAX_TURNS (default 60), clamped to the global
+ *             GAFFER_MAX_TURNS ceiling (roleTurnCap: the global lowers, never replaces).
+ *   model    — GAFFER_ONBOARD_SYNTH_MODEL → an OPERATOR-set GAFFER_PLAN_MODEL →
+ *             the registry's mid tier ('sonnet') (digest/feature/lore synthesis +
+ *             the card-review gate). See synthModel.
  */
-export const SYNTH_MODEL_DEFAULT = "claude-sonnet-4-5";
+export const SYNTH_MODEL_DEFAULT = "sonnet";
+
+/**
+ * A model id the `claude` CLI can run: a provider-prefixed registry id such as
+ * "ollama:qwen2.5-coder" has no adapter yet (model-registry.json localSeam: the
+ * provider wiring is a follow-up), so handing it to `claude --model` would break
+ * the pass the moment someone enables the seam. Such ids — and empty ones — are
+ * rejected here so the caller falls back to a Claude tier.
+ */
+function claudeRunnable(id) {
+  const v = String(id ?? "").trim();
+  return v && !v.includes(":") ? v : "";
+}
+
+/** The loaded model registry (GAFFER_MODEL_REGISTRY or the shipped file); never throws. */
+function registryFor(env) {
+  try {
+    return loadRegistry(env.GAFFER_MODEL_REGISTRY || undefined);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The synthesis model. GAFFER_PLAN_MODEL is honoured only when an operator set it:
+ * factory.config.sh exports its own `opus` default and records GAFFER_PLAN_MODEL_EXPLICIT=0
+ * for that case, which used to put every onboarding synthesis + card-review turn on
+ * opus. With no config sourced (EXPLICIT absent) a set GAFFER_PLAN_MODEL is the
+ * caller's own choice and still wins.
+ */
+export function synthModel(env = process.env) {
+  const own = String(env.GAFFER_ONBOARD_SYNTH_MODEL ?? "").trim();
+  if (own) return own;
+  const plan = String(env.GAFFER_PLAN_MODEL ?? "").trim();
+  if (plan && env.GAFFER_PLAN_MODEL_EXPLICIT !== "0") return plan;
+  const reg = registryFor(env);
+  return claudeRunnable(reg?.tiers?.mid) || SYNTH_MODEL_DEFAULT;
+}
 
 export function analysisCaps(env = process.env) {
   const onboardSec = parseInt(env.GAFFER_ONBOARD_TIMEOUT ?? "", 10);
@@ -1163,25 +1171,48 @@ export function analysisCaps(env = process.env) {
         ? tickSec
         : 1800;
   const timeoutMs = timeoutSec * 1000;
-  const maxTurns = parseInt(env.GAFFER_MAX_TURNS ?? "", 10) || 60;
+  const maxTurns = roleTurnCap(parseInt(env.GAFFER_ONBOARD_MAX_TURNS ?? "", 10) || 60, env);
   // Synthesis model (digest / features / lore analysis + the card-review gate).
-  // A FEW deep-reasoning calls — keep them on Sonnet. Knob precedence:
-  // GAFFER_ONBOARD_SYNTH_MODEL → GAFFER_PLAN_MODEL → Sonnet default. The per-file
-  // card pass overrides this with cardModel() (Haiku) via a scoped env, so the
-  // two speeds coexist: cheap Haiku for the many cards, Sonnet for the few syntheses.
-  const model =
-    (env.GAFFER_ONBOARD_SYNTH_MODEL ?? env.GAFFER_PLAN_MODEL ?? "").trim() || SYNTH_MODEL_DEFAULT;
+  // A FEW deep-reasoning calls — the mid tier, not the planner's strong tier unless
+  // an operator pins it (synthModel). The per-file card pass overrides this with
+  // cardModel() (the registry's onboarding tier) via a scoped env, so the two speeds
+  // coexist: the cheap tier for the many cards, mid for the few syntheses.
+  const model = synthModel(env);
   return { timeoutMs, maxTurns, model };
 }
+
+// Turn cap for a TEXT-ONLY call: with no tools the first reply always ends the run;
+// the spare turn is margin, not a budget the model can spend exploring.
+export const TEXT_ONLY_MAX_TURNS = 2;
 
 /**
  * Spawn ONE headless `claude -p … --output-format json` analysis turn, capture its
  * usage in the ledger (kind "onboard"), and return the agent's `.result` text.
  * Reuses bin/decompose.mjs's invocation pattern EXACTLY: --output-format json for
  * the usage ledger, the chosen model, the per-call turn + timeout caps, and the
- * credential-stripped child env. Returns { timedOut, stdout }.
+ * credential-stripped child env.
+ *
+ * Returns { timedOut, stdout, status, failed, errorText }. `failed` is a CLI-level
+ * failure — a non-zero exit, or claude's JSON reporting `is_error` (auth, rate limit:
+ * often with exit 0 and an empty stderr) — with `errorText` its first line (claude's
+ * `.result`, else stderr, else stdout). A failed turn's stdout is "" so callers never
+ * mine an error message for JSON. Callers used to see only stdout, so an expired login
+ * read as "no usable JSON" and every card was retried one by one.
+ *
+ * textOnly (the card + card-review turns): the prompt inlines everything the model
+ * needs and asks for one JSON block, so the call runs as a plain completion — no
+ * built-in tools (`--tools ""`), no MCP servers (an empty config under
+ * --strict-mcp-config), no skill listing (--disable-slash-commands), from an EMPTY
+ * scratch cwd (runner/CLAUDE.md, the maintainer guide, no longer loads into every
+ * card call) and under TEXT_ONLY_MAX_TURNS. Hundreds of card calls per onboard used
+ * to carry the tool schemas and that brief for nothing.
  */
-export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
+export function runAnalysisTurn(
+  prompt,
+  env = process.env,
+  kind = "onboard",
+  { textOnly = false } = {},
+) {
   const caps = analysisCaps(env);
   const claudeBin = env.CLAUDE_BIN || "claude";
   const flags = (env.CLAUDE_FLAGS || "--permission-mode acceptEdits").split(/\s+/).filter(Boolean);
@@ -1192,7 +1223,8 @@ export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
   // so run the agent READ-ONLY: deny every write/exec tool UNCONDITIONALLY — a prompt
   // injection in an (untrusted) onboarded-repo file can't write into factory source
   // (denying only the edit tools is defeated by a Bash `>` fallback). Read/Grep/Glob + MCP
-  // stay available for the file inspection the analysis needs.
+  // stay available to the synthesis turn; the text-only card/review turns get none
+  // (below). The denylist stays on those too, as defence in depth.
   // MUST enumerate the COMPLETE write/exec set — MultiEdit is a write tool too; a denylist
   // silently permits any write tool it omits.
   // The template's recursive Read deny rules ride along too: with no project settings
@@ -1209,39 +1241,150 @@ export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
   );
   if (caps.model) flags.unshift("--model", caps.model);
   const args = ["-p", prompt, "--output-format", "json", ...flags];
-  if (caps.maxTurns > 0) args.push("--max-turns", String(caps.maxTurns));
-  const mcp = env.MCP_CONFIG;
-  if (mcp) args.unshift("--mcp-config", mcp);
+  let cwd = RUNNER_DIR;
+  let scratch = null;
+  if (textOnly) {
+    // An empty dir as cwd + the only write root, and an empty MCP config FILE (not an
+    // inline JSON string: the docker seam reads --mcp-config as a path to bridge it).
+    scratch = mkdtempSync(join(tmpdir(), "gaffer-onboard-text-"));
+    cwd = scratch;
+    // The scratch cwd carries the verified safety-hook settings like every other agent
+    // home (defence in depth: the turn has no tools). writeAgentSettings throws
+    // "SAFETY: …" when the template cannot be rendered and verified — refuse the turn
+    // as a failed call (fail closed; the onboard's claude-failure breaker sees it).
+    try {
+      const claudeDir = join(scratch, ".claude");
+      mkdirSync(claudeDir, { recursive: true });
+      writeAgentSettings(claudeDir, env.CLAUDE_SETTINGS || undefined);
+    } catch (err) {
+      rmSync(scratch, { recursive: true, force: true });
+      const errorText = String(err?.message ?? err);
+      return { timedOut: false, stdout: "", status: null, failed: true, errorText };
+    }
+    const emptyMcp = join(scratch, "mcp.json");
+    writeFileSync(emptyMcp, '{"mcpServers":{}}');
+    args.push("--max-turns", String(roleTurnCap(TEXT_ONLY_MAX_TURNS, env)));
+    // Appended AFTER the operator's CLAUDE_FLAGS so an override cannot re-enable tools.
+    args.push("--tools", "", "--strict-mcp-config", "--disable-slash-commands");
+    args.unshift("--mcp-config", emptyMcp);
+  } else {
+    if (caps.maxTurns > 0) args.push("--max-turns", String(caps.maxTurns));
+    const mcp = env.MCP_CONFIG;
+    if (mcp) args.unshift("--mcp-config", mcp);
+  }
 
   // Route through the ONE worker spawn seam (lib/worker.mjs): provider dispatch plus
   // the SAME OS-sandbox containment decision the bash seam makes (wrap under
   // STRICT_MODE / GAFFER_STRICT_REQUIRE, fail closed when the host cannot supply
   // one). This spawn used to be a bare spawnSync outside the seam.
-  const res = Worker.deliver({
-    bin: claudeBin,
-    argv: args,
-    cwd: RUNNER_DIR,
-    timeoutMs: caps.timeoutMs,
-    maxBuffer: 16 * 1024 * 1024,
-    env: { ...agentChildEnv(env), GAFFER_WRITE_ROOTS: RUNNER_DIR },
-  });
+  let res;
+  const t0 = Date.now();
+  try {
+    res = Worker.deliver({
+      bin: claudeBin,
+      argv: args,
+      cwd,
+      timeoutMs: caps.timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...agentChildEnv(env), GAFFER_WRITE_ROOTS: cwd },
+    });
+  } finally {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      appendUsageRecord(unknownRecord({ kind, reason: "onboard analysis claude call timed out" }));
-      return { timedOut: true, stdout: "" };
+      recordKilledCall({
+        kind,
+        reason: "onboard analysis claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
+      return { timedOut: true, stdout: "", status: null, failed: false, errorText: "" };
     }
     throw res.error;
   }
   const rawStdout = res.stdout || "";
+  const status = res.status ?? 0;
   const json = parseClaudeJson(rawStdout);
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({ kind, reason: "no parseable --output-format json on stdout" }),
-    );
-    return { timedOut: false, stdout: rawStdout };
+    recordKilledCall({
+      kind,
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
+  } else {
+    appendUsageRecord(buildUsageRecord({ json, kind }));
   }
-  appendUsageRecord(buildUsageRecord({ json, kind }));
-  return { timedOut: false, stdout: extractResultText(json) };
+  const isError = json !== null && json.is_error === true;
+  if (status !== 0 || isError) {
+    const errorText =
+      firstLine(isError ? extractResultText(json) : "") ||
+      firstLine(res.stderr) ||
+      firstLine(rawStdout) ||
+      "no output";
+    return { timedOut: false, stdout: "", status, failed: true, errorText };
+  }
+  return {
+    timedOut: false,
+    stdout: json === null ? rawStdout : extractResultText(json),
+    status,
+    failed: false,
+    errorText: "",
+  };
+}
+
+/** The first non-empty line of `text`, trimmed and capped (for one-line error reports). */
+function firstLine(text) {
+  const line = String(text ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return line ? line.slice(0, 300) : "";
+}
+
+/**
+ * A model turn that failed at the CLI level (see runAnalysisTurn's `failed`). The card
+ * and review turns return one instead of null so the pass can tell "claude is down"
+ * (stop calling it) from "the model answered badly" (retry / mechanical-only).
+ */
+export function modelFailure(turn) {
+  return { modelFailed: true, status: turn.status, errorText: turn.errorText };
+}
+export function isModelFailure(v) {
+  return Boolean(v && typeof v === "object" && v.modelFailed === true);
+}
+
+/**
+ * The shared circuit breaker over every model call in one onboard (analysis, cards,
+ * reviews). It trips when the analysis turn fails at the CLI level, or after
+ * CLAUDE_BREAKER_LIMIT consecutive failed card/review turns; once tripped every
+ * remaining model call is skipped (mechanical-only cards). Without it an
+ * unauthenticated claude was spawned once per file — up to the 4000-file cap.
+ */
+export const CLAUDE_BREAKER_LIMIT = 2;
+export function claudeBreaker(log = () => {}, limit = CLAUDE_BREAKER_LIMIT) {
+  const b = {
+    tripped: false,
+    consecutive: 0,
+    failedTurns: 0,
+    error: null,
+    /** Record a failed turn; `trip` forces the breaker open immediately. */
+    fail(f, { trip = false } = {}) {
+      b.failedTurns += 1;
+      b.consecutive += 1;
+      b.error = b.error ?? `exit ${f.status ?? "?"}: ${f.errorText}`;
+      if (!b.tripped && (trip || b.consecutive >= limit)) {
+        b.tripped = true;
+        log(
+          `claude unavailable (${b.error}) — skipping model calls for the rest of this onboard ` +
+            "(mechanical-only cards); check `claude` auth, then re-run the onboard",
+        );
+      }
+    },
+    ok() {
+      b.consecutive = 0;
+    },
+  };
+  return b;
 }
 
 // ── Memory-store writes (the SAME memory CLI verbs the merge producer uses) ─────
@@ -1537,12 +1680,13 @@ const CARD_OVERSIZED_LOC = 2000;
 // (400) so Haiku has real context to write a meaningful TLDR for a large file
 // rather than a purely mechanical card.
 export const CARD_SOLO_SNIPPET_CHARS = 1200;
-// Default model for per-file card generation. Haiku is validated good-enough for
-// per-file TLDRs (structure-first, short output) and is far cheaper than Sonnet —
-// the card pass makes HUNDREDS of calls, so this is where model cost is decided.
-// The digest/feature/lore SYNTHESIS pass stays on Sonnet (see analysisCaps).
-// Override per-repo via GAFFER_CARD_MODEL if a repo needs a stronger card model.
-const CARD_MODEL_DEFAULT = "claude-haiku-4-5";
+// Last-resort model for per-file card generation, when the registry cannot be read.
+// The card pass makes HUNDREDS of calls, so this is where model cost is decided: it
+// resolves through the model registry's `onboarding` phase (cheap tier, the CLI
+// alias 'haiku' — which tracks the current Haiku, where a pinned id such as
+// claude-haiku-4-5 stayed on a previous, ~10x pricier generation). The synthesis
+// pass uses the mid tier (see synthModel). Override per-repo via GAFFER_CARD_MODEL.
+const CARD_MODEL_DEFAULT = "haiku";
 // Files carded per `claude` call. Sending B files per call amortises the (static)
 // skill prefix across B cards instead of paying it per file — the dominant cost.
 // B=1 exactly reproduces the original one-file-per-call behaviour (safe fallback).
@@ -1671,14 +1815,25 @@ export function cardCaps(env = process.env) {
 }
 
 /**
- * Resolve the model to use for per-file card generation. Reads GAFFER_CARD_MODEL
- * first; falls back to CARD_MODEL_DEFAULT (Haiku). Card generation is a simple
- * structure-first file-TLDR task and does NOT need a deep-reasoning model — this
- * is the cheap tier for the hundreds of per-file calls. Synthesis (digest/feature/
- * lore) stays on the Sonnet tier resolved by analysisCaps.
+ * Resolve the model to use for per-file card generation: GAFFER_CARD_MODEL, else
+ * the registry's routing for phase `onboarding` (model-registry.json, cheap tier).
+ * Card generation is a simple structure-first file-TLDR task and does NOT need a
+ * deep-reasoning model. When the localSeam routes onboarding to a provider-prefixed
+ * id the CLI cannot run yet (e.g. "ollama:…"), fall back to the registry's cheap
+ * tier, then CARD_MODEL_DEFAULT — never emit an id that would break the pass.
  */
 export function cardModel(env = process.env) {
-  return (env.GAFFER_CARD_MODEL ?? "").trim() || CARD_MODEL_DEFAULT;
+  const own = String(env.GAFFER_CARD_MODEL ?? "").trim();
+  if (own) return own;
+  const reg = registryFor(env);
+  if (!reg) return CARD_MODEL_DEFAULT;
+  let routed;
+  try {
+    routed = routeModel({ phase: "onboarding" }, reg).model;
+  } catch {
+    routed = "";
+  }
+  return claudeRunnable(routed) || claudeRunnable(reg.tiers?.cheap) || CARD_MODEL_DEFAULT;
 }
 
 /**
@@ -2085,9 +2240,10 @@ function runCardTurn(prompt, env = process.env) {
   // Override the synth-model knobs with the card-specific model so runAnalysisTurn
   // picks it up through analysisCaps without touching the caller's env.
   const cardEnv = cardTurnEnv(env);
-  const turn = runAnalysisTurn(prompt, cardEnv, "onboard");
+  const turn = runAnalysisTurn(prompt, cardEnv, "onboard", { textOnly: true });
   if (turn.timedOut) return null;
-  return validateCardFields(extractLastJsonBlock(turn.stdout));
+  if (turn.failed) return modelFailure(turn);
+  return validateCardFields(extractLastJsonBlock(turn.stdout, hasKey("tldr")));
 }
 
 /** Scope the card model onto a child env, overriding both synth-model knobs. */
@@ -2098,14 +2254,18 @@ function cardTurnEnv(env) {
 
 /**
  * Run ONE model turn over a BATCH of `count` files (ledgered under "onboard").
- * Returns a dense array (fields | null per index) or null on timeout (caller then
- * writes mechanical-only cards for the whole batch). Same cheap card model as
- * runCardTurn. Injectable in tests.
+ * Returns a dense array (fields | null per index) when the model answered with JSON;
+ * null on a timeout or an answer with no JSON block at all (a TOTAL failure — the
+ * caller writes mechanical-only cards for the batch and does not retry per file); a
+ * modelFailure when claude itself failed. Same cheap card model as runCardTurn.
+ * Injectable in tests.
  */
-function runCardBatchTurn(prompt, count, env = process.env) {
-  const turn = runAnalysisTurn(prompt, cardTurnEnv(env), "onboard");
+export function runCardBatchTurn(prompt, count, env = process.env) {
+  const turn = runAnalysisTurn(prompt, cardTurnEnv(env), "onboard", { textOnly: true });
   if (turn.timedOut) return null;
-  return validateCardBatch(extractLastJsonBlock(turn.stdout), count);
+  if (turn.failed) return modelFailure(turn);
+  const parsed = extractLastJsonBlock(turn.stdout, (o) => Array.isArray(o) || hasKey("cards")(o));
+  return parsed === null ? null : validateCardBatch(parsed, count);
 }
 
 /** Run `memory card upsert` for one file. Returns the spawnSync result. */
@@ -2144,10 +2304,11 @@ function upsertCardCli(
 }
 
 /** Run one semantic review turn (ledgered under kind "onboard-review"). */
-function runCardReviewTurn(prompt, env = process.env) {
-  const turn = runAnalysisTurn(prompt, env, "onboard-review");
+export function runCardReviewTurn(prompt, env = process.env) {
+  const turn = runAnalysisTurn(prompt, env, "onboard-review", { textOnly: true });
   if (turn.timedOut) return null;
-  return validateCardReviewResult(extractLastJsonBlock(turn.stdout));
+  if (turn.failed) return modelFailure(turn);
+  return validateCardReviewResult(extractLastJsonBlock(turn.stdout, hasKey("verdict")));
 }
 
 /** Run the `memory card mark-failed` CLI verb for one card. */
@@ -2193,7 +2354,17 @@ function markFailedCli(cfg, { canonical, repo, rel, reason }, env = process.env)
  */
 export function runCardReviewSample(
   candidates,
-  { cfg, canonical, repo, repoRoot, head, env = process.env, log = () => {}, runReviewTurn },
+  {
+    cfg,
+    canonical,
+    repo,
+    repoRoot,
+    head,
+    env = process.env,
+    log = () => {},
+    runReviewTurn,
+    breaker = claudeBreaker(log),
+  },
 ) {
   const rawCap = parseInt(env.GAFFER_CARD_REVIEW_SAMPLE ?? "", 10);
   const maxReviews = Number.isFinite(rawCap) && rawCap >= 0 ? rawCap : CARD_REVIEW_SAMPLE_DEFAULT;
@@ -2248,7 +2419,13 @@ export function runCardReviewSample(
   for (const c of sample) {
     try {
       const prompt = buildCardReviewPrompt(c.rel, c.fileType, c.structure, c.snippet, c.fields);
-      const result = runReviewTurn(prompt);
+      // claude down (breaker open): no call — the card is unverified, same as a
+      // failed review below (fail closed).
+      let result = breaker.tripped ? null : runReviewTurn(prompt);
+      if (isModelFailure(result)) {
+        breaker.fail(result);
+        result = null;
+      } else if (result) breaker.ok();
       // FAIL-CLOSED: no parseable verdict → the card is unverified, so its model
       // fields are NOT trusted. Downgrade to mechanical-only rather than
       // letting an unreviewable (possibly poisoned) card keep its model text.
@@ -2318,6 +2495,7 @@ export function emitFileCards(
     runTurn = (p) => runCardTurn(p, env),
     runBatchTurn = (p, count) => runCardBatchTurn(p, count, env),
     runReviewTurn = (p) => runCardReviewTurn(p, env),
+    breaker = claudeBreaker(log),
   } = {},
 ) {
   const stats = {
@@ -2326,6 +2504,11 @@ export function emitFileCards(
     modelCarded: 0,
     skipped: 0,
     failed: 0,
+    // Model turns claude itself failed (exit / is_error), and files carded
+    // mechanical-only without a call because the breaker was open. `failed` stays
+    // what it always counted: card upserts the memory store refused.
+    modelFailed: 0,
+    modelSkipped: 0,
     capsHit: [],
     coverageNote: null,
     watermark: null,
@@ -2445,6 +2628,23 @@ export function emitFileCards(
   // Used for oversized-file isolation so a monster never shares a batch prompt.
   const processChunk = (entries, { forceSolo = false } = {}) => {
     if (entries.length === 0) return;
+    // One guarded model call covering `n` files: null when the breaker is open (no
+    // call; the files count as model-skipped) or claude failed (recorded on the
+    // breaker), else the turn's own result.
+    const guarded = (call, n = 1) => {
+      if (breaker.tripped) {
+        stats.modelSkipped += n;
+        return null;
+      }
+      const r = call();
+      if (isModelFailure(r)) {
+        stats.modelFailed += 1;
+        breaker.fail(r);
+        return null;
+      }
+      breaker.ok();
+      return r;
+    };
     let fieldsList;
     if (batch === 1 || forceSolo) {
       // Single-file path: B=1 safe fallback OR oversized isolation.
@@ -2452,7 +2652,9 @@ export function emitFileCards(
       fieldsList = entries.map((e) => {
         let fields = null;
         try {
-          fields = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
+          fields = guarded(() =>
+            runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet)),
+          );
         } catch (err) {
           log(`card model turn failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
         }
@@ -2462,7 +2664,10 @@ export function emitFileCards(
       // Batch path: one call covers all entries.
       let arr = null;
       try {
-        arr = runBatchTurn(buildCardBatchPrompt(entries), entries.length);
+        arr = guarded(
+          () => runBatchTurn(buildCardBatchPrompt(entries), entries.length),
+          entries.length,
+        );
       } catch (err) {
         log(
           `card batch turn failed for ${entries.length} file(s) ` +
@@ -2472,8 +2677,9 @@ export function emitFileCards(
       // Per-file retry on PARTIAL shortfall: the batch returned but some slots are
       // null (the model dropped or mis-aligned them). Retry each missing file
       // individually so a bad batch costs a retry, not N lost cards. Log it honestly.
-      // A TOTAL failure (arr === null — e.g. timeout) is left as mechanical-only;
-      // retrying all files after a complete timeout isn't worth the additional cost.
+      // A TOTAL failure (arr === null — a timeout, no JSON at all, or claude itself
+      // failing) is left as mechanical-only: retrying every file after a complete
+      // failure multiplies the cost (and, with claude down, the spawns) for nothing.
       if (arr !== null) {
         const missing = [];
         for (let j = 0; j < entries.length; j++) {
@@ -2487,7 +2693,9 @@ export function emitFileCards(
           for (const j of missing) {
             const e = entries[j];
             try {
-              arr[j] = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
+              arr[j] = guarded(() =>
+                runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet)),
+              );
             } catch (err) {
               log(`card retry failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
             }
@@ -2563,7 +2771,8 @@ export function emitFileCards(
     const note =
       `file-card coverage: enumerated=${stats.enumerated} carded=${stats.carded} ` +
       `model-summarised=${stats.modelCarded} skipped=${stats.skipped} ` +
-      `failed=${stats.failed} caps-hit=[${capsHit.join(", ")}]`;
+      `failed=${stats.failed} model-failed=${stats.modelFailed} ` +
+      `model-skipped=${stats.modelSkipped} caps-hit=[${capsHit.join(", ")}]`;
     stats.coverageNote = note;
     log(`COVERAGE NOTE — ${note}`);
   }
@@ -2571,6 +2780,7 @@ export function emitFileCards(
   log(
     `file cards: enumerated=${stats.enumerated} carded=${stats.carded} ` +
       `model-summarised=${stats.modelCarded} skipped=${stats.skipped} failed=${stats.failed} ` +
+      `model-failed=${stats.modelFailed} model-skipped=${stats.modelSkipped} ` +
       `cardModel=${cardModel(env)} batch=${batch} snippet=${snippetChars} ` +
       `watermark=${stats.watermark ?? "none"}`,
   );
@@ -2590,6 +2800,7 @@ export function emitFileCards(
         env,
         log: (m) => log(`review: ${m}`),
         runReviewTurn,
+        breaker,
       });
       stats.reviewStats = reviewStats;
     } catch (err) {
@@ -2633,6 +2844,7 @@ export function refreshFileCards(
   } = {},
 ) {
   const result = { refreshed: 0, deleted: 0, skipped: 0, failed: 0, watermark: null };
+  const breaker = claudeBreaker(log);
   if (!cfg) {
     log("memory CLI not configured — skipping card refresh");
     return result;
@@ -2711,7 +2923,13 @@ export function refreshFileCards(
     const structure = extractStructureSummary(content, fileType);
     const snippet = cardSnippet(content, snippetChars);
     try {
-      fields = runTurn(buildCardPrompt(rel, fileType, structure, snippet));
+      // claude down (breaker open after failed turns): keep the existing summary
+      // (keepModel) instead of spawning it once per changed file.
+      fields = breaker.tripped ? null : runTurn(buildCardPrompt(rel, fileType, structure, snippet));
+      if (isModelFailure(fields)) {
+        breaker.fail(fields);
+        fields = null;
+      } else if (fields) breaker.ok();
     } catch (err) {
       log(`card model turn failed for ${rel} (${err?.message ?? err}) — mechanical-only`);
     }
@@ -2770,7 +2988,7 @@ export function refreshFileCards(
  *
  * `runTurn` (digest analysis) and `runCardTurn` (per-file cards) are injectable —
  * the live model turns in production; stubs in tests. Returns
- * { ran, usedModel, stats, cardStats } for the caller's log/JSON.
+ * { ran, usedModel, stats, cardStats, modelError? } for the caller's log/JSON.
  */
 export function analyzeAndWrite(
   repoPath,
@@ -2797,6 +3015,8 @@ export function analyzeAndWrite(
   }
 
   const material = gatherMaterial(repoPath, scan);
+  // ONE breaker for every model call below (analysis → cards → reviews).
+  const breaker = claudeBreaker(log);
 
   let understanding = null;
   let usedModel = false;
@@ -2805,8 +3025,16 @@ export function analyzeAndWrite(
     const turn = runTurn(prompt);
     if (turn.timedOut) {
       log("model analysis timed out — falling back to a minimal honest digest");
+    } else if (turn.failed) {
+      // claude itself failed (auth, rate limit, crash): say WHY, and do not spawn it
+      // again for every file of the card pass.
+      log(
+        `model analysis failed: claude exited ${turn.status ?? "?"}: ${turn.errorText} — ` +
+          "falling back to a minimal honest digest",
+      );
+      breaker.fail(turn, { trip: true });
     } else {
-      const parsed = extractLastJsonBlock(turn.stdout);
+      const parsed = extractLastJsonBlock(turn.stdout, hasKey("digest"));
       understanding = validateAnalysis(parsed);
       if (understanding) {
         usedModel = true;
@@ -2840,6 +3068,7 @@ export function analyzeAndWrite(
         runTurn: runCardTurnInjected,
         runBatchTurn: runCardBatchTurnInjected,
         runReviewTurn: runReviewTurnInjected,
+        breaker,
       });
     } catch (err) {
       log(`cards: file-card pass failed (${err?.message ?? err}) — onboard unaffected`);
@@ -2893,5 +3122,13 @@ export function analyzeAndWrite(
     }
   }
 
-  return { ran: true, usedModel, stats, ...(cardStats ? { cardStats } : {}) };
+  return {
+    ran: true,
+    usedModel,
+    stats,
+    ...(cardStats ? { cardStats } : {}),
+    // Why model analysis was unavailable (claude's own error line), for the onboard
+    // summary + the dashboard run record. Absent when claude worked.
+    ...(breaker.error ? { modelError: breaker.error } : {}),
+  };
 }

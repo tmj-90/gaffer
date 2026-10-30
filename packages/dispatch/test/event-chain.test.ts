@@ -55,6 +55,7 @@ describe("event hash chain", () => {
       brokenAtSeq: null,
       brokenEventId: null,
       reason: null,
+      headHash: r[3]!.hash,
     });
   });
 
@@ -153,19 +154,29 @@ describe("event hash chain", () => {
     importState(dst.db, bundle);
     expect(verifyEventChain(dst.db).ok).toBe(true);
     // Strip the hashes (a bundle from before v23) — import re-chains from genesis.
+    const stripped = events.map(({ hash: _h, prev_hash: _p, ...rest }) => rest);
     const legacy = {
       ...bundle,
-      tables: {
-        ...bundle.tables,
-        work_events: events.map(({ hash: _h, prev_hash: _p, ...rest }) => rest),
-      },
+      schema_version: 22,
+      tables: { ...bundle.tables, work_events: stripped },
     };
     const dst2 = Dispatch.open(":memory:");
     importState(dst2.db, legacy as typeof bundle);
     expect(verifyEventChain(dst2.db)).toMatchObject({ ok: true, checked: events.length });
+    // The same stripped log in a chained-era bundle is a tampered one: refused, not
+    // silently re-chained into a log that verifies clean.
+    const dst3 = Dispatch.open(":memory:");
+    expect(() =>
+      importState(dst3.db, {
+        ...bundle,
+        tables: { ...bundle.tables, work_events: stripped },
+      } as typeof bundle),
+    ).toThrow(/no hash/);
+    expect(dst3.listTickets()).toHaveLength(0);
     src.db.close();
     dst.db.close();
     dst2.db.close();
+    dst3.db.close();
   });
 
   it("doctor reports the chain and fails on a break; Dispatch.verifyEventChain delegates", () => {

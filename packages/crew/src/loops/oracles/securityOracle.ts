@@ -107,7 +107,7 @@ function resolveRuleset(
  */
 export function createSecurityOracle(
   runner: CommandRunner,
-  options: { binary?: string; ruleset?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { binary?: string; ruleset?: string; env?: NodeJS.ProcessEnv; pathOnly?: boolean } = {},
 ): Oracle {
   const binary = options.binary ?? "semgrep";
   const env = options.env ?? process.env;
@@ -132,7 +132,9 @@ export function createSecurityOracle(
           reason: `semgrep ruleset '${ruleset}' looks like a remote registry pack (auto/p//r/); set ${ALLOW_REMOTE_ENV}=1 to allow remote rulesets`,
         };
       }
-      const resolved = resolveBinary(binary, root);
+      const resolved = resolveBinary(binary, root, process.env, {
+        pathOnly: options.pathOnly === true,
+      });
       if (!resolved) return { available: false, reason: `${binary} not found on PATH` };
       const result = runner.runArgs(
         resolved,

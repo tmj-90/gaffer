@@ -18,6 +18,8 @@ source "$RUNNER_DIR/lib/sandbox.sh"
 PASS=0
 FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
+SKIPPED=0
+skip_part() { SKIPPED=$((SKIPPED + 1)); printf '  SKIP: %s\n' "$1"; }   # a skipped section is NOT an ok
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 rc_for() { SANDBOX_PROVIDER="$1" sandbox_wrap_cmd "/tmp/gaffer-wt" "" >/dev/null 2>&1; echo $?; }
@@ -46,7 +48,7 @@ if command -v sandbox-exec >/dev/null 2>&1; then
     && ok "strict-require: sandbox-exec present → real OS sandbox, rc 0 (no refusal)" \
     || fail "sandbox-exec should succeed (rc 0) when present, even under strict-require"
 else
-  ok "SKIP: sandbox-exec absent (Linux) — the real-sandbox case is macOS-only"
+  skip_part "sandbox-exec absent (Linux) — the real-sandbox case is macOS-only"
 fi
 
 # ── the mjs worker seam honours the SAME requirement (parity with worker_deliver) ──
@@ -76,12 +78,12 @@ if command -v node >/dev/null 2>&1; then
   OUT="$(mjs_deliver GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0 SANDBOX_PROVIDER=none)"
   [ "${OUT%%|*}" = "0" ] && [ -f "$MARKER" ] && ok "mjs seam: without strict-require the agent still spawns (status 0)" || fail "mjs seam should spawn when the sandbox is not required (got: $OUT)"
 else
-  ok "SKIP: node absent — the mjs seam parity case needs node"
+  skip_part "node absent — the mjs seam parity case needs node"
 fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
-  echo "strict-require: ALL $PASS checks passed"
+  echo "strict-require: ALL $PASS checks passed, $SKIPPED skipped"
   exit 0
 fi
 echo "strict-require: ${#FAILURES[@]} FAILURE(S):"

@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureApiToken, resolveDashboardTokenPath } from "../src/api/auth.js";
+import { describeApiToken, ensureApiToken, resolveDashboardTokenPath } from "../src/api/auth.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { createApiServer } from "../src/api/server.js";
@@ -73,6 +73,27 @@ describe("ensureApiToken", () => {
     const ensured = ensureApiToken(env);
     expect(ensured).toMatchObject({ token: "saved-token", source: "file" });
     expect(env.DISPATCH_API_TOKEN).toBe("saved-token");
+  });
+
+  // The server's stdout is the runner's dashboard.log (not 0600 like the token
+  // file): the startup line used to echo a freshly generated token into it.
+  it("the startup message never contains the token — for every source", () => {
+    const dir = freshDataDir();
+    const generated = ensureApiToken({ GAFFER_DATA: dir } as NodeJS.ProcessEnv);
+    expect(generated.source).toBe("generated");
+    const genMsg = describeApiToken(generated);
+    expect(genMsg).not.toContain(generated.token);
+    expect(genMsg).toContain(join(dir, "dashboard-token"));
+    expect(genMsg).toContain("gaffer dashboard");
+    // Every request needs the token, not just mutating ones.
+    expect(genMsg).not.toMatch(/mutating requests/);
+
+    const reused = ensureApiToken({ GAFFER_DATA: dir } as NodeJS.ProcessEnv);
+    expect(reused.source).toBe("file");
+    expect(describeApiToken(reused)).not.toContain(reused.token);
+
+    const fromEnv = ensureApiToken({ DISPATCH_API_TOKEN: "operator-secret" } as NodeJS.ProcessEnv);
+    expect(describeApiToken(fromEnv)).not.toContain("operator-secret");
   });
 });
 

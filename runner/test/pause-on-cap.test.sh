@@ -14,7 +14,8 @@
 #   2. orphan-recovery PROTECTS a paused ticket's worktree (it is not swept).
 #   3. the crash-cleanup trap's guard is a no-op for a paused worktree (survival).
 #   4. Continue marks it resume-requested; the loop's resume queue lists it.
-#   5. resume-begin re-enters delivery (-> in_progress) in the SAME worktree path.
+#   5. resume-begin re-enters delivery (-> in_progress) in the SAME worktree path,
+#      leased to the runner agent (claim token printed, heartbeat works).
 #   6. Stop abandons it (-> cancelled) and drops the resume context.
 #
 # Zero deps beyond git + node. Run: bash test/pause-on-cap.test.sh
@@ -132,7 +133,13 @@ QNUM="$(wg ticket resume-requested 2>/dev/null | jget 'd[0]?.number ?? ""')"
 [ "$QNUM" = "$NUM" ] && ok "resume queue lists #$NUM (number enriched for the loop)" || fail "resume queue missing #$NUM (got '$QNUM')"
 
 echo "== 5. resume-begin re-enters delivery in the SAME worktree (-> in_progress) =="
-RB_WT="$(wg ticket resume-begin "$NUM" 2>/dev/null | jget 'd.context.worktree_path')"
+# Exactly as tick.sh resumes: leased to the runner agent, which gets the claim token.
+RUNNER_AGENT="$(wg agent register -n runner --max-risk high 2>/dev/null | jget 'd.agent.id')"
+RB_JSON="$(wg ticket resume-begin "$NUM" --agent "$RUNNER_AGENT" --ttl 600 2>/dev/null)"
+RB_WT="$(printf '%s' "$RB_JSON" | jget 'd.context.worktree_path')"
+RB_TOK="$(printf '%s' "$RB_JSON" | jget 'd.claim_token ?? ""')"
+[ -n "$RB_TOK" ] && ok "resume-begin --agent leased the resumed delivery (claim token printed)" || fail "resume-begin --agent printed no claim token"
+wg heartbeat "$RB_TOK" >/dev/null 2>&1 && ok "the resumed delivery's lease heartbeats with that token" || fail "heartbeat on the resume lease failed"
 [ "$(status_of "$NUM")" = "in_progress" ] && ok "resume-begin moved #$NUM paused -> in_progress" || fail "resume-begin did not reach in_progress (got '$(status_of "$NUM")')"
 [ "$RB_WT" = "$WT" ] && ok "INVARIANT: resume re-enters the SAME worktree path" || fail "resume worktree path changed ($RB_WT)"
 [ -d "$WT" ] && ok "the worktree is still present for the resumed delivery" || fail "worktree vanished before resume"

@@ -34,6 +34,13 @@
 //   --repo <name|path>   override DISPATCH_ONBOARD_REPO
 //   --dry-run            do NOT spawn crew; print the planned invocation as JSON
 //                        (used by tests to assert the argv offline)
+//   --summary            the TERMINAL view (`gaffer onboard` passes it): the full log —
+//                        crew's pretty-printed scan JSON, every analysis line — goes to
+//                        $GAFFER_DATA/onboard.log, and stderr gets a summary of at most
+//                        ~8 lines (registered name, stack/test/branch, model analysis
+//                        yes/no + why not, counts, the intake decision, the next step).
+//                        GAFFER_VERBOSE=1 keeps the full log on stderr. Without the flag
+//                        (the dashboard's run log, tests) the output is unchanged.
 //
 // EXIT: 0 on a clean run (crew spawned + exited 0), non-zero on a hard failure
 //   (no target, unresolvable target, spawn error). On a hard failure it emits a single
@@ -41,9 +48,9 @@
 // =====================================================================
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeAndWrite } from "../lib/onboard-analyze.mjs";
 
@@ -62,8 +69,19 @@ const CONFIG = {
   crewConfig: process.env.CREW_CONFIG || resolve(GAFFER_DATA, "crew.yaml"),
 };
 
+// --summary: where the full log goes instead of stderr (null = stderr, the default).
+let LOG_FILE = null;
 function log(msg) {
-  process.stderr.write(`[onboard-run] ${msg}\n`);
+  const line = `[onboard-run] ${msg}\n`;
+  if (LOG_FILE) {
+    try {
+      appendFileSync(LOG_FILE, line);
+      return;
+    } catch {
+      /* unwritable log file — fall back to stderr */
+    }
+  }
+  process.stderr.write(line);
 }
 
 /** Emit a single JSON object on stdout (for the detached log) and exit. */
@@ -73,11 +91,13 @@ function emit(obj, code = 0) {
 }
 function fail(reason, code = 1) {
   log(`ERROR: ${reason}`);
+  // A hard failure always reaches the terminal, summary mode or not.
+  if (LOG_FILE) process.stderr.write(`✗ ${reason}\n`);
   emit({ phase: "error", error: reason }, code);
 }
 
 function parseArgs(argv) {
-  const opts = { repo: process.env.DISPATCH_ONBOARD_REPO || "", dryRun: false };
+  const opts = { repo: process.env.DISPATCH_ONBOARD_REPO || "", dryRun: false, summary: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => argv[(i += 1)];
@@ -87,6 +107,9 @@ function parseArgs(argv) {
         break;
       case "--dry-run":
         opts.dryRun = true;
+        break;
+      case "--summary":
+        opts.summary = true;
         break;
       default:
         break;
@@ -233,6 +256,69 @@ function lastBalancedObject(text) {
   return last;
 }
 
+/**
+ * The --summary view: a few lines a new user needs NEXT, built from crew's onboard
+ * JSON + the analysis result. `gaffer onboard` used to print ~150 lines of raw JSON
+ * (its single-line JSON filter never matched crew's pretty-printed output), burying
+ * the repo name, the test command, whether the model ran, and the intake decision.
+ * Pure (returns the lines); exported for tests.
+ */
+export function buildOnboardSummary({ stdout, exit, analysis, logFile }) {
+  const facts = extractScanFacts(stdout) ?? {};
+  let clarifications = [];
+  try {
+    const obj = JSON.parse(String(stdout ?? "").trim());
+    if (Array.isArray(obj?.clarifications)) clarifications = obj.clarifications;
+  } catch {
+    /* not JSON — no intake line */
+  }
+  const name = facts.name ?? facts.repoId ?? "(unknown)";
+  const lines = [];
+  if ((exit ?? 0) !== 0) {
+    lines.push(`✗ crew onboard failed (exit ${exit}) — see ${logFile}`);
+    return lines;
+  }
+  const bits = [
+    facts.stack ? `stack ${facts.stack}` : null,
+    facts.testCommand ? `test "${facts.testCommand}"` : "no test command found",
+    facts.defaultBranch ? `branch ${facts.defaultBranch}` : null,
+  ].filter(Boolean);
+  lines.push(`✓ registered: ${name}   (${bits.join(" · ")})`);
+  if (!analysis || !analysis.ran) {
+    lines.push("! model analysis skipped (memory CLI not configured) — mechanical digest only");
+  } else if (analysis.usedModel) {
+    const st = analysis.stats ?? {};
+    const cs = analysis.cardStats;
+    lines.push(
+      `✓ model analysis: digest written · features +${st.featuresAdded ?? 0} · lore drafts +${st.loreDrafted ?? 0}` +
+        (cs ? ` · cards ${cs.modelCarded}/${cs.carded} model-summarised` : ""),
+    );
+  } else if (analysis.modelError) {
+    lines.push(
+      `! model analysis unavailable (claude: ${analysis.modelError}) — mechanical-only digest + cards; ` +
+        "fix claude auth (`claude`, then /login) and re-run the onboard",
+    );
+  } else {
+    lines.push(
+      "! model analysis gave no usable answer — wrote a minimal honest digest (mechanical-only)",
+    );
+  }
+  const decisionId = clarifications.find((c) => c && c.decisionId)?.decisionId;
+  if (decisionId) {
+    const short = String(decisionId).slice(0, 8);
+    lines.push(
+      `! intake: ${clarifications.length} question(s) about the product, filed as decision ${short} — ` +
+        `answer in the dashboard, or: gaffer wg decisions resolve ${short} --answer "…"`,
+    );
+  }
+  lines.push(
+    `next: gaffer wg ticket create -t "…" -d "…", then ac add · repo-access set <n> ${name} · ready ` +
+      "(quickstart §4) — or map it in the Factory Map tab",
+  );
+  if (logFile) lines.push(`full log: ${logFile}`);
+  return lines;
+}
+
 function ensureCrewConfig() {
   if (existsSync(CONFIG.crewConfig)) return;
   const crewCli = resolve(CONFIG.crewDir, "dist", "cli", "index.js");
@@ -258,6 +344,16 @@ function ensureCrewConfig() {
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
+  const summary =
+    opts.summary && !opts.dryRun && !/^(1|true|yes|on)$/i.test(process.env.GAFFER_VERBOSE ?? "");
+  if (summary) {
+    LOG_FILE = resolve(GAFFER_DATA, "onboard.log");
+    try {
+      writeFileSync(LOG_FILE, "", { mode: 0o600 });
+    } catch {
+      LOG_FILE = null; // cannot write the state dir — keep the full log on stderr
+    }
+  }
 
   if (!opts.repo.trim()) {
     fail("DISPATCH_ONBOARD_REPO is required (the repo name/id or path to onboard)");
@@ -304,6 +400,11 @@ function main() {
       ...process.env,
       // crew reads the factory state dir as GAFFER_DATA_DIR (see `gaffer onboard`).
       GAFFER_DATA_DIR: GAFFER_DATA,
+      // The factory's one events log (as factory.config.sh exports it), so a
+      // dashboard-spawned onboard never writes `.crew/` into whatever its cwd is.
+      GAFFER_CREW_EVENTS: process.env.GAFFER_CREW_EVENTS || join(GAFFER_DATA, "events.jsonl"),
+      // Register into the factory's DB even if crew.yaml's sqlite_path has drifted.
+      ...(process.env.DISPATCH_DB ? { CREW_DISPATCH_DB: process.env.DISPATCH_DB } : {}),
     },
   });
 
@@ -330,10 +431,28 @@ function main() {
         ...facts,
       };
       analysis = analyzeAndWrite(repoPath, scan, { log: (m) => log(`analysis: ${m}`) });
+      // The onboard still succeeds (mechanical digest + cards), but say loudly WHY the
+      // model half is missing — it used to read as a silent, degraded success.
+      if (analysis?.modelError) {
+        log(
+          `WARNING: model analysis unavailable (claude: ${analysis.modelError}) — digest and ` +
+            "cards are mechanical-only; fix claude auth (`claude`, then /login) and re-run the onboard",
+        );
+      }
     } catch (err) {
       // Defensive: the analysis is best-effort. A bug here must not fail the onboard.
       log(`analysis: skipped after error: ${err?.message ?? err}`);
     }
+  }
+
+  if (summary) {
+    const lines = buildOnboardSummary({
+      stdout: res.stdout,
+      exit: res.status ?? 0,
+      analysis,
+      logFile: LOG_FILE,
+    });
+    process.stderr.write(lines.join("\n") + "\n");
   }
 
   emit(

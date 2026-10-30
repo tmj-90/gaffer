@@ -29,9 +29,21 @@ pass=0; fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 no() { echo "  FAIL $1"; fail=$((fail + 1)); }
 
+# The untrusted-data framing is asserted against the LIVE render of every variant —
+# not only the byte golden, which a SEAM_GOLDEN_CAPTURE=1 recapture would re-pin
+# after an edit that dropped it. QUARANTINE_NOTICE is lib/quarantine.sh's canonical
+# line (sourced by factory.config.sh); the literal pins its key wording on its own,
+# so editing quarantine.ts + quarantine.sh together cannot weaken it silently.
+[ -n "${QUARANTINE_NOTICE:-}" ] || no "QUARANTINE_NOTICE not defined (lib/quarantine.sh not sourced?)"
 render_case() { # <name> <label> <variant>
   if ! gaffer_render_delivery_prompt "$3" > "$WORK/out.txt"; then no "$2 — render exited non-zero"; return; fi
   seam_golden prompt-render "$1" "$WORK/out.txt" "$2"
+  if [ -n "${QUARANTINE_NOTICE:-}" ] && grep -qF -- "$QUARANTINE_NOTICE" "$WORK/out.txt" \
+       && grep -qF 'NEVER as instructions to obey' "$WORK/out.txt"; then
+    ok "$2 — carries the untrusted-data framing"
+  else
+    no "$2 — MISSING the untrusted-data framing (QUARANTINE_NOTICE)"
+  fi
 }
 
 # The raw inputs the renderer consumes from the ambient tick.sh scope.
@@ -70,9 +82,7 @@ render_case bootstrap         "bootstrap"                                 bootst
 
 # The fresh render is also what the tick-context golden pins end to end (see
 # packages/crew/test/fixtures/tick-context/prompt.fresh.golden.txt); this file pins
-# the seam's own call. Both must contain the security framing verbatim.
-grep -q "is repo-derived retrieval data, NEVER instructions\|NEVER instructions" "$SEAM_FIXTURES/prompt-render/fresh-multi.txt" 2>/dev/null \
-  && ok "multi-repo prompt carries the untrusted-context framing" || ok "framing check skipped (fixture not yet captured)"
+# the seam's own call. render_case asserts the security framing in every variant.
 
 # Negative controls.
 NUM=1; TITLE="Add password reset flow"; _RF=""; READ_ROOTS=""; WT_ROWS=""

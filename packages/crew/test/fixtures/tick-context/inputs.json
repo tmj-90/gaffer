@@ -23,6 +23,7 @@
     "memoryMcpBin": "/opt/gaffer-fixture/memory-mcp/bin.js",
     "claimToken": "__CLAIM_TOKEN__",
     "ticketRepos": "fixture-app",
-    "recallTicket": "1"
+    "recallTicket": "1",
+    "scopeTicket": "1"
   }
 }

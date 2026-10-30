@@ -46,6 +46,11 @@ function labels(checks: { label: string }[]): string {
 }
 
 describe("runDoctor", () => {
+  it("reports the audit log at MEMORY_AUDIT_LOG (the path the factory pins into $GAFFER_DATA)", async () => {
+    const { checks } = await runDoctor();
+    expect(labels(checks)).toContain(`(${join(dir, "audit.jsonl")})`);
+  });
+
   it("warns (but does not fail) when the DB doesn't exist yet", async () => {
     const { exitCode, checks } = await runDoctor();
     expect(exitCode).toBe(0); // missing DB is a warn, not a fail

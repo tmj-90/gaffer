@@ -21,7 +21,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 
 import { addBoundary } from "../src/core/boundaries.js";
-import { addLore } from "../src/core/lore.js";
+import { addLore, getLore } from "../src/core/lore.js";
+import { recallFeedback } from "../src/core/recallFeedback.js";
 import { recordAbsence } from "../src/core/absence.js";
 import { repoKey, upsertFileCard } from "../src/core/fileCards.js";
 import { addFeature, upsertDigest } from "../src/core/repoUnderstanding.js";
@@ -239,6 +240,24 @@ describe("MCP — search_lore", () => {
     expect(json.next).toContain("record_absence");
   });
 
+  it("a ticket-title query finds the terse decision that binds it (no absence coach)", async () => {
+    // Regression (review r2: stopword-or-query): 6 content terms sharing only
+    // "password" + "bcrypt" with the record fell under a "match half" bar, so the
+    // agent was told to record_absence while a binding decision existed.
+    const rec = addLore(db, {
+      title: "Use Argon2id for password hashing",
+      summary: "Passwords are hashed with Argon2id, memory cost 64MB; bcrypt is not allowed.",
+      body: "b",
+      source: "https://example.com/adr/argon2",
+    });
+    client = await connectClient(db);
+    const { json } = await callJson(client, "search_lore", {
+      query: "Switch password storage from bcrypt to something stronger",
+    });
+    expect(json.results.map((r: { id: string }) => r.id)).toEqual([rec.id]);
+    expect(json.next).toBeUndefined();
+  });
+
   it("surfaces an absence_marker on a zero-hit query that matches one", async () => {
     recordAbsence(db, {
       query: "kafka exactly-once",
@@ -256,6 +275,24 @@ describe("MCP — search_lore", () => {
     );
     expect(json.security).toContain("<untrusted-*>");
     expect(json.next).toBeUndefined(); // marker wins over coach
+  });
+
+  it("an off-topic SENTENCE reaches the zero-hit path and surfaces its absence marker", async () => {
+    // Regression (audit: stopword-or-query): "the" / "for" / "is" used to match
+    // the Argon2id record above, so the marker below was unreachable.
+    recordAbsence(db, {
+      query: "employee holiday leave policy",
+      reason: "HR owns this, not engineering",
+      recordedBy: "human",
+    });
+    client = await connectClient(db);
+    const { json } = await callJson(client, "search_lore", {
+      query: "what is the policy for employee holiday leave",
+    });
+    expect(json.results).toEqual([]);
+    expect(json.absence_marker.reason).toBe(
+      "<untrusted-absence>HR owns this, not engineering</untrusted-absence>",
+    );
   });
 
   it("reports truncation when more match than the limit", async () => {
@@ -424,18 +461,18 @@ describe("MCP — suggest_lore defaults repos from the factory ticket scope", ()
     expect([...got.json.repos].sort()).toEqual(["auth", "payments-svc"]);
   });
 
-  it("an explicit non-empty repos always wins over the ticket scope", async () => {
+  it("an explicit in-scope repos wins over the ticket-scope default", async () => {
     process.env["GAFFER_FACTORY"] = "1";
-    process.env["GAFFER_TICKET_REPOS"] = "payments-svc";
+    process.env["GAFFER_TICKET_REPOS"] = "payments-svc:auth";
     client = await connectClient(db);
     const { json } = await callJson(client, "suggest_lore", {
-      title: "Org-wide rule",
+      title: "Auth-only rule",
       summary: "s",
       body: "b",
-      repos: ["platform"],
+      repos: ["auth"],
     });
     const got = await callJson(client, "get_lore", { id: json.id });
-    expect(got.json.repos).toEqual(["platform"]);
+    expect(got.json.repos).toEqual(["auth"]);
   });
 
   it("an explicit EMPTY repos in factory context is treated as omitted (tagged, not lost)", async () => {
@@ -475,6 +512,106 @@ describe("MCP — suggest_lore defaults repos from the factory ticket scope", ()
     expect(json.status).toBe("draft");
     const got = await callJson(client, "get_lore", { id: json.id });
     expect(got.json.repos).toEqual([]);
+  });
+});
+
+/**
+ * Regression (audit: suggest-lore-scope-guard-gap): the factory repo-scope guard
+ * covered digest / feature writes but suggest_lore and report_conflict accepted
+ * any explicit repo list, so an agent scoped to repo A could plant lore tagged
+ * for repo B (active at once under MEMORY_AUTO_APPROVE) that B's PRODUCT CONTEXT
+ * primer would serve.
+ */
+describe("MCP — lore writes are bound to the factory ticket's repo scope", () => {
+  const loreRows = (): number =>
+    (db.prepare("SELECT COUNT(*) AS n FROM lore").get() as { n: number }).n;
+  const repoRows = (): number =>
+    (db.prepare("SELECT COUNT(*) AS n FROM lore_repos").get() as { n: number }).n;
+
+  for (const autoApprove of [undefined, "1"]) {
+    it(`suggest_lore refuses an out-of-scope repo (MEMORY_AUTO_APPROVE=${autoApprove ?? "unset"})`, async () => {
+      process.env["GAFFER_FACTORY"] = "1";
+      process.env["GAFFER_TICKET_REPOS"] = "a";
+      if (autoApprove) process.env["MEMORY_AUTO_APPROVE"] = autoApprove;
+      const audit = captureAudit();
+      client = await connectClient(db);
+      for (const repos of [["b"], ["a", "b"]]) {
+        const { isError, json } = await callJson(client, "suggest_lore", {
+          title: "Planted decision",
+          summary: "s",
+          body: "b",
+          kind: "decision",
+          repos,
+        });
+        expect(isError).toBe(true);
+        expect(json).toMatchObject({ error: "repo_out_of_scope", repo: "b" });
+      }
+      expect(loreRows()).toBe(0);
+      expect(repoRows()).toBe(0);
+      expect(audit.rows().filter((r) => r["blocked"] === "repo_out_of_scope")).toHaveLength(2);
+      // In-scope explicit and defaulted repos still work.
+      const ok1 = await callJson(client, "suggest_lore", {
+        title: "Fine",
+        summary: "s",
+        body: "b",
+        repos: ["a"],
+      });
+      expect(ok1.isError).toBe(false);
+      const ok2 = await callJson(client, "suggest_lore", {
+        title: "Fine 2",
+        summary: "s",
+        body: "b",
+      });
+      expect(ok2.isError).toBe(false);
+      expect(loreRows()).toBe(2);
+    });
+  }
+
+  it("an untagged write is refused only when it would land ACTIVE (empty scope + auto-approve)", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["MEMORY_AUTO_APPROVE"] = "1";
+    client = await connectClient(db);
+    const { isError, json } = await callJson(client, "suggest_lore", {
+      title: "Untagged active",
+      summary: "s",
+      body: "b",
+    });
+    expect(isError).toBe(true);
+    expect(json.error).toBe("repo_out_of_scope");
+    expect(loreRows()).toBe(0);
+  });
+
+  it("standalone (no GAFFER_FACTORY) still accepts any repos", async () => {
+    process.env["GAFFER_TICKET_REPOS"] = "a";
+    client = await connectClient(db);
+    const { isError } = await callJson(client, "suggest_lore", {
+      title: "Anywhere",
+      summary: "s",
+      body: "b",
+      repos: ["b"],
+    });
+    expect(isError).toBe(false);
+  });
+
+  it("report_conflict refuses an explicit out-of-scope repo and writes no counter-draft", async () => {
+    const existing = addLore(db, { title: "Rule", summary: "s", body: "b", repos: ["a"] });
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "a";
+    client = await connectClient(db);
+    const { isError, json } = await callJson(client, "report_conflict", {
+      existingId: existing.id,
+      observation: "The code does the opposite.",
+      repos: ["b"],
+    });
+    expect(isError).toBe(true);
+    expect(json.error).toBe("repo_out_of_scope");
+    expect(loreRows()).toBe(1);
+    const ok = await callJson(client, "report_conflict", {
+      existingId: existing.id,
+      observation: "The code does the opposite.",
+      repos: ["a"],
+    });
+    expect(ok.isError).toBe(false);
   });
 });
 
@@ -1011,6 +1148,31 @@ describe("MCP — retrieval-ROI logging on the read path (migration 011)", () =>
     expect(scope).toContainEqual({ item_type: "card", item_id: cardId });
     expect(scope).toContainEqual({ item_type: "digest", item_id: REPO });
     expect(scope).toContainEqual({ item_type: "lore", item_id: loreId });
+  });
+
+  it("recall-feedback credits exactly the lore the agent FETCHED, not what a search offered", async () => {
+    // Regression (audit: recall-feedback-wrong-items): outcome credit went to the
+    // packet lore cards-for-scope never rendered. Now it follows get_lore.
+    const { loreId } = seedAll();
+    const offered = addLore(db, {
+      title: "Webhook signing secret rotation",
+      summary: "s",
+      body: "b",
+      repos: [REPO],
+      source: "https://example.com/adr/2",
+      confidence: "medium",
+    });
+    process.env["GAFFER_RECALL_TICKET"] = "42";
+    process.env["GAFFER_TICKET_REPOS"] = REPO;
+    client = await connectClient(db);
+    const search = await callJson(client, "search_lore", { query: "webhook" });
+    expect(search.json.results.map((r: { id: string }) => r.id)).toContain(offered.id);
+    await callJson(client, "get_lore", { id: loreId });
+
+    const res = recallFeedback(db, { repo: REPO, ticket: "42", outcome: "reworked" });
+    expect(res.loreAdjusted).toEqual([loreId]);
+    expect(getLore(db, offered.id)!.confidence).toBe("medium"); // only offered → untouched
+    expect(getLore(db, loreId)!.confidence).toBe("low");
   });
 
   it("writes NOTHING when GAFFER_RECALL_TICKET is unset (standalone inert)", async () => {

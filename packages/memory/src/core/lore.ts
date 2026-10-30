@@ -13,8 +13,8 @@ import type {
 } from "../db/types.js";
 import { LORE_KINDS } from "../db/types.js";
 import {
-  cosine,
   deserialiseVector,
+  dotUnit,
   embeddingTextHash,
   getEmbedder,
   hybridRetrievalEnabled,
@@ -23,6 +23,7 @@ import {
 } from "./embedding.js";
 import type { Embedder } from "./embedding.js";
 import { newLoreId } from "./ids.js";
+import { MIN_MATCH_FROM, denseQueryText, queryTerms, toFtsMatch } from "./queryTokens.js";
 
 const LORE_KIND_SET = new Set<string>(LORE_KINDS);
 
@@ -406,6 +407,13 @@ export interface ImportLoreInput {
    * "NULL or non-empty array" holds.
    */
   readonly conflictsWith?: ReadonlyArray<string>;
+  /**
+   * Spec-freeze linkage (migration 010). Omitted by files exported before the
+   * sync format carried it, so an update KEEPS the local value when the file is
+   * silent — a re-import must not null out a still-correct join key.
+   */
+  readonly specId?: string;
+  readonly clauseId?: string;
 }
 
 export interface ImportResult {
@@ -430,6 +438,28 @@ export interface ImportResult {
  * lacks a meaningful kind (missing, empty, or 'other') and the existing
  * row has one, the existing kind is preserved — see the inline note below.
  */
+/** True when an import would change any field lore_version snapshots. */
+function importChangesContent(
+  row: LoreRow,
+  input: ImportLoreInput,
+  kind: LoreKind,
+  confidence: LoreConfidence,
+): boolean {
+  return (
+    row.title !== input.title ||
+    row.summary !== input.summary ||
+    row.body !== input.body ||
+    row.author !== (input.author ?? null) ||
+    row.team !== (input.team ?? null) ||
+    row.source !== (input.source ?? null) ||
+    row.confidence !== confidence ||
+    (row.kind ?? "other") !== kind ||
+    row.restricted !== (input.restricted ? 1 : 0) ||
+    row.review_after !== (input.reviewAfter ?? null) ||
+    row.status !== input.status
+  );
+}
+
 export function upsertLoreFromImport(db: Database, input: ImportLoreInput): ImportResult {
   assertIsoDate(input.reviewAfter, "reviewAfter");
   assertIsoDate(input.createdAt, "createdAt");
@@ -444,8 +474,8 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
   const createdAt = input.createdAt ?? nowTs;
   const updatedAt = input.updatedAt ?? nowTs;
 
-  const existing = db.prepare("SELECT rowid, kind FROM lore WHERE id = ?").get(input.id) as
-    { rowid: number; kind: string | null } | undefined;
+  const existing = db.prepare("SELECT * FROM lore WHERE id = ?").get(input.id) as
+    LoreRow | undefined;
   const isCreate = !existing;
 
   // Kind preservation — mirrors updateLore's "no kind supplied → keep the
@@ -478,10 +508,10 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
           `INSERT INTO lore (
             id, title, summary, body, author, team,
             status, kind, source, review_after, confidence,
-            superseded_by, restricted,
+            superseded_by, restricted, spec_id, clause_id,
             created_at, updated_at, last_verified_at,
             conflicts_with
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -497,6 +527,8 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
           confidence,
           input.supersededBy ?? null,
           input.restricted ? 1 : 0,
+          input.specId ?? null,
+          input.clauseId ?? null,
           createdAt,
           updatedAt,
           input.lastVerifiedAt ?? null,
@@ -511,12 +543,21 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
       );
       refreshLoreEmbedding(db, input.id, input.title, input.summary);
     } else {
+      // VERSION HISTORY: an import overwrites local text just like updateLore does,
+      // so snapshot the pre-import row first (migration 012) — otherwise a teammate's
+      // newer file, or --force, destroys a local edit with no way back. Only when a
+      // snapshotted field actually changes, so idempotent re-imports / every
+      // `sync pull` don't pile up duplicate versions.
+      if (importChangesContent(existing, input, kind, confidence)) {
+        snapshotLoreVersion(db, existing, nowTs);
+      }
       db.prepare(
         `UPDATE lore SET
            title = ?, summary = ?, body = ?,
            author = ?, team = ?, status = ?, kind = ?,
            source = ?, review_after = ?, confidence = ?,
            superseded_by = ?, restricted = ?,
+           spec_id = COALESCE(?, spec_id), clause_id = COALESCE(?, clause_id),
            updated_at = ?, last_verified_at = ?,
            conflicts_with = ?
          WHERE id = ?`,
@@ -533,6 +574,8 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
         confidence,
         input.supersededBy ?? null,
         input.restricted ? 1 : 0,
+        input.specId ?? null,
+        input.clauseId ?? null,
         updatedAt,
         input.lastVerifiedAt ?? null,
         conflictsWith,
@@ -735,13 +778,23 @@ export function reportConflict(db: Database, input: ReportConflictInput): Lore {
   // Re-fetch so the returned Lore reflects the post-UPDATE
   // conflicts_with field (insertLore returned the row before the
   // UPDATE landed).
-  return getLore(db, draft.id)!;
+  return getLore(db, draft.id, { recordRead: false })!;
 }
 
-export function getLore(db: Database, id: string): Lore | null {
+export interface GetLoreOptions {
+  /**
+   * Record a `read` event (default true). Pass false for anything that is not
+   * an agent pulling the record into its context — an operator's `show` /
+   * `history`, a re-fetch after a write — so `memory stats` top-cited and the
+   * retirement candidates reflect real use, not browsing or bookkeeping.
+   */
+  readonly recordRead?: boolean;
+}
+
+export function getLore(db: Database, id: string, opts: GetLoreOptions = {}): Lore | null {
   const row = db.prepare("SELECT * FROM lore WHERE id = ?").get(id) as LoreRow | undefined;
   if (!row) return null;
-  recordRead(db, [id], "get");
+  if (opts.recordRead !== false) recordRead(db, [id], "get");
   return rowToLore(row, reposOf(db, id), tagsOf(db, id));
 }
 
@@ -781,7 +834,7 @@ export function approveLore(db: Database, id: string): Lore | null {
     .run(ts, id);
   if (r.changes === 0) return null;
   db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'approved', ?)").run(id, ts);
-  return getLore(db, id);
+  return getLore(db, id, { recordRead: false });
 }
 
 /** Mark deprecated — stays findable only with `includeDeprecated`. */
@@ -792,39 +845,88 @@ export function deprecateLore(db: Database, id: string): Lore | null {
     .run(ts, id);
   if (r.changes === 0) return null;
   db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'deprecated', ?)").run(id, ts);
-  return getLore(db, id);
+  return getLore(db, id, { recordRead: false });
+}
+
+/** Thrown inside the supersede transaction to roll back an `approveReplacement`. */
+class SupersedeAborted extends Error {}
+
+/** Why {@link supersedeLore} refused, for a caller that wants to explain it. */
+export type SupersedeRefusal =
+  "same_id" | "not_found" | "replacement_not_active" | "old_not_active";
+
+/**
+ * Check whether `oldId` can be superseded by `newId`; null when it can.
+ * Both records must exist and be ACTIVE. A draft replacement is refused: the
+ * old record would vanish from every default (active-only) search while its
+ * replacement is still unapproved — and rejecting the draft afterwards left
+ * the original pointing at a deleted id with no CLI path back. A non-active
+ * old record is refused too, so a draft is never "superseded" and an existing
+ * supersede chain is never silently re-pointed.
+ */
+export function supersedeRefusal(
+  db: Database,
+  oldId: string,
+  newId: string,
+): SupersedeRefusal | null {
+  if (oldId === newId) return "same_id";
+  const statusOf = db.prepare("SELECT status FROM lore WHERE id = ?");
+  const replacement = statusOf.get(newId) as { status: LoreStatus } | undefined;
+  const old = statusOf.get(oldId) as { status: LoreStatus } | undefined;
+  if (!replacement || !old) return "not_found";
+  if (old.status !== "active") return "old_not_active";
+  if (replacement.status !== "active") return "replacement_not_active";
+  return null;
 }
 
 /**
  * Mark `oldId` as superseded by `newId`. Old record → status='superseded'
- * + supersededBy=newId. New record is left as-is (typically already active).
- *
- * Validates: oldId exists, newId exists, oldId !== newId, and newId
- * itself is not a tombstone (deprecated / superseded). Returns null
- * on any failure rather than throwing — the CLI surfaces a single
- * explanatory message rather than an unhandled error.
+ * + supersededBy=newId. New record is left as-is. Refusals (see
+ * {@link supersedeRefusal}) return null rather than throwing — the CLI asks
+ * `supersedeRefusal` for the reason. With `approveReplacement`, a DRAFT
+ * replacement is approved in the same transaction first (all or nothing).
  */
-export function supersedeLore(db: Database, oldId: string, newId: string): Lore | null {
-  if (oldId === newId) return null;
-  const replacement = db.prepare("SELECT id, status FROM lore WHERE id = ?").get(newId) as
-    { id: string; status: LoreStatus } | undefined;
-  if (!replacement) return null;
-  if (replacement.status === "deprecated" || replacement.status === "superseded") {
-    return null;
-  }
+export function supersedeLore(
+  db: Database,
+  oldId: string,
+  newId: string,
+  opts: { approveReplacement?: boolean } = {},
+): Lore | null {
   const ts = nowIso();
-  const r = db
-    .prepare(
+  const done = db.transaction((): boolean => {
+    if (opts.approveReplacement) {
+      const r = db
+        .prepare(
+          "UPDATE lore SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'",
+        )
+        .run(ts, newId);
+      if (r.changes > 0) {
+        db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'approved', ?)").run(
+          newId,
+          ts,
+        );
+      }
+    }
+    if (supersedeRefusal(db, oldId, newId) !== null) {
+      // Roll back an approval made above: the supersede is all or nothing.
+      if (opts.approveReplacement) throw new SupersedeAborted();
+      return false;
+    }
+    db.prepare(
       "UPDATE lore SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?",
-    )
-    .run(newId, ts, oldId);
-  if (r.changes === 0) return null;
-  db.prepare("INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'superseded', ?, ?)").run(
-    oldId,
-    ts,
-    JSON.stringify({ supersededBy: newId }),
-  );
-  return getLore(db, oldId);
+    ).run(newId, ts, oldId);
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'superseded', ?, ?)",
+    ).run(oldId, ts, JSON.stringify({ supersededBy: newId }));
+    return true;
+  });
+  try {
+    if (!done()) return null;
+  } catch (err) {
+    if (err instanceof SupersedeAborted) return null;
+    throw err;
+  }
+  return getLore(db, oldId, { recordRead: false });
 }
 
 /**
@@ -863,7 +965,7 @@ export function verifyLore(db: Database, id: string, nextReviewAfter?: string | 
     ts,
     JSON.stringify({ reviewAfter: newReview }),
   );
-  return getLore(db, id);
+  return getLore(db, id, { recordRead: false });
 }
 
 /**
@@ -1064,7 +1166,7 @@ export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lo
     db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'updated', ?)").run(id, ts);
   });
   tx();
-  return getLore(db, id);
+  return getLore(db, id, { recordRead: false });
 }
 
 /**
@@ -1095,6 +1197,24 @@ export function rejectLore(db: Database, id: string, reason?: string): boolean {
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
     db.prepare("DELETE FROM lore WHERE id = ?").run(id);
     db.prepare("DELETE FROM lore_embeddings WHERE lore_id = ?").run(id);
+    // Edited draft text must not outlive the rejection (migration 014's trigger
+    // also does this; explicit so the scrub is obvious here).
+    db.prepare("DELETE FROM lore_version WHERE lore_id = ?").run(id);
+    // A record superseded by this draft (possible before supersedeLore required an
+    // active replacement) would otherwise point at a deleted id with no CLI way
+    // back: restore it, since the replacement was never approved.
+    const orphaned = db
+      .prepare("SELECT id FROM lore WHERE superseded_by = ? AND status = 'superseded'")
+      .pluck()
+      .all(id) as string[];
+    for (const oldId of orphaned) {
+      db.prepare(
+        "UPDATE lore SET status = 'active', superseded_by = NULL, updated_at = ? WHERE id = ?",
+      ).run(ts, oldId);
+      db.prepare(
+        "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'reactivated', ?, ?)",
+      ).run(oldId, ts, JSON.stringify({ reason: "replacement_rejected", replacement: id }));
+    }
     db.prepare("INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'rejected', ?, ?)").run(
       id,
       ts,
@@ -1152,6 +1272,9 @@ export function deleteLore(db: Database, id: string): boolean {
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
     db.prepare("DELETE FROM lore WHERE id = ?").run(id);
     db.prepare("DELETE FROM lore_embeddings WHERE lore_id = ?").run(id);
+    // "Edit, then delete" is how a leaked secret gets scrubbed: the snapshots of
+    // the earlier text go too (and migration 014's trigger guarantees it).
+    db.prepare("DELETE FROM lore_version WHERE lore_id = ?").run(id);
     db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'deleted', ?)").run(id, ts);
   });
   tx();
@@ -1205,6 +1328,16 @@ const RANK_CANDIDATE_POOL = 60;
  * bm25, keeping its "reorders near-ties, never flips a clear winner" contract.
  */
 const DENSE_MIN_COSINE = 0.25;
+/**
+ * Stricter floor for queries of MIN_MATCH_FROM+ content terms. On those the
+ * lexical side's min-match rule (2 terms, or a third of 7+) is the recall gate
+ * (one typo in a long query still leaves enough terms to match), so a dense hit is
+ * mostly a re-ranking signal — and a long off-topic sentence shares enough
+ * surface n-grams with SOME record to clear 0.25 (measured on a 1,045-record
+ * corpus of repo-doc headings: off-topic sentences peaked at 0.32, while the
+ * labelled blind-spot recoveries in retrieval-eval are 1–2 term queries).
+ */
+const DENSE_MIN_COSINE_LONG_QUERY = 0.35;
 const DENSE_WEIGHT = 0.5;
 const DENSE_CANDIDATE_POOL = 60;
 /** Upper bound on records embedded lazily during one search (a first search on a big legacy DB). */
@@ -1230,6 +1363,88 @@ function refreshLoreEmbedding(db: Database, id: string, title: string, summary: 
        dim = excluded.dim, vec = excluded.vec, text_hash = excluded.text_hash,
        updated_at = excluded.updated_at`,
   ).run(id, embedder.model, embedder.dim, serialiseVector(embedder.embed(text)), hash, nowIso());
+  invalidateVectorCache(db);
+}
+
+/**
+ * Decoded dense vectors per connection, so a search does not re-read and
+ * re-decode every BLOB (nor re-run ensureLoreEmbeddings' LEFT JOIN) per query —
+ * that full-row scan was ~10x the lexical cost (330 ms vs 30 ms at 20k rows).
+ *
+ * The cache is only TRUSTED while all of these are unchanged since it loaded:
+ *   - `PRAGMA data_version` — bumps when ANOTHER connection commits (the MCP
+ *     server, the CLI and crew share one DB file; an older binary may add lore
+ *     rows with no vector, which the ensure pass must still backfill);
+ *   - this connection's own vector writes (refreshLoreEmbedding / ensure bump
+ *     `generation`, since data_version ignores a connection's own commits);
+ *   - the lore and lore_embeddings row counts (a same-connection raw delete);
+ *   - and the backfill having drained: an ensure pass that embedded a full
+ *     EMBED_BACKFILL_BATCH may have left more records without a vector, so the
+ *     next search must run it again (its own writes are in the key above).
+ * Any change → ensureLoreEmbeddings, then a full reload of (id, vec) pairs.
+ */
+interface VectorCache {
+  model: string;
+  dim: number;
+  backfillPending: boolean;
+  dataVersion: number;
+  generation: number;
+  loreCount: number;
+  vecCount: number;
+  vecs: Map<string, Float32Array>;
+}
+const vectorCaches = new WeakMap<Database, VectorCache>();
+const vectorGenerations = new WeakMap<Database, number>();
+
+function invalidateVectorCache(db: Database): void {
+  vectorGenerations.set(db, (vectorGenerations.get(db) ?? 0) + 1);
+}
+
+function vectorCacheKey(
+  db: Database,
+): Omit<VectorCache, "model" | "dim" | "backfillPending" | "vecs"> {
+  const counts = db
+    .prepare("SELECT (SELECT COUNT(*) FROM lore) AS l, (SELECT COUNT(*) FROM lore_embeddings) AS e")
+    .get() as { l: number; e: number };
+  return {
+    dataVersion: db.pragma("data_version", { simple: true }) as number,
+    generation: vectorGenerations.get(db) ?? 0,
+    loreCount: counts.l,
+    vecCount: counts.e,
+  };
+}
+
+/** The current decoded vectors for `embedder`, backfilling + reloading only when stale. */
+function loreVectors(db: Database, embedder: Embedder): Map<string, Float32Array> {
+  const cached = vectorCaches.get(db);
+  const key = vectorCacheKey(db);
+  if (
+    cached &&
+    !cached.backfillPending &&
+    cached.model === embedder.model &&
+    cached.dim === embedder.dim &&
+    cached.dataVersion === key.dataVersion &&
+    cached.generation === key.generation &&
+    cached.loreCount === key.loreCount &&
+    cached.vecCount === key.vecCount
+  ) {
+    return cached.vecs;
+  }
+  const embedded = ensureLoreEmbeddings(db, embedder);
+  const vecs = new Map<string, Float32Array>();
+  const rows = db
+    .prepare("SELECT lore_id, vec FROM lore_embeddings WHERE model = ? AND dim = ?")
+    .all(embedder.model, embedder.dim) as Array<{ lore_id: string; vec: Buffer }>;
+  for (const r of rows) vecs.set(r.lore_id, deserialiseVector(r.vec, embedder.dim));
+  // Re-read the key AFTER the load: ensure's own writes bumped `generation`.
+  vectorCaches.set(db, {
+    model: embedder.model,
+    dim: embedder.dim,
+    backfillPending: embedded >= EMBED_BACKFILL_BATCH,
+    ...vectorCacheKey(db),
+    vecs,
+  });
+  return vecs;
 }
 
 /**
@@ -1259,6 +1474,7 @@ export function ensureLoreEmbeddings(db: Database, embedder: Embedder = getEmbed
     for (const m of missing) refreshLoreEmbedding(db, m.id, m.title, m.summary);
   });
   tx();
+  invalidateVectorCache(db);
   return missing.length;
 }
 
@@ -1267,35 +1483,49 @@ export function ensureLoreEmbeddings(db: Database, embedder: Embedder = getEmbed
  * (repo / tag / kind / status / restricted / updatedAfter — the same clauses
  * the lexical side uses, minus the FTS MATCH) scored by cosine against the
  * query vector, thresholded, top DENSE_CANDIDATE_POOL. Brute force over the
- * filtered set: a lore corpus is thousands of rows at most and each dot
- * product is 256 multiplies, so this is microseconds, not an index problem.
+ * filtered set, but against the per-connection decoded-vector cache (see
+ * loreVectors): the filter query reads only ids, and only the ≤60 winners
+ * are hydrated as full rows.
  */
 function denseCandidates(
   db: Database,
   opts: SearchOptions,
   embedder: Embedder,
 ): Array<{ row: LoreRow; cosine: number }> {
-  const q = embedder.embed(opts.query!.trim());
+  // Embed content terms only: stopword unigrams / bigrams / trigrams otherwise
+  // lift unrelated records over DENSE_MIN_COSINE on "the ... of ... in" alone.
+  const text = denseQueryText(opts.query!.trim());
+  const q = embedder.embed(text);
+  const minCosine =
+    queryTerms(text).terms.length >= MIN_MATCH_FROM
+      ? DENSE_MIN_COSINE_LONG_QUERY
+      : DENSE_MIN_COSINE;
+  const vecs = loreVectors(db, embedder);
   const { where, params } = buildSearchClauses({ ...opts, query: undefined });
-  const rows = db
-    .prepare(
-      `SELECT l.*, e.vec AS vec FROM lore l
-       JOIN lore_embeddings e ON e.lore_id = l.id AND e.model = ? AND e.dim = ?
-       ${where}`,
-    )
-    .all(embedder.model, embedder.dim, ...params) as Array<LoreRow & { vec: Buffer }>;
-  const scored: Array<{ row: LoreRow; cosine: number }> = [];
-  for (const r of rows) {
-    const c = cosine(q, deserialiseVector(r.vec, embedder.dim));
-    if (c >= DENSE_MIN_COSINE) {
-      const { vec: _vec, ...row } = r;
-      scored.push({ row: row as LoreRow, cosine: c });
-    }
+  const ids = db.prepare(`SELECT l.id, l.updated_at FROM lore l ${where}`).all(...params) as Array<{
+    id: string;
+    updated_at: string;
+  }>;
+  const scored: Array<{ id: string; updatedAt: string; cosine: number }> = [];
+  for (const r of ids) {
+    const v = vecs.get(r.id);
+    if (!v || v.length !== q.length) continue;
+    const c = dotUnit(q, v);
+    if (c >= minCosine) scored.push({ id: r.id, updatedAt: r.updated_at, cosine: c });
   }
   scored.sort((a, b) =>
-    a.cosine !== b.cosine ? b.cosine - a.cosine : a.row.updated_at < b.row.updated_at ? 1 : -1,
+    a.cosine !== b.cosine ? b.cosine - a.cosine : a.updatedAt < b.updatedAt ? 1 : -1,
   );
-  return scored.slice(0, DENSE_CANDIDATE_POOL);
+  const top = scored.slice(0, DENSE_CANDIDATE_POOL);
+  if (top.length === 0) return [];
+  const rows = db
+    .prepare(`SELECT * FROM lore WHERE id IN (${top.map(() => "?").join(",")})`)
+    .all(...top.map((t) => t.id)) as LoreRow[];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return top.flatMap((t) => {
+    const row = byId.get(t.id);
+    return row ? [{ row, cosine: t.cosine }] : [];
+  });
 }
 
 /**
@@ -1518,9 +1748,8 @@ export function searchLore(db: Database, opts: SearchOptions = {}): LoreSummary[
     if (hybridRetrievalEnabled()) {
       let dense: Array<{ row: LoreRow; cosine: number }>;
       try {
-        const embedder = getEmbedder();
-        ensureLoreEmbeddings(db, embedder);
-        dense = denseCandidates(db, opts, embedder);
+        // denseCandidates runs the lazy ensure/backfill itself, only when stale.
+        dense = denseCandidates(db, opts, getEmbedder());
       } catch {
         dense = [];
       }
@@ -1564,7 +1793,7 @@ export function searchLore(db: Database, opts: SearchOptions = {}): LoreSummary[
       retrievalOf.get(row.id),
     ),
   );
-  recordRead(db, ids, "search");
+  if (opts.recordReads !== false) recordRead(db, ids, "search");
   return annotatePossibleConflicts(summaries);
 }
 
@@ -1617,37 +1846,20 @@ function hasIntersection(a: ReadonlyArray<string>, b: ReadonlyArray<string>): bo
 }
 
 /**
- * Translate a free-text query into an FTS5 MATCH expression.
- * Split on whitespace, drop empties, quote each term — stops users
- * accidentally tripping FTS operators (NEAR, OR, AND, ", :, etc.).
+ * Translate a free-text query into an FTS5 MATCH expression. Each
+ * whitespace term is quoted (stops users tripping FTS operators) and the
+ * terms are OR-joined, ranked by bm25 — FTS5's default AND made multi-word
+ * queries brittle (real dogfood: 5 queries against a fresh corpus returned
+ * 0 hits because no record contained EVERY token), and bm25 still puts
+ * records matching MORE tokens, in higher-weighted columns, first.
  *
- * **OR-mode, ranked by bm25.** FTS5 defaults to AND across tokens, which
- * makes multi-word queries brittle (real dogfood: 5 queries against a
- * fresh corpus returned 0 hits because no record contained EVERY token).
- * We join with explicit `OR` so a query of N tokens surfaces records
- * matching any subset; bm25 ranking then puts records matching MORE
- * tokens (and matching them in higher-weighted columns — see column
- * weights at search-site `bm25(lore_fts, 3.0, 2.0, 1.0)`) at the top.
- * Net behaviour: "deployment kafka" surfaces Kafka-only records when
- * nothing matches both, but Kafka-and-deployment records (if any
- * existed) would still rank first.
- *
- * When `prefix` is true, every quoted token of length ≥ 3 is suffixed
- * with `*` so it matches as a prefix ("timez" → "timezone"). Tokens
- * shorter than 3 chars stay exact-match because a 1–2 char prefix is
- * usually meaningless and slow.
+ * Two guards keep OR-mode from matching the corpus on sentence queries (see
+ * core/queryTokens.ts): stopwords are dropped from the query, and a query of
+ * 3+ content terms must match 2 of them (a third of 7+). `prefix` suffixes terms
+ * of 3+ chars with `*` ("timez" → "timezone").
  */
 function toFtsQuery(input: string, prefix: boolean): string {
-  const parts = input
-    .split(/\s+/)
-    .map((p) => p.replace(/"/g, ""))
-    .filter(Boolean);
-  if (parts.length === 0) return '""';
-  const tokens = parts.map((p) => (prefix && p.length >= 3 ? `"${p}"*` : `"${p}"`));
-  // One token: no operator needed (FTS5 happy with bare quoted term).
-  // Multiple tokens: explicit OR so partial matches surface; bm25
-  // does the ranking work.
-  return tokens.length === 1 ? tokens[0]! : tokens.join(" OR ");
+  return toFtsMatch(input, prefix);
 }
 
 export interface PossibleDuplicate extends LoreSummary {
@@ -1808,8 +2020,10 @@ function tokenizeTitleForDuplicates(title: string): string[] {
  * freshest first. Used by `memory list` for at-a-glance browse.
  */
 export function listRecent(db: Database, limit = 20): LoreSummary[] {
+  // A browse, not a retrieval: it must not feed `memory stats` reads (see listLore).
   return searchLore(db, {
     limit,
+    recordReads: false,
     includeRestricted: true,
     includeDrafts: true,
     includeDeprecated: true,

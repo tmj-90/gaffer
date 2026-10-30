@@ -18,7 +18,7 @@
 import BetterSqlite3 from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { addLore, ensureLoreEmbeddings, searchLore } from "../src/core/lore.js";
+import { addLore, ensureLoreEmbeddings, searchLore, searchLoreCount } from "../src/core/lore.js";
 import { getEmbedder } from "../src/core/embedding.js";
 import { runMigrations } from "../src/db/migrations.js";
 import type { Database } from "better-sqlite3";
@@ -146,6 +146,29 @@ const CASES: Case[] = [
 /** Queries the corpus has nothing on: hybrid must not invent hits. */
 const NEGATIVES = ["kubernetes ingress", "elasticsearch mapping", "mobile push notification"];
 
+/**
+ * Off-topic questions phrased as SENTENCES — how agents (and the runner's
+ * ticket-title query) actually search. Regression (audit: stopword-or-query):
+ * the OR-joined FTS query matched these on "the" / "for" / "in" alone, and the
+ * dense side cleared DENSE_MIN_COSINE on stopword n-grams, so the zero-hit path
+ * (absence markers, coaching) never fired for a sentence.
+ */
+const SENTENCE_NEGATIVES = [
+  "what is the policy on employee holiday leave",
+  "the best way to train a puppy at home",
+  "how do I bake a cake for the party",
+  "recipe for chocolate cake with the oven",
+  "why is the office printer out of paper again",
+];
+
+/** Sentence-form paraphrases of labelled positives: the stopword guard must keep them. */
+const SENTENCE_POSITIVES: Array<{ query: string; expect: string }> = [
+  { query: "why does the kafka consumer retry so often in production", expect: "kafka-retry" },
+  { query: "how should we hash a password for a new user", expect: "password-hash" },
+  { query: "what are the rules for a deployment freeze", expect: "deploy-freeze" },
+  { query: "how do I verify a webhook signature", expect: "webhook-sig" },
+];
+
 let db: Database;
 const ids = new Map<string, string>();
 const prevHybrid = process.env["MEMORY_HYBRID_RETRIEVAL"];
@@ -260,6 +283,88 @@ describe("retrieval eval set", () => {
     }
   });
 
+  it("returns zero hits (and a zero count) for off-topic SENTENCES under both rankings", () => {
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const q of SENTENCE_NEGATIVES) {
+        expect(searchLore(db, { query: q }), `"${q}" (hybrid=${hybrid})`).toHaveLength(0);
+        expect(searchLoreCount(db, { query: q }), `"${q}" count`).toBe(0);
+        expect(searchLore(db, { query: q, prefix: true }), `"${q}" prefix`).toHaveLength(0);
+      }
+    }
+  });
+
+  it("a sentence-form paraphrase of a labelled query still returns its record", () => {
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const c of SENTENCE_POSITIVES) {
+        expect(topKeys(c.query), `"${c.query}" (hybrid=${hybrid})`).toContain(c.expect);
+      }
+    }
+  });
+
+  it("punctuation separators in a ticket-title query (' - ', ' / ', ' — ') do not raise the bar", () => {
+    // Regression (review: stopword-or-query): a part with no letters/digits was a
+    // "content term" its FTS phrase never matches, so each of these needed 3 of 5
+    // terms and returned nothing in lexical mode; without the separator they need 2 of 4.
+    const titles: Array<{ query: string; expect: string }> = [
+      { query: "Kafka - fix retry bug", expect: "kafka-retry" },
+      { query: "Webhooks / add signature check", expect: "webhook-sig" },
+      { query: "Deployment — freeze tooling broken", expect: "deploy-freeze" },
+    ];
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const c of titles) {
+        expect(topKeys(c.query), `"${c.query}" (hybrid=${hybrid})`).toContain(c.expect);
+        const bare = c.query.replace(/ [-/—] /, " ");
+        expect(searchLoreCount(db, { query: c.query }), `"${c.query}" count`).toBe(
+          searchLoreCount(db, { query: bare }),
+        );
+      }
+    }
+  });
+
+  it("a long query needs 2+ of its content terms to match ('in production' alone is not enough)", () => {
+    setHybrid(false);
+    // Only deploy-freeze says "production"; with 4 content terms it needs 2 to match.
+    expect(topKeys("why does the elasticsearch indexer stall in production")).toEqual([]);
+    expect(searchLoreCount(db, { query: "kafka consumer lag production" })).toBe(1);
+  });
+
+  it("a long off-topic sentence gets no dense-only hit from surface n-gram overlap", () => {
+    // Real records from the audit's 1,045-heading noise corpus that an off-topic
+    // sentence pulled in dense-only at cosine 0.29–0.32 (over DENSE_MIN_COSINE).
+    for (const [title, summary] of [
+      [
+        "Verification",
+        "- Recount: every user-visible commit in the range appears exactly once; no internal-only commit leaked in.",
+      ],
+      [
+        "BAB (Before → After → Bridge)",
+        "Best when the outcome is the hook (transformation offers). [Before] Right now, [audience] [current painful state].",
+      ],
+    ] as const) {
+      addLore(db, { title, summary, body: summary });
+    }
+    setHybrid(true);
+    for (const q of [
+      "how should we handle the user interface for the mobile app",
+      "the best way to train a puppy at home",
+    ]) {
+      expect(searchLore(db, { query: q }), q).toHaveLength(0);
+    }
+    // Short queries keep the normal floor, so the blind-spot recoveries above still hold.
+    expect(topKeys("ratelimiting")).toEqual(["rate-limit"]);
+  });
+
+  it("an all-stopword query does not throw and falls back to its original terms", () => {
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      expect(() => searchLore(db, { query: "the of and to" })).not.toThrow();
+      expect(searchLoreCount(db, { query: "the" })).toBeGreaterThan(0);
+    }
+  });
+
   it("is deterministic across repeated searches", () => {
     setHybrid(true);
     for (const c of CASES) {
@@ -293,5 +398,118 @@ describe("retrieval eval set", () => {
       .prepare("SELECT COUNT(*) AS n FROM lore_embeddings WHERE model = 'some-other-model'")
       .get() as { n: number };
     expect(other.n).toBe(0);
+  });
+});
+
+/**
+ * Long ticket-title / sentence queries against TERSE decision records — the
+ * dominant real query shape (the runner searches with the ticket title). Each
+ * query has 5-8 content terms but shares only 2-3 key terms with the record
+ * that binds it. Regression (review r2: stopword-or-query): a "match at least
+ * half the terms" bar returned ZERO hits for these in both rankings, which the
+ * MCP layer turns into "No ratified position found ... call record_absence"
+ * while a binding decision exists. The precision guard above must not trade
+ * this recall away again.
+ */
+describe("retrieval eval: long queries against terse decision records", () => {
+  const DECISIONS: Doc[] = [
+    {
+      key: "invoice-rounding",
+      title: "Invoice rounding uses banker's rounding",
+      summary: "All billing amounts round half-even to the cent; never round half-up.",
+    },
+    {
+      key: "invoice-immutable",
+      title: "Invoices are immutable once issued",
+      summary:
+        "An issued invoice is never edited after it is sent to the customer; corrections go through credit notes.",
+    },
+    {
+      key: "argon2",
+      title: "Use Argon2id for password hashing",
+      summary: "Passwords are hashed with Argon2id, memory cost 64MB; bcrypt is not allowed.",
+    },
+    {
+      key: "kafka-offsets",
+      title: "Kafka consumers commit offsets manually",
+      summary: "Consumer groups disable auto-commit and commit after the handler succeeds.",
+    },
+    {
+      key: "session-idle",
+      title: "Sessions expire after 30 minutes idle",
+      summary:
+        "The auth middleware drops a session after 30 minutes of inactivity; refresh tokens last 7 days.",
+    },
+    {
+      key: "dark-mode",
+      title: "Dark mode follows the OS setting",
+      summary:
+        "The settings page toggle defaults to system preference; stored per user in localStorage.",
+    },
+  ];
+  const LONG_POSITIVES: Array<{ query: string; expect: string }> = [
+    // 6 content terms, 2 shared (password, bcrypt).
+    { query: "Switch password storage from bcrypt to something stronger", expect: "argon2" },
+    // 7 content terms, 3 shared (kafka, consumer, handler).
+    {
+      query: "Kafka consumer loses messages when the handler throws an exception",
+      expect: "kafka-offsets",
+    },
+    // 8 content terms, 3 shared (invoice, round, billing).
+    {
+      query: "Fix bug where invoice totals round incorrectly in the billing service",
+      expect: "invoice-rounding",
+    },
+    // 5 content terms, 3 shared (invoice, sent, customer).
+    {
+      query: "Allow editing an invoice after it was sent to the customer",
+      expect: "invoice-immutable",
+    },
+    // 6 content terms, 3 shared (dark, mode, settings) — also 3 of 6 under the old rule.
+    { query: "Add a dark mode toggle to the settings page for the user", expect: "dark-mode" },
+  ];
+
+  let ddb: Database;
+  const dids = new Map<string, string>();
+
+  beforeEach(() => {
+    ddb = new BetterSqlite3(":memory:");
+    runMigrations(ddb);
+    dids.clear();
+    for (const d of DECISIONS) {
+      const lore = addLore(ddb, {
+        title: d.title,
+        summary: d.summary,
+        body: d.summary,
+        repos: ["eval-repo"],
+        source: "https://example.com/adr/" + d.key,
+      });
+      dids.set(d.key, lore.id);
+    }
+  });
+
+  afterEach(() => {
+    ddb.close();
+  });
+
+  it("returns the binding decision at rank 1 under both rankings", () => {
+    const byId = new Map([...dids.entries()].map(([k, v]) => [v, k]));
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const c of LONG_POSITIVES) {
+        const hits = searchLore(ddb, { query: c.query, limit: 5 }).map((h) => byId.get(h.id));
+        expect(hits[0], `"${c.query}" (hybrid=${hybrid}) → ${JSON.stringify(hits)}`).toBe(c.expect);
+        expect(searchLoreCount(ddb, { query: c.query }), `"${c.query}" count`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("off-topic sentences still get zero hits against the same records", () => {
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const q of SENTENCE_NEGATIVES) {
+        expect(searchLore(ddb, { query: q }), `"${q}" (hybrid=${hybrid})`).toHaveLength(0);
+      }
+    }
   });
 });

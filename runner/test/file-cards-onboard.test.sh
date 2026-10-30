@@ -177,7 +177,7 @@ esac
 # never the mojibake "â€”" the old "\xe2\x80\x94" Python byte-escape produced
 # (U+00E2 U+0080 U+0094 re-encoded → \xc3\xa2… in every card line of every
 # agent prompt). Assert no mojibake byte sequence AND the clean separator.
-if printf '%s' "$F1_OUT" | grep -q "$(printf '\xc3\xa2')"; then
+if grep -q "$(printf '\xc3\xa2')" <<<"$F1_OUT"; then
   fail "card block contains mojibake bytes (\\xc3\\xa2 — the old â€” em-dash bug)"
 else
   ok "card block carries no mojibake bytes"

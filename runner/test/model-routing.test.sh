@@ -25,6 +25,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
+SKIPPED=0
+skip_part() { SKIPPED=$((SKIPPED + 1)); printf '  SKIP: %s\n' "$1"; }   # a skipped section is NOT an ok
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 # Isolated data dir so the helper's log() writes don't touch a real factory log.
@@ -114,13 +116,13 @@ grep -q 'ROUTE_IMPL_FLAG="--model \$DELIVERY_MODEL"' "$RUNNER_DIR/tick.sh" \
 # implement flag ($_ATTEMPT_IMPL_FLAG) as the model argument — the escalation ladder
 # initialises it to the routed $ROUTE_IMPL_FLAG on attempt 1 and escalates to the
 # stronger model on the final rework attempt. worker_deliver then splices that model
-# flag between $CLAUDE_FLAGS and $GAFFER_MAX_TURNS_FLAG on the invocation.
+# flag between $CLAUDE_FLAGS and the per-call turn flag on the invocation.
 grep -qE 'worker_deliver "\$PRIMARY_REPO" "\$PROMPT\$_REWORK_BLOCK" "\$_ATTEMPT_IMPL_FLAG"' "$RUNNER_DIR/tick.sh" \
   && ok "the delivery call passes \$_ATTEMPT_IMPL_FLAG as the worker model flag (routed by default, escalates on the final attempt)" \
   || fail "the delivery worker_deliver call should pass \$_ATTEMPT_IMPL_FLAG as the model argument"
-grep -q 'CLAUDE_FLAGS \$model_flag \$GAFFER_MAX_TURNS_FLAG' "$RUNNER_DIR/lib/worker.sh" \
-  && ok "worker_deliver splices the model flag between \$CLAUDE_FLAGS and \$GAFFER_MAX_TURNS_FLAG" \
-  || fail "worker_deliver should splice \$model_flag between \$CLAUDE_FLAGS and \$GAFFER_MAX_TURNS_FLAG"
+grep -q 'CLAUDE_FLAGS \$model_flag \$_turns_flag' "$RUNNER_DIR/lib/worker.sh" \
+  && ok "worker_deliver splices the model flag between \$CLAUDE_FLAGS and the turn flag" \
+  || fail "worker_deliver should splice \$model_flag between \$CLAUDE_FLAGS and \$_turns_flag"
 grep -q '_ATTEMPT_IMPL_FLAG="\$ROUTE_IMPL_FLAG"' "$RUNNER_DIR/tick.sh" \
   && ok "the per-attempt flag defaults to the routed \$ROUTE_IMPL_FLAG (attempt 1)" \
   || fail "the per-attempt flag should default to \$ROUTE_IMPL_FLAG"
@@ -131,7 +133,7 @@ grep -q 'gaffer_route_model implement' "$RUNNER_DIR/tick.sh" \
 echo "== AC10: a real DRY_RUN tick logs a ROUTE #N decision line =="
 WG_CLI="$RUNNER_DIR/../packages/dispatch/dist/cli/index.js"
 if [ ! -f "$WG_CLI" ] || ! node "$WG_CLI" --help >/dev/null 2>&1; then
-  ok "SKIP AC10 — dispatch CLI not built (router unit + wiring already proven)"
+  skip_part "AC10 — dispatch CLI not built (router unit + wiring already proven)"
 else
   DB="$WORK/wg.sqlite"
   WG() { node "$WG_CLI" --db "$DB" "$@"; }
@@ -151,12 +153,12 @@ else
     SMOKE_DATA="$WORK/.gaffer-tick"
     OUT="$(env DISPATCH_DB="$DB" GAFFER_DATA="$SMOKE_DATA" DRY_RUN=1 \
             bash "$RUNNER_DIR/tick.sh" 2>&1)"
-    if printf '%s' "$OUT" | grep -q "ROUTE #$NUM .*phase=implement"; then
+    if grep -q "ROUTE #$NUM .*phase=implement" <<<"$OUT"; then
       ok "DRY_RUN tick logs 'ROUTE #$NUM phase=implement …' for the delivered ticket"
     else
       fail "expected a ROUTE #$NUM line (got: $(printf '%s' "$OUT" | grep -iE 'ROUTE|delivering|TICK_RESULT' | tail -4))"
     fi
-    if printf '%s' "$OUT" | grep -q "routed implement model ="; then
+    if grep -q "routed implement model =" <<<"$OUT"; then
       ok "DRY_RUN tick logs the routed implement model"
     else
       fail "expected a 'routed implement model =' DRY_RUN line"
@@ -192,7 +194,7 @@ if command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
     && ok "small diff stays cheap — does NOT escalate to opus (got $SMALL)" \
     || fail "small diff must not route stronger (got $SMALL)"
 else
-  ok "SKIP AC11 — git/node unavailable"
+  skip_part "AC11 — git/node unavailable"
 fi
 
 echo "== AC12: FINDING-9 — worktree ABSENT + COMMITTED rework on a preserved branch feeds the router =="
@@ -240,7 +242,7 @@ if command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
     && ok "missing preserved branch → no signal, normal route (sonnet), no crash" \
     || fail "missing branch should route normally (got $NOBR)"
 else
-  ok "SKIP AC12 — git/node unavailable"
+  skip_part "AC12 — git/node unavailable"
 fi
 
 echo "== AC13: tick.sh wires the repo/branch/base rework-diff args into the route call =="
@@ -250,7 +252,7 @@ grep -q 'gaffer_route_model implement .*"\$ROUTE_REPO" "\$WORK_BRANCH" "\$ROUTE_
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
-  echo "PASS: $PASS checks"; exit 0
+  echo "PASS: $PASS checks, $SKIPPED skipped"; exit 0
 else
   printf 'FAILED (%d):\n' "${#FAILURES[@]}"; printf '  - %s\n' "${FAILURES[@]}"; exit 1
 fi

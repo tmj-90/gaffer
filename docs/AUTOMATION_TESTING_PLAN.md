@@ -69,12 +69,13 @@ pnpm -r test             # all package Vitest suites
 pnpm -r test:coverage    # optional: enforce the coverage floor as CI does
 
 # Runner tests (need the built dispatch CLI at packages/dispatch/dist/cli/index.js):
-for t in runner/test/*.test.mjs; do echo "== $t"; node "$t" || break; done
-for t in runner/test/*.test.sh;  do echo "== $t"; bash "$t" || break; done
+pnpm test:runner         # runner/test/run.sh — parallel, capped, exits 1 on any failure
 ```
 
-Runner tests **SKIP with exit 0** (not fail) when the dispatch CLI isn't built, so
-always `pnpm -r build` first or you will get false "green" from skips.
+Runner tests **SKIP** (not fail) when the dispatch CLI isn't built. The harness lists
+every skip separately from the passes, and `GAFFER_TEST_STRICT=1 pnpm test:runner`
+(what CI runs) turns a skip for a missing build into a failure — so always
+`pnpm -r build` first.
 
 ### 2.2 Clean-clone run (the pre-release gate)
 
@@ -88,8 +89,7 @@ cd gaffer-clean
 pnpm install --frozen-lockfile
 pnpm -r build
 pnpm -r test && pnpm -r test:coverage
-for t in runner/test/*.test.mjs; do node "$t"; done
-for t in runner/test/*.test.sh;  do bash "$t"; done
+GAFFER_TEST_STRICT=1 pnpm test:runner
 ```
 
 If a test passes in your working tree but fails in the clean clone, the usual

@@ -406,6 +406,6 @@ describe("acceptance gate: migration v25→v26", () => {
       value: string;
     };
     expect(Number(v.value)).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(26);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(26);
   });
 });

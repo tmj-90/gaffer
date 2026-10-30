@@ -375,7 +375,10 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|reject|repo-access)\b/,
+    // Also the ticket-gate inputs the MCP surface scopes or ratchets for factory agents
+    // (testing-lane flag, test contract, tester verdicts, per-repo delivery, required
+    // capabilities, reviewer): via the CLI they would bypass that scope check.
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|reject|repo-access|set-testable|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer)\b/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

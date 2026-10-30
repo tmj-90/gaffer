@@ -9,7 +9,8 @@
 //        a sibling with exactly one bootstrap in its closure inherits that repo,
 //        and a genuinely-ambiguous sibling (0 / >1) escalates to the claude seam.
 //   AC5  the --dry-run CLI emits a plan with deterministic links + the planned
-//        claude argv (GAFFER_PLAN_MODEL + --mcp-config) for ambiguous siblings,
+//        claude argv for ambiguous siblings — TEXT-ONLY (no tools, no MCP, json
+//        envelope, 2-turn cap), cheap tier unless an operator pins a model —
 //        WITHOUT spawning claude.
 //   AC6  buildClaudeArgv shape; tick.sh wires gaffer_inherit_repo after onboard.
 
@@ -24,9 +25,8 @@ const require = createRequire(import.meta.url);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
 const HELPER = resolve(RUNNER_DIR, "bin", "inherit-repo.mjs");
-const { readGraph, resolveInheritance, transitiveBootstraps, buildClaudeArgv } = await import(
-  HELPER
-);
+const { readGraph, resolveInheritance, transitiveBootstraps, buildClaudeArgv, inheritModel } =
+  await import(HELPER);
 
 // `node:sqlite` (DatabaseSync) is a built-in only from Node 22.5+. This test builds a
 // throwaway dispatch DB with it; on older Node (e.g. the Node 20 CI leg) skip cleanly
@@ -337,7 +337,9 @@ console.log("== AC5: --dry-run CLI emits the plan + ambiguous claude argv offlin
     encoding: "utf8",
     env: {
       ...process.env,
+      // An operator-pinned plan model (EXPLICIT=1) still applies to the classifier.
       GAFFER_PLAN_MODEL: "opus",
+      GAFFER_PLAN_MODEL_EXPLICIT: "1",
       MCP_CONFIG: "/tmp/mcp.json",
       CLAUDE_FLAGS: "--permission-mode acceptEdits",
     },
@@ -356,19 +358,26 @@ console.log("== AC5: --dry-run CLI emits the plan + ambiguous claude argv offlin
   eq("deterministic link t10→web present", link?.repo, "web");
 
   const amb = (out?.ambiguous || []).find((a) => a.ticket === 30);
+  const after = (flag) => amb.argv[amb.argv.indexOf(flag) + 1];
   if (
     amb &&
     Array.isArray(amb.argv) &&
     amb.argv[0] === "-p" &&
-    amb.argv.includes("--mcp-config") &&
-    amb.argv.includes("--model") &&
-    amb.argv[amb.argv.indexOf("--model") + 1] === "opus" &&
+    !amb.argv.includes("--mcp-config") &&
+    amb.argv.includes("--strict-mcp-config") &&
+    amb.argv.includes("--tools") &&
+    after("--tools") === "" &&
+    after("--output-format") === "json" &&
+    after("--max-turns") === "2" &&
+    after("--model") === "opus" &&
     amb.candidates
       .map((c) => c.repo)
       .sort()
       .join(",") === "api,web"
   ) {
-    ok("ambiguous #30 carries the planned claude argv (model=opus, mcp, candidates)");
+    ok(
+      "ambiguous #30 carries the planned text-only argv (no tools/MCP, json, 2 turns, pinned model, candidates)",
+    );
   } else {
     fail(`ambiguous argv seam wrong: ${JSON.stringify(amb)}`);
   }
@@ -385,22 +394,56 @@ console.log("== AC6: buildClaudeArgv shape + tick.sh wiring ==");
 {
   const argv = buildClaudeArgv({
     prompt: "P",
-    mcpConfig: "/m.json",
-    model: "opus",
+    model: "haiku",
     flags: ["--permission-mode", "acceptEdits"],
+    maxTurns: 2,
   });
-  eq("argv = [-p, prompt, --mcp-config, cfg, --model, m, ...flags]", argv, [
+  eq("argv = [-p, prompt, json, --model, m, ...flags, turn cap, text-only flags]", argv, [
     "-p",
     "P",
-    "--mcp-config",
-    "/m.json",
+    "--output-format",
+    "json",
     "--model",
-    "opus",
+    "haiku",
     "--permission-mode",
     "acceptEdits",
+    "--max-turns",
+    "2",
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
   ]);
-  const noModel = buildClaudeArgv({ prompt: "P", mcpConfig: "", model: "", flags: ["--foo"] });
-  eq("no mcp/model → omitted", noModel, ["-p", "P", "--foo"]);
+  const noModel = buildClaudeArgv({ prompt: "P", model: "", flags: ["--foo"], maxTurns: 0 });
+  eq("no model / no cap → omitted; text-only flags always last", noModel, [
+    "-p",
+    "P",
+    "--output-format",
+    "json",
+    "--foo",
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
+  ]);
+  // Model: a one-word pick from a validated list is cheap-tier work — the config's
+  // own opus default (EXPLICIT=0) no longer reaches it; an operator pin still does.
+  eq("classifier defaults to the cheap tier", inheritModel({}), "haiku");
+  eq(
+    "the config's opus default does not move it to opus",
+    inheritModel({ GAFFER_PLAN_MODEL: "opus", GAFFER_PLAN_MODEL_EXPLICIT: "0" }),
+    "haiku",
+  );
+  eq(
+    "an operator-set GAFFER_PLAN_MODEL still applies",
+    inheritModel({ GAFFER_PLAN_MODEL: "opus", GAFFER_PLAN_MODEL_EXPLICIT: "1" }),
+    "opus",
+  );
+  eq(
+    "GAFFER_INHERIT_MODEL wins",
+    inheritModel({ GAFFER_INHERIT_MODEL: "sonnet", GAFFER_PLAN_MODEL: "opus" }),
+    "sonnet",
+  );
 
   const tick = readFileSync(resolve(RUNNER_DIR, "tick.sh"), "utf8");
   if (tick.includes("gaffer_inherit_repo")) ok("tick.sh calls gaffer_inherit_repo after onboard");

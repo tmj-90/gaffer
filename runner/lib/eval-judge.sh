@@ -20,9 +20,20 @@
 # DRY_RUN is always a no-op.
 #
 # The judge's model turn goes through worker_deliver — the factory's SINGLE
-# claude -p spawn seam (env-scrubbed, timeout-bounded, safety-hooked) — with an
-# empty MCP config (the judge grades text; it gets NO tools). The reply is read
-# back via worker.mjs `parse-result result-text` (the one envelope parser).
+# claude -p spawn seam (env-scrubbed, timeout-bounded, safety-hooked) — as a TEXT
+# GRADER: the diff is in the prompt, so it runs TEXT-ONLY: `--tools ""` (no built-in
+# tools) with every built-in tool also denied by name, an empty MCP config under
+# --strict-mcp-config (no MCP tools), --disable-slash-commands (no skill listing), no
+# acceptEdits, from an EMPTY scratch cwd that is also its only write root (never the
+# delivery worktree: the target repo's CLAUDE.md / skills / settings never load, and
+# none of the delivery's DB/ticket env reaches it), under GAFFER_JUDGE_MAX_TURNS (2).
+# The scratch cwd carries only the factory's verified safety-hook settings
+# (gaffer_write_agent_settings); a judge whose settings cannot be verified is skipped.
+# It used to inherit the delivery's acceptEdits, the 200-turn delivery cap and the
+# worktree as cwd + write root — so a diff carrying a prompt injection could make a
+# "one-shot" judge edit the just-submitted delivery.
+# The reply is read back via worker.mjs `parse-result result-text` (the one
+# envelope parser).
 # =====================================================================
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 
@@ -37,6 +48,9 @@ gaffer_eval_judge_delivery() (
   [ -n "$num" ] && [ -d "$repo_dir" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
   type worker_deliver >/dev/null 2>&1 || return 0
+  # The judge's scratch cwd gets the verified safety-hook settings (lib/agent-env.sh),
+  # like every other spawn site; without the writer the judge is not launched.
+  type gaffer_write_agent_settings >/dev/null 2>&1 || return 0
 
   crew_dir="${CREW_DIR:-$RUNNER_DIR/../packages/crew}"
   judge_cli="$crew_dir/dist/eval/deliveryJudgeCli.js"
@@ -69,16 +83,37 @@ gaffer_eval_judge_delivery() (
     node "$_GAFFER_JSON_TOOL" judge-input "$tmp/diff" "$tmp/tests" > "$tmp/input.json" 2>/dev/null || return 0
 
   # ── 3. Render the judge prompt (quarantined by the CLI), then ONE model turn
-  #      through the worker seam with an empty MCP config (no tools). ──
+  #      through the worker seam, text-only (no tools, no MCP, empty cwd). ──
   prompt="$(node "$judge_cli" --mode prompt < "$tmp/input.json" 2>/dev/null)" || return 0
   [ -n "$prompt" ] || return 0
   printf '{"mcpServers":{}}' > "$tmp/mcp.json"
+  mkdir -p "$tmp/cwd" || return 0
+  # Render AND verify the safety-hook settings into the scratch cwd. The judge is
+  # text-only, so the hook is defence in depth; the delivery worktree it used to run
+  # in carried them. A template that cannot be rendered or verified skips judging
+  # (fail closed for the spawn, fail soft for the delivery).
+  if ! gaffer_write_agent_settings "$tmp/cwd"; then
+    type log >/dev/null 2>&1 && log "EVAL: judge #$num skipped — its safety-hook settings could not be rendered and verified" || true
+    return 0
+  fi
+  # The judge's own boundary: its scratch cwd is the only write root (the sandbox
+  # wrap, when on, is derived from these), never the caller's delivery roots.
+  WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$tmp/cwd" "GAFFER_READ_ROOTS=")
   # JUDGE INDEPENDENCE: default the judge to the PLAN-tier (strong) model, not the
   # implementer's — a model grading its own tier's output is the weakest reading the
   # eval can take. GAFFER_JUDGE_MODEL_FLAG still overrides; the implementer flag is the
   # last resort only when no plan flag is configured.
   judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"
-  worker_deliver "$repo_dir" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" \
+  # The overrides are local: this function body is a subshell. CLAUDE_FLAGS is REPLACED
+  # (no acceptEdits; built-in tools denied by name as defence in depth on top of
+  # `--tools ""`); the turn cap is passed per call, so it replaces the 200-turn flag
+  # rather than adding a second --max-turns.
+  # shellcheck disable=SC2034  # read by worker_deliver
+  CLAUDE_FLAGS="--disallowedTools ${GAFFER_JUDGE_DENIED_TOOLS:-Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite}"
+  judge_turns="${GAFFER_JUDGE_MAX_TURNS:-2}"
+  type gaffer_role_turns >/dev/null 2>&1 && judge_turns="$(gaffer_role_turns "$judge_turns")"
+  worker_deliver "$tmp/cwd" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" "" \
+    "$judge_turns" --tools "" --strict-mcp-config --disable-slash-commands \
     >/dev/null 2>&1
   worker_rc=$?   # a failed judge turn is fail-soft; the guard below skips
   # B28(e): the judge's model turn is PAID work — book it in the usage ledger like

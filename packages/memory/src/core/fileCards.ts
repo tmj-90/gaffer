@@ -33,6 +33,7 @@ import type { Database } from "better-sqlite3";
 
 import { newLoreId } from "./ids.js";
 import { canonicalizeRepo, legacyRepoIdentityForms } from "./repoIdentity.js";
+import { toFtsMatch } from "./queryTokens.js";
 import type {
   CardStatus,
   FileCard,
@@ -88,19 +89,12 @@ function symbolsToFts(symbols: ReadonlyArray<string>): string {
 }
 
 /**
- * Translate a free-text query into an FTS5 MATCH expression.
- * OR-mode with optional prefix, mirroring toFtsQuery in lore.ts.
- * Multiple tokens joined with OR so partial matches surface; bm25
- * does the ranking.
+ * Translate a free-text query into an FTS5 MATCH expression. Same builder
+ * as lore search (core/queryTokens.ts): OR-mode with optional prefix,
+ * stopwords dropped, and 3+ content terms must match 2 of them (a third of 7+).
  */
 function toFtsQuery(input: string, prefix = false): string {
-  const parts = input
-    .split(/\s+/)
-    .map((p) => p.replace(/"/g, ""))
-    .filter(Boolean);
-  if (parts.length === 0) return '""';
-  const tokens = parts.map((p) => (prefix && p.length >= 3 ? `"${p}"*` : `"${p}"`));
-  return tokens.length === 1 ? tokens[0]! : tokens.join(" OR ");
+  return toFtsMatch(input, prefix);
 }
 
 // ── Row → domain object ───────────────────────────────────────────────

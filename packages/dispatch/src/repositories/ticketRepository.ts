@@ -1,5 +1,6 @@
 import type { Db } from "../db/connection.js";
 import type { RiskLevel, Ticket, TicketStatus } from "../domain/types.js";
+import { notFound } from "../util/errors.js";
 
 /** Optional filters for the human backlog list. */
 export interface TicketListFilter {
@@ -45,6 +46,22 @@ export class TicketRepository {
   findByNumber(number: number): Ticket | undefined {
     return this.db.prepare(`SELECT * FROM tickets WHERE number = ?`).get(number) as
       Ticket | undefined;
+  }
+
+  /**
+   * THE ticket-reference resolver every service uses: the id, else the number in any
+   * accepted spelling (`15`, `#15`, `T-15`). Throws NOT_FOUND. One shared resolver so
+   * no tool can reject a reference its siblings accept (agents pass `#N`).
+   */
+  resolveRef(ref: string): Ticket {
+    const byId = this.findById(ref);
+    if (byId) return byId;
+    const asNumber = Number(ref.trim().replace(/^#/, "").replace(/^T-/i, ""));
+    if (Number.isInteger(asNumber) && asNumber > 0) {
+      const byNumber = this.findByNumber(asNumber);
+      if (byNumber) return byNumber;
+    }
+    throw notFound("ticket", ref);
   }
 
   /**
@@ -122,7 +139,7 @@ export class TicketRepository {
   /**
    * TRACK-3a: set (or, with `null`, clear) the ticket's per-ticket delivery-budget
    * ceiling in USD. A plain write — no row_version bump — since the budget is
-   * independent of the status machine (it only bounds cumulative delivery spend).
+   * independent of the status machine (it only bounds the ticket's cumulative agent spend).
    */
   setDeliveryBudget(id: string, value: number | null, nowIso: string): void {
     this.db
@@ -173,9 +190,45 @@ export class TicketRepository {
 
   /**
    * Filtered backlog list. `repo` matches a linked repository by name or id.
-   * Conditions are ANDed; an absent filter is ignored.
+   * Conditions are ANDed; an absent filter is ignored. Unbounded on purpose: the
+   * internal read models (board, work, counts) need every row — the REST list pages
+   * through {@link listPage} instead.
    */
   listFiltered(filter: TicketListFilter): Ticket[] {
+    const { clause, params } = this.filterClause(filter);
+    return this.db
+      .prepare(`SELECT t.* FROM tickets t ${clause} ORDER BY t.priority DESC, t.created_at ASC`)
+      .all(params) as Ticket[];
+  }
+
+  /**
+   * One page of the filtered list plus the total under the same filter (GET /tickets).
+   * `limit` absent ⇒ every row from `offset` (the unpaged contract). `summary` drops
+   * the large free-text columns ({@link TICKET_SUMMARY_OMITS}) a card never shows.
+   */
+  listPage(
+    filter: TicketListFilter,
+    page: { limit?: number | undefined; offset?: number | undefined; summary?: boolean },
+  ): { tickets: Array<Ticket | TicketSummary>; total: number } {
+    const { clause, params } = this.filterClause(filter);
+    const cols = page.summary ? SUMMARY_COLUMNS.map((c) => `t.${c}`).join(", ") : "t.*";
+    const bounds = { limit: page.limit ?? -1, offset: page.offset ?? 0 };
+    const tickets = this.db
+      .prepare(
+        `SELECT ${cols} FROM tickets t ${clause}
+         ORDER BY t.priority DESC, t.created_at ASC LIMIT @limit OFFSET @offset`,
+      )
+      .all({ ...params, ...bounds }) as Array<Ticket | TicketSummary>;
+    const { n } = this.db.prepare(`SELECT COUNT(*) AS n FROM tickets t ${clause}`).get(params) as {
+      n: number;
+    };
+    return { tickets, total: n };
+  }
+
+  private filterClause(filter: TicketListFilter): {
+    clause: string;
+    params: Record<string, string>;
+  } {
     const where: string[] = [];
     const params: Record<string, string> = {};
     if (filter.status) {
@@ -196,9 +249,45 @@ export class TicketRepository {
       );
       params.repo = filter.repo;
     }
-    const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-    return this.db
-      .prepare(`SELECT t.* FROM tickets t ${clause} ORDER BY t.priority DESC, t.created_at ASC`)
-      .all(params) as Ticket[];
+    return { clause: where.length > 0 ? `WHERE ${where.join(" AND ")}` : "", params };
   }
 }
+
+/** The large free-text columns `fields=summary` leaves out of a list row. */
+export const TICKET_SUMMARY_OMITS = [
+  "description",
+  "test_contract",
+  "last_review_feedback",
+] as const;
+/** A list row without {@link TICKET_SUMMARY_OMITS}. */
+export type TicketSummary = Omit<Ticket, (typeof TICKET_SUMMARY_OMITS)[number]>;
+
+// A Record over every TicketSummary key, so a new tickets column cannot be silently
+// missing from summary rows.
+const SUMMARY_COLUMN_SET: Record<keyof TicketSummary, true> = {
+  id: true,
+  number: true,
+  title: true,
+  status: true,
+  priority: true,
+  risk_level: true,
+  policy_pack: true,
+  source: true,
+  created_by: true,
+  reviewer: true,
+  branch_name: true,
+  pr_url: true,
+  attempt_count: true,
+  row_version: true,
+  scheduled_after: true,
+  due_at: true,
+  bootstrap: true,
+  can_be_tested: true,
+  acceptance: true,
+  human_owner: true,
+  human_delivered: true,
+  delivery_budget_usd: true,
+  created_at: true,
+  updated_at: true,
+};
+const SUMMARY_COLUMNS = Object.keys(SUMMARY_COLUMN_SET);

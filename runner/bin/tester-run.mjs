@@ -82,8 +82,13 @@ import { fileURLToPath } from "node:url";
 import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole } from "./select-skills.mjs";
-import { extractResultText, parseClaudeJson, Worker } from "../lib/worker.mjs";
-import { appendUsageRecord, buildUsageRecord, unknownRecord } from "../lib/usage-ledger.mjs";
+import { extractResultText, parseClaudeJson, roleTurnCap, Worker } from "../lib/worker.mjs";
+import {
+  appendUsageRecord,
+  buildUsageRecord,
+  recordKilledCall,
+  unknownRecord,
+} from "../lib/usage-ledger.mjs";
 import { writeAgentSettings } from "../lib/agent-home.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -122,6 +127,11 @@ const CONFIG = {
     return Number.isFinite(v) && v > 0 ? v : 900000;
   })(),
 };
+
+/** The tester's turn cap: GAFFER_TESTER_MAX_TURNS (default 80) clamped to GAFFER_MAX_TURNS. */
+export function testerMaxTurns(env = process.env) {
+  return roleTurnCap(parseInt(env.GAFFER_TESTER_MAX_TURNS ?? "", 10) || 80, env);
+}
 
 function log(msg) {
   process.stderr.write(`[tester-run] ${msg}\n`);
@@ -367,15 +377,22 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
 }
 
 /**
- * Read the tester's machine verdict: the LAST line that is (or contains) a
- * {"verdict":"PASS"|"FAIL"} object. Prose ("PASS", "the tests pass") never counts —
- * the token is out-of-band so text quoted from the ticket or contract cannot forge a
- * verdict. Returns "pass" | "fail" | null (no token → no verdict → the ticket is HELD).
+ * Read the tester's machine verdict: its FINAL non-empty line (a closing ``` fence and
+ * trailing whitespace ignored, surrounding backticks tolerated) must BE a
+ * {"verdict":"PASS"|"FAIL"} object. A token anywhere else is quoted text — a FAIL token
+ * followed by prose quoting a PASS token used to read as "pass", because the last token
+ * ANYWHERE won. Prose ("PASS", "the tests pass") never counts. Returns "pass" | "fail" |
+ * null (no final token → no verdict → the ticket is HELD).
  */
 export function parseTesterVerdict(text) {
-  const matches = String(text ?? "").match(/[{]\s*"verdict"\s*:\s*"(PASS|FAIL)"\s*[}]/gi);
-  if (!matches || matches.length === 0) return null;
-  return /PASS/i.test(matches[matches.length - 1]) ? "pass" : "fail";
+  const lines = String(text ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && !/^```[\w-]*$/.test(l));
+  const last = (lines[lines.length - 1] ?? "").replace(/^`/, "").replace(/`$/, "");
+  const m = /^[{]\s*"verdict"\s*:\s*"(PASS|FAIL)"\s*[}]$/i.exec(last);
+  if (!m) return null;
+  return m[1].toUpperCase() === "PASS" ? "pass" : "fail";
 }
 
 /**
@@ -713,7 +730,7 @@ function git(cwd, ...args) {
  *      so record_ac_evidence accepts the tester's notes without a claim);
  *   4. spawn `claude -p` through the worker seam with the worktree as the ONLY write
  *      root; ledger its usage;
- *   5. read the verdict token; keep the tester's tests on a `gaffer/ticket-<n>-tests`
+ *   5. read the verdict token; keep the tester's tests on a `gaffer-tests/ticket-<n>`
  *      branch (never rewriting the reviewed delivery branch); tear the worktree down;
  *   6. record the verdict through the seam (pass → ready_for_merge, fail → refining).
  * No token → the ticket is HELD in_testing for a human (exit 2, phase "held").
@@ -743,7 +760,7 @@ function runLiveTester(context) {
   // REVIEWED delivery branch. Seen live: a tester committed its black-box tests in the
   // worktree, the delivery branch moved, and the merge lane landed a commit no reviewer
   // had seen. Detached, any commit it makes lands on a detached HEAD and is moved to
-  // gaffer/ticket-<n>-tests below; the branch under review is byte-identical after.
+  // gaffer-tests/ticket-<n> below; the branch under review is byte-identical after.
   const add = git(repo.localPath, "worktree", "add", "--force", "--detach", worktree, branch);
   if (add.status !== 0) {
     fail(
@@ -792,8 +809,14 @@ function runLiveTester(context) {
   }
 
   const prompt = buildTesterPrompt({ context, worktree, repoName: repo.name });
-  const argv = buildClaudeArgv({ prompt, mcpConfig: mcpRuntime, flags: CONFIG.claudeFlags });
+  const argv = buildClaudeArgv({
+    prompt,
+    mcpConfig: mcpRuntime,
+    flags: CONFIG.claudeFlags,
+    maxTurns: testerMaxTurns(),
+  });
   log(`testing #${n} (${repo.name} @ ${branch}) in ${worktree}; skills: ${skills.join(", ")}`);
+  const t0 = Date.now();
   const res = Worker.deliver({
     bin: CONFIG.claudeBin,
     argv,
@@ -818,20 +841,23 @@ function runLiveTester(context) {
   // Ledger + verdict.
   let verdict = null;
   let text = "";
+  const elapsedMs = Date.now() - t0;
   if (res.error) {
-    appendUsageRecord(
-      unknownRecord({
-        ticket: n,
-        kind: "tester",
-        reason:
-          res.error.code === "ETIMEDOUT" ? "tester timed out" : `spawn error: ${res.error.message}`,
-      }),
-    );
+    // A timed-out call did paid work: book the labelled estimate, never a silent $0.
+    // Any other error (ENOENT, Worker.deliver failing closed) never ran claude, so it
+    // is an "unknown" row, not an estimate — the same split decompose/spec-author use.
+    if (res.error.code === "ETIMEDOUT") {
+      recordKilledCall({ ticket: n, kind: "tester", reason: "tester timed out", elapsedMs });
+    } else {
+      appendUsageRecord(
+        unknownRecord({ ticket: n, kind: "tester", reason: `spawn error: ${res.error.message}` }),
+      );
+    }
     log(`tester did not complete (${res.error.code ?? res.error.message})`);
   } else {
     const json = parseClaudeJson(res.stdout || "");
     if (json === null) {
-      appendUsageRecord(unknownRecord({ ticket: n, kind: "tester", reason: "no parseable json" }));
+      recordKilledCall({ ticket: n, kind: "tester", reason: "no parseable json", elapsedMs });
     } else {
       appendUsageRecord(buildUsageRecord({ json, ticket: n, kind: "tester" }));
       text = extractResultText(json) ?? "";
@@ -859,13 +885,18 @@ function runLiveTester(context) {
     log(`clean replay of the tester's tests: ${replay.state} (${replay.reason})`);
   }
   // Preserve the tester's tests WITHOUT rewriting the reviewed delivery branch: any
-  // work left in the worktree lands on gaffer/ticket-<n>-tests (branch of the delivery
-  // head), so a human can merge or read them. Nothing is pushed.
+  // work left in the worktree lands on gaffer-tests/ticket-<n> (branch of the delivery
+  // head), so a human can merge or read them. Nothing is pushed. OUTSIDE the gaffer/
+  // namespace on purpose: every unmerged gaffer/* branch counts toward the repo's
+  // branch backpressure cap, and nothing ever merges a tests branch, so under the old
+  // gaffer/ticket-<n>-tests name three tested tickets stopped all claims for the repo
+  // for good. It also can never collide with a delivery branch whose title-slug is
+  // "tests" (gaffer/ticket-<n>-tests), which `checkout -B` would have rewritten.
   let testsBranch = null;
   const dirty = (git(worktree, "status", "--porcelain").stdout || "").trim();
   const ahead = (git(worktree, "rev-list", "--count", `${branch}..HEAD`).stdout || "0").trim();
   if (dirty || ahead !== "0") {
-    testsBranch = `gaffer/ticket-${n}-tests`;
+    testsBranch = `gaffer-tests/ticket-${n}`;
     git(worktree, "checkout", "-q", "-B", testsBranch);
     if (dirty) {
       git(worktree, "add", "-A");

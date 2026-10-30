@@ -84,9 +84,11 @@ node "$DISPATCH_CLI" --db "$DISPATCH_DB" repo add -n widget --path "$REPO" --bra
 # --- 3. A ready ticket with an acceptance criterion. -------------------------
 TID="$(node "$DISPATCH_CLI" --db "$DISPATCH_DB" ticket create -t "Add DELIVERED marker" -d "Add a DELIVERED.txt file at the repo root." --risk low 2>/dev/null |
   node -e 'let r="";process.stdin.on("data",c=>r+=c);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(r).ticket.id)}catch{process.stdout.write("")}})')"
+# A CLI that cannot create or ready a ticket is a regression in exactly the
+# contract this test drives — a FAIL, never a SKIP (cli-contract-regression.test.sh).
 [ -n "$TID" ] || {
-  echo "SKIP: could not create ticket via CLI"
-  exit 0
+  fail "could not create a ticket via the CLI — a break in the dispatch CLI contract this test guards"
+  exit 1
 }
 RID="$(node -e 'const{DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.env.DISPATCH_DB);process.stdout.write(db.prepare("select id from repositories where name=?").get("widget").id)')"
 node -e '
@@ -98,8 +100,8 @@ db.prepare("insert into acceptance_criteria(id,ticket_id,text,sort_order) values
 node "$DISPATCH_CLI" --db "$DISPATCH_DB" ticket ready "$TID" >/dev/null 2>&1
 READY="$(node -e 'const{DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.env.DISPATCH_DB);process.stdout.write(db.prepare("select status from tickets where id=?").get(process.argv[1]).status)' "$TID")"
 [ "$READY" = "ready" ] || {
-  echo "SKIP: ticket did not reach ready (got '$READY') — policy/env drift"
-  exit 0
+  fail "ticket did not reach ready (got '$READY') — a break in the dispatch CLI contract this test guards"
+  exit 1
 }
 ok "ticket set up + marked ready"
 

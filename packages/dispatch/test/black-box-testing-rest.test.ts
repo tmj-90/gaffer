@@ -92,7 +92,7 @@ describe("BBT-001 REST surface", () => {
       can_be_tested: true,
     });
     expect(testable.status).toBe(200);
-    expect(testable.body.canBeTested).toBe(true);
+    expect(testable.body.can_be_tested).toBe(true);
 
     const contract = await call(h.baseUrl, "POST", `/tickets/${ticketId}/test-contract`, {
       changed_surfaces: ["POST /api/widgets"],

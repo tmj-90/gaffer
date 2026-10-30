@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,8 @@ import { initFactory } from "../src/config/init.js";
 import { loadConfig, resolveEventLogPath } from "../src/config/loader.js";
 
 function tmp(): string {
-  return mkdtempSync(join(tmpdir(), "fg-evtlog-"));
+  // realpath: macOS tmpdir is a symlink, and process.cwd() reports the real path.
+  return realpathSync(mkdtempSync(join(tmpdir(), "fg-evtlog-")));
 }
 
 describe("event log path resolution", () => {
@@ -34,9 +35,42 @@ describe("event log path resolution", () => {
     const result = initFactory({ dir, factoryName: "test-factory" });
     const loaded = loadConfig(result.configPath);
 
-    // Default is the canonical relative path from the YAML template.
-    expect(loaded.config.logging.event_log_path).toBe("./.crew/events.jsonl");
-    expect(resolveEventLogPath(loaded)).toBe("./.crew/events.jsonl");
+    // The template's relative default resolves against the factory root.
+    expect(loaded.config.logging.event_log_path).toBe(join(dir, ".crew", "events.jsonl"));
+    expect(resolveEventLogPath(loaded)).toBe(join(dir, ".crew", "events.jsonl"));
+  });
+
+  it("resolves the relative default against the factory root, not the cwd", () => {
+    const dir = tmp();
+    const result = initFactory({ dir, factoryName: "test-factory" });
+    // Load from a DIFFERENT cwd (e.g. `crew repo onboard .` run inside a repo):
+    // the log must still land under the factory, never in that checkout.
+    const elsewhere = tmp();
+    const savedCwd = process.cwd();
+    process.chdir(elsewhere);
+    try {
+      const loaded = loadConfig(result.configPath);
+      expect(loaded.config.logging.event_log_path).toBe(join(dir, ".crew", "events.jsonl"));
+      expect(resolveEventLogPath(loaded)).toBe(join(dir, ".crew", "events.jsonl"));
+    } finally {
+      process.chdir(savedCwd);
+    }
+  });
+
+  it("resolves a relative GAFFER_CREW_EVENTS against the cwd at load time", () => {
+    const dir = tmp();
+    const result = initFactory({ dir, factoryName: "test-factory" });
+    const elsewhere = tmp();
+    mkdirSync(join(elsewhere, "data"));
+    process.env.GAFFER_CREW_EVENTS = "data/events.jsonl";
+    const savedCwd = process.cwd();
+    process.chdir(elsewhere);
+    try {
+      const loaded = loadConfig(result.configPath);
+      expect(loaded.config.logging.event_log_path).toBe(join(elsewhere, "data", "events.jsonl"));
+    } finally {
+      process.chdir(savedCwd);
+    }
   });
 
   it("resolveEventLogPath returns the env override when GAFFER_CREW_EVENTS is set", () => {
@@ -70,8 +104,8 @@ describe("event log path resolution", () => {
     const result = initFactory({ dir, factoryName: "test-factory" });
     const loaded = loadConfig(result.configPath);
 
-    expect(loaded.config.logging.event_log_path).toBe("./.crew/events.jsonl");
-    expect(resolveEventLogPath(loaded)).toBe("./.crew/events.jsonl");
+    expect(loaded.config.logging.event_log_path).toBe(join(dir, ".crew", "events.jsonl"));
+    expect(resolveEventLogPath(loaded)).toBe(join(dir, ".crew", "events.jsonl"));
   });
 
   it("config-level yaml path wins when env is unset", () => {

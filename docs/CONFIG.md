@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 118 |
+| Knobs with a runner default | 134 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 68 |
+| Env reads in code with no default and no UI entry | 75 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -38,6 +38,7 @@ computed from other knobs at runtime.
 | `DISPATCH_DB` | _derived_ (`$GAFFER_DATA/dispatch.sqlite`) |  | crew, dispatch, runner | Shared databases (the two MCP servers read these) |
 | `MEMORY_DB` | _derived_ (`$GAFFER_DATA/memory.sqlite`) |  | crew, dispatch, memory, runner |  |
 | `CREW_CONFIG` | _derived_ (`$GAFFER_DATA/crew.yaml`) |  | crew, dispatch, runner |  |
+| `MEMORY_AUDIT_LOG` | _derived_ (`$GAFFER_DATA/memory-audit.jsonl`) |  | memory, runner | memory's MCP/CLI audit trail. |
 | `GAFFER_ESTIMATE_LIB` | _derived_ (`$RUNNER_DIR/lib/estimate.mjs`) |  | runner | Shared usage-ledger READER (lib/estimate.mjs parseLedger). |
 | `MCP_CONFIG` | _derived_ (`$RUNNER_DIR/.mcp.json`) |  | runner | Claude Code wiring |
 | `CLAUDE_SETTINGS` | _derived_ (`$RUNNER_DIR/claude/settings.json`) |  | runner |  |
@@ -53,6 +54,7 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
 | `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom in-flight work pauses. Empty = unlimited. |
+| `GAFFER_MAX_CALL_USD` | _(empty)_ |  | runner | GAFFER_MAX_CALL_USD — a HARD per-call dollar cap, passed to `claude --max-budget-usd` so ONE runaway call is stopped while it runs (every other guard acts only between calls). |
 | `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (string) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
 | `GAFFER_CHEAP_PHASES` | _(empty)_ | yes (csv) | dispatch, runner | Comma-separated phases whose work is biased to the cheap model tier. Only 'implement' is routed through the model router today, so 'implement' is the only value with any effect; other phase names are inert until their call sites are routed. High/critical-risk work is never cheapened. |
 | `GAFFER_PLAN_DEBATE` | `0` | yes (boolean) | dispatch, runner | Run a multi-model debate over the plan before decomposing. |
@@ -65,12 +67,19 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_TICK_TIMEOUT` | `1800` | yes (int) | dispatch, runner | Wall-clock cap on a single tick before it is killed. |
-| `GAFFER_MAX_TURNS` | `200` | yes (int) | dispatch, runner | Cap on agent turns within one ticket. |
-| `GAFFER_DOD_TESTS` | `1` |  | runner | 1 = run the repo's test gate on every delivery; 0 skips it |
-| `GAFFER_DOD_LINT` | `1` |  | runner | 1 = run the lint gate |
-| `GAFFER_DOD_TYPECHECK` | `1` |  | runner | 1 = run the typecheck gate (auto-detected command) |
+| `GAFFER_MAX_TURNS` | `200` | yes (int) | dispatch, runner | Turn cap for one delivery agent call, and the ceiling for every other role (reviewer, clarify, planner, tester, …): each runs under the lower of its own cap and this one, so raising it never lifts a role above its own cap. |
+| `GAFFER_REVIEW_MAX_TURNS` | `60` |  | runner | primary reviewer |
+| `GAFFER_SECURITY_REVIEW_MAX_TURNS` | `40` |  | runner | security second-opinion reviewer |
+| `GAFFER_CLARIFY_MAX_TURNS` | `40` |  | runner | intake / clarify pass |
+| `GAFFER_JUDGE_MAX_TURNS` | `2` |  | runner | eval judge (text-only, no tools) |
+| `GAFFER_TESTER_MAX_TURNS` | `80` |  | runner | bin/tester-run.mjs |
+| `GAFFER_MERGE_MAX_TURNS` | `60` |  | runner | bin/merge-ticket.mjs conflict resolver |
+| `GAFFER_PO_MAX_TURNS` | `60` |  | runner | bin/product-owner-run.mjs |
+| `GAFFER_DOD_TESTS` | `1` |  | crew, runner | 1 = run the repo's test gate on every delivery; 0 skips it |
+| `GAFFER_DOD_LINT` | `1` |  | crew, runner | 1 = run the lint gate |
+| `GAFFER_DOD_TYPECHECK` | `1` |  | crew, runner | 1 = run the typecheck gate (auto-detected command) |
 | `GAFFER_DOD_TYPECHECK_CMD` | _(empty)_ |  | runner | override the auto-detected typecheck command |
-| `GAFFER_DOD_TIMEOUT` | `900` |  | runner | wall-clock cap (seconds) per gate and per AC check command |
+| `GAFFER_DOD_TIMEOUT` | `900` |  | crew, runner | wall-clock cap (seconds) per gate and per AC check command |
 | `GAFFER_DOD_SANDBOX` | `1` |  | runner | Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent (they execute agent-modified code). |
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
 | `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the wor |
@@ -82,13 +91,17 @@ computed from other knobs at runtime.
 | `GAFFER_SANDBOX_PIDS` | `512` |  | runner |  |
 | `GAFFER_DAEMON_INTERVAL` | `30` |  | runner | seconds between `gaffer run --daemon` cycles |
 | `GAFFER_DAEMON_MAX_CYCLES` | `0` |  | runner | 0 = unbounded |
+| `GAFFER_DAEMON_SETUP_BACKOFF_MAX` | `1800` |  | runner | ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3) |
+| `GAFFER_RESOLVER_MAX_TURNS` | _(empty)_ |  | runner | alias of GAFFER_MERGE_MAX_TURNS (empty → that knob) |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many times a ticket may be re-worked after a rejected review before it parks to blocked. |
 | `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a retry (rework / gate retry / timeout) keeps the ticket branch's previous commits and re-enters on them; 1 = the old clean-slate reset to base. |
 | `GAFFER_CLAIM_TTL` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))`) |  | runner |  |
 | `DISPATCH_MAX_ATTEMPTS` | _derived_ (`$GAFFER_MAX_DELIVERY_ATTEMPTS`) | yes (int) | dispatch, runner | Dispatch's own cap on how many times a delivery may be rejected back into the queue before the ticket is parked (blocked) for a human — the server-side wallet guard against an unbounded reject loop, enforced on every reject transition regardless of which runner drove it. Defaults to Max delivery attempts so the two caps agree; set it only to make the server stricter or looser than the runner's rework ladder. |
 | `GAFFER_TICK_OUTER_TIMEOUT` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))`) |  | runner | FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around the WHOLE tick.sh. |
+| `GAFFER_TICK_DEADLINE_GUARD` | `1` |  | runner | TICK DEADLINE GUARD (tick.sh): the outer bound above counts only agent calls, but a tick also spends merge-lane resolver time and every attempt's DoD install, gates and AC checks. |
+| `GAFFER_TICK_DEADLINE_MARGIN` | `60` |  | runner | seconds kept back for record / release / teardown |
 | `GAFFER_REWORK_STRONG_MODEL` | _derived_ (`${GAFFER_PLAN_MODEL:-opus}`) |  | runner | ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning for the hardest cases before a human is pulled in). |
-| `GAFFER_REWORK_BUDGET_USD` | _derived_ (`${GAFFER_BUDGET_USD:-}`) | yes (string) | dispatch, runner | Cumulative spend ceiling for one ticket's rework loop. Delivery stops at whichever hits first — this or Max delivery attempts — then parks to blocked. Defaults to the factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it). |
+| `GAFFER_REWORK_BUDGET_USD` | _derived_ (`${GAFFER_BUDGET_USD:-}`) | yes (string) | dispatch, runner | Cumulative spend ceiling for one ticket's rework loop, counting every agent call booked to the ticket (delivery, review, security review, clarify, eval judge). Delivery stops at whichever hits first — this or Max delivery attempts — then parks to blocked. Defaults to the factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it). |
 | `GAFFER_MAX_NOCOMMIT_FAILURES` | _derived_ (`${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}`) | yes (int) | dispatch, runner | Cross-run bound on deliveries that crash before committing. After this many no-commit/wrong-branch failures the ticket parks visibly to blocked instead of being re-picked (and re-billed) every run. Defaults to Max delivery attempts. |
 
 ### Ask-on-cap guard
@@ -164,7 +177,7 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_MODE` | `supervised` | yes (string: supervised / lite / graduated / autonomous / strict) | dispatch, runner | Preset that sets the whole autonomy cluster at once (review mode, agent approval, auto-merge, auto-push, memory auto-approve): supervised · lite · graduated · autonomous · strict. supervised (default) keeps a human on every merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, no sensitive path) that passed every gate + earned an APPROVE from the reviewer agent — and still leaves a human to MERGE (never auto-merges); non-trivial tickets hold for you. (Because auto-approve drops the human quality gate, lite requires the OS sandbox — GAFFER_STRICT_REQUIRE defaults on.) graduated ships what each repo has EARNED at its risk level and holds everything else for you (the reviewer agent runs, but the per-repo/risk autonomy policy is the sole allow-path — set grants in the per-repo policy editor); autonomous lets agents approve and auto-merges + pushes approved work; strict adds OS-level sandbox containment on top of autonomous, chosen by SANDBOX_PROVIDER: docker (any host with Docker) gives real read + egress isolation; sandbox-exec (macOS) is a write-only sandbox, so with sandbox-exec on a non-macOS host strict has no OS containment beyond the deterministic hook — set GAFFER_STRICT_REQUIRE=1 to fail closed rather than degrade. Picking a mode prevents a half-configured autonomy posture. The individual knobs below still override the mode — an explicitly-set flag always wins. |
 | `DISPATCH_ALLOW_AGENT_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | dispatch, runner | Let an agent actor approve a ticket's review (otherwise human-only). |
-| `MEMORY_AUTO_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | dispatch, memory, runner | Accept memory draft records without a human review step. |
+| `MEMORY_AUTO_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | crew, dispatch, memory, runner | Accept memory draft records without a human review step. |
 
 ### Autonomy REQUIRES containment
 
@@ -174,6 +187,7 @@ computed from other knobs at runtime.
 | `MERGE_ON_AGENT_REVIEW` | `0` | yes (boolean) | dispatch, runner | Fire the merge command when an agent (not just a human) approves. |
 | `AUTO_MERGE` | `0` | yes (boolean) | dispatch, runner | Safe-merge into the default branch on approval. Off → approved tickets wait at ready-for-merge for a human. |
 | `GAFFER_AUTO_PUSH` | `0` | yes (boolean) | dispatch, runner | The final AFK step: push the default branch to origin after a successful auto-merge. Requires Auto-merge; off → merges stay local. |
+| `GAFFER_IDLE_HOST_EXEC` | `0` |  | crew, runner | 1 = allow idle repo commands on the host under GAFFER_STRICT_REQUIRE |
 
 ### Strict execution mode
 
@@ -227,6 +241,13 @@ computed from other knobs at runtime.
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 | `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) into $GAFFER_D |
 
+### lib/claude-auth.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_PREFLIGHT_LIVE` | `0` |  | runner | LIVE CLAUDE PROBE: 1 = runner/preflight.sh also makes ONE tiny paid `claude -p` call to prove the login works (catches an expired token the free credential check cannot); 0 = only the free check (is a credential visible |
+| `GAFFER_PREFLIGHT_LIVE_TIMEOUT` | `60` |  | runner | Seconds the live probe may take before it counts as a failure. |
+
 ### lib/delivery-recovery.sh
 
 | Variable | Default | UI | Read by | Notes |
@@ -257,7 +278,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_UNIVERSAL_SKILLS` | `run-tests run-lint run-coverage minimalism self-review submit-review record-evidence create-branch prepare-digest-delta` |  | runner | !/usr/bin/env bash shellcheck shell=bash Gaffer factory — per-agent SKILL mount + skill-selection telemetry. |
+| `GAFFER_UNIVERSAL_SKILLS` | `run-tests run-lint run-coverage minimalism self-review record-evidence prepare-digest-delta` |  | runner | !/usr/bin/env bash shellcheck shell=bash Gaffer factory — per-agent SKILL mount + skill-selection telemetry. |
 
 ## Dashboard-only settings
 
@@ -308,6 +329,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
 | `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
+| `GAFFER_DECOMPOSE_AGENT_MAX_TURNS` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
 | `GAFFER_DEFAULT_TICKET_REPO` |  | `packages/dispatch/src/mcp/tools.ts`, `runner/bin/merge-ticket.mjs`, `runner/bin/tester-run.mjs` |
@@ -315,16 +337,22 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_EGRESS_ALLOW_FILE` | `$data/egress-allow.txt` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | `runner/gaffer`, `runner/lib/eval-judge.sh` |
 | `GAFFER_INHERIT_AMB_TIMEOUT` | `300` | `runner/lib/greenfield.sh` |
+| `GAFFER_INHERIT_MODEL` | _(empty)_ | `runner/bin/inherit-repo.mjs` |
 | `GAFFER_INHERIT_PLAN_TIMEOUT` | `60` | `runner/lib/greenfield.sh` |
+| `GAFFER_JUDGE_DENIED_TOOLS` | `Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite` | `runner/lib/eval-judge.sh` |
 | `GAFFER_JUDGE_MODEL_FLAG` | `${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-` | `runner/lib/eval-judge.sh` |
 | `GAFFER_LITE_MAX_FILES` | `4` | `runner/factory.config.sh` |
 | `GAFFER_LITE_MAX_LINES` | `60` | `runner/factory.config.sh` |
-| `GAFFER_LITE_SENSITIVE_RE` | `(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
+| `GAFFER_LITE_SENSITIVE_RE` | `$_GAFFER_SENSITIVE_PATH_RE` | `runner/factory.config.sh` |
 | `GAFFER_MERGE_TIMEOUT_MS` | `600000` | `runner/lib/land.sh` |
-| `GAFFER_ONBOARD_SYNTH_MODEL` |  | `runner/lib/onboard-analyze.mjs` |
+| `GAFFER_ONBOARD_MAX_TURNS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
+| `GAFFER_ONBOARD_SYNTH_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_PLAN_BUILD_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
+| `GAFFER_REAPPROVAL_ATTEMPTS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
+| `GAFFER_REAPPROVAL_BACKOFF_MS` | _(empty)_ | `runner/bin/merge-ticket.mjs` |
 | `GAFFER_REVIEW_TICKET` |  | `packages/dispatch/src/mcp/tools.ts` |
+| `GAFFER_SAFETY_HOOK` |  | `packages/crew/src/safety/liveHook.ts` |
 | `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_CLAUDE_CREDENTIALS` | _(empty)_ / `/nonexistent` | `runner/lib/sandbox-docker.sh`, `runner/sandbox/smoke-test.sh` |
 | `GAFFER_SANDBOX_HOME` | `/root` | `runner/lib/dod.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
@@ -333,9 +361,10 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_SANDBOX_PATH` | `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` | `runner/lib/dod.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_PROXY` | `gaffer-egress-proxy-svc` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_SANDBOX_PROXY_IMAGE` | `gaffer-egress-proxy` | `runner/lib/sandbox-docker.sh` |
-| `GAFFER_SECURITY_REVIEW_RE` | `${GAFFER_LITE_SENSITIVE_RE:-(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
+| `GAFFER_SECURITY_REVIEW_RE` | `${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE` | `runner/factory.config.sh` |
 | `GAFFER_SKILL_TELEMETRY` | `$GAFFER_DATA/skills-telemetry.jsonl` | `packages/dispatch/src/health/skillsTelemetryAggregator.ts`, `runner/lib/skills-mount.sh` |
 | `GAFFER_SLACK_WEBHOOK` | _(empty)_ | `runner/status.sh` |
+| `GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS` | _(empty)_ | `runner/bin/spec-author.mjs` |
 | `GAFFER_SPEC_AUTHOR_MOCK` | _(empty)_ | `runner/bin/spec-author.mjs` |
 | `GAFFER_TEST_MODEL` |  | `runner/bin/tester-run.mjs` |
 | `GAFFER_TESTER_REPLAY` | `1` | `runner/bin/tester-run.mjs` |
@@ -350,7 +379,6 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/orphan-recovery.sh` |
 | `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
-| `MEMORY_AUDIT_LOG` |  | `packages/memory/src/cli/commands/setup.ts`, `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts` |
 | `MEMORY_AUDIT_OFF` |  | `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts`, `packages/memory/src/core/lore.ts` |
 | `MEMORY_CLI` |  | `runner/bin/epic-feature.mjs`, `runner/bin/merge-ticket.mjs` |
 | `MEMORY_NO_COLOR` |  | `packages/memory/src/cli/format.ts` |

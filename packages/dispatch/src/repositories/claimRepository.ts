@@ -304,6 +304,15 @@ export class ClaimRepository {
    * until its TTL runs out. Idempotent — no active claim means zero rows changed.
    * Returns the number of claims released.
    */
+  /** True when the ticket carries an `active` claim row (expired-but-unswept counts). */
+  hasActiveForTicket(ticketId: string): boolean {
+    return (
+      this.db
+        .prepare("SELECT 1 FROM ticket_claims WHERE ticket_id = ? AND status = 'active' LIMIT 1")
+        .get(ticketId) !== undefined
+    );
+  }
+
   releaseActiveForTicket(ticketId: string, nowIso: string): number {
     return this.db
       .prepare(

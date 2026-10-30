@@ -19,11 +19,18 @@
 //                               an ACCEPTANCE ticket is HELD (unverified)
 //   bound PASS, head == tested → lands, pinned to the tested commit
 //   bound PASS, head moved     → HELD (names both commits)
+// REVIEW PIN: when the runner's agent review approved the ticket it first records the
+// commit the reviewer saw (a SYSTEM `commit` evidence row, uri gaffer-reviewed-commit:<sha>,
+// lib/review.sh). Every decision above that would otherwise land "the branch head" (no
+// tester, a human waiver, a legacy unbound PASS) then lands ONLY that commit and HOLDS
+// (kind moved-since-review) when the head moved past it — on every landing path, the
+// merge lane's later landing of a ready_for_merge ticket included. A pin recorded before
+// the ticket last (re)entered in_review describes an older candidate and is ignored.
 // Fail CLOSED: an unreadable DB, an unknown ticket or an unresolvable branch head HOLD.
 //
 // CLI: node lib/tester-binding.mjs landing --db <dispatch.sqlite> --ticket <n>
 //        --repo <path> --branch <name>
-//      → one JSON line { ok, pin, kind, reason, tested, head }; exit 0 land · 4 hold.
+//      → one JSON line { ok, pin, kind, reason, tested, reviewed, head }; exit 0 land · 4 hold.
 // =====================================================================
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -50,6 +57,44 @@ export function branchHead(repoPath, branch) {
 }
 
 /** Read the ticket's acceptance flag and its latest tester PASS evidence payload. */
+/**
+ * The commit the runner's agent review approved (REVIEW PIN), or null. Only a SYSTEM row
+ * counts (agents record evidence as `agent` through the MCP and cannot forge one), and
+ * only one recorded after the ticket's latest entry into in_review: a rework or a
+ * conflict resolution re-enters review, which makes the old pin stale.
+ */
+function readReviewPin(db, ticketId) {
+  let row;
+  try {
+    row = db
+      .prepare(
+        "SELECT uri, created_at FROM evidence WHERE ticket_id = ? AND evidence_type = 'commit' " +
+          "AND recorded_by_actor_type = 'system' AND uri LIKE 'gaffer-reviewed-commit:%' " +
+          "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      )
+      .get(ticketId);
+  } catch {
+    return null; // pre-provenance schema / minimal fixture: no pin was ever recorded
+  }
+  const sha = String(row?.uri ?? "")
+    .slice("gaffer-reviewed-commit:".length)
+    .toLowerCase();
+  if (!/^[0-9a-f]{40,64}$/.test(sha)) return null;
+  try {
+    const entered = db
+      .prepare(
+        "SELECT created_at FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? " +
+          "AND event_type = 'ticket.transitioned' AND json_extract(payload_json, '$.to') = 'in_review' " +
+          "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      )
+      .get(ticketId);
+    if (entered && String(entered.created_at) > String(row.created_at)) return null;
+  } catch {
+    // no event log to date the pin against: keep it (the stricter reading)
+  }
+  return sha;
+}
+
 export function readTesterEvidence(dbPath, ticketNumber) {
   if (!dbPath || !existsSync(dbPath))
     return { error: `dispatch DB not found (${dbPath || "unset"})` };
@@ -84,7 +129,12 @@ export function readTesterEvidence(dbPath, ticketNumber) {
     } catch {
       pass = null; // no evidence table (minimal fixture) = no tester verdict
     }
-    return { ticketId: String(t.id), acceptance: Number(t.acceptance || 0) === 1, pass };
+    return {
+      ticketId: String(t.id),
+      acceptance: Number(t.acceptance || 0) === 1,
+      pass,
+      reviewed: readReviewPin(db, t.id),
+    };
   } catch (e) {
     return { error: `could not read the dispatch DB: ${e?.message ?? e}` };
   } finally {
@@ -102,24 +152,28 @@ export function landingDecision({ dbPath, ticketNumber, repoPath, branch }) {
   const head = branchHead(repoPath, branch);
   if (!head) return hold("no-head", `cannot resolve the head of ${branch} in ${repoPath}`);
   const pass = ev.pass;
+  const reviewed = ev.reviewed ?? null;
+  // A head landing (no tester / waiver / legacy) is bound to the reviewed commit when the
+  // runner's agent review recorded one: the head must still BE that commit.
+  const headLanding = (kind, reason) => {
+    if (reviewed && head !== reviewed)
+      return hold("moved-since-review", `${branch} moved since the agent review approved it`, {
+        reviewed,
+        head,
+      });
+    return { ok: true, pin: head, kind, reason, head, ...(reviewed ? { reviewed } : {}) };
+  };
   if (!pass) {
     if (ev.acceptance)
       return hold("unverified", "acceptance ticket has no tester PASS on record", { head });
-    return { ok: true, pin: head, kind: "no-tester", reason: "no tester involved", head };
+    return headLanding("no-tester", "no tester involved");
   }
-  if (pass.provenance === "human")
-    return { ok: true, pin: head, kind: "waived", reason: "human tester-pass (waiver)", head };
+  if (pass.provenance === "human") return headLanding("waived", "human tester-pass (waiver)");
   const tested = typeof pass.tested_commit === "string" ? pass.tested_commit.toLowerCase() : "";
   if (!/^[0-9a-f]{40,64}$/.test(tested)) {
     if (ev.acceptance)
       return hold("unverified", "acceptance PASS is not bound to a tested commit", { head });
-    return {
-      ok: true,
-      pin: head,
-      kind: "legacy-unbound",
-      reason: "tester PASS predates commit binding",
-      head,
-    };
+    return headLanding("legacy-unbound", "tester PASS predates commit binding");
   }
   if (head !== tested)
     return hold("moved", `${branch} moved since the tester's PASS`, { tested, head });

@@ -40,6 +40,8 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0
 FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
+SKIPPED=0
+skip_part() { SKIPPED=$((SKIPPED + 1)); printf '  SKIP: %s\n' "$1"; }   # a skipped section is NOT an ok
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 command -v git  >/dev/null 2>&1 || { echo "SKIP: git required";  exit 0; }
@@ -157,7 +159,7 @@ run_recover() {
 
 # (a) attempt 1 of 2 → RETRY decision; branch preserved, worktree torn down.
 out="$(run_recover 1 2)"
-printf '%s' "$out" | grep -q "OUTCOME=retry" && ok "attempt 1/2 → retry decision" || fail "expected retry on attempt 1/2 (got: $out)"
+grep -q "OUTCOME=retry" <<<"$out" && ok "attempt 1/2 → retry decision" || fail "expected retry on attempt 1/2 (got: $out)"
 branch_exists && ok "INVARIANT: branch SURVIVES a recoverable RETRY (worktree-only teardown)" \
   || fail "recoverable retry WRONGLY deleted the committed branch"
 [ -e "$WT" ] && fail "retry left the worktree behind" || ok "retry tore down the disposable worktree"
@@ -166,7 +168,7 @@ branch_exists && ok "INVARIANT: branch SURVIVES a recoverable RETRY (worktree-on
 git -C "$REPO" worktree add "$WT" "$WORK_BRANCH" >/dev/null 2>&1
 # (b) attempt 2 of 2 → PARK decision; branch STILL preserved (never dropped).
 out="$(run_recover 2 2)"
-printf '%s' "$out" | grep -q "OUTCOME=parked" && ok "attempt 2/2 → parked decision (attempts exhausted)" || fail "expected parked on attempt 2/2 (got: $out)"
+grep -q "OUTCOME=parked" <<<"$out" && ok "attempt 2/2 → parked decision (attempts exhausted)" || fail "expected parked on attempt 2/2 (got: $out)"
 branch_exists && ok "INVARIANT: branch SURVIVES the exhausted-attempts PARK (the #64 fix)" \
   || fail "exhausted-attempts park WRONGLY deleted the committed branch — work lost (#64 regression)"
 
@@ -219,12 +221,12 @@ if [ -f "$TICK" ]; then
     fail "tick.sh success teardown changed unexpectedly"
   fi
 else
-  ok "SKIP static checks (tick.sh not found)"
+  skip_part "static checks (tick.sh not found)"
 fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
-  echo "PASS: $PASS checks"
+  echo "PASS: $PASS checks, $SKIPPED skipped"
   exit 0
 else
   echo "FAILED: ${#FAILURES[@]} of $((PASS + ${#FAILURES[@]}))"

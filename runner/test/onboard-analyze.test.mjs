@@ -28,10 +28,12 @@
 // =====================================================================
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const RUNNER_DIR = resolve(HERE, "..");
 const MOD = resolve(HERE, "..", "lib", "onboard-analyze.mjs");
 const {
   parseMavenModules,
@@ -63,6 +65,13 @@ const {
   INDUCTION_TAG,
   CARD_SOLO_SNIPPET_CHARS,
   agentChildEnv,
+  runAnalysisTurn,
+  runCardBatchTurn,
+  runCardReviewTurn,
+  buildCardReviewPrompt,
+  modelFailure,
+  isModelFailure,
+  claudeBreaker,
 } = await import(MOD);
 
 let passed = 0;
@@ -82,6 +91,34 @@ function eq(label, got, want) {
   if (JSON.stringify(got) === JSON.stringify(want)) ok(label);
   else fail(`${label} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
 }
+
+// HERMETIC: no case here may spawn a real `claude`. analyzeAndWrite defaults its card,
+// batch and review turns to LIVE model calls, and the env is built from process.env —
+// on a machine with Claude Code installed (and logged in) an unstubbed path ran real,
+// billed Haiku turns with cwd = runner/. Every env below starts from BASE_ENV, whose
+// CLAUDE_BIN is a tripwire that logs its argv and exits 97 (the developer's CLAUDE_FLAGS
+// / MCP_CONFIG are dropped too), and every analyzeAndWrite call stubs all four turns
+// (noLive). The run fails at the end if the tripwire was ever hit.
+const TRIP_DIR = mkdtempSync(join(tmpdir(), "onboard-analyze-trip-"));
+const TRIP_LOG = join(TRIP_DIR, "calls.log");
+const TRIPWIRE = join(TRIP_DIR, "claude");
+writeFileSync(
+  TRIPWIRE,
+  `#!/bin/sh\necho "$*" | head -c 300 >> "${TRIP_LOG}"\necho >> "${TRIP_LOG}"\nexit 97\n`,
+  {
+    mode: 0o755,
+  },
+);
+const BASE_ENV = { ...process.env, CLAUDE_BIN: TRIPWIRE };
+delete BASE_ENV.CLAUDE_FLAGS;
+delete BASE_ENV.MCP_CONFIG;
+// The card pass stays ON (GAFFER_CARD_EMIT default) so its path is still exercised;
+// the turns return what a failed / timed-out model turn returns.
+const noLive = {
+  runCardTurn: () => null,
+  runCardBatchTurn: (_prompt, count) => Array(count).fill(null),
+  runReviewTurn: () => null,
+};
 
 // --- B25(b): agentChildEnv keeps the headless-Max OAuth token, and ONLY it ---------
 // Live audit: CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) matched the *_TOKEN deny
@@ -340,7 +377,7 @@ console.log("== AC9: writeUnderstanding de-dupes features by name on re-onboard 
     ],
   };
 
-  const first = writeUnderstanding(cfg, "demo", understanding, { env: process.env });
+  const first = writeUnderstanding(cfg, "demo", understanding, { env: BASE_ENV });
   assert("first onboard: digest written", first.digestWritten === true);
   eq("first onboard: both features added", first.featuresAdded, 2);
   eq("first onboard: none skipped", first.featuresSkipped, 0);
@@ -350,7 +387,7 @@ console.log("== AC9: writeUnderstanding de-dupes features by name on re-onboard 
     featuresFile,
     "Features for demo: 2\n\nSHIPPED (2)\n  [shipped] Feed normalisation  (aaa11111)\n  [shipped] Entity registry  (bbb22222)\n",
   );
-  const second = writeUnderstanding(cfg, "demo", understanding, { env: process.env });
+  const second = writeUnderstanding(cfg, "demo", understanding, { env: BASE_ENV });
   assert("re-onboard: digest re-written (upsert)", second.digestWritten === true);
   eq("re-onboard: zero features added (de-duped)", second.featuresAdded, 0);
   eq("re-onboard: both features skipped", second.featuresSkipped, 2);
@@ -370,7 +407,7 @@ console.log("== AC10: analyzeAndWrite end-to-end (model JSON → memory writes) 
       "process.exit(0);",
     ].join("\n"),
   );
-  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
+  const env = { ...BASE_ENV, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
   const modelJson =
     "```json\n" +
     JSON.stringify({
@@ -388,7 +425,7 @@ console.log("== AC10: analyzeAndWrite end-to-end (model JSON → memory writes) 
   const res = analyzeAndWrite(
     repo,
     { repoId: "demo", name: "demo", stack: "java" },
-    { env, runTurn: () => ({ timedOut: false, stdout: modelJson }) },
+    { env, runTurn: () => ({ timedOut: false, stdout: modelJson }), ...noLive },
   );
   assert("ran with the model", res.ran === true && res.usedModel === true);
   eq("one feature added", res.stats.featuresAdded, 1);
@@ -410,6 +447,33 @@ console.log("== AC10: analyzeAndWrite end-to-end (model JSON → memory writes) 
   );
 }
 
+console.log("== AC10b: an example ```json block AFTER the analysis does not replace it ==");
+{
+  // The shared extractor (lib/agent-io.mjs) takes the last block with the expected shape
+  // (a `digest`); this file's old copy took the LAST fence, so the analysis was lost.
+  const repo = mavenRepo();
+  const dir = mkdtempSync(resolve(tmpdir(), "onboard-trail-"));
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(cliBin, "process.exit(0);\n");
+  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
+  const modelJson =
+    "```json\n" +
+    JSON.stringify({
+      digest: { overview: "O.", structure: "S.", conventions: "C.", stack: "java-maven" },
+      features: [{ name: "Supplier normalisation", summary: "Normalises.", status: "shipped" }],
+    }) +
+    '\n```\nAn example supplier record:\n```json\n{"id":1}\n```\n';
+  const res = analyzeAndWrite(
+    repo,
+    { repoId: "demo", name: "demo", stack: "java" },
+    { env, runTurn: () => ({ timedOut: false, stdout: modelJson }) },
+  );
+  assert(
+    "analysis followed by an example fence → the model analysis is used",
+    res.ran === true && res.usedModel === true && res.stats.featuresAdded === 1,
+  );
+}
+
 console.log(
   "== AC11: analyzeAndWrite falls back on unparseable model output (no fake features) ==",
 );
@@ -426,11 +490,15 @@ console.log(
       "process.exit(0);",
     ].join("\n"),
   );
-  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
+  const env = { ...BASE_ENV, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
   const res = analyzeAndWrite(
     repo,
     { repoId: "demo", name: "demo", stack: "java" },
-    { env, runTurn: () => ({ timedOut: false, stdout: "the model said nothing parseable" }) },
+    {
+      env,
+      runTurn: () => ({ timedOut: false, stdout: "the model said nothing parseable" }),
+      ...noLive,
+    },
   );
   assert("ran but did NOT use the model output", res.ran === true && res.usedModel === false);
   eq("fallback adds ZERO features", res.stats.featuresAdded, 0);
@@ -450,7 +518,7 @@ console.log(
     repo,
     { repoId: "demo", name: "demo" },
     {
-      env: { ...process.env, MEMORY_CLI_BIN: "", MEMORY_DB: "" },
+      env: { ...BASE_ENV, MEMORY_CLI_BIN: "", MEMORY_DB: "" },
       runTurn: () => ({ timedOut: false, stdout: "" }),
     },
   );
@@ -643,7 +711,7 @@ console.log("== AC16/AC17: writeUnderstanding drafts lore via `suggest` (DRAFT) 
     ],
   };
 
-  const first = writeUnderstanding(cfg, "demo", understanding, { env: process.env });
+  const first = writeUnderstanding(cfg, "demo", understanding, { env: BASE_ENV });
   eq("first onboard: one lore drafted", first.loreDrafted, 1);
   eq("first onboard: none skipped", first.loreSkipped, 0);
   const calls = (await import("node:fs"))
@@ -685,7 +753,7 @@ console.log("== AC16/AC17: writeUnderstanding drafts lore via `suggest` (DRAFT) 
     searchFile,
     "Webhook retries cap at 2h backoff (lore-aaa111)\n  [draft] conf=medium  tags=induction,migrations\n",
   );
-  const second = writeUnderstanding(cfg, "demo", understanding, { env: process.env });
+  const second = writeUnderstanding(cfg, "demo", understanding, { env: BASE_ENV });
   eq("AC17: re-onboard drafts zero (de-duped by title)", second.loreDrafted, 0);
   eq("AC17: the lore was skipped", second.loreSkipped, 1);
 }
@@ -714,7 +782,7 @@ console.log("== AC18: analyzeAndWrite end-to-end drafts grounded+cited+induction
       "process.exit(0);",
     ].join("\n"),
   );
-  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
+  const env = { ...BASE_ENV, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
   const modelJson =
     "```json\n" +
     JSON.stringify({
@@ -750,7 +818,7 @@ console.log("== AC18: analyzeAndWrite end-to-end drafts grounded+cited+induction
   const res = analyzeAndWrite(
     repo,
     { repoId: "demo", name: "demo", stack: "java" },
-    { env, runTurn: () => ({ timedOut: false, stdout: modelJson }) },
+    { env, runTurn: () => ({ timedOut: false, stdout: modelJson }), ...noLive },
   );
   assert("ran with the model", res.ran === true && res.usedModel === true);
   eq("two grounded lore drafted (uncited dropped)", res.stats.loreDrafted, 2);
@@ -832,7 +900,7 @@ console.log("== AC9b: feature dedup survives model REWORDING across re-onboards 
     digest: { overview: "o", structure: "s", conventions: "c", stack: "java" },
     features: [{ name: "URL shortening", summary: "Shorten long URLs.", status: "shipped" }],
   };
-  const first = writeUnderstanding(cfg, "demo", firstRun, { env: process.env });
+  const first = writeUnderstanding(cfg, "demo", firstRun, { env: BASE_ENV });
   eq("first onboard: feature added", first.featuresAdded, 1);
 
   // Store now lists the first run's feature (what `features demo` returns).
@@ -845,7 +913,7 @@ console.log("== AC9b: feature dedup survives model REWORDING across re-onboards 
     digest: { overview: "o", structure: "s", conventions: "c", stack: "java" },
     features: [{ name: "Shorten a URL", summary: "Create short links.", status: "shipped" }],
   };
-  const second = writeUnderstanding(cfg, "demo", secondRun, { env: process.env });
+  const second = writeUnderstanding(cfg, "demo", secondRun, { env: BASE_ENV });
   eq("re-onboard: reworded duplicate NOT added (no accumulation)", second.featuresAdded, 0);
   eq("re-onboard: reworded duplicate skipped", second.featuresSkipped, 1);
 }
@@ -885,7 +953,7 @@ console.log("== AC17b: lore dedup survives model REWORDING across re-onboards ==
       },
     ],
   };
-  const first = writeUnderstanding(cfg, "demo", firstRun, { env: process.env });
+  const first = writeUnderstanding(cfg, "demo", firstRun, { env: BASE_ENV });
   eq("first onboard: lore drafted", first.loreDrafted, 1);
 
   // Store now lists that draft (what the search returns on re-onboard).
@@ -908,38 +976,207 @@ console.log("== AC17b: lore dedup survives model REWORDING across re-onboards ==
       },
     ],
   };
-  const second = writeUnderstanding(cfg, "demo", secondRun, { env: process.env });
+  const second = writeUnderstanding(cfg, "demo", secondRun, { env: BASE_ENV });
   eq("re-onboard: reworded lore NOT drafted (no accumulation)", second.loreDrafted, 0);
   eq("re-onboard: reworded lore skipped", second.loreSkipped, 1);
 }
 
-console.log("== cardModel: GAFFER_CARD_MODEL / default Haiku (cheap per-file tier) ==");
+console.log("== cardModel: GAFFER_CARD_MODEL / registry onboarding tier (cheap per-file) ==");
 {
-  assert("cardModel defaults to claude-haiku-4-5", cardModel({}) === "claude-haiku-4-5");
+  // The registry's `onboarding` phase routes to the cheap tier — the CLI alias
+  // 'haiku', which tracks the current generation (not a pinned claude-haiku-4-5).
+  assert("cardModel defaults to the registry's onboarding tier (haiku)", cardModel({}) === "haiku");
+  assert(
+    "cardModel ignores GAFFER_PLAN_MODEL (the planner's opus never reaches the cards)",
+    cardModel({ GAFFER_PLAN_MODEL: "opus", GAFFER_PLAN_MODEL_EXPLICIT: "1" }) === "haiku",
+  );
   assert(
     "cardModel respects GAFFER_CARD_MODEL override",
     cardModel({ GAFFER_CARD_MODEL: "claude-opus-4" }) === "claude-opus-4",
   );
   assert(
     "cardModel ignores blank GAFFER_CARD_MODEL",
-    cardModel({ GAFFER_CARD_MODEL: "  " }) === "claude-haiku-4-5",
+    cardModel({ GAFFER_CARD_MODEL: "  " }) === "haiku",
   );
+  // A registry edit reroutes cards (config-only), and an enabled localSeam pointing
+  // at a provider id the CLI cannot run yet falls back to the cheap tier.
+  const regDir = mkdtempSync(join(tmpdir(), "onb-reg-"));
+  const reg = (obj) => {
+    const f = join(regDir, `r${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(f, JSON.stringify(obj));
+    return f;
+  };
+  const tiers = { cheap: "haiku-next", mid: "sonnet-next", strong: "opus", local: "ollama:x" };
+  const order = ["cheap", "mid", "strong"];
+  assert(
+    "cardModel follows a registry's onboarding tier",
+    cardModel({ GAFFER_MODEL_REGISTRY: reg({ tiers, escalationOrder: order }) }) === "haiku-next",
+  );
+  const seam = reg({
+    tiers,
+    escalationOrder: ["local", ...order],
+    localSeam: { enabled: true, tier: "local", phases: ["onboarding"] },
+  });
+  assert(
+    "localSeam → 'ollama:x' (no adapter yet) falls back to the cheap tier, never emitted",
+    cardModel({ GAFFER_MODEL_REGISTRY: seam }) === "haiku-next",
+  );
+  assert(
+    "an unreadable registry falls back to haiku",
+    cardModel({ GAFFER_MODEL_REGISTRY: join(regDir, "missing.json") }) === "haiku",
+  );
+  rmSync(regDir, { recursive: true, force: true });
 }
 
-console.log("== analysisCaps: synthesis model stays on Sonnet (separate knob) ==");
+console.log("== analysisCaps: synthesis model is the mid tier unless an operator pins it ==");
 {
   assert(
-    "synth model defaults to claude-sonnet-4-5",
-    analysisCaps({}).model === "claude-sonnet-4-5",
+    "synth model defaults to the registry mid tier (sonnet)",
+    analysisCaps({}).model === "sonnet",
   );
   assert(
-    "GAFFER_PLAN_MODEL overrides synth model",
+    "the config's own opus default (EXPLICIT=0) does NOT move synthesis to opus",
+    analysisCaps({ GAFFER_PLAN_MODEL: "opus", GAFFER_PLAN_MODEL_EXPLICIT: "0" }).model === "sonnet",
+  );
+  assert(
+    "an operator-set GAFFER_PLAN_MODEL (EXPLICIT=1) still overrides synthesis",
+    analysisCaps({ GAFFER_PLAN_MODEL: "opus", GAFFER_PLAN_MODEL_EXPLICIT: "1" }).model === "opus",
+  );
+  assert(
+    "GAFFER_PLAN_MODEL with no config sourced (EXPLICIT absent) is the caller's choice",
     analysisCaps({ GAFFER_PLAN_MODEL: "claude-opus-4" }).model === "claude-opus-4",
   );
   assert(
     "GAFFER_ONBOARD_SYNTH_MODEL wins over GAFFER_PLAN_MODEL",
     analysisCaps({ GAFFER_ONBOARD_SYNTH_MODEL: "m1", GAFFER_PLAN_MODEL: "m2" }).model === "m1",
   );
+}
+
+{
+  // INTEGRATION: source the real factory.config.sh with no operator overrides — the
+  // production env — and resolve both models from it.
+  const cfg = join(RUNNER_DIR, "factory.config.sh");
+  const dump = spawnSync(
+    "bash",
+    [
+      "-c",
+      'source "$0" >/dev/null 2>&1; node -e "process.stdout.write(JSON.stringify(process.env))"',
+      cfg,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        GAFFER_DATA: mkdtempSync(join(tmpdir(), "onb-cfg-")),
+      },
+    },
+  );
+  const prodEnv = JSON.parse(dump.stdout || "{}");
+  assert("sourced config exports GAFFER_PLAN_MODEL=opus", prodEnv.GAFFER_PLAN_MODEL === "opus");
+  assert(
+    "with the sourced config, synthesis is NOT opus",
+    analysisCaps(prodEnv).model === "sonnet",
+  );
+  assert("with the sourced config, cards are haiku", cardModel(prodEnv) === "haiku");
+}
+
+console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny turn cap ==");
+{
+  // A stub claude records its cwd + argv (one per line, "" kept visible) and replies
+  // with a JSON envelope — the shape of the audit's reproduction (no live model). Args
+  // are recorded whole (newlines flattened), so path asserts hold under a long TMPDIR.
+  const dir = mkdtempSync(join(tmpdir(), "onb-textonly-"));
+  const rec = join(dir, "rec.txt");
+  const stub = join(dir, "claude.sh");
+  writeFileSync(
+    stub,
+    [
+      "#!/bin/bash",
+      `{ echo "CWD=$PWD"; grep -qF "${RUNNER_DIR}/safety-hook.mjs" .claude/settings.json 2>/dev/null && echo "SETTINGS=verified"; for a in "$@"; do printf 'ARG<%s>\\n' "\${a//$'\\n'/ }"; done; } > "${rec}"`,
+      `echo '{"type":"result","result":"\`\`\`json\\n{\\"cards\\":[]}\\n\`\`\`","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0}'`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const env = {
+    ...process.env,
+    CLAUDE_BIN: stub,
+    GAFFER_MAX_TURNS: "200",
+    GAFFER_DATA: dir,
+    MCP_CONFIG: join(RUNNER_DIR, ".mcp.json"),
+  };
+  const read = () => readFileSync(rec, "utf8").split("\n");
+  const args = (lines) => lines.filter((l) => l.startsWith("ARG<")).map((l) => l.slice(4, -1));
+  const after = (a, flag) => a[a.indexOf(flag) + 1];
+  const prompt = buildCardBatchPrompt([
+    {
+      rel: "a.js",
+      fileType: "js",
+      structure: { imports: ["x"], symbols: ["f"] },
+      snippet: "f(){}",
+    },
+  ]);
+  for (const [label, run] of [
+    ["card batch", () => runCardBatchTurn(prompt, 1, env)],
+    [
+      "card review",
+      () =>
+        runCardReviewTurn(
+          buildCardReviewPrompt("a.js", "js", { imports: [], symbols: [] }, "f(){}", { tldr: "x" }),
+          env,
+        ),
+    ],
+  ]) {
+    run();
+    const lines = read();
+    const a = args(lines);
+    const cwd = (lines.find((l) => l.startsWith("CWD=")) || "").slice(4);
+    assert(`${label}: cwd is NOT runner/ (runner/CLAUDE.md no longer loads)`, cwd !== RUNNER_DIR);
+    assert(`${label}: cwd is an empty scratch dir`, /gaffer-onboard-text-/.test(cwd));
+    assert(
+      `${label}: the scratch cwd carries the verified safety-hook settings`,
+      lines.includes("SETTINGS=verified"),
+    );
+    assert(`${label}: built-in tools disabled (--tools "")`, after(a, "--tools") === "");
+    assert(`${label}: --strict-mcp-config`, a.includes("--strict-mcp-config"));
+    assert(
+      `${label}: the factory MCP config is NOT handed over`,
+      !a.includes(env.MCP_CONFIG) && /mcp\.json$/.test(after(a, "--mcp-config")),
+    );
+    assert(`${label}: --disable-slash-commands`, a.includes("--disable-slash-commands"));
+    assert(`${label}: --max-turns 2, not the 200 delivery cap`, after(a, "--max-turns") === "2");
+    assert(`${label}: one --max-turns only`, a.filter((x) => x === "--max-turns").length === 1);
+    assert(`${label}: write denylist kept (defence in depth)`, a.includes("--disallowedTools"));
+    assert(`${label}: scratch cwd removed after the turn`, !existsSync(cwd));
+  }
+  // The synthesis turn (not text-only) keeps its tools + MCP, under its own role cap.
+  runAnalysisTurn("synth", env);
+  const a = args(read());
+  assert(
+    "synthesis turn keeps the factory MCP config",
+    after(a, "--mcp-config") === env.MCP_CONFIG,
+  );
+  assert("synthesis turn is not tool-less", !a.includes("--tools"));
+  assert("synthesis turn: GAFFER_ONBOARD_MAX_TURNS default 60", after(a, "--max-turns") === "60");
+  // A settings template without the safety-hook wiring refuses the text-only turn
+  // (a failed call, never a hook-less spawn) and leaves no scratch dir behind.
+  const unwired = join(dir, "unwired.json");
+  writeFileSync(unwired, '{"hooks":{}}');
+  writeFileSync(rec, "");
+  const refused = runCardReviewTurn(
+    buildCardReviewPrompt("a.js", "js", { imports: [], symbols: [] }, "f(){}", { tldr: "x" }),
+    { ...env, CLAUDE_SETTINGS: unwired },
+  );
+  assert(
+    "unwired settings: the text-only turn is refused (claude never spawned)",
+    readFileSync(rec, "utf8") === "",
+  );
+  assert(
+    "unwired settings: reported as a failed SAFETY call",
+    JSON.stringify(refused ?? null).includes("SAFETY"),
+  );
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log("== cardBatch: GAFFER_CARD_BATCH / default 8, min 1 ==");
@@ -1063,7 +1300,7 @@ console.log("== emitFileCards: B=1 vs B>1 both card every file (trust-split pres
   {
     const repoDir = mkRepo();
     const cfg = mkCli();
-    const env = { ...process.env, GAFFER_CARD_BATCH: "1", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+    const env = { ...BASE_ENV, GAFFER_CARD_BATCH: "1", GAFFER_CARD_REVIEW_SAMPLE: "0" };
     let singleCalls = 0;
     const s = emitFileCards(
       repoDir,
@@ -1088,7 +1325,7 @@ console.log("== emitFileCards: B=1 vs B>1 both card every file (trust-split pres
   {
     const repoDir = mkRepo();
     const cfg = mkCli();
-    const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+    const env = { ...BASE_ENV, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
     let batchCalls = 0;
     let lastCount = 0;
     const s = emitFileCards(
@@ -1123,7 +1360,7 @@ console.log("== emitFileCards: B=1 vs B>1 both card every file (trust-split pres
   {
     const repoDir = mkRepo();
     const cfg = mkCli();
-    const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+    const env = { ...BASE_ENV, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
     const s = emitFileCards(
       repoDir,
       { repoId: "demo", name: "demo" },
@@ -1161,7 +1398,7 @@ console.log("== batch-shortfall retry: missing batch slots trigger per-file runT
     ].join("\n"),
   );
   const cfg = { cliBin, db: join(cliDir, "lore.sqlite") };
-  const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+  const env = { ...BASE_ENV, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
 
   let retryCalls = 0;
   const retryCalled = [];
@@ -1218,7 +1455,7 @@ console.log("== oversized isolation: large file routed solo, others batched norm
     ].join("\n"),
   );
   const cfg = { cliBin, db: join(cliDir, "lore.sqlite") };
-  const env = { ...process.env, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
+  const env = { ...BASE_ENV, GAFFER_CARD_BATCH: "8", GAFFER_CARD_REVIEW_SAMPLE: "0" };
 
   const batchedFiles = [];
   let soloPrompt = null;
@@ -1329,7 +1566,7 @@ console.log("== refreshFileCards: changed file gets re-carded + watermark advanc
 
   const cfg = { cliBin, db: join(dir, "lore.sqlite") };
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     MEMORY_CLI_BIN: cliBin,
     MEMORY_DB: cfg.db,
     GAFFER_PLAN_MODEL: "test-model",
@@ -1441,7 +1678,7 @@ console.log("== refreshFileCards: deleted + renamed files tombstone their cards 
   );
 
   const cfg = { cliBin, db: join(dir, "lore.sqlite") };
-  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: cfg.db };
+  const env = { ...BASE_ENV, MEMORY_CLI_BIN: cliBin, MEMORY_DB: cfg.db };
   const stubTurn = () => ({ tldr: "x", rolePrimary: "util", roleTags: ["t"] });
 
   // A renamed file: old path tombstoned, new path re-carded. Plus a pure delete.
@@ -1507,7 +1744,7 @@ console.log("== refreshFileCards: watermark HELD when a tombstone hard-fails =="
   );
 
   const cfg = { cliBin, db: join(dir, "lore.sqlite") };
-  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: cfg.db };
+  const env = { ...BASE_ENV, MEMORY_CLI_BIN: cliBin, MEMORY_DB: cfg.db };
 
   const rStats = refreshFileCards(repoDir, [], {
     cfg,
@@ -1572,7 +1809,7 @@ console.log(
   // Case 1: mark-failed errors, mechanical-only strip succeeds → still downgraded.
   {
     const { cfg, logFile } = mkCli(true);
-    const env = { ...process.env, CLI_LOG: logFile, GAFFER_CARD_REVIEW_SAMPLE: "5" };
+    const env = { ...BASE_ENV, CLI_LOG: logFile, GAFFER_CARD_REVIEW_SAMPLE: "5" };
     const stats = runCardReviewSample([candidate], {
       cfg,
       canonical: "file:///tmp/repo",
@@ -1602,7 +1839,7 @@ console.log(
   // (surfaced loudly rather than silently trusted).
   {
     const { cfg, logFile } = mkCli(false);
-    const env = { ...process.env, CLI_LOG: logFile, GAFFER_CARD_REVIEW_SAMPLE: "5" };
+    const env = { ...BASE_ENV, CLI_LOG: logFile, GAFFER_CARD_REVIEW_SAMPLE: "5" };
     let logged = "";
     const stats = runCardReviewSample([candidate], {
       cfg,
@@ -1663,6 +1900,7 @@ console.log("== agentChildEnv: credentials AND outbound-endpoint vars are stripp
     env.PATH === "/usr/bin" && env.MEMORY_CLI_BIN === "/x/memory.js",
   );
   assert("pins GAFFER_RECALL_TICKET empty (no delivery recall)", env.GAFFER_RECALL_TICKET === "");
+  assert("pins GAFFER_SCOPE_TICKET empty (bound to no ticket)", env.GAFFER_SCOPE_TICKET === "");
   // Structural pin: the analysis turn spawns through the ONE worker seam.
   const src = readFileSync(MOD, "utf8");
   assert("onboard-analyze imports the worker seam", /from "\.\/worker\.mjs"/.test(src));
@@ -1670,6 +1908,203 @@ console.log("== agentChildEnv: credentials AND outbound-endpoint vars are stripp
   assert(
     "onboard-analyze never spawnSync()s claudeBin directly",
     !/spawnSync\(claudeBin/.test(src),
+  );
+}
+
+// ── claude itself failing (auth / rate limit): say why, and stop calling it ──────
+// An unauthenticated claude exits 1 ("Invalid API key"). runAnalysisTurn dropped the
+// exit status and stderr, so the onboard logged only "no usable JSON"; the card pass
+// read the all-null batch as a PARTIAL shortfall and retried every file one by one —
+// a 24-file repo cost 28 spawns (1 analysis + 3 batches + 24 retries), all failing.
+console.log("== broken claude: the cause is logged and the spawns stop (circuit breaker) ==");
+{
+  const { execSync } = await import("node:child_process");
+  const dir = mkdtempSync(resolve(tmpdir(), "onboard-broken-claude-"));
+  process.env.GAFFER_USAGE_LEDGER = join(dir, "usage.jsonl");
+  const repoDir = join(dir, "repo");
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  for (let i = 0; i < 24; i++) {
+    writeFileSync(join(repoDir, "src", `m${i}.ts`), `export const v${i} = ${i};\n`);
+  }
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    {
+      cwd: repoDir,
+      stdio: "ignore",
+    },
+  );
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') " +
+      "process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n');\nprocess.exit(0);\n",
+  );
+  const CALLS = join(dir, "claude-calls");
+  // mode "exit1": stderr + exit 1. mode "is_error": exit 0, the error in claude's JSON.
+  const fakeClaude = (mode) => {
+    const bin = join(dir, `claude-${mode}`);
+    const body =
+      mode === "exit1"
+        ? "echo 'Invalid API key · Please run /login' >&2\nexit 1\n"
+        : `printf '%s\\n' '{"type":"result","is_error":true,"result":"Claude AI usage limit reached"}'\nexit 0\n`;
+    writeFileSync(bin, `#!/usr/bin/env bash\necho call >> ${JSON.stringify(CALLS)}\n${body}`);
+    execSync(`chmod +x ${JSON.stringify(bin)}`);
+    return bin;
+  };
+  const calls = () => {
+    try {
+      return readFileSync(CALLS, "utf8").trim().split("\n").filter(Boolean).length;
+    } catch {
+      return 0;
+    }
+  };
+  const baseEnv = {
+    ...process.env,
+    MEMORY_CLI_BIN: cliBin,
+    MEMORY_DB: join(dir, "lore.sqlite"),
+    GAFFER_CARD_BATCH: "8",
+    STRICT_MODE: "0",
+    GAFFER_STRICT_REQUIRE: "0",
+    SANDBOX_PROVIDER: "none",
+  };
+
+  for (const mode of ["exit1", "is_error"]) {
+    writeFileSync(CALLS, "");
+    const env = { ...baseEnv, CLAUDE_BIN: fakeClaude(mode) };
+    const want = mode === "exit1" ? "Invalid API key" : "usage limit reached";
+    const turn = runAnalysisTurn("hello", env);
+    assert(
+      `${mode}: runAnalysisTurn reports failed + the CLI's own error`,
+      turn.failed === true && turn.errorText.includes(want) && turn.stdout === "",
+    );
+    writeFileSync(CALLS, "");
+    const logs = [];
+    const res = analyzeAndWrite(
+      repoDir,
+      { repoId: "demo", name: "demo" },
+      {
+        env,
+        log: (m) => logs.push(m),
+      },
+    );
+    assert(`${mode}: at most 2 claude spawns for a 24-file repo (got ${calls()})`, calls() <= 2);
+    assert(
+      `${mode}: the log names claude's error`,
+      logs.some((l) => l.includes("model analysis failed") && l.includes(want)),
+    );
+    assert(`${mode}: modelError carries it to the caller`, String(res.modelError).includes(want));
+    eq(`${mode}: no model digest`, res.usedModel, false);
+    eq(`${mode}: every file still carded (mechanical-only)`, res.cardStats?.carded, 24);
+    eq(`${mode}: modelSkipped counts the 24 files`, res.cardStats?.modelSkipped, 24);
+    eq(`${mode}: failed still counts only store refusals`, res.cardStats?.failed, 0);
+  }
+
+  // The breaker over card turns alone (analysis fine, claude dies mid-pass): two
+  // consecutive failed batches trip it; the third batch never calls claude.
+  {
+    let batchCalls = 0;
+    let singleCalls = 0;
+    const logs = [];
+    const s = emitFileCards(
+      repoDir,
+      { repoId: "demo", name: "demo" },
+      {
+        cfg: { cliBin, db: join(dir, "lore.sqlite") },
+        env: { ...baseEnv, GAFFER_CARD_REVIEW_SAMPLE: "0" },
+        log: (m) => logs.push(m),
+        runBatchTurn: () => {
+          batchCalls += 1;
+          return modelFailure({ status: 1, errorText: "Invalid API key" });
+        },
+        runTurn: () => {
+          singleCalls += 1;
+          return null;
+        },
+      },
+    );
+    eq("card breaker: 2 batch calls, then stop", batchCalls, 2);
+    eq("card breaker: no per-file retries after a total failure", singleCalls, 0);
+    eq("card breaker: modelFailed = 2 turns", s.modelFailed, 2);
+    eq("card breaker: modelSkipped = the 8 files of the third batch", s.modelSkipped, 8);
+    assert(
+      "card breaker: one 'claude unavailable' line",
+      logs.filter((l) => l.includes("claude unavailable")).length === 1,
+    );
+  }
+
+  // Regression: a batch that EXITED 0 and parsed, with 6 of 8 slots, still retries
+  // exactly the 2 missing files.
+  {
+    let singleCalls = 0;
+    const s = emitFileCards(
+      repoDir,
+      { repoId: "demo", name: "demo" },
+      {
+        cfg: { cliBin, db: join(dir, "lore.sqlite") },
+        env: { ...baseEnv, GAFFER_CARD_REVIEW_SAMPLE: "0" },
+        runBatchTurn: (_p, count) => {
+          const out = new Array(count).fill(null);
+          for (let i = 0; i < Math.min(count, 6); i++)
+            out[i] = { tldr: "x.", rolePrimary: "util", roleTags: [] };
+          return out;
+        },
+        runTurn: () => {
+          singleCalls += 1;
+          return { tldr: "retried.", rolePrimary: "util", roleTags: [] };
+        },
+      },
+    );
+    eq("partial batch: 2 retries per batch of 8 (3 batches → 6)", singleCalls, 6);
+    eq("partial batch: every file model-carded", s.modelCarded, 24);
+  }
+
+  // The breaker in isolation + the review gate fails closed without calling claude.
+  {
+    const b = claudeBreaker();
+    b.fail({ status: 1, errorText: "x" });
+    assert("breaker: one failure does not trip", b.tripped === false);
+    b.ok();
+    b.fail({ status: 1, errorText: "x" });
+    assert("breaker: ok() resets the consecutive count", b.tripped === false);
+    b.fail({ status: 1, errorText: "x" });
+    assert("breaker: two consecutive failures trip it", b.tripped === true);
+    assert("isModelFailure(modelFailure(...))", isModelFailure(modelFailure({ status: 1 })));
+    assert("isModelFailure(null) is false", !isModelFailure(null));
+    let reviewCalls = 0;
+    const r = runCardReviewSample(
+      [{ rel: "src/m1.ts", fileType: "ts", structure: "", snippet: "", fields: { tldr: "x" } }],
+      {
+        cfg: { cliBin, db: join(dir, "lore.sqlite") },
+        canonical: repoDir,
+        repo: "demo",
+        repoRoot: repoDir,
+        head: null,
+        env: { ...baseEnv, GAFFER_CARD_REVIEW_SAMPLE: "5" },
+        runReviewTurn: () => {
+          reviewCalls += 1;
+          return { verdict: "pass", reason: "" };
+        },
+        breaker: b,
+      },
+    );
+    eq("review gate with the breaker open: no claude call", reviewCalls, 0);
+    eq("review gate with the breaker open: the card is downgraded (fail closed)", r.downgraded, 1);
+  }
+  delete process.env.GAFFER_USAGE_LEDGER;
+}
+
+console.log("== hermetic: no case spawned a real claude ==");
+{
+  let calls = "";
+  try {
+    calls = readFileSync(TRIP_LOG, "utf8");
+  } catch {
+    /* never written: no call */
+  }
+  rmSync(TRIP_DIR, { recursive: true, force: true });
+  assert(
+    `no real claude spawn (tripwire calls: ${calls.split("\n").filter(Boolean).length})${calls ? ` — ${calls.slice(0, 200)}` : ""}`,
+    calls === "",
   );
 }
 

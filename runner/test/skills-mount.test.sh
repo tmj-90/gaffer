@@ -51,7 +51,7 @@ echo "== AC3: a selected stack skill is mounted; an unselected one is NOT =="
 [ -e "$DEST/.claude/skills/typescript-conventions" ] \
   && ok "selected skill (typescript-conventions) present" || fail "selected skill missing"
 # kubernetes-operator is a devops-area skill not selected for a bare typescript stack.
-if printf '%s' "$SEL" | grep -q 'kubernetes-operator'; then
+if grep -q 'kubernetes-operator' <<<"$SEL"; then
   ok "n/a: kubernetes-operator was selected for this stack"
 else
   [ ! -e "$DEST/.claude/skills/kubernetes-operator" ] \

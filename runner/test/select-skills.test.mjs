@@ -16,6 +16,7 @@ import {
   selectForRole,
   ROLE_PROFILES,
   ROLE_NAMES,
+  TEXT_GATED_SKILL_NAMES,
   DEFAULT_SKILLS_DIR,
 } from "../bin/select-skills.mjs";
 
@@ -816,11 +817,6 @@ check("selectSkills without text is byte-identical to before (no text arg == emp
   );
 });
 
-if (failures.length) {
-  console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
-  for (const f of failures) console.error("  ✗ " + f);
-  process.exit(1);
-}
 // --- ROLE profiles: every agent role gets its own set, not the delivery's ---------
 const libNames = new Set(loadSkills().map((s) => s.name));
 check("every ROLE_PROFILES core skill exists in the library (no dangling names)", () => {
@@ -923,4 +919,75 @@ check("roles never return duplicates", () => {
   }
 });
 
+check("delivery never mounts the runner's / another role's jobs (listing paid every turn)", () => {
+  for (const stacks of [["typescript"], ["python"], []]) {
+    const names = selectSkills({ stacks, text: "Add a REST endpoint for tasks" }).map(
+      (s) => s.name,
+    );
+    for (const n of [
+      "create-branch",
+      "submit-review",
+      "resolve-merge-conflict",
+      "dependency-upgrade",
+    ])
+      assert(
+        !names.includes(n),
+        `delivery (${stacks.join(",") || "no stack"}) must NOT mount ${n}`,
+      );
+    const role = selectForRole("delivery", { stacks, text: "Add a REST endpoint" }).map(
+      (s) => s.name,
+    );
+    for (const n of ["create-branch", "submit-review", "resolve-merge-conflict"])
+      assert(!role.includes(n), `delivery profile must NOT mount ${n}`);
+  }
+});
+check("no skill body points the agent at a skill delivery may not have mounted", () => {
+  // The runner creates the branch, submits for review and resolves merges; a skill that
+  // says "(the `create-branch` skill verifies)" sends the delivery agent looking for a
+  // skill it does not have. A text-gated skill (dependency-upgrade) is absent on most
+  // deliveries, so an always-mounted stack pack that says "(the `dependency-upgrade`
+  // skill)" dangles exactly when the agent finds mid-delivery that it needs one. Only
+  // those skills' own SKILL.md may name them. The bare name is matched, so a pointer
+  // that wraps across a line ("the\n`x` skill") or drops the word "skill" still fails.
+  const absent = ["create-branch", "submit-review", "resolve-merge-conflict"];
+  absent.push(...TEXT_GATED_SKILL_NAMES);
+  assert(TEXT_GATED_SKILL_NAMES.includes("dependency-upgrade"), "text-gated list lost a name");
+  const re = new RegExp("(?<![\\w-])(" + absent.join("|") + ")(?![\\w-])");
+  const skills = loadSkills();
+  assert(skills.length > 0, "no skills loaded");
+  for (const s of skills) {
+    if (absent.includes(s.name)) continue;
+    const m = readFileSync(join(DEFAULT_SKILLS_DIR, s.name, "SKILL.md"), "utf8").match(re);
+    assert(!m, `${s.name}/SKILL.md names the ${m && m[1]} skill`);
+  }
+});
+check("dependency-upgrade is pulled in only when the ticket text names a dependency change", () => {
+  for (const text of [
+    "Upgrade express to v5",
+    "Fix the Dependabot advisory for lodash",
+    "Bump react and refresh the lockfile",
+  ]) {
+    const names = selectSkills({ stacks: ["typescript"], text }).map((s) => s.name);
+    assert(names.includes("dependency-upgrade"), `"${text}" should mount dependency-upgrade`);
+  }
+});
+check("the role that owns each still mounts it", () => {
+  assert(selectForRole("review", { stacks: ["go"] }).some((s) => s.name === "submit-review"));
+  assert(
+    selectForRole("merge", { stacks: ["go"] }).some((s) => s.name === "resolve-merge-conflict"),
+  );
+  // create-branch has no live consumer: the bootstrap profile lists it, but tick.sh's
+  // bootstrap runs the plain delivery selection (no --role) and the runner creates the
+  // bootstrap branch itself. Pin that the live path really goes without it.
+  const live = selectSkills({ stacks: ["go"], text: "Scaffold a Go CLI" });
+  assert(!live.some((s) => s.name === "create-branch"), "live bootstrap mounted create-branch");
+});
+
+// Report once, AFTER every check: this block used to sit above the ROLE-profile
+// checks, so a failing role check was never reported.
+if (failures.length) {
+  console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
+  for (const f of failures) console.error("  ✗ " + f);
+  process.exit(1);
+}
 console.log(`PASS — ${passed} checks passed (library: ${DEFAULT_SKILLS_DIR})`);

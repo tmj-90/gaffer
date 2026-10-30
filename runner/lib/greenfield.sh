@@ -327,7 +327,10 @@ gaffer_ensure_node_modules() {
 gaffer_bootstrap_onboard() {
   # shellcheck disable=SC2034  # num is part of the call contract (logged by callers / future use)
   local num="$1" name="$2" dir="$3" stack="${4:-}" remote="${5:-}" branch="${6:-main}"
-  [ -n "$name" ] && [ -n "$dir" ] || return 1
+  # GAFFER_ONBOARD_ERR: the trimmed `repo add` error when registration fails, so the
+  # caller's park reason can say WHY (empty on success).
+  GAFFER_ONBOARD_ERR=""
+  [ -n "$name" ] && [ -n "$dir" ] || { GAFFER_ONBOARD_ERR="no repo name/dir"; return 1; }
   local wg_ok=1
 
   # 1) Register in dispatch (the link target for the dependent feature tickets).
@@ -352,7 +355,7 @@ gaffer_bootstrap_onboard() {
     add_out="$(wg "${add_args[@]}" 2>&1)"; add_rc=$?
     if [ "$add_rc" -eq 0 ]; then
       wg_ok=0
-    elif printf '%s' "$add_out" | grep -q '"code":"DUPLICATE"'; then
+    elif grep -q '"code":"DUPLICATE"' <<<"$add_out"; then
       # Idempotent retry: a PRIOR (partial) bootstrap already registered this repo.
       # The link target the dependent feature tickets need EXISTS — so this is a
       # success, not a failure. Without this, a re-attempt (e.g. after an unrelated
@@ -364,16 +367,22 @@ gaffer_bootstrap_onboard() {
       # caller suppresses this with >/dev/null 2>&1, so without this the whole
       # greenfield epic sinks with only a generic "FAILED" and no cause (e.g. a
       # malformed --branch value failing git-ref validation).
+      GAFFER_ONBOARD_ERR="$(printf '%s' "$add_out" | head -c 200 | tr '\n' ' ')"
       type log >/dev/null 2>&1 \
-        && log "onboard: 'repo add $name' failed (rc=$add_rc): $(printf '%s' "$add_out" | head -c 200 | tr '\n' ' ')"
+        && log "onboard: 'repo add $name' failed (rc=$add_rc): $GAFFER_ONBOARD_ERR"
       wg_ok=1
     fi
   fi
 
   # 2) Onboard into the Factory Map (crew). Standalone single-repo scope.
-  # Non-fatal: a missing/unbuilt crew must not fail the bootstrap delivery.
+  # Non-fatal: a missing/unbuilt crew must not fail the bootstrap delivery — but a
+  # refused onboard (e.g. crew can't find the factory DB) is LOGGED, not swallowed.
   if type fg >/dev/null 2>&1; then
-    fg repo onboard "$dir" --name "$name" --standalone >/dev/null 2>&1 || true
+    local onb_err
+    if ! onb_err="$(fg repo onboard "$dir" --name "$name" --standalone 2>&1 >/dev/null)"; then
+      type log >/dev/null 2>&1 \
+        && log "onboard: 'crew repo onboard $name' failed (non-fatal): $(printf '%s' "$onb_err" | head -c 300 | tr '\n' ' ')"
+    fi
   fi
 
   return "$wg_ok"
@@ -441,10 +450,10 @@ gaffer_inherit_repo() {
       local tnum cands ans
       tnum="$(printf '%s' "$plan" | _gaffer_inherit_amb_field "$idx" ticket)"
       cands="$(printf '%s' "$plan" | _gaffer_inherit_amb_field "$idx" candidates)"  # newline-separated repo names
-      # Spawn the planned claude call for this sibling.
-      ans="$(printf '%s' "$plan" | _gaffer_inherit_amb_spawn "$idx")"
+      # Spawn the planned claude call for this sibling (ledgered against its ticket).
+      ans="$(printf '%s' "$plan" | _gaffer_inherit_amb_spawn "$idx" "$tnum")"
       ans="$(printf '%s' "$ans" | tr -d '[:space:]')"
-      if [ -n "$ans" ] && [ "$ans" != "NONE" ] && printf '%s\n' "$cands" | grep -qxF "$ans"; then
+      if [ -n "$ans" ] && [ "$ans" != "NONE" ] && grep -qxF -- "$ans" <<<"$cands"; then
         if wg ticket repo-access set "$tnum" "$ans" --access write --relation confirmed >/dev/null 2>&1; then
           log "inherited repo $ans → #$tnum (claude)"
           applied=$((applied+1))
@@ -477,11 +486,14 @@ _gaffer_inherit_amb_field() {  # stdin: plan JSON; args: <idx> <ticket|candidate
   node "$_GAFFER_JSON_TOOL" inherit-amb-field "$1" "$2" 2>/dev/null
 }
 
-# Spawn the planned claude argv for ambiguous sibling <idx> and echo its stdout.
-# The argv (binary + args) is carried in the plan so model/flags/mcp stay identical
-# to the rest of the factory's claude calls.
-_gaffer_inherit_amb_spawn() {  # stdin: plan JSON; arg: <idx> → claude stdout
-  local idx="$1" payload
+# Spawn the planned claude argv for ambiguous sibling <idx> and echo its answer text.
+# The argv (binary + args) is carried in the plan so model/flags stay identical to
+# the rest of the factory's claude calls. It asks for --output-format json, so the
+# call is booked in the usage ledger (kind `inherit`, against <ticket>) like every
+# other paid turn, and the answer is the envelope's `.result`; a plain-text reply
+# (no envelope) is used as is — the caller validates it against the candidates.
+_gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answer text
+  local idx="$1" tnum="${2:-}" payload
   payload="$(cat)"
   # Pull the binary + argv as NUL-separated tokens to survive spaces in the prompt.
   local bin
@@ -494,6 +506,17 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; arg: <idx> → claude stdout
   # Bound this ambiguous-multi-app inherit decision like every other live `claude -p`:
   # it runs AFTER a fast delivery where the outer per-tick timer may have hours of
   # headroom, so a hung/runaway agent here would stall the whole tick. Wrap in
-  # gaffer_timeout and forward the turns cap, matching worker.sh.
-  gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ${GAFFER_MAX_TURNS_FLAG:-} 2>/dev/null || true
+  # gaffer_timeout; the argv carries its own (text-only) turn cap. Run from an EMPTY
+  # scratch dir so no CLAUDE.md / project settings load into a one-word answer.
+  local scratch rc=0 text="" t0=$SECONDS
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-inherit.XXXXXX")" || return 0
+  ( cd "$scratch" && gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ) \
+    >"$scratch/out.json" 2>/dev/null || rc=$?
+  if type gaffer_usage_record >/dev/null 2>&1; then
+    text="$(gaffer_usage_record inherit "$tnum" "$rc" "$scratch/out.json" "$(( (SECONDS - t0) * 1000 ))" 2>/dev/null)"
+  fi
+  [ -n "$text" ] || text="$(node "${GAFFER_WORKER_MJS:-${RUNNER_DIR:-.}/lib/worker.mjs}" parse-result result-text --json-file "$scratch/out.json" 2>/dev/null)"
+  [ -n "$text" ] || text="$(cat "$scratch/out.json" 2>/dev/null)"
+  rm -rf "$scratch"
+  printf '%s' "$text"
 }

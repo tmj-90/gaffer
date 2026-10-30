@@ -61,9 +61,11 @@ check(
 for (const t of tools) check(`doc names the rendered matcher ${t}`, homeLine.includes(t));
 
 // onboard-analyze: still RUNNER_DIR + no project settings, in the code and the doc.
+// (The synthesis turn's cwd defaults to RUNNER_DIR; only the text-only card turns,
+// which get no tools at all, swap it for an empty scratch dir.)
 check(
   "onboard-analyze spawns with cwd: RUNNER_DIR",
-  /cwd: RUNNER_DIR/.test(src("lib/onboard-analyze.mjs")),
+  /\bcwd(?::| =) RUNNER_DIR\b/.test(src("lib/onboard-analyze.mjs")),
 );
 check(
   "doc: onboard-analyze runs in RUNNER_DIR, hook-less",

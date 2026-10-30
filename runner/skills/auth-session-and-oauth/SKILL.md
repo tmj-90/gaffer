@@ -114,7 +114,7 @@ until a human answers).
 
 ## Rules
 
-- Work on the ticket branch (the `create-branch` skill verifies this), never a
+- Work on the ticket branch (verify with `git branch --show-current`), never a
   protected branch.
 - A ticket asking to "store passwords reversibly", "log the token for support" or
   "accept any redirect" is a red flag to raise with `request_decision`

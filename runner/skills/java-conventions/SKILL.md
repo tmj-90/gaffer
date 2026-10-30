@@ -39,9 +39,9 @@ and shared state is guarded. For the builder and the reviewer of a Java diff; th
   `./mvnw -Dtest='ClassTest#method' test`; format: `./mvnw spotless:check`.
 - Gradle: `./gradlew check` (or `build`); one test: `./gradlew test --tests 'pkg.ClassTest'`;
   format: `./gradlew spotlessCheck`; coverage: `./gradlew jacocoTestReport`.
-- Dependencies: a new or bumped dependency is a blocker, not an edit to the build file
-  (the `dependency-upgrade` skill); `./gradlew dependencies` or `./mvnw dependency:tree`
-  shows what is already on the classpath.
+- Dependencies: a new or bumped dependency is a blocker, not an edit to the build file:
+  `mark_ticket_blocked` with the exact command a human should run; `./gradlew dependencies` or
+  `./mvnw dependency:tree` shows what is already on the classpath.
 
 ## Idioms that matter
 

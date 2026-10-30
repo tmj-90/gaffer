@@ -34,7 +34,7 @@ describe("crew init", () => {
     expect(loaded.config.factory.mode).toBe("local_strict");
 
     const policy = loadSafetyPolicy(loaded);
-    expect(policy.git.require_branch_prefix).toBe("dispatch/");
+    expect(policy.git.require_branch_prefix).toBe("gaffer/");
     expect(policy.git.deny_force_push).toBe(true);
   });
 
@@ -53,7 +53,7 @@ describe("crew init", () => {
     const cfg = parseConfig(defaultConfigYaml({ factoryName: "x" }));
     expect(cfg.loops.idle_coverage.mode).toBe("create_draft_tickets");
     // safety policy template parses too
-    expect(defaultSafetyPolicyYaml()).toContain("dispatch/");
+    expect(defaultSafetyPolicyYaml()).toContain("gaffer/");
   });
 
   it("a fresh config has the scan loops OFF with the threshold field present", () => {

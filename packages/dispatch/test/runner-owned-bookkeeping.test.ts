@@ -35,6 +35,21 @@ function seedReadyClaimedTicket(wg: Dispatch): { ticketId: string; acId: string;
   return { ticketId, acId, token: claim.claim_token as string };
 }
 
+/**
+ * Put a claimed ticket in_progress the way the claim-gated submit's first step does
+ * (a raw board move of `claimed -> in_progress` is guarded since the lease holder's
+ * work must not be moved out from under it).
+ */
+function startDelivery(wg: Dispatch, ticketId: string): void {
+  wg.transitions.transition({
+    ticketId,
+    actor: systemActor,
+    toStatus: "in_progress",
+    expectedFromStatus: "claimed",
+    agentSubmit: true,
+  });
+}
+
 describe("runner-owned bookkeeping", () => {
   it("record_ac_evidence resolves the claim token from GAFFER_CLAIM_TOKEN when no arg is passed", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
@@ -181,7 +196,7 @@ describe("runner-owned bookkeeping", () => {
   it("runnerRelease --to blocked works tokenlessly for a resumed (in_progress) delivery", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     const { ticketId } = seedReadyClaimedTicket(wg);
-    wg.moveTicket(ticketId, "in_progress", systemActor);
+    startDelivery(wg, ticketId);
     const res = wg.runnerRelease(
       {
         ticket_id: ticketId,
@@ -201,7 +216,7 @@ describe("runner-owned bookkeeping", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     const { ticketId, token } = seedReadyClaimedTicket(wg);
     // Simulate a resumed delivery: claimed -> in_progress.
-    wg.moveTicket(ticketId, "in_progress", systemActor);
+    startDelivery(wg, ticketId);
     // Original claim lease is irrelevant on resume; park without a token.
     void token;
     const res = wg.runnerRelease(
@@ -216,7 +231,7 @@ describe("runner-owned bookkeeping", () => {
     const { ticketId, token } = seedReadyClaimedTicket(wg);
     // Simulate a resumed delivery: claimed -> in_progress. The original lease is
     // irrelevant on resume; a crash-trap release hands it back to ready tokenlessly.
-    wg.moveTicket(ticketId, "in_progress", systemActor);
+    startDelivery(wg, ticketId);
     void token;
     const res = wg.runnerRelease(
       { ticket_id: ticketId, to: "ready", reason: "runner killed mid-delivery" },
@@ -241,7 +256,7 @@ describe("runner-owned bookkeeping", () => {
   it("board move in_progress -> ready is illegal (runner-release-only leg)", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     const { ticketId } = seedReadyClaimedTicket(wg);
-    wg.moveTicket(ticketId, "in_progress", systemActor);
+    startDelivery(wg, ticketId);
     expect(() => wg.moveTicket(ticketId, "ready", { type: "admin", id: "tom" })).toThrow(
       /ILLEGAL_TRANSITION|not allowed|released\/parked/i,
     );
@@ -250,7 +265,7 @@ describe("runner-owned bookkeeping", () => {
   it("board move in_progress -> refining is illegal (runner-release-only leg)", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     const { ticketId } = seedReadyClaimedTicket(wg);
-    wg.moveTicket(ticketId, "in_progress", systemActor);
+    startDelivery(wg, ticketId);
     expect(() => wg.moveTicket(ticketId, "refining", { type: "admin", id: "tom" })).toThrow(
       /ILLEGAL_TRANSITION|not allowed|released\/parked/i,
     );

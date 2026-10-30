@@ -38,8 +38,7 @@ grep -q 'lib/eval-judge.sh' "$RUNNER_DIR/factory.config.sh" \
 grep -q 'gaffer_eval_judge_delivery "\$NUM"' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh invokes the judge for the submitted ticket" || no "tick.sh missing the judge call"
 # The call must live INSIDE the submit-success branch (after gaffer_submit_delivery).
-awk '/if gaffer_submit_delivery "delivered on branch/,/^  else$/' "$RUNNER_DIR/tick.sh" \
-  | grep -q 'gaffer_eval_judge_delivery' \
+grep -q 'gaffer_eval_judge_delivery' <<<"$(awk '/if gaffer_submit_delivery "delivered on branch/,/^  else$/' "$RUNNER_DIR/tick.sh")" \
   && ok "judge call is inside the submit-success branch (post-submit telemetry)" \
   || no "judge call is not in the submit-success branch"
 bash -n "$RUNNER_DIR/lib/eval-judge.sh" && ok "eval-judge.sh parses (bash -n)" || no "eval-judge.sh syntax error"
@@ -59,9 +58,13 @@ export SHOW='{"title":"Rotate the constant","acceptanceCriteria":[{"id":"AC1","t
 
 # ── Stub worker: capture the judge prompt, emit a canned PASS reply envelope. ──
 WORKER_CALLS="$WORK/worker-calls"; : > "$WORKER_CALLS"
-worker_deliver() { # cwd prompt model_flag mcp out_json [wrap]
+worker_deliver() { # cwd prompt model_flag mcp out_json [wrap] [max_turns] [extra flags…]
   printf '%s\n' "CALLED" >> "$WORKER_CALLS"
   printf '%s' "$2" > "$WORK/last-prompt.txt"
+  # Record the spawn shape: cwd, turn cap, extra flags (one per line, "" kept visible).
+  ( printf 'cwd=%s\n' "$1"; printf 'turns=%s\n' "${7:-}"
+    grep -qF "$RUNNER_DIR/safety-hook.mjs" "$1/.claude/settings.json" 2>/dev/null && printf 'settings=verified\n'
+    shift 7 2>/dev/null && printf 'x<%s>\n' "$@" ) > "$WORK/last-spawn.txt"
   REPLY_OUT="$5" python3 - <<'PY'
 import json, os
 reply = "```json\n" + json.dumps({
@@ -79,6 +82,11 @@ log() { :; }
 
 # shellcheck source=../lib/eval-judge.sh
 source "$RUNNER_DIR/lib/eval-judge.sh"
+# The verified settings writer (sourced by factory.config.sh at runtime).
+_gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
+export CLAUDE_SETTINGS="$RUNNER_DIR/claude/settings.json"
+# shellcheck source=../lib/agent-env.sh
+source "$RUNNER_DIR/lib/agent-env.sh"
 
 echo "== B. default OFF → no-op =="
 unset GAFFER_EVAL_JUDGE
@@ -131,6 +139,22 @@ grep -q '<untrusted-delivery-diff>' "$WORK/last-prompt.txt" \
   && ok "judge prompt quarantined the diff (untrusted envelope)" || no "prompt missing the quarantine envelope"
 grep -q 'AC1' "$WORK/last-prompt.txt" \
   && ok "judge prompt carries the acceptance criteria" || no "prompt missing the ACs"
+# TEXT-ONLY JUDGE: it grades inline text, so it gets no built-in tools, no MCP tools,
+# no skill listing, its own small turn cap, and an EMPTY scratch cwd — never the
+# target repo (whose CLAUDE.md / skills / settings would load into the judge).
+grep -qx "cwd=$REPO" "$WORK/last-spawn.txt" \
+  && no "judge spawned in the target repo (its CLAUDE.md/skills load)" \
+  || ok "judge does not spawn in the target repo"
+_jcwd="$(sed -n 's/^cwd=//p' "$WORK/last-spawn.txt")"
+case "$_jcwd" in */eval-judge.*/cwd) ok "judge cwd is its own scratch dir" ;; *) no "judge cwd is not the scratch dir ($_jcwd)" ;; esac
+grep -qx 'settings=verified' "$WORK/last-spawn.txt" \
+  && ok "judge scratch cwd carries the verified safety-hook settings" \
+  || no "judge spawned without the rendered safety-hook settings"
+grep -qx 'turns=2' "$WORK/last-spawn.txt" && ok "judge runs under GAFFER_JUDGE_MAX_TURNS (default 2), not the 200 delivery cap" \
+  || no "judge turn cap wrong ($(grep turns= "$WORK/last-spawn.txt"))"
+[ "$(sed -n '/^x</p' "$WORK/last-spawn.txt" | tr '\n' ' ')" = "x<--tools> x<> x<--strict-mcp-config> x<--disable-slash-commands> " ] \
+  && ok "judge is text-only: --tools \"\" --strict-mcp-config --disable-slash-commands" \
+  || no "judge extra flags wrong: $(sed -n '/^x</p' "$WORK/last-spawn.txt" | tr '\n' ' ')"
 
 echo "== E. FAIL-SOFT: dead judge turn records NOTHING =="
 worker_deliver() { : > "$5"; return 70; }   # provider fail-closed: empty envelope
@@ -160,6 +184,14 @@ gaffer_eval_judge_delivery 9 "$REPO" main main 0 ''; rc=$?
 [ "$rc" -eq 0 ] && [ ! -s "$WORKER_CALLS" ] \
   && ok "no diff: exit 0 and the worker is never spawned" || no "empty diff should skip the spawn (rc=$rc)"
 
+echo "== F2. unwired settings template → the judge is NOT spawned (fail closed, fail soft) =="
+: > "$WORKER_CALLS"
+printf '{"hooks":{}}\n' > "$WORK/unwired.json"
+CLAUDE_SETTINGS="$WORK/unwired.json" gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 0 ''; rc=$?
+[ "$rc" -eq 0 ] && [ ! -s "$WORKER_CALLS" ] \
+  && ok "unverifiable settings: exit 0 and the worker is never spawned" \
+  || no "an unwired template should skip the judge spawn (rc=$rc)"
+
 echo "== G. test evidence + judge model flow into the record =="
 rm -f "$LEDGER"
 # restore the passing stub (also record which model flag it was handed)
@@ -185,6 +217,48 @@ import json, sys
 r = json.loads(open(sys.argv[1]).read().splitlines()[0])
 assert r.get("judgeModel") == "opus", r
 PY
+
+echo "== H. the REAL worker seam: the judge runs as a confined one-shot grader =="
+# Real factory.config.sh + lib/worker.sh; only CLAUDE_BIN is a stub that records its argv,
+# cwd and env. The caller's state is a delivery's: acceptEdits, the 200-turn cap, and the
+# delivery's write root + DB/ticket vars in WORKER_CALL_ENV (as tick.sh leaves them).
+CAP="$WORK/judge-cap"; mkdir -p "$CAP"
+cat > "$WORK/claude-stub" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$CAP/argv"; pwd -P > "$CAP/cwd"; env > "$CAP/env"
+grep -qF "$RUNNER_DIR/safety-hook.mjs" .claude/settings.json 2>/dev/null && echo verified > "$CAP/settings"
+printf '%s\n' '{"type":"result","subtype":"success","result":"no grading","num_turns":1}'
+STUB
+chmod +x "$WORK/claude-stub"
+(
+  export GAFFER_MAX_TURNS=200
+  # shellcheck source=../factory.config.sh
+  source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
+  unset -f worker_deliver gaffer_usage_record log 2>/dev/null
+  # shellcheck source=../lib/worker.sh
+  source "$RUNNER_DIR/lib/worker.sh"
+  log() { :; }
+  export GAFFER_EVAL_JUDGE=1 DRY_RUN=0 CLAUDE_BIN="$WORK/claude-stub" GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0
+  CLAUDE_FLAGS="--permission-mode acceptEdits"
+  WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$REPO" "DISPATCH_DB=$WORK/d.sqlite" "MEMORY_DB=$WORK/m.sqlite" "GAFFER_TICKET=9")
+  gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 0 ''
+) >/dev/null 2>&1
+if [ -s "$CAP/argv" ]; then
+  [ "$(grep -cx -- '--max-turns' "$CAP/argv")" = "1" ] && [ "$(grep -A1 -x -- '--max-turns' "$CAP/argv" | tail -1)" = "2" ] \
+    && ok "exactly one --max-turns, and it is the judge's 2 (not the 200-turn delivery cap)" || no "turn cap wrong: $(tr '\n' ' ' < "$CAP/argv" | tail -c 300)"
+  grep -qx 'acceptEdits' "$CAP/argv" && no "the judge still runs under acceptEdits" || ok "no acceptEdits"
+  grep -qx -- '--strict-mcp-config' "$CAP/argv" && grep -qx -- '--disallowedTools' "$CAP/argv" \
+    && grep -q 'Bash,Edit,Write.*Read,Grep,Glob' <<<"$(grep -A1 -x -- '--disallowedTools' "$CAP/argv" | tail -1)" \
+    && ok "--strict-mcp-config + every built-in tool denied" || no "tools not disabled: $(tr '\n' ' ' < "$CAP/argv" | tail -c 300)"
+  [ "$(cat "$CAP/cwd")" != "$(cd "$REPO" && pwd -P)" ] && ok "cwd is the judge's temp dir, not the delivery repo" || no "judge ran in the delivery repo"
+  [ "$(cat "$CAP/settings" 2>/dev/null)" = "verified" ] \
+    && ok "the real seam spawns the judge with the verified safety-hook settings in its cwd" \
+    || no "the judge's cwd lacks the rendered safety-hook settings"
+  grep -q "^GAFFER_WRITE_ROOTS=$REPO\$" "$CAP/env" && no "the delivery repo is still the judge's write root" || ok "the delivery repo is not a write root"
+  grep -qE '^(DISPATCH_DB|MEMORY_DB|GAFFER_TICKET)=' "$CAP/env" && no "delivery DB/ticket vars leaked into the judge env" || ok "no DISPATCH_DB / MEMORY_DB / GAFFER_TICKET in the judge env"
+else
+  no "the judge never reached the stub claude"
+fi
 
 echo ""
 echo "eval-judge: $pass passed, $fail failed"

@@ -26,7 +26,7 @@
 // ---------------------------------------------------------------------
 // INVOCATION:
 //   node bin/spec-author.mjs [--input <file>] [--brief <text>]
-//                            [--max-turns N] [--max-clauses N] [--timeout-ms N]
+//                            [--max-rounds N] [--max-clauses N] [--timeout-ms N]
 //                            [--force-plan] [--dry-run]
 //
 // INPUT (stdin JSON, or --input <file>, or --brief for a bare first turn):
@@ -68,10 +68,14 @@
 // straight to the freeze gate.
 //
 // BOUNDS (cost/abuse guards; all overridable via flags or env):
-//   --max-turns    (GAFFER_SPEC_AUTHOR_MAX_TURNS,   default 20) ADVISORY turn ceiling —
+//   --max-rounds   (GAFFER_SPEC_AUTHOR_MAX_TURNS,   default 20) ADVISORY turn ceiling —
 //                  a long conversation is NOT a dead-end: once history reaches this
 //                  ceiling the author is forced to emit its best spec (same as
 //                  --force-plan) instead of rejecting and stranding the user.
+//                  (`--max-turns N` is the old spelling, still accepted.) It is a
+//                  HISTORY bound; the claude agent-turn cap is
+//                  GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS, else this value — either clamped
+//                  to the GAFFER_MAX_TURNS ceiling (it can lower, never raise, the cap).
 //   --max-clauses  (GAFFER_SPEC_AUTHOR_MAX_CLAUSES, default 40) reject specs over this
 //   --timeout-ms   (GAFFER_SPEC_AUTHOR_TIMEOUT_MS,  default 180000) kill claude after this
 //
@@ -92,9 +96,11 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
+import { roleTurnCap, withCallBudget } from "../lib/worker.mjs";
+import { extractLastJsonBlock as extractJson, quarantine } from "../lib/agent-io.mjs";
 
 // The agent turn spawns from a throwaway agent home (lib/agent-home.mjs), so this
 // helper no longer needs its own runner-dir path.
@@ -145,7 +151,8 @@ function parseArgs(argv) {
       case "--brief":
         opts.brief = next() ?? "";
         break;
-      case "--max-turns":
+      case "--max-rounds":
+      case "--max-turns": // the old spelling of --max-rounds
         opts.maxTurns = Math.max(1, parseInt(next() ?? "", 10) || DEFAULTS.maxTurns);
         break;
       case "--max-clauses":
@@ -204,47 +211,18 @@ function readRequest(opts) {
   return req;
 }
 
+/** Result-envelope phases the spec-author contract recognises. */
+const KNOWN_PHASES = new Set(["clarify", "spec", "error"]);
+
 /**
- * Pull the LAST fenced ```json block out of the model's text. Falls back to the
- * last bare {...} object if no fence is present. Returns the parsed object or null.
- * (Byte-for-byte the decompose.mjs extractor so the recovery behaviour is identical.)
+ * Pull the model's result envelope out of its text: the LAST parseable JSON block whose
+ * `phase` is one the spec-author contract recognises, else the last parseable object.
+ * The shared extractor (lib/agent-io.mjs) — this file's own copy only took the LAST
+ * fence, so a spec envelope followed by an example ```json block failed with "unknown
+ * result phase: undefined" (the failure decompose had already been fixed for).
  */
 export function extractLastJsonBlock(text) {
-  if (!text) return null;
-  const fenceRe = /```(?:json)?\s*\n([\s\S]*?)\n```/gi;
-  let match;
-  let lastFence = null;
-  while ((match = fenceRe.exec(text)) !== null) lastFence = match[1];
-  const candidates = [];
-  if (lastFence) candidates.push(lastFence);
-  const bare = lastBalancedObject(text);
-  if (bare) candidates.push(bare);
-  for (const c of candidates) {
-    try {
-      return JSON.parse(c);
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  return null;
-}
-
-/** Find the last balanced top-level {...} substring (brace-counting). */
-function lastBalancedObject(text) {
-  let depth = 0,
-    start = -1,
-    last = null;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0 && start !== -1) last = text.slice(start, i + 1);
-    }
-  }
-  return last;
+  return extractJson(text, KNOWN_PHASES);
 }
 
 /**
@@ -323,30 +301,9 @@ export function validateResult(obj, maxClauses, forcePlan = false) {
   return { phase: "error", error: `unknown result phase: ${String(phase)}` };
 }
 
-/**
- * Wrap an UNTRUSTED field in a delimited envelope (P1 prompt-injection). The brief,
- * the context, and the conversation history come straight from the user/caller, so
- * an embedded "SYSTEM:" / "ignore previous instructions" line must land as DATA, not
- * as a fresh instruction line. We strip any literal closing/opening delimiter the
- * data tries to smuggle (so it can't terminate its own envelope), and for a
- * single-line field collapse whitespace runs so an injected newline can't open a new
- * instruction line. (Byte-for-byte the decompose.mjs quarantine() helper.)
- */
-// Escape (never delete) the `<` of every untrusted-* delimiter — opening or closing,
-// any tag, any case, padded with whitespace / zero-width characters, terminated or
-// not. Deleting a delimiter in one pass let a nested token reassemble itself:
-// `</untrus</untrusted-a>ted-x>` minus the inner token IS `</untrusted-x>`, which
-// closed the envelope early. Escaping removes no text, so nothing can rejoin and one
-// pass is safe (and idempotent). Same rule as crew's deliveryJudge.
-const UNTRUSTED_DELIMITER_RE =
-  // eslint-disable-next-line no-control-regex -- the C0 separators are whitespace to python and to a model reading the prompt
-  /<(?=[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*\/?[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*untrusted)/gi;
-export function quarantine(tag, value, { singleLine = false } = {}) {
-  let data = String(value ?? "");
-  data = data.replace(UNTRUSTED_DELIMITER_RE, "&lt;");
-  if (singleLine) data = data.replace(/\s+/g, " ").trim();
-  return `<untrusted-${tag}>${data}</untrusted-${tag}>`;
-}
+// quarantine (lib/agent-io.mjs) wraps an UNTRUSTED field — the brief, the context, the
+// history — in a delimited envelope; re-exported here under its old name.
+export { quarantine };
 
 // One standing line, stated plainly, prepended to the prompt that embeds the
 // quarantined brief/context/history (identical to decompose's notice).
@@ -506,12 +463,19 @@ function runClaudeTurn(prompt, opts) {
   // --output-format json makes stdout a JSON result object carrying real usage AND
   // the agent's text in `.result`. We ledger the usage and feed `.result` to the
   // existing extractLastJsonBlock parser, so the contract is preserved.
-  const args = ["-p", prompt, "--output-format", "json", ...flags];
+  let args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (denial-of-wallet): bound the agent's model round-trips in
-  // addition to the wall-clock timeout on spawnSync. Reuse GAFFER_MAX_TURNS (the
-  // shared bash knob), falling back to this helper's own --max-turns.
-  const maxTurns = parseInt(process.env.GAFFER_MAX_TURNS || "", 10) || opts.maxTurns;
+  // addition to the wall-clock timeout on spawnSync.
+  // GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS caps THIS lane's agent on its own; else this
+  // helper's own cap (--max-rounds/--max-turns > GAFFER_SPEC_AUTHOR_MAX_TURNS > 20).
+  // The global GAFFER_MAX_TURNS is only a CEILING that can lower it (roleTurnCap).
+  const maxTurns = roleTurnCap(
+    parseInt(process.env.GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS || "", 10) || opts.maxTurns,
+  );
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
+  // The opt-in per-call dollar cap (GAFFER_MAX_CALL_USD → --max-budget-usd). This
+  // spawn is outside Worker.deliver, so it applies the seam's cap itself.
+  args = withCallBudget(args);
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);
   // SKILLS: mount the factory's skills (spec-author) into a THROWAWAY agent home so the
@@ -527,6 +491,7 @@ function runClaudeTurn(prompt, opts) {
     return fail(err?.message ?? String(err));
   }
   let res;
+  const t0 = Date.now();
   try {
     res = spawnSync(claudeBin, args, {
       cwd: home.dir,
@@ -541,9 +506,11 @@ function runClaudeTurn(prompt, opts) {
   }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      appendUsageRecord(
-        unknownRecord({ kind: "spec-author", reason: "spec-author claude call timed out" }),
-      );
+      recordKilledCall({
+        kind: "spec-author",
+        reason: "spec-author claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       return { timedOut: true, stdout: "" };
     }
     throw res.error;
@@ -551,9 +518,11 @@ function runClaudeTurn(prompt, opts) {
   const rawStdout = res.stdout || "";
   const json = parseClaudeJson(rawStdout);
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({ kind: "spec-author", reason: "no parseable --output-format json on stdout" }),
-    );
+    recordKilledCall({
+      kind: "spec-author",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     // Fall back to the raw stdout so a parser change in claude can't silently break
     // spec authoring — the existing block-extractor still gets the text.
     return { timedOut: false, stdout: rawStdout };

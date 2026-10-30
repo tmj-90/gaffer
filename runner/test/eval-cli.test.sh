@@ -26,7 +26,7 @@ trap 'rm -rf "$WORK"' EXIT
 export GAFFER_DATA="$WORK/gd"; mkdir -p "$GAFFER_DATA"
 
 echo "== A. help lists eval =="
-bash "$RUNNER_DIR/gaffer" help 2>/dev/null | grep -q 'gaffer eval' \
+grep -q 'gaffer eval' <<<"$(bash "$RUNNER_DIR/gaffer" help 2>/dev/null)" \
   && ok "help mentions gaffer eval" || no "help missing the eval subcommand"
 
 echo "== B. empty ledger =="

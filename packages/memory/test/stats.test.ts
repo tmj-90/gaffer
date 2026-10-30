@@ -13,7 +13,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { addLore, getLore, searchLore, suggestLore } from "../src/core/lore.js";
+import {
+  addLore,
+  approveLore,
+  deprecateLore,
+  getLore,
+  listRecent,
+  searchLore,
+  suggestLore,
+  supersedeLore,
+  updateLore,
+  verifyLore,
+} from "../src/core/lore.js";
 import {
   evidenceForRecord,
   recentActivity,
@@ -106,6 +117,59 @@ describe("read-tracking gates", () => {
     searchLore(db, { query: "argon" });
     getLore(db, a.id);
     expect(readEventCount(db)).toBe(0);
+  });
+});
+
+/**
+ * Regression (audit: browse-records-reads): `memory list`, `show`, `history`,
+ * write re-fetches and the runner's bookkeeping search all recorded reads, so
+ * top-cited / retirement candidates reflected browsing, not agent use.
+ */
+describe("browse and bookkeeping paths record no reads", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newDb();
+    delete process.env["MEMORY_NO_TELEMETRY"];
+    delete process.env["MEMORY_AUDIT_OFF"];
+  });
+
+  it("listRecent (plain `memory list`) records no reads", () => {
+    addLore(db, { title: "a", summary: "s", body: "b" });
+    addLore(db, { title: "b", summary: "s", body: "b" });
+    expect(listRecent(db, 50)).toHaveLength(2);
+    expect(readEventCount(db)).toBe(0);
+  });
+
+  it("getLore({recordRead:false}) and searchLore({recordReads:false}) record none", () => {
+    const a = addLore(db, { title: "argon2id", summary: "s", body: "b" });
+    getLore(db, a.id, { recordRead: false });
+    searchLore(db, { query: "argon2id", recordReads: false });
+    searchLore(db, { tag: "x", recordReads: false });
+    expect(readEventCount(db)).toBe(0);
+  });
+
+  it("lifecycle writes do not count their own re-fetch as a read", () => {
+    const d = suggestLore(db, { title: "d", summary: "s", body: "b" });
+    approveLore(db, d.id);
+    updateLore(db, d.id, { title: "d2" });
+    verifyLore(db, d.id);
+    const b = addLore(db, { title: "b", summary: "s", body: "b" });
+    supersedeLore(db, d.id, b.id);
+    deprecateLore(db, b.id);
+    expect(readEventCount(db)).toBe(0);
+  });
+
+  it("agent-facing searches still count: query and filter-only (the product-context block)", () => {
+    const a = addLore(db, { title: "argon2id", summary: "s", body: "b", kind: "decision" });
+    searchLore(db, { query: "argon2id" });
+    searchLore(db, { kind: ["decision", "requirement", "non-goal"], limit: 6 });
+    expect(readEventCount(db, a.id)).toBe(2);
+  });
+
+  it("a fresh active record stays a retirement candidate after `memory list`", () => {
+    const a = addLore(db, { title: "never used", summary: "s", body: "b" });
+    listRecent(db, 50);
+    expect(retireCandidates(db).map((r) => r.id)).toContain(a.id);
   });
 });
 

@@ -191,16 +191,16 @@ FULL_PATHS="${HYGIENE_FORBIDDEN_PATHS:-node_modules .crew/ *.events.jsonl .claud
 BOOTSTRAP_PATHS="$(printf '%s\n' $FULL_PATHS | grep -v '^node_modules$' | tr '\n' ' ')"
 
 # Confirm node_modules was stripped from the bootstrap list.
-printf '%s' "$BOOTSTRAP_PATHS" | grep -qw 'node_modules' \
+grep -qw 'node_modules' <<<"$BOOTSTRAP_PATHS" \
   && fail "BUG 3: node_modules should NOT be in the bootstrap forbidden list" \
   || ok  "BUG 3: node_modules correctly absent from the bootstrap forbidden list"
 
 # Confirm .claude/ + CLAUDE.factory.md are STILL in the bootstrap list.
-printf '%s' "$BOOTSTRAP_PATHS" | grep -q '\.claude/' \
+grep -q '\.claude/' <<<"$BOOTSTRAP_PATHS" \
   && ok  "BUG 3: .claude/ retained in the bootstrap forbidden list" \
   || fail "BUG 3: .claude/ was removed from the bootstrap forbidden list (should stay)"
 
-printf '%s' "$BOOTSTRAP_PATHS" | grep -q 'CLAUDE\.factory\.md' \
+grep -q 'CLAUDE\.factory\.md' <<<"$BOOTSTRAP_PATHS" \
   && ok  "BUG 3: CLAUDE.factory.md retained in the bootstrap forbidden list" \
   || fail "BUG 3: CLAUDE.factory.md was removed from the bootstrap forbidden list (should stay)"
 
@@ -229,7 +229,7 @@ BCHECK_OUT="$(HYGIENE_FORBIDDEN_PATHS="$BOOTSTRAP_PATHS" \
   && ok "BUG 3: bootstrap hygiene gate REJECTS .claude/ + CLAUDE.factory.md in scaffold" \
   || fail "BUG 3: bootstrap hygiene gate should reject .claude/ + CLAUDE.factory.md (rc=$BCHECK_RC, out=$BCHECK_OUT)"
 
-printf '%s' "$BCHECK_OUT" | grep -q 'forbidden path' \
+grep -q 'forbidden path' <<<"$BCHECK_OUT" \
   && ok "BUG 3: rejection reason cites 'forbidden path'" \
   || fail "BUG 3: expected 'forbidden path' in output, got: $BCHECK_OUT"
 
@@ -273,11 +273,11 @@ git -C "$NESTED_NM_REPO" add -A -- . \
   ':(exclude).next' ':(exclude)coverage' >/dev/null 2>&1
 STAGED="$(git -C "$NESTED_NM_REPO" diff --cached --name-only 2>/dev/null)"
 # Verify the nested node_modules were not staged.
-printf '%s' "$STAGED" | grep -q 'node_modules' \
+grep -q 'node_modules' <<<"$STAGED" \
   && fail "BUG 4: nested node_modules were staged by auto-commit pathspec (staged: $STAGED)" \
   || ok "BUG 4: nested node_modules not staged by auto-commit pathspec"
 # Verify the real change WAS staged.
-printf '%s' "$STAGED" | grep -q 'src/index.ts' \
+grep -q 'src/index.ts' <<<"$STAGED" \
   && ok "BUG 4: real change (src/index.ts) was staged" \
   || fail "BUG 4: real change was not staged (staged: $STAGED)"
 
@@ -286,7 +286,7 @@ echo "== BUG 5: worker.sh counts maintenance results correctly =="
 # Source the functions the case statement lives in (worker.sh is a script, not
 # a library, so we exercise the logic directly by simulating the same variables
 # and case statement to verify the logic pattern is correct).
-(
+BUG5_OUT="$(
   worked=0; reviewed=0; clarified=0; idle=0; nowork=0; errors=0
   empties=0
 
@@ -312,12 +312,13 @@ echo "== BUG 5: worker.sh counts maintenance results correctly =="
   else
     echo "BUG5_FAIL idle=$idle errors=$errors"
   fi
-) | grep -q "^BUG5_PASS$" \
+)"
+grep -q "^BUG5_PASS$" <<<"$BUG5_OUT" \
   && ok "BUG 5: maintenance_drafted + maintenance_ran counted as idle, not errors" \
   || fail "BUG 5: maintenance results miscounted (expected idle=3 errors=0)"
 
 # Verify unknown results still go to errors (regression guard).
-(
+BUG5_UNKNOWN_OUT="$(
   idle=0; errors=0; empties=0
   res="completely_unknown_result"
   case "${res:-unknown}" in
@@ -330,7 +331,8 @@ echo "== BUG 5: worker.sh counts maintenance results correctly =="
     *)                 errors=$((errors + 1)); empties=0 ;;
   esac
   [ "$errors" -eq 1 ] && echo "BUG5_UNKNOWN_PASS" || echo "BUG5_UNKNOWN_FAIL errors=$errors"
-) | grep -q "^BUG5_UNKNOWN_PASS$" \
+)"
+grep -q "^BUG5_UNKNOWN_PASS$" <<<"$BUG5_UNKNOWN_OUT" \
   && ok "BUG 5: unknown result still counted as error (regression guard)" \
   || fail "BUG 5: unknown result should still be counted as error"
 

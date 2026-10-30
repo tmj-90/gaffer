@@ -41,7 +41,7 @@ structured concurrency that cannot leak. For the builder and the reviewer of a K
 - Tests: `./gradlew test`; one class: `./gradlew test --tests 'pkg.ClassTest'`.
 - Android: `./gradlew lint testDebugUnitTest` (or the repo's variant).
 - Dependencies: a new or bumped entry in `libs.versions.toml` or the build file is a
-  blocker (the `dependency-upgrade` skill).
+  blocker: `mark_ticket_blocked` with the exact command a human should run.
 
 ## Idioms that matter
 

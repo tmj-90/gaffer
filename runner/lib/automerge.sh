@@ -10,8 +10,9 @@
 #     working tree is never touched, the branch ref just advances.
 #   • default branch IS the checked-out branch AND the tree is CLEAN → merge in place
 #     (the operator walked away from a clean checkout; they return to merged work).
-#   • default branch IS checked out AND the tree is DIRTY → REFUSE (rc 3), leave the
-#     delivery branch for a human. An AFK machine must never merge over active edits.
+#   • default branch IS checked out AND the tracked tree is DIRTY (or an untracked file
+#     is in the merge's way) → REFUSE (rc 3), leave the delivery branch for a human. An
+#     AFK machine must never merge over active edits.
 # Force-free + push-free by construction (a plain `git merge` only) — push is a separate,
 # explicitly-gated step (gaffer_auto_push). On conflict it aborts and leaves the delivery
 # branch intact for a human.
@@ -20,7 +21,8 @@
 #     → 0  merged cleanly into <default_branch>
 #     → 1  conflict — merge aborted, branch left intact for a human
 #     → 2  bad arguments / missing ref — nothing attempted
-#     → 3  skipped: the default branch is checked out with uncommitted changes (unsafe)
+#     → 3  skipped: the default branch is checked out with uncommitted changes, or with an
+#          untracked file the merge would overwrite (unsafe; nothing merged)
 #     → 6  refused: <branch> no longer points at <pin_commit> (the commit the landing
 #          decision approved) — nothing merged
 gaffer_auto_merge() {
@@ -41,12 +43,19 @@ gaffer_auto_merge() {
   head_branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || echo '')"
 
   if [ "$head_branch" = "$def" ]; then
-    # The target is the live checked-out branch. ONLY safe if the tree is clean.
-    if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]; then
+    # The target is the live checked-out branch. ONLY safe if the TRACKED tree is clean.
+    # Untracked files (a .DS_Store, a notes file) are not edits a merge could clobber —
+    # git itself refuses a merge that would overwrite one — so they no longer hold every
+    # landing for the repo (the dashboard merge and gaffer_pr_merge already ignore them).
+    if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
       return 3   # dirty live checkout on the target — never merge over active edits
     fi
-    if git -C "$repo" merge --no-edit -m "Merge branch '$branch'" "$src" >/dev/null 2>&1; then return 0; fi
+    local _merr
+    if _merr="$(git -C "$repo" merge --no-edit -m "Merge branch '$branch'" "$src" 2>&1 >/dev/null)"; then return 0; fi
     git -C "$repo" merge --abort 2>/dev/null || true
+    # An untracked file in the way is a refusal, not a conflict: rc 1 would hand the
+    # branch to the conflict resolver (and spend its one pass) on nothing to resolve.
+    case "$_merr" in *"untracked working tree files would be overwritten"*) return 3 ;; esac
     return 1
   fi
 

@@ -77,5 +77,5 @@ same class of lost-update and lock defect that shipped past review in live runs.
 - Never weaken the assertion or serialise a test that is exposing a real race.
 - If the flake reveals a product bug outside the ticket's scope, report it; do not
   silently widen scope.
-- Work on the delivery branch the runner prepared (the `create-branch` skill); never a
-  protected branch.
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`);
+  never a protected branch.

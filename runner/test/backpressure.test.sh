@@ -213,7 +213,7 @@ git -C "$SREPO" checkout -q main
 SWEPT2="$(GAFFER_WG_SHOW_CMD="/bin/false" GAFFER_WG_DELIVERIES_CMD="/bin/false" \
           gaffer_sweep_abandoned_branches "$SREPO" main)"
 branch_exists gaffer/ticket-99 && ok "ambiguous-status branch PRESERVED (fail-safe)" || fail "ambiguous-status branch was wrongly swept"
-printf '%s\n' "$SWEPT2" | grep -q 'ticket-99' && fail "ticket-99 must not be reported swept" || ok "no PRESERVED branch reported swept under wg failure"
+grep -q 'ticket-99' <<<"$SWEPT2" && fail "ticket-99 must not be reported swept" || ok "no PRESERVED branch reported swept under wg failure"
 
 echo "== PARKED-1: parked tickets' preserved branches must NOT starve the repo =="
 # FINDING-4: a ticket parked for a human (rework loop → blocked, other recovery

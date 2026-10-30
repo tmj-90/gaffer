@@ -7,7 +7,10 @@
  * The loop, in three moves:
  *   1. RECALL LOG (`logRecall`)  — when the runner primes a ticket's context,
  *      memory records which items it SERVED, keyed by (repo, ticket). This is
- *      the read-event EDGE (migration 008 `recall_event`).
+ *      the read-event EDGE (migration 008 `recall_event`). Lore credit also
+ *      comes from the MCP read path: a `get_lore` the delivery agent made for
+ *      the ticket (migration 011 `retrieval_event`) — the record it actually
+ *      pulled into its context, not merely something a search offered.
  *   2. OUTCOME FEEDBACK (`recallFeedback`) — when the runner learns the ticket
  *      outcome, it PASSES it back. Memory looks up what it served for that
  *      ticket (its OWN read-event log) and adjusts its OWN items:
@@ -30,7 +33,8 @@
 import type { Database } from "better-sqlite3";
 
 import { newLoreId } from "./ids.js";
-import type { LoreConfidence } from "../db/types.js";
+import { clampConfidence } from "./lore.js";
+import type { LoreConfidence, LoreStatus } from "../db/types.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -58,6 +62,10 @@ function stepConfidence(current: LoreConfidence, direction: 1 | -1): LoreConfide
   if (idx < 0) return current;
   const next = Math.min(CONFIDENCE_LADDER.length - 1, Math.max(0, idx + direction));
   return CONFIDENCE_LADDER[next]!;
+}
+
+function higherOf(a: LoreConfidence, b: LoreConfidence): LoreConfidence {
+  return CONFIDENCE_LADDER.indexOf(a) >= CONFIDENCE_LADDER.indexOf(b) ? a : b;
 }
 
 // ── Recall logging (the read-event edge) ──────────────────────────────
@@ -135,7 +143,7 @@ export interface RecallFeedbackResult {
   readonly loreAdjusted: ReadonlyArray<string>;
   /** File-card ids whose flag was adjusted on this call. */
   readonly cardsAdjusted: ReadonlyArray<string>;
-  /** Total served items considered (from the recall log). */
+  /** Distinct served items considered (recall log + lore fetched over MCP for the ticket). */
   readonly served: number;
 }
 
@@ -187,18 +195,35 @@ export function recallFeedback(db: Database, input: RecallFeedbackInput): Recall
     )
     .all(repo, ticket) as Array<{ item_type: RecallItemType; item_id: string }>;
 
-  const loreIds = served.filter((r) => r.item_type === "lore").map((r) => r.item_id);
+  // Lore the agent FETCHED for this ticket over MCP (get_lore). Search hits and
+  // the unconditional product-context block are deliberately NOT credited: they
+  // are offered, not used, and crediting them is outcome noise on records that
+  // had nothing to do with the delivery. `repo` on retrieval_event is
+  // best-effort ("" when the server had no ticket repo), so accept that too.
+  const fetched = db
+    .prepare(
+      `SELECT DISTINCT item_id FROM retrieval_event
+        WHERE ticket = ? AND item_type = 'lore' AND tool = 'get_lore' AND (repo = ? OR repo = '')
+        ORDER BY item_id`,
+    )
+    .all(ticket, repo) as Array<{ item_id: string }>;
+
+  const loreIds = [
+    ...new Set([
+      ...served.filter((r) => r.item_type === "lore").map((r) => r.item_id),
+      ...fetched.map((r) => r.item_id),
+    ]),
+  ];
   const cardIds = served.filter((r) => r.item_type === "card").map((r) => r.item_id);
 
   const ts = nowIso();
   const isReward = outcome === "clean";
-  const direction: 1 | -1 = isReward ? 1 : -1;
   const flag = isReward ? 0 : 1;
 
   const loreAdjusted: string[] = [];
   const cardsAdjusted: string[] = [];
 
-  const readLore = db.prepare("SELECT confidence FROM lore WHERE id = ?");
+  const readLore = db.prepare("SELECT confidence, source, status FROM lore WHERE id = ?");
   const updateLoreReward = db.prepare(
     `UPDATE lore
        SET confidence = ?, flagged_for_review = 0, last_verified_at = ?, updated_at = ?
@@ -218,10 +243,18 @@ export function recallFeedback(db: Database, input: RecallFeedbackInput): Recall
 
   const tx = db.transaction(() => {
     for (const id of loreIds) {
-      const row = readLore.get(id) as { confidence: LoreConfidence } | undefined;
+      const row = readLore.get(id) as
+        { confidence: LoreConfidence; source: string | null; status: LoreStatus } | undefined;
       if (!row) continue; // served item since deleted — skip, don't fabricate
       const from = row.confidence;
-      const to = stepConfidence(from, direction);
+      // A reward still honours the confidence invariants (clampConfidence: no
+      // `high` without a source, a draft caps at `medium`) — a lucky clean ticket
+      // must not turn an unsourced agent claim authoritative. A demote can only
+      // lower confidence, so it is never clamped (that could RAISE a legacy row),
+      // and a reward never LOWERS one either (a legacy unsourced `high` stays put).
+      const to = isReward
+        ? higherOf(from, clampConfidence(stepConfidence(from, 1), !!row.source, row.status))
+        : stepConfidence(from, -1);
       if (isReward) {
         updateLoreReward.run(to, ts, ts, id);
       } else {
@@ -263,7 +296,7 @@ export function recallFeedback(db: Database, input: RecallFeedbackInput): Recall
         repo,
         ticket,
         outcome,
-        served: served.length,
+        served: loreIds.length + cardIds.length,
         loreAdjusted: loreAdjusted.length,
         cardsAdjusted: cardsAdjusted.length,
       }),
@@ -273,7 +306,7 @@ export function recallFeedback(db: Database, input: RecallFeedbackInput): Recall
 
   return {
     ...base,
-    served: served.length,
+    served: loreIds.length + cardIds.length,
     alreadyApplied: false,
     loreAdjusted,
     cardsAdjusted,

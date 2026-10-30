@@ -122,7 +122,7 @@ RES="$WORK/a7.results"
 printf 'repo\t%s\t1\t0\t0\tsh -c "echo BOOM_MARKER; exit 3"\t-\t-\n' "$WT" \
   | gaffer_run_dod_gates "$RES" || true
 EV="$(gaffer_dod_evidence_summary "$RES" FAIL)"
-printf '%s\n' "$EV" | head -1 | grep -q '^DoD: FAIL' \
+grep -q '^DoD: FAIL' <<<"$(head -1 <<<"$EV")" \
   && ok "A7 evidence summary opens with the DoD verdict line" \
   || fail "A7 expected a 'DoD: FAIL' first line ($EV)"
 printf '%s\n' "$EV" | sed -n '2p' | python3 -c "
@@ -133,7 +133,7 @@ assert any(g['gate']=='tests' and g['status']=='FAIL' for g in d['gates']), d
 " 2>/dev/null \
   && ok "A7 the JSON line parses with the failing tests gate" \
   || fail "A7 expected a parseable JSON line naming the failing gate"
-printf '%s' "$EV" | grep -q 'BOOM_MARKER' \
+grep -q 'BOOM_MARKER' <<<"$EV" \
   && ok "A7 the failing command's output tail is captured for evidence" \
   || fail "A7 expected the failing output (BOOM_MARKER) in the evidence"
 
@@ -183,7 +183,9 @@ else
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('claimToken',''))" 2>/dev/null || echo '')"
   CUR="$(WG ticket show "$TNUM" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['status'])" 2>/dev/null || echo '')"
   if [ "$CUR" != "claimed" ] || [ -z "$CLAIM" ]; then
-    echo "  SKIP: could not drive #$TNUM to claimed (got '$CUR') — skipping the park assertions"
+    # agent register / claim-ticket broke: a regression in the contract this
+    # fixture drives, so a FAIL — never a SKIP (cli-contract-regression.test.sh).
+    fail "could not drive #$TNUM to claimed (got '$CUR') — a break in the dispatch CLI contract this test guards"
   else
     ok "B fixture: #$TNUM is claimed (the runner holds the delivery claim)"
 
@@ -256,13 +258,13 @@ AssertionError: expected 3 to be 4
       Tests  1 failed (1)
 VEOF
 V_DISTILLED="$(gaffer_dod_distill_output "$VITEST_OUT" 40)"
-printf '%s' "$V_DISTILLED" | grep -q 'AssertionError: expected 3 to be 4' \
+grep -q 'AssertionError: expected 3 to be 4' <<<"$V_DISTILLED" \
   && ok "E vitest: the distiller keeps the real assertion (expected 3 to be 4)" \
   || fail "E vitest: distiller lost the assertion ($V_DISTILLED)"
-printf '%s' "$V_DISTILLED" | grep -q 'adds numbers' \
+grep -q 'adds numbers' <<<"$V_DISTILLED" \
   && ok "E vitest: the distiller keeps the failing test name" \
   || fail "E vitest: distiller lost the failing test name ($V_DISTILLED)"
-printf '%s' "$V_DISTILLED" | grep -q 'Test Files  1 failed' \
+grep -q 'Test Files  1 failed' <<<"$V_DISTILLED" \
   && fail "E vitest: distiller kept the summary COUNT line (should drop it)" \
   || ok "E vitest: the distiller DROPS the summary count line (not a blind tail)"
 
@@ -274,7 +276,7 @@ org.opentest4j.AssertionFailedError: expected: <4> but was: <3>
 	at com.example.CalcTest.testAdd(CalcTest.java:12)
 MEOF
 M_DISTILLED="$(gaffer_dod_distill_output "$MVN_OUT" 40)"
-printf '%s' "$M_DISTILLED" | grep -q 'expected: <4> but was: <3>' \
+grep -q 'expected: <4> but was: <3>' <<<"$M_DISTILLED" \
   && ok "E maven: the distiller keeps the real assertion (expected <4> but was <3>)" \
   || fail "E maven: distiller lost the assertion ($M_DISTILLED)"
 
@@ -283,10 +285,10 @@ RESE="$WORK/e.results"
 printf 'repo\t%s\t1\t0\t0\tsh -c "echo AssertionError: boom; echo \\"  at f.ts:1:2\\"; exit 1"\t-\t-\n' "$WT" \
   | gaffer_run_dod_gates "$RESE" || true
 E_FB="$(gaffer_dod_extract_failure "$RESE")"
-printf '%s' "$E_FB" | grep -q 'AssertionError: boom' \
+grep -q 'AssertionError: boom' <<<"$E_FB" \
   && ok "E the extractor pulls the distilled real failure out of the results file" \
   || fail "E extractor lost the failure ($E_FB)"
-printf '%s' "$E_FB" | grep -q 'failing gate: tests@repo' \
+grep -q 'failing gate: tests@repo' <<<"$E_FB" \
   && ok "E the extracted feedback names the failing gate" \
   || fail "E extractor did not name the failing gate ($E_FB)"
 
@@ -294,7 +296,7 @@ printf '%s' "$E_FB" | grep -q 'failing gate: tests@repo' \
 NOSIG="$WORK/nosig.out"
 printf 'random line one\nrandom line two\n' > "$NOSIG"
 N_DISTILLED="$(gaffer_dod_distill_output "$NOSIG" 40)"
-printf '%s' "$N_DISTILLED" | grep -q 'random line two' \
+grep -q 'random line two' <<<"$N_DISTILLED" \
   && ok "E no-signal output falls back to the tail (a failure is never lost)" \
   || fail "E fallback tail lost the output ($N_DISTILLED)"
 
@@ -405,6 +407,47 @@ grep -q 'GAFFER_ALLOW_NO_DOD=1 waiver' "$RUNNER_DIR/tick.sh" \
 grep -q 'GAFFER_ALLOW_NO_DOD' "$RUNNER_DIR/factory.config.sh" \
   && ok "D3 GAFFER_ALLOW_NO_DOD is documented in factory.config.sh" \
   || fail "D3 GAFFER_ALLOW_NO_DOD must be documented in factory.config.sh"
+
+echo "== PART F: a gate that reads stdin cannot swallow later rows / lose its output =="
+# F1 (stdin fail-open): repo1's test reads stdin to EOF and exits 0, repo2's test
+# fails. The gate rows are fed on stdin, so before the fix repo1's `cat` swallowed
+# repo2's row: repo2 never ran and the whole DoD PASSED (rc 0).
+RESF="$WORK/f1.results"
+{ printf 'repo1\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'cat >/dev/null; exit 0'
+  printf 'repo2\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'exit 1'; } | gaffer_run_dod_gates "$RESF"; F1_RC=$?
+[ "$F1_RC" -eq 1 ] && ok "F1 a stdin-reading gate in repo1 does not swallow repo2's row (gate FAILS, rc=1)" \
+  || fail "F1 expected rc=1 with repo2 failing (got rc=$F1_RC — repo2's row was swallowed)"
+grep -q $'^GATE\ttests\trepo2\tFAIL' "$RESF" && ok "F1 repo2's failing test gate RAN and is recorded FAIL" \
+  || fail "F1 no repo2 FAIL row: $(tr '\n' '|' < "$RESF")"
+# F2 (dead `|| tail` fallback): without the crew dist the distiller used to print
+# nothing and return 0, so the framed output block, the extract and the next
+# attempt's feedback were all empty. The raw tail must now land in all of them.
+RESF2="$WORK/f2.results"
+printf 'repo\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'echo "AssertionError: expected 2 got 3 in test_widget"; exit 1' \
+  | CREW_DIR="$WORK/no-crew" gaffer_run_dod_gates "$RESF2"
+grep -q 'AssertionError: expected 2 got 3' <<<"$(awk '/^---DOD-OUTPUT tests@repo---/{k=1;next} /^---END-DOD-OUTPUT---/{k=0} k' "$RESF2")" \
+  && ok "F2 no crew dist → the failing output still lands in the framed DOD-OUTPUT block (tail fallback runs)" \
+  || fail "F2 framed block is empty without the crew dist: $(tr '\n' '|' < "$RESF2")"
+F2_EX="$(CREW_DIR="$WORK/no-crew" gaffer_dod_extract_failure "$RESF2")"
+grep -q '^failing gate: tests@repo$' <<<"$F2_EX" && grep -q '^  AssertionError: expected 2 got 3' <<<"$F2_EX" \
+  && ok "F2 no crew dist → gaffer_dod_extract_failure still feeds the failure back (awk fallback)" \
+  || fail "F2 extract without the crew dist is empty/wrong: '$F2_EX'"
+# F3: a distiller that ERRORS (a crash on unusual output) is treated like a missing one.
+FAKECREW="$WORK/fake-crew"; mkdir -p "$FAKECREW/dist/runtime/dod"
+printf 'process.stdout.write("half"); process.exit(3);\n' > "$FAKECREW/dist/runtime/dod/dodDistillCli.js"
+RESF3="$WORK/f3.results"
+printf 'repo\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'echo "AssertionError: crash-case"; exit 1' \
+  | CREW_DIR="$FAKECREW" gaffer_run_dod_gates "$RESF3"
+grep -q 'AssertionError: crash-case' "$RESF3" && ! grep -q '^half' "$RESF3" \
+  && ok "F3 a crashing distiller → the raw tail is used, no half-distilled text leaks" \
+  || fail "F3 crashing distiller output wrong: $(tr '\n' '|' < "$RESF3")"
+grep -q '^  AssertionError: crash-case' <<<"$(CREW_DIR="$FAKECREW" gaffer_dod_extract_failure "$RESF3")" \
+  && ok "F3 a crashing extractor CLI → the awk fallback extracts the failure" \
+  || fail "F3 extract with a crashing CLI lost the failure"
+# F4: the install enabler runs with stdin closed too (its caller loops rows on stdin).
+grep -q 'bash -c "\$_script" ) </dev/null' "$RUNNER_DIR/lib/dod.sh" \
+  && ok "F4 gaffer_dod_install_deps runs the install with stdin from /dev/null" \
+  || fail "F4 the DoD install still inherits the caller's stdin"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

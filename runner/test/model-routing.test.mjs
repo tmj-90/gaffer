@@ -28,6 +28,7 @@ import {
   normaliseRegistry,
   scoreDifficulty,
   cheapClassFromEnv,
+  resolveDifficulty,
   FALLBACK_REGISTRY,
   DEFAULT_REGISTRY_PATH,
 } from "../bin/route-model.mjs";
@@ -315,6 +316,77 @@ check("cheapClassFromEnv reads GAFFER_CHEAP_PHASES allow-list", () => {
   assert.equal(cheapClassFromEnv("implement", { GAFFER_CHEAP_PHASES: "test,self-review" }), false);
   assert.equal(cheapClassFromEnv("test", {}), false);
 });
+
+// ── Owner-tunable AC threshold + rework history (router-ac-threshold) ─────────
+// The DEFAULTS are today's behaviour (owner decision pending); a registry edit is the
+// mechanism to change them — no code change.
+{
+  const shipped = loadRegistry(SHIPPED);
+  check("shipped registry keeps highAc 5 and historyOnRework 'stack' (defaults unchanged)", () => {
+    assert.equal(shipped.thresholds.highAc, 5);
+    assert.equal(shipped.historyOnRework, "stack");
+    assert.equal(
+      routeModel({ phase: "implement", risk: "low", acCount: 5 }, shipped).tier,
+      "strong",
+    );
+  });
+  const tuned = normaliseRegistry({
+    ...JSON.parse(readFileSync(SHIPPED, "utf8")),
+    thresholds: { highAc: 7 },
+  });
+  check("registry thresholds.highAc=7: 5 and 6 ACs stay mid, 7 climbs", () => {
+    assert.equal(routeModel({ phase: "implement", risk: "low", acCount: 5 }, tuned).tier, "mid");
+    assert.equal(routeModel({ phase: "implement", risk: "low", acCount: 6 }, tuned).tier, "mid");
+    assert.equal(routeModel({ phase: "review", risk: "medium", acCount: 6 }, tuned).tier, "mid");
+    const d = routeModel({ phase: "implement", risk: "low", acCount: 7 }, tuned);
+    assert.equal(d.tier, "strong");
+    assert.ok(
+      d.reasons.some((r) => r.includes("≥ 7")),
+      d.reasons.join("; "),
+    );
+  });
+  check("a bad thresholds.highAc falls back to the default", () => {
+    assert.equal(normaliseRegistry({ thresholds: { highAc: "lots" } }).thresholds.highAc, 5);
+    assert.equal(normaliseRegistry({ thresholds: { highAc: 0 } }).thresholds.highAc, 5);
+  });
+  const rework = { risk: "low", acCount: 1, attempt: 2, historicalCostUsd: 1.6 };
+  check(
+    "historyOnRework 'stack' (default): a trivial rework with $1.6 history → strong (today)",
+    () => {
+      const diff = resolveDifficulty(rework, shipped);
+      assert.equal(diff, "high");
+      assert.equal(
+        routeModel({ phase: "implement", ...rework, difficulty: diff }, shipped).tier,
+        "strong",
+      );
+    },
+  );
+  const once = normaliseRegistry({
+    ...JSON.parse(readFileSync(SHIPPED, "utf8")),
+    historyOnRework: "attempt-only",
+  });
+  check(
+    "historyOnRework 'attempt-only': the same failure is counted once (trivial rework → mid)",
+    () => {
+      const diff = resolveDifficulty(rework, once);
+      assert.equal(diff, "");
+      assert.equal(
+        routeModel({ phase: "implement", ...rework, difficulty: diff }, once).tier,
+        "mid",
+      );
+      // A medium ticket's rework: one escalation reason, strong.
+      const med = { risk: "medium", acCount: 3, attempt: 2, historicalCostUsd: 1.6 };
+      const d = routeModel(
+        { phase: "implement", ...med, difficulty: resolveDifficulty(med, once) },
+        once,
+      );
+      assert.equal(d.tier, "strong");
+      assert.equal(d.reasons.filter((r) => r.includes("+1 tier")).length, 1, d.reasons.join("; "));
+      // On a FIRST attempt the history signal still votes (it is not a prior failure).
+      assert.equal(resolveDifficulty({ ...rework, attempt: 1 }, once), "high");
+    },
+  );
+}
 
 console.log();
 if (failures.length === 0) {

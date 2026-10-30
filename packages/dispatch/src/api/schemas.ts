@@ -21,6 +21,7 @@ import {
   TICKET_SCOPE_RELATIONS,
   TICKET_STATUSES,
 } from "../domain/types.js";
+import { REPLAY_STATES } from "../util/contractHash.js";
 
 /**
  * Zod schemas for the HTTP request bodies + query parameters. These validate the
@@ -206,6 +207,23 @@ export const testerVerdictBody = z.object({
   uri: z.string().trim().min(1).max(2_000).optional(),
   /** fail only: where the FAIL lands below the retry cap (default refining = hold for a human). */
   to: z.enum(["refining", "ready"]).optional(),
+  /**
+   * The ACCEPTANCE binding an automated tester sends with its verdict: the commit it
+   * tested, the sha256 of the contract it read, and its clean-replay outcome. Required
+   * for a non-human PASS on an acceptance ticket (else 422 BINDING_REQUIRED); a hash
+   * that no longer matches the contract on record is a 409 CONTRACT_MISMATCH.
+   */
+  tested_commit: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/i)
+    .optional(),
+  contract_hash: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-f]{64}$/i)
+    .optional(),
+  replay: z.enum(REPLAY_STATES).optional(),
 });
 export type TesterVerdictBody = z.infer<typeof testerVerdictBody>;
 
@@ -300,11 +318,28 @@ export const resolveDecisionBody = z.object({
 });
 export type ResolveDecisionBody = z.infer<typeof resolveDecisionBody>;
 
-/** Query-string filters for GET /tickets. */
+/** Largest page GET /tickets returns when the caller pages (`limit` is clamped to it). */
+export const TICKET_LIST_MAX_LIMIT = 1_000;
+
+/**
+ * Query for GET /tickets. Paging is OPT-IN: with no `limit` every matching row is
+ * returned, as before (callers that resolve tickets from the full list keep
+ * working). `limit` is clamped to [1, TICKET_LIST_MAX_LIMIT]; `offset` skips rows;
+ * `total` in the response counts the whole filtered set either way.
+ * `fields=summary` drops the large free-text columns (description, test_contract,
+ * last_review_feedback) a board card or picker never shows.
+ */
 export const ticketListQuery = z.object({
   status: z.enum(TICKET_STATUSES).optional(),
   repo: z.string().min(1).optional(),
   risk: z.enum(RISK_LEVELS).optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .transform((n) => Math.min(Math.max(n, 1), TICKET_LIST_MAX_LIMIT))
+    .optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+  fields: z.enum(["full", "summary"]).optional(),
 });
 export type TicketListQuery = z.infer<typeof ticketListQuery>;
 
@@ -853,3 +888,37 @@ export const createPrincipalBody = z.object({
   actor_id: z.string().trim().min(1).max(200).optional(),
 });
 export type CreatePrincipalBody = z.infer<typeof createPrincipalBody>;
+
+// --- Squad (club identity + agent display names; presentation only) --------
+
+/** A kit colour: `#rgb` or `#rrggbb` (stored as lowercase `#rrggbb`); "" clears. */
+const kitColourField = z
+  .string()
+  .trim()
+  .regex(/^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))?$/, "a hex colour like #1d4ed8 or #fff")
+  .nullable()
+  .optional();
+
+/**
+ * Body for PATCH /api/club. Partial: an omitted field is unchanged; `null` or ""
+ * clears it back to the default (the dashboard falls back to "Gaffer").
+ */
+export const updateClubBody = z.object({
+  name: z.string().trim().max(60).nullable().optional(),
+  /** The crest short name: 1–4 letters/digits ('&' and '.' allowed). */
+  short_name: z.string().trim().max(4).nullable().optional(),
+  kit_primary: kitColourField,
+  kit_secondary: kitColourField,
+});
+export type UpdateClubBody = z.infer<typeof updateClubBody>;
+
+/**
+ * Body for PATCH /api/squad/agents/:id. Partial: omitted ⇒ unchanged; `null`
+ * (or "" for the name) clears. A shirt number already worn by another agent is
+ * refused (409 DUPLICATE). Presentation only — the agent id never changes.
+ */
+export const updateSquadAgentBody = z.object({
+  display_name: z.string().trim().max(40).nullable().optional(),
+  shirt_number: z.number().int().min(1).max(99).nullable().optional(),
+});
+export type UpdateSquadAgentBody = z.infer<typeof updateSquadAgentBody>;

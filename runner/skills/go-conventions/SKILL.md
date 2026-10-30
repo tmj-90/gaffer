@@ -41,8 +41,8 @@ that always end. For the builder and the reviewer of a Go diff; the repo's confi
 - Test: `go test -race -count=1 ./...`; one case: `go test -race -run 'TestX/case' ./pkg/x`.
 - Dependencies: `go mod tidy -diff` (Go 1.23+) reports drift without rewriting
   `go.mod`/`go.sum`. Never `go get` or let `go mod tidy` add a module: a new or bumped
-  dependency is a blocker (the `dependency-upgrade` skill). `govulncheck ./...` if
-  installed.
+  dependency is a blocker: `mark_ticket_blocked` with the exact command a human should run.
+  `govulncheck ./...` if installed.
 - Do not run `go fix ./...` (Go 1.26 modernizers) across the tree unless the ticket asks;
   it rewrites unrelated code.
 

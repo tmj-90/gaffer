@@ -29,6 +29,14 @@ import { buildPrompt as buildSpecPrompt } from "../bin/spec-author.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = resolve(HERE, "..", "bin", "decompose.mjs");
+// Every repo-path lookup (resolveRepoPath) reads DISPATCH_DB, falling back to the
+// checkout's .gaffer/dispatch.sqlite — the operator's LIVE DB — so pin it to an ABSENT
+// scratch path for this process and the children it spawns: "no such repo" stays the
+// answer whatever the operator's DB holds. (FIX 4 swaps in its own path and restores.)
+process.env.DISPATCH_DB = resolve(
+  mkdtempSync(resolve(tmpdir(), "decompose-test-")),
+  "absent.sqlite",
+);
 const {
   extractLastJsonBlock,
   validateResult,
@@ -679,8 +687,8 @@ console.log("== FIX 4: read-only DB open — a missing DISPATCH_DB is never crea
 
 console.log("== FIX 1: null repo path → no card context emitted in prompt ==");
 {
-  // When targetRepo is set but resolveRepoPath returns null (no DISPATCH_DB in
-  // the test environment), buildPrompt must skip card injection entirely — no
+  // When targetRepo is set but resolveRepoPath returns null (DISPATCH_DB pinned to an
+  // absent path above), buildPrompt must skip card injection entirely — no
   // "PRIOR CONTEXT" or <untrusted-file-cards> in the prompt.  Pre-fix, the
   // code used `resolveRepoPath(targetRepo) ?? ""` which passed "" to
   // primeContextBlock and resolved to process.cwd() as the repo, potentially
@@ -975,6 +983,41 @@ console.log("== DEBATE CLI (dry-run, stubbed turns) end-to-end ==");
     ok("CLI DEBATE=1 above gate → final revised plan emitted + validated");
   } else fail(`CLI debate wrong (code=${r.code}, out=${JSON.stringify(r.out)})`);
 
+  // BEST VALID PLAN: a revision that does not validate never replaces a valid draft.
+  const material =
+    "```json\n" + JSON.stringify({ materialIssues: true, critique: "split it" }) + "\n```";
+  const forwardDep = JSON.parse(JSON.stringify(planObj));
+  forwardDep.plan.epic.name = "FORWARD-DEP revision";
+  forwardDep.plan.tickets[1].dependsOn = [forwardDep.plan.tickets.length + 3];
+  const debateCase = (label, turns, wantName, extraReq = {}) => {
+    const rr = runCliEnv({ brief: reqBrief, mockTurns: turns, ...extraReq }, [], env);
+    if (rr.code === 0 && rr.out && rr.out.phase === "plan" && rr.out.plan.epic.name === wantName)
+      ok(label);
+    else fail(`${label} (code=${rr.code}, out=${JSON.stringify(rr.out).slice(0, 300)})`);
+  };
+  debateCase(
+    "debate: a FORWARD-DEPENDENCY revision is rejected → the valid round-1 plan is emitted (rc 0)",
+    [greenPlanText, material, fencePlan(forwardDep)],
+    "Gym tracker",
+  );
+  debateCase(
+    "debate: a NO-JSON revision is rejected → round 1 is emitted",
+    [greenPlanText, material, "Sorry, I could not revise the plan."],
+    "Gym tracker",
+  );
+  debateCase(
+    "debate: a CLARIFY revision (not forced) is rejected → round 1 is emitted as a plan",
+    [greenPlanText, material, fencePlan({ phase: "clarify", questions: ["Which users?"] })],
+    "Gym tracker",
+  );
+  const invalidDraft = JSON.parse(JSON.stringify(forwardDep));
+  invalidDraft.plan.epic.name = "INVALID draft";
+  debateCase(
+    "debate: an INVALID draft fixed by a valid revision → the revision is emitted",
+    [fencePlan(invalidDraft), material, fencePlan(revised)],
+    "CLI debated epic",
+  );
+
   // DEBATE=1 + BELOW the gate → single-agent: only mockOutput is used, mockTurns ignored.
   const belowReq = {
     brief: "tiny",
@@ -1126,7 +1169,13 @@ console.log("== AC12: greenfield bootstrap ACs may not assert on git history =="
     plan: {
       epic: { name: "E" },
       tickets: [
-        { title: "Bootstrap", acceptanceCriteria: [ac], bootstrap: true, dependsOn: [] },
+        {
+          title: "Bootstrap",
+          acceptanceCriteria: [ac],
+          repo: "bm",
+          bootstrap: true,
+          dependsOn: [],
+        },
         { title: "Core", acceptanceCriteria: ["`bm add` stores a bookmark"], dependsOn: [0] },
       ],
     },
@@ -1206,6 +1255,68 @@ console.log("== AC-noSpecClauseRef: a clauseRef with no driving spec is dropped 
     "a frozen spec naming c2 → the clauseRef is kept",
     withSpec.out?.plan?.tickets?.[0]?.acceptanceCriteria?.[0],
     { text: "the list persists", clauseRef: "c2" },
+  );
+}
+
+console.log("== GREENFIELD contract: every ticket builds on the ONE repo the bootstrap creates ==");
+{
+  const g = (tickets) =>
+    validateResult({ phase: "plan", plan: { epic: { name: "Todo" }, tickets } }, 20);
+  const boot = (extra = {}) => ({
+    title: "Scaffold",
+    acceptanceCriteria: ["package.json exists"],
+    repo: "todo",
+    bootstrap: true,
+    dependsOn: [],
+    ...extra,
+  });
+  const t = (title, extra = {}) => ({ title, acceptanceCriteria: ["works"], ...extra });
+  const r1 = g([
+    boot(),
+    t("API", { repo: "todo-api", dependsOn: [] }),
+    t("UI", { dependsOn: [1, 1] }),
+  ]);
+  eq("a fixable plan is fixed, not rejected", r1.phase, "plan");
+  const [, api, ui] = r1.plan?.tickets ?? [];
+  ok2(
+    "a sibling with no path to the bootstrap gets dependsOn 0 added",
+    JSON.stringify(api?.dependsOn) === "[0]",
+  );
+  ok2("a mismatched sibling repo is stamped with the bootstrap's", api?.repo === "todo");
+  ok2("an EMPTY sibling repo is stamped too", ui?.repo === "todo");
+  ok2("duplicate dependsOn [1,1] is de-duplicated to [1]", JSON.stringify(ui?.dependsOn) === "[1]");
+  const r2 = g([boot({ repo: "" }), t("API", { dependsOn: [0] })]);
+  ok2(
+    "an EMPTY bootstrap repo is rejected (it is the one name that cannot be inferred)",
+    r2.phase === "error" && /must name the repo/.test(r2.error ?? ""),
+  );
+  const r3 = g([t("API", { dependsOn: [] }), t("UI", { dependsOn: [0] }), boot()]);
+  const ts = r3.plan?.tickets ?? [];
+  ok2(
+    "a bootstrap at index 2 is moved to 0 with dependencies remapped (still a DAG)",
+    r3.phase === "plan" &&
+      ts[0]?.bootstrap === true &&
+      ts[1]?.title === "API" &&
+      JSON.stringify(ts[1]?.dependsOn) === "[0]" &&
+      ts[2]?.title === "UI" &&
+      JSON.stringify(ts[2]?.dependsOn) === "[1]",
+  );
+  const brown = validateResult(
+    {
+      phase: "plan",
+      plan: {
+        epic: { name: "B" },
+        tickets: [t("A", { dependsOn: [] }), t("B", { dependsOn: [0, 0] })],
+      },
+    },
+    20,
+    "acme-web",
+  );
+  ok2(
+    "brownfield: independent tickets stay independent; duplicates de-duplicated",
+    brown.phase === "plan" &&
+      JSON.stringify(brown.plan.tickets[0].dependsOn) === "[]" &&
+      JSON.stringify(brown.plan.tickets[1].dependsOn) === "[0]",
   );
 }
 

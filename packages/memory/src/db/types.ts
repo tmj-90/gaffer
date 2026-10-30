@@ -228,6 +228,13 @@ export interface SearchOptions {
    */
   readonly prefix?: boolean;
   readonly limit?: number;
+  /**
+   * Record one `read` event per returned hit (default true). Agent-facing
+   * searches — query or filter-only, e.g. the runner's product-context block —
+   * keep the default; browse and bookkeeping callers (`memory list`, the
+   * runner's distill dedupe) pass false so `memory stats` reflects real use.
+   */
+  readonly recordReads?: boolean;
 }
 
 /**

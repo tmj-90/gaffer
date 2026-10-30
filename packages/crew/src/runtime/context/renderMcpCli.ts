@@ -26,12 +26,13 @@
 //   GAFFER_MCP_CLAIM_TOKEN     → claimToken       (may legitimately be "")
 //   GAFFER_MCP_TICKET_REPOS    → ticketRepos      (may legitimately be "")
 //   GAFFER_MCP_RECALL_TICKET   → recallTicket     (may legitimately be "")
+//   GAFFER_MCP_SCOPE_TICKET    → scopeTicket      (may legitimately be "")
 //
 // BYTE-IDENTITY: renderMcpRuntimeConfig returns the rendered template
 // verbatim (it does not strip or add a trailing newline), and this writes
 // it with writeFileSync (no console.log — that would append a byte). The
 // output is therefore byte-identical to the prior bash sed render for the
-// same inputs (proven by runner/test/mcp-render-parity.test.sh).
+// same inputs (pinned by runner/test/mcp-render-golden.test.sh).
 //
 // FAIL-CLOSED: a CrewError from the renderer (leftover placeholder, invalid
 // JSON, missing dispatch/memory server) is printed to stderr and exits 1,
@@ -76,6 +77,7 @@ function main(): void {
     claimToken: env.GAFFER_MCP_CLAIM_TOKEN ?? "",
     ticketRepos: env.GAFFER_MCP_TICKET_REPOS ?? "",
     recallTicket: env.GAFFER_MCP_RECALL_TICKET ?? "",
+    scopeTicket: env.GAFFER_MCP_SCOPE_TICKET ?? "",
   });
 
   // writeFileSync — NOT console.log / stdout + "\n": the render must land

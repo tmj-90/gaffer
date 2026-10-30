@@ -349,6 +349,42 @@ else
   fail "dry-run mishandled (wg=$(cat "$WG_LOG" 2>/dev/null); claude=$(cat "$CLAUDE_LOG" 2>/dev/null))"
 fi
 
+# Envelope reply: the classifier asks for --output-format json, so the answer is the
+# envelope's `.result`, the call is booked in the usage ledger (kind inherit, against
+# the sibling's ticket), and it runs from a scratch dir — not the tick's cwd.
+: > "$WG_LOG"; : > "$CLAUDE_LOG"
+cat >"$BIN/claude" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$CLAUDE_LOG"
+echo "CWD=\$PWD" >> "$CLAUDE_LOG"
+printf '%s\n' '{"type":"result","result":"auto-trader\\n","total_cost_usd":0.0012,"num_turns":1,"usage":{"input_tokens":5,"output_tokens":2}}'
+EOF
+chmod +x "$BIN/claude"
+INH_LEDGER="$INH_WORK/usage-ledger.jsonl"
+(
+  export PATH="$BIN:$PATH"
+  export DISPATCH_DB="$INH_WORK/wg.sqlite"
+  export CLAUDE_BIN="claude" GAFFER_USAGE_LEDGER="$INH_LEDGER"
+  # The runner's recorder (factory.config.sh is not sourced here): the REAL ledger CLI.
+  gaffer_usage_record() { "$REAL_NODE" "$RUNNER_DIR/lib/usage-ledger.mjs" --kind "$1" --ticket "$2" --rc "$3" --json-file "$4"; }
+  cd "$INH_WORK" && gaffer_inherit_repo 61 >/dev/null 2>&1
+)
+grep -q "ticket repo-access set 30 auto-trader --access write" "$WG_LOG" \
+  && ok "an envelope reply is unwrapped (.result) and the ambiguous link applies" \
+  || fail "envelope reply not unwrapped (wg.log: $(cat "$WG_LOG" 2>/dev/null))"
+grep -q '"kind":"inherit"' "$INH_LEDGER" 2>/dev/null && grep -q '"ticket":30' "$INH_LEDGER" \
+  && grep -q '"total_cost_usd":0.0012' "$INH_LEDGER" \
+  && ok "the classifier call is booked in the usage ledger (kind inherit, ticket 30, measured)" \
+  || fail "inherit call not ledgered (ledger: $(cat "$INH_LEDGER" 2>/dev/null))"
+_inh_cwd="$(sed -n 's/^CWD=//p' "$CLAUDE_LOG" | head -1)"
+case "$_inh_cwd" in
+  */gaffer-inherit.*) ok "the classifier runs from an empty scratch dir, not the caller's cwd" ;;
+  *) fail "classifier cwd wrong ($_inh_cwd)" ;;
+esac
+grep -q -- '--max-turns 200' "$CLAUDE_LOG" \
+  && fail "the global 200-turn flag is still appended to the classifier" \
+  || ok "no global 200-turn flag appended (the argv carries its own text-only cap)"
+
 rm -rf "$INH_WORK"
 
 echo "== AC11: bootstrap teardown purges the mount symlink from the PERSISTENT repo =="
@@ -393,7 +429,7 @@ gaffer_skills_mount_cleanup "bootstrap-999"
 # status — capture-then-grep is the suite's deterministic idiom (afk-delivery-loop).
 if [ -L "$BREPO/.claude/skills" ] && [ ! -e "$BREPO/.claude/skills" ]; then
   LEGACY_OUT="$(gaffer_assert_repo_clean "$BREPO" 2>&1 || true)"
-  printf '%s\n' "$LEGACY_OUT" | grep -q "broken symlink in real repo: .claude/skills" \
+  grep -q "broken symlink in real repo: .claude/skills" <<<"$LEGACY_OUT" \
     && ok "legacy path (no dest arg) leaves a dangling link the detector flags" \
     || fail "expected the detector to flag the legacy dangling link (got: $LEGACY_OUT)"
 else
@@ -417,7 +453,7 @@ echo "== AC11b: the detector STILL fires on a genuine planted dangling symlink =
 mkdir -p "$BREPO/.claude"
 ln -s "$SM_WORK/does-not-exist" "$BREPO/.claude/skills"   # dangling: target absent
 CTRL="$(gaffer_assert_repo_clean "$BREPO" 2>&1 || true)"
-printf '%s\n' "$CTRL" | grep -q "broken symlink in real repo: .claude/skills" \
+grep -q "broken symlink in real repo: .claude/skills" <<<"$CTRL" \
   && ok "gaffer_assert_repo_clean STILL fires on a planted dangling .claude/skills" \
   || fail "detector should still catch a genuine dangling symlink (got: $CTRL)"
 rm -rf "$BREPO/.claude"

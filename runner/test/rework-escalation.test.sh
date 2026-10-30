@@ -59,19 +59,19 @@ gaffer_build_escalation 1
 
 # Attempt 2 — RETHINK, same model, carries the real failure.
 gaffer_build_escalation 2
-printf '%s' "$_REWORK_BLOCK" | grep -q 'RETHINK' \
+grep -q 'RETHINK' <<<"$_REWORK_BLOCK" \
   && ok "A2 attempt 2 → RETHINK posture (re-plan the approach)" \
   || fail "A2 attempt 2 should be a RETHINK ($_REWORK_BLOCK)"
 [ "$_ATTEMPT_IMPL_FLAG" = "$ROUTE_IMPL_FLAG" ] \
   && ok "A2 attempt 2 → same routed model (model escalates only on the final attempt)" \
   || fail "A2 attempt 2 model should stay the routed model (got: $_ATTEMPT_IMPL_FLAG)"
-printf '%s' "$_REWORK_BLOCK" | grep -q 'expected 3 to be 4' \
+grep -q 'expected 3 to be 4' <<<"$_REWORK_BLOCK" \
   && ok "A2 the real failure is fed into the rework block (well-fed)" \
   || fail "A2 the rework block should carry the real failure ($_REWORK_BLOCK)"
 
 # Attempt 3 (== max) — STRONGER model + full history.
 gaffer_build_escalation 3
-printf '%s' "$_REWORK_BLOCK" | grep -q 'FINAL' \
+grep -q 'FINAL' <<<"$_REWORK_BLOCK" \
   && ok "A3 attempt 3 → FINAL posture (last shot before a human)" \
   || fail "A3 attempt 3 should be the FINAL attempt ($_REWORK_BLOCK)"
 [ "$_ATTEMPT_IMPL_FLAG" = "--model opus" ] \
@@ -88,10 +88,15 @@ gaffer_build_escalation 3
 GAFFER_REWORK_STRONG_MODEL="opus"
 
 echo "== PART B: gaffer_ticket_rework_spend — the cost side of the double-bound =="
-SPEND_SRC="$(extract_fn "$CFG" "gaffer_ticket_rework_spend" "}")"
-[ -n "$SPEND_SRC" ] && ok "B extracted gaffer_ticket_rework_spend from factory.config.sh (real source)" \
-  || fail "B could not extract gaffer_ticket_rework_spend"
+# The summation lives in _gaffer_ticket_spend; the three public names are one-line
+# scope wrappers (total = every kind, the ceiling's figure; delivery = the router's).
+SPEND_SRC="$(extract_fn "$CFG" "_gaffer_ticket_spend" "}")"
+WRAP_SRC="$(grep -E '^gaffer_ticket_(total|delivery|rework)_spend\(\) \{.*\}$' "$CFG")"
+[ -n "$SPEND_SRC" ] && [ "$(printf '%s\n' "$WRAP_SRC" | wc -l)" -eq 3 ] \
+  && ok "B extracted _gaffer_ticket_spend + its three wrappers from factory.config.sh (real source)" \
+  || fail "B could not extract the ticket-spend helpers"
 eval "$SPEND_SRC"
+eval "$WRAP_SRC"
 # The runtime exports this before the function can exist (factory.config.sh sets
 # it at source time); the extracted-function harness must mirror that contract.
 # The function parses the ledger via the ONE shared reader (lib/estimate.mjs).
@@ -110,10 +115,23 @@ LEDGER="$WORK/usage-ledger.jsonl"
   printf '%s\n' '{"kind":"clarify","ticket":88,"measured":true,"total_cost_usd":9.00}'
 } > "$LEDGER"
 
-SPENT="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_rework_spend 88)"
+# The per-ticket CEILING counts every agent call booked to the ticket — the clarify
+# $9.00 is real spend in the same rework loop and must not be invisible to the bound.
+TOTAL="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_rework_spend 88)"
+awk "BEGIN{exit !(($TOTAL+0) > 9.349 && ($TOTAL+0) < 9.351)}" \
+  && ok "B1 the ceiling's figure sums ALL of ticket 88's spend (0.35 delivery + 9.00 clarify, ignoring other tickets/unknowns)" \
+  || fail "B1 expected ~9.35 total for ticket 88, got $TOTAL"
+TOTAL2="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_total_spend 88)"
+[ "$TOTAL2" = "$TOTAL" ] && ok "B1 gaffer_ticket_rework_spend is gaffer_ticket_total_spend" \
+  || fail "B1 rework_spend ($TOTAL) should equal total_spend ($TOTAL2)"
+# The router's difficulty signal stays DELIVERY-only (its thresholds are sized for it).
+SPENT="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_delivery_spend 88)"
 awk "BEGIN{exit !(($SPENT+0) > 0.349 && ($SPENT+0) < 0.351)}" \
-  && ok "B1 sums ONLY ticket 88's measured DELIVERY spend (0.35, ignoring other tickets/kinds/unknowns)" \
-  || fail "B1 expected ~0.35 for ticket 88, got $SPENT"
+  && ok "B1 gaffer_ticket_delivery_spend sums ONLY ticket 88's DELIVERY spend (0.35)" \
+  || fail "B1 expected ~0.35 delivery spend for ticket 88, got $SPENT"
+grep -q '_hist="$(gaffer_ticket_delivery_spend "$ticket"' "$CFG" \
+  && ok "B1 the router's --historical-cost reads the delivery-only figure" \
+  || fail "B1 gaffer_route_model should feed --historical-cost from gaffer_ticket_delivery_spend"
 
 # The per-ticket ceiling decision (the exact awk tick.sh uses): 0.35 >= 0.30 → trip.
 GAFFER_REWORK_BUDGET_USD="0.30"
@@ -146,7 +164,7 @@ grep -q '_cost_exhausted' "$TICK" \
 RP_SRC="$(extract_fn "$TICK" "_recover_or_park" "  }")"
 [ -n "$RP_SRC" ] && ok "C extracted _recover_or_park from tick.sh (real source)" \
   || fail "C could not extract _recover_or_park"
-printf '%s\n' "$RP_SRC" | grep -q '^ *GAFFER_KEEP_DELIVERY_BRANCH=1' \
+grep -q '^ *GAFFER_KEEP_DELIVERY_BRANCH=1' <<<"$RP_SRC" \
   && ok "C _recover_or_park raises GAFFER_KEEP_DELIVERY_BRANCH=1 (park/retry never drop-branch via the trap)" \
   || fail "C _recover_or_park must raise GAFFER_KEEP_DELIVERY_BRANCH=1"
 # The retention line must come BEFORE the first cleanup/release call in the function.
@@ -157,18 +175,18 @@ _first_cleanup_ln="$(printf '%s\n' "$RP_SRC" | grep -n 'gaffer_cleanup_worktrees
   || fail "C retention must precede teardown/release in _recover_or_park (keep=$_keep_ln cleanup=$_first_cleanup_ln)"
 # AGENT-SIDE PARK: a ticket the agent itself moved to `blocked` (a decision it opened)
 # ends the loop — no further paid attempt, branch preserved, ticket left where it is.
-printf '%s\n' "$RP_SRC" | grep -q '_cur_status" = "blocked"' \
+grep -q '_cur_status" = "blocked"' <<<"$RP_SRC" \
   && ok "C _recover_or_park stops the loop when the agent already parked the ticket to blocked" \
   || fail "C _recover_or_park must detect an agent-side park (status blocked)"
 # NOT CONVERGING: an attempt that reproduces the previous attempt's distilled failure
 # byte-for-byte parks at once instead of spending the remaining paid attempts.
-printf '%s\n' "$RP_SRC" | grep -q '_LAST_REAL_FAILURE' \
+grep -q '_LAST_REAL_FAILURE' <<<"$RP_SRC" \
   && ok "C _recover_or_park compares the failure with the previous attempt's" \
   || fail "C _recover_or_park must track _LAST_REAL_FAILURE"
-printf '%s\n' "$RP_SRC" | grep -q '\[ "\$_repeat" -eq 0 \]' \
+grep -q '\[ "\$_repeat" -eq 0 \]' <<<"$RP_SRC" \
   && ok "C a repeated identical failure skips the retry branch (parks)" \
   || fail "C the retry condition must require _repeat=0"
-printf '%s\n' "$RP_SRC" | grep -q 'not converging' \
+grep -q 'not converging' <<<"$RP_SRC" \
   && ok "C the park reason says the loop was not converging" \
   || fail "C park reason should name non-convergence"
 # GAFFER_MAX_DELIVERY_ATTEMPTS default is raised 2 → 3.

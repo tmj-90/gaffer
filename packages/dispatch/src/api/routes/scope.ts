@@ -100,6 +100,10 @@ export async function routeScope(
       }
       return methodNotAllowed(res);
     }
+    if (segments.length === 3 && method === "GET") {
+      sendJson(res, 200, { edge: wg.getScopeEdge(segments[2] as string) });
+      return;
+    }
     if (segments.length === 3 && method === "DELETE") {
       const result = wg.deleteScopeEdge(segments[2] as string, apiActor());
       sendJson(res, 200, { edge_id: result.edgeId, event_id: result.eventId });
@@ -140,6 +144,10 @@ export async function routeScope(
     }
     if (segments.length === 3) {
       const associationId = segments[2] as string;
+      if (method === "GET") {
+        sendJson(res, 200, { association: wg.getScopeRepo(associationId) });
+        return;
+      }
       if (method === "PATCH") {
         const body = updateScopeRepoBody.parse(await readJsonBody(req));
         const link = wg.updateScopeRepo(associationId, body, apiActor());

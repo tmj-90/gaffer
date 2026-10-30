@@ -177,8 +177,7 @@ export class TicketService {
     const input = addAcInput.parse(raw);
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
       const ac: AcceptanceCriterion = {
         id: newId(),
         ticket_id: ticket.id,
@@ -760,15 +759,7 @@ export class TicketService {
   }
 
   resolveTicket(ref: string): Ticket {
-    const byId = this.tickets.findById(ref);
-    if (byId) return byId;
-    // Accept #N and T-N as ticket-number shortcuts.
-    const normalised = ref.replace(/^#/, "").replace(/^T-/, "");
-    const asNumber = Number(normalised);
-    if (Number.isInteger(asNumber) && asNumber > 0) {
-      const byNumber = this.tickets.findByNumber(asNumber);
-      if (byNumber) return byNumber;
-    }
-    throw notFound("ticket", ref);
+    // The id, or #N / T-N / N (see TicketRepository.resolveRef).
+    return this.tickets.resolveRef(ref);
   }
 }

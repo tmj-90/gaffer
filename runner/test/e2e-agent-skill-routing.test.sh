@@ -172,14 +172,17 @@ D1="$(last_call delivery)"
 if [ -z "$D1" ]; then fail "1: no delivery agent spawn recorded"; else
   ok "1: the delivery agent ran (cwd $(cat "$D1/cwd" | sed "s|$WORK/||"))"
   assert_skills "1: delivery/alpha" "$D1" \
-    "typescript-conventions,add-api-endpoint,pagination-and-filtering,run-tests,run-lint,minimalism,engineering-craft,self-review,submit-review,record-evidence,create-branch" \
-    "csharp-conventions,python-conventions,rust-conventions,kotlin-conventions,swift-conventions,mobile-ui,frontend-design,react-patterns,seo-audit,terraform-patterns,kubernetes-operator,review-ticket"
+    "typescript-conventions,add-api-endpoint,pagination-and-filtering,run-tests,run-lint,minimalism,engineering-craft,self-review,record-evidence" \
+    "csharp-conventions,python-conventions,rust-conventions,kotlin-conventions,swift-conventions,mobile-ui,frontend-design,react-patterns,seo-audit,terraform-patterns,kubernetes-operator,review-ticket,create-branch,submit-review,resolve-merge-conflict,dependency-upgrade"
   n1="$(wc -l < "$D1/skills" | tr -d ' ')"
   { [ "$n1" -ge 20 ] && [ "$n1" -le 80 ]; } && ok "1: a scoped mount ($n1 skills, not the whole library)" || fail "1: mount size $n1"
   grep -qx "GAFFER_TICKET=$A1" "$D1/env" && ok "1: GAFFER_TICKET=$A1 in the agent env" || fail "1: GAFFER_TICKET missing: $(grep GAFFER_TICKET= "$D1/env")"
   # The repo scope is bound into the MEMORY MCP server's env (one-hop plumbing), not the
   # agent's own env: suggest_lore / direct-apply default to exactly this repo.
   grep -q '"GAFFER_TICKET_REPOS": *"alpha"' "$D1/mcp.json" 2>/dev/null && ok "1: memory MCP scoped to GAFFER_TICKET_REPOS=alpha" || fail "1: memory MCP repo scope: $(grep -o '"GAFFER_TICKET_REPOS": *"[^"]*"' "$D1/mcp.json" 2>/dev/null)"
+  # FACTORY TICKET SCOPE: the dispatch server is bound to the delivery ticket, so the
+  # agent's AC / dependency / contract / decision writes on any other ticket are refused.
+  grep -q "\"GAFFER_SCOPE_TICKET\": *\"$A1\"" "$D1/mcp.json" 2>/dev/null && ok "1: dispatch MCP scoped to GAFFER_SCOPE_TICKET=$A1" || fail "1: dispatch MCP lacks GAFFER_SCOPE_TICKET=$A1"
   [ "$(cat "$D1/settings")" = yes ] && ok "1: .claude/settings.json (safety hook) installed" || fail "1: no settings.json in the agent dir"
   [ "$(cat "$D1/brief")" = yes ] && ok "1: CLAUDE.factory.md brief installed" || fail "1: no factory brief in the agent dir"
   prompt_has "$D1" "typescript-conventions" && ok "1: prompt recommends the TS pack" || fail "1: prompt does not name typescript-conventions"
@@ -223,7 +226,7 @@ echo "== 3. TESTER: the test role with a CONTRACT-ONLY prompt =="
 # gave up on empty polls (seen live). The tester must run on that path too.
 A1DEP="$(new_ticket alpha "Follow-up on the endpoint" "depends on the endpoint ticket" low)"
 wg ticket dep add "$A1DEP" "$A1" >/dev/null 2>&1; wg ticket ready "$A1DEP" >/dev/null 2>&1
-( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true
+( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
 grep -q "all ready tickets failed delivery this run — nothing deliverable" "$GAFFER_DATA/factory.log" && ok "3: the tick hit the nothing-deliverable path (dependent blocked behind in_testing #$A1)" || fail "3: fixture did not exercise the nothing-deliverable path"
 [ "$(st "$A1DEP")" = "ready" ] && ok "3: the dependent stayed ready (blocked, not delivered)" || fail "3: dependent status=$(st "$A1DEP")"
 T1="$(last_call tester)"
@@ -251,9 +254,9 @@ tester_fail_case() { # $1 label, $2 autonomous(1|0) → prints the final status
   run_tick >/dev/null; review_tick >/dev/null
   [ "$(st "$n")" = "in_testing" ] || { echo "$n setup:$(st "$n")"; return; }
   if [ "$2" = 1 ]; then
-    ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true
+    ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
   else
-    ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true
+    ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
   fi
   echo "$n $(st "$n")"   # "<number> <status>" — the caller splits it (a $() cannot export)
 }
@@ -267,7 +270,7 @@ grep -q "TESTER: #$N_AUTO FAIL re-queued for REWORK" "$GAFFER_DATA/factory.log" 
 echo PASS > "$WORK/tester-verdict"
 run_tick >/dev/null; review_tick >/dev/null
 [ "$(st "$N_AUTO")" = "in_testing" ] && ok "3b: the reworked #$N_AUTO is back in_testing" || fail "3b: reworked #$N_AUTO is '$(st "$N_AUTO")' (expected in_testing)"
-( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=' || true
+( cd "$RUNNER_DIR" && GAFFER_TESTING=1 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
 case "$(st "$N_AUTO")" in ready_for_merge|done) ok "3b: the tester RE-TESTED the reworked ticket in the same run (now $(st "$N_AUTO"))" ;; *) fail "3b: reworked #$N_AUTO was not re-tested (status '$(st "$N_AUTO")')" ;; esac
 echo FAIL > "$WORK/tester-verdict"
 read -r N_SUP S_SUP <<< "$(tester_fail_case supervised 0)"
@@ -294,13 +297,14 @@ fi
 echo "== 5. CLARIFY: intake on a DRAFT when the queue is empty =="
 C1="$(wg ticket create -t "Something about exports" -d "Users want exports." 2>/dev/null | jget 'd.ticket.number')"
 wg ticket repo-access set "$C1" alpha --access write --relation confirmed >/dev/null 2>&1
-( cd "$RUNNER_DIR" && CLARIFY_DRAFTS_WHEN_IDLE=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep -q '^TICK_RESULT=clarified$' && ok "5: the tick ran the clarify pass" || fail "5: clarify pass did not run: $(grep -i clarif "$GAFFER_DATA/factory.log" | tail -2 | tr '\n' '|' | cut -c1-300)"
+grep -q '^TICK_RESULT=clarified$' <<<"$(cd "$RUNNER_DIR" && CLARIFY_DRAFTS_WHEN_IDLE=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log")" && ok "5: the tick ran the clarify pass" || fail "5: clarify pass did not run: $(grep -i clarif "$GAFFER_DATA/factory.log" | tail -2 | tr '\n' '|' | cut -c1-300)"
 K1="$(last_call clarify)"
 if [ -z "$K1" ]; then fail "5: no intake agent spawn"; else
   assert_skills "5: clarify/alpha" "$K1" \
     "clarify,record-evidence,user-story,prd,typescript-conventions" \
     "create-branch,run-coverage,add-api-endpoint,review-ticket,black-box-test,python-conventions,mobile-ui"
   prompt_has "$K1" "#$C1" && ok "5: intake prompt targets draft #$C1" || fail "5: intake prompt does not name #$C1"
+  grep -q "\"GAFFER_SCOPE_TICKET\": *\"$C1\"" "$K1/mcp.json" 2>/dev/null && ok "5: intake's dispatch MCP scoped to GAFFER_SCOPE_TICKET=$C1" || fail "5: intake's dispatch MCP lacks GAFFER_SCOPE_TICKET=$C1"
   [ "$(st "$C1")" = "draft" ] && ok "5: the draft stays a draft (intake never marks ready)" || fail "5: #$C1 is '$(st "$C1")'"
 fi
 

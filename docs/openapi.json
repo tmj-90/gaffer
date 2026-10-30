@@ -3,7 +3,7 @@
   "info": {
     "title": "Gaffer dispatch API",
     "version": "0.1.0",
-    "description": "The control plane's REST surface: tickets and their gates, the Factory Map scope graph, plan sessions, epics and specs, repositories, runner actions, configuration, read models and the live event stream.\n\n**Authentication.** Every data route requires `Authorization: Bearer <token>`. Two credentials exist: the **full** token (`DISPATCH_API_TOKEN`, or `$GAFFER_DATA/dashboard-token`) and a **read-scoped** token derived from it one-way (`dispatch-api print-read-token`) that may call GET routes only; a mutating call with the read token is refused with 403 `READ_ONLY_TOKEN`. Each operation's `x-capability` says which it needs (`public`, `read`, `full`). Token-less requests are also subject to a Host/Origin check (403 `FORBIDDEN_HOST`).\n\n**Errors** are `{ error: { code, message, details? } }` with a stable `code`; 422 is validation, 409 a state-machine or claim conflict, 404 an unknown resource.\n\n**Actors.** The API acts as one operator identity; there is no per-user RBAC. Response bodies are described by the TypeScript view type they serialise (named in each description) rather than schema'd."
+    "description": "The control plane's REST surface: tickets and their gates, the Factory Map scope graph, plan sessions, epics and specs, repositories, runner actions, configuration, read models and the live event stream.\n\n**Authentication.** Every data route requires `Authorization: Bearer <token>`. Two credentials exist: the **full** token (`DISPATCH_API_TOKEN`, or `$GAFFER_DATA/dashboard-token`) and a **read-scoped** token derived from it one-way (`dispatch-api print-read-token`) that may call GET routes only; a mutating call with the read token is refused with 403 `READ_ONLY_TOKEN`. Each operation's `x-capability` says which it needs (`public`, `read`, `full`). Token-less requests are also subject to a Host/Origin check (403 `FORBIDDEN_HOST`).\n\n**Errors** are `{ error: { code, message, details? } }` with a stable `code`; 422 is validation, 409 a state-machine or claim conflict, 404 an unknown resource.\n\n**Actors.** A request acts as the principal its token names (`GET /api/whoami`), or as the single `dispatch-api` operator for the shared token; there is no per-repository RBAC. The main ticket, gate, decision and principal operations carry response schemas; the read models are described by the TypeScript view type they serialise (named in each description)."
   },
   "servers": [
     {
@@ -145,7 +145,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/Whoami"
                 }
               }
             }
@@ -232,7 +232,7 @@
           "Configuration"
         ],
         "summary": "Mint a named API credential",
-        "description": "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored.",
+        "description": "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored. Shared operator token only: a principal token is refused.",
         "requestBody": {
           "required": true,
           "content": {
@@ -249,7 +249,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/PrincipalCreated"
                 }
               }
             }
@@ -265,7 +265,7 @@
             }
           },
           "403": {
-            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "description": "The caller authenticated with a principal token; only the shared operator token may manage principals (`PRINCIPAL_ADMIN_REQUIRED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -304,13 +304,13 @@
       }
     },
     "/api/principals/{id}": {
-      "delete": {
-        "operationId": "deleteApiPrincipalsById",
+      "get": {
+        "operationId": "getApiPrincipalsById",
         "tags": [
           "Configuration"
         ],
-        "summary": "Revoke an API credential",
-        "description": "Stamps `revoked_at`; the row stays for the audit trail. `:id` accepts the id or the name.",
+        "summary": "Get an API principal",
+        "description": "One principal by id or name, revoked ones included — the `Location` that POST /api/principals returns. Never carries token material.",
         "parameters": [
           {
             "name": "id",
@@ -328,7 +328,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/PrincipalEnvelope"
                 }
               }
             }
@@ -344,7 +344,74 @@
             }
           },
           "403": {
-            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      },
+      "delete": {
+        "operationId": "deleteApiPrincipalsById",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Revoke an API credential",
+        "description": "Stamps `revoked_at`; the row stays for the audit trail. `:id` accepts the id or the name. Shared operator token only: a principal token is refused.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ principal }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller authenticated with a principal token; only the shared operator token may manage principals (`PRINCIPAL_ADMIN_REQUIRED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -469,6 +536,267 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/api/club": {
+      "get": {
+        "operationId": "getApiClub",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Read the club identity",
+        "description": "The operator's team for the Match Day dashboard (`ClubView`): `name`, `short_name`, `kit_primary`, `kit_secondary` (null when unset) plus `name_effective` (\"Gaffer\" when unset) and `short_name_effective`.",
+        "responses": {
+          "200": {
+            "description": "`{ club: ClubView }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      },
+      "patch": {
+        "operationId": "patchApiClub",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Update the club identity",
+        "description": "Partial: an omitted field is unchanged, `null` or \"\" clears it. Name ≤ 60 chars; short name 1–4 letters/digits; kit colours `#rgb`/`#rrggbb` (stored lowercase `#rrggbb`). A change is recorded as a `club.updated` event.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/updateClubBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ club: ClubView, changed: string[] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/api/squad": {
+      "get": {
+        "operationId": "getApiSquad",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "The squad: club + agents with display names",
+        "description": "The club plus every registered agent in registration order (`SquadAgentView`): `agent_id`, `display_name` (operator-set or null), `display_name_effective`, `default_display_name` (derived from role + index, e.g. \"Delivery 1\", \"Reviewer\"), `shirt_number`, `role`, `registered_name` and registration facts. Presentation only.",
+        "responses": {
+          "200": {
+            "description": "`{ club: ClubView, agents: SquadAgentView[] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
+    "/api/squad/agents/{id}": {
+      "patch": {
+        "operationId": "patchApiSquadAgentsById",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Set an agent's display name / shirt number",
+        "description": "Partial: omitted ⇒ unchanged, `null` (or \"\" for the name) clears. Display name ≤ 40 chars (trimmed); shirt number 1–99, unique among agents. `:id` is the agent id (or its unique registered name). The agent id itself never changes. Recorded as an `agent.display_updated` event.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/updateSquadAgentBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ agent: SquadAgentView, changed: string[] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The shirt number is worn by another agent (`DUPLICATE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -778,7 +1106,7 @@
           "Events"
         ],
         "summary": "Live event stream (Server-Sent Events)",
-        "description": "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`.",
+        "description": "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`.",
         "parameters": [
           {
             "name": "since",
@@ -1318,7 +1646,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`BoardView`: the columns plus the closed area.",
+            "description": "`BoardView`: the columns plus the closed area. A card's `claim` carries `agent_display`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1485,7 +1813,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Newest-first `ActivityItem[]` (metadata only).",
+            "description": "Newest-first `ActivityItem[]` (metadata only); an event whose actor is a registered agent carries `agent_display`, else `null`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1972,6 +2300,7 @@
           "Tickets"
         ],
         "summary": "List tickets",
+        "description": "Paging is opt-in: with no `limit` every matching ticket is returned. `limit` (clamped to 1–1000) and `offset` page the list; `total` always counts the whole filtered set. `fields=summary` leaves out `description`, `test_contract` and `last_review_feedback`. Unknown query parameters are ignored.",
         "parameters": [
           {
             "name": "status",
@@ -2018,15 +2347,46 @@
                 "critical"
               ]
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Coerced from a string."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Coerced from a string."
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "full",
+                "summary"
+              ]
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "`Ticket[]`.",
+            "description": "`{ tickets, total, limit?, offset? }` (`limit`/`offset` echoed when paging).",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketList"
                 }
               }
             }
@@ -2075,7 +2435,7 @@
           "Tickets"
         ],
         "summary": "Create a ticket",
-        "description": "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo.",
+        "description": "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2088,11 +2448,11 @@
         },
         "responses": {
           "201": {
-            "description": "The new `Ticket`. The Location header names the created resource.",
+            "description": "`{ ticket }` — the new ticket. The Location header names the created resource.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketEnvelope"
                 }
               }
             }
@@ -2109,6 +2469,16 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2143,7 +2513,7 @@
           "Tickets"
         ],
         "summary": "Ticket detail",
-        "description": "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail. `:id` accepts the ticket id or number.",
+        "description": "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail, plus `agent_display` — the presentation of every registered agent the ticket names, keyed by agent id. `:id` accepts the ticket id or number.",
         "parameters": [
           {
             "name": "id",
@@ -2157,11 +2527,11 @@
         ],
         "responses": {
           "200": {
-            "description": "`TicketView`.",
+            "description": "`TicketView` as `{ ticket, acceptance_criteria, repositories, scopes, blocking_decisions, dependencies, evidence, events, rework_trail }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketDetail"
                 }
               }
             }
@@ -2236,11 +2606,11 @@
         },
         "responses": {
           "201": {
-            "description": "The new `AcceptanceCriterion`. The Location header names the created resource.",
+            "description": "`{ acceptance_criterion, event_id }`. The Location header names the created resource.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/AcCreated"
                 }
               }
             }
@@ -2314,11 +2684,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketTransition"
                 }
               }
             }
@@ -2379,7 +2749,7 @@
           "Tickets"
         ],
         "summary": "Move on the board",
-        "description": "A human board move through the state machine; illegal edges are refused.",
+        "description": "A human board move through the state machine; illegal edges are refused. Moving a reviewed ticket back to `ready`/`refining` is a rejection (ACs reset, attempt counted, feedback recorded, parked at the retry cap); agent-leased in-flight work cannot be moved into review.",
         "parameters": [
           {
             "name": "id",
@@ -2403,11 +2773,11 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketTransition"
                 }
               }
             }
@@ -2501,7 +2871,7 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket` (in_progress).",
+            "description": "`{ ticket_id, number, human_owned: true }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2589,7 +2959,7 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket` (ready).",
+            "description": "`{ ticket_id, status, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2667,7 +3037,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket_id, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2745,7 +3115,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`WorkEvent[]` (with `correlation_id` per tick and the hash chain).",
+            "description": "`{ events: WorkEvent[] }` (with `correlation_id` per tick and the hash chain).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2814,7 +3184,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`ReworkTrailEntry[]`.",
+            "description": "`{ rework_trail: ReworkTrailEntry[] }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2883,11 +3253,11 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ ticket, merge }`.",
+            "description": "`{ ticket, event_id, merge? }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/ReviewApproved"
                 }
               }
             }
@@ -2972,11 +3342,11 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket, event_id, lore_capture? }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketTransition"
                 }
               }
             }
@@ -3126,7 +3496,7 @@
           "Review & delivery"
         ],
         "summary": "Merge-complete callback",
-        "description": "ready_for_merge → done. Acts as the system actor.",
+        "description": "ready_for_merge → done. A human principal acts as admin under its own id (the event names who marked it merged); a system or admin principal keeps its type.",
         "parameters": [
           {
             "name": "id",
@@ -3140,11 +3510,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketTransition"
                 }
               }
             }
@@ -3205,7 +3575,7 @@
           "Review & delivery"
         ],
         "summary": "Reopen a done ticket for re-review",
-        "description": "The auto-merge re-approval callback (done → in_review). Acts as the system actor.",
+        "description": "The auto-merge re-approval callback (done → in_review). Attributed like mark-merged: a human principal acts as admin under its own id.",
         "parameters": [
           {
             "name": "id",
@@ -3229,11 +3599,11 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket_id, status, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/ReopenedForReview"
                 }
               }
             }
@@ -3483,11 +3853,11 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket_id, can_be_tested, event_id }` (plus deprecated camelCase twins).",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TestableSet"
                 }
               }
             }
@@ -3571,11 +3941,11 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ test_contract }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TestContractSet"
                 }
               }
             }
@@ -3636,7 +4006,7 @@
           "Review & delivery"
         ],
         "summary": "Record the independent tester's verdict",
-        "description": "pass → ready_for_merge, fail → refining. Acts as the system actor.",
+        "description": "pass → ready_for_merge, fail → refining, recorded as the calling principal. On an acceptance ticket a human PASS is a waiver; an automated PASS must carry `tested_commit`, `contract_hash` and `replay: passed` (422 `BINDING_REQUIRED`), and a `contract_hash` that no longer matches the contract on record is a 409 `CONTRACT_MISMATCH`.",
         "parameters": [
           {
             "name": "id",
@@ -3660,11 +4030,11 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketTransition"
                 }
               }
             }
@@ -3758,11 +4128,11 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket` (cancelled).",
+            "description": "`{ ticket, event_id }` (cancelled).",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketTransition"
                 }
               }
             }
@@ -3856,11 +4226,11 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketTransition"
                 }
               }
             }
@@ -3955,7 +4325,7 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket_id, event_id, resume_requested: true }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4043,7 +4413,7 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket` (cancelled).",
+            "description": "`{ ticket, event_id }` (cancelled).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4142,7 +4512,7 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket_id, branch_name, pr_url, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4230,7 +4600,7 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `Ticket`.",
+            "description": "`{ ticket_id, reviewer, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4939,11 +5309,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The updated access rows.",
+            "description": "`{ applied, ticket_id, repo_id?, reason?, event_id? }` (plus deprecated camelCase twins).",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/MonoFallback"
                 }
               }
             }
@@ -5537,7 +5907,7 @@
         "summary": "List pending decisions",
         "responses": {
           "200": {
-            "description": "`Decision[]`.",
+            "description": "`{ decisions: Decision[] }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5592,11 +5962,11 @@
         },
         "responses": {
           "201": {
-            "description": "The new `Decision`. The Location header names the created resource.",
+            "description": "`{ decision }`. The Location header names the created resource.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/DecisionEnvelope"
                 }
               }
             }
@@ -5640,6 +6010,75 @@
         "x-capability": "full"
       }
     },
+    "/decisions/{id}": {
+      "get": {
+        "operationId": "getDecisionsById",
+        "tags": [
+          "Decisions"
+        ],
+        "summary": "Get a decision",
+        "description": "One decision in any status — the `Location` that POST /decisions returns.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ decision }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
     "/decisions/{id}/resolve": {
       "post": {
         "operationId": "postDecisionsByIdResolve",
@@ -5670,11 +6109,11 @@
         },
         "responses": {
           "200": {
-            "description": "The resolved `Decision`.",
+            "description": "`{ decision }` — resolved.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/DecisionEnvelope"
                 }
               }
             }
@@ -5747,7 +6186,7 @@
         "summary": "List active claims",
         "responses": {
           "200": {
-            "description": "`Claim[]`.",
+            "description": "`{ claims: ActiveClaimView[] }` — each row carries `agent_display` (the claiming agent's display name, shirt number and role).",
             "content": {
               "application/json": {
                 "schema": {
@@ -6340,7 +6779,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`ScopeEdge[]`.",
+            "description": "`{ edges: ScopeEdge[] }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6395,7 +6834,7 @@
         },
         "responses": {
           "201": {
-            "description": "The new `ScopeEdge`. The Location header names the created resource.",
+            "description": "`{ edge }`. The Location header names the created resource.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6444,6 +6883,73 @@
       }
     },
     "/scope/edges/{id}": {
+      "get": {
+        "operationId": "getScopeEdgesById",
+        "tags": [
+          "Factory Map (scope graph)"
+        ],
+        "summary": "Get a scope edge",
+        "description": "The `Location` that POST /scope/edges returns.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ edge }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      },
       "delete": {
         "operationId": "deleteScopeEdgesById",
         "tags": [
@@ -6463,7 +6969,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ ok: true }`.",
+            "description": "`{ edge_id, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6606,7 +7112,7 @@
         },
         "responses": {
           "201": {
-            "description": "The new `ScopeRepo`. The Location header names the created resource.",
+            "description": "`{ association }`. The Location header names the created resource.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6655,6 +7161,73 @@
       }
     },
     "/scope/repos/{id}": {
+      "get": {
+        "operationId": "getScopeReposById",
+        "tags": [
+          "Factory Map (scope graph)"
+        ],
+        "summary": "Get a scope↔repo association",
+        "description": "The `Location` that POST /scope/repos returns.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ association }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      },
       "patch": {
         "operationId": "patchScopeReposById",
         "tags": [
@@ -6684,7 +7257,7 @@
         },
         "responses": {
           "200": {
-            "description": "The updated `ScopeRepo`.",
+            "description": "`{ association }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6760,7 +7333,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ ok: true }`.",
+            "description": "`{ association_id, event_id }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7754,7 +8327,7 @@
         "summary": "List agents",
         "responses": {
           "200": {
-            "description": "`Agent[]`.",
+            "description": "`{ agents: Agent[] }`, each with `agent_display`. `display_name` here is the label the agent registered with; the operator-chosen name is `agent_display.display_name`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8558,6 +9131,121 @@
       }
     },
     "schemas": {
+      "AcCreated": {
+        "type": "object",
+        "properties": {
+          "acceptance_criterion": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "sort_order": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "satisfied",
+                  "failed",
+                  "waived"
+                ]
+              },
+              "verification_method": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "evidence_required": {
+                "type": "integer"
+              },
+              "verified_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "verified_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "check_command": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "spec_clause_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "ticket_id",
+              "text",
+              "sort_order",
+              "status",
+              "verification_method",
+              "evidence_required",
+              "verified_by",
+              "verified_at",
+              "check_command",
+              "spec_clause_id",
+              "created_at",
+              "updated_at"
+            ],
+            "description": "An acceptance criterion."
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          }
+        },
+        "required": [
+          "acceptance_criterion",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
       "addAcBody": {
         "type": "object",
         "properties": {
@@ -9216,6 +9904,158 @@
           "title"
         ]
       },
+      "DecisionEnvelope": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "question": {
+                "type": "string"
+              },
+              "rationale": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "requested",
+                  "agent_proposed",
+                  "human_required",
+                  "accepted",
+                  "rejected",
+                  "superseded"
+                ]
+              },
+              "decision_type": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "log_only",
+                  "agent_can_choose",
+                  "human_preferred",
+                  "human_required",
+                  "security_required"
+                ]
+              },
+              "proposed_answer": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "proposed_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "confidence": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "resolved_answer": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "resolved_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "resolved_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "memory_record_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "question",
+              "rationale",
+              "status",
+              "decision_type",
+              "severity",
+              "proposed_answer",
+              "proposed_by",
+              "confidence",
+              "resolved_answer",
+              "resolved_by",
+              "resolved_at",
+              "memory_record_id",
+              "created_at",
+              "updated_at"
+            ],
+            "description": "A decision."
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "additionalProperties": false
+      },
       "ErrorBody": {
         "type": "object",
         "required": [
@@ -9368,6 +10208,46 @@
         "required": [
           "scope_node_id"
         ]
+      },
+      "MonoFallback": {
+        "type": "object",
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "ticket_id": {
+            "type": "string"
+          },
+          "repo_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it did not apply."
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          },
+          "ticketId": {
+            "type": "string",
+            "description": "Deprecated camelCase twin of ticket_id."
+          },
+          "repoId": {
+            "type": "string",
+            "description": "Deprecated camelCase twin of repo_id."
+          },
+          "eventId": {
+            "type": "string",
+            "description": "Deprecated camelCase twin of event_id."
+          }
+        },
+        "required": [
+          "applied",
+          "ticket_id",
+          "ticketId"
+        ],
+        "additionalProperties": false
       },
       "moveTicketBody": {
         "type": "object",
@@ -9570,6 +10450,175 @@
           "content"
         ]
       },
+      "PrincipalCreated": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "capability": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "read"
+                ]
+              },
+              "actor_type": {
+                "type": "string",
+                "enum": [
+                  "human",
+                  "admin"
+                ]
+              },
+              "actor_id": {
+                "type": "string"
+              },
+              "created_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "last_used_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revoked_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "capability",
+              "actor_type",
+              "actor_id",
+              "created_by",
+              "created_at",
+              "last_used_at",
+              "revoked_at"
+            ],
+            "description": "An API principal (never carries token material)."
+          },
+          "token": {
+            "type": "string",
+            "description": "The bearer token — shown this once; only its hash is stored."
+          }
+        },
+        "required": [
+          "principal",
+          "token"
+        ],
+        "additionalProperties": false
+      },
+      "PrincipalEnvelope": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "capability": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "read"
+                ]
+              },
+              "actor_type": {
+                "type": "string",
+                "enum": [
+                  "human",
+                  "admin"
+                ]
+              },
+              "actor_id": {
+                "type": "string"
+              },
+              "created_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "last_used_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revoked_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "capability",
+              "actor_type",
+              "actor_id",
+              "created_by",
+              "created_at",
+              "last_used_at",
+              "revoked_at"
+            ],
+            "description": "An API principal (never carries token material)."
+          }
+        },
+        "required": [
+          "principal"
+        ],
+        "additionalProperties": false
+      },
       "recordDeliveryArtifactBody": {
         "type": "object",
         "properties": {
@@ -9679,6 +10728,42 @@
           "reason"
         ]
       },
+      "ReopenedForReview": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "refining",
+              "ready",
+              "claimed",
+              "in_progress",
+              "blocked",
+              "in_review",
+              "in_testing",
+              "ready_for_merge",
+              "done",
+              "failed",
+              "cancelled",
+              "paused"
+            ]
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          }
+        },
+        "required": [
+          "ticket_id",
+          "status",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
       "reopenForReviewBody": {
         "type": "object",
         "properties": {
@@ -9733,6 +10818,282 @@
         "required": [
           "status"
         ]
+      },
+      "ReviewApproved": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "number": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "refining",
+                  "ready",
+                  "claimed",
+                  "in_progress",
+                  "blocked",
+                  "in_review",
+                  "in_testing",
+                  "ready_for_merge",
+                  "done",
+                  "failed",
+                  "cancelled",
+                  "paused"
+                ]
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "risk_level": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "policy_pack": {
+                "type": "string",
+                "enum": [
+                  "solo_loose",
+                  "team_light",
+                  "factory_strict",
+                  "regulated"
+                ]
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reviewer": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "branch_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pr_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attempt_count": {
+                "type": "integer"
+              },
+              "row_version": {
+                "type": "integer"
+              },
+              "scheduled_after": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "due_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bootstrap": {
+                "type": "integer"
+              },
+              "last_review_feedback": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded {reason, reviewer, at} or null."
+              },
+              "can_be_tested": {
+                "type": "integer"
+              },
+              "test_contract": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded test contract or null."
+              },
+              "acceptance": {
+                "type": "integer"
+              },
+              "human_owner": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "human_delivered": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "delivery_budget_usd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "number",
+              "title",
+              "description",
+              "status",
+              "priority",
+              "risk_level",
+              "policy_pack",
+              "source",
+              "created_by",
+              "reviewer",
+              "branch_name",
+              "pr_url",
+              "attempt_count",
+              "row_version",
+              "scheduled_after",
+              "due_at",
+              "bootstrap",
+              "last_review_feedback",
+              "can_be_tested",
+              "test_contract",
+              "acceptance",
+              "human_owner",
+              "human_delivered",
+              "delivery_budget_usd",
+              "created_at",
+              "updated_at"
+            ],
+            "description": "A ticket row."
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          },
+          "merge": {
+            "type": "object",
+            "properties": {
+              "triggered": {
+                "type": "boolean"
+              },
+              "pid": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "skipped": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "triggered",
+              "pid"
+            ],
+            "description": "The auto-merge command, when one is configured."
+          }
+        },
+        "required": [
+          "ticket",
+          "event_id"
+        ],
+        "additionalProperties": false
       },
       "runProductOwnerBody": {
         "type": "object",
@@ -10058,6 +11419,87 @@
           }
         }
       },
+      "TestableSet": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "string"
+          },
+          "can_be_tested": {
+            "type": "boolean"
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          },
+          "ticketId": {
+            "type": "string",
+            "description": "Deprecated camelCase twin of ticket_id."
+          },
+          "canBeTested": {
+            "type": "boolean",
+            "description": "Deprecated camelCase twin of can_be_tested."
+          },
+          "eventId": {
+            "type": "string",
+            "description": "Deprecated camelCase twin of event_id."
+          }
+        },
+        "required": [
+          "ticket_id",
+          "can_be_tested",
+          "event_id",
+          "ticketId",
+          "canBeTested",
+          "eventId"
+        ],
+        "additionalProperties": false
+      },
+      "TestContractSet": {
+        "type": "object",
+        "properties": {
+          "test_contract": {
+            "type": "object",
+            "properties": {
+              "changed_surfaces": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "runtime_deps": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env_vars": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "run_command": {
+                "type": "string"
+              },
+              "harness_ready": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "changed_surfaces",
+              "runtime_deps",
+              "env_vars",
+              "run_command",
+              "harness_ready"
+            ]
+          }
+        },
+        "required": [
+          "test_contract"
+        ],
+        "additionalProperties": false
+      },
       "testerVerdictBody": {
         "type": "object",
         "properties": {
@@ -10084,12 +11526,1400 @@
               "refining",
               "ready"
             ]
+          },
+          "tested_commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+          },
+          "contract_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "replay": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "skipped"
+            ]
           }
         },
         "required": [
           "verdict",
           "summary"
         ]
+      },
+      "TicketDetail": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "number": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "refining",
+                  "ready",
+                  "claimed",
+                  "in_progress",
+                  "blocked",
+                  "in_review",
+                  "in_testing",
+                  "ready_for_merge",
+                  "done",
+                  "failed",
+                  "cancelled",
+                  "paused"
+                ]
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "risk_level": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "policy_pack": {
+                "type": "string",
+                "enum": [
+                  "solo_loose",
+                  "team_light",
+                  "factory_strict",
+                  "regulated"
+                ]
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reviewer": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "branch_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pr_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attempt_count": {
+                "type": "integer"
+              },
+              "row_version": {
+                "type": "integer"
+              },
+              "scheduled_after": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "due_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bootstrap": {
+                "type": "integer"
+              },
+              "last_review_feedback": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded {reason, reviewer, at} or null."
+              },
+              "can_be_tested": {
+                "type": "integer"
+              },
+              "test_contract": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded test contract or null."
+              },
+              "acceptance": {
+                "type": "integer"
+              },
+              "human_owner": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "human_delivered": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "delivery_budget_usd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "number",
+              "title",
+              "description",
+              "status",
+              "priority",
+              "risk_level",
+              "policy_pack",
+              "source",
+              "created_by",
+              "reviewer",
+              "branch_name",
+              "pr_url",
+              "attempt_count",
+              "row_version",
+              "scheduled_after",
+              "due_at",
+              "bootstrap",
+              "last_review_feedback",
+              "can_be_tested",
+              "test_contract",
+              "acceptance",
+              "human_owner",
+              "human_delivered",
+              "delivery_budget_usd",
+              "created_at",
+              "updated_at"
+            ],
+            "description": "A ticket row."
+          },
+          "acceptance_criteria": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "ticket_id": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "sort_order": {
+                  "type": "integer"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "satisfied",
+                    "failed",
+                    "waived"
+                  ]
+                },
+                "verification_method": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "evidence_required": {
+                  "type": "integer"
+                },
+                "verified_by": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "verified_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "check_command": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "spec_clause_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "ticket_id",
+                "text",
+                "sort_order",
+                "status",
+                "verification_method",
+                "evidence_required",
+                "verified_by",
+                "verified_at",
+                "check_command",
+                "spec_clause_id",
+                "created_at",
+                "updated_at"
+              ],
+              "description": "An acceptance criterion."
+            }
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "blocking_decisions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                },
+                "rationale": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "requested",
+                    "agent_proposed",
+                    "human_required",
+                    "accepted",
+                    "rejected",
+                    "superseded"
+                  ]
+                },
+                "decision_type": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "log_only",
+                    "agent_can_choose",
+                    "human_preferred",
+                    "human_required",
+                    "security_required"
+                  ]
+                },
+                "proposed_answer": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "proposed_by": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "confidence": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "resolved_answer": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "resolved_by": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "resolved_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "memory_record_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "question",
+                "rationale",
+                "status",
+                "decision_type",
+                "severity",
+                "proposed_answer",
+                "proposed_by",
+                "confidence",
+                "resolved_answer",
+                "resolved_by",
+                "resolved_at",
+                "memory_record_id",
+                "created_at",
+                "updated_at"
+              ],
+              "description": "A decision."
+            }
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "rework_trail": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          }
+        },
+        "required": [
+          "ticket",
+          "acceptance_criteria",
+          "repositories",
+          "scopes",
+          "blocking_decisions",
+          "dependencies",
+          "evidence",
+          "events",
+          "rework_trail"
+        ],
+        "additionalProperties": false
+      },
+      "TicketEnvelope": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "number": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "refining",
+                  "ready",
+                  "claimed",
+                  "in_progress",
+                  "blocked",
+                  "in_review",
+                  "in_testing",
+                  "ready_for_merge",
+                  "done",
+                  "failed",
+                  "cancelled",
+                  "paused"
+                ]
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "risk_level": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "policy_pack": {
+                "type": "string",
+                "enum": [
+                  "solo_loose",
+                  "team_light",
+                  "factory_strict",
+                  "regulated"
+                ]
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reviewer": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "branch_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pr_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attempt_count": {
+                "type": "integer"
+              },
+              "row_version": {
+                "type": "integer"
+              },
+              "scheduled_after": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "due_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bootstrap": {
+                "type": "integer"
+              },
+              "last_review_feedback": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded {reason, reviewer, at} or null."
+              },
+              "can_be_tested": {
+                "type": "integer"
+              },
+              "test_contract": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded test contract or null."
+              },
+              "acceptance": {
+                "type": "integer"
+              },
+              "human_owner": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "human_delivered": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "delivery_budget_usd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "number",
+              "title",
+              "description",
+              "status",
+              "priority",
+              "risk_level",
+              "policy_pack",
+              "source",
+              "created_by",
+              "reviewer",
+              "branch_name",
+              "pr_url",
+              "attempt_count",
+              "row_version",
+              "scheduled_after",
+              "due_at",
+              "bootstrap",
+              "last_review_feedback",
+              "can_be_tested",
+              "test_contract",
+              "acceptance",
+              "human_owner",
+              "human_delivered",
+              "delivery_budget_usd",
+              "created_at",
+              "updated_at"
+            ],
+            "description": "A ticket row."
+          }
+        },
+        "required": [
+          "ticket"
+        ],
+        "additionalProperties": false
+      },
+      "TicketList": {
+        "type": "object",
+        "properties": {
+          "tickets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "number": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "draft",
+                    "refining",
+                    "ready",
+                    "claimed",
+                    "in_progress",
+                    "blocked",
+                    "in_review",
+                    "in_testing",
+                    "ready_for_merge",
+                    "done",
+                    "failed",
+                    "cancelled",
+                    "paused"
+                  ]
+                },
+                "priority": {
+                  "type": "integer"
+                },
+                "risk_level": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "critical"
+                  ]
+                },
+                "policy_pack": {
+                  "type": "string",
+                  "enum": [
+                    "solo_loose",
+                    "team_light",
+                    "factory_strict",
+                    "regulated"
+                  ]
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "created_by": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reviewer": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "branch_name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pr_url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "attempt_count": {
+                  "type": "integer"
+                },
+                "row_version": {
+                  "type": "integer"
+                },
+                "scheduled_after": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "due_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "bootstrap": {
+                  "type": "integer"
+                },
+                "last_review_feedback": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "JSON-encoded {reason, reviewer, at} or null."
+                },
+                "can_be_tested": {
+                  "type": "integer"
+                },
+                "test_contract": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "JSON-encoded test contract or null."
+                },
+                "acceptance": {
+                  "type": "integer"
+                },
+                "human_owner": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "human_delivered": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "delivery_budget_usd": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "number",
+                "title",
+                "status",
+                "priority",
+                "risk_level",
+                "policy_pack",
+                "source",
+                "created_by",
+                "reviewer",
+                "branch_name",
+                "pr_url",
+                "attempt_count",
+                "row_version",
+                "scheduled_after",
+                "due_at",
+                "bootstrap",
+                "can_be_tested",
+                "acceptance",
+                "human_owner",
+                "human_delivered",
+                "delivery_budget_usd",
+                "created_at",
+                "updated_at"
+              ],
+              "description": "A ticket row."
+            }
+          },
+          "total": {
+            "type": "integer",
+            "description": "Every ticket matching the filters, regardless of paging."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Echoed when paging."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Echoed when paging."
+          }
+        },
+        "required": [
+          "tickets",
+          "total"
+        ],
+        "additionalProperties": false
+      },
+      "TicketTransition": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "number": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "refining",
+                  "ready",
+                  "claimed",
+                  "in_progress",
+                  "blocked",
+                  "in_review",
+                  "in_testing",
+                  "ready_for_merge",
+                  "done",
+                  "failed",
+                  "cancelled",
+                  "paused"
+                ]
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "risk_level": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "policy_pack": {
+                "type": "string",
+                "enum": [
+                  "solo_loose",
+                  "team_light",
+                  "factory_strict",
+                  "regulated"
+                ]
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reviewer": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "branch_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pr_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attempt_count": {
+                "type": "integer"
+              },
+              "row_version": {
+                "type": "integer"
+              },
+              "scheduled_after": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "due_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bootstrap": {
+                "type": "integer"
+              },
+              "last_review_feedback": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded {reason, reviewer, at} or null."
+              },
+              "can_be_tested": {
+                "type": "integer"
+              },
+              "test_contract": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded test contract or null."
+              },
+              "acceptance": {
+                "type": "integer"
+              },
+              "human_owner": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "human_delivered": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "delivery_budget_usd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "number",
+              "title",
+              "description",
+              "status",
+              "priority",
+              "risk_level",
+              "policy_pack",
+              "source",
+              "created_by",
+              "reviewer",
+              "branch_name",
+              "pr_url",
+              "attempt_count",
+              "row_version",
+              "scheduled_after",
+              "due_at",
+              "bootstrap",
+              "last_review_feedback",
+              "can_be_tested",
+              "test_contract",
+              "acceptance",
+              "human_owner",
+              "human_delivered",
+              "delivery_budget_usd",
+              "created_at",
+              "updated_at"
+            ],
+            "description": "A ticket row."
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          },
+          "lore_capture": {
+            "type": "object",
+            "properties": {
+              "captured": {
+                "type": "boolean"
+              },
+              "id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "captured"
+            ],
+            "description": "review/reject with captureLore only."
+          }
+        },
+        "required": [
+          "ticket",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
+      "updateClubBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "short_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kit_primary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))?$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kit_secondary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))?$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "updateScopeNodeBody": {
         "type": "object",
@@ -10228,6 +13058,90 @@
         "required": [
           "clauses"
         ]
+      },
+      "updateSquadAgentBody": {
+        "type": "object",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shirt_number": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 99
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Whoami": {
+        "type": "object",
+        "properties": {
+          "capability": {
+            "type": "string",
+            "enum": [
+              "full",
+              "read"
+            ]
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "principal": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "capability",
+          "actor",
+          "principal"
+        ],
+        "additionalProperties": false
       },
       "wontDoBody": {
         "type": "object",

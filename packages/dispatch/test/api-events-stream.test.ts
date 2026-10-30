@@ -12,6 +12,7 @@ import type { AddressInfo } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { setPrincipalResolver } from "../src/api/auth.js";
 import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
@@ -170,5 +171,50 @@ describe("GET /api/events/stream (SSE)", () => {
   it("rejects non-GET", async () => {
     const res = await fetch(`${h.baseUrl}/api/events/stream`, { method: "POST" });
     expect(res.status).toBe(405);
+  });
+});
+
+describe("GET /api/events/stream ends when its credential is revoked", () => {
+  const FULL = "shared-full-token-for-stream-revocation-0123456789";
+  const prev = process.env.DISPATCH_API_TOKEN;
+  let h: Harness;
+  beforeEach(async () => {
+    process.env.DISPATCH_API_TOKEN = FULL;
+    h = await startHarness();
+  });
+  afterEach(async () => {
+    await h.close();
+    setPrincipalResolver(null);
+    if (prev === undefined) delete process.env.DISPATCH_API_TOKEN;
+    else process.env.DISPATCH_API_TOKEN = prev;
+  });
+  const open = (token: string, signal: AbortSignal) =>
+    fetch(`${h.baseUrl}/api/events/stream`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal,
+    });
+
+  it("a revoked principal's open stream closes without delivering later events", async () => {
+    const { token } = h.wg.createPrincipal({ name: "viewer2", capability: "read" }, human);
+    const ctrl = new AbortController();
+    const res = await open(token, ctrl.signal);
+    expect(res.status).toBe(200);
+    h.wg.revokePrincipal("viewer2", human);
+    h.wg.createTicket({ title: "after revoke" }, human);
+    const frames = await readFrames(res, 1, 3500);
+    expect(frames.some((f) => f.event === "auth_revoked")).toBe(true);
+    expect(JSON.stringify(frames)).not.toContain("after revoke");
+    ctrl.abort();
+  });
+
+  it("the shared token's stream keeps delivering after an unrelated principal is revoked", async () => {
+    h.wg.createPrincipal({ name: "other" }, human);
+    const ctrl = new AbortController();
+    const res = await open(FULL, ctrl.signal);
+    h.wg.revokePrincipal("other", human);
+    h.wg.createTicket({ title: "still streamed" }, human);
+    const frames = await readFrames(res, 1);
+    expect(frames.some((f) => f.data?.ticket_title === "still streamed")).toBe(true);
+    ctrl.abort();
   });
 });

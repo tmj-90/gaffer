@@ -48,7 +48,7 @@ crew run -a <agentId> --dry-run # one implementation-loop tick
 crew idle                       # run every enabled idle loop (drafts only)
 crew maintain                   # idle MAINTENANCE LANE: ONE scheduler-chosen loop (priority+rotation)
 crew skills --capability tests  # list skills by stack/capability
-crew safety check --command "git push --force"   # explain a safety decision
+crew safety check --command "git push --force"   # advisory policy verdict + the live hook's enforced one
 ```
 
 `doctor` and `stats` render human-readable output by default; pass `--json` for
@@ -56,7 +56,7 @@ the structured form.
 
 ### `crew maintain` — the idle maintenance lane
 
-`crew idle` runs *every* enabled idle loop. `crew maintain` instead runs the
+`crew idle` runs _every_ enabled idle loop. `crew maintain` instead runs the
 **one** maintenance loop chosen by a **deterministic priority + rotation
 scheduler — no LLM in the choice** (audit item A4). It is the "factory improves
 the longer it runs" promise made literal: every quiet tick spends its tokens on
@@ -74,7 +74,7 @@ the highest-leverage maintenance lane that is due.
 
 ### `crew doctor`
 
-A readiness pre-flight that answers *"is this factory actually ready to run?"*.
+A readiness pre-flight that answers _"is this factory actually ready to run?"_.
 Each check is independent and degrades to a `warn` or a `fail` with an actionable
 `fix`. It exits non-zero only on a hard `fail`, so it slots straight into CI as a
 gate. The checks:
@@ -82,7 +82,7 @@ gate. The checks:
 - **Config valid** — the loaded `crew.yaml` parsed and its mode.
 - **Repos resolve** — every configured repo path exists on disk (`fail` if missing).
 - **Active agents** — at least one agent is `status: active` to claim work.
-- **Dispatch reachable** — opens the store *and issues a real read* (`listReady`),
+- **Dispatch reachable** — opens the store _and issues a real read_ (`listReady`),
   so a locked/corrupt DB or a schema mismatch surfaces as a `fail` rather than a
   vacuously-passing bare open.
 - **Memory reachable** — the MCP memory server connects, or a clean "not
@@ -104,8 +104,10 @@ their target repos, and recent run outcomes read back from the audit log.
 `crew-mcp` exposes the factory to an agent over stdio. Each tool's
 description coaches the agent on when to call it, how to read the result, and what
 to do on empty/failed results. Every tool returns both a text payload and a
-matching `structuredContent` object. Tools are read-only or draft-only — the only
-mutating tool, `run_idle_loop`, creates **draft** tickets and never edits code.
+matching `structuredContent` object. Every tool but one is read-only. The one
+mutating tool, `run_idle_loop`, runs the same tick as `crew idle` and files its
+findings as **draft** tickets (or ready ones, when a loop's mode is
+`create_ready_tickets` or `loops.self_improve` promotes them). It never edits code.
 
 ```bash
 crew-mcp -c /path/to/crew.yaml   # or set CREW_CONFIG
@@ -113,16 +115,16 @@ crew-mcp -c /path/to/crew.yaml   # or set CREW_CONFIG
 
 The tools:
 
-| Tool | What it does |
-| --- | --- |
-| `get_factory_status` | Factory mode, repo/agent/skill counts, subsystem reachability. |
-| `list_agents` | Configured agents with capabilities, risk ceiling and status. |
-| `list_repos` | Configured repos; optionally `scan` for live branch + stack. |
-| `get_context_packet` | The full context packet for a ticket (AC, paths, policy, lore). |
-| `run_idle_loop` | The one mutating tool — drafts observation-only tickets. |
-| `explain_safety_policy` | The effective git/fs/command/secret guardrails. |
-| `check_command_allowed` | Classify a command: `allowed` / `needs_approval` / `denied`. |
-| `check_path_write_allowed` | Whether a path is writable under the repo's fs guard. |
+| Tool                       | What it does                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------- |
+| `get_factory_status`       | Factory mode, repo/agent/skill counts, subsystem reachability.                  |
+| `list_agents`              | Configured agents with capabilities, risk ceiling and status.                   |
+| `list_repos`               | Configured repos; optionally `scan` for live branch + stack.                    |
+| `get_context_packet`       | The full context packet for a ticket (AC, paths, policy, lore).                 |
+| `run_idle_loop`            | The one mutating tool — one `crew idle` tick (ingest + every enabled loop).     |
+| `explain_safety_policy`    | The ADVISORY safety_policy.yaml rules (the live hook does not read them).       |
+| `check_command_allowed`    | Advisory `allowed` / `needs_approval` / `denied`, plus the live hook's verdict. |
+| `check_path_write_allowed` | Whether a path is writable: advisory fs guard plus the live hook's verdict.     |
 
 If the server can't start, it writes a code-specific, multi-line diagnostic to
 stderr (which MCP clients surface on a launch failure) and exits cleanly — e.g. a
@@ -141,8 +143,8 @@ Every MCP tool call is recorded to an append-only, **content-redacted** audit lo
   filesystem guard (`.env`/secret files, writes outside the repo root), command
   classifier (risky installs need approval), branch policy, secret redaction.
 - **Context packet** (`src/context/packet.ts`) — ticket + AC + repo paths/commands
-  + branch policy + forbidden actions + relevant Memory records, with every
-  free-text field run through secret redaction.
+  - branch policy + forbidden actions + relevant Memory records, with every
+    free-text field run through secret redaction.
 - **Dispatch boundary** (`src/dispatch/`) — Crew codes against a
   `DispatchClient` interface; `FakeDispatchClient` in tests, `RealDispatchClient`
   (thin adapter over the `dispatch` package, with camelCase↔snake_case + evidence
@@ -161,12 +163,13 @@ Every MCP tool call is recorded to an append-only, **content-redacted** audit lo
   > loop end-to-end; it does **not** call a model or edit files. Real, model-backed
   > delivery is orchestrated by the **Runner** (`runner/`), which spawns a headless
   > `claude -p` agent per ticket inside a git-worktree under the safety hook. So Crew
-  > here is the loop *scaffolding* and policy; the Runner is what actually writes code.
+  > here is the loop _scaffolding_ and policy; the Runner is what actually writes code.
+
 - **Hooks engine** (`src/hooks/`) — advisory, non-mutating hooks fired at lifecycle
   points (`before_claim`, `after_claim`, `after_tests`, `before_submit_review`,
   `on_blocked`, `on_failure`, `after_ticket_done`, …). Hooks report — they never
   act: a veto is honoured only at `before_claim`, elsewhere it degrades to a
-  warning, and any override is *requested* for a human, never applied. The built-in
+  warning, and any override is _requested_ for a human, never applied. The built-in
   set includes the **lore-capture reflection hook** (`after_ticket_done`), which
   prompts the agent to call Memory's `suggest_lore` for anything reusable it
   learned — landing a **draft** for human approval, never recording lore directly.

@@ -16,13 +16,13 @@
 #      merge=deny) → approve_hold; non-trivial → (approve=deny) → hold.
 # Containment is NOT a lite concern: DoD/hygiene stay enforced (untouched here) and
 # the safety hook / worktree isolation / egress are mode-independent.
-# Zero deps beyond bash + python3. bash 3.2 safe. Run: bash runner/test/lite-mode.test.sh
+# Zero deps beyond bash + node. bash 3.2 safe. Run: bash runner/test/lite-mode.test.sh
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 required"; exit 0; }
+command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 [ -f "$RUNNER_DIR/factory.config.sh" ] || { echo "SKIP: factory.config.sh not found"; exit 0; }
 
 PASS=0
@@ -60,6 +60,38 @@ eq ".env → nontrivial:sensitive"               "$(lite_reason low 10 1 '.env.p
 eq "mixed paths, one sensitive → nontrivial"   "$(lite_reason low 10 2 "$(printf 'src/a.ts\ndb/migrations/2.sql')")" nontrivial:sensitive-path
 # empty / non-numeric size fails closed (treated as large)
 eq "garbage line count → nontrivial (closed)"  "$(lite_reason low abc 1 'src/a.ts')"                   nontrivial:lines=999999\>60
+
+echo "== 1b: the shared sensitive-path default — no ordinary-word false positives, no lost coverage =="
+# One sourced shell classifies every path (sensitive|plain), so the table stays fast.
+classify_paths() {
+  env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" bash -c '
+    source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1
+    for p in "$@"; do
+      r="$(gaffer_lite_trivial_reason low 5 1 "$p")"
+      [ "$r" = "nontrivial:sensitive-path" ] && echo "$p sensitive" || echo "$p plain"
+    done' _ "$@"
+}
+PLAIN_PATHS="src/authors/list.ts docs/authoring.md AUTHORS src/author.ts src/environment.ts"
+SENSITIVE_PATHS="auth/login.ts src/auth.ts packages/auth/login.ts src/oauth/cb.ts src/OAuth2/cb.ts \
+src/authentication/a.ts src/authorization/b.ts src/authz/c.ts lib/authn.ts src/authService.ts \
+src/AuthGuard.tsx src/authenticator.ts src/authorize.ts src/auth-service.ts src/auth_utils.py \
+src/Auth/Login.cs security/csp.ts src/securityHeaders.ts config/secrets.yml db/migrations/001.sql \
+Dockerfile Dockerfile.dev .env .env.local .envrc .github/workflows/ci.yml package-lock.json \
+yarn.lock .gaffer/x runner/safety-hook.mjs \
+src/authmiddleware.go internal/authhandler.go src/authconfig.ts lib/authcode.py src/authprovider.tsx"
+# shellcheck disable=SC2086
+CLASSIFIED="$(classify_paths $PLAIN_PATHS $SENSITIVE_PATHS)"
+for p in $PLAIN_PATHS; do
+  grep -qxF "$p plain" <<<"$CLASSIFIED" && ok "not sensitive: $p" || fail "false positive: $p"
+done
+for p in $SENSITIVE_PATHS; do
+  grep -qxF "$p sensitive" <<<"$CLASSIFIED" && ok "sensitive: $p" || fail "false NEGATIVE (security gate): $p"
+done
+# The security second-review lane falls back to the SAME default (one definition).
+grep -q 'GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}"' "$RUNNER_DIR/factory.config.sh" \
+  && grep -q 'GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"' "$RUNNER_DIR/factory.config.sh" \
+  && ok "lite classifier and security review lane share _GAFFER_SENSITIVE_PATH_RE" \
+  || fail "the two sensitive-path defaults are not the shared one"
 
 echo "== 2: tunable caps (GAFFER_LITE_MAX_LINES / _FILES / _SENSITIVE_RE) =="
 eq "tighter line cap flips a former-trivial" \

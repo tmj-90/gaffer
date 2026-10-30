@@ -320,31 +320,8 @@ switch (cmd) {
   }
 
   // ── ticket-derived blocks (tick.sh) ─────────────────────────────────────────
-  // distill-intent: env SHOW, DTITLE, DREPO, DNUM → one JSON line {title, summary}, or
-  // nothing when the ticket has no acceptance criteria / unparseable SHOW.
-  case "distill-intent": {
-    const MAX_TITLE = 190;
-    const MAX_SUMMARY = 780;
-    const p = tryParse(process.env.SHOW || "{}");
-    if (!p.ok) process.exit(0);
-    const d = p.value || {};
-    const acs = d.acceptanceCriteria || [];
-    const lines = acs
-      .map((a) => ((a && a.text) || "").trim())
-      .filter((t) => t.length > 0)
-      .map((t) => `- ${t}`);
-    if (lines.length === 0) process.exit(0);
-    const repo = process.env.DREPO || "";
-    const num = process.env.DNUM || "";
-    const title = process.env.DTITLE || "";
-    const t = `Requirement from #${num}: ${title}`.slice(0, MAX_TITLE);
-    let body =
-      `Why '${repo}' ticket #${num} ("${title}") was built — the requirement it served ` +
-      `(distilled at close from the delivered work):\n${lines.join("\n")}`;
-    if (body.length > MAX_SUMMARY) body = `${body.slice(0, MAX_SUMMARY - 1)}…`;
-    println(JSON.stringify({ title: t, summary: body }));
-    break;
-  }
+  // (distill-intent moved to crew: packages/crew/src/runtime/context/distillIntentCli.ts,
+  // the single source of the ticket → lore distillation text.)
   // partition: stdin = ticket show → the three @@-marked sections tick.sh slices.
   case "partition": {
     const d = parseStdin();
@@ -819,7 +796,6 @@ switch (cmd) {
     else println(String(Math.trunc(Number((q.ticketsByStatus || {})[args[0]] || 0))));
     break;
   }
-  // status-hq-lines: stdin = human-queue JSON → "    #N  reason" per pending decision.
   case "status-repo-lines": {
     // `dispatch repo list` JSON → one line per registered repo for the status pane:
     //     <name>  <local_path or remote>  [<default_branch>] <stack>  gates: test ✓/–  lint ✓/–
@@ -835,19 +811,49 @@ switch (cmd) {
     }
     break;
   }
+  // One line per pending decision, at most MAX (5) of them:
+  //     #12 3f9a1c2e [required]  <reason, whitespace-collapsed, ≤95 chars>…
+  // The ref is the ticket number when there is one, and always the short decision id
+  // (`wg decisions resolve <id>` takes it). An onboarding intake question is ~1.7 KB:
+  // printed whole it was one unreadable line, with ref "-" when it had no ticket.
   case "status-hq-lines": {
     const p = tryParse(readStdin());
     if (!p.ok) process.exit(0);
-    for (const i of (p.value && p.value.items) || []) {
-      if (!i || i.kind !== "decision") continue;
+    const MAX = 5;
+    const REASON_MAX = 95;
+    const decisions = ((p.value && p.value.items) || []).filter((i) => i && i.kind === "decision");
+    for (const i of decisions.slice(0, MAX)) {
       const t = i.ticket;
-      const ref = t && t.number !== null && t.number !== undefined ? `#${t.number}` : "-";
-      const reason = String(i.reason || "")
+      const num = t && t.number !== null && t.number !== undefined ? `#${t.number} ` : "";
+      const dec = i.decisionId ? String(i.decisionId).slice(0, 8) : "-";
+      const sev = i.severity ? ` [${String(i.severity).replace(/^human_/, "")}]` : "";
+      let reason = String(i.reason || "")
         .split(/\s+/)
         .filter(Boolean)
         .join(" ");
-      println(`    ${ref}  ${reason}`);
+      if (reason.length > REASON_MAX) reason = `${reason.slice(0, REASON_MAX - 1).trimEnd()}…`;
+      println(`    ${num}${dec}${sev}  ${reason}`);
     }
+    if (decisions.length > MAX) {
+      println(
+        `    +${decisions.length - MAX} more — gaffer dashboard, or gaffer wg decisions list`,
+      );
+    }
+    break;
+  }
+  // status-hq-count all|required: pending decisions in the human-queue JSON (required =
+  // severity human_required, the ones that block a ticket — hasUnresolvedHumanRequired).
+  case "status-hq-count": {
+    const p = tryParse(readStdin());
+    const items = (p.ok && p.value && p.value.items) || [];
+    const ds = items.filter((i) => i && i.kind === "decision");
+    println(
+      String(
+        args[0] === "required"
+          ? ds.filter((i) => i.severity === "human_required").length
+          : ds.length,
+      ),
+    );
     break;
   }
 

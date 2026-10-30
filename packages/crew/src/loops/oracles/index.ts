@@ -6,3 +6,4 @@ export { createEslintOracle, parseEslintOutput } from "./eslintOracle.js";
 export { createDeadCodeOracle, parseKnipOutput, parseTsPruneOutput } from "./deadCodeOracle.js";
 export { createSecurityOracle, parseSemgrepOutput } from "./securityOracle.js";
 export { summariseOracleFindings, oracleFindingKey } from "./summary.js";
+export { buildOracleSet } from "./build.js";

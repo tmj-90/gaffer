@@ -117,7 +117,10 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # set -u safety at this no-work juncture, and rendered through the single
       # gaffer_render_mcp_runtime seam (factory.config.sh) shared with delivery.
       GAFFER_TICKET_REPOS=""
-      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
+      # FACTORY TICKET SCOPE: the scope ticket ($CNUM → GAFFER_SCOPE_TICKET) means the
+      # clarify agent files ACs and decisions on THIS draft only; the dispatch server
+      # refuses its writes on any other ticket.
+      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" "$CNUM" \
         || { log "MCP-RENDER: failed to render clarify runtime .mcp.json — refusing live clarify (fail closed)"; result error; exit 1; }
       chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
       # File-card context for the intake agent — orients it on the repo before
@@ -155,7 +158,8 @@ EOF
       CLARIFY_MODEL="$(gaffer_route_model clarify "$CRISK" "${CAC:-0}" "" 1 "$CNUM" 2>/dev/null || true)"
       CLARIFY_MODEL_FLAG="${GAFFER_PLAN_MODEL_FLAG:-}"
       [ -n "$CLARIFY_MODEL" ] && CLARIFY_MODEL_FLAG="--model $CLARIFY_MODEL"
-      worker_deliver "$CWT" "$CPROMPT" "$CLARIFY_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON"
+      worker_deliver "$CWT" "$CPROMPT" "$CLARIFY_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON" "" \
+        "$(gaffer_role_turns "${GAFFER_CLARIFY_MAX_TURNS:-40}")"
       crc=$?
       gaffer_usage_record clarify "$CNUM" "$crc" "$C_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       rm -f "$C_USAGE_JSON"

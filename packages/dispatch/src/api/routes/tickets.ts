@@ -29,7 +29,7 @@ import {
   ticketListQuery,
   wontDoBody,
 } from "../schemas.js";
-import { apiActor } from "./context.js";
+import { apiActor, operatorActor } from "./context.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -86,12 +86,24 @@ export async function routeTickets(
   // /tickets
   if (segments.length === 1) {
     if (method === "GET") {
+      const param = (k: string) => url.searchParams.get(k) ?? undefined;
       const q = ticketListQuery.parse({
-        status: url.searchParams.get("status") ?? undefined,
-        repo: url.searchParams.get("repo") ?? undefined,
-        risk: url.searchParams.get("risk") ?? undefined,
+        status: param("status"),
+        repo: param("repo"),
+        risk: param("risk"),
+        limit: param("limit"),
+        offset: param("offset"),
+        fields: param("fields"),
       });
-      sendJson(res, 200, { tickets: wg.listTickets(q) });
+      const page = wg.listTicketPage(
+        { status: q.status, repo: q.repo, risk: q.risk },
+        { limit: q.limit, offset: q.offset, summary: q.fields === "summary" },
+      );
+      sendJson(res, 200, {
+        tickets: page.tickets,
+        total: page.total,
+        ...(q.limit !== undefined ? { limit: q.limit, offset: q.offset ?? 0 } : {}),
+      });
       return;
     }
     if (method === "POST") {
@@ -112,7 +124,12 @@ export async function routeTickets(
           "At least one attached repo must have write access — the ticket needs a delivery target.",
         );
       }
-      const ticket = wg.createTicket(
+      // Feature A: the legacy single-repo link, the chosen scope node(s) (the first is
+      // primary so the ticket lives under a product scope) and each repo's confirmed
+      // access boundary (so the ticket is immediately deliverable) — all in ONE
+      // transaction with the create, so an unknown repo or scope node (404) leaves no
+      // orphan ticket behind for a retry to duplicate.
+      const ticket = wg.createTicketWithLinks(
         {
           title: body.title,
           description: body.description ?? "",
@@ -121,34 +138,9 @@ export async function routeTickets(
           policy_pack: body.policy_pack,
           source: body.source,
         },
+        { repo: body.repo, scopeNodeIds: body.scopeNodeIds, repoAccess: body.repoIds },
         apiActor(),
       );
-      // Legacy single-repo link (older callers / mono-fallback flows).
-      if (body.repo) wg.linkRepository(ticket.id, body.repo, "primary", apiActor());
-      // Feature A: link the chosen scope node(s) — the first is primary so the
-      // ticket lives under a product scope, the rest are secondary context.
-      if (body.scopeNodeIds) {
-        body.scopeNodeIds.forEach((scopeNodeId, i) => {
-          wg.linkTicketScope(
-            {
-              ticket_id: ticket.id,
-              scope_node_id: scopeNodeId,
-              relation: i === 0 ? "primary" : "secondary",
-            },
-            apiActor(),
-          );
-        });
-      }
-      // Feature A: confirm each repo's access boundary so the ticket is
-      // immediately deliverable (a write target exists) rather than repo-less.
-      if (body.repoIds) {
-        for (const r of body.repoIds) {
-          wg.setTicketRepoAccess(
-            { ticket_id: ticket.id, repo_id: r.repo_id, access: r.access, relation: "confirmed" },
-            apiActor(),
-          );
-        }
-      }
       sendCreated(res, `/tickets/${ticket.id}`, { ticket });
       return;
     }
@@ -176,6 +168,19 @@ export async function routeTickets(
         events: view.events,
         // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
         rework_trail: view.reworkTrail,
+        // SQUAD: the presentation (display name, shirt number, role) of every
+        // REGISTERED agent this ticket names — event actors, the reviewer, the
+        // creator and any active claim holder — keyed by agent id. Additive: the
+        // ids above are unchanged.
+        agent_display: wg.agentDisplayFor([
+          ...view.events.map((e) => e.actor_id),
+          view.ticket.reviewer,
+          view.ticket.created_by,
+          ...wg.claimsRepo
+            .listActive()
+            .filter((c) => c.ticket_id === view.ticket.id)
+            .map((c) => c.agent_id),
+        ]),
       });
       return;
     }
@@ -327,10 +332,11 @@ export async function routeTickets(
 
   // /tickets/:id/mark-merged — MERGE-COMPLETE callback (ready_for_merge -> done).
   // The merge runner calls this once the git merge of the delivery branch lands,
-  // so `done` means actually merged. System/admin only (the REST surface acts as
-  // the system actor); a user/board-drag can never reach this.
+  // so `done` means actually merged. The service allows only system/admin (a board
+  // drag can never reach this); a full-capability REST caller acts as admin under its
+  // OWN principal id, so the event names who marked it merged.
   if (segments.length === 3 && sub === TICKET_SUB.MARK_MERGED && method === "POST") {
-    const result = wg.markMerged(id, { type: "system", id: "dispatch-api" });
+    const result = wg.markMerged(id, operatorActor());
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -361,7 +367,16 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.TESTABLE && method === "POST") {
     const body = setTestableBody.parse(await readJsonBody(req));
     const result = wg.setTestable(id, body.can_be_tested, apiActor());
-    sendJson(res, 200, result);
+    sendJson(res, 200, {
+      ticket_id: result.ticketId,
+      can_be_tested: result.canBeTested,
+      event_id: result.eventId,
+      // DEPRECATED camelCase twins of the snake_case keys above (every sibling route
+      // answers in snake_case). Kept for one release so existing clients keep working.
+      ticketId: result.ticketId,
+      canBeTested: result.canBeTested,
+      eventId: result.eventId,
+    });
     return;
   }
 
@@ -374,16 +389,23 @@ export async function routeTickets(
   }
 
   // BBT-001: /tickets/:id/tester — record a tester verdict (pass → ready_for_merge,
-  // fail → refining). The REST surface acts as the system actor here, recording the
-  // tester's reported result; the actual merge stays the guarded mark-merged path.
+  // fail → refining) as the calling principal. A human principal (the dashboard
+  // button) records a WAIVER on an acceptance ticket, as the gate intends; an
+  // automated caller must send the binding (tested_commit / contract_hash / replay)
+  // or gets a 422 BINDING_REQUIRED. The merge stays the guarded mark-merged path.
   if (segments.length === 3 && sub === TICKET_SUB.TESTER && method === "POST") {
     const body = testerVerdictBody.parse(await readJsonBody(req));
-    const testerActor = { type: "system" as const, id: "dispatch-api" };
-    const verdictInput = { summary: body.summary, ...(body.uri ? { uri: body.uri } : {}) };
+    const verdictInput = {
+      summary: body.summary,
+      ...(body.uri ? { uri: body.uri } : {}),
+      ...(body.tested_commit ? { tested_commit: body.tested_commit } : {}),
+      ...(body.contract_hash ? { contract_hash: body.contract_hash } : {}),
+      ...(body.replay ? { replay: body.replay } : {}),
+    };
     const result =
       body.verdict === "pass"
-        ? wg.testerPass(id, verdictInput, testerActor)
-        : wg.testerFail(id, { ...verdictInput, ...(body.to ? { to: body.to } : {}) }, testerActor);
+        ? wg.testerPass(id, verdictInput, apiActor())
+        : wg.testerFail(id, { ...verdictInput, ...(body.to ? { to: body.to } : {}) }, apiActor());
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -416,14 +438,14 @@ export async function routeTickets(
   }
 
   // /tickets/:id/reopen-for-review — auto-merge re-approval callback
-  // (done -> in_review). System/admin only; records the resolver's resolution.
+  // (done -> in_review). System/admin only; records the resolver's resolution under
+  // the calling principal's id (see operatorActor).
   if (segments.length === 3 && sub === TICKET_SUB.REOPEN_FOR_REVIEW && method === "POST") {
     const body = reopenForReviewBody.parse(await readJsonBody(req));
     const result = wg.reopenForReview(
       id,
       { reason: body.reason, resolution: body.resolution },
-      // The REST surface acts as the system actor for this machine-driven path.
-      { type: "system", id: "dispatch-api" },
+      operatorActor(),
     );
     sendJson(res, 200, {
       ticket_id: result.ticketId,
@@ -634,8 +656,24 @@ export async function routeTickets(
 
   // /tickets/:id/mono-fallback — POST to promote a single unmapped repo to write.
   if (segments.length === 3 && sub === TICKET_SUB.MONO_FALLBACK && method === "POST") {
-    const result = wg.applyMonoFallback(id, apiActor());
-    sendJson(res, 200, result);
+    const result = wg.applyMonoFallback(id, apiActor()) as {
+      applied: boolean;
+      ticketId: string;
+      repoId?: string;
+      reason?: string;
+      eventId?: string;
+    };
+    sendJson(res, 200, {
+      applied: result.applied,
+      ticket_id: result.ticketId,
+      ...(result.repoId !== undefined ? { repo_id: result.repoId } : {}),
+      ...(result.reason !== undefined ? { reason: result.reason } : {}),
+      ...(result.eventId !== undefined ? { event_id: result.eventId } : {}),
+      // DEPRECATED camelCase twins (see /testable), kept for one release.
+      ticketId: result.ticketId,
+      ...(result.repoId !== undefined ? { repoId: result.repoId } : {}),
+      ...(result.eventId !== undefined ? { eventId: result.eventId } : {}),
+    });
     return;
   }
 

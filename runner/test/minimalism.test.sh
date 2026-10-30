@@ -10,6 +10,8 @@
 #   AC5  caps are configurable (OVERSIZED_MAX_LINES / OVERSIZED_MAX_FILES)
 #   AC6  MINIMALISM_ENFORCE=0 downgrades a missing note to a flag (return 2)
 #   AC7  the config keys are present + commented in factory.config.sh
+#   AC8  the verdict reaches tick.sh through GAFFER_MINIMALISM_VERDICT, never a
+#        fixed $GAFFER_DATA scratch file that concurrent workers share
 #
 # Zero deps; needs only git. Run: bash test/minimalism.test.sh
 # =====================================================================
@@ -99,6 +101,38 @@ for k in 'MINIMALISM_ENFORCE:=1' 'OVERSIZED_MAX_LINES:=400' 'OVERSIZED_MAX_FILES
     && ok "$k default present in factory.config.sh" \
     || fail "$k default missing from factory.config.sh"
 done
+
+echo "== AC8: the verdict is per-process — concurrent workers never read each other's =="
+gaffer_check_minimalism 1 5 "smallest change: one line in file.txt" "file.txt " >/dev/null 2>&1
+[ "${GAFFER_MINIMALISM_VERDICT:-}" = "ok" ] && ok "AC8 GAFFER_MINIMALISM_VERDICT carries the token (ok)" || fail "AC8 verdict global '${GAFFER_MINIMALISM_VERDICT:-}' (want ok)"
+gaffer_check_minimalism 1 5 "" "file.txt " >/dev/null 2>&1
+[ "${GAFFER_MINIMALISM_VERDICT:-}" = "missing_note" ] && ok "AC8 GAFFER_MINIMALISM_VERDICT carries the token (missing_note)" || fail "AC8 verdict global '${GAFFER_MINIMALISM_VERDICT:-}' (want missing_note)"
+( CREW_DIR="$WORK/no-crew"; gaffer_check_minimalism 1 5 "x" "file.txt " >/dev/null 2>&1; [ "${GAFFER_MINIMALISM_VERDICT:-}" = "check_failed" ] ) \
+  && ok "AC8 without the crew dist the global reads check_failed (fail closed)" || fail "AC8 no-crew verdict global is not check_failed"
+# Run tick.sh's OWN gate lines (extracted verbatim) in two concurrent loops against ONE
+# shared GAFFER_DATA: one with a note (expects ok), one without (expects missing_note).
+# With the old fixed `$GAFFER_DATA/.mz-verdict` file the two raced: wrong and empty
+# verdicts in both directions (a note-less delivery could read `ok`).
+SNIP="$WORK/mz-snippet.sh"
+awk '/gaffer_check_minimalism "\$\{_MZ_FILES:-0\}"/{p=1} p{print} p && /_MZ_VERDICT=/{exit}' "$RUNNER_DIR/tick.sh" > "$SNIP"
+grep -q '_MZ_VERDICT=' "$SNIP" && ok "AC8 extracted the minimalism gate lines from tick.sh" || fail "AC8 could not extract the gate lines from tick.sh"
+mzloop() { # <note> <expect> <out>
+  local _MZ_FILES=1 _MZ_LINES=5 _MZ_NOTE="$1" _MZ_CHANGED="file.txt " _MZ_VERDICT wrong=0 i
+  for i in $(seq 1 40); do
+    # shellcheck disable=SC1090
+    source "$SNIP"
+    [ "$_MZ_VERDICT" = "$2" ] || wrong=$((wrong + 1))
+  done
+  echo "$wrong" > "$3"
+}
+export GAFFER_DATA="$WORK/shared-data"; mkdir -p "$GAFFER_DATA"
+mzloop "smallest change: one line in file.txt" ok "$WORK/mz-a" &
+mzloop "" missing_note "$WORK/mz-b" &
+wait
+[ "$(cat "$WORK/mz-a")" = 0 ] && [ "$(cat "$WORK/mz-b")" = 0 ] \
+  && ok "AC8 two concurrent gate runs on one GAFFER_DATA each saw their OWN verdict (0 wrong/empty of 40+40)" \
+  || fail "AC8 concurrent gate runs read each other's verdict (wrong: with-note=$(cat "$WORK/mz-a"), no-note=$(cat "$WORK/mz-b"))"
+! grep -q '\$GAFFER_DATA/\.mz-verdict' "$RUNNER_DIR/tick.sh" && ok "AC8 tick.sh no longer uses the fixed \$GAFFER_DATA/.mz-verdict path" || fail "AC8 tick.sh still writes \$GAFFER_DATA/.mz-verdict"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

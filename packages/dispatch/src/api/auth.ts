@@ -141,6 +141,34 @@ export function ensureApiToken(env: NodeJS.ProcessEnv = process.env): EnsuredApi
   return { token, source: "generated", path };
 }
 
+/**
+ * The operator-facing startup line about the token. It NEVER contains the token
+ * itself: the runner sends the server's stdout to `$GAFFER_DATA/dashboard.log`,
+ * which is not 0600 like the token file, so echoing a freshly generated token there
+ * copied the credential to wherever the log could be read. It names the token file
+ * instead; `gaffer dashboard` prints a ready-made `?token=` login URL.
+ */
+export function describeApiToken(ensured: EnsuredApiToken): string {
+  if (ensured.source === "env") {
+    // An operator-SET token switches auth to the strict posture (see
+    // isRequestAuthorized): loopback reads are gated too, so say so.
+    return (
+      "dispatch-api: using DISPATCH_API_TOKEN from the environment " +
+      "(strict auth: every request, including loopback reads, requires the token).\n"
+    );
+  }
+  const where =
+    ensured.source === "generated"
+      ? `generated a new dashboard token (saved 0600 to ${ensured.path})`
+      : `using the saved dashboard token at ${ensured.path} (delete it to rotate)`;
+  return (
+    `dispatch-api: ${where}.\n` +
+    "  Every API request needs it (only the dashboard shell and /healthz are open): " +
+    "`gaffer dashboard` prints a login URL with it, or send `Authorization: Bearer <token>` " +
+    "with the file's contents.\n"
+  );
+}
+
 /** True when a token is configured (auth enforced + non-loopback bind allowed). */
 export function authConfigured(): boolean {
   return apiToken().length > 0;

@@ -54,12 +54,23 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # permission prompt. orphan-recovery only reaps `worktrees/ticket-*`, so a
       # `review-wt-*` sibling here is untouched by it (cleanup stays trap-driven).
       WT="$GAFFER_DATA/worktrees/review-wt-$RNUM"
+      # Per-ticket review claim (a lock DIRECTORY holding the owner's pid): nothing claims
+      # an in_review ticket, so with GAFFER_CONCURRENCY>1 two lanes can pick the same
+      # RNUM — and the stale-worktree sweep below must never delete another lane's LIVE
+      # review worktree. A claim whose pid is dead (a SIGKILLed tick) is reaped.
+      _RCLAIM="$GAFFER_DATA/.review-$RNUM.lock.d"
+      _RCLAIMED=0
+      # Everything here belongs to the claim holder: a lane that did not take the claim
+      # must not remove the live lane's worktree or skills mount.
       _review_cleanup() {
+        [ "${_RCLAIMED:-0}" = "1" ] || return 0
         if [ -n "${WT:-}" ] && [ -e "$WT" ]; then
           git -C "$RREPO" worktree remove --force "$WT" 2>/dev/null || true
           git -C "$RREPO" worktree prune 2>/dev/null || true
+          rm -rf "$WT"  # an unregistered leftover must not survive to block the next add
         fi
         gaffer_skills_mount_cleanup "review-$RNUM"
+        rm -rf "$_RCLAIM"; _RCLAIMED=0
       }
       # BLOCKING 2 fix: install review-scoped EXIT + signal traps so
       # _review_cleanup fires under INT/TERM as well as on a normal exit.
@@ -77,6 +88,27 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       }
       _review_on_int()  { trap - EXIT INT TERM; _review_cleanup; gaffer_crash_cleanup; exit 130; }
       _review_on_term() { trap - EXIT INT TERM; _review_cleanup; gaffer_crash_cleanup; exit 143; }
+      _review_restore_traps() {
+        trap gaffer_on_exit EXIT
+        trap 'gaffer_on_signal 130' INT
+        trap 'gaffer_on_signal 143' TERM
+      }
+      # A TICKET-SPECIFIC refusal (no recorded branch, a missing/corrupt branch, a
+      # worktree or agent env that cannot be set up for THIS ticket) must not wedge the
+      # lane: `result error; exit 1` left the ticket first in line, so every later tick
+      # picked it again and no other in_review ticket was ever reviewed (and the tester
+      # lane, which runs after this pass, never ran either). Hold it for a human instead —
+      # skip it for the rest of the run, leave a note on the ticket, and RETURN so the
+      # tick carries on (tester lane, no_work). SYSTEMIC refusals (safety hook missing,
+      # empty DB vars, MCP render) still error: skipping would walk every ticket.
+      _review_hold_ticket() {
+        log "REVIEW-HELD: #$RNUM cannot be agent-reviewed — $1; skipped for the rest of this run, left in_review for a human"
+        _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+        wg attach-evidence "$RNUM" --type manual_note \
+          --summary "agent review could not run: $1 — needs a human" >/dev/null 2>&1 || true
+        _review_cleanup
+        _review_restore_traps
+      }
       trap _review_on_exit EXIT
       trap _review_on_int  INT
       trap _review_on_term TERM
@@ -84,15 +116,37 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # Fail CLOSED if no branch is recorded — the reviewer must never operate
       # on an unknown HEAD (mirrors the delivery-path fail-closed checkout guard).
       if [ -z "${RBRANCH:-}" ]; then
-        log "REVIEW-ERROR: no delivery branch recorded for ticket #$RNUM — refusing review (fail closed)"
-        result error; exit 1
+        _review_hold_ticket "no delivery branch recorded"; return 0
       fi
+      if ! mkdir "$_RCLAIM" 2>/dev/null; then
+        _rowner="$(cat "$_RCLAIM/pid" 2>/dev/null || true)"
+        if [ -n "$_rowner" ] && kill -0 "$_rowner" 2>/dev/null; then
+          log "review of #$RNUM is already running in another lane (pid $_rowner) — not reviewing it twice"
+          _review_cleanup; _review_restore_traps; return 0
+        fi
+        rm -rf "$_RCLAIM"
+        mkdir "$_RCLAIM" 2>/dev/null || { log "review of #$RNUM: could not take its review claim — skipping this tick"; _review_cleanup; _review_restore_traps; return 0; }
+      fi
+      _RCLAIMED=1; echo "$$" > "$_RCLAIM/pid"
+      # REVIEWED CANDIDATE: the exact commit under review, resolved once. The reviewer works
+      # on a DETACHED checkout of it (never the live branch: a commit the reviewer made on a
+      # checked-out branch WAS the delivery and shipped unreviewed on its own APPROVE), and
+      # the commit is checked again after the review and recorded as the landing pin.
+      RSHA="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RBRANCH^{commit}" 2>/dev/null || true)"
+      if [ -z "$RSHA" ]; then
+        _review_hold_ticket "delivery branch '$RBRANCH' is missing or corrupt in $RREPO"; return 0
+      fi
+      RDEF_SHA="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RDEFAULT^{commit}" 2>/dev/null || true)"
+      # A worktree left by a killed tick (registered or not) would make `worktree add` fail
+      # forever; the claim above guarantees it is not another lane's live review.
+      git -C "$RREPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
+      rm -rf "$WT"
+      git -C "$RREPO" worktree prune >/dev/null 2>&1 || true
       # Fail CLOSED if the throwaway worktree can't be created — prevents the
       # reviewer from operating on the wrong code.
       mkdir -p "$GAFFER_DATA/worktrees"  # `git worktree add` won't create leading dirs
-      if ! git -C "$RREPO" worktree add --force "$WT" "$RBRANCH" >/dev/null 2>&1; then
-        log "REVIEW-ERROR: failed to create review worktree for branch '$RBRANCH' in $RREPO — refusing review of #$RNUM (fail closed; branch may be missing or corrupt)"
-        result error; exit 1
+      if ! git -C "$RREPO" worktree add --force --detach "$WT" "$RSHA" >/dev/null 2>&1; then
+        _review_hold_ticket "could not create the review worktree for '$RBRANCH' (${RSHA:0:12})"; return 0
       fi
       # Mount the REVIEW ROLE's skill set (select-skills --role review): the review
       # procedure, the review lenses (security / performance / accessibility / test
@@ -113,8 +167,13 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       RSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role review --stack "$RSTACK" --paths-file "$_RPATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
       rm -f "$_RPATHS"
       [ -n "$RSKILLS" ] || RSKILLS="review-ticket, adversarial-reviewer, submit-review, record-evidence"
-      GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$WT" "$RSKILLS" "review-$RNUM" \
-        || { log "SAFETY: reviewer agent env install failed for #$RNUM — refusing live review (fail closed)"; result error; exit 1; }
+      if ! GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$WT" "$RSKILLS" "review-$RNUM"; then
+        log "SAFETY: reviewer agent env install failed for #$RNUM — refusing live review (fail closed)"
+        _review_hold_ticket "the reviewer agent env could not be installed into its worktree"; return 0
+      fi
+      # Tracked-file state before the reviewer runs (the env install may touch a tracked
+      # .claude/ in some repos): the post-review check compares against THIS, not empty.
+      _RTRACKED0="$(git -C "$WT" status --porcelain --untracked-files=no 2>/dev/null || true)"
       # The lenses the reviewer must apply, named in the prompt (everything mounted that
       # is not the core procedure): the stack pack + the review/security lenses.
       _RLENSES="$(printf '%s' "$RSKILLS" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vE '^(review-ticket|adversarial-reviewer|submit-review|record-evidence)$' | paste -sd, - | sed 's/,/, /g')"
@@ -136,7 +195,9 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # through the single gaffer_render_mcp_runtime seam (factory.config.sh) so
       # review, delivery + bootstrap share one byte-identical render path.
       GAFFER_TICKET_REPOS=""
-      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
+      # No scope ticket (4th arg empty): a reviewer is bound through GAFFER_REVIEW_TICKET
+      # below instead.
+      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" "" \
         || { log "MCP-RENDER: failed to render review runtime .mcp.json — refusing live review (fail closed)"; result error; exit 1; }
       # REVIEWER EVIDENCE PATH: with no claim token, dispatch's record_ac_evidence refused
       # every non-human write, so the reviewer's per-AC notes (which the prompt + skill
@@ -221,7 +282,11 @@ EOF
       REVIEW_MODEL="$(gaffer_route_model review "$RRISK" "${RAC:-0}" "" 1 "$RNUM" 2>/dev/null || true)"
       REVIEW_MODEL_FLAG="${GAFFER_IMPL_MODEL_FLAG:-}"
       [ -n "$REVIEW_MODEL" ] && REVIEW_MODEL_FLAG="--model $REVIEW_MODEL"
-      worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON"
+      # Role turn cap (GAFFER_REVIEW_MAX_TURNS, clamped to GAFFER_MAX_TURNS) — not the
+      # 200-turn delivery cap: a read-and-judge pass that loops is stopped early. A cap
+      # hit is named in the hold reason below.
+      worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
+        "$(gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}")"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       # Capture the reviewer's advisory verdict (its final RECOMMEND line) from the result
@@ -230,22 +295,29 @@ EOF
       # PATH (not stdin): the usage JSON must never be piped as stdin (prompt-injection
       # guard, enforced by tick-prompt-wiring.test.sh) — parsing its result is output-read.
       R_RESULT="$(gaffer_json expr 'd.result ?? ""' --file "$R_USAGE_JSON" 2>/dev/null || echo '')"
+      # A run stopped by its turn cap says so in the envelope: name it in the hold reason.
+      R_CAPHIT="$(gaffer_json expr 'd.subtype === "error_max_turns" ? String(d.num_turns ?? "?") : ""' --file "$R_USAGE_JSON" 2>/dev/null || echo '')"
       rm -f "$R_USAGE_JSON"
-      # S-H2: resolve the verdict from the reviewer's OUT-OF-BAND STRUCTURED last line
-      # ({"verdict":"APPROVE"|"CHANGES"}) — NOT a free-text grep over its prose. Text an
-      # adversarial ticket/diff/rejection-reason coaxes the reviewer to QUOTE can no longer
-      # force an AFK approve+merge. gaffer_review_verdict falls back to the legacy grep only
-      # when no structured line is present, and stays fail-closed (ambiguous/empty → changes).
+      # S-H2: resolve the verdict from the reviewer's OUT-OF-BAND STRUCTURED FINAL line
+      # ({"verdict":"APPROVE"|"CHANGES"}) — NOT a free-text grep over its prose, and not a
+      # token quoted anywhere earlier. Text an adversarial ticket/diff/rejection-reason
+      # coaxes the reviewer to QUOTE can no longer force an AFK approve+merge. A final line
+      # that is no token → `held` (no verdict: never approve, never rework on it).
       R_VERDICT="$(gaffer_review_verdict "$R_RESULT")"
       # A reviewer that did NOT run is not a verdict. worker_deliver returns non-zero
-      # (containment refused to spawn, timeout, crash) or the envelope is empty →
-      # the fail-closed default above would read as CHANGES and, in AFK mode, send a
-      # possibly-fine delivery back to rework. Hold instead: leave the ticket
+      # (containment refused to spawn, timeout, crash) or the envelope is empty — or it
+      # ran but its final line is no verdict token. Reading that as CHANGES would, in AFK
+      # mode, send a possibly-fine delivery back to rework. Hold instead: leave the ticket
       # in_review for a human, skip it for the rest of this run, and say why.
       R_HELD_REASON=""
-      if [ "$rrc" -ne 0 ] || [ -z "${R_RESULT// /}" ]; then
+      if [ -n "$R_CAPHIT" ]; then
+        R_HELD_REASON="reviewer hit its turn cap ($R_CAPHIT turns; GAFFER_REVIEW_MAX_TURNS / GAFFER_MAX_TURNS) before a verdict — not a verdict"
+        R_VERDICT=held
+      elif [ "$rrc" -ne 0 ] || [ -z "${R_RESULT// /}" ]; then
         R_HELD_REASON="reviewer did not run (rc=$rrc${R_RESULT:+, non-empty result}) — not a verdict"
         R_VERDICT=held
+      elif [ "$R_VERDICT" = "held" ]; then
+        R_HELD_REASON="the reviewer's final line is not a verdict token — not a verdict"
       fi
 
       # ── SECURITY SECOND OPINION (a second, independent agent lane) ──────────────
@@ -297,7 +369,10 @@ EOF
         SEC_MODEL="$(gaffer_route_model review "$RRISK" "${RAC:-0}" "" 1 "$RNUM" 2>/dev/null || true)"
         SEC_MODEL_FLAG="${GAFFER_IMPL_MODEL_FLAG:-}"
         [ -n "$SEC_MODEL" ] && SEC_MODEL_FLAG="--model $SEC_MODEL"
-        worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON"
+        # Role turn cap: GAFFER_SECURITY_REVIEW_MAX_TURNS, else the reviewer's cap,
+        # clamped to GAFFER_MAX_TURNS.
+        worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
+          "$(gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}")"
         src=$?
         gaffer_usage_record security-review "$RNUM" "$src" "$S_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
         S_RESULT="$(gaffer_json expr 'd.result ?? ""' --file "$S_USAGE_JSON" 2>/dev/null || echo '')"
@@ -310,12 +385,56 @@ EOF
           R_SECURITY="$(gaffer_review_verdict "$S_RESULT")"
           if [ "$R_SECURITY" = "approve" ]; then
             log "SECURITY-REVIEW: #$RNUM security reviewer concurs (verdict=approve)"
+          elif [ "$R_SECURITY" = "held" ]; then
+            # No token on its final line: the same as a second opinion that did not run.
+            R_HELD_REASON="security reviewer's final line is not a verdict token — not a verdict"
+            R_VERDICT=held
+            log "SECURITY-REVIEW: #$RNUM security reviewer gave no verdict token — HOLDING the primary approve for a human"
           else
             R_VERDICT=changes
             R_RESULT="SECURITY REVIEW: $(printf '%s' "$S_RESULT" | tr '\n' ' ' | tail -c 700)"
             log "SECURITY-REVIEW: #$RNUM security reviewer found a defect (verdict=changes) — overrides the primary approve"
           fi
         fi
+      fi
+      # ── CANDIDATE INTEGRITY: the reviewers must not have changed what they judged ──────
+      # Their verdict is about RSHA. A reviewer that committed (in its worktree, or by
+      # moving the branch through the shared ref store), edited tracked files, or moved
+      # the default branch has judged something else, or tried to ship its own code: never
+      # a verdict, whatever its last line says. A moved delivery branch is put back
+      # (compare-and-swap) with the moved head kept under refs/gaffer/review-tamper/<n>.
+      _R_TAMPER=""
+      _rnow="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RBRANCH^{commit}" 2>/dev/null || true)"
+      if [ "$_rnow" != "$RSHA" ]; then
+        _R_TAMPER="delivery branch $RBRANCH moved during review (${RSHA:0:12} → ${_rnow:0:12})"
+        if [ -n "$_rnow" ]; then
+          git -C "$RREPO" update-ref "refs/gaffer/review-tamper/$RNUM" "$_rnow" >/dev/null 2>&1 || true
+          git -C "$RREPO" update-ref -m "gaffer: undo reviewer move of $RBRANCH" "refs/heads/$RBRANCH" "$RSHA" "$_rnow" >/dev/null 2>&1 \
+            && _R_TAMPER="$_R_TAMPER; restored to ${RSHA:0:12} (moved head kept as refs/gaffer/review-tamper/$RNUM)"
+        fi
+      fi
+      _rwt="$(git -C "$WT" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+      [ -n "$_R_TAMPER" ] || [ "$_rwt" = "$RSHA" ] || _R_TAMPER="the reviewer moved HEAD in its worktree (${RSHA:0:12} → ${_rwt:0:12})"
+      # The worktree's own HEAD reflog has exactly one entry (the checkout) unless the
+      # reviewer committed/checked out — even if it put HEAD back afterwards.
+      _rmoves="$(git -C "$WT" reflog show --format=%H HEAD 2>/dev/null | wc -l | tr -d ' ')"
+      [ -n "$_R_TAMPER" ] || [ "${_rmoves:-0}" -le 1 ] || _R_TAMPER="the reviewer moved HEAD in its worktree ($_rmoves reflog entries)"
+      [ -n "$_R_TAMPER" ] || [ "$(git -C "$WT" status --porcelain --untracked-files=no 2>/dev/null || true)" = "$_RTRACKED0" ] \
+        || _R_TAMPER="the reviewer edited tracked files in its worktree"
+      # The default branch: under GAFFER_CONCURRENCY>1 another lane may legitimately land a
+      # sibling mid-review, so a move there is logged, not held.
+      _rdef_now="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RDEFAULT^{commit}" 2>/dev/null || true)"
+      if [ -z "$_R_TAMPER" ] && [ "$_rdef_now" != "$RDEF_SHA" ]; then
+        if [ "${GAFFER_CONCURRENCY:-1}" -le 1 ] 2>/dev/null; then
+          _R_TAMPER="default branch $RDEFAULT moved during review (${RDEF_SHA:0:12} → ${_rdef_now:0:12}) with no other lane running"
+        else
+          log "REVIEW-WARN: #$RNUM $RDEFAULT moved during review (${RDEF_SHA:0:12} → ${_rdef_now:0:12}) — another lane landing, or the reviewer; check its reflog"
+        fi
+      fi
+      if [ -n "$_R_TAMPER" ]; then
+        log "SAFETY: #$RNUM reviewer modified the candidate — $_R_TAMPER; verdict discarded (HELD for a human)"
+        R_HELD_REASON="reviewer modified the candidate: $_R_TAMPER"
+        R_VERDICT=held
       fi
       NEWSTATUS="$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
 
@@ -365,6 +484,17 @@ EOF
         _SHIP_PLAN="$(gaffer_afk_ship_plan "$R_VERDICT" "$_SHIP_APPROVE" "$_SHIP_MERGE")"
         # No reviewer output ⇒ no plan: never approve, never rework on it.
         [ -n "$R_HELD_REASON" ] && _SHIP_PLAN=hold
+      fi
+      # REVIEW PIN: before the runner crosses the review gate, record (as SYSTEM evidence) the
+      # commit the reviewer approved. lib/tester-binding.mjs reads it on EVERY landing path —
+      # this pass, the merge lane's later landing of a held merge gate, the dashboard Merge
+      # — and holds a branch that moved past it. No pin, no approve.
+      if [ "$_SHIP_PLAN" = "ship" ] || [ "$_SHIP_PLAN" = "approve_hold" ]; then
+        if ! wg attach-evidence "$RNUM" --type commit --summary "agent review approved commit $RSHA of $RBRANCH" \
+             --uri "gaffer-reviewed-commit:$RSHA" >/dev/null 2>&1; then
+          R_HELD_REASON="could not record the reviewed commit ${RSHA:0:12} (the landing pin) — not approving"
+          _SHIP_PLAN=hold
+        fi
       fi
       case "$_SHIP_PLAN" in
         ship|approve_hold)
@@ -423,7 +553,8 @@ EOF
           ;;
         rework)
           # CHANGES verdict on an EARNED ticket → reject to rework with the reviewer's reason.
-          # The feedback loop (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
+          # The feedback loop (the delivery prompt's review-feedback block, rendered by crew's
+          # runtime/context/deliveryPrompt.ts) + rework budget/escalation take it from here.
           # The concrete ask from the reviewer's RECOMMEND CHANGES line, verdict token
           # stripped, front-capped (gaffer_review_reason) — not a mid-word tail.
           _rreason="$(gaffer_review_reason "$R_RESULT")"
@@ -449,9 +580,7 @@ EOF
       # trap - EXIT clears our review-scoped EXIT handler so gaffer_on_exit (the
       # restored global) won't double-call _review_cleanup on the subsequent exit.
       _review_cleanup
-      trap gaffer_on_exit EXIT
-      trap 'gaffer_on_signal 130' INT
-      trap 'gaffer_on_signal 143' TERM
+      _review_restore_traps
       result reviewed; exit 0
     fi
   fi

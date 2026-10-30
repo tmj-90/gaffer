@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import type { Actor } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, printJson } from "../shared.js";
+import { cliActor, open, parseAs, printJson } from "../shared.js";
 
 export function registerReview(program: Command): void {
   // --- Review (close a ticket from in_review) --------------------------------
@@ -19,9 +19,10 @@ export function registerReview(program: Command): void {
       "human",
     )
     .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["human", "agent"] as const);
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor =
-        opts.as === "agent"
+        as === "agent"
           ? { type: "agent", id: opts.reviewer ?? "agent" }
           : { type: "human", id: opts.reviewer ?? "reviewer" };
       const res = wg.approveReview(ref, actor);
@@ -46,12 +47,7 @@ export function registerReview(program: Command): void {
       "human",
     )
     .action((ref, opts, cmd) => {
-      const as = opts.as as string;
-      if (as !== "human" && as !== "agent" && as !== "system") {
-        throw new DispatchError("VALIDATION_ERROR", "--as must be 'human', 'agent' or 'system'.", {
-          as,
-        });
-      }
+      const as = parseAs(opts.as, ["human", "agent", "system"] as const);
       const wg = open(cmd.optsWithGlobals());
       const to = opts.to as "ready" | "refining" | "cancelled";
       if (to !== "ready" && to !== "refining" && to !== "cancelled") {

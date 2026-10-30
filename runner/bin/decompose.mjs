@@ -20,7 +20,7 @@
 // ---------------------------------------------------------------------
 // INVOCATION:
 //   node bin/decompose.mjs [--input <file>] [--brief <text>] [--repo <name>]
-//                          [--max-turns N] [--max-tickets N] [--timeout-ms N]
+//                          [--max-rounds N] [--max-tickets N] [--timeout-ms N]
 //                          [--force-plan] [--dry-run]
 //
 // INPUT (stdin JSON, or --input <file>, or --brief for a bare first turn):
@@ -89,10 +89,14 @@
 // so the dashboard can hand a confirmed plan straight to `create_epic`.
 //
 // BOUNDS (cost/abuse guards; all overridable via flags or env):
-//   --max-turns    (GAFFER_DECOMPOSE_MAX_TURNS,   default 20) ADVISORY turn ceiling —
+//   --max-rounds   (GAFFER_DECOMPOSE_MAX_TURNS,   default 20) ADVISORY turn ceiling —
 //                  a long conversation is NOT a dead-end: once history reaches this
 //                  ceiling the decomposer is forced to emit its best plan (same as
 //                  --force-plan) instead of rejecting and stranding the user.
+//                  (`--max-turns N` is the old spelling, still accepted.) It is a
+//                  HISTORY bound; the claude agent-turn cap is
+//                  GAFFER_DECOMPOSE_AGENT_MAX_TURNS, else this value — either clamped
+//                  to the GAFFER_MAX_TURNS ceiling (it can lower, never raise, the cap).
 //   --max-tickets  (GAFFER_DECOMPOSE_MAX_TICKETS,  default 20) reject/refuse plans over this
 //   --timeout-ms   (GAFFER_DECOMPOSE_TIMEOUT_MS, default 180000) kill claude after this
 //
@@ -110,12 +114,13 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { filterMeasured, parseLedger, summarise } from "../lib/estimate.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
-import { Worker } from "../lib/worker.mjs";
+import { Worker, roleTurnCap } from "../lib/worker.mjs";
+import { extractLastJsonBlock as extractJson, quarantine } from "../lib/agent-io.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const _require = createRequire(import.meta.url);
@@ -170,7 +175,8 @@ function parseArgs(argv) {
       case "--repo":
         opts.repo = next() ?? "";
         break;
-      case "--max-turns":
+      case "--max-rounds":
+      case "--max-turns": // the old spelling of --max-rounds
         opts.maxTurns = Math.max(1, parseInt(next() ?? "", 10) || DEFAULTS.maxTurns);
         break;
       case "--max-tickets":
@@ -252,64 +258,13 @@ function readRequest(opts) {
 const KNOWN_PHASES = new Set(["clarify", "plan", "error"]);
 
 /**
- * Pull the model's result envelope out of its text. Collects EVERY parseable JSON
- * block — all fenced ```json blocks plus the last bare {...} — and returns the LAST
- * one that is a real envelope (a recognised `phase`). Only if none carry a phase does
- * it fall back to the last parseable object (so validateResult still reports a clean
- * error). Returns the parsed object or null.
- *
- * Why not just "take the last block": the model sometimes emits an extra JSON-ish
- * block AFTER the envelope (an example inside a clarify question, a trailing snippet).
- * Blindly grabbing the last block then yields a phase-less object → the intermittent
- * "unknown result phase: undefined" failure. Preferring a phase-bearing envelope is
- * robust to that ordering.
+ * Pull the model's result envelope out of its text: the LAST parseable JSON block whose
+ * `phase` is one the decomposer contract recognises, else the last parseable object (see
+ * lib/agent-io.mjs — the ONE extractor every agent lane shares). Re-exported under its
+ * old name for callers and tests.
  */
 export function extractLastJsonBlock(text) {
-  if (!text) return null;
-  const parsed = [];
-  const fenceRe = /```(?:json)?\s*\n([\s\S]*?)\n```/gi;
-  let match;
-  while ((match = fenceRe.exec(text)) !== null) {
-    try {
-      parsed.push(JSON.parse(match[1]));
-    } catch {
-      /* skip an unparseable fence */
-    }
-  }
-  // Fallback source: the last balanced top-level {...} in the text.
-  const bare = lastBalancedObject(text);
-  if (bare) {
-    try {
-      parsed.push(JSON.parse(bare));
-    } catch {
-      /* skip */
-    }
-  }
-  if (parsed.length === 0) return null;
-  // Last recognised envelope wins; else the last parseable object.
-  for (let i = parsed.length - 1; i >= 0; i -= 1) {
-    const o = parsed[i];
-    if (o && typeof o === "object" && KNOWN_PHASES.has(o.phase)) return o;
-  }
-  return parsed[parsed.length - 1];
-}
-
-/** Find the last balanced top-level {...} substring (brace-counting). */
-function lastBalancedObject(text) {
-  let depth = 0,
-    start = -1,
-    last = null;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0 && start !== -1) last = text.slice(start, i + 1);
-    }
-  }
-  return last;
+  return extractJson(text, KNOWN_PHASES);
 }
 
 /**
@@ -370,6 +325,59 @@ export function normalizeAc(a, clauseIds = null) {
 // commit contains" and history-reading checks are unsatisfiable by construction.
 export const GIT_HISTORY_AC_RE =
   /\b(initial|root)\s+commit\b|\bin\s+the\s+first\s+commit\b|\bfirst\s+commit\s+(contains|holds|includes|has)\b|\bcommit\s+history\b|\bgit\s+log\b|\brev-list\b/i;
+
+/**
+ * GREENFIELD CONTRACT (the header's promise, enforced): the bootstrap creates THE repo,
+ * and every other ticket builds on it. Validation only checked that deps point backwards
+ * and that there is one bootstrap, so a plan could carry a sibling with no path to the
+ * bootstrap (made ready at once, claimed before its repo existed, released and skipped
+ * for the run), a sibling naming a repo no bootstrap creates, or an empty repo (which
+ * createEpic's schema rejects at the human's confirm). Mutates `norm` deterministically
+ * rather than rejecting, so a fixable plan never costs a paid re-plan:
+ *   • the bootstrap moves to index 0 (dependency indexes remapped; still a DAG);
+ *   • the bootstrap must name the new repo (the one thing that cannot be inferred);
+ *   • every sibling's repo is stamped with the bootstrap's (inherit-repo links every
+ *     sibling to the single bootstrap's repo whatever name it gave — only a misleading
+ *     label survived);
+ *   • a sibling that cannot reach the bootstrap through dependsOn gets it added.
+ * Returns { error } on the unfixable case, else {}.
+ */
+function enforceGreenfieldContract(norm) {
+  let b = norm.findIndex((t) => t.bootstrap);
+  if (b > 0) {
+    const remap = (d) => (d === b ? 0 : d < b ? d + 1 : d);
+    const boot = norm.splice(b, 1)[0];
+    norm.unshift(boot);
+    for (const t of norm) t.dependsOn = t.dependsOn.map(remap);
+    process.stderr.write(`decompose: moved the bootstrap ticket from index ${b} to 0\n`);
+    b = 0;
+  }
+  const bootRepo = String(norm[0].repo ?? "").trim();
+  if (!bootRepo)
+    return {
+      error: `bootstrap ticket 0 ("${norm[0].title}") must name the repo it creates (repo is empty)`,
+    };
+  const reach = [true];
+  for (let i = 1; i < norm.length; i += 1) {
+    const t = norm[i];
+    if (t.repo !== bootRepo) {
+      if (t.repo)
+        process.stderr.write(
+          `decompose: ticket ${i} ("${t.title}") named repo "${t.repo}" — stamped with the bootstrap's "${bootRepo}"\n`,
+        );
+      t.repo = bootRepo;
+    }
+    reach[i] = t.dependsOn.some((d) => reach[d]);
+    if (!reach[i]) {
+      t.dependsOn = [0, ...t.dependsOn];
+      reach[i] = true;
+      process.stderr.write(
+        `decompose: ticket ${i} ("${t.title}") had no path to the bootstrap — added dependsOn 0\n`,
+      );
+    }
+  }
+  return {};
+}
 
 export function validateResult(
   obj,
@@ -453,8 +461,10 @@ export function validateResult(
       }
       // dependsOn: integer indexes pointing at EARLIER tickets only (no forward
       // refs, no cycles — a plan is a DAG ordered by index).
+      // De-duplicated: dispatch's createEpic refuses a repeated edge (DUPLICATE) and rolls
+      // the WHOLE epic back, so `[1,1]` used to pass here and fail at the human's confirm.
       const dependsOn = Array.isArray(t.dependsOn)
-        ? t.dependsOn.map((d) => parseInt(d, 10)).filter((d) => Number.isInteger(d))
+        ? [...new Set(t.dependsOn.map((d) => parseInt(d, 10)).filter((d) => Number.isInteger(d)))]
         : [];
       for (const d of dependsOn) {
         if (d < 0 || d >= i) {
@@ -498,6 +508,10 @@ export function validateResult(
         error: `plan must contain exactly one bootstrap ticket (found ${bootstrapCount})`,
       };
     }
+    if (!brownfield) {
+      const fixed = enforceGreenfieldContract(norm);
+      if (fixed.error) return { phase: "error", error: fixed.error };
+    }
     return {
       phase: "plan",
       plan: {
@@ -510,31 +524,9 @@ export function validateResult(
   return { phase: "error", error: `unknown result phase: ${String(phase)}` };
 }
 
-/**
- * Wrap an UNTRUSTED field in a delimited envelope (P1 prompt-injection). The
- * brief and the conversation history come straight from the user/caller, so an
- * embedded "SYSTEM:" / "ignore previous instructions" line must land as DATA,
- * not as a fresh instruction line. We strip any literal closing/opening delimiter
- * the data tries to smuggle (so it can't terminate its own envelope), and for a
- * single-line field collapse whitespace runs so an injected newline can't open a
- * new instruction line.
- */
-// Escape (never delete) the `<` of every untrusted-* delimiter — opening or closing,
-// any tag, any case, padded with whitespace / zero-width characters, terminated or
-// not. Deleting a delimiter in one pass let a nested token reassemble itself:
-// `</untrus</untrusted-a>ted-x>` minus the inner token IS `</untrusted-x>`, which
-// closed the envelope early. Escaping removes no text, so nothing can rejoin and one
-// pass is safe (and idempotent). Same rule as crew's deliveryJudge.
-const UNTRUSTED_DELIMITER_RE =
-  // eslint-disable-next-line no-control-regex -- the C0 separators are whitespace to python and to a model reading the prompt
-  /<(?=[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*\/?[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*untrusted)/gi;
-export function quarantine(tag, value, { singleLine = false } = {}) {
-  let data = String(value ?? "");
-  // Neutralise every untrusted-* delimiter the data tries to inject.
-  data = data.replace(UNTRUSTED_DELIMITER_RE, "&lt;");
-  if (singleLine) data = data.replace(/\s+/g, " ").trim();
-  return `<untrusted-${tag}>${data}</untrusted-${tag}>`;
-}
+// quarantine (lib/agent-io.mjs) wraps an UNTRUSTED field — the brief, the history — in
+// a delimited envelope; re-exported here under its old name.
+export { quarantine };
 
 // One standing line, stated plainly, prepended to the prompt that embeds the
 // quarantined brief/history.
@@ -961,25 +953,44 @@ export function parseCritique(text) {
  * Round 1 is the proposer draft. Each subsequent round is critic → proposer
  * revision, stopping at cfg.maxRounds or when the critic raises no material issue.
  */
-export function runDebate(req, opts, cfg, turn) {
+export function runDebate(req, opts, cfg, turn, validate = null) {
   const proposerPrompt = buildPrompt({ ...req, maxTickets: opts.maxTickets });
   const first = turn(proposerPrompt, cfg.proposer);
   if (first.timedOut) return { timedOut: true, text: "" };
   let planText = first.stdout;
+  // BEST VALID PLAN: a revision is adopted only when it validates as a plan. Without the
+  // check a valid paid draft was replaced by a revision with a forward dependency, too
+  // many tickets, no JSON or a clarify — three paid turns ending in an error (or in
+  // questions) and the good plan lost. `validate` is main's own validator, so "valid" here
+  // means exactly what the final emit accepts; without one every revision is adopted.
+  const isPlan = (text) => (validate ? validate(text)?.phase === "plan" : true);
+  let bestText = planText;
+  let bestValid = validate ? isPlan(planText) : false;
 
   // cfg.maxRounds counts the TOTAL plan-producing rounds (the initial draft is
   // round 1). With maxRounds=2 that is: draft, then ONE critic→revise cycle.
   for (let round = 2; round <= cfg.maxRounds; round += 1) {
     const planJson = currentPlanJson(planText);
     const criticReply = turn(buildCriticPrompt(planJson), cfg.critic);
-    if (criticReply.timedOut) return { timedOut: false, text: planText }; // keep best-so-far
+    if (criticReply.timedOut) break; // keep best-so-far
     const { materialIssues, critique } = parseCritique(criticReply.stdout);
     if (!materialIssues) break; // critic raised nothing material → stop early
     const revision = turn(buildRevisionPrompt(req, planJson, critique), cfg.proposer);
-    if (revision.timedOut) return { timedOut: false, text: planText }; // keep best-so-far
-    planText = revision.stdout;
+    if (revision.timedOut) break; // keep best-so-far
+    if (!validate || isPlan(revision.stdout)) {
+      planText = bestText = revision.stdout;
+      bestValid = Boolean(validate);
+    } else if (bestValid) {
+      const v = validate(revision.stdout);
+      process.stderr.write(
+        `decompose: debate revision rejected (${v?.phase === "clarify" ? "revision returned clarify" : v?.error || "not a valid plan"}) — keeping the previous valid plan\n`,
+      );
+      break;
+    } else {
+      planText = revision.stdout; // nothing valid yet: let the critic see the newest attempt
+    }
   }
-  return { timedOut: false, text: planText };
+  return { timedOut: false, text: bestValid ? bestText : planText };
 }
 
 /**
@@ -1069,10 +1080,13 @@ function runClaudeTurn(prompt, opts, model) {
   // agent's text — just unwrapped from the JSON envelope first).
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (P1 denial-of-wallet): bound the agent's model round-trips
-  // in addition to the wall-clock timeout already passed to Worker.deliver below. Reuse
-  // the same GAFFER_MAX_TURNS knob the bash call sites use, falling back to this
-  // helper's own --max-turns (history bound) when the global knob isn't set.
-  const maxTurns = parseInt(process.env.GAFFER_MAX_TURNS || "", 10) || opts.maxTurns;
+  // in addition to the wall-clock timeout already passed to Worker.deliver below.
+  // GAFFER_DECOMPOSE_AGENT_MAX_TURNS caps THIS lane's agent on its own; else this
+  // helper's own cap (--max-rounds/--max-turns > GAFFER_DECOMPOSE_MAX_TURNS > 20).
+  // The global GAFFER_MAX_TURNS is only a CEILING that can lower it (roleTurnCap).
+  const maxTurns = roleTurnCap(
+    parseInt(process.env.GAFFER_DECOMPOSE_AGENT_MAX_TURNS || "", 10) || opts.maxTurns,
+  );
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);
@@ -1095,6 +1109,7 @@ function runClaudeTurn(prompt, opts, model) {
     return fail(err?.message ?? String(err));
   }
   let res;
+  const t0 = Date.now();
   try {
     res = Worker.deliver({
       bin: claudeBin,
@@ -1109,10 +1124,12 @@ function runClaudeTurn(prompt, opts, model) {
   }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      // Ledger the unmeasurable call as "unknown" (honesty rule 3: never 0).
-      appendUsageRecord(
-        unknownRecord({ kind: "decompose", reason: "decompose claude call timed out" }),
-      );
+      // Ledger the unmeasurable call as a labelled ESTIMATE (never $0, never "measured").
+      recordKilledCall({
+        kind: "decompose",
+        reason: "decompose claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       return { timedOut: true, stdout: "" };
     }
     throw res.error;
@@ -1122,9 +1139,11 @@ function runClaudeTurn(prompt, opts, model) {
   const rawStdout = res.stdout || "";
   const json = parseClaudeJson(rawStdout);
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({ kind: "decompose", reason: "no parseable --output-format json on stdout" }),
-    );
+    recordKilledCall({
+      kind: "decompose",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     // Fall back to the raw stdout so a parser change in claude can't silently
     // break decomposition — the existing block-extractor still gets the text.
     return { timedOut: false, stdout: rawStdout };
@@ -1166,6 +1185,18 @@ function main() {
   const gate = cfg.enabled ? sizeGate(req, opts, cfg) : { debate: false };
   const useDebate = cfg.enabled && gate.debate;
 
+  // SPEC-DRIVEN (#4): the driving spec's clause ids are the ONLY valid clauseRef
+  // provenance. Build that set so validateResult can drop any AC clauseRef the model
+  // hallucinated (or an injected clause smuggled in). With no spec there are no valid
+  // clause ids at all, so the set is EMPTY and every clauseRef is dropped: a plan with
+  // no frozen spec can never persist a spec_clause_id. Built before the debate, which
+  // validates each revision with the same rule the final emit applies.
+  const clauseIds = Array.isArray(req.spec)
+    ? new Set(req.spec.map((c) => String(c?.clause_id ?? "").trim()).filter(Boolean))
+    : new Set();
+  const validate = (text) =>
+    validateResult(extractLastJsonBlock(text), opts.maxTickets, targetRepo, forcePlan, clauseIds);
+
   let output;
   if (opts.dryRun) {
     // Test/inspection path. A debate test supplies `mockTurns` (an ordered array
@@ -1179,7 +1210,7 @@ function main() {
         i += 1;
         return { timedOut: false, stdout: String(out ?? "") };
       };
-      const debate = runDebate(req, opts, cfg, stub);
+      const debate = runDebate(req, opts, cfg, stub, validate);
       output = debate.text;
     } else {
       // Byte-for-byte the original dry-run behaviour.
@@ -1188,7 +1219,7 @@ function main() {
   } else if (useDebate) {
     let debate;
     try {
-      debate = runDebate(req, opts, cfg, (p, model) => runClaudeTurn(p, opts, model));
+      debate = runDebate(req, opts, cfg, (p, model) => runClaudeTurn(p, opts, model), validate);
     } catch (e) {
       fail(`failed to spawn claude: ${e?.message ?? e}`);
       return;
@@ -1206,15 +1237,6 @@ function main() {
     if (run.timedOut) fail(`decomposition timed out after ${opts.timeoutMs}ms`);
     output = run.stdout;
   }
-
-  // SPEC-DRIVEN (#4): the driving spec's clause ids are the ONLY valid clauseRef
-  // provenance. Build that set so validateResult can drop any AC clauseRef the model
-  // hallucinated (or an injected clause smuggled in). With no spec there are no valid
-  // clause ids at all, so the set is EMPTY and every clauseRef is dropped: a plan with
-  // no frozen spec can never persist a spec_clause_id.
-  const clauseIds = Array.isArray(req.spec)
-    ? new Set(req.spec.map((c) => String(c?.clause_id ?? "").trim()).filter(Boolean))
-    : new Set();
 
   const parsed = extractLastJsonBlock(output);
   const result = validateResult(parsed, opts.maxTickets, targetRepo, forcePlan, clauseIds);

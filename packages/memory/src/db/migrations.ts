@@ -25,7 +25,10 @@ export class DatabaseTooNewError extends Error {
       "this lore database was written by a newer version of memory.\n" +
         `  It has migrations this version doesn't recognise: ${unknownMigrations.join(", ")}.\n` +
         "  Upgrade to the latest release before opening it:\n" +
-        "    npm i -g memory-mcp@latest\n" +
+        // Never `npm i -g memory-mcp`: that npm name is an unrelated third-party package
+        // whose bin would shadow this one. Gaffer ships from git or a release tarball.
+        "    from a checkout: git pull && pnpm install && pnpm -r build; from a release:\n" +
+        "    npm install -g <the newer memory-mcp-X.tgz from https://github.com/tmj-90/gaffer/releases>\n" +
         "  (Refusing to open — an older schema could corrupt newer data.)",
     );
     this.name = "DatabaseTooNewError";
@@ -464,6 +467,12 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     // outcome ledger by the report (retrievalRoi) — no new cross-package
     // coupling, and the confidence loop is left byte-for-byte untouched.
     //
+    // SUPERSEDED IN PART (audit: recall-feedback-wrong-items): recallFeedback
+    // now credits exactly the lore an agent fetched with MCP `get_lore` (read
+    // from this table), because the packet's lore list was never rendered to
+    // the agent. Search / browse reads here still never move confidence, and a
+    // credit is still one rung, clamped.
+    //
     // Its item_type CHECK also admits 'digest' and 'feature' (recall_event only
     // allows 'lore'/'card'), because the read path serves those too.
     //
@@ -545,6 +554,37 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
           PRIMARY KEY (lore_id, model)
         );
       `);
+    },
+  },
+  {
+    // VERSION HISTORY DIES WITH ITS RECORD. lore_version (012) has no FK, and
+    // deleteLore / rejectLore never touched it, so "edit, then delete" — the
+    // obvious way to scrub a leaked secret or rejected poison — left the original
+    // text on disk forever (and in every copy of a shared DB). Purge the orphans
+    // already there, and cascade every future delete in the schema itself so any
+    // delete path (current, future, or a direct SQL delete) is covered. A
+    // trigger rather than a FK rebuild: no table copy on upgrade.
+    id: "014-lore-version-cascade",
+    up(db) {
+      db.exec(`
+        DELETE FROM lore_version WHERE lore_id NOT IN (SELECT id FROM lore);
+        CREATE TRIGGER lore_version_ad AFTER DELETE ON lore BEGIN
+          DELETE FROM lore_version WHERE lore_id = old.id;
+        END;
+      `);
+    },
+  },
+  {
+    // DENSE-SCAN COVERING INDEX. The hybrid search's dense side scores every record
+    // passing the caller's filters; reading just (id, updated_at) for that set used
+    // to walk the full lore rows, bodies included (~19 ms at 20k rows). Covering the
+    // status / restricted / kind filter columns plus the selected ones lets SQLite
+    // answer from the index alone (~7 ms).
+    id: "015-lore-dense-scan-index",
+    up(db) {
+      db.exec(
+        "CREATE INDEX idx_lore_dense_scan ON lore(status, restricted, kind, updated_at, id);",
+      );
     },
   },
 ];

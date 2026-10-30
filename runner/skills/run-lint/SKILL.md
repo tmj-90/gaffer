@@ -70,7 +70,7 @@ were reformatted.
 - Fix the cause of a warning; a suppression needs a line-scoped justification.
 - Format only what you touched unless the ticket is a formatting ticket.
 - Report the true result of a run in this session; never claim "lint passes" from memory.
-- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
+- Work on the delivery branch (verify with `git branch --show-current`); commit, never push.
 
 ## Capture lore
 

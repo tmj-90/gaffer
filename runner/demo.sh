@@ -55,5 +55,7 @@ rm -f "$PING"
 line "4 ▸ One factory tick (DRY-RUN — nothing is invoked or mutated)"
 bash "$HERE/tick.sh" 2>&1 | sed 's/^[0-9T:-]* //; s#'"$HERE"'#runner#g' | grep -vE '^TICK_RESULT'
 
-line "▸ Live run: review factory.config.sh, then  DRY_RUN=0 bash loop.sh"
-echo "  Audit trail: dispatch ticket show 1   (or the web UI: dispatch-api)"
+line "▸ Live run: review $HERE/factory.config.sh, then  $HERE/gaffer run   (LIVE: delivers your ready tickets)"
+# This demo's ticket lives in the showcase db, not the factory's — name it, or
+# `gaffer wg ticket show 1` would show the operator's OWN ticket #1.
+echo "  Audit trail: DISPATCH_DB=$DISPATCH_DB $HERE/gaffer wg ticket show 1"

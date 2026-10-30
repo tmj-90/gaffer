@@ -72,7 +72,7 @@ override and invalid; docs name the option, type, default and unit.
 - Safe default that preserves current behaviour unless the ticket changes it.
 - Same precedence in every process; prove the value arrives.
 - Never log a config value that might be a secret; log the option name.
-- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
+- Work on the delivery branch (verify with `git branch --show-current`); commit, never push.
 
 ## Capture lore
 

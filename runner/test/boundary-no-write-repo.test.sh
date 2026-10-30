@@ -64,7 +64,7 @@ wg ticket repo-access set "$A" readonly-repo --access read --relation confirmed 
 wg ticket ready "$A" >/dev/null 2>&1
 [ "$(st "$A")" = "ready" ] && ok "#$A is ready with a single READ-access repo" || fail "#$A not ready: $(st "$A")"
 OUT1="$(run_tick)"
-echo "$OUT1" | grep -q '^TICK_RESULT=no_work$' && ok "tick → no_work (nothing deliverable)" || fail "tick result: $OUT1"
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT1" && ok "tick → no_work (nothing deliverable)" || fail "tick result: $OUT1"
 grep -q "has no WRITE repo" "$GAFFER_DATA/factory.log" && ok "tick logs the refusal (no WRITE repo)" || fail "no 'no WRITE repo' log line"
 [ "$(st "$A")" = "ready" ] && ok "#$A released back to ready for a human" || fail "#$A ended '$(st "$A")'"
 [ ! -e "$GAFFER_DATA/stub-claude.log" ] && ok "the agent was never invoked" || fail "agent invoked: $(cat "$GAFFER_DATA/stub-claude.log")"
@@ -78,14 +78,14 @@ wg ac add "$B" -t "nothing happens" >/dev/null 2>&1
 wg ticket repo-access set "$B" pathless-repo --access write --relation confirmed >/dev/null 2>&1
 wg ticket ready "$B" >/dev/null 2>&1
 OUT2="$(run_tick)"
-echo "$OUT2" | grep -q '^TICK_RESULT=no_work$' && ok "tick → no_work for the pathless ticket" || fail "tick result: $OUT2"
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT2" && ok "tick → no_work for the pathless ticket" || fail "tick result: $OUT2"
 grep -qE "has no local repo path|has no WRITE repo" "$GAFFER_DATA/factory.log" && ok "tick logs why it parked the pathless ticket" || fail "no parking log line for the pathless ticket"
 grep -qx "$B" "$GAFFER_DATA/.failed-tickets" 2>/dev/null && ok "#$B is skipped (no re-claim loop)" || fail "#$B not in the skip file"
 # With both head tickets skipped, another tick must not touch them again.
 BEFORE="$(grep -c 'claimed #' "$GAFFER_DATA/factory.log")"
 OUT3="$(run_tick)"
 AFTER="$(grep -c 'claimed #' "$GAFFER_DATA/factory.log")"
-echo "$OUT3" | grep -q '^TICK_RESULT=no_work$' && [ "$AFTER" = "$BEFORE" ] \
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT3" && [ "$AFTER" = "$BEFORE" ] \
   && ok "a further tick claims nothing (queue not wedged)" \
   || fail "further tick re-claimed (claims before=$BEFORE after=$AFTER, result=$OUT3)"
 [ ! -e "$GAFFER_DATA/stub-claude.log" ] && ok "the agent was never invoked across all ticks" || fail "agent invoked"

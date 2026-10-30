@@ -53,11 +53,15 @@ function normalizeFile(file: string, root: string): string {
  * Build the tsc oracle. `binary` defaults to `tsc`, resolved on PATH (or repo
  * `node_modules/.bin`) at consult time. Absent tool → `available: false`.
  */
-export function createTscOracle(runner: CommandRunner, binary = "tsc"): Oracle {
+export function createTscOracle(
+  runner: CommandRunner,
+  binary = "tsc",
+  opts: { pathOnly?: boolean } = {},
+): Oracle {
   return {
     id: "tsc",
     consult(root: string): OracleResult {
-      const resolved = resolveBinary(binary, root);
+      const resolved = resolveBinary(binary, root, process.env, opts);
       if (!resolved) return { available: false, reason: `${binary} not found on PATH` };
       const result = runner.runArgs(
         resolved,

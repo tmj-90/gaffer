@@ -15,14 +15,19 @@ export function resolveBinary(
   name: string,
   root: string,
   env: NodeJS.ProcessEnv = process.env,
+  opts: { pathOnly?: boolean } = {},
 ): string | undefined {
   // A name with a path separator is taken as-is (caller already resolved it).
   if (name.includes("/") || name.includes("\\")) {
     return isExecutable(name) ? name : undefined;
   }
 
-  const localBin = join(root, "node_modules", ".bin", name);
-  if (isExecutable(localBin)) return localBin;
+  // pathOnly: skip the repo-local bin. The production wiring (buildOracleSet)
+  // sets it, because a repo's node_modules/.bin is controlled by the repo.
+  if (!opts.pathOnly) {
+    const localBin = join(root, "node_modules", ".bin", name);
+    if (isExecutable(localBin)) return localBin;
+  }
 
   const pathEntries = (env.PATH ?? "").split(delimiter).filter((p) => p.length > 0);
   // On Windows an executable may carry an extension; PATHEXT lists them.

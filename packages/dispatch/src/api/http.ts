@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { z } from "zod";
 
-import { DispatchError } from "../util/errors.js";
+import { DispatchError, type DispatchErrorCode } from "../util/errors.js";
 
 /**
  * Shared HTTP primitives + error mapping for the REST surface. Extracted from
@@ -10,40 +10,59 @@ import { DispatchError } from "../util/errors.js";
  * the request/response helpers (no behaviour change — a pure move).
  */
 
-/** Map a stable DispatchError code to an HTTP status. */
+/**
+ * The HTTP status for every DispatchError code. A `Record` over the closed code
+ * union, so the compiler refuses a code with no status: a deliberate domain refusal
+ * (a gate, a binding check, a leak guard) must never surface as a 500.
+ */
+const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
+  NOT_FOUND: 404,
+  FILE_NOT_FOUND: 404,
+  VALIDATION_ERROR: 422,
+  INVALID_EDGE: 422,
+  INVALID_DEPENDENCY: 422,
+  ADVANCED_RELATION_REQUIRED: 422,
+  // A payload the gate refuses on its content: the contract names the implementation,
+  // or an acceptance PASS is not bound to what was tested.
+  TEST_CONTRACT_LEAK: 422,
+  BINDING_REQUIRED: 422,
+  POLICY_DENIED: 400,
+  STATE_CONFLICT: 409,
+  CONCURRENCY_CONFLICT: 409,
+  ILLEGAL_TRANSITION: 409,
+  NO_OP: 409,
+  DUPLICATE: 409,
+  CLAIM_INVALID: 409,
+  CLAIM_REQUIRED: 409,
+  TICKET_NOT_CLAIMABLE: 409,
+  TICKET_NOT_HUMAN_OWNED: 409,
+  DEPENDENCY_BLOCKED: 409,
+  AGENT_NOT_ELIGIBLE: 409,
+  SCOPE_NODE_IN_USE: 409,
+  REPO_NOT_LINKED: 409,
+  // Conflicts with recorded state: the contract changed since the tester started, the
+  // observed risk outgrew the auto-ship ceiling, a role owns this move, a bundle or
+  // target DB does not fit.
+  CONTRACT_MISMATCH: 409,
+  OBSERVED_RISK_ESCALATED: 409,
+  FACTORY_RUNNER_OWNED: 409,
+  DB_NOT_EMPTY: 409,
+  // CLI-only today: an implicit DB path with no database, an id prefix matching several.
+  DB_NOT_FOUND: 404,
+  AMBIGUOUS_REF: 409,
+  INCOMPATIBLE_BUNDLE: 409,
+  INCONSISTENT_BUNDLE: 409,
+  ACTOR_NOT_PERMITTED: 403,
+  NOT_CONFIGURED: 503,
+  // Genuine server-side failures (UNSAFE_BIND is startup-only).
+  IO_ERROR: 500,
+  UNSAFE_BIND: 500,
+  INTERNAL_ERROR: 500,
+};
+
+/** Map a stable DispatchError code to an HTTP status (500 for an unknown code). */
 export function statusForCode(code: string): number {
-  switch (code) {
-    case "NOT_FOUND":
-      return 404;
-    case "VALIDATION_ERROR":
-      return 422;
-    case "POLICY_DENIED":
-      return 400;
-    case "STATE_CONFLICT":
-    case "CONCURRENCY_CONFLICT":
-    case "ILLEGAL_TRANSITION":
-    case "NO_OP":
-    case "DUPLICATE":
-    case "CLAIM_INVALID":
-    case "CLAIM_REQUIRED":
-    case "TICKET_NOT_CLAIMABLE":
-    case "TICKET_NOT_HUMAN_OWNED":
-    case "DEPENDENCY_BLOCKED":
-    case "AGENT_NOT_ELIGIBLE":
-    case "SCOPE_NODE_IN_USE":
-    case "REPO_NOT_LINKED":
-      return 409;
-    case "INVALID_EDGE":
-    case "INVALID_DEPENDENCY":
-    case "ADVANCED_RELATION_REQUIRED":
-      return 422;
-    case "ACTOR_NOT_PERMITTED":
-      return 403;
-    case "NOT_CONFIGURED":
-      return 503;
-    default:
-      return 500;
-  }
+  return (STATUS_FOR_CODE as Record<string, number | undefined>)[code] ?? 500;
 }
 
 export interface ErrorBody {

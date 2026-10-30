@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One factory tick: deliver the next ready ticket via Claude Code + the two MCP
 # servers, or (when nothing is ready) run an idle scan that drafts new work.
-# Prints a final `TICK_RESULT=worked|reviewed|clarified|idle_drafted|no_work|error` line.
+# Prints a final `TICK_RESULT=worked|reviewed|clarified|idle_drafted|no_work|error|setup_error`
+# line (setup_error: a fail-closed setup check refused before any agent launched).
 #
 # DRY_RUN=1 (default) prints the plan and never invokes Claude or mutates a repo.
 set -uo pipefail
@@ -66,6 +67,19 @@ MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
 # caller (loop.sh, a test) may preset it; otherwise it is time + pid, unique per tick.
 GAFFER_TICK_ID="${GAFFER_TICK_ID:-$(date -u +%Y%m%dT%H%M%SZ).$$}"
 export GAFFER_TICK_ID
+# TICK DEADLINE (factory.config.sh GAFFER_TICK_DEADLINE_GUARD): the tick's own start,
+# taken BEFORE the merge lane, so the time left until the outer per-tick bound counts
+# resolver time, setup and every attempt's gates — not only agent calls.
+_GAFFER_TICK_T0="$(date +%s)"
+# Seconds left before the outer bound, less GAFFER_TICK_DEADLINE_MARGIN. Prints a huge
+# number when there is no outer bound (0 = unbounded) or the guard is off.
+gaffer_tick_remaining() {
+  local _ob="${GAFFER_TICK_OUTER_TIMEOUT:-0}" _m="${GAFFER_TICK_DEADLINE_MARGIN:-60}"
+  case "$_ob" in ''|*[!0-9]*) _ob=0 ;; esac
+  case "$_m" in ''|*[!0-9]*) _m=60 ;; esac
+  if [ "$_ob" -le 0 ] || [ "${GAFFER_TICK_DEADLINE_GUARD:-1}" = "0" ]; then echo 999999999; return 0; fi
+  echo $(( _GAFFER_TICK_T0 + _ob - _m - $(date +%s) ))
+}
 # Reap an orphaned agent process group if one is still recorded (see above). TERM
 # the whole group, brief grace, then KILL any survivor so no `claude -p` lingers
 # burning tokens. Numeric-guarded and fully best-effort — never faults the trap.
@@ -107,7 +121,10 @@ gaffer_reap_orphan_agent() {
 #   • EXIT vs signal: a returning bash signal trap does NOT end the script. EXIT
 #     uses gaffer_on_exit (preserves $?); INT/TERM use gaffer_on_signal which
 #     resets the trap and exits 130/143 so termination is never swallowed
-#     (FIX-SIGNAL).
+#     (FIX-SIGNAL). Both IGNORE further INT/TERM while the cleanup runs: stopping a
+#     pool delivers several TERMs (the outer reaper, the worker's group kill), and a
+#     second one must not kill the cleanup before the claim is released. The
+#     reaper's KILL after GAFFER_REAP_GRACE still bounds a wedged cleanup.
 GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
 # Branch-retention seam (FIX-BRANCH): split "keep the delivered branch" from
 # "skip cleanup entirely". GAFFER_DELIVERY_COMPLETE=1 means "fully done — the trap
@@ -148,6 +165,17 @@ gaffer_crash_cleanup() {
   # B25(a): the docker sandbox's per-call root files are named with THIS tick's PID
   # (lib/sandbox.sh) so they can be swept here without touching a concurrent worker's.
   rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* "$GAFFER_DATA"/strict-profile.$$.* 2>/dev/null || true
+  # RESUME ABORT: a resumed delivery (paused → Continue → in_progress) that ends here
+  # without completing — a signal, the outer timeout, a fail-closed setup exit, a
+  # worktree that could not be reused — used to stay in_progress with nothing left to
+  # pick it up (no queue lists it, and the keep-worktree guard below skipped every
+  # release). Put it back to `paused` with its resume context so it shows a Continue
+  # button again. Guarded inside on the ticket still being in flight, so a resume that
+  # re-paused, parked or submitted is left alone. Worktree + branch are untouched.
+  if [ "${_RESUMING:-0}" = "1" ] && [ "${GAFFER_DELIVERY_COMPLETE:-0}" != "1" ] \
+     && declare -F gaffer_resume_abort >/dev/null 2>&1; then
+    gaffer_resume_abort "the resumed tick ended before the delivery finished (${_GAFFER_EXIT_CAUSE:-exit})" || true
+  fi
   # A paused delivery keeps its worktree + branch ALIVE for the one-click resume —
   # the crash-cleanup must never tear it down. This is the load-bearing PAUSE-ON-CAP
   # invariant: a paused worktree survives the tick's exit.
@@ -188,7 +216,17 @@ gaffer_crash_cleanup() {
      && [ "${GAFFER_DELIVERY_COMPLETE:-0}" != "1" ] \
      && [ "${GAFFER_PAUSE_KEEP_WORKTREE:-0}" != "1" ] \
      && declare -F gaffer_release_delivery >/dev/null 2>&1; then
-    gaffer_release_delivery ready "runner killed mid-delivery — claim released by crash trap" || true
+    # Say WHICH way the tick ended: a signal is a kill, anything else is an exit the
+    # normal flow did not resolve (a setup error that bypassed gaffer_abort_setup, a
+    # bug). One fixed "runner killed" reason sent operators looking for kills.
+    if [ "${_GAFFER_EXIT_CAUSE:-exit}" = "signal" ]; then
+      gaffer_release_delivery ready "runner killed mid-delivery (signal) — claim released by crash trap" || true
+      # The outer per-tick bound fires as a signal too: without a skip-file entry the
+      # loop's very next tick re-claimed this ticket and restarted it from attempt 1.
+      [ -n "${SKIP_FILE:-}" ] && declare -F gaffer_skip_ticket >/dev/null 2>&1 && gaffer_skip_ticket "$NUM"
+    else
+      gaffer_release_delivery ready "tick exited mid-delivery without resolving the claim (${_GAFFER_EXIT_CAUSE:-exit}) — claim released by crash trap" || true
+    fi
   fi
   # Nothing to clean until worktree setup has defined the teardown helper + its rows.
   # Before that point (config/candidate/skill/access parsing) this is a safe no-op.
@@ -209,14 +247,18 @@ gaffer_crash_cleanup() {
 # keep going in an inconsistent state. We therefore split EXIT from the signal
 # handlers: each resets the trap first (so re-entry can't recurse) then exits with
 # the correct status. EXIT preserves the original `$?`; INT exits 130, TERM 143.
+# INT/TERM are ignored (not reset to default) for the cleanup itself, so a repeat
+# signal cannot kill it half-way and strand the claim, worktree and runtime file.
 gaffer_on_exit() {
   local rc=$?
-  trap - EXIT INT TERM
+  trap - EXIT; trap '' INT TERM
+  _GAFFER_EXIT_CAUSE="${_GAFFER_EXIT_CAUSE:-rc=$rc}"
   gaffer_crash_cleanup
   exit "$rc"
 }
 gaffer_on_signal() {   # $1 = exit code (130 INT, 143 TERM)
-  trap - EXIT INT TERM
+  trap - EXIT; trap '' INT TERM
+  _GAFFER_EXIT_CAUSE=signal
   gaffer_crash_cleanup
   exit "$1"
 }
@@ -324,6 +366,33 @@ _gaffer_append_line() { echo "$2" >> "$1"; }
 # Locked backpressure-report append: _gaffer_bp_record <file> <repo> <triple> <reason>.
 _gaffer_bp_record() { printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$1"; }
 result() { echo "TICK_RESULT=$1"; }
+# SETUP ERROR: one exit for every fail-closed SETUP failure (no agent launched: the
+# dispatch CLI unbuilt, no timeout primitive, an unregistrable agent, the safety hook /
+# agent env / DB vars / MCP or prompt render refusing). These used to `exit 1` with
+# `error`: the crash trap then released the claim as "runner killed mid-delivery" (no
+# kill happened), the ticket was re-claimed on the very next tick, and one broken
+# install burned the whole MAX_TICKS_PER_DAY on claim/teardown churn. Now the claim is
+# released (or a resume re-paused) with the REAL reason, the ticket is skipped for the
+# run, the cause is written to $GAFFER_DATA/.setup-error for the loop / daemon, and the
+# tick reports `setup_error` — which loop.sh / worker.sh treat as "stop this run" and
+# the daemon backs off on (lib/daemon.sh). $1 = tag (SAFETY, MCP-RENDER, …), $2 = msg.
+gaffer_abort_setup() {
+  local tag="$1" msg="$2"
+  log "$tag: $msg"
+  _GAFFER_EXIT_CAUSE="setup error: $tag"
+  ( umask 077; printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg" > "$GAFFER_DATA/.setup-error" ) 2>/dev/null || true
+  if [ -n "${NUM:-}" ]; then
+    if [ "${_RESUMING:-0}" = "1" ] && declare -F gaffer_resume_abort >/dev/null 2>&1; then
+      gaffer_resume_abort "setup error: $tag — $msg"
+    elif [ -n "${CLAIM_TOKEN:-}" ] && [ "${GAFFER_CLAIM_RESOLVED:-0}" != "1" ] \
+         && declare -F gaffer_release_delivery >/dev/null 2>&1; then
+      gaffer_release_delivery ready "setup error: $tag — $msg (no agent was launched)"
+    fi
+    [ -n "${SKIP_FILE:-}" ] && gaffer_skip_ticket "$NUM"
+  fi
+  result setup_error
+  exit 1
+}
 # Derive an opt-in `--area` from the repo stack label where it is UNAMBIGUOUS, so
 # the area-only packs that select-skills now gates (FIX-2) still fire when the
 # stack clearly implies a domain. Today only the web/front-end family is safe to
@@ -344,14 +413,14 @@ gaffer_area_for_stack() {
 # via factory.config.sh) — they wrap UNTRUSTED ticket-derived fields (title,
 # review feedback) in a delimited envelope before they reach the agent prompt.
 
-[ -f "$DISPATCH_DIR/dist/cli/index.js" ] || { log "dispatch not built — run: pnpm -C $DISPATCH_DIR build"; result error; exit 1; }
+[ -f "$DISPATCH_DIR/dist/cli/index.js" ] || gaffer_abort_setup SETUP "dispatch not built — run: pnpm -C $DISPATCH_DIR build"
 
 # R-10: fail closed on a missing timeout primitive. Every live `claude -p` call
 # below runs under gaffer_timeout, which now REFUSES to run unbounded when no
 # perl/timeout/gtimeout exists. Assert one is present up front and abort the tick
 # as a setup error rather than discovering it mid-delivery (a runaway agent must
 # never even be launched).
-gaffer_timeout_preflight || { log "no timeout primitive — aborting tick (setup error)"; result error; exit 1; }
+gaffer_timeout_preflight || gaffer_abort_setup SETUP "no timeout primitive — aborting tick (setup error)"
 
 # Part B (defense-in-depth): before this tick can claim work and spawn ANY paid
 # `claude -p`, consult the per-UTC-day USD cap. If the day's ledger spend is already
@@ -369,7 +438,7 @@ fi
 if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
   wg init >/dev/null 2>&1 || true
   if ! wg agent register -n "$GAFFER_AGENT_NAME" --max-risk high 2>/dev/null | jget 'd.agent.id' > "$GAFFER_AGENT_ID_FILE" 2>/dev/null; then
-    log "could not register factory agent"; result error; exit 1
+    gaffer_abort_setup SETUP "could not register factory agent"
   fi
 fi
 AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
@@ -378,7 +447,7 @@ AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
 if [ ! -s "$GAFFER_REVIEWER_ID_FILE" ]; then
   if ! wg agent register -n "${GAFFER_AGENT_NAME}-reviewer" --max-risk high 2>/dev/null | jget 'd.agent.id' > "$GAFFER_REVIEWER_ID_FILE" 2>/dev/null \
      || [ ! -s "$GAFFER_REVIEWER_ID_FILE" ]; then
-    rm -f "$GAFFER_REVIEWER_ID_FILE"; log "could not register the reviewer principal"; result error; exit 1
+    rm -f "$GAFFER_REVIEWER_ID_FILE"; gaffer_abort_setup SETUP "could not register the reviewer principal"
   fi
 fi
 REVIEWER_AGENT="$(cat "$GAFFER_REVIEWER_ID_FILE")"
@@ -391,9 +460,10 @@ declare -F gaffer_inert_policy_check >/dev/null 2>&1 && gaffer_inert_policy_chec
 # ── RUNNER-OWNED-BOOKKEEPING: the runner holds the delivery claim ────────────
 # The runner (not the agent) claims the chosen ticket at SELECTION, holds the claim
 # token for the whole delivery, submits after ITS gates pass, and releases/parks the
-# claim on failure. CLAIM_TOKEN is captured by the candidate-loop claim below; it
-# stays EMPTY for a resumed delivery (the runner holds no token — the ticket is
-# already in_progress) and for DRY_RUN (never claims).
+# claim on failure. CLAIM_TOKEN is captured by the candidate-loop claim below, or by
+# resume-begin for a resumed delivery (which leases the resume to this runner); it
+# stays EMPTY for DRY_RUN (never claims) and only falls back to empty on a resume if
+# resume-begin printed no token (the tokenless branches below remain for that case).
 CLAIM_TOKEN=""
 
 # Release/park the runner-held delivery claim (RUNNER-OWNED-BOOKKEEPING). $1 =
@@ -448,6 +518,42 @@ gaffer_release_delivery() {
   GAFFER_CLAIM_RESOLVED=1
 }
 
+# RESUME ABORT: put a resumed delivery that did not finish back to `paused` through
+# the guarded in_progress → paused edge, re-using its own resume context (reason,
+# branch, worktree map, attempt, spend), so the human sees the Continue button again.
+# The upsert leaves resume_requested=0: a human presses Continue once more rather than
+# the loop re-crashing on the same resume every tick. $1 = why (logged + noted).
+# Acts only while the ticket is still in flight (in_progress/claimed); best-effort.
+gaffer_resume_abort() {
+  local why="$1" st ctx
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  [ "${_RESUME_ABORTED:-0}" = "1" ] && return 0
+  [ -n "${NUM:-}" ] || return 0
+  st="$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
+  case "$st" in in_progress|claimed) ;; *) return 0 ;; esac
+  _RESUME_ABORTED=1
+  ctx="$(wg ticket paused-context "$NUM" 2>/dev/null || echo '{}')"
+  local _r _b _w _wj _repo _a _sp
+  _r="$(printf '%s' "$ctx" | jget '(d.context && d.context.reason) || "timeout"' 2>/dev/null || echo timeout)"
+  _b="$(printf '%s' "$ctx" | jget '(d.context && d.context.branch_name) || ""' 2>/dev/null || true)"
+  _w="$(printf '%s' "$ctx" | jget '(d.context && d.context.worktree_path) || ""' 2>/dev/null || true)"
+  _wj="$(printf '%s' "$ctx" | jget '(d.context && d.context.worktrees_json) || ""' 2>/dev/null || true)"
+  _repo="$(printf '%s' "$ctx" | jget '(d.context && d.context.repo) || ""' 2>/dev/null || true)"
+  _a="$(printf '%s' "$ctx" | jget 'String((d.context && d.context.attempt) || 0)' 2>/dev/null || echo 0)"
+  _sp="$(printf '%s' "$ctx" | jget '(d.context && d.context.spend) || ""' 2>/dev/null || true)"
+  if wg ticket pause "$NUM" --reason "$_r" --attempt "${_a:-0}" \
+      ${_b:+--branch "$_b"} ${_w:+--worktree "$_w"} ${_wj:+--worktrees-json "$_wj"} \
+      ${_repo:+--repo "$_repo"} ${_sp:+--spend "$_sp"} >/dev/null 2>&1; then
+    GAFFER_CLAIM_RESOLVED=1
+    wg attach-evidence "$NUM" --type manual_note \
+      --summary "RESUME ABORTED: $why — re-paused with its worktree + branch kept; press Continue to retry" >/dev/null 2>&1 || true
+    log "RESUME: #$NUM did not finish ($why) — re-paused (→ paused); worktree + branch ${_b:-$WORK_BRANCH} kept, Continue to retry"
+  else
+    log "RESUME: WARNING — #$NUM did not finish ($why) and could not be re-paused; it is still '$st' — needs a human"
+  fi
+  return 0
+}
+
 # ── FINDING-3: CROSS-RUN no-commit failure counter ───────────────────────────
 # A per-ticket counter that survives runs (the skip-file is per-run only), kept
 # as one small file per ticket under $GAFFER_DATA — the same durability domain
@@ -489,7 +595,8 @@ _num_ge() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{exit !(a + 0 >= b + 0)}' 2>
 _num_le() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{exit !(a + 0 <= b + 0)}' 2>/dev/null; } # a <= b
 
 gaffer_release_or_park_nocommit() {
-  local reason="$1"
+  # $2 (optional) = what the parked trail says happened (default: no commits produced).
+  local reason="$1" detail="${2:-the agent produced no commits}"
   # DRY_RUN never claims → never releases and never counts; keep it side-effect-free.
   if [ "${DRY_RUN:-0}" = "1" ]; then gaffer_release_delivery ready "$reason"; return 0; fi
   local _max="${GAFFER_MAX_NOCOMMIT_FAILURES:-${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}}"
@@ -526,7 +633,7 @@ gaffer_release_or_park_nocommit() {
   # the reason-code lands on the board card (last_review_feedback) and the
   # ticket.blocked event pages a human; the durable note records the trail.
   wg attach-evidence "$NUM" --type manual_note \
-    --summary "PARKED (rework_exhausted): $reason — after $_why; the agent produced no commits, needs a human" >/dev/null 2>&1 || true
+    --summary "PARKED (rework_exhausted): $reason — after $_why; $detail, needs a human" >/dev/null 2>&1 || true
   gaffer_release_delivery blocked "$reason — parked after $_why; needs a human" rework_exhausted "$_n" "$_max"
   # MEMORY FEEDBACK LOOP: served knowledge did not help this ticket — demote + flag.
   gaffer_recall_feedback blocked
@@ -556,10 +663,26 @@ gaffer_budget_exhausted() {
   GAFFER_BUDGET_SPENT="$_spent"; GAFFER_BUDGET_CEIL="$_ceil"; return 0
 }
 
+# gaffer_ticket_budget_remaining <num>
+# Echo the ticket's remaining USD under its effective ceiling (the same ceiling
+# gaffer_budget_exhausted resolves: delivery_budget_usd, else GAFFER_REWORK_BUDGET_USD)
+# minus its cumulative spend; nothing when no ceiling is configured. Feeds the
+# opt-in per-call cap (gaffer_call_budget_usd) so one call cannot overshoot it.
+gaffer_ticket_budget_remaining() {
+  local _num="$1" _tb _ceil _spent
+  _tb="$(printf '%s' "${SHOW:-}" | jget 'd.ticket.delivery_budget_usd' 2>/dev/null || true)"
+  case "$_tb" in ""|None|null) _tb="" ;; esac
+  if [ -n "$_tb" ] && _num_pos "$_tb"; then _ceil="$_tb"; else _ceil="${GAFFER_REWORK_BUDGET_USD:-}"; fi
+  { [ -n "$_ceil" ] && _num_pos "$_ceil"; } || return 0
+  _spent="$(gaffer_ticket_rework_spend "$_num" 2>/dev/null || echo 0)"
+  awk -v c="$_ceil" -v s="$_spent" 'BEGIN{printf "%.6f", (c+0)-(s+0)}' 2>/dev/null || true
+}
+
 # Submit a passed delivery for review (RUNNER-OWNED-BOOKKEEPING). With a runner-held
 # token (normal delivery) it uses the claim-gated submit (claimed → in_review,
-# completing the claim); a resumed delivery (no token, already in_progress) is moved
-# straight to in_review. $1 = reason. Returns non-zero (logged) on failure.
+# completing the claim; a leased resume goes in_progress → in_review the same way); a
+# tokenless resume fallback is moved straight to in_review. $1 = reason. Returns
+# non-zero (logged) on failure.
 # Derive the delivery-branch slug from a ticket title. SHARED by the normal delivery
 # path AND the greenfield bootstrap so both mint the identical `gaffer/ticket-N-<slug>`
 # branch shape the reviewer's fallback grep (`gaffer/ticket-$NUM-[a-z0-9-]*`) expects.
@@ -639,17 +762,18 @@ gaffer_recall_feedback() {
 # TICKET → LORE DISTILLATION AT CLOSE (Track 1c, live-path backport).
 # A ticket's title + acceptance criteria carry the REAL product intent — WHY the
 # work exists. At close that intent evaporates: the ticket is marked done and
-# nothing durable captures it. This harvests it into a REQUIREMENT DRAFT lore
-# record so the "why" survives the ticket. DRAFT ONLY (human-gated via the
-# memory suggest boundary) — never auto-promoted. Conservative like the crew
-# mirror (packages/crew/src/context/ticketIntent.ts::distillTicketIntent): a
-# ticket with NO acceptance criteria has nothing durable to harvest, so it is a
-# no-op rather than drafting noise. (The optional DECISION draft the mirror can
-# emit needs recorded decisions/reject-reasons, which the live close path does
-# not carry — matching crew's own live call, which passes only title + AC.)
+# nothing durable captures it. This harvests it into a REQUIREMENT lore record
+# so the "why" survives the ticket: a human-gated DRAFT by default, promoted ACTIVE
+# only under MEMORY_AUTO_APPROVE=1 / GAFFER_MEMORY_AUTO_PROMOTE=1 (below). The text
+# is rendered by crew — packages/crew/src/context/ticketIntent.ts::distillTicketIntent
+# via runtime/context/distillIntentCli.js, the single source (edit it there). A
+# ticket with NO non-blank acceptance criteria has nothing durable to harvest, so
+# it is a no-op rather than drafting noise. (The optional DECISION draft the
+# distiller can emit needs recorded decisions/reject-reasons, which the live close
+# path does not carry, so the CLI emits only the requirement.)
 # Best-effort + logged: a distill error NEVER affects delivery (already
-# submitted). No-op under DRY_RUN, without the memory CLI, or with no ticket/repo
-# in scope.
+# submitted). No-op under DRY_RUN, without the memory CLI or the crew build, or
+# with no ticket/repo in scope.
 gaffer_distill_ticket_intent() {
   [ "${DRY_RUN:-0}" = "1" ] && return 0
   [ -n "${NUM:-}" ] && [ -n "${RECALL_REPO_NAME:-}" ] || return 0
@@ -657,9 +781,13 @@ gaffer_distill_ticket_intent() {
   [ -n "${SHOW:-}" ] || return 0
 
   # Build the requirement draft's {title, summary} from the ticket's title + AC.
-  # json-tool emits ONE JSON line (or nothing when there is no AC). Fail-soft.
-  local _distill
-  _distill="$(SHOW="$SHOW" DTITLE="${TITLE:-}" DREPO="$RECALL_REPO_NAME" DNUM="$NUM" gaffer_json distill-intent 2>/dev/null || true)"
+  # The crew CLI emits ONE JSON line (or nothing when there is no AC). Fail-soft.
+  local _distill _distill_cli="${CREW_DIR:-}/dist/runtime/context/distillIntentCli.js"
+  if [ ! -f "$_distill_cli" ]; then
+    log "memory: crew not built ($_distill_cli missing) — skipping the ticket-intent distillation for #$NUM"
+    return 0
+  fi
+  _distill="$(SHOW="$SHOW" DTITLE="${TITLE:-}" DREPO="$RECALL_REPO_NAME" DNUM="$NUM" node "$_distill_cli" 2>/dev/null || true)"
   [ -n "$_distill" ] || return 0
 
   local _dt _ds
@@ -674,7 +802,9 @@ gaffer_distill_ticket_intent() {
   # active), there is nothing new to harvest. Fail-soft: an unreadable lookup drafts
   # as before rather than silently skipping.
   local _existing
-  _existing="$(lg search --repo "$RECALL_REPO_NAME" --tag "ticket-$NUM" --include-drafts --json 2>/dev/null \
+  # --no-record-reads: a bookkeeping lookup, not an agent retrieval — it must not
+  # count as a read in `memory stats` (top-cited / retirement candidates).
+  _existing="$(lg search --repo "$RECALL_REPO_NAME" --tag "ticket-$NUM" --include-drafts --no-record-reads --json 2>/dev/null \
     | jget 'Array.isArray(d) ? d.length : 0' 2>/dev/null || echo 0)"
   if [ "${_existing:-0}" != "0" ]; then
     log "memory: requirement for #$NUM already distilled (${_existing} record(s) tagged ticket-$NUM) — not drafting again"
@@ -763,7 +893,14 @@ if [ -n "$RESUME_NUM" ]; then
   REPO_PATH="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' 2>/dev/null)"
   STACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
   TITLE="$(echo "$SHOW" | jget 'd.ticket.title' 2>/dev/null)"
-  if wg ticket resume-begin "$NUM" >/dev/null 2>&1; then
+  # The resume is LEASED to this runner (--agent/--ttl): the pause released the old
+  # lease, and resume-begin takes a fresh one and prints its token. From here a resumed
+  # delivery uses the same token paths as a fresh one — heartbeat, claim-gated submit,
+  # token release, MCP evidence — and if this tick dies the lapsed lease returns the
+  # ticket to `paused` (worktree kept) instead of stranding it in_progress unleased.
+  if _RESUME_JSON="$(wg ticket resume-begin "$NUM" --agent "$AGENT" --ttl "$GAFFER_CLAIM_TTL" 2>/dev/null)"; then
+    CLAIM_TOKEN="$(printf '%s' "$_RESUME_JSON" | jget 'd.claim_token ?? ""' 2>/dev/null || echo '')"
+    [ -n "$CLAIM_TOKEN" ] || log "RESUME: WARNING — resume-begin returned no lease token for #$NUM; continuing tokenless"
     _RESUMING=1
     # Keep the (existing) worktree alive even if THIS resumed tick crashes mid-way —
     # the partial work must never be torn down by the trap. A clean success still tears
@@ -975,7 +1112,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     fi
 
     # Fail closed: never run a live agent without the deterministic safety hook.
-    gaffer_assert_safety_hook || { log "SAFETY: refusing live bootstrap (fail closed)"; result error; exit 1; }
+    gaffer_assert_safety_hook || gaffer_abort_setup SAFETY "refusing live bootstrap (fail closed)"
 
     # EXECUTION PREFLIGHT (lib/registry-probe.sh): the bootstrap's one permitted
     # install needs the package registry from INSIDE the agent's allowlisted env.
@@ -1055,13 +1192,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # boundary. FAIL CLOSED: release the claim back to ready (the scaffold resumes on
     # the next attempt), skip the ticket this run, and never spawn.
     if ! gaffer_install_agent_dir "$B_DIR" "$B_SKILLS" "bootstrap-$NUM"; then
-      log "SAFETY: agent-env install failed for bootstrap #$NUM (settings/hook wiring unverified) — refusing live bootstrap (fail closed)"
-      gaffer_release_delivery ready "bootstrap: agent-env install failed (safety-hook wiring unverified) — refusing live bootstrap (fail closed)"
-      gaffer_skip_ticket "$NUM"
-      result error; exit 1
+      gaffer_abort_setup SAFETY "agent-env install failed for bootstrap #$NUM (settings/hook wiring unverified) — refusing live bootstrap (fail closed)"
     fi
     MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
-    gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"; result error; exit 1; }
+    gaffer_assert_db_vars || gaffer_abort_setup DB-VARS "DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"
     # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
     # MCP server env so the agent's evidence writes resolve it without ever handling
     # the token string. Substituted alongside the DB/bin placeholders.
@@ -1079,14 +1213,18 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Recall is empty for a bootstrap (no delivery-recall context ⇒ memory read inert).
     # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
     # must abort the bootstrap before the agent launch — the bare sed never did.
-    gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
-      || { log "MCP-RENDER: failed to render bootstrap runtime .mcp.json — refusing live bootstrap (fail closed)"; result error; exit 1; }
+    # FACTORY TICKET SCOPE: the scope ticket ($NUM, rendered into the dispatch server's
+    # GAFFER_SCOPE_TICKET) makes the server refuse this agent's writes on any OTHER
+    # ticket (it does not depend on the claim token alone, which is empty on a resume).
+    gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" "$NUM" \
+      || gaffer_abort_setup MCP-RENDER "failed to render bootstrap runtime .mcp.json — refusing live bootstrap (fail closed)"
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
 
-    B_TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
+    # The prompt text (and the title's quarantine envelope) is rendered by crew:
+    # packages/crew/src/runtime/context/deliveryPrompt.ts via renderPromptCli.js.
     B_PROMPT="$(gaffer_render_delivery_prompt bootstrap)" \
-      || { log "PROMPT-RENDER: failed to render bootstrap prompt for #$NUM — refusing live bootstrap (fail closed)"; result error; exit 1; }
+      || gaffer_abort_setup PROMPT-RENDER "failed to render bootstrap prompt for #$NUM — refusing live bootstrap (fail closed)"
 
     RUN_LOG_MARK="$(wc -l < "$GAFFER_LOG" 2>/dev/null || echo 0)"
     # The scoped install allowance: GAFFER_BOOTSTRAP_INSTALL=1 + GAFFER_BOOTSTRAP_DIR
@@ -1268,9 +1406,16 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # Best-effort/non-fatal + idempotent (re-running never double-links).
       gaffer_inherit_repo "$NUM" || true
     else
-      log "BOOTSTRAP: dispatch registration of '$B_NAME' FAILED — the dependent tickets would not unblock; flagging #$NUM"
-      wg attach-evidence "$NUM" --type manual_note \
-        --summary "needs_human_review: bootstrap scaffold succeeded but dispatch repo registration of '$B_NAME' failed — onboard manually so dependents unblock" >/dev/null 2>&1 || true
+      # Registration failed, so there is no repo to link, no branch_name and no per-repo
+      # delivery row: submitting would strand the ticket in in_review (the reviewer has
+      # nothing to diff, the done-gate cannot resolve it) with every dependent blocked
+      # behind it. Park VISIBLY instead, with the cause, keeping the scaffold + branch;
+      # a retry resumes the scaffold and counts a now-registered repo as success.
+      log "BOOTSTRAP: dispatch registration of '$B_NAME' FAILED (${GAFFER_ONBOARD_ERR:-unknown}) — parking #$NUM → blocked (NOT submitting)"
+      GAFFER_KEEP_DELIVERY_BRANCH=1
+      gaffer_release_delivery blocked "bootstrap repo registration of '$B_NAME' failed: ${GAFFER_ONBOARD_ERR:-unknown} — register it with 'wg repo add' (scaffold kept at $B_DIR, branch $B_WORK_BRANCH), then unblock" bootstrap_failed
+      gaffer_skip_ticket "$NUM"
+      result error; exit 0
     fi
 
     # RUNNER-OWNED-BOOKKEEPING: the runner (holding the claim) submits the bootstrap
@@ -1320,7 +1465,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   #   • markers ABSENT    → json parse failure; warn so a multi-repo ticket's
   #                         incomplete delivery is visible (not silent single-repo).
   _WG_MARKERS=1
-  if ! printf '%s\n' "$WG_PARTITION" | grep -qF '@@WRITE_PATHS@@'; then
+  if ! grep -qF '@@WRITE_PATHS@@' <<<"$WG_PARTITION"; then   # here-string: a pipe can SIGPIPE-miss under pipefail
     _WG_MARKERS=0
     # Parse failure (markers absent = json parse crash). If the ticket actually links
     # MORE THAN ONE repo, the single-repo fallback would silently deliver incomplete work
@@ -1489,33 +1634,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
   PRIMARY_REPO="$(printf '%s\n' "$WRITE_ROOTS" | grep . | head -1)"
   [ -n "$PRIMARY_REPO" ] || PRIMARY_REPO="$WORKTREES_BASE/primary"
 
-  # Human-readable WRITE / READ repo lists for the prompt + plan logging. The
-  # agent is told which (worktree) repos are WRITABLE (it is already on the gaffer/
-  # branch in each) and which are READ-ONLY context (never branch or write them).
-  WRITE_LIST="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '{printf "  - %s (%s) [WRITABLE worktree, on branch '"$WORK_BRANCH"']\n", $5, ($2==""?"repo":$2)}')"
-  READ_LIST="$(printf '%s\n' "$READ_ROOTS" | grep . | awk '{printf "  - %s [READ-ONLY context — do NOT write or branch]\n", $0}')"
-  [ -n "$READ_LIST" ] || READ_LIST="  (none)"
-
-  # Prior review feedback: if this ticket was sent back before, surface the reviewer's
-  # reasons so the agent ADDRESSES them this time (closes the learning loop instead of
-  # repeating the mistake). Pulled from ticket.transitioned events whose payload reason
-  # records a rejection (to refining/ready/cancelled), newest few, deduped.
-  REVIEW_FEEDBACK_BLOCK=""
+  # Prior review feedback: if this ticket was sent back before, the reviewer's
+  # reasons ride into the prompt so the agent ADDRESSES them this time. Pulled from
+  # ticket.transitioned events whose payload reason records a rejection, newest
+  # few, deduped. Only the RAW reasons are captured here: the write/read repo
+  # lists, the review-feedback framing and the quarantine envelope around
+  # the (untrusted) reasons are all rendered by crew's deliveryPrompt.ts, which
+  # reads _RF through _gaffer_prompt_inputs_json (factory.config.sh).
   _RF="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json review-feedback 2>/dev/null || true)"
-  # The reviewer feedback is UNTRUSTED (a rejection reason is free text that may
-  # itself carry injected instructions) — quarantine the body inside an envelope.
-  if [ -n "$_RF" ]; then
-    _RF_Q="$(gaffer_quarantine review-feedback "$_RF")"
-    REVIEW_FEEDBACK_BLOCK="
-PRIOR REVIEW FEEDBACK — this ticket was sent back before. Each line inside the
-envelope below is why a previous attempt was rejected; you MUST address every one
-before re-delivering, and must NOT repeat them. The previous attempt's commits are
-ALREADY on this branch: fix them in place rather than re-implementing from scratch
-(run \`git log --oneline\` first; reset to the base deliberately only if the approach
-itself was wrong).
-$_RF_Q
-"
-  fi
 
   # ── PRIOR CONTEXT (file cards) — via shared gaffer_prime_context_block ───────
   # Runner has ALREADY resolved scope (write/read partition above). Pull the
@@ -1579,31 +1705,20 @@ $PRODUCT_CONTEXT_BLOCK}"
     log "ACCEPTANCE: #$NUM is the epic's acceptance ticket — brief-level acceptance suite against the integrated build; the independent tester decides"
   fi
 
-  # ── LORE-REFLECTION NUDGE (Track 1c) — appended to the delivery brief ─────────
-  # The live-agent counterpart of crew's CaptureLoreReflectionHook: prompt the
-  # agent, before it stops, to capture any durable INTENT (decision / requirement
-  # / non-goal) this ticket established via the gated `suggest_lore` boundary —
-  # not per-ticket trivia. Advisory only; it records nothing itself.
-  read -r -d '' LORE_REFLECTION_NUDGE <<'EOF' || true
-BEFORE STOPPING, reflect on WHY this was built this way. If this ticket established a
-durable DECISION (why this approach over the alternatives), a REQUIREMENT (what it
-needed), or a NON-GOAL (what it deliberately did NOT do), call the Memory `suggest_lore`
-tool ONCE with an explicit `kind` (decision / requirement / non-goal). Capture only
-intent the NEXT agent should start from — skip per-ticket trivia. This lands a gated
-DRAFT a human approves; nothing is auto-applied.
-EOF
-
-  TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
+  # The prompt TEXT — the quarantined title, the lore-reflection nudge, the
+  # review-feedback block, the repo lists — is LIVE in
+  # packages/crew/src/runtime/context/deliveryPrompt.ts; edit it there (and
+  # rebuild crew), not here. This file only gathers the raw inputs.
   if [ "$_RESUMING" = "1" ]; then
     # PAUSE-ON-CAP continuation prompt: the prior progress is ALREADY in this worktree
     # (committed and/or working changes) — the agent CONTINUES and FINISHES it with a
     # fresh turn allowance. No re-claim, no re-scaffold; the ticket is already
     # in_progress and the branch already carries the partial work.
     PROMPT="$(gaffer_render_delivery_prompt resume)" \
-      || { log "PROMPT-RENDER: failed to render resume prompt for #$NUM — aborting delivery (fail closed)"; result error; exit 1; }
+      || gaffer_abort_setup PROMPT-RENDER "failed to render resume prompt for #$NUM — aborting delivery (fail closed)"
   else
   PROMPT="$(gaffer_render_delivery_prompt fresh)" \
-    || { log "PROMPT-RENDER: failed to render delivery prompt for #$NUM — aborting delivery (fail closed)"; result error; exit 1; }
+    || gaffer_abort_setup PROMPT-RENDER "failed to render delivery prompt for #$NUM — aborting delivery (fail closed)"
   fi
 
   if [ "$_RESUMING" = "1" ]; then
@@ -1697,10 +1812,20 @@ EOF
   # run, (b) success removal — keep the branch, (c) failure rollback — drop the
   # branch too, so a botched run leaves the real repo 100% clean. Always defensive
   # (`git worktree prune`) and never fatal.
+  # BRANCH RETENTION: `drop-branch` deletes $WORK_BRANCH ONLY in the repos where THIS
+  # tick created it (`worktree add -B`, recorded in _BRANCH_CREATED_THIS_TICK by repo
+  # path). A branch this tick merely re-attached — a rework's reviewed commits, a
+  # resume — predates the tick and is never deleted by any caller: the crash trap
+  # (signals, the outer timeout, setup exits, the pre-spawn budget park), the
+  # multi-repo setup rollback, or a failure path. Those used to delete reviewed,
+  # paid-for commits. A kept branch with commits is logged.
+  _BRANCH_CREATED_THIS_TICK=""
+  _gaffer_branch_created_here() { grep -qxF -- "$1" <<<"$_BRANCH_CREATED_THIS_TICK"; }
   gaffer_cleanup_worktrees() {
-    # $1 = "drop-branch" to also delete $WORK_BRANCH from each real repo.
+    # $1 = "drop-branch" to also delete $WORK_BRANCH from each real repo where this
+    # tick created it (see BRANCH RETENTION above).
     local drop_branch="${1:-}"
-    local _rid _rname _rpath _rbase _rwt
+    local _rid _rname _rpath _rbase _rwt _kept
     while IFS=$'\t' read -r _rid _rname _rpath _rbase _rwt; do
       [ -n "$_rpath" ] || continue
       git -C "$_rpath" rev-parse --git-dir >/dev/null 2>&1 || { [ -e "$_rwt" ] && rm -rf "$_rwt"; continue; }
@@ -1717,7 +1842,13 @@ EOF
       fi
       git -C "$_rpath" worktree prune >/dev/null 2>&1 || true
       if [ "$drop_branch" = "drop-branch" ]; then
-        git -C "$_rpath" branch -D "$WORK_BRANCH" >/dev/null 2>&1 || true
+        if _gaffer_branch_created_here "$_rpath"; then
+          git -C "$_rpath" branch -D "$WORK_BRANCH" >/dev/null 2>&1 || true
+        else
+          _kept="$(git -C "$_rpath" rev-list --count "${_rbase:-main}..$WORK_BRANCH" 2>/dev/null || echo 0)"
+          [ "${_kept:-0}" -gt 0 ] 2>/dev/null \
+            && log "branch $WORK_BRANCH KEPT in ${_rname:-repo} ($_rpath): it predates this tick ($_kept commit(s) over ${_rbase:-main}); only the worktree was removed"
+        fi
       fi
     done <<< "$WT_ROWS"
     # Also remove the (now empty) ticket worktrees base dir if nothing else uses it.
@@ -1815,6 +1946,7 @@ EOF
       esac
       gaffer_link_node_modules "$rpath" "$rwt"
     elif git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
+      _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'   # this tick owns the branch (BRANCH RETENTION)
       log "created worktree for ${rname:-repo} ($rpath) at $rwt on branch $WORK_BRANCH off $rbase for #$NUM"
       # GREENFIELD FIRST-RUN: a freshly-bootstrapped repo has a package.json+lockfile
       # but no node_modules, so the symlink below no-ops and the first ticket's test
@@ -1841,6 +1973,7 @@ EOF
       # the worktree-retention flag so nothing is torn down.
       gaffer_skip_ticket "$NUM"
       log "RESUME FAILED for #$NUM — could not reuse the paused worktree; branch $WORK_BRANCH left intact for a human"
+      gaffer_resume_abort "the paused worktree could not be reused or re-attached"
       result error; exit 0
     fi
     # Roll back anything partially created so a failed setup leaves no residue, and
@@ -1858,7 +1991,7 @@ EOF
   # PreToolUse hook is the safety boundary; env carries the two server DB paths.
   # Fail CLOSED: the safety hook is THE deterministic boundary. If it's missing,
   # never run a live agent — Claude Code would otherwise run with no boundary.
-  gaffer_assert_safety_hook || { log "SAFETY: refusing live run (fail closed)"; result error; exit 1; }
+  gaffer_assert_safety_hook || gaffer_abort_setup SAFETY "refusing live run (fail closed)"
 
   # ── Agent-environment install (runs before EVERY attempt's launch) ──────────
   # Installs the project-local agent environment into the PRIMARY write worktree
@@ -1890,17 +2023,17 @@ EOF
     return 0
   }
   # Attempt 1's install (the retry loop re-runs it for every later attempt).
-  gaffer_install_agent_env || { log "SAFETY: agent-env install failed for #$NUM — refusing live run (fail closed)"; result error; exit 1; }
+  gaffer_install_agent_env || gaffer_abort_setup SAFETY "agent-env install failed for #$NUM — refusing live run (fail closed)"
   # Substitute the real DB paths into a RUNTIME copy OUTSIDE the repo. Writing into
   # $PRIMARY_REPO/.mcp.json breaks when the target repo IS the runner itself (source
   # == destination → the redirect truncates the file → "Invalid MCP configuration").
   MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
-  gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live run (fail closed)"; result error; exit 1; }
+  gaffer_assert_db_vars || gaffer_abort_setup DB-VARS "DISPATCH_DB/MEMORY_DB empty — refusing live run (fail closed)"
   # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
   # MCP server env (GAFFER_CLAIM_TOKEN) so the agent's token-gated evidence writes
-  # resolve it from the server env — the agent never handles the token. Empty for a
-  # resumed delivery (the runner holds no token), which the MCP server treats as
-  # "no token" (the resume agent's evidence writes are best-effort, as before).
+  # resolve it from the server env — the agent never handles the token. A resumed
+  # delivery carries the lease token resume-begin took; only a tokenless resume
+  # fallback leaves it empty, which the MCP server treats as "no token".
   #
   # MEMORY-SCOPE BINDING: the ticket's in-scope repo NAMES (WT_ROWS col-2, the
   # names sourced from repositories.name in the same rows that produce
@@ -1910,6 +2043,7 @@ EOF
   # a single-line, valid JSON string; empty names are skipped (an unnamed repo is
   # not a memory-write target). Paired with GAFFER_FACTORY=1 (a literal in the
   # template) which arms the guard — standalone memory-mcp never sets it.
+  # shellcheck disable=SC2034  # read by gaffer_render_mcp_runtime (factory.config.sh)
   GAFFER_TICKET_REPOS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '$2!=""{print $2}' | paste -sd: -)"
   # MEMORY ROI: the delivery ticket ref is injected as ${GAFFER_RECALL_TICKET} so
   # the memory MCP server's READ path can attribute a retrieval to this ticket
@@ -1919,8 +2053,12 @@ EOF
   # Recall is the ticket $NUM so the memory read path can attribute a retrieval to it.
   # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
   # must abort the delivery before the agent launch — the bare sed never did.
-  gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "$NUM" \
-    || { log "MCP-RENDER: failed to render delivery runtime .mcp.json — refusing live run (fail closed)"; result error; exit 1; }
+  # FACTORY TICKET SCOPE: the scope ticket ($NUM, rendered into the dispatch server's
+  # GAFFER_SCOPE_TICKET) makes the server refuse the agent's writes (ACs, dependencies,
+  # test contract, decisions…) on any other ticket — also on a resume, where the claim
+  # token is empty.
+  gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "$NUM" "$NUM" \
+    || gaffer_abort_setup MCP-RENDER "failed to render delivery runtime .mcp.json — refusing live run (fail closed)"
   chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
   # ── P1b GOLDEN CAPTURE (docs/tick-sh-runtime-migration.md) ──────────────────
   # Default-OFF dump of the assembled context (the delivery PROMPT + the rendered
@@ -2044,6 +2182,9 @@ EOF
   #     _DELIV_OUTCOME=parked so the caller exits. The branch is NEVER dropped here.
   _recover_or_park() {
     local gate="$1" feedback="$2" detail="${3:-}"
+    # TICK DEADLINE: how long this attempt's gates took after the agent returned — the
+    # next attempt needs about as much again on top of the agent call.
+    _GATE_SECS_LAST=$(( $(date +%s) - ${_T_AGENT_DONE:-$(date +%s)} ))
     # The REAL failure fed to the next attempt: the distilled assertion/error when the
     # caller captured one, else the human summary. This is the crux of (b) — the agent
     # sees the actual failing test, not just "tests@repo failed".
@@ -2205,13 +2346,73 @@ $_trail_q
 "
   }
 
+  # ── TICK DEADLINE GUARD (GAFFER_TICK_DEADLINE_GUARD) ────────────────────────
+  # The outer per-tick bound is sized for agent calls only (attempts × timeout + 2 min)
+  # but this tick also spent the merge lane, setup and each attempt's install, gates
+  # and AC checks; a live run had its FINAL strong-model attempt killed mid-flight —
+  # spend wasted, nothing recorded, the branch at the trap's mercy, and the next tick
+  # re-claiming from attempt 1. Before starting an attempt, require the time left to
+  # cover one full agent call plus what the previous attempt's gates took; otherwise
+  # hand the ticket to the next tick with its branch kept (released to ready, bounded
+  # across runs through the same counter as a no-commit failure). Gate/AC timeouts
+  # are clamped to the time left so a gate cannot outlive the bound either.
+  # Attempt 1 is never refused for a short budget (nothing is spent yet, and a slow
+  # merge lane or first install would otherwise park a ticket that was never tried):
+  # its agent call is instead clamped to the time left, so the call's own timeout
+  # (pause-eligible, work kept) fires before the outer bound would kill the tick. It
+  # is handed off only when no time is left at all.
+  _GATE_SECS_LAST=0; _T_AGENT_DONE=""
+  _DOD_TIMEOUT_CFG="${GAFFER_DOD_TIMEOUT:-900}"; _DOD_INSTALL_TIMEOUT_CFG="${GAFFER_DOD_INSTALL_TIMEOUT:-$_DOD_TIMEOUT_CFG}"
+  _TICK_TIMEOUT_CFG="${GAFFER_TICK_TIMEOUT:-1800}"; _AGENT_TIMEOUT="$_TICK_TIMEOUT_CFG"
+  gaffer_deadline_short() {
+    local rem need
+    rem="$(gaffer_tick_remaining)"
+    need=$(( _TICK_TIMEOUT_CFG + ${_GATE_SECS_LAST:-0} ))
+    _AGENT_TIMEOUT="$_TICK_TIMEOUT_CFG"
+    [ "$rem" -lt "$need" ] || return 1
+    _DEADLINE_REM="$rem"; _DEADLINE_NEED="$need"
+    if [ "$_DELIV_ATTEMPT" -le 1 ] && [ "$rem" -ge 1 ]; then
+      [ "$rem" -lt "$_AGENT_TIMEOUT" ] && _AGENT_TIMEOUT="$rem"
+      log "DEADLINE: #$NUM attempt 1 has ${rem}s before the outer per-tick bound (needs ~${need}s) — starting it with the agent call clamped to ${_AGENT_TIMEOUT}s"
+      return 1
+    fi
+    return 0
+  }
+  gaffer_deadline_handoff() {
+    local why="attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS needs ~${_DEADLINE_NEED}s (GAFFER_TICK_TIMEOUT ${_TICK_TIMEOUT_CFG}s + ${_GATE_SECS_LAST:-0}s of gates) but only ${_DEADLINE_REM}s are left before the outer per-tick bound"
+    log "DEADLINE: #$NUM $why — not starting it; the next tick continues on branch $WORK_BRANCH"
+    # Keep the branch (a retry already tore the worktree down, so its commits can only
+    # be seen on the branch itself); an empty one is simply re-created next tick.
+    GAFFER_KEEP_DELIVERY_BRANCH=1
+    gaffer_cleanup_worktrees
+    if [ "$_RESUMING" = "1" ]; then
+      gaffer_resume_abort "tick deadline: $why"
+    else
+      gaffer_release_or_park_nocommit "tick deadline: $why; branch kept for the next tick" \
+        "the rework ladder did not fit inside one tick's outer bound"
+    fi
+    gaffer_skip_ticket "$NUM"
+  }
+  gaffer_clamp_gate_timeouts() {
+    local rem; rem="$(gaffer_tick_remaining)"
+    [ "$rem" -ge 1 ] || rem=1
+    GAFFER_DOD_TIMEOUT="$_DOD_TIMEOUT_CFG"; GAFFER_DOD_INSTALL_TIMEOUT="$_DOD_INSTALL_TIMEOUT_CFG"
+    [ "$rem" -lt "$GAFFER_DOD_TIMEOUT" ] 2>/dev/null && GAFFER_DOD_TIMEOUT="$rem"
+    [ "$rem" -lt "$GAFFER_DOD_INSTALL_TIMEOUT" ] 2>/dev/null && GAFFER_DOD_INSTALL_TIMEOUT="$rem"
+    return 0
+  }
+
   while [ "$_DELIV_ATTEMPT" -lt "$_MAX_DELIVERY_ATTEMPTS" ]; do
   _DELIV_ATTEMPT=$((_DELIV_ATTEMPT + 1))
   _DELIV_OUTCOME=""
+  if [ "${DRY_RUN:-0}" != "1" ] && gaffer_deadline_short; then
+    gaffer_deadline_handoff
+    result error; exit 0
+  fi
   # RUNNER-OWNED-BOOKKEEPING: heartbeat the runner-held claim at the start of each
   # attempt so the lease covers the whole delivery even across retries (belt-and-
   # braces with the generously-sized GAFFER_CLAIM_TTL). No-op when the runner holds
-  # no token (a resumed delivery). Best-effort — a failed heartbeat is logged, and
+  # no token (a tokenless resume fallback). Best-effort — a failed heartbeat is logged, and
   # the generous TTL still covers the delivery.
   [ -n "${CLAIM_TOKEN:-}" ] && { wg heartbeat "$CLAIM_TOKEN" >/dev/null 2>&1 || log "heartbeat for #$NUM claim failed (non-fatal; TTL still covers the delivery)"; }
   # ESCALATION: pick THIS attempt's implement-model + rework prompt suffix from the
@@ -2234,7 +2435,8 @@ $_trail_q
       # are the starting point for rework. Fall back to -B off base if the branch
       # somehow vanished (defensive — it should always exist).
       if ! git -C "$rpath" worktree add "$rwt" "$WORK_BRANCH" >/dev/null 2>&1; then
-        git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1 || true
+        git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1 \
+          && _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'
       fi
       gaffer_link_node_modules "$rpath" "$rwt"
     done <<< "$WT_ROWS"
@@ -2273,22 +2475,38 @@ $_trail_q
   # C1/M2: scrub ambient credentials via an allowlist (env -i) inside worker_deliver.
   # The scrub sits INSIDE the optional OS-sandbox $WRAP so the sandbox still wraps the
   # whole agent; the per-call boundary vars in WORKER_CALL_ENV are layered on top.
+  # shellcheck disable=SC2034  # read by worker_deliver (lib/worker.sh)
   WORKER_CALL_ENV=(
     "GAFFER_WRITE_ROOTS=$WRITE_ROOTS" "GAFFER_READ_ROOTS=$READ_ROOTS"
     "GAFFER_DATA=$GAFFER_DATA" "GAFFER_TICKET=$NUM"
     "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
   )
-  worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP"
+  # Opt-in per-call dollar cap (GAFFER_MAX_CALL_USD): for a delivery it also carries
+  # the ticket's remaining ceiling, so this one call cannot run past it.
+  _CALL_BUDGET_ARGS=()
+  if [ -n "${GAFFER_MAX_CALL_USD:-}" ]; then
+    _CALL_BUDGET="$(gaffer_call_budget_usd "$(gaffer_ticket_budget_remaining "$NUM")")"
+    [ -n "$_CALL_BUDGET" ] && _CALL_BUDGET_ARGS=(--max-budget-usd "$_CALL_BUDGET")
+  fi
+  # What every write repo's refs held at spawn: the branch-switch recovery below only
+  # adopts commits the agent made and only deletes a branch the agent created.
+  _PRESPAWN_REFS="$(gaffer_snapshot_refs "$WT_ROWS")"
+  GAFFER_TICK_TIMEOUT="$_AGENT_TIMEOUT"  # the deadline guard's clamp (attempt 1 only)
+  worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
+    "" ${_CALL_BUDGET_ARGS[@]+"${_CALL_BUDGET_ARGS[@]}"}
   rc=$?
+  GAFFER_TICK_TIMEOUT="$_TICK_TIMEOUT_CFG"
+  _T_AGENT_DONE="$(date +%s)"
   # SKILL TELEMETRY: record which skills were SELECTED for this delivery (and,
   # best-effort, which were APPLIED — detected from the agent's output JSON) so a
   # LATER data-driven prune of the generic skills isn't blind. Fail-soft; captured
   # here before the ledger removes $USAGE_JSON on either the pause or normal path.
   gaffer_record_skill_usage "$NUM" delivery "$STACK" "$SKILLS, $LENSES" "$USAGE_JSON"
-  # RESUME REPORT: a resumed delivery holds no claim, so its own record_ac_evidence calls
-  # are refused and its prompt tells it to END its message with the AC -> test lines and
-  # the smallest-change note. Record that final text as evidence (runner-attributed) so
-  # the minimalism gate and the reviewer can read it. Fail-soft.
+  # RESUME REPORT: the resume prompt tells the agent to END its message with the AC ->
+  # test lines and the smallest-change note (written for the tokenless resume, whose
+  # record_ac_evidence calls are refused; a leased resume's evidence writes now land
+  # too). Record that final text as evidence (runner-attributed) so the minimalism gate
+  # and the reviewer can read it either way. Fail-soft.
   if [ "$_RESUMING" = "1" ]; then
     gaffer_record_resume_report "$NUM" "$USAGE_JSON" \
       || log "RESUME: could not record the resumed agent's report for #$NUM (continuing)"
@@ -2327,6 +2545,11 @@ $_trail_q
   if [ -n "$_LIVE_REMAINING" ] && _num_le "$_LIVE_REMAINING" 0; then
     _BUDGET_HIT=1
   fi
+  # The call stopped on its own per-call dollar cap (--max-budget-usd): a budget pause,
+  # never a turn-cap one, so a Continue is not misread as "it needs more turns". On a
+  # Continue the pre-spawn gate re-checks the ticket's ceiling and parks it
+  # (budget_exhausted) when that is what ran out, instead of respawning into $0.
+  if gaffer_is_budget_stop "$USAGE_JSON"; then _BUDGET_HIT=1; fi
   # WASTE CONTROL: a cap that lands before the agent's first commit used to mean no
   # pause (nothing on the branch to keep) and a from-scratch retry. Checkpoint the
   # uncommitted work first, so the pause below has commits to preserve.
@@ -2430,32 +2653,91 @@ $_trail_q
 
   # Branch assertion (FG-008: "verifies current branch after agent execution"):
   # the runner created each WORKTREE on the ticket branch, so EACH worktree's HEAD
-  # MUST still be on a gaffer/ branch (and NOT the repo's default branch). If the
-  # agent switched away or reset onto the default branch in ANY worktree, recording
-  # a delivery would attribute work to the wrong branch — fail the whole delivery
-  # (skip + error + rollback), record nothing. In single-repo mode this is exactly
-  # today's single-repo assertion, just checked on the worktree.
+  # MUST still be on a gaffer/ branch (and NOT the repo's default branch) — recording
+  # a delivery on the wrong branch would attribute work to it. In single-repo mode this
+  # is exactly today's single-repo assertion, just checked on the worktree.
+  # BRANCH-SWITCH RECOVERY: an agent that switched away (`checkout -b x`, `switch -c`,
+  # a detached `checkout <sha>`, back onto the default branch) used to get the whole
+  # delivery failed with the ticket branch DELETED — a rework's reviewed commits with
+  # it — while its own commits were stranded on an unswept branch, and the failure was
+  # counted as "no commits". Now, per worktree:
+  #   • HEAD still contains $WORK_BRANCH and every commit on top of it was made by the
+  #     agent (none was reachable from any ref at spawn, see _PRESPAWN_REFS): fast-
+  #     forward $WORK_BRANCH to HEAD and check it out again (same commit, so uncommitted
+  #     edits carry over) and carry on to the gates. A branch the agent CREATED is then
+  #     deleted once fully contained; a branch that existed before the spawn (the
+  #     user's) is never deleted, and if the agent committed on it, it is put back to
+  #     its pre-spawn sha (the commits now live on $WORK_BRANCH);
+  #   • otherwise (diverged, or HEAD carries commits that existed before the spawn,
+  #     e.g. the agent checked out a user's branch): leave $WORK_BRANCH as it was, KEEP
+  #     the stray branch (logged with its sha for a human to salvage), put the worktree
+  #     back on $WORK_BRANCH so a retry runs on the right branch, and retry-or-park when
+  #     the ticket branch carries commits. Only a branch with nothing on it is dropped.
+  _BS_FAIL=""; _BS_FAIL_REPO=""
   while IFS=$'\t' read -r rid rname rpath rbase rwt; do
     [ -n "$rwt" ] || continue
     rbase="${rbase:-main}"
     git -C "$rwt" rev-parse --git-dir >/dev/null 2>&1 || continue
     HEAD_BRANCH="$(git -C "$rwt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
     case "$HEAD_BRANCH" in
-      "$rbase"|"")
-        gaffer_cleanup_worktrees drop-branch
-        gaffer_release_or_park_nocommit "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch); branch dropped"
-        gaffer_skip_ticket "$NUM"
-        log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD is '$HEAD_BRANCH' (expected a gaffer/ branch, not the default '$rbase'); removed worktrees + branch, not recording delivery"
-        result error; exit 0 ;;
-      gaffer/*) : ;;  # on the runner-owned branch as expected
-      *)
-        gaffer_cleanup_worktrees drop-branch
-        gaffer_release_or_park_nocommit "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch; branch dropped"
-        gaffer_skip_ticket "$NUM"
-        log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD '$HEAD_BRANCH' is not a gaffer/ branch; removed worktrees + branch, not recording delivery"
-        result error; exit 0 ;;
+      "$WORK_BRANCH") continue ;;
+      "$rbase"|"") : ;;
+      gaffer/*) continue ;;  # on a runner-owned branch as expected
+      *) : ;;
     esac
+    _bs_head="$(git -C "$rwt" rev-parse --verify --quiet HEAD 2>/dev/null || echo '')"
+    _bs_pre=""
+    case "$HEAD_BRANCH" in
+      ""|HEAD) : ;;
+      *) _bs_pre="$(gaffer_snapshot_sha "$_PRESPAWN_REFS" "$rpath" "$HEAD_BRANCH" || true)" ;;
+    esac
+    _bs_why="does not contain $WORK_BRANCH"
+    if [ -n "$_bs_head" ] && git -C "$rwt" merge-base --is-ancestor "$WORK_BRANCH" "$_bs_head" 2>/dev/null; then
+      _bs_why="carries commits that existed before the agent ran (not the agent's work)"
+      if gaffer_commits_all_new "$_PRESPAWN_REFS" "$rpath" "$WORK_BRANCH" "$_bs_head" \
+         && git -C "$rwt" checkout -q -B "$WORK_BRANCH" "$_bs_head" >/dev/null 2>&1; then
+        log "RECOVERED branch switch for #$NUM in ${rname:-repo}: the agent left $WORK_BRANCH for '${HEAD_BRANCH:-?}' but only built on it — $WORK_BRANCH fast-forwarded to $(printf '%s' "$_bs_head" | cut -c1-12) and checked out again"
+        case "$HEAD_BRANCH" in
+          ""|HEAD|gaffer/*) : ;;
+          *) if [ -z "$_bs_pre" ]; then
+               # The agent created it: delete it once it holds nothing $WORK_BRANCH lacks.
+               if [ "$(git -C "$rpath" rev-parse --verify --quiet "refs/heads/$HEAD_BRANCH" 2>/dev/null)" = "$_bs_head" ]; then
+                 git -C "$rpath" branch -D "$HEAD_BRANCH" >/dev/null 2>&1 \
+                   && log "RECOVERED branch switch for #$NUM: deleted the agent's stray branch '$HEAD_BRANCH' (fully contained in $WORK_BRANCH)"
+               fi
+             elif [ "$_bs_pre" != "$_bs_head" ] \
+                  && ! grep -qxF "branch refs/heads/$HEAD_BRANCH" <<<"$(git -C "$rpath" worktree list --porcelain 2>/dev/null)"; then
+               # A pre-existing branch the agent committed on: put it back (compare-and-
+               # swap, so a concurrent move by its owner wins) — the commits are on $WORK_BRANCH.
+               git -C "$rpath" update-ref "refs/heads/$HEAD_BRANCH" "$_bs_pre" "$_bs_head" >/dev/null 2>&1 \
+                 && log "RECOVERED branch switch for #$NUM: restored pre-existing branch '$HEAD_BRANCH' to $(printf '%s' "$_bs_pre" | cut -c1-12) (the agent's commits are on $WORK_BRANCH)"
+             fi ;;
+        esac
+        continue
+      fi
+    fi
+    # Diverged, foreign commits, or HEAD unreadable: never move $WORK_BRANCH; the stray
+    # work stays where the agent put it. Re-checkout $WORK_BRANCH so the worktree (and
+    # any retry) is on it.
+    log "BRANCH SWITCH: #$NUM worktree for ${rname:-repo} ($rwt) is on '${HEAD_BRANCH:-?}' at ${_bs_head:-unknown}, which $_bs_why — $WORK_BRANCH left as it was, '${HEAD_BRANCH:-?}' / ${_bs_head:-?} kept for a human to salvage"
+    git -C "$rwt" checkout -q -f "$WORK_BRANCH" >/dev/null 2>&1 || true
+    _BS_FAIL="worktree HEAD '${HEAD_BRANCH:-?}' (${_bs_head:-?}) $_bs_why"
+    _BS_FAIL_REPO="${rname:-repo} ($rwt)"
   done <<< "$WT_ROWS"
+  if [ -n "$_BS_FAIL" ]; then
+    if gaffer_any_branch_has_commits "$WT_ROWS"; then
+      # The ticket branch carries work (a rework's reviewed commits, or this attempt's):
+      # recoverable, never dropped. The feedback tells the agent to stay on the branch.
+      _recover_or_park "branch" "you switched branches ($_BS_FAIL in $_BS_FAIL_REPO); commit ONLY on $WORK_BRANCH — never create, switch or detach branches"
+      [ "$_DELIV_OUTCOME" = "retry" ] && continue
+      result error; exit 0
+    fi
+    gaffer_cleanup_worktrees drop-branch
+    gaffer_release_or_park_nocommit "delivery failed: $_BS_FAIL; $WORK_BRANCH had no commits and was dropped"
+    gaffer_skip_ticket "$NUM"
+    log "delivery FAILED for #$NUM — $_BS_FAIL in $_BS_FAIL_REPO; $WORK_BRANCH had no commits (removed with the worktrees), not recording delivery"
+    result error; exit 0
+  fi
 
   # ── Auto-commit safety net ─────────────────────────────────────────────────
   # Agents sometimes EDIT files but STOP WITHOUT running git commit; the change then
@@ -2578,11 +2860,15 @@ $_trail_q
     # "resume agent report"), never the runner's own flag rows or events.
     _MZ_NOTE="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json smallest-change-note 2>/dev/null || echo '')"
     _MZ_CHANGED="$(git -C "$PRIMARY_REPO" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | tr '\n' ' ')"
-    # Run in THIS shell (stdout → file, NOT a $() subshell) so gaffer_check_minimalism's
-    # GAFFER_MINIMALISM_REASON global propagates here. A $() subshell loses it, and the
-    # references below then hit "unbound variable" under `set -u` — failing the gate OPEN.
-    gaffer_check_minimalism "${_MZ_FILES:-0}" "${_MZ_LINES:-0}" "$_MZ_NOTE" "$_MZ_CHANGED" > "$GAFFER_DATA/.mz-verdict" 2>/dev/null || true
-    _MZ_VERDICT="$(cat "$GAFFER_DATA/.mz-verdict" 2>/dev/null || echo '')"; rm -f "$GAFFER_DATA/.mz-verdict"
+    # Run in THIS shell (NOT a $() subshell) so gaffer_check_minimalism's
+    # GAFFER_MINIMALISM_REASON / GAFFER_MINIMALISM_VERDICT globals propagate here. A $()
+    # subshell loses them, and the references below then hit "unbound variable" under
+    # `set -u` — failing the gate OPEN. The verdict is read from the global, never a
+    # fixed scratch file: $GAFFER_DATA is shared by every worker under
+    # GAFFER_CONCURRENCY>1, and a shared .mz-verdict let one delivery read another's.
+    GAFFER_MINIMALISM_VERDICT=""
+    gaffer_check_minimalism "${_MZ_FILES:-0}" "${_MZ_LINES:-0}" "$_MZ_NOTE" "$_MZ_CHANGED" >/dev/null 2>&1 || true
+    _MZ_VERDICT="${GAFFER_MINIMALISM_VERDICT:-}"
     : "${GAFFER_MINIMALISM_REASON:=minimalism check produced no reason}"   # belt: never unbound under set -u
     case "$_MZ_VERDICT" in
       missing_note)
@@ -2660,11 +2946,13 @@ $_trail_q
   # verified); set GAFFER_ALLOW_NO_DOD=1 to waive this for repos with no runnable
   # gates (see factory.config.sh). GAFFER_DOD=0 turns enforcement off entirely.
   # Per-gate toggles
-  # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) carry the resolved
-  # `definition_of_done` config; commands come from each repo's dispatch
+  # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) are env-only: crew.yaml's
+  # `definition_of_done` block is NOT read here (crew doctor warns when it is
+  # changed). Commands come from each repo's dispatch
   # test_command/lint_command (+ GAFFER_DOD_TYPECHECK_CMD for typecheck, which has
   # no dispatch field). DoD is best-effort RESILIENT: a gate command that itself
   # errors to spawn is treated as a FAIL with a clear message, never a crash.
+  gaffer_clamp_gate_timeouts   # TICK DEADLINE: no gate outlives the outer bound
   if gaffer_dod_enabled; then
     # Per-repo commands from the dispatch payload, keyed by repo id (fallback name):
     #   id|name <TAB> test_cmd <TAB> lint_cmd
@@ -2673,7 +2961,7 @@ $_trail_q
     # silently treated as "no commands" (which would fail the gate OPEN).
     # parse failure → no sentinel, non-zero (exit 3)
     DOD_CMD_MAP="$(echo "$SHOW" | gaffer_json dod-cmd-map 2>/dev/null || true)"
-    if ! printf '%s\n' "$DOD_CMD_MAP" | grep -q '^@@DOD_PARSE_OK@@$'; then
+    if ! grep -q '^@@DOD_PARSE_OK@@$' <<<"$DOD_CMD_MAP"; then   # here-string: a pipe can SIGPIPE-miss under pipefail
       # Could not parse the dispatch payload. Do NOT
       # fail the gate OPEN by pretending no commands are configured: surface it as a
       # visible WARNING and FAIL the delivery closed so a human looks, rather than
@@ -2691,6 +2979,9 @@ $_trail_q
       # work — PRESERVE it (worktree-only teardown). Re-invoking the agent cannot
       # fix an unresolvable gate-command/env problem, so this does NOT retry; it
       # parks once with the branch kept for a human to resolve the config + re-run.
+      # Raise retention BEFORE exiting: the EXIT trap otherwise `drop-branch`es the
+      # branch this tick created — the very branch the log calls PRESERVED.
+      GAFFER_KEEP_DELIVERY_BRANCH=1
       gaffer_cleanup_worktrees
       gaffer_skip_ticket "$NUM"
       log "delivery FAILED for #$NUM — DoD gate commands unresolvable; parked, removed worktree, branch $WORK_BRANCH PRESERVED (config problem — needs a human), not recording delivery"
@@ -2823,6 +3114,7 @@ $_trail_q
   # A failing check is a RECOVERABLE gate failure exactly like DoD: keep the branch,
   # feed the real failure back, retry-or-park. Runs whether or not DoD is enabled —
   # the checks are per-ticket contracts, not per-repo gate config. See lib/ac-checks.sh.
+  gaffer_clamp_gate_timeouts
   if command -v gaffer_run_ac_checks >/dev/null 2>&1 && [ "$(gaffer_ac_check_count "$SHOW")" -gt 0 ]; then
     AC_RESULTS="$GAFFER_DATA/.ac-check-$NUM.results"; : > "$AC_RESULTS"
     if gaffer_run_ac_checks "$NUM" "$SHOW" "$PRIMARY_REPO" "$AC_RESULTS"; then
@@ -2853,7 +3145,8 @@ $_trail_q
   # Every gate passed. The runner (which holds the claim) now submits the ticket for
   # review — deterministic + token-free from the agent's perspective. A normal
   # delivery uses the claim-gated `wg submit` (claimed → in_review, completing the
-  # claim); a resumed delivery (no runner-held token) is moved in_progress → in_review.
+  # claim; a leased resume uses it too); a tokenless resume fallback is moved
+  # in_progress → in_review.
   # The delivery-artifact / diff_summary / per-repo records BELOW run as a SYSTEM actor
   # and are status-independent, so submitting first (matching the old agent-submit
   # ordering) keeps the done-gate's PR/diff evidence attached to an in_review ticket.
@@ -2944,7 +3237,6 @@ $_trail_q
     git -C "$rwt" rev-parse --git-dir >/dev/null 2>&1 || continue
     R_CUR="$(git -C "$rwt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
     [ -n "$R_CUR" ] && [ "$R_CUR" != "$rbase" ] || continue
-    R_DIFFSTAT="$(git -C "$rwt" diff "$rbase"...HEAD --stat 2>/dev/null | tail -15)"
     # GRADUATED AUTONOMY: record the delivery HEAD sha so the review-approve path can
     # compute an honest `approved_unchanged` (delivery sha vs the branch head at approval).
     # Without it the signal was permanently null and the auto-merge half never fired.
@@ -3136,23 +3428,44 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
   _MAINT_ARGS=()
   [ "${GAFFER_MAINTENANCE:-}" = "1" ] && _MAINT_ARGS=(--force)
   log "no ready tickets → maintenance lane (crew.yaml decides; deterministic scheduler picks one loop)"
+  if _gaffer_flag_on "${GAFFER_STRICT_REQUIRE:-0}" && ! _gaffer_flag_on "${GAFFER_IDLE_HOST_EXEC:-0}"; then
+    log "maintenance lane: GAFFER_STRICT_REQUIRE is on — idle loops will NOT run repo commands (coverage_command) unsandboxed on the host (GAFFER_IDLE_HOST_EXEC=1 to allow)"
+  fi
   if [ "$DRY_RUN" = "1" ]; then
     log "DRY_RUN: would run: fg maintain${_MAINT_ARGS[0]:+ --force} (scheduler-chosen maintenance loop)"; result no_work; exit 0
   fi
-  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain ${_MAINT_ARGS[@]+"${_MAINT_ARGS[@]}"} 2>>"$GAFFER_LOG")"
+  # Capture crew's rc + stderr: a failed `crew maintain` (invalid crew.yaml, crash,
+  # locked DB) prints nothing on stdout, and parsing that empty output as "chose
+  # none, no_op" used to report a healthy `maintenance_ran` on every idle tick.
+  _merr="$(mktemp "${TMPDIR:-/tmp}/gaffer-maint.XXXXXX" 2>/dev/null || echo "/tmp/gaffer-maint.$$")"
+  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain ${_MAINT_ARGS[@]+"${_MAINT_ARGS[@]}"} 2>"$_merr")"
+  _mrc=$?
+  cat "$_merr" >> "$GAFFER_LOG" 2>/dev/null || true
+  # MSTATUS is "invalid" unless MOUT is crew's `{ok:true, report}` with either no
+  # outcome (nothing was due: no_op) or a status from the registry's outcome enum
+  # (IdleLoopRunOutcome in packages/crew/src/loops/idleRegistry.ts).
+  MSTATUS="$(echo "$MOUT" | jget '(() => { const r = d && d.ok === true ? d.report : null; if (!r || typeof r !== "object") return "invalid"; const o = r.outcome; if (o == null) return "no_op"; return ["skipped_tickets_ready", "no_repos", "no_findings", "draft_created", "ready_created", "observed", "suggested", "disabled"].includes(o.status) ? o.status : "invalid"; })()' 2>/dev/null || echo invalid)"
+  [ "$_mrc" -eq 0 ] || MSTATUS=invalid
   MCHOSEN="$(echo "$MOUT" | jget '(d.report || {}).chosen || "none"' 2>/dev/null || echo none)"
   MREASON="$(echo "$MOUT" | jget '(d.report || {}).reason ?? ""' 2>/dev/null || echo '')"
-  MSTATUS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).status || "no_op"' 2>/dev/null || echo no_op)"
   MDRAFTS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).draftCount ?? 0' 2>/dev/null || echo 0)"
-  if [ "$MSTATUS" = "disabled" ]; then
+  case "$MDRAFTS" in ''|*[!0-9]*) MDRAFTS=0 ;; esac
+  if [ "$MSTATUS" = "invalid" ]; then
+    # FAILED, not ran: log it loudly and fall through to the legacy scan + the final
+    # `no_work`, so workers still drain on EMPTY_POLL_LIMIT and the tick does not
+    # count against the day cap (a productive result here made the pool spin).
+    log "maintenance lane FAILED (rc=$_mrc): $(grep . "$_merr" 2>/dev/null | head -1 | cut -c1-300) — check $CREW_CONFIG (\`gaffer status\` runs crew doctor)"
+  elif [ "$MSTATUS" = "disabled" ]; then
     # The switch is off: say so once per idle tick (it is the most common reason an
     # operator sees "no_work" with lanes enabled) and fall through to the legacy scan.
     log "maintenance lane is OFF in crew.yaml (loops.maintenance.enabled=false) — turn it on in Settings → Idle loops, or GAFFER_MAINTENANCE=1 to force"
   else
     log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, drafts=$MDRAFTS"
+    rm -f "$_merr"
     [ "${MDRAFTS:-0}" -gt 0 ] && { result maintenance_drafted; exit 0; }
     result maintenance_ran; exit 0
   fi
+  rm -f "$_merr"
 fi
 
 # Nothing ready → idle scan to draft new work (crew). OFF by default: an idle

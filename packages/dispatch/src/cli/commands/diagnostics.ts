@@ -2,9 +2,9 @@ import type { Command } from "commander";
 
 import { Dispatch } from "../../core.js";
 import { DatabaseOpenError, DatabaseTooNewError } from "../../db/connection.js";
-import { resolveDbPath } from "../../util/paths.js";
+import { assertCliDbExists, resolveDbPath } from "../../util/paths.js";
 import { computeStats, renderDoctor, renderHumanQueue, renderStats, runDoctor } from "../ops.js";
-import { open, printJson } from "../shared.js";
+import { cliActor, open, printJson } from "../shared.js";
 
 export function registerDiagnostics(program: Command): void {
   // --- Operational commands --------------------------------------------------
@@ -14,6 +14,7 @@ export function registerDiagnostics(program: Command): void {
     .description("Diagnose the database: schema, counts, stale claims, integrity")
     .option("--json", "emit machine-readable JSON", false)
     .action((opts, cmd) => {
+      assertCliDbExists(cmd.optsWithGlobals().db);
       const dbPath = resolveDbPath(cmd.optsWithGlobals().db);
       let wg: Dispatch;
       try {
@@ -82,12 +83,52 @@ export function registerDiagnostics(program: Command): void {
       try {
         const v = wg.verifyEventChain();
         if (opts.json) printJson(v);
-        else if (v.ok) process.stdout.write(`event log hash chain intact (${v.checked} events)\n`);
+        else if (v.ok)
+          process.stdout.write(
+            `event log hash chain intact (${v.checked} events, head ${v.headHash})\n`,
+          );
         else
           process.stdout.write(
             `event log hash chain BROKEN at seq ${v.brokenAtSeq} (event ${v.brokenEventId}): ${v.reason} — ${v.checked} rows checked before the break\n`,
           );
         process.exitCode = v.ok ? 0 : 1;
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  events
+    .command("rechain")
+    .description(
+      "Hash work_event rows that have no hash, chaining each from its predecessor, and " +
+        "record the re-anchor (old/new head) as an events.rechained event. Opening the DB " +
+        "never does this on a chained log; requires --confirm.",
+    )
+    .option("--confirm", "actually re-chain (without it, only report what would change)", false)
+    .option("--json", "emit machine-readable JSON", false)
+    .action((opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const before = wg.verifyEventChain();
+        if (!opts.confirm) {
+          const out = { confirmed: false, verification: before };
+          if (opts.json) printJson(out);
+          else
+            process.stdout.write(
+              before.ok
+                ? `event log hash chain intact (${before.checked} events); nothing to re-chain\n`
+                : `event log hash chain BROKEN at seq ${before.brokenAtSeq} (${before.reason}); re-run with --confirm to hash unhashed rows and record the re-anchor\n`,
+            );
+          return;
+        }
+        const res = wg.rechainEventLog(cliActor());
+        if (opts.json) printJson({ confirmed: true, ...res });
+        else
+          process.stdout.write(
+            `re-chained ${res.rechained} event(s); head ${res.oldHead} -> ${res.newHead}; ` +
+              `chain ${res.verification.ok ? "intact" : `still BROKEN at seq ${res.verification.brokenAtSeq} (${res.verification.reason})`}\n`,
+          );
+        process.exitCode = res.verification.ok ? 0 : 1;
       } finally {
         wg.db.close();
       }

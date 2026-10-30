@@ -29,7 +29,8 @@ const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "Read `dispatch.ok` before any work-driving tool. If it is `false`, " +
     "`get_context_packet` and `run_idle_loop` WILL fail the same way — fix the " +
     "Dispatch connection first (the `dispatch.error.code` tells you why; " +
-    "`DISPATCH_UNAVAILABLE` usually means its package isn't built yet). " +
+    "`DISPATCH_UNAVAILABLE` means its package isn't built yet, or the factory DB " +
+    "isn't at the configured path — crew never creates a missing one). " +
     "The `mode` shapes how strict the safety policy is: in `local_loose` more is " +
     "auto-allowed, in `shared_team` expect more `needs_approval` decisions. " +
     "This tool is read-only and never mutates anything — call it freely.",
@@ -73,55 +74,64 @@ const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "building a packet never changes the ticket.",
 
   run_idle_loop:
-    "Run one idle-coverage tick: scan the configured repos for low-coverage / " +
-    "quality gaps and file the findings as work. **This is the only tool that " +
-    "writes to Dispatch — and it ONLY ever creates DRAFT tickets.** It never " +
-    "edits code, never claims or readies tickets, and never touches git. Call it " +
-    "when the work queue is empty and you want the factory to propose its own " +
-    "next tasks, not when you already have a ticket to work.\n\n" +
-    "Inspect `outcome.status`: `draft_created` means new drafts were filed (see " +
-    "`outcome.drafts[].ticketId`); a no-work status means nothing crossed the " +
-    "configured gap threshold — that's a healthy result, not an error, so don't " +
-    "retry in a loop. Each call is one tick; the drafts wait for a human to " +
-    "promote them to ready. Requires Dispatch to be reachable.",
+    "Run one idle tick — the same tick `crew idle` runs: ingest labelled " +
+    "GitHub / Jira issues (when enabled), then every enabled idle loop " +
+    "(coverage, test / type quality, documentation, dependency hygiene, " +
+    "security hotspots, tech debt, design drift, lore gaps, feature backlog) " +
+    "over the factory's repos " +
+    "(crew.yaml's plus every repo onboarded into Dispatch), filing the findings as " +
+    "tickets. **This is the only tool that writes to Dispatch.** It never edits " +
+    "code, never claims work, and never touches git. Findings land as DRAFT " +
+    "tickets, EXCEPT that a loop whose mode is `create_ready_tickets`, or " +
+    "`loops.self_improve` promoting a low-risk opted-in repo's finding, marks " +
+    "the ticket READY (claimable). Call it when the work queue is empty and you " +
+    "want the factory to propose its own next tasks, not when you already have a " +
+    "ticket to work.\n\n" +
+    "Inspect `report.loops[].outcome.status`: `draft_created` / `ready_created` " +
+    "mean tickets were filed (`report.totalDrafts` counts them); `no_findings` / " +
+    "`no_repos` / `skipped_tickets_ready` are healthy no-work results, not " +
+    "errors, so don't retry in a loop. Each call is one tick. Requires Dispatch " +
+    "to be reachable.",
 
   explain_safety_policy:
     "Return the loaded safety policy in full: git rules (branch prefix, " +
     "protected branches, force-push / delete / rebase bans), filesystem rules " +
     "(allowed roots, denied and approval-gated write paths), command rules " +
-    "(denied, approval-gated, allowed), and secret handling. **Read this before " +
-    "planning any mutation so you know the boundary you're operating inside.** " +
-    "The policy is enforced deterministically by a PreToolUse hook regardless of " +
-    "what you do — these are the rules you'll be held to, not suggestions. Use " +
-    "it to choose a compliant approach up front (e.g. a correctly-prefixed " +
-    "branch) instead of getting denied mid-task. For a yes/no on one specific " +
-    "command or path, call `check_command_allowed` / `check_path_write_allowed` " +
-    "instead — they're cheaper than reasoning over the whole policy. Read-only.",
+    "(denied, approval-gated, allowed), and secret handling. **This policy is " +
+    "ADVISORY.** It drives crew's own classifier and the mock `crew run` loop; " +
+    "the live factory's boundary is the PreToolUse hook runner/safety-hook.mjs, " +
+    "which does NOT read this file. The two mostly agree, but not always: the " +
+    "hook blocks some things the policy allows (e.g. raw writes to the factory " +
+    "databases), and the policy's `needs_approval` / custom `deny` entries are " +
+    "not enforced at runtime. Use it to plan a conservative approach; for a " +
+    "yes/no on one command or path, call `check_command_allowed` / " +
+    "`check_path_write_allowed`, which also report the hook's actual verdict. " +
+    "Read-only.",
 
   check_command_allowed:
     "**Call this BEFORE running any shell command whose safety you're unsure of " +
     "— the check is far cheaper than a denied or destructive action.** It " +
-    "classifies the command against the git + command policy and returns a " +
-    "three-valued decision: `allowed` (proceed), `needs_approval` (a human must " +
-    "sign off — stop and request it; do not try to route around it), or `denied` " +
-    "(never run this; find another way). The `reason` explains which rule " +
-    "matched. Destructive git (force-push, branch/tag deletion, rebase of shared " +
-    "branches) and risky installs are the usual `needs_approval`/`denied` hits. " +
-    "When in doubt, check — a false 'allowed' assumption is the expensive " +
-    "mistake, an extra check costs one cheap call. Read-only; classifying a " +
-    "command never runs it.",
+    "returns two verdicts. `decision` is the ADVISORY safety_policy.yaml " +
+    "classification: `allowed`, `needs_approval` (a human must sign off — stop " +
+    "and request it; do not try to route around it), or `denied` (never run " +
+    "this; find another way), with a `reason`. `enforced` is what the live " +
+    "PreToolUse hook (runner/safety-hook.mjs) would do: `blocked: true` means " +
+    "the call will be refused. `mismatch` explains any disagreement. Treat the " +
+    "STRICTER of the two as binding. Destructive git (force-push, branch/tag " +
+    "deletion, rebase of shared branches), raw database writes and risky " +
+    "installs are the usual hits. Read-only; checking a command never runs it.",
 
   check_path_write_allowed:
     "**Call this before writing to any path you're not certain is in-bounds.** " +
-    "It classifies a filesystem write against the policy and returns the same " +
-    "three-valued decision as `check_command_allowed`: `allowed`, " +
-    "`needs_approval`, or `denied`. Pass the target `path` and optionally a " +
-    "`repo` to anchor relative paths to that repo's root (otherwise the first " +
-    "configured repo, else the process cwd, is used). Writes outside the " +
-    "allowed roots, and to secret files like `.env`, are denied or gated — this " +
-    "is the boundary that keeps agents from exfiltrating or corrupting files " +
-    "outside the sanctioned work area. Prefer one cheap check over a denied " +
-    "write that wastes a whole turn. Read-only; checking a path never writes it.",
+    "Like `check_command_allowed`, it returns the ADVISORY safety_policy.yaml " +
+    "`decision` (`allowed`, `needs_approval`, or `denied`) and the live hook's " +
+    "`enforced` verdict (with the repo root as the only write root), plus a " +
+    "`mismatch` note when they disagree; treat the stricter as binding. Pass " +
+    "the target `path` and optionally a `repo` to anchor relative paths to that " +
+    "repo's root (otherwise the first repo, else the process cwd, is used). " +
+    "Writes outside the write roots, and to secret files like `.env`, are " +
+    "refused. Prefer one cheap check over a denied write that wastes a whole " +
+    "turn. Read-only; checking a path never writes it.",
 };
 
 export interface ServerOptions {
@@ -141,6 +151,16 @@ export interface ServerOptions {
 }
 
 /**
+ * The default opener for every MCP tool: the real adapter with `mustExist`, as
+ * the CLI opens it. A bare open CREATES a missing sqlite, so on a factory whose
+ * DB is absent (or whose path drifted) `list_repos` / `check_path_write_allowed`
+ * left an empty dispatch.sqlite behind and `run_idle_loop` filed drafts into it
+ * while `crew idle` refused. Now each fails with DISPATCH_UNAVAILABLE; the
+ * read-only tools fall back to crew.yaml's repos.
+ */
+export const mcpDispatchOpener: DispatchOpener = (c) => openDispatch(c, { mustExist: true });
+
+/**
  * Build an MCP server exposing the Crew factory tools. Transport-agnostic:
  * call {@link runStdioServer} to serve over stdio, or register the returned
  * handlers directly in tests. Wiring (config + registries + safety policy) is
@@ -153,7 +173,7 @@ export function createCrewServer(options: ServerOptions = {}): McpServer {
   const audit: AuditOptions = options.audit ?? { dataDir: ctx.loaded.rootDir };
   const handlers = makeHandlers({
     ctx,
-    openDispatch: options.dispatchOpener ?? openDispatch,
+    openDispatch: options.dispatchOpener ?? mcpDispatchOpener,
     audit,
   });
 

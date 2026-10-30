@@ -43,9 +43,9 @@ source "$RUNNER_DIR/lib/dod.sh"
 source "$RUNNER_DIR/lib/ac-checks.sh"
 
 WT="$WORK/wt"; mkdir -p "$WT"
-T="$(wg ticket create --title "Checked delivery" --json 2>/dev/null || wg ticket create --title "Checked delivery")"
+T="$(wg ticket create --title "Checked delivery" 2>"$WORK/create.err")"
 NUM="$(printf '%s' "$T" | jget 'd.number ?? d.ticket?.number' 2>/dev/null)"
-[ -n "$NUM" ] && [ "$NUM" != "None" ] || { echo "SKIP: could not create a ticket via the CLI (got: ${T:0:120})"; exit 0; }
+[ -n "$NUM" ] && [ "$NUM" != "None" ] || { echo "FAIL: \`ticket create\` returned no ticket number — the dispatch CLI contract this test guards (got: ${T:0:200} $(head -c 200 "$WORK/create.err"))"; exit 1; }
 
 echo "== 1: passing + failing checks, prose AC untouched =="
 wg ac add "$NUM" -t "marker written" --check 'touch ran-here.marker && test -f ran-here.marker' >/dev/null
@@ -89,6 +89,23 @@ wg ac add "$N3" -t "prose" >/dev/null
 [ "$(gaffer_ac_check_count "$(wg ticket show "$N3")")" = "0" ] && ok "count 0 for a ticket with no checked ACs" || no "count should be 0"
 RES3="$WORK/ac3.results"; : > "$RES3"
 gaffer_run_ac_checks "$N3" "$(wg ticket show "$N3")" "$WT" "$RES3" && [ ! -s "$RES3" ] && ok "no-op returns 0 and writes no rows" || no "no-op misbehaved"
+
+echo "== 3b: a check that reads stdin cannot swallow the later checks =="
+# The AC rows are looped on stdin; a check that read stdin used to eat AC-2's row, so
+# AC-2 never ran and gaffer_run_ac_checks returned 0.
+T4="$(wg ticket create --title "Stdin reader")"
+N4="$(printf '%s' "$T4" | jget 'd.number ?? d.ticket?.number')"
+wg ac add "$N4" -t "reads stdin" --check 'read x; cat >/dev/null; exit 0' >/dev/null
+wg ac add "$N4" -t "then fails" --check 'echo second-fails >&2; exit 1' >/dev/null
+RES4="$WORK/ac4.results"; : > "$RES4"
+gaffer_run_ac_checks "$N4" "$(wg ticket show "$N4")" "$WT" "$RES4"; rc4=$?
+[ "$rc4" = "1" ] && ok "a stdin-reading AC-1 does not swallow AC-2 (returns 1)" || no "expected rc 1 (got $rc4 — AC-2 was swallowed)"
+grep -q $'^GATE\tac-check\tAC2: then fails\tFAIL' "$RES4" && ok "AC-2 ran and is recorded FAIL" || no "no AC-2 FAIL row: $(tr '\n' '|' < "$RES4")"
+S42="$(wg ticket show "$N4" | jget 'd.acceptanceCriteria.find((a) => a.text === "then fails").status')"
+[ "$S42" = "failed" ] && ok "AC-2's verdict reached dispatch (failed)" || no "AC-2 status=$S42"
+RES5="$WORK/ac5.results"; : > "$RES5"
+CREW_DIR="$WORK/no-crew" gaffer_run_ac_checks "$N4" "$(wg ticket show "$N4")" "$WT" "$RES5"
+grep -q 'second-fails' "$RES5" && ok "without the crew dist the failing check's output still lands in the results (tail fallback)" || no "AC output tail lost without the crew dist"
 
 echo "== 4: tick.sh wiring =="
 grep -q 'gaffer_run_ac_checks "$NUM" "$SHOW" "$PRIMARY_REPO" "$AC_RESULTS"' "$RUNNER_DIR/tick.sh" && ok "tick.sh runs the AC checks in the primary worktree" || no "tick.sh does not call gaffer_run_ac_checks"

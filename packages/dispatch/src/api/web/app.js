@@ -431,7 +431,7 @@ function renderLogin(wasWrong) {
   });
   const form = el("form", { class: "login-gate" }, [
     shield("login-mark"),
-    el("h1", {}, "Dispatch"),
+    el("h1", {}, "Gaffer"),
     el("p", {}, "This factory requires an access token."),
     wasWrong ? el("p", { class: "login-error" }, "That token was rejected — try again.") : null,
     input,
@@ -441,7 +441,8 @@ function renderLogin(wasWrong) {
     el(
       "p",
       { class: "login-hint" },
-      "Printed in the terminal that started Dispatch, or set as DISPATCH_API_TOKEN.",
+      "Run `gaffer dashboard` — it prints a login URL with the token. Or paste the contents " +
+        "of $GAFFER_DATA/dashboard-token (or your DISPATCH_API_TOKEN).",
     ),
   ]);
   form.addEventListener("submit", (ev) => {
@@ -1277,10 +1278,23 @@ const VIEW_TITLES = {
   ticket: "Ticket",
   repo: "Repo",
   node: "Map",
+  create: "New ticket",
+  hidden: "Hidden repos",
 };
-function setDocTitle(view, detail) {
-  const base = VIEW_TITLES[view] || "Gaffer";
-  document.title = detail ? `${detail} · Gaffer` : `${base} · Gaffer`;
+/**
+ * Set the tab title. `detail` (a detail view's own label, e.g. "#12 Add login") wins;
+ * an unknown view is plain "Gaffer" (it used to read "Gaffer · Gaffer"). A detail
+ * title is applied only while its route is still the current one, so a slow load
+ * can never retitle the view the operator has since moved to.
+ */
+function setDocTitle(view, detail, param) {
+  if (detail) {
+    const cur = parseHash();
+    if (cur.view !== view || (param !== undefined && cur.param !== param)) return;
+    document.title = `${detail} · Gaffer`;
+    return;
+  }
+  document.title = VIEW_TITLES[view] ? `${VIEW_TITLES[view]} · Gaffer` : "Gaffer";
 }
 
 /** Live, data-driven nav badges: Work shows open (in-flight) tickets, Review
@@ -1422,7 +1436,8 @@ async function buildPaletteSources() {
   ];
   let tickets = [];
   try {
-    tickets = (await api("GET", "/tickets")).tickets || [];
+    // Summary rows: the palette shows number/title/status only.
+    tickets = (await api("GET", "/tickets?fields=summary")).tickets || [];
   } catch {
     // Palette still works for navigation if the list call fails.
   }
@@ -1585,7 +1600,8 @@ async function renderOverview() {
   ] = await Promise.all([
     api("GET", "/api/dashboard"),
     api("GET", "/api/activity?limit=200"),
-    api("GET", "/tickets").catch(() => ({ tickets: [] })),
+    // Summary rows: the overview reads status and timestamps, never the long text.
+    api("GET", "/tickets?fields=summary").catch(() => ({ tickets: [] })),
     api("GET", "/decisions").catch(() => ({ decisions: [] })),
     api("GET", "/api/cost").catch(() => null),
     api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
@@ -3952,6 +3968,7 @@ async function renderTicket(id) {
   if (!id) return renderWork();
   const view = await api("GET", `/tickets/${id}`);
   const t = view.ticket;
+  setDocTitle("ticket", `#${t.number} ${t.title}`, id);
   const acList = view.acceptance_criteria || [];
   const blockers = view.blocking_decisions || [];
   const events = view.events || [];
@@ -8317,6 +8334,7 @@ async function renderNode(id) {
 
   const view = await api("GET", `/scope/nodes/${id}`);
   const node = view.node;
+  if (node?.name) setDocTitle("node", node.name, id);
   const repos = view.repos || [];
   const tickets = view.tickets || view.recent_tickets || null;
 
@@ -8712,6 +8730,7 @@ async function renderRepo(id) {
     return wrap;
   }
 
+  setDocTitle("repo", repo.name, id);
   const isMapped = scopes.length > 0;
   const hasWrite = scopes.some((s) => s.default_access === "write");
 
@@ -9156,7 +9175,7 @@ async function renderEpics(param) {
 
   const [nodesRes, ticketsRes] = await Promise.all([
     api("GET", "/scope/nodes"),
-    api("GET", "/tickets"),
+    api("GET", "/tickets?fields=summary"),
   ]);
   const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
   const tickets = ticketsRes.tickets || [];
@@ -10449,7 +10468,7 @@ async function confirmPlanBuild(plan, opts = {}) {
       // gate decide per ticket. A refusal (missing AC, unmet precondition) is
       // expected for some tickets — they stay draft, counted, never surfaced as an
       // error. Bootstrap-gated tickets are readied too; the loop honours deps.
-      const all = (await api("GET", "/tickets")).tickets || [];
+      const all = (await api("GET", "/tickets?fields=summary")).tickets || [];
       const mine = all.filter((t) => numbers.includes(t.number));
       for (const t of mine) {
         try {

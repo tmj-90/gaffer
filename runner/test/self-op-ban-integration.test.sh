@@ -12,6 +12,8 @@
 #   PROOF B  (override) GAFFER_ALLOW_SELF_DELIVERY=1 restores today's behaviour:
 #            the SAME ticket proceeds to the normal delivery plan.
 #   PROOF C  (control) a NON-Gaffer target is unaffected — delivered as before.
+#   PROOF D  a ticket whose write repo is the gaffer monorepo ROOT (the obvious
+#            `gaffer onboard ~/gaffer` registration) is refused the same way.
 #
 # Requires the built dispatch CLI. Run: bash test/self-op-ban-integration.test.sh
 # =====================================================================
@@ -107,6 +109,28 @@ if grep -q "delivering #$SELF_NUM" <<<"$OUT_AGAIN"; then
 else
   ok "later tick does NOT re-claim the set-aside self-target"
 fi
+
+echo "== PROOF D: the gaffer monorepo ROOT is a self-target too =="
+GAFFER_ROOT="$(cd "$RUNNER_DIR/.." && pwd -P)"
+WG repo add -n gaffer-root --path "$GAFFER_ROOT" --branch main --stack typescript --test "true" >/dev/null 2>&1
+ROOT_NUM="$(WG ticket create -t "Self-op: tweak the whole gaffer repo" -p solo_loose 2>&1 | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['number'])")"
+WG repo link "$ROOT_NUM" gaffer-root >/dev/null 2>&1
+WG ac add "$ROOT_NUM" -t "Root self-op AC" >/dev/null 2>&1
+WG ticket ready "$ROOT_NUM" >/dev/null 2>&1
+OUT_ROOT="$(run_tick)"
+if grep -q "SELF-OP: refusing to deliver #$ROOT_NUM" <<<"$OUT_ROOT"; then
+  ok "monorepo-root ticket is refused with a SELF-OP log"
+else
+  fail "monorepo-root ticket should be refused (got: $(printf '%s' "$OUT_ROOT" | grep -E 'SELF-OP|delivering|worktree|TICK_RESULT' | tail -4))"
+fi
+if grep -qE "delivering #$ROOT_NUM|would add a throwaway worktree" <<<"$OUT_ROOT"; then
+  fail "monorepo-root ticket must NOT reach the worktree/delivery plan"
+else
+  ok "monorepo-root ticket does NOT reach the worktree/delivery plan"
+fi
+ST="$(ticket_status "$ROOT_NUM")"
+[ "$ST" != "ready" ] && ok "monorepo-root ticket is set aside (status=$ST)" \
+  || fail "expected monorepo-root ticket out of 'ready' (status=$ST)"
 
 echo "== PROOF B (override): GAFFER_ALLOW_SELF_DELIVERY=1 restores delivery =="
 # Re-ready a fresh self-target ticket (the first is now blocked).

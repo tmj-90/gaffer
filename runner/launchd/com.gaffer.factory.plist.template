@@ -1,19 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   launchd template — runs the factory loop on a schedule (macOS). DISABLED by
-  default: this file is not installed until you RENDER it (substitute the two
-  placeholders below), copy it to ~/Library/LaunchAgents, and `launchctl load`
-  it. Review factory.config.sh (especially DRY_RUN) first.
+  default: this file is not installed until you RENDER it, copy it to
+  ~/Library/LaunchAgents, and `launchctl load` it. Review factory.config.sh
+  (especially DRY_RUN) first.
 
-  Placeholders:
+  Placeholders (filled by runner/launchd/render.mjs):
     __GAFFER_REPO__   absolute path to the Gaffer monorepo checkout root
     __GAFFER_DATA__   absolute path to the factory state dir (default: <repo>/.gaffer)
+    __GAFFER_PATH__   the PATH the job runs with. launchd starts a job with a bare
+                      /usr/bin:/bin:/usr/sbin:/sbin, where node is not, so the
+                      renderer records the directory of the node that ran it, then
+                      the dirs of claude and git on your PATH, then the system dirs.
 
-  Render + install (run from the repo root):
+  Render + install (run from the repo root, in the shell you use gaffer from):
     OUT=~/Library/LaunchAgents/com.gaffer.factory.plist
-    sed -e "s#__GAFFER_REPO__#$(pwd)#g" -e "s#__GAFFER_DATA__#$(pwd)/.gaffer#g" \
-      runner/launchd/com.gaffer.factory.plist.template > "$OUT"
-    launchctl load "$OUT"
+    node runner/launchd/render.mjs > "$OUT"
+    plutil -lint "$OUT" && launchctl load "$OUT"
+  Re-render after moving node (a new Homebrew or nvm version) or the checkout.
   Stop:
     launchctl unload ~/Library/LaunchAgents/com.gaffer.factory.plist
 -->
@@ -30,6 +34,11 @@
 
   <key>EnvironmentVariables</key>
   <dict>
+    <!-- Without this launchd's bare PATH has no node, and the run stops at SETUP. -->
+    <key>PATH</key>
+    <string>__GAFFER_PATH__</string>
+    <key>GAFFER_DATA</key>
+    <string>__GAFFER_DATA__</string>
     <!-- Keep DRY_RUN=1 until you've watched a few real ticks by hand. -->
     <key>DRY_RUN</key>
     <string>1</string>

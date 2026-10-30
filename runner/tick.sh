@@ -336,7 +336,9 @@ gaffer_trust_workspace() {
   # full repo it onboarded/created — PRIMARY_REPO, the clarify clone, the greenfield
   # bootstrap). GAFFER_TRUST_ALLOW_REPO=1 vouches for the full-repo shapes; linked
   # worktrees are still validated strictly (under the worktree root) regardless.
-  GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
+  # GAFFER_DATA is passed so the prune of dead worktree entries knows this factory's
+  # real worktree root ($GAFFER_DATA/worktrees) under a non-default data dir.
+  GAFFER_DATA="$GAFFER_DATA" GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
     || log "TRUST: could not pre-trust $dir (headless agent may hang on an MCP tool prompt)"
   # Claude Code keys a git WORKTREE's trust on its MAIN repo working tree (the
   # git-common-dir's parent), NOT the worktree path — so trusting only a linked
@@ -349,7 +351,7 @@ gaffer_trust_workspace() {
   local main
   main="$(gaffer_git_main_worktree "$dir")"
   if [ -n "$main" ] && [ "$main" != "$dir" ] && [ -d "$main" ]; then
-    GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY=1 \
+    GAFFER_DATA="$GAFFER_DATA" GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY=1 \
       node "$RUNNER_DIR/lib/trust-workspace.mjs" "$main" 2>>"$GAFFER_LOG" \
       || log "TRUST: could not pre-trust main repo root $main (worktree $dir)"
   fi
@@ -1482,14 +1484,24 @@ if [ "$READY_COUNT" -gt 0 ]; then
     log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (json parse failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH)."
   fi
 
-  # A parsed boundary (markers present) with NO write repo is a ticket whose repos
-  # are all read / test / context-only. It must NOT fall through to the legacy
-  # single-repo fallback below — that made the alphabetically-first linked repo
-  # WRITABLE (worktree + branch + hook allowing writes) for a ticket the operator
-  # had marked read-only. Release it for a human and skip it this run.
+  # A parsed boundary (markers present) with NO write repo is a ticket with no repo
+  # linked at all (the default solo_loose pack lets one go ready with only a
+  # REPO_RECOMMENDED warning) or whose repos are all read / test / context-only. It
+  # must NOT fall through to the legacy single-repo fallback below — that made the
+  # alphabetically-first linked repo WRITABLE (worktree + branch + hook allowing
+  # writes) for a ticket the operator had marked read-only. Park it VISIBLY as
+  # `blocked` (reason_code no_write_repo — it lands in the human queue) and skip it
+  # this run. Releasing it to `ready` instead re-claimed and re-released it on every
+  # loop run forever (the skip file is per run), a claim/release pair per run.
   if [ "$_WG_MARKERS" = 1 ] && [ -z "$(printf '%s' "$WRITE_ROOTS" | tr -d '[:space:]')" ]; then
-    log "WG-002: #$NUM has no WRITE repo (all links are read/test/context-only) — refusing to deliver into a read-only repo; parking → ready"
-    gaffer_release_delivery ready "no write repo on the ticket — set a repo's access to write, then re-ready"
+    _NWR_COUNT="$(echo "$SHOW" | jget '(d.repositories || []).length' 2>/dev/null || echo 0)"
+    if [ "${_NWR_COUNT:-0}" -gt 0 ]; then
+      _NWR_WHY="all $_NWR_COUNT linked repo(s) are read/test/context-only"
+    else
+      _NWR_WHY="no repo is linked to the ticket"
+    fi
+    log "WG-002: #$NUM has no WRITE repo ($_NWR_WHY) — refusing to deliver; parking → blocked (no_write_repo) for a human"
+    gaffer_release_delivery blocked "no write repo on the ticket ($_NWR_WHY) — link a repo and set its access to write (wg ticket repo-access set <n> <repo> --access write --relation confirmed), then unblock" no_write_repo
     gaffer_skip_ticket "$NUM"
     result no_work; exit 0
   fi
@@ -1545,10 +1557,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
   [ -n "$LENSES" ] || LENSES="minimalism"
 
   if [ -z "$REPO_PATH" ] || [ ! -d "$REPO_PATH" ]; then
-    log "ticket #$NUM has no local repo path; leaving it for a human"
-    gaffer_release_delivery ready "no local repo path — leaving it for a human"
-    # Skip it for the rest of this run: released to `ready` at the head of the queue
-    # it would be re-claimed by the very next tick, forever (a wedged queue).
+    log "ticket #$NUM has no local repo path; parking → blocked (no_local_repo_path) for a human"
+    # Park VISIBLY as `blocked`, never back to `ready`: the skip file only lasts one
+    # loop run, so a `ready` release was re-claimed and re-released on every run
+    # forever. Skip it for the rest of this run too.
+    gaffer_release_delivery blocked "the write repo has no local checkout on this machine — register its path (wg repo add / repo update) or clone it, then unblock" no_local_repo_path
     gaffer_skip_ticket "$NUM"
     result no_work; exit 0
   fi
@@ -1674,14 +1687,16 @@ if [ "$READY_COUNT" -gt 0 ]; then
     log "cards: no file-card context for #$NUM (none served / memory unavailable) — proceeding without"
   fi
   # METRICS (chunk 2b) — record the mechanically-observable retrieval facts for
-  # this delivery: prime_context_called + cards_served + coverage. Best-effort,
-  # gated on GAFFER_DATA, fully swallowed (never affects delivery). The
+  # this delivery: prime_context_called + cards_served + the served cards' paths.
+  # Best-effort, gated on GAFFER_DATA, fully swallowed (never affects delivery). The
   # complementary reads-before-first-write signal is captured at the safety-hook
-  # tool-call layer ($GAFFER_DATA/tool-metrics.jsonl), keyed by GAFFER_TICKET.
+  # tool-call layer ($GAFFER_DATA/tool-metrics.jsonl), keyed by GAFFER_TICKET. The
+  # end-of-run summary (run-summary.sh → json-tool summary-retrieval) joins the two:
+  # reads before the first write, and how many served cards the agent then Read.
   if [ -n "${GAFFER_DATA:-}" ]; then
     {
-      printf '{"ts":"%s","ticket":"%s","prime_context_called":%s,"cards_served":%s}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" \
+      printf '%s\n' "$FILE_CARDS_BLOCK" \
+        | node "$RUNNER_DIR/lib/json-tool.mjs" delivery-metric "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" \
         >> "$GAFFER_DATA/delivery-metrics.jsonl"
     } 2>/dev/null || true
   fi

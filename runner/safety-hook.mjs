@@ -163,10 +163,11 @@ function logBlock(reason) {
 
 // Append one tool-call observation to the per-run metrics ledger
 // ($GAFFER_DATA/tool-metrics.jsonl). PURE TELEMETRY: this records WHAT tool was
-// called (Read / Write / Bash / …) and its target so an offline aggregator can
-// compute the chunk-2b "reads-before-first-write" proxy (unique files read +
-// read count before the first Write, the real "unnecessary scans avoided"
-// signal). It mirrors logBlock exactly: gated on GAFFER_DATA, fully swallowed,
+// called (Read / Write / Bash / …) and its target so the end-of-run summary
+// (run-summary.sh → json-tool summary-retrieval) can compute the chunk-2b
+// "reads-before-first-write" proxy (unique files read + read count before the
+// first Write, the real "unnecessary scans avoided" signal) and how many served
+// file cards were then Read. It mirrors logBlock exactly: gated on GAFFER_DATA, fully swallowed,
 // and NEVER read by the allow/block decision — it cannot weaken the hook.
 function logToolCall(tool, target) {
   try {

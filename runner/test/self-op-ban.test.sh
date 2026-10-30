@@ -13,6 +13,9 @@
 #   AC7  every component dir (dispatch/crew/memory/runner) is checked
 #   AC8  the knob GAFFER_ALLOW_SELF_DELIVERY + helper are present in config
 #   AC9  tick.sh wires the SELF-OP guard on the delivery AND bootstrap paths
+#   AC10 the monorepo ROOT (an ANCESTOR of a component dir) is a self-target
+#   AC11 a linked worktree / other path into the runner's own git repo is a
+#        self-target, while an unrelated git repo is not
 #
 # Zero deps beyond bash + coreutils. Run: bash test/self-op-ban.test.sh
 # =====================================================================
@@ -96,6 +99,31 @@ for pair in "CREW_DIR:$WORK/crew" "MEMORY_DIR:$WORK/memory" "RUNNER_DIR:$WORK/ru
   gaffer_is_self_target "$dir/inner" && ok "$name subdir matches" \
     || fail "$name subdir should match"
 done
+
+echo "== AC10: the monorepo ROOT (ancestor of a component) is a self-target =="
+mkdir -p "$WORK/mono/packages/dispatch" "$WORK/mono/runner"
+( DISPATCH_DIR="$WORK/mono/packages/dispatch"; RUNNER_DIR="$WORK/mono/runner"
+  CREW_DIR=""; MEMORY_DIR=""
+  gaffer_is_self_target "$WORK/mono" || exit 1        # the root itself
+  gaffer_is_self_target "$WORK/mono/" || exit 2       # trailing slash
+  gaffer_is_self_target "$WORK" || exit 3             # anything above it
+  gaffer_is_self_target "$WORK/mono/packages" || exit 4
+  if gaffer_is_self_target "$WORK/elsewhere/normal-repo"; then exit 5; fi
+) && ok "monorepo root + its ancestors match; a sibling repo does not" \
+  || fail "monorepo root / ancestor of a component dir should be a self-target (rc=$?)"
+
+echo "== AC11: a worktree of the runner's own git repo is a self-target =="
+G="$WORK/gitmono"
+git init -q -b main "$G"
+git -C "$G" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+mkdir -p "$G/runner"
+git -C "$G" worktree add -q "$WORK/gitmono-wt" -b wt-branch 2>/dev/null
+OTHER="$WORK/other-git"; git init -q -b main "$OTHER"
+( DISPATCH_DIR=""; CREW_DIR=""; MEMORY_DIR=""; RUNNER_DIR="$G/runner"
+  gaffer_is_self_target "$WORK/gitmono-wt" || exit 1
+  if gaffer_is_self_target "$OTHER"; then exit 2; fi
+) && ok "linked worktree of the runner's repo matches; an unrelated git repo does not" \
+  || fail "linked worktree of the runner's own repo should be a self-target (rc=$?)"
 
 echo "== AC8: knob + helper present in factory.config.sh =="
 grep -q 'GAFFER_ALLOW_SELF_DELIVERY:=0' "$RUNNER_DIR_REAL/factory.config.sh" \

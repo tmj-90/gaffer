@@ -103,6 +103,34 @@ function isUnderExpectedRoot(norm) {
   return /[/\\]worktrees[/\\](ticket|review-wt)-[^/\\]+[/\\]/.test(norm + sep);
 }
 
+/** Upper bound on factory worktree trust entries kept in ~/.claude.json. Dead ones are
+ *  always pruned; this caps LIVE ones too (orphaned worktrees a crash left behind), so
+ *  the operator's global config stays bounded whatever happens on disk. Trust is read
+ *  when `claude` starts and re-written before every agent call, so dropping the oldest
+ *  live entry never affects a running agent. */
+const MAX_FACTORY_WORKTREE_ENTRIES = 200;
+
+/** True iff `p` is a trust entry the factory created for a throwaway worktree. */
+function isFactoryWorktreeEntry(p) {
+  if (typeof p !== "string" || !p.startsWith("/")) return false;
+  return isUnderExpectedRoot(resolve(p));
+}
+
+/** Prune dead factory-worktree entries, then cap the survivors (oldest first — JSON
+ *  object order is insertion order). `keep` (the path being trusted now) is never
+ *  removed. Entries that are not the factory's are never touched. */
+function pruneFactoryWorktreeEntries(projects, keep) {
+  const live = [];
+  for (const p of Object.keys(projects)) {
+    if (p === keep || !isFactoryWorktreeEntry(p)) continue;
+    if (!existsSync(p)) delete projects[p];
+    else live.push(p);
+  }
+  // The entry about to be (re)written counts toward the cap.
+  const excess = live.length + 1 - MAX_FACTORY_WORKTREE_ENTRIES;
+  for (let i = 0; i < excess; i++) delete projects[live[i]];
+}
+
 /** True iff `dir` is a LINKED git worktree: its `.git` is a FILE holding a
  *  `gitdir: …/.git/worktrees/<name>` pointer. A normal repo root (a `.git`
  *  DIRECTORY) or an arbitrary folder is rejected — only the factory's `git worktree
@@ -292,12 +320,13 @@ try {
   if (!conf.projects || typeof conf.projects !== "object") conf.projects = {};
 
   // Prune stale factory-worktree trust entries so the config doesn't grow forever
-  // (worktrees are torn down after each delivery).
-  for (const p of Object.keys(conf.projects)) {
-    if (p.includes("/.gaffer/worktrees/") && p !== target && !existsSync(p)) {
-      delete conf.projects[p];
-    }
-  }
+  // (worktrees are torn down after each delivery). An entry is the factory's when it
+  // sits under an expected worktree root ($GAFFER_DATA/worktrees,
+  // GAFFER_TRUST_WORKTREE_ROOT) or has the factory's throwaway-worktree shape — NOT
+  // only when its path contains `/.gaffer/worktrees/`: that literal missed every
+  // worktree made under a non-default GAFFER_DATA (containers, tests, custom data
+  // dirs), and one operator config reached 3,700 dead entries.
+  pruneFactoryWorktreeEntries(conf.projects, target);
 
   const cur =
     conf.projects[target] && typeof conf.projects[target] === "object" ? conf.projects[target] : {};

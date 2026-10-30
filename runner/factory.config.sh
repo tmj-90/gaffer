@@ -534,8 +534,11 @@ gaffer_role_turns() {
 # (GAFFER_REWORK_STRONG_MODEL) with the full feedback history. Set to 1 to disable
 # rework entirely (one attempt, then park to `blocked`).
 : "${GAFFER_MAX_DELIVERY_ATTEMPTS:=3}"
-# WASTE CONTROL: a retry (rework / gate retry / timeout) keeps the ticket branch's
-# previous commits and re-enters on them; 1 = the old clean-slate reset to base.
+# WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed
+# pause, a re-queued retry) keeps its branch's commits; 1 = reset it to base for that
+# tick (in-tick rework is never reset). In-tick rework — the up to
+# GAFFER_MAX_DELIVERY_ATTEMPTS re-runs inside one tick after a gate failure — always
+# continues on the agent's own commits, because its feedback is about that diff.
 : "${GAFFER_RETRY_FRESH_BRANCH:=0}"
 : "${GAFFER_CLAIM_TTL:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))}"
 export GAFFER_MAX_DELIVERY_ATTEMPTS GAFFER_CLAIM_TTL
@@ -1303,22 +1306,27 @@ gaffer_agent_env() {
 # (dispatch / crew / memory / the runner itself), the factory ends up
 # editing its OWN source — a footgun and a weird self-modifying recursion. So by
 # default the runner REFUSES any delivery (or greenfield bootstrap) whose target
-# IS, or is INSIDE, one of the factory's own component dirs (DISPATCH_DIR,
+# IS, is INSIDE, or CONTAINS one of the factory's own component dirs (DISPATCH_DIR,
 # CREW_DIR, MEMORY_DIR, RUNNER_DIR — all defined above, so this works in
-# BOTH the mono layout and the side-by-side layout). First-party dogfooding
+# BOTH the mono layout and the side-by-side layout) — so the monorepo root is
+# covered — or is a worktree of the runner's own git repository. First-party dogfooding
 # overrides it: set GAFFER_ALLOW_SELF_DELIVERY=1 to restore today's behaviour
 # exactly. NOTE: not bulletproof — the check is in-tree and removable — but it
 # stops the casual case, which is the accepted bar.
 : "${GAFFER_ALLOW_SELF_DELIVERY:=0}"
 
 # gaffer_is_self_target <path>
-# Returns success (0) when <path> IS, or is INSIDE, any of the factory's own
-# component dirs (DISPATCH_DIR / CREW_DIR / MEMORY_DIR / RUNNER_DIR).
+# Returns success (0) when <path> IS, is INSIDE, or CONTAINS any of the factory's
+# own component dirs (DISPATCH_DIR / CREW_DIR / MEMORY_DIR / RUNNER_DIR), or is a
+# checkout (main or linked worktree) of the same git repository RUNNER_DIR lives
+# in. The CONTAINS case is what catches the obvious registration — the gaffer
+# monorepo ROOT (`gaffer onboard ~/gaffer`) — and any directory above it: a
+# delivery there can edit every component. The same-repo case catches a linked
+# worktree of the gaffer checkout registered as a "repo".
 # Both sides are CANONICALISED (symlinks resolved via `cd … && pwd -P`, trailing
 # slashes normalised) before an equal-or-subdir match (`case "$canon/" in
-# "$comp/"*)`). Empty/missing component vars are skipped. A non-existent or
-# non-resolvable <path> can't match (returns 1) — the guard is additive and must
-# never misfire on a normal repo.
+# "$comp/"*)`) and the reverse ancestor match. Empty/missing component vars are
+# skipped. A non-existent <path> can only match by its literal path.
 gaffer_is_self_target() {
   local target="${1:-}"
   [ -n "$target" ] || return 1
@@ -1339,7 +1347,24 @@ gaffer_is_self_target() {
     case "$canon/" in
       "$comp_canon"/*) return 0 ;;
     esac
+    # Reverse match: the target is an ANCESTOR of a component (the monorepo
+    # root, or anything above it). "${canon%/}/" keeps "/" as "/".
+    case "$comp_canon/" in
+      "${canon%/}"/*) return 0 ;;
+    esac
   done
+  # Same git repository as the runner (a linked worktree of the gaffer checkout,
+  # or its root reached by another path): compare the canonical common git dirs.
+  if [ -n "${RUNNER_DIR:-}" ] && [ -d "$canon" ]; then
+    local self_common target_common
+    self_common="$(git -C "$RUNNER_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    target_common="$(git -C "$canon" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -n "$self_common" ] && [ -n "$target_common" ]; then
+      self_common="$(cd "$self_common" 2>/dev/null && pwd -P || printf '%s' "$self_common")"
+      target_common="$(cd "$target_common" 2>/dev/null && pwd -P || printf '%s' "$target_common")"
+      [ "$self_common" = "$target_common" ] && return 0
+    fi
+  fi
   return 1
 }
 

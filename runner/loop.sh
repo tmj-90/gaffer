@@ -95,6 +95,13 @@ gaffer_loop_end_ping() {
 # agent call unbounded when no perl/timeout/gtimeout exists; abort the whole run
 # with a setup error here so we never start a loop that can't bound its calls.
 gaffer_timeout_preflight || { echo "gaffer factory: aborting — no timeout primitive (setup error)." >&2; exit 1; }
+# Every control-plane call is `node …`. A scheduled run (launchd, cron) starts with
+# a bare PATH that usually has no node, which used to surface only as the vague
+# "SETUP: could not register factory agent". Name the real cause instead.
+command -v node >/dev/null 2>&1 || {
+  echo "gaffer factory: aborting — node is not on PATH (PATH=$PATH). A launchd/cron job gets a bare PATH: render the launchd plist with 'node runner/launchd/render.mjs' (it records node's directory), or set PATH in the job (setup error)." >&2
+  exit 3
+}
 
 # R-1 (cleanup): start a fresh run with no stale skip/backpressure markers. If
 # this rm fails, a prior run's markers could wrongly suppress work this run — so

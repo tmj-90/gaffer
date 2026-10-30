@@ -24,7 +24,7 @@ It's alpha. It gives an agent a shell inside the repos you point it at, so keep 
 
 ## How a ticket gets done
 
-A ticket can't be marked ready until it has at least one acceptance criterion and a repo it's allowed to write to. A criterion can carry a check command (`--check "npm test"`), which the runner runs itself rather than taking the agent's word for it.
+A ticket can't be marked ready until it has at least one acceptance criterion; the stricter policy packs (`team_light` and up) also require a repo it's allowed to write to. Under the default `solo_loose` pack a ticket with no write repo goes ready with a warning, and the runner parks it as blocked for you (reason `no_write_repo`) instead of delivering it. A criterion can carry a check command (`--check "npm test"`), which the runner runs itself rather than taking the agent's word for it.
 
 `gaffer run` makes one pass over the ready queue and then exits. There's no daemon unless you ask for one. Each tick claims a ticket, creates a worktree on a `gaffer/ticket-<n>-<slug>` branch, and starts a headless agent session there with the skills that suit the ticket. The agent reaches the control plane and the memory store over MCP, and the safety hook sees every tool call it makes. Your own checkout is never touched.
 
@@ -32,7 +32,7 @@ When the agent says it's finished, the runner runs the repo's tests, typecheck a
 
 A delivery that passes sits in review. The diff you approve is computed by the control plane from git, so it shows what actually changed, whatever the agent says. Approving sends it towards merge (through the independent tester first, if it's an Acceptance ticket), and merging lands the branch on your default branch and refreshes what Gaffer knows about the repo. By default no agent reviews anything (`REVIEW_MODE=human`). If you do let agents approve, the control plane still refuses an approval from the agent that did the work.
 
-Models are tiered in [runner/model-registry.json](runner/model-registry.json). Planning gets opus and implementation gets sonnet by default, and a high-risk ticket or one with a lot of criteria is routed a tier up.
+Models are tiered in [runner/model-registry.json](runner/model-registry.json), which maps each tier to a model. Planning runs on the strong tier and implementation on the mid tier by default. A low-risk ticket with at most one criterion, or one measured as a small change, is implemented and tested on the cheap tier; a high-risk ticket or one with a lot of criteria is routed a tier up.
 
 ### Planning a build
 

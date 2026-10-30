@@ -994,6 +994,133 @@ switch (cmd) {
     break;
   }
 
+  // delivery-metric <ticket> <prime_called> <cards_served>: stdin = the delivery's
+  // file-card block. Prints the delivery-metrics.jsonl line tick.sh appends, carrying
+  // the served cards' repo-relative paths so summary-retrieval can tell which of
+  // them the agent then Read. Fail-soft: a bad block still yields a line (no paths).
+  case "delivery-metric": {
+    const cardPaths = [];
+    for (const ln of readStdin().split("\n")) {
+      const m = ln.match(/^ {2}- \[[^\]]*\] (.+?)(?: — .*)?$/);
+      if (m && m[1].trim()) cardPaths.push(m[1].trim());
+    }
+    const served = Number.parseInt(args[2] ?? "0", 10);
+    println(
+      JSON.stringify({
+        ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+        ticket: String(args[0] ?? ""),
+        prime_context_called: args[1] === "true",
+        cards_served: Number.isFinite(served) ? served : 0,
+        card_paths: cardPaths.slice(0, 50),
+      }),
+    );
+    break;
+  }
+  // summary-retrieval <delivery-metrics> <tool-metrics>: the retrieval report for the
+  // run summary (env SUMMARY_SINCE scopes it). One delivery = one delivery-metrics line
+  // (written when the runner primes the agent); its tool calls are that ticket's
+  // tool-metrics lines from then until the ticket's next delivery. Headlines: how many
+  // Reads the agent made before its first write (and of how many distinct files), and
+  // how many of the file cards the runner served it then went on to Read.
+  case "summary-retrieval": {
+    const since = process.env.SUMMARY_SINCE || "";
+    const readLines = (f) => {
+      let text;
+      try {
+        text = readFileSync(f, "utf8");
+      } catch {
+        return [];
+      }
+      const rows = [];
+      for (const raw of text.split("\n")) {
+        const ln = raw.trim();
+        if (!ln) continue;
+        try {
+          const e = JSON.parse(ln);
+          if (e && typeof e === "object" && typeof e.ts === "string") rows.push(e);
+        } catch {
+          /* skip a torn line */
+        }
+      }
+      return rows;
+    };
+    const deliveries = readLines(args[0]).filter((d) => !since || d.ts >= since);
+    const calls = readLines(args[1]).filter((c) => !since || c.ts >= since);
+    const scope = since ? "this run" : "(all-time)";
+    if (deliveries.length === 0) {
+      println(`    \x1b[2m(no deliveries primed ${scope})\x1b[0m`);
+      break;
+    }
+    // Compare ISO timestamps as instants: the two writers differ in sub-second precision.
+    const t = (ts) => Date.parse(ts) || 0;
+    const byTicket = new Map();
+    for (const d of deliveries) {
+      const k = String(d.ticket ?? "");
+      if (!byTicket.has(k)) byTicket.set(k, []);
+      byTicket.get(k).push(d);
+    }
+    const before = [];
+    const uniqBefore = [];
+    let noWrite = 0;
+    let served = 0;
+    let servedWithPaths = 0;
+    let servedRead = 0;
+    let primed = 0;
+    for (const [ticket, ds] of byTicket) {
+      ds.sort((a, b) => t(a.ts) - t(b.ts));
+      const mine = calls
+        .filter((c) => String(c.ticket ?? "") === ticket)
+        .sort((a, b) => t(a.ts) - t(b.ts));
+      ds.forEach((d, i) => {
+        const from = t(d.ts);
+        const to = i + 1 < ds.length ? t(ds[i + 1].ts) : Infinity;
+        const win = mine.filter((c) => t(c.ts) >= from && t(c.ts) < to);
+        if (d.prime_context_called === true) primed += 1;
+        served += Number(d.cards_served) || 0;
+        const firstWrite = win.findIndex((c) => c.kind === "write");
+        if (firstWrite === -1) noWrite += 1;
+        else {
+          const reads = win.slice(0, firstWrite).filter((c) => c.kind === "read");
+          before.push(reads.length);
+          uniqBefore.push(new Set(reads.map((c) => c.target)).size);
+        }
+        const paths = Array.isArray(d.card_paths) ? d.card_paths : [];
+        if (paths.length) {
+          servedWithPaths += paths.length;
+          const readTargets = win
+            .filter((c) => c.kind === "read" && c.target)
+            .map((c) => String(c.target));
+          for (const p of paths) {
+            const rel = String(p).replace(/^\.\//, "");
+            if (readTargets.some((r) => r === rel || r.endsWith(`/${rel}`))) servedRead += 1;
+          }
+        }
+      });
+    }
+    const median = (xs) => {
+      if (!xs.length) return 0;
+      const a = [...xs].sort((x, y) => x - y);
+      const m = Math.floor(a.length / 2);
+      return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+    };
+    println(
+      `    ${deliveries.length} deliver${deliveries.length === 1 ? "y" : "ies"} primed ${scope} — ${primed} with file cards, ${served} card(s) served`,
+    );
+    if (before.length)
+      println(
+        `    reads before first write: median ${median(before)} (${median(uniqBefore)} distinct file(s)) over ${before.length} deliver${before.length === 1 ? "y" : "ies"} that wrote` +
+          (noWrite ? `; ${noWrite} made no write` : ""),
+      );
+    else println(`    reads before first write: n/a — no delivery wrote a file ${scope}`);
+    if (servedWithPaths)
+      println(
+        `    file cards read: ${servedRead} of ${servedWithPaths} served card(s) were then Read by the agent`,
+      );
+    else if (served)
+      println("    file cards read: unknown (these deliveries recorded no card paths)");
+    break;
+  }
+
   // ── sandbox*.sh ───────────────────────────────────────────────────────────────────
   case "realpath": {
     println(realpathSync(args[0]));

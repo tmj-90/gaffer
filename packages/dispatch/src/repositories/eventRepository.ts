@@ -353,7 +353,7 @@ export class EventRepository {
    * PARKED-WORK-QUEUE: the most recent runner/human park (`ticket.blocked`) event
    * for `ticketId` — when it was parked, its structured `reason_code` (the runner
    * sets it: rework_exhausted / bootstrap_failed / strict_require_unavailable /
-   * budget_exhausted; NULL for a human/agent block that recorded no code), and the
+   * budget_exhausted / no_write_repo / no_local_repo_path; NULL for a human/agent block that recorded no code), and the
    * FREE-TEXT `reason`. `reason` is agent/runner-influenceable UNTRUSTED text —
    * every caller that renders it must treat it as data (see humanQueue). Returns
    * null when the ticket has never had a `ticket.blocked` event.

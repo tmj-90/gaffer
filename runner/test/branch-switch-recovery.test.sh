@@ -3,13 +3,11 @@
 # BRANCH-SWITCH RECOVERY — an agent that leaves the ticket branch loses nothing.
 # ---------------------------------------------------------------------
 # Driven through the REAL tick.sh with a stub agent (lib/stub-tick.sh):
-#   S1. fresh ticket, `checkout -b x && commit` → fast-forwarded onto the ticket
-#       branch, x deleted, in_review
-#   S2. the same on a rework → reviewed + new commit on the ticket branch, in_review,
+#   S2. rework, `checkout -b x && commit` → reviewed + new commit on the ticket branch, in_review,
 #       not counted as a no-commit failure
 #   S3. rework, `checkout -b x main && commit` (diverged) → reviewed commit untouched,
 #       x kept for salvage, a recoverable retry that spawns on the ticket branch
-#   S4. fresh ticket, detached HEAD + commit → recovered onto the ticket branch
+# (Fresh tickets and a detached HEAD: branch-switch-fresh.test.sh.)
 # Run: bash runner/test/branch-switch-recovery.test.sh
 # =====================================================================
 set -uo pipefail
@@ -26,17 +24,6 @@ done
 STUB_TICK_NAME=branch-switch-recovery
 # shellcheck source=lib/stub-tick.sh
 source "$HERE/lib/stub-tick.sh"
-
-echo "== S1. fresh ticket: agent switches to its own branch → recovered =="
-echo newbranch > "$MODE"
-S1="$(new_ready "Side branch fresh" "deliver a helper")"
-run_tick >/dev/null
-BS1="$(branch_of "$S1")"
-[ "$(st "$S1")" = "in_review" ] && ok "S1: #$S1 delivered → in_review" || fail "S1: status=$(st "$S1")"
-[ -n "$BS1" ] && [ "$(commits_on "$BS1")" -ge 1 ] && ok "S1: the agent's commit is on $BS1" || fail "S1: $BS1 has $(commits_on "$BS1") commits"
-[ -z "$(git -C "$R" branch --list 'agent-side-*')" ] && ok "S1: the stray agent branch was deleted (fully contained)" || fail "S1: stray branches left: $(git -C "$R" branch --list 'agent-side-*' | tr '\n' ' ')"
-
-retire "$S1"; [ "$(st "$S1")" = cancelled ] || fail "S1: could not retire #$S1 (status $(st "$S1"))"
 
 echo "== S2. rework: agent switches to its own branch → reviewed + new commit kept =="
 S2="$(reworked_ticket "Side branch rework")"; BS2="$(branch_of "$S2")"; N2="$(commits_on "$BS2")"
@@ -63,13 +50,6 @@ DL3="$(last_delivery)"
 grep -q "RECOVER: #$S3 branch failed on attempt 1" "$GAFFER_DATA/factory.log" && ok "S3: handled as a recoverable 'branch' failure (not a no-commit release)" || fail "S3: no recoverable branch-failure log"
 
 retire "$S3"; [ "$(st "$S3")" = cancelled ] || fail "S3: could not retire #$S3 (status $(st "$S3"))"
-
-echo "== S4. fresh ticket: detached HEAD + commit → recovered =="
-echo detached > "$MODE"
-S4="$(new_ready "Detached fresh" "deliver a helper")"
-run_tick >/dev/null
-BS4="$(branch_of "$S4")"
-[ "$(st "$S4")" = "in_review" ] && [ "$(commits_on "$BS4")" -ge 1 ] && ok "S4: detached commit recovered onto $BS4 → in_review" || fail "S4: status=$(st "$S4") commits=$(commits_on "$BS4")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

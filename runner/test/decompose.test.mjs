@@ -29,6 +29,14 @@ import { buildPrompt as buildSpecPrompt } from "../bin/spec-author.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = resolve(HERE, "..", "bin", "decompose.mjs");
+// Every repo-path lookup (resolveRepoPath) reads DISPATCH_DB, falling back to the
+// checkout's .gaffer/dispatch.sqlite — the operator's LIVE DB — so pin it to an ABSENT
+// scratch path for this process and the children it spawns: "no such repo" stays the
+// answer whatever the operator's DB holds. (FIX 4 swaps in its own path and restores.)
+process.env.DISPATCH_DB = resolve(
+  mkdtempSync(resolve(tmpdir(), "decompose-test-")),
+  "absent.sqlite",
+);
 const {
   extractLastJsonBlock,
   validateResult,
@@ -669,8 +677,8 @@ console.log("== FIX 4: read-only DB open — a missing DISPATCH_DB is never crea
 
 console.log("== FIX 1: null repo path → no card context emitted in prompt ==");
 {
-  // When targetRepo is set but resolveRepoPath returns null (no DISPATCH_DB in
-  // the test environment), buildPrompt must skip card injection entirely — no
+  // When targetRepo is set but resolveRepoPath returns null (DISPATCH_DB pinned to an
+  // absent path above), buildPrompt must skip card injection entirely — no
   // "PRIOR CONTEXT" or <untrusted-file-cards> in the prompt.  Pre-fix, the
   // code used `resolveRepoPath(targetRepo) ?? ""` which passed "" to
   // primeContextBlock and resolved to process.cwd() as the repo, potentially

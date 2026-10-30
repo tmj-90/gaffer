@@ -548,6 +548,14 @@ export function buildChildEnv(baseEnv, { dispatchDb, memoryDb, writeRoot }) {
  * product-owner-run.mjs do — so the headless run gets the same safety boundary and the
  * dispatch/memory MCP servers. Returns the runtime MCP config path.
  */
+/** The resolver's rendered MCP runtime config for ticket `n` (under GAFFER_DATA). */
+export function mergeTicketMcpRuntimePath(n) {
+  return resolve(
+    GAFFER_DATA,
+    `mcp-merge-ticket-${String(n).replace(/[^0-9A-Za-z_-]/g, "")}-runtime.json`,
+  );
+}
+
 export function installProjectLocalWiring(worktreePath, ticketNumber, repoName) {
   const claudeDir = resolve(worktreePath, ".claude");
   mkdirSync(claudeDir, { recursive: true });
@@ -566,7 +574,9 @@ export function installProjectLocalWiring(worktreePath, ticketNumber, repoName) 
   writeFileSync(resolve(claudeDir, "settings.json"), settings);
 
   mkdirSync(GAFFER_DATA, { recursive: true });
-  const mcpRuntime = resolve(GAFFER_DATA, "mcp-merge-ticket-runtime.json");
+  // One runtime file PER TICKET: two concurrent resolvers used to share (and rewrite)
+  // a single mcp-merge-ticket-runtime.json, re-scoping each other's evidence writes.
+  const mcpRuntime = mergeTicketMcpRuntimePath(ticketNumber);
   // Render the SAME way the tester and the product-owner run do (renderPoMcpRuntime:
   // every placeholder substituted, fail closed on a leftover). This used to replace only
   // ${DISPATCH_DB}/${MEMORY_DB}/${GAFFER_RECALL_TICKET}, so the server command was the
@@ -975,7 +985,7 @@ function main() {
     // touching git or spawning claude.
     const resolverArgv = buildClaudeArgv({
       prompt: resolverPrompt,
-      mcpConfig: resolve(GAFFER_DATA, "mcp-merge-ticket-runtime.json"),
+      mcpConfig: mergeTicketMcpRuntimePath(resolved.number),
       flags: CONFIG.claudeFlags,
     });
     emit(

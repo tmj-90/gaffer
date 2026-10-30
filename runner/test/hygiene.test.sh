@@ -167,6 +167,8 @@ mkdir -p "$REPO/.claude"; printf '{}\n' > "$REPO/.claude/settings.json"
 printf 'agent brief\n' > "$REPO/CLAUDE.factory.md"
 git -C "$REPO" add -A && git -C "$REPO" commit -q -m "leak .claude + CLAUDE.factory.md"
 OUT="$( set +u; unset HYGIENE_FORBIDDEN_PATHS
+        # shellcheck source=lib/isolate.sh
+        . "$HERE/lib/isolate.sh"; gaffer_test_isolate "$WORK"   # private GAFFER_DATA, not the checkout's
         source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
         gaffer_assert_clean_delivery "$REPO" main 2>&1 )"; RC=$?
 if [ "$RC" -ne 0 ] && grep -qi 'forbidden path' <<<"$OUT"; then

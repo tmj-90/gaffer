@@ -163,7 +163,7 @@ lg add --title "$BETA_DECISION" --summary "Never store a reversible or unsalted 
 lg suggest --title "$ALPHA_DRAFT" --summary "An agent proposed this; a human has not reviewed it." --body "pending" --kind requirement --repo alpha </dev/null >/dev/null 2>&1
 
 echo "== 0. ONBOARDING alpha: digest + file cards written, induction lore filed as a DRAFT =="
-( cd "$RUNNER_DIR" && DISPATCH_ONBOARD_REPO="$A" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
+( cd "$RUNNER_DIR" && DISPATCH_ONBOARD_REPO="$A" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" GAFFER_CREW_EVENTS="$GAFFER_DATA/events.jsonl" \
     CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" \
     node bin/onboard-run.mjs --repo "$A" >>"$GAFFER_DATA/onboard.log" 2>&1 ); orc=$?
 [ "$orc" -eq 0 ] && ok "0: onboard-run exited 0" || fail "0: onboard-run exited $orc: $(tail -3 "$GAFFER_DATA/onboard.log" | tr '\n' '|' | cut -c1-400)"

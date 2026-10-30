@@ -57,6 +57,10 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/agent-self-submit.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 DB="$WORK/dispatch.sqlite"
+# The in-process MCP probe opens Dispatch.open(DB) but its audit log resolves from
+# DISPATCH_DB / DISPATCH_AUDIT — unset, it fell back to <cwd>/.dispatch/audit.jsonl,
+# i.e. the checkout's operator audit trail. Pin both into the scratch dir.
+export DISPATCH_DB="$DB" DISPATCH_AUDIT="$WORK/audit.jsonl"
 
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
 jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }

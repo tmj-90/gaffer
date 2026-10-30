@@ -32,6 +32,21 @@
     flex: 1;
     min-width: 0;
   }
+  /* what the Find box matched, said out loud (a live region) */
+  .map-found {
+    margin: 0;
+    max-width: none;
+    font: 700 var(--t16) / 1.3 var(--f-cond);
+  }
+  .map-found:empty {
+    display: none;
+  }
+  .map-found.is-none {
+    padding: 10px 14px;
+    border: var(--frame);
+    border-radius: var(--r);
+    background: var(--paper-2);
+  }
   .map-key {
     display: flex;
     flex-wrap: wrap;
@@ -639,6 +654,30 @@
   .gr-lede .is-red {
     color: var(--red);
   }
+  /* the ground's count line: the same words as its card on the Map */
+  .gr-count {
+    max-width: none;
+    font: 700 var(--t26) / 1.2 var(--f-display);
+  }
+  .gr-count b {
+    font-size: var(--t34);
+  }
+  .gr-count .is-red {
+    color: var(--red);
+  }
+  .gr-count.is-quiet {
+    font: 600 var(--t20) / 1.3 var(--f-cond);
+    color: var(--ink-2);
+  }
+  /* fixtures: a live ticket wears its magnet counter */
+  .gr-fx-mag {
+    display: inline-flex;
+    justify-self: start;
+    padding-top: 4px;
+  }
+  .gr-typekey dt {
+    font-weight: 800;
+  }
   .gr-mapped {
     display: inline-flex;
     align-items: center;
@@ -920,6 +959,12 @@
     }
     .gr-head .detail-title {
       font-size: var(--t34);
+    }
+    .gr-count {
+      font-size: var(--t20);
+    }
+    .gr-count b {
+      font-size: var(--t26);
     }
     .gr-lede {
       font-size: var(--t16);

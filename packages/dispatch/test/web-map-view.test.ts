@@ -55,6 +55,15 @@ function stubFetch(unmapped: unknown[]): void {
           status: 200,
           headers: { "content-type": "application/json" },
         });
+      const one = url.match(/\/scope\/nodes\/(n-[a-z]+)$/);
+      if (one)
+        return json({
+          node: NODES.find((n) => n.id === one[1]),
+          repos:
+            one[1] === "n-pay"
+              ? [{ id: "r-bill", name: "billing-api", relation: "owns", default_access: "write" }]
+              : [],
+        });
       if (url.includes("/scope/nodes")) return json({ nodes: NODES });
       if (url.includes("/scope/edges")) return json({ edges: EDGES });
       if (url.includes("/scope/unmapped-repos")) return json({ repositories: unmapped });
@@ -79,7 +88,7 @@ function stubFetch(unmapped: unknown[]): void {
   );
 }
 
-function mountShell(): void {
+function mountShell(hash = "#/factory"): void {
   document.body.innerHTML = `
     <div id="toast" class="toast" role="alert" hidden></div>
     <div class="shell">
@@ -87,7 +96,7 @@ function mountShell(): void {
       <main id="app" class="app"><p class="loading">Loading…</p></main>
       <nav id="bottomnav" class="bottomnav" hidden></nav>
     </div>`;
-  location.hash = "#/factory";
+  location.hash = hash;
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -138,11 +147,17 @@ describe("web: Map view (the scouting map)", () => {
     expect(mag?.textContent).toBe("4");
     expect(mag?.classList.contains("is-yellow")).toBe(true);
     expect(mag?.querySelector(".ycard")).not.toBeNull();
-    expect(epic!.querySelector(".sg-words")?.textContent).toBe("1 in play · 1 to review");
-    // The club holds everything live (3 tickets), without counters.
+    // Each ticket is counted once, so the words add up to the counters: the review
+    // ticket is "to review", not also "in play" (it used to read "1 in play · 1 to
+    // review" for one counter).
+    expect(epic!.querySelector(".sg-words")?.textContent).toBe("1 to review");
+    // The club holds everything live (3 tickets), without counters, and its words add up.
     const club = ground("Fernhill");
     expect(club!.querySelector(".sg-club b")?.textContent).toBe("3");
     expect(club!.querySelectorAll(".mag").length).toBe(0);
+    expect(club!.querySelector(".sg-words")?.textContent).toBe(
+      "1 blocked · 1 to review · 1 in play",
+    );
   });
 
   it("tallies mapped repos in Who plays where and lists free agents with the onboard entry", async () => {
@@ -152,9 +167,11 @@ describe("web: Map view (the scouting map)", () => {
     const row = reg!.querySelector('tr.repo-row[data-repo-id="r-bill"]');
     expect(row).not.toBeNull();
     expect(row!.textContent).toContain("Payments");
-    // Blocked 1 · In play 1 · To review 0 (the review ticket has no repo).
+    // Blocked 1 · To review 0 · In play 1 (the review ticket has no repo). The columns
+    // now run in the order of the card's words (worst first), so the counts list
+    // reads Blocked, To review, In play.
     const counts = Array.from(row!.querySelectorAll(".reg-n")).map((n) => n.textContent);
-    expect(counts).toEqual(["1", "1", "0"]);
+    expect(counts).toEqual(["1", "0", "1"]);
     // The unmapped repo is a free agent, not in the register.
     expect(reg!.querySelector('[data-repo-id="r-free"]')).toBeNull();
     const free = document.querySelector("[data-section='unmapped']");
@@ -180,5 +197,48 @@ describe("web: Map view (the scouting map)", () => {
     expect(ground("Repeat orders")!.classList.contains("is-dim")).toBe(true);
     const free = document.querySelector('[data-section="unmapped"] tr.repo-row') as HTMLElement;
     expect(free.hidden).toBe(true);
+    // What the search found is said in a live region; a search that finds nothing says so.
+    const found = document.querySelector(".map-found");
+    expect(found?.getAttribute("role")).toBe("status");
+    expect(found?.textContent).toContain("match “billing”");
+    input.value = "zzzz";
+    input.dispatchEvent(new Event("input"));
+    expect(found?.textContent).toBe(
+      "Nothing on the map matches “zzzz”. Try a ground, a repo or an owner.",
+    );
+  });
+
+  it("counts a ground's own page from the same source as its card on the Map", async () => {
+    // The campaign holds #4 only through the ticket's own scope link (no repo plays
+    // there). Its page used to read /tickets?repo= for its repos, found none, and
+    // showed zeros while its card showed #4 to review.
+    stubFetch([]);
+    mountShell("#/node/n-epic");
+    await loadApp();
+    const stat = (label: string) =>
+      Array.from(document.querySelectorAll(".gr-stats .kpi"))
+        .find((k) => k.querySelector(".kpi-label")?.textContent === label)
+        ?.querySelector(".kpi-val")?.textContent;
+    expect(stat("Live")).toBe("1");
+    expect(stat("To review")).toBe("1");
+    expect(stat("Blocked")).toBe("0");
+    const fixtures = document.querySelector('[aria-label="Fixtures"]');
+    expect(Array.from(fixtures!.querySelectorAll(".mag-n")).map((n) => n.textContent)).toEqual([
+      "4",
+    ]);
+    expect(document.querySelector(".gr-count")?.textContent).toContain("1 to review");
+  });
+
+  it("counts the club's page over every ticket, as its card does", async () => {
+    stubFetch([]);
+    mountShell("#/node/n-club");
+    await loadApp();
+    const vals = Array.from(document.querySelectorAll(".gr-stats .kpi")).map(
+      (k) =>
+        `${k.querySelector(".kpi-label")?.textContent} ${k.querySelector(".kpi-val")?.textContent}`,
+    );
+    // live 3 = #3 blocked + #4 to review + #2 in play; #5 done; #1 on the bench.
+    expect(vals).toEqual(["Live 3", "Blocked 1", "To review 1", "In play 1", "Done 1", "Bench 1"]);
+    expect(document.body.textContent).not.toContain("No tickets reference this repo");
   });
 });

@@ -31,6 +31,7 @@ const HEALTH = {
   recall: { available: false },
 };
 
+let tickets: unknown[] = [];
 function stubFetch(summary: Record<string, unknown>): void {
   vi.stubGlobal(
     "fetch",
@@ -56,6 +57,7 @@ function stubFetch(summary: Record<string, unknown>): void {
         });
       if (url.includes("/api/rework/bouncing")) return json({ bouncing: [] });
       if (url.includes("/api/runs")) return json({ active: [], recent: [] });
+      if (url.includes("/tickets")) return json({ tickets });
       return json({});
     }),
   );
@@ -121,9 +123,13 @@ describe("web: Health — the physio room", () => {
   it("leads with the treatment table and lists what is on it as links", async () => {
     stubFetch({ ticketsByStatus: { in_review: 2 }, blocked: 1, staleClaims: 0, openDecisions: 0 });
     await loadApp();
+    // The headline counts what is on the table, the same sum its clauses and the
+    // table's lines give (1 blocked + 2 to review = 3). It used to count the lines
+    // ("2 things") while its clauses added up to 3.
     expect(document.querySelector(".health-view h1")?.textContent).toBe(
-      "2 things on the treatment table.",
+      "3 things on the treatment table.",
     );
+    expect(document.querySelector(".needs-hero .panel-aux")?.textContent).toBe("3 things");
     const grid = document.querySelector(".hx-grid");
     expect(grid?.firstElementChild?.querySelector(".needs-hero")).not.toBeNull();
     const links = Array.from(document.querySelectorAll(".hl-clauses a")).map((a) => [
@@ -137,5 +143,60 @@ describe("web: Health — the physio room", () => {
     // Referee's marks, not line icons: a red square and a yellow card.
     expect(document.querySelector('.needs-item[data-sev="critical"] .g-blocked')).not.toBeNull();
     expect(document.querySelector('.needs-item[data-sev="waiting"] .ycard')).not.toBeNull();
+  });
+
+  it("counts each ticket once, under its worst complaint, with its tickets as links", async () => {
+    // #6 is blocked and also held too long; #9 is only held. The table must not count #6 twice.
+    tickets = [
+      { id: "t6", number: 6, title: "Six", status: "blocked", updated_at: "2026-10-29T09:00:00Z" },
+      { id: "t9", number: 9, title: "Nine", status: "draft", updated_at: "2026-10-20T09:00:00Z" },
+    ];
+    stubFetch({
+      ticketsByStatus: { blocked: 1, draft: 1, ready: 2 },
+      blocked: 1,
+      staleClaims: 0,
+      openDecisions: 0,
+      stuckThresholdHours: 24,
+      stuckTickets: [
+        { id: "t9", number: 9, title: "Nine", status: "draft", stuckForMs: 9e8, since: "x" },
+        { id: "t6", number: 6, title: "Six", status: "blocked", stuckForMs: 5e8, since: "y" },
+      ],
+    });
+    await loadApp();
+    expect(document.querySelector(".health-view h1")?.textContent).toBe(
+      "2 things on the treatment table.",
+    );
+    const lines = Array.from(document.querySelectorAll(".needs-item")).map((li) => [
+      li.querySelector(".ni-title")?.textContent,
+      Array.from(li.querySelectorAll("a.ni-tk")).map((a) => a.getAttribute("href")),
+    ]);
+    expect(lines).toEqual([
+      ["1 blocked task", ["#/ticket/t6"]],
+      ["1 held too long", ["#/ticket/t9"]],
+    ]);
+    // Held too long is not a yellow card: yellow is "waits on your sign-off" only.
+    expect(document.querySelector('.needs-item[data-sev="held"] .ycard')).toBeNull();
+    // A full squad with work queued is not a yellow card either.
+    expect(ftCell("Squad", "Waiting")?.querySelector(".ycard")).toBeNull();
+    tickets = [];
+  });
+
+  it("collapses a source with nothing measured into one line, not an empty page", async () => {
+    stubFetch({ ticketsByStatus: {}, staleClaims: 0, blocked: 0, openDecisions: 0 });
+    await loadApp();
+    expect(document.querySelector(".skill-panel")).toBeNull();
+    expect(document.querySelector(".recall-panel")).toBeNull();
+    const line = document.querySelector(".hx-unmeasured")?.textContent || "";
+    expect(line).toMatch(/^Not measured yet: Skill hit-rate/);
+    expect(line).toContain("Recall effectiveness");
+    // The duplicates are gone: one cycle-time chart (inside the form guide), no
+    // separate Flow efficiency or Progress by repository pages.
+    expect(document.querySelectorAll(".form-guide .fg-chart").length).toBe(1);
+    const titles = Array.from(document.querySelectorAll(".panel-title")).map((h) =>
+      h.firstChild?.textContent?.trim(),
+    );
+    expect(titles).not.toContain("Cycle time");
+    expect(titles).not.toContain("Flow efficiency");
+    expect(titles).not.toContain("Progress by repository");
   });
 });

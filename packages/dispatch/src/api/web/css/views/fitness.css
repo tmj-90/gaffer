@@ -135,50 +135,6 @@
     font: 600 var(--t16) var(--f-text);
   }
 
-  /* --- league table: progress by repository --------------------------------- */
-  .repo-prog {
-    display: grid;
-  }
-  .rp-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 96px 44px;
-    gap: 12px;
-    align-items: center;
-    padding: 8px 0;
-    border-top: var(--hair);
-  }
-  .rp-row:first-child {
-    border-top: 0;
-  }
-  .rp-dot {
-    display: none;
-  }
-  .rp-name {
-    display: grid;
-    gap: 2px;
-    min-width: 0;
-  }
-  .rp-note {
-    font: 600 var(--t12) var(--f-cond);
-    color: var(--ink-2);
-  }
-  .rp-bar {
-    height: 8px;
-    background: var(--rule-2);
-  }
-  .rp-bar i {
-    display: block;
-    height: 100%;
-    background: var(--ink);
-  }
-  .rp-bar i.warn {
-    background: var(--red);
-  }
-  .rp-pct {
-    font: 800 var(--t20) / 1 var(--f-display);
-    text-align: right;
-  }
-
   .flow-eff .band {
     height: 12px;
   }
@@ -187,16 +143,21 @@
   .gov-panel {
     display: grid;
     gap: var(--s3);
+    align-content: start;
   }
   .gov-head {
     display: flex;
-    align-items: baseline;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
   }
-  .gov-title {
-    font: 800 var(--t26) / 1 var(--f-display);
-    text-transform: uppercase;
+  .gov-note {
+    margin: 0;
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .gov-win {
+    flex: none;
   }
   .gov-tiles {
     display: grid;
@@ -226,27 +187,6 @@
     font-size: var(--t14);
     color: var(--ink-2);
   }
-  .cost-banner {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 18px;
-    align-items: baseline;
-    font: 600 var(--t14) var(--f-cond);
-    color: var(--ink-2);
-  }
-  .cost-item {
-    display: inline-flex;
-    gap: 6px;
-    align-items: baseline;
-  }
-  .cost-val {
-    font: 800 var(--t20) / 1 var(--f-display);
-    color: var(--ink);
-  }
-  .cost-est {
-    font-size: var(--t12);
-  }
-
   /* --- running now, bouncing, decisions, activity ------------------------------ */
   .run-list {
     display: grid;

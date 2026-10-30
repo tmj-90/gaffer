@@ -4787,7 +4787,6 @@ async function fitnessRoomPanels(healthRes) {
   const decisions = decisionsRes.decisions || [];
   const inReview = byStatus.in_review || 0;
   const blocked = summary.blocked ?? byStatus.blocked ?? 0;
-  const openDecisions = summary.openDecisions ?? decisions.length;
   const staleClaims = summary.staleClaims || 0;
   const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
   const doneTickets = tickets.filter((t) => t.status === "done");
@@ -4923,6 +4922,37 @@ async function fitnessRoomPanels(healthRes) {
           flip: "lead",
         }),
       ]),
+      // The results by day: the cycle time as a bar per day, and what flow efficiency means.
+      el("div", { class: "fg-detail" }, [
+        el("div", { class: "fg-chart" }, [
+          el("h3", { class: "fg-h" }, "Cycle time, by day"),
+          el("div", {
+            class: "chart",
+            html: svgBars(cycleLine, {
+              labels: days.map((d) => d.lbl),
+              fmt: (v) => `${(+v).toFixed(1)}d`,
+              label: "Median cycle time by day",
+              today: true,
+              // Drawn at the width it shows at, so its tick labels stay readable.
+              ...(window.matchMedia && window.matchMedia("(max-width: 760px)").matches
+                ? { width: 360, height: 130 }
+                : { width: 720, height: 150 }),
+            }),
+          }),
+        ]),
+        el("div", { class: "fg-eff flow-eff" }, [
+          el("h3", { class: "fg-h" }, [
+            "Flow efficiency ",
+            el("b", { class: "tabnum" }, `${flowEff}%`),
+          ]),
+          band(flowEff, 100, `Flow efficiency ${flowEff}% of lead time spent working`),
+          el(
+            "p",
+            { class: "section-note" },
+            "The share of each shipped ticket's lead time spent being worked on rather than waiting (the median).",
+          ),
+        ]),
+      ]),
     ]),
   );
 
@@ -4932,7 +4962,10 @@ async function fitnessRoomPanels(healthRes) {
   // the demo dataset. Window-selectable. Every rate is shown WITH the raw counts it
   // derives from, and an empty window renders an explicit note, never a fake 0%.
   {
-    const govPanel = el("div", { class: "card gov-panel" });
+    const govPanel = el("section", {
+      class: "card panel gov-panel",
+      "aria-label": "Referee's record",
+    });
     const pct = (r) => (r && typeof r.rate === "number" ? Math.round(r.rate * 100) : null);
     const tile = (label, r, subFn) => {
       const p = pct(r);
@@ -4964,17 +4997,16 @@ async function fitnessRoomPanels(healthRes) {
         }),
       );
       govPanel.appendChild(
+        panelHead("Referee's record", "does review earn its keep", null, { kit: "sky" }),
+      );
+      govPanel.appendChild(
         el("div", { class: "gov-head" }, [
           el(
-            "div",
-            {
-              class: "gov-title",
-              title:
-                "Does gaffer's governance (gates + review + opt-in autonomy) earn its overhead? Computed from YOUR real ticket transitions — not the demo dataset.",
-            },
-            "Governance ROI",
+            "p",
+            { class: "gov-note" },
+            "Governance ROI, from the factory's own ticket transitions: how often review lets a change through, and whether what it lets through stays shipped.",
           ),
-          sel,
+          el("label", { class: "gov-win" }, [el("span", { class: "sr-only" }, "Window"), sel]),
         ]),
       );
       if (!gov || gov.empty) {
@@ -4997,7 +5029,8 @@ async function fitnessRoomPanels(healthRes) {
           tile(
             "Rework rate",
             gov.reworkRate,
-            (r) => `${r.numerator} of ${r.denominator} shipped needed rework`,
+            (r) =>
+              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first`,
           ),
           tile(
             "Unattended-safe",
@@ -5017,99 +5050,87 @@ async function fitnessRoomPanels(healthRes) {
     right.appendChild(govPanel);
   }
 
-  // --- Cost banner (H1) -------------------------------------------------------
-  // One small row: total spend all-time + today. Reads from /api/cost which
-  // reads the usage-ledger. Hidden when the ledger is absent / not configured.
-  if (costRes && (costRes.total_usd > 0 || costRes.today_usd > 0 || costRes.ticket_count > 0)) {
-    const fmtUsd = money;
-    // B28(e): the totals INCLUDE the labelled estimate the runner books for a
-    // killed/timed-out call — the same sum the daemon's day-USD cap halts on, so
-    // "Today" can never read lower than the figure the factory stopped at. The
-    // estimated share is shown marked as such, never passed off as measured.
-    const estNote = (v) =>
-      typeof v === "number" && v > 0
-        ? el(
-            "span",
-            {
-              class: "cost-est",
-              title: `${money(v)} of this is a labelled estimate booked for killed/timed-out calls (not measured usage).`,
-            },
-            `incl. ${fmtUsd(v)} est.`,
-          )
-        : null;
-    right.appendChild(
-      el(
-        "div",
-        {
-          class: "cost-banner",
-          // HONESTY: this is an API-EQUIVALENT estimate from Claude Code usage, not real
-          // money — on a Max/Pro subscription the marginal cost is the flat fee. A
-          // timed-out/killed call has no measured usage; the runner books a labelled
-          // conservative estimate for it, which is counted here and marked "est.".
-          title:
-            "API-equivalent estimate from Claude Code usage — NOT real charges on a Max/Pro subscription (there the marginal cost is the flat fee). Killed/timed-out calls carry a labelled conservative estimate (marked est.) — the same figure the runner's daily budget counts.",
-        },
-        [
-          el("span", { class: "cost-item" }, [
-            el("span", { class: "cost-label" }, "All-time (API-equiv)"),
-            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
-            estNote(costRes.estimated_usd),
-          ]),
-          el("span", { class: "cost-sep" }, "·"),
-          el("span", { class: "cost-item" }, [
-            el("span", { class: "cost-label" }, "Today"),
-            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
-            estNote(costRes.today_estimated_usd),
-          ]),
-          el("span", { class: "cost-sep" }, "·"),
-          el("span", { class: "cost-item" }, [
-            el("span", { class: "cost-label" }, "Tickets costed"),
-            el("span", { class: "cost-val tabnum" }, String(costRes.ticket_count)),
-          ]),
-        ],
-      ),
-    );
+  // --- Where the wages go: the usage ledger by kind, the top earners, the totals.
+  // HONESTY: an API-equivalent estimate from Claude Code usage, not real charges on a
+  // Max/Pro subscription. A killed or timed-out call carries a labelled estimate.
+  {
+    const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
+    const maxKind = Math.max(1, ...byKind.map((k) => k.total_cost_usd || 0));
+    const top =
+      costRes && Array.isArray(costRes.top_tickets) ? costRes.top_tickets.slice(0, 3) : [];
+    const byNum = new Map(tickets.map((t) => [t.number, t]));
+    const total =
+      costRes && typeof costRes.total_usd === "number" ? costRes.total_usd : health.total_usd;
+    const est = costRes ? costRes.estimated_usd : health.estimated_usd;
+    const costed = costRes ? costRes.ticket_count : health.ticket_count;
+    if (byKind.length || top.length || total > 0)
+      right.appendChild(
+        el(
+          "section",
+          {
+            class: "card panel wages-panel",
+            "aria-label": "Where the wages go",
+            title:
+              "API-equivalent estimate from Claude Code usage, not real charges on a Max/Pro subscription. Killed or timed-out calls carry a labelled estimate.",
+          },
+          [
+            panelHead(
+              "Where the wages go",
+              typeof total === "number"
+                ? `${money(total)} all-time${est > 0 ? ` incl. ${money(est)} est.` : ""} · ${plural(costed || 0, "ticket")} costed`
+                : "usage ledger",
+              null,
+              { kit: "claret" },
+            ),
+            el("div", { class: "wg-cols" }, [
+              byKind.length
+                ? el("div", { class: "hlist" }, [
+                    el("h3", { class: "fg-h" }, "By kind of call"),
+                    ...byKind.map((k) =>
+                      healthBarRow(
+                        k.kind,
+                        money(k.total_cost_usd),
+                        (k.total_cost_usd || 0) / maxKind,
+                        "amber",
+                      ),
+                    ),
+                  ])
+                : null,
+              top.length
+                ? el("div", { class: "wg-top" }, [
+                    el("h3", { class: "fg-h" }, "Top earners"),
+                    el(
+                      "ol",
+                      { class: "clean wg-earners" },
+                      top.map((x) => {
+                        const tk = byNum.get(x.ticket);
+                        return el("li", {}, [
+                          tk
+                            ? el(
+                                "a",
+                                { class: "wg-num tabnum", href: `#/ticket/${tk.id}` },
+                                `#${x.ticket}`,
+                              )
+                            : el("span", { class: "wg-num tabnum" }, `#${x.ticket}`),
+                          el("span", { class: "wg-title" }, tk ? tk.title : ""),
+                          el("span", { class: "wg-cost tabnum" }, money(x.total_cost_usd)),
+                          el("span", { class: "wg-turns" }, plural(x.num_turns || 0, "turn")),
+                        ]);
+                      }),
+                    ),
+                  ])
+                : null,
+            ]),
+          ],
+        ),
+      );
   }
 
   // --- Development flow + Needs your attention (2-up) -----------------------
   right.appendChild(
     el("div", { class: "ov-grid ov-2" }, [
       devFlowPanel(tickets, byStatus, now),
-      needsPanel({
-        inReview,
-        blocked,
-        openDecisions,
-        staleClaims,
-        stuck: summary.stuckTickets || [],
-      }),
-    ]),
-  );
-
-  // --- Progress by repo + Cycle-time chart + Flow-efficiency donut (3-up) ---
-  right.appendChild(
-    el("div", { class: "ov-grid ov-3" }, [
-      repoProgressPanel(summary.repoProgress || []),
-      el("div", { class: "card panel" }, [
-        panelHead("Cycle time", "median days to ship, by day"),
-        el("div", {
-          class: "chart",
-          html: svgBars(cycleLine, {
-            labels: days.map((d) => d.lbl),
-            fmt: (v) => `${(+v).toFixed(1)}d`,
-            label: "Median cycle time by day",
-            today: true,
-          }),
-        }),
-      ]),
-      el("div", { class: "card panel flow-eff" }, [
-        panelHead("Flow efficiency", `${flowEff}%`),
-        band(flowEff, 100, `Flow efficiency ${flowEff}% of lead time spent working`),
-        el(
-          "p",
-          { class: "section-note" },
-          "Share of each shipped ticket's lead time spent being worked on, not waiting (median).",
-        ),
-      ]),
+      needsPanel({ tickets, byStatus, summary, decisions, claims: claimsRes }),
     ]),
   );
 
@@ -5133,6 +5154,7 @@ async function fitnessRoomPanels(healthRes) {
         cost: costRes,
         health,
         last7,
+        tickets,
       }),
     );
   }
@@ -5160,7 +5182,17 @@ async function fitnessRoomPanels(healthRes) {
  * budget, the delivery line) how loaded it is, what queues behind it and what has
  * gone wrong — the USE / RED numbers, each from a response, each with its words.
  */
-function fitnessTestPanel({ claims, slots, ready, stale, budget, cost, health, last7 }) {
+function fitnessTestPanel({
+  claims,
+  slots,
+  ready,
+  stale,
+  budget,
+  cost,
+  health,
+  last7,
+  tickets = [],
+}) {
   const h = health || {};
   const today = cost && typeof cost.today_usd === "number" ? cost.today_usd : null;
   const todayEst =
@@ -5171,7 +5203,32 @@ function fitnessTestPanel({ claims, slots, ready, stale, budget, cost, health, l
     h.rework && typeof h.rework.rework_cost_share_pct === "number"
       ? h.rework.rework_cost_share_pct
       : null;
-  const reworked = h.rework && Array.isArray(h.rework.by_ticket) ? h.rework.by_ticket.length : null;
+  const reworkRows = h.rework && Array.isArray(h.rework.by_ticket) ? h.rework.by_ticket : null;
+  const reworked = reworkRows ? reworkRows.length : null;
+  // Which tickets were sent back (all-time, from the ledger), and whether any shipped:
+  // the referee's record counts only tickets merged in its window.
+  const statusOf = new Map(tickets.map((t) => [t.number, t.status]));
+  const named = (reworkRows || []).filter((r) => typeof r.ticket === "number");
+  const shippedBack = named.filter((r) => statusOf.get(r.ticket) === "done").length;
+  const reworkSub =
+    rework == null
+      ? "no rework data"
+      : [
+          named.length
+            ? `all-time: ${named
+                .slice(0, 3)
+                .map((r) => `#${r.ticket} ×${r.rework_count}`)
+                .join(", ")}${named.length > 3 ? "…" : ""}`
+            : "tickets, all-time",
+          named.length && statusOf.size
+            ? shippedBack
+              ? `${shippedBack} since shipped`
+              : "none shipped yet"
+            : null,
+          `${rework}% of spend`,
+        ]
+          .filter(Boolean)
+          .join(" · ");
   const dur = h.duration && h.duration.measured_calls ? h.duration.avg_ms : null;
   const cell = (label, value, sub, opts = {}) =>
     el("div", { class: `ft-cell${opts.bad ? " is-bad" : ""}${opts.needs ? " is-needs" : ""}` }, [
@@ -5212,9 +5269,6 @@ function fitnessTestPanel({ claims, slots, ready, stale, budget, cost, health, l
           ready
             ? `ready, ${slotsFull ? "queued for a slot" : "not yet claimed"}`
             : "nothing queued",
-          {
-            needs: !!(slotsFull && ready),
-          },
         ),
         cell(
           "Faults",
@@ -5254,11 +5308,7 @@ function fitnessTestPanel({ claims, slots, ready, stale, budget, cost, health, l
       ]),
       row("Deliveries", "the delivery line", [
         cell("Rate", String(last7 || 0), "shipped in 7 days"),
-        cell(
-          "Reworked",
-          reworked == null ? "—" : String(reworked),
-          rework == null ? "no rework data" : `tickets · ${rework}% of spend`,
-        ),
+        cell("Reworked", reworked == null ? "—" : String(reworked), reworkSub),
         cell(
           "Per call",
           dur == null ? "—" : fmtDuration(dur),
@@ -5566,72 +5616,160 @@ function devFlowPanel(_tickets, byStatus, _now) {
 }
 
 /**
- * Needs your attention: the human-gate queue as severity-coded alert rows. Each
- * row carries a left status icon keyed to severity — a red diamond for a
- * critical/failing condition (blocked work), an amber triangle for something
- * waiting/overdue (review queue, open decisions, at-risk/stale tickets) — a bold
- * title + a muted sub-line (the detail), and a right-aligned action link that
- * routes to the relevant view. All items derive from real overview state; when
- * nothing is owed the panel keeps its reassuring green all-clear row.
+ * The treatment table: what is wrong with the factory right now, one line per
+ * complaint, worst first. Each line is a link to where it is treated, with its
+ * tickets as numbered links under it.
  */
-function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
+function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [], claims = null }) {
+  // Each ticket is on the table once, under its worst complaint, so the lines add
+  // up to the total the header and the verdict state. With no ticket list the
+  // counts come from the dashboard summary (the lines cannot overlap there).
+  const have = tickets.length > 0;
+  const taken = new Set();
+  const take = (list) => list.filter((t) => (taken.has(t.id) ? false : taken.add(t.id)));
+  const ofStatus = (st) => take(tickets.filter((t) => t.status === st));
+  const sortOld = (list) =>
+    [...list].sort((a, b) => String(a.updated_at || "").localeCompare(String(b.updated_at || "")));
+  // The summary counts stale claims on the factory's clock; the claims that expired
+  // first are the stale ones.
+  const nStale = summary.staleClaims || 0;
+  const staleClaims =
+    claims && nStale
+      ? (claims.claims || [])
+          .filter((c) => (!c.status || c.status === "active") && c.expires_at)
+          .sort((a, b) => String(a.expires_at).localeCompare(String(b.expires_at)))
+          .slice(0, nStale)
+      : null;
+  const pendingDecisions = decisions.filter((d) => !d.resolved_at);
   const items = [];
-  if (blocked > 0)
-    items.push({
-      severity: "critical",
-      title: `${blocked} blocked ${blocked === 1 ? "task" : "tasks"}`,
-      sub: "waiting on a human to clear the path",
-      action: "View",
-      href: "#/work?status=blocked",
-    });
-  if (inReview > 0)
-    items.push({
-      severity: "waiting",
-      title: `${inReview} ${inReview === 1 ? "change" : "changes"} to review`,
-      sub: "changes waiting on your sign-off",
-      action: "Review",
-      href: "#/review",
-    });
-  if (openDecisions > 0)
-    items.push({
-      severity: "waiting",
-      title: `${openDecisions} open ${openDecisions === 1 ? "decision" : "decisions"}`,
-      sub: "a question is waiting on you",
-      action: "Review",
-      href: "#/overview",
-    });
-  if ((stuck || []).length)
-    items.push({
-      severity: "waiting",
-      title: `${stuck.length} at risk`,
-      sub: `held too long — oldest ${fmtDuration(stuck[0].stuckForMs)}`,
-      action: "View",
-      href: "#/work",
-    });
-  if (staleClaims > 0)
-    items.push({
-      severity: "waiting",
-      title: `${staleClaims} stale ${staleClaims === 1 ? "claim" : "claims"}`,
-      sub: "leases past expiry",
-      action: "View",
-      href: "#/work",
+  const add = (it) => it.count > 0 && items.push(it);
+
+  const blocked = have ? sortOld(ofStatus("blocked")) : null;
+  add({
+    severity: "critical",
+    count: blocked ? blocked.length : (summary.blocked ?? byStatus.blocked ?? 0),
+    title: (n) => `${n} blocked ${n === 1 ? "task" : "tasks"}`,
+    sub: "waiting on a human to clear the path",
+    action: "View",
+    href: "#/work?status=blocked",
+    tickets: blocked,
+  });
+  const failed = have ? sortOld(ofStatus("failed")) : null;
+  add({
+    severity: "critical",
+    count: failed ? failed.length : byStatus.failed || 0,
+    title: (n) => `${n} failed ${n === 1 ? "ticket" : "tickets"}`,
+    sub: "out of attempts: reopen it or close it",
+    action: "View",
+    href: "#/work?status=failed",
+    tickets: failed,
+  });
+  const review = have ? sortOld(ofStatus("in_review")) : null;
+  add({
+    severity: "waiting",
+    count: review ? review.length : byStatus.in_review || 0,
+    title: (n) => `${n} ${n === 1 ? "change" : "changes"} to review`,
+    sub: "waiting on your sign-off",
+    action: "Review",
+    href: "#/review",
+    tickets: review,
+  });
+  const merge = have ? sortOld(ofStatus("ready_for_merge")) : null;
+  add({
+    severity: "waiting",
+    count: merge ? merge.length : byStatus.ready_for_merge || 0,
+    title: (n) => `${n} approved, not merged`,
+    sub: "signed off and waiting to merge",
+    action: "View",
+    href: "#/work?status=ready_for_merge",
+    tickets: merge,
+  });
+  const nDec = summary.openDecisions ?? pendingDecisions.length;
+  add({
+    severity: "waiting",
+    count: nDec,
+    title: (n) => `${n} open ${n === 1 ? "decision" : "decisions"}`,
+    sub:
+      pendingDecisions.length === 1 && pendingDecisions[0].title
+        ? `“${pendingDecisions[0].title}”`
+        : "a question is waiting on you",
+    action: "Answer",
+    // The team sheet on the Overview is where a decision is answered.
+    href: "#/overview",
+  });
+  // Stale claims: a lease past expiry is a fault in the squad, not a wait on you.
+  const staleIds = staleClaims ? new Set(staleClaims.map((c) => c.ticket_id)) : null;
+  const stale = staleIds && have ? take(tickets.filter((t) => staleIds.has(t.id))) : null;
+  add({
+    severity: "fault",
+    count: stale ? stale.length : nStale,
+    title: (n) => `${n} stale ${n === 1 ? "claim" : "claims"}`,
+    sub: "an agent's lease ran out mid-ticket",
+    action: "View",
+    href: "#/work",
+    tickets: stale,
+  });
+  // Held too long: past the stuck threshold and not already counted above.
+  const stuckAll = summary.stuckTickets || [];
+  const stuck = take(stuckAll.map((s) => ({ ...s, updated_at: s.since })));
+  const hours = summary.stuckThresholdHours;
+  if (stuck.length)
+    add({
+      severity: "held",
+      count: stuck.length,
+      title: (n) => `${n} held too long`,
+      sub: `in one state over ${hours ? `${hours}h` : "the limit"} · oldest ${fmtDuration(stuck[0].stuckForMs)} (#${stuck[0].number}, ${statusLabel(stuck[0].status).toLowerCase()})`,
+      ...(stuck.length === 1
+        ? { action: "Open", href: `#/ticket/${stuck[0].id}` }
+        : new Set(stuck.map((x) => x.status)).size === 1
+          ? { action: "View", href: `#/work?status=${stuck[0].status}` }
+          : { action: "Board", href: "#/work" }),
+      tickets: stuck,
     });
 
-  // Referee's marks: the red square for what is blocked, a yellow card for what waits on you.
-  const sevIcon = (severity) => (severity === "critical" ? glyph("blocked", 18) : ycard(20));
+  // Referee's marks: red for blocked or failed, a yellow card for what waits on
+  // you, a stopwatch for what is held, the red triangle for a fault.
+  const sevIcon = (severity) =>
+    severity === "critical"
+      ? glyph("blocked", 18)
+      : severity === "fault"
+        ? glyph("failed", 18)
+        : severity === "held"
+          ? icon("clock", "ni-clock", 20)
+          : ycard(20);
+  const total = items.reduce((a, n) => a + n.count, 0);
+  const chips = (list) => {
+    if (!list || !list.length) return null;
+    const shown = list.slice(0, 5);
+    return el("span", { class: "ni-tks" }, [
+      ...shown.map((t) =>
+        el(
+          "a",
+          {
+            class: "ni-tk tabnum",
+            href: `#/ticket/${t.id}`,
+            title: t.title || "",
+            "aria-label": `#${t.number} ${t.title || ""}`,
+          },
+          `#${t.number}`,
+        ),
+      ),
+      list.length > shown.length
+        ? el("span", { class: "ni-tk-more" }, `+${list.length - shown.length}`)
+        : null,
+    ]);
+  };
 
   const body = items.length
     ? el(
         "ul",
         { class: "needs-list" },
         items.map((n) =>
-          el(
-            "li",
-            { class: `needs-item`, dataset: { sev: n.severity } },
+          el("li", { class: "needs-item", dataset: { sev: n.severity, count: String(n.count) } }, [
             el("a", { class: "ni-link", href: n.href }, [
               el("span", { class: "ni-icon" }, sevIcon(n.severity)),
               el("span", { class: "ni-body" }, [
-                el("span", { class: "ni-title" }, n.title),
+                el("span", { class: "ni-title" }, n.title(n.count)),
                 el("span", { class: "ni-sub" }, n.sub),
               ]),
               el("span", { class: "ni-action" }, [
@@ -5639,59 +5777,20 @@ function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
                 el("span", { class: "ni-arrow" }, "→"),
               ]),
             ]),
-          ),
+            chips(n.tickets),
+          ]),
         ),
       )
-    : el("div", { class: "needs-empty" }, [
-        icon("check"),
-        "All clear — nothing is waiting on you.",
-      ]);
+    : el("div", { class: "needs-empty" }, [icon("check"), "All clear: nothing is waiting on you."]);
 
-  return el("div", { class: "card panel needs-hero" }, [
-    panelHead("Treatment table", items.length ? `${items.length} at risk` : "all clear", null, {
+  const card = el("div", { class: "card panel needs-hero" }, [
+    panelHead("Treatment table", items.length ? plural(total, "thing") : "all clear", null, {
       kit: items.length ? "red" : "sky",
     }),
     body,
   ]);
-}
-
-/** Progress by repository. Repo names are real; per-repo progress is illustrative
- *  demo data until the control plane exposes per-repo completion. */
-/** Progress by repository — real per-repo completion from the control plane
- *  (DashboardSummary.repoProgress): a done-share bar + in-flight/blocked hint. */
-function repoProgressPanel(rows) {
-  const list = rows.slice(0, 6);
-  return el("div", { class: "card panel" }, [
-    panelHead("Progress by repository", `${rows.length} ${rows.length === 1 ? "repo" : "repos"}`),
-    list.length
-      ? el(
-          "div",
-          { class: "repo-prog" },
-          list.map((r) => {
-            // Red is for what is blocked, never for a low share done.
-            const warn = r.blocked > 0;
-            const note = r.blocked
-              ? `${r.blocked} blocked`
-              : r.inFlight
-                ? `${r.inFlight} in flight`
-                : `${r.done}/${r.total} done`;
-            return el("div", { class: "rp-row", title: `${r.done}/${r.total} tickets done` }, [
-              el("span", { class: `rp-dot ${warn ? "warn" : "ok"}` }),
-              el("span", { class: "rp-name" }, [
-                el("span", { class: "rp-repo" }, repoTag(r.repo, 18)),
-                el("span", { class: "rp-note" }, note),
-              ]),
-              el(
-                "span",
-                { class: "rp-bar" },
-                el("i", { class: warn ? "warn" : "", style: `width:${Math.max(3, r.pct)}%` }),
-              ),
-              el("span", { class: "rp-pct tabnum" }, `${r.pct}%`),
-            ]);
-          }),
-        )
-      : el("p", { class: "dim" }, "No repositories linked to tickets yet."),
-  ]);
+  card.dataset.total = String(total);
+  return card;
 }
 
 /** One reverse-chronological activity row: time · ticket · event · actor. */
@@ -6286,7 +6385,7 @@ function finishedRunRow(run) {
 function runActivityPanel() {
   const POLL_MS = 3000;
   const card = el("div", { class: "card panel run-activity", id: "running-now" }, [
-    panelHead("Running now", "background runs"),
+    panelHead("Running now", "background runs: polls, suggestions, merges", null, { kit: "ink" }),
   ]);
   const listWrap = el("div", { class: "run-activity-body" }, [
     el("p", { class: "dim" }, "Loading runs…"),
@@ -6304,17 +6403,18 @@ function runActivityPanel() {
       return;
     }
     if (active && active.length) {
-      listWrap.appendChild(el("ul", { class: "run-list" }, active.map(activeRunRow)));
+      listWrap.appendChild(el("div", { class: "run-recent-title dim" }, "In play now"));
+      listWrap.appendChild(el("ul", { class: "run-list run-now" }, active.map(activeRunRow)));
     }
     if (recent && recent.length) {
       listWrap.appendChild(el("div", { class: "run-recent-title dim" }, "Recently finished"));
-      // The last eight; the rest fold away (a busy day lists dozens).
-      listWrap.appendChild(el("ul", { class: "run-list" }, recent.slice(0, 8).map(finishedRunRow)));
-      if (recent.length > 8)
+      // The last six; the rest fold away (a busy day lists dozens).
+      listWrap.appendChild(el("ul", { class: "run-list" }, recent.slice(0, 6).map(finishedRunRow)));
+      if (recent.length > 6)
         listWrap.appendChild(
           el("details", { class: "run-more" }, [
-            el("summary", {}, `${recent.length - 8} more finished`),
-            el("ul", { class: "run-list" }, recent.slice(8).map(finishedRunRow)),
+            el("summary", {}, `${recent.length - 6} more finished`),
+            el("ul", { class: "run-list" }, recent.slice(6).map(finishedRunRow)),
           ]),
         );
     }
@@ -9069,7 +9169,6 @@ async function renderHealth() {
     return wrap;
   }
 
-  const fmtUsd = money;
   const skills = health.skills || {};
   const recall = health.recall || { available: false };
   const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
@@ -9163,33 +9262,18 @@ async function renderHealth() {
       : null,
   ]);
 
-  // --- Detail panels: spend-by-kind · skill hit-rate · recall trend ---------
-  const maxKind = Math.max(1, ...kindSeries);
-  const kindPanel = el("div", { class: "card panel" }, [
-    panelHead("Spend by kind", "usage ledger"),
-    byKind.length
-      ? el(
-          "div",
-          { class: "hlist" },
-          byKind.map((k) =>
-            healthBarRow(
-              k.kind,
-              fmtUsd(k.total_cost_usd),
-              (k.total_cost_usd || 0) / maxKind,
-              "amber",
-            ),
-          ),
-        )
-      : el("p", { class: "section-note dim" }, "No spend recorded yet."),
-  ]);
-
-  const skillPanel = el("div", { class: "card panel" }, [
-    panelHead(
-      "Skill hit-rate",
-      skills.total_records ? `${skills.total_records} deliveries` : "no telemetry",
-    ),
-    skillList.length
-      ? el(
+  // --- The deep reads: skill hit-rate and recall. Each is drawn only with data to
+  // show; a source that has measured nothing yet is one clause in the line below.
+  const unmeasured = [];
+  const skillPanel = skillList.length
+    ? el("section", { class: "card panel skill-panel", "aria-label": "Skill hit-rate" }, [
+        panelHead(
+          "Skill hit-rate",
+          `${plural(skills.total_records || 0, "delivery", "deliveries")} · applied of selected`,
+          null,
+          { kit: "ink" },
+        ),
+        el(
           "div",
           { class: "hlist" },
           skillList.map((s) =>
@@ -9200,49 +9284,44 @@ async function renderHealth() {
               s.hit_rate_pct >= 50 ? "ok" : "amber",
             ),
           ),
-        )
-      : el(
-          "p",
-          { class: "section-note dim" },
-          "No skill telemetry yet — selected-vs-applied hit-rate appears once deliveries mount skills.",
         ),
-  ]);
-
-  const recallPanel = el(
-    "div",
-    { class: "card panel" },
-    recall.available
-      ? [
-          panelHead("Recall effectiveness", "memory feedback"),
-          el("div", { class: "recall-figures" }, [
-            recallStat(
-              "Effectiveness",
-              recall.effectiveness_pct == null ? "—" : `${recall.effectiveness_pct}%`,
-            ),
-            recallStat("Clean", String(recall.clean || 0)),
-            recallStat("Reworked", String(recall.reworked || 0)),
-            recallStat("Blocked", String(recall.blocked || 0)),
-          ]),
-          recallSeries.length
-            ? el("div", { class: "health-spark", html: svgSpark(recallSeries) })
-            : el("p", { class: "section-note dim" }, "No recall outcomes recorded yet."),
-        ]
-      : [
-          panelHead("Recall effectiveness", "not wired"),
-          el(
-            "div",
-            { class: "health-degraded" },
-            el(
-              "p",
-              { class: "section-note dim" },
-              recall.reason || "Memory is not wired — recall effectiveness is unavailable.",
-            ),
+      ])
+    : (unmeasured.push([
+        "Skill hit-rate",
+        "no skill telemetry yet: it appears once deliveries mount skills",
+      ]),
+      null);
+  const recallHas =
+    recall.available &&
+    (recallSeries.length ||
+      recall.effectiveness_pct != null ||
+      (recall.clean || 0) + (recall.reworked || 0) + (recall.blocked || 0) > 0);
+  const recallPanel = recallHas
+    ? el("section", { class: "card panel recall-panel", "aria-label": "Recall effectiveness" }, [
+        panelHead("Recall effectiveness", "memory feedback", null, { kit: "ink" }),
+        el("div", { class: "recall-figures" }, [
+          recallStat(
+            "Effectiveness",
+            recall.effectiveness_pct == null ? "—" : `${recall.effectiveness_pct}%`,
           ),
-        ],
-  );
+          recallStat("Clean", String(recall.clean || 0)),
+          recallStat("Reworked", String(recall.reworked || 0)),
+          recallStat("Blocked", String(recall.blocked || 0)),
+        ]),
+        recallSeries.length
+          ? el("div", { class: "health-spark", html: svgSpark(recallSeries) })
+          : null,
+      ])
+    : (unmeasured.push([
+        "Recall effectiveness",
+        recall.available
+          ? "no recall outcomes recorded yet"
+          : recall.reason || "memory is not wired, so recall effectiveness is unavailable",
+      ]),
+      null);
 
   // The flow panels (form guide, governance, development flow, treatment table,
-  // running now, bouncing) — the physio's charts, read from their own endpoints.
+  // running now, bouncing, wages) — the physio's charts, read from their own endpoints.
   const panels = await fitnessRoomPanels(health).catch((e) => {
     if (e && e.code === "ABORTED") throw e;
     return [];
@@ -9255,43 +9334,51 @@ async function renderHealth() {
   const gov = pick("gov-panel");
   const running = pick("run-activity");
   const bouncing = pick("bouncing-panel");
-  const costLine = pick("cost-banner");
+  const wages = pick("wages-panel");
   const fitness = pick("fitness-test");
   const rest = flat.filter(
-    (p) => ![formGuide, treatment, devFlow, gov, running, bouncing, costLine, fitness].includes(p),
+    (p) => ![formGuide, treatment, devFlow, gov, running, bouncing, wages, fitness].includes(p),
   );
 
-  // The verdict, in one sentence: the ledger first, then who is on the table.
-  const onTable = treatment ? treatment.querySelectorAll(".needs-item").length : 0;
-  const bounce = bouncing ? bouncing.querySelectorAll("li").length : 0;
+  // The verdict, in one sentence: the ledger first, then how much is on the table.
+  // The number is the sum of the lines below it (each ticket counted once).
+  const lines = treatment ? [...treatment.querySelectorAll(".needs-item")] : [];
+  const onTable = treatment ? Number(treatment.dataset.total || 0) : 0;
+  const injured = bouncing ? [...bouncing.querySelectorAll(".bounce-num")] : [];
   const ledgerBroken = eventLog && !eventLog.chain_ok;
   const verdict = ledgerBroken
     ? "The ledger has been altered."
-    : onTable + bounce
-      ? `${plural(onTable + bounce, "thing")} on the treatment table.`
-      : "Fit to play.";
-  // What is on the table, each clause a link to where it is treated.
+    : onTable
+      ? `${plural(onTable, "thing")} on the treatment table.`
+      : injured.length
+        ? `Fit to play, with ${injured.length === 1 ? "a recurring injury" : "recurring injuries"}.`
+        : "Fit to play.";
+  // What is on the table, each clause a link to where it is treated; then who keeps
+  // coming back, by number (not counted again: they are tickets already above or fit).
   const clauses = [
-    ...(treatment ? [...treatment.querySelectorAll(".needs-item a.ni-link")] : []).map((a) =>
-      el("a", { href: a.getAttribute("href") }, a.querySelector(".ni-title")?.textContent || ""),
-    ),
-    bounce
-      ? el(
-          "a",
-          { href: "#health-injuries" },
-          `${plural(bounce, "recurring injury", "recurring injuries")}`,
-        )
+    ...lines.map((li) => {
+      const a = li.querySelector("a.ni-link");
+      return el(
+        "a",
+        { href: a.getAttribute("href"), class: `is-${li.dataset.sev}` },
+        a.querySelector(".ni-title")?.textContent || "",
+      );
+    }),
+    injured.length
+      ? el("a", { href: "#health-injuries", class: "is-injury" }, [
+          injured
+            .slice(0, 3)
+            .map((n) => n.textContent)
+            .join(", "),
+          injured.length > 3 ? ` and ${injured.length - 3} more` : "",
+          injured.length === 1 ? " keeps coming back" : " keep coming back",
+        ])
       : null,
   ].filter(Boolean);
+  const lastRead = health.last_record_at ? fmtTime(health.last_record_at) : null;
   const facts = [
-    eventLog
-      ? eventLog.chain_ok
-        ? `event log intact (${eventLog.events} events)`
-        : `event log broken at seq ${eventLog.broken_at_seq}`
-      : null,
-    costPerFeature == null ? null : `${money(costPerFeature)} per shipped ticket`,
-    `rework ${reworkShare}% of spend`,
-    `${coveragePct}% of calls measured`,
+    "read from the usage ledger and the event log",
+    lastRead ? `last ledger record ${lastRead}` : null,
   ].filter(Boolean);
   wrap.appendChild(
     el(
@@ -9319,27 +9406,67 @@ async function renderHealth() {
     ),
   );
   if (bouncing) bouncing.id = "health-injuries";
-  const span = (n, node) => (node ? el("div", { class: `hx-span hx-${n}` }, node) : null);
-  // Failures first: the treatment table and the fitness test lead; when nobody is on
-  // the table the verdict above says so, and the table is not drawn.
-  const hurt = onTable > 0 && treatment;
+  const span = (n, ...nodes) => {
+    const kids = nodes.filter(Boolean);
+    return kids.length
+      ? el("div", { class: `hx-span hx-${n}${kids.length > 1 ? " hx-stack" : ""}` }, kids)
+      : null;
+  };
+  // Failures first, in two columns that each stack. Of three arrangements, take the
+  // one whose columns come out nearest in height, counting a hole (a short column
+  // ending in a page that cannot stretch) as worse than a stretch (the pitch strip
+  // and the fitness rows can take slack).
+  const hurt = onTable > 0 ? treatment : null;
+  const hT = hurt ? 64 + lines.length * 58 : 0;
+  const hB = bouncing ? 100 + injured.length * 64 : 0;
+  const hP = devFlow ? 200 : 0;
+  const hF = fitness ? 350 : 0;
+  const G = 24;
+  const sum = (...h) => h.filter(Boolean).reduce((a, x) => a + x + G, -G);
+  const plans = [
+    // the table beside the injuries and the fitness test; the phases full width under
+    {
+      cost: hT >= sum(hB, hF) ? hT - sum(hB, hF) : 3 * (sum(hB, hF) - hT),
+      grid: () => [span(7, hurt), span(5, bouncing, fitness), span(12, devFlow)],
+    },
+    // the table and the phases of play beside the injuries and the fitness test
+    {
+      cost: Math.abs(sum(hT, hP) - sum(hB, hF)),
+      grid: () => [span(7, hurt, devFlow), span(5, bouncing, fitness)],
+    },
+    // a short table stacked with the injuries beside the fitness test; phases under
+    {
+      cost: sum(hT, hB) >= hF ? 3 * (sum(hT, hB) - hF) : 3 * (hF - sum(hT, hB)),
+      grid: () => [span(5, hurt, bouncing), span(7, fitness), span(12, devFlow)],
+    },
+    // a short table stacked with the injuries and the phases, beside the fitness test
+    {
+      cost: Math.abs(sum(hT, hB, hP) - hF),
+      grid: () => [span(5, hurt, bouncing, devFlow), span(7, fitness)],
+    },
+  ];
+  const plan = hurt ? plans.reduce((a, b) => (b.cost < a.cost ? b : a)) : plans[3];
+  const deep = [skillPanel, recallPanel].filter(Boolean);
   wrap.appendChild(
     el("div", { class: "hx-grid" }, [
-      hurt ? span(7, treatment) : null,
-      span(hurt ? 5 : 12, fitness),
-      // The phases of play beside what keeps getting hurt (or, if nothing does, governance).
-      span(7, devFlow),
-      span(5, bouncing || gov),
+      ...plan.grid(),
       span(12, formGuide),
-      // Running now grows with the day's runs; the short panels stack beside it.
-      span(7, running),
-      el("div", { class: "hx-span hx-5 hx-stack" }, [bouncing ? gov : null, kindPanel]),
-      span(4, skillPanel),
-      span(4, recallPanel),
-      ...rest.map((r) => span(4, r)),
-      span(12, costLine),
+      // The wage bill beside the referee's record, then what is running.
+      span(7, wages),
+      span(5, gov),
+      span(12, running),
+      ...deep.map((p) => span(deep.length > 1 ? 6 : 12, p)),
+      ...rest.map((r) => span(12, r)),
     ]),
   );
+  if (unmeasured.length)
+    wrap.appendChild(
+      el("p", { class: "hx-unmeasured" }, [
+        el("b", {}, "Not measured yet: "),
+        ...unmeasured.flatMap(([k, v], i) => [i ? " · " : "", el("span", {}, `${k}, ${v}`)]),
+        ".",
+      ]),
+    );
 
   return wrap;
 }
@@ -12167,12 +12294,32 @@ function mapTone(status) {
 const MAP_TONE_RANK = { red: 0, yellow: 1, play: 2 };
 const MAP_COUNTERS = 6;
 
+/** Every ticket on the board once: the live columns, the closed area and won't-do. */
+function boardCards(board) {
+  const seen = new Set();
+  const out = [];
+  for (const c of [
+    ...((board && board.columns) || []).flatMap((col) => col.cards || []),
+    ...((board && board.closed) || []),
+    ...((board && board.wontDo) || []),
+  ]) {
+    if (!c || seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push(c);
+  }
+  return out;
+}
+
 /**
- * Who plays at each ground and what is live there, from four reads: the board
- * (live tickets with their repos), each repo's scope links, and the details of
- * live tickets (for tickets linked to a ground directly, e.g. a campaign).
+ * Who plays at each ground and which tickets are there: the ONE source the Map,
+ * a ground's page and a repo's page all count from. A ticket is at a ground when
+ * a repo it delivers to (the board's write boundary) plays there, or when the
+ * ticket is linked to the ground itself (as campaign members are). Reads: the
+ * board, each repo's scope links, and the details of the tickets in the book.
+ * `all` puts every ticket in the book (a ground's page counts its results too);
+ * the Map only needs the live ones.
  */
-async function mapOverlay(nodes, repos, signal) {
+async function mapOverlay(nodes, repos, signal, { all = false } = {}) {
   const opt = (p, fb) =>
     api("GET", p, undefined, { signal }).catch((e) => {
       if (e && e.code === "ABORTED") throw e;
@@ -12182,16 +12329,9 @@ async function mapOverlay(nodes, repos, signal) {
     opt("/api/board", null),
     ...repos.map((r) => opt(`/scope/repos?repo=${encodeURIComponent(r.id)}`, { scopes: [] })),
   ]);
-  const cards = [];
-  const seen = new Set();
-  for (const c of [
-    ...((board && board.columns) || []).flatMap((col) => col.cards || []),
-    ...((board && board.closed) || []),
-  ]) {
-    if (!c || seen.has(c.id) || !mapTone(c.status)) continue;
-    seen.add(c.id);
-    cards.push(c);
-  }
+  const every = boardCards(board);
+  const cards = every.filter((c) => mapTone(c.status));
+  const book = all ? every.filter((c) => c.status !== "cancelled") : cards;
   // node id → [{ repo, relation, access }]
   const reposAt = new Map(nodes.map((n) => [n.id, []]));
   // repo id → [{ node, relation, access }]
@@ -12211,50 +12351,80 @@ async function mapOverlay(nodes, repos, signal) {
       nodesOfRepo.get(repo.id).add(nid);
     }
   // Direct links (a ticket scoped to a ground, as campaign members are).
-  const details = cards.length
-    ? await ticketDetails(cards, signal).catch(() => new Map())
+  const details = book.length
+    ? await ticketDetails(book, signal).catch((e) => {
+        if (e && e.code === "ABORTED") throw e;
+        return new Map();
+      })
     : new Map();
-  const liveAt = new Map(nodes.map((n) => [n.id, new Map()]));
-  const liveOfRepo = new Map(repos.map((r) => [r.id, new Map()]));
-  for (const c of cards) {
-    const at = new Set();
+  const at = new Map(nodes.map((n) => [n.id, new Map()]));
+  const ofRepo = new Map(repos.map((r) => [r.id, new Map()]));
+  for (const c of book) {
+    const here = new Set();
     for (const r of c.repos || []) {
       const rid = r.id || repoIdByName.get(r.name);
-      if (liveOfRepo.has(rid)) liveOfRepo.get(rid).set(c.id, c);
-      for (const nid of nodesOfRepo.get(rid) || []) at.add(nid);
+      if (ofRepo.has(rid)) ofRepo.get(rid).set(c.id, c);
+      for (const nid of nodesOfRepo.get(rid) || []) here.add(nid);
     }
-    for (const s of (details.get(c.id) && details.get(c.id).scopes) || []) at.add(s.id);
-    for (const nid of at) if (liveAt.has(nid)) liveAt.get(nid).set(c.id, c);
+    for (const s of (details.get(c.id) && details.get(c.id).scopes) || []) here.add(s.id);
+    for (const nid of here) if (at.has(nid)) at.get(nid).set(c.id, c);
   }
   const sorted = (m) =>
     [...m.values()].sort(
       (a, b) =>
-        MAP_TONE_RANK[mapTone(a.status)] - MAP_TONE_RANK[mapTone(b.status)] ||
+        (MAP_TONE_RANK[mapTone(a.status)] ?? 9) - (MAP_TONE_RANK[mapTone(b.status)] ?? 9) ||
         (b.priority || 0) - (a.priority || 0) ||
         (a.number || 0) - (b.number || 0),
     );
+  const live = (list) => list.filter((c) => mapTone(c.status));
+  const ticketsAt = new Map([...at].map(([k, v]) => [k, sorted(v)]));
+  const ticketsOfRepo = new Map([...ofRepo].map(([k, v]) => [k, sorted(v)]));
   return {
     board: !!board,
-    cards,
+    cards: sorted(new Map(cards.map((c) => [c.id, c]))),
+    book: sorted(new Map(book.map((c) => [c.id, c]))),
     reposAt,
     groundsOf,
-    liveAt: new Map([...liveAt].map(([k, v]) => [k, sorted(v)])),
-    liveOfRepo: new Map([...liveOfRepo].map(([k, v]) => [k, sorted(v)])),
+    ticketsAt,
+    ticketsOfRepo,
+    liveAt: new Map([...ticketsAt].map(([k, v]) => [k, live(v)])),
+    liveOfRepo: new Map([...ticketsOfRepo].map(([k, v]) => [k, live(v)])),
   };
 }
 
+/** The tickets at a ground, from the overlay. The club holds every ticket. */
+function groundBook(n, ov, { live = true } = {}) {
+  if (!ov) return [];
+  if (n.type === "factory") return live ? ov.cards : ov.book;
+  return (live ? ov.liveAt : ov.ticketsAt).get(n.id) || [];
+}
+
 /**
- * Counts: red (blocked or failed), play (on the pitch, as the tactics board and the
- * repo page count it) and yellow (the part of play that waits on your sign-off).
+ * Counts, each ticket in exactly one: red (blocked or failed), yellow (waits on
+ * your sign-off) and play (the rest of the pitch). live = red + yellow + play, so
+ * the words on a card add up to its counters.
  */
 function mapTally(list) {
-  const t = { red: 0, yellow: 0, play: 0 };
+  const t = { red: 0, yellow: 0, play: 0, live: 0, done: 0, bench: 0 };
   for (const c of list || []) {
-    if (MAP_RED.has(c.status)) t.red += 1;
-    if (ON_PITCH.has(c.status)) t.play += 1;
-    if (MAP_YELLOW.has(c.status)) t.yellow += 1;
+    const tone = mapTone(c.status);
+    if (tone) {
+      t[tone] += 1;
+      t.live += 1;
+    } else if (c.status === "done") t.done += 1;
+    else if (ON_BENCH.has(c.status)) t.bench += 1;
   }
   return t;
+}
+/** A tally in words, worst first: "1 blocked · 2 to review · 3 in play". */
+function tallyWords(t) {
+  return [
+    t.red ? el("span", { class: "is-red" }, `${t.red} blocked`) : null,
+    t.yellow ? el("span", {}, `${t.yellow} to review`) : null,
+    t.play ? el("span", {}, `${t.play} in play`) : null,
+  ]
+    .filter(Boolean)
+    .flatMap((x, i) => (i ? [" · ", x] : [x]));
 }
 /** A ticket as a magnet counter: its number on a disc, carded when it needs you. */
 function mapCounter(c) {
@@ -12279,7 +12449,7 @@ function mapGround(n, ov, relLine) {
   const repos = (ov && ov.reposAt.get(n.id)) || [];
   // The club holds everything: its card tallies every live ticket, without counters.
   const club = n.type === "factory" && ov;
-  const live = club ? ov.cards : (ov && ov.liveAt.get(n.id)) || [];
+  const live = groundBook(n, ov);
   const t = mapTally(live);
   const search = [n.name, n.type, n.owner, ...repos.map((r) => r.repo.name)]
     .filter(Boolean)
@@ -12320,18 +12490,7 @@ function mapGround(n, ov, relLine) {
                   ...shown.map(mapCounter),
                   more > 0 ? el("span", { class: "sg-more" }, `+${more}`) : null,
                 ]),
-            el(
-              "span",
-              { class: "sg-words" },
-              [
-                t.red ? el("span", { class: "is-red" }, `${t.red} blocked`) : null,
-                // The club's big number already says how many are in play.
-                t.play && !club ? el("span", {}, `${t.play} in play`) : null,
-                t.yellow ? el("span", {}, `${t.yellow} to review`) : null,
-              ]
-                .filter(Boolean)
-                .flatMap((x, i) => (i ? [" · ", x] : [x])),
-            ),
+            el("span", { class: "sg-words" }, tallyWords(t)),
           ])
         : el("span", { class: "sg-words is-quiet" }, ov && ov.board ? "Nothing in play" : ""),
     ],
@@ -12359,15 +12518,19 @@ function mapKey() {
 
 async function renderFactory() {
   const signal = routeSignal();
-  const [nodesRes, edgesRes, unmappedRes, reposRes] = await Promise.all([
+  const soft = (p, fb) =>
+    api("GET", p, undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return fb;
+    });
+  const [nodesRes, edgesRes, unmappedRes, reposRes, hiddenRes] = await Promise.all([
     api("GET", "/scope/nodes", undefined, { signal }),
     api("GET", "/scope/edges", undefined, { signal }),
     api("GET", "/scope/unmapped-repos", undefined, { signal }),
-    api("GET", "/repositories", undefined, { signal }).catch((e) => {
-      if (e && e.code === "ABORTED") throw e;
-      return { repositories: [] };
-    }),
+    soft("/repositories", { repositories: [] }),
+    soft("/repositories?hidden=only", null),
   ]);
+  const hiddenN = hiddenRes ? (hiddenRes.repositories || []).length : 0;
   const nodes = nodesRes.nodes || [];
   const edges = edgesRes.edges || [];
   const unmapped = unmappedRes.repositories || [];
@@ -12393,7 +12556,7 @@ async function renderFactory() {
       [
         el("button", { class: "btn", type: "button", onclick: () => navigate("#/node") }, [
           icon("plus"),
-          "New scope node",
+          "New ground",
         ]),
         onboardButton(repos, null, { primary: true }),
       ],
@@ -12403,7 +12566,7 @@ async function renderFactory() {
   wrap.appendChild(renderScopeGraph(nodes, edges, ov, readAt));
 
   const register = renderRepoRegister(repos, unmapped, ov);
-  const freeAgents = renderUnmappedSection(unmapped, repos);
+  const freeAgents = renderUnmappedSection(unmapped, repos, hiddenN);
   const side = el("div", { class: "stack map-side" }, [
     unmapped.length ? null : freeAgents,
     el("details", { class: "card map-help" }, [
@@ -12432,6 +12595,7 @@ async function renderFactory() {
       edges.map((e) => e.id),
       repos.map((r) => [r.id, r.updated_at]),
       unmapped.map((r) => r.id),
+      hiddenN,
       [...ov.reposAt].map(([k, v]) => [k, v.map((x) => `${x.repo.id}:${x.access}`)]),
       ov.cards.map((c) => `${c.id}:${c.status}`),
     ]),
@@ -12582,6 +12746,7 @@ function renderScopeGraph(nodes, edges, ov, readAt = Date.now()) {
       mapKey(),
     ]),
   );
+  card.appendChild(el("p", { class: "map-found", role: "status", "aria-live": "polite" }));
   if (nodes.length === 0) {
     card.appendChild(
       el("p", { class: "quiet" }, [
@@ -12761,8 +12926,8 @@ function renderRepoRegister(repos, unmapped, ov) {
         ),
       ),
       regCell("Blocked", regCount(t.red, "red"), "reg-num"),
-      regCell("In play", regCount(t.play), "reg-num"),
       regCell("To review", regCount(t.yellow, "yellow"), "reg-num"),
+      regCell("In play", regCount(t.play), "reg-num"),
       regCell("Gates", regGates(r), "reg-gc"),
     ]);
   });
@@ -12776,8 +12941,8 @@ function renderRepoRegister(repos, unmapped, ov) {
           el("th", { scope: "col" }, "Repo"),
           el("th", { scope: "col" }, "Plays at"),
           el("th", { scope: "col", class: "reg-num" }, "Blocked"),
-          el("th", { scope: "col", class: "reg-num" }, "In play"),
           el("th", { scope: "col", class: "reg-num" }, "To review"),
+          el("th", { scope: "col", class: "reg-num" }, "In play"),
           el("th", { scope: "col" }, "Gates"),
         ]),
       ),
@@ -12787,7 +12952,7 @@ function renderRepoRegister(repos, unmapped, ov) {
 }
 
 /** Free agents: repos with no ground, each playing as its own single-repo scope. */
-function renderUnmappedSection(unmapped, repos = []) {
+function renderUnmappedSection(unmapped, repos = [], hiddenN = 0) {
   const head = panelHead("Free agents", `${plural(unmapped.length, "repo")} with no ground`, null, {
     kit: "sky",
   });
@@ -12799,7 +12964,17 @@ function renderUnmappedSection(unmapped, repos = []) {
   if (unmapped.length === 0) {
     card.appendChild(
       el("div", { class: "quiet map-free-none" }, [
-        el("p", {}, "Every repo has a ground."),
+        el(
+          "p",
+          {},
+          hiddenN
+            ? [
+                "Every repo in the squad has a ground. ",
+                el("a", { href: "#/hidden" }, `${plural(hiddenN, "hidden repo")}`),
+                ` ${hiddenN === 1 ? "is" : "are"} left out.`,
+              ]
+            : "Every repo in the squad has a ground.",
+        ),
         onboardButton(repos, null),
       ]),
     );
@@ -13048,59 +13223,151 @@ async function renderHidden() {
 
 function applyFactoryFilter(wrap, q) {
   // Dim the grounds that don't match (the layout stays where it is); hide repo rows.
+  const hits = new Set();
   wrap.querySelectorAll(".scope-gnode").forEach((node) => {
     const text = (node.dataset.search || node.dataset.name || node.textContent || "").toLowerCase();
-    node.classList.toggle("is-dim", !!q && !text.includes(q));
+    const miss = !!q && !text.includes(q);
+    node.classList.toggle("is-dim", miss);
+    if (!miss) hits.add(node.dataset.name);
   });
+  let rows = 0;
   wrap.querySelectorAll(".repo-row").forEach((row) => {
     const text = row.textContent.toLowerCase();
     row.hidden = !!q && !text.includes(q);
+    if (!row.hidden) rows += 1;
   });
+  // Say what the filter found, for everyone (a live region, not just dimming).
+  const out = wrap.querySelector(".map-found");
+  if (out) {
+    const grounds = hits.size;
+    out.textContent = !q
+      ? ""
+      : grounds || rows
+        ? `${plural(grounds, "ground")} and ${plural(rows, "repo")} match “${q}”.`
+        : `Nothing on the map matches “${q}”. Try a ground, a repo or an owner.`;
+    out.classList.toggle("is-none", !!q && !grounds && !rows);
+  }
 }
 
 // --- View: Scope node editor + detail (UI-001) ------------------------------
 
+/**
+ * Fixtures or results: each ticket a row with its counter (carded when it needs
+ * you), its title and its status. Links to the ticket.
+ */
+function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
+  if (!list || !list.length) return el("p", { class: "quiet" }, empty);
+  const rows = byTime
+    ? [...list].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
+    : list;
+  const shown = rows.slice(0, limit);
+  return el("div", { class: "repo-tickets" }, [
+    el(
+      "ul",
+      { class: "clean repo-ticket-list gr-fx-list" },
+      shown.map((t) =>
+        el(
+          "li",
+          {},
+          el("a", { class: "repo-ticket-row gr-fx-row", href: `#/ticket/${t.id}` }, [
+            mapTone(t.status)
+              ? el("span", { class: "gr-fx-mag" }, [
+                  el("span", { class: "sr-only" }, "#"),
+                  mapCounter(t),
+                ])
+              : el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
+            el("span", { class: "repo-ticket-title" }, t.title),
+            el("span", { class: "repo-ticket-side" }, [
+              statusBadge(t.status),
+              t.updated_at
+                ? el(
+                    "time",
+                    { class: "repo-ticket-time", datetime: t.updated_at },
+                    fmtTime(t.updated_at),
+                  )
+                : null,
+            ]),
+          ]),
+        ),
+      ),
+    ),
+    rows.length > shown.length
+      ? el("p", { class: "repo-ticket-more" }, [
+          `${rows.length - shown.length} more on the `,
+          el("a", { href: "#/work" }, "Work board"),
+          ".",
+        ])
+      : null,
+  ]);
+}
+
+/** The stat strip a ground or repo page opens on: the Map's counts, nothing else. */
+function groundStats(t) {
+  return el("div", { class: "kpi-row gr-stats" }, [
+    statCell({ label: "Live", value: String(t.live), sub: "blocked + to review + in play" }),
+    statCell({ label: "Blocked", value: String(t.red), sub: "blocked or failed" }),
+    statCell({
+      label: "To review",
+      value: String(t.yellow),
+      sub: "waits on your sign-off",
+      needs: t.yellow > 0,
+    }),
+    statCell({ label: "In play", value: String(t.play), sub: "the rest of the pitch" }),
+    statCell({ label: "Done", value: String(t.done), sub: "shipped" }),
+    statCell({ label: "Bench", value: String(t.bench), sub: "drafts and refining" }),
+  ]);
+}
+
+/** One line from the same counts: "13 live here: 2 blocked · 3 to review · 8 in play. 6 done." */
+function groundCountLine(t, { club = false, where = "here" } = {}) {
+  if (!t.live && !t.done && !t.bench)
+    return el(
+      "p",
+      { class: "gr-count is-quiet" },
+      club ? "No ticket in the club yet." : `No ticket plays ${where} yet.`,
+    );
+  return el("p", { class: "gr-count" }, [
+    el("b", { class: "tabnum" }, String(t.live)),
+    club ? " live across the club" : ` live ${where}`,
+    t.live ? [": ", ...tallyWords(t)] : null,
+    ". ",
+    `${t.done} done`,
+    t.bench ? ` · ${t.bench} on the bench` : null,
+    ".",
+  ]);
+}
+
 async function renderNode(id) {
-  const [nodesRes, edgesRes] = await Promise.all([
-    api("GET", "/scope/nodes"),
-    api("GET", "/scope/edges"),
+  const signal = routeSignal();
+  const [nodesRes, edgesRes, reposRes] = await Promise.all([
+    api("GET", "/scope/nodes", undefined, { signal }),
+    api("GET", "/scope/edges", undefined, { signal }),
+    api("GET", "/repositories", undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return { repositories: [] };
+    }),
   ]);
   const allNodes = nodesRes.nodes || [];
   const allEdges = edgesRes.edges || [];
+  const allRepos = reposRes.repositories || [];
+  learnKits(allRepos.map((r) => r.name));
 
-  if (!id) {
-    const wrap = el("div", { class: "view" });
-    wrap.appendChild(
-      el(
-        "button",
-        { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-        "← Back to Map",
-      ),
-    );
-    wrap.appendChild(viewHead("New scope node"));
-    wrap.appendChild(el("div", { class: "card" }, renderNodeForm(null)));
-    return wrap;
-  }
+  if (!id) return renderNewGround(allNodes);
 
-  const view = await api("GET", `/scope/nodes/${id}`);
+  const view = await api("GET", `/scope/nodes/${id}`, undefined, { signal });
   const node = view.node;
   const repos = view.repos || [];
 
-  // The ground's fixtures: the tickets of every repo that plays here (best-effort).
-  let tickets = null;
-  try {
-    const lists = await Promise.all(
-      repos
-        .filter((r) => r.name)
-        .map((r) =>
-          api("GET", `/tickets?repo=${encodeURIComponent(r.name)}`).then((x) => x.tickets || []),
-        ),
-    );
-    const seen = new Set();
-    tickets = lists.flat().filter((t) => (seen.has(t.id) ? false : seen.add(t.id)));
-  } catch {
-    tickets = null;
-  }
+  // The ground's tickets, counted exactly as its card on the Map counts them.
+  const ov = await mapOverlay(allNodes, allRepos, signal, { all: true }).catch((e) => {
+    if (e && e.code === "ABORTED") throw e;
+    return null;
+  });
+  const isClub = node.type === "factory";
+  const book = ov && ov.board ? groundBook(node, ov, { live: false }) : null;
+  const t = book ? mapTally(book) : null;
+  const live = book ? book.filter((c) => mapTone(c.status)) : [];
+  const results = book ? book.filter((c) => c.status === "done") : [];
 
   const wrap = el("div", { class: "view view-ground" });
   wrap.appendChild(backToMap());
@@ -13108,14 +13375,13 @@ async function renderNode(id) {
   const tags = parseTags(node.tags_json);
   const loreTags = parseTags(node.lore_tags_json);
   const byId = new Map(allNodes.map((n) => [n.id, n]));
-  const outgoing = allEdges.filter((e) => e.from_node_id === node.id);
   const incoming = allEdges.filter((e) => e.to_node_id === node.id);
   const parent = incoming.find((e) => e.relation === "contains");
   const parentNode = parent ? byId.get(parent.from_node_id) : null;
 
   const editDetails = el("details", { class: "edit-panel gr-edit" }, [
-    el("summary", { class: "btn small" }, "Edit node"),
-    el("div", { class: "card gr-edit-body" }, renderNodeForm(node)),
+    el("summary", { class: "btn small" }, "Edit ground"),
+    el("div", { class: "card gr-edit-body" }, renderNodeForm(node, allNodes)),
   ]);
   const deleteBtn = el(
     "button",
@@ -13124,17 +13390,17 @@ async function renderNode(id) {
       type: "button",
       onclick: () =>
         guard(async () => {
-          if (!window.confirm(`Delete scope node “${node.name}”? This cannot be undone.`)) return;
+          if (!window.confirm(`Delete the ground “${node.name}”? This cannot be undone.`)) return;
           await api("DELETE", `/scope/nodes/${node.id}`);
-          toast("Scope node deleted", { ok: true });
+          toast("Ground deleted", { ok: true });
           navigate("#/factory");
         }),
     },
-    "Delete node",
+    "Delete ground",
   );
 
   wrap.appendChild(
-    el("header", { class: "gr-head is-node" }, [
+    el("header", { class: `gr-head is-node type-${node.type}` }, [
       el("div", { class: "gr-head-main" }, [
         el("div", { class: "tk-meta" }, [
           el("span", { class: "gr-type" }, typeLabel(node.type)),
@@ -13152,56 +13418,67 @@ async function renderNode(id) {
             : null,
         ]),
         el("h1", { class: "detail-title" }, node.name),
+        t ? groundCountLine(t, { club: isClub }) : null,
         node.description
           ? el("p", { class: "gr-lede desc" }, node.description)
           : el("p", { class: "gr-lede dim" }, "No description yet."),
         tags.length || loreTags.length
           ? el("div", { class: "tag-row" }, [
-              ...tags.map((t) => el("span", { class: "tag-chip" }, t)),
-              ...loreTags.map((t) => el("span", { class: "tag-chip lore" }, `lore:${t}`)),
+              ...tags.map((x) => el("span", { class: "tag-chip" }, x)),
+              ...loreTags.map((x) => el("span", { class: "tag-chip lore" }, `lore:${x}`)),
             ])
           : null,
-        el("div", { class: "gr-actions" }, [editDetails, deleteBtn]),
+        el("div", { class: "gr-actions" }, [
+          node.type === "epic"
+            ? el("a", { class: "btn small", href: `#/epics/${node.id}` }, "Open the campaign")
+            : null,
+          editDetails,
+          deleteBtn,
+        ]),
       ]),
     ]),
   );
+  if (t) wrap.appendChild(groundStats(t));
 
-  const count = (pred) => (tickets ? tickets.filter(pred).length : 0);
-  wrap.appendChild(
-    el("div", { class: "kpi-row gr-stats" }, [
-      statCell({
-        label: "Repos",
-        value: String(repos.length),
-        sub: `${repos.filter((r) => r.default_access === "write").length} with write access`,
-      }),
-      statCell({
-        label: "Connections",
-        value: String(outgoing.length + incoming.length),
-        sub: `${outgoing.length} out · ${incoming.length} in`,
-      }),
-      tickets
-        ? statCell({ label: "In play", value: String(count((t) => ON_PITCH.has(t.status))) })
-        : null,
-      tickets
-        ? statCell({
-            label: "To review",
-            value: String(count((t) => MAP_YELLOW.has(t.status))),
-            needs: count((t) => MAP_YELLOW.has(t.status)) > 0,
-          })
-        : null,
-      tickets
-        ? statCell({ label: "Blocked", value: String(count((t) => MAP_RED.has(t.status))) })
-        : null,
-      tickets
-        ? statCell({ label: "Done", value: String(count((t) => t.status === "done")) })
-        : null,
-    ]),
-  );
+  const fixtures = el("section", { class: "card gr-card", "aria-label": "Fixtures" }, [
+    panelHead(
+      "Fixtures",
+      book ? (live.length ? `${live.length} live, worst first` : "nothing live") : "",
+      null,
+      { kit: "claret" },
+    ),
+    book
+      ? fixtureList(live, {
+          limit: 12,
+          empty: isClub
+            ? "Nothing in play anywhere in the club."
+            : repos.length
+              ? "Nothing in play here. The repos that play here have no live ticket."
+              : "Nothing in play here. Link a repo, or put a ticket on this ground from its page.",
+        })
+      : el("p", { class: "quiet" }, "The board did not answer, so the fixtures are unknown."),
+  ]);
+  const resultsCard = book
+    ? el("section", { class: "card gr-card", "aria-label": "Results" }, [
+        panelHead(
+          "Results",
+          results.length ? `latest ${Math.min(8, results.length)} of ${results.length} done` : "",
+          null,
+          { kit: "ink" },
+        ),
+        fixtureList(results, { byTime: true, empty: "Nothing shipped from here yet." }),
+      ])
+    : null;
 
   const repoCard = el("section", { class: "card gr-card", "aria-label": "Who plays here" }, [
-    panelHead("Who plays here", `${repos.length} repo${repos.length === 1 ? "" : "s"}`, null, {
-      kit: "claret",
-    }),
+    panelHead("Who plays here", plural(repos.length, "repo"), null, { kit: "sky" }),
+    isClub
+      ? el(
+          "p",
+          { class: "gr-note" },
+          "The club holds every ground, so its fixtures are every live ticket. Repos play at the grounds inside it.",
+        )
+      : null,
     repos.length
       ? el(
           "ul",
@@ -13223,36 +13500,74 @@ async function renderNode(id) {
             ),
           ),
         )
-      : el("p", { class: "quiet" }, "No repos play here yet. Link one below."),
+      : el("p", { class: "quiet" }, "No repo plays here yet. Link one below."),
     el("h3", { class: "gr-sub" }, "Link a repo"),
     renderLinkRepoForm(node.id),
   ]);
-
-  const ticketCard = tickets
-    ? el("section", { class: "card gr-card", "aria-label": "Results and fixtures" }, [
-        panelHead(
-          "Results & fixtures",
-          tickets.length ? `latest ${Math.min(8, tickets.length)} of ${tickets.length}` : "",
-          null,
-          { kit: "ink" },
-        ),
-        renderRepoTickets(null, tickets),
-      ])
-    : null;
 
   const connCard = renderConnectionsCard(node, allNodes, allEdges);
 
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", { class: "stack" }, [repoCard, ticketCard]),
-      el("div", { class: "stack" }, [connCard]),
+      el("div", { class: "stack" }, [fixtures, resultsCard]),
+      el("div", { class: "stack" }, [repoCard, connCard]),
     ]),
   );
   return wrap;
 }
 
-function renderNodeForm(node) {
+/** A new ground: what it is, where it stands, then the form. */
+function renderNewGround(allNodes) {
+  const wrap = el("div", { class: "view view-ground view-new-ground" });
+  wrap.appendChild(backToMap());
+  const hasClub = allNodes.some((n) => n.type === "factory");
+  wrap.appendChild(
+    viewHead(
+      "New ground",
+      allNodes.length
+        ? `${plural(allNodes.length, "ground")} on the map already`
+        : "The first ground on the map",
+    ),
+  );
+  wrap.appendChild(
+    el("div", { class: "detail-grid" }, [
+      el("section", { class: "card gr-card", "aria-label": "The ground" }, [
+        panelHead("The ground", "name, type, owner, risk", null, { kit: "claret" }),
+        renderNodeForm(null, allNodes),
+      ]),
+      el("section", { class: "card gr-card gr-types", "aria-label": "Which type" }, [
+        panelHead("Which type", "where it stands on the map", null, { kit: "sky" }),
+        el(
+          "dl",
+          { class: "kv gr-kv gr-typekey" },
+          [
+            ["Factory", hasClub ? "The club itself. You have one already." : "The club itself."],
+            ["Product", "Something customers use: Checkout, Catalogue."],
+            ["Service", "Something products lean on: Payments, Stock sync."],
+            ["Domain or capability", "A wider area that holds products or services."],
+            ["External dependency", "Outside the ground: Stripe, an ERP."],
+          ].flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]),
+        ),
+        el(
+          "p",
+          { class: "gr-note" },
+          "After it is made, link the repos that play here and connect it to its neighbours from its page.",
+        ),
+      ]),
+    ]),
+  );
+  return wrap;
+}
+
+function renderNodeForm(node, allNodes = []) {
   const isEdit = !!node;
+  // An existing ground keeps its own type, even one this list does not offer (epic).
+  const types =
+    node && node.type && !SCOPE_NODE_TYPES.includes(node.type)
+      ? [node.type, ...SCOPE_NODE_TYPES]
+      : SCOPE_NODE_TYPES;
+  const hasClub = allNodes.some((n) => n.type === "factory");
+  const typeNow = node ? node.type : hasClub ? "product" : "factory";
   const name = el("input", {
     type: "text",
     required: "",
@@ -13262,9 +13577,7 @@ function renderNodeForm(node) {
   const type = el(
     "select",
     {},
-    SCOPE_NODE_TYPES.map((t) =>
-      el("option", { value: t, selected: node?.type === t }, typeLabel(t)),
-    ),
+    types.map((t) => el("option", { value: t, selected: typeNow === t }, typeLabel(t))),
   );
   const owner = el("input", {
     type: "text",
@@ -13278,7 +13591,7 @@ function renderNodeForm(node) {
       el("option", { value: r, selected: (node?.risk_level || "low") === r }, r),
     ),
   );
-  const desc = el("textarea", { placeholder: "What is this node, and what does it own?" });
+  const desc = el("textarea", { placeholder: "What is this ground, and what does it own?" });
   desc.value = node?.description || "";
   const tags = el("input", {
     type: "text",
@@ -13311,11 +13624,11 @@ function renderNodeForm(node) {
         guard(async () => {
           if (isEdit) {
             await api("PATCH", `/scope/nodes/${node.id}`, body);
-            toast("Scope node updated", { ok: true });
+            toast("Ground updated", { ok: true });
             router();
           } else {
             const r = await api("POST", "/scope/nodes", body);
-            toast("Scope node created", { ok: true });
+            toast("Ground created", { ok: true });
             navigate(`#/node/${r.node.id}`);
           }
         });
@@ -13334,7 +13647,7 @@ function renderNodeForm(node) {
         el(
           "button",
           { class: "btn primary", type: "submit" },
-          isEdit ? "Save changes" : "Create node",
+          isEdit ? "Save changes" : "Create ground",
         ),
       ]),
     ],
@@ -13530,21 +13843,33 @@ async function renderRepo(id) {
     );
     return wrap;
   }
-  // The repo's fixtures: every ticket whose boundary includes it (best-effort).
+  // The repo's tickets: those that deliver to it (the board's write boundary), the
+  // same source the Map's "Who plays where" counts from.
   let tickets = null;
   let ticketErr = null;
   try {
-    tickets = (await api("GET", `/tickets?repo=${encodeURIComponent(repo.name)}`)).tickets || [];
+    const board = await api("GET", "/api/board");
+    tickets = boardCards(board).filter(
+      (c) =>
+        c.status !== "cancelled" &&
+        (c.repos || []).some((r) => r.id === repo.id || r.name === repo.name),
+    );
   } catch (e) {
+    if (e && e.code === "ABORTED") throw e;
     ticketErr = e;
   }
 
   const isMapped = scopes.length > 0;
   const hasWrite = scopes.some((s) => s.default_access === "write");
-  const count = (pred) => (tickets ? tickets.filter(pred).length : null);
-  const inPlay = count((t) => ON_PITCH.has(t.status));
-  const done = count((t) => t.status === "done");
-  const held = count((t) => OFF_PITCH.has(t.status));
+  const t = tickets ? mapTally(tickets) : null;
+  const sortedT = tickets
+    ? [...tickets].sort(
+        (a, b) =>
+          (MAP_TONE_RANK[mapTone(a.status)] ?? 9) - (MAP_TONE_RANK[mapTone(b.status)] ?? 9) ||
+          (b.priority || 0) - (a.priority || 0) ||
+          (a.number || 0) - (b.number || 0),
+      )
+    : null;
 
   const hideBtn = repo.hidden
     ? el(
@@ -13585,16 +13910,7 @@ async function renderRepo(id) {
         "Hide repo",
       );
 
-  const lede = tickets
-    ? tickets.length
-      ? [
-          el("b", {}, `${tickets.length} ticket${tickets.length === 1 ? "" : "s"}`),
-          ` ${tickets.length === 1 ? "has" : "have"} played here: ${inPlay} in play, ${done} done`,
-          held ? el("span", { class: "is-red" }, `, ${held} off the pitch`) : null,
-          ".",
-        ]
-      : "No ticket has played here yet."
-    : null;
+  const lede = t ? groundCountLine(t, { where: "in this repo" }) : null;
 
   wrap.appendChild(
     el("header", { class: "gr-head" }, [
@@ -13616,25 +13932,12 @@ async function renderRepo(id) {
           repo.hidden ? badge("hidden") : null,
         ]),
         el("h1", { class: "detail-title" }, repo.name),
-        lede ? el("p", { class: "gr-lede" }, lede) : null,
+        lede,
         el("div", { class: "gr-actions" }, [hideBtn]),
       ]),
     ]),
   );
-  if (tickets && tickets.length) {
-    wrap.appendChild(
-      el("div", { class: "kpi-row gr-stats" }, [
-        statCell({ label: "Tickets", value: String(tickets.length) }),
-        statCell({ label: "In play", value: String(inPlay) }),
-        statCell({
-          label: "Done",
-          value: String(done),
-          sub: `${Math.round((done / tickets.length) * 100)}% of all`,
-        }),
-        statCell({ label: "Off the pitch", value: String(held), sub: "blocked, paused or failed" }),
-      ]),
-    );
-  }
+  if (tickets && tickets.length) wrap.appendChild(groundStats(t));
 
   const branchBtn = el(
     "button",
@@ -13730,12 +14033,14 @@ async function renderRepo(id) {
       panelHead(
         "Results & fixtures",
         tickets && tickets.length
-          ? `latest ${Math.min(8, tickets.length)} of ${tickets.length}`
+          ? `${tickets.length > 8 ? `8 of ${tickets.length}` : plural(tickets.length, "ticket")} delivering here, live first`
           : "",
         null,
         { kit: "ink" },
       ),
-      renderRepoTickets(repo, tickets, ticketErr),
+      tickets
+        ? fixtureList(sortedT, { empty: "No ticket delivers to this repo yet." })
+        : renderRepoTickets(repo, tickets, ticketErr),
     ],
   );
 

@@ -81,7 +81,7 @@ one change, one observation at a time.
 - No fix without a reproduction; no reproduction without a permanent test.
 - Never delete, skip, or loosen a failing test to make the bug "go away".
 - One bug per ticket; siblings become findings, not scope creep.
-- Work on the delivery branch the runner prepared (the `create-branch` skill verifies);
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`);
   commit, never push.
 
 ## Capture lore

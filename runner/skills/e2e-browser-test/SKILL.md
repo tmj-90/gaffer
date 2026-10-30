@@ -69,7 +69,7 @@ no sleeps, no order dependence, no data another test created.
 - The backend under test is real or a faithful stub declared in the test; never mock the
   browser side to make the assertion pass.
 - Match the repo's harness, browser pins and CI command exactly.
-- Work on the delivery branch the runner prepared (the `create-branch` skill verifies),
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`),
   never a protected branch.
 
 ## Capture lore

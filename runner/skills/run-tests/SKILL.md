@@ -66,5 +66,5 @@ final add + commit (so no `git diff` in step 4), and you hold no claim, so step 
 - Report the true result — never claim "tests pass" without a run in this session.
 - Don't skip or delete failing tests to go green; fix the cause or mark blocked.
 - Don't add a new test framework or runner; match the repo's.
-- Work on the delivery branch the runner prepared (the `create-branch` skill); never a
-  protected branch.
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`);
+  never a protected branch.

@@ -72,8 +72,8 @@ identity (direction, palette, type pairing, voice). The token *structure* belong
    undecided and the ticket does not settle it, do not fabricate one. As a delivery skill,
    `mark_ticket_blocked` with the specific question; as a lore seed, `suggest_lore` the
    brand with the open questions named.
-7. **Land it.** As a delivery skill (you are on the ticket's worktree branch — the
-   `create-branch` skill verifies), commit, record per-AC evidence with the
+7. **Land it.** As a delivery skill (you are on the ticket's worktree branch — verify with
+   `git branch --show-current`), commit, record per-AC evidence with the
    `record-evidence` skill (the `BRAND.md` diff, contrast table, qualities list), then
    stop; the runner submits for review. As a lore seed, `suggest_lore` the brand; it
    stays a suggestion until a human ratifies it.

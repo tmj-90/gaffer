@@ -76,7 +76,7 @@ failure into a permanent example.
 
 - The repo's installed framework only (never install one), time-boxed runs.
 - Properties complement examples; they do not replace specific regression cases.
-- Work on the delivery branch the runner prepared (the `create-branch` skill verifies),
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`),
   never a protected branch.
 
 ## Capture lore

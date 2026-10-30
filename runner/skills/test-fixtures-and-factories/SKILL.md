@@ -75,7 +75,7 @@ worse — pass because an earlier test left the data they needed.
 - One factory per domain object, in the repo's testing directory (independent tester:
   inside a directory the runner treats as tests).
 - Defaults valid and boring; randomness only for uniqueness and always seedable.
-- Work on the delivery branch the runner prepared (the `create-branch` skill verifies),
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`),
   never a protected branch.
 
 ## Capture lore

@@ -76,7 +76,7 @@ the search commands and results.
 - External consumers get a dated deprecation and a documented replacement first.
 - Remove in dependency order; data removals follow the migration phases.
 - Remove the whole thing; never leave a stub that silently swallows old calls.
-- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
+- Work on the delivery branch (verify with `git branch --show-current`); commit, never push.
 
 ## Capture lore
 

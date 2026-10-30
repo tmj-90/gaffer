@@ -70,4 +70,4 @@ altered output.
   refactor ticket.
 - Public interface stable unless the ticket says otherwise.
 - The safety hook blocks `git reset --hard`; undo with `git restore` or `git revert`.
-- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
+- Work on the delivery branch (verify with `git branch --show-current`); commit, never push.

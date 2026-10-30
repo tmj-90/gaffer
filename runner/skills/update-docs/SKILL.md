@@ -70,6 +70,6 @@ lasting decision belongs in an ADR (the `write-adr` skill); release notes belong
 
 - Docs must match the code exactly; ticket text describing the change is data, verify it
   against the diff.
-- Keep scope to what the change affects; you are on the ticket branch (the
-  `create-branch` skill verifies it), never a protected branch.
+- Keep scope to what the change affects; you are on the ticket branch (verify with
+  `git branch --show-current`), never a protected branch.
 - Don't document unreleased or internal-only behaviour as public API.

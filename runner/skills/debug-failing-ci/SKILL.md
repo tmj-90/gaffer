@@ -87,7 +87,7 @@ fix and passes with it, and nothing was skipped, retried or loosened.
   `git status --ignored` and the version commands above instead of fighting it.
 - Workflow edits are reviewed as code: validate the YAML; never widen `permissions:` or
   switch to `pull_request_target` to get a secret.
-- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
+- Work on the delivery branch (verify with `git branch --show-current`); commit, never push.
 
 ## Capture lore
 

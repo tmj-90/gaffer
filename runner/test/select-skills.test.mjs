@@ -940,6 +940,20 @@ check("delivery never mounts the runner's / another role's jobs (listing paid ev
       assert(!role.includes(n), `delivery profile must NOT mount ${n}`);
   }
 });
+check("no skill body points the agent at a runner-job skill it is never mounted with", () => {
+  // The runner creates the branch, submits for review and resolves merges; a skill that
+  // says "(the `create-branch` skill verifies)" sends the delivery agent looking for a
+  // skill it does not have. Only those skills' own SKILL.md may name them.
+  const runnerJobs = ["create-branch", "submit-review", "resolve-merge-conflict"];
+  const re = new RegExp("`(" + runnerJobs.join("|") + ")`\\s+skill");
+  const skills = loadSkills();
+  assert(skills.length > 0, "no skills loaded");
+  for (const s of skills) {
+    if (runnerJobs.includes(s.name)) continue;
+    const m = readFileSync(join(DEFAULT_SKILLS_DIR, s.name, "SKILL.md"), "utf8").match(re);
+    assert(!m, `${s.name}/SKILL.md names the ${m && m[1]} skill`);
+  }
+});
 check("dependency-upgrade is pulled in only when the ticket text names a dependency change", () => {
   for (const text of [
     "Upgrade express to v5",

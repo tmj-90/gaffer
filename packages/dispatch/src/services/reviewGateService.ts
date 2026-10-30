@@ -137,6 +137,14 @@ export interface ReviewGateServiceDeps {
    */
   readonly approvalShaResolver?: ApprovalShaResolver;
   /**
+   * REVIEW PIN (human approvals): resolves the delivery-branch head a HUMAN approves, so
+   * `approveReview` records it as the reviewed-commit pin (system `commit` evidence, uri
+   * `gaffer-reviewed-commit:<sha>`) that runner/lib/tester-binding.mjs enforces on every
+   * landing path — commits added after the approval are held, never landed unreviewed.
+   * `undefined` (the default) or a null result records no pin.
+   */
+  readonly reviewedHeadResolver?: (ticket: Ticket) => { sha: string; branch: string } | null;
+  /**
    * GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate that answers
    * "does an explicit mode='auto' approve policy cover this ticket (its risk × ALL
    * its write repos)?" NO env read here — the P0 check below ORs it with the env
@@ -237,6 +245,8 @@ export class ReviewGateService {
   private readonly onTicketParked:
     ((ticket: import("../domain/types.js").Ticket, detail: string) => void) | undefined;
   private readonly approvalShaResolver: ApprovalShaResolver | undefined;
+  private readonly reviewedHeadResolver:
+    ((ticket: Ticket) => { sha: string; branch: string } | null) | undefined;
   private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
   private readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
 
@@ -254,6 +264,7 @@ export class ReviewGateService {
     this.requireRegisteredAgentApprover = deps.requireRegisteredAgentApprover ?? false;
     this.onTicketParked = deps.onTicketParked;
     this.approvalShaResolver = deps.approvalShaResolver;
+    this.reviewedHeadResolver = deps.reviewedHeadResolver;
     this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
     this.observedRiskResolver = deps.observedRiskResolver;
   }
@@ -336,6 +347,13 @@ export class ReviewGateService {
     // approved UNCHANGED vs edited, emitted on the transition below. Best-effort — a
     // resolver throw or absence yields `null` (unknown) and never blocks the approve.
     const approvedUnchanged = this.computeApprovedUnchanged(ticket);
+    // REVIEW PIN: what a HUMAN approved is the branch head NOW. Resolved before the
+    // transition (git runs outside the write lock) and recorded right after it, so the pin
+    // post-dates the ticket's entry into in_review (tester-binding ignores older pins).
+    // Agent approvals are pinned by the runner itself (lib/review.sh pins the commit the
+    // reviewer judged, which may predate the approve call), so they are left alone here.
+    const humanPin =
+      actor.type === "human" || actor.type === "admin" ? this.resolveReviewedHead(ticket) : null;
     // BBT-001: when the testing lane is ON and this ticket is eligible, route
     // through the independent tester (`in_review -> in_testing`) instead of
     // straight to merge. testerVerdict:true guards this transition.
@@ -360,9 +378,10 @@ export class ReviewGateService {
         event_type: "ticket.routed_to_testing",
         payload: { from: "in_review", ...(ticket.acceptance === 1 ? { acceptance: true } : {}) },
       });
+      this.recordHumanApprovalPin(ticket, actor, humanPin);
       return result;
     }
-    return this.transitions.transition({
+    const result = this.transitions.transition({
       ticketId: ticket.id,
       actor,
       toStatus: "ready_for_merge",
@@ -372,6 +391,46 @@ export class ReviewGateService {
       reviewApprove: true, // reached the merge-ready state through the guarded approve path
       // The done gate's git runs HERE, before transition() takes the write lock.
       deliveryDiff: this.transitions.deliveryDiffProof(ticket.id),
+    });
+    this.recordHumanApprovalPin(ticket, actor, humanPin);
+    return result;
+  }
+
+  /** Best-effort head lookup for the human approval pin (a throw records no pin). */
+  private resolveReviewedHead(ticket: Ticket): { sha: string; branch: string } | null {
+    try {
+      return this.reviewedHeadResolver?.(ticket) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Record the commit a human approved as the REVIEW PIN — a SYSTEM `commit` evidence row
+   * (agents record evidence as `agent` and cannot forge one) that the landing check reads
+   * on every path (the merge lane, the dashboard Merge, `gaffer merge`). Without it a human
+   * approval bound nothing: commits pushed to the branch between the approve and the merge
+   * landed unreviewed.
+   */
+  private recordHumanApprovalPin(
+    ticket: Ticket,
+    actor: Actor,
+    pin: { sha: string; branch: string } | null,
+  ): void {
+    if (!pin) return;
+    this.evidence.insert({
+      id: newId(),
+      ticket_id: ticket.id,
+      ac_id: null,
+      repo_id: null,
+      decision_id: null,
+      evidence_type: "commit",
+      summary: `human review (${actor.id ?? actor.type}) approved commit ${pin.sha} of ${pin.branch}`,
+      uri: `gaffer-reviewed-commit:${pin.sha}`,
+      payload_json: JSON.stringify({ kind: "review_pin", approver_type: actor.type }),
+      created_by: "dispatch",
+      recorded_by_actor_type: "system",
+      created_at: this.clock.now(),
     });
   }
 

@@ -93,6 +93,17 @@ pin "$REVIEWED" agent 2026-09-29T00:05:00.000Z; out="$(decide10)"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin row recorded by an AGENT is not a pin (cannot be forged through the MCP)" || fail "agent pin: rc=$rc $out"
 pin "$REVIEWED" system 2026-09-28T23:00:00.000Z; out="$(decide10)"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin older than the ticket's latest entry into in_review is stale → ignored" || fail "stale pin: rc=$rc $out"
+# A tester PASS bound to a commit NOBODY reviewed (the branch moved after the approval,
+# before the tester ran) must not land just because head == tested.
+LATE="$(g rev-parse gaffer/ticket-10-y)"
+pin "$REVIEWED" system 2026-09-29T00:05:00.000Z
+sql2 "INSERT INTO evidence VALUES ('b1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$LATE\"}', 'agent', '2026-09-29T00:07:00.000Z');"
+out="$(decide10)"; rc=$?
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && [[ "$out" == *"\"tested\":\"$LATE\""* ]] \
+  && ok "bound tester PASS of an UNREVIEWED commit (tested != reviewed) → hold (moved-since-review)" || fail "bound but unreviewed: rc=$rc $out"
+pin "$LATE" system 2026-09-29T00:06:00.000Z; out="$(decide10)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "bound" ] && ok "bound PASS of the reviewed commit → land" || fail "bound + reviewed: rc=$rc $out"
+sql2 "DELETE FROM evidence WHERE id = 'b1';"
 
 # ── the Bash path: real land.sh + automerge.sh, stubbed tick globals ─────────────
 LOGF="$WORK/log"; CALLS="$WORK/calls"

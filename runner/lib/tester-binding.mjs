@@ -19,13 +19,16 @@
 //                               an ACCEPTANCE ticket is HELD (unverified)
 //   bound PASS, head == tested → lands, pinned to the tested commit
 //   bound PASS, head moved     → HELD (names both commits)
-// REVIEW PIN: when the runner's agent review approved the ticket it first records the
-// commit the reviewer saw (a SYSTEM `commit` evidence row, uri gaffer-reviewed-commit:<sha>,
-// lib/review.sh). Every decision above that would otherwise land "the branch head" (no
-// tester, a human waiver, a legacy unbound PASS) then lands ONLY that commit and HOLDS
-// (kind moved-since-review) when the head moved past it — on every landing path, the
-// merge lane's later landing of a ready_for_merge ticket included. A pin recorded before
-// the ticket last (re)entered in_review describes an older candidate and is ignored.
+// REVIEW PIN: every approval records the commit it approved as a SYSTEM `commit` evidence
+// row (uri gaffer-reviewed-commit:<sha>): the runner's agent review pins the commit the
+// reviewer saw (lib/review.sh), and dispatch pins the branch head a HUMAN approved
+// (reviewGateService.approveReview). Every decision above that would otherwise land "the
+// branch head" (no tester, a human waiver, a legacy unbound PASS) then lands ONLY that
+// commit and HOLDS (kind moved-since-review) when the head moved past it, and a bound
+// tester PASS of a commit other than the reviewed one holds the same way — on every
+// landing path, the merge lane's later landing of a ready_for_merge ticket included. A pin
+// recorded before the ticket last (re)entered in_review describes an older candidate and
+// is ignored.
 // Fail CLOSED: an unreadable DB, an unknown ticket or an unresolvable branch head HOLD.
 //
 // CLI: node lib/tester-binding.mjs landing --db <dispatch.sqlite> --ticket <n>
@@ -58,7 +61,8 @@ export function branchHead(repoPath, branch) {
 
 /** Read the ticket's acceptance flag and its latest tester PASS evidence payload. */
 /**
- * The commit the runner's agent review approved (REVIEW PIN), or null. Only a SYSTEM row
+ * The commit the ticket's current approval pinned (REVIEW PIN — the runner's agent review
+ * or a human approve), or null. Only a SYSTEM row
  * counts (agents record evidence as `agent` through the MCP and cannot forge one), and
  * only one recorded after the ticket's latest entry into in_review: a rework or a
  * conflict resolution re-enters review, which makes the old pin stale.
@@ -154,10 +158,10 @@ export function landingDecision({ dbPath, ticketNumber, repoPath, branch }) {
   const pass = ev.pass;
   const reviewed = ev.reviewed ?? null;
   // A head landing (no tester / waiver / legacy) is bound to the reviewed commit when the
-  // runner's agent review recorded one: the head must still BE that commit.
+  // approval recorded one (the agent review or a human approve): the head must still BE it.
   const headLanding = (kind, reason) => {
     if (reviewed && head !== reviewed)
-      return hold("moved-since-review", `${branch} moved since the agent review approved it`, {
+      return hold("moved-since-review", `${branch} moved since the review approved it`, {
         reviewed,
         head,
       });
@@ -177,6 +181,14 @@ export function landingDecision({ dbPath, ticketNumber, repoPath, branch }) {
   }
   if (head !== tested)
     return hold("moved", `${branch} moved since the tester's PASS`, { tested, head });
+  // The tester certified a commit nobody reviewed: the branch moved after the approval
+  // (agent review or human approve) and before the tester ran.
+  if (reviewed && tested !== reviewed)
+    return hold("moved-since-review", `${branch} moved since the review approved it`, {
+      reviewed,
+      tested,
+      head,
+    });
   return {
     ok: true,
     pin: tested,

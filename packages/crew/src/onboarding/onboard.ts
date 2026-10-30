@@ -1,4 +1,7 @@
-import { basename } from "node:path";
+import { statSync } from "node:fs";
+import { basename, resolve } from "node:path";
+
+import { CrewError } from "../util/errors.js";
 
 import type { LoreSuggestionInput } from "../memory/client.js";
 import type { GitAdapter } from "../adapters/gitAdapter.js";
@@ -106,10 +109,31 @@ export function availableScopeNodes(dispatch: DispatchClient): ScopeNodeSummary[
 }
 
 /**
+ * Resolve an operator-supplied repo path to an absolute directory. Every caller
+ * gets this, not just the CLI: a relative `.` used to register a Dispatch repo
+ * named "." with local_path "." (resolved later against whatever cwd read it, and
+ * colliding with every other repo onboarded as "."), and a missing directory was
+ * registered without error.
+ */
+function resolveRepoDir(dir: string): string {
+  const abs = resolve(dir);
+  if (statSync(abs, { throwIfNoEntry: false })?.isDirectory() !== true) {
+    throw new CrewError("NOT_FOUND", `repo directory not found: ${abs}`, { path: abs });
+  }
+  return abs;
+}
+
+/**
  * Onboard a repo at `dir`. Pure-ish: the only side effects are the context-store
  * write and the (optional) Dispatch registration; the repo itself is untouched.
+ * `dir` may be relative; it is resolved against the cwd and must be a directory.
  */
-export function onboardRepo(dir: string, opts: OnboardOptions, deps: OnboardDeps): OnboardResult {
+export function onboardRepo(
+  rawDir: string,
+  opts: OnboardOptions,
+  deps: OnboardDeps,
+): OnboardResult {
+  const dir = resolveRepoDir(rawDir);
   const git = deps.git ?? systemGitAdapter;
   const repoId = opts.repoId ?? basename(dir);
   const name = opts.name ?? basename(dir);
@@ -230,9 +254,10 @@ export interface RescanResult {
  * The caller decides whether to flush them via the async Memory bridge.
  */
 export function rescanRepo(
-  dir: string,
+  rawDir: string,
   deps: OnboardDeps & { repoId: string; tags?: string[] },
 ): RescanResult {
+  const dir = resolveRepoDir(rawDir);
   const git = deps.git ?? systemGitAdapter;
   const previous = deps.store.readContext(deps.repoId);
   const scan = scanRepoForOnboarding(dir, git);

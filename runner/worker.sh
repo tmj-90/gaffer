@@ -49,6 +49,35 @@ W_MAX_TICKS="${WORKER_MAX_TICKS:-$MAX_TICKS}"
 worked=0; reviewed=0; clarified=0; idle=0; nowork=0; errors=0; ticks=0
 empties=0
 
+# STOP (loop.sh STOPPABLE POOL). loop.sh TERMs every worker on INT/TERM/HUP and writes
+# the pool stop file. The in-flight tick runs in the BACKGROUND (+ `wait`) so this trap
+# fires at once instead of after the whole tick: it TERMs the tick's process group (the
+# outer gaffer_timeout records its PGID in this worker's own file), the tick's crash
+# trap releases its claim, and no further tick is reserved. SIGINT is ignored in a
+# background worker from the start, so Ctrl-C reaches us as loop.sh's TERM.
+_stop=0
+_tick_pid=""
+_TICK_PGID_FILE="$WORKERS_DIR/$WORKER_ID.tick-pgid"
+_TICK_OUT="$WORKERS_DIR/$WORKER_ID.tick-out"
+_worker_stop() {
+  _stop=1
+  local _pg
+  _pg="$(cat "$_TICK_PGID_FILE" 2>/dev/null || true)"
+  case "$_pg" in ''|*[!0-9]*) ;; *) kill -TERM -- "-$_pg" 2>/dev/null || true ;; esac
+  # The tick's wrapper (perl) if it started but has not recorded the group yet.
+  [ -n "$_tick_pid" ] && command -v pkill >/dev/null 2>&1 && pkill -TERM -P "$_tick_pid" 2>/dev/null
+  return 0
+}
+trap '_worker_stop' TERM HUP
+# True when this worker must not start another tick: told to stop, the pool stop file
+# exists, or the loop that spawned us is gone (killed with SIGKILL, so no TERM came).
+_should_stop() {
+  [ "$_stop" = 1 ] && return 0
+  [ -n "${GAFFER_POOL_STOP_FILE:-}" ] && [ -e "$GAFFER_POOL_STOP_FILE" ] && return 0
+  [ -n "${GAFFER_LOOP_PID:-}" ] && ! kill -0 "$GAFFER_LOOP_PID" 2>/dev/null && return 0
+  return 1
+}
+
 # Shared per-run budget (loop.sh exports GAFFER_RUN_TICKS_FILE): each tick is RESERVED
 # atomically against MAX_TICKS before it starts, so the pool total is bounded exactly.
 # Without the shared counter (a worker run by hand) the static per-worker share applies.
@@ -61,7 +90,7 @@ _reserve_run_tick() {
 }
 _refund_run_tick() { [ -n "${GAFFER_RUN_TICKS_FILE:-}" ] && gaffer_refund_run_tick "$GAFFER_RUN_TICKS_FILE" || true; }
 
-while _reserve_run_tick; do
+while ! _should_stop && _reserve_run_tick; do
   # Per-day cost cap is a SHARED guard — honour it inside every worker so the pool
   # can't collectively blow past MAX_TICKS_PER_DAY. ATOMIC ADMISSION: the slot is
   # reserved in one locked read-modify-write BEFORE the tick (lib/budget.sh); the old
@@ -92,7 +121,13 @@ while _reserve_run_tick; do
   # whole rework ladder (attempts × GAFFER_TICK_TIMEOUT + margin), matching the
   # claim-TTL math — the inner per-call GAFFER_TICK_TIMEOUT still bounds each
   # individual claude -p first.
-  out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"
+  : > "$_TICK_OUT"
+  GAFFER_TIMEOUT_PGID_FILE="$_TICK_PGID_FILE" gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh" > "$_TICK_OUT" &
+  _tick_pid=$!
+  # `wait` returns early when the stop trap fires; keep waiting until the tick is gone.
+  while kill -0 "$_tick_pid" 2>/dev/null; do wait "$_tick_pid" 2>/dev/null; done
+  _tick_pid=""
+  out="$(cat "$_TICK_OUT" 2>/dev/null)"
   res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
 
   # A tick that may have spent (invoked claude -p) counts against the shared per-day
@@ -124,6 +159,13 @@ while _reserve_run_tick; do
     *)                 errors=$((errors + 1)); empties=0 ;;
   esac
   echo "worker $WORKER_ID: tick $ticks → ${res:-unknown}" >&2
+  # SETUP ERROR (tick.sh gaffer_abort_setup): systemic — every worker's next tick would
+  # fail the same way. Stop the whole pool; loop.sh reports it and exits 3.
+  if [ "$res" = "setup_error" ]; then
+    echo "worker $WORKER_ID: setup error — stopping the pool." >&2
+    [ -n "${GAFFER_POOL_STOP_FILE:-}" ] && : > "$GAFFER_POOL_STOP_FILE"
+    break
+  fi
 
   # A worker stops once the queue is drained FOR IT: EMPTY_POLL_LIMIT consecutive
   # no_work ticks. (Other workers may still be delivering; the pool-level wait in
@@ -132,8 +174,11 @@ while _reserve_run_tick; do
     echo "worker $WORKER_ID: $empties consecutive empty polls — stopping." >&2
     break
   fi
-  sleep "$TICK_SLEEP"
+  _should_stop && break
+  sleep "$TICK_SLEEP" &
+  wait "$!" 2>/dev/null
 done
+rm -f "$_TICK_OUT" "$_TICK_PGID_FILE" 2>/dev/null
 
 printf '%s %s %s %s %s %s %s\n' "$worked" "$reviewed" "$clarified" "$idle" "$nowork" "$errors" "$ticks" > "$RESULT_FILE"
 echo "worker $WORKER_ID: done after $ticks tick(s) (worked=$worked reviewed=$reviewed clarified=$clarified idle=$idle no_work=$nowork error=$errors)." >&2

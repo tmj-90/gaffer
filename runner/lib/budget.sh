@@ -166,9 +166,13 @@ _gaffer_refund_run_tick_unlocked() {
 # may have run before a gate failed) and an EMPTY/unknown result (the outer timeout
 # reaped a tick mid-agent — real spend with no result line). Conservative by design:
 # only the one result that provably cost nothing is exempt.
+# `setup_error` is exempt too: tick.sh reports it only from a fail-closed setup
+# check that refused BEFORE any agent launched (gaffer_abort_setup). The run stops on
+# it and the daemon backs off exponentially (lib/daemon.sh), so the refund cannot
+# turn into unbounded claim/teardown churn.
 gaffer_tick_counts_toward_day_cap() {
   case "${1:-}" in
-    no_work) return 1 ;;
+    no_work|setup_error) return 1 ;;
     *) return 0 ;;
   esac
 }

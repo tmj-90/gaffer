@@ -430,6 +430,7 @@ export GAFFER_MCP_BRIDGE
 : "${GAFFER_SANDBOX_PIDS:=512}"
 : "${GAFFER_DAEMON_INTERVAL:=30}"    # seconds between `gaffer run --daemon` cycles
 : "${GAFFER_DAEMON_MAX_CYCLES:=0}"   # 0 = unbounded
+: "${GAFFER_DAEMON_SETUP_BACKOFF_MAX:=1800}"   # ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3)
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 # PER-LANE TURN CAPS. GAFFER_MAX_TURNS is the DELIVERY cap; the other agent lanes can be
@@ -503,6 +504,18 @@ export DISPATCH_MAX_ATTEMPTS
 # for a tick wedged OUTSIDE an agent call.
 : "${GAFFER_TICK_OUTER_TIMEOUT:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))}"
 export GAFFER_TICK_OUTER_TIMEOUT
+# TICK DEADLINE GUARD (tick.sh): the outer bound above counts only agent calls, but a
+# tick also spends merge-lane resolver time and every attempt's DoD install, gates and
+# AC checks. Before each delivery attempt the tick checks the time left until
+# (start + GAFFER_TICK_OUTER_TIMEOUT - GAFFER_TICK_DEADLINE_MARGIN); when it is less
+# than GAFFER_TICK_TIMEOUT plus the previous attempt's measured gate time, it does NOT
+# start an attempt the outer bound would kill — it keeps the branch and releases the
+# ticket for the next tick (bounded across runs like a no-commit failure). Attempt 1 is
+# never refused this way (nothing is spent yet): its agent call is clamped to the time
+# left instead. Gate and AC timeouts are also clamped to the time left. 0 = off (start
+# every attempt, as before).
+: "${GAFFER_TICK_DEADLINE_GUARD:=1}"
+: "${GAFFER_TICK_DEADLINE_MARGIN:=60}"   # seconds kept back for record / release / teardown
 
 # ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning
 # for the hardest cases before a human is pulled in). Empty → keep the routed model

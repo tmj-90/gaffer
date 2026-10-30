@@ -37,7 +37,6 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 command -v node    >/dev/null 2>&1 || { echo "SKIP: node required";    exit 0; }
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 required"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/afk-delivery-loop.XXXXXX")"
 WORK="$(cd "$WORK" && pwd -P)"

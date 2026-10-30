@@ -65,7 +65,7 @@ gaffer_run_ac_checks() {
     # record is logged loudly — the done gate will then hold the ticket (unverified),
     # which is the safe direction.
     if ! wg ac check-result "$ac_id" --ticket "$num" --exit "$rc" --command "$cmd" \
-         --output-file "$tmpout" --duration "$((t1 - t0))" >/dev/null 2>&1; then
+         --output-file "$tmpout" --duration "$((t1 - t0))" </dev/null >/dev/null 2>&1; then
       log "AC-check: WARNING — could not record the check result for $label on #$num (rc=$rc); the done gate will hold this AC as unverified"
     fi
     if [ "$rc" -eq 0 ]; then

@@ -9,13 +9,13 @@
 #   • the factory-wide GAFFER_REWORK_BUDGET_USD trips at cumulative spend >= ceiling;
 #   • the per-ticket delivery_budget_usd WINS over the factory default;
 #   • the message globals (GAFFER_BUDGET_SPENT/CEIL) expose the resolved figures.
-# Zero deps beyond python3. Run: bash test/prespawn-budget-gate.test.sh  (bash 3.2 safe)
+# Zero deps beyond node. Run: bash test/prespawn-budget-gate.test.sh  (bash 3.2 safe)
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 TICK="$RUNNER_DIR/tick.sh"
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 required"; exit 0; }
+command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 [ -f "$TICK" ] || { echo "SKIP: tick.sh not found"; exit 0; }
 
 PASS=0

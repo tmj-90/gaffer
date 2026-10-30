@@ -111,8 +111,8 @@ gaffer_skills_mount_cleanup() { :; }
 # nothing removes the clarify residue and the repo leaks.
 gaffer_crash_cleanup() { :; }
 # The GLOBAL signal/exit handlers, exactly as tick.sh installs them at top level.
-gaffer_on_exit()   { local rc=$?; trap - EXIT INT TERM; gaffer_crash_cleanup; exit "$rc"; }
-gaffer_on_signal() { trap - EXIT INT TERM; gaffer_crash_cleanup; exit "$1"; }
+gaffer_on_exit()   { local rc=$?; trap - EXIT; trap '' INT TERM; gaffer_crash_cleanup; exit "$rc"; }
+gaffer_on_signal() { trap - EXIT; trap '' INT TERM; gaffer_crash_cleanup; exit "$1"; }
 
 # The interrupted agent: raise SIGINT at the subshell running the clarify pass,
 # exactly as a contributor's Ctrl-C would mid-run.

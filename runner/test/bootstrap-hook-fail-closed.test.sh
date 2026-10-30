@@ -14,7 +14,7 @@
 # serves one ready bootstrap ticket, with a STUB claude that proves a spawn by
 # writing a marker (no model, no spend):
 #   NEG  CLAUDE_SETTINGS = a template WITHOUT the PreToolUse wiring →
-#          • the tick logs the SAFETY refusal and yields TICK_RESULT=error
+#          • the tick logs the SAFETY refusal and yields TICK_RESULT=setup_error
 #          • the agent is NOT spawned (no marker)
 #          • no unwired settings.json survives in the new repo
 #          • the runner releases its claim back to `ready` and skips the ticket
@@ -116,9 +116,9 @@ OUT="$(run_tick CLAUDE_SETTINGS="$UNWIRED")"
 printf '%s' "$OUT" | grep -q 'SAFETY: agent-env install failed for bootstrap #7' \
   && ok "tick logs the SAFETY refusal for the bootstrap install" \
   || fail "no SAFETY refusal logged (got: $(printf '%s' "$OUT" | grep -E 'SAFETY|BOOTSTRAP|TICK_RESULT' | tail -5 | tr '\n' ' '))"
-printf '%s' "$OUT" | grep -q 'TICK_RESULT=error' \
-  && ok "tick yields TICK_RESULT=error (fail closed, not a silent launch)" \
-  || fail "expected TICK_RESULT=error (got: $(printf '%s' "$OUT" | grep TICK_RESULT= || echo none))"
+printf '%s' "$OUT" | grep -q 'TICK_RESULT=setup_error' \
+  && ok "tick yields TICK_RESULT=setup_error (fail closed, not a silent launch)" \
+  || fail "expected TICK_RESULT=setup_error (got: $(printf '%s' "$OUT" | grep TICK_RESULT= || echo none))"
 [ ! -f "$MARKER" ] \
   && ok "the bootstrap agent was NOT spawned (no marker)" \
   || fail "the bootstrap agent RAN without a verified safety-hook wiring"

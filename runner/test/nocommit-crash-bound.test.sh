@@ -35,7 +35,7 @@
 #        GAFFER_REWORK_BUDGET_USD, vs the ticket's measured ledger spend) parks
 #        to `blocked` on the FIRST no-commit failure once exceeded;
 #   AC7  DRY_RUN never increments the counter (side-effect-free);
-#   AC8  WIRING: tick.sh's three no-commit/wrong-branch failure paths route
+#   AC8  WIRING: tick.sh's no-commit and unrecoverable wrong-branch failure paths route
 #        through the bounded wrapper; the submit-success path clears the
 #        counter; factory.config.sh defines the configurable default;
 #   AC9  NEGATIVE CONTROL: the pre-fix shape (plain release-to-ready) never
@@ -284,10 +284,8 @@ check() {  # $1 name, $2 perl-regex over $3 (file)
 }
 check "AC8: no-commit agent-crash path routes through the bounded wrapper (before skip)" \
   'gaffer_release_or_park_nocommit "delivery failed: agent exited non-zero \(rc=\$rc\) with no commits;[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
-check "AC8: wrong-branch (default branch) path routes through the bounded wrapper" \
-  'gaffer_release_or_park_nocommit "delivery failed: worktree HEAD was[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
-check "AC8: wrong-branch (non-gaffer branch) path routes through the bounded wrapper" \
-  'gaffer_release_or_park_nocommit "delivery failed: worktree HEAD[^\n]*is not a gaffer[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
+check "AC8: an unrecoverable branch switch (no commits) routes through the bounded wrapper" \
+  'gaffer_release_or_park_nocommit "delivery failed: \$_BS_FAIL;[^\n]*had no commits[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
 check "AC8: the submit-success path clears the cross-run counter (flaky-then-fixed reset)" \
   'submitted #\$NUM for review[^\n]*\n(?:[^\n]*\n)*?[^\n]*gaffer_nocommit_clear "\$NUM"' "$TICK"
 check "AC8: factory.config.sh defines GAFFER_MAX_NOCOMMIT_FAILURES (aligned with the delivery-attempt cap)" \

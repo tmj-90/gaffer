@@ -34,7 +34,7 @@ program
   .command("init")
   .description("Create (or open) the Dispatch database")
   .action((_opts, cmd) => {
-    const wg = open(cmd.optsWithGlobals());
+    const wg = open(cmd.optsWithGlobals(), { create: true });
     printJson({ ok: true, db: resolveDbPath(cmd.optsWithGlobals().db), schema: "applied" });
     wg.db.close();
   });

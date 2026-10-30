@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import { Dispatch } from "../../core.js";
 import { DatabaseOpenError, DatabaseTooNewError } from "../../db/connection.js";
-import { resolveDbPath } from "../../util/paths.js";
+import { assertCliDbExists, resolveDbPath } from "../../util/paths.js";
 import { computeStats, renderDoctor, renderHumanQueue, renderStats, runDoctor } from "../ops.js";
 import { cliActor, open, printJson } from "../shared.js";
 
@@ -14,6 +14,7 @@ export function registerDiagnostics(program: Command): void {
     .description("Diagnose the database: schema, counts, stale claims, integrity")
     .option("--json", "emit machine-readable JSON", false)
     .action((opts, cmd) => {
+      assertCliDbExists(cmd.optsWithGlobals().db);
       const dbPath = resolveDbPath(cmd.optsWithGlobals().db);
       let wg: Dispatch;
       try {

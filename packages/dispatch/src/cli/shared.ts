@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { Dispatch } from "../core.js";
 import type { Actor } from "../domain/types.js";
 import { DispatchError } from "../util/errors.js";
-import { resolveDbPath } from "../util/paths.js";
+import { assertCliDbExists, resolveDbPath } from "../util/paths.js";
 
 /** The human running the CLI is the actor for events. */
 export function cliActor(): Actor {
@@ -33,7 +33,15 @@ export function testerActor(as: string): Actor {
   }
 }
 
-export function open(opts: { db?: string }): Dispatch {
+/**
+ * Open the CLI's database. Only `init` passes `create: true`; every other command
+ * refuses to conjure an empty `./.dispatch/dispatch.sqlite` (see assertCliDbExists).
+ */
+export function open(
+  opts: { db?: string },
+  { create = false }: { create?: boolean } = {},
+): Dispatch {
+  if (!create) assertCliDbExists(opts.db);
   return Dispatch.open(resolveDbPath(opts.db), undefined, undefined, {
     requireRegisteredAgentApprover: true,
   });

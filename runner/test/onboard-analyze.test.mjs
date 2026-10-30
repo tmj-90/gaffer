@@ -63,6 +63,10 @@ const {
   INDUCTION_TAG,
   CARD_SOLO_SNIPPET_CHARS,
   agentChildEnv,
+  runAnalysisTurn,
+  modelFailure,
+  isModelFailure,
+  claudeBreaker,
 } = await import(MOD);
 
 let passed = 0;
@@ -1698,6 +1702,188 @@ console.log("== agentChildEnv: credentials AND outbound-endpoint vars are stripp
     "onboard-analyze never spawnSync()s claudeBin directly",
     !/spawnSync\(claudeBin/.test(src),
   );
+}
+
+// ── claude itself failing (auth / rate limit): say why, and stop calling it ──────
+// An unauthenticated claude exits 1 ("Invalid API key"). runAnalysisTurn dropped the
+// exit status and stderr, so the onboard logged only "no usable JSON"; the card pass
+// read the all-null batch as a PARTIAL shortfall and retried every file one by one —
+// a 24-file repo cost 28 spawns (1 analysis + 3 batches + 24 retries), all failing.
+console.log("== broken claude: the cause is logged and the spawns stop (circuit breaker) ==");
+{
+  const { execSync } = await import("node:child_process");
+  const dir = mkdtempSync(resolve(tmpdir(), "onboard-broken-claude-"));
+  process.env.GAFFER_USAGE_LEDGER = join(dir, "usage.jsonl");
+  const repoDir = join(dir, "repo");
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  for (let i = 0; i < 24; i++) {
+    writeFileSync(join(repoDir, "src", `m${i}.ts`), `export const v${i} = ${i};\n`);
+  }
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    {
+      cwd: repoDir,
+      stdio: "ignore",
+    },
+  );
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    "if (process.argv[2] === 'card' && process.argv[3] === 'upsert') " +
+      "process.stdout.write(JSON.stringify({ modelStatus: 'active' }) + '\\n');\nprocess.exit(0);\n",
+  );
+  const CALLS = join(dir, "claude-calls");
+  // mode "exit1": stderr + exit 1. mode "is_error": exit 0, the error in claude's JSON.
+  const fakeClaude = (mode) => {
+    const bin = join(dir, `claude-${mode}`);
+    const body =
+      mode === "exit1"
+        ? "echo 'Invalid API key · Please run /login' >&2\nexit 1\n"
+        : `printf '%s\\n' '{"type":"result","is_error":true,"result":"Claude AI usage limit reached"}'\nexit 0\n`;
+    writeFileSync(bin, `#!/usr/bin/env bash\necho call >> ${JSON.stringify(CALLS)}\n${body}`);
+    execSync(`chmod +x ${JSON.stringify(bin)}`);
+    return bin;
+  };
+  const calls = () => {
+    try {
+      return readFileSync(CALLS, "utf8").trim().split("\n").filter(Boolean).length;
+    } catch {
+      return 0;
+    }
+  };
+  const baseEnv = {
+    ...process.env,
+    MEMORY_CLI_BIN: cliBin,
+    MEMORY_DB: join(dir, "lore.sqlite"),
+    GAFFER_CARD_BATCH: "8",
+    STRICT_MODE: "0",
+    GAFFER_STRICT_REQUIRE: "0",
+    SANDBOX_PROVIDER: "none",
+  };
+
+  for (const mode of ["exit1", "is_error"]) {
+    writeFileSync(CALLS, "");
+    const env = { ...baseEnv, CLAUDE_BIN: fakeClaude(mode) };
+    const want = mode === "exit1" ? "Invalid API key" : "usage limit reached";
+    const turn = runAnalysisTurn("hello", env);
+    assert(
+      `${mode}: runAnalysisTurn reports failed + the CLI's own error`,
+      turn.failed === true && turn.errorText.includes(want) && turn.stdout === "",
+    );
+    writeFileSync(CALLS, "");
+    const logs = [];
+    const res = analyzeAndWrite(
+      repoDir,
+      { repoId: "demo", name: "demo" },
+      {
+        env,
+        log: (m) => logs.push(m),
+      },
+    );
+    assert(`${mode}: at most 2 claude spawns for a 24-file repo (got ${calls()})`, calls() <= 2);
+    assert(
+      `${mode}: the log names claude's error`,
+      logs.some((l) => l.includes("model analysis failed") && l.includes(want)),
+    );
+    assert(`${mode}: modelError carries it to the caller`, String(res.modelError).includes(want));
+    eq(`${mode}: no model digest`, res.usedModel, false);
+    eq(`${mode}: every file still carded (mechanical-only)`, res.cardStats?.carded, 24);
+    eq(`${mode}: modelSkipped counts the 24 files`, res.cardStats?.modelSkipped, 24);
+    eq(`${mode}: failed still counts only store refusals`, res.cardStats?.failed, 0);
+  }
+
+  // The breaker over card turns alone (analysis fine, claude dies mid-pass): two
+  // consecutive failed batches trip it; the third batch never calls claude.
+  {
+    let batchCalls = 0;
+    let singleCalls = 0;
+    const logs = [];
+    const s = emitFileCards(
+      repoDir,
+      { repoId: "demo", name: "demo" },
+      {
+        cfg: { cliBin, db: join(dir, "lore.sqlite") },
+        env: { ...baseEnv, GAFFER_CARD_REVIEW_SAMPLE: "0" },
+        log: (m) => logs.push(m),
+        runBatchTurn: () => {
+          batchCalls += 1;
+          return modelFailure({ status: 1, errorText: "Invalid API key" });
+        },
+        runTurn: () => {
+          singleCalls += 1;
+          return null;
+        },
+      },
+    );
+    eq("card breaker: 2 batch calls, then stop", batchCalls, 2);
+    eq("card breaker: no per-file retries after a total failure", singleCalls, 0);
+    eq("card breaker: modelFailed = 2 turns", s.modelFailed, 2);
+    eq("card breaker: modelSkipped = the 8 files of the third batch", s.modelSkipped, 8);
+    assert(
+      "card breaker: one 'claude unavailable' line",
+      logs.filter((l) => l.includes("claude unavailable")).length === 1,
+    );
+  }
+
+  // Regression: a batch that EXITED 0 and parsed, with 6 of 8 slots, still retries
+  // exactly the 2 missing files.
+  {
+    let singleCalls = 0;
+    const s = emitFileCards(
+      repoDir,
+      { repoId: "demo", name: "demo" },
+      {
+        cfg: { cliBin, db: join(dir, "lore.sqlite") },
+        env: { ...baseEnv, GAFFER_CARD_REVIEW_SAMPLE: "0" },
+        runBatchTurn: (_p, count) => {
+          const out = new Array(count).fill(null);
+          for (let i = 0; i < Math.min(count, 6); i++)
+            out[i] = { tldr: "x.", rolePrimary: "util", roleTags: [] };
+          return out;
+        },
+        runTurn: () => {
+          singleCalls += 1;
+          return { tldr: "retried.", rolePrimary: "util", roleTags: [] };
+        },
+      },
+    );
+    eq("partial batch: 2 retries per batch of 8 (3 batches → 6)", singleCalls, 6);
+    eq("partial batch: every file model-carded", s.modelCarded, 24);
+  }
+
+  // The breaker in isolation + the review gate fails closed without calling claude.
+  {
+    const b = claudeBreaker();
+    b.fail({ status: 1, errorText: "x" });
+    assert("breaker: one failure does not trip", b.tripped === false);
+    b.ok();
+    b.fail({ status: 1, errorText: "x" });
+    assert("breaker: ok() resets the consecutive count", b.tripped === false);
+    b.fail({ status: 1, errorText: "x" });
+    assert("breaker: two consecutive failures trip it", b.tripped === true);
+    assert("isModelFailure(modelFailure(...))", isModelFailure(modelFailure({ status: 1 })));
+    assert("isModelFailure(null) is false", !isModelFailure(null));
+    let reviewCalls = 0;
+    const r = runCardReviewSample(
+      [{ rel: "src/m1.ts", fileType: "ts", structure: "", snippet: "", fields: { tldr: "x" } }],
+      {
+        cfg: { cliBin, db: join(dir, "lore.sqlite") },
+        canonical: repoDir,
+        repo: "demo",
+        repoRoot: repoDir,
+        head: null,
+        env: { ...baseEnv, GAFFER_CARD_REVIEW_SAMPLE: "5" },
+        runReviewTurn: () => {
+          reviewCalls += 1;
+          return { verdict: "pass", reason: "" };
+        },
+        breaker: b,
+      },
+    );
+    eq("review gate with the breaker open: no claude call", reviewCalls, 0);
+    eq("review gate with the breaker open: the card is downgraded (fail closed)", r.downgraded, 1);
+  }
+  delete process.env.GAFFER_USAGE_LEDGER;
 }
 
 console.log("");

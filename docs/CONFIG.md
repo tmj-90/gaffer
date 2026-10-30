@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 124 |
+| Knobs with a runner default | 126 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 73 |
@@ -232,6 +232,13 @@ computed from other knobs at runtime.
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 | `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) into $GAFFER_D |
+
+### lib/claude-auth.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_PREFLIGHT_LIVE` | `0` |  | runner | LIVE CLAUDE PROBE: 1 = runner/preflight.sh also makes ONE tiny paid `claude -p` call to prove the login works (catches an expired token the free credential check cannot); 0 = only the free check (is a credential visible |
+| `GAFFER_PREFLIGHT_LIVE_TIMEOUT` | `60` |  | runner | Seconds the live probe may take before it counts as a failure. |
 
 ### lib/delivery-recovery.sh
 

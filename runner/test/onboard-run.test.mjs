@@ -19,6 +19,8 @@
 //   AC7  --dry-run resolves a registered NAME → the repo's path
 //   AC8  a missing DISPATCH_ONBOARD_REPO is REFUSED (exit 1, error JSON)
 //   AC9  an unresolvable target is REFUSED (exit 1, error JSON)
+//   S1   --summary: ≤10 stderr lines (repo, test command, intake decision, next step),
+//        the full log in $GAFFER_DATA/onboard.log; no flag → the full log as before
 //
 // Zero deps (node:sqlite ships with Node 22+). Run: node test/onboard-run.test.mjs
 // =====================================================================
@@ -182,6 +184,100 @@ console.log("== AC9: an unresolvable target is REFUSED ==");
   if (code !== 0 && out && out.phase === "error" && /resolve/i.test(out.error)) {
     ok("unresolvable target → exit 1 + error JSON");
   } else fail(`unresolvable refusal wrong (code=${code}, out=${JSON.stringify(out)})`);
+}
+
+// ── --summary: the terminal view `gaffer onboard` passes ───────────────────────────
+// gaffer onboard filtered with `grep -vE '^\{.*\}$'`, which only drops single-line JSON;
+// crew prints its onboard result pretty-printed, so ~150 lines of raw JSON reached the
+// terminal and buried the facts a user needs next.
+console.log("== --summary: a short summary on stderr, the full log in $GAFFER_DATA/onboard.log ==");
+{
+  const { writeFileSync, readFileSync, existsSync } = await import("node:fs");
+  const work = mkdtempSync(resolve(tmpdir(), "onboard-summary-"));
+  const crewDir = resolve(work, "crew");
+  mkdirSync(resolve(crewDir, "dist", "cli"), { recursive: true });
+  const crewOut = {
+    ok: true,
+    onboarded: {
+      repoId: "notes",
+      name: "notes",
+      scan: { stack: "node", testCommand: "npm run test", defaultBranch: "main", riskSignals: [] },
+      profile: {
+        repoId: "notes",
+        name: "notes",
+        mapping: { mode: "standalone", scopeNodeIds: [] },
+      },
+      registration: { repoId: "a9c704b9", attachedScopeIds: [] },
+    },
+    clarifications: Array.from({ length: 8 }, (_, i) => ({
+      topic: `t${i}`,
+      question: `Question ${i}?`,
+      decisionId: "699ebe38-c214-467c-92a7-f6f9e5f31f2e",
+    })),
+  };
+  writeFileSync(
+    resolve(crewDir, "dist", "cli", "index.js"),
+    `process.stdout.write(${JSON.stringify(JSON.stringify(crewOut, null, 2))} + "\\n");\n`,
+  );
+  const data = resolve(work, "data");
+  mkdirSync(data, { recursive: true });
+  writeFileSync(resolve(data, "crew.yaml"), "dispatch:\n  local:\n    sqlite_path: x\n");
+  const repoDir = resolve(work, "notes");
+  mkdirSync(repoDir, { recursive: true });
+  const run = (args, extraEnv = {}) =>
+    spawnSync(process.execPath, [HELPER, "--repo", repoDir, ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GAFFER_DATA: data,
+        CREW_DIR: crewDir,
+        CREW_CONFIG: resolve(data, "crew.yaml"),
+        DISPATCH_DB: resolve(data, "dispatch.sqlite"),
+        MEMORY_CLI_BIN: "",
+        MEMORY_DB: "",
+        GAFFER_VERBOSE: "",
+        ...extraEnv,
+      },
+    });
+
+  const sum = run(["--summary"]);
+  const lines = sum.stderr.split("\n").filter((l) => l.trim().length > 0);
+  if (sum.status === 0) ok("--summary run exits 0");
+  else fail(`--summary exit ${sum.status}: ${sum.stderr}`);
+  if (lines.length <= 10) ok(`--summary prints at most 10 lines (got ${lines.length})`);
+  else fail(`--summary printed ${lines.length} lines:\n${sum.stderr}`);
+  if (!lines.some((l) => /^\s+"/.test(l) || /^\s*[{}]\s*$/.test(l)))
+    ok("no raw JSON lines in the summary");
+  else fail(`raw JSON in the summary:\n${sum.stderr}`);
+  if (/registered: notes/.test(sum.stderr) && /test "npm run test"/.test(sum.stderr))
+    ok("names the registered repo and its test command");
+  else fail(`summary lacks repo/test:\n${sum.stderr}`);
+  if (/decision 699ebe38/.test(sum.stderr) && /decisions resolve 699ebe38/.test(sum.stderr))
+    ok("names the intake decision and how to answer it");
+  else fail(`no intake line:\n${sum.stderr}`);
+  if (/^next: .*repo-access set <n> notes/m.test(sum.stderr))
+    ok("prints the next step with the repo name");
+  else fail(`no next line:\n${sum.stderr}`);
+  const logFile = resolve(data, "onboard.log");
+  if (existsSync(logFile) && readFileSync(logFile, "utf8").includes('"clarifications"'))
+    ok("the full crew JSON is kept in $GAFFER_DATA/onboard.log");
+  else fail("onboard.log missing the full output");
+  let done = null;
+  try {
+    done = JSON.parse(sum.stdout.trim().split("\n").pop());
+  } catch {
+    /* leave null */
+  }
+  eq("stdout still carries the single-line done event", done?.phase, "done");
+
+  const full = run([]);
+  if (full.stderr.includes('"clarifications"') && !/registered: notes/.test(full.stderr))
+    ok("without --summary the full JSON is still logged (dashboard run log unchanged)");
+  else fail(`no-flag output changed:\n${full.stderr.slice(0, 300)}`);
+  const verbose = run(["--summary"], { GAFFER_VERBOSE: "1" });
+  if (verbose.stderr.includes('"clarifications"'))
+    ok("GAFFER_VERBOSE=1 keeps the full log on stderr");
+  else fail("GAFFER_VERBOSE=1 hid the full log");
 }
 
 console.log("");

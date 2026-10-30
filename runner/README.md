@@ -235,13 +235,14 @@ and per-repo config.
 # 1. Build the servers
 pnpm -C .. -r build   # build all three packages from the repo root
 
-# 2. Watch a dry run (no Claude invoked, nothing mutated) — DRY_RUN=1 is the default
-bash loop.sh
+# 2. Watch a dry run (no Claude invoked, nothing mutated)
+./gaffer run --dry-run
 #   → prints each tick: what it WOULD claim, the recommended skills, the exact
 #     headless-claude command, or the idle-scan it WOULD run.
 
-# 3. Go live (only after reviewing) — claims real tickets and runs Claude
-DRY_RUN=0 bash loop.sh
+# 3. Go live (only after reviewing) — claims real tickets and runs Claude.
+#    `gaffer run` is LIVE by default (only --dry-run / DRY_RUN=1 keeps it a preview).
+./gaffer run
 
 # 4. Unattended: render + install the launchd agent (every 15 min, keep DRY_RUN=1 first).
 #    The plist is a TEMPLATE — substitute the repo + data paths, then load it (run from repo root):
@@ -254,7 +255,7 @@ Config + stop conditions (cost guards) live in `factory.config.sh`; the full
 knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 (`node scripts/config-reference.mjs`). Logs land in
 `<repo-root>/.gaffer/factory.log`; the full audit trail is Dispatch's event log
-(`dispatch ticket show <n>`) and its web UI.
+(`./gaffer wg ticket show <n>`) and its web UI.
 
 ## Files
 - `factory.config.sh` — paths, identity, **DRY_RUN**, stop conditions, CLI helpers

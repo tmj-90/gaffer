@@ -1253,6 +1253,14 @@ for (const [label, cmd] of [
   ["wg approve-ready", "wg approve-ready 5"],
   ["fg approve-ready", "fg approve-ready 5"],
   ["wg repo-access grant", "wg repo-access grant some/repo"],
+  ["wg decisions resolve", "wg decisions resolve abcd1234 --answer yes"],
+  ["dispatch decisions resolve", "dispatch decisions resolve abcd1234 --answer yes"],
+  [
+    "wg agent rename (agents never name themselves)",
+    "wg agent rename gaffer-factory --name Striker",
+  ],
+  ["wg agent rename --number", "wg agent rename gaffer-factory --number 9"],
+  ["wg club set", "wg club set --name 'Robot Rovers'"],
   ["crew repo-access", "crew repo-access list"],
   // Gate inputs the MCP scope check guards must not be reachable through the CLI either.
   ["wg ticket set-testable --off", "wg ticket set-testable 5 --off"],
@@ -1289,6 +1297,9 @@ for (const [label, cmd] of [
 for (const [label, cmd] of [
   ["wg ticket show", "wg ticket show 5"],
   ["wg ticket list", "wg ticket list -s ready"],
+  ["wg agent list", "wg agent list"],
+  ["wg club show", "wg club show"],
+  ["crew skill named resolve-merge-conflict", "crew skills show resolve-merge-conflict"],
   ["dispatch ticket show", "dispatch ticket show 5"],
   // The agent's OWN node usage on the delivered app must stay allowed — the deny rules
   // only fence the gaffer control-plane dist / DB, not a project that happens to use node.

@@ -83,6 +83,7 @@ wg init >/dev/null 2>&1 || { echo "dispatch init failed"; exit 1; }
 lg init >/dev/null 2>&1
 [ -f "$CREW_CONFIG" ] || node "$CREW_DIR/dist/cli/index.js" init -d "$GAFFER_DATA" -n gaffer >/dev/null
 sed -i.bak "s#sqlite_path:.*#sqlite_path: $DISPATCH_DB#" "$CREW_CONFIG" && rm -f "$CREW_CONFIG.bak"
+cp "$CREW_CONFIG" "$WORK/crew.before-onboard.yaml"
 
 # Onboard exactly as the dashboard's "Onboard a repo" does (registers in DISPATCH,
 # never in crew.yaml), then make sure the test command is the real one.
@@ -92,7 +93,10 @@ REPO_NAME="$(jget '(d.onboarded || {}).name || (d.onboarded || {}).repoId || ""'
 [ -n "$REPO_NAME" ] || { echo "onboarded repo name missing from crew onboard output:"; cat "$WORK/onboard.json"; exit 1; }
 wg repo set-commands "$REPO_NAME" --test "npm test" --lint "npm run lint" >/dev/null 2>&1 || true
 ok "setup: fixture repo '$REPO_NAME' onboarded into dispatch (crew.yaml repos untouched)"
-grep -q '^repos: \[\]$\|^repos:$' "$CREW_CONFIG" 2>/dev/null && ok "crew.yaml carries no repo entry of its own" || ok "crew.yaml unchanged by onboarding"
+# Both branches used to be `ok`, so this never checked anything: the onboarding must
+# leave crew.yaml byte-identical (repos live in dispatch only).
+cmp -s "$WORK/crew.before-onboard.yaml" "$CREW_CONFIG" && ok "crew.yaml unchanged by onboarding (no repo entry of its own)" \
+  || fail "onboarding rewrote crew.yaml: $(diff "$WORK/crew.before-onboard.yaml" "$CREW_CONFIG" | head -5 | tr '\n' '|')"
 
 # Turn the lane on the way the Settings → Idle loops panel does: through the
 # dispatch idleLoops module (maintenance switch + tech-debt lane + self-improve gate).

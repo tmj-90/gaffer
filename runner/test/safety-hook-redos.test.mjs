@@ -10,6 +10,7 @@
 //     own start-up cost;
 //   • the inline-interpreter DB rule, which retried every later `-c` / `<<` (cubic:
 //     42s for the whole hook on 26KB of `bun -c --yes`), stays fast on long input;
+//   • the ~100 KB deep path that took ~70s now blocks on the input-size cap in < 2s;
 //   • the prefix still sees through real valued options (`nice -n 5 gh …`).
 // Run: node test/safety-hook-redos.test.mjs
 import { spawnSync } from "node:child_process";
@@ -89,6 +90,32 @@ for (const [label, prefix] of Object.entries(inputs)) {
       status === want && ms - baseline < 1000,
     );
   }
+}
+
+// The ~100 KB deep path (`echo x > /a/a/…`, and the same path as a Write) took ~60-70s
+// to decide in the secret-path regexes, which are polynomial in the input length. The
+// input-size cap now blocks it before any rule runs: the whole spawned hook answers
+// exit 2 with the size reason in < 2s (start-up included), not by the 60s timeout.
+const deepPath = "/" + "a/".repeat(50000) + "a";
+for (const [label, payload] of [
+  ["bash redirect", bash(`echo x > ${deepPath}`)],
+  ["Write", { tool_name: "Write", tool_input: { file_path: deepPath } }],
+]) {
+  const start = Date.now();
+  const res = spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify(payload),
+    cwd: opts.cwd,
+    env: { ...process.env, ...opts.env },
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  const ms = Date.now() - start;
+  t.assert(
+    `hook blocks the ~100 KB deep-path ${label} on the size cap in < 2s (exit ${res.status}, ${ms}ms)`,
+    res.status === 2 &&
+      (res.stderr || "").includes("unverifiable: tool input too large (") &&
+      ms < 2000,
+  );
 }
 
 // The unambiguous value still lets real valued options through to the command.

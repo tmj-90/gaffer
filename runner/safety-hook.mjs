@@ -10,7 +10,10 @@
  * This file is the PROCESS CONTRACT only: stdin → decide → stderr + exit code.
  * The decision, every rule, lives in ./safety-hook-core.mjs (decideRaw; its header
  * carries the design notes and the SECRET BOUNDARY MODEL). Nothing here allows a
- * call the core did not allow.
+ * call the core did not allow. That includes the INPUT-SIZE CAP: the core blocks a
+ * payload over MAX_PAYLOAD_BYTES (2 MiB) or an inspected field over
+ * MAX_INSPECTED_FIELD_BYTES (64 KiB) before any rule runs, so an oversized input
+ * fails closed in milliseconds instead of feeding the super-linear regexes.
  */
 import { writeSync } from "node:fs";
 

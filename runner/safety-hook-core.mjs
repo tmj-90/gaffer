@@ -24,7 +24,16 @@
  * never appearing literally and not routed through a read-ish tool or `$(...)`)
  * can still slip past a regex. This hook is defence-in-depth, not a jail — real
  * containment of a determined exfil needs an OS sandbox / permission boundary.
+ *
+ * INPUT-SIZE CAP (see MAX_INSPECTED_FIELD_BYTES below): before JSON.parse, and
+ * again before any rule or regex reads a field, an oversized input BLOCKS with
+ * "unverifiable: tool input too large (…)" (ledger category `oversized-input`).
+ * Several rules are super-linear in the input length (a 100 KB deep path took
+ * 60-70s), so the cap bounds the input every rule sees; it sits well above any
+ * legitimate tool call seen. The caps are constants, never env-configurable: a
+ * knob would only ever be a way to loosen the boundary.
  */
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -60,6 +69,91 @@ try {
 // the top-level decision guard turns that throw into a BLOCK (fail-closed).
 const MAX_PATH_LEN = 4096; // ~PATH_MAX; anything longer is pathological, not real
 const MAX_CANON_DEPTH = 512; // ancestor-walk + symlink-follow recursion ceiling
+
+// =====================================================================
+// INPUT-SIZE CAP — an oversized tool input fails CLOSED before any rule runs
+// ---------------------------------------------------------------------
+// Several rules are polynomial in the input length (SECRET_PATH_FRAGMENT's
+// `[\w./-]*\.pem\b`-style alternatives rescan to the end of the string from every
+// position): `echo x > /` + "a/" x 50,000 (~100 KB) took 60-70s to decide (to a BLOCK)
+// and a 41 KB `find` ~19s. Claude Code's 60s timeout with `onFailure: block` stops
+// such a call anyway, but a slow path in a security boundary is a liability. So every field a rule reads is size-checked first, and anything
+// over the cap is BLOCKED as unverifiable — the hook never ALLOWS what it did not
+// fully analyse. These are deliberately constants and NOT env-configurable.
+//
+// MAX_INSPECTED_FIELD_BYTES = 64 KiB, per inspected field AND for all of them
+// together (UTF-8 bytes). The inspected fields are exactly what runDecision reads:
+// the tool name (tool_name / toolName) and tool_input's (or toolInput's) command,
+// file_path, filePath, notebook_path, path, pattern and glob. Nothing else in the
+// input reaches a rule: Write/Edit `content` / `new_string`, MCP arguments and
+// WebFetch's `url` are never read (an MCP or non-file tool is decided by its NAME).
+// Evidence for the number:
+//   • the largest input any ALLOW case in the hook suites uses is a 1,407-byte Bash
+//     command (safety-hook*.test.mjs, boundary-integration, the claude-settings /
+//     agent-home / spawner / bootstrap tests, crew's safety-hook-parity,
+//     safety-live-hook and root-access-parity); the only inputs over 6 KB in any
+//     suite are the two ~100 KB deep-path BLOCK cases;
+//   • real Claude Code agents write files through Bash heredocs (`cat > f <<'EOF'`,
+//     `python3 - <<'EOF'` edit scripts): over 14,578 recorded Bash calls the largest
+//     command was 29,795 bytes (p99 ≈ 6.6 KB, p99.9 ≈ 12.9 KB); the largest
+//     file_path was 154 bytes and the largest Grep/Glob pattern 87;
+//   • the runner itself writes no tool input; its own heredocs (tick.sh, lib/*)
+//     are shell it runs, not tool calls the hook sees.
+// 64 KiB is over twice the largest real heredoc and ~45x the largest test allow.
+// HONEST RESIDUAL: the cap bounds the input, not every rule's cost. Under it the
+// rules stay super-linear on adversarial shapes: at 64 KiB, `echo {a,{a,…` takes
+// ~117s (the deny-list's command-position prefix restarts at every `{`) and the
+// other pathological shapes measured 24–46s. The 60s hook timeout with
+// `onFailure: block` still turns those into a BLOCK; a lower cap would instead
+// refuse real heredocs (~30 KB seen).
+export const MAX_INSPECTED_FIELD_BYTES = 64 * 1024;
+// MAX_PAYLOAD_BYTES = 2 MiB, for the raw stdin JSON as a whole, checked before
+// JSON.parse. It bounds what is parsed and copied (an allowed Grep echoes its whole
+// input back) but must clear the fields no rule reads, chiefly a Write's `content`:
+// the largest real Write payload seen was 86,694 bytes, and one tool call cannot
+// exceed the model's output budget (~128K tokens ≈ 0.5 MB, plus JSON escaping), so
+// 2 MiB never refuses a call a model can actually emit.
+export const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
+const OVERSIZED_PREFIX = "unverifiable: tool input too large";
+// The tool_input keys a rule reads (keep in step with runDecision and checkSearch).
+const INSPECTED_INPUT_FIELDS = [
+  "command",
+  "file_path",
+  "filePath",
+  "notebook_path",
+  "path",
+  "pattern",
+  "glob",
+];
+
+/** UTF-8 size of one field as a rule would see it (a non-string is measured as JSON). */
+function fieldBytes(value) {
+  if (value == null) return 0;
+  return Buffer.byteLength(typeof value === "string" ? value : (JSON.stringify(value) ?? ""));
+}
+
+/**
+ * BLOCK when the tool name or an inspected tool_input field is over the cap, or the
+ * inspected tool_input fields are over it together (a Grep's path + glob + pattern).
+ */
+function checkInputSize(tool, input) {
+  const over = (name, bytes) =>
+    block(`${OVERSIZED_PREFIX} (${name}: ${bytes} bytes > ${MAX_INSPECTED_FIELD_BYTES}-byte cap)`);
+  const toolBytes = fieldBytes(tool);
+  if (toolBytes > MAX_INSPECTED_FIELD_BYTES) over("tool_name", toolBytes);
+  if (!input || typeof input !== "object") return;
+  let total = 0;
+  for (const key of INSPECTED_INPUT_FIELDS) {
+    const bytes = fieldBytes(input[key]);
+    if (bytes > MAX_INSPECTED_FIELD_BYTES) over(`tool_input.${key}`, bytes);
+    total += bytes;
+  }
+  if (total > MAX_INSPECTED_FIELD_BYTES) {
+    block(
+      `${OVERSIZED_PREFIX} (inspected fields together: ${total} bytes > ${MAX_INSPECTED_FIELD_BYTES}-byte cap)`,
+    );
+  }
+}
 
 /**
  * Canonicalise a path symlink-safely, even when it doesn't exist yet (a file
@@ -109,6 +203,8 @@ let CURRENT_TARGET = null;
 // Coarse category for the block ledger, derived from the reason string so the
 // trust report can group "what the agent kept trying" without parsing prose.
 function blockCategory(reason) {
+  // First: the size cap's reason says "unverifiable", which would read as a write.
+  if (String(reason).startsWith(OVERSIZED_PREFIX)) return "oversized-input";
   const r = String(reason).toLowerCase();
   if (r.includes("secret") || r.includes(".env") || r.includes("credential")) return "secret-read";
   if (
@@ -3068,6 +3164,13 @@ function runDecision(raw) {
   // than escaping as exit 1 → ALLOW. block()/allow() throw a HookVerdict, which the
   // catch below passes through untouched, so the normal decision path is unaffected.
   try {
+    // INPUT-SIZE CAP, part 1: the payload as a whole, before it is even parsed.
+    const rawBytes = typeof raw === "string" ? Buffer.byteLength(raw) : 0;
+    if (rawBytes > MAX_PAYLOAD_BYTES) {
+      block(
+        `${OVERSIZED_PREFIX} (hook payload: ${rawBytes} bytes > ${MAX_PAYLOAD_BYTES}-byte cap)`,
+      );
+    }
     let payload = {};
     let parsed = true;
     try {
@@ -3099,6 +3202,8 @@ function runDecision(raw) {
     // Chunk 2b metric: record every observed tool call (telemetry only — this runs
     // BEFORE dispatch and never influences the allow/block outcome below).
     logToolCall(tool, CURRENT_TARGET);
+    // INPUT-SIZE CAP, part 2: every field a rule reads, before any rule reads it.
+    checkInputSize(tool, input);
     switch (tool) {
       case "Bash":
         return checkCommand(String(input.command ?? ""));

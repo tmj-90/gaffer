@@ -11,7 +11,12 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, relative, resolve } from "node:path";
-import { decide, decideRaw } from "../safety-hook-core.mjs";
+import {
+  MAX_INSPECTED_FIELD_BYTES,
+  MAX_PAYLOAD_BYTES,
+  decide,
+  decideRaw,
+} from "../safety-hook-core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = resolve(HERE, "..", "safety-hook.mjs");
@@ -1574,11 +1579,24 @@ allowed("literal in-root cp still allowed", "cp src/a.ts sub/b.ts");
   // hook non-2, which Claude Code treats as ALLOW → the entire hook was voided.
   // The decision is now wrapped fail-closed and canonicalize is depth/length-
   // bounded, so a crash BLOCKS. Pre-fix these exited 1 (allow); post-fix exit 2.
+  // At ~100 KB both are now over the INPUT-SIZE CAP (section below), which blocks
+  // them in milliseconds before any rule runs; the bash redirect used to spend ~70s
+  // in the secret-path regexes before reaching the same verdict.
   const deepPath = "/" + "a/".repeat(50000) + "a";
-  if (runFileTool("Write", deepPath) === 2) passed += 1;
-  else failures.push("DENY expected: pathological deep-path Write must fail CLOSED, not exit 1");
-  if (runBash(`echo x > ${deepPath}`) === 2) passed += 1;
-  else failures.push("DENY expected: pathological deep-path bash redirect must fail CLOSED");
+  for (const [label, payload] of [
+    ["Write", { tool_name: "Write", tool_input: { file_path: deepPath } }],
+    ["bash redirect", bash(`echo x > ${deepPath}`)],
+  ]) {
+    const t0 = performance.now();
+    const res = decide(payload, { cwd: RUNNER });
+    const ms = performance.now() - t0;
+    if (res.exitCode === 2 && /^unverifiable: tool input too large \(/.test(res.reason) && ms < 200)
+      passed += 1;
+    else
+      failures.push(
+        `DENY expected: pathological deep-path ${label} must fail CLOSED on the size cap in <200ms, got exit ${res.exitCode} in ${Math.round(ms)}ms: ${res.reason}`,
+      );
+  }
 
   // Fix 2 — SYMLINK ESCAPE. An in-root symlink whose target is OUTSIDE the
   // write-root. Pre-fix, canonicalize caught realpath's throw on the dangling
@@ -1783,6 +1801,276 @@ if (runRawStdin("   \n  ") === 0) passed += 1;
 else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays allowed");
 
 // =====================================================================
+// INPUT-SIZE CAP — every field a rule reads (the tool name; command, file_path /
+// filePath / notebook_path, path, pattern, glob) and the payload as a whole are
+// size-checked before any rule runs. Over the cap BLOCKS as unverifiable, fast; at
+// or under it the normal rules decide, so a long but legitimate heredoc is still
+// allowed and a long secret read is still blocked by its own rule.
+// =====================================================================
+{
+  const CAP = MAX_INSPECTED_FIELD_BYTES;
+  const OVERSIZED = "unverifiable: tool input too large (";
+  const SZ_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-sizecap-")));
+  const SZ_DATA = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-sizecap-data-")));
+  const env = { ...process.env, GAFFER_WRITE_ROOTS: SZ_ROOT, GAFFER_READ_ROOTS: "" };
+  const LINE = "The quick brown fox jumps over the lazy dog, 0123456789.\n";
+  /** `head` + ordinary prose lines + `tail`, exactly `bytes` long (ASCII). */
+  const fit = (head, tail, bytes) => {
+    const room = bytes - head.length - tail.length;
+    let body = LINE.repeat(Math.floor(room / LINE.length));
+    const rest = room - body.length;
+    if (rest > 0) body += "x".repeat(rest - 1) + "\n";
+    const out = head + body + tail;
+    if (Buffer.byteLength(out) !== bytes)
+      throw new Error(`fit: built ${out.length}, wanted ${bytes}`);
+    return out;
+  };
+  const heredoc = (file, bytes) => fit(`cat > ${file} <<'EOF'\n`, "EOF\n", bytes);
+  const pad = (prefix, bytes) => prefix + "a".repeat(bytes - prefix.length);
+  /** Decide `payload` (an object, or raw stdin text) in SZ_ROOT; time the decision. */
+  const timed = (payload, opts = {}) => {
+    const raw = typeof payload === "string" ? payload : JSON.stringify(payload);
+    const t0 = performance.now();
+    const res = decideRaw(raw, { env: opts.env ?? env, cwd: SZ_ROOT });
+    return { ...res, ms: performance.now() - t0 };
+  };
+  /** Over the cap: BLOCK, reason names the field, the size and the cap, under 200ms. */
+  const oversized = (label, payload, field, bytes, cap = CAP) => {
+    const res = timed(payload);
+    const want = `${OVERSIZED}${field}: ${bytes} bytes > ${cap}-byte cap)`;
+    if (res.exitCode === 2 && res.reason === want && res.ms < 200) passed += 1;
+    else
+      failures.push(
+        `SIZE CAP ${label}: expected "${want}" in <200ms, got exit ${res.exitCode} in ${Math.round(res.ms)}ms: ${String(res.reason).slice(0, 160)}`,
+      );
+  };
+  /** At or under the cap: the normal rules decide (`want` exit; a block's reason must not be the cap's). */
+  const ruled = (label, payload, want, reasonHas) => {
+    const res = timed(payload);
+    const ok =
+      res.exitCode === want &&
+      (want === 0 || (!String(res.reason).startsWith(OVERSIZED) && res.reason.includes(reasonHas)));
+    if (ok) passed += 1;
+    else
+      failures.push(
+        `SIZE CAP ${label}: expected exit ${want}${reasonHas ? ` "${reasonHas}"` : ""} from the normal rules, got exit ${res.exitCode}: ${String(res.reason).slice(0, 160)}`,
+      );
+  };
+  const tool = (tool_name, tool_input) => ({ tool_name, tool_input });
+
+  // Bash command: a long legitimate heredoc at cap-1 and exactly at the cap is
+  // allowed; the same heredoc into a secret file is blocked by the secret rule;
+  // one byte over the cap is blocked by the cap.
+  ruled("heredoc at cap-1", tool("Bash", { command: heredoc("notes.md", CAP - 1) }), 0);
+  ruled("heredoc at the cap", tool("Bash", { command: heredoc("notes.md", CAP) }), 0);
+  ruled(
+    "secret heredoc at cap-1",
+    tool("Bash", { command: heredoc(".env", CAP - 1) }),
+    2,
+    "secret",
+  );
+  oversized(
+    "heredoc at cap+1",
+    tool("Bash", { command: heredoc("notes.md", CAP + 1) }),
+    "tool_input.command",
+    CAP + 1,
+  );
+  // 60 KiB, under the cap: a harmless multi-line `echo` into the write root is allowed, and the
+  // same size with a force push after the heredoc is blocked by the deny-list (for
+  // the force push, not the size), so the cap never stands in for a rule.
+  const KIB60 = 60 * 1024;
+  ruled(
+    "60 KiB multi-line echo",
+    tool("Bash", { command: fit(`echo "`, `" > notes.md\n`, KIB60) }),
+    0,
+  );
+  ruled(
+    "60 KiB command with a force push",
+    tool("Bash", {
+      command: fit(`cat > notes.md <<'EOF'\n`, "EOF\ngit push --force origin feature\n", KIB60),
+    }),
+    2,
+    "force push",
+  );
+  oversized(
+    "camelCase toolName/toolInput",
+    { toolName: "Bash", toolInput: { command: heredoc("notes.md", CAP + 1) } },
+    "tool_input.command",
+    CAP + 1,
+  );
+  // A non-string field is measured as the JSON a rule's String() would be built from.
+  const arr = ["x".repeat(CAP)];
+  oversized(
+    "array command",
+    tool("Bash", { command: arr }),
+    "tool_input.command",
+    JSON.stringify(arr).length,
+  );
+
+  // File path: at cap-1 the normal rules still decide (the path bound blocks it);
+  // over the cap the size cap blocks first, for every path-carrying key.
+  ruled(
+    "Write file_path at cap-1",
+    tool("Write", { file_path: pad(`${SZ_ROOT}/`, CAP - 1) }),
+    2,
+    "canonicalize: path too long",
+  );
+  for (const [t, key] of [
+    ["Write", "file_path"],
+    ["Edit", "filePath"],
+    ["Read", "file_path"],
+    ["NotebookEdit", "notebook_path"],
+    ["NotebookRead", "notebook_path"],
+  ]) {
+    oversized(
+      `${t} ${key} at cap+1`,
+      tool(t, { [key]: pad(`${SZ_ROOT}/`, CAP + 1) }),
+      `tool_input.${key}`,
+      CAP + 1,
+    );
+  }
+
+  // Grep / Glob: Grep's pattern is a content regex no rule tests, so at cap-1 it is
+  // allowed; over the cap it, a glob or a search root is blocked.
+  ruled("Grep pattern at cap-1", tool("Grep", { pattern: pad("x", CAP - 1) }), 0);
+  oversized(
+    "Grep pattern at cap+1",
+    tool("Grep", { pattern: pad("x", CAP + 1) }),
+    "tool_input.pattern",
+    CAP + 1,
+  );
+  oversized(
+    "Glob pattern at cap+1",
+    tool("Glob", { pattern: pad("**/", CAP + 1) }),
+    "tool_input.pattern",
+    CAP + 1,
+  );
+  oversized(
+    "Grep glob at cap+1",
+    tool("Grep", { pattern: "x", glob: pad("*.", CAP + 1) }),
+    "tool_input.glob",
+    CAP + 1,
+  );
+  oversized(
+    "Grep path at cap+1",
+    tool("Grep", { pattern: "x", path: pad(`${SZ_ROOT}/`, CAP + 1) }),
+    "tool_input.path",
+    CAP + 1,
+  );
+  // Each field under the cap, but together over it: still blocked.
+  oversized(
+    "Grep fields together over the cap",
+    tool("Grep", { pattern: pad("x", CAP / 2), glob: pad("*.", CAP / 2 + 1) }),
+    "inspected fields together",
+    CAP + 1,
+  );
+
+  // MCP: the tool NAME is what the hook decides on and is capped; its arguments are
+  // never read by a rule, so only the whole-payload cap bounds them.
+  oversized(
+    "MCP tool name at cap+1",
+    tool(pad("mcp__dispatch__", CAP + 1), {}),
+    "tool_name",
+    CAP + 1,
+  );
+  ruled(
+    "MCP args over the field cap (not inspected)",
+    tool("mcp__dispatch__add_comment", { body: "x".repeat(4 * CAP) }),
+    0,
+  );
+  const mcpBig = JSON.stringify(
+    tool("mcp__dispatch__add_comment", { body: "x".repeat(MAX_PAYLOAD_BYTES) }),
+  );
+  oversized(
+    "MCP args over the payload cap",
+    mcpBig,
+    "hook payload",
+    mcpBig.length,
+    MAX_PAYLOAD_BYTES,
+  );
+
+  // The payload as a whole: a large Write `content` (no rule reads it) is allowed
+  // under the payload cap and blocked over it, before JSON.parse.
+  ruled(
+    "Write content of 1 MiB",
+    tool("Write", { file_path: "big.txt", content: "z".repeat(1024 * 1024) }),
+    0,
+  );
+  const writeBig = JSON.stringify(
+    tool("Write", { file_path: "big.txt", content: "z".repeat(MAX_PAYLOAD_BYTES) }),
+  );
+  oversized(
+    "Write payload over the cap",
+    writeBig,
+    "hook payload",
+    writeBig.length,
+    MAX_PAYLOAD_BYTES,
+  );
+  // Over the payload cap even when it is not valid JSON: the size is checked first.
+  const junk = "{" + " ".repeat(MAX_PAYLOAD_BYTES);
+  oversized(
+    "unparseable payload over the cap",
+    junk,
+    "hook payload",
+    junk.length,
+    MAX_PAYLOAD_BYTES,
+  );
+
+  // The block reaches the safety-blocks ledger like any other, as oversized-input.
+  timed(tool("Bash", { command: heredoc("notes.md", CAP + 1) }), {
+    env: { ...env, GAFFER_DATA: SZ_DATA, GAFFER_TICKET: "9" },
+  });
+  let entry = null;
+  try {
+    entry = JSON.parse(readFileSync(resolve(SZ_DATA, "safety-blocks.jsonl"), "utf8"));
+  } catch {
+    /* asserted below */
+  }
+  if (
+    entry &&
+    entry.category === "oversized-input" &&
+    entry.tool === "Bash" &&
+    entry.ticket === "9" &&
+    entry.reason.startsWith(OVERSIZED)
+  )
+    passed += 1;
+  else
+    failures.push(
+      `SIZE CAP ledger: expected an oversized-input entry, got ${JSON.stringify(entry)}`,
+    );
+
+  // The caps are constants, never read from the environment: pin their values and
+  // that their declarations are bare literals with no process.env in the cap's code.
+  if (MAX_INSPECTED_FIELD_BYTES === 65536 && MAX_PAYLOAD_BYTES === 2097152) passed += 1;
+  else
+    failures.push(
+      `SIZE CAP constants: expected 65536 / 2097152, got ${MAX_INSPECTED_FIELD_BYTES} / ${MAX_PAYLOAD_BYTES}`,
+    );
+  const coreSrc = readFileSync(resolve(RUNNER, "safety-hook-core.mjs"), "utf8");
+  const capStart = coreSrc.indexOf("INPUT-SIZE CAP — an oversized tool input fails CLOSED");
+  const capEnd = coreSrc.indexOf("\n}\n", coreSrc.indexOf("function checkInputSize("));
+  const capSrc = capStart >= 0 && capEnd > capStart ? coreSrc.slice(capStart, capEnd) : "";
+  if (
+    /^export const MAX_INSPECTED_FIELD_BYTES = 64 \* 1024;$/m.test(capSrc) &&
+    /^export const MAX_PAYLOAD_BYTES = 2 \* 1024 \* 1024;$/m.test(capSrc) &&
+    !capSrc.includes("process.env") &&
+    !/process\.env\b[^\n]*(?:MAX|SIZE|CAP|BYTES)/i.test(coreSrc) &&
+    (
+      coreSrc.match(
+        /^\s*(?:export\s+)?(?:const|let|var)\s+MAX_(?:INSPECTED_FIELD|PAYLOAD)_BYTES\b/gm,
+      ) ?? []
+    ).join("|") === "export const MAX_INSPECTED_FIELD_BYTES|export const MAX_PAYLOAD_BYTES"
+  )
+    passed += 1;
+  else
+    failures.push(
+      "SIZE CAP constants: MAX_INSPECTED_FIELD_BYTES / MAX_PAYLOAD_BYTES must be literal constants, assigned once, with no process.env near them",
+    );
+
+  for (const d of [SZ_ROOT, SZ_DATA]) rmSync(d, { recursive: true, force: true });
+}
+
+// =====================================================================
 // SUBPROCESS CONTRACT — the real wrapper, spawned the way Claude Code runs it
 // ---------------------------------------------------------------------
 // Everything above decides in-process (the rules). These cases spawn
@@ -1904,6 +2192,44 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
   contract("empty stdin (parses as {})", "", {}, 0);
   contract("whitespace stdin (parses as {})", "   \n  ", {}, 0);
   contract("payload that throws (null)", "null", {}, 2, "safety hook crashed while deciding");
+  contract(
+    "oversized input (size cap)",
+    call("Bash", { command: "x".repeat(MAX_INSPECTED_FIELD_BYTES + 1) }),
+    {},
+    2,
+    `unverifiable: tool input too large (tool_input.command: ${MAX_INSPECTED_FIELD_BYTES + 1} bytes`,
+  );
+  // Over the payload cap the process blocks before JSON.parse: an in-scope Write with
+  // 2 MiB of content, and 2 MiB that is not even JSON (which would otherwise block as
+  // unparseable), both report the size. Env names that look like a knob change nothing.
+  const capKnobs = {
+    ...CT_ENV,
+    MAX_PAYLOAD_BYTES: "999999999",
+    MAX_INSPECTED_FIELD_BYTES: "999999999",
+    GAFFER_MAX_PAYLOAD_BYTES: "999999999",
+    GAFFER_MAX_INSPECTED_FIELD_BYTES: "999999999",
+  };
+  contract(
+    "oversized payload (2 MiB Write content)",
+    call("Write", { file_path: "big.txt", content: "z".repeat(MAX_PAYLOAD_BYTES) }),
+    { env: capKnobs, cwd: CT_ROOT },
+    2,
+    "unverifiable: tool input too large (hook payload: ",
+  );
+  contract(
+    "oversized unparseable payload (size checked before parse)",
+    "{" + " ".repeat(MAX_PAYLOAD_BYTES),
+    { env: capKnobs, cwd: CT_ROOT },
+    2,
+    `unverifiable: tool input too large (hook payload: ${MAX_PAYLOAD_BYTES + 1} bytes > ${MAX_PAYLOAD_BYTES}-byte cap)`,
+  );
+  contract(
+    "oversized field with cap-like env vars set",
+    call("Bash", { command: "x".repeat(MAX_INSPECTED_FIELD_BYTES + 1) }),
+    { env: capKnobs, cwd: CT_ROOT },
+    2,
+    "unverifiable: tool input too large (tool_input.command: ",
+  );
   contract(
     "path that throws (canonicalize bound)",
     call("Read", { file_path: "a/".repeat(3000) }),

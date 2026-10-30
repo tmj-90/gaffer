@@ -73,17 +73,24 @@ const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "building a packet never changes the ticket.",
 
   run_idle_loop:
-    "Run one idle-coverage tick: scan the configured repos for low-coverage / " +
-    "quality gaps and file the findings as work. **This is the only tool that " +
-    "writes to Dispatch — and it ONLY ever creates DRAFT tickets.** It never " +
-    "edits code, never claims or readies tickets, and never touches git. Call it " +
-    "when the work queue is empty and you want the factory to propose its own " +
-    "next tasks, not when you already have a ticket to work.\n\n" +
-    "Inspect `outcome.status`: `draft_created` means new drafts were filed (see " +
-    "`outcome.drafts[].ticketId`); a no-work status means nothing crossed the " +
-    "configured gap threshold — that's a healthy result, not an error, so don't " +
-    "retry in a loop. Each call is one tick; the drafts wait for a human to " +
-    "promote them to ready. Requires Dispatch to be reachable.",
+    "Run one idle tick — the same tick `crew idle` runs: ingest labelled " +
+    "GitHub / Jira issues (when enabled), then every enabled idle loop " +
+    "(coverage, test / type quality, documentation, dependency hygiene, " +
+    "security hotspots, tech debt, design drift, lore gaps, feature backlog) " +
+    "over the factory's repos " +
+    "(crew.yaml's plus every repo onboarded into Dispatch), filing the findings as " +
+    "tickets. **This is the only tool that writes to Dispatch.** It never edits " +
+    "code, never claims work, and never touches git. Findings land as DRAFT " +
+    "tickets, EXCEPT that a loop whose mode is `create_ready_tickets`, or " +
+    "`loops.self_improve` promoting a low-risk opted-in repo's finding, marks " +
+    "the ticket READY (claimable). Call it when the work queue is empty and you " +
+    "want the factory to propose its own next tasks, not when you already have a " +
+    "ticket to work.\n\n" +
+    "Inspect `report.loops[].outcome.status`: `draft_created` / `ready_created` " +
+    "mean tickets were filed (`report.totalDrafts` counts them); `no_findings` / " +
+    "`no_repos` / `skipped_tickets_ready` are healthy no-work results, not " +
+    "errors, so don't retry in a loop. Each call is one tick. Requires Dispatch " +
+    "to be reachable.",
 
   explain_safety_policy:
     "Return the loaded safety policy in full: git rules (branch prefix, " +

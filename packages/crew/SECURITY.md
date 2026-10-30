@@ -7,7 +7,7 @@ is gated by deterministic, agent-independent controls.
 
 ## The boundary: a deterministic PreToolUse hook
 
-The enforcement point is a **deterministic safety decision** computed *before*
+The enforcement point is a **deterministic safety decision** computed _before_
 any mutating action runs — the PreToolUse boundary. Given a command, a file
 write, or a branch operation, the policy returns one of three values:
 
@@ -25,14 +25,17 @@ in the MCP surface.
 ## Agents cannot self-approve
 
 There is no code path by which an agent's output can flip a `denied` or
-`needs_approval` decision to `allowed`. Approval is a *human* act that happens
+`needs_approval` decision to `allowed`. Approval is a _human_ act that happens
 outside the agent's control loop. Specifically:
 
-- The MCP tools an agent can call are **read-only or draft-only**. The single
-  mutating tool, `run_idle_loop`, can only create **draft** Dispatch tickets —
-  it never edits code, claims work, readies tickets, or touches git.
-- Idle-loop findings land as drafts that a human promotes to *ready*. An agent
-  cannot promote its own work.
+- Every MCP tool an agent can call is **read-only** except one. The single
+  mutating tool, `run_idle_loop`, runs one idle tick (the same as `crew idle`):
+  it files findings as Dispatch tickets and never edits code, claims work, or
+  touches git.
+- Idle-loop findings land as drafts that a human promotes to _ready_, unless
+  the OPERATOR configured otherwise: a loop with `mode: create_ready_tickets`,
+  or `loops.self_improve` (off by default, opt-in per repo, low risk only)
+  promoting a finding. An agent cannot promote its own work.
 - The safety policy is loaded from disk at startup; agents have no tool to mutate
   it.
 
@@ -43,7 +46,7 @@ outside the agent's control loop. Specifically:
   acceptance criteria, repo paths/commands, branch policy, relevant lore) and
   runs **every free-text field through secret redaction** before returning it
   (`src/safety/redaction.ts`, `src/context/packet.ts`). The packet is the
-  *sanctioned* view — agents are coached to prefer it over reading raw rows or
+  _sanctioned_ view — agents are coached to prefer it over reading raw rows or
   `.env` files.
 - **Secret files are write-denied and read-gated.** Writes to `.env` and similar
   secret files are denied or approval-gated by the filesystem guard. Reading
@@ -57,13 +60,13 @@ outside the agent's control loop. Specifically:
   branches (`main`, `release/*`, …) reject direct pushes; force-push, branch and
   tag deletion, and rebases of shared branches are denied.
 - **Command policy:** risky commands (destructive git, untrusted installs) are
-  denied or approval-gated. A repo may *widen* its own allow-list only within the
+  denied or approval-gated. A repo may _widen_ its own allow-list only within the
   bounds the policy permits.
 
 ## Audit log
 
 Every MCP tool call is recorded to an **append-only, content-redacted** audit log
-(`src/audit/`). Each line records *that* a tool ran and the ids/counts it touched
+(`src/audit/`). Each line records _that_ a tool ran and the ids/counts it touched
 — tool name, ticket/repo/skill/draft ids, result counts, and any error code. It
 **never** records prompts, file contents, ticket/lore bodies, commands, paths, or
 secrets: free-text arguments are reduced to a character count by `summariseArgs`

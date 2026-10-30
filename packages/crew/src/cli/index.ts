@@ -13,7 +13,6 @@ import { defaultBuiltinHooks } from "../hooks/builtins.js";
 import { HookRegistry } from "../hooks/hookRegistry.js";
 import { NullMemoryClient } from "../memory/client.js";
 import { resolveAsyncMemory, resolveUnderstandingSink } from "../memory/factory.js";
-import { resolveDecomposer } from "../adapters/decomposerFactory.js";
 import {
   prefetchLore,
   seededSyncClient,
@@ -23,12 +22,8 @@ import {
 } from "../memory/prefetch.js";
 import { ingestGithubIssues } from "../ingest/githubIssues.js";
 import { ingestJiraIssues } from "../ingest/jiraIssues.js";
-import {
-  runIdleLoops,
-  runIdleLoreGap,
-  runIdleFeatureBacklog,
-  runMaintenanceLane,
-} from "../loops/idleRegistry.js";
+import { runMaintenanceLane } from "../loops/idleRegistry.js";
+import { runIdleTick } from "../loops/idleTick.js";
 import { runImplementationLoop } from "../loops/implementationLoop.js";
 import { MockAgentRuntime } from "../runtime/agentRuntime.js";
 import { loadSkillRegistry } from "../skills/loader.js";
@@ -389,64 +384,25 @@ program
       redact: loaded.config.logging.redact,
     });
     const dispatch = await openDispatch(ctx);
-    // Dispatch's registry (what onboarding writes) merged into crew.yaml's repos, so a
-    // dashboard-onboarded repo is scanned without hand-editing crew.yaml.
-    const repoRegistry = withDispatchRepos(ctx.repoRegistry, dispatch, events);
-    const baseDeps = {
+    // The shared idle tick (loops/idleTick.ts): Dispatch repos merged into
+    // crew.yaml's, GitHub/Jira ingest, every enabled idle loop, then the async
+    // lore-gap + feature-backlog loops. crew-mcp's run_idle_loop runs the same body.
+    const tick = await runIdleTick({
       config: loaded.config,
-      repoRegistry,
+      repoRegistry: ctx.repoRegistry,
       dispatch,
       runner: systemCommandRunner,
       events,
       clock: systemClock,
-    };
-
-    // Pull real labelled GitHub/Jira issues BEFORE the scan loops, so an idle
-    // tick first ingests teammate-filed work, then scans. Guarded by config.
-    const ingestDeps = {
-      config: loaded.config,
-      repoRegistry,
-      dispatch,
-      runner: systemCommandRunner,
-      events,
-    };
-    const ingest = loaded.config.ingest.github.enabled ? ingestGithubIssues(ingestDeps) : null;
-    const jira = loaded.config.ingest.jira.enabled ? ingestJiraIssues(ingestDeps) : null;
-
-    const report = runIdleLoops(baseDeps);
-
-    // Async lore-gap loop (behind loops.idle_lore_gap.enabled + real Memory).
-    const loreGap: { id: "lore_gap"; outcome: unknown } | null = await (async () => {
-      const asyncLore = await resolveAsyncMemory(loaded.config, events);
-      if (!asyncLore) return null;
-      try {
-        return await runIdleLoreGap({ ...baseDeps, memory: asyncLore });
-      } finally {
-        await asyncLore.close();
-      }
-    })();
-
-    // Async feature-backlog loop (behind loops.idle_feature_backlog.enabled +
-    // real Memory + a configured brownfield decomposer).
-    const featureBacklog: { id: "feature_backlog"; outcome: unknown } | null = await (async () => {
-      const decomposer = resolveDecomposer(loaded.config);
-      if (!decomposer) return null;
-      const asyncLore = await resolveAsyncMemory(loaded.config, events);
-      if (!asyncLore) return null;
-      try {
-        return await runIdleFeatureBacklog({ ...baseDeps, memory: asyncLore, decomposer });
-      } finally {
-        await asyncLore.close();
-      }
-    })();
+    });
 
     printJson({
       ok: true,
-      ...(ingest ? { ingest } : {}),
-      ...(jira ? { jira } : {}),
-      report,
-      ...(loreGap ? { loreGap } : {}),
-      ...(featureBacklog ? { featureBacklog } : {}),
+      ...(tick.ingest ? { ingest: tick.ingest } : {}),
+      ...(tick.jira ? { jira: tick.jira } : {}),
+      report: tick.report,
+      ...(tick.loreGap ? { loreGap: tick.loreGap } : {}),
+      ...(tick.featureBacklog ? { featureBacklog: tick.featureBacklog } : {}),
       events: events.types(),
     });
   });

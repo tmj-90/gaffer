@@ -134,12 +134,28 @@ grep -q 'gaffer_is_self_target()' "$RUNNER_DIR_REAL/factory.config.sh" \
   || fail "missing gaffer_is_self_target helper"
 
 echo "== AC9: tick.sh wires the guard on BOTH paths =="
-grep -q 'gaffer_is_self_target "\$PRIMARY_REPO"' "$RUNNER_DIR_REAL/tick.sh" \
-  && ok "delivery path guards PRIMARY_REPO" \
-  || fail "delivery path missing gaffer_is_self_target on PRIMARY_REPO"
-grep -q 'gaffer_is_self_target "\$REPO_PATH"' "$RUNNER_DIR_REAL/tick.sh" \
-  && ok "delivery path also guards REPO_PATH" \
-  || fail "delivery path missing gaffer_is_self_target on REPO_PATH"
+# The delivery guard must cover EVERY write target, not only the first one: the
+# candidate list feeds each WRITE_ROOTS line, each WRITE_ROWS path and REPO_PATH
+# through gaffer_is_self_target (PROOF E in self-op-ban-integration proves the
+# behaviour; this pins the wiring).
+_SELF_BLOCK="$(sed -n '/SELF-OPERATION BAN (refuse to deliver/,/Worktree isolation (delivery happens/p' "$RUNNER_DIR_REAL/tick.sh")"
+grep -q 'gaffer_is_self_target "\$__self_c"' <<<"$_SELF_BLOCK" \
+  && ok "delivery path runs gaffer_is_self_target over a candidate loop" \
+  || fail "delivery path missing the gaffer_is_self_target candidate loop"
+grep -q '"\$WRITE_ROOTS"' <<<"$_SELF_BLOCK" \
+  && ok "delivery guard candidates include every WRITE_ROOTS line" \
+  || fail "delivery guard does not check WRITE_ROOTS"
+grep -q '"\$WRITE_ROWS"' <<<"$_SELF_BLOCK" \
+  && ok "delivery guard candidates include every WRITE_ROWS path" \
+  || fail "delivery guard does not check WRITE_ROWS paths"
+grep -q '"\$REPO_PATH"' <<<"$_SELF_BLOCK" \
+  && ok "delivery guard candidates also include REPO_PATH" \
+  || fail "delivery guard does not check REPO_PATH"
+if grep -q 'gaffer_is_self_target "\$PRIMARY_REPO"' <<<"$_SELF_BLOCK"; then
+  fail "delivery guard must not fall back to checking only PRIMARY_REPO (the first write root)"
+else
+  ok "delivery guard is not a first-write-root-only check"
+fi
 grep -q 'gaffer_is_self_target "\$B_DIR"' "$RUNNER_DIR_REAL/tick.sh" \
   && ok "bootstrap path guards B_DIR" \
   || fail "bootstrap path missing gaffer_is_self_target on B_DIR"

@@ -403,7 +403,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Allow self-delivery",
     help:
       "Permit the factory to deliver into its OWN repo. Off (default) is the safe choice — it never edits itself by accident: " +
-      "a ticket whose write repo is the gaffer checkout root (or any directory above it), a component dir inside it, " +
+      "a ticket where any of its write repos (not only the first) is the gaffer checkout root (or any directory above it), a component dir inside it, " +
       "or a worktree of the same git repo is set aside for a human instead of delivered.",
   },
 

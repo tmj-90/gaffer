@@ -1309,7 +1309,8 @@ gaffer_agent_env() {
 # IS, is INSIDE, or CONTAINS one of the factory's own component dirs (DISPATCH_DIR,
 # CREW_DIR, MEMORY_DIR, RUNNER_DIR — all defined above, so this works in
 # BOTH the mono layout and the side-by-side layout) — so the monorepo root is
-# covered — or is a worktree of the runner's own git repository. First-party dogfooding
+# covered — or is a worktree of the runner's own git repository. Every write repo
+# of a multi-repo ticket is checked, not only the first. First-party dogfooding
 # overrides it: set GAFFER_ALLOW_SELF_DELIVERY=1 to restore today's behaviour
 # exactly. NOTE: not bulletproof — the check is in-tree and removable — but it
 # stops the casual case, which is the accepted bar.

@@ -1593,17 +1593,25 @@ if [ "$READY_COUNT" -gt 0 ]; then
 
   # ── SELF-OPERATION BAN (refuse to deliver to Gaffer's own source) ────────────
   # If the delivery target IS, or is INSIDE, one of the factory's own component
-  # dirs (dispatch / crew / memory / the runner), refuse: the factory
-  # would be editing its own source. Checked here — after REPO_PATH is resolved
-  # and PRIMARY_REPO is set, before any worktree is created — so nothing is
+  # dirs (dispatch / crew / memory / the runner) or the gaffer checkout itself,
+  # refuse: the factory would be editing its own source. Checked here — after
+  # REPO_PATH and every write root are resolved, before any worktree is created — so nothing is
   # mutated. GAFFER_ALLOW_SELF_DELIVERY=1 fully restores today's behaviour (for
   # first-party dogfooding). The ticket is BLOCKED (set aside for a human, exactly
   # like the bootstrap "no commit" / hygiene parks) AND recorded in the per-run
   # skip file, so the loop does NOT re-claim the same self-target ticket forever.
   if [ "${GAFFER_ALLOW_SELF_DELIVERY:-0}" != "1" ]; then
+    # EVERY write target is checked, not just the first: a multi-repo ticket whose
+    # gaffer checkout (or a component dir) is the 2nd+ write repo would otherwise
+    # be delivered into. Candidates, in order: each WRITE_ROOTS line, each
+    # WRITE_ROWS path column (the rows worktrees are actually added from), then
+    # REPO_PATH. First match wins; any match refuses the whole ticket (fail closed).
     SELF_HIT=""
-    if gaffer_is_self_target "$PRIMARY_REPO"; then SELF_HIT="$PRIMARY_REPO"
-    elif gaffer_is_self_target "$REPO_PATH"; then SELF_HIT="$REPO_PATH"; fi
+    __self_cands="$(printf '%s\n' "$WRITE_ROOTS"; printf '%s\n' "$WRITE_ROWS" | awk -F'\t' 'NF>=3{print $3}'; printf '%s\n' "$REPO_PATH")"
+    while IFS= read -r __self_c; do
+      [ -n "$__self_c" ] || continue
+      if gaffer_is_self_target "$__self_c"; then SELF_HIT="$__self_c"; break; fi
+    done <<< "$__self_cands"
     if [ -n "$SELF_HIT" ]; then
       log "SELF-OP: refusing to deliver #$NUM — target '$SELF_HIT' is (or is inside) a Gaffer component; the factory must not edit its own source. Set GAFFER_ALLOW_SELF_DELIVERY=1 to override (first-party dogfooding only)."
       wg attach-evidence "$NUM" --type manual_note \

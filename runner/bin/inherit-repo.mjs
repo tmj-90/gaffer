@@ -33,7 +33,7 @@
 //     "bootstrapCount": <int>,            // bootstraps in the epic
 //     "links":      [ { "ticket": <num>, "ticketId": "...", "repo": "<name>", "reason": "single|dependency" } ],
 //     "ambiguous":  [ { "ticket": <num>, "ticketId": "...", "candidates": [ { "repo": "...", "purpose": "..." } ],
-//                       "argv": [ ... ] | null, "model": "<plan-model>" } ],
+//                       "argv": [ ... ] | null, "model": "<classifier-model>" } ],
 //     "unresolved": [ { "ticket": <num>, "ticketId": "...", "reason": "..." } ]
 //   }
 // Exit 0 on a computed plan (even an empty one); non-zero only on a hard failure
@@ -44,6 +44,8 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { loadRegistry } from "./route-model.mjs";
+import { roleTurnCap } from "../lib/worker.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -54,14 +56,34 @@ const GAFFER_DATA = process.env.GAFFER_DATA || resolve(GAFFER_HOME, ".gaffer");
 
 const CONFIG = {
   dispatchDb: process.env.DISPATCH_DB || resolve(GAFFER_DATA, "dispatch.sqlite"),
-  mcpConfig: process.env.MCP_CONFIG || resolve(RUNNER_DIR, ".mcp.json"),
   claudeBin: process.env.CLAUDE_BIN || "claude",
-  // Repo choice for an ambiguous sibling is a DECISION step → plan model (opus).
-  planModel: (process.env.GAFFER_PLAN_MODEL || "").trim(),
+  model: inheritModel(process.env),
   claudeFlags: (process.env.CLAUDE_FLAGS || "--permission-mode acceptEdits")
     .split(/\s+/)
     .filter(Boolean),
 };
+
+/**
+ * The classifier's model. Picking ONE name from a short candidate list (validated by
+ * the caller against the set, NONE → left for a human) is a cheap-tier task, so the
+ * default is the registry's cheap tier — it used to inherit the planner's opus.
+ * GAFFER_INHERIT_MODEL pins it; an OPERATOR-set GAFFER_PLAN_MODEL (not the config's
+ * own default, GAFFER_PLAN_MODEL_EXPLICIT=0) still applies, as before.
+ */
+export function inheritModel(env = process.env) {
+  const own = String(env.GAFFER_INHERIT_MODEL ?? "").trim();
+  if (own) return own;
+  const plan = String(env.GAFFER_PLAN_MODEL ?? "").trim();
+  if (plan && env.GAFFER_PLAN_MODEL_EXPLICIT !== "0") return plan;
+  let cheap;
+  try {
+    cheap = String(loadRegistry(env.GAFFER_MODEL_REGISTRY || undefined).tiers?.cheap ?? "");
+  } catch {
+    cheap = "";
+  }
+  // A provider-prefixed id ("ollama:…") has no CLI adapter yet — never emit it.
+  return cheap.trim() && !cheap.includes(":") ? cheap.trim() : "haiku";
+}
 
 function log(msg) {
   process.stderr.write(`[inherit-repo] ${msg}\n`);
@@ -294,9 +316,8 @@ export function resolveInheritance(graph, bootstrapTicketId) {
 }
 
 /**
- * Build the headless `claude -p` argv that asks the plan model to pick ONE
- * candidate repo for an ambiguous sibling. Same shape as decompose.mjs /
- * product-owner-run.mjs: [-p, prompt, --mcp-config, <cfg>, --model, <plan>, ...flags].
+ * Build the prompt that asks the classifier model to pick ONE candidate repo for an
+ * ambiguous sibling (the argv is buildClaudeArgv below).
  * The model MUST answer with exactly one candidate repo name; the caller validates
  * the answer is in the candidate set and never links an invented repo.
  */
@@ -317,11 +338,30 @@ export function buildPrompt({ title, description, candidates }) {
   ].join("\n");
 }
 
-export function buildClaudeArgv({ prompt, mcpConfig, model, flags }) {
-  const args = ["-p", prompt];
-  if (mcpConfig) args.push("--mcp-config", mcpConfig);
+/**
+ * The classifier answers ONE word from the candidates inlined in the prompt, so it
+ * runs TEXT-ONLY: no built-in tools (`--tools ""`), no MCP servers (--strict-mcp-config
+ * with none named — it used to get the factory's .mcp.json template), no skill
+ * listing, a 2-turn cap. `--output-format json` makes the call measurable: the bash
+ * caller books it in the usage ledger (kind `inherit`) and reads `.result`. The
+ * text-only flags come AFTER the operator's CLAUDE_FLAGS so they cannot be undone.
+ */
+export const INHERIT_MAX_TURNS = 2;
+export function buildClaudeArgv({
+  prompt,
+  model,
+  flags,
+  maxTurns = roleTurnCap(INHERIT_MAX_TURNS),
+}) {
+  const args = ["-p", prompt, "--output-format", "json"];
   if (model) args.push("--model", model);
-  return args.concat(flags);
+  const turns = maxTurns > 0 ? ["--max-turns", String(maxTurns)] : [];
+  return args.concat(flags, turns, [
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
+  ]);
 }
 
 function main() {
@@ -376,8 +416,7 @@ function main() {
     });
     const argv = buildClaudeArgv({
       prompt,
-      mcpConfig: CONFIG.mcpConfig,
-      model: CONFIG.planModel,
+      model: CONFIG.model,
       flags: CONFIG.claudeFlags,
     });
     return {
@@ -385,7 +424,7 @@ function main() {
       ticketId: a.ticketId,
       candidates: a.candidates,
       argv,
-      model: CONFIG.planModel,
+      model: CONFIG.model,
       claudeBin: CONFIG.claudeBin,
     };
   });

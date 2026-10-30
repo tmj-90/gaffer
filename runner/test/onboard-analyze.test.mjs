@@ -29,7 +29,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -65,6 +65,10 @@ const {
   INDUCTION_TAG,
   CARD_SOLO_SNIPPET_CHARS,
   agentChildEnv,
+  runAnalysisTurn,
+  runCardBatchTurn,
+  runCardReviewTurn,
+  buildCardReviewPrompt,
 } = await import(MOD);
 
 let passed = 0;
@@ -1013,6 +1017,82 @@ console.log("== analysisCaps: synthesis model is the mid tier unless an operator
     analysisCaps(prodEnv).model === "sonnet",
   );
   assert("with the sourced config, cards are haiku", cardModel(prodEnv) === "haiku");
+}
+
+console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny turn cap ==");
+{
+  // A stub claude records its cwd + argv (one per line, "" kept visible) and replies
+  // with a JSON envelope — the shape of the audit's reproduction (no live model).
+  const dir = mkdtempSync(join(tmpdir(), "onb-textonly-"));
+  const rec = join(dir, "rec.txt");
+  const stub = join(dir, "claude.sh");
+  writeFileSync(
+    stub,
+    [
+      "#!/bin/bash",
+      `{ echo "CWD=$PWD"; for a in "$@"; do printf 'ARG<%s>\\n' "\${a:0:60}"; done; } > "${rec}"`,
+      `echo '{"type":"result","result":"\`\`\`json\\n{\\"cards\\":[]}\\n\`\`\`","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0}'`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const env = {
+    ...process.env,
+    CLAUDE_BIN: stub,
+    GAFFER_MAX_TURNS: "200",
+    GAFFER_DATA: dir,
+    MCP_CONFIG: join(RUNNER_DIR, ".mcp.json"),
+  };
+  const read = () => readFileSync(rec, "utf8").split("\n");
+  const args = (lines) => lines.filter((l) => l.startsWith("ARG<")).map((l) => l.slice(4, -1));
+  const after = (a, flag) => a[a.indexOf(flag) + 1];
+  const prompt = buildCardBatchPrompt([
+    {
+      rel: "a.js",
+      fileType: "js",
+      structure: { imports: ["x"], symbols: ["f"] },
+      snippet: "f(){}",
+    },
+  ]);
+  for (const [label, run] of [
+    ["card batch", () => runCardBatchTurn(prompt, 1, env)],
+    [
+      "card review",
+      () =>
+        runCardReviewTurn(
+          buildCardReviewPrompt("a.js", "js", { imports: [], symbols: [] }, "f(){}", { tldr: "x" }),
+          env,
+        ),
+    ],
+  ]) {
+    run();
+    const lines = read();
+    const a = args(lines);
+    const cwd = (lines.find((l) => l.startsWith("CWD=")) || "").slice(4);
+    assert(`${label}: cwd is NOT runner/ (runner/CLAUDE.md no longer loads)`, cwd !== RUNNER_DIR);
+    assert(`${label}: cwd is an empty scratch dir`, /gaffer-onboard-text-/.test(cwd));
+    assert(`${label}: built-in tools disabled (--tools "")`, after(a, "--tools") === "");
+    assert(`${label}: --strict-mcp-config`, a.includes("--strict-mcp-config"));
+    assert(
+      `${label}: the factory MCP config is NOT handed over`,
+      !a.includes(env.MCP_CONFIG) && /mcp\.json$/.test(after(a, "--mcp-config")),
+    );
+    assert(`${label}: --disable-slash-commands`, a.includes("--disable-slash-commands"));
+    assert(`${label}: --max-turns 2, not the 200 delivery cap`, after(a, "--max-turns") === "2");
+    assert(`${label}: one --max-turns only`, a.filter((x) => x === "--max-turns").length === 1);
+    assert(`${label}: write denylist kept (defence in depth)`, a.includes("--disallowedTools"));
+    assert(`${label}: scratch cwd removed after the turn`, !existsSync(cwd));
+  }
+  // The synthesis turn (not text-only) keeps its tools + MCP, under its own role cap.
+  runAnalysisTurn("synth", env);
+  const a = args(read());
+  assert(
+    "synthesis turn keeps the factory MCP config",
+    after(a, "--mcp-config") === env.MCP_CONFIG,
+  );
+  assert("synthesis turn is not tool-less", !a.includes("--tools"));
+  assert("synthesis turn: GAFFER_ONBOARD_MAX_TURNS default 60", after(a, "--max-turns") === "60");
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log("== cardBatch: GAFFER_CARD_BATCH / default 8, min 1 ==");

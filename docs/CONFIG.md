@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 125 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 69 |
+| Env reads in code with no default and no UI entry | 70 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -322,6 +322,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_EGRESS_ALLOW_FILE` | `$data/egress-allow.txt` | `runner/lib/sandbox-docker.sh` |
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | `runner/gaffer`, `runner/lib/eval-judge.sh` |
 | `GAFFER_INHERIT_AMB_TIMEOUT` | `300` | `runner/lib/greenfield.sh` |
+| `GAFFER_INHERIT_MODEL` | _(empty)_ | `runner/bin/inherit-repo.mjs` |
 | `GAFFER_INHERIT_PLAN_TIMEOUT` | `60` | `runner/lib/greenfield.sh` |
 | `GAFFER_JUDGE_MODEL_FLAG` | `${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-` | `runner/lib/eval-judge.sh` |
 | `GAFFER_LITE_MAX_FILES` | `4` | `runner/factory.config.sh` |

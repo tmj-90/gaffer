@@ -441,8 +441,8 @@ gaffer_inherit_repo() {
       local tnum cands ans
       tnum="$(printf '%s' "$plan" | _gaffer_inherit_amb_field "$idx" ticket)"
       cands="$(printf '%s' "$plan" | _gaffer_inherit_amb_field "$idx" candidates)"  # newline-separated repo names
-      # Spawn the planned claude call for this sibling.
-      ans="$(printf '%s' "$plan" | _gaffer_inherit_amb_spawn "$idx")"
+      # Spawn the planned claude call for this sibling (ledgered against its ticket).
+      ans="$(printf '%s' "$plan" | _gaffer_inherit_amb_spawn "$idx" "$tnum")"
       ans="$(printf '%s' "$ans" | tr -d '[:space:]')"
       if [ -n "$ans" ] && [ "$ans" != "NONE" ] && printf '%s\n' "$cands" | grep -qxF "$ans"; then
         if wg ticket repo-access set "$tnum" "$ans" --access write --relation confirmed >/dev/null 2>&1; then
@@ -477,11 +477,14 @@ _gaffer_inherit_amb_field() {  # stdin: plan JSON; args: <idx> <ticket|candidate
   node "$_GAFFER_JSON_TOOL" inherit-amb-field "$1" "$2" 2>/dev/null
 }
 
-# Spawn the planned claude argv for ambiguous sibling <idx> and echo its stdout.
-# The argv (binary + args) is carried in the plan so model/flags/mcp stay identical
-# to the rest of the factory's claude calls.
-_gaffer_inherit_amb_spawn() {  # stdin: plan JSON; arg: <idx> → claude stdout
-  local idx="$1" payload
+# Spawn the planned claude argv for ambiguous sibling <idx> and echo its answer text.
+# The argv (binary + args) is carried in the plan so model/flags stay identical to
+# the rest of the factory's claude calls. It asks for --output-format json, so the
+# call is booked in the usage ledger (kind `inherit`, against <ticket>) like every
+# other paid turn, and the answer is the envelope's `.result`; a plain-text reply
+# (no envelope) is used as is — the caller validates it against the candidates.
+_gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answer text
+  local idx="$1" tnum="${2:-}" payload
   payload="$(cat)"
   # Pull the binary + argv as NUL-separated tokens to survive spaces in the prompt.
   local bin
@@ -494,6 +497,17 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; arg: <idx> → claude stdout
   # Bound this ambiguous-multi-app inherit decision like every other live `claude -p`:
   # it runs AFTER a fast delivery where the outer per-tick timer may have hours of
   # headroom, so a hung/runaway agent here would stall the whole tick. Wrap in
-  # gaffer_timeout and forward the turns cap, matching worker.sh.
-  gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ${GAFFER_MAX_TURNS_FLAG:-} 2>/dev/null || true
+  # gaffer_timeout; the argv carries its own (text-only) turn cap. Run from an EMPTY
+  # scratch dir so no CLAUDE.md / project settings load into a one-word answer.
+  local scratch rc=0 text=""
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-inherit.XXXXXX")" || return 0
+  ( cd "$scratch" && gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ) \
+    >"$scratch/out.json" 2>/dev/null || rc=$?
+  if type gaffer_usage_record >/dev/null 2>&1; then
+    text="$(gaffer_usage_record inherit "$tnum" "$rc" "$scratch/out.json" 2>/dev/null)"
+  fi
+  [ -n "$text" ] || text="$(node "${GAFFER_WORKER_MJS:-${RUNNER_DIR:-.}/lib/worker.mjs}" parse-result result-text --json-file "$scratch/out.json" 2>/dev/null)"
+  [ -n "$text" ] || text="$(cat "$scratch/out.json" 2>/dev/null)"
+  rm -rf "$scratch"
+  printf '%s' "$text"
 }

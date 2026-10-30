@@ -48,7 +48,17 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -1203,14 +1213,31 @@ export function analysisCaps(env = process.env) {
   return { timeoutMs, maxTurns, model };
 }
 
+// Turn cap for a TEXT-ONLY call: with no tools the first reply always ends the run;
+// the spare turn is margin, not a budget the model can spend exploring.
+export const TEXT_ONLY_MAX_TURNS = 2;
+
 /**
  * Spawn ONE headless `claude -p … --output-format json` analysis turn, capture its
  * usage in the ledger (kind "onboard"), and return the agent's `.result` text.
  * Reuses bin/decompose.mjs's invocation pattern EXACTLY: --output-format json for
  * the usage ledger, the chosen model, the per-call turn + timeout caps, and the
  * credential-stripped child env. Returns { timedOut, stdout }.
+ *
+ * textOnly (the card + card-review turns): the prompt inlines everything the model
+ * needs and asks for one JSON block, so the call runs as a plain completion — no
+ * built-in tools (`--tools ""`), no MCP servers (an empty config under
+ * --strict-mcp-config), no skill listing (--disable-slash-commands), from an EMPTY
+ * scratch cwd (runner/CLAUDE.md, the maintainer guide, no longer loads into every
+ * card call) and under TEXT_ONLY_MAX_TURNS. Hundreds of card calls per onboard used
+ * to carry the tool schemas and that brief for nothing.
  */
-export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
+export function runAnalysisTurn(
+  prompt,
+  env = process.env,
+  kind = "onboard",
+  { textOnly = false } = {},
+) {
   const caps = analysisCaps(env);
   const claudeBin = env.CLAUDE_BIN || "claude";
   const flags = (env.CLAUDE_FLAGS || "--permission-mode acceptEdits").split(/\s+/).filter(Boolean);
@@ -1221,28 +1248,49 @@ export function runAnalysisTurn(prompt, env = process.env, kind = "onboard") {
   // so run the agent READ-ONLY: deny every write/exec tool UNCONDITIONALLY — a prompt
   // injection in an (untrusted) onboarded-repo file can't write into factory source
   // (denying only the edit tools is defeated by a Bash `>` fallback). Read/Grep/Glob + MCP
-  // stay available for the file inspection the analysis needs.
+  // stay available to the synthesis turn; the text-only card/review turns get none
+  // (below). The denylist stays on those too, as defence in depth.
   // MUST enumerate the COMPLETE write/exec set — MultiEdit is a write tool too; a denylist
   // silently permits any write tool it omits.
   flags.push("--disallowedTools", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash");
   if (caps.model) flags.unshift("--model", caps.model);
   const args = ["-p", prompt, "--output-format", "json", ...flags];
-  if (caps.maxTurns > 0) args.push("--max-turns", String(caps.maxTurns));
-  const mcp = env.MCP_CONFIG;
-  if (mcp) args.unshift("--mcp-config", mcp);
+  let cwd = RUNNER_DIR;
+  let scratch = null;
+  if (textOnly) {
+    // An empty dir as cwd + the only write root, and an empty MCP config FILE (not an
+    // inline JSON string: the docker seam reads --mcp-config as a path to bridge it).
+    scratch = mkdtempSync(join(tmpdir(), "gaffer-onboard-text-"));
+    cwd = scratch;
+    const emptyMcp = join(scratch, "mcp.json");
+    writeFileSync(emptyMcp, '{"mcpServers":{}}');
+    args.push("--max-turns", String(roleTurnCap(TEXT_ONLY_MAX_TURNS, env)));
+    // Appended AFTER the operator's CLAUDE_FLAGS so an override cannot re-enable tools.
+    args.push("--tools", "", "--strict-mcp-config", "--disable-slash-commands");
+    args.unshift("--mcp-config", emptyMcp);
+  } else {
+    if (caps.maxTurns > 0) args.push("--max-turns", String(caps.maxTurns));
+    const mcp = env.MCP_CONFIG;
+    if (mcp) args.unshift("--mcp-config", mcp);
+  }
 
   // Route through the ONE worker spawn seam (lib/worker.mjs): provider dispatch plus
   // the SAME OS-sandbox containment decision the bash seam makes (wrap under
   // STRICT_MODE / GAFFER_STRICT_REQUIRE, fail closed when the host cannot supply
   // one). This spawn used to be a bare spawnSync outside the seam.
-  const res = Worker.deliver({
-    bin: claudeBin,
-    argv: args,
-    cwd: RUNNER_DIR,
-    timeoutMs: caps.timeoutMs,
-    maxBuffer: 16 * 1024 * 1024,
-    env: { ...agentChildEnv(env), GAFFER_WRITE_ROOTS: RUNNER_DIR },
-  });
+  let res;
+  try {
+    res = Worker.deliver({
+      bin: claudeBin,
+      argv: args,
+      cwd,
+      timeoutMs: caps.timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...agentChildEnv(env), GAFFER_WRITE_ROOTS: cwd },
+    });
+  } finally {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
       appendUsageRecord(unknownRecord({ kind, reason: "onboard analysis claude call timed out" }));
@@ -2115,7 +2163,7 @@ function runCardTurn(prompt, env = process.env) {
   // Override the synth-model knobs with the card-specific model so runAnalysisTurn
   // picks it up through analysisCaps without touching the caller's env.
   const cardEnv = cardTurnEnv(env);
-  const turn = runAnalysisTurn(prompt, cardEnv, "onboard");
+  const turn = runAnalysisTurn(prompt, cardEnv, "onboard", { textOnly: true });
   if (turn.timedOut) return null;
   return validateCardFields(extractLastJsonBlock(turn.stdout));
 }
@@ -2132,8 +2180,8 @@ function cardTurnEnv(env) {
  * writes mechanical-only cards for the whole batch). Same cheap card model as
  * runCardTurn. Injectable in tests.
  */
-function runCardBatchTurn(prompt, count, env = process.env) {
-  const turn = runAnalysisTurn(prompt, cardTurnEnv(env), "onboard");
+export function runCardBatchTurn(prompt, count, env = process.env) {
+  const turn = runAnalysisTurn(prompt, cardTurnEnv(env), "onboard", { textOnly: true });
   if (turn.timedOut) return null;
   return validateCardBatch(extractLastJsonBlock(turn.stdout), count);
 }
@@ -2174,8 +2222,8 @@ function upsertCardCli(
 }
 
 /** Run one semantic review turn (ledgered under kind "onboard-review"). */
-function runCardReviewTurn(prompt, env = process.env) {
-  const turn = runAnalysisTurn(prompt, env, "onboard-review");
+export function runCardReviewTurn(prompt, env = process.env) {
+  const turn = runAnalysisTurn(prompt, env, "onboard-review", { textOnly: true });
   if (turn.timedOut) return null;
   return validateCardReviewResult(extractLastJsonBlock(turn.stdout));
 }

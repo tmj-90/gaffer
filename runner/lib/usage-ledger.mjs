@@ -71,6 +71,12 @@ export const VALID_KINDS = new Set([
   // The merge-conflict resolver agent (bin/merge-ticket.mjs) — spawned when a landing
   // conflicts; paid work that counts toward the caps like any other call.
   "merge-resolver",
+  // Booked by bin/spec-author.mjs and the onboarding card-review gate
+  // (lib/onboard-analyze.mjs) but missing here, so `estimate-usage --kind` refused them.
+  "spec-author",
+  "onboard-review",
+  // The ambiguous-sibling repo classifier (bin/inherit-repo.mjs via lib/greenfield.sh).
+  "inherit",
 ]);
 
 // parseClaudeJson / extractResultText / the numeric extractors (numOrUnknown,

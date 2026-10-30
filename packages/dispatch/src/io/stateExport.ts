@@ -96,6 +96,9 @@ export const EXPORT_TABLES = [
   // root). A durable, security-relevant operator decision worth carrying between
   // machines (and auditable), so it IS part of the bundle.
   "autonomy_policy",
+  // SQUAD (v27): the operator's club identity (one row, no FK). The team name and
+  // kit are part of the factory the operator carries between machines.
+  "club",
 ] as const;
 
 export type ExportTable = (typeof EXPORT_TABLES)[number];
@@ -127,6 +130,7 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   ticket_dependencies: "ticket_id, depends_on_ticket_id",
   rework_attempts: "id",
   autonomy_policy: "id",
+  club: "id",
 };
 
 /** A single table's rows, each row a column→value map (SQLite scalar values). */

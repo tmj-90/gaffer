@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -239,8 +239,19 @@ CREATE TABLE IF NOT EXISTS agents (
   created_by   TEXT,
   last_seen_at TEXT,
   created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  -- SQUAD (schema_version 27): PRESENTATION ONLY. \`display_name\` above stays the
+  -- label the agent registered with (e.g. gaffer-factory-reviewer); \`squad_name\` is
+  -- the operator-chosen name the dashboard shows (NULL ⇒ a derived default such as
+  -- "Delivery 1"), \`shirt_number\` its 1–99 squad number, unique when set (partial
+  -- unique index below). Neither ever replaces the agent id that claims, events and
+  -- the audit log record. For an existing DB both columns are added by an
+  -- idempotent ALTER in connection.ts (NULL backfill ⇒ unnamed, no number).
+  squad_name   TEXT,
+  shirt_number INTEGER CHECK (shirt_number IS NULL OR (shirt_number BETWEEN 1 AND 99))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_shirt_number
+  ON agents(shirt_number) WHERE shirt_number IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS agent_capabilities (
   agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -681,4 +692,24 @@ CREATE TABLE IF NOT EXISTS api_principals (
 );
 CREATE INDEX IF NOT EXISTS idx_api_principals_active
   ON api_principals(revoked_at, token_hash);
+
+-- ============================================================================
+-- CLUB IDENTITY (schema_version 27). The operator's team ("club") for the
+-- dashboard's Match Day view: a name (NULL ⇒ the dashboard shows "Gaffer"), an
+-- optional crest short name (≤ 4 chars) and two kit colours (#rrggbb). A single
+-- row (id = 1) — the factory has one club. Presentation only: nothing in the
+-- delivery path reads it. Writes are recorded as \`club.updated\` events in the
+-- tamper-evident log. Portable (part of the state bundle). Brand-new table,
+-- created idempotently — no ADD COLUMN migration needed.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS club (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  name          TEXT,
+  short_name    TEXT,
+  kit_primary   TEXT CHECK (kit_primary IS NULL OR kit_primary GLOB '#[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'),
+  kit_secondary TEXT CHECK (kit_secondary IS NULL OR kit_secondary GLOB '#[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'),
+  updated_by    TEXT,
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
 `;

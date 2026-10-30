@@ -81,8 +81,9 @@ Ticket lifecycle: `create_ticket`, `add_acceptance_criterion`,
 `claim_next_ticket`, `claim_ticket`, `heartbeat_claim`, `record_ac_evidence`,
 `submit_ticket_for_review`, `record_delivery_artifact`, `record_repo_delivery`,
 `mark_ticket_blocked`, `release_claim`. Planning + coordination: `add_dependency`,
-`create_epic`, `list_pending_decisions`, `request_decision`, and the read-only
-Factory-Map summary `list_scopes`. DB path from `DISPATCH_DB`.
+`create_epic`, `list_pending_decisions`, `request_decision`, the read-only
+Factory-Map summary `list_scopes`, and the read-only squad roster `get_squad`
+(club name + agent display names; no tool sets names). DB path from `DISPATCH_DB`.
 
 Each tool's description **coaches the operating agent** — when to call, what to
 provide, the cost asymmetry, and the failure modes to avoid (claim one ticket

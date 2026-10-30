@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 
 import type { Actor } from "../../domain/types.js";
+import { DispatchError } from "../../util/errors.js";
 import { cliActor, open, printJson, validateTtl } from "../shared.js";
 
 export function registerAgent(program: Command): void {
@@ -21,6 +22,58 @@ export function registerAgent(program: Command): void {
       );
       printJson({ ok: true, agent: { id: a.id, display_name: a.display_name } });
       wg.db.close();
+    });
+
+  // SQUAD: presentation-only names + shirt numbers. The agent id (what claims,
+  // events and the audit log record) never changes.
+  agent
+    .command("list")
+    .description(
+      "List agents with their display name, shirt number, role and registered name (registration order)",
+    )
+    .action((_opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        printJson({ ok: true, agents: wg.listSquad() });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  agent
+    .command("rename <id>")
+    .description(
+      'Give an agent a display name (≤ 40 chars; "" clears) and/or a shirt number (1–99, unique). Presentation only — the id never changes.',
+    )
+    .option("-n, --name <name>", 'display name ("" clears back to the derived default)')
+    .option("--number <n>", "shirt number 1–99")
+    .option("--no-number", "clear the shirt number")
+    .action((ref: string, opts: { name?: string; number?: string | boolean }, cmd) => {
+      let shirt: number | null | undefined;
+      if (opts.number === false) shirt = null;
+      else if (typeof opts.number === "string") {
+        shirt = /^\d+$/.test(opts.number) ? Number(opts.number) : Number.NaN;
+      }
+      if (opts.name === undefined && shirt === undefined) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "Nothing to change: pass --name and/or --number (or --no-number).",
+        );
+      }
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.updateAgentDisplay(
+          ref,
+          {
+            ...(opts.name !== undefined ? { display_name: opts.name } : {}),
+            ...(shirt !== undefined ? { shirt_number: shirt } : {}),
+          },
+          cliActor(),
+        );
+        printJson({ ok: true, ...res });
+      } finally {
+        wg.db.close();
+      }
     });
 
   program

@@ -295,7 +295,8 @@ grep -q 'GAFFER_EVAL_TEST_OUTPUT="${_DOD_JUDGE_TESTS:-}"' "$RUNNER_DIR/tick.sh" 
   && grep -q '"${_DELIVERY_SPEND_USD:-}" "${_CARD_REPO_NAME:-}"' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh passes the DoD checklist and the primary repo's name to the judge" \
   || no "tick.sh does not pass the checklist / repo name to the judge"
-awk '/_DOD_EV="\$\(gaffer_dod_evidence_summary "\$DOD_RESULTS" PASS\)"/{p=1} p&&/rm -f "\$DOD_RESULTS"/{print; exit} p' "$RUNNER_DIR/tick.sh" | grep -q '_DOD_JUDGE_TESTS="$(tail -c 20000 "$DOD_RESULTS"' \
+_dod_blk="$(awk '/_DOD_EV="\$\(gaffer_dod_evidence_summary "\$DOD_RESULTS" PASS\)"/{p=1} p&&/rm -f "\$DOD_RESULTS"/{print; exit} p' "$RUNNER_DIR/tick.sh")"
+grep -q '_DOD_JUDGE_TESTS="$(tail -c 20000 "$DOD_RESULTS"' <<<"$_dod_blk" \
   && ok "tick.sh keeps the PASS checklist BEFORE removing the results file" \
   || no "tick.sh removes the DoD results before the judge can see them"
 

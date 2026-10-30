@@ -105,7 +105,12 @@ function stubFetch(capability: "full" | "read", extra: (url: string) => unknown 
   );
 }
 
-function mountShell(hash: string): void {
+/**
+ * Mount the shell at `hash` and wait for the hashchange it fires: the app's own
+ * hashchange handler closes an open sheet, so a late event would shut the club
+ * sheet under the test (a flake seen under a loaded suite).
+ */
+async function mountShell(hash: string): Promise<void> {
   document.body.innerHTML = `
     <div id="toast" class="toast" role="alert" hidden></div>
     <div class="shell">
@@ -113,7 +118,10 @@ function mountShell(hash: string): void {
       <main id="app" class="app"><p class="loading">Loading…</p></main>
       <nav id="bottomnav" class="bottomnav" hidden></nav>
     </div>`;
+  if (location.hash === hash) return;
+  const changed = new Promise((r) => window.addEventListener("hashchange", r, { once: true }));
   location.hash = hash;
+  await changed;
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -140,7 +148,7 @@ describe("web: the club and the squad", () => {
 
   it("the crest shows the club from /api/club, wears its kit, and its editor PATCHes the club", async () => {
     stubFetch("full");
-    mountShell("#/squad");
+    await mountShell("#/squad");
     await boot();
     const btn = await until(() => document.querySelector<HTMLButtonElement>("button.crest-btn"));
     expect(document.querySelector(".brand-name")?.textContent).toBe("Factory FC");
@@ -249,7 +257,7 @@ describe("web: the club and the squad", () => {
         };
       return null;
     });
-    mountShell("#/overview");
+    await mountShell("#/overview");
     await boot();
     const counter = await until(() => document.querySelector("#tactics a.counter.has-agent"));
     // The squad says No. 9 "Kev", not the index scheme's 02 from crew-delivery-02.
@@ -263,7 +271,7 @@ describe("web: the club and the squad", () => {
 
   it("the Squad page renames an agent inline and names the holder of a taken number", async () => {
     stubFetch("full");
-    mountShell("#/squad");
+    await mountShell("#/squad");
     await boot();
     const rows = await until(() => {
       const r = document.querySelectorAll(".sq-table tbody tr");
@@ -342,7 +350,7 @@ describe("web: the club and the squad", () => {
 
   it("a read token sees the crest and the squad, but no editor anywhere", async () => {
     stubFetch("read");
-    mountShell("#/squad");
+    await mountShell("#/squad");
     await boot();
     await until(() => document.querySelectorAll(".sq-table tbody tr").length === 2);
     await until(() => document.querySelector(".brand-name")?.textContent === "Factory FC");

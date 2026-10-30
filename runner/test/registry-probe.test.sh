@@ -22,6 +22,8 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
+# shellcheck source=lib/skip.sh
+. "$HERE/lib/skip.sh"   # gaffer_skip_part: a skipped section is counted, never an ok
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/registry-probe.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/bin"
@@ -49,6 +51,11 @@ sed -i.bak "s|\${STUB_MODE_FILE}|$MODE|; s|\${STUB_ENV_DUMP_FILE:-/dev/null}|$DU
 export PATH="$WORK/bin:$PATH"
 export HOME="$WORK/home"; mkdir -p "$HOME"
 export RUNNER_SECRET_TOKEN="leak-me-not" NODE_EXTRA_CA_CERTS="/etc/corp/ca.pem" HTTPS_PROXY="http://proxy:3128"
+# Private operator state: factory.config.sh (and preflight.sh in check 7) would
+# otherwise read the checkout's .gaffer settings.json and create its dispatch /
+# memory DBs when this runs directly — see lib/isolate.sh.
+# shellcheck source=lib/isolate.sh
+. "$HERE/lib/isolate.sh"; gaffer_test_isolate "$WORK"
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
 declare -F gaffer_registry_probe >/dev/null || { echo "FAIL: gaffer_registry_probe not sourced via factory.config.sh"; exit 1; }
@@ -163,7 +170,7 @@ JS
   grep -q 'TICK_RESULT=error' <<<"$OUT" && ok "tick result is error (never a silent no_work)" || fail "unexpected tick result: $(printf '%s' "$OUT" | grep TICK_RESULT)"
   echo ok > "$MODE"
 else
-  echo "  skip (crew not built or git missing)"
+  gaffer_skip_part "check 9 — crew not built or git missing"
 fi
 
 echo

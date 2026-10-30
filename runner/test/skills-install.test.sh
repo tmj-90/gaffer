@@ -13,6 +13,11 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/skills-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+# Private operator state: `gaffer` sources factory.config.sh, which would otherwise
+# read the checkout's .gaffer (settings.json APPLIED, dispatch.sqlite opened
+# read-write) when this runs directly — see lib/isolate.sh.
+# shellcheck source=lib/isolate.sh
+. "$HERE/lib/isolate.sh"; gaffer_test_isolate "$WORK"
 
 COUNT="$(ls -d "$SKILLS_DIR"/*/ 2>/dev/null | wc -l | tr -d ' ')"
 

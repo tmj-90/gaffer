@@ -19,6 +19,11 @@ has()  { case "$1" in *"$2"*) return 0;; *) return 1;; esac; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/status-hq-test.XXXXXX")"
 WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf "$WORK"' EXIT
+# Private operator state: status.sh sources factory.config.sh, which would otherwise
+# read the checkout's .gaffer (settings.json APPLIED, dispatch.sqlite opened
+# read-write) when this runs directly — see lib/isolate.sh.
+# shellcheck source=lib/isolate.sh
+. "$HERE/lib/isolate.sh"; gaffer_test_isolate "$WORK"
 LOG="$WORK/factory.log"
 : > "$LOG"
 

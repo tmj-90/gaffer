@@ -20,6 +20,11 @@ gaffer onboarding /Users/you/git/payments-service … (scan + register + claude 
   full log: <repo-root>/.gaffer/onboard.log
 ```
 
+`cards N/M model-summarised` counts only the cards whose model summary the memory
+card gate stored as active and the sampled review did not strip; a rejected summary
+leaves a mechanical-only card and never reaches the repo digest. The digest keeps the
+analysis model's own overview, with the extracted features appended.
+
 Secret files are always excluded from the scan and the context. The full log (crew's
 scan JSON, every analysis step) is in `.gaffer/onboard.log`; `GAFFER_VERBOSE=1` prints
 it as it runs. If `claude` is not logged in, the model line says so

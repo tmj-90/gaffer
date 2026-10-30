@@ -27,7 +27,7 @@ import { CrewError } from "../../util/errors.js";
 // must never reach a live agent launch.
 // =====================================================================
 
-/** The eight runtime values substituted into the .mcp.json template. */
+/** The runtime values substituted into the .mcp.json template. */
 export interface McpRuntimeInputs {
   dispatchDb: string;
   memoryDb: string;
@@ -57,6 +57,16 @@ export interface McpRuntimeInputs {
    * created itself).
    */
   scopeTicket: string;
+  /**
+   * The ticket's repo NAME → canonical map as a JSON object string (e.g.
+   * `{"billing":"/repos/billing"}`), bound into the memory server as
+   * GAFFER_REPO_CANONICALS so its file-card tools key on the canonical the cards
+   * were written under rather than the agent's guess (a worktree path for a repo
+   * with no remote). May be "" (no binding — the tools then need the agent's
+   * `repoCanonical`). Unlike the other values it is JSON-ESCAPED on substitution,
+   * because its quotes would otherwise end the JSON string it lands in.
+   */
+  repoCanonicals?: string;
 }
 
 const PLACEHOLDERS: ReadonlyArray<[token: string, key: keyof McpRuntimeInputs]> = [
@@ -70,11 +80,20 @@ const PLACEHOLDERS: ReadonlyArray<[token: string, key: keyof McpRuntimeInputs]> 
   ["${GAFFER_SCOPE_TICKET}", "scopeTicket"],
 ];
 
+/** Substituted JSON-escaped (its value is itself JSON), after the raw ones. */
+const JSON_ESCAPED_PLACEHOLDER = "${GAFFER_REPO_CANONICALS}";
+
+/** `value` escaped for the inside of a JSON string literal (no surrounding quotes). */
+function jsonStringBody(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
+}
+
 const LEFTOVER_PLACEHOLDER = /\$\{[A-Z_]+\}/;
 
 /**
  * Render the runtime MCP config from the raw template text. Literal textual
- * substitution of the eight `${NAME}` tokens, then fail-closed validation.
+ * substitution of the `${NAME}` tokens (GAFFER_REPO_CANONICALS JSON-escaped, the
+ * rest raw), then fail-closed validation.
  *
  * @throws CrewError (`INVALID_MCP_TEMPLATE`) when the rendered result is not
  *   valid JSON, lacks `mcpServers.dispatch`/`mcpServers.memory`, or still
@@ -83,8 +102,11 @@ const LEFTOVER_PLACEHOLDER = /\$\{[A-Z_]+\}/;
 export function renderMcpRuntimeConfig(template: string, inputs: McpRuntimeInputs): string {
   let rendered = template;
   for (const [token, key] of PLACEHOLDERS) {
-    rendered = rendered.split(token).join(inputs[key]);
+    rendered = rendered.split(token).join(inputs[key] ?? "");
   }
+  rendered = rendered
+    .split(JSON_ESCAPED_PLACEHOLDER)
+    .join(jsonStringBody(inputs.repoCanonicals ?? ""));
 
   const leftover = LEFTOVER_PLACEHOLDER.exec(rendered);
   if (leftover) {

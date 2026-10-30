@@ -1206,6 +1206,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # literal) it lets the memory server refuse a direct-apply write against any
     # OTHER repo. (The main-delivery twin at the live run derives this from WT_ROWS.)
     GAFFER_TICKET_REPOS="$B_NAME"
+    # CARD-CANONICAL BINDING (see the main-delivery twin): the one fresh repo.
+    # shellcheck disable=SC2034  # read by gaffer_render_mcp_runtime (factory.config.sh)
+    GAFFER_REPO_CANONICALS="$(printf '%s\t%s\n' "$B_NAME" "$B_DIR" | gaffer_repo_canonicals_json)"
     # MEMORY ROI: a bootstrap has no delivery-recall context, so ${GAFFER_RECALL_TICKET}
     # renders empty — the memory read path then logs no retrieval (inert), matching
     # the standalone posture. The main-delivery twin sets it to the ticket $NUM.
@@ -1668,7 +1671,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
   FILE_CARDS_BLOCK="$(GAFFER_RECALL_TICKET="$NUM" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
   if [ -n "$FILE_CARDS_BLOCK" ]; then
     PRIME_CONTEXT_CALLED=true
-    CARDS_SERVED="$(printf '%s\n' "$FILE_CARDS_BLOCK" | grep -c "^  - \[" 2>/dev/null || echo 0)"
+    # Count card lines only: the recalled-lore section that may follow the cards
+    # uses the same "  - [kind]" bullet, so it is cut off before counting.
+    CARDS_SERVED="$(printf '%s\n' "$FILE_CARDS_BLOCK" | sed '/Recalled lore for this scope (conventions \/ gotchas):$/,$d' | grep -c "^  - \[" 2>/dev/null || echo 0)"
     log "cards: primed delivery #$NUM with ${CARDS_SERVED} file card(s)"
   else
     log "cards: no file-card context for #$NUM (none served / memory unavailable) — proceeding without"
@@ -2045,6 +2050,13 @@ $PRODUCT_CONTEXT_BLOCK}"
   # template) which arms the guard — standalone memory-mcp never sets it.
   # shellcheck disable=SC2034  # read by gaffer_render_mcp_runtime (factory.config.sh)
   GAFFER_TICKET_REPOS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '$2!=""{print $2}' | paste -sd: -)"
+  # CARD-CANONICAL BINDING: each ticket repo's name → the canonical its file cards
+  # are keyed under (WT_ROWS col-3 is the REAL repo, not the worktree), rendered into
+  # the memory server as ${GAFFER_REPO_CANONICALS}. The agent's card tools then find
+  # the cards from its worktree without guessing a canonical — for a repo with no
+  # remote its guess (the worktree path) matched nothing. Fail-soft: empty ⇒ unbound.
+  # shellcheck disable=SC2034  # read by gaffer_render_mcp_runtime (factory.config.sh)
+  GAFFER_REPO_CANONICALS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '{print $2 "\t" $3}' | gaffer_repo_canonicals_json)"
   # MEMORY ROI: the delivery ticket ref is injected as ${GAFFER_RECALL_TICKET} so
   # the memory MCP server's READ path can attribute a retrieval to this ticket
   # (best-effort, fail-soft). Empty ⇒ the read path logs nothing (inert), exactly

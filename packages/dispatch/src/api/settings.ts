@@ -138,8 +138,12 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     key: "MEMORY_AUTO_APPROVE",
     type: "boolean",
     group: "autonomy",
-    label: "Auto-approve memory drafts",
-    help: "Accept memory draft records without a human review step.",
+    label: "Auto-approve runner memory drafts",
+    help:
+      "Let the memory the runner itself files go live without a human review step: the " +
+      "requirement distilled from each delivered ticket, onboarding's induction lore and " +
+      "`memory suggest` from the CLI. Lore a delivery agent suggests over MCP always " +
+      "stays a draft for you to approve, whatever this says.",
   },
   {
     key: "GAFFER_TESTING",

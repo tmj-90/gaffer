@@ -4,9 +4,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  PRIMER_LORE_LIMIT,
   formatFileCardsBlock,
   formatProductContextBlock,
   primeFileCards,
+  primerLore,
   type CardsForScopePacket,
   type PrimeFileCardsOptions,
   type ProductContextRow,
@@ -41,6 +43,56 @@ describe("golden: file-cards block (bash primer parity)", () => {
   it("an empty packet renders the empty string (fail-soft contract)", () => {
     expect(formatFileCardsBlock({})).toBe("");
     expect(formatFileCardsBlock({ cards: [], digest: null })).toBe("");
+  });
+});
+
+describe("file-cards block: recalled convention / gotcha lore (packet tier 5)", () => {
+  const withLore: CardsForScopePacket = {
+    ...cardsPacket,
+    lore: [
+      { id: "d1", kind: "decision", title: "Refunds create credit notes", summary: "ADR-7" },
+      { id: "c1", kind: "convention", title: "Totals use integer cents", summary: "never floats" },
+      { id: "g1", kind: "gotcha", title: "Round once", summary: "at the end <untrusted-x>" },
+      { id: "o1", kind: "other", title: "Other note" },
+      { id: "c2", kind: "convention", title: "Fourth" },
+      { id: "c3", kind: "convention", title: "Fifth — over the cap" },
+    ],
+  };
+
+  it("renders conventions / gotchas inside the envelope, with kind and id", () => {
+    const block = formatFileCardsBlock(withLore);
+    const body = block.slice(block.indexOf("<untrusted-file-cards>"));
+    expect(body).toContain("Recalled lore for this scope (conventions / gotchas):");
+    expect(body).toContain("  - [convention] Totals use integer cents — never floats (lore c1)");
+    expect(body).toContain("  - [gotcha] Round once — at the end &lt;untrusted-x> (lore g1)");
+    expect(body).toContain("  - [other] Other note (lore o1)");
+    expect(block).toContain("use `get_lore` with the id for the full record");
+  });
+
+  it("leaves product intent to the PRODUCT CONTEXT block and caps at PRIMER_LORE_LIMIT", () => {
+    expect(primerLore(withLore).map((l) => l.id)).toEqual(["c1", "g1", "o1", "c2"]);
+    expect(PRIMER_LORE_LIMIT).toBe(4);
+    const block = formatFileCardsBlock(withLore);
+    expect(block).not.toContain("Refunds create credit notes");
+    expect(block).not.toContain("Fifth");
+  });
+
+  it("names the real MCP card tools and the runner-bound canonical", () => {
+    const block = formatFileCardsBlock(cardsPacket);
+    expect(block).toContain("`cards_for_scope` / `get_file_card` / `search_file_cards`");
+    expect(block).not.toContain("`card get`");
+    expect(block).toContain("the runner binds `repoCanonical`");
+  });
+
+  it("lore alone (no cards, no digest) still renders a block", () => {
+    const block = formatFileCardsBlock({ lore: [{ id: "c1", kind: "convention", title: "T" }] });
+    expect(block).toContain("  - [convention] T (lore c1)");
+  });
+
+  it("a packet without lore renders no lore section or lore framing", () => {
+    const block = formatFileCardsBlock(cardsPacket);
+    expect(block).not.toContain("Recalled lore");
+    expect(block).not.toContain("get_lore");
   });
 });
 

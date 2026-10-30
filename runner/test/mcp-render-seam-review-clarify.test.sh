@@ -105,7 +105,10 @@ seam_case() {
   # The template has since gained ${GAFFER_SCOPE_TICKET} (the dispatch server's factory
   # ticket scope), which the frozen prior chain predates; review/clarify's scope render
   # is checked here with it empty, so strip it the same way.
-  sed -e "s#\${GAFFER_TICKET_REPOS}##g" -e "s#\${GAFFER_SCOPE_TICKET}##g" "$prior" > "$corrected"
+  # Likewise ${GAFFER_REPO_CANONICALS} (the memory server's card-canonical binding),
+  # rendered empty here because this harness binds no repo.
+  sed -e "s#\${GAFFER_TICKET_REPOS}##g" -e "s#\${GAFFER_SCOPE_TICKET}##g" \
+      -e "s#\${GAFFER_REPO_CANONICALS}##g" "$prior" > "$corrected"
   if cmp -s "$corrected" "$seam"; then
     ok "$label — corrected prior render is byte-identical to the seam output"
   else

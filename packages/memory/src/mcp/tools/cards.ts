@@ -18,6 +18,7 @@ import {
   quarantineLore,
   QUARANTINE_NOTICE,
 } from "../quarantine.js";
+import { resolveCardCanonical } from "../repoCanonical.js";
 import { recordRetrieval } from "../retrievalLog.js";
 import type { RetrievalItem } from "../../core/retrievalRoi.js";
 
@@ -45,16 +46,20 @@ export function registerCardTools(server: McpServer, db: Database): void {
         "card does NOT mean the file is unimportant — it means no card has been " +
         "written for it yet. Read the file directly in that case.\n\n" +
         "Pass `repoCanonical` = the repo's remote origin URL (preferred) or its " +
-        "absolute realpath on disk. The display `repo` name is used for digest " +
-        "and lore queries only.",
+        "absolute realpath on disk. In a Gaffer factory session the runner binds " +
+        "the canonical of each of the ticket's repos, so omit it there and pass " +
+        "only `repo`. The display `repo` name is used for digest and lore queries.",
       inputSchema: mcpToolInput({
         repoCanonical: z
           .string()
           .min(1)
+          .optional()
           .describe(
             "Canonical repo identifier: remote origin URL (e.g. " +
               "'https://github.com/org/repo') or absolute local realpath. " +
-              "Used as the stable repo identity key — do NOT use the display name.",
+              "Used as the stable repo identity key — do NOT use the display name " +
+              "(nor a worktree path). Optional in a Gaffer factory session: the " +
+              "runner-bound canonical for the ticket's repos is used instead.",
           ),
         repo: z.string().min(1).describe("Human-readable repo name (e.g. 'payments-svc')."),
         path: z
@@ -65,7 +70,8 @@ export function registerCardTools(server: McpServer, db: Database): void {
     },
     async (args) => {
       try {
-        const rk = repoKey(args.repoCanonical);
+        const canonical = resolveCardCanonical(args.repo, args.repoCanonical);
+        const rk = repoKey(canonical);
         const card = getFileCard(db, rk, args.path);
         audit({
           tool: "get_file_card",
@@ -136,7 +142,11 @@ export function registerCardTools(server: McpServer, db: Database): void {
         repoCanonical: z
           .string()
           .min(1)
-          .describe("Canonical repo identifier: remote origin URL or absolute local realpath."),
+          .optional()
+          .describe(
+            "Canonical repo identifier: remote origin URL or absolute local realpath. " +
+              "Optional in a Gaffer factory session (the runner binds it for the ticket's repos).",
+          ),
         repo: z.string().min(1).describe("Human-readable repo name."),
         query: z.string().min(1).describe("Free-text query (FTS5 over path, tldr, symbols)."),
         limit: z
@@ -150,7 +160,8 @@ export function registerCardTools(server: McpServer, db: Database): void {
     },
     async (args) => {
       try {
-        const rk = repoKey(args.repoCanonical);
+        const canonical = resolveCardCanonical(args.repo, args.repoCanonical);
+        const rk = repoKey(canonical);
         const limit = Math.min(args.limit ?? 20, 50);
         const cards = searchFileCards(db, rk, args.query, limit);
         // FAIL LOUD but OUT-OF-BAND: an empty result while cards exist under a
@@ -159,9 +170,7 @@ export function registerCardTools(server: McpServer, db: Database): void {
         // diagnostic names other repos' keys and is untrusted context noise.
         // Consistent with every other diagnostic path (logs go to stderr).
         const diagnostic =
-          cards.length === 0
-            ? diagnoseRepoKeyMismatch(db, rk, args.repo, args.repoCanonical)
-            : null;
+          cards.length === 0 ? diagnoseRepoKeyMismatch(db, rk, args.repo, canonical) : null;
         if (diagnostic) process.stderr.write(`memory-mcp: ${diagnostic}\n`);
         audit({
           tool: "search_file_cards",
@@ -247,9 +256,12 @@ export function registerCardTools(server: McpServer, db: Database): void {
         repoCanonical: z
           .string()
           .min(1)
+          .optional()
           .describe(
             "Canonical repo identifier: remote origin URL (preferred) or " +
-              "absolute local realpath. Used as the stable repo identity key.",
+              "absolute local realpath. Used as the stable repo identity key. " +
+              "Optional in a Gaffer factory session (the runner binds it for the " +
+              "ticket's repos).",
           ),
         repo: z
           .string()
@@ -309,7 +321,7 @@ export function registerCardTools(server: McpServer, db: Database): void {
       try {
         const maxCards = Math.min(args.limit ?? 20, 100);
         const packet = cardsForScope(db, {
-          repoCanonical: args.repoCanonical,
+          repoCanonical: resolveCardCanonical(args.repo, args.repoCanonical),
           repo: args.repo,
           query: args.query,
           paths: args.paths,

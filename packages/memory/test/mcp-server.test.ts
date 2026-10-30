@@ -39,6 +39,7 @@ const ENV_KEYS = [
   "GAFFER_RECALL_TICKET",
   "GAFFER_TICKET_REPOS",
   "GAFFER_FACTORY",
+  "GAFFER_REPO_CANONICALS",
 ];
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -132,6 +133,7 @@ beforeEach(() => {
   delete process.env["GAFFER_RECALL_TICKET"];
   delete process.env["GAFFER_TICKET_REPOS"];
   delete process.env["GAFFER_FACTORY"];
+  delete process.env["GAFFER_REPO_CANONICALS"];
   db = newDb();
 });
 
@@ -1066,6 +1068,104 @@ describe("MCP — repo-key mismatch diagnostic stays out of agent context (N2)",
     expect(json).not.toHaveProperty("diagnostics");
     expect(JSON.stringify(json)).not.toContain("mismatch");
     expect(err).toContain("mismatch");
+  });
+});
+
+/**
+ * Audit (memory: agent pulls more file cards over MCP): a local repo with no remote
+ * keys its cards under the REAL repo's realpath, but the delivery agent works in a
+ * worktree — its obvious canonical (its cwd) matched nothing, and omitting the
+ * field was a validation error. In factory context the runner binds each ticket
+ * repo's canonical (GAFFER_REPO_CANONICALS), and that binding is what the card
+ * tools key on.
+ */
+describe("MCP — card tools use the runner-bound repo canonical in factory context", () => {
+  const REAL = "/repos/billing";
+  const WORKTREE = "/data/worktrees/ticket-1/abc";
+  const REPO = "billing";
+
+  function seedCard(): void {
+    upsertFileCard(db, {
+      repoKey: repoKey(REAL),
+      canonical: REAL,
+      repo: REPO,
+      path: "src/invoice.js",
+      contentHash: "b".repeat(64),
+      loc: 3,
+      symbols: ["invoiceTotal"],
+      source: "onboard",
+      tldr: "invoice totals",
+      modelStatus: "active",
+    });
+  }
+  function bindFactory(): void {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = REPO;
+    process.env["GAFFER_REPO_CANONICALS"] = JSON.stringify({ [REPO]: REAL });
+  }
+
+  it("an omitted repoCanonical resolves to the binding (all three tools)", async () => {
+    seedCard();
+    bindFactory();
+    client = await connectClient(db);
+    const scope = await callJson(client, "cards_for_scope", { repo: REPO, query: "invoice" });
+    expect(scope.isError).toBe(false);
+    expect(scope.json.cards.map((c: any) => c.path)).toEqual(["src/invoice.js"]);
+    const search = await callJson(client, "search_file_cards", { repo: REPO, query: "invoice" });
+    expect(search.json.count).toBe(1);
+    const one = await callJson(client, "get_file_card", { repo: REPO, path: "src/invoice.js" });
+    expect(one.json.found).toBe(true);
+  });
+
+  it("a worktree-path guess is overridden by the binding for a ticket repo", async () => {
+    seedCard();
+    bindFactory();
+    client = await connectClient(db);
+    const scope = await callJson(client, "cards_for_scope", {
+      repoCanonical: WORKTREE,
+      repo: REPO,
+      query: "invoice",
+    });
+    expect(scope.json.cards).toHaveLength(1);
+    const search = await callJson(client, "search_file_cards", {
+      repoCanonical: WORKTREE,
+      repo: REPO,
+      query: "invoice",
+    });
+    expect(search.json.count).toBe(1);
+  });
+
+  it("standalone (no GAFFER_FACTORY) ignores the binding and still requires repoCanonical", async () => {
+    seedCard();
+    process.env["GAFFER_REPO_CANONICALS"] = JSON.stringify({ [REPO]: REAL });
+    client = await connectClient(db);
+    const guess = await callJson(client, "search_file_cards", {
+      repoCanonical: WORKTREE,
+      repo: REPO,
+      query: "invoice",
+    });
+    expect(guess.json.count).toBe(0);
+    const missing = await callJson(client, "cards_for_scope", { repo: REPO, query: "invoice" });
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toMatch(/repoCanonical is required/);
+  });
+
+  it("an unsubstituted or malformed binding is treated as none (fail-safe)", async () => {
+    seedCard();
+    process.env["GAFFER_FACTORY"] = "1";
+    client = await connectClient(db);
+    for (const bad of ["${GAFFER_REPO_CANONICALS}", "not json", "[1,2]", ""]) {
+      // The binding is read per call, so one client covers every value.
+      process.env["GAFFER_REPO_CANONICALS"] = bad;
+      const r = await callJson(client, "cards_for_scope", { repo: REPO, query: "invoice" });
+      expect(r.isError).toBe(true);
+      const explicit = await callJson(client, "cards_for_scope", {
+        repoCanonical: REAL,
+        repo: REPO,
+        query: "invoice",
+      });
+      expect(explicit.json.cards).toHaveLength(1);
+    }
   });
 });
 

@@ -494,6 +494,8 @@ function installProjectLocalWiring(repoName) {
  *   • ${GAFFER_SCOPE_TICKET}  → ""       (binds no ticket: the PO writes only its own
  *                                        drafts; the tester / resolver bind theirs via
  *                                        GAFFER_REVIEW_TICKET)
+ *   • ${GAFFER_REPO_CANONICALS} → ""     (no card-canonical binding: the card tools then
+ *                                        take the agent's repoCanonical, as before)
  *   • dispatch env GAFFER_DEFAULT_TICKET_REPO = repoName — the dispatch MCP links every
  *     create_ticket that names no repo to THIS repo. Before this, the skill's drafts
  *     landed unlinked, the run's draft-count guard (which joins by repo) saw 0 and
@@ -524,6 +526,8 @@ export function renderPoMcpRuntime(
     .split("${GAFFER_RECALL_TICKET}")
     .join("")
     .split("${GAFFER_SCOPE_TICKET}")
+    .join("")
+    .split("${GAFFER_REPO_CANONICALS}")
     .join("");
   const leftover = /\$\{[A-Z_]+\}/.exec(rendered);
   if (leftover) {

@@ -195,6 +195,13 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # through the single gaffer_render_mcp_runtime seam (factory.config.sh) so
       # review, delivery + bootstrap share one byte-identical render path.
       GAFFER_TICKET_REPOS=""
+      # CARD-CANONICAL BINDING: the repo this pass reads (its registered name and the
+      # basename the PRIOR CONTEXT primer below uses) → the canonical its file cards
+      # are keyed under, so the agent's memory card tools need no repoCanonical guess.
+      # Read-only retrieval binding; fail-soft (empty ⇒ unbound).
+      _BIND_NAME="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).name) || ""' 2>/dev/null || echo '')"
+      # shellcheck disable=SC2034  # read by gaffer_render_mcp_runtime (factory.config.sh)
+      GAFFER_REPO_CANONICALS="$(printf '%s\t%s\n%s\t%s\n' "$(basename "$RREPO")" "$RREPO" "$_BIND_NAME" "$RREPO" | gaffer_repo_canonicals_json)"
       # No scope ticket (4th arg empty): a reviewer is bound through GAFFER_REVIEW_TICKET
       # below instead.
       gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" "" \

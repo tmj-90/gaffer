@@ -846,7 +846,7 @@ gaffer_timeout_preflight() {
 _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 
 # --- MCP runtime-config render -----------------------------------------------
-# Render the per-tick runtime .mcp.json from the template, substituting the eight
+# Render the per-tick runtime .mcp.json from the template, substituting the
 # ${NAME} placeholders, through the typed renderer (packages/crew renderMcpCli.js →
 # renderMcpRuntimeConfig). This is the SINGLE render site the delivery and bootstrap
 # ticks both call (they once carried duplicate inline sed chains, which is exactly
@@ -855,7 +855,8 @@ _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 # Usage: gaffer_render_mcp_runtime <template> <out> <recall_ticket> [<scope_ticket>]
 #   Reads the other six values from the ambient shell scope (DISPATCH_DB, MEMORY_DB,
 #   DISPATCH_MCP_BIN, MEMORY_MCP_BIN, CLAIM_TOKEN, GAFFER_TICKET_REPOS — each set by
-#   the caller before the call). The recall ticket (empty on bootstrap, $NUM on
+#   the caller before the call — plus the optional GAFFER_REPO_CANONICALS, see
+#   gaffer_repo_canonicals_json below; unset renders it empty). The recall ticket (empty on bootstrap, $NUM on
 #   delivery) and the scope ticket differ per site, so they are positional. The scope
 #   ticket is the dispatch server's factory ticket scope (GAFFER_SCOPE_TICKET: the
 #   agent's ticket writes on any other ticket are refused) — delivery, bootstrap and
@@ -882,7 +883,29 @@ gaffer_render_mcp_runtime() {
   GAFFER_MCP_TICKET_REPOS="$GAFFER_TICKET_REPOS" \
   GAFFER_MCP_RECALL_TICKET="$recall" \
   GAFFER_MCP_SCOPE_TICKET="$scope" \
+  GAFFER_MCP_REPO_CANONICALS="${GAFFER_REPO_CANONICALS:-}" \
     node "$CREW_DIR/dist/runtime/context/renderMcpCli.js" --template "$tmpl" --out "$out" || return 1
+}
+
+# --- Card-canonical binding for the memory MCP server ----------------------------
+# Print the JSON object {repo name: canonical} for the rows on stdin (TAB-separated
+# `<name>\t<real repo path>`), for the caller to set as GAFFER_REPO_CANONICALS before
+# gaffer_render_mcp_runtime. The canonical is `memory repo-canonical` of the REAL repo
+# (remote.origin.url, else its realpath) — the exact key onboarding wrote the file
+# cards under — so the agent's card tools find them from a worktree, where its own
+# guess (the worktree path) matches nothing for a repo with no remote. FAIL-SOFT:
+# a row with no name / no dir / no canonical is skipped, and no rows print nothing
+# (the memory server then takes the agent's repoCanonical, as before).
+gaffer_repo_canonicals_json() {
+  local _rc_name _rc_path _rc_canon _rc_rows=""
+  while IFS=$'\t' read -r _rc_name _rc_path; do
+    [ -n "$_rc_name" ] && [ -n "$_rc_path" ] && [ -d "$_rc_path" ] || continue
+    _rc_canon="$(lg repo-canonical --repo-root "$_rc_path" 2>/dev/null)" || continue
+    [ -n "$_rc_canon" ] || continue
+    _rc_rows+="$_rc_name"$'\t'"$_rc_canon"$'\n'
+  done
+  [ -n "$_rc_rows" ] || return 0
+  printf '%s' "$_rc_rows" | gaffer_json tsv-object 2>/dev/null || true
 }
 
 # --- MCP runtime env binding -----------------------------------------------------

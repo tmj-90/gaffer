@@ -42,7 +42,7 @@ Every epic also gets an Acceptance ticket that depends on all the others. An ind
 
 ### What it remembers
 
-Onboarding a repo writes a digest of it (overview, structure, conventions, stack), a feature ledger, and draft lore, which is notes on conventions and gotchas cited back to the code. Each merge moves the ledger on and refreshes the digest, so the next ticket starts from what the last one learned. Lore an agent suggests lands as a draft, and delivery agents can't see drafts until a human approves them with the memory CLI. The digest is only a summary, and the tool that hands it to an agent says to check the code before high-stakes work.
+Onboarding a repo writes a digest of it (overview, structure, conventions, stack), a feature ledger, and draft lore, which is notes on conventions and gotchas cited back to the code. Each merge moves the ledger on and refreshes the digest, so the next ticket starts from what the last one learned. Every delivery prompt is primed from that memory: the file cards that match the ticket, the repo's approved conventions and gotchas recalled for it, and its product decisions, requirements and non-goals. The agent can pull more cards and lore over its memory MCP server. Lore an agent suggests lands as a draft, and delivery agents can't see drafts until a human approves them (dashboard or memory CLI). The digest is only a summary, and the tool that hands it to an agent says to check the code before high-stakes work.
 
 ## What still needs you
 

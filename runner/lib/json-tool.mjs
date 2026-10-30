@@ -75,6 +75,19 @@ const UNTRUSTED_DELIMITER_RE =
 function sanitize(s) {
   return String(s ?? "").replace(UNTRUSTED_DELIMITER_RE, "&lt;");
 }
+/**
+ * The cards-for-scope packet lore the delivery primer shows: top 4 hits that are not
+ * product intent (that has its own PRODUCT CONTEXT block). Mirrors primerLore in
+ * packages/crew/src/runtime/context/contextPrimer.ts and packages/memory scopePacket.ts.
+ */
+const PRODUCT_INTENT_KINDS = new Set(["decision", "requirement", "non-goal"]);
+function primerLoreRows(pk) {
+  const lore = isObj(pk) && Array.isArray(pk.lore) ? pk.lore : [];
+  return lore
+    .filter((l) => isObj(l) && !PRODUCT_INTENT_KINDS.has(String(l.kind ?? "")))
+    .slice(0, 4)
+    .filter((l) => sanitize(l.title).trim() !== "");
+}
 function flag(name) {
   const i = args.indexOf(name);
   if (i === -1) return undefined;
@@ -436,6 +449,22 @@ switch (cmd) {
     break;
   }
 
+  // tsv-object: stdin = `<key>\t<value>` lines → one compact JSON object (later keys
+  // win; blank keys/values skipped); prints NOTHING when no row qualifies.
+  // gaffer_repo_canonicals_json uses it for the memory server's GAFFER_REPO_CANONICALS.
+  case "tsv-object": {
+    const obj = {};
+    for (const ln of readStdin().split("\n")) {
+      const i = ln.indexOf("\t");
+      if (i <= 0) continue;
+      const k = ln.slice(0, i).trim();
+      const v = ln.slice(i + 1).trim();
+      if (k && v) obj[k] = v;
+    }
+    if (Object.keys(obj).length) out(JSON.stringify(obj));
+    break;
+  }
+
   // ── greenfield.sh ────────────────────────────────────────────────────────────
   // bootstrap-repo-name: stdin = ticket show → filesystem-safe slug ("" on bad JSON).
   case "bootstrap-repo-name": {
@@ -652,6 +681,18 @@ switch (cmd) {
             .join(", ")}`,
         );
     }
+    // Recalled conventions / gotchas (packet lore minus product intent, top 4) —
+    // the same rule as primerLore in crew contextPrimer.ts / memory scopePacket.ts.
+    const lore = primerLoreRows(pk);
+    if (lore.length) {
+      lines.push("Recalled lore for this scope (conventions / gotchas):");
+      for (const l of lore) {
+        let head = `  - [${sanitize(l.kind ?? "").trim() || "other"}] ${sanitize(l.title).trim()}`;
+        const summ = sanitize(l.summary ?? "").trim();
+        if (summ) head += ` — ${summ}`;
+        lines.push(head);
+      }
+    }
     const cov = pk.coverage || {};
     const missing = cov.missing || [];
     const tr = pk.truncationReason;
@@ -675,9 +716,12 @@ switch (cmd) {
     const pk = p.value || {};
     const paths = (pk.cards || []).map((c) => c.path ?? "").filter(Boolean);
     const digest = Boolean(pk.digest);
-    if (!paths.length && !digest) process.exit(0);
+    const lore = primerLoreRows(pk);
+    if (!paths.length && !digest && !lore.length) process.exit(0);
     let head = `${paths.length} card${paths.length === 1 ? "" : "s"}: ${paths.slice(0, 8).join(", ")}`;
     if (paths.length > 8) head += `, +${paths.length - 8} more`;
+    if (lore.length)
+      head += `; ${lore.length} lore: ${lore.map((l) => `${pyStr(l.kind ?? "other")} ${pyStr(l.id ?? "")}`.trim()).join(", ")}`;
     println(`${digest ? "repo-digest + " : ""}${head}`);
     break;
   }

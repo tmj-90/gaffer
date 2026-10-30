@@ -1008,7 +1008,10 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
   const CANONICAL = "/repos/app";
   const REPO = "app";
 
-  async function seedLore(): Promise<string> {
+  // Product intent (decision) by default: the delivery primer renders that kind in
+  // its own PRODUCT CONTEXT block, not from the packet, so the get_lore credit path
+  // below is what is under test. A convention IS rendered from the packet.
+  async function seedLore(kind = "decision"): Promise<string> {
     // Distinctive token so cards-for-scope FTS reliably serves it.
     const rc = await run(
       "add",
@@ -1020,6 +1023,8 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
       "always zorptastic",
       "--repo",
       REPO,
+      "--kind",
+      kind,
       "--confidence",
       "low",
     );
@@ -1079,10 +1084,11 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
   }
 
   it("packet lore the primer never renders gets no outcome credit (audit: recall-feedback-wrong-items)", async () => {
-    const id = await seedLore();
+    const id = await seedLore("decision");
     const packet = await primeTicket("42");
-    // The packet carries the lore, but the runner's primer renders only cards
-    // and the digest — the agent never saw it, so it must not be adjusted.
+    // The packet carries the decision, but the primer renders product intent
+    // only in its own PRODUCT CONTEXT block, never from the packet — so the
+    // packet hit must not be adjusted on the agent's behalf.
     expect(packet.lore.some((l) => l.id === id)).toBe(true);
     expect((await feedback("42", "reworked")).loreAdjusted).toEqual([]);
     out = "";
@@ -1090,6 +1096,23 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
     expect(out).toMatch(/conf=low/);
     expect(out).not.toMatch(/flagged/);
   });
+
+  for (const kind of ["convention", "gotcha"]) {
+    it(`a ${kind} the primer renders into the delivery is logged as served and gets outcome credit`, async () => {
+      const id = await seedLore(kind);
+      const packet = await primeTicket("44");
+      expect(packet.lore.some((l) => l.id === id)).toBe(true);
+      // No get_lore: the primer showed it to the agent, which is enough.
+      expect((await feedback("44", "reworked")).loreAdjusted).toEqual([id]);
+      out = "";
+      expect(await run("flagged", "--repo", REPO, "--json")).toBe(0);
+      expect(
+        (JSON.parse(out) as Array<{ id: string; type: string }>).some(
+          (i) => i.id === id && i.type === "lore",
+        ),
+      ).toBe(true);
+    });
+  }
 
   it("lore the agent fetched for the ticket is credited: clean bumps confidence", async () => {
     const id = await seedLore();

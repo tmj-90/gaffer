@@ -45,6 +45,7 @@ import {
 } from "./fileCards.js";
 import { getDigest } from "./repoUnderstanding.js";
 import { searchLore } from "./lore.js";
+import { PRODUCT_INTENT_KINDS } from "../db/types.js";
 import type { FileCard, LoreSummary, RepoDigest } from "../db/types.js";
 
 // ── Constants ─────────────────────────────────────────────────────────
@@ -53,6 +54,27 @@ const DEFAULT_MAX_CARDS = 20;
 const DEFAULT_LORE_LIMIT = 5;
 /** Rough chars-per-token estimate for budget calculations. */
 const CHARS_PER_TOKEN = 4;
+
+/**
+ * How many of a packet's lore hits the delivery primer renders into the agent's
+ * "PRIOR CONTEXT (file cards)" block. Mirrored by PRIMER_LORE_LIMIT in
+ * packages/crew/src/runtime/context/contextPrimer.ts (the renderer).
+ */
+export const PRIMER_LORE_LIMIT = 4;
+
+/**
+ * The lore a packet's delivery primer actually SHOWS the agent: the top
+ * {@link PRIMER_LORE_LIMIT} hits whose kind is NOT product intent (conventions,
+ * gotchas, other). Product intent (decision / requirement / non-goal) has its own
+ * PRODUCT CONTEXT block, so it is left out here rather than shown twice. The memory
+ * CLI logs exactly these ids as served for the recall-feedback loop, and the crew
+ * renderer applies the same rule — keep the two in step.
+ */
+export function primerLore(lore: ReadonlyArray<LoreSummary>): LoreSummary[] {
+  return lore
+    .filter((l) => !(PRODUCT_INTENT_KINDS as readonly string[]).includes(l.kind))
+    .slice(0, PRIMER_LORE_LIMIT);
+}
 
 // ── Public types ──────────────────────────────────────────────────────
 

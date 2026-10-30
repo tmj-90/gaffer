@@ -149,6 +149,14 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   diff — runs the **`prepare-digest-delta`** skill to record ONE inert evidence row
   (`GAFFER_DIGEST_DELTA_V1 {…}`): the digest section deltas + the feature note. Nothing
   is applied yet.
+- **Conflicts (never a force-merge).** When the landing conflicts, `bin/merge-ticket.mjs`
+  spawns the resolver agent once, in a throwaway worktree of the delivery branch, then
+  **re-gates** the committed resolution with `bin/dod-regate.sh` — no conflict markers
+  introduced, and the repo's DoD gates (tests · typecheck · lint, same runner, toggles,
+  install step, sandbox and zero-gates rule as the delivery gate) green on the resolved
+  head — before `wg ticket reopen-for-review` sends it back for re-review with that fresh
+  checklist as evidence. A failing resolution is parked on
+  `refs/gaffer/conflict-resolved/<n>`, the branch restored, and the ticket held for a human.
 - **Apply at merge (post-review, deterministic).** On a CLEAN merge, `bin/merge-ticket.mjs`
   reads that prepared evidence and replays it as plain Dispatch CLI writes — stamping
   each digest section with `source: "merge:#<n>"` and the feature → `shipped`. **No agent

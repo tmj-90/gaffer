@@ -983,16 +983,7 @@ function skeleton(kind = "list") {
     "aria-busy": "true",
     "aria-label": "Loading",
   });
-  if (kind === "overview") {
-    wrap.appendChild(el("div", { class: "skeleton sk-scoreboard" }));
-    wrap.appendChild(
-      el("div", { class: "grid-2" }, [
-        el("div", { class: "skeleton sk-card" }),
-        el("div", { class: "skeleton sk-card" }),
-      ]),
-    );
-    return wrap;
-  }
+  if (kind === "overview") return overviewSkeleton();
   wrap.appendChild(el("div", { class: "skeleton sk-bar", style: "width:40%" }));
   wrap.appendChild(el("div", { class: "skeleton sk-line" }));
   if (kind === "board") {
@@ -1211,6 +1202,13 @@ function mountView(content) {
   }
 }
 
+/**
+ * Views that draw their own failure page (one specific message + Try again). The
+ * router uses it only for a navigation; a failed background refresh keeps the
+ * view on screen, and a later refresh that succeeds replaces the failure page.
+ */
+const VIEW_ERROR_PAGES = { overview: (e) => overviewError(e) };
+
 async function router() {
   const { view, param } = parseHash();
   // Unknown views fall through to Overview; aliases are resolved in parseHash.
@@ -1243,6 +1241,11 @@ async function router() {
       if (!isCurrent()) return; // a stale failure never paints over the new view
       // A 401 is already handled inside api() (the login screen is shown).
       if (e && (e.code === "UNAUTHORIZED" || e.code === "ABORTED")) return;
+      // A view may draw its own failure in its own language (the Overview's dark scoreboard).
+      if (VIEW_ERROR_PAGES[view]) {
+        mountView(VIEW_ERROR_PAGES[view](e));
+        return;
+      }
       // One specific message + a retry, shown once — not repeated in a toast.
       const panel = emptyState(
         "That page could not load.",
@@ -2832,9 +2835,59 @@ function overviewScoreboard(f) {
   const nowIso = new Date(f.now).toISOString();
   return el("section", { class: "scoreboard bleed", "aria-label": "Scoreboard" }, [
     el("div", { class: "scoreboard-in" }, [
-      el("div", { class: "sb-main" }, [
-        el("h1", { class: "hl" }, lead),
-        subP,
+      el("div", { class: "sb-main" }, [el("h1", { class: "hl" }, lead), subP]),
+      el("div", { class: "sb-side" }, [
+        el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Today" }, [
+          statCell({
+            label: "Need you",
+            value: String(total).padStart(2, "0"),
+            needs: total > 0,
+            href: "#what-i-own",
+            flip: "needs",
+            title: `${total} waiting for you`,
+          }),
+          statCell({
+            label: "On the pitch",
+            value: f.slots ? `${onPitch}/${f.slots}` : String(onPitch),
+            href: "#tactics",
+            flip: "pitch",
+            title: f.slots
+              ? `${onPitch} of ${f.slots} agent slots working`
+              : `${onPitch} agents working`,
+          }),
+          statCell({
+            label: "Delivered today",
+            value: String(f.summary.deliveredToday ?? 0).padStart(2, "0"),
+            href: "#/work?status=done",
+            flip: "delivered",
+          }),
+          statCell({
+            label: "Wage bill",
+            value: today == null ? "—" : money(today),
+            flip: "wage",
+            title: "API-equivalent spend today, from the usage ledger",
+            after:
+              today != null && f.budget
+                ? el("div", { class: "sc-band" }, [
+                    band(
+                      today,
+                      f.budget,
+                      `${money(today)} of the ${moneyW(f.budget)} daily budget (${Math.round((today / f.budget) * 100)}%)`,
+                    ),
+                    el("span", { class: "kpi-sub" }, `of ${moneyW(f.budget)} today`),
+                  ])
+                : el("span", { class: "kpi-sub" }, "today, API-equivalent"),
+          }),
+        ]),
+      ]),
+      // The board's small print, top right: when it was read and the ledger's
+      // integrity (an altered log reads red and bold).
+      el("div", { class: "sb-small" }, [
+        el(
+          "time",
+          { class: "sb-clock", datetime: nowIso },
+          `${fmtDay(nowIso)} · ${clockTime(f.now)}`,
+        ),
         logStatus
           ? el("p", { class: `view-hero-status${chain?.chain_ok !== false ? " ok" : ""}` }, [
               chain?.chain_ok !== false ? glyph("done", 14) : glyph("failed", 14),
@@ -2842,53 +2895,6 @@ function overviewScoreboard(f) {
             ])
           : null,
       ]),
-      el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Today" }, [
-        statCell({
-          label: "Need you",
-          value: String(total).padStart(2, "0"),
-          needs: total > 0,
-          href: "#what-i-own",
-          flip: "needs",
-          title: `${total} waiting for you`,
-        }),
-        statCell({
-          label: "On the pitch",
-          value: f.slots ? `${onPitch}/${f.slots}` : String(onPitch),
-          href: "#tactics",
-          flip: "pitch",
-          title: f.slots
-            ? `${onPitch} of ${f.slots} agent slots working`
-            : `${onPitch} agents working`,
-        }),
-        statCell({
-          label: "Delivered today",
-          value: String(f.summary.deliveredToday ?? 0).padStart(2, "0"),
-          href: "#/work?status=done",
-          flip: "delivered",
-        }),
-        statCell({
-          label: "Wage bill",
-          value: today == null ? "—" : money(today),
-          flip: "wage",
-          title: "API-equivalent spend today, from the usage ledger",
-          after:
-            today != null && f.budget
-              ? el("div", { class: "sc-band" }, [
-                  band(
-                    today,
-                    f.budget,
-                    `${money(today)} of the ${moneyW(f.budget)} daily budget (${Math.round((today / f.budget) * 100)}%)`,
-                  ),
-                  el("span", { class: "kpi-sub" }, `of ${moneyW(f.budget)} today`),
-                ])
-              : el("span", { class: "kpi-sub" }, "today, API-equivalent"),
-        }),
-      ]),
-      el(
-        "time",
-        { class: "sb-clock", datetime: nowIso },
-        `${fmtDay(nowIso)} · ${clockTime(f.now)}`,
-      ),
     ]),
   ]);
 }
@@ -2934,12 +2940,25 @@ function whatIOwnPanel(queue, f) {
     ],
   );
   if (!items.length) {
+    // Nothing needs you: say so, then the one thing a gaffer can do with a quiet
+    // hour (the bench: drafts and refining tickets wait for criteria), when any.
+    const bench = f ? f.tickets.filter((t) => ON_BENCH.has(t.status)) : [];
+    const drafts = bench.filter((t) => t.status === "draft").length;
     card.appendChild(
-      el(
-        "div",
-        { class: "empty-state" },
-        "Nothing is waiting on you right now. Every ticket in play is with an agent or the queue.",
-      ),
+      el("div", { class: "empty-state" }, [
+        el(
+          "p",
+          { class: "es-title" },
+          "Nothing needs you. Every ticket in play is with an agent or the queue.",
+        ),
+        bench.length
+          ? el("p", { class: "es-sub" }, [
+              `On the bench: ${[drafts ? `${drafts} draft` : "", bench.length - drafts ? `${bench.length - drafts} refining` : ""].filter(Boolean).join(", ")}. `,
+              el("a", { href: "#/work?status=draft" }, "Pick one to sharpen"),
+              " and it joins the fixtures.",
+            ])
+          : null,
+      ]),
     );
     return card;
   }
@@ -3009,6 +3028,18 @@ function ownAction(it, primary, f) {
         : null;
   }
 }
+/** How long a team-sheet row has waited, in words a programme would print: "9 h 16 min". */
+function fmtWait(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return "under a minute";
+  if (min < 60) return `${min} min`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} h ${min % 60} min`;
+  const day = Math.floor(hr / 24);
+  return `${day} ${day === 1 ? "day" : "days"} ${hr % 24} h`;
+}
+
 /** A decision's question: its title from /decisions (the reason is the detail). */
 function decisionTitle(it, f) {
   const d = f && f.decisions.find((x) => x.id === it.decisionId);
@@ -3040,10 +3071,29 @@ function renderOwnedItem(it, i = 0, f = null) {
         el(
           "span",
           { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
-          `waited ${fmtDuration(it.waitedMs)}`,
+          `Waited ${fmtWait(it.waitedMs)}`,
         ),
-        it.reasonCode != null ? el("span", { class: "own-code" }, it.reasonCode) : null,
-        it.suggestedAction ? el("span", { class: "own-action" }, `→ ${it.suggestedAction}`) : null,
+        // The server's structured code and its advice, as the referee's notebook:
+        // one group, so the advice never wraps onto a line of its own.
+        it.reasonCode != null || it.suggestedAction
+          ? el("span", { class: "own-note" }, [
+              it.reasonCode != null
+                ? el(
+                    "span",
+                    { class: "own-code", title: "The server's reason code" },
+                    it.reasonCode,
+                  )
+                : null,
+              it.reasonCode != null && it.suggestedAction ? "\u00a0\u00a0" : null,
+              it.suggestedAction
+                ? el(
+                    "span",
+                    { class: "own-action", title: "What the server suggests" },
+                    `→\u00a0${it.suggestedAction}`,
+                  )
+                : null,
+            ])
+          : null,
       ]),
     ]),
     el("div", { class: "own-cta" }, ownAction(it, i === 0, f)),
@@ -3229,18 +3279,26 @@ function readyApprovalSheet(t, it) {
 
 // --- The Tactics Board -------------------------------------------------------
 
-/** Which repos get a channel: those with tickets in play or done, most busy first. */
+/**
+ * Which repos get a channel: those with tickets in play or done. The busiest get
+ * a channel (in play counts most); the channels then run from the wing with the
+ * club's biggest squad (most tickets) to the smallest, as the comp draws them, so
+ * a repo keeps its channel while its tickets move.
+ */
 function pitchChannels(f) {
   const score = new Map();
+  const size = new Map();
   for (const t of f.tickets) {
     const r = f.repoOf.get(t.id);
-    if (!r) continue;
+    if (!r || t.status === "cancelled") continue;
+    size.set(r, (size.get(r) || 0) + 1);
     if (ON_PITCH.has(t.status)) score.set(r, (score.get(r) || 0) + 10);
     else if (t.status === "done") score.set(r, (score.get(r) || 0) + 1);
   }
+  const bySize = (a, b) => size.get(b) - size.get(a) || a.localeCompare(b);
   const all = [...score.keys()].sort((a, b) => score.get(b) - score.get(a) || a.localeCompare(b));
-  if (all.length <= PITCH_MAX_CHANNELS) return { channels: all.sort(), other: null };
-  const keep = all.slice(0, PITCH_MAX_CHANNELS - 1).sort();
+  if (all.length <= PITCH_MAX_CHANNELS) return { channels: all.sort(bySize), other: null };
+  const keep = all.slice(0, PITCH_MAX_CHANNELS - 1).sort(bySize);
   return { channels: [...keep, "Other repos"], other: new Set(all.slice(PITCH_MAX_CHANNELS - 1)) };
 }
 
@@ -3374,20 +3432,27 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     const mid = (z.x0 + z.x1) / 2,
       w = textWidth(z.label, FS.zl, 0.1);
     if (P) {
-      const [x, y] = T(z.x1, 0);
+      // The stage name sits in the band's corner; when the first channel has
+      // players there it moves to the far corner, so no shirt covers it.
+      const busy = (r) => f.tickets.some((t) => t.status === z.key && chanOf(t) === r);
+      const right = busy(channels[0]) && !busy(channels[channels.length - 1]);
+      const [x0, y] = T(z.x1, 0),
+        [x1] = T(z.x1, W);
       labels.append(
         svgS(
           "text",
           {
-            x: x + 8,
+            x: right ? x1 - 8 : x0 + 8,
             y: y + 8 + FS.zl,
+            "text-anchor": right ? "end" : null,
             class: `zl ${PITCH_ZONES.indexOf(z) % 2 ? "halo-b" : "halo-a"}`,
             style: pxs(FS.zl),
           },
           z.label,
         ),
       );
-      box(x + 4, y + 4, x + 12 + w, y + 14 + FS.zl, "zl");
+      if (right) box(x1 - 12 - w, y + 4, x1 - 4, y + 14 + FS.zl, "zl");
+      else box(x0 + 4, y + 4, x0 + 12 + w, y + 14 + FS.zl, "zl");
     } else {
       const [x, y] = T(mid, 0);
       labels.append(
@@ -3452,12 +3517,19 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
         ),
       );
     } else {
+      // A turf patch under the name, so a chalk line it sits on (the box's
+      // edge) never strikes it through.
+      const by = y + 15 + FS.cl * 0.4,
+        [zx] = T(PITCH_ZONES[0].x1, 0);
       kits.append(
-        svgS(
-          "text",
-          { x: x + 36, y: y + 15 + FS.cl * 0.4, class: "cl halo-a", style: pxs(FS.cl) },
-          r,
-        ),
+        svgS("rect", {
+          x: x + 33,
+          y: by - FS.cl * 0.82,
+          width: Math.max(0, Math.min(textWidth(r, FS.cl) + 6, zx - x - 33)),
+          height: FS.cl * 1.08,
+          class: "mow-a",
+        }),
+        svgS("text", { x: x + 36, y: by, class: "cl halo-a", style: pxs(FS.cl) }, r),
       );
       box(x + 34, y + 2, x + 38 + textWidth(r, FS.cl), y + 22 + FS.cl * 0.4, "cl");
     }
@@ -3479,16 +3551,26 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     // A crowded cell packs tighter, then wraps into a second row.
     const zoneW = z.x1 - z.x0;
     const step0 = withAgent ? SH + (P ? 30 : 24) : 2.2 * R + (P ? 4 : 10);
-    const perRow = Math.max(1, Math.floor((P ? CH : zoneW) / step0));
+    // A phone's channel is narrow: counters squeeze side by side down to a
+    // shirt's width apart before they wrap, so a shirt never sits on the disc
+    // (and its ticket number) of the counter beside it.
+    const span = P ? CH - 8 : zoneW,
+      minStep = P ? (withAgent ? SH + 6 : 2 * R + 6) : step0;
+    const perRow = Math.max(1, Math.floor(span / minStep));
     const rows = Math.ceil(list.length / perRow);
+    const step = P ? Math.min(step0, span / Math.min(perRow, list.length)) : step0;
+    // Wrapped rows on a phone stagger across the channel, and sit a full
+    // counter apart when the stagger alone cannot clear a shirt.
+    const stagger = P && rows > 1 ? (perRow > 1 ? step / 2 : Math.min(SH + 6, span - SH)) : 0;
+    const rowStep = P ? (withAgent && stagger < SH ? SH + R : 2.4 * R) : 0;
     list.forEach((t, i) => {
       const row = Math.floor(i / perRow),
         col = i % perRow;
       const inRow = Math.min(perRow, list.length - row * perRow);
       let qx = (z.x0 + z.x1) / 2,
         qy = (c + 0.5) * CH;
-      const off = (col - (inRow - 1) / 2) * step0;
-      const roff = (row - (rows - 1) / 2) * (P ? 2.4 * R : Math.min(CH / rows, 2.4 * R));
+      const off = (col - (inRow - 1) / 2) * step + (row % 2 ? 0.5 : -0.5) * stagger;
+      const roff = (row - (rows - 1) / 2) * (P ? rowStep : Math.min(CH / rows, 2.4 * R));
       if (P) {
         qy += off;
         qx += roff;
@@ -3507,7 +3589,8 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
   };
   const needs = new Set(f.items.map((i) => i.ticket?.id).filter(Boolean));
   const win = arrowWindow(f);
-  const shirtTop = (y) => y - R - SH * 0.925 + (P ? 11 : 9);
+  // On a phone the shirt sits a touch higher, so its hem clears the ticket number.
+  const shirtTop = (y) => y - R - SH * 0.925 + (P ? 3 : 9);
   const geo = new Map();
   for (const t of inPlay) {
     const [x, y] = T(...pos.get(t.id));
@@ -3615,6 +3698,22 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     [0, 1].map((i) => (1 - u) * (1 - v) * a[i] + ((1 - u) * v + u * (1 - v)) * b[i] + u * v * c[i]);
   const inAny = (p, cs) => cs.some((c) => Math.hypot(p[0] - c.x, p[1] - c.y) < c.r);
   const labelBoxes = obs.filter((o) => ["zl", "cl", "kit", "done"].includes(o.why));
+  // Where a move started: the cell's centre, or the nearest open turf in that
+  // cell when another counter stands there, so the tail never reads as that
+  // counter having moved.
+  const freeSpot = (st, repo, own) => {
+    const [cx, cy] = zoneCentre(st, repo),
+      z = PITCH_ZONES.find((x) => x.key === st);
+    const taken = allCircles.filter((c) => !own.includes(c)).map((c) => ({ ...c, r: c.r + 4 }));
+    const zw = z.x1 - z.x0;
+    const cands = [];
+    for (const u of [0, 0.3, -0.3, 0.42, -0.42])
+      for (const v of [0, 0.32, -0.32]) cands.push([cx + v * zw, cy + u * CH]);
+    cands.sort((p, q) => Math.hypot(p[0] - cx, p[1] - cy) - Math.hypot(q[0] - cx, q[1] - cy));
+    const onLabel = ([x, y]) =>
+      labelBoxes.some((o) => x > o.x0 - 8 && x < o.x1 + 8 && y > o.y0 - 8 && y < o.y1 + 8);
+    return cands.find((q) => !inAny(T(...q), taken) && !onLabel(T(...q))) || [cx, cy];
+  };
   const plans = [];
   for (const t of f.tickets) {
     const evs = (f.details.get(t.id)?.events || []).filter((e) => {
@@ -3623,27 +3722,51 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
       return at > win.start && at <= win.end;
     });
     if (!evs.length) continue;
-    let first;
-    try {
-      first = JSON.parse(evs[0].payload_json || "{}");
-    } catch {
-      continue;
-    }
     const repo = chanOf(t);
     if (!repo) continue;
-    const from = zoneCentre(first.from, repo);
     const done = t.status === "done";
-    if (!from || (!done && !geo.has(t.id)) || (done && !ballAt.has(repo))) continue;
-    const a = T(...from);
+    if ((!done && !geo.has(t.id)) || (done && !ballAt.has(repo))) continue;
     const tgt = done ? ballAt.get(repo) : geo.get(t.id);
     const b = [tgt.x, tgt.y];
-    if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 30) continue;
+    // The arrow starts where the ticket first stood on the pitch in the window. A
+    // ticket that only came on from off it (blocked, paused, failed, the bench)
+    // comes on from the nearer touchline, beside where it stands now.
+    const froms = evs.map((e) => {
+      try {
+        return JSON.parse(e.payload_json || "{}").from;
+      } catch {
+        return undefined;
+      }
+    });
+    const far = (q) => q && Math.hypot(b[0] - q[0], b[1] - q[1]) >= 30;
+    const onAt = froms.find((s) => ON_PITCH.has(s));
+    let a = onAt ? T(...freeSpot(onAt, repo, geo.get(t.id)?.circles || [])) : null,
+      on = false;
+    if (!far(a) && !done && froms.some((s) => s && !ON_PITCH.has(s))) {
+      const here = PITCH_ZONES.find((z) => z.key === t.status);
+      const c = channels.indexOf(repo);
+      if (here && c >= 0) {
+        // Come on at a slant when the touchline is close, so the chalk is long
+        // enough to read past the counter.
+        const ty = (c + 0.5) * CH < W / 2 ? 6 : W - 6,
+          [bx, by] = P ? [M.t + L - b[1], b[0] - M.l] : [b[0] - M.l, b[1] - M.t];
+        const d = Math.abs(by - ty),
+          need = 110;
+        const run = d < need ? Math.sqrt(need * need - d * d) : 0;
+        // Slant back towards the start of the lifecycle; forward only when the
+        // goal line leaves no room.
+        let sx = Math.max(6, bx - run);
+        if (Math.hypot(bx - sx, d) < 60) sx = Math.min(L - 6, bx + run);
+        a = T(sx, ty);
+      } else a = null;
+      on = true;
+    }
+    if (!far(a)) continue;
     plans.push({
       t,
-      first,
-      evs,
       a,
       b,
+      on,
       key: done ? "net|" + repo : "t" + t.id,
       endCs: done ? [{ x: tgt.x, y: tgt.y, r: tgt.r + 9 }, ...tgt.extra] : tgt.circles,
     });
@@ -3730,6 +3853,9 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
   svg.append(arrows, labels, kits);
 
   const layer = svgS("g", { class: "counters" });
+  const placed = [];
+  const zoneOf = (t) => PITCH_ZONES.findIndex((z) => z.key === t.status);
+  const chanIdx = (t) => channels.indexOf(chanOf(t));
   const agentMoves = [];
   const pitchBox = P
     ? { x0: M.l + 2, y0: M.t + 2, x1: M.l + W - 2, y1: M.t + L - 2 }
@@ -3738,8 +3864,12 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     let n = 0;
     for (const o of obs)
       if (b.x0 < o.x1 + 3 && b.x1 > o.x0 - 3 && b.y0 < o.y1 + 3 && b.y1 > o.y0 - 3) n += 60;
+    // Chalk under a plate costs a little, but never enough on its own to send
+    // the plate off on a leader line: the arrows are re-routed round the plates.
+    let chalk = 0;
     for (const [qx, qy] of arrowPts)
-      if (qx > b.x0 - 5 && qx < b.x1 + 5 && qy > b.y0 - 5 && qy < b.y1 + 5) n += 4;
+      if (qx > b.x0 - 5 && qx < b.x1 + 5 && qy > b.y0 - 5 && qy < b.y1 + 5) chalk += 4;
+    n += Math.min(chalk, 48);
     if (b.x0 < pitchBox.x0 || b.x1 > pitchBox.x1 || b.y0 < pitchBox.y0 || b.y1 > pitchBox.y1)
       n += 400;
     return n;
@@ -3794,6 +3924,10 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
           { x0: x - R, y0: y + R + gap + 2 },
           { x0: x + R - w, y0: y + R + gap + 2 },
           { x0: x - w / 2, y0: top - gap - h },
+          // Over the shirt, flush with either side of it: a phone's pair of
+          // counters side by side leaves room above, not beside.
+          { x0: x - SH / 2, y0: top - gap - h },
+          { x0: x + SH / 2 - w, y0: top - gap - h },
           { x0: x + SH / 2 + gap, y0: top - 4 },
           { x0: x - SH / 2 - gap - w, y0: top - 4 },
         ].map((c) => ({ x0: c.x0, y0: c.y0, x1: c.x0 + w, y1: c.y0 + h }));
@@ -3808,6 +3942,28 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
           if (!hN) break;
         }
         let lead = null;
+        // A leader line that runs through another counter would tie the plate
+        // to the wrong ticket.
+        const others = obs.filter(
+          (o) =>
+            (o.why === "disc" || o.why === "shirt") &&
+            !(o.x0 <= x && o.x1 >= x && o.y0 <= y - 1 && o.y1 >= y - 1) &&
+            !(o.why === "shirt" && o.x0 === x - SH / 2),
+        );
+        const leadCrosses = (c) => {
+          const above = c.y1 < shirt.top + SH * 0.2;
+          const ox = x,
+            oy = above ? shirt.top + SH * 0.12 : y;
+          const tx = Math.min(Math.max(ox, c.x0), c.x1),
+            ty = Math.min(Math.max(oy, c.y0), c.y1);
+          let n = 0;
+          for (let j = 1; j < 12; j++) {
+            const px = ox + ((tx - ox) * j) / 12,
+              py = oy + ((ty - oy) * j) / 12;
+            if (others.some((o) => px > o.x0 && px < o.x1 && py > o.y0 && py < o.y1)) n += 60;
+          }
+          return n;
+        };
         if (bestHits >= 60) {
           let bestScore = bestHits * 1000;
           for (let gy = -5; gy <= 5; gy++)
@@ -3816,7 +3972,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
               c.x1 = c.x0 + w;
               c.y1 = c.y0 + h;
               const d = Math.hypot((c.x0 + c.x1) / 2 - x, (c.y0 + c.y1) / 2 - y);
-              const sc = hits(c) * 1000 + d;
+              const sc = (hits(c) + leadCrosses(c)) * 1000 + d;
               if (sc < bestScore) {
                 bestScore = sc;
                 best = c;
@@ -3886,23 +4042,36 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
       );
       box(cx - R * 0.4, cy - R * 0.5, cx + R * 0.4, cy + R * 0.55, "ycard");
     }
-    layer.append(a);
+    placed.push({ a, key: P ? [-zoneOf(t), Math.round(y), x] : [chanIdx(t), x, y] });
   }
+  // Tab through the counters in the order they sit on the pitch: channel by
+  // channel, left to right (on a phone, stage by stage from the top).
+  placed.sort((p, q) => p.key[0] - q.key[0] || p.key[1] - q.key[1] || p.key[2] - q.key[2]);
+  layer.append(...placed.map((p) => p.a));
   const tagBoxes = obs.filter((o) => o.why === "tag");
+  let cameOn = 0;
   for (const { p, i } of routed) {
     const r = routeArrow(p, i, tagBoxes);
     if (!r) continue;
+    if (p.on) cameOn++;
     const f1 = (v) => v.toFixed(1);
     arrows.append(
       svgS("path", {
         d: `M${f1(r.s0[0])} ${f1(r.s0[1])} Q${f1(r.c1[0])} ${f1(r.c1[1])} ${f1(r.e1[0])} ${f1(r.e1[1])}`,
-        class: "arrow",
+        class: p.on ? "arrow arrow-on" : "arrow",
         "marker-end": `url(#${mid})`,
       }),
     );
   }
   svg.append(layer);
-  return { svg, agentMoves, arrows, count: inPlay.length, arrowsDrawn: arrows.childElementCount };
+  return {
+    svg,
+    agentMoves,
+    arrows,
+    cameOn,
+    count: inPlay.length,
+    arrowsDrawn: arrows.childElementCount,
+  };
 }
 
 /** Chalk in once, shirts slide from where they were, tags rise: once, never under reduced motion. */
@@ -4047,8 +4216,21 @@ function tacticsBoard(f) {
           { viewBox: "0 0 40 12", width: 40, height: 12, "aria-hidden": "true" },
           svgS("path", { d: "M2 9 Q20 0 36 6", class: "key-arrow" }),
         ),
-        "A move",
+        win.recent ? "Moved in the last 3 h" : "Moved in the 3 h to the last move",
       ]),
+      // A ticket back on from off the pitch (unblocked, resumed, off the bench)
+      // has no stage to come from: its arrow rises from the touchline.
+      boards.landscape.cameOn || boards.portrait.cameOn
+        ? el("li", {}, [
+            svgS(
+              "svg",
+              { viewBox: "0 0 40 16", width: 40, height: 16, "aria-hidden": "true" },
+              svgS("line", { x1: 2, y1: 14, x2: 38, y2: 14, class: "key-line" }),
+              svgS("path", { d: "M12 14 Q16 6 28 3", class: "key-arrow" }),
+            ),
+            "Back on from off the pitch",
+          ])
+        : null,
       ...channels
         .filter((r) => r !== "Other repos")
         .map((r) => el("li", { class: "key-kit" }, [kitShirt(r, 20), r])),
@@ -4093,75 +4275,83 @@ function cupRuns(f) {
     "sky",
     "Cup runs",
     "epics, by phase",
-    f.epics.map((e) => {
-      const deps = new Map(
-        e.members.map((t) => [
-          t.id,
-          (f.details.get(t.id)?.dependencies || []).map((d) => d.depends_on_ticket_id),
-        ]),
-      );
-      const byPhase = computePhases(e.members, deps);
-      const phases = [...byPhase.keys()].sort((a, b) => a - b).map((p) => byPhase.get(p));
-      const held = e.members.filter((t) => OFF_PITCH.has(t.status));
-      const heldIds = new Set(held.map((t) => t.id));
-      const waits = e.members.filter((t) => (deps.get(t.id) || []).some((d) => heldIds.has(d)));
-      const done = e.members.filter((t) => t.status === "done").length;
-      return el("article", { class: `cup${held.length ? " is-held" : ""}` }, [
-        el("header", { class: "cup-head" }, [
-          el("h3", {}, el("a", { href: `#/epics/${e.node.id}` }, e.node.name)),
+    // A held campaign leads: it is the one that needs a look.
+    f.epics
+      .map((e, i) => ({ e, i, held: e.members.some((t) => OFF_PITCH.has(t.status)) }))
+      .sort((a, b) => b.held - a.held || a.i - b.i)
+      .map(({ e }) => {
+        const deps = new Map(
+          e.members.map((t) => [
+            t.id,
+            (f.details.get(t.id)?.dependencies || []).map((d) => d.depends_on_ticket_id),
+          ]),
+        );
+        const byPhase = computePhases(e.members, deps);
+        const phases = [...byPhase.keys()].sort((a, b) => a - b).map((p) => byPhase.get(p));
+        const held = e.members
+          .filter((t) => OFF_PITCH.has(t.status))
+          .sort((a, b) => a.number - b.number);
+        const heldIds = new Set(held.map((t) => t.id));
+        const waits = e.members
+          .filter((t) => (deps.get(t.id) || []).some((d) => heldIds.has(d)))
+          .sort((a, b) => a.number - b.number);
+        const done = e.members.filter((t) => t.status === "done").length;
+        return el("article", { class: `cup${held.length ? " is-held" : ""}` }, [
+          el("header", { class: "cup-head" }, [
+            el("h3", {}, el("a", { href: `#/epics/${e.node.id}` }, e.node.name)),
+            el(
+              "p",
+              { class: held.length ? "cup-why is-red" : "cup-why" },
+              held.length
+                ? [
+                    glyph("blocked", 16),
+                    `Held at #${held[0].number}${waits.length ? `: ${waits.map((t) => "#" + t.number).join(", ")} wait on it.` : "."}`,
+                  ]
+                : `${done} of ${e.members.length} done. Nothing is holding it.`,
+            ),
+          ]),
           el(
-            "p",
-            { class: held.length ? "cup-why is-red" : "cup-why" },
-            held.length
-              ? [
-                  glyph("blocked", 16),
-                  `Held at #${held[0].number}${waits.length ? `: ${waits.map((t) => "#" + t.number).join(", ")} wait on it.` : "."}`,
-                ]
-              : `${done} of ${e.members.length} done. Nothing is holding it.`,
+            "ol",
+            { class: "rounds" },
+            phases.map((ph, i) =>
+              el("li", { class: "round" }, [
+                el(
+                  "span",
+                  { class: "round-name" },
+                  i === phases.length - 1 &&
+                    phases.length > 1 &&
+                    ph.some((t) => /^Acceptance/i.test(t.title))
+                    ? "Final"
+                    : `Round ${i + 1}`,
+                ),
+                el(
+                  "ul",
+                  {},
+                  ph
+                    .slice()
+                    .sort((a, b) => a.number - b.number)
+                    .map((t) =>
+                      el("li", { class: `tie st-${t.status}` }, [
+                        el(
+                          "a",
+                          {
+                            href: `#/ticket/${t.id}`,
+                            "aria-label": `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
+                          },
+                          [
+                            glyph(t.status, 16),
+                            el("b", {}, `#${t.number}`),
+                            el("span", { class: "tie-t" }, t.title),
+                          ],
+                        ),
+                      ]),
+                    ),
+                ),
+              ]),
+            ),
           ),
-        ]),
-        el(
-          "ol",
-          { class: "rounds" },
-          phases.map((ph, i) =>
-            el("li", { class: "round" }, [
-              el(
-                "span",
-                { class: "round-name" },
-                i === phases.length - 1 &&
-                  phases.length > 1 &&
-                  ph.some((t) => /^Acceptance/i.test(t.title))
-                  ? "Final"
-                  : `Round ${i + 1}`,
-              ),
-              el(
-                "ul",
-                {},
-                ph
-                  .slice()
-                  .sort((a, b) => a.number - b.number)
-                  .map((t) =>
-                    el("li", { class: `tie st-${t.status}` }, [
-                      el(
-                        "a",
-                        {
-                          href: `#/ticket/${t.id}`,
-                          "aria-label": `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
-                        },
-                        [
-                          glyph(t.status, 16),
-                          el("b", {}, `#${t.number}`),
-                          el("span", { class: "tie-t" }, t.title),
-                        ],
-                      ),
-                    ]),
-                  ),
-              ),
-            ]),
-          ),
-        ),
-      ]);
-    }),
+        ]);
+      }),
   );
 }
 
@@ -4345,7 +4535,7 @@ function wageSvg(f, W) {
     const v = spend.get(d),
       x = padL + gap / 2 + i * bw,
       today = d === todayKey,
-      w = bw - gap,
+      w = Math.max(1, bw - gap),
       cx = x + w / 2;
     if (v != null) {
       svg.append(
@@ -4361,7 +4551,10 @@ function wageSvg(f, W) {
           svgS("title", {}, `${fmtDay(d + "T12:00:00Z")}: ${money(v)}`),
         ),
       );
-      if (today || bw >= 36 || d === topDay) {
+      // Every day carries its figure: in full where the bar is wide enough, to
+      // the dollar where it is not (the bar's title keeps the cents).
+      const full = today || bw >= 36 || d === topDay;
+      if (full || bw >= 22) {
         const anchor = today && cx + 26 > W ? "end" : "middle";
         svg.append(
           svgS(
@@ -4372,7 +4565,7 @@ function wageSvg(f, W) {
               "text-anchor": anchor,
               class: today ? "val val-today" : "val",
             },
-            money(v),
+            full ? money(v) : v >= 9.5 ? `$${Math.round(v)}` : `$${v.toFixed(1)}`,
           ),
         );
       }
@@ -4405,7 +4598,9 @@ function wageBill(f) {
   let lastW = 0;
   const fit = () => {
     const w = Math.floor(host.clientWidth);
-    if (!w || Math.abs(w - lastW) < 2) return;
+    // A host caught mid-layout (narrower than the axis plus a few px a day)
+    // would draw negative bars; wait for its real width.
+    if (w < 160 || Math.abs(w - lastW) < 2) return;
     lastW = w;
     host.replaceChildren(wageSvg(f, w));
   };
@@ -4680,18 +4875,296 @@ function fixtures(f) {
   );
 }
 
-/** The match report: the latest events, in words, with who did them. */
+/**
+ * The match report: the latest moves as commentary, minute by minute. Each line
+ * is one real event: when (HH:MM), the state it left the ticket in (§6 glyph),
+ * who did it (an agent's shirt and name, priya.raman, the runner) and what, with
+ * the from → to read from the ticket's own event payload when the detail cache
+ * has it. Book-keeping (evidence rows, criteria added, repo links) is left off
+ * the commentary but kept, every event, in the folded full log beneath.
+ */
+const REPORT_QUIET = new Set([
+  "evidence.recorded",
+  "ac.added",
+  "ticket.repo_linked",
+  "ticket.repo_access_set",
+  "ticket.testable_set",
+  "ticket.test_contract_set",
+  "ticket.budget_set",
+  "ticket.repo_delivery_recorded",
+  "ticket.acceptance_criteria_reset",
+]);
+const PITCH_WORD = { ready_for_merge: "To merge" };
+function reportLine(f, e) {
+  const det = f.details.get(e.entity_id);
+  const full = det?.events?.find((x) => x.id === e.id);
+  const p = full?.payload_json ? parseJsonSafe(full.payload_json) || {} : {};
+  const word = (st) => PITCH_WORD[st] || statusLabel(st);
+  switch (e.event_type) {
+    case "ticket.created":
+      return { st: "draft", say: "created" };
+    case "ticket.transitioned":
+      return p.to
+        ? { st: p.to, say: [p.from ? `${word(p.from)} → ` : "→ ", el("b", {}, word(p.to))] }
+        : { st: null, say: "moved" };
+    case "claim.created":
+      return { st: "claimed", say: "claimed" };
+    case "claim.completed":
+      return { st: null, say: "claim completed" };
+    case "claim.released":
+      return { st: null, say: "claim released" };
+    case "ticket.reworking":
+      return {
+        st: "failed",
+        say: p.attempt
+          ? `back for rework ${p.attempt}/${p.max_attempts}${p.gate ? ` on ${p.gate}` : ""}`
+          : "back for rework",
+      };
+    case "ticket.delivery_recorded":
+      return { st: "in_review", say: "delivery recorded" };
+    case "ticket.blocked":
+      return { st: "blocked", say: "parked: it needs you" };
+    case "ticket.paused":
+      return {
+        st: "paused",
+        say: p.reason ? `paused (${String(p.reason).replace(/_/g, " ")})` : "paused",
+      };
+    case "ticket.routed_to_testing":
+      return { st: "in_testing", say: "sent to testing" };
+    case "ticket.dependency_added":
+      return {
+        st: null,
+        say: p.depends_on_number ? `now waits on #${p.depends_on_number}` : "gains a dependency",
+      };
+    case "decision.created":
+      return { st: "decision", say: "a question for the gaffer" };
+    case "epic.created":
+      return { st: null, say: "epic created" };
+    default:
+      return { st: null, say: humanizeEvent(e.event_type).toLowerCase() };
+  }
+}
 function matchReport(f) {
-  const evs = f.events.slice(0, 10);
+  // A claim writes two events in the same instant (the claim and the move to
+  // Claimed): the report says it once, as the move.
+  const movedAt = new Set(
+    f.events
+      .filter((e) => e.event_type === "ticket.transitioned")
+      .map((e) => `${e.entity_id}@${String(e.created_at).slice(0, 19)}`),
+  );
+  const lines = f.events
+    .filter((e) => !REPORT_QUIET.has(e.event_type))
+    .filter(
+      (e) =>
+        e.event_type !== "claim.created" ||
+        !movedAt.has(`${e.entity_id}@${String(e.created_at).slice(0, 19)}`),
+    )
+    .slice(0, 10);
+  let day = "";
+  const half = Math.ceil(lines.length / 2);
+  const rows = lines.map((e, i) => {
+    const { st, say } = reportLine(f, e);
+    const d = fmtDay(e.created_at);
+    const head = d !== day ? (day = d) : null;
+    const agent = e.actor_type === "agent" && e.actor_id ? agentNames.get(e.actor_id) : null;
+    const who = actorName(e.actor_type, e.actor_id);
+    const ref =
+      e.ticket_number != null
+        ? el(
+            "a",
+            { class: "mr-ref", href: `#/ticket/${e.entity_id}`, title: e.ticket_title || "" },
+            `#${e.ticket_number}`,
+          )
+        : null;
+    const cls = [
+      "mr-row",
+      st ? `mr-${st}` : "",
+      i >= half ? "is-col-b" : "",
+      i % half === 0 ? "is-col-top" : "",
+    ];
+    return el("li", { class: cls.filter(Boolean).join(" ") }, [
+      el("time", { class: "mr-min tabnum", datetime: e.created_at }, [
+        head ? el("span", { class: "mr-day" }, head) : null,
+        clockTime(Date.parse(e.created_at)),
+      ]),
+      st ? glyph(st, 16) : el("span", { class: "mr-dot", "aria-hidden": "true" }),
+      el("p", { class: "mr-say" }, [
+        ref,
+        ref ? " " : null,
+        e.ticket_title ? el("span", { class: "mr-t" }, e.ticket_title) : null,
+        el("span", { class: "mr-what" }, [" ", say]),
+      ]),
+      el("span", { class: "mr-who" }, [agent ? agentShirt(agent, 26) : null, who]),
+    ]);
+  });
+  const evs = f.events.slice(0, 30);
   return progPage(
     "report",
     "ink",
     "Match report",
-    f.events.length ? `latest ${evs.length}` : null,
-    evs.length
-      ? el("ul", { class: "feed" }, evs.map(renderFeedRow))
-      : el("p", { class: "quiet" }, "No activity recorded yet."),
+    f.events.length ? `the latest ${plural(lines.length, "event")}` : null,
+    lines.length || evs.length
+      ? [
+          lines.length
+            ? el("ol", { class: "mr-list", style: { "--mr-rows": String(half) } }, rows)
+            : null,
+          el("details", { class: "mr-all" }, [
+            el("summary", {}, `Every event, book-keeping included (latest ${evs.length})`),
+            el("ul", { class: "feed" }, evs.map(renderFeedRow)),
+          ]),
+        ]
+      : el(
+          "p",
+          { class: "quiet" },
+          "No activity recorded yet. The report starts with the first ticket.",
+        ),
   );
+}
+
+/**
+ * The Overview while it loads: the ground before kick-off. The scoreboard is lit
+ * with its four counters named but blank ("––", never a number the server has
+ * not given), the Team Sheet's block with three empty rows, and the pitch drawn
+ * with its markings and stage names but nobody on it. Same shape as the view, so
+ * nothing jumps when the data lands; invisible for its first 300ms.
+ */
+function overviewSkeleton() {
+  const empty = {
+    now: Date.now(),
+    tickets: [],
+    items: [],
+    events: [],
+    claims: [],
+    repoOf: new Map(),
+    details: new Map(),
+    byId: new Map(),
+    claimByTicket: new Map(),
+    runByTicket: new Map(),
+  };
+  let pitch;
+  try {
+    pitch = el("div", { class: "pitch-wrap" }, [
+      el("div", { class: "pw-land" }, pitchBoard(empty, "landscape").svg),
+      el("div", { class: "pw-port" }, pitchBoard(empty, "portrait").svg),
+    ]);
+    for (const svg of pitch.querySelectorAll("svg")) {
+      svg.setAttribute("aria-hidden", "true");
+      svg.removeAttribute("role");
+    }
+  } catch {
+    pitch = el("div", { class: "skeleton sk-board" });
+  }
+  const cell = (label) =>
+    el("div", { class: "kpi" }, [
+      el("div", { class: "kpi-top" }, el("span", { class: "kpi-label" }, label)),
+      el("span", { class: "kpi-val sk-digits" }, "––"),
+    ]);
+  const row = () =>
+    el("li", { class: "sk-own" }, [
+      el("span", { class: "skeleton sk-rank" }),
+      el("span", { class: "sk-own-lines" }, [
+        el("span", { class: "skeleton sk-l1" }),
+        el("span", { class: "skeleton sk-l2" }),
+        el("span", { class: "skeleton sk-l3" }),
+      ]),
+    ]);
+  return el(
+    "div",
+    {
+      class: "view view-overview skeleton-view sk-overview",
+      "aria-busy": "true",
+      "aria-label": "Loading the Overview",
+    },
+    [
+      el("section", { class: "scoreboard bleed", "aria-hidden": "true" }, [
+        el("div", { class: "scoreboard-in" }, [
+          el("div", { class: "sb-main sk-hl" }, [
+            el("span", { class: "skeleton sk-hl1" }),
+            el("span", { class: "skeleton sk-hl2" }),
+            el("span", { class: "skeleton sk-hl3" }),
+          ]),
+          el("div", { class: "sb-side" }, [
+            el("div", { class: "sb-cells kpi-row" }, [
+              cell("Need you"),
+              cell("On the pitch"),
+              cell("Delivered today"),
+              cell("Wage bill"),
+            ]),
+          ]),
+        ]),
+      ]),
+      el("div", { class: "ov-main", "aria-hidden": "true" }, [
+        el("div", { class: "card what-i-own" }, [
+          panelHead("Team sheet", null, null, { kit: "claret" }),
+          el("ol", { class: "own-well" }, [row(), row(), row()]),
+        ]),
+        el("section", { class: "tactics" }, [
+          el("div", { class: "tactics-head" }, [el("h2", { class: "tb-title" }, "Tactics board")]),
+          pitch,
+        ]),
+      ]),
+    ],
+  );
+}
+
+/**
+ * The Overview when its read fails: the scoreboard stays dark and says what
+ * happened in one sentence (no number it could not read), the server's own words
+ * under it, and one way on: Try again. A background refresh retries every 9s and
+ * replaces this page as soon as the factory answers.
+ */
+function overviewError(e) {
+  const code = (e && e.code) || "";
+  const head =
+    code === "NETWORK"
+      ? "Can’t reach the factory."
+      : code === "BAD_GATEWAY"
+        ? "Something else answered for the factory."
+        : "The factory couldn’t make up the scoreboard.";
+  const detail =
+    code === "NETWORK"
+      ? "The dashboard server isn’t answering. Check it is still running; this page tries again by itself every 9 seconds."
+      : code === "BAD_GATEWAY"
+        ? `${e.message} A proxy or another server is in the way; this page tries again every 9 seconds.`
+        : `It said: “${(e && e.message) || "the request failed"}”. This page tries again every 9 seconds.`;
+  const retry = el(
+    "button",
+    { class: "btn primary", type: "button", onclick: () => router() },
+    "Try again",
+  );
+  return el("div", { class: "view view-overview ov-error" }, [
+    el("section", { class: "scoreboard bleed sb-dark", "aria-label": "Scoreboard" }, [
+      el("div", { class: "scoreboard-in" }, [
+        el("div", { class: "sb-main" }, [
+          el("h1", { class: "hl" }, [el("span", { class: "hl-nb" }, [glyph("failed", 34), head])]),
+          el("p", { class: "hl-sub" }, detail),
+        ]),
+        el("div", { class: "sb-side" }, [
+          el(
+            "div",
+            { class: "sb-cells kpi-row sb-off", role: "group", "aria-label": "Today (not read)" },
+            ["Need you", "On the pitch", "Delivered today", "Wage bill"].map((label) =>
+              el("div", { class: "kpi" }, [
+                el("div", { class: "kpi-top" }, el("span", { class: "kpi-label" }, label)),
+                el("span", { class: "kpi-val sk-digits" }, [
+                  el("span", { "aria-hidden": "true" }, "––"),
+                  el("span", { class: "sr-only" }, "not read"),
+                ]),
+              ]),
+            ),
+          ),
+        ]),
+      ]),
+    ]),
+    el("div", { class: "empty-state is-error ov-error-act" }, [
+      el("div", { class: "es-actions" }, [
+        retry,
+        el("a", { class: "btn", href: "#/work" }, "Open the Work board"),
+        el("a", { class: "btn", href: "#/health" }, "Open Health"),
+      ]),
+      code ? el("p", { class: "es-sub" }, `Error code: ${code}`) : null,
+    ]),
+  ]);
 }
 
 async function renderOverview() {

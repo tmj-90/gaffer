@@ -37,9 +37,21 @@
   .hl-sub .sep {
     color: #8a93a3;
   }
+  .sb-side {
+    display: grid;
+    gap: 8px;
+    justify-items: end;
+    align-self: center;
+    min-width: 0;
+  }
   .sb-cells {
     grid-template-columns: repeat(4, minmax(120px, auto));
-    align-self: center;
+  }
+  .sb-small .view-hero-status {
+    margin: 0;
+    gap: 6px;
+    font-size: var(--t12);
+    letter-spacing: 0.02em;
   }
   .sb-cells .kpi-val {
     font-size: var(--t52);
@@ -50,10 +62,17 @@
     gap: 4px;
     min-width: 120px;
   }
-  .sb-clock {
+  .sb-small {
     position: absolute;
     right: var(--gut);
     top: 8px;
+    display: flex;
+    flex-direction: row-reverse;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 16px;
+  }
+  .sb-clock {
     font: 600 var(--t12) var(--f-cond);
     letter-spacing: 0.04em;
     color: var(--board-ink-2);
@@ -166,6 +185,10 @@
   }
   .own-code {
     font: 400 var(--t12) / 1.35 var(--f-mono);
+  }
+  .own-note {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .own-cta {
     min-width: 0;
@@ -500,6 +523,10 @@
     stroke-dasharray: 2 5;
     stroke-linecap: round;
   }
+  .key-line {
+    stroke: var(--ink);
+    stroke-width: 2;
+  }
 
   /* --- the programme pages ------------------------------------------------- */
   .ov-prog {
@@ -536,13 +563,17 @@
   .wage {
     grid-column: span 4;
   }
-  .squad {
+  /* Scoped to the programme grid: in the idle left column a span would add
+     implicit columns and narrow the Team Sheet beside it. */
+  .ov-prog > .squad {
     grid-column: span 3;
   }
   .results,
-  .fixtures,
-  .report {
-    grid-column: span 4;
+  .fixtures {
+    grid-column: span 6;
+  }
+  .ov-prog > .report {
+    grid-column: 1 / -1;
   }
   .ov-prog.is-idle .league,
   .ov-prog.is-idle .wage {
@@ -959,19 +990,120 @@
     font: 600 var(--t14) var(--f-cond);
     color: var(--ink-2);
   }
+  /* A fixture: the ready glyph, the ticket, and what it waits on, on one line. */
   .fx-list li {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
   .fx-gate {
-    grid-column: 2;
     font: 600 var(--t14) var(--f-cond);
     color: var(--ink-2);
+    text-align: right;
+    white-space: nowrap;
   }
   .fx-gate.is-red {
     color: var(--red);
   }
-  .report .feed {
-    padding: 4px 16px 12px;
+
+  /* Match report: minute-by-minute commentary, two columns at full width. */
+  /* Column-major (read down, then across), rows shared so the two halves align. */
+  .mr-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: repeat(var(--mr-rows, 5), auto);
+    grid-auto-flow: column;
+    padding: 4px 0 8px;
+  }
+  .mr-row {
+    display: grid;
+    grid-template-columns: 56px 18px minmax(0, 1fr) auto;
+    gap: 2px 10px;
+    align-items: center;
+    padding: 8px 16px;
+    border-top: 1px solid var(--rule-2);
+  }
+  .mr-row.is-col-top {
+    border-top: 0;
+  }
+  .mr-row.is-col-b {
+    border-left: var(--hair);
+  }
+  .mr-row > .glyph,
+  .mr-dot {
+    align-self: center;
+  }
+  .mr-dot {
+    width: 6px;
+    height: 6px;
+    margin-left: 5px;
+    border-radius: var(--r-round);
+    background: var(--ink-2);
+  }
+  /* The day prints over the first minute it holds, like a programme's date line. */
+  .mr-day {
+    display: block;
+    margin-bottom: 2px;
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    color: var(--ink-2);
+  }
+  .mr-min {
+    display: block;
+    font: 800 var(--t20) / 1 var(--f-display);
+    color: var(--ink);
+  }
+  .mr-say {
+    min-width: 0;
+    font-size: var(--t14);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .mr-ref {
+    font: 800 var(--t16) / 1 var(--f-display);
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .mr-ref:hover {
+    text-decoration: underline;
+  }
+  .mr-t {
+    color: var(--ink);
+  }
+  .mr-what {
+    color: var(--ink-2);
+  }
+  .mr-what b {
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .mr-blocked .mr-what,
+  .mr-failed .mr-what,
+  .mr-blocked > .glyph,
+  .mr-failed > .glyph {
+    color: var(--red);
+  }
+  .mr-who {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 600 var(--t12) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .mr-who .shirt {
+    flex: none;
+  }
+  .mr-all {
+    border-top: var(--hair);
+  }
+  .mr-all > summary {
+    padding: 10px 16px;
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .mr-all .feed {
+    padding: 0 16px 12px;
   }
 
   @media (max-width: 1280px) {
@@ -981,15 +1113,14 @@
     .scoreboard-in {
       grid-template-columns: minmax(0, 1fr);
     }
-    .sb-cells {
-      justify-self: start;
+    .sb-side {
+      justify-items: start;
     }
     .league,
     .wage,
-    .squad,
+    .ov-prog > .squad,
     .results,
-    .fixtures,
-    .report {
+    .fixtures {
       grid-column: span 6;
     }
     .campaigns,
@@ -1045,23 +1176,26 @@
     .sc-band {
       min-width: 0;
     }
-    .sb-clock {
+    .sb-small {
       position: static;
       order: -1;
+      flex-direction: row;
+      justify-content: flex-start;
+      gap: 4px 12px;
     }
     .ov-main {
       grid-template-columns: minmax(0, 1fr);
       gap: var(--s4);
     }
-    /* On a phone the pitch comes before the squad that moved up beside it. */
+    /* On a phone the column stacks as it reads: Team Sheet, then the squad that
+       moved up beside the pitch, then the pitch (the comp's idle order; drawing
+       the pitch first would split the DOM and focus order from what is seen). */
     .ov-left {
-      display: contents;
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s4);
     }
-    .ov-main > .ov-left > * {
+    .ov-left > * {
       grid-column: 1 / -1;
-    }
-    .ov-main > .ov-left > .squad {
-      order: 1;
     }
     .own-row {
       grid-template-columns: 28px minmax(0, 1fr);
@@ -1149,8 +1283,130 @@
     .res-list li {
       grid-template-columns: auto minmax(0, 1fr) auto;
     }
+    .fx-list li {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+    .fx-list li {
+      row-gap: 2px;
+    }
+    .fx-gate {
+      grid-column: 2;
+      text-align: left;
+      white-space: normal;
+    }
+    .mr-what {
+      display: block;
+    }
+    .mr-list {
+      grid-template-columns: minmax(0, 1fr);
+      grid-auto-flow: row;
+      grid-template-rows: none;
+    }
+    .mr-row.is-col-b {
+      border-left: 0;
+    }
+    .mr-row.is-col-top:not(:first-child) {
+      border-top: 1px solid var(--rule-2);
+    }
+    .mr-row {
+      grid-template-columns: 44px 18px minmax(0, 1fr);
+      padding: 8px 12px;
+    }
+    .mr-who {
+      grid-column: 3;
+    }
+    .sb-side {
+      justify-items: stretch;
+    }
+    .sk-hl .skeleton {
+      height: 32px;
+    }
     .res-list time {
       display: none;
     }
+  }
+}
+
+/* --- loading: the ground before kick-off (same shape as the view) --------- */
+@layer views {
+  /* It is a .view (full-bleed grid): no column gap between its tracks. */
+  .skeleton-view.sk-overview {
+    padding-top: var(--s5);
+    gap: var(--s5) 0;
+  }
+  .sk-hl {
+    display: grid;
+    gap: 14px;
+    padding: 6px 0 4px;
+  }
+  .sk-hl .skeleton {
+    display: block;
+    height: 44px;
+    background: var(--board-2);
+  }
+  .sk-hl1 {
+    width: 46%;
+  }
+  .sk-hl2 {
+    width: 72%;
+  }
+  .sk-hl3 {
+    width: 58%;
+    height: 22px !important;
+  }
+  .sk-digits {
+    color: var(--board-ink-2);
+  }
+  .sk-own {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 12px;
+    padding: 16px 16px 18px 12px;
+    border-top: var(--hair);
+  }
+  .sk-own:first-child {
+    border-top: 0;
+  }
+  .sk-own .skeleton {
+    display: block;
+    height: 14px;
+  }
+  .sk-rank {
+    width: 22px;
+    height: 32px !important;
+    margin-inline: auto;
+  }
+  .sk-own-lines {
+    display: grid;
+    gap: 10px;
+  }
+  .sk-l1 {
+    width: 40%;
+  }
+  .sk-l2 {
+    width: 85%;
+    height: 18px !important;
+  }
+  .sk-l3 {
+    width: 65%;
+  }
+}
+
+/* --- failure: the scoreboard stays dark ----------------------------------- */
+@layer views {
+  .ov-error .hl .glyph {
+    display: inline-block;
+    vertical-align: -3px;
+    margin-right: 12px;
+    color: #ff6b78;
+  }
+  .ov-error .hl .hl-nb {
+    white-space: normal;
+  }
+  .ov-error .hl-sub {
+    color: var(--board-ink);
+  }
+  .ov-error-act {
+    padding-top: 0;
   }
 }

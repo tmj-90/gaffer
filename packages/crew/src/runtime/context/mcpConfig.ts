@@ -5,8 +5,8 @@ import { CrewError } from "../../util/errors.js";
 // substitution (P1b context assembly, docs/tick-sh-runtime-migration.md).
 // ---------------------------------------------------------------------
 // tick.sh renders a per-tick RUNTIME copy of runner/.mcp.json by sed-
-// substituting seven ${NAME} placeholders (tick.sh main render + bootstrap
-// twin), escaping the replacement via _gaffer_sed_repl
+// substituting eight ${NAME} placeholders (tick.sh main render + bootstrap
+// twin, review.sh, clarify.sh), escaping the replacement via _gaffer_sed_repl
 // (factory.config.sh) — whose whole point is a LITERAL substitution.
 //
 // PARITY NOTES:
@@ -27,7 +27,7 @@ import { CrewError } from "../../util/errors.js";
 // must never reach a live agent launch.
 // =====================================================================
 
-/** The seven runtime values substituted into the .mcp.json template. */
+/** The eight runtime values substituted into the .mcp.json template. */
 export interface McpRuntimeInputs {
   dispatchDb: string;
   memoryDb: string;
@@ -49,6 +49,14 @@ export interface McpRuntimeInputs {
    * the ROI instrumentation is inert, exactly like standalone memory-mcp.
    */
   recallTicket: string;
+  /**
+   * The ticket number this mount is bound to (the dispatch server's factory ticket
+   * scope: an agent's ticket writes on any OTHER ticket are refused). Delivery,
+   * resume, bootstrap and clarify pass their ticket; every other mount passes "",
+   * which binds nothing (fail closed: the agent may then write only drafts it
+   * created itself).
+   */
+  scopeTicket: string;
 }
 
 const PLACEHOLDERS: ReadonlyArray<[token: string, key: keyof McpRuntimeInputs]> = [
@@ -59,13 +67,14 @@ const PLACEHOLDERS: ReadonlyArray<[token: string, key: keyof McpRuntimeInputs]> 
   ["${GAFFER_CLAIM_TOKEN}", "claimToken"],
   ["${GAFFER_TICKET_REPOS}", "ticketRepos"],
   ["${GAFFER_RECALL_TICKET}", "recallTicket"],
+  ["${GAFFER_SCOPE_TICKET}", "scopeTicket"],
 ];
 
 const LEFTOVER_PLACEHOLDER = /\$\{[A-Z_]+\}/;
 
 /**
  * Render the runtime MCP config from the raw template text. Literal textual
- * substitution of the seven `${NAME}` tokens, then fail-closed validation.
+ * substitution of the eight `${NAME}` tokens, then fail-closed validation.
  *
  * @throws CrewError (`INVALID_MCP_TEMPLATE`) when the rendered result is not
  *   valid JSON, lacks `mcpServers.dispatch`/`mcpServers.memory`, or still

@@ -102,7 +102,10 @@ seam_case() {
 
   # Assertion 2: prior + the one extra placeholder-stripping sub == seam, byte for
   # byte (trailing newline included).
-  sed -e "s#\${GAFFER_TICKET_REPOS}##g" "$prior" > "$corrected"
+  # The template has since gained ${GAFFER_SCOPE_TICKET} (the dispatch server's factory
+  # ticket scope), which the frozen prior chain predates; review/clarify's scope render
+  # is checked here with it empty, so strip it the same way.
+  sed -e "s#\${GAFFER_TICKET_REPOS}##g" -e "s#\${GAFFER_SCOPE_TICKET}##g" "$prior" > "$corrected"
   if cmp -s "$corrected" "$seam"; then
     ok "$label — corrected prior render is byte-identical to the seam output"
   else

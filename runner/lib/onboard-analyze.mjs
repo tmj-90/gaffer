@@ -1129,6 +1129,9 @@ export function agentChildEnv(base = process.env) {
   // placeholder, which would bucket every onboarding retrieval under a fake
   // ticket that can never join to a real outcome.
   env["GAFFER_RECALL_TICKET"] = "";
+  // Likewise the dispatch server's "${GAFFER_SCOPE_TICKET}": onboarding is bound to no
+  // ticket, so pin it EMPTY rather than let an inherited value widen the agent's scope.
+  env["GAFFER_SCOPE_TICKET"] = "";
   return env;
 }
 

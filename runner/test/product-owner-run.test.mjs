@@ -400,12 +400,17 @@ console.log("== B8: renderPoMcpRuntime substitutes EVERY placeholder + binds the
   });
   assert("no ${PLACEHOLDER} survives the render", !/\$\{[A-Z_]+\}/.test(out));
   const j = JSON.parse(out);
-  eq("dispatch env: DB + EMPTY claim token + default ticket repo", j.mcpServers.dispatch.env, {
-    DISPATCH_DB: "/d/dispatch.sqlite",
-    GAFFER_CLAIM_TOKEN: "",
-    GAFFER_FACTORY: "1",
-    GAFFER_DEFAULT_TICKET_REPO: "demo",
-  });
+  eq(
+    "dispatch env: DB + EMPTY claim token + EMPTY scope + default ticket repo",
+    j.mcpServers.dispatch.env,
+    {
+      DISPATCH_DB: "/d/dispatch.sqlite",
+      GAFFER_CLAIM_TOKEN: "",
+      GAFFER_SCOPE_TICKET: "",
+      GAFFER_FACTORY: "1",
+      GAFFER_DEFAULT_TICKET_REPO: "demo",
+    },
+  );
   eq("memory env: DB + repo scope + inert recall", j.mcpServers.memory.env, {
     MEMORY_DB: "/d/memory.sqlite",
     GAFFER_FACTORY: "1",

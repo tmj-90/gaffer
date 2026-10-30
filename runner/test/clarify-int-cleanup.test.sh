@@ -83,10 +83,11 @@ _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/agent-env.sh"
 # clarify.sh renders the runtime .mcp.json through the factory.config.sh seam.
 # This hermetic harness stubs every collaborator, so provide a faithful bash-branch
-# stand-in: it substitutes the same seven placeholders (incl. ${GAFFER_TICKET_REPOS},
-# which clarify sets to "") so the flow proceeds to the interruptible worker.
+# stand-in: it substitutes the same eight placeholders (incl. ${GAFFER_TICKET_REPOS},
+# which clarify sets to "", and ${GAFFER_SCOPE_TICKET}, the draft clarify is bound to)
+# so the flow proceeds to the interruptible worker.
 gaffer_render_mcp_runtime() {
-  local tmpl="$1" out="$2" recall="$3"
+  local tmpl="$1" out="$2" recall="$3" scope="${4:-}"
   sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" \
       -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" \
       -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" \
@@ -94,13 +95,8 @@ gaffer_render_mcp_runtime() {
       -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" \
       -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "${GAFFER_TICKET_REPOS:-}")#g" \
       -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "$recall")#g" \
+      -e "s#\${GAFFER_SCOPE_TICKET}#$(_gaffer_sed_repl "$scope")#g" \
       "$tmpl" > "$out" || return 1
-}
-# Clarify binds GAFFER_SCOPE_TICKET into the rendered runtime (factory.config.sh's
-# gaffer_mcp_runtime_set_env); stand in with the same JSON env merge.
-gaffer_mcp_runtime_set_env() {
-  GAFFER_MCP_SET_FILE="$1" GAFFER_MCP_SET_SERVER="$2" GAFFER_MCP_SET_KEY="$3" GAFFER_MCP_SET_VALUE="$4" \
-    node -e 'const fs=require("node:fs");const e=process.env;const j=JSON.parse(fs.readFileSync(e.GAFFER_MCP_SET_FILE,"utf8"));const s=j.mcpServers[e.GAFFER_MCP_SET_SERVER];s.env={...(s.env||{}),[e.GAFFER_MCP_SET_KEY]:e.GAFFER_MCP_SET_VALUE};fs.writeFileSync(e.GAFFER_MCP_SET_FILE,JSON.stringify(j,null,2)+"\n");'
 }
 gaffer_trust_workspace() { :; }
 gaffer_assert_db_vars()  { return 0; }

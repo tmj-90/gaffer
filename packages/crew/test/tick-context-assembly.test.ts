@@ -97,6 +97,34 @@ describe("golden: MCP runtime config (bash sed parity)", () => {
     });
     expect(rendered).toContain('"GAFFER_RECALL_TICKET": ""');
   });
+
+  it("substitutes the 8th placeholder (scope ticket) into the dispatch server env", () => {
+    const rendered = renderMcpRuntimeConfig(runnerFile(".mcp.json"), {
+      ...captured.mcp,
+      scopeTicket: "77",
+    });
+    const env = (
+      JSON.parse(rendered) as { mcpServers: { dispatch: { env: Record<string, string> } } }
+    ).mcpServers.dispatch.env;
+    expect(env["GAFFER_SCOPE_TICKET"]).toBe("77");
+  });
+
+  it("the delivery golden binds the delivery ticket as the dispatch scope", () => {
+    const env = (
+      JSON.parse(fixture("mcp-runtime.golden.json")) as {
+        mcpServers: { dispatch: { env: Record<string, string> } };
+      }
+    ).mcpServers.dispatch.env;
+    expect(env["GAFFER_SCOPE_TICKET"]).toBe(captured.ticketNumber);
+  });
+
+  it('an empty scope ticket renders as "" (review / PO mounts bind no ticket)', () => {
+    const rendered = renderMcpRuntimeConfig(runnerFile(".mcp.json"), {
+      ...captured.mcp,
+      scopeTicket: "",
+    });
+    expect(rendered).toContain('"GAFFER_SCOPE_TICKET": ""');
+  });
 });
 
 describe("golden: fresh delivery prompt (heredoc parity)", () => {

@@ -29,21 +29,45 @@ pass=0; fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 no() { echo "  FAIL $1"; fail=$((fail + 1)); }
 
-render_case() { # <name> <label> <db> <mdb> <dbin> <mbin> <token> <repos> <recall>
+render_case() { # <name> <label> <db> <mdb> <dbin> <mbin> <token> <repos> <recall> <scope>
   local name="$1" label="$2"
   DISPATCH_DB="$3" MEMORY_DB="$4" DISPATCH_MCP_BIN="$5" MEMORY_MCP_BIN="$6" CLAIM_TOKEN="$7" GAFFER_TICKET_REPOS="$8"
-  if ! gaffer_render_mcp_runtime "$TEMPLATE" "$WORK/out.json" "$9"; then no "$label — render exited non-zero"; return; fi
+  if ! gaffer_render_mcp_runtime "$TEMPLATE" "$WORK/out.json" "$9" "${10}"; then no "$label — render exited non-zero"; return; fi
   seam_golden mcp-render "$name" "$WORK/out.json" "$label"
 }
 DB="/data/gaffer/dispatch.sqlite"; MDB="/data/gaffer/memory.sqlite"
 DBIN="/opt/gaffer/dispatch-mcp/bin.js"; MBIN="/opt/gaffer/memory-mcp/bin.js"; TOK="fixture-claim-token"
-render_case delivery        "delivery (recall=77)"                        "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "fixture-app" "77"
-render_case bootstrap       "bootstrap (recall empty)"                    "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "fixture-app" ""
-render_case empty-token     "empty claim token"                           "$DB" "$MDB" "$DBIN" "$MBIN" ""     "fixture-app" "42"
+render_case delivery        "delivery (recall=77)"                        "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "fixture-app" "77" "77"
+render_case bootstrap       "bootstrap (recall empty, scope=77)"          "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "fixture-app" ""   "77"
+render_case empty-token     "empty claim token"                           "$DB" "$MDB" "$DBIN" "$MBIN" ""     "fixture-app" "42" "42"
 TRICKY='/data/di#r/w&x$&$'\''z.sqlite'
-render_case escaping        "escaping torture (# & \$& \$')"              "$TRICKY" "$MDB" "$DBIN" "$MBIN" "$TOK" "fixture-app" "77"
-render_case colon-repos     "colon-joined repos (a:b:c)"                  "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "a:b:c" "77"
-render_case review-clarify  "review/clarify (recall empty, repos empty)"  "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "" ""
+render_case escaping        "escaping torture (# & \$& \$')"              "$TRICKY" "$MDB" "$DBIN" "$MBIN" "$TOK" "fixture-app" "77" "77"
+render_case colon-repos     "colon-joined repos (a:b:c)"                  "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "a:b:c" "77" "77"
+render_case review-clarify  "review/clarify (recall empty, repos empty)"  "$DB" "$MDB" "$DBIN" "$MBIN" "$TOK" "" "" ""
+
+# The scope ticket is a template placeholder (not a post-render JSON edit), so it lands
+# in the dispatch server env and the rest of the render keeps the template's bytes.
+DISPATCH_DB="$DB" MEMORY_DB="$MDB" DISPATCH_MCP_BIN="$DBIN" MEMORY_MCP_BIN="$MBIN" CLAIM_TOKEN="$TOK" GAFFER_TICKET_REPOS="fixture-app"
+gaffer_render_mcp_runtime "$TEMPLATE" "$WORK/scope.json" "77" "77" \
+  && [ "$(node -e 'process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).mcpServers.dispatch.env.GAFFER_SCOPE_TICKET))' "$WORK/scope.json")" = "77" ] \
+  && ok "scope ticket lands in the dispatch server env (GAFFER_SCOPE_TICKET=77)" || no "scope ticket missing from the dispatch server env"
+gaffer_render_mcp_runtime "$TEMPLATE" "$WORK/noscope.json" "77" && grep -q '"GAFFER_SCOPE_TICKET": ""' "$WORK/noscope.json" \
+  && ok "omitted scope ticket renders empty (binds nothing — fail closed)" || no "omitted scope ticket did not render empty"
+
+# Call sites: bootstrap + delivery (tick.sh) and clarify bind their ticket through the
+# render's scope argument, and nothing re-edits the rendered JSON to add it (a
+# post-render edit re-serialises the file, drifting the bash render from the TS golden).
+grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "" "\$NUM"' "$RUNNER_DIR/tick.sh" \
+  && ok "bootstrap render binds scope ticket \$NUM" || no "bootstrap render does not pass the scope ticket"
+grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "\$NUM" "\$NUM"' "$RUNNER_DIR/tick.sh" \
+  && ok "delivery render binds scope ticket \$NUM" || no "delivery render does not pass the scope ticket"
+grep -Eq 'gaffer_render_mcp_runtime "\$MCP_CONFIG" "\$MCP_RUNTIME" "" "\$CNUM"' "$RUNNER_DIR/lib/clarify.sh" \
+  && ok "clarify render binds scope ticket \$CNUM" || no "clarify render does not pass the scope ticket"
+if grep -Rq 'gaffer_mcp_runtime_set_env[^#]*GAFFER_SCOPE_TICKET' "$RUNNER_DIR/tick.sh" "$RUNNER_DIR/lib"; then
+  no "GAFFER_SCOPE_TICKET is still bound by a post-render JSON edit"
+else
+  ok "GAFFER_SCOPE_TICKET is never bound by a post-render JSON edit"
+fi
 
 # No placeholder may survive a render (the pre-seam inline sed leaked ${GAFFER_TICKET_REPOS}).
 DISPATCH_DB="$DB" MEMORY_DB="$MDB" DISPATCH_MCP_BIN="$DBIN" MEMORY_MCP_BIN="$MBIN" CLAIM_TOKEN="$TOK" GAFFER_TICKET_REPOS=""

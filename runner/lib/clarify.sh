@@ -117,12 +117,11 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # set -u safety at this no-work juncture, and rendered through the single
       # gaffer_render_mcp_runtime seam (factory.config.sh) shared with delivery.
       GAFFER_TICKET_REPOS=""
-      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
+      # FACTORY TICKET SCOPE: the scope ticket ($CNUM → GAFFER_SCOPE_TICKET) means the
+      # clarify agent files ACs and decisions on THIS draft only; the dispatch server
+      # refuses its writes on any other ticket.
+      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" "$CNUM" \
         || { log "MCP-RENDER: failed to render clarify runtime .mcp.json — refusing live clarify (fail closed)"; result error; exit 1; }
-      # FACTORY TICKET SCOPE: the clarify agent files ACs and decisions on THIS draft
-      # only; the dispatch server refuses its writes on any other ticket.
-      gaffer_mcp_runtime_set_env "$MCP_RUNTIME" dispatch GAFFER_SCOPE_TICKET "$CNUM" \
-        || { log "MCP-RENDER: failed to bind GAFFER_SCOPE_TICKET into the clarify runtime .mcp.json — refusing live clarify (fail closed)"; result error; exit 1; }
       chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
       # File-card context for the intake agent — orients it on the repo before
       # it reads the ticket and spots ambiguities. FAIL-SOFT via gaffer_prime_context_block.

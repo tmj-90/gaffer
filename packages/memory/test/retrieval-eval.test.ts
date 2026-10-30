@@ -303,6 +303,27 @@ describe("retrieval eval set", () => {
     }
   });
 
+  it("punctuation separators in a ticket-title query (' - ', ' / ', ' — ') do not raise the bar", () => {
+    // Regression (review: stopword-or-query): a part with no letters/digits was a
+    // "content term" its FTS phrase never matches, so each of these needed 3 of 5
+    // terms and returned nothing in lexical mode; without the separator they need 2 of 4.
+    const titles: Array<{ query: string; expect: string }> = [
+      { query: "Kafka - fix retry bug", expect: "kafka-retry" },
+      { query: "Webhooks / add signature check", expect: "webhook-sig" },
+      { query: "Deployment — freeze tooling broken", expect: "deploy-freeze" },
+    ];
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const c of titles) {
+        expect(topKeys(c.query), `"${c.query}" (hybrid=${hybrid})`).toContain(c.expect);
+        const bare = c.query.replace(/ [-/—] /, " ");
+        expect(searchLoreCount(db, { query: c.query }), `"${c.query}" count`).toBe(
+          searchLoreCount(db, { query: bare }),
+        );
+      }
+    }
+  });
+
   it("a long query must match at least half its content terms ('in production' alone is not enough)", () => {
     setHybrid(false);
     // Only deploy-freeze says "production"; with 4 content terms it needs 2 to match.

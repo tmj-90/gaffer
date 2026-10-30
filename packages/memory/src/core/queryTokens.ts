@@ -22,7 +22,8 @@
  * Terms are whitespace-separated parts (each still matched by FTS as a quoted
  * phrase, so `snake_case_name` keeps its phrase semantics); a part counts as a
  * stopword only when every letter/digit run in it is one, using the same
- * tokeniser the embedder uses (so `the,` and `Why` are recognised).
+ * tokeniser the embedder uses (so `the,` and `Why` are recognised). A part
+ * with no letter/digit run at all (the " - " in "Area - do X") is dropped too.
  */
 import { tokenise } from "./embedding.js";
 
@@ -57,7 +58,7 @@ export function isStopword(token: string): boolean {
 export interface QueryTerms {
   /** Whitespace parts with `"` stripped, de-duplicated case-insensitively, in query order. */
   readonly terms: string[];
-  /** True when every part was a stopword and `terms` is the original, unfiltered list. */
+  /** True when every part was a stopword (or punctuation) and `terms` is the original, unfiltered list. */
   readonly allStopwords: boolean;
 }
 
@@ -75,9 +76,12 @@ export function queryTerms(input: string): QueryTerms {
   }
   const content = parts.filter((p) => {
     const toks = tokenise(p);
-    // A part with no letters/digits (e.g. "-") is kept as-is, as before.
-    return toks.length === 0 || toks.some((t) => !STOPWORDS.has(t));
+    // A part with no letters/digits ("-", "/", "&", an em dash) is not a content
+    // term: its FTS phrase matches nothing, yet it would still count toward the
+    // half-match rule ("Billing - fix invoice rounding" would need 3 of 5).
+    return toks.length > 0 && toks.some((t) => !STOPWORDS.has(t));
   });
+  // All stopwords and/or punctuation: fall back to the original parts.
   if (content.length === 0) return { terms: parts, allStopwords: parts.length > 0 };
   return { terms: content, allStopwords: false };
 }

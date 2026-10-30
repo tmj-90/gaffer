@@ -464,6 +464,12 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     // outcome ledger by the report (retrievalRoi) — no new cross-package
     // coupling, and the confidence loop is left byte-for-byte untouched.
     //
+    // SUPERSEDED IN PART (audit: recall-feedback-wrong-items): recallFeedback
+    // now credits exactly the lore an agent fetched with MCP `get_lore` (read
+    // from this table), because the packet's lore list was never rendered to
+    // the agent. Search / browse reads here still never move confidence, and a
+    // credit is still one rung, clamped.
+    //
     // Its item_type CHECK also admits 'digest' and 'feature' (recall_event only
     // allows 'lore'/'card'), because the read path serves those too.
     //

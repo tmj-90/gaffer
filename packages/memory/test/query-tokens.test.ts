@@ -47,6 +47,24 @@ describe("queryTerms", () => {
     ]);
   });
 
+  it("drops punctuation-only parts ('Area - do X'), which no FTS phrase can match", () => {
+    // Regression (review: stopword-or-query): "-" counted toward the half-match
+    // rule, so "Billing - fix invoice rounding" needed 3 of 5 terms instead of 2 of 4.
+    expect(queryTerms("Billing - fix / invoice & rounding —").terms).toEqual([
+      "Billing",
+      "fix",
+      "invoice",
+      "rounding",
+    ]);
+    expect(toFtsMatch("Billing - fix invoice rounding", false)).toBe(
+      toFtsMatch("Billing fix invoice rounding", false),
+    );
+  });
+
+  it("falls back to the original parts when the query is only punctuation (and stopwords)", () => {
+    expect(queryTerms("- / the")).toEqual({ terms: ["-", "/", "the"], allStopwords: true });
+  });
+
   it("de-duplicates case-insensitively", () => {
     expect(queryTerms("Kafka kafka KAFKA retry").terms).toEqual(["Kafka", "retry"]);
   });

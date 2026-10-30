@@ -1377,12 +1377,16 @@ function refreshLoreEmbedding(db: Database, id: string, title: string, summary: 
  *     rows with no vector, which the ensure pass must still backfill);
  *   - this connection's own vector writes (refreshLoreEmbedding / ensure bump
  *     `generation`, since data_version ignores a connection's own commits);
- *   - the lore and lore_embeddings row counts (a same-connection raw delete).
+ *   - the lore and lore_embeddings row counts (a same-connection raw delete);
+ *   - and the backfill having drained: an ensure pass that embedded a full
+ *     EMBED_BACKFILL_BATCH may have left more records without a vector, so the
+ *     next search must run it again (its own writes are in the key above).
  * Any change → ensureLoreEmbeddings, then a full reload of (id, vec) pairs.
  */
 interface VectorCache {
   model: string;
   dim: number;
+  backfillPending: boolean;
   dataVersion: number;
   generation: number;
   loreCount: number;
@@ -1396,7 +1400,9 @@ function invalidateVectorCache(db: Database): void {
   vectorGenerations.set(db, (vectorGenerations.get(db) ?? 0) + 1);
 }
 
-function vectorCacheKey(db: Database): Omit<VectorCache, "model" | "dim" | "vecs"> {
+function vectorCacheKey(
+  db: Database,
+): Omit<VectorCache, "model" | "dim" | "backfillPending" | "vecs"> {
   const counts = db
     .prepare("SELECT (SELECT COUNT(*) FROM lore) AS l, (SELECT COUNT(*) FROM lore_embeddings) AS e")
     .get() as { l: number; e: number };
@@ -1414,6 +1420,7 @@ function loreVectors(db: Database, embedder: Embedder): Map<string, Float32Array
   const key = vectorCacheKey(db);
   if (
     cached &&
+    !cached.backfillPending &&
     cached.model === embedder.model &&
     cached.dim === embedder.dim &&
     cached.dataVersion === key.dataVersion &&
@@ -1423,14 +1430,20 @@ function loreVectors(db: Database, embedder: Embedder): Map<string, Float32Array
   ) {
     return cached.vecs;
   }
-  ensureLoreEmbeddings(db, embedder);
+  const embedded = ensureLoreEmbeddings(db, embedder);
   const vecs = new Map<string, Float32Array>();
   const rows = db
     .prepare("SELECT lore_id, vec FROM lore_embeddings WHERE model = ? AND dim = ?")
     .all(embedder.model, embedder.dim) as Array<{ lore_id: string; vec: Buffer }>;
   for (const r of rows) vecs.set(r.lore_id, deserialiseVector(r.vec, embedder.dim));
   // Re-read the key AFTER the load: ensure's own writes bumped `generation`.
-  vectorCaches.set(db, { model: embedder.model, dim: embedder.dim, ...vectorCacheKey(db), vecs });
+  vectorCaches.set(db, {
+    model: embedder.model,
+    dim: embedder.dim,
+    backfillPending: embedded >= EMBED_BACKFILL_BATCH,
+    ...vectorCacheKey(db),
+    vecs,
+  });
   return vecs;
 }
 

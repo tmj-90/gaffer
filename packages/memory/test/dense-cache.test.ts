@@ -81,6 +81,31 @@ describe("dense vector cache", () => {
     expect(searchLore(db, { query: "ratelimiting" })).toHaveLength(1);
   });
 
+  it("a backfill bigger than one batch keeps draining across searches on one connection", () => {
+    // Regression (review: dense-search-full-row-scan): ensure embeds at most
+    // EMBED_BACKFILL_BATCH (5000) records per search, and the cache key folded in
+    // ensure's own writes, so the next search trusted the cache and the rest of an
+    // upgraded / re-modelled DB never became dense-searchable.
+    const total = 6000;
+    db.transaction(() => {
+      for (let i = 0; i < total; i++) {
+        addLore(db, { title: `rec ${i} widget${i % 50}`, summary: `gizmo ${i}`, body: "b" });
+      }
+    })();
+    const other = new BetterSqlite3(join(dir, "lore.db"));
+    other.prepare("DELETE FROM lore_embeddings").run();
+    other.close();
+    const vectors = (): number =>
+      (db.prepare("SELECT COUNT(*) AS n FROM lore_embeddings").get() as { n: number }).n;
+    searchLore(db, { query: "gizmo widget3" });
+    expect(vectors()).toBe(5000);
+    searchLore(db, { query: "gizmo widget4" });
+    expect(vectors()).toBe(total);
+    // Fully drained: the cache is trusted again (no more ensure passes needed).
+    searchLore(db, { query: "gizmo widget5" });
+    expect(vectors()).toBe(total);
+  });
+
   it("perf guard: warm hybrid search stays within a few x of lexical at 3k records", () => {
     const words =
       "kafka retry webhook payments timezone billing invoice auth token session cache redis postgres migration schema queue worker deploy rollback canary flag config secret logging metrics tracing alert incident latency batch stream partition consumer offset lag".split(

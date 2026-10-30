@@ -13,8 +13,8 @@ import type {
 } from "../db/types.js";
 import { LORE_KINDS } from "../db/types.js";
 import {
-  cosine,
   deserialiseVector,
+  dotUnit,
   embeddingTextHash,
   getEmbedder,
   hybridRetrievalEnabled,
@@ -1363,6 +1363,75 @@ function refreshLoreEmbedding(db: Database, id: string, title: string, summary: 
        dim = excluded.dim, vec = excluded.vec, text_hash = excluded.text_hash,
        updated_at = excluded.updated_at`,
   ).run(id, embedder.model, embedder.dim, serialiseVector(embedder.embed(text)), hash, nowIso());
+  invalidateVectorCache(db);
+}
+
+/**
+ * Decoded dense vectors per connection, so a search does not re-read and
+ * re-decode every BLOB (nor re-run ensureLoreEmbeddings' LEFT JOIN) per query —
+ * that full-row scan was ~10x the lexical cost (330 ms vs 30 ms at 20k rows).
+ *
+ * The cache is only TRUSTED while all of these are unchanged since it loaded:
+ *   - `PRAGMA data_version` — bumps when ANOTHER connection commits (the MCP
+ *     server, the CLI and crew share one DB file; an older binary may add lore
+ *     rows with no vector, which the ensure pass must still backfill);
+ *   - this connection's own vector writes (refreshLoreEmbedding / ensure bump
+ *     `generation`, since data_version ignores a connection's own commits);
+ *   - the lore and lore_embeddings row counts (a same-connection raw delete).
+ * Any change → ensureLoreEmbeddings, then a full reload of (id, vec) pairs.
+ */
+interface VectorCache {
+  model: string;
+  dim: number;
+  dataVersion: number;
+  generation: number;
+  loreCount: number;
+  vecCount: number;
+  vecs: Map<string, Float32Array>;
+}
+const vectorCaches = new WeakMap<Database, VectorCache>();
+const vectorGenerations = new WeakMap<Database, number>();
+
+function invalidateVectorCache(db: Database): void {
+  vectorGenerations.set(db, (vectorGenerations.get(db) ?? 0) + 1);
+}
+
+function vectorCacheKey(db: Database): Omit<VectorCache, "model" | "dim" | "vecs"> {
+  const counts = db
+    .prepare("SELECT (SELECT COUNT(*) FROM lore) AS l, (SELECT COUNT(*) FROM lore_embeddings) AS e")
+    .get() as { l: number; e: number };
+  return {
+    dataVersion: db.pragma("data_version", { simple: true }) as number,
+    generation: vectorGenerations.get(db) ?? 0,
+    loreCount: counts.l,
+    vecCount: counts.e,
+  };
+}
+
+/** The current decoded vectors for `embedder`, backfilling + reloading only when stale. */
+function loreVectors(db: Database, embedder: Embedder): Map<string, Float32Array> {
+  const cached = vectorCaches.get(db);
+  const key = vectorCacheKey(db);
+  if (
+    cached &&
+    cached.model === embedder.model &&
+    cached.dim === embedder.dim &&
+    cached.dataVersion === key.dataVersion &&
+    cached.generation === key.generation &&
+    cached.loreCount === key.loreCount &&
+    cached.vecCount === key.vecCount
+  ) {
+    return cached.vecs;
+  }
+  ensureLoreEmbeddings(db, embedder);
+  const vecs = new Map<string, Float32Array>();
+  const rows = db
+    .prepare("SELECT lore_id, vec FROM lore_embeddings WHERE model = ? AND dim = ?")
+    .all(embedder.model, embedder.dim) as Array<{ lore_id: string; vec: Buffer }>;
+  for (const r of rows) vecs.set(r.lore_id, deserialiseVector(r.vec, embedder.dim));
+  // Re-read the key AFTER the load: ensure's own writes bumped `generation`.
+  vectorCaches.set(db, { model: embedder.model, dim: embedder.dim, ...vectorCacheKey(db), vecs });
+  return vecs;
 }
 
 /**
@@ -1392,6 +1461,7 @@ export function ensureLoreEmbeddings(db: Database, embedder: Embedder = getEmbed
     for (const m of missing) refreshLoreEmbedding(db, m.id, m.title, m.summary);
   });
   tx();
+  invalidateVectorCache(db);
   return missing.length;
 }
 
@@ -1400,8 +1470,9 @@ export function ensureLoreEmbeddings(db: Database, embedder: Embedder = getEmbed
  * (repo / tag / kind / status / restricted / updatedAfter — the same clauses
  * the lexical side uses, minus the FTS MATCH) scored by cosine against the
  * query vector, thresholded, top DENSE_CANDIDATE_POOL. Brute force over the
- * filtered set: a lore corpus is thousands of rows at most and each dot
- * product is 256 multiplies, so this is microseconds, not an index problem.
+ * filtered set, but against the per-connection decoded-vector cache (see
+ * loreVectors): the filter query reads only ids, and only the ≤60 winners
+ * are hydrated as full rows.
  */
 function denseCandidates(
   db: Database,
@@ -1416,26 +1487,32 @@ function denseCandidates(
     queryTerms(text).terms.length >= MIN_MATCH_FROM
       ? DENSE_MIN_COSINE_LONG_QUERY
       : DENSE_MIN_COSINE;
+  const vecs = loreVectors(db, embedder);
   const { where, params } = buildSearchClauses({ ...opts, query: undefined });
-  const rows = db
-    .prepare(
-      `SELECT l.*, e.vec AS vec FROM lore l
-       JOIN lore_embeddings e ON e.lore_id = l.id AND e.model = ? AND e.dim = ?
-       ${where}`,
-    )
-    .all(embedder.model, embedder.dim, ...params) as Array<LoreRow & { vec: Buffer }>;
-  const scored: Array<{ row: LoreRow; cosine: number }> = [];
-  for (const r of rows) {
-    const c = cosine(q, deserialiseVector(r.vec, embedder.dim));
-    if (c >= minCosine) {
-      const { vec: _vec, ...row } = r;
-      scored.push({ row: row as LoreRow, cosine: c });
-    }
+  const ids = db.prepare(`SELECT l.id, l.updated_at FROM lore l ${where}`).all(...params) as Array<{
+    id: string;
+    updated_at: string;
+  }>;
+  const scored: Array<{ id: string; updatedAt: string; cosine: number }> = [];
+  for (const r of ids) {
+    const v = vecs.get(r.id);
+    if (!v || v.length !== q.length) continue;
+    const c = dotUnit(q, v);
+    if (c >= minCosine) scored.push({ id: r.id, updatedAt: r.updated_at, cosine: c });
   }
   scored.sort((a, b) =>
-    a.cosine !== b.cosine ? b.cosine - a.cosine : a.row.updated_at < b.row.updated_at ? 1 : -1,
+    a.cosine !== b.cosine ? b.cosine - a.cosine : a.updatedAt < b.updatedAt ? 1 : -1,
   );
-  return scored.slice(0, DENSE_CANDIDATE_POOL);
+  const top = scored.slice(0, DENSE_CANDIDATE_POOL);
+  if (top.length === 0) return [];
+  const rows = db
+    .prepare(`SELECT * FROM lore WHERE id IN (${top.map(() => "?").join(",")})`)
+    .all(...top.map((t) => t.id)) as LoreRow[];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return top.flatMap((t) => {
+    const row = byId.get(t.id);
+    return row ? [{ row, cosine: t.cosine }] : [];
+  });
 }
 
 /**
@@ -1658,9 +1735,8 @@ export function searchLore(db: Database, opts: SearchOptions = {}): LoreSummary[
     if (hybridRetrievalEnabled()) {
       let dense: Array<{ row: LoreRow; cosine: number }>;
       try {
-        const embedder = getEmbedder();
-        ensureLoreEmbeddings(db, embedder);
-        dense = denseCandidates(db, opts, embedder);
+        // denseCandidates runs the lazy ensure/backfill itself, only when stale.
+        dense = denseCandidates(db, opts, getEmbedder());
       } catch {
         dense = [];
       }

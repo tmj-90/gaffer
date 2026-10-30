@@ -565,6 +565,19 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // DENSE-SCAN COVERING INDEX. The hybrid search's dense side scores every record
+    // passing the caller's filters; reading just (id, updated_at) for that set used
+    // to walk the full lore rows, bodies included (~19 ms at 20k rows). Covering the
+    // status / restricted / kind filter columns plus the selected ones lets SQLite
+    // answer from the index alone (~7 ms).
+    id: "015-lore-dense-scan-index",
+    up(db) {
+      db.exec(
+        "CREATE INDEX idx_lore_dense_scan ON lore(status, restricted, kind, updated_at, id);",
+      );
+    },
+  },
 ];
 
 /**

@@ -146,7 +146,7 @@ jobs:
       # (`pnpm test:runner`). It runs them in parallel (-j = CPU count) with each
       # test's output buffered into its own ::group::, a per-test wall-clock cap
       # (perl alarm — GNU `timeout` isn't on macOS: .sh 120s, .mjs 300s; the long
-      # e2e tests run alone afterwards at 400s), and exits non-zero on ANY failure.
+      # e2e tests are queued FIRST with a 600s cap), and exits non-zero on ANY failure.
       # The harness also: counts exit 77 / "SKIP…" lines as skips (listed in the step
       # summary, never as passes); under GAFFER_TEST_STRICT=1 fails every skip whose
       # reason is not a genuine platform gap (runner/test/lib/skip.sh allowlist —

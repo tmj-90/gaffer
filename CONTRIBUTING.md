@@ -32,7 +32,7 @@ the same command CI runs:
 
 ```bash
 pnpm test:runner                      # all of them, in parallel; exits 1 on ANY failure
-pnpm test:runner -- -j 2              # fewer parallel jobs
+pnpm test:runner -j 2                 # fewer parallel jobs (`-- -j 2` works too)
 bash runner/test/run.sh runner/test/parallel-claim.test.sh   # just the ones named
 bash runner/test/parallel-claim.test.sh                      # or run one directly
 ```

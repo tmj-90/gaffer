@@ -14,6 +14,9 @@
 #       run fails a strict run and only warns otherwise
 #   H6  isolation: tests see a private GAFFER_DATA and no inherited DISPATCH_DB
 #   H7  the per-test wall-clock cap kills a hung test and reports TIMED OUT
+#   H8  argument parsing: the `--` pnpm 10 forwards (`pnpm test:runner -- -j 2`) is
+#       dropped, not run as a "test"; an unknown option, a missing FILE or a bad -j
+#       is a usage error (exit 2), never a run
 # Run: bash runner/test/run-harness.test.sh
 # =====================================================================
 set -uo pipefail
@@ -101,6 +104,26 @@ echo "== H7: the per-test cap =="
 mk hang.test.sh 'sleep 30'
 GAFFER_RUN_CAP_SH=1 harness "$T/hang.test.sh"; rc=$?
 [ "$rc" -ne 0 ] && grep -q 'hang.test.sh — TIMED OUT (1s)' "$WORK/out" && ok "H7 a hung test is killed and reported TIMED OUT" || fail "H7 cap (rc $rc): $(tail -5 "$WORK/out")"
+
+echo "== H8: argument parsing =="
+harness -- -j 1 "$T/z-pass.test.sh"; rc=$?
+[ "$rc" -eq 0 ] && grep -q '1 passed, 0 skipped, 0 failed' "$WORK/out" && grep -q -- '-j 1' "$WORK/out" \
+  && ok "H8 \`-- -j 1 FILE\`: the \`--\` is dropped and -j after it still applies" || fail "H8 '--' mishandled (rc $rc): $(tail -5 "$WORK/out")"
+harness --jobs 2 "$T/z-pass.test.sh"; rc=$?
+[ "$rc" -eq 2 ] && grep -q "unknown option '--jobs'" "$WORK/out" \
+  && ok "H8 an unknown option is a usage error (exit 2)" || fail "H8 unknown option (rc $rc): $(tail -3 "$WORK/out")"
+harness "$T/no-such.test.sh"; rc=$?
+[ "$rc" -eq 2 ] && grep -q 'no such test file' "$WORK/out" \
+  && ok "H8 a missing FILE is a usage error, not a run" || fail "H8 missing file (rc $rc): $(tail -3 "$WORK/out")"
+harness -j x "$T/z-pass.test.sh"; rc=$?
+[ "$rc" -eq 2 ] && ok "H8 a non-numeric -j is a usage error" || fail "H8 -j x (rc $rc): $(tail -3 "$WORK/out")"
+# The real pnpm path (CONTRIBUTING.md documents it), when pnpm is on PATH.
+if command -v pnpm >/dev/null 2>&1; then
+  (cd "$ROOT" && env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT GAFFER_RUN_STATE_ROOT="$WORK/root" \
+    pnpm --silent test:runner -- -j 1 "$T/z-pass.test.sh") >"$WORK/out" 2>&1; rc=$?
+  [ "$rc" -eq 0 ] && grep -q '1 passed, 0 skipped, 0 failed' "$WORK/out" \
+    && ok "H8 \`pnpm test:runner -- -j 1 FILE\` runs exactly that FILE" || fail "H8 pnpm path (rc $rc): $(tail -5 "$WORK/out")"
+fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

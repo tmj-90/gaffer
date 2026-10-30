@@ -31,10 +31,11 @@
 # A summary (failures, skips, tripwire hits, slowest 10) is printed and, in CI,
 # appended to $GITHUB_STEP_SUMMARY.
 #
-# Usage: runner/test/run.sh [-j N] [--strict] [-v] [FILE...]
+# Usage: runner/test/run.sh [-j N] [--strict] [-v] [--] [FILE...]
 #   -j N      parallel jobs (default: $JOBS, else the CPU count)
 #   --strict  same as GAFFER_TEST_STRICT=1
 #   -v        print every test's output, not only failures'
+#   --        ignored (pnpm forwards it: `pnpm test:runner -- -j 2` works too)
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -107,14 +108,22 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)}"
 FILES=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    -j) JOBS="$2"; shift 2 ;;
+    # pnpm 10 forwards `pnpm test:runner -- -j 2`'s `--` literally: drop it and keep
+    # parsing, so the options after it still count as options.
+    --) shift ;;
+    -j) JOBS="${2:-}"; shift $(($# < 2 ? 1 : 2)) ;;
     -j*) JOBS="${1#-j}"; shift ;;
     --strict) export GAFFER_TEST_STRICT=1; shift ;;
     -v) export GAFFER_RUN_VERBOSE=1; shift ;;
     -h | --help) sed -n '2,/^# =====/p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) FILES+=("$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"); shift ;;
+    # An unknown option or a missing FILE is a usage error, never a "test" to run.
+    -*) echo "run.sh: unknown option '$1' (see --help)" >&2; exit 2 ;;
+    *)
+      [ -f "$1" ] || { echo "run.sh: no such test file: $1" >&2; exit 2; }
+      FILES+=("$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"); shift ;;
   esac
 done
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "run.sh: -j needs a positive integer (got '$JOBS')" >&2; exit 2; }
 if [ ${#FILES[@]} -eq 0 ]; then
   for f in "$HERE"/*.test.sh "$HERE"/*.test.mjs; do FILES+=("$f"); done
 fi

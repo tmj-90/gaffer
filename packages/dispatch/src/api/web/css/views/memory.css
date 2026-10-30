@@ -1,0 +1,545 @@
+/* Memory — the club history. Lore first (the drafts wait for the gaffer's
+   signature, each with its yellow card), the scouting report (Repo Digest) as a
+   calm document beside it, and the honours board (Feature ledger) as one mown
+   band per stage. Layout only: the blocks, cards and tags are components. */
+
+@layer views {
+  /* The repos as a row of kits; the one being read is marked, and a repo whose
+     lore waits for you carries its yellow card and count. */
+  .mem-repos {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .mem-repo {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: var(--tap);
+    padding: 6px 12px;
+    background: var(--paper);
+    border: 2px solid var(--rule);
+    border-radius: var(--r);
+    color: var(--ink);
+    text-decoration: none;
+    font: 700 var(--t14) var(--f-text);
+  }
+  .mem-repo:hover {
+    border-color: var(--ink);
+  }
+  .mem-repo[aria-current="page"] {
+    border-color: var(--ink);
+    background: var(--sky-wash);
+    box-shadow: inset 0 -4px 0 var(--ink);
+  }
+  .mem-repo-n {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font: 800 var(--t16) / 1 var(--f-display);
+  }
+  .mem-repo-n .ycard {
+    transform: rotate(8deg);
+  }
+  /* One repo control per width: the kits on a desk, the dropdown on a phone. */
+  .mem-pick.is-solo {
+    display: none;
+  }
+  @media (min-width: 761px) {
+    .mem-pick {
+      display: none;
+    }
+  }
+  @media (max-width: 760px) {
+    .mem-repos {
+      display: none;
+    }
+  }
+  .mem-pick .field {
+    flex: 1 1 auto;
+  }
+  /* On a phone the header's Onboard rides in the repo row instead. */
+  .mem-pick {
+    flex-wrap: nowrap;
+  }
+  .mem-pick-onboard {
+    flex: none;
+  }
+  @media (max-width: 760px) {
+    .view-memory:has(.mem-pick:not(.is-solo)) .view-head-actions {
+      display: none;
+    }
+  }
+
+  /* The lore filters: open on a desk (no summary line), folded to one line on a phone. */
+  .lore-fold-sum {
+    display: none;
+  }
+  @media (max-width: 760px) {
+    .lore-fold-sum {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: var(--tap);
+      padding: 0 12px;
+      border: 2px solid var(--ink);
+      border-radius: var(--r);
+      background: var(--paper);
+      list-style: none;
+    }
+    .lore-fold-sum::-webkit-details-marker {
+      display: none;
+    }
+    .lore-fold-sum::after {
+      content: "";
+      flex: none;
+      width: 8px;
+      height: 8px;
+      margin-left: auto;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: translateY(-2px) rotate(45deg);
+    }
+    .lore-fold[open] > .lore-fold-sum::after {
+      transform: translateY(2px) rotate(-135deg);
+    }
+    .lore-fold[open] > .lore-fold-sum {
+      margin-bottom: var(--s3);
+    }
+    .lore-fold-label {
+      font: 800 var(--t16) / 1 var(--f-display);
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .lore-fold-set {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--ink-2);
+      font: 600 var(--t14) var(--f-cond);
+    }
+    .view > .kpi-row.mem-stats .kpi-sub {
+      display: none;
+    }
+  }
+  .mem-node .field {
+    flex: 0 1 320px;
+  }
+
+  /* The strip: this repo's numbers on the stadium board (always dark, both
+     kits), big numerals, the drafts that wait for you lit in yellow. */
+  .view > .kpi-row.mem-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    background: var(--board);
+    color: var(--board-ink);
+    border: 2px solid var(--board-rule);
+    border-bottom: 4px solid var(--yellow);
+    border-radius: var(--r);
+    --kpi-rule: var(--board-rule);
+  }
+  .view > .kpi-row.mem-stats .kpi {
+    padding: 12px 20px 14px;
+  }
+  .view > .kpi-row.mem-stats .kpi-label,
+  .view > .kpi-row.mem-stats .kpi-unit,
+  .view > .kpi-row.mem-stats .kpi-sub {
+    color: var(--board-ink-2);
+  }
+  .view > .kpi-row.mem-stats .kpi-unit {
+    font-size: var(--t16);
+  }
+  .view > .kpi-row.mem-stats .kpi-val {
+    font-size: var(--t52);
+    color: var(--board-ink);
+    white-space: nowrap;
+  }
+  .view > .kpi-row.mem-stats .kpi-val.y {
+    color: var(--yellow);
+  }
+  .mem-stats a.kpi:hover .kpi-label {
+    color: var(--board-ink);
+    text-decoration: underline;
+    text-decoration-color: var(--yellow);
+  }
+  .mem-stats :focus-visible {
+    outline-color: var(--yellow);
+    box-shadow: none;
+  }
+  /* The lore block is the board's own black: on the floodlit ground it carries
+     the board's yellow edge so it never melts into the page. */
+  .mem-lore > .panel-head.block-ink {
+    border-bottom: 4px solid var(--yellow);
+  }
+  /* Lore on the left (wide rows with their actions), the report and the
+     honours board stacked on the right. One column on a phone, lore first. */
+  .mem-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: var(--s5);
+    align-items: start;
+  }
+  .mem-side {
+    display: grid;
+    gap: var(--s5);
+    min-width: 0;
+  }
+  .lore-slot {
+    min-width: 0;
+  }
+  @media (max-width: 1180px) {
+    .mem-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .view-memory .mem-page {
+    display: grid;
+    gap: var(--s4);
+    align-content: start;
+  }
+  .view-memory .mem-page > .panel-head.block {
+    margin-bottom: 0;
+  }
+  .view-memory .panel-title > .count {
+    margin-left: 10px;
+  }
+  .view-memory .panel-aux {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  /* Club lore. */
+  .lore-filters {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--s3);
+  }
+  .lore-list {
+    display: grid;
+  }
+  .lore-group {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-top: var(--s4);
+    padding-bottom: 6px;
+    border-bottom: var(--frame);
+    font: 800 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .lore-group:first-child {
+    margin-top: 0;
+  }
+  .lore-group .count {
+    font: 800 var(--t26) / 1 var(--f-display);
+    color: var(--ink-2);
+  }
+  .lore-row {
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr) auto;
+    gap: 6px var(--s4);
+    align-items: start;
+    padding: var(--s4) 0;
+    border-top: var(--hair);
+  }
+  .lore-group + .lore-row {
+    border-top: 0;
+  }
+  .lore-mark {
+    display: grid;
+    justify-items: start;
+    gap: 8px;
+    padding-top: 2px;
+  }
+  .lore-card {
+    transform: rotate(8deg);
+    transform-origin: 50% 100%;
+  }
+  .lore-kind {
+    font: 700 var(--t14) / 1.1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .lore-body {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+  .lore-head,
+  .lore-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px 10px;
+    flex-wrap: wrap;
+  }
+  .lore-title {
+    font: 700 var(--t20) / 1.25 var(--f-text);
+    color: var(--ink);
+  }
+  .lore-row[data-status="active"] .lore-title,
+  .lore-row[data-status="deprecated"] .lore-title,
+  .lore-row[data-status="superseded"] .lore-title {
+    font-size: var(--t16);
+  }
+  .lore-summary {
+    max-width: 70ch;
+    color: var(--ink-2);
+  }
+  .lore-meta {
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .lore-meta .repo {
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .lore-flag-hint {
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+    color: var(--ink);
+  }
+  .lore-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 116px;
+  }
+  .lore-actions .btn {
+    justify-content: center;
+  }
+  /* Reject asks for its reason in place: the actions take the row's full width
+     under the body while the reason is being written. */
+  .lore-actions:has(.lore-reject-form) {
+    grid-column: 2 / -1;
+    min-width: 0;
+  }
+  .lore-reject-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+  }
+  .lore-reason {
+    flex: 1 1 240px;
+    min-width: 0;
+    min-height: var(--tap);
+  }
+  .lore-reject-btns {
+    display: flex;
+    gap: 8px;
+  }
+  .lore-reject-btns .btn {
+    min-height: var(--tap);
+  }
+  .lore-note {
+    padding-top: var(--s3);
+    border-top: var(--hair);
+  }
+  .lore-pager {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding-top: var(--s3);
+    border-top: var(--hair);
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .lore-pager .tabnum {
+    margin-right: auto;
+  }
+
+  /* The scouting report: a calm document on a readable measure. */
+  .scout {
+    display: grid;
+    gap: var(--s4);
+  }
+  .scout-sec {
+    display: grid;
+    gap: 4px;
+  }
+  .scout dt {
+    font: 700 var(--t14) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--claret-ink);
+  }
+  .scout dd {
+    margin: 0;
+    max-width: 68ch;
+    white-space: pre-wrap;
+  }
+  .scout-lede dd {
+    font: 500 var(--t20) / 1.4 var(--f-text);
+  }
+  /* The colophon spans the report (not the 75ch measure of its prose). */
+  .digest-fresh,
+  .digest-caveat {
+    max-width: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .digest-fresh {
+    padding-top: var(--s3);
+    border-top: var(--hair);
+  }
+
+  /* The honours board: one mown band per stage, the count as a big numeral. */
+  .ledger {
+    display: grid;
+    border: var(--frame);
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+  .ledger-lane {
+    display: grid;
+    grid-template-columns: 132px minmax(0, 1fr);
+    gap: var(--s3);
+    padding: var(--s3) var(--s4) var(--s4);
+    background: var(--lane-a);
+    border-top: var(--hair);
+  }
+  .ledger-lane:first-child {
+    border-top: 0;
+  }
+  .ledger-lane:nth-child(even) {
+    background: var(--lane-b);
+  }
+  .ledger-head {
+    display: grid;
+    align-content: start;
+    gap: 2px;
+  }
+  .ledger-n {
+    font: 800 var(--t52) / 1 var(--f-display);
+    color: var(--ink);
+  }
+  .ledger-label {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .ledger-note,
+  .ledger-empty,
+  .ledger-node {
+    font: 600 var(--t14) / 1.25 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .ledger-list {
+    display: grid;
+    gap: 8px;
+    align-content: start;
+    min-width: 0;
+  }
+  .ledger-node {
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .ledger-empty {
+    padding-top: 6px;
+  }
+  .feature-card {
+    display: grid;
+    gap: 2px;
+    padding: 8px 12px;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: var(--r);
+  }
+  .feature-top {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .feature-name {
+    font: 700 var(--t16) / 1.3 var(--f-text);
+  }
+  .feature-area,
+  .feature-summary {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .feature-prov {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .feature-prov a {
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  /* Memory unavailable: one quiet sentence and where to configure it. */
+  .memory-unavailable {
+    display: grid;
+    gap: 6px;
+    justify-items: start;
+  }
+
+  @media (max-width: 760px) {
+    .view > .kpi-row.mem-stats .kpi {
+      padding: 8px 10px 10px;
+    }
+    .view > .kpi-row.mem-stats .kpi-label {
+      font-size: var(--t12);
+      line-height: 1.15;
+      min-height: 2.3em;
+    }
+    .view > .kpi-row.mem-stats .kpi-val {
+      font-size: var(--t34);
+    }
+    .lore-filters {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .lore-filters > .field:first-child {
+      grid-column: 1 / -1;
+    }
+    .lore-filters select {
+      padding-left: 8px;
+      padding-right: 22px;
+      font-size: var(--t14);
+    }
+    .lore-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .lore-mark {
+      grid-auto-flow: column;
+      justify-content: start;
+      align-items: center;
+    }
+    .lore-actions {
+      flex-direction: row;
+    }
+    .lore-actions .btn {
+      flex: 1;
+    }
+    .lore-actions:has(.lore-reject-form) {
+      grid-column: auto;
+    }
+    .lore-reject-btns {
+      flex: 1 1 100%;
+    }
+    .ledger-lane {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .ledger-head {
+      grid-template-columns: auto auto minmax(0, 1fr);
+      align-items: baseline;
+      gap: 8px;
+    }
+    .ledger-n {
+      font-size: var(--t34);
+    }
+  }
+}

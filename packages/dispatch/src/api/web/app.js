@@ -1,10 +1,12 @@
-// Dispatch human control surface — plain ES-module SPA over the REST API.
+// Gaffer dashboard — plain ES-module SPA over the Dispatch REST API.
 // No framework, no build step. Every view calls the JSON API via fetch().
 //
-// Redesign: dark "mission-control" skin. The API client + auth gate are
-// UNCHANGED in behaviour — only the rendering layer was rebuilt onto a new
-// token-driven design system and a 5-area information architecture
-// (Overview · Work · Review · Map · ⌘K), with every previous view ported.
+// Presentation: "Match Day". The gaffer is the manager and the factory is the
+// club on match day — a claret club header, a stadium scoreboard, programme
+// pages with kit-colour section blocks, referee's cards for status. The tokens,
+// components and conventions are in css/ (see css/tokens.css) and the shared
+// helpers below (el/field/icon/glyph, viewHead, panelHead, emptyState,
+// skeleton, statCell, charts). Every mark carries data the server gave us.
 
 // --- API client ------------------------------------------------------------
 
@@ -45,31 +47,82 @@ function adoptTokenFromUrl() {
  * On a non-2xx response it throws an Error carrying the API error envelope
  * ({ error: { code, message } }) so callers can surface it to the user.
  * A 401 means the server requires a token — render the login gate and stop.
+ *
+ * Honest failure modes: a network failure or timeout becomes code NETWORK with
+ * one plain sentence (never the browser's raw "Failed to fetch"); a non-JSON
+ * body (a proxy's HTML error page) becomes BAD_GATEWAY instead of a SyntaxError.
+ * Every outcome is reported to the freshness tracker that drives the header's
+ * "Data as of" line. `opts.signal` lets the router abort a superseded view's
+ * reads; an aborted call rejects with code ABORTED and is never toasted.
  */
-async function api(method, path, body) {
+const API_GET_TIMEOUT_MS = 15000;
+async function api(method, path, body, opts = {}) {
   const headers = body !== undefined ? { "content-type": "application/json" } : {};
   const tok = authToken();
   if (tok) headers["authorization"] = "Bearer " + tok;
-  const res = await fetch(path, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  const signals = [];
+  if (opts.signal) signals.push(opts.signal);
+  // Reads time out; writes may legitimately run long (spawns, merges) and do not.
+  if (method === "GET" && typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+    signals.push(AbortSignal.timeout(opts.timeoutMs || API_GET_TIMEOUT_MS));
+  }
+  const signal =
+    signals.length > 1 && typeof AbortSignal.any === "function"
+      ? AbortSignal.any(signals)
+      : signals[0];
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
+    });
+  } catch (cause) {
+    if (opts.signal && opts.signal.aborted) {
+      const e = new Error("Superseded");
+      e.code = "ABORTED";
+      throw e;
+    }
+    freshness.fail("network");
+    const e = new Error("Can't reach the factory — retrying.");
+    e.code = "NETWORK";
+    e.cause = cause;
+    throw e;
+  }
   if (res.status === 401) {
+    freshness.fail("auth");
     renderLogin(Boolean(tok)); // tok present + still 401 ⇒ wrong token
     const e = new Error("Authentication required");
     e.code = "UNAUTHORIZED";
     throw e;
   }
   const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      freshness.fail("network");
+      const e = new Error(`The factory answered ${res.status} with a page that isn't data.`);
+      e.code = "BAD_GATEWAY";
+      throw e;
+    }
+  }
+  // Any parsed answer from the server — even a 4xx refusal — proves it is up.
+  freshness.ok();
   if (!res.ok) {
     const err =
       data && data.error ? data.error : { code: String(res.status), message: res.statusText };
     const e = new Error(err.message || "Request failed");
     e.code = err.code;
+    // The HTTP status rides along: callers test it (a ticket's 404) and the
+    // error page shows it; it was never set, so `e.status === 404` never matched.
+    e.status = res.status;
     throw e;
   }
+  if (data && Array.isArray(data.repositories))
+    learnKits(data.repositories.map((r) => r && r.name));
   return data;
 }
 
@@ -88,25 +141,50 @@ function prefersReducedMotion() {
   );
 }
 
-/** Create an element with attributes + children. Strings become text nodes. */
+/**
+ * Create an element with attributes + children. Strings become text nodes.
+ * `style` may be a string or an object; object keys starting with `--` are set
+ * with setProperty (Object.assign silently drops custom properties).
+ */
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (v === undefined || v === null || v === false) continue;
     if (k === "class") node.className = v;
     else if (k === "dataset") Object.assign(node.dataset, v);
-    else if (k.startsWith("on") && typeof v === "function") {
+    else if (k === "style" && typeof v === "object") {
+      for (const [sk, sv] of Object.entries(v)) {
+        if (sv === undefined || sv === null) continue;
+        if (sk.startsWith("--")) node.style.setProperty(sk, String(sv));
+        else node.style[sk] = sv;
+      }
+    } else if (k.startsWith("on") && typeof v === "function") {
       node.addEventListener(k.slice(2).toLowerCase(), v);
     } else if (k === "html") node.innerHTML = v;
     else node.setAttribute(k, v);
   }
-  for (const child of [].concat(children)) {
-    if (child === null || child === undefined || child === false) continue;
+  for (const child of [].concat(children).flat(Infinity)) {
+    if (child === null || child === undefined || child === false || child === "") continue;
     node.appendChild(
       typeof child === "string" || typeof child === "number"
         ? document.createTextNode(String(child))
         : child,
     );
+  }
+  return node;
+}
+
+/** Create an SVG element (same attribute rules as el(), no listeners). */
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs = {}, children = []) {
+  const node = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null || v === false) continue;
+    node.setAttribute(k, String(v));
+  }
+  for (const child of [].concat(children)) {
+    if (child === null || child === undefined || child === false) continue;
+    node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
   }
   return node;
 }
@@ -143,6 +221,7 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  backarrow: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   alert:
@@ -184,36 +263,285 @@ const ICONS = {
   gauge:
     '<path d="m12 13 3.5-3.5"/><path d="M4 18.5a10 10 0 1 1 16 0"/><circle cx="12" cy="19" r="1"/>',
   doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  more: '<path d="M5 12h.01M12 12h.01M19 12h.01"/>',
+  chevdown: '<path d="m6 9 6 6 6-6"/>',
+  back: '<path d="M15 6 9 12l6 6"/>',
+  external: '<path d="M10 4H4v16h16v-6M14 4h6v6M20 4l-9 9"/>',
+  logout: '<path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/>',
 };
-function icon(name, cls) {
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
+/**
+ * Inline SVG icon (24×24 stroke icons, currentColor). Always carries width and
+ * height attributes (default 20px) so a class that sets only colour can never
+ * leave an unsized SVG to stretch across its flex row (the 830px Access lock).
+ * CSS width/height still override the attributes.
+ */
+function icon(name, cls, size = 20) {
+  const svg = document.createElementNS(SVGNS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
   svg.setAttribute("fill", "none");
   svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.9");
+  svg.setAttribute("stroke-width", "1.75");
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
-  if (cls) svg.setAttribute("class", cls);
+  svg.setAttribute("class", cls ? `ico ${cls}` : "ico");
   svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
   svg.innerHTML = ICONS[name] || "";
   return svg;
 }
-/** Dispatch shield mark via the inlined <symbol>. */
-function shield(cls) {
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  if (cls) svg.setAttribute("class", cls);
-  svg.setAttribute("viewBox", "0 0 256 280");
-  svg.setAttribute("aria-hidden", "true");
-  const use = document.createElementNS(ns, "use");
-  use.setAttribute("href", "#wg-shield");
-  svg.appendChild(use);
+
+/**
+ * §6 status glyphs, the same shape everywhere (20px grid, currentColor, 1.75
+ * stroke). The status WORD is always adjacent (statusBadge) or in the accessible
+ * name (pass `label`). Squares are blocked, triangles failed, bars paused.
+ */
+const GLYPHS = {
+  draft: '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/>',
+  refining:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-dasharray="1.6 2.6" stroke-linecap="round"/>',
+  ready:
+    '<path d="M10 3 A7 7 0 1 1 4.5 5.7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>',
+  claimed:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M10 10 L10 3 A7 7 0 0 1 17 10 Z" fill="currentColor"/>',
+  in_progress:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M10 3 A7 7 0 0 1 10 17 Z" fill="currentColor"/>',
+  in_review:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><circle cx="10" cy="10" r="2.6" fill="currentColor"/>',
+  in_testing:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M7 10.5 L9.2 12.6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>',
+  ready_for_merge:
+    '<circle cx="10" cy="10" r="8" fill="currentColor"/><path d="M6.5 10 H13 M10.5 7 L13.5 10 L10.5 13" fill="none" stroke="var(--glyph-knock)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>',
+  done: '<circle cx="10" cy="10" r="8" fill="currentColor"/><path d="M6.4 10.3 L8.9 12.7 L13.8 7.6" fill="none" stroke="var(--glyph-knock)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>',
+  blocked: '<rect x="3.5" y="3.5" width="13" height="13" rx="1" fill="currentColor"/>',
+  failed: '<path d="M10 2.8 L17.6 16.4 H2.4 Z" fill="currentColor" stroke-linejoin="round"/>',
+  paused:
+    '<rect x="5" y="4" width="3.4" height="12" rx=".6" fill="currentColor"/><rect x="11.6" y="4" width="3.4" height="12" rx=".6" fill="currentColor"/>',
+  cancelled:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M5 15 L15 5" stroke="currentColor" stroke-width="1.75"/>',
+  decision:
+    '<path d="M10 2.5 L17.5 10 L10 17.5 L2.5 10 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><circle cx="10" cy="10" r="2" fill="currentColor"/>',
+};
+function glyph(status, size = 16, label) {
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("viewBox", "0 0 20 20");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("class", `glyph g-${status}`);
+  svg.setAttribute("focusable", "false");
+  if (label) {
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", label);
+  } else svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = GLYPHS[status] || GLYPHS.draft;
   return svg;
 }
 
+/** The referee's yellow card: needs you. Always paired with words on its row. */
+function ycard(size = 14, cls = "") {
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 12 16",
+      width: (size * 0.75).toFixed(1),
+      height: size,
+      class: `ycard ${cls}`.trim(),
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    svgEl("rect", {
+      x: 1,
+      y: 1,
+      width: 10,
+      height: 14,
+      rx: 1.4,
+      fill: "var(--yellow)",
+      stroke: "var(--ycard-edge)",
+      "stroke-width": 1.2,
+    }),
+  );
+}
+
+// Kit drawings. A repo is identified by its kit PATTERN (not a hue), which
+// survives greyscale and forced colours; an agent wears the club shirt with its
+// stencil squad number. The shirt outline is shared.
+const SHIRT_PATH =
+  "M13 4 L7 6.5 L1.5 12.5 L6 18 L10 15.5 L10 37 L30 37 L30 15.5 L34 18 L38.5 12.5 L33 6.5 L27 4 Q20 9.5 13 4 Z";
+const KIT_PATTERNS = ["stripes", "hoops", "halves", "sash", "quarters"];
+let svgUid = 0;
+// Every repo name the server has shown us. Patterns are assigned over the whole
+// roster so no two repos wear the same kit (while there are patterns to go round).
+const kitRoster = new Set();
+let kitAssigned = null;
+function kitHash(name) {
+  let h = 0;
+  for (const ch of String(name || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h;
+}
+/** Record repo names so their kits are assigned distinctly. */
+function learnKits(names) {
+  for (const n of names || []) {
+    if (n && !kitRoster.has(n)) {
+      kitRoster.add(n);
+      kitAssigned = null;
+    }
+  }
+}
+/**
+ * The kit pattern a repo wears. Each repo (in name order) takes its hashed
+ * pattern, or the next one no other repo has taken; adding a repo only moves a
+ * later-named repo whose pattern it now takes. Past five repos, kits repeat.
+ */
+function kitPattern(name) {
+  const key = String(name || "");
+  if (!kitRoster.has(key)) learnKits([key]);
+  if (!kitAssigned) {
+    kitAssigned = new Map();
+    const used = new Set();
+    for (const n of [...kitRoster].sort()) {
+      let i = kitHash(n) % KIT_PATTERNS.length;
+      if (used.size < KIT_PATTERNS.length)
+        while (used.has(KIT_PATTERNS[i])) i = (i + 1) % KIT_PATTERNS.length;
+      else used.clear();
+      used.add(KIT_PATTERNS[i]);
+      kitAssigned.set(n, KIT_PATTERNS[i]);
+    }
+  }
+  return kitAssigned.get(key);
+}
+function kitShirt(repoName, size = 18) {
+  const id = "kit" + ++svgUid;
+  const pat = kitPattern(repoName);
+  const fill = svgEl("g", { "clip-path": `url(#${id})`, fill: "currentColor" });
+  if (pat === "stripes")
+    for (let x = 8; x < 34; x += 8)
+      fill.appendChild(svgEl("rect", { x, y: 0, width: 4, height: 40 }));
+  if (pat === "hoops")
+    for (let y = 10; y < 40; y += 8)
+      fill.appendChild(svgEl("rect", { x: 0, y, width: 40, height: 4 }));
+  if (pat === "halves") fill.appendChild(svgEl("rect", { x: 0, y: 0, width: 20, height: 40 }));
+  if (pat === "sash") fill.appendChild(svgEl("path", { d: "M2 6 L10 2 L40 34 L34 40 Z" }));
+  if (pat === "quarters") {
+    fill.appendChild(svgEl("rect", { x: 0, y: 0, width: 20, height: 20 }));
+    fill.appendChild(svgEl("rect", { x: 20, y: 20, width: 20, height: 20 }));
+  }
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 40 40",
+      width: size,
+      height: size,
+      class: `kit kit-${pat}`,
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    [
+      svgEl("defs", {}, svgEl("clipPath", { id }, svgEl("path", { d: SHIRT_PATH }))),
+      svgEl("path", { d: SHIRT_PATH, fill: "var(--paper)", class: "kit-paper" }),
+      fill,
+      svgEl("path", {
+        d: SHIRT_PATH,
+        fill: "none",
+        stroke: "currentColor",
+        "stroke-width": 2.2,
+        "stroke-linejoin": "round",
+      }),
+    ],
+  );
+}
+/** A repo name with its kit, e.g. ▥ billing-api. */
+function repoTag(name, size = 18) {
+  return el("span", { class: "repo" }, [kitShirt(name, size), el("span", {}, name)]);
+}
+/** The squad number an agent wears: the trailing digits of its name (01, 02…). */
+function agentNo(name) {
+  const m = String(name || "").match(/(\d+)$/);
+  return m ? m[1].slice(-2).padStart(2, "0") : "";
+}
+/** An agent: the club shirt (claret, sky chevron + collar) with its stencil number. */
+function agentShirt(name, size = 24) {
+  const id = "shirt" + ++svgUid;
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 40 40",
+      width: size,
+      height: size,
+      class: "shirt",
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    [
+      svgEl("defs", {}, svgEl("clipPath", { id }, svgEl("path", { d: SHIRT_PATH }))),
+      svgEl("path", { d: SHIRT_PATH, fill: "var(--claret)" }),
+      svgEl("g", { "clip-path": `url(#${id})`, fill: "var(--sky)" }, [
+        svgEl("path", { d: "M13 4 Q20 9.5 27 4 L27 6.4 Q20 12 13 6.4 Z" }),
+        svgEl("path", { d: "M10 9.6 L20 15 L30 9.6 L30 12.6 L20 18 L10 12.6 Z" }),
+        svgEl("rect", { x: 0, y: 15.5, width: 6.5, height: 3 }),
+        svgEl("rect", { x: 33.5, y: 15.5, width: 6.5, height: 3 }),
+      ]),
+      svgEl("path", {
+        d: SHIRT_PATH,
+        fill: "none",
+        stroke: "var(--shirt-edge)",
+        "stroke-width": 1.4,
+        "stroke-linejoin": "round",
+      }),
+      svgEl("text", { x: 20, y: 34, "text-anchor": "middle", class: "shirt-no" }, agentNo(name)),
+    ],
+  );
+}
+function agentTag(name, size = 22) {
+  return el("span", { class: "agent" }, [agentShirt(name, size), el("span", {}, name)]);
+}
+/** The club crest: a shield split claret and sky with a fern frond — the product mark. */
+function crest(cls = "crest", w = 34, h = 40) {
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 44 52",
+      width: w,
+      height: h,
+      class: cls,
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    [
+      svgEl("path", {
+        d: "M22 2 L41 8 V26 C41 38 32 46 22 50 C12 46 3 38 3 26 V8 Z",
+        fill: "var(--sky)",
+        stroke: "var(--crest-edge)",
+        "stroke-width": 2.4,
+      }),
+      svgEl("path", { d: "M22 2 L41 8 V26 C41 38 32 46 22 50 Z", fill: "var(--claret)" }),
+      svgEl("path", {
+        d: "M14 40 C15 30 18 22 26 13",
+        fill: "none",
+        stroke: "var(--claret)",
+        "stroke-width": 2,
+        "stroke-linecap": "round",
+      }),
+      ...[0, 1, 2, 3, 4].map((i) =>
+        svgEl("path", {
+          d: `M${15.2 + i * 2.2} ${35 - i * 5} q-6 -1 -8 -5`,
+          fill: "none",
+          stroke: "var(--claret)",
+          "stroke-width": 1.8,
+          "stroke-linecap": "round",
+        }),
+      ),
+      svgEl("text", { x: 31.5, y: 31, "text-anchor": "middle", class: "crest-t" }, "G"),
+    ],
+  );
+}
+
+/** One neutral tag. Status and risk have their own helpers (glyph + word). */
 function badge(text, kind) {
-  return el("span", { class: `badge ${kind}` }, text);
+  return el("span", { class: kind ? `badge ${kind}` : "badge" }, text);
 }
 
 /** Compact, human-friendly duration from milliseconds (e.g. "2d 3h", "45m"). */
@@ -244,12 +572,71 @@ function fmtTime(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  // British, like the voice: "29 Oct, 18:56" (24-hour clock, day before month).
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}, ${clockTime(d.getTime())}`;
+}
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** A date the British way: "Thu 29 Oct" (weekday optional). */
+function fmtDay(iso, { weekday = true } = {}) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${weekday ? WEEKDAYS[d.getDay()] + " " : ""}${d.getDate()} ${MONTHS[d.getMonth()]}`;
+}
+/**
+ * Money, one format everywhere: dollars and cents ("$15.74"). A sliver under a cent
+ * reads "<$0.01" (never a four-decimal "$0.0034"); no figure reads "—", never "$0".
+ */
+function money(v) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  if (v > 0 && v < 0.005) return "<$0.01";
+  return `$${v.toFixed(2)}`;
+}
+/** A budget or cap: whole dollars when it is whole ("$25"), else cents. */
+function moneyW(v) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  return Number.isInteger(v) ? `$${v}` : money(v);
+}
+/** JSON.parse that answers null for a malformed or empty payload. */
+function parseJsonSafe(text) {
+  try {
+    return JSON.parse(text || "{}");
+  } catch {
+    return null;
+  }
+}
+/** "3 diffs" / "1 diff". */
+function plural(n, one, many = one + "s") {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+// Agents are people on the team sheet: a raw agent UUID is never printed. Every
+// read of /agents or /claims feeds this map; actorName() falls back to a short id.
+const agentNames = new Map();
+function learnAgents(list) {
+  for (const a of list || []) {
+    if (a && a.id && a.display_name) agentNames.set(a.id, a.display_name);
+    if (a && a.agent_id && a.agent_display_name) agentNames.set(a.agent_id, a.agent_display_name);
+  }
+}
+let agentsLoaded = null;
+/** Load the squad list once per page (best-effort), so feeds can name agents. */
+function ensureAgents() {
+  if (!agentsLoaded) {
+    agentsLoaded = api("GET", "/agents")
+      .then((r) => learnAgents(r.agents))
+      .catch(() => {
+        agentsLoaded = null;
+      });
+  }
+  return agentsLoaded;
+}
+/** Who did it, in words: "crew-delivery-02", "priya.raman", "the runner". */
+function actorName(type, id) {
+  if (id && agentNames.has(id)) return agentNames.get(id);
+  if (type === "system" || (!id && type !== "human")) return "the runner";
+  if (type === "agent") return id ? `an agent (${String(id).slice(0, 8)})` : "an agent";
+  return id || type || "—";
 }
 
 // --- Toast ------------------------------------------------------------------
@@ -424,26 +811,45 @@ function renderLogin(wasWrong) {
   const input = el("input", {
     type: "password",
     name: "token",
-    placeholder: "access token",
+    id: "login-token",
+    placeholder: "paste the token",
     autocomplete: "off",
     autofocus: "",
-    "aria-label": "Access token",
+    "aria-describedby": wasWrong ? "login-error login-hint" : "login-hint",
+    "aria-invalid": wasWrong ? "true" : null,
   });
-  const form = el("form", { class: "login-gate" }, [
-    shield("login-mark"),
-    el("h1", {}, "Gaffer"),
-    el("p", {}, "This factory requires an access token."),
-    wasWrong ? el("p", { class: "login-error" }, "That token was rejected — try again.") : null,
-    input,
-    el("button", { class: "btn primary", type: "submit" }, "Enter"),
-    // Tell a new operator where the token actually comes from — the hardest
-    // first-run wall was a gate that never said this.
-    el(
-      "p",
-      { class: "login-hint" },
-      "Run `gaffer dashboard` — it prints a login URL with the token. Or paste the contents " +
-        "of $GAFFER_DATA/dashboard-token (or your DISPATCH_API_TOKEN).",
-    ),
+  // The members' entrance: a match ticket. The claret stub is the club; the
+  // rest is the one field, the one button, and where the token comes from.
+  const form = el("form", { class: "login-gate gate-ticket", "aria-labelledby": "login-title" }, [
+    el("div", { class: "gate-stub", "aria-hidden": "true" }, [
+      crest("login-mark", 64, 76),
+      el("span", { class: "gate-club" }, "Gaffer"),
+      el("span", { class: "gate-admit" }, "Admit one · the gaffer"),
+    ]),
+    el("div", { class: "gate-main" }, [
+      el("h1", { id: "login-title" }, "Members’ entrance"),
+      el("p", { class: "gate-lede" }, "This factory needs an access token."),
+      wasWrong
+        ? el("p", { class: "login-error", id: "login-error", role: "alert" }, [
+            glyph("failed", 16),
+            el("span", {}, "That token was rejected — try again."),
+          ])
+        : null,
+      el("label", { class: "gate-label", for: "login-token" }, "Access token"),
+      input,
+      el("button", { class: "btn primary", type: "submit" }, "Enter"),
+      // Tell a new operator where the token actually comes from — the hardest
+      // first-run wall was a gate that never said this.
+      el("p", { class: "login-hint", id: "login-hint" }, [
+        "Run ",
+        el("code", { class: "mono" }, "gaffer dashboard"),
+        ": it prints a login URL with the token. Or paste the contents of ",
+        el("code", { class: "mono" }, "$GAFFER_DATA/dashboard-token"),
+        " (or your ",
+        el("code", { class: "mono" }, "DISPATCH_API_TOKEN"),
+        ").",
+      ]),
+    ]),
   ]);
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
@@ -482,11 +888,21 @@ const STATUS_LABELS = {
 function statusLabel(status) {
   return STATUS_LABELS[status] || status;
 }
+/** A status: its §6 glyph + its word, together (never colour alone). */
 function statusBadge(status) {
-  return badge(statusLabel(status), `status-${status}`);
+  return el("span", { class: `badge st status-${status}` }, [
+    glyph(status, 16),
+    el("span", {}, statusLabel(status)),
+  ]);
 }
-function riskBadge(risk) {
-  return badge(risk, `risk-${risk}`);
+/** Risk: outlined condensed caps ("HIGH RISK" reads on its own, not by hue). */
+/** Risk chip. `long` says "high risk" (a page's meta line, where "high" alone is ambiguous). */
+function riskBadge(risk, { long = false } = {}) {
+  return el(
+    "span",
+    { class: `badge risk-${risk}`, title: `${risk} risk` },
+    long ? `${risk} risk` : risk,
+  );
 }
 function accessBadge(access) {
   return badge(access, `access-${access}`);
@@ -514,9 +930,10 @@ function repoLink(repo, { className = "", stop = false } = {}) {
 }
 
 /**
- * Pipeline-dots lifecycle indicator (cyan → amber → cyan). The lifecycle stage
- * the ticket sits in is amber ("now"); everything before it is a filled cyan
- * dot; everything after is hollow. Terminal failure paints the active dot red.
+ * Lifecycle progress marks: five stages (draft → ready → in progress → review →
+ * done); stages passed are filled, the current one is the long mark, a terminal
+ * failure paints it red. Class `.pdots` — `.pipeline` belongs to the Overview's
+ * development-flow strip (the old shared name broke its overflow on phones).
  */
 const LIFECYCLE = ["draft", "ready", "in_progress", "in_review", "done"];
 const STAGE_FOR_STATUS = {
@@ -543,7 +960,7 @@ function pipelineDots(status) {
   const stage = STAGE_FOR_STATUS[status] ?? 0;
   const failed = status === "failed" || status === "cancelled";
   const wrap = el("span", {
-    class: "pipeline",
+    class: "pdots",
     role: "img",
     "aria-label": `Lifecycle: ${statusLabel(status)}`,
   });
@@ -556,92 +973,62 @@ function pipelineDots(status) {
   return wrap;
 }
 
+/** The pips said in words: "stage 3 of 5 · on the pitch". */
+const STAGE_WORDS = ["drafting", "in the fixtures", "on the pitch", "the sign-off", "full time"];
+function stageCaption(status) {
+  const stage = STAGE_FOR_STATUS[status] ?? 0;
+  const word =
+    status === "failed" ? "sent off" : status === "cancelled" ? "won't do" : STAGE_WORDS[stage];
+  return `Stage ${stage + 1} of ${LIFECYCLE.length} · ${word}`;
+}
+
 // --- View scaffolding -------------------------------------------------------
 
-function viewHead(title, countText, actions) {
-  // Instrument header: a mono kicker line over a confident display title, all
-  // riding on a hairline baseline — like the label plate on a console section.
-  return el("div", { class: "view-head" }, [
+/**
+ * A view's programme-page header: the title in Big Shoulders (mixed case — it is
+ * a name, not an eyebrow), one line of real counts beneath it, and the view's
+ * actions on the right. No hero bands, no slogans. `sub` may be a string or a node.
+ */
+function viewHead(title, sub, actions) {
+  return el("header", { class: "view-head" }, [
     el("div", { class: "view-head-main" }, [
-      el("div", { class: "view-kicker" }, [
-        el("span", { class: "view-kicker-tick" }),
-        el("span", {}, countText ? String(countText).toUpperCase() : "GAFFER FACTORY"),
-      ]),
       el("h1", {}, title),
+      sub ? el("p", { class: "view-sub" }, sub) : null,
     ]),
     actions ? el("div", { class: "view-head-actions" }, [].concat(actions)) : null,
   ]);
 }
 
 /**
- * Atmospheric hero band that sits at the very TOP of a view, below the nav.
- * A dark sci-fi image carries the amber focal on its RIGHT; a two-axis scrim
- * (see `.view-hero` in styles.css) darkens the LEFT and fades the band into the
- * OLED content below, so real headline text stays legible at AAA contrast.
- *
- * The image is purely decorative background; all copy is live DOM text (screen
- * readers get the eyebrow/title/subtitle/status verbatim). The leading ◆ / ●
- * marks are rendered as decorative, aria-hidden spans — do not bake them into
- * the passed strings.
- *
- * @param {object}  o
- * @param {string}  o.image        asset path, e.g. "assets/bg/hero-city.jpg"
- * @param {string} [o.eyebrow]     small mono caps line (amber ◆ prepended)
- * @param {string}  o.title        editorial headline (Space Grotesk)
- * @param {string} [o.subtitle]    muted supporting line(s)
- * @param {string} [o.status]      status line text (● dot prepended)
- * @param {boolean}[o.statusOk]    green dot + text when healthy (default true)
+ * Idle / empty: one quiet sentence (and an optional second line + actions), never
+ * an icon in a box. `iconName` is accepted for older callers and ignored.
  */
-function viewHero({ image, eyebrow, title, subtitle, status, statusOk = true }) {
-  return el("header", { class: "view-hero", style: `background-image:url("${image}")` }, [
-    el("div", { class: "view-hero-inner" }, [
-      eyebrow
-        ? el("div", { class: "view-hero-eyebrow mono" }, [
-            el("span", { class: "view-hero-diamond", "aria-hidden": "true" }, "◆"),
-            el("span", {}, eyebrow),
-          ])
-        : null,
-      el("h1", { class: "view-hero-title" }, title),
-      subtitle ? el("p", { class: "view-hero-sub" }, subtitle) : null,
-      status
-        ? el("div", { class: `view-hero-status${statusOk ? " ok" : ""}` }, [
-            el("span", { class: "view-hero-dot", "aria-hidden": "true" }),
-            el("span", {}, status),
-          ])
-        : null,
-    ]),
-  ]);
-}
-
-function emptyState(title, sub, iconName = "check") {
+function emptyState(title, sub, _iconName, actions) {
   return el("div", { class: "empty-state" }, [
-    el("div", { class: "es-icon" }, icon(iconName)),
-    el("div", { class: "es-title" }, title),
-    sub ? el("div", { class: "es-sub" }, sub) : null,
+    el("p", { class: "es-title" }, title),
+    sub ? el("p", { class: "es-sub" }, sub) : null,
+    actions ? el("div", { class: "es-actions" }, [].concat(actions)) : null,
   ]);
 }
 
-/** Generic loading skeleton for a view. */
+/**
+ * A loading skeleton shaped like the view it stands in for. CSS keeps it
+ * invisible for the first 300ms so a fast view never flashes it.
+ */
 function skeleton(kind = "list") {
-  const wrap = el("div", { class: "skeleton-view", "aria-busy": "true" });
+  const wrap = el("div", {
+    class: `skeleton-view sk-${kind}`,
+    "aria-busy": "true",
+    "aria-label": "Loading",
+  });
+  if (kind === "overview") return overviewSkeleton();
   wrap.appendChild(el("div", { class: "skeleton sk-bar", style: "width:40%" }));
-  if (kind === "overview") {
-    wrap.appendChild(el("div", { class: "skeleton sk-card" }));
-    const bento = el("div", { class: "bento" });
-    for (let i = 0; i < 4; i++) bento.appendChild(el("div", { class: "skeleton sk-card" }));
-    wrap.appendChild(bento);
-  }
+  wrap.appendChild(el("div", { class: "skeleton sk-line" }));
   if (kind === "board") {
-    const board = el("div", { class: "board" });
-    for (let c = 0; c < 4; c++) {
-      const col = el("div", { class: "skeleton", style: "height:260px;border-radius:14px" });
-      board.appendChild(col);
-    }
-    wrap.appendChild(board);
+    wrap.appendChild(el("div", { class: "skeleton sk-board" }));
+    return wrap;
   }
-  for (let i = 0; i < (kind === "board" ? 0 : 5); i++) {
-    wrap.appendChild(el("div", { class: "skeleton sk-row" }));
-  }
+  for (let i = 0; i < 5; i++) wrap.appendChild(el("div", { class: "skeleton sk-row" }));
   return wrap;
 }
 
@@ -681,9 +1068,10 @@ function focusableIn(root) {
     ),
   ].filter((e) => e.offsetParent !== null || e === document.activeElement);
 }
-function openSheet(title, contentNode) {
+function openSheet(title, contentNode, { focus } = {}) {
   const { scrim, sheet, head, body } = ensureSheet();
-  sheetReturnFocus = document.activeElement; // so focus returns here on close
+  // A sheet opened from inside an open sheet keeps the ORIGINAL trigger to return to.
+  if (!sheet.classList.contains("open")) sheetReturnFocus = document.activeElement;
   clear(head);
   clear(body);
   head.appendChild(el("h2", { id: "sheet-title" }, title));
@@ -698,20 +1086,57 @@ function openSheet(title, contentNode) {
   scrim.classList.add("open");
   sheet.classList.add("open");
   document.addEventListener("keydown", sheetKeydown);
-  // Move focus INTO the dialog so keyboard/AT users aren't stranded behind it.
-  const first = focusableIn(sheet)[0];
+  trackKeyboardInset(true);
+  // Move focus INTO the dialog so keyboard/AT users aren't stranded behind it:
+  // to the field the sheet is for when it names one, else its first control.
+  const first = focus || focusableIn(sheet)[0];
   (first || sheet).focus();
 }
-function closeSheet() {
+/**
+ * Close the sheet. Focus goes back to the control that opened it; `restore: false`
+ * (a route change) leaves focus to the new page. A click handler passes its event
+ * here, which has no `restore`, so a Close or Cancel button restores focus.
+ */
+function closeSheet({ restore = true } = {}) {
   if (!sheetEls) return;
+  const wasOpen = sheetEls.sheet.classList.contains("open");
   sheetEls.scrim.classList.remove("open");
   sheetEls.sheet.classList.remove("open");
   document.removeEventListener("keydown", sheetKeydown);
+  trackKeyboardInset(false);
   // Restore focus to whatever opened the sheet (the trigger), not the body.
-  if (sheetReturnFocus && typeof sheetReturnFocus.focus === "function") {
-    sheetReturnFocus.focus();
-  }
+  const back = sheetReturnFocus;
   sheetReturnFocus = null;
+  if (!restore || !wasOpen) return;
+  if (back && back.isConnected && typeof back.focus === "function") back.focus();
+}
+/**
+ * While a sheet is open on a phone, keep it above the soft keyboard: the
+ * keyboard's height (layout viewport minus the visual one) goes into --kb,
+ * which the phone sheet sits on, so its sticky confirm row stays in view.
+ */
+function onViewportInset() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  document.documentElement.style.setProperty("--kb", `${kb}px`);
+}
+function trackKeyboardInset(on) {
+  const vv = typeof window !== "undefined" ? window.visualViewport : null;
+  if (!vv) return;
+  if (on) {
+    vv.addEventListener("resize", onViewportInset);
+    vv.addEventListener("scroll", onViewportInset);
+    onViewportInset();
+  } else {
+    vv.removeEventListener("resize", onViewportInset);
+    vv.removeEventListener("scroll", onViewportInset);
+    document.documentElement.style.removeProperty("--kb");
+  }
+}
+/** Is the shared sheet showing? */
+function sheetOpen() {
+  return Boolean(sheetEls && sheetEls.sheet.classList.contains("open"));
 }
 function sheetKeydown(e) {
   if (e.key === "Escape") {
@@ -770,29 +1195,12 @@ const VIEW_ALIASES = {
   map: "factory",
 };
 
-// Primary nav entries (order = bottom-nav + desktop rail order).
-// Two tiers. "primary" is the loop an operator actually drives — the same four
-// areas the mobile bottom-nav promotes. "utility" is reference & config you
-// visit occasionally; the rail sets it apart with a divider so the primary loop
-// reads first instead of drowning in a flat nine-item list.
-const NAV = [
-  { id: "overview", label: "Overview", icon: "overview", group: "primary" },
-  { id: "work", label: "Work", icon: "work", group: "primary" },
-  { id: "review", label: "Review", icon: "review", group: "primary" },
-  { id: "factory", label: "Map", icon: "map", group: "primary" },
-  { id: "health", label: "Health", icon: "health", group: "utility" },
-  { id: "epics", label: "Epics", icon: "epics", group: "utility" },
-  { id: "specs", label: "Specs", icon: "specs", group: "utility" },
-  { id: "memory", label: "Memory", icon: "memory", group: "utility" },
-  { id: "settings", label: "Settings", icon: "settings", group: "utility" },
-];
-
 // Sub-views highlight their parent area in the nav.
 const AREA_FOR_VIEW = {
   ticket: "work",
   node: "factory",
   repo: "factory",
-  create: "work",
+  create: "epics",
   hidden: "factory",
 };
 
@@ -816,88 +1224,192 @@ function navigate(hash) {
   else location.hash = next;
 }
 
-// Navigation order — used to decide which way the "camera" steps so a forward
-// move (Overview → Settings) and a back move read differently. This is what
-// makes navigating feel like walking through a plan rather than a page reload.
-const NAV_ORDER = [
-  "overview",
-  "work",
-  "review",
-  "factory",
-  "health",
-  "epics",
-  "specs",
-  "memory",
-  "settings",
-];
-let lastAreaIndex = 0;
-
 let activeArea = "overview";
 // Where a ticket detail's "← Back" returns to. Tracks the last LIST view the
 // operator came from (Work or Review) so opening a ticket from the Review queue
 // returns to Review, not always Work.
 let detailBackHash = "#/work";
+
+// Route generations. Every navigation bumps routeGen and aborts the previous
+// route's reads. A render that resolves after the operator has moved on is
+// DISCARDED (and disposed, so its document-level key handlers die with it):
+// a slow Review render must never land under the Specs URL with live Approve
+// buttons (router-stale-render-race).
+let routeGen = 0;
+let routeAbort = null;
+/** The AbortSignal for the current route's reads (views pass it to api()). */
+function routeSignal() {
+  return routeAbort ? routeAbort.signal : undefined;
+}
+/**
+ * Tear down a rendered view tree: views register cleanup as `node._dispose`
+ * (document listeners, timers, observers). Safe to call twice.
+ */
+function disposeView(node) {
+  if (!node) return;
+  const fns = [];
+  if (typeof node._dispose === "function") fns.push(node._dispose);
+  if (node.querySelectorAll) {
+    for (const n of node.querySelectorAll("*")) {
+      if (typeof n._dispose === "function") fns.push(n._dispose);
+    }
+  }
+  for (const fn of fns) {
+    try {
+      fn();
+    } catch {
+      /* cleanup is best-effort */
+    }
+  }
+  node._dispose = null;
+}
+/** Swap #app's content, disposing whatever view was there. */
+function mountView(content) {
+  for (const child of [...app.children]) disposeView(child);
+  clear(app);
+  app.appendChild(content);
+  // A view that measures itself (the tactics board, the wage chart) draws once it is in the DOM.
+  if (typeof content._mounted === "function") {
+    try {
+      content._mounted();
+    } catch {
+      /* a drawing that cannot measure keeps its first draw */
+    }
+  }
+}
+
+/**
+ * Views that draw their own failure page (one specific message + Try again). The
+ * router uses it only for a navigation; a failed background refresh keeps the
+ * view on screen, and a later refresh that succeeds replaces the failure page.
+ */
+const VIEW_ERROR_PAGES = { overview: (e) => overviewError(e) };
+
+/**
+ * The error page in the club's language: the fourth official's board held up
+ * with the code the server (or the router) gave, one plain sentence of what went
+ * wrong, and the one useful way on. `code` is shown only when it is a real code.
+ */
+function errorPage({ code, caption, title, lede, detail, actions, error = false }) {
+  const board = code
+    ? el("div", { class: "err-board", "aria-hidden": "true" }, [
+        el("div", { class: "err-face" }, [
+          el("span", { class: "err-code tabnum" }, code),
+          caption ? el("span", { class: "err-cap" }, caption) : null,
+        ]),
+        el("span", { class: "err-handle" }),
+      ])
+    : el("div", { class: "err-board is-card", "aria-hidden": "true" }, refCard("red"));
+  return el("div", { class: `view view-error${error ? " is-error" : ""}` }, [
+    el("section", { class: "err-page", "aria-labelledby": "err-title" }, [
+      board,
+      el("div", { class: "err-body" }, [
+        el("h1", { id: "err-title" }, title),
+        lede ? el("p", { class: "err-lede" }, lede) : null,
+        detail ? el("p", { class: "err-detail" }, detail) : null,
+        actions && actions.length ? el("div", { class: "err-actions" }, actions) : null,
+      ]),
+    ]),
+  ]);
+}
+
+/** #/<anything that is not a page>: say which address, and offer the way back. */
+function renderNotFound() {
+  const addr = decodeURIComponent((location.hash || "#/").split("?")[0]);
+  setDocTitle("", "Page not found");
+  return errorPage({
+    code: "404",
+    caption: "page not found",
+    title: `No page at ${addr}`,
+    lede: "Gaffer has no page at this address. It may be an old link or a typo.",
+    actions: [
+      el("a", { class: "btn primary", href: "#/overview" }, "Go to the Overview"),
+      el("button", { class: "btn", type: "button", onclick: () => openPalette() }, [
+        icon("search"),
+        el("span", {}, "Search"),
+      ]),
+    ],
+  });
+}
+
+/** A view that failed to load: one specific message and a retry, shown once (not toasted). */
+function loadErrorPage(e) {
+  const status = e && Number.isInteger(e.status) && e.status >= 400 ? String(e.status) : "";
+  const offline = e && (e.code === "NETWORK" || e.code === "BAD_GATEWAY");
+  return errorPage({
+    code: status,
+    caption: status ? "the server answered" : null,
+    title: offline ? "Can't reach the factory." : "That page could not load.",
+    lede: (e && e.message) || "The request failed. Check the connection and retry.",
+    error: true,
+    actions: [
+      el("button", { class: "btn primary", type: "button", onclick: () => router() }, "Try again"),
+      el("a", { class: "btn", href: "#/overview" }, "Go to the Overview"),
+    ],
+  });
+}
+
 async function router() {
   const { view, param } = parseHash();
-  // Unknown views fall through to Overview; aliases are resolved in parseHash.
-  const render = VIEWS[view] || renderOverview;
-  activeArea = AREA_FOR_VIEW[view] || (VIEWS[view] ? view : "overview");
+  // Aliases are resolved in parseHash. An address under #/ that names no view is
+  // a 404 page (one link back); a bare fragment that is not a section on this
+  // page still opens the Overview, as it always has.
+  const notFound = !VIEWS[view] && (location.hash || "").startsWith("#/");
+  const render = VIEWS[view] || (notFound ? renderNotFound : renderOverview);
+  activeArea = AREA_FOR_VIEW[view] || (VIEWS[view] ? view : notFound ? "" : "overview");
   if (view === "work" || view === "review") detailBackHash = "#/" + view;
 
-  // Decide the step direction (forward = deeper into the plan, back = out).
-  const idx = NAV_ORDER.indexOf(activeArea);
-  const dir = idx === -1 || idx === lastAreaIndex ? "none" : idx > lastAreaIndex ? "fwd" : "back";
-  if (idx !== -1) lastAreaIndex = idx;
-  document.documentElement.dataset.step = dir;
+  const gen = ++routeGen;
+  workRefCache = null; // a navigation re-reads repos/nodes (the refresh reuses them)
+  if (routeAbort) routeAbort.abort();
+  routeAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const isCurrent = () => gen === routeGen;
 
   app.dataset.area = activeArea; // lets CSS give width-hungry views (work/map/epics) the full screen
+  // The view actually rendered: a stray bare fragment (#grp-nothing) opens the
+  // Overview, so it is named "overview", not after the fragment.
+  app.dataset.view = VIEWS[view] ? view : notFound ? "notfound" : "overview";
   syncNav();
   updateNavBadges();
   setDocTitle(view); // detail views refine this once their data loads
   app.classList.remove("login-shell");
 
-  // The actual DOM swap: skeleton in, awaited content in. Wrapped in a View
-  // Transition so the browser tweens the old frame to the new one — the nav
-  // marker glides between rail items and the content does a depth "camera step".
+  // The DOM swap: a view-shaped skeleton (invisible for its first 300ms), then the
+  // awaited content — unless a newer navigation superseded this one meanwhile.
   const swap = async () => {
-    clear(app);
-    app.appendChild(
-      skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"),
-    );
+    if (!isCurrent()) return;
+    mountView(skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"));
+    let content;
     try {
-      const content = await render(param);
-      clear(app);
-      app.appendChild(content);
-      app.scrollTop = 0;
-      stagger(content);
-      animateReadouts(content);
-      // Tell a screen reader the view changed (one short line, not the whole DOM).
-      announce(`${VIEW_TITLES[view] || "View"} loaded`);
+      content = await render(param);
     } catch (e) {
-      // A 401 is already handled inside api() (the login screen is shown) — returning
-      // here avoids clobbering it. For any OTHER failure, replace the skeleton with an
-      // error panel + retry instead of leaving a misleading permanent "loading" state.
-      if (e && e.code === "UNAUTHORIZED") return;
-      toast((e && e.message) || "Unexpected error", { code: e && e.code });
-      clear(app);
-      const panel = emptyState(
-        "Couldn’t load this view",
-        (e && e.message) || "The request failed. Check the connection and retry.",
-        "alert",
-      );
-      panel.appendChild(el("button", { class: "btn", onClick: () => router() }, "Retry"));
-      app.appendChild(panel);
+      if (!isCurrent()) return; // a stale failure never paints over the new view
+      // A 401 is already handled inside api() (the login screen is shown).
+      if (e && (e.code === "UNAUTHORIZED" || e.code === "ABORTED")) return;
+      // A view may draw its own failure in its own language (the Overview's dark scoreboard).
+      if (VIEW_ERROR_PAGES[view]) {
+        mountView(VIEW_ERROR_PAGES[view](e));
+        return;
+      }
+      // One specific message + a retry, shown once — not repeated in a toast.
+      mountView(loadErrorPage(e));
+      return;
     }
+    if (!isCurrent()) {
+      disposeView(content);
+      return;
+    }
+    mountView(content);
+    window.scrollTo?.(0, 0);
+    flipDigits(content);
+    // Tell a screen reader the view changed (one short line, not the whole DOM).
+    announce(`${VIEW_TITLES[view] || "View"} loaded`);
   };
 
   const reduce = prefersReducedMotion();
-  if (document.startViewTransition && !reduce) {
-    // Snapshot synchronously, then run the marker-glide; the awaited content
-    // resolves inside the transition's update callback. A rapid navigation aborts
-    // the in-flight transition, rejecting its .ready/.finished with
-    // InvalidStateError — the DOM update still runs, so swallow those rejections (and
-    // any synchronous throw) to keep an unguarded exception off every interrupted
-    // view change.
+  if (document.startViewTransition && !reduce && app.childElementCount) {
+    // A rapid navigation aborts the in-flight transition, rejecting its promises
+    // with InvalidStateError; the update still runs (and bails if stale).
     try {
       const vt = document.startViewTransition(swap);
       vt.ready?.catch(() => {});
@@ -911,196 +1423,543 @@ async function router() {
   }
 }
 
-/** Stagger the entrance of a freshly-mounted view's top-level blocks so the
- *  screen assembles itself, top-down, like instruments coming online. */
-function stagger(root) {
-  const blocks = root.querySelectorAll(":scope > *");
-  blocks.forEach((b, i) => {
-    b.style.setProperty("--stagger", `${Math.min(i, 9) * 60}ms`);
-    b.classList.add("rise-in");
-  });
+/**
+ * Scoreboard digits flip in on first paint (and when a refresh changes them):
+ * each character of a `.kpi-val[data-flip]` becomes a `.dg` with a stagger index.
+ * A flip, never a count-up — we never show a number the server did not give.
+ */
+function flipDigits(root, prev = null) {
+  if (prefersReducedMotion() || !root || !root.querySelectorAll) return;
+  for (const node of root.querySelectorAll("[data-flip]")) {
+    const text = node.textContent || "";
+    if (node.dataset.flipped === text) continue;
+    node.dataset.flipped = text;
+    // A background refresh flips only the numbers that actually changed.
+    if (prev && prev[node.dataset.flip] === text) continue;
+    clear(node);
+    [...text].forEach((ch, i) =>
+      node.appendChild(el("span", { class: "dg", style: { "--i": i } }, ch)),
+    );
+    node.classList.add("flip");
+  }
+}
+/** The current text of every flip-digit node under root, keyed by data-flip. */
+function digitValues(root) {
+  const out = {};
+  if (root && root.querySelectorAll)
+    for (const n of root.querySelectorAll("[data-flip]")) out[n.dataset.flip] = n.textContent;
+  return out;
 }
 
-/** The instruments "come up": telemetry numbers spin from 0 to their value and
- *  fill gauges sweep out. Honest — the target is the real number; we only
- *  animate the approach. Skipped under reduced-motion. */
-function animateReadouts(root) {
-  if (prefersReducedMotion()) return;
+// --- Data freshness ----------------------------------------------------------
+//
+// The header shows WHEN the data on screen was last confirmed by the server —
+// the time of the last API response or live-stream byte — never a lamp that
+// stays lit when the factory is unreachable (live-lamp-hardcoded). States:
+//   live     the event stream is connected (pushes arrive within a second)
+//   polling  the stream is down but API calls succeed (9s refresh fallback)
+//   offline  the last call failed to reach the server, or nothing has been
+//            confirmed for 2.5 refresh intervals — actions pause, data is stale
+//   auth     the server refused our token
+const FRESH_STALE_MS = 2.5 * 9000;
+const freshness = {
+  lastOkAt: 0,
+  lastFailAt: 0,
+  failKind: null,
+  stream: "down",
+  listeners: new Set(),
+  ok() {
+    const was = this.state();
+    this.lastOkAt = Date.now();
+    this.failKind = null;
+    this.emit(was);
+  },
+  fail(kind) {
+    const was = this.state();
+    this.lastFailAt = Date.now();
+    this.failKind = kind;
+    this.emit(was);
+  },
+  setStream(state) {
+    const was = this.state();
+    this.stream = state;
+    if (state === "up") this.lastOkAt = Date.now();
+    this.emit(was);
+  },
+  state(now = Date.now()) {
+    if (this.failKind === "auth") return "auth";
+    if (this.failKind === "network" && this.lastFailAt >= this.lastOkAt) return "offline";
+    if (!this.lastOkAt) return "connecting";
+    if (now - this.lastOkAt > FRESH_STALE_MS && this.stream !== "up") return "offline";
+    return this.stream === "up" ? "live" : "polling";
+  },
+  emit(was) {
+    const now = this.state();
+    for (const fn of this.listeners) fn(now, was);
+  },
+};
 
-  // Silos fill up from empty, left to right — the line charging.
-  root.querySelectorAll(".silo-fill").forEach((bar, i) => {
-    const target = bar.style.height || "0%";
-    bar.style.height = "0%";
-    setTimeout(
-      () => requestAnimationFrame(() => (bar.style.height = target)),
-      200 + Math.min(i, 9) * 90,
-    );
-  });
-
-  // Fill gauges (other views): start collapsed, then transition to width.
-  root.querySelectorAll(".gauge-track i").forEach((bar, i) => {
-    const target = bar.style.width || "0%";
-    bar.style.width = "0%";
-    setTimeout(
-      () => requestAnimationFrame(() => (bar.style.width = target)),
-      220 + Math.min(i, 9) * 60,
-    );
-  });
-
-  // Count-up on big numeric readouts (silo values + any gauge values).
-  root.querySelectorAll(".silo-val, .gauge-value").forEach((node, i) => {
-    const target = parseInt(node.textContent, 10);
-    if (!Number.isFinite(target) || target === 0) return;
-    const dur = 620;
-    const start = performance.now() + 180 + Math.min(i, 9) * 60;
-    node.textContent = "0";
-    const tick = (now) => {
-      const t = (now - start) / dur;
-      if (t < 0) {
-        requestAnimationFrame(tick);
-        return;
-      }
-      if (t >= 1) {
-        node.textContent = String(target);
-        return;
-      }
-      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
-      node.textContent = String(Math.round(eased * target));
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  });
+/** "18:58" in the viewer's clock (the header line is a fact, not a countdown). */
+function clockTime(ms) {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-// --- App chrome (app bar + bottom nav) --------------------------------------
+/** Paint the header freshness line from the tracker (also re-run every 15s). */
+function paintFreshness() {
+  const node = document.getElementById("freshness");
+  if (!node) return;
+  const st = freshness.state();
+  node.dataset.state = st;
+  clear(node);
+  const at = freshness.lastOkAt;
+  if (st === "auth") {
+    node.appendChild(el("span", { class: "rail-status-text" }, "Token refused"));
+  } else if (st === "offline") {
+    node.appendChild(glyph("blocked", 12));
+    node.appendChild(
+      el("span", {}, [
+        "Offline",
+        at
+          ? el("span", { class: "rail-status-text" }, [
+              " · data from ",
+              el("time", { datetime: new Date(at).toISOString() }, clockTime(at)),
+            ])
+          : null,
+      ]),
+    );
+  } else if (at) {
+    node.appendChild(
+      el("span", { class: "rail-status-text" }, [
+        el("span", { class: "rs-prefix" }, st === "live" ? "Live · data as of " : "Data as of "),
+        el("time", { datetime: new Date(at).toISOString() }, clockTime(at)),
+      ]),
+    );
+  } else {
+    node.appendChild(el("span", { class: "rail-status-text" }, "Connecting…"));
+  }
+  node.title =
+    st === "live"
+      ? "Connected to the factory's event stream; updates arrive as they happen."
+      : st === "polling"
+        ? "The live stream is down; the view refreshes every 9 seconds."
+        : st === "offline"
+          ? "Can't reach the factory. What you see is from the time shown; actions are paused."
+          : st === "auth"
+            ? "The factory refused this token."
+            : "Waiting for the first answer from the factory.";
+  document.body.classList.toggle("is-offline", st === "offline");
+  const strip = document.getElementById("offline-strip");
+  if (strip) {
+    strip.hidden = st !== "offline";
+    if (st === "offline") {
+      clear(strip);
+      strip.appendChild(
+        el("div", {}, [
+          glyph("blocked", 14),
+          at
+            ? `Can't reach the factory. You're looking at data from ${clockTime(at)}; actions are paused until it answers.`
+            : "Can't reach the factory. Actions are paused until it answers.",
+        ]),
+      );
+    }
+  }
+}
+let freshPainted = "";
+freshness.listeners.add((now, was) => {
+  // Repaint only when what the line says would change (state or the minute shown).
+  const key = `${now}|${freshness.lastOkAt ? clockTime(freshness.lastOkAt) : ""}`;
+  if (key !== freshPainted) {
+    freshPainted = key;
+    paintFreshness();
+  }
+  // Coming back: re-read the view at once instead of waiting for the next tick.
+  if (was === "offline" && (now === "live" || now === "polling")) refreshCurrentView();
+});
+
+// --- Theme (per-viewer kit) ----------------------------------------------------
+
+const THEME_KEY = "gaffer_theme";
+function storedTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    return t === "light" || t === "dark" ? t : "system";
+  } catch {
+    return "system";
+  }
+}
+/** The kit actually showing: the stored override, else the system setting. */
+function effectiveTheme() {
+  const t = storedTheme();
+  if (t !== "system") return t;
+  return typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+/** Pin the kit ("light" | "dark") or follow the system ("system"). */
+function setTheme(t) {
+  try {
+    if (t === "light" || t === "dark") localStorage.setItem(THEME_KEY, t);
+    else localStorage.removeItem(THEME_KEY);
+  } catch {
+    /* storage blocked: the choice lasts for this page only */
+  }
+  if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  else document.documentElement.removeAttribute("data-theme");
+  paintThemeToggle();
+}
+function toggleTheme() {
+  setTheme(effectiveTheme() === "dark" ? "light" : "dark");
+}
+function paintThemeToggle() {
+  for (const b of document.querySelectorAll(".theme-toggle")) {
+    const dark = effectiveTheme() === "dark";
+    clear(b);
+    b.appendChild(icon(dark ? "sun" : "moon", null, 18));
+    b.setAttribute(
+      "aria-label",
+      dark ? "Switch to the day kit (light)" : "Switch to the floodlit kit (dark)",
+    );
+    b.title = b.getAttribute("aria-label");
+  }
+}
+
+// --- App chrome: the club header + the phone bottom nav ----------------------
+
+// Primary nav in programme order. Counts are live data from /api/dashboard:
+// Review's count is yellow (it needs you); Work's is plain (load, not a demand).
+const NAV = [
+  { id: "overview", label: "Overview", icon: "overview" },
+  { id: "work", label: "Work", icon: "work" },
+  { id: "review", label: "Review", icon: "review" },
+  { id: "epics", label: "Epics", icon: "epics" },
+  { id: "factory", label: "Map", icon: "map" },
+  { id: "specs", label: "Specs", icon: "specs" },
+  { id: "memory", label: "Memory", icon: "memory" },
+  { id: "health", label: "Health", icon: "health" },
+  { id: "settings", label: "Settings", icon: "settings" },
+];
+/** The phone bottom nav: the loop an operator drives; the rest sit under More. */
+const BOTTOM_NAV_IDS = ["overview", "work", "review"];
+const navCounts = {};
+
+function navCountEl(id) {
+  return el("span", { class: "nav-count", dataset: { count: id }, hidden: true });
+}
 
 function buildChrome() {
-  // App bar.
   clear(appbar);
   const brand = el("a", { class: "brand", href: "#/overview", "aria-label": "Gaffer — Overview" }, [
-    el("img", { class: "brand-icon", src: "/gaffer-icon.svg", alt: "" }),
-    el("span", { class: "brand-text" }, [
+    crest(),
+    el("span", { class: "brand-t" }, [
       el("span", { class: "brand-name" }, "Gaffer"),
-      el("span", { class: "brand-sub" }, "CONTROL ROOM"),
+      el("span", { class: "brand-sub", id: "brand-sub" }),
     ]),
   ]);
 
-  // LIVE lamp — a breathing amber status light. The single most "alive" pixel
-  // in the room; it tells you the factory is on watch.
-  const live = el("div", { class: "rail-status", title: "Factory online" }, [
-    el("span", { class: "live-lamp" }),
-    el("span", { class: "rail-status-text" }, "LIVE"),
-    el("span", { class: "rail-status-meta mono", id: "live-tick" }, "tick 001"),
+  const railItems = NAV.map((n) =>
+    el("a", { class: "nav-link", href: `#/${n.id}`, dataset: { area: n.id }, onclick: reselect }, [
+      el("span", { class: "nav-label" }, n.label),
+      navCountEl(n.id),
+    ]),
+  );
+  const more = el(
+    "button",
+    {
+      class: "nav-more",
+      type: "button",
+      "aria-haspopup": "true",
+      "aria-expanded": "false",
+      hidden: true,
+      onclick: (e) => toggleNavMenu(e.currentTarget),
+    },
+    ["More", icon("chevdown", null, 16)],
+  );
+  const rail = el("nav", { class: "nav-rail", "aria-label": "Primary views" }, [
+    ...railItems,
+    more,
   ]);
-  const railItems = [];
-  let sepPlaced = false;
-  for (const n of NAV) {
-    // One thin divider where the primary loop ends and the utility cluster begins.
-    if (n.group === "utility" && !sepPlaced) {
-      railItems.push(el("span", { class: "nav-sep", "aria-hidden": "true" }));
-      sepPlaced = true;
-    }
-    railItems.push(
-      el(
-        "button",
-        {
-          class: `nav-link nav-${n.group}`,
-          type: "button",
-          dataset: { area: n.id },
-          onclick: () => navigate(`#/${n.id}`),
-        },
-        [
-          el("span", { class: "nav-rule" }),
-          icon(n.icon, "nav-ico"),
-          el("span", { class: "nav-label" }, n.label),
-          el("span", { class: "nav-count", dataset: { count: n.id }, hidden: true }),
-        ],
-      ),
-    );
-  }
-  const rail = el("nav", { class: "nav-rail", "aria-label": "Primary views" }, railItems);
 
+  const freshnessNode = el("span", {
+    class: "rail-status",
+    id: "freshness",
+    role: "status",
+    "aria-live": "polite",
+    dataset: { state: "connecting" },
+  });
   const cmdk = el(
     "button",
     {
-      class: "cmdk-trigger",
+      class: "btn-club cmdk-trigger",
       type: "button",
-      "aria-label": "Open command palette",
+      "aria-label": "Search",
+      "aria-keyshortcuts": "Control+K Meta+K",
       onclick: () => openPalette(),
     },
     [
-      icon("search"),
-      el("span", { class: "cmdk-label" }, "Jump to…"),
+      icon("search", null, 18),
+      el("span", { class: "cmdk-label" }, "Search"),
       el("span", { class: "kbd" }, "⌘K"),
     ],
   );
-
-  const newBtn = el(
-    "button",
-    {
-      class: "btn primary small",
-      type: "button",
-      onclick: () => navigate("#/create"),
-    },
-    [icon("plus"), el("span", { class: "cmdk-label" }, "New")],
-  );
-
-  appbar.append(brand, live, rail, el("div", { class: "appbar-spacer" }), cmdk, newBtn);
+  const theme = el("button", {
+    class: "btn-club icon-only theme-toggle",
+    type: "button",
+    onclick: toggleTheme,
+  });
+  const newBtn = el("a", { class: "btn-club btn-new", href: "#/create" }, [
+    icon("plus", null, 18),
+    el("span", {}, "New"),
+  ]);
+  const end = el("div", { class: "club-end" }, [freshnessNode, cmdk, theme, newBtn]);
   // Logout affordance — only when authenticating with a token.
   if (authToken()) {
-    appbar.appendChild(
-      el("button", { class: "logout-btn", type: "button", onclick: logout }, "Logout"),
+    end.appendChild(
+      el("button", { class: "btn-club logout-btn", type: "button", onclick: logout }, "Logout"),
     );
   }
+  appbar.appendChild(el("div", { class: "club-in" }, [brand, rail, end]));
   appbar.hidden = false;
+  if (!document.getElementById("offline-strip")) {
+    appbar.after(
+      el("div", { class: "offline-strip", id: "offline-strip", role: "alert", hidden: true }),
+    );
+  }
 
-  // Bottom nav (mobile): the primary loop only — Overview · Work · Review · Map · +.
-  // Looping the full 9-item desktop NAV crammed 10 cells into a phone width (~36px
-  // each, below the 44px touch target, labels clipped); the reference/config views
-  // stay reachable via ⌘K and the desktop rail.
+  // Phone bottom nav: Overview · Work · Review · More (the More sheet reaches every
+  // other route plus Search and the kit switch — nothing is unreachable on a phone).
   clear(bottomnav);
-  const BOTTOM_NAV_IDS = new Set(["overview", "work", "review", "factory"]);
-  for (const n of NAV.filter((x) => BOTTOM_NAV_IDS.has(x.id))) {
+  for (const n of NAV.filter((x) => BOTTOM_NAV_IDS.includes(x.id))) {
     bottomnav.appendChild(
       el(
-        "button",
-        {
-          class: "bottomnav-item",
-          type: "button",
-          dataset: { area: n.id },
-          onclick: () => navigate(`#/${n.id}`),
-        },
-        [icon(n.icon), el("span", {}, n.label)],
+        "a",
+        { class: "bottomnav-item", href: `#/${n.id}`, dataset: { area: n.id }, onclick: reselect },
+        [el("span", {}, n.label), navCountEl(n.id)],
       ),
     );
   }
   bottomnav.appendChild(
     el(
       "button",
-      {
-        class: "bottomnav-item is-fab",
-        type: "button",
-        "aria-label": "New ticket",
-        onclick: () => navigate("#/create"),
-      },
-      [el("span", { class: "fab-disc" }, icon("plus")), el("span", {}, "New")],
+      { class: "bottomnav-item bottomnav-more", type: "button", onclick: openMoreSheet },
+      "More",
     ),
   );
   bottomnav.hidden = false;
 
-  startLiveTick();
+  paintThemeToggle();
+  paintFreshness();
+  fitNav();
+  if (typeof window.ResizeObserver === "function" && !appbar._ro) {
+    appbar._ro = new window.ResizeObserver(() => fitNav());
+    appbar._ro.observe(appbar);
+  }
+  if (typeof document.fonts?.ready?.then === "function") document.fonts.ready.then(fitNav);
+  if (!window._freshTimer) window._freshTimer = setInterval(paintFreshness, 15000);
   startAutoRefresh();
 }
 
-// Hot-refresh: read-mostly views quietly re-fetch on an interval so the board,
-// overview and review reflect what the factory is doing without a manual reload
-// (fixes the stale-board bug — there was no polling or server push). It never
-// fights the operator: skipped while typing, while dragging, when the tab is
-// hidden, or if the route changed mid-fetch — and it preserves scroll so a
-// background refresh is invisible. Forms (create/settings) and ticket detail are
-// deliberately excluded so in-flight input is never clobbered.
+/**
+ * Re-selecting the view you are on still re-reads it: an identical hash fires no
+ * hashchange, so the nav link routes explicitly (as navigate() does).
+ */
+function reselect(e) {
+  const href = e.currentTarget.getAttribute("href");
+  if (href && location.hash === href) {
+    e.preventDefault();
+    router();
+  }
+}
+
+/**
+ * Priority+ nav: show as many tabs as fit in the bar and move the rest into the
+ * More menu, so the header can never be wider than the viewport
+ * (appbar-overflow-760-1565). Folding order, first to last: the kit switch and
+ * Logout (both also live in More), then the reference tabs from the right
+ * (Settings, Health, Memory, Specs, Map, Epics), then Work. Overview, Review —
+ * with its yellow "needs you" count — and the active tab never fold. More shows
+ * the sum of any counts it holds.
+ */
+const NAV_PINNED = new Set(["overview", "review"]);
+function fitNav() {
+  const rail = appbar.querySelector(".nav-rail");
+  if (!rail || !rail.clientWidth) return;
+  const links = [...rail.querySelectorAll(".nav-link")];
+  const more = rail.querySelector(".nav-more");
+  const extras = [...appbar.querySelectorAll(".club-end .theme-toggle, .club-end .logout-btn")];
+  links.forEach((l) => (l.hidden = false));
+  extras.forEach((b) => b.removeAttribute("data-folded"));
+  appbar.classList.remove("nav-tight");
+  more.hidden = true;
+  const fits = () => rail.scrollWidth <= rail.clientWidth;
+  if (fits()) return paintMoreCount(more, links);
+  more.hidden = false;
+  extras.forEach((b) => b.setAttribute("data-folded", ""));
+  // Then the header's small print: the club name and the freshness prefix (the
+  // time itself stays — it is the one liveness signal).
+  if (!fits()) appbar.classList.add("nav-tight");
+  const order = [...links]
+    .reverse()
+    .filter((l) => !NAV_PINNED.has(l.dataset.area) && l.dataset.area !== activeArea);
+  // Work folds last of the foldable tabs.
+  order.sort((a, b) => (a.dataset.area === "work") - (b.dataset.area === "work"));
+  for (const l of order) {
+    if (fits()) break;
+    l.hidden = true;
+  }
+  more.classList.toggle(
+    "active",
+    links.some((l) => l.hidden && l.dataset.area === activeArea),
+  );
+  paintMoreCount(more, links);
+}
+/** More carries the counts of the tabs folded into it (plain: Review never folds). */
+function paintMoreCount(more, links) {
+  more.querySelector(".nav-count")?.remove();
+  if (more.hidden) return;
+  const n = links
+    .filter((l) => l.hidden)
+    .reduce((sum, l) => sum + (Number(navCounts[l.dataset.area]) || 0), 0);
+  if (n > 0) more.insertBefore(el("span", { class: "nav-count" }, String(n)), more.lastChild);
+}
+
+let navMenuEl = null;
+function closeNavMenu() {
+  if (!navMenuEl) return;
+  navMenuEl.remove();
+  navMenuEl = null;
+  const btn = appbar.querySelector(".nav-more");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+  document.removeEventListener("click", navMenuOutside, true);
+  document.removeEventListener("keydown", navMenuKey);
+}
+function navMenuOutside(e) {
+  if (navMenuEl && !navMenuEl.contains(e.target) && !e.target.closest?.(".nav-more"))
+    closeNavMenu();
+}
+function navMenuKey(e) {
+  if (e.key === "Escape") {
+    const btn = appbar.querySelector(".nav-more");
+    closeNavMenu();
+    btn?.focus();
+  }
+}
+function toggleNavMenu(btn) {
+  if (navMenuEl) {
+    closeNavMenu();
+    return;
+  }
+  const hidden = [...appbar.querySelectorAll(".nav-link[hidden]")];
+  const items = hidden.map((l) => {
+    const id = l.dataset.area;
+    const n = NAV.find((x) => x.id === id);
+    return el(
+      "a",
+      {
+        href: `#/${id}`,
+        "aria-current": id === activeArea ? "page" : null,
+        onclick: closeNavMenu,
+      },
+      [n ? n.label : id, navCounts[id] ? navCountBadge(id) : null],
+    );
+  });
+  // The kit switch and Logout, when fitNav folded them out of the header.
+  if (appbar.querySelector(".theme-toggle[data-folded]")) {
+    const dark = effectiveTheme() === "dark";
+    items.push(
+      el("button", { type: "button", onclick: () => (closeNavMenu(), toggleTheme()) }, [
+        dark ? "Day kit (light)" : "Floodlit kit (dark)",
+        icon(dark ? "sun" : "moon", null, 18),
+      ]),
+    );
+  }
+  if (appbar.querySelector(".logout-btn[data-folded]")) {
+    items.push(
+      el("button", { type: "button", onclick: () => (closeNavMenu(), logout()) }, [
+        "Log out",
+        icon("logout", null, 18),
+      ]),
+    );
+  }
+  navMenuEl = el("div", { class: "nav-menu", role: "menu", "aria-label": "More views" }, items);
+  const r = btn.getBoundingClientRect();
+  navMenuEl.style.top = `${r.bottom + 6}px`;
+  navMenuEl.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 240))}px`;
+  navMenuEl.style.position = "fixed";
+  document.body.appendChild(navMenuEl);
+  btn.setAttribute("aria-expanded", "true");
+  navMenuEl.querySelector("a")?.focus();
+  setTimeout(() => document.addEventListener("click", navMenuOutside, true), 0);
+  document.addEventListener("keydown", navMenuKey);
+}
+function navCountBadge(id) {
+  const v = navCounts[id];
+  return el("span", { class: `nav-count${id === "review" ? " urgent" : ""}` }, String(v));
+}
+
+/** The phone More sheet: every route not in the bottom nav, Search, the kit. */
+function openMoreSheet() {
+  const links = NAV.filter((n) => !BOTTOM_NAV_IDS.includes(n.id)).map((n) =>
+    el(
+      "a",
+      {
+        class: "more-link",
+        href: `#/${n.id}`,
+        "aria-current": n.id === activeArea ? "page" : null,
+        onclick: closeSheet,
+      },
+      [n.label, icon("chevron", null, 18)],
+    ),
+  );
+  const dark = effectiveTheme() === "dark";
+  openSheet(
+    "More",
+    el("div", { class: "more-list" }, [
+      el(
+        "button",
+        {
+          class: "btn",
+          type: "button",
+          onclick: () => {
+            closeSheet();
+            openPalette();
+          },
+        },
+        [icon("search", null, 18), "Search tickets and views"],
+      ),
+      ...links,
+      el(
+        "button",
+        {
+          class: "more-link",
+          type: "button",
+          onclick: () => {
+            toggleTheme();
+            closeSheet();
+          },
+        },
+        [dark ? "Day kit (light)" : "Floodlit kit (dark)", icon(dark ? "sun" : "moon", null, 18)],
+      ),
+      authToken()
+        ? el("button", { class: "more-link", type: "button", onclick: logout }, [
+            "Log out",
+            icon("logout", null, 18),
+          ])
+        : null,
+    ]),
+  );
+}
+
+// Hot-refresh: read-mostly views quietly re-fetch so the board, overview and
+// review reflect what the factory is doing without a manual reload. It never
+// fights the operator: skipped while typing, dragging, with a sheet/menu open,
+// when the tab is hidden, or if the route changed mid-fetch. It keeps the scroll
+// position (on the document — the real scroller), holds the view's height while
+// async parts (diffs) settle so the page can't shrink and clamp scroll to 0, and
+// skips the swap entirely when the view's data signature did not change.
 const AUTO_REFRESH_MS = 9000;
-const AUTO_REFRESHABLE = new Set(["overview", "work", "review", "epics", "memory"]);
+const AUTO_REFRESHABLE = new Set(["overview", "work", "review", "epics", "memory", "factory"]);
 let autoRefreshTimer;
 function busyEditing() {
   const a = document.activeElement;
@@ -1115,15 +1974,16 @@ function busyEditing() {
 // --- live event stream --------------------------------------------------------
 // The control plane pushes its append-only event log as Server-Sent Events
 // (GET /api/events/stream). Every push schedules ONE debounced refresh of the
-// current view, so the board reacts within a second of a transition instead of
-// on the next blind interval. Streamed with fetch (not EventSource) so the bearer
-// token travels in the Authorization header, never in the URL. The interval
-// refresh below stays as the fallback when the stream is unavailable.
+// current view. Streamed with fetch (not EventSource) so the bearer token travels
+// in the Authorization header, never in the URL. A read watchdog treats ~40s of
+// silence (the server pings every 15s) as a dead connection, so a half-open
+// socket after sleep or a network change can't keep the header saying "Live".
 let liveStreamAbort = null;
 let liveStreamSeq = null;
 let liveRefreshTimer = null;
 const LIVE_REFRESH_DEBOUNCE_MS = 400;
 const LIVE_RECONNECT_MS = 5000;
+const LIVE_WATCHDOG_MS = 40000;
 
 function scheduleLiveRefresh() {
   if (liveRefreshTimer) return;
@@ -1142,15 +2002,24 @@ async function startLiveStream() {
   const tok = authToken();
   if (tok) headers["authorization"] = "Bearer " + tok;
   const since = liveStreamSeq === null ? "" : `?since=${liveStreamSeq}`;
+  let watchdog = null;
+  const pet = () => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => controller.abort(), LIVE_WATCHDOG_MS);
+  };
   try {
     const res = await fetch(`/api/events/stream${since}`, { headers, signal: controller.signal });
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    pet();
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      pet();
+      if (freshness.stream !== "up") freshness.setStream("up");
+      else freshness.lastOkAt = Date.now();
       buf += decoder.decode(value, { stream: true });
       let idx;
       while ((idx = buf.indexOf("\n\n")) !== -1) {
@@ -1167,46 +2036,113 @@ async function startLiveStream() {
   } catch {
     // fall through to reconnect (the interval refresh keeps the UI honest meanwhile)
   } finally {
+    clearTimeout(watchdog);
     liveStreamAbort = null;
-    if (!controller.signal.aborted && document.visibilityState !== "hidden") {
-      setTimeout(startLiveStream, LIVE_RECONNECT_MS);
-    }
+    freshness.setStream("down");
+    if (document.visibilityState !== "hidden") setTimeout(startLiveStream, LIVE_RECONNECT_MS);
   }
+}
+// A phone tab coming back to the foreground re-checks at once instead of
+// trusting its old state: restart the stream and re-read the view.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || !autoRefreshTimer) return;
+  startLiveStream();
+  refreshCurrentView();
+});
+
+/**
+ * Cheap per-view change signatures. When a refresh's signature matches the one
+ * the view on screen was rendered from, the view is left alone: no detail or diff
+ * re-fetches, no DOM swap, nothing moves (review-n-plus-one-refresh).
+ */
+const VIEW_SIGNATURES = {
+  review: async () => {
+    const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
+    if (tickets.length) return reviewSignature(tickets);
+    // The clear desk shows what moved on and who is still playing: watch those.
+    const all = (await api("GET", "/tickets")).tickets || [];
+    return clearDeskSignature(all);
+  },
+};
+/** What the clear Review desk draws from: the tickets past and before the sign-off. */
+const CLEAR_DESK_STATUSES = new Set([
+  "claimed",
+  "in_progress",
+  "in_testing",
+  "ready_for_merge",
+  "done",
+  "cancelled",
+]);
+function clearDeskSignature(all) {
+  return `clear:${reviewSignature(all.filter((t) => CLEAR_DESK_STATUSES.has(t.status)))}`;
+}
+function reviewSignature(tickets) {
+  return tickets.map((t) => `${t.id}@${t.updated_at || ""}`).join("|");
 }
 
 /** Re-render the current view in place if it is safe to do so (shared by the interval + stream). */
+let refreshing = false;
 function refreshCurrentView() {
-  if (document.visibilityState !== "visible") return;
+  if (document.visibilityState === "hidden") return;
   if (busyEditing()) return;
-  // don't yank a card mid-drag or a menu/sheet out from under a click. Match `.sheet.open`
-  // (an OPEN sheet), not `.sheet` — the latter is the always-present container, so it would
-  // pause auto-refresh permanently after the first sheet ever opens.
+  // don't yank a card mid-drag or a menu/sheet out from under a click.
   if (document.querySelector(".dragging, .is-dragging, .sheet.open, .menu-open")) return;
-  // A modal owns the screen — use the single source of truth (isModalOpen), not a
-  // narrower ad-hoc list, so a refresh never fires under the reject dialog, move
-  // menu, or command palette and detach the nodes they anchor to.
+  if (navMenuEl) return;
+  // A modal owns the screen (reject dialog, move menu, command palette).
   if (isModalOpen()) return;
-  // Never tear down the review queue mid-triage: a blind re-render resets the
-  // j/k cursor, silently DISARMS a pending approve, and reloads every diff. Skip
-  // while an approve is armed (keyboard `.card-armed` or the mouse `.btn-armed`),
-  // or while the operator is focused inside a review card.
+  // Never tear down the review queue mid-triage (armed approve or focus in a card).
   if (reviewInteractionInProgress()) return;
   const { view, param } = parseHash();
   if (!AUTO_REFRESHABLE.has(view)) return;
   const render = VIEWS[view];
-  if (!render) return;
-  const y = app.scrollTop;
-  guard(async () => {
-    const content = await render(param);
-    // bail if the operator navigated or started interacting during the fetch — the
-    // armed-approve check must run AGAIN here: a refresh that started a moment before
-    // the first Approve click would otherwise swap in a fresh, unarmed button under
-    // the confirming second click (the click then only re-arms; nothing is approved).
-    if (parseHash().view !== view || busyEditing() || reviewInteractionInProgress()) return;
-    clear(app);
-    app.appendChild(content);
-    app.scrollTop = y;
-  });
+  if (!render || refreshing) return;
+  const gen = routeGen;
+  const current = app.firstElementChild;
+  refreshing = true;
+  (async () => {
+    try {
+      const sigFn = VIEW_SIGNATURES[view];
+      if (sigFn && current && current.dataset.sig != null) {
+        const sig = await sigFn();
+        if (sig === current.dataset.sig) return;
+      }
+      const content = await render(param);
+      // bail if the operator navigated or started interacting during the fetch — the
+      // armed-approve check must run AGAIN here: a refresh that started a moment before
+      // the first Approve click would otherwise swap in a fresh, unarmed button under
+      // the confirming second click (the click then only re-arms; nothing is approved).
+      if (gen !== routeGen || busyEditing() || reviewInteractionInProgress() || isModalOpen()) {
+        disposeView(content);
+        return;
+      }
+      if (content.dataset.sig != null && current && content.dataset.sig === current.dataset.sig) {
+        disposeView(content); // same data: keep the DOM (and its scroll + open details)
+        return;
+      }
+      const se = document.scrollingElement || document.documentElement;
+      const y = se.scrollTop;
+      const prevDigits = digitValues(current);
+      // Hold the old height across the swap: async parts of the new view (diffs)
+      // mount as short placeholders, and a shorter page would clamp scroll to 0.
+      app.style.minHeight = `${app.offsetHeight}px`;
+      mountView(content);
+      se.scrollTop = y;
+      flipDigits(content, prevDigits);
+      const release = () => {
+        if (app.firstElementChild === content) app.style.minHeight = "";
+      };
+      if (content._settled && typeof content._settled.then === "function") {
+        Promise.race([content._settled, new Promise((r) => setTimeout(r, 8000))]).then(release);
+      } else release();
+    } catch (e) {
+      if (e && (e.code === "UNAUTHORIZED" || e.code === "ABORTED")) return;
+      // The header already says "Offline"; one toast per outage, not one per tick.
+      if (e && e.code === "NETWORK") return;
+      toast(e.message || "Refresh failed", { code: e.code });
+    } finally {
+      refreshing = false;
+    }
+  })();
 }
 
 /** An approve is armed (keyboard `.card-armed` or mouse `.btn-armed`) or the operator is focused inside a review card. */
@@ -1222,32 +2158,17 @@ function startAutoRefresh() {
   autoRefreshTimer = setInterval(refreshCurrentView, AUTO_REFRESH_MS);
 }
 
-// Live heartbeat — the tick counter breathes in the bar so the room reads
-// "on watch". Purely cosmetic; the number is a monotonic tick, not real data.
-let liveTickTimer;
-function startLiveTick() {
-  if (liveTickTimer) return;
-  let n = 0;
-  liveTickTimer = setInterval(() => {
-    n++;
-    const t = document.getElementById("live-tick");
-    if (!t) return;
-    t.textContent = "tick " + String(n).padStart(3, "0");
-    if (prefersReducedMotion()) return;
-    t.classList.add("tick-flash");
-    setTimeout(() => t.classList.remove("tick-flash"), 200);
-  }, 6000);
-}
-
 function syncNav() {
   document.querySelectorAll("[data-area]").forEach((n) => {
     const on = n.dataset.area === activeArea;
     n.classList.toggle("active", on);
-    // Programmatic active state for assistive tech (the amber tint alone is
-    // color-only — WCAG 1.4.1). `page` marks the current view in the nav.
+    // Programmatic active state for assistive tech (WCAG 1.4.1).
     if (on) n.setAttribute("aria-current", "page");
     else n.removeAttribute("aria-current");
   });
+  const moreBtn = bottomnav && bottomnav.querySelector(".bottomnav-more");
+  if (moreBtn) moreBtn.classList.toggle("active", !BOTTOM_NAV_IDS.includes(activeArea));
+  fitNav();
 }
 
 // One-line polite announcement into the dedicated #sr-status region (see
@@ -1257,7 +2178,7 @@ function announce(msg) {
   const r = document.getElementById("sr-status");
   if (!r) return;
   r.textContent = "";
-  // A microtask gap makes the region change register as a fresh announcement.
+  // A frame gap makes the region change register as a fresh announcement.
   requestAnimationFrame(() => {
     r.textContent = msg;
   });
@@ -1278,27 +2199,41 @@ const VIEW_TITLES = {
   ticket: "Ticket",
   repo: "Repo",
   node: "Map",
-  create: "New ticket",
+  create: "Plan a build",
   hidden: "Hidden repos",
 };
 /**
  * Set the tab title. `detail` (a detail view's own label, e.g. "#12 Add login") wins;
- * an unknown view is plain "Gaffer" (it used to read "Gaffer · Gaffer"). A detail
- * title is applied only while its route is still the current one, so a slow load
- * can never retitle the view the operator has since moved to.
+ * an unknown view is plain "Gaffer". A detail title is applied only while its route is
+ * still the current one, so a slow load can never retitle the view the operator has
+ * since moved to.
  */
 function setDocTitle(view, detail, param) {
   if (detail) {
     const cur = parseHash();
-    if (cur.view !== view || (param !== undefined && cur.param !== param)) return;
+    if (view && (cur.view !== view || (param !== undefined && cur.param !== param))) return;
     document.title = `${detail} · Gaffer`;
     return;
   }
   document.title = VIEW_TITLES[view] ? `${VIEW_TITLES[view]} · Gaffer` : "Gaffer";
 }
 
-/** Live, data-driven nav badges: Work shows open (in-flight) tickets, Review
- *  shows the gate queue. Best-effort; the rail works fine without them. */
+/** The club's name under the crest: the factory node on the scope map (read once). */
+let factoryNamePromise = null;
+function factoryName() {
+  if (!factoryNamePromise) {
+    factoryNamePromise = api("GET", "/scope/nodes")
+      .then((r) => (r.nodes || []).find((n) => n.type === "factory")?.name || null)
+      .catch(() => {
+        factoryNamePromise = null;
+        return null;
+      });
+  }
+  return factoryNamePromise;
+}
+
+/** Live nav counts from /api/dashboard: Review = the gate queue (yellow: it needs
+ *  you); Work = tickets in flight (plain). Best-effort; the nav works without them. */
 let navBadgeBusy = false;
 async function updateNavBadges() {
   if (navBadgeBusy) return;
@@ -1306,26 +2241,26 @@ async function updateNavBadges() {
   try {
     const { summary } = await api("GET", "/api/dashboard");
     const s = summary.ticketsByStatus || {};
-    const open =
-      (s.ready || 0) +
-      (s.in_progress || 0) +
-      (s.claimed || 0) +
-      (s.in_review || 0) +
-      (s.in_testing || 0) +
-      (s.ready_for_merge || 0) +
-      (s.blocked || 0);
-    const counts = { work: open, review: summary.openDecisions != null ? s.in_review || 0 : 0 };
-    counts.review = s.in_review || 0;
-    document.querySelectorAll(".nav-count[data-count]").forEach((el) => {
-      const v = counts[el.dataset.count];
+    // Work = everything live: on the Tactics Board's pitch (Ready through To merge) plus
+    // off it (blocked, paused, failed), the same two counts the board heads with.
+    navCounts.work = [...ON_PITCH, ...OFF_PITCH].reduce((n, k) => n + (s[k] || 0), 0);
+    navCounts.review = s.in_review || 0;
+    const club = summary.club?.name || summary.clubName || (await factoryName());
+    const sub = document.getElementById("brand-sub");
+    if (sub && club) sub.textContent = club;
+    document.querySelectorAll(".nav-count[data-count]").forEach((n) => {
+      const id = n.dataset.count;
+      const v = navCounts[id];
       if (v > 0) {
-        el.textContent = String(v);
-        el.hidden = false;
-        el.classList.toggle("urgent", el.dataset.count === "review");
+        n.textContent = String(v);
+        n.hidden = false;
+        n.classList.toggle("urgent", id === "review");
+        n.setAttribute("aria-label", id === "review" ? `${v} waiting for you` : `${v} in flight`);
       } else {
-        el.hidden = true;
+        n.hidden = true;
       }
     });
+    fitNav();
   } catch {
     /* best-effort */
   } finally {
@@ -1408,9 +2343,9 @@ async function buildPaletteSources() {
     {
       group: "Create",
       label: "New ticket",
-      hint: "create",
+      hint: "one ticket, outside any campaign",
       icon: "plus",
-      run: () => navigate("#/create"),
+      run: () => navigate("#/create/ticket"),
     },
     {
       group: "Create",
@@ -1433,11 +2368,24 @@ async function buildPaletteSources() {
       icon: "map",
       run: () => navigate("#/node"),
     },
+    {
+      group: "Kit",
+      label: effectiveTheme() === "dark" ? "Day kit (light theme)" : "Floodlit kit (dark theme)",
+      hint: "this browser only",
+      icon: effectiveTheme() === "dark" ? "sun" : "moon",
+      run: () => toggleTheme(),
+    },
+    {
+      group: "Kit",
+      label: "Follow the system theme",
+      hint: storedTheme() === "system" ? "on" : "off",
+      icon: "settings",
+      run: () => setTheme("system"),
+    },
   ];
   let tickets = [];
   try {
-    // Summary rows: the palette shows number/title/status only.
-    tickets = (await api("GET", "/tickets?fields=summary")).tickets || [];
+    tickets = (await api("GET", "/tickets")).tickets || [];
   } catch {
     // Palette still works for navigation if the list call fails.
   }
@@ -1587,35 +2535,3070 @@ document.addEventListener("keydown", (e) => {
 //  Lead with "what needs you now" → live activity → bento stats → repo pressure.
 // ===========================================================================
 
-async function renderOverview() {
+// ===========================================================================
+//  View: Overview — the match-day programme's front page
+//    the stadium scoreboard (headline + four counters), the Team Sheet (what
+//    needs you, each row with one real action), the Tactics Board (every ticket
+//    in play on a drawn pitch, agents in numbered shirts, chalk arrows for the
+//    real moves), then the programme pages: Cup runs, Injury list, League table,
+//    Wage bill, Squad & form, Full time, Fixtures and the Match report.
+//  Every mark is a field a server response carried. The flow numbers, governance
+//  rates and run list live in the Health view (the physio room).
+// ===========================================================================
+
+/** The statuses drawn on the pitch, left (ready) to right (to merge). */
+const PITCH_ZONES = [
+  { key: "ready", label: "Ready", x0: 0, x1: 210 },
+  { key: "claimed", label: "Claimed", x0: 210, x1: 360 },
+  { key: "in_progress", label: "In progress", x0: 360, x1: 525 },
+  { key: "in_review", label: "In review", x0: 525, x1: 700 },
+  { key: "in_testing", label: "In testing", x0: 700, x1: 860 },
+  { key: "ready_for_merge", label: "To merge", x0: 860, x1: 1050 },
+];
+const ON_PITCH = new Set(PITCH_ZONES.map((z) => z.key));
+const OFF_PITCH = new Set(["blocked", "paused", "failed"]);
+const ON_BENCH = new Set(["draft", "refining"]);
+const PITCH_MAX_CHANNELS = 6;
+const ARROW_WINDOW_MS = 3 * 3600e3;
+
+/** SVG builder for the drawings: like svgEl, but `style` may be an object. */
+function svgS(tag, attrs = {}, ...children) {
+  const a = { ...attrs };
+  if (a.style && typeof a.style === "object") {
+    a.style = Object.entries(a.style)
+      .map(([k, v]) => `${k.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase())}:${v}`)
+      .join(";");
+  }
+  return svgEl(tag, a, children.flat());
+}
+
+// Text measurement for the board's layout engine (tags, label boxes). jsdom and
+// some locked-down browsers have no 2D canvas: fall back to an average glyph width.
+let measureCtx;
+/**
+ * Break a name into at most `max` lines that each fit `width` (breaking after
+ * - _ / . first); the last line is cut with an ellipsis if it still overflows.
+ */
+function wrapLabel(str, size, width, max = 2) {
+  const parts = String(str).match(/[^-_/.]+[-_/.]?/g) || [String(str)];
+  const lines = [];
+  let cur = "";
+  for (const p of parts) {
+    if (cur && textWidth(cur + p, size) > width && lines.length < max - 1) {
+      lines.push(cur);
+      cur = p;
+    } else cur += p;
+  }
+  lines.push(cur);
+  const last = lines.length - 1;
+  if (textWidth(lines[last], size) > width) {
+    let t = lines[last];
+    while (t.length > 1 && textWidth(t + "…", size) > width) t = t.slice(0, -1);
+    lines[last] = t + "…";
+  }
+  return lines;
+}
+function textWidth(str, size, track = 0) {
+  if (measureCtx === undefined) {
+    try {
+      measureCtx = document.createElement("canvas").getContext("2d") || null;
+    } catch {
+      measureCtx = null;
+    }
+  }
+  const s = String(str);
+  if (!measureCtx) return s.length * size * (0.5 + track);
+  measureCtx.font = `700 ${size}px "Sofia Sans Condensed", "Arial Narrow", sans-serif`;
+  return measureCtx.measureText(s).width + s.length * size * track;
+}
+
+/** A ball, for the net tallies. */
+function pitchBall(r = 7) {
+  return svgS(
+    "g",
+    { class: "ball" },
+    svgS("circle", { r, fill: "var(--chalk)", stroke: "var(--ink-on-pitch)", "stroke-width": 1 }),
+    svgS("path", {
+      d: `M0 ${-r * 0.42} L${r * 0.4} ${-r * 0.13} L${r * 0.25} ${r * 0.34} L${-r * 0.25} ${r * 0.34} L${-r * 0.4} ${-r * 0.13} Z`,
+      fill: "var(--ink-on-pitch)",
+    }),
+  );
+}
+/** The club shirt as a group, placed at (x, y) and scaled (40 units across). */
+function shirtGroup(no, x = 0, y = 0, scale = 1, numPx) {
+  const id = "sg" + ++svgUid;
+  return svgS(
+    "g",
+    { transform: `translate(${x} ${y}) scale(${scale})` },
+    svgS("defs", {}, svgS("clipPath", { id }, svgS("path", { d: SHIRT_PATH }))),
+    svgS("path", { d: SHIRT_PATH, fill: "var(--claret)" }),
+    svgS(
+      "g",
+      { "clip-path": `url(#${id})`, fill: "var(--sky)" },
+      svgS("path", { d: "M13 4 Q20 9.5 27 4 L27 6.4 Q20 12 13 6.4 Z" }),
+      svgS("path", { d: "M10 9.6 L20 15 L30 9.6 L30 12.6 L20 18 L10 12.6 Z" }),
+      svgS("rect", { x: 0, y: 15.5, width: 6.5, height: 3 }),
+      svgS("rect", { x: 33.5, y: 15.5, width: 6.5, height: 3 }),
+    ),
+    svgS("path", {
+      d: SHIRT_PATH,
+      fill: "none",
+      stroke: "var(--shirt-edge)",
+      "stroke-width": 1.4,
+      "stroke-linejoin": "round",
+    }),
+    svgS(
+      "text",
+      {
+        x: 20,
+        y: 34,
+        "text-anchor": "middle",
+        class: "shirt-no",
+        style: numPx ? { fontSize: (numPx / scale).toFixed(2) + "px" } : undefined,
+      },
+      no,
+    ),
+  );
+}
+
+/** Ticket details (scopes, deps, events, evidence) cached by updated_at. */
+const ticketDetailCache = new Map();
+const TICKET_DETAIL_TTL_MS = 120000;
+async function ticketDetails(tickets, signal) {
+  const now = Date.now();
+  const need = tickets.filter((t) => {
+    const c = ticketDetailCache.get(t.id);
+    return !c || c.stamp !== t.updated_at || now - c.at > TICKET_DETAIL_TTL_MS;
+  });
+  for (let i = 0; i < need.length; i += EPIC_DETAIL_CONCURRENCY) {
+    const batch = need.slice(i, i + EPIC_DETAIL_CONCURRENCY);
+    const got = await Promise.all(
+      batch.map((t) =>
+        api("GET", `/tickets/${t.id}`, undefined, { signal }).catch((e) => {
+          if (e && e.code === "ABORTED") throw e;
+          return null;
+        }),
+      ),
+    );
+    batch.forEach((t, j) => {
+      if (got[j]) ticketDetailCache.set(t.id, { stamp: t.updated_at, at: now, data: got[j] });
+    });
+  }
+  const out = new Map();
+  for (const t of tickets) {
+    const c = ticketDetailCache.get(t.id);
+    if (c) out.set(t.id, c.data);
+  }
+  return out;
+}
+const runDetailCache = new Map();
+async function activeRunDetails(active, signal) {
+  const out = new Map();
+  await Promise.all(
+    (active || []).map(async (r) => {
+      const c = runDetailCache.get(r.id);
+      let d = c && Date.now() - c.at < 20000 ? c.data : null;
+      if (!d) {
+        d = await api("GET", `/api/runs/${r.id}`, undefined, { signal })
+          .then((x) => x.detail || x)
+          .catch((e) => {
+            if (e && e.code === "ABORTED") throw e;
+            return null;
+          });
+        if (d) runDetailCache.set(r.id, { at: Date.now(), data: d });
+      }
+      if (d && d.ticket_number != null) out.set(d.ticket_number, d);
+    }),
+  );
+  return out;
+}
+
+/** How many details the overview may read (the newest first): a big club stays fast. */
+const OVERVIEW_DETAIL_CAP = 150;
+const TERMINAL = new Set(["done", "cancelled", "failed"]);
+
+/** Everything the Overview draws, read once per render. */
+async function loadMatchDay() {
+  const signal = routeSignal();
+  const opt = (p, fb) =>
+    api("GET", p, undefined, { signal }).catch((e) => {
+      if (e && (e.code === "ABORTED" || e.code === "UNAUTHORIZED")) throw e;
+      return fb;
+    });
   const [
-    { summary },
+    dash,
+    queue,
+    board,
+    cost,
+    health,
+    settings,
+    claimsRes,
+    agentsRes,
+    runsRes,
     activity,
-    ticketsRes,
-    decisionsRes,
-    costRes,
-    bouncingRes,
-    humanQueueRes,
-    healthRes,
+    decs,
+    nodes,
   ] = await Promise.all([
-    api("GET", "/api/dashboard"),
-    api("GET", "/api/activity?limit=200"),
-    // Summary rows: the overview reads status and timestamps, never the long text.
-    api("GET", "/tickets?fields=summary").catch(() => ({ tickets: [] })),
-    api("GET", "/decisions").catch(() => ({ decisions: [] })),
-    api("GET", "/api/cost").catch(() => null),
-    api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
-    api("GET", "/api/human-queue").catch(() => ({ items: [], counts: { total: 0 } })),
-    api("GET", "/api/health").catch(() => null),
+    api("GET", "/api/dashboard", undefined, { signal }),
+    opt("/api/human-queue", { items: [], counts: { total: 0 } }),
+    opt("/api/board", null),
+    opt("/api/cost", null),
+    opt("/api/health", null),
+    opt("/api/settings", null),
+    opt("/claims", { claims: [] }),
+    opt("/agents", { agents: [] }),
+    opt("/api/runs?active=1", { active: [] }),
+    opt("/api/activity?limit=200", { events: [] }),
+    opt("/decisions", { decisions: [] }),
+    opt("/scope/nodes", { nodes: [] }),
   ]);
+  const summary = dash.summary || {};
+  const claims = (claimsRes && claimsRes.claims) || [];
+  const agents = (agentsRes && agentsRes.agents) || [];
+  learnAgents(agents);
+  learnAgents(claims);
+
+  // Tickets: the board's cards carry the repo and the claim; the board covers
+  // every status (lanes + closed + won't do).
+  let tickets = [];
+  if (board) {
+    for (const c of board.columns || []) tickets.push(...(c.cards || []));
+    tickets.push(...(board.closed || []), ...(board.wontDo || []));
+  } else {
+    tickets = ((await opt("/tickets", { tickets: [] })).tickets || []).map((t) => ({
+      ...t,
+      repos: [],
+    }));
+  }
+  const seen = new Set();
+  tickets = tickets.filter((t) => (seen.has(t.id) ? false : seen.add(t.id)));
+  const byId = new Map(tickets.map((t) => [t.id, t]));
+
+  // Details for the live tickets and the most recent closed ones (capped).
+  const ranked = tickets
+    .filter((t) => t.status !== "cancelled")
+    .sort(
+      (a, b) =>
+        TERMINAL.has(a.status) - TERMINAL.has(b.status) ||
+        String(b.updated_at).localeCompare(String(a.updated_at)),
+    );
+  const detailCapped = ranked.length > OVERVIEW_DETAIL_CAP;
+  const details = await ticketDetails(ranked.slice(0, OVERVIEW_DETAIL_CAP), signal);
+  const runByTicket = await activeRunDetails((runsRes && runsRes.active) || [], signal);
+
+  const repoOf = new Map();
+  for (const t of tickets) {
+    const d = details.get(t.id);
+    const write = d?.repositories?.find((r) => r.access === "write") || d?.repositories?.[0];
+    const name = write?.name || t.repos?.[0]?.name || null;
+    if (name) repoOf.set(t.id, name);
+  }
+  learnKits([...repoOf.values()].sort());
+
+  const setting = (k) => {
+    const s = (settings?.settings || []).find((x) => x.key === k);
+    const v = s ? Number(s.effective ?? s.value) : NaN;
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+
+  // Epics: membership from each ticket's scopes; phases from in-epic dependencies.
+  const epicNodes = ((nodes && nodes.nodes) || []).filter((n) => n.type === "epic");
+  const epics = epicNodes.map((n) => ({ node: n, members: [] }));
+  const epicById = new Map(epics.map((e) => [e.node.id, e]));
+  const epicOf = new Map();
+  for (const t of tickets) {
+    for (const s of details.get(t.id)?.scopes || []) {
+      const e = epicById.get(s.id);
+      if (e) {
+        e.members.push(t);
+        if (!epicOf.has(t.id)) epicOf.set(t.id, e.node.name);
+      }
+    }
+  }
+  const factoryNode = ((nodes && nodes.nodes) || []).find((n) => n.type === "factory");
+
+  const claimByTicket = new Map(claims.map((c) => [c.ticket_id, c]));
+  for (const t of tickets) {
+    if (!claimByTicket.has(t.id) && t.claim && !t.claim.stale) {
+      claimByTicket.set(t.id, {
+        ticket_id: t.id,
+        ticket_number: t.number,
+        agent_id: t.claim.agentId,
+        agent_display_name: t.claim.agentDisplayName,
+      });
+    }
+  }
+
+  return {
+    now: Date.now(),
+    summary,
+    queue,
+    items: (queue && queue.items) || [],
+    tickets,
+    byId,
+    byNo: new Map(tickets.filter((t) => t.number != null).map((t) => [t.number, t])),
+    details,
+    detailCapped,
+    repoOf,
+    epics: epics.filter((e) => e.members.length),
+    epicOf,
+    claims,
+    claimByTicket,
+    agents,
+    runByTicket,
+    cost,
+    health,
+    budget: setting("GAFFER_DAILY_BUDGET_USD"),
+    slots: setting("GAFFER_CONCURRENCY"),
+    autoMerge: (settings?.settings || []).find((x) => x.key === "AUTO_MERGE")?.effective,
+    decisions: (decs && decs.decisions) || [],
+    events: (activity && activity.events) || [],
+    clubName: summary.club?.name || summary.clubName || factoryNode?.name || null,
+  };
+}
+
+/** The ticket a team-sheet row is about (with its current status), if any. */
+function rowTicket(f, it) {
+  return it.ticket ? f.byId.get(it.ticket.id) || it.ticket : null;
+}
+/** Did a parked ticket stop on a failing test? (the rework trail or the reason says so) */
+function parkedOnTest(f, t, reason) {
+  const trail = (t && f.details.get(t.id)?.rework_trail) || [];
+  if (trail.length) return trail[trail.length - 1].gate === "tests";
+  return /\btests?\b/i.test(reason || "");
+}
+
+/**
+ * The scoreboard's headline: one specific sentence from the queue, every clause a
+ * link to its object. "5 things need you. ■ Epic “Repeat orders” is blocked at #6
+ * by a failing test." When nothing does, it says what the squad is doing instead.
+ */
+function matchHeadline(f) {
+  const items = f.items;
+  const kind = (k) => items.filter((i) => i.kind === k);
+  const parked = kind("parked");
+  const reviews = kind("review");
+  const decisions = kind("decision");
+  const merges = kind("awaiting_merge");
+  const others = items.filter(
+    (i) => !["parked", "review", "decision", "awaiting_merge"].includes(i.kind),
+  );
+  const onPitch = f.summary.activeClaims ?? f.claims.length;
+  const slots = f.slots;
+  const today = f.cost && typeof f.cost.today_usd === "number" ? f.cost.today_usd : null;
+  const wage =
+    today == null
+      ? null
+      : f.budget
+        ? `${money(today)} of ${moneyW(f.budget)} wage bill today`
+        : `${money(today)} wage bill today`;
+  const squadLine = slots
+    ? `${onPitch} of ${slots} agents on the pitch`
+    : `${plural(onPitch, "agent")} on the pitch`;
+  const sub = [];
+  let lead;
+  if (items.length) {
+    lead = [
+      el(
+        "span",
+        { class: "hl-count" },
+        `${plural(items.length, "thing")} ${items.length === 1 ? "needs" : "need"} you.`,
+      ),
+    ];
+    for (const p of parked.slice(0, 2)) {
+      const t = rowTicket(f, p);
+      const epic = t && f.epicOf.get(t.id);
+      const test = parkedOnTest(f, t, p.reason);
+      const ref = t && t.number != null ? `#${t.number}` : "a ticket";
+      lead.push(
+        " ",
+        el("a", { class: "hl-block", href: t ? `#/ticket/${t.id}` : "#what-i-own" }, [
+          el("span", { class: "hl-nb" }, [glyph("blocked", 34), epic ? "Epic" : ref]),
+          " ",
+          epic
+            ? [el("q", {}, epic), ` is blocked at ${ref}`]
+            : t && t.status === "blocked"
+              ? "is blocked"
+              : "is parked",
+          test ? " by a failing test." : ".",
+        ]),
+      );
+    }
+    if (reviews.length) {
+      const first = rowTicket(f, reviews[0]);
+      sub.push(
+        el(
+          "a",
+          { href: first ? `#/review/${first.id}` : "#/review" },
+          `${plural(reviews.length, "diff")} ${reviews.length === 1 ? "awaits" : "await"} review`,
+        ),
+      );
+    }
+    if (decisions.length)
+      sub.push(el("a", { href: "#what-i-own" }, plural(decisions.length, "decision")));
+    for (const m of merges.slice(0, 2)) {
+      const t = rowTicket(f, m);
+      if (t) sub.push(el("a", { href: `#/ticket/${t.id}` }, `#${t.number} approved, not merged`));
+    }
+    if (merges.length > 2) sub.push(`${merges.length - 2} more approved, not merged`);
+    if (others.length)
+      sub.push(el("a", { href: "#what-i-own" }, plural(others.length, "other call")));
+    sub.push(squadLine);
+  } else {
+    lead = [el("span", { class: "hl-count" }, "Nothing needs you.")];
+    const on = f.claims
+      .map((c) => c.ticket_number)
+      .filter((n) => n != null)
+      .sort((a, b) => a - b)
+      .map((n) => "#" + n);
+    const free = slots ? Math.max(0, slots - onPitch) : null;
+    sub.push(
+      `${squadLine}${on.length ? `, on ${on.join(on.length === 2 ? " and " : ", ")}` : ""}` +
+        (free != null ? `; ${plural(free, "slot")} free` : ""),
+    );
+  }
+  if (f.summary.staleClaims > 0)
+    sub.push(
+      el("a", { href: "#/work" }, `${plural(f.summary.staleClaims, "stale claim")} (no heartbeat)`),
+    );
+  if (wage) sub.push(wage);
+  return { lead, sub };
+}
+
+/**
+ * The stadium scoreboard: the headline sentence plus four counters (need you ·
+ * on the pitch against the slots · delivered today · the wage bill against the
+ * daily budget). Full-bleed and always dark; the digits flip once on arrival.
+ */
+function overviewScoreboard(f) {
+  const { lead, sub } = matchHeadline(f);
+  const total = f.items.length;
+  const onPitch = f.summary.activeClaims ?? f.claims.length;
+  const today = f.cost && typeof f.cost.today_usd === "number" ? f.cost.today_usd : null;
+  const subP = el("p", { class: "hl-sub" });
+  sub.forEach((c, i) => {
+    if (i) subP.appendChild(el("span", { class: "sep", "aria-hidden": "true" }, " · "));
+    subP.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  });
+  const chain = f.health?.event_log;
+  const logStatus =
+    chain?.chain_ok === false
+      ? `Ledger: event log ALTERED at seq ${chain.broken_at_seq} — see Health`
+      : chain?.chain_ok === true
+        ? `Ledger: event log intact (${chain.events} events)`
+        : null;
+  const nowIso = new Date(f.now).toISOString();
+  return el("section", { class: "scoreboard bleed", "aria-label": "Scoreboard" }, [
+    el("div", { class: "scoreboard-in" }, [
+      el("div", { class: "sb-main" }, [el("h1", { class: "hl" }, lead), subP]),
+      el("div", { class: "sb-side" }, [
+        el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Today" }, [
+          statCell({
+            label: "Need you",
+            value: String(total).padStart(2, "0"),
+            needs: total > 0,
+            href: "#what-i-own",
+            flip: "needs",
+            title: `${total} waiting for you`,
+          }),
+          statCell({
+            label: "On the pitch",
+            value: f.slots ? `${onPitch}/${f.slots}` : String(onPitch),
+            href: "#tactics",
+            flip: "pitch",
+            title: f.slots
+              ? `${onPitch} of ${f.slots} agent slots working`
+              : `${onPitch} agents working`,
+          }),
+          statCell({
+            label: "Delivered today",
+            value: String(f.summary.deliveredToday ?? 0).padStart(2, "0"),
+            href: "#/work?status=done",
+            flip: "delivered",
+          }),
+          statCell({
+            label: "Wage bill",
+            value: today == null ? "—" : money(today),
+            flip: "wage",
+            title: "API-equivalent spend today, from the usage ledger",
+            after:
+              today != null && f.budget
+                ? el("div", { class: "sc-band" }, [
+                    band(
+                      today,
+                      f.budget,
+                      `${money(today)} of the ${moneyW(f.budget)} daily budget (${Math.round((today / f.budget) * 100)}%)`,
+                    ),
+                    el("span", { class: "kpi-sub" }, `of ${moneyW(f.budget)} today`),
+                  ])
+                : el("span", { class: "kpi-sub" }, "today, API-equivalent"),
+          }),
+        ]),
+      ]),
+      // The board's small print, top right: when it was read and the ledger's
+      // integrity (an altered log reads red and bold).
+      el("div", { class: "sb-small" }, [
+        el(
+          "time",
+          { class: "sb-clock", datetime: nowIso },
+          `${fmtDay(nowIso)} · ${clockTime(f.now)}`,
+        ),
+        logStatus
+          ? el("p", { class: `view-hero-status${chain?.chain_ok !== false ? " ok" : ""}` }, [
+              chain?.chain_ok !== false ? glyph("done", 14) : glyph("failed", 14),
+              el("span", {}, logStatus),
+            ])
+          : null,
+      ]),
+    ]),
+  ]);
+}
+
+// --- The Team Sheet: what needs you, ranked, each with one real action -------
+
+/** The verb on each row. Every one is a real button or link (never a decoration). */
+const OWN_VERB = {
+  review: "Review",
+  decision: "Answer…",
+  parked: "Unblock…",
+  awaiting_merge: "Merge…",
+  ready_approval: "Approve…",
+  reviewer_assignment: "Assign…",
+  dependency_cancelled: "Re-plan…",
+};
+/** The word each kind of row leads with (the referee's call, not the queue's jargon). */
+const OWN_WORD = {
+  parked: "Blocked",
+  decision: "Decision",
+  review: "Review sign-off",
+  awaiting_merge: "Approved, not merged",
+};
+const OWN_GLYPH = {
+  review: "in_review",
+  decision: "decision",
+  parked: "blocked",
+  awaiting_merge: "ready_for_merge",
+  ready_approval: "ready",
+  dependency_cancelled: "cancelled",
+};
+
+function whatIOwnPanel(queue, f) {
+  const items = (queue && queue.items) || [];
+  const total = (queue && queue.counts && queue.counts.total) || items.length;
+  const card = el(
+    "section",
+    { class: "card what-i-own", id: "what-i-own", "aria-label": "Team sheet" },
+    [
+      panelHead("Team sheet", items.length ? `needs you · ${total}` : null, null, {
+        kit: "claret",
+      }),
+    ],
+  );
+  if (!items.length) {
+    // Nothing needs you: say so, then the one thing a gaffer can do with a quiet
+    // hour (the bench: drafts and refining tickets wait for criteria), when any.
+    const bench = f ? f.tickets.filter((t) => ON_BENCH.has(t.status)) : [];
+    const drafts = bench.filter((t) => t.status === "draft").length;
+    card.appendChild(
+      el("div", { class: "empty-state" }, [
+        el(
+          "p",
+          { class: "es-title" },
+          "Nothing needs you. Every ticket in play is with an agent or the queue.",
+        ),
+        bench.length
+          ? el("p", { class: "es-sub" }, [
+              `On the bench: ${[drafts ? `${drafts} draft` : "", bench.length - drafts ? `${bench.length - drafts} refining` : ""].filter(Boolean).join(", ")}. `,
+              el("a", { href: "#/work?status=draft" }, "Pick one to sharpen"),
+              " and it joins the fixtures.",
+            ])
+          : null,
+      ]),
+    );
+    return card;
+  }
+  const well = el("ol", { class: "own-well" });
+  items.forEach((it, i) => well.appendChild(el("li", {}, renderOwnedItem(it, i, f))));
+  card.appendChild(well);
+  return card;
+}
+
+/** The one action a row offers: a real button (a sheet that acts) or a real link. */
+function ownAction(it, primary, f) {
+  const t = it.ticket;
+  const cls = `btn own-act${primary ? " primary" : ""}`;
+  const verb = OWN_VERB[it.kind] || "Open";
+  const ref = t && t.number != null ? ` #${t.number}` : "";
+  const label = `${verb.replace("…", "")}${ref}`;
+  switch (it.kind) {
+    case "parked":
+      return t
+        ? el(
+            "button",
+            { class: cls, type: "button", "aria-label": label, onclick: () => unblockSheet(t, it) },
+            verb,
+          )
+        : null;
+    case "decision":
+      return it.decisionId
+        ? el(
+            "button",
+            {
+              class: cls,
+              type: "button",
+              "aria-label": `Answer: ${decisionTitle(it, f)}`,
+              onclick: () => answerSheet(it, f),
+            },
+            verb,
+          )
+        : null;
+    case "awaiting_merge":
+      return t
+        ? el(
+            "button",
+            { class: cls, type: "button", "aria-label": label, onclick: () => mergeSheet(t) },
+            verb,
+          )
+        : null;
+    case "ready_approval":
+      return t
+        ? el(
+            "button",
+            {
+              class: cls,
+              type: "button",
+              "aria-label": label,
+              onclick: () => readyApprovalSheet(t, it),
+            },
+            verb,
+          )
+        : null;
+    case "review":
+      return t
+        ? el("a", { class: cls, href: `#/review/${t.id}`, "aria-label": label }, verb)
+        : null;
+    default:
+      return t
+        ? el("a", { class: cls, href: `#/ticket/${t.id}`, "aria-label": label }, verb)
+        : null;
+  }
+}
+/** How long a team-sheet row has waited, in words a programme would print: "9 h 16 min". */
+function fmtWait(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return "under a minute";
+  if (min < 60) return `${min} min`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} h ${min % 60} min`;
+  const day = Math.floor(hr / 24);
+  return `${day} ${day === 1 ? "day" : "days"} ${hr % 24} h`;
+}
+
+/** A decision's question: its title from /decisions (the reason is the detail). */
+function decisionTitle(it, f) {
+  const d = f && f.decisions.find((x) => x.id === it.decisionId);
+  return (d && d.title) || it.title || it.reason || "Decision";
+}
+
+/** One team-sheet row: rank · card · kind · #ref, the title (a link), the reason, the wait, the action. */
+function renderOwnedItem(it, i = 0, f = null) {
+  const t = it.ticket;
+  const ref = t ? (t.number != null ? `#${t.number}` : t.id.slice(0, 8)) : null;
+  const href = t ? (it.kind === "review" ? `#/review/${t.id}` : `#/ticket/${t.id}`) : null;
+  const title = t && t.title ? t.title : it.kind === "decision" ? decisionTitle(it, f) : null;
+  const reason = it.reason || "(no reason given)";
+  return el("div", { class: `own-row own-row--${it.kind}`, dataset: { kind: it.kind } }, [
+    el("span", { class: "own-rank", "aria-hidden": "true" }, String(i + 1)),
+    el("div", { class: "own-body" }, [
+      el("p", { class: "own-head" }, [
+        el("span", { class: `own-kind own-kind--${it.kind}` }, [
+          ycard(16, "ycard-row"),
+          OWN_GLYPH[it.kind] ? glyph(OWN_GLYPH[it.kind], 16) : null,
+          OWN_WORD[it.kind] || it.label,
+        ]),
+        ref ? el("span", { class: "own-ref" }, ref) : null,
+      ]),
+      title ? el("p", { class: "own-title" }, href ? el("a", { href }, title) : title) : null,
+      // A decision's reason IS its question text; the title above is its headline.
+      el("p", { class: "own-reason" }, reason),
+      el("p", { class: "own-meta" }, [
+        el(
+          "span",
+          { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
+          `Waited ${fmtWait(it.waitedMs)}`,
+        ),
+        // The server's structured code and its advice, as the referee's notebook:
+        // one group, so the advice never wraps onto a line of its own.
+        it.reasonCode != null || it.suggestedAction
+          ? el("span", { class: "own-note" }, [
+              it.reasonCode != null
+                ? el(
+                    "span",
+                    { class: "own-code", title: "The server's reason code" },
+                    it.reasonCode,
+                  )
+                : null,
+              it.reasonCode != null && it.suggestedAction ? "\u00a0\u00a0" : null,
+              it.suggestedAction
+                ? el(
+                    "span",
+                    { class: "own-action", title: "What the server suggests" },
+                    `→\u00a0${it.suggestedAction}`,
+                  )
+                : null,
+            ])
+          : null,
+      ]),
+    ]),
+    el("div", { class: "own-cta" }, ownAction(it, i === 0, f)),
+  ]);
+}
+
+/** A bottom sheet / side panel with a short intro, a form and its actions. */
+function actionSheet(title, { intro, body, actions, focus }) {
+  openSheet(
+    title,
+    el("div", { class: "act-sheet" }, [
+      intro ? el("p", { class: "act-intro" }, intro) : null,
+      body || null,
+      el("div", { class: "btn-row act-actions" }, actions),
+    ]),
+    { focus },
+  );
+}
+
+/** The ticket a sheet acts on, named at its top: glyph, number and title. */
+function sheetTicket(t) {
+  if (!t) return null;
+  return el("p", { class: "rs-ticket" }, [
+    t.status ? glyph(t.status, 16, statusLabel(t.status)) : null,
+    t.number != null ? el("b", { class: "rs-num tabnum" }, `#${t.number}`) : null,
+    t.title ? el("span", { class: "rs-title" }, t.title) : null,
+  ]);
+}
+
+/**
+ * The one place a reason is collected: Send back, Won't do, a tester's verdict, Stop,
+ * a repo ruled off the boundary. It opens in the shared sheet (side panel at desktop,
+ * bottom sheet on a phone), so it wears the kit in both themes, traps focus, gives
+ * focus back to its trigger on Cancel or Esc, and closes when the route changes.
+ *
+ *   title    names the act and the ticket ("Send #15 back")
+ *   ticket   the ticket it acts on (shown under the title), or null
+ *   intro    what happens when you confirm, from what the server does
+ *   presets  quick reasons: a tap fills the box (one-handed on a phone)
+ *   required when true the confirm stays disabled until there is a reason, and
+ *            the submit re-checks (a reason is REQUIRED for these endpoints)
+ *   confirm  the button word, the same verb as the button that opened it
+ *   tone     "primary" or "danger"
+ *   capture  offer "also capture as a lore draft" (Review's send back / won't do)
+ *   onConfirm(reason, captureLore) does the work; the sheet closes when it
+ *            resolves and stays open (reason kept) when it throws.
+ *
+ * Hooks: `.reject-dialog` (the form), `.reject-chip`, `.reject-reason-input`,
+ * `.reject-dialog-actions .reject-submit`, `.reject-capture-cb`.
+ */
+function reasonSheet({
+  title,
+  ticket = null,
+  intro,
+  label = "Reason",
+  hint,
+  presets = [],
+  placeholder,
+  required = true,
+  confirm,
+  tone = "primary",
+  capture = false,
+  onConfirm,
+}) {
+  const hintId = `rs-hint-${++fieldSeq}`;
+  const input = el("textarea", {
+    class: "reject-reason-input",
+    name: "reason",
+    rows: 4,
+    maxlength: "20000",
+    placeholder: placeholder || null,
+    required: required ? "" : null,
+    "aria-describedby": hintId,
+  });
+  const chips = presets.length
+    ? el(
+        "div",
+        { class: "reject-chips", role: "group", "aria-label": "Quick reasons" },
+        presets.map((text) =>
+          el(
+            "button",
+            {
+              class: "chip reject-chip",
+              type: "button",
+              "aria-pressed": "false",
+              onclick: () => {
+                input.value = text;
+                sync();
+                input.focus();
+              },
+            },
+            text,
+          ),
+        ),
+      )
+    : null;
+  const submit = el(
+    "button",
+    {
+      class: `btn ${tone === "danger" ? "danger" : "primary"} reject-submit`,
+      type: "submit",
+      // aria-disabled, not disabled: the confirm stays focusable and, pressed with an
+      // empty box, says why instead of doing nothing silently.
+      "aria-disabled": required ? "true" : null,
+    },
+    confirm,
+  );
+  const captureBox = capture
+    ? el("input", { type: "checkbox", class: "reject-capture-cb", name: "capture" })
+    : null;
+  const hintText =
+    hint ||
+    (required
+      ? "Required. It is kept on the ticket."
+      : "Optional. It is kept on the ticket if you write one.");
+  const hintEl = el("p", { class: "act-hint", id: hintId }, hintText);
+  const form = el(
+    "form",
+    {
+      class: "act-sheet reject-dialog",
+      novalidate: "",
+      onsubmit: (e) => {
+        e.preventDefault();
+        void send();
+      },
+    },
+    [
+      sheetTicket(ticket),
+      intro ? el("p", { class: "act-intro" }, intro) : null,
+      chips,
+      field(label, input),
+      hintEl,
+      captureBox
+        ? el("label", { class: "reject-capture" }, [
+            captureBox,
+            el("span", {}, [
+              el("b", {}, "Also file it as a lore draft. "),
+              "It waits in the memory review queue for you; it is never approved on its own.",
+            ]),
+          ])
+        : null,
+      el("div", { class: "btn-row act-actions reject-dialog-actions" }, [
+        submit,
+        el("button", { class: "btn", type: "button", onclick: () => closeSheet() }, "Cancel"),
+      ]),
+    ],
+  );
+  function sync() {
+    const v = input.value.trim();
+    if (required) submit.setAttribute("aria-disabled", String(!v));
+    input.removeAttribute("aria-invalid");
+    hintEl.classList.remove("is-error");
+    hintEl.textContent = hintText;
+    if (chips)
+      for (const c of chips.children)
+        c.setAttribute("aria-pressed", String(c.textContent === input.value));
+  }
+  let busy = false;
+  async function send() {
+    if (busy) return;
+    const reason = input.value.trim();
+    // Backstop the invariant even if the disabled state were bypassed.
+    if (required && !reason) {
+      input.setAttribute("aria-invalid", "true");
+      hintEl.classList.add("is-error");
+      hintEl.textContent = `Write a reason first: ${confirm} needs one.`;
+      input.focus();
+      return;
+    }
+    busy = true;
+    submit.setAttribute("aria-disabled", "true");
+    submit.setAttribute("aria-busy", "true");
+    try {
+      await onConfirm(reason, captureBox ? captureBox.checked : false);
+      // Close only if this form is still what the sheet shows.
+      if (form.isConnected && sheetOpen()) closeSheet();
+    } catch (e) {
+      if (!e || e.code !== "ABORTED")
+        toast((e && e.message) || "That did not go through.", { code: e && e.code });
+      submit.setAttribute("aria-disabled", String(required && !input.value.trim()));
+    } finally {
+      busy = false;
+      submit.removeAttribute("aria-busy");
+    }
+  }
+  input.addEventListener("input", sync);
+  // Ctrl/Cmd+Enter sends from the box (Enter alone is a new line).
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void send();
+    }
+  });
+  openSheet(title, form, { focus: input });
+  return form;
+}
+
+/** Unblock: move a blocked ticket back to Ready (another go) or Refining (rewrite first). */
+function unblockSheet(t, it = {}) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  const opt = (value, word, rest, checked) =>
+    el("label", {}, [
+      el("input", { type: "radio", name: "unblock-to", value, checked: checked ? "" : null }),
+      el("span", {}, [el("b", {}, word), ` ${rest}`]),
+    ]);
+  const choice = el("fieldset", { class: "choice" }, [
+    el("legend", {}, `Move ${ref} to`),
+    opt(
+      "ready",
+      "Ready",
+      "— an agent claims it and delivers again, with a fresh set of attempts.",
+      true,
+    ),
+    opt(
+      "refining",
+      "Refining",
+      "— it comes back to you to rewrite the ticket or its criteria first.",
+    ),
+  ]);
+  const go = el(
+    "button",
+    {
+      class: "btn primary",
+      type: "button",
+      onclick: () =>
+        guard(async () => {
+          const to = choice.querySelector("input:checked")?.value || "ready";
+          await api("POST", `/tickets/${t.id}/move`, { to });
+          closeSheet();
+          toast(`Unblocked ${ref}: it is ${statusLabel(to)} now.`, { ok: true });
+          router();
+        }),
+    },
+    "Unblock",
+  );
+  actionSheet(`Unblock ${ref}`, {
+    intro: [it.reason ? `Parked: ${it.reason}` : "This ticket is blocked."].join(" "),
+    body: el("div", {}, [
+      choice,
+      el("p", { class: "act-hint" }, [
+        "To brief the next attempt, add or sharpen an acceptance criterion on ",
+        el("a", { href: `#/ticket/${t.id}`, onclick: closeSheet }, `the ticket page`),
+        " first.",
+      ]),
+    ]),
+    actions: [go, el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel")],
+  });
+}
+
+/** Answer a decision the agents are waiting on (resolves it as accepted, with your answer). */
+function answerSheet(it, f) {
+  const d = (f && f.decisions.find((x) => x.id === it.decisionId)) || {};
+  const answer = el("textarea", { rows: 4, name: "answer", required: "" });
+  const rationale = el("input", { type: "text", name: "rationale" });
+  const resolve = (status) =>
+    guard(async () => {
+      if (status === "accepted" && !answer.value.trim()) {
+        answer.setAttribute("aria-invalid", "true");
+        answer.focus();
+        toast("Write an answer first.");
+        return;
+      }
+      const body = { status };
+      if (answer.value.trim()) body.answer = answer.value.trim();
+      if (rationale.value.trim()) body.rationale = rationale.value.trim();
+      await api("POST", `/decisions/${it.decisionId}/resolve`, body);
+      closeSheet();
+      toast(status === "accepted" ? "Answered. Agents read it next time." : "Question rejected.", {
+        ok: true,
+      });
+      router();
+    });
+  actionSheet(d.title || "Answer the decision", {
+    intro: d.question || it.reason,
+    body: el("div", { class: "stack" }, [
+      field("Your answer", answer),
+      field("Why (optional)", rationale),
+    ]),
+    actions: [
+      el(
+        "button",
+        { class: "btn primary", type: "button", onclick: () => resolve("accepted") },
+        "Answer",
+      ),
+      el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+      el(
+        "button",
+        { class: "btn danger", type: "button", onclick: () => resolve("rejected") },
+        "Reject the question",
+      ),
+    ],
+  });
+}
+
+/** Merge an approved branch (the merge runner), or record that you merged it by hand. */
+function mergeSheet(t) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  actionSheet(`Merge ${ref}`, {
+    intro:
+      "It is approved, but its delivery branch has not merged. Merge runs the merge runner on the branch; the board updates when it lands.",
+    actions: [
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/merge`);
+              closeSheet();
+              toast(`Merge started for ${ref}.`, { ok: true });
+              router();
+            }),
+        },
+        "Merge",
+      ),
+      el(
+        "button",
+        {
+          class: "btn",
+          type: "button",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/mark-merged`);
+              closeSheet();
+              toast(`${ref} marked merged.`, { ok: true });
+              router();
+            }),
+        },
+        "I merged it by hand",
+      ),
+      el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+    ],
+  });
+}
+
+/** Regulated tickets: the ready-approval a human must give before the queue takes it. */
+function readyApprovalSheet(t, it) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  actionSheet(`Approve ${ref} for the queue`, {
+    intro: it.reason,
+    actions: [
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/ready-approval`);
+              closeSheet();
+              toast(`${ref} approved for the queue.`, { ok: true });
+              router();
+            }),
+        },
+        "Approve",
+      ),
+      el("a", { class: "btn", href: `#/ticket/${t.id}`, onclick: closeSheet }, "Open the ticket"),
+    ],
+  });
+}
+
+// --- The Tactics Board -------------------------------------------------------
+
+/**
+ * Which repos get a channel: those with tickets in play or done. The busiest get
+ * a channel (in play counts most); the channels then run from the wing with the
+ * club's biggest squad (most tickets) to the smallest, as the comp draws them, so
+ * a repo keeps its channel while its tickets move.
+ */
+function pitchChannels(f) {
+  const score = new Map();
+  const size = new Map();
+  for (const t of f.tickets) {
+    const r = f.repoOf.get(t.id);
+    if (!r || t.status === "cancelled") continue;
+    size.set(r, (size.get(r) || 0) + 1);
+    if (ON_PITCH.has(t.status)) score.set(r, (score.get(r) || 0) + 10);
+    else if (t.status === "done") score.set(r, (score.get(r) || 0) + 1);
+  }
+  const bySize = (a, b) => size.get(b) - size.get(a) || a.localeCompare(b);
+  const all = [...score.keys()].sort((a, b) => score.get(b) - score.get(a) || a.localeCompare(b));
+  if (all.length <= PITCH_MAX_CHANNELS) return { channels: all.sort(bySize), other: null };
+  const keep = all.slice(0, PITCH_MAX_CHANNELS - 1).sort(bySize);
+  return { channels: [...keep, "Other repos"], other: new Set(all.slice(PITCH_MAX_CHANNELS - 1)) };
+}
+
+/** The window the chalk arrows cover: the last 3 hours, or the 3 before the last move. */
+function arrowWindow(f) {
+  let last = 0;
+  for (const e of f.events) {
+    if (e.event_type === "ticket.transitioned")
+      last = Math.max(last, Date.parse(e.created_at) || 0);
+  }
+  const recent = last && f.now - last < ARROW_WINDOW_MS;
+  const end = recent || !last ? f.now : last;
+  return { start: end - ARROW_WINDOW_MS, end, recent: recent || !last };
+}
+
+/**
+ * The tactics board drawing (ported from the approved comp's layout engine).
+ * x is the lifecycle stage, y the repo channel. Every label keeps a pixel floor
+ * at the size it is seen (k = viewBox units per CSS px); tags and arrows are laid
+ * out at those sizes, so nothing collides.
+ */
+const PITCH_VW = { landscape: 14 + 1050 + 104, portrait: 14 + 680 + 14 };
+function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
+  const P = orientation === "portrait";
+  const { channels, other } = pitchChannels(f);
+  const chanOf = (t) => {
+    const r = f.repoOf.get(t.id);
+    if (!r) return null;
+    if (other && other.has(r)) return "Other repos";
+    return channels.includes(r) ? r : null;
+  };
+  const NC = Math.max(1, channels.length);
+  const L = 1050,
+    W = 680,
+    CH = W / NC;
+  const fz = (design, floor = 12.5) => Math.max(design, floor * k);
+  // Portrait leaves room under the kits for each channel's repo name (2 lines).
+  const M = P
+    ? { l: 14, t: 124, r: 14, b: 70 + Math.ceil(2 * fz(17) * 1.15) + 6 }
+    : { l: 14, t: 58, r: 104, b: 14 };
+  const VW = P ? M.l + W + M.r : M.l + L + M.r,
+    VH = P ? M.t + L + M.b : M.t + W + M.b;
+  const T = (px, py) => (P ? [M.l + py, M.t + (L - px)] : [M.l + px, M.t + py]);
+  const R = P ? 25 : 19,
+    SH = P ? 56 : 46;
+  const pxs = (n) => ({ fontSize: n.toFixed(2) + "px" });
+  const FS = {
+    zl: fz(P ? 24 : 18, 12.5),
+    cl: fz(17, 12.5),
+    disc: fz(P ? 28 : 22, 14),
+    tally: fz(P ? 28 : 22, 14),
+    tag: fz(P ? 26 : 16, 13),
+    shirt: fz(P ? 22 : 17, 12.5),
+  };
+  const rect = (x0, y0, x1, y1, a) => {
+    const [ax, ay] = T(x0, y0),
+      [bx, by] = T(x1, y1);
+    return svgS("rect", {
+      x: Math.min(ax, bx),
+      y: Math.min(ay, by),
+      width: Math.abs(bx - ax),
+      height: Math.abs(by - ay),
+      ...a,
+    });
+  };
+  const line = (x0, y0, x1, y1, a) => {
+    const [ax, ay] = T(x0, y0),
+      [bx, by] = T(x1, y1);
+    return svgS("line", { x1: ax, y1: ay, x2: bx, y2: by, ...a });
+  };
+  const arc = (cx, cy, r, a0, a1, a) => {
+    const pts = [];
+    for (let i = 0; i <= 40; i++) {
+      const t = a0 + ((a1 - a0) * i) / 40;
+      pts.push(T(cx + r * Math.cos(t), cy + r * Math.sin(t)).join(","));
+    }
+    return svgS("polyline", { points: pts.join(" "), fill: "none", ...a });
+  };
+  const obs = [];
+  const box = (x0, y0, x1, y1, why) => {
+    const b = { x0, y0, x1, y1, why };
+    obs.push(b);
+    return b;
+  };
+  const tid = `pitch-t-${orientation}-${++svgUid}`;
+  const svg = svgS(
+    "svg",
+    {
+      viewBox: `0 0 ${VW} ${VH}`,
+      class: `pitch pitch-${orientation}`,
+      role: "group",
+      "aria-labelledby": tid,
+    },
+    svgS(
+      "title",
+      { id: tid },
+      "Tactics board: every ticket in play, placed by stage (towards goal) and repo (channel). Agents are the shirts.",
+    ),
+  );
+  const turf = svgS("g", { class: "turf" });
+  PITCH_ZONES.forEach((z, i) =>
+    turf.append(rect(z.x0, 0, z.x1, W, { class: i % 2 ? "mow-b" : "mow-a" })),
+  );
+  svg.append(turf);
+  const chalk = svgS("g", { class: "chalk" });
+  chalk.append(
+    rect(0, 0, L, W, { fill: "none" }),
+    line(525, 0, 525, W),
+    arc(525, 340, 91.5, 0, Math.PI * 2),
+    rect(0, 138.4, 165, 541.6, { fill: "none" }),
+    rect(885, 138.4, 1050, 541.6, { fill: "none" }),
+    rect(0, 248.4, 55, 431.6, { fill: "none" }),
+    rect(995, 248.4, 1050, 431.6, { fill: "none" }),
+    arc(110, 340, 91.5, -0.93, 0.93),
+    arc(940, 340, 91.5, Math.PI - 0.93, Math.PI + 0.93),
+  );
+  for (const cx of [110, 525, 940]) {
+    const [x, y] = T(cx, 340);
+    chalk.append(svgS("circle", { cx: x, cy: y, r: 3.5, class: "spot" }));
+  }
+  chalk.append(rect(1050, 303.4, 1078, 376.6, { class: "goal" }));
+  for (let j = 0; j < 6; j++)
+    chalk.append(line(1050 + j * 5, 303.4, 1050 + j * 5, 376.6, { class: "net" }));
+  svg.append(chalk);
+  const guides = svgS("g", { class: "guides" });
+  for (let c = 1; c < NC; c++) guides.append(line(0, c * CH, L, c * CH, { class: "lane-guide" }));
+  svg.append(guides);
+
+  const labels = svgS("g", { class: "zone-labels", "aria-hidden": "true" });
+  for (const z of PITCH_ZONES) {
+    const mid = (z.x0 + z.x1) / 2,
+      w = textWidth(z.label, FS.zl, 0.1);
+    if (P) {
+      // The stage name sits in the band's corner; when the first channel has
+      // players there it moves to the far corner, so no shirt covers it.
+      const busy = (r) => f.tickets.some((t) => t.status === z.key && chanOf(t) === r);
+      const right = busy(channels[0]) && !busy(channels[channels.length - 1]);
+      const [x0, y] = T(z.x1, 0),
+        [x1] = T(z.x1, W);
+      labels.append(
+        svgS(
+          "text",
+          {
+            x: right ? x1 - 8 : x0 + 8,
+            y: y + 8 + FS.zl,
+            "text-anchor": right ? "end" : null,
+            class: `zl ${PITCH_ZONES.indexOf(z) % 2 ? "halo-b" : "halo-a"}`,
+            style: pxs(FS.zl),
+          },
+          z.label,
+        ),
+      );
+      if (right) box(x1 - 12 - w, y + 4, x1 - 4, y + 14 + FS.zl, "zl");
+      else box(x0 + 4, y + 4, x0 + 12 + w, y + 14 + FS.zl, "zl");
+    } else {
+      const [x, y] = T(mid, 0);
+      labels.append(
+        svgS(
+          "text",
+          { x, y: y - 16, "text-anchor": "middle", class: "zl", style: pxs(FS.zl) },
+          z.label,
+        ),
+      );
+    }
+  }
+  {
+    const [gx, gy] = P ? T(L, W / 2) : T(L, 0);
+    const cx = P ? gx : gx + 52,
+      by = P ? 8 : gy - 46,
+      h = FS.zl + 14,
+      w = textWidth("DONE", FS.zl, 0.08) + 22;
+    labels.append(
+      svgS("rect", { x: cx - w / 2, y: by, width: w, height: h, rx: 3, class: "zl-plaque" }),
+      svgS(
+        "text",
+        {
+          x: cx,
+          y: by + h / 2 + FS.zl * 0.36,
+          "text-anchor": "middle",
+          class: "zl zl-goal",
+          style: pxs(FS.zl),
+        },
+        "Done",
+      ),
+    );
+    box(cx - w / 2, by, cx + w / 2, by + h, "done");
+  }
+  const kits = svgS("g", { class: "channel-kits", "aria-hidden": "true" });
+  channels.forEach((r, c) => {
+    const ks = P ? 40 : 30,
+      kt = kitShirt(r, ks);
+    const [x, y] = P ? T(0, (c + 0.5) * CH) : T(8, c * CH + 8);
+    const kx = P ? x - 20 : x,
+      ky = P ? y + 14 : y;
+    kt.setAttribute("x", kx);
+    kt.setAttribute("y", ky);
+    kt.classList.add("kit-chalk");
+    kits.append(kt);
+    box(kx, ky, kx + ks, ky + ks, "kit");
+    if (P) {
+      // A phone has no room beside the kit: the name sits under it, wrapped.
+      const lines = wrapLabel(r, FS.cl, CH - 10, 2);
+      lines.forEach((ln, i) =>
+        kits.append(
+          svgS(
+            "text",
+            {
+              x,
+              y: ky + ks + 6 + FS.cl * (0.9 + i * 1.15),
+              "text-anchor": "middle",
+              class: "cl cl-p",
+              style: pxs(FS.cl),
+            },
+            ln,
+          ),
+        ),
+      );
+    } else {
+      // A turf patch under the name, so a chalk line it sits on (the box's
+      // edge) never strikes it through.
+      const by = y + 15 + FS.cl * 0.4,
+        [zx] = T(PITCH_ZONES[0].x1, 0);
+      kits.append(
+        svgS("rect", {
+          x: x + 33,
+          y: by - FS.cl * 0.82,
+          width: Math.max(0, Math.min(textWidth(r, FS.cl) + 6, zx - x - 33)),
+          height: FS.cl * 1.08,
+          class: "mow-a",
+        }),
+        svgS("text", { x: x + 36, y: by, class: "cl halo-a", style: pxs(FS.cl) }, r),
+      );
+      box(x + 34, y + 2, x + 38 + textWidth(r, FS.cl), y + 22 + FS.cl * 0.4, "cl");
+    }
+  });
+
+  const cells = new Map();
+  const inPlay = f.tickets.filter((t) => ON_PITCH.has(t.status) && chanOf(t));
+  for (const t of inPlay.sort((a, b) => (a.number || 0) - (b.number || 0))) {
+    const key = t.status + "|" + chanOf(t);
+    (cells.get(key) || cells.set(key, []).get(key)).push(t);
+  }
+  const claimOf = (t) => f.claimByTicket.get(t.id);
+  const pos = new Map();
+  for (const [key, list] of cells) {
+    const [st, repo] = key.split("|");
+    const z = PITCH_ZONES.find((x) => x.key === st),
+      c = channels.indexOf(repo);
+    const withAgent = list.some((t) => claimOf(t));
+    // A crowded cell packs tighter, then wraps into a second row.
+    const zoneW = z.x1 - z.x0;
+    const step0 = withAgent ? SH + (P ? 30 : 24) : 2.2 * R + (P ? 4 : 10);
+    // A phone's channel is narrow: counters squeeze side by side down to a
+    // shirt's width apart before they wrap, so a shirt never sits on the disc
+    // (and its ticket number) of the counter beside it.
+    const span = P ? CH - 8 : zoneW,
+      minStep = P ? (withAgent ? SH + 6 : 2 * R + 6) : step0;
+    const perRow = Math.max(1, Math.floor(span / minStep));
+    const rows = Math.ceil(list.length / perRow);
+    const step = P ? Math.min(step0, span / Math.min(perRow, list.length)) : step0;
+    // Wrapped rows on a phone stagger across the channel, and sit a full
+    // counter apart when the stagger alone cannot clear a shirt.
+    const stagger = P && rows > 1 ? (perRow > 1 ? step / 2 : Math.min(SH + 6, span - SH)) : 0;
+    const rowStep = P ? (withAgent && stagger < SH ? SH + R : 2.4 * R) : 0;
+    list.forEach((t, i) => {
+      const row = Math.floor(i / perRow),
+        col = i % perRow;
+      const inRow = Math.min(perRow, list.length - row * perRow);
+      let qx = (z.x0 + z.x1) / 2,
+        qy = (c + 0.5) * CH;
+      const off = (col - (inRow - 1) / 2) * step + (row % 2 ? 0.5 : -0.5) * stagger;
+      const roff = (row - (rows - 1) / 2) * (P ? rowStep : Math.min(CH / rows, 2.4 * R));
+      if (P) {
+        qy += off;
+        qx += roff;
+      } else {
+        qx += off;
+        qy += roff;
+      }
+      if (claimOf(t) && !P) qy += 14;
+      if (claimOf(t) && P) qx -= 30;
+      pos.set(t.id, [qx, qy]);
+    });
+  }
+  const zoneCentre = (st, repo) => {
+    const z = PITCH_ZONES.find((x) => x.key === st);
+    return z ? [(z.x0 + z.x1) / 2, (channels.indexOf(repo) + 0.5) * CH] : null;
+  };
+  const needs = new Set(f.items.map((i) => i.ticket?.id).filter(Boolean));
+  const win = arrowWindow(f);
+  // On a phone the shirt sits a touch higher, so its hem clears the ticket number.
+  const shirtTop = (y) => y - R - SH * 0.925 + (P ? 3 : 9);
+  const geo = new Map();
+  for (const t of inPlay) {
+    const [x, y] = T(...pos.get(t.id));
+    const g = { x, y, circles: [{ x, y, r: R + 6 }] };
+    box(x - R, y - R, x + R, y + R + 3, "disc");
+    if (claimOf(t)) {
+      const top = shirtTop(y);
+      g.shirt = { top };
+      g.circles.push({ x, y: top + SH * 0.52, r: SH * 0.5 + 8 });
+      box(x - SH / 2, top + SH * 0.08, x + SH / 2, y, "shirt");
+    }
+    geo.set(t.id, g);
+  }
+
+  const net = svgS("g", { class: "net-tally" });
+  const ballAt = new Map();
+  channels.forEach((r, c) => {
+    const done = f.tickets
+      .filter((t) => t.status === "done" && chanOf(t) === r)
+      .map((t) => t.number)
+      .sort((a, b) => a - b);
+    const [x, y] = T(L, (c + 0.5) * CH);
+    const gx = P ? x : x + 52,
+      gy = P ? M.t - 64 : y - 10,
+      br = P ? 15 : 12;
+    const g = svgS(
+      "g",
+      { transform: `translate(${gx} ${gy})`, class: "tally" },
+      svgS(
+        "title",
+        {},
+        `${r}: ${done.length} done${done.length ? ` (${done.map((n) => "#" + n).join(", ")})` : ""}`,
+      ),
+    );
+    g.append(pitchBall(br));
+    const nw = textWidth(String(done.length), FS.tally);
+    if (P)
+      g.append(
+        svgS(
+          "text",
+          { x: br + 6, y: FS.tally * 0.36, class: "tally-n", style: pxs(FS.tally) },
+          String(done.length),
+        ),
+      );
+    else
+      g.append(
+        svgS(
+          "text",
+          {
+            x: 0,
+            y: br + 6 + FS.tally * 0.75,
+            "text-anchor": "middle",
+            class: "tally-n",
+            style: pxs(FS.tally),
+          },
+          String(done.length),
+        ),
+      );
+    net.append(g);
+    ballAt.set(r, {
+      x: gx,
+      y: gy,
+      r: br,
+      extra: P ? [{ x: gx + br + 6 + nw / 2, y: gy, r: Math.max(nw, FS.tally) / 2 + 8 }] : [],
+    });
+    if (P) box(gx - br - 2, gy - br - 2, gx + br + 10 + nw, gy + br + 2, "ball");
+    else box(gx - br - 2, gy - br - 2, gx + br + 2, gy + br + 8 + FS.tally * 0.8, "ball");
+  });
+  svg.append(net);
+
+  const arrows = svgS("g", { class: "arrows" });
+  const mid = `ah-${orientation}-${svgUid}`;
+  svg.prepend(
+    svgS(
+      "defs",
+      {},
+      svgS(
+        "marker",
+        {
+          id: mid,
+          viewBox: "0 0 10 10",
+          refX: 6,
+          refY: 5,
+          markerWidth: 4.5,
+          markerHeight: 4.5,
+          orient: "auto-start-reverse",
+        },
+        svgS("path", {
+          d: "M0 1 L8 5 L0 9",
+          fill: "none",
+          stroke: "var(--chalk)",
+          "stroke-width": 2,
+          "stroke-linecap": "round",
+          "stroke-linejoin": "round",
+        }),
+      ),
+    ),
+  );
+  const allCircles = [...geo.values()].flatMap((g) => g.circles);
+  const quad = (a, b, c, t) => [
+    (1 - t) * (1 - t) * a[0] + 2 * (1 - t) * t * b[0] + t * t * c[0],
+    (1 - t) * (1 - t) * a[1] + 2 * (1 - t) * t * b[1] + t * t * c[1],
+  ];
+  const blossom = (a, b, c, u, v) =>
+    [0, 1].map((i) => (1 - u) * (1 - v) * a[i] + ((1 - u) * v + u * (1 - v)) * b[i] + u * v * c[i]);
+  const inAny = (p, cs) => cs.some((c) => Math.hypot(p[0] - c.x, p[1] - c.y) < c.r);
+  const labelBoxes = obs.filter((o) => ["zl", "cl", "kit", "done"].includes(o.why));
+  // Where a move started: the cell's centre, or the nearest open turf in that
+  // cell when another counter stands there, so the tail never reads as that
+  // counter having moved.
+  const freeSpot = (st, repo, own) => {
+    const [cx, cy] = zoneCentre(st, repo),
+      z = PITCH_ZONES.find((x) => x.key === st);
+    const taken = allCircles.filter((c) => !own.includes(c)).map((c) => ({ ...c, r: c.r + 4 }));
+    const zw = z.x1 - z.x0;
+    const cands = [];
+    for (const u of [0, 0.3, -0.3, 0.42, -0.42])
+      for (const v of [0, 0.32, -0.32]) cands.push([cx + v * zw, cy + u * CH]);
+    cands.sort((p, q) => Math.hypot(p[0] - cx, p[1] - cy) - Math.hypot(q[0] - cx, q[1] - cy));
+    const onLabel = ([x, y]) =>
+      labelBoxes.some((o) => x > o.x0 - 8 && x < o.x1 + 8 && y > o.y0 - 8 && y < o.y1 + 8);
+    return cands.find((q) => !inAny(T(...q), taken) && !onLabel(T(...q))) || [cx, cy];
+  };
+  const plans = [];
+  for (const t of f.tickets) {
+    const evs = (f.details.get(t.id)?.events || []).filter((e) => {
+      if (e.event_type !== "ticket.transitioned") return false;
+      const at = Date.parse(e.created_at);
+      return at > win.start && at <= win.end;
+    });
+    if (!evs.length) continue;
+    const repo = chanOf(t);
+    if (!repo) continue;
+    const done = t.status === "done";
+    if ((!done && !geo.has(t.id)) || (done && !ballAt.has(repo))) continue;
+    const tgt = done ? ballAt.get(repo) : geo.get(t.id);
+    const b = [tgt.x, tgt.y];
+    // The arrow starts where the ticket first stood on the pitch in the window. A
+    // ticket that only came on from off it (blocked, paused, failed, the bench)
+    // comes on from the nearer touchline, beside where it stands now.
+    const froms = evs.map((e) => {
+      try {
+        return JSON.parse(e.payload_json || "{}").from;
+      } catch {
+        return undefined;
+      }
+    });
+    const far = (q) => q && Math.hypot(b[0] - q[0], b[1] - q[1]) >= 30;
+    const onAt = froms.find((s) => ON_PITCH.has(s));
+    let a = onAt ? T(...freeSpot(onAt, repo, geo.get(t.id)?.circles || [])) : null,
+      on = false;
+    if (!far(a) && !done && froms.some((s) => s && !ON_PITCH.has(s))) {
+      const here = PITCH_ZONES.find((z) => z.key === t.status);
+      const c = channels.indexOf(repo);
+      if (here && c >= 0) {
+        // Come on at a slant when the touchline is close, so the chalk is long
+        // enough to read past the counter.
+        const ty = (c + 0.5) * CH < W / 2 ? 6 : W - 6,
+          [bx, by] = P ? [M.t + L - b[1], b[0] - M.l] : [b[0] - M.l, b[1] - M.t];
+        const d = Math.abs(by - ty),
+          need = 110;
+        const run = d < need ? Math.sqrt(need * need - d * d) : 0;
+        // Slant back towards the start of the lifecycle; forward only when the
+        // goal line leaves no room.
+        let sx = Math.max(6, bx - run);
+        if (Math.hypot(bx - sx, d) < 60) sx = Math.min(L - 6, bx + run);
+        a = T(sx, ty);
+      } else a = null;
+      on = true;
+    }
+    if (!far(a)) continue;
+    plans.push({
+      t,
+      a,
+      b,
+      on,
+      key: done ? "net|" + repo : "t" + t.id,
+      endCs: done ? [{ x: tgt.x, y: tgt.y, r: tgt.r + 9 }, ...tgt.extra] : tgt.circles,
+    });
+  }
+  const byKey = new Map();
+  for (const p of plans) (byKey.get(p.key) || byKey.set(p.key, []).get(p.key)).push(p);
+  const moved = [],
+    arrowPts = [],
+    routed = [];
+  const pitchArea = P
+    ? { x0: M.l + 4, y0: 20, x1: M.l + W - 4, y1: M.t + L - 4 }
+    : { x0: M.l + 4, y0: M.t + 4, x1: M.l + L - 4, y1: M.t + W - 4 };
+  const inBoxes = (q, bs, pad = 0) =>
+    bs.some(
+      (o) => q[0] > o.x0 - pad && q[0] < o.x1 + pad && q[1] > o.y0 - pad && q[1] < o.y1 + pad,
+    );
+  const routeArrow = (p, i, tagBoxes) => {
+    const { a, b } = p;
+    const dx = b[0] - a[0],
+      dy = b[1] - a[1],
+      len = Math.hypot(dx, dy);
+    const base = Math.min(70, len * 0.2) + i * 26;
+    const startCs = allCircles.filter((cc) => Math.hypot(a[0] - cc.x, a[1] - cc.y) < cc.r + 14);
+    const others = allCircles.filter((cc) => !startCs.includes(cc) && !p.endCs.includes(cc));
+    const ctrl = (bend) => [
+      (a[0] + b[0]) / 2 + (-dy / len) * bend,
+      (a[1] + b[1]) / 2 + (dx / len) * bend,
+    ];
+    const sign = P ? 1 : -1;
+    let c = ctrl(base * sign),
+      bestX = Infinity;
+    for (const m of [1, -1, 1.7, -1.7, 0.4, -0.4, 2.4, -2.4, 3.2, -3.2]) {
+      const cc = ctrl(base * sign * m);
+      let x = Math.abs(m) * 0.5;
+      for (let j = 1; j < 48; j++) {
+        const q = quad(a, cc, b, j / 48);
+        if (inAny(q, others)) x += 3;
+        if (inBoxes(q, tagBoxes, 6)) x += 6;
+        if (inBoxes(q, labelBoxes)) x += 1;
+        if (
+          q[1] < pitchArea.y0 ||
+          q[1] > pitchArea.y1 ||
+          q[0] < pitchArea.x0 ||
+          q[0] > pitchArea.x1 + (P ? 0 : 60)
+        )
+          x += 8;
+      }
+      if (x < bestX) {
+        bestX = x;
+        c = cc;
+      }
+    }
+    let t0 = 0,
+      t1 = 1;
+    while (
+      t0 < 0.6 &&
+      (inAny(
+        quad(a, c, b, t0),
+        startCs.map((cc) => ({ ...cc, r: cc.r - 2 })),
+      ) ||
+        Math.hypot(...quad(a, c, b, t0).map((v, j) => v - a[j])) < 10)
+    )
+      t0 += 0.004;
+    while (t0 < 0.5 && inBoxes(quad(a, c, b, t0), tagBoxes, 6)) t0 += 0.004;
+    while (t1 > t0 + 0.1 && inAny(quad(a, c, b, t1), p.endCs)) t1 -= 0.004;
+    const s0 = blossom(a, c, b, t0, t0),
+      c1 = blossom(a, c, b, t0, t1),
+      e1 = blossom(a, c, b, t1, t1);
+    return Math.hypot(e1[0] - s0[0], e1[1] - s0[1]) < 26 ? null : { s0, c1, e1 };
+  };
+  for (const group of byKey.values()) {
+    group.sort(
+      (p, q) =>
+        Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1]) - Math.hypot(q.b[0] - q.a[0], q.b[1] - q.a[1]),
+    );
+    group.forEach((p, i) => {
+      const r = routeArrow(p, i, []);
+      if (!r) return;
+      for (let j = 0; j <= 36; j++) arrowPts.push(quad(r.s0, r.c1, r.e1, j / 36));
+      routed.push({ p, i });
+      moved.push({ id: p.t.id, fromXY: p.a });
+    });
+  }
+  svg.append(arrows, labels, kits);
+
+  const layer = svgS("g", { class: "counters" });
+  const placed = [];
+  const zoneOf = (t) => PITCH_ZONES.findIndex((z) => z.key === t.status);
+  const chanIdx = (t) => channels.indexOf(chanOf(t));
+  const agentMoves = [];
+  const pitchBox = P
+    ? { x0: M.l + 2, y0: M.t + 2, x1: M.l + W - 2, y1: M.t + L - 2 }
+    : { x0: M.l + 2, y0: M.t + 2, x1: M.l + L - 2, y1: M.t + W - 2 };
+  const hits = (b) => {
+    let n = 0;
+    for (const o of obs)
+      if (b.x0 < o.x1 + 3 && b.x1 > o.x0 - 3 && b.y0 < o.y1 + 3 && b.y1 > o.y0 - 3) n += 60;
+    // Chalk under a plate costs a little, but never enough on its own to send
+    // the plate off on a leader line: the arrows are re-routed round the plates.
+    let chalk = 0;
+    for (const [qx, qy] of arrowPts)
+      if (qx > b.x0 - 5 && qx < b.x1 + 5 && qy > b.y0 - 5 && qy < b.y1 + 5) chalk += 4;
+    n += Math.min(chalk, 48);
+    if (b.x0 < pitchBox.x0 || b.x1 > pitchBox.x1 || b.y0 < pitchBox.y0 || b.y1 > pitchBox.y1)
+      n += 400;
+    return n;
+  };
+  for (const t of inPlay) {
+    const { x, y, shirt } = geo.get(t.id);
+    const claim = claimOf(t);
+    const run = f.runByTicket.get(t.number);
+    const nm = needs.has(t.id);
+    const label = `#${t.number} ${statusLabel(t.status)}${claim ? ", " + claim.agent_display_name + " on it" : ""}${nm ? ", needs you" : ""}: ${t.title}`;
+    const a = svgS("a", {
+      href: t.status === "in_review" ? `#/review/${t.id}` : `#/ticket/${t.id}`,
+      class: `counter${claim ? " has-agent" : ""}${nm ? " needs" : ""}`,
+      "aria-label": label,
+    });
+    a.append(svgS("title", {}, label));
+    const disc = [
+      svgS("circle", { cx: x, cy: y + 2.5, r: R, class: "disc-shadow" }),
+      svgS("circle", { cx: x, cy: y, r: R, class: "disc" }),
+      svgS(
+        "text",
+        { x, y: y + FS.disc * 0.34, "text-anchor": "middle", class: "disc-n", style: pxs(FS.disc) },
+        String(t.number),
+      ),
+    ];
+    if (claim) {
+      const no = agentNo(claim.agent_display_name);
+      const g = svgS("g", { class: "agent-on" });
+      g.append(...disc, shirtGroup(no, x - SH / 2, shirt.top, SH / 40, FS.shirt));
+      a.append(g);
+      const mv = moved.find((m) => m.id === t.id);
+      if (mv) agentMoves.push({ g, dx: mv.fromXY[0] - x, dy: mv.fromXY[1] - y });
+      const lines = run
+        ? run.num_turns
+          ? [`${run.num_turns} turns`, money(run.cost_usd)]
+          : ["just claimed"]
+        : null;
+      if (lines) {
+        const fs = FS.tag,
+          padX = fs * 0.45,
+          padY = fs * 0.32,
+          lh = fs * 1.12;
+        const w = Math.max(...lines.map((l) => textWidth(l, fs, 0.02))) + padX * 2,
+          h = lines.length * lh + padY * 2 - fs * 0.12;
+        const top = shirt.top + SH * 0.1,
+          gap = 6;
+        const cands = [
+          { x0: x + SH / 2 + gap, y0: y - h / 2 - (P ? 4 : 2) },
+          { x0: x + R + gap, y0: y + 4 },
+          { x0: x - SH / 2 - gap - w, y0: y - h / 2 },
+          { x0: x - w / 2, y0: y + R + gap + 2 },
+          { x0: x - R, y0: y + R + gap + 2 },
+          { x0: x + R - w, y0: y + R + gap + 2 },
+          { x0: x - w / 2, y0: top - gap - h },
+          // Over the shirt, flush with either side of it: a phone's pair of
+          // counters side by side leaves room above, not beside.
+          { x0: x - SH / 2, y0: top - gap - h },
+          { x0: x + SH / 2 - w, y0: top - gap - h },
+          { x0: x + SH / 2 + gap, y0: top - 4 },
+          { x0: x - SH / 2 - gap - w, y0: top - 4 },
+        ].map((c) => ({ x0: c.x0, y0: c.y0, x1: c.x0 + w, y1: c.y0 + h }));
+        let best = cands[0],
+          bestHits = Infinity;
+        for (const c of cands) {
+          const hN = hits(c);
+          if (hN < bestHits) {
+            best = c;
+            bestHits = hN;
+          }
+          if (!hN) break;
+        }
+        let lead = null;
+        // A leader line that runs through another counter would tie the plate
+        // to the wrong ticket.
+        const others = obs.filter(
+          (o) =>
+            (o.why === "disc" || o.why === "shirt") &&
+            !(o.x0 <= x && o.x1 >= x && o.y0 <= y - 1 && o.y1 >= y - 1) &&
+            !(o.why === "shirt" && o.x0 === x - SH / 2),
+        );
+        const leadCrosses = (c) => {
+          const above = c.y1 < shirt.top + SH * 0.2;
+          const ox = x,
+            oy = above ? shirt.top + SH * 0.12 : y;
+          const tx = Math.min(Math.max(ox, c.x0), c.x1),
+            ty = Math.min(Math.max(oy, c.y0), c.y1);
+          let n = 0;
+          for (let j = 1; j < 12; j++) {
+            const px = ox + ((tx - ox) * j) / 12,
+              py = oy + ((ty - oy) * j) / 12;
+            if (others.some((o) => px > o.x0 && px < o.x1 && py > o.y0 && py < o.y1)) n += 60;
+          }
+          return n;
+        };
+        if (bestHits >= 60) {
+          let bestScore = bestHits * 1000;
+          for (let gy = -5; gy <= 5; gy++)
+            for (let gx = -4; gx <= 4; gx++) {
+              const c = { x0: x - w / 2 + gx * (w * 0.55), y0: y - h / 2 + gy * (h * 0.7) };
+              c.x1 = c.x0 + w;
+              c.y1 = c.y0 + h;
+              const d = Math.hypot((c.x0 + c.x1) / 2 - x, (c.y0 + c.y1) / 2 - y);
+              const sc = (hits(c) + leadCrosses(c)) * 1000 + d;
+              if (sc < bestScore) {
+                bestScore = sc;
+                best = c;
+                lead = true;
+              }
+            }
+        }
+        box(best.x0, best.y0, best.x1, best.y1, "tag");
+        const tg = svgS("g", { class: "agent-tag" });
+        if (lead) {
+          const above = best.y1 < shirt.top + SH * 0.2;
+          const ox = x,
+            oy = above ? shirt.top + SH * 0.12 : y;
+          const tx = Math.min(Math.max(ox, best.x0), best.x1),
+            ty = Math.min(Math.max(oy, best.y0), best.y1);
+          const dd = Math.hypot(tx - ox, ty - oy) || 1,
+            r0 = above ? 2 : R + 3;
+          tg.append(
+            svgS("circle", {
+              cx: ox + ((tx - ox) / dd) * r0,
+              cy: oy + ((ty - oy) / dd) * r0,
+              r: 2.5,
+              class: "tag-dot",
+            }),
+            svgS("line", {
+              x1: ox + ((tx - ox) / dd) * r0,
+              y1: oy + ((ty - oy) / dd) * r0,
+              x2: tx,
+              y2: ty,
+              class: "tag-lead",
+            }),
+          );
+        }
+        tg.append(
+          svgS("rect", { x: best.x0, y: best.y0, width: w, height: h, rx: 3, class: "tag-plate" }),
+        );
+        lines.forEach((l, i) =>
+          tg.append(
+            svgS(
+              "text",
+              {
+                x: best.x0 + padX,
+                y: best.y0 + padY + fs * 0.8 + i * lh,
+                class: `tag-t${i ? " tag-t2" : ""}`,
+                style: pxs(fs),
+              },
+              l,
+            ),
+          ),
+        );
+        a.append(tg);
+      }
+    } else a.append(...disc);
+    if (nm) {
+      const cx = claim ? x + SH * 0.42 : x + R * 0.8,
+        cy = claim ? shirt.top + SH * 0.18 : y - R;
+      a.append(
+        svgS("rect", {
+          x: cx - R * 0.35,
+          y: cy - R * 0.45,
+          width: R * 0.72,
+          height: R * 0.98,
+          rx: 2,
+          class: "ycard-on",
+          transform: `rotate(10 ${cx} ${cy})`,
+        }),
+      );
+      box(cx - R * 0.4, cy - R * 0.5, cx + R * 0.4, cy + R * 0.55, "ycard");
+    }
+    placed.push({ a, key: P ? [-zoneOf(t), Math.round(y), x] : [chanIdx(t), x, y] });
+  }
+  // Tab through the counters in the order they sit on the pitch: channel by
+  // channel, left to right (on a phone, stage by stage from the top).
+  placed.sort((p, q) => p.key[0] - q.key[0] || p.key[1] - q.key[1] || p.key[2] - q.key[2]);
+  layer.append(...placed.map((p) => p.a));
+  const tagBoxes = obs.filter((o) => o.why === "tag");
+  let cameOn = 0;
+  for (const { p, i } of routed) {
+    const r = routeArrow(p, i, tagBoxes);
+    if (!r) continue;
+    if (p.on) cameOn++;
+    const f1 = (v) => v.toFixed(1);
+    arrows.append(
+      svgS("path", {
+        d: `M${f1(r.s0[0])} ${f1(r.s0[1])} Q${f1(r.c1[0])} ${f1(r.c1[1])} ${f1(r.e1[0])} ${f1(r.e1[1])}`,
+        class: p.on ? "arrow arrow-on" : "arrow",
+        "marker-end": `url(#${mid})`,
+      }),
+    );
+  }
+  svg.append(layer);
+  return {
+    svg,
+    agentMoves,
+    arrows,
+    cameOn,
+    count: inPlay.length,
+    arrowsDrawn: arrows.childElementCount,
+  };
+}
+
+/** Chalk in once, shirts slide from where they were, tags rise: once, never under reduced motion. */
+function animatePitch(board) {
+  if (prefersReducedMotion() || !board || typeof board.svg.animate !== "function") return;
+  board.arrows.querySelectorAll("path").forEach((p, i) => {
+    if (typeof p.getTotalLength !== "function") return;
+    const len = p.getTotalLength();
+    p.style.strokeDasharray = `${len}`;
+    p.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], {
+      duration: 520,
+      delay: 80 + i * 60,
+      easing: "cubic-bezier(.16,1,.3,1)",
+      fill: "backwards",
+    }).finished.then(
+      () => (p.style.strokeDasharray = ""),
+      () => {},
+    );
+  });
+  board.agentMoves.forEach(({ g, dx, dy }, i) =>
+    g.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0,0)" }], {
+      duration: 640,
+      delay: 520 + i * 60,
+      easing: "cubic-bezier(.16,1,.3,1)",
+      fill: "backwards",
+    }),
+  );
+  board.svg.querySelectorAll(".agent-tag").forEach((c, i) =>
+    c.animate([{ opacity: 0 }, { opacity: 1 }], {
+      duration: 240,
+      delay: 1100 + i * 70,
+      fill: "backwards",
+    }),
+  );
+}
+
+function tacticsBoard(f) {
+  const boards = {};
+  const observers = [];
+  const host = (o) => {
+    const h = el("div", { class: o === "portrait" ? "pw-port" : "pw-land" });
+    let lastK = 0;
+    h.fit = () => {
+      const w = h.clientWidth;
+      if (!w) return false;
+      const k = PITCH_VW[o] / w;
+      if (Math.abs(k - lastK) / k < 0.02) return false;
+      lastK = k;
+      boards[o] = pitchBoard(f, o, k);
+      h.replaceChildren(boards[o].svg);
+      return true;
+    };
+    boards[o] = pitchBoard(f, o);
+    h.append(boards[o].svg);
+    if (typeof window.ResizeObserver === "function") {
+      const ro = new window.ResizeObserver(() => h.fit());
+      ro.observe(h);
+      observers.push(ro);
+    }
+    return h;
+  };
+  const hl = host("landscape"),
+    hp = host("portrait");
+  const inPlay = f.tickets.filter((t) => ON_PITCH.has(t.status)).length;
+  const off = f.tickets.filter((t) => OFF_PITCH.has(t.status)).sort((a, b) => a.number - b.number);
+  const bench = f.tickets.filter((t) => ON_BENCH.has(t.status)).sort((a, b) => a.number - b.number);
+  const win = arrowWindow(f);
+  const when = win.recent
+    ? "in the last 3 hours"
+    : `in the 3 hours to the last move (${fmtTime(new Date(win.end).toISOString())})`;
+  const { channels } = pitchChannels(f);
+  const sec = el("section", { class: "tactics", id: "tactics", "aria-labelledby": "tb-h" }, [
+    el("div", { class: "tactics-head" }, [
+      el("h2", { id: "tb-h", class: "tb-title" }, [
+        "Tactics board",
+        // The Work badge counts both, so the two numbers add up in plain sight.
+        el(
+          "span",
+          { class: "panel-aux" },
+          off.length ? `${inPlay} in play · ${off.length} off` : `${inPlay} in play`,
+        ),
+      ]),
+      el("p", { class: "tb-note" }, [
+        el("span", { class: "tb-land" }, "Left to right"),
+        el("span", { class: "tb-port" }, "Bottom to top"),
+        ` is the lifecycle; each channel is a repo. Chalk arrows are the moves ${when}.`,
+      ]),
+    ]),
+    channels.length
+      ? el("div", { class: "pitch-wrap" }, [hl, hp])
+      : el("div", { class: "pitch-wrap is-empty" }, [
+          el("p", { class: "pitch-empty" }, "Nobody on the pitch: no ticket is in play yet."),
+        ]),
+    el("div", { class: "touchline" }, [
+      el("div", { class: "dugout" }, [
+        el("h3", {}, "Off the pitch"),
+        off.length
+          ? el(
+              "ul",
+              {},
+              off.map((t) =>
+                el("li", {}, [
+                  el("a", { href: `#/ticket/${t.id}`, class: `off-${t.status}` }, [
+                    statusBadge(t.status),
+                    el("b", {}, `#${t.number}`),
+                    el("span", { class: "off-t" }, t.title),
+                  ]),
+                ]),
+              ),
+            )
+          : el("p", {}, "Nobody: nothing is blocked, paused or failed."),
+      ]),
+      el("div", { class: "bench" }, [
+        el("h3", {}, "Bench"),
+        el("p", {}, [
+          bench.length
+            ? `${bench.filter((t) => t.status === "draft").length} draft, ${bench.filter((t) => t.status === "refining").length} refining: `
+            : "Empty.",
+          ...bench.flatMap((t, i) => [
+            i ? " " : "",
+            el("a", { href: `#/ticket/${t.id}`, title: t.title }, `#${t.number}`),
+          ]),
+        ]),
+      ]),
+    ]),
+    el("ul", { class: "pitch-key", "aria-label": "Key" }, [
+      el("li", {}, [agentShirt("01", 26), "Agent (shirt number) on a ticket"]),
+      el("li", {}, [
+        svgS(
+          "svg",
+          { viewBox: "0 0 20 20", width: 20, height: 20, "aria-hidden": "true" },
+          svgS("circle", { cx: 10, cy: 10, r: 8, class: "key-disc" }),
+        ),
+        "Ticket",
+      ]),
+      el("li", {}, [
+        el("span", { class: "key-tag", "aria-hidden": "true" }, [
+          "31 turns ",
+          el("b", {}, "$1.02"),
+        ]),
+        "Agent's run so far",
+      ]),
+      el("li", {}, [ycard(18), "Needs you"]),
+      el("li", {}, [
+        svgS(
+          "svg",
+          { viewBox: "0 0 40 12", width: 40, height: 12, "aria-hidden": "true" },
+          svgS("path", { d: "M2 9 Q20 0 36 6", class: "key-arrow" }),
+        ),
+        win.recent ? "Moved in the last 3 h" : "Moved in the 3 h to the last move",
+      ]),
+      // A ticket back on from off the pitch (unblocked, resumed, off the bench)
+      // has no stage to come from: its arrow rises from the touchline.
+      boards.landscape.cameOn || boards.portrait.cameOn
+        ? el("li", {}, [
+            svgS(
+              "svg",
+              { viewBox: "0 0 40 16", width: 40, height: 16, "aria-hidden": "true" },
+              svgS("line", { x1: 2, y1: 14, x2: 38, y2: 14, class: "key-line" }),
+              svgS("path", { d: "M12 14 Q16 6 28 3", class: "key-arrow" }),
+            ),
+            "Back on from off the pitch",
+          ])
+        : null,
+      ...channels
+        .filter((r) => r !== "Other repos")
+        .map((r) => el("li", { class: "key-kit" }, [kitShirt(r, 20), r])),
+    ]),
+  ]);
+  sec._arrive = () => {
+    const o = window.matchMedia?.("(max-width: 760px)").matches ? "portrait" : "landscape";
+    (o === "portrait" ? hp : hl).fit();
+    animatePitch(boards[o]);
+  };
+  sec._dispose = () => observers.forEach((ro) => ro.disconnect());
+  return sec;
+}
+
+// --- The programme pages -----------------------------------------------------
+
+/** A programme page: a kit-colour title block over a 2px ink frame. */
+function progPage(cls, kit, title, aux, body) {
+  return el("section", { class: `card prog ${cls}`, "aria-label": title }, [
+    panelHead(title, aux, null, { kit }),
+    ...[].concat(body),
+  ]);
+}
+
+/** Cup runs: every epic as rounds (dependency depth); the acceptance ticket is the Final. */
+function cupRuns(f) {
+  if (!f.epics.length) {
+    return progPage("campaigns", "sky", "Cup runs", "epics, by phase", [
+      el("p", { class: "quiet" }, [
+        "No cup runs yet. ",
+        el(
+          "button",
+          { class: "btn-link", type: "button", onclick: () => openPlanBuild() },
+          "Plan a build",
+        ),
+        " and the epic lands here as rounds.",
+      ]),
+    ]);
+  }
+  return progPage(
+    "campaigns",
+    "sky",
+    "Cup runs",
+    "epics, by phase",
+    // A held campaign leads: it is the one that needs a look.
+    f.epics
+      .map((e, i) => ({ e, i, held: e.members.some((t) => OFF_PITCH.has(t.status)) }))
+      .sort((a, b) => b.held - a.held || a.i - b.i)
+      .map(({ e }) => {
+        const deps = new Map(
+          e.members.map((t) => [
+            t.id,
+            (f.details.get(t.id)?.dependencies || []).map((d) => d.depends_on_ticket_id),
+          ]),
+        );
+        const byPhase = computePhases(e.members, deps);
+        const phases = [...byPhase.keys()].sort((a, b) => a - b).map((p) => byPhase.get(p));
+        const held = e.members
+          .filter((t) => OFF_PITCH.has(t.status))
+          .sort((a, b) => a.number - b.number);
+        const heldIds = new Set(held.map((t) => t.id));
+        const waits = e.members
+          .filter((t) => (deps.get(t.id) || []).some((d) => heldIds.has(d)))
+          .sort((a, b) => a.number - b.number);
+        const done = e.members.filter((t) => t.status === "done").length;
+        return el("article", { class: `cup${held.length ? " is-held" : ""}` }, [
+          el("header", { class: "cup-head" }, [
+            el("h3", {}, el("a", { href: `#/epics/${e.node.id}` }, e.node.name)),
+            el(
+              "p",
+              { class: held.length ? "cup-why is-red" : "cup-why" },
+              held.length
+                ? [
+                    glyph("blocked", 16),
+                    `Held at #${held[0].number}${waits.length ? `: ${waits.map((t) => "#" + t.number).join(", ")} wait on it.` : "."}`,
+                  ]
+                : `${done} of ${e.members.length} done. Nothing is holding it.`,
+            ),
+          ]),
+          el(
+            "ol",
+            { class: "rounds" },
+            phases.map((ph, i) =>
+              el("li", { class: "round" }, [
+                el(
+                  "span",
+                  { class: "round-name" },
+                  i === phases.length - 1 &&
+                    phases.length > 1 &&
+                    ph.some((t) => /^Acceptance/i.test(t.title))
+                    ? "Final"
+                    : `Round ${i + 1}`,
+                ),
+                el(
+                  "ul",
+                  {},
+                  ph
+                    .slice()
+                    .sort((a, b) => a.number - b.number)
+                    .map((t) =>
+                      el("li", { class: `tie st-${t.status}` }, [
+                        el(
+                          "a",
+                          {
+                            href: `#/ticket/${t.id}`,
+                            "aria-label": `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
+                          },
+                          [
+                            glyph(t.status, 16),
+                            el("b", {}, `#${t.number}`),
+                            el("span", { class: "tie-t" }, t.title),
+                          ],
+                        ),
+                      ]),
+                    ),
+                ),
+              ]),
+            ),
+          ),
+        ]);
+      }),
+  );
+}
+
+/** Why a failed or paused ticket is out: the pause event, or the last failing gate. */
+function injuryWhy(f, t) {
+  const d = f.details.get(t.id);
+  if (t.status === "paused") {
+    const p = d ? pausedInfo(d.events || []) : {};
+    if (p.reason === "budget_cap")
+      return `Stopped at its budget cap: ${p.spend || "its spend"} spent${t.delivery_budget_usd != null || d?.ticket?.delivery_budget_usd != null ? ` of ${money(Number(d?.ticket?.delivery_budget_usd ?? t.delivery_budget_usd))}` : ""}.`;
+    if (p.reason === "timeout") return "Stopped at the wall-clock timeout.";
+    return `Stopped at the turn cap${p.turns != null ? ` (${p.turns} turns)` : ""}.`;
+  }
+  const trail = d?.rework_trail || [];
+  if (trail.length) {
+    const last = trail[trail.length - 1];
+    const first =
+      String(last.distilled_failure || "")
+        .split("\n")
+        .find((l) => l.trim()) || "";
+    return `Failed the ${last.gate} gate${first ? `: ${first.slice(0, 140)}` : "."}`;
+  }
+  const ev = (d?.evidence || []).find((e) => /FAIL/.test(e.summary || ""));
+  if (ev) {
+    const g = String(ev.summary).match(/\[FAIL\]\s+(\w+)\s*\(([^)]+)\)\s*[—-]\s*([^\n]+)/);
+    const err = String(ev.summary)
+      .split("\n")
+      .find((l) => /^Error/.test(l.trim()));
+    if (g)
+      return `The ${g[1]} gate failed in ${g[2]} (${g[3].trim()})${err ? `: ${err.trim().slice(0, 120)}` : "."}`;
+  }
+  return "Failed its gates.";
+}
+function injuryList(f) {
+  const list = f.tickets.filter((t) => t.status === "failed" || t.status === "paused");
+  return progPage(
+    "injuries",
+    "red",
+    "Injury list",
+    "failed or paused",
+    list.length
+      ? el(
+          "ul",
+          { class: "inj-list" },
+          list.map((t) =>
+            el("li", {}, [
+              el("p", { class: "inj-top" }, [
+                statusBadge(t.status),
+                el("a", { href: `#/ticket/${t.id}` }, `#${t.number} ${t.title}`),
+              ]),
+              el("p", { class: "inj-why" }, injuryWhy(f, t)),
+              f.repoOf.get(t.id)
+                ? el("p", { class: "inj-meta" }, repoTag(f.repoOf.get(t.id), 18))
+                : null,
+            ]),
+          ),
+        )
+      : el("p", { class: "quiet" }, "No failed or paused tickets."),
+  );
+}
+
+function leagueTable(f) {
+  const spend = new Map(((f.cost && f.cost.by_repo) || []).map((r) => [r.repo, r.total_cost_usd]));
+  const rows = (f.summary.repoProgress || [])
+    .slice()
+    .sort((a, b) => b.pct - a.pct || b.done - a.done);
+  const head = ["Pos", "Repo", "Tickets", "Done", "In play", "Blocked", "Spend", "Done %"];
+  return progPage(
+    "league",
+    "claret",
+    "League table",
+    "repos by share done",
+    rows.length
+      ? el("div", { class: "lt-wrap" }, [
+          el("table", { class: "lt" }, [
+            el(
+              "thead",
+              {},
+              el(
+                "tr",
+                {},
+                head.map((h, i) => el("th", { scope: "col", class: i > 1 ? "num" : null }, h)),
+              ),
+            ),
+            el(
+              "tbody",
+              {},
+              rows.map((r, i) =>
+                el("tr", {}, [
+                  el("td", { class: "pos" }, String(i + 1)),
+                  el("th", { scope: "row" }, repoTag(r.repo, 20)),
+                  el("td", { class: "num" }, String(r.total)),
+                  el("td", { class: "num" }, String(r.done)),
+                  el("td", { class: "num" }, String(r.inFlight ?? 0)),
+                  el(
+                    "td",
+                    { class: `num${r.blocked ? " is-red" : ""}` },
+                    r.blocked ? [glyph("blocked", 12), " ", String(r.blocked)] : "0",
+                  ),
+                  el("td", { class: "num" }, spend.has(r.repo) ? money(spend.get(r.repo)) : "—"),
+                  el("td", { class: "num" }, [
+                    el(
+                      "span",
+                      { class: "pct-bar", "aria-hidden": "true" },
+                      el("span", { style: { width: `${r.pct}%` } }),
+                    ),
+                    `${r.pct}%`,
+                  ]),
+                ]),
+              ),
+            ),
+          ]),
+        ])
+      : el("p", { class: "quiet" }, "No repos with tickets yet."),
+  );
+}
+
+/** Daily spend bars against the budget line, drawn at real pixel width. */
+function wageSvg(f, W) {
+  const daily = ((f.health && f.health.daily_spend) || [])
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const spend = new Map(daily.map((d) => [d.date, d.total_cost_usd]));
+  const todayKey = new Date(f.now).toISOString().slice(0, 10);
+  const days = [];
+  const startKey = daily[0]?.date || todayKey;
+  const start = new Date(startKey + "T00:00:00Z");
+  const end = new Date(todayKey + "T00:00:00Z");
+  // At most the last 21 days, so a long season stays readable.
+  for (
+    let d = new Date(Math.max(start.getTime(), end.getTime() - 20 * 864e5));
+    d <= end;
+    d = new Date(d.getTime() + 864e5)
+  )
+    days.push(d.toISOString().slice(0, 10));
+  const budget = f.budget || 0;
+  const narrow = W < 480;
+  const H = narrow ? 200 : 220,
+    padL = 36,
+    padR = 4,
+    padB = 36,
+    padT = 22;
+  const max = Math.max(budget, ...days.map((d) => spend.get(d) || 0), 1);
+  const bw = (W - padL - padR) / days.length,
+    gap = Math.max(3, Math.min(8, bw * 0.18));
+  const y = (v) => padT + (H - padT - padB) * (1 - v / max);
+  const svg = svgS("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    width: W,
+    height: H,
+    class: "wage-chart",
+    role: "img",
+    "aria-label": `Daily spend from ${fmtDay(days[0] + "T12:00:00Z", { weekday: false })} to today: ${days
+      .map(
+        (d) =>
+          `${fmtDay(d + "T12:00:00Z", { weekday: false })} ${spend.has(d) ? money(spend.get(d)) : "none recorded"}`,
+      )
+      .join(", ")}.${budget ? ` Daily budget ${moneyW(budget)}.` : ""}`,
+  });
+  const stepV = max > 40 ? 10 : 5;
+  for (let v = 0; v <= max; v += stepV) {
+    svg.append(
+      svgS("line", { x1: padL, x2: W - padR, y1: y(v), y2: y(v), class: v ? "grid" : "axis" }),
+      svgS("text", { x: padL - 6, y: y(v) + 4, "text-anchor": "end", class: "tick" }, "$" + v),
+    );
+  }
+  if (budget) {
+    svg.append(
+      svgS("line", { x1: padL, x2: W - padR, y1: y(budget), y2: y(budget), class: "budget-line" }),
+      svgS(
+        "text",
+        { x: W - padR, y: y(budget) - 6, "text-anchor": "end", class: "budget-t" },
+        `Daily budget ${moneyW(budget)}`,
+      ),
+    );
+  }
+  const topDay = [...spend.entries()]
+    .filter(([d]) => d !== todayKey && days.includes(d))
+    .sort((p, q) => q[1] - p[1])[0]?.[0];
+  days.forEach((d, i) => {
+    const v = spend.get(d),
+      x = padL + gap / 2 + i * bw,
+      today = d === todayKey,
+      w = Math.max(1, bw - gap),
+      cx = x + w / 2;
+    if (v != null) {
+      svg.append(
+        svgS(
+          "rect",
+          {
+            x,
+            y: y(v),
+            width: w,
+            height: Math.max(1, y(0) - y(v)),
+            class: today ? "bar bar-today" : "bar",
+          },
+          svgS("title", {}, `${fmtDay(d + "T12:00:00Z")}: ${money(v)}`),
+        ),
+      );
+      // Every day carries its figure: in full where the bar is wide enough, to
+      // the dollar where it is not (the bar's title keeps the cents).
+      const full = today || bw >= 36 || d === topDay;
+      if (full || bw >= 22) {
+        const anchor = today && cx + 26 > W ? "end" : "middle";
+        svg.append(
+          svgS(
+            "text",
+            {
+              x: anchor === "end" ? x + w : cx,
+              y: y(v) - 6,
+              "text-anchor": anchor,
+              class: today ? "val val-today" : "val",
+            },
+            full ? money(v) : v >= 9.5 ? `$${Math.round(v)}` : `$${v.toFixed(1)}`,
+          ),
+        );
+      }
+    } else
+      svg.append(
+        svgS("text", { x: cx, y: y(0) - 5, "text-anchor": "middle", class: "val none" }, "–"),
+      );
+    const dd = new Date(d + "T12:00:00Z");
+    svg.append(
+      svgS(
+        "text",
+        { x: cx, y: H - 20, "text-anchor": "middle", class: "tick" },
+        String(dd.getUTCDate()),
+      ),
+    );
+    if (dd.getUTCDay() === 1 || i === 0)
+      svg.append(
+        svgS(
+          "text",
+          { x: cx, y: H - 4, "text-anchor": "middle", class: "tick tick-s" },
+          WEEKDAYS[dd.getUTCDay()],
+        ),
+      );
+  });
+  return svg;
+}
+function wageBill(f) {
+  const h = f.health || {};
+  const host = el("div", { class: "wage-host" });
+  let lastW = 0;
+  const fit = () => {
+    const w = Math.floor(host.clientWidth);
+    // A host caught mid-layout (narrower than the axis plus a few px a day)
+    // would draw negative bars; wait for its real width.
+    if (w < 160 || Math.abs(w - lastW) < 2) return;
+    lastW = w;
+    host.replaceChildren(wageSvg(f, w));
+  };
+  host.append(wageSvg(f, 360));
+  host._fit = fit;
+  const kinds = Array.isArray(h.by_kind) ? h.by_kind : [];
+  const top = (f.cost && f.cost.top_tickets && f.cost.top_tickets[0]) || null;
+  const topT = top ? f.byNo.get(top.ticket) : null;
+  const cov =
+    h.coverage && typeof h.coverage.coverage_pct === "number" ? h.coverage.coverage_pct : null;
+  const est = f.cost && f.cost.estimated_usd > 0 ? f.cost.estimated_usd : 0;
+  const sec = progPage(
+    "wage",
+    "ink",
+    "Wage bill",
+    f.cost && typeof f.cost.total_usd === "number"
+      ? `${money(f.cost.total_usd)} this season`
+      : null,
+    [
+      host,
+      el(
+        "p",
+        { class: "wage-note" },
+        `Days with no spend recorded show a dash. API-equivalent cost from the usage ledger${cov != null ? ` (${cov}% of calls measured)` : ""}${est ? `; ${money(est)} is a labelled estimate for killed calls` : ""}.`,
+      ),
+      el("dl", { class: "wage-facts" }, [
+        el("div", {}, [
+          el("dt", {}, "Per shipped ticket"),
+          el("dd", {}, [
+            money(h.cost_per_shipped_usd),
+            el("small", {}, h.shipped_count != null ? `over ${h.shipped_count} shipped` : ""),
+          ]),
+        ]),
+        el("div", {}, [
+          el("dt", {}, "Spent on rework"),
+          el("dd", {}, [
+            money(h.rework?.total_rework_cost_usd),
+            el(
+              "small",
+              {},
+              h.rework?.rework_cost_share_pct != null
+                ? `${h.rework.rework_cost_share_pct}% of spend`
+                : "",
+            ),
+          ]),
+        ]),
+        el("div", {}, [
+          el("dt", {}, "Top earner"),
+          el(
+            "dd",
+            {},
+            top
+              ? [
+                  topT
+                    ? el("a", { href: `#/ticket/${topT.id}` }, `#${top.ticket}`)
+                    : `#${top.ticket}`,
+                  el("small", {}, `${money(top.total_cost_usd)}, ${top.num_turns} turns`),
+                ]
+              : "—",
+          ),
+        ]),
+      ]),
+      kinds.length
+        ? el(
+            "div",
+            {
+              class: "kind-bar",
+              role: "img",
+              "aria-label":
+                "Spend by kind: " +
+                kinds.map((k) => `${k.kind} ${money(k.total_cost_usd)}`).join(", "),
+            },
+            kinds.map((k, i) =>
+              el("span", {
+                class: `kb kb-${Math.min(i, 4)}`,
+                style: { flexGrow: k.total_cost_usd || 0 },
+              }),
+            ),
+          )
+        : null,
+      kinds.length
+        ? el(
+            "ul",
+            { class: "kind-key" },
+            kinds.map((k, i) =>
+              el("li", {}, [
+                el("span", { class: `kb-sw kb-${Math.min(i, 4)}` }),
+                `${k.kind} ${money(k.total_cost_usd)}`,
+              ]),
+            ),
+          )
+        : null,
+    ],
+  );
+  sec._arrive = fit;
+  return sec;
+}
+
+/** Squad & form: each agent, what it is on now, and every ticket it claimed (where it is now). */
+function squadForm(f) {
+  const history = new Map();
+  for (const e of f.events) {
+    if (e.event_type !== "claim.created" || !e.actor_id) continue;
+    const nm = agentNames.get(e.actor_id);
+    if (!nm) continue;
+    (history.get(nm) || history.set(nm, []).get(nm)).push({
+      id: e.entity_id,
+      n: e.ticket_number,
+      at: e.created_at,
+    });
+  }
+  const claimByAgent = new Map(f.claims.map((c) => [c.agent_id, c]));
+  const agents = f.agents
+    .filter((a) => a.agent_type !== "human")
+    .slice()
+    .sort((a, b) => String(a.display_name).localeCompare(String(b.display_name)));
+  const onPitch = f.claims.length;
+  return progPage(
+    "squad",
+    "sky",
+    "Squad & form",
+    f.slots ? `${onPitch} of ${f.slots} on the pitch` : `${onPitch} on the pitch`,
+    agents.length
+      ? [
+          el(
+            "ul",
+            { class: "sq-list" },
+            agents.map((a) => {
+              const claim = claimByAgent.get(a.id);
+              const t = claim ? f.byId.get(claim.ticket_id) : null;
+              const run = claim ? f.runByTicket.get(claim.ticket_number) : null;
+              const rework = t
+                ? (f.details.get(t.id)?.events || [])
+                    .filter((e) => e.event_type === "ticket.reworking")
+                    .pop()
+                : null;
+              const rw = rework ? parseJsonSafe(rework.payload_json) : null;
+              const form = (history.get(a.display_name) || [])
+                .sort((x, y) => x.at.localeCompare(y.at))
+                .slice(-6);
+              return el("li", { class: `sq-row${claim ? " is-on" : ""}` }, [
+                agentShirt(a.display_name, 56),
+                el("div", { class: "sq-body" }, [
+                  el("p", { class: "sq-name" }, a.display_name),
+                  el(
+                    "p",
+                    { class: "sq-now" },
+                    claim
+                      ? [
+                          t
+                            ? el("a", { href: `#/ticket/${t.id}` }, `On #${claim.ticket_number}`)
+                            : `On #${claim.ticket_number}`,
+                          t ? ` · ${statusLabel(t.status).toLowerCase()}` : "",
+                          run
+                            ? run.num_turns
+                              ? ` · ${run.phase ? run.phase + " · " : ""}${run.num_turns} turns · ${money(run.cost_usd)}`
+                              : " · just claimed"
+                            : "",
+                          rw && rw.attempt
+                            ? el(
+                                "span",
+                                { class: "is-warn" },
+                                ` · rework ${rw.attempt}/${rw.max_attempts} on ${rw.gate || "gates"}`,
+                              )
+                            : null,
+                        ]
+                      : `On the bench. Last seen ${a.last_seen_at ? fmtTime(a.last_seen_at) : "never"}.`,
+                  ),
+                  form.length
+                    ? el("p", { class: "sq-form" }, [
+                        el("span", { class: "sq-form-l" }, "Form"),
+                        el(
+                          "span",
+                          { class: "form-row" },
+                          form.map((x) => {
+                            const ft = f.byId.get(x.id);
+                            const st = ft ? ft.status : "draft";
+                            return el(
+                              "a",
+                              {
+                                href: `#/ticket/${x.id}`,
+                                class: `form-chip st-${st}`,
+                                title: `#${x.n} ${statusLabel(st)}`,
+                                "aria-label": `#${x.n} now ${statusLabel(st)}`,
+                              },
+                              [glyph(st, 14), String(x.n)],
+                            );
+                          }),
+                        ),
+                      ])
+                    : null,
+                ]),
+              ]);
+            }),
+          ),
+          el(
+            "p",
+            { class: "quiet small" },
+            "Form: the tickets each agent claimed recently, oldest first, with where each one is now.",
+          ),
+        ]
+      : el("p", { class: "quiet" }, "No agents registered yet."),
+  );
+}
+
+function fullTime(f) {
+  const done = f.tickets
+    .filter((t) => t.status === "done")
+    .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
+    .slice(0, 6);
+  const spend = new Map(
+    ((f.cost && f.cost.top_tickets) || []).map((t) => [t.ticket, t.total_cost_usd]),
+  );
+  return progPage(
+    "results",
+    "ink",
+    "Full time",
+    "recently done",
+    done.length
+      ? el(
+          "ul",
+          { class: "res-list" },
+          done.map((t) =>
+            el("li", {}, [
+              el("span", { class: "res-ft", "aria-hidden": "true" }, "FT"),
+              el("time", { datetime: t.updated_at }, fmtDay(t.updated_at, { weekday: false })),
+              el("a", { href: `#/ticket/${t.id}` }, [el("b", {}, `#${t.number}`), " ", t.title]),
+              el(
+                "span",
+                { class: "res-cost" },
+                spend.has(t.number) ? money(spend.get(t.number)) : "",
+              ),
+            ]),
+          ),
+        )
+      : el("p", { class: "quiet" }, "Nothing delivered yet."),
+  );
+}
+
+function fixtures(f) {
+  const ready = f.tickets
+    .filter((t) => t.status === "ready")
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.number - b.number);
+  return progPage(
+    "fixtures",
+    "sky",
+    "Fixtures",
+    `${ready.length} ready`,
+    ready.length
+      ? el(
+          "ul",
+          { class: "fx-list" },
+          ready.slice(0, 8).map((t) => {
+            const deps = (f.details.get(t.id)?.dependencies || []).filter(
+              (d) => !d.satisfied && d.status !== "done",
+            );
+            const red = deps.some((d) => OFF_PITCH.has(d.status));
+            return el("li", {}, [
+              glyph("ready", 16),
+              el("a", { href: `#/ticket/${t.id}` }, [el("b", {}, `#${t.number}`), " ", t.title]),
+              el(
+                "span",
+                { class: red ? "fx-gate is-red" : "fx-gate" },
+                deps.length
+                  ? `waits on ${deps.map((d) => `#${d.number} (${statusLabel(d.status).toLowerCase()})`).join(", ")}`
+                  : "next up",
+              ),
+            ]);
+          }),
+        )
+      : el("p", { class: "quiet" }, "No ticket is ready to be claimed."),
+  );
+}
+
+/**
+ * The match report: the latest moves as commentary, minute by minute. Each line
+ * is one real event: when (HH:MM), the state it left the ticket in (§6 glyph),
+ * who did it (an agent's shirt and name, priya.raman, the runner) and what, with
+ * the from → to read from the ticket's own event payload when the detail cache
+ * has it. Book-keeping (evidence rows, criteria added, repo links) is left off
+ * the commentary but kept, every event, in the folded full log beneath.
+ */
+const REPORT_QUIET = new Set([
+  "evidence.recorded",
+  "ac.added",
+  "ticket.repo_linked",
+  "ticket.repo_access_set",
+  "ticket.testable_set",
+  "ticket.test_contract_set",
+  "ticket.budget_set",
+  "ticket.repo_delivery_recorded",
+  "ticket.acceptance_criteria_reset",
+]);
+const PITCH_WORD = { ready_for_merge: "To merge" };
+function reportLine(f, e) {
+  const det = f.details.get(e.entity_id);
+  const full = det?.events?.find((x) => x.id === e.id);
+  const p = full?.payload_json ? parseJsonSafe(full.payload_json) || {} : {};
+  const word = (st) => PITCH_WORD[st] || statusLabel(st);
+  switch (e.event_type) {
+    case "ticket.created":
+      return { st: "draft", say: "created" };
+    case "ticket.transitioned":
+      return p.to
+        ? { st: p.to, say: [p.from ? `${word(p.from)} → ` : "→ ", el("b", {}, word(p.to))] }
+        : { st: null, say: "moved" };
+    case "claim.created":
+      return { st: "claimed", say: "claimed" };
+    case "claim.completed":
+      return { st: null, say: "claim completed" };
+    case "claim.released":
+      return { st: null, say: "claim released" };
+    case "ticket.reworking":
+      return {
+        st: "failed",
+        say: p.attempt
+          ? `back for rework ${p.attempt}/${p.max_attempts}${p.gate ? ` on ${p.gate}` : ""}`
+          : "back for rework",
+      };
+    case "ticket.delivery_recorded":
+      return { st: "in_review", say: "delivery recorded" };
+    case "ticket.blocked":
+      return { st: "blocked", say: "parked: it needs you" };
+    case "ticket.paused":
+      return {
+        st: "paused",
+        say: p.reason ? `paused (${String(p.reason).replace(/_/g, " ")})` : "paused",
+      };
+    case "ticket.routed_to_testing":
+      return { st: "in_testing", say: "sent to testing" };
+    case "ticket.dependency_added":
+      return {
+        st: null,
+        say: p.depends_on_number ? `now waits on #${p.depends_on_number}` : "gains a dependency",
+      };
+    case "decision.created":
+      return { st: "decision", say: "a question for the gaffer" };
+    case "epic.created":
+      return { st: null, say: "epic created" };
+    default:
+      return { st: null, say: humanizeEvent(e.event_type).toLowerCase() };
+  }
+}
+function matchReport(f) {
+  // A claim writes two events in the same instant (the claim and the move to
+  // Claimed): the report says it once, as the move.
+  const movedAt = new Set(
+    f.events
+      .filter((e) => e.event_type === "ticket.transitioned")
+      .map((e) => `${e.entity_id}@${String(e.created_at).slice(0, 19)}`),
+  );
+  const lines = f.events
+    .filter((e) => !REPORT_QUIET.has(e.event_type))
+    .filter(
+      (e) =>
+        e.event_type !== "claim.created" ||
+        !movedAt.has(`${e.entity_id}@${String(e.created_at).slice(0, 19)}`),
+    )
+    .slice(0, 10);
+  let day = "";
+  const half = Math.ceil(lines.length / 2);
+  const rows = lines.map((e, i) => {
+    const { st, say } = reportLine(f, e);
+    const d = fmtDay(e.created_at);
+    const head = d !== day ? (day = d) : null;
+    const agent = e.actor_type === "agent" && e.actor_id ? agentNames.get(e.actor_id) : null;
+    const who = actorName(e.actor_type, e.actor_id);
+    const ref =
+      e.ticket_number != null
+        ? el(
+            "a",
+            { class: "mr-ref", href: `#/ticket/${e.entity_id}`, title: e.ticket_title || "" },
+            `#${e.ticket_number}`,
+          )
+        : null;
+    const cls = [
+      "mr-row",
+      st ? `mr-${st}` : "",
+      i >= half ? "is-col-b" : "",
+      i % half === 0 ? "is-col-top" : "",
+    ];
+    return el("li", { class: cls.filter(Boolean).join(" ") }, [
+      el("time", { class: "mr-min tabnum", datetime: e.created_at }, [
+        head ? el("span", { class: "mr-day" }, head) : null,
+        clockTime(Date.parse(e.created_at)),
+      ]),
+      st ? glyph(st, 16) : el("span", { class: "mr-dot", "aria-hidden": "true" }),
+      el("p", { class: "mr-say" }, [
+        ref,
+        ref ? " " : null,
+        e.ticket_title ? el("span", { class: "mr-t" }, e.ticket_title) : null,
+        el("span", { class: "mr-what" }, [" ", say]),
+      ]),
+      el("span", { class: "mr-who" }, [agent ? agentShirt(agent, 26) : null, who]),
+    ]);
+  });
+  const evs = f.events.slice(0, 30);
+  return progPage(
+    "report",
+    "ink",
+    "Match report",
+    f.events.length ? `the latest ${plural(lines.length, "event")}` : null,
+    lines.length || evs.length
+      ? [
+          lines.length
+            ? el("ol", { class: "mr-list", style: { "--mr-rows": String(half) } }, rows)
+            : null,
+          el("details", { class: "mr-all" }, [
+            el("summary", {}, `Every event, book-keeping included (latest ${evs.length})`),
+            el("ul", { class: "feed" }, evs.map(renderFeedRow)),
+          ]),
+        ]
+      : el(
+          "p",
+          { class: "quiet" },
+          "No activity recorded yet. The report starts with the first ticket.",
+        ),
+  );
+}
+
+/**
+ * The Overview while it loads: the ground before kick-off. The scoreboard is lit
+ * with its four counters named but blank ("––", never a number the server has
+ * not given), the Team Sheet's block with three empty rows, and the pitch drawn
+ * with its markings and stage names but nobody on it. Same shape as the view, so
+ * nothing jumps when the data lands; invisible for its first 300ms.
+ */
+function overviewSkeleton() {
+  const empty = {
+    now: Date.now(),
+    tickets: [],
+    items: [],
+    events: [],
+    claims: [],
+    repoOf: new Map(),
+    details: new Map(),
+    byId: new Map(),
+    claimByTicket: new Map(),
+    runByTicket: new Map(),
+  };
+  let pitch;
+  try {
+    pitch = el("div", { class: "pitch-wrap" }, [
+      el("div", { class: "pw-land" }, pitchBoard(empty, "landscape").svg),
+      el("div", { class: "pw-port" }, pitchBoard(empty, "portrait").svg),
+    ]);
+    for (const svg of pitch.querySelectorAll("svg")) {
+      svg.setAttribute("aria-hidden", "true");
+      svg.removeAttribute("role");
+    }
+  } catch {
+    pitch = el("div", { class: "skeleton sk-board" });
+  }
+  const cell = (label) =>
+    el("div", { class: "kpi" }, [
+      el("div", { class: "kpi-top" }, el("span", { class: "kpi-label" }, label)),
+      el("span", { class: "kpi-val sk-digits" }, "––"),
+    ]);
+  const row = () =>
+    el("li", { class: "sk-own" }, [
+      el("span", { class: "skeleton sk-rank" }),
+      el("span", { class: "sk-own-lines" }, [
+        el("span", { class: "skeleton sk-l1" }),
+        el("span", { class: "skeleton sk-l2" }),
+        el("span", { class: "skeleton sk-l3" }),
+      ]),
+    ]);
+  return el(
+    "div",
+    {
+      class: "view view-overview skeleton-view sk-overview",
+      "aria-busy": "true",
+      "aria-label": "Loading the Overview",
+    },
+    [
+      el("section", { class: "scoreboard bleed", "aria-hidden": "true" }, [
+        el("div", { class: "scoreboard-in" }, [
+          el("div", { class: "sb-main sk-hl" }, [
+            el("span", { class: "skeleton sk-hl1" }),
+            el("span", { class: "skeleton sk-hl2" }),
+            el("span", { class: "skeleton sk-hl3" }),
+          ]),
+          el("div", { class: "sb-side" }, [
+            el("div", { class: "sb-cells kpi-row" }, [
+              cell("Need you"),
+              cell("On the pitch"),
+              cell("Delivered today"),
+              cell("Wage bill"),
+            ]),
+          ]),
+        ]),
+      ]),
+      el("div", { class: "ov-main", "aria-hidden": "true" }, [
+        el("div", { class: "card what-i-own" }, [
+          panelHead("Team sheet", null, null, { kit: "claret" }),
+          el("ol", { class: "own-well" }, [row(), row(), row()]),
+        ]),
+        el("section", { class: "tactics" }, [
+          el("div", { class: "tactics-head" }, [el("h2", { class: "tb-title" }, "Tactics board")]),
+          pitch,
+        ]),
+      ]),
+    ],
+  );
+}
+
+/**
+ * The Overview when its read fails: the scoreboard stays dark and says what
+ * happened in one sentence (no number it could not read), the server's own words
+ * under it, and one way on: Try again. A background refresh retries every 9s and
+ * replaces this page as soon as the factory answers.
+ */
+function overviewError(e) {
+  const code = (e && e.code) || "";
+  const head =
+    code === "NETWORK"
+      ? "Can’t reach the factory."
+      : code === "BAD_GATEWAY"
+        ? "Something else answered for the factory."
+        : "The factory couldn’t make up the scoreboard.";
+  const detail =
+    code === "NETWORK"
+      ? "The dashboard server isn’t answering. Check it is still running; this page tries again by itself every 9 seconds."
+      : code === "BAD_GATEWAY"
+        ? `${e.message} A proxy or another server is in the way; this page tries again every 9 seconds.`
+        : `It said: “${(e && e.message) || "the request failed"}”. This page tries again every 9 seconds.`;
+  const retry = el(
+    "button",
+    { class: "btn primary", type: "button", onclick: () => router() },
+    "Try again",
+  );
+  return el("div", { class: "view view-overview ov-error" }, [
+    el("section", { class: "scoreboard bleed sb-dark", "aria-label": "Scoreboard" }, [
+      el("div", { class: "scoreboard-in" }, [
+        el("div", { class: "sb-main" }, [
+          el("h1", { class: "hl" }, [el("span", { class: "hl-nb" }, [glyph("failed", 34), head])]),
+          el("p", { class: "hl-sub" }, detail),
+        ]),
+        el("div", { class: "sb-side" }, [
+          el(
+            "div",
+            { class: "sb-cells kpi-row sb-off", role: "group", "aria-label": "Today (not read)" },
+            ["Need you", "On the pitch", "Delivered today", "Wage bill"].map((label) =>
+              el("div", { class: "kpi" }, [
+                el("div", { class: "kpi-top" }, el("span", { class: "kpi-label" }, label)),
+                el("span", { class: "kpi-val sk-digits" }, [
+                  el("span", { "aria-hidden": "true" }, "––"),
+                  el("span", { class: "sr-only" }, "not read"),
+                ]),
+              ]),
+            ),
+          ),
+        ]),
+      ]),
+    ]),
+    el("div", { class: "empty-state is-error ov-error-act" }, [
+      el("div", { class: "es-actions" }, [
+        retry,
+        el("a", { class: "btn", href: "#/work" }, "Open the Work board"),
+        el("a", { class: "btn", href: "#/health" }, "Open Health"),
+      ]),
+      code ? el("p", { class: "es-sub" }, `Error code: ${code}`) : null,
+    ]),
+  ]);
+}
+
+async function renderOverview() {
+  const [f] = await Promise.all([
+    loadMatchDay(),
+    document.fonts?.load?.('700 16px "Sofia Sans Condensed"').catch(() => null),
+  ]);
+  const wrap = el("div", { class: "view view-overview" });
+  // A short Team Sheet (nothing, or one or two rows) leaves the column beside
+  // the pitch mostly empty: Squad & form moves up into it, as in the idle comp.
+  const idle = f.items.length <= 2;
+  wrap.appendChild(overviewScoreboard(f));
+  const sheet = whatIOwnPanel(f.queue, f);
+  const board = tacticsBoard(f);
+  const squad = squadForm(f);
+  const wage = wageBill(f);
+  wrap.appendChild(
+    el("div", { class: "ov-main" }, [
+      idle ? el("div", { class: "ov-left" }, [sheet, squad]) : sheet,
+      board,
+    ]),
+  );
+  wrap.appendChild(
+    el("div", { class: `ov-prog${idle ? " is-idle" : ""}` }, [
+      cupRuns(f),
+      injuryList(f),
+      leagueTable(f),
+      wage,
+      idle ? null : squad,
+      fullTime(f),
+      fixtures(f),
+      matchReport(f),
+    ]),
+  );
+  // A signature of what was drawn: an unchanged factory keeps its DOM on refresh.
+  wrap.dataset.sig = hashText(
+    JSON.stringify([
+      f.items.map((i) => [
+        i.kind,
+        i.ticket?.id,
+        i.decisionId,
+        Math.floor((i.waitedMs || 0) / 60000),
+      ]),
+      f.tickets.map((t) => [t.id, t.status, t.updated_at]),
+      f.claims.map((c) => [c.ticket_id, c.agent_id]),
+      [...f.runByTicket].map(([n, r]) => [n, r.num_turns, r.cost_usd]),
+      f.cost?.today_usd,
+      f.cost?.total_usd,
+      f.summary.deliveredToday,
+      f.events[0]?.id,
+      f.health?.event_log?.events,
+    ]),
+  );
+  // Draw the board at its real size (labels keep their pixel floor) once mounted.
+  wrap._mounted = () => {
+    board._arrive?.();
+    wage._arrive?.();
+  };
+  wrap._dispose = () => board._dispose?.();
+  if (typeof window.ResizeObserver === "function") {
+    const ro = new window.ResizeObserver(() => wage._arrive?.());
+    const host = wage.querySelector(".wage-host");
+    if (host) ro.observe(host);
+    const prev = wrap._dispose;
+    wrap._dispose = () => {
+      prev();
+      ro.disconnect();
+    };
+  }
+  return wrap;
+}
+
+/**
+ * The physio room's flow panels (moved off the Overview, which is the comp's
+ * programme now): the Form guide, Governance ROI, the cost line, Development
+ * flow, the treatment table (at risk / stale), cycle time and flow efficiency,
+ * the "keeps bouncing" list and Running now. Returns the panels in order.
+ */
+async function fitnessRoomPanels(healthRes) {
+  const [{ summary }, ticketsRes, decisionsRes, costRes, bouncingRes, claimsRes, settingsRes] =
+    await Promise.all([
+      api("GET", "/api/dashboard"),
+      api("GET", "/tickets").catch(() => ({ tickets: [] })),
+      api("GET", "/decisions").catch(() => ({ decisions: [] })),
+      api("GET", "/api/cost").catch(() => null),
+      api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
+      api("GET", "/claims").catch(() => null),
+      api("GET", "/api/settings").catch(() => null),
+    ]);
 
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
-  const events = activity.events || [];
   const decisions = decisionsRes.decisions || [];
   const inReview = byStatus.in_review || 0;
   const blocked = summary.blocked ?? byStatus.blocked ?? 0;
-  const openDecisions = summary.openDecisions ?? decisions.length;
   const staleClaims = summary.staleClaims || 0;
   const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
   const doneTickets = tickets.filter((t) => t.status === "done");
@@ -1637,7 +5620,6 @@ async function renderOverview() {
     }
     return days.map((d) => m[d.key]);
   };
-  const actByDay = bucket(events, (e) => e.created_at);
 
   // AUTHORITATIVE cycle-time / throughput: read the ONE server-side definition
   // from /api/health (src/health/deliveryFlow.ts) instead of recomputing it here.
@@ -1707,83 +5689,82 @@ async function renderOverview() {
             )) *
             100,
         );
-  // honest deltas: second-half avg vs first-half avg of the relevant series
-  const half = (s) => {
-    const h = Math.floor(s.length / 2);
-    const a = s.slice(0, h).reduce((x, y) => x + y, 0) / Math.max(1, h);
-    const b = s.slice(h).reduce((x, y) => x + y, 0) / Math.max(1, s.length - h);
-    return a === 0 ? (b > 0 ? 100 : 0) : Math.round(((b - a) / a) * 100);
-  };
+  const right = el("div", { class: "fitness-panels stack" });
+  const left = right;
 
-  const wrap = el("div", { class: "view" });
-  wrap.appendChild(
-    viewHero({
-      image: "assets/bg/hero-city.jpg",
-      title: "Ship better software, faster.",
-      subtitle:
-        "Real-time insight into your factory. Track flow, focus on what matters, and keep everything moving.",
-      // Honest status line: the dashboard is up, AND the event log the whole room is
-      // derived from verifies (the server re-derives the sha256 chain). A broken
-      // chain means an event was rewritten, deleted or re-ordered after the fact —
-      // the one thing a control room must never paper over.
-      status:
-        healthRes?.event_log?.chain_ok === false
-          ? `Factory online · event log ALTERED at seq ${healthRes.event_log.broken_at_seq} — see Health`
-          : healthRes?.event_log?.chain_ok === true
-            ? `Factory online · event log intact (${healthRes.event_log.events} events)`
-            : "Factory online",
-      statusOk: healthRes?.event_log?.chain_ok !== false,
-    }),
-  );
-
-  // Queue-first: what needs YOU leads the room, sitting above the metrics.
-  wrap.appendChild(whatIOwnPanel(humanQueueRes));
-
-  // --- KPI row --------------------------------------------------------------
-  wrap.appendChild(
-    el("div", { class: "kpi-row" }, [
-      kpiCard({
-        label: "Cycle time",
-        value: cycleTime.toFixed(1),
-        unit: "days",
-        tone: "accent",
-        delta: half(cycleLine),
-        goodWhenDown: true,
-        series: cycleLine,
-      }),
-      kpiCard({
-        label: "Throughput",
-        value: String(last7),
-        unit: "shipped / 7d",
-        tone: "ok",
-        delta: prev7 === 0 ? (last7 > 0 ? 100 : 0) : Math.round(((last7 - prev7) / prev7) * 100),
-        series: doneByDay,
-      }),
-      kpiCard({
-        label: "Flow efficiency",
-        value: String(flowEff),
-        unit: "%",
-        tone: "accent",
-        delta: half(actByDay),
-        series: flowEffSeries,
-      }),
-      kpiCard({
-        label: "Deployments",
-        value: String(doneTickets.length),
-        unit: "all-time",
-        tone: "amber",
-        delta: half(doneByDay),
-        series: deploySeries,
-      }),
-      kpiCard({
-        label: "Lead time",
-        value: leadTime.toFixed(1),
-        unit: "days",
-        tone: "accent",
-        delta: half(cycleLine),
-        goodWhenDown: true,
-        series: leadSeries,
-      }),
+  // --- Form guide: the flow numbers, each from the server's one definition ------
+  right.appendChild(
+    el("section", { class: "card panel form-guide", "aria-label": "Flow" }, [
+      panelHead("Form guide", "last 14 days", null, { kit: "claret" }),
+      el("div", { class: "kpi-row" }, [
+        statCell({
+          label: "Cycle time",
+          value: cycleTime.toFixed(1),
+          unit: "days",
+          series: cycleLine,
+          flip: "cycle",
+        }),
+        statCell({
+          label: "Throughput",
+          value: String(last7),
+          unit: "shipped / 7d",
+          sub: `${prev7} the week before`,
+          series: doneByDay,
+          flip: "thr",
+        }),
+        statCell({
+          label: "Flow efficiency",
+          value: String(flowEff),
+          unit: "%",
+          series: flowEffSeries,
+          flip: "eff",
+        }),
+        statCell({
+          label: "Deployments",
+          value: String(doneTickets.length),
+          unit: "all-time",
+          series: deploySeries,
+          flip: "dep",
+        }),
+        statCell({
+          label: "Lead time",
+          value: leadTime.toFixed(1),
+          unit: "days",
+          series: leadSeries,
+          flip: "lead",
+        }),
+      ]),
+      // The results by day: the cycle time as a bar per day, and what flow efficiency means.
+      el("div", { class: "fg-detail" }, [
+        el("div", { class: "fg-chart" }, [
+          el("h3", { class: "fg-h" }, "Cycle time, by day"),
+          el("div", {
+            class: "chart",
+            html: svgBars(cycleLine, {
+              labels: days.map((d) => d.lbl),
+              fmt: (v) => `${(+v).toFixed(1)}d`,
+              label: "Median cycle time by day",
+              today: true,
+              // Drawn at the width it shows at, so its tick labels stay readable.
+              ...(window.matchMedia && window.matchMedia("(max-width: 760px)").matches
+                ? { width: 360, height: 130 }
+                : { width: 720, height: 150 }),
+            }),
+          }),
+        ]),
+        el("div", { class: "fg-eff flow-eff" }, [
+          el("h3", { class: "fg-h" }, [
+            "Flow efficiency ",
+            el("b", { class: "tabnum" }, `${flowEff}%`),
+          ]),
+          band(flowEff, 100, `Flow efficiency ${flowEff}% of lead time spent working`),
+          el(
+            "p",
+            { class: "section-note" },
+            "The share of each shipped ticket's lead time spent being worked on rather than waiting (the median).",
+          ),
+        ]),
+      ]),
     ]),
   );
 
@@ -1793,7 +5774,10 @@ async function renderOverview() {
   // the demo dataset. Window-selectable. Every rate is shown WITH the raw counts it
   // derives from, and an empty window renders an explicit note, never a fake 0%.
   {
-    const govPanel = el("div", { class: "card gov-panel" });
+    const govPanel = el("section", {
+      class: "card panel gov-panel",
+      "aria-label": "Referee's record",
+    });
     const pct = (r) => (r && typeof r.rate === "number" ? Math.round(r.rate * 100) : null);
     const tile = (label, r, subFn) => {
       const p = pct(r);
@@ -1825,17 +5809,16 @@ async function renderOverview() {
         }),
       );
       govPanel.appendChild(
+        panelHead("Referee's record", "does review earn its keep", null, { kit: "sky" }),
+      );
+      govPanel.appendChild(
         el("div", { class: "gov-head" }, [
           el(
-            "div",
-            {
-              class: "gov-title",
-              title:
-                "Does gaffer's governance (gates + review + opt-in autonomy) earn its overhead? Computed from YOUR real ticket transitions — not the demo dataset.",
-            },
-            "Governance ROI",
+            "p",
+            { class: "gov-note" },
+            "Governance ROI, from the factory's own ticket transitions: how often review lets a change through, and whether what it lets through stays shipped.",
           ),
-          sel,
+          el("label", { class: "gov-win" }, [el("span", { class: "sr-only" }, "Window"), sel]),
         ]),
       );
       if (!gov || gov.empty) {
@@ -1858,7 +5841,8 @@ async function renderOverview() {
           tile(
             "Rework rate",
             gov.reworkRate,
-            (r) => `${r.numerator} of ${r.denominator} shipped needed rework`,
+            (r) =>
+              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first`,
           ),
           tile(
             "Unattended-safe",
@@ -1875,114 +5859,123 @@ async function renderOverview() {
       );
     };
     paint(health.governance);
-    wrap.appendChild(govPanel);
+    right.appendChild(govPanel);
   }
 
-  // --- Cost banner (H1) -------------------------------------------------------
-  // One small row: total spend all-time + today. Reads from /api/cost which
-  // reads the usage-ledger. Hidden when the ledger is absent / not configured.
-  if (costRes && (costRes.total_usd > 0 || costRes.today_usd > 0 || costRes.ticket_count > 0)) {
-    const fmtUsd = (v) => (typeof v === "number" ? `$${v.toFixed(4)}` : "—");
-    // B28(e): the totals INCLUDE the labelled estimate the runner books for a
-    // killed/timed-out call — the same sum the daemon's day-USD cap halts on, so
-    // "Today" can never read lower than the figure the factory stopped at. The
-    // estimated share is shown marked as such, never passed off as measured.
-    const estNote = (v) =>
-      typeof v === "number" && v > 0
-        ? el(
-            "span",
-            {
-              class: "cost-est",
-              title: `$${v.toFixed(4)} of this is a labelled estimate booked for killed/timed-out calls (not measured usage).`,
-            },
-            `incl. ${fmtUsd(v)} est.`,
-          )
-        : null;
-    wrap.appendChild(
-      el(
-        "div",
-        {
-          class: "cost-banner",
-          // HONESTY: this is an API-EQUIVALENT estimate from Claude Code usage, not real
-          // money — on a Max/Pro subscription the marginal cost is the flat fee. A
-          // timed-out/killed call has no measured usage; the runner books a labelled
-          // conservative estimate for it, which is counted here and marked "est.".
-          title:
-            "API-equivalent estimate from Claude Code usage — NOT real charges on a Max/Pro subscription (there the marginal cost is the flat fee). Killed/timed-out calls carry a labelled conservative estimate (marked est.) — the same figure the runner's daily budget counts.",
-        },
-        [
-          el("span", { class: "cost-item" }, [
-            el("span", { class: "cost-label" }, "All-time (API-equiv)"),
-            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.total_usd)),
-            estNote(costRes.estimated_usd),
-          ]),
-          el("span", { class: "cost-sep" }, "·"),
-          el("span", { class: "cost-item" }, [
-            el("span", { class: "cost-label" }, "Today"),
-            el("span", { class: "cost-val tabnum" }, fmtUsd(costRes.today_usd)),
-            estNote(costRes.today_estimated_usd),
-          ]),
-          el("span", { class: "cost-sep" }, "·"),
-          el("span", { class: "cost-item" }, [
-            el("span", { class: "cost-label" }, "Tickets costed"),
-            el("span", { class: "cost-val tabnum" }, String(costRes.ticket_count)),
-          ]),
-        ],
-      ),
-    );
+  // --- Where the wages go: the usage ledger by kind, the top earners, the totals.
+  // HONESTY: an API-equivalent estimate from Claude Code usage, not real charges on a
+  // Max/Pro subscription. A killed or timed-out call carries a labelled estimate.
+  {
+    const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
+    const maxKind = Math.max(1, ...byKind.map((k) => k.total_cost_usd || 0));
+    const top =
+      costRes && Array.isArray(costRes.top_tickets) ? costRes.top_tickets.slice(0, 3) : [];
+    const byNum = new Map(tickets.map((t) => [t.number, t]));
+    const total =
+      costRes && typeof costRes.total_usd === "number" ? costRes.total_usd : health.total_usd;
+    const est = costRes ? costRes.estimated_usd : health.estimated_usd;
+    const costed = costRes ? costRes.ticket_count : health.ticket_count;
+    if (byKind.length || top.length || total > 0)
+      right.appendChild(
+        el(
+          "section",
+          {
+            class: "card panel wages-panel",
+            "aria-label": "Where the wages go",
+            title:
+              "API-equivalent estimate from Claude Code usage, not real charges on a Max/Pro subscription. Killed or timed-out calls carry a labelled estimate.",
+          },
+          [
+            panelHead(
+              "Where the wages go",
+              typeof total === "number"
+                ? `${money(total)} all-time${est > 0 ? ` incl. ${money(est)} est.` : ""} · ${plural(costed || 0, "ticket")} costed`
+                : "usage ledger",
+              null,
+              { kit: "claret" },
+            ),
+            el("div", { class: "wg-cols" }, [
+              byKind.length
+                ? el("div", { class: "hlist" }, [
+                    el("h3", { class: "fg-h" }, "By kind of call"),
+                    ...byKind.map((k) =>
+                      healthBarRow(
+                        k.kind,
+                        money(k.total_cost_usd),
+                        (k.total_cost_usd || 0) / maxKind,
+                        "amber",
+                      ),
+                    ),
+                  ])
+                : null,
+              top.length
+                ? el("div", { class: "wg-top" }, [
+                    el("h3", { class: "fg-h" }, "Top earners"),
+                    el(
+                      "ol",
+                      { class: "clean wg-earners" },
+                      top.map((x) => {
+                        const tk = byNum.get(x.ticket);
+                        return el("li", {}, [
+                          tk
+                            ? el(
+                                "a",
+                                { class: "wg-num tabnum", href: `#/ticket/${tk.id}` },
+                                `#${x.ticket}`,
+                              )
+                            : el("span", { class: "wg-num tabnum" }, `#${x.ticket}`),
+                          el("span", { class: "wg-title" }, tk ? tk.title : ""),
+                          el("span", { class: "wg-cost tabnum" }, money(x.total_cost_usd)),
+                          el("span", { class: "wg-turns" }, plural(x.num_turns || 0, "turn")),
+                        ]);
+                      }),
+                    ),
+                  ])
+                : null,
+            ]),
+          ],
+        ),
+      );
   }
 
   // --- Development flow + Needs your attention (2-up) -----------------------
-  wrap.appendChild(
+  right.appendChild(
     el("div", { class: "ov-grid ov-2" }, [
       devFlowPanel(tickets, byStatus, now),
-      needsPanel({
-        inReview,
-        blocked,
-        openDecisions,
-        staleClaims,
-        stuck: summary.stuckTickets || [],
-      }),
+      needsPanel({ tickets, byStatus, summary, decisions, claims: claimsRes }),
     ]),
   );
 
-  // --- Progress by repo + Cycle-time chart + Flow-efficiency donut (3-up) ---
-  wrap.appendChild(
-    el("div", { class: "ov-grid ov-3" }, [
-      repoProgressPanel(summary.repoProgress || []),
-      el("div", { class: "card panel" }, [
-        panelHead("Cycle time", "days"),
-        el("div", { class: "chart", html: svgLine(cycleLine, days) }),
-      ]),
-      el("div", { class: "card panel" }, [
-        panelHead("Flow efficiency", "value-add"),
-        el("div", { class: "donut-wrap tone-violet" }, [
-          el("div", { class: "donut", html: svgDonut(flowEff) }),
-          el("div", { class: "donut-center" }, [
-            el("span", { class: "donut-pct tabnum" }, `${flowEff}%`),
-            el("span", { class: "donut-cap" }, "efficient"),
-          ]),
-        ]),
-      ]),
-    ]),
-  );
+  // --- Fitness test: load, queue and faults for the squad, the wage bill and deliveries.
+  {
+    const setting = (k) => {
+      const x = ((settingsRes && settingsRes.settings) || []).find((y) => y.key === k);
+      const v = x ? Number(x.effective ?? x.value) : NaN;
+      return Number.isFinite(v) && v > 0 ? v : null;
+    };
+    const activeClaims = claimsRes
+      ? (claimsRes.claims || []).filter((c) => !c.status || c.status === "active").length
+      : null;
+    right.appendChild(
+      fitnessTestPanel({
+        claims: activeClaims,
+        slots: setting("GAFFER_CONCURRENCY"),
+        ready: byStatus.ready || 0,
+        stale: staleClaims,
+        budget: setting("GAFFER_DAILY_BUDGET_USD"),
+        cost: costRes,
+        health,
+        last7,
+        tickets,
+      }),
+    );
+  }
 
   // --- "Running now" — what's in flight right now (RUN-ACTIVITY) -----------
   // Polls GET /api/runs every ~3s so a triggered background run (Suggest work /
   // onboard / poll-work / merge) is visible while it churns, with its captured
   // log a click away when it finishes. Quiet empty state when nothing's running.
-  wrap.appendChild(runActivityPanel());
-
-  // --- Decisions (inline, when present) ------------------------------------
-  if (decisions.length) {
-    const decCard = el("div", { class: "card decisions-card", id: "decisions" }, [
-      panelHead("Decisions awaiting you", `${decisions.length}`),
-    ]);
-    const well = el("div", { class: "decisions-well" });
-    decisions.forEach((d) => well.appendChild(renderDecisionCard(d)));
-    decCard.appendChild(well);
-    wrap.appendChild(decCard);
-  }
+  left.appendChild(runActivityPanel());
 
   // --- FAILURE-DIAGNOSIS: "these keep bouncing" quality signal --------------
   // Cross-ticket read model: tickets whose rework trail keeps growing, ranked so
@@ -1990,77 +5983,150 @@ async function renderOverview() {
   // actually bouncing (a quiet factory shows no panel).
   const bouncing = (bouncingRes && bouncingRes.bouncing) || [];
   if (bouncing.length) {
-    wrap.appendChild(renderBouncingPanel(bouncing));
+    right.appendChild(renderBouncingPanel(bouncing));
   }
 
-  // --- Live activity --------------------------------------------------------
-  wrap.appendChild(
-    el("div", { class: "card panel" }, [
-      panelHead("Live activity", `${activity.total ?? events.length}`),
-      events.length
-        ? el("ul", { class: "feed" }, events.slice(0, 12).map(renderFeedRow))
-        : el("p", { class: "dim" }, "No activity recorded yet."),
-    ]),
-  );
-
-  return wrap;
+  return [...right.children];
 }
 
 /**
- * Track 2a "What I own": the operator's first-class lane. Surfaces the HUMAN's
- * queue — the decisions/approvals the agent delegated to them — so the operator
- * sees at a glance what is waiting on THEM, distinct from the board (what the
- * agent is churning). Each row: what it is, the reason, its ticket, how long it
- * has waited. A quiet, reassuring empty state when nothing is owed.
+ * The fitness test: for each of the factory's three limits (agent slots, the daily
+ * budget, the delivery line) how loaded it is, what queues behind it and what has
+ * gone wrong — the USE / RED numbers, each from a response, each with its words.
  */
-function whatIOwnPanel(queue) {
-  const items = (queue && queue.items) || [];
-  const total = (queue && queue.counts && queue.counts.total) || items.length;
-  const card = el("div", { class: "card what-i-own", id: "what-i-own" }, [
-    el("div", { class: "panel-head" }, [
-      el("span", { class: "panel-title" }, [icon("lock"), "What I own"]),
-      el("span", { class: "panel-aux mono" }, String(total)),
-    ]),
-    el(
-      "p",
-      { class: "dim what-i-own-sub" },
-      "Decisions and approvals waiting on you — distinct from what the agent is churning.",
-    ),
-  ]);
-  if (!items.length) {
-    card.appendChild(el("div", { class: "empty-state" }, "Nothing is waiting on you right now."));
-    return card;
-  }
-  const well = el("div", { class: "own-well" });
-  items.forEach((it) => well.appendChild(renderOwnedItem(it)));
-  card.appendChild(well);
-  return card;
-}
-
-/** One "What I own" row: kind chip · reason · ticket ref · how long it waited. */
-function renderOwnedItem(it) {
-  const t = it.ticket;
-  const ref = t ? (t.number != null ? `#${t.number}` : t.id.slice(0, 8)) : "—";
-  // Link each item to its ticket; a decision with no ticket links to the
-  // decisions well on the overview so it can still be actioned.
-  const href = t ? `#/ticket/${t.id}` : "#/overview";
-  return el("a", { class: `own-row own-row--${it.kind}`, href }, [
-    el("span", { class: `own-kind own-kind--${it.kind}` }, it.label),
-    el("span", { class: "own-body" }, [
-      el("span", { class: "own-reason" }, it.reason || "(no reason given)"),
-      el("span", { class: "own-meta" }, [
-        el("span", { class: "own-ref mono" }, ref),
-        // Parked items only: the structured park reason_code and advisory action.
-        // Both are short enum-ish strings, but rendered as string children (text
-        // nodes) for uniformity — never interpolated into markup or an attribute.
-        it.reasonCode != null ? el("span", { class: "own-code mono" }, it.reasonCode) : null,
-        it.suggestedAction
-          ? el("span", { class: "own-action dim" }, `→ ${it.suggestedAction}`)
-          : null,
-        el(
-          "span",
-          { class: "own-age dim tabnum", title: `Waiting since ${it.since}` },
-          `waited ${fmtDuration(it.waitedMs)}`,
+function fitnessTestPanel({
+  claims,
+  slots,
+  ready,
+  stale,
+  budget,
+  cost,
+  health,
+  last7,
+  tickets = [],
+}) {
+  const h = health || {};
+  const today = cost && typeof cost.today_usd === "number" ? cost.today_usd : null;
+  const todayEst =
+    cost && typeof cost.today_estimated_usd === "number" ? cost.today_estimated_usd : 0;
+  const days = Array.isArray(h.daily_spend) ? h.daily_spend : [];
+  const overDays = budget ? days.filter((d) => (d.total_cost_usd || 0) > budget).length : null;
+  const rework =
+    h.rework && typeof h.rework.rework_cost_share_pct === "number"
+      ? h.rework.rework_cost_share_pct
+      : null;
+  const reworkRows = h.rework && Array.isArray(h.rework.by_ticket) ? h.rework.by_ticket : null;
+  const reworked = reworkRows ? reworkRows.length : null;
+  // Which tickets were sent back (all-time, from the ledger), and whether any shipped:
+  // the referee's record counts only tickets merged in its window.
+  const statusOf = new Map(tickets.map((t) => [t.number, t.status]));
+  const named = (reworkRows || []).filter((r) => typeof r.ticket === "number");
+  const shippedBack = named.filter((r) => statusOf.get(r.ticket) === "done").length;
+  const reworkSub =
+    rework == null
+      ? "no rework data"
+      : [
+          named.length
+            ? `all-time: ${named
+                .slice(0, 3)
+                .map((r) => `#${r.ticket} ×${r.rework_count}`)
+                .join(", ")}${named.length > 3 ? "…" : ""}`
+            : "tickets, all-time",
+          named.length && statusOf.size
+            ? shippedBack
+              ? `${shippedBack} since shipped`
+              : "none shipped yet"
+            : null,
+          `${rework}% of spend`,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+  const dur = h.duration && h.duration.measured_calls ? h.duration.avg_ms : null;
+  const cell = (label, value, sub, opts = {}) =>
+    el("div", { class: `ft-cell${opts.bad ? " is-bad" : ""}${opts.needs ? " is-needs" : ""}` }, [
+      el("span", { class: "ft-l" }, label),
+      el("span", { class: "ft-v tabnum" }, [
+        opts.bad ? glyph("failed", 16) : null,
+        opts.needs ? ycard(16) : null,
+        value,
+      ]),
+      sub ? el("span", { class: "ft-s" }, sub) : null,
+      opts.after || null,
+    ]);
+  const row = (name, what, cells) =>
+    el("div", { class: "ft-row", role: "group", "aria-label": name }, [
+      el("div", { class: "ft-name" }, [el("b", {}, name), el("span", {}, what)]),
+      ...cells,
+    ]);
+  const slotsFull = slots && claims != null && claims >= slots;
+  const overBudget = budget && today != null && today > budget;
+  return el("section", { class: "card prog fitness-test", "aria-label": "Fitness test" }, [
+    panelHead("Fitness test", "load · queue · faults", null, { kit: "ink" }),
+    el("div", { class: "ft-grid" }, [
+      row("Squad", "agent slots", [
+        cell(
+          "In use",
+          claims == null ? "—" : slots ? `${claims}/${slots}` : String(claims),
+          slots ? (slotsFull ? "every slot taken" : `${slots - claims} free`) : "no slot limit set",
+          {
+            after:
+              slots && claims != null
+                ? band(claims, slots, `${claims} of ${slots} agent slots in use`)
+                : null,
+          },
+        ),
+        cell(
+          "Waiting",
+          String(ready),
+          ready
+            ? `ready, ${slotsFull ? "queued for a slot" : "not yet claimed"}`
+            : "nothing queued",
+        ),
+        cell(
+          "Faults",
+          String(stale || 0),
+          stale ? "stale claims, leases past expiry" : "no stale claims",
+          {
+            bad: stale > 0,
+          },
+        ),
+      ]),
+      row("Wage bill", "daily budget", [
+        cell(
+          "Spent today",
+          today == null ? "—" : money(today),
+          budget ? `of ${moneyW(budget)} a day` : "no daily budget set",
+          {
+            bad: !!overBudget,
+            after:
+              budget && today != null
+                ? band(today, budget, `${money(today)} of ${moneyW(budget)} daily budget spent`)
+                : null,
+          },
+        ),
+        cell(
+          "Days over",
+          overDays == null ? "—" : String(overDays),
+          overDays == null
+            ? "set a daily budget to measure"
+            : `of ${plural(days.length, "day")} with spend`,
+          { bad: overDays > 0 },
+        ),
+        cell(
+          "Estimated",
+          money(todayEst),
+          todayEst ? "today, for killed or timed-out calls" : "no estimates today",
+        ),
+      ]),
+      row("Deliveries", "the delivery line", [
+        cell("Rate", String(last7 || 0), "shipped in 7 days"),
+        cell("Reworked", reworked == null ? "—" : String(reworked), reworkSub),
+        cell(
+          "Per call",
+          dur == null ? "—" : fmtDuration(dur),
+          dur == null
+            ? "no measured calls"
+            : `mean over ${plural(h.duration.measured_calls, "call")}`,
         ),
       ]),
     ]),
@@ -2074,11 +6140,18 @@ function renderOwnedItem(it) {
  */
 function renderBouncingPanel(bouncing) {
   return el("div", { class: "card panel bouncing-panel" }, [
-    panelHead("Repeatedly bouncing", `${bouncing.length}`),
+    panelHead(
+      "Recurring injuries",
+      `${plural(bouncing.length, "ticket")} ${bouncing.length === 1 ? "keeps" : "keep"} bouncing`,
+      null,
+      {
+        kit: "red",
+      },
+    ),
     el(
       "p",
       { class: "dim bouncing-sub" },
-      "Tickets reworking the most — those stuck on the same gate need a human.",
+      "Tickets sent back the most. One that fails the same gate again and again needs a human.",
     ),
     el(
       "ul",
@@ -2100,10 +6173,11 @@ function renderBouncingPanel(bouncing) {
           "li",
           {},
           el("a", { class: "bounce-row", href: `#/ticket/${b.ticket_id}` }, [
-            el("span", { class: "bounce-num mono" }, ref),
+            el("span", { class: "bounce-num" }, ref),
             el("span", { class: "bounce-title" }, b.title || "(untitled)"),
             el("span", { class: "bounce-count", title: "Total rework attempts" }, [
-              `${b.rework_count}×`,
+              el("b", { class: "tabnum" }, `${b.rework_count}×`),
+              " sent back",
             ]),
             sameGate,
           ]),
@@ -2113,36 +6187,147 @@ function renderBouncingPanel(bouncing) {
   ]);
 }
 
-/** A panel header: a title with an optional trailing meta/aux label. */
-function panelHead(title, aux, link) {
-  return el("div", { class: "panel-head" }, [
-    el("span", { class: "panel-title" }, title),
+/**
+ * A section header on a programme page: Big Shoulders caps title + a condensed
+ * count/aux (or a link). `opts.kit` paints it as a kit-colour block across the top
+ * of its .card — "claret" (what needs you), "ink" (the factory's drawings),
+ * "sky" (campaigns / reference), "red" (broken). Use a block for the one or two
+ * sections a view leads with; everything else stays a plain heading.
+ */
+function panelHead(title, aux, link, opts = {}) {
+  const kit = opts.kit;
+  return el("div", { class: kit ? `panel-head block block-${kit}` : "panel-head" }, [
+    el(opts.level || "h2", { class: "panel-title" }, [
+      title,
+      aux != null && link ? el("span", { class: "panel-aux" }, aux) : null,
+    ]),
     link
       ? el("a", { class: "panel-link", href: link.href }, link.text)
-      : aux
-        ? el("span", { class: "panel-aux mono" }, aux)
+      : aux != null && aux !== ""
+        ? el("span", { class: "panel-aux" }, aux)
         : null,
   ]);
 }
 
-/** A KPI card: label, big value + unit, a signed delta chip, and a sparkline. */
-function kpiCard({ label, value, unit, tone, delta, series, goodWhenDown = false }) {
-  const dir = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
-  const good = delta === 0 ? "flat" : delta > 0 !== goodWhenDown ? "good" : "bad";
-  return el("a", { class: `kpi tone-${tone}`, href: "#/work" }, [
-    el("div", { class: "kpi-top" }, [
-      el("span", { class: "kpi-label" }, label),
-      el("span", { class: `kpi-delta ${good}` }, [
-        el("span", { class: "kpi-arrow" }, dir === "up" ? "▲" : dir === "down" ? "▼" : "—"),
-        `${Math.abs(delta)}%`,
-      ]),
-    ]),
+/**
+ * A stat cell (scoreboard / league-table typography): condensed caps label, the
+ * number the server gave us in Big Shoulders, its unit, an optional sub line and
+ * an optional sparkline with its own baseline. No delta chips: a "▲100%" the data
+ * cannot support is not shown. `flip` keys a digit flip on first paint/change.
+ */
+function statCell({ label, value, unit, sub, series, href, flip, needs = false, title, after }) {
+  return el(href ? "a" : "div", { class: "kpi", href, title }, [
+    el("div", { class: "kpi-top" }, [el("span", { class: "kpi-label" }, label)]),
     el("div", { class: "kpi-figure" }, [
-      el("span", { class: "kpi-val tabnum" }, value),
+      el(
+        "span",
+        { class: `kpi-val tabnum${needs ? " y" : ""}`, dataset: flip ? { flip } : undefined },
+        value,
+      ),
       unit ? el("span", { class: "kpi-unit" }, unit) : null,
     ]),
-    el("div", { class: "kpi-spark", html: svgSpark(series) }),
+    sub ? el("div", { class: "kpi-sub" }, sub) : null,
+    series && series.length > 1 ? el("div", { class: "kpi-spark", html: svgSpark(series) }) : null,
+    after || null,
   ]);
+}
+/** @deprecated kept for older callers: a statCell (the delta/tone are ignored). */
+function kpiCard({ label, value, unit, series }) {
+  return statCell({ label, value, unit, series });
+}
+
+/**
+ * Band-and-pointer bar: how much of a limit is used (budget, slots, queue).
+ * `max` is the band; the tick marks the limit; a fill past it turns red.
+ * Returns an element with an accessible label stating both numbers.
+ */
+function band(value, max, label) {
+  const v = Number(value) || 0;
+  const m = Number(max) || 0;
+  const pct = m > 0 ? Math.min(100, (v / m) * 100) : 0;
+  return el("div", { class: "band", role: "img", "aria-label": label || `${v} of ${m}` }, [
+    el("span", { class: `band-fill${m > 0 && v > m ? " over" : ""}`, style: `width:${pct}%` }),
+    m > 0 ? el("span", { class: "band-tick", style: "left:100%" }) : null,
+  ]);
+}
+
+// --- inline SVG chart primitives (no libraries; axes always drawn) -----------
+
+const esc = (t) =>
+  String(t).replace(
+    /[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+  );
+
+/**
+ * A sparkline with a baseline: currentColor line, a dot on the latest value.
+ * Used beside a number that already states the value; returns markup.
+ */
+function svgSpark(series) {
+  const vals = series.map((v) => (v == null || !Number.isFinite(Number(v)) ? 0 : Number(v)));
+  if (vals.length < 2) vals.push(vals[0] ?? 0);
+  const w = 132,
+    h = 28,
+    p = 3;
+  const max = Math.max(...vals),
+    min = Math.min(0, ...vals);
+  const X = (i) => p + (i / (vals.length - 1)) * (w - 2 * p);
+  const Y = (v) => h - p - ((v - min) / (max - min || 1)) * (h - 2 * p);
+  let line = "";
+  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark-svg" aria-hidden="true" focusable="false">
+    <line class="spark-base" x1="${p}" y1="${h - p}" x2="${w - p}" y2="${h - p}"/>
+    <path class="spark-line" d="${line}"/>
+    <circle class="spark-end" cx="${X(vals.length - 1).toFixed(1)}" cy="${Y(vals[vals.length - 1]).toFixed(1)}" r="2.4"/>
+  </svg>`;
+}
+
+/**
+ * A bar chart with a baseline, a max gridline labelled with its value, and a tick
+ * label per bar (thinned when narrow). Every bar carries its value in a <title>;
+ * the chart's accessible name lists all of them. `opts.fmt` formats values,
+ * `opts.today` highlights the last bar, `opts.labels` labels the x axis.
+ */
+function svgBars(series, opts = {}) {
+  const vals = series.map((v) => (v == null || !Number.isFinite(Number(v)) ? 0 : Number(v)));
+  const labels = opts.labels || vals.map((_, i) => String(i + 1));
+  const fmt = opts.fmt || ((v) => String(v));
+  const w = opts.width || 340,
+    h = opts.height || 140,
+    pl = 4,
+    pr = 4,
+    pt = 18,
+    pb = 22;
+  const max = Math.max(1, ...vals);
+  const n = Math.max(1, vals.length);
+  const slot = (w - pl - pr) / n;
+  const bw = Math.max(2, slot * 0.66);
+  const Y = (v) => pt + (1 - v / max) * (h - pt - pb);
+  const every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor((w - pl - pr) / 36))));
+  const bars = vals
+    .map((v, i) => {
+      const x = pl + i * slot + (slot - bw) / 2;
+      const y = Y(v);
+      const cls = `chart-bar${v === 0 ? " is-zero" : ""}${opts.today && i === n - 1 ? " is-today" : ""}`;
+      return `<rect class="${cls}" x="${x.toFixed(1)}" y="${(v === 0 ? h - pb - 1.5 : y).toFixed(1)}" width="${bw.toFixed(1)}" height="${(v === 0 ? 1.5 : h - pb - y).toFixed(1)}"><title>${esc(labels[i])}: ${esc(fmt(v))}</title></rect>`;
+    })
+    .join("");
+  const ticks = labels
+    .map((l, i) =>
+      // The last label always shows; a regular tick closer than one step to it is dropped.
+      i === n - 1 || (i % every === 0 && n - 1 - i >= every)
+        ? `<text class="chart-tick" x="${(pl + i * slot + slot / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle">${esc(l)}</text>`
+        : "",
+    )
+    .join("");
+  const name = `${opts.label ? opts.label + ": " : ""}${labels.map((l, i) => `${l} ${fmt(vals[i])}`).join(", ")}`;
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart-svg" role="img" aria-label="${esc(name)}">
+    <line class="chart-axis" x1="${pl}" y1="${pt}" x2="${w - pr}" y2="${pt}"/>
+    <text class="chart-val" x="${pl}" y="${pt - 5}">${esc(fmt(max))}</text>
+    ${bars}
+    <line class="chart-base" x1="${pl}" y1="${h - pb}" x2="${w - pr}" y2="${h - pb}"/>
+    ${ticks}
+  </svg>`;
 }
 
 /**
@@ -2159,23 +6344,43 @@ const PIPELINE_STAGES = [
   {
     label: "Plan",
     icon: "gitbranch",
+    glyph: "draft",
+    zone: "On the bench",
     statuses: ["draft", "refining"],
     href: "#/work?status=draft",
   },
-  { label: "Ready", icon: "inbox", statuses: ["ready"], href: "#/work?status=ready" },
+  {
+    label: "Ready",
+    icon: "inbox",
+    glyph: "ready",
+    zone: "Own box",
+    statuses: ["ready"],
+    href: "#/work?status=ready",
+  },
   {
     label: "Build",
     icon: "wrench",
+    glyph: "in_progress",
+    zone: "Our half",
     statuses: ["in_progress", "claimed"],
     href: "#/work?status=in_progress",
   },
   {
     label: "Review",
     icon: "clipboardcheck",
+    glyph: "in_review",
+    zone: "Their box",
     statuses: ["in_review", "in_testing", "ready_for_merge"],
     href: "#/review",
   },
-  { label: "Deploy", icon: "diamond", statuses: ["done", "shipped"], href: "#/work?status=done" },
+  {
+    label: "Deploy",
+    icon: "diamond",
+    glyph: "done",
+    zone: "In the net",
+    statuses: ["done", "shipped"],
+    href: "#/work?status=done",
+  },
 ];
 
 function devFlowPanel(_tickets, byStatus, _now) {
@@ -2187,8 +6392,15 @@ function devFlowPanel(_tickets, byStatus, _now) {
 
   return el("div", { class: "card panel pipeline-panel" }, [
     el("div", { class: "panel-head" }, [
-      el("span", { class: "panel-title" }, "Development flow"),
-      el("span", { class: "pl-live" }, [el("span", { class: "pl-live-dot" }), "LIVE"]),
+      el("h2", { class: "panel-title" }, [
+        "Phases of play",
+        el("span", { class: "panel-aux" }, "bench to net"),
+      ]),
+      // When these counts were read — a fact from the response, not a "LIVE" lamp.
+      el("span", { class: "pl-live", title: "The time these counts were read from the factory" }, [
+        "as of ",
+        el("time", { datetime: new Date().toISOString() }, clockTime(Date.now())),
+      ]),
     ]),
     el(
       "div",
@@ -2204,9 +6416,10 @@ function devFlowPanel(_tickets, byStatus, _now) {
             "aria-label": `${n.label}: ${n.count}`,
           },
           [
-            el("span", { class: "pl-disc" }, icon(n.icon)),
             el("span", { class: "pl-label" }, n.label),
+            el("span", { class: "pl-disc" }, glyph(n.glyph, 20)),
             el("span", { class: "pl-count tabnum" }, String(n.count)),
+            el("span", { class: "pl-zone" }, n.zone),
           ],
         );
       }),
@@ -2215,72 +6428,172 @@ function devFlowPanel(_tickets, byStatus, _now) {
 }
 
 /**
- * Needs your attention: the human-gate queue as severity-coded alert rows. Each
- * row carries a left status icon keyed to severity — a red diamond for a
- * critical/failing condition (blocked work), an amber triangle for something
- * waiting/overdue (review queue, open decisions, at-risk/stale tickets) — a bold
- * title + a muted sub-line (the detail), and a right-aligned action link that
- * routes to the relevant view. All items derive from real overview state; when
- * nothing is owed the panel keeps its reassuring green all-clear row.
+ * The treatment table: what is wrong with the factory right now, one line per
+ * complaint, worst first. Each line is a link to where it is treated, with its
+ * tickets as numbered links under it.
  */
-function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
+function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [], claims = null }) {
+  // Each ticket is on the table once, under its worst complaint, so the lines add
+  // up to the total the header and the verdict state. With no ticket list the
+  // counts come from the dashboard summary (the lines cannot overlap there).
+  const have = tickets.length > 0;
+  const taken = new Set();
+  const take = (list) => list.filter((t) => (taken.has(t.id) ? false : taken.add(t.id)));
+  const ofStatus = (st) => take(tickets.filter((t) => t.status === st));
+  const sortOld = (list) =>
+    [...list].sort((a, b) => String(a.updated_at || "").localeCompare(String(b.updated_at || "")));
+  // The summary counts stale claims on the factory's clock; the claims that expired
+  // first are the stale ones.
+  const nStale = summary.staleClaims || 0;
+  const staleClaims =
+    claims && nStale
+      ? (claims.claims || [])
+          .filter((c) => (!c.status || c.status === "active") && c.expires_at)
+          .sort((a, b) => String(a.expires_at).localeCompare(String(b.expires_at)))
+          .slice(0, nStale)
+      : null;
+  const pendingDecisions = decisions.filter((d) => !d.resolved_at);
   const items = [];
-  if (blocked > 0)
-    items.push({
-      severity: "critical",
-      title: `${blocked} blocked ${blocked === 1 ? "task" : "tasks"}`,
-      sub: "waiting on a human to clear the path",
-      action: "View",
-      href: "#/work?status=blocked",
-    });
-  if (inReview > 0)
-    items.push({
-      severity: "waiting",
-      title: `Review queue · ${inReview}`,
-      sub: "changes waiting on your sign-off",
-      action: "Review",
-      href: "#/review",
-    });
-  if (openDecisions > 0)
-    items.push({
-      severity: "waiting",
-      title: `${openDecisions} open ${openDecisions === 1 ? "decision" : "decisions"}`,
-      sub: "a question is waiting on you",
-      action: "Review",
-      href: "#/overview",
-    });
-  if ((stuck || []).length)
-    items.push({
-      severity: "waiting",
-      title: `${stuck.length} at risk`,
-      sub: `held too long — oldest ${fmtDuration(stuck[0].stuckForMs)}`,
-      action: "View",
-      href: "#/work",
-    });
-  if (staleClaims > 0)
-    items.push({
-      severity: "waiting",
-      title: `${staleClaims} stale ${staleClaims === 1 ? "claim" : "claims"}`,
-      sub: "leases past expiry",
-      action: "View",
-      href: "#/work",
+  const add = (it) => it.count > 0 && items.push(it);
+
+  const blocked = have ? sortOld(ofStatus("blocked")) : null;
+  add({
+    severity: "critical",
+    count: blocked ? blocked.length : (summary.blocked ?? byStatus.blocked ?? 0),
+    title: (n) => `${n} blocked ${n === 1 ? "task" : "tasks"}`,
+    sub: "waiting on a human to clear the path",
+    action: "View",
+    href: "#/work?status=blocked",
+    tickets: blocked,
+  });
+  const failed = have ? sortOld(ofStatus("failed")) : null;
+  add({
+    severity: "critical",
+    count: failed ? failed.length : byStatus.failed || 0,
+    title: (n) => `${n} failed ${n === 1 ? "ticket" : "tickets"}`,
+    sub: "out of attempts: reopen it or close it",
+    action: "View",
+    href: "#/work?status=failed",
+    tickets: failed,
+  });
+  const review = have ? sortOld(ofStatus("in_review")) : null;
+  add({
+    severity: "waiting",
+    count: review ? review.length : byStatus.in_review || 0,
+    title: (n) => `${n} ${n === 1 ? "change" : "changes"} to review`,
+    sub: "waiting on your sign-off",
+    action: "Review",
+    href: "#/review",
+    tickets: review,
+  });
+  const merge = have ? sortOld(ofStatus("ready_for_merge")) : null;
+  add({
+    severity: "waiting",
+    count: merge ? merge.length : byStatus.ready_for_merge || 0,
+    title: (n) => `${n} approved, not merged`,
+    sub: "signed off and waiting to merge",
+    action: "View",
+    href: "#/work?status=ready_for_merge",
+    tickets: merge,
+  });
+  const nDec = summary.openDecisions ?? pendingDecisions.length;
+  add({
+    severity: "waiting",
+    count: nDec,
+    title: (n) => `${n} open ${n === 1 ? "decision" : "decisions"}`,
+    sub:
+      pendingDecisions.length === 1 && pendingDecisions[0].title
+        ? `“${pendingDecisions[0].title}”`
+        : "a question is waiting on you",
+    action: "Answer",
+    // The team sheet on the Overview is where a decision is answered.
+    href: "#/overview",
+  });
+  // Stale claims: a lease past expiry is a fault in the squad, not a wait on you.
+  const staleIds = staleClaims ? new Set(staleClaims.map((c) => c.ticket_id)) : null;
+  const stale = staleIds && have ? take(tickets.filter((t) => staleIds.has(t.id))) : null;
+  add({
+    severity: "fault",
+    count: stale ? stale.length : nStale,
+    title: (n) => `${n} stale ${n === 1 ? "claim" : "claims"}`,
+    sub: "an agent's lease ran out mid-ticket",
+    action: "View",
+    href: "#/work",
+    tickets: stale,
+  });
+  // Held too long: in flight (an agent has it, or it is paused), past the stuck
+  // threshold, and not already counted above. A draft or a ready ticket that has
+  // waited a day is a queue, not an injury: it goes to the phases of play as a
+  // flow note (card._waiting), so a normal backlog never keeps Health in alarm.
+  const stuckAll = (summary.stuckTickets || []).map((s) => ({ ...s, updated_at: s.since }));
+  const waiting = stuckAll.filter((s) => HELD_WAITING.has(s.status));
+  const stuck = take(stuckAll.filter((s) => !HELD_WAITING.has(s.status)));
+  const hours = summary.stuckThresholdHours;
+  if (stuck.length)
+    add({
+      severity: "held",
+      count: stuck.length,
+      title: (n) => `${n} held too long`,
+      sub: `in one state over ${hours ? `${hours}h` : "the limit"} · oldest ${fmtDuration(stuck[0].stuckForMs)} (#${stuck[0].number}, ${statusLabel(stuck[0].status).toLowerCase()})`,
+      ...(stuck.length === 1
+        ? { action: "Open", href: `#/ticket/${stuck[0].id}` }
+        : new Set(stuck.map((x) => x.status)).size === 1
+          ? { action: "View", href: `#/work?status=${stuck[0].status}` }
+          : { action: "Board", href: "#/work" }),
+      tickets: stuck,
     });
 
-  // red diamond = critical/failing · amber triangle = waiting/overdue
-  const sevIcon = (severity) => icon(severity === "critical" ? "diamond" : "alert");
+  // Referee's marks: red for blocked or failed, a yellow card for what waits on
+  // you, a stopwatch for what is held, the red triangle for a fault.
+  const sevIcon = (severity) =>
+    severity === "critical"
+      ? glyph("blocked", 18)
+      : severity === "fault"
+        ? glyph("failed", 18)
+        : severity === "held"
+          ? icon("clock", "ni-clock", 20)
+          : ycard(20);
+  const total = items.reduce((a, n) => a + n.count, 0);
+  const chips = (list, href) => {
+    if (!list || !list.length) return null;
+    const shown = list.slice(0, 5);
+    return el("span", { class: "ni-tks" }, [
+      ...shown.map((t) =>
+        el(
+          "a",
+          {
+            class: "ni-tk tabnum",
+            href: `#/ticket/${t.id}`,
+            title: t.title || "",
+            "aria-label": `#${t.number} ${t.title || ""}`,
+          },
+          `#${t.number}`,
+        ),
+      ),
+      list.length > shown.length
+        ? el(
+            "a",
+            {
+              class: "ni-tk-more",
+              href,
+              "aria-label": `${list.length - shown.length} more`,
+            },
+            `+${list.length - shown.length}`,
+          )
+        : null,
+    ]);
+  };
 
   const body = items.length
     ? el(
         "ul",
         { class: "needs-list" },
         items.map((n) =>
-          el(
-            "li",
-            { class: `needs-item`, dataset: { sev: n.severity } },
+          el("li", { class: "needs-item", dataset: { sev: n.severity, count: String(n.count) } }, [
             el("a", { class: "ni-link", href: n.href }, [
               el("span", { class: "ni-icon" }, sevIcon(n.severity)),
               el("span", { class: "ni-body" }, [
-                el("span", { class: "ni-title" }, n.title),
+                el("span", { class: "ni-title" }, n.title(n.count)),
                 el("span", { class: "ni-sub" }, n.sub),
               ]),
               el("span", { class: "ni-action" }, [
@@ -2288,148 +6601,68 @@ function needsPanel({ inReview, blocked, openDecisions, staleClaims, stuck }) {
                 el("span", { class: "ni-arrow" }, "→"),
               ]),
             ]),
-          ),
+            chips(n.tickets, n.href),
+          ]),
         ),
       )
-    : el("div", { class: "needs-empty" }, [
-        icon("check"),
-        "All clear — nothing is waiting on you.",
-      ]);
+    : el("div", { class: "needs-empty" }, [icon("check"), "All clear: nothing is waiting on you."]);
 
-  return el("div", { class: "card panel needs-hero" }, [
-    panelHead(
-      "Needs your attention",
-      null,
-      items.length ? { text: "View all", href: "#/work" } : null,
-    ),
+  const card = el("div", { class: "card panel needs-hero" }, [
+    panelHead("Treatment table", items.length ? plural(total, "thing") : "all clear", null, {
+      kit: items.length ? "red" : "sky",
+    }),
     body,
   ]);
+  card.dataset.total = String(total);
+  card._waiting = { list: waiting, hours: summary.stuckThresholdHours };
+  return card;
 }
 
-/** Progress by repository. Repo names are real; per-repo progress is illustrative
- *  demo data until the control plane exposes per-repo completion. */
-/** Progress by repository — real per-repo completion from the control plane
- *  (DashboardSummary.repoProgress): a done-share bar + in-flight/blocked hint. */
-function repoProgressPanel(rows) {
-  const list = rows.slice(0, 6);
-  return el("div", { class: "card panel" }, [
-    panelHead("Progress by repository", `${rows.length} ${rows.length === 1 ? "repo" : "repos"}`),
-    list.length
-      ? el(
-          "div",
-          { class: "repo-prog" },
-          list.map((r) => {
-            const warn = r.blocked > 0 || r.pct < 35;
-            const note = r.blocked
-              ? `${r.blocked} blocked`
-              : r.inFlight
-                ? `${r.inFlight} in flight`
-                : `${r.done}/${r.total} done`;
-            return el("div", { class: "rp-row", title: `${r.done}/${r.total} tickets done` }, [
-              el("span", { class: `rp-dot ${warn ? "warn" : "ok"}` }),
-              el("span", { class: "rp-name" }, [
-                el("span", { class: "rp-repo" }, r.repo),
-                el("span", { class: "rp-note" }, note),
-              ]),
-              el(
-                "span",
-                { class: "rp-bar" },
-                el("i", { class: warn ? "warn" : "", style: `width:${Math.max(3, r.pct)}%` }),
-              ),
-              el("span", { class: "rp-pct tabnum" }, `${r.pct}%`),
-            ]);
-          }),
-        )
-      : el("p", { class: "dim" }, "No repositories linked to tickets yet."),
+/** Statuses where a ticket waits its turn: held long there is a queue, not an injury. */
+const HELD_WAITING = new Set(["draft", "refining", "ready"]);
+
+/**
+ * The flow note under the phases of play: what has waited past the stuck limit on
+ * the bench or in its box, oldest first, each a link. Null when nothing has.
+ */
+function waitingNote(w) {
+  if (!w || !w.list || !w.list.length) return null;
+  const list = w.list;
+  const by = (st) => list.filter((t) => t.status === st).length;
+  const where = [
+    by("draft") + by("refining") ? `${by("draft") + by("refining")} on the bench` : null,
+    by("ready") ? `${by("ready")} ready, not yet claimed` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const shown = list.slice(0, 6);
+  return el("p", { class: "pl-wait" }, [
+    icon("clock", "pl-wait-ico", 18),
+    el("span", {}, [
+      el(
+        "b",
+        {},
+        `${plural(list.length, "ticket")} waiting over ${w.hours ? `${w.hours}h` : "a day"}`,
+      ),
+      ` (${where}). Oldest ${fmtDuration(list[0].stuckForMs)}. A queue, not an injury: `,
+      ...shown.flatMap((t, i) => [
+        i ? " " : "",
+        el(
+          "a",
+          {
+            href: `#/ticket/${t.id}`,
+            title: t.title || "",
+            "aria-label": `#${t.number} ${t.title || ""}`,
+          },
+          `#${t.number}`,
+        ),
+      ]),
+      list.length > shown.length
+        ? [" and ", el("a", { href: "#/work" }, `${list.length - shown.length} more`)]
+        : null,
+      ".",
+    ]),
   ]);
-}
-
-// --- tiny hand-rolled SVG charts (no libraries) -----------------------------
-
-/** A compact sparkline; uses currentColor so the KPI tone drives the colour. */
-function svgSpark(series) {
-  const vals = series.map((v) => (v == null ? 0 : v));
-  if (vals.length < 2) vals.push(vals[0] ?? 0);
-  const w = 132,
-    h = 38,
-    p = 4;
-  const max = Math.max(...vals),
-    min = Math.min(...vals);
-  const X = (i) => p + (i / (vals.length - 1)) * (w - 2 * p);
-  const Y = (v) => h - p - ((v - min) / (max - min || 1)) * (h - 2 * p);
-  let line = "";
-  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
-  const area = `${line}L${X(vals.length - 1).toFixed(1)} ${h - p} L${X(0).toFixed(1)} ${h - p} Z`;
-  const gid = "sp" + Math.random().toString(36).slice(2, 8);
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark-svg">
-    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0.30"/>
-      <stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
-    <path d="${area}" fill="url(#${gid})"/>
-    <path d="${line}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="${X(vals.length - 1).toFixed(1)}" cy="${Y(vals[vals.length - 1]).toFixed(1)}" r="2.4" fill="currentColor"/>
-  </svg>`;
-}
-
-/** A line chart with a soft area fill, dots and a few x-axis ticks. */
-function svgLine(series, days) {
-  const vals = series.map((v) => (v == null ? 0 : v));
-  const w = 340,
-    h = 150,
-    pl = 6,
-    pr = 6,
-    pt = 12,
-    pb = 22;
-  const max = Math.max(1, ...vals),
-    min = Math.min(...vals, 0);
-  const X = (i) => pl + (i / (vals.length - 1)) * (w - pl - pr);
-  const Y = (v) => h - pb - ((v - min) / (max - min || 1)) * (h - pt - pb);
-  let line = "";
-  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
-  const area = `${line}L${X(vals.length - 1).toFixed(1)} ${h - pb} L${X(0).toFixed(1)} ${h - pb} Z`;
-  const grid = [0.25, 0.5, 0.75, 1]
-    .map((f) => {
-      const y = (pt + (h - pt - pb) * (1 - f)).toFixed(1);
-      return `<line x1="${pl}" y1="${y}" x2="${w - pr}" y2="${y}" class="cg"/>`;
-    })
-    .join("");
-  const ticks = days
-    .map((d, i) =>
-      i % 3 === 0 ? `<text x="${X(i).toFixed(1)}" y="${h - 6}" class="cx">${d.lbl}</text>` : "",
-    )
-    .join("");
-  const dots = vals
-    .map((v, i) =>
-      i % 3 === 0 || i === vals.length - 1
-        ? `<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="2.4" class="cd"/>`
-        : "",
-    )
-    .join("");
-  const gid = "ln" + Math.random().toString(36).slice(2, 8);
-  return `<svg viewBox="0 0 ${w} ${h}" class="chart-svg" preserveAspectRatio="none">
-    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0.22"/>
-      <stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
-    ${grid}
-    <path d="${area}" fill="url(#${gid})"/>
-    <path d="${line}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    ${dots}${ticks}
-  </svg>`;
-}
-
-/** A donut gauge; the filled arc uses currentColor (tone-driven). */
-function svgDonut(pct) {
-  const r = 46,
-    cx = 60,
-    cy = 60,
-    c = 2 * Math.PI * r;
-  const off = c * (1 - Math.max(0, Math.min(100, pct)) / 100);
-  return `<svg viewBox="0 0 120 120" class="donut-svg">
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--line)" stroke-width="11"/>
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="currentColor" stroke-width="11"
-      stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"
-      transform="rotate(-90 ${cx} ${cy})"/>
-  </svg>`;
 }
 
 /** One reverse-chronological activity row: time · ticket · event · actor. */
@@ -2507,11 +6740,7 @@ function renderFeedRow(ev) {
       { class: `feed-event ev-${ev.event_type.split(".")[0]}` },
       humanizeEvent(ev.event_type),
     ),
-    el(
-      "span",
-      { class: "feed-actor dim" },
-      `${ev.actor_type}${ev.actor_id ? ` · ${ev.actor_id}` : ""}`,
-    ),
+    el("span", { class: "feed-actor dim" }, actorName(ev.actor_type, ev.actor_id)),
   ]);
 }
 
@@ -2543,12 +6772,13 @@ const BOARD_COLUMN_LABELS = {
   blocked: "Blocked",
   in_review: "In review",
   in_testing: "In testing",
-  ready_for_merge: "Approved · merging",
+  // The comp's lane head; one line at 1440, and the header line's own words.
+  ready_for_merge: "Ready for merge",
   done: "Done",
 };
 
 // Work-view state, seeded from the URL query so filters/mode are shareable.
-const workState = { mode: "board", status: "", repo: "", risk: "" };
+const workState = { mode: "board", status: "", repo: "", risk: "", q: "" };
 
 function readWorkStateFromUrl() {
   const { query } = parseHash();
@@ -2556,15 +6786,21 @@ function readWorkStateFromUrl() {
   workState.status = query.get("status") || "";
   workState.repo = query.get("repo") || "";
   workState.risk = query.get("risk") || "";
+  workState.q = query.get("q") || "";
 }
-function writeWorkStateToUrl() {
+/** The Work address for the current mode and filters (the number-or-title filter too). */
+function workUrl() {
   const qs = new URLSearchParams();
   if (workState.mode === "list") qs.set("mode", "list");
   if (workState.status) qs.set("status", workState.status);
   if (workState.repo) qs.set("repo", workState.repo);
   if (workState.risk) qs.set("risk", workState.risk);
+  if (workState.q.trim()) qs.set("q", workState.q.trim());
   const q = qs.toString();
-  navigate(`#/work${q ? `?${q}` : ""}`);
+  return `#/work${q ? `?${q}` : ""}`;
+}
+function writeWorkStateToUrl() {
+  navigate(workUrl());
 }
 
 /**
@@ -2596,9 +6832,10 @@ function pollWorkButton() {
   const btn = el(
     "button",
     {
-      class: "btn",
+      class: "btn primary",
       type: "button",
-      title: "Trigger one factory tick now so claimable work gets picked up",
+      title:
+        "Run one factory tick now, so ready work is picked up without waiting for the next cycle",
       onclick: () =>
         runAsyncAction(btn, "Polling…", async () => {
           const res = await api("POST", "/poll-work");
@@ -2615,7 +6852,7 @@ function pollWorkButton() {
           router();
         }),
     },
-    [icon("activity"), el("span", {}, "Poll for work")],
+    [el("span", {}, "Poll for work")],
   );
   return btn;
 }
@@ -2635,7 +6872,7 @@ function openSuggestWorkPicker(repos, nodes) {
 
   const repoBlock = el("div", { class: "where-block" }, [field("Repository", repoSel)]);
   const nodeBlock = el("div", { class: "where-block" }, [
-    field("Scope node", nodeSel),
+    field("Ground (scope node)", nodeSel),
     el(
       "p",
       { class: "mode-note dim" },
@@ -2715,19 +6952,24 @@ function openSuggestWorkPicker(repos, nodes) {
       },
     },
     [
-      el("div", { class: "mode-toggle" }, [
+      el(
+        "p",
+        { class: "suggest-intro" },
+        "The product owner reads the code and proposes new tickets. They arrive in the Draft lane for you to read before anything is readied.",
+      ),
+      el("div", { class: "mode-toggle", role: "radiogroup", "aria-label": "What to scout" }, [
         el("label", { class: "mode-option" }, [
           repoMode,
           el("span", {}, [
-            el("strong", {}, "Repo-level"),
-            el("span", { class: "dim" }, " — one repo"),
+            el("strong", {}, "One repo"),
+            el("span", { class: "dim" }, "Scout a single repository"),
           ]),
         ]),
         el("label", { class: "mode-option" }, [
           nodeMode,
           el("span", {}, [
-            el("strong", {}, "Node-level"),
-            el("span", { class: "dim" }, " — a scope's repos"),
+            el("strong", {}, "A ground"),
+            el("span", { class: "dim" }, "Every repo on one Map node"),
           ]),
         ]),
       ]),
@@ -2737,6 +6979,7 @@ function openSuggestWorkPicker(repos, nodes) {
     ],
   );
 
+  form.classList.add("suggest-form");
   openSheet("Suggest work", form);
 }
 
@@ -2776,9 +7019,9 @@ function runDuration(run) {
 }
 
 /** Open the captured log for a finished run in a sheet (best-effort fetch). */
-async function viewRunLog(run) {
+async function viewRunLog(run, title) {
   const body = el("div", { class: "run-log" }, [el("p", { class: "dim" }, "Loading log…")]);
-  openSheet(`${runKindLabel(run.kind)} log`, body);
+  openSheet(title || `${runKindLabel(run.kind)} log`, body);
   try {
     const tok = authToken();
     const res = await fetch(`/api/runs/${encodeURIComponent(run.id)}/log`, {
@@ -2797,7 +7040,12 @@ async function viewRunLog(run) {
     }
     const text = await res.text();
     body.appendChild(
-      el("pre", { class: "run-log-pre" }, text && text.trim() ? text : "(log is empty)"),
+      // A long log scrolls inside its <pre>: focusable and named (axe scrollable-region-focusable).
+      el(
+        "pre",
+        { class: "run-log-pre", tabindex: "0", role: "region", "aria-label": "Run log" },
+        text && text.trim() ? text : "(log is empty)",
+      ),
     );
   } catch {
     clear(body);
@@ -2843,7 +7091,7 @@ function viewRunDetail(runId, kindLabel) {
     };
   }
 
-  const fmtCost = (usd) => (usd > 0 ? `$${usd.toFixed(4)}` : null);
+  const fmtCost = (usd) => (usd > 0 ? money(usd) : null);
   const fmtTurns = (n) => (n > 0 ? `${n} turn${n === 1 ? "" : "s"}` : null);
 
   const renderDetail = (detail) => {
@@ -2866,7 +7114,7 @@ function viewRunDetail(runId, kindLabel) {
             class: "run-detail-chip dim",
             title: "includes the runner's estimate for killed / timed-out calls",
           },
-          `incl. $${detail.estimated_usd.toFixed(4)} est.`,
+          `incl. ${money(detail.estimated_usd)} est.`,
         ),
       );
     }
@@ -2902,7 +7150,16 @@ function viewRunDetail(runId, kindLabel) {
 
     if (detail.log_tail) {
       logSection.appendChild(
-        el("pre", { class: "run-log-pre run-detail-log-pre" }, detail.log_tail),
+        el(
+          "pre",
+          {
+            class: "run-log-pre run-detail-log-pre",
+            tabindex: "0",
+            role: "region",
+            "aria-label": "Run log, latest lines",
+          },
+          detail.log_tail,
+        ),
       );
     } else if (detail.run.status !== "running") {
       logSection.appendChild(el("p", { class: "dim" }, "No log captured for this run."));
@@ -2947,7 +7204,7 @@ function viewRunDetail(runId, kindLabel) {
  */
 function runCostChip(costUsd) {
   if (!costUsd || costUsd <= 0) return null;
-  return el("span", { class: "run-cost-chip tabnum dim" }, `$${costUsd.toFixed(4)}`);
+  return el("span", { class: "run-cost-chip tabnum dim" }, money(costUsd));
 }
 
 /** One active run row: kind · repo · phase · elapsed · spinner · detail button. */
@@ -2965,7 +7222,13 @@ function activeRunRow(run) {
     [
       el("span", { class: "run-spinner", "aria-hidden": "true" }),
       el("span", { class: "run-kind" }, runKindLabel(run.kind)),
-      run.repo ? el("span", { class: "run-repo dim" }, run.repo) : null,
+      run.repo
+        ? el(
+            "span",
+            { class: "run-repo dim", title: run.repo },
+            String(run.repo).split("/").filter(Boolean).pop() || run.repo,
+          )
+        : null,
       phaseChip,
       costChip,
       el(
@@ -2983,7 +7246,13 @@ function finishedRunRow(run) {
   const costChip = runCostChip(run._cost_usd);
   return el("li", { class: "run-row run-done" }, [
     el("span", { class: "run-kind" }, runKindLabel(run.kind)),
-    run.repo ? el("span", { class: "run-repo dim" }, run.repo) : null,
+    run.repo
+      ? el(
+          "span",
+          { class: "run-repo dim", title: run.repo },
+          String(run.repo).split("/").filter(Boolean).pop() || run.repo,
+        )
+      : null,
     phaseChip,
     runStatusBadge(run.status),
     costChip,
@@ -3015,8 +7284,8 @@ function finishedRunRow(run) {
  */
 function runActivityPanel() {
   const POLL_MS = 3000;
-  const card = el("div", { class: "card run-activity", id: "running-now" }, [
-    el("h2", {}, [icon("activity"), "Running now"]),
+  const card = el("div", { class: "card panel run-activity", id: "running-now" }, [
+    panelHead("Running now", "background runs: polls, suggestions, merges", null, { kit: "ink" }),
   ]);
   const listWrap = el("div", { class: "run-activity-body" }, [
     el("p", { class: "dim" }, "Loading runs…"),
@@ -3029,16 +7298,25 @@ function runActivityPanel() {
     clear(listWrap);
     if ((!active || active.length === 0) && (!recent || recent.length === 0)) {
       listWrap.appendChild(
-        emptyState("Nothing running", "Background runs you trigger show up here.", "activity"),
+        emptyState("Nothing running.", "Polls, suggestions and merges you start show up here."),
       );
       return;
     }
     if (active && active.length) {
-      listWrap.appendChild(el("ul", { class: "run-list" }, active.map(activeRunRow)));
+      listWrap.appendChild(el("div", { class: "run-recent-title dim" }, "In play now"));
+      listWrap.appendChild(el("ul", { class: "run-list run-now" }, active.map(activeRunRow)));
     }
     if (recent && recent.length) {
       listWrap.appendChild(el("div", { class: "run-recent-title dim" }, "Recently finished"));
-      listWrap.appendChild(el("ul", { class: "run-list" }, recent.map(finishedRunRow)));
+      // The last six; the rest fold away (a busy day lists dozens).
+      listWrap.appendChild(el("ul", { class: "run-list" }, recent.slice(0, 6).map(finishedRunRow)));
+      if (recent.length > 6)
+        listWrap.appendChild(
+          el("details", { class: "run-more" }, [
+            el("summary", {}, `${recent.length - 6} more finished`),
+            el("ul", { class: "run-list" }, recent.slice(6).map(finishedRunRow)),
+          ]),
+        );
     }
   };
 
@@ -3102,102 +7380,328 @@ function runActivityPanel() {
   return card;
 }
 
-async function renderWork() {
-  readWorkStateFromUrl();
-
-  // Board endpoint powers the board; the filtered /tickets list powers list mode.
-  // Repos + scope nodes feed the "Suggest work" target picker (Feature B).
-  const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
-  const [board, reposRes, nodesRes] = await Promise.all([
-    api("GET", `/api/board${boardQs}`),
+// Repos + scope nodes change rarely; the 9s refresh reuses them for a minute
+// instead of re-fetching both on every tick (board-unbounded-render).
+const WORK_REF_TTL_MS = 60000;
+let workRefCache = null;
+async function workReference() {
+  if (workRefCache && Date.now() - workRefCache.at < WORK_REF_TTL_MS) return workRefCache;
+  const [reposRes, nodesRes] = await Promise.all([
     api("GET", "/repositories"),
     api("GET", "/scope/nodes"),
   ]);
-  const repos = reposRes.repositories || [];
-  const nodes = nodesRes.nodes || [];
-  const columns = board.columns || [];
-  const closed = board.closed || [];
-  const wontDo = board.wontDo || [];
-  const live = columns.reduce((n, c) => n + (c.cards || []).length, 0);
+  workRefCache = {
+    at: Date.now(),
+    repos: reposRes.repositories || [],
+    nodes: nodesRes.nodes || [],
+  };
+  return workRefCache;
+}
 
-  const wrap = el("div", { class: "view" });
+// --- View: Work (the board on mown lanes, and the list as a league table) ----
+//
+// The comp's Work board: scoreboard-black lane heads with their true counts over
+// mown-grass lanes, paper cards with a hard counter shadow, a yellow card on what
+// waits on you and a red frame on what is blocked. A card is an <article>: its
+// title is the link (stretched over the card), so Move, the repo and the by-hand
+// actions are real buttons beside it, never inside a link. On a phone the lanes
+// stack in urgency order and fold, and the fold a viewer chose survives the 9s
+// refresh. The list is a league table, most urgent first.
 
-  const modeToggle = el("div", { class: "segmented", role: "tablist", "aria-label": "View mode" }, [
-    el(
-      "button",
-      {
-        class: workState.mode === "board" ? "active" : "",
-        type: "button",
-        role: "tab",
-        "aria-selected": String(workState.mode === "board"),
-        onclick: () => {
-          workState.mode = "board";
-          writeWorkStateToUrl();
-        },
-      },
-      [icon("work"), "Board"],
-    ),
-    el(
-      "button",
-      {
-        class: workState.mode === "list" ? "active" : "",
-        type: "button",
-        role: "tab",
-        "aria-selected": String(workState.mode === "list"),
-        onclick: () => {
-          workState.mode = "list";
-          writeWorkStateToUrl();
-        },
-      },
-      [icon("overview"), "List"],
-    ),
-  ]);
+/** Urgency, the list's sort (the phone's lane order is the same, in CSS): paused with blocked, refining with draft … */
+const STATUS_URGENCY = {
+  blocked: 0,
+  paused: 0,
+  failed: 0,
+  in_review: 1,
+  claimed: 2,
+  in_progress: 2,
+  ready_for_merge: 3,
+  in_testing: 4,
+  ready: 5,
+  draft: 6,
+  refining: 6,
+  done: 7,
+  cancelled: 8,
+};
+/** True at phone width (≤760px); false where matchMedia is absent (tests). */
+function isPhoneWidth() {
+  return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
+}
+// Phone lanes fold. What the viewer opened or closed is kept for the session, so
+// the 9s refresh never re-folds a lane they are reading.
+const laneOpenState = new Map();
+function laneStartsOpen(column, count) {
+  if (laneOpenState.has(column)) return laneOpenState.get(column);
+  return count > 0 && column !== "draft" && column !== "done";
+}
 
-  wrap.appendChild(
-    viewHero({
-      image: "assets/bg/hero-factory.jpg",
-      eyebrow: `${live} LIVE · ${wontDo.length} WON'T DO · ${closed.length} CLOSED`,
-      title: "Work",
-      subtitle: "Plan, prioritize and ship with confidence.",
-    }),
-  );
-  wrap.appendChild(
-    el("div", { class: "view-toolbar" }, [
-      modeToggle,
-      el("div", { class: "view-toolbar-actions" }, [
-        pollWorkButton(),
-        suggestWorkButton(repos, nodes),
-      ]),
-    ]),
-  );
-  if (workState.mode === "board") wrap.appendChild(workFlowHeader(columns, closed.length));
-  wrap.appendChild(renderWorkFilters(repos));
-
-  if (workState.mode === "list") {
-    wrap.appendChild(await renderWorkList());
-  } else {
-    wrap.appendChild(renderBoard(columns, closed, wontDo));
+/**
+ * Who waits on you, by ticket id: the server's human queue (the Overview's team
+ * sheet reads the same list). Without it, the statuses that always wait on a
+ * person stand in: a review, an approved merge, a blocked ticket.
+ */
+function workNeeds(queue) {
+  const items = queue && Array.isArray(queue.items) ? queue.items : null;
+  const map = new Map();
+  if (!items) return { map, fallback: true };
+  for (const it of items) if (it && it.ticket && it.ticket.id) map.set(it.ticket.id, it.label);
+  return { map, fallback: false };
+}
+function needsLabel(t, needs) {
+  if (!needs || needs.fallback) {
+    if (t.status === "in_review") return "Review sign-off";
+    if (t.status === "ready_for_merge") return "Approved, not merged";
+    if (t.status === "blocked") return "Blocked";
+    return null;
   }
+  return needs.map.get(t.id) || null;
+}
 
-  // Active claims — folded in as a collapsible panel (replaces the Claims tab).
-  wrap.appendChild(await renderClaimsPanel());
+/** A card or row matches the filters (repo is filtered by the server). */
+function workMatches(t) {
+  if (workState.status && t.status !== workState.status) return false;
+  if (workState.risk && t.risk_level !== workState.risk) return false;
+  // "#6" is that ticket and no other; a bare "6" is ticket 6 or a title with a 6
+  // in it (never #16 or #26); anything else is a title search.
+  const q = workState.q.trim().toLowerCase();
+  if (q) {
+    const title = (t.title || "").toLowerCase();
+    const num = /^#?(\d+)$/.exec(q);
+    if (num) {
+      const exact = String(t.number) === String(Number(num[1]));
+      if (q.startsWith("#") ? !exact : !exact && !title.includes(num[1])) return false;
+    } else if (!title.includes(q.replace(/^#/, ""))) return false;
+  }
+  return true;
+}
+function workFiltered() {
+  return Boolean(workState.status || workState.risk || workState.q.trim() || workState.repo);
+}
+
+async function renderWork() {
+  readWorkStateFromUrl();
+  const signal = routeSignal();
+  const get = (p) => api("GET", p, undefined, { signal });
+
+  // The board endpoint powers the board; the filtered /tickets list powers list
+  // mode (list mode does not fetch the board at all). Repos + scope nodes feed the
+  // "Suggest work" target picker (Feature B) and the repo filter. The human queue
+  // says which cards wait on you; the claims say who is on the pitch.
+  const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
+  const listQs = new URLSearchParams();
+  if (workState.status) listQs.set("status", workState.status);
+  if (workState.repo) listQs.set("repo", workState.repo);
+  if (workState.risk) listQs.set("risk", workState.risk);
+  const list = workState.mode === "list";
+  const [board, listRes, ref, claimsRes, queue] = await Promise.all([
+    list ? null : get(`/api/board${boardQs}`),
+    list ? get("/tickets" + (listQs.toString() ? `?${listQs}` : "")) : null,
+    workReference(),
+    get("/claims"),
+    get("/api/human-queue").catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return null;
+    }),
+  ]);
+  const { repos, nodes } = ref;
+  const columns = (board && board.columns) || [];
+  const closed = (board && board.closed) || [];
+  const wontDo = (board && board.wontDo) || [];
+  const tickets = (listRes && listRes.tickets) || [];
+  const claims = (claimsRes && claimsRes.claims) || [];
+  learnAgents(claims);
+  const needs = workNeeds(queue);
+  const readAt = Date.now();
+
+  const wrap = el("div", { class: `view view-work is-${workState.mode}` });
+
+  // The line under the title and the flow bar count what the lanes show: with a
+  // filter on they count the matching cards (BRIEF §2: header counts equal lane
+  // counts), and they are redrawn as the viewer types.
+  const subText = () =>
+    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo);
+  const head = viewHead("Work board", subText(), [
+    pollWorkButton(),
+    suggestWorkButton(repos, nodes),
+  ]);
+  let flow = list ? null : workFlowHeader(columns, closed);
+  if (flow) head.querySelector(".view-head-main").appendChild(flow);
+  const refreshHead = () => {
+    const sub = head.querySelector(".view-sub");
+    if (sub) sub.textContent = subText();
+    if (!flow) return;
+    const next = workFlowHeader(columns, closed);
+    flow.replaceWith(next);
+    flow = next;
+  };
+  wrap.appendChild(head);
+
+  // The board or the list, rebuilt in place (no fetch) as the viewer types.
+  const build = () =>
+    list ? renderWorkList(tickets, needs, claims) : renderBoard(columns, closed, wontDo, needs);
+  let main = build();
+  const toolbar = renderWorkToolbar(repos, () => {
+    const next = build();
+    main.replaceWith(next);
+    main = next;
+    refreshHead();
+  });
+  wrap.appendChild(toolbar);
+  wrap.appendChild(main);
+
+  wrap.appendChild(renderClaimsPanel(claims, readAt));
+
+  // "/" puts the cursor in the filter, as in most boards; the phone/desktop lane
+  // heads swap when the width crosses 760px.
+  const onKey = (e) => {
+    if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!wrap.isConnected || isModalOpen() || busyEditing()) return;
+    const input = wrap.querySelector(".work-q");
+    if (!input) return;
+    e.preventDefault();
+    input.focus();
+    input.select();
+  };
+  document.addEventListener("keydown", onKey);
+  const mq =
+    typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 760px)") : null;
+  const onWidth = () => {
+    if (list || !wrap.isConnected) return;
+    const next = build();
+    main.replaceWith(next);
+    main = next;
+  };
+  if (mq && mq.addEventListener) mq.addEventListener("change", onWidth);
+  wrap._dispose = () => {
+    document.removeEventListener("keydown", onKey);
+    if (mq && mq.removeEventListener) mq.removeEventListener("change", onWidth);
+  };
+
+  // Change signature: an unchanged board (same payload, same filters) is not
+  // re-rendered by the background refresh, so nothing on it moves.
+  const needSig = [...needs.map.entries()].map(([k, v]) => `${k}:${v}`).join(",");
+  wrap.dataset.sig = `${hashText(JSON.stringify(board || tickets))}:${location.hash}:${hashText(JSON.stringify(claims))}:${hashText(needSig)}`;
 
   return wrap;
 }
 
-/** A flow-summary header above the board: per-stage WIP counts and a single
- *  distribution bar so the shape of the board reads before you scan the lanes. */
-function workFlowHeader(columns, shippedCount) {
+/** A short, stable hash of a string (djb2) for change signatures. */
+function hashText(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * One set of board counts, used by the header line, the flow strip and the lane
+ * heads alike, so they can never disagree (work-shipped-count-wrong):
+ *   live    = every lane except Done (draft … ready for merge)
+ *   shipped = the Done lane
+ *   failed  = the closed area (the board puts only `failed` tickets there)
+ *   wontDo  = cancelled
+ */
+function boardCounts(columns, closed = [], wontDo = []) {
   const by = {};
-  for (const c of columns) by[c.column] = (c.cards || []).length;
-  const cells = [
-    { label: "Draft", v: by.draft || 0, tone: "idle" },
-    { label: "Ready", v: by.ready || 0, tone: "accent" },
-    { label: "In progress", v: by.in_progress || 0, tone: "accent" },
-    { label: "In review", v: by.in_review || 0, tone: "amber" },
-    { label: "Blocked", v: by.blocked || 0, tone: "danger" },
-    { label: "Shipped", v: shippedCount, tone: "ok" },
-  ];
+  for (const c of columns) by[c.column] = c.total ?? (c.cards || []).length;
+  const live = Object.entries(by)
+    .filter(([k]) => k !== "done")
+    .reduce((n, [, v]) => n + v, 0);
+  return { by, live, shipped: by.done || 0, failed: closed.length, wontDo: wontDo.length };
+}
+
+/** The board's columns, closed and won't-do narrowed to the client-side filters. */
+function workVisible(columns, closed = [], wontDo = []) {
+  return {
+    columns: columns.map((c) => {
+      const cards = (c.cards || []).filter(workMatches);
+      return { ...c, cards, total: cards.length };
+    }),
+    closed: closed.filter(workMatches),
+    wontDo: wontDo.filter(workMatches),
+  };
+}
+/** The client-side filters in words: “refund”, status blocked, high risk. */
+function workFilterWords() {
+  const words = [];
+  const q = workState.q.trim();
+  if (q) words.push(`\u201c${q}\u201d`);
+  if (workState.status) words.push(`status ${statusLabel(workState.status).toLowerCase()}`);
+  if (workState.risk) words.push(`${workState.risk} risk`);
+  return words;
+}
+
+/**
+ * "25 tickets in lanes: 6 draft · 4 ready … 6 done. 2 failed, listed under the board."
+ * With a filter on: "4 of 25 tickets match “refund”: 1 draft · 1 blocked …", so
+ * the line always equals the lane heads below it.
+ */
+function workSummaryLine(columns, closed = [], wontDo = []) {
+  const all = boardCounts(columns, closed, wontDo);
+  const vis = workVisible(columns, closed, wontDo);
+  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo);
+  const parts = columns
+    .filter((c) => counts.by[c.column] > 0)
+    // A count never wraps away from its lane name ("1 / done").
+    .map((c) => {
+      const word = (BOARD_COLUMN_LABELS[c.column] || c.column).toLowerCase();
+      return `${counts.by[c.column]}\u00a0${word}`;
+    });
+  const extra = [];
+  if (counts.failed) extra.push(`${counts.failed} failed`);
+  if (counts.wontDo) extra.push(`${counts.wontDo} won't do`);
+  const tail = extra.length ? ` ${extra.join(", ")}, listed under the board.` : "";
+  const inLanes = counts.live + counts.shipped;
+  const words = workFilterWords();
+  const scope = workState.repo ? ` in ${workState.repo}` : "";
+  if (!words.length)
+    return (
+      `${plural(inLanes, "ticket")}${scope ? `${scope}'s` : " in"} lanes${parts.length ? ": " + parts.join(" · ") : ""}.` +
+      tail
+    );
+  const allInLanes = all.live + all.shipped;
+  const what = words.join(", ");
+  if (!inLanes && !extra.length)
+    return `None of the ${plural(allInLanes, "ticket")}${scope} match ${what}.`;
+  return (
+    `${inLanes} of ${plural(allInLanes, "ticket")}${scope} ${inLanes === 1 ? "matches" : "match"} ${what}` +
+    `${parts.length ? ": " + parts.join(" · ") : ""}.` +
+    tail
+  );
+}
+
+/** List mode's line: how many, in what order, and how many wait on you. */
+function workListSummary(all, needs) {
+  const tickets = all.filter(workMatches);
+  const waiting = tickets.filter((t) => needsLabel(t, needs)).length;
+  if (!tickets.length)
+    return workFiltered() ? "No ticket matches these filters." : "No tickets yet.";
+  const words = workFilterWords();
+  const scope = workState.repo ? ` in ${workState.repo}` : "";
+  const match = words.length
+    ? ` ${tickets.length === 1 ? "matches" : "match"} ${words.join(", ")}`
+    : "";
+  return (
+    `${plural(tickets.length, "ticket")}${scope}${match}, most urgent first.` +
+    (waiting ? ` ${waiting} ${waiting === 1 ? "waits" : "wait"} on you.` : "")
+  );
+}
+
+/** A flow-summary strip above the board: one cell per lane (built from the
+ *  board's own columns, so none is ever left out) plus Failed, and a single
+ *  distribution bar so the shape of the board reads before you scan the lanes.
+ *  Shipped is the Done lane; failed tickets are counted as failed, never shipped. */
+function workFlowHeader(allColumns, allClosed = []) {
+  const vis = workVisible(allColumns, allClosed);
+  const columns = vis.columns;
+  const failed = vis.closed.length;
+  const { by } = boardCounts(columns);
+  const cells = columns.map((c) => ({
+    key: c.column,
+    label: c.column === "done" ? "Shipped" : BOARD_COLUMN_LABELS[c.column] || c.column,
+    v: by[c.column] || 0,
+  }));
+  cells.push({ key: "failed", label: "Failed", v: failed });
   const flowTotal = Math.max(
     1,
     cells.reduce((n, c) => n + c.v, 0),
@@ -3206,92 +7710,154 @@ function workFlowHeader(columns, shippedCount) {
     .filter((c) => c.v > 0)
     .map((c) =>
       el("span", {
-        class: `wf-seg tone-${c.tone}`,
+        class: `wf-seg wf-${c.key}`,
         style: `width:${(c.v / flowTotal) * 100}%`,
         title: `${c.label}: ${c.v}`,
       }),
     );
-  return el("div", { class: "card panel work-flow" }, [
-    el(
-      "div",
-      { class: "wf-cells" },
-      cells.map((c) =>
-        el("div", { class: `wf-cell tone-${c.tone}` }, [
-          el("span", { class: "wf-val tabnum" }, String(c.v)),
-          el("span", { class: "wf-label" }, c.label),
-        ]),
-      ),
-    ),
-    el("div", { class: "wf-bar" }, seg),
-  ]);
+  // The lane heads already carry each count, so this is one slim distribution
+  // bar (the shape of the board before you scan it), its numbers in its name.
+  const label = cells.map((c) => `${c.label} ${c.v}`).join(", ");
+  return el(
+    "div",
+    {
+      class: "work-flow",
+      role: "img",
+      "aria-label": `Tickets per lane: ${label}`,
+      hidden: seg.length ? null : "",
+    },
+    [el("div", { class: "wf-bar" }, seg)],
+  );
 }
 
-function renderWorkFilters(repos) {
-  const statusSel = el(
-    "select",
-    {
-      "aria-label": "Filter by status",
-      onchange: (e) => {
-        workState.status = e.target.value;
-        writeWorkStateToUrl();
-      },
-    },
-    [
-      el("option", { value: "" }, "All statuses"),
-      ...TICKET_STATUSES.map((s) =>
-        el("option", { value: s, selected: workState.status === s }, statusLabel(s)),
-      ),
-    ],
-  );
-  const repoSel = el(
-    "select",
-    {
-      "aria-label": "Filter by repo",
-      onchange: (e) => {
-        workState.repo = e.target.value;
-        writeWorkStateToUrl();
-      },
-    },
-    [
-      el("option", { value: "" }, "All repos"),
-      ...repos.map((r) =>
-        el("option", { value: r.name, selected: workState.repo === r.name }, r.name),
-      ),
-    ],
-  );
-  const riskSel = el(
-    "select",
-    {
-      "aria-label": "Filter by risk",
-      onchange: (e) => {
-        workState.risk = e.target.value;
-        writeWorkStateToUrl();
-      },
-    },
-    [
-      el("option", { value: "" }, "All risk"),
-      ...RISK_LEVELS.map((r) => el("option", { value: r, selected: workState.risk === r }, r)),
-    ],
-  );
+/**
+ * The filter line: number-or-title (client-side, as you type), status, repo and
+ * risk (in the address, so a filtered board can be shared), Reset when any is on,
+ * and Board | List. `onQuery` rebuilds the board from the data already read.
+ */
+function renderWorkToolbar(repos, onQuery) {
   const reset = el(
     "button",
     {
-      class: "btn small",
+      class: "btn small work-reset",
       type: "button",
+      hidden: workFiltered() ? null : "",
       onclick: () => {
         workState.status = "";
         workState.repo = "";
         workState.risk = "";
+        workState.q = "";
         writeWorkStateToUrl();
       },
     },
     "Reset",
   );
-  return el("div", { class: "filters" }, [
-    field("Status", statusSel),
-    field("Repo", repoSel),
-    field("Risk", riskSel),
-    el("div", { class: "field", style: "flex:0 0 auto" }, [el("label", { html: "&nbsp;" }), reset]),
+  let pending = 0;
+  const q = el("input", {
+    type: "search",
+    class: "work-q",
+    value: workState.q,
+    placeholder: "Filter by number or title",
+    "aria-label": "Filter tickets by number or title",
+    "aria-keyshortcuts": "/",
+    autocomplete: "off",
+    spellcheck: "false",
+  });
+  q.addEventListener("input", () => {
+    workState.q = q.value;
+    reset.hidden = !workFiltered();
+    // Into the address without a navigation, so a refresh (or a shared link)
+    // keeps the filter; the board itself is rebuilt from what is already read.
+    try {
+      history.replaceState(null, "", workUrl());
+    } catch {
+      /* no history in this context */
+    }
+    if (pending) return;
+    const tick = typeof requestAnimationFrame === "function" ? requestAnimationFrame : setTimeout;
+    pending = tick(() => {
+      pending = 0;
+      onQuery();
+    });
+  });
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && q.value) {
+      e.stopPropagation();
+      q.value = "";
+      q.dispatchEvent(new Event("input"));
+    }
+  });
+  const select = (label, key, all, options) =>
+    el(
+      "select",
+      {
+        class: `work-sel work-sel-${key}`,
+        "aria-label": label,
+        onchange: (e) => {
+          workState[key] = e.target.value;
+          writeWorkStateToUrl();
+        },
+      },
+      [el("option", { value: "" }, all), ...options],
+    );
+  const statusSel = select(
+    "Filter by status",
+    "status",
+    "All statuses",
+    TICKET_STATUSES.map((s) =>
+      el("option", { value: s, selected: workState.status === s }, statusLabel(s)),
+    ),
+  );
+  const repoSel = select(
+    "Filter by repo",
+    "repo",
+    "All repos",
+    repos.map((r) => el("option", { value: r.name, selected: workState.repo === r.name }, r.name)),
+  );
+  const riskSel = select(
+    "Filter by risk",
+    "risk",
+    "All risk",
+    RISK_LEVELS.map((r) =>
+      el(
+        "option",
+        { value: r, selected: workState.risk === r },
+        `${r[0].toUpperCase()}${r.slice(1)} risk`,
+      ),
+    ),
+  );
+  const modeBtn = (mode, label) =>
+    el(
+      "button",
+      {
+        class: workState.mode === mode ? "active" : "",
+        type: "button",
+        "aria-pressed": String(workState.mode === mode),
+        onclick: () => {
+          if (workState.mode === mode) return;
+          workState.mode = mode;
+          writeWorkStateToUrl();
+        },
+      },
+      label,
+    );
+  const modeToggle = el(
+    "div",
+    { class: "segmented work-mode", role: "group", "aria-label": "View" },
+    [modeBtn("board", "Board"), modeBtn("list", "List")],
+  );
+  return el("div", { class: "view-toolbar work-toolbar" }, [
+    el("div", { class: "filters work-filters" }, [
+      el("span", { class: "work-q-wrap" }, [
+        q,
+        el("kbd", { class: "kbd", "aria-hidden": "true" }, "/"),
+      ]),
+      statusSel,
+      repoSel,
+      riskSel,
+      reset,
+    ]),
+    modeToggle,
   ]);
 }
 
@@ -3345,7 +7911,7 @@ const TICKET_ACTION_KEYS = {
   ready: [],
   claimed: [],
   in_progress: [],
-  blocked: ["wont_do"],
+  blocked: ["unblock", "wont_do"],
   // Review surface: approve takes the ticket to `ready_for_merge` (merging).
   in_review: ["approve", "rework", "wont_do"],
   // BBT-001: independent testing lane. The tester agent owns the verdict (pass →
@@ -3357,7 +7923,7 @@ const TICKET_ACTION_KEYS = {
   ready_for_merge: ["merge_now", "mark_merged", "rework"],
   // Terminal: reopen only where allowed (cancelled is reopenable; done is not).
   done: [],
-  failed: [],
+  failed: ["unblock"],
   cancelled: ["reopen"],
   // PAUSE-ON-CAP: a paused (cap-hit) delivery offers one-click Continue (re-enter
   // the existing worktree) or Stop (tear down + abandon). The banner above the bar
@@ -3373,10 +7939,10 @@ function hasTicketAction(status, key) {
 
 /**
  * Move a card to a target column with an optimistic UI update + rollback. The
- * DOM card is moved into the destination column immediately; on a backend
- * rejection (illegal transition, policy, concurrency) it snaps back and an error
- * toast surfaces the API code. On success the board re-renders so counts, claim
- * state and pipeline dots stay truthful.
+ * DOM card glides into the destination lane at once (a View Transition, off under
+ * reduced motion); on a backend rejection (illegal transition, policy,
+ * concurrency) it snaps back and an error toast surfaces the API code. On success
+ * the board re-renders so counts and claim state stay truthful.
  */
 async function performBoardMove(cardEl, card, toColumn) {
   if (card.status === toColumn) return; // dropped on its own column — no-op.
@@ -3384,16 +7950,41 @@ async function performBoardMove(cardEl, card, toColumn) {
   const placeholder = document.createComment("wg-move");
   fromBody.insertBefore(placeholder, cardEl);
   const destBody = document.querySelector(`.board-col.col-${toColumn} .board-col-body`);
+  const glide = (fn) => {
+    if (typeof document.startViewTransition !== "function" || prefersReducedMotion()) return fn();
+    cardEl.style.viewTransitionName = "wk-moving-card";
+    let t;
+    try {
+      t = document.startViewTransition(fn);
+    } catch {
+      cardEl.style.viewTransitionName = "";
+      return fn();
+    }
+    // The refresh after the move starts its own transition, which skips this one
+    // and rejects its promises with InvalidStateError: swallow those (the DOM
+    // update still ran), as router() does.
+    const clear = () => (cardEl.style.viewTransitionName = "");
+    t.ready?.catch(() => {});
+    t.updateCallbackDone?.catch(() => {});
+    t.finished?.then(clear, clear);
+  };
   if (destBody) {
-    const dash = destBody.querySelector(".board-empty");
-    if (dash) dash.remove();
-    destBody.appendChild(cardEl);
+    glide(() => {
+      const dash = destBody.querySelector(".board-empty");
+      if (dash) dash.remove();
+      destBody.prepend(cardEl);
+      const fold = destBody.closest("details");
+      if (fold) fold.open = true;
+    });
   }
   cardEl.classList.add("is-moving");
+  const label = BOARD_COLUMN_LABELS[toColumn] || toColumn;
   try {
     await api("POST", `/tickets/${card.id}/move`, { to: toColumn });
-    toast(`Moved to ${BOARD_COLUMN_LABELS[toColumn] || toColumn}`, { ok: true });
-    router(); // refresh truthfully (counts/claim/dots) once the move landed.
+    toast(`Moved ${card.number != null ? `#${card.number}` : "the ticket"} to ${label}`, {
+      ok: true,
+    });
+    router(); // refresh truthfully (counts/claim) once the move landed.
   } catch (e) {
     // Rollback: restore the card to where the drag started.
     if (placeholder.parentElement) placeholder.parentElement.insertBefore(cardEl, placeholder);
@@ -3404,10 +7995,17 @@ async function performBoardMove(cardEl, card, toColumn) {
   }
 }
 
-/** Open the touch/keyboard status menu for a card (drag-free fallback). */
+/**
+ * The move menu (touch and keyboard; the same moves as a drag): the card is
+ * armed while it is open, focus goes to the first lane, arrows walk the list and
+ * Escape puts focus back on the card's Move button.
+ */
 function openMoveMenu(card, anchorEl) {
   const targets = legalTargetColumns(card.status);
   if (!targets.length) return;
+  closeMoveMenu();
+  const cardNode = anchorEl.closest(".board-card");
+  const name = card.number != null ? `#${card.number}` : "this ticket";
   const items = targets.map((col) =>
     el(
       "button",
@@ -3416,33 +8014,88 @@ function openMoveMenu(card, anchorEl) {
         type: "button",
         role: "menuitem",
         onclick: () => {
-          closeMoveMenu();
-          const node = anchorEl.closest(".board-card");
-          if (node) guard(() => performBoardMove(node, card, col));
+          closeMoveMenu({ restore: false });
+          if (cardNode) guard(() => performBoardMove(cardNode, card, col));
         },
       },
-      [
-        el("span", { class: `movemenu-dot col-${col}` }),
-        `Move to ${BOARD_COLUMN_LABELS[col] || col}`,
-      ],
+      [glyph(col, 18), el("span", {}, BOARD_COLUMN_LABELS[col] || col)],
     ),
   );
-  const menu = el("div", { class: "movemenu", role: "menu", "aria-label": "Move ticket to" }, [
-    el("div", { class: "movemenu-head" }, card.number != null ? `#${card.number}` : "Move ticket"),
+  const menu = el("div", { class: "movemenu", role: "menu", "aria-label": `Move ${name} to` }, [
+    el("div", { class: "movemenu-head", "aria-hidden": "true" }, `Move ${name} to`),
     ...items,
   ]);
-  const scrim = el("div", { class: "movemenu-scrim", onclick: closeMoveMenu });
+  menu.addEventListener("keydown", (e) => {
+    const i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = items.length;
+      items[(i + (e.key === "ArrowDown" ? 1 : n - 1) + n) % n].focus();
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      items[e.key === "Home" ? 0 : items.length - 1].focus();
+    } else if (e.key === "Tab") {
+      e.preventDefault(); // the menu keeps focus until a lane is picked or it closes
+    }
+  });
+  const scrim = el("div", { class: "movemenu-scrim", onclick: () => closeMoveMenu() });
   scrim.appendChild(menu);
   menu.addEventListener("click", (e) => e.stopPropagation());
   document.body.appendChild(scrim);
   moveMenuScrim = scrim;
+  moveMenuReturn = anchorEl;
+  if (cardNode) cardNode.classList.add("card-armed");
+  anchorEl.setAttribute("aria-expanded", "true");
   document.addEventListener("keydown", moveMenuKeydown);
+  // The menu opens at its Move button (below it, or above when the screen ends),
+  // so the armed card stays in view beside the lanes it can go to.
+  const r = anchorEl.getBoundingClientRect ? anchorEl.getBoundingClientRect() : null;
+  if (r && r.width) {
+    scrim.classList.add("is-anchored");
+    const place = () => {
+      const a = anchorEl.getBoundingClientRect();
+      const nav = document.getElementById("bottomnav");
+      const navTop = nav && nav.offsetHeight ? nav.getBoundingClientRect().top : window.innerHeight;
+      const floor = Math.min(window.innerHeight, navTop) - 8;
+      // The Move button scrolled out of view: the menu has nothing to sit by.
+      if (!anchorEl.isConnected || a.bottom < 0 || a.top > floor) return false;
+      const mw = menu.offsetWidth;
+      const mh = menu.offsetHeight;
+      let top = a.bottom + 6;
+      if (top + mh > floor) top = Math.max(8, a.top - 6 - mh);
+      menu.style.left = `${Math.max(8, Math.min(a.left, window.innerWidth - mw - 8))}px`;
+      menu.style.top = `${top}px`;
+      return true;
+    };
+    place();
+    moveMenuPlace = place;
+    window.addEventListener("scroll", onMoveMenuScroll, { passive: true });
+  }
+  items[0].focus();
 }
 let moveMenuScrim = null;
-function closeMoveMenu() {
+let moveMenuReturn = null;
+let moveMenuPlace = null;
+// The page scrolls under an anchored menu: it follows its Move button (a momentum
+// scroll no longer closes it under a tap), and closes once the button leaves view.
+function onMoveMenuScroll() {
+  if (!moveMenuPlace || !moveMenuPlace()) closeMoveMenu();
+}
+function closeMoveMenu({ restore = true } = {}) {
+  window.removeEventListener("scroll", onMoveMenuScroll);
+  moveMenuPlace = null;
   if (moveMenuScrim) {
     moveMenuScrim.remove();
     moveMenuScrim = null;
+  }
+  document
+    .querySelectorAll(".board-card.card-armed")
+    .forEach((n) => n.classList.remove("card-armed"));
+  if (moveMenuReturn) {
+    moveMenuReturn.setAttribute("aria-expanded", "false");
+    // preventScroll: a menu closed by scrolling away never yanks the page back.
+    if (restore && moveMenuReturn.isConnected) moveMenuReturn.focus({ preventScroll: true });
+    moveMenuReturn = null;
   }
   document.removeEventListener("keydown", moveMenuKeydown);
 }
@@ -3450,44 +8103,153 @@ function moveMenuKeydown(e) {
   if (e.key === "Escape") closeMoveMenu();
 }
 
-/** Board (kanban) — columns by status; filters dim non-matching cards client-side. */
-function renderBoard(columns, closed, wontDo = []) {
-  const wrap = el("div");
-  // repo is filtered server-side via ?repo= on /api/board; only status and
-  // risk need client-side dimming here (no repo field on BoardCard).
-  const matches = (card) =>
-    (!workState.status || card.status === workState.status) &&
-    (!workState.risk || card.risk_level === workState.risk);
+/**
+ * The board renders a bounded number of cards per lane: the whole Done history
+ * (and a runaway live lane) would otherwise grow the DOM forever and jank every
+ * 9s refresh (board-unbounded-render). Done shows the newest BOARD_DONE_CAP;
+ * live lanes show BOARD_LANE_CAP. The lane head always shows the TRUE count, and
+ * the remainder is one link away in the List view, filtered to that status.
+ */
+const BOARD_DONE_CAP = 25;
+const BOARD_LANE_CAP = 60;
+const BOARD_CLOSED_CAP = 25;
+function capLane(column, cards) {
+  if (column === "done") {
+    const newest = [...cards].sort((a, b) =>
+      String(b.updated_at || "").localeCompare(String(a.updated_at || "")),
+    );
+    return newest.slice(0, BOARD_DONE_CAP);
+  }
+  return cards.slice(0, BOARD_LANE_CAP);
+}
+function laneMoreLink(column, shown, total) {
+  if (total <= shown) return null;
+  return el(
+    "a",
+    { class: "lane-more", href: `#/work?mode=list&status=${encodeURIComponent(column)}` },
+    `Showing ${shown} of ${total} — see all in the list`,
+  );
+}
 
+/** Phone lane order: most urgent first; lanes with no (matching) card sink last. */
+const PHONE_LANE_URGENCY = [
+  "blocked",
+  "in_review",
+  "in_progress",
+  "ready_for_merge",
+  "in_testing",
+  "ready",
+  "draft",
+  "done",
+];
+function phoneLaneOrder(columns) {
+  const rank = (c) => {
+    const i = PHONE_LANE_URGENCY.indexOf(c.column);
+    const empty = !(c.cards || []).some(workMatches);
+    return (empty ? 100 : 0) + (i < 0 ? 50 : i);
+  };
+  return [...columns].sort((a, b) => rank(a) - rank(b));
+}
+
+/** Board (kanban) — mown lanes by status; filters narrow the cards client-side. */
+function renderBoard(columns, closed, wontDo = [], needs = null) {
+  const wrap = el("div", { class: "board-wrap" });
+  const phone = isPhoneWidth();
+  const total = columns.reduce((n, c) => n + (c.cards || []).length, 0);
+  const shown = columns.reduce((n, c) => n + (c.cards || []).filter(workMatches).length, 0);
+  if (!total && !closed.length && !wontDo.length && !workFiltered()) {
+    wrap.appendChild(
+      emptyState(
+        "No tickets yet. Create one, or let the product owner suggest work.",
+        null,
+        null,
+        el("a", { class: "btn", href: "#/create" }, "Create a ticket"),
+      ),
+    );
+  } else if (!shown && workFiltered()) {
+    wrap.appendChild(
+      el("p", { class: "work-nomatch", role: "status" }, "No ticket matches these filters."),
+    );
+  }
+
+  const closedAll = [...closed, ...wontDo].filter(workMatches);
+  // On a phone the lanes stack in urgency order (Blocked, In review, In progress
+  // first; empty lanes last) IN THE DOM, so tab and screen-reader order match what
+  // is on screen (WCAG 2.4.3). The board re-renders when the width crosses 760px.
+  const laneCols = phone ? phoneLaneOrder(columns) : columns;
   const cols = el(
     "div",
     { class: "board" },
-    columns.map((c) => {
-      const cards = (c.cards || []).filter(matches);
+    laneCols.map((c, laneIdx) => {
+      // repo is filtered server-side via ?repo= on /api/board; status, risk and the
+      // number-or-title filter narrow the cards here.
+      const all = (c.cards || []).filter(workMatches);
+      const cards = capLane(c.column, all);
+      const label = BOARD_COLUMN_LABELS[c.column] || c.column;
       const body = el(
         "div",
         { class: "board-col-body" },
         cards.length
-          ? cards.map(renderBoardCard)
-          : el("div", { class: "board-empty" }, [
-              el("span", { class: "board-empty-dot" }),
-              el("span", {}, "Empty"),
-            ]),
+          ? [
+              ...cards.map((card) => renderBoardCard(card, c.column, needs)),
+              laneMoreLink(c.column, cards.length, all.length),
+            ]
+          : el("p", { class: "board-empty" }, "Nothing here."),
       );
+      // Done carries the tickets that left without merging, as the comp's foot line.
+      const foot =
+        c.column === "done" && closedAll.length
+          ? el("p", { class: "lane-foot" }, [
+              "Closed without merging: ",
+              ...closedAll
+                .slice(0, 6)
+                .flatMap((t, j) => [
+                  j ? ", " : "",
+                  el(
+                    "a",
+                    { href: `#/ticket/${t.id}` },
+                    t.number != null ? `#${t.number}` : t.id.slice(0, 8),
+                  ),
+                  ` ${t.status === "cancelled" ? "won't do" : statusLabel(t.status).toLowerCase()}`,
+                ]),
+              closedAll.length > 6 ? `, and ${closedAll.length - 6} more` : "",
+              ".",
+            ])
+          : null;
+      const headBits = [
+        glyph(c.column, 18),
+        el("h2", { class: "board-col-title" }, label),
+        el("span", { class: "board-col-count tabnum" }, String(all.length)),
+      ];
+      let inner;
+      if (phone && all.length) {
+        const open = laneStartsOpen(c.column, all.length);
+        const toggleWord = el(
+          "span",
+          { class: "lane-toggle", "aria-hidden": "true" },
+          open ? "Hide" : "Show",
+        );
+        const details = el("details", { class: "lane-d", open: open ? "" : null }, [
+          el("summary", { class: "board-col-head" }, [...headBits, toggleWord]),
+          body,
+          foot,
+        ]);
+        details.addEventListener("toggle", () => {
+          laneOpenState.set(c.column, details.open);
+          toggleWord.textContent = details.open ? "Hide" : "Show";
+        });
+        inner = [details];
+      } else {
+        inner = [el("div", { class: "board-col-head" }, headBits), body, foot];
+      }
       const section = el(
         "section",
         {
-          class: `board-col col-${c.column}`,
-          dataset: { column: c.column },
-          "aria-label": BOARD_COLUMN_LABELS[c.column] || c.column,
+          class: `board-col col-${c.column} ${laneIdx % 2 ? "lane-b" : "lane-a"}`,
+          dataset: { column: c.column, status: c.column },
+          "aria-label": `${label}: ${all.length}`,
         },
-        [
-          el("div", { class: "board-col-head" }, [
-            el("span", { class: "board-col-title" }, BOARD_COLUMN_LABELS[c.column] || c.column),
-            el("span", { class: "board-col-count tabnum" }, String(cards.length)),
-          ]),
-          body,
-        ],
+        inner,
       );
       wireColumnDropZone(section, c.column);
       return section;
@@ -3495,55 +8257,80 @@ function renderBoard(columns, closed, wontDo = []) {
   );
   wrap.appendChild(cols);
 
-  // Won't-do bucket: terminal "will NOT be built" tickets, distinct from rework
-  // and from the failed/closed area. Each card carries a discreet "Reopen" action
-  // (-> refining) so an abandoned ticket is reversible.
-  const wontDoVisible = wontDo.filter(matches);
-  if (wontDoVisible.length) {
-    const details = el("details", { class: "closed-area wont-do-area", open: "" });
-    details.appendChild(el("summary", {}, `Won't do (${wontDoVisible.length})`));
-    details.appendChild(el("div", { class: "closed-cards" }, wontDoVisible.map(renderWontDoCard)));
-    wrap.appendChild(details);
-  }
-
-  if (closed.length) {
-    const details = el("details", { class: "closed-area" });
-    details.appendChild(el("summary", {}, `Closed · failed (${closed.length})`));
-    details.appendChild(el("div", { class: "closed-cards" }, closed.map(renderBoardCard)));
-    wrap.appendChild(details);
+  // Closed without merging: won't do (reversible: Reopen → refining) and failed.
+  const wontDoVisible = wontDo.filter(workMatches);
+  const failedVisible = closed.filter(workMatches);
+  if (wontDoVisible.length || failedVisible.length) {
+    const group = (cls, title, list, action) =>
+      el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${list.length}` }, [
+        el("h3", { class: "closed-head" }, [
+          glyph(list[0].status, 16),
+          el("span", {}, title),
+          el("span", { class: "closed-count tabnum" }, String(list.length)),
+        ]),
+        el("ul", { class: "closed-cards" }, [
+          ...list.slice(0, BOARD_CLOSED_CAP).map((t) => closedRow(t, action)),
+        ]),
+        list.length > BOARD_CLOSED_CAP
+          ? el("p", { class: "section-note" }, `Showing ${BOARD_CLOSED_CAP} of ${list.length}.`)
+          : null,
+      ]);
+    wrap.appendChild(
+      progPage(
+        "work-closed",
+        null,
+        "Closed without merging",
+        plural(wontDoVisible.length + failedVisible.length, "ticket"),
+        el("div", { class: "closed-groups" }, [
+          wontDoVisible.length
+            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen)
+            : null,
+          failedVisible.length ? group("failed-area", "Failed", failedVisible, null) : null,
+        ]),
+      ),
+    );
   }
   return wrap;
 }
 
-/** A won't-do bucket card: the board card plus a discreet reopen-to-refining action. */
-function renderWontDoCard(card) {
-  const reopen = el(
+/** One closed ticket: number, title (the link), risk, repo, and its one action. */
+function closedRow(t, action) {
+  const repo = (t.repos || [])[0];
+  return el("li", { class: `closed-row bc-${t.status}` }, [
+    el("span", { class: "closed-num tabnum" }, t.number != null ? `#${t.number}` : "—"),
+    el("a", { class: "closed-title", href: `#/ticket/${t.id}` }, t.title),
+    el("span", { class: "closed-meta" }, [
+      riskBadge(t.risk_level),
+      repo ? repoTag(repo.name, 16) : null,
+      el("span", { class: "dim tabnum" }, fmtTime(t.updated_at)),
+    ]),
+    action ? action(t) : null,
+  ]);
+}
+
+/** Won't do is reversible: Reopen sends the ticket back to refining. */
+function wontDoReopen(card) {
+  return el(
     "button",
     {
       class: "btn small",
       type: "button",
       title: "Reopen this ticket into refining",
-      onclick: (e) => {
-        e.stopPropagation();
+      "aria-label": `Reopen ${card.number != null ? `#${card.number}` : "this ticket"} into refining`,
+      onclick: () =>
         guard(async () => {
           await api("POST", `/tickets/${card.id}/reopen`, { to: "refining" });
           toast("Reopened to refining", { ok: true });
           router();
-        });
-      },
+        }),
     },
     "Reopen",
   );
-  const wrap = el("div", { class: "wont-do-card" }, [
-    renderBoardCard(card),
-    el("div", { class: "btn-row" }, [reopen]),
-  ]);
-  return wrap;
 }
 
 /**
  * Make a column a HTML5 drop target. While a movable card is dragging, columns
- * that can legally accept it light up (cyan accent); columns that can't show a
+ * that can legally accept it light up (sky edge); columns that can't show a
  * not-allowed cursor and never accept the drop.
  */
 function wireColumnDropZone(section, column) {
@@ -3580,7 +8367,6 @@ function wireColumnDropZone(section, column) {
 let draggingCard = null;
 let draggingEl = null;
 
-/** A keyboard-reachable kanban card → ticket detail; carries pipeline-dots. */
 /**
  * TRACK-2b: the human WIP lane's per-card action. A `ready` card gets an "I'll do
  * this by hand" button (human-claim → in_progress owned by you, so the agent loop
@@ -3605,11 +8391,7 @@ function humanLaneAction(card) {
         class: "card-human-btn hand-back",
         type: "button",
         title: "Hand this ticket back to the queue so an agent can pick it up",
-        onclick: (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          guard(() => post("human-release", "Handed back to the queue"));
-        },
+        onclick: () => guard(() => post("human-release", "Handed back to the queue")),
       },
       "Hand back",
     );
@@ -3622,11 +8404,7 @@ function humanLaneAction(card) {
         class: "card-human-btn take-myself",
         type: "button",
         title: "Take this ticket by hand — the agent will stay out of it",
-        onclick: (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          guard(() => post("human-claim", "You're on it — taken by hand"));
-        },
+        onclick: () => guard(() => post("human-claim", "You're on it — taken by hand")),
       },
       "I'll do this by hand",
     );
@@ -3634,103 +8412,98 @@ function humanLaneAction(card) {
   return null;
 }
 
-function renderBoardCard(card) {
-  const chips = el("div", { class: "card-chips" }, [
-    riskBadge(card.risk_level),
-    el("span", { class: "tabnum dim", title: "priority" }, `P${card.priority}`),
-    card.blockingCount ? badge(`${card.blockingCount} blocking`, "status-blocked") : null,
+/** A status word with its glyph, at card size (for a card whose status is not its lane's). */
+function cardStatus(status) {
+  return el("span", { class: `card-status st-${status}` }, [
+    glyph(status, 14),
+    el("span", {}, statusLabel(status)),
+  ]);
+}
+
+/**
+ * A board card: an <article> whose title is the link (stretched over the card).
+ * `laneKey` is the lane it sits in, so a refining, claimed or paused card says so.
+ */
+function renderBoardCard(card, laneKey, needs) {
+  const numText = card.number != null ? `#${card.number}` : card.id.slice(0, 8);
+  const need = needsLabel(card, needs);
+  const href = card.status === "in_review" ? `#/review/${card.id}` : `#/ticket/${card.id}`;
+
+  const top = el("div", { class: "card-top" }, [
+    el("span", { class: "num" }, numText),
+    laneKey && card.status !== laneKey && card.status !== "done" ? cardStatus(card.status) : null,
+    el("span", { class: "card-tags" }, [
+      card.blockingCount ? badge(`${card.blockingCount} blocking`, "status-blocked") : null,
+      el(
+        "span",
+        { class: "card-pri tabnum", title: `Priority ${card.priority}` },
+        `P${card.priority}`,
+      ),
+      riskBadge(card.risk_level),
+    ]),
   ]);
 
   let acText = null;
-  if (card.acEvidenceRequired > 0)
-    acText = `${card.acEvidenced}/${card.acEvidenceRequired} evidenced`;
-  else if (card.acTotal > 0) acText = `${card.acSatisfied}/${card.acTotal} satisfied`;
+  let acTitle = null;
+  if (card.acEvidenceRequired > 0) {
+    acText = `Evidence ${card.acEvidenced}/${card.acEvidenceRequired}`;
+    acTitle = `${card.acEvidenced} of ${card.acEvidenceRequired} criteria evidenced`;
+  } else if (card.acTotal > 0) {
+    acText = `AC ${card.acSatisfied}/${card.acTotal}`;
+    acTitle = `${card.acSatisfied} of ${card.acTotal} acceptance criteria satisfied`;
+  }
+
+  // Repo cross-link (audit: "no path from a card to its repo"): the repo is a
+  // button beside the title link, one hop to #/repo/:id.
+  const cardRepos = card.repos || [];
+  const meta = el("div", { class: "card-meta" }, [
+    cardRepos.length
+      ? el("span", { class: "card-repos" }, [
+          ...cardRepos.slice(0, 2).map((r) =>
+            el(
+              "button",
+              {
+                class: "card-repo-chip",
+                type: "button",
+                title: `Open ${r.name}`,
+                onclick: () => navigate(`#/repo/${encodeURIComponent(r.id || r.name)}`),
+              },
+              [kitShirt(r.name, 16), el("span", {}, r.name)],
+            ),
+          ),
+          cardRepos.length > 2
+            ? el("span", { class: "card-repo-more dim" }, `+${cardRepos.length - 2}`)
+            : null,
+        ])
+      : el("span", { class: "dim" }, "No repo yet"),
+    el("span", { class: "ac-progress tabnum", title: acTitle }, acText || "No AC"),
+  ]);
 
   // TRACK-2b: a ticket the operator took "by hand" is THEIR in-flight work, not the
   // agent's. Render it distinctly (a "By hand" marker with the human-owner) so the
   // human WIP lane reads apart from an agent claim. This branch wins over the agent
-  // claim/pipeline-dots — a human-owned ticket never carries an agent claim.
-  const ownerMarker = card.humanOwner
+  // claim — a human-owned ticket never carries an agent claim.
+  const owner = card.humanOwner
     ? el(
-        "span",
+        "p",
         { class: "card-human-owned", title: `You're working this by hand (${card.humanOwner})` },
         [el("span", { class: "human-dot" }), "By hand", ` · ${card.humanOwner}`],
       )
     : card.claim
       ? el(
-          "span",
+          "p",
           {
             class: `card-claim${card.claim.stale ? " stale" : ""}`,
-            title: card.claim.stale ? "Lease past expiry" : "Lease active",
+            title: card.claim.stale
+              ? `Lease ended ${fmtTime(card.claim.expiresAt)}`
+              : `Lease to ${fmtTime(card.claim.expiresAt)}`,
           },
           [
-            el("span", { class: "claim-dot" }),
-            card.claim.agentDisplayName || card.claim.agentId.slice(0, 8),
-            card.claim.stale ? " · stale" : "",
+            agentTag(card.claim.agentDisplayName || card.claim.agentId.slice(0, 8), 22),
+            card.claim.stale ? el("span", { class: "card-stale" }, "lease ended") : null,
           ],
         )
-      : pipelineDots(card.status);
-
-  const meta = el("div", { class: "card-meta" }, [
-    acText ? el("span", { class: "ac-progress" }, acText) : el("span", { class: "dim" }, "no AC"),
-    ownerMarker,
-  ]);
-
-  // Repo cross-link (audit: "no path from a card to its repo"). A card is an
-  // <a> to its ticket, so the repo chips are buttons that stopPropagation and
-  // navigate to #/repo/:id — one hop to the repo, no ticket-open side effect.
-  const cardRepos = card.repos || [];
-  const repoChips = cardRepos.length
-    ? el("div", { class: "card-repos" }, [
-        ...cardRepos.slice(0, 2).map((r) =>
-          el(
-            "button",
-            {
-              class: "card-repo-chip",
-              type: "button",
-              title: `Open ${r.name}`,
-              onclick: (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                navigate(`#/repo/${encodeURIComponent(r.id || r.name)}`);
-              },
-            },
-            [icon("map", "chip-ico"), el("span", {}, r.name)],
-          ),
-        ),
-        cardRepos.length > 2
-          ? el("span", { class: "card-repo-more dim" }, `+${cardRepos.length - 2}`)
-          : null,
-      ])
-    : null;
-
-  const go = () => navigate(`#/ticket/${card.id}`);
-  const movable = cardIsMovable(card);
-
-  // TRACK-2b dashboard actions: a READY card offers "I'll do this by hand" (human-
-  // claim); a human-owned in_progress card offers "Hand back" (release to the queue).
-  // Both POST the dedicated endpoints and re-render the board on success.
-  const humanLaneBtn = humanLaneAction(card);
-
-  // Touch/keyboard fallback: a small "move" affordance opens a status menu, so
-  // the same moves work one-handed on phones where drag is unreliable.
-  const moveBtn = movable
-    ? el(
-        "button",
-        {
-          class: "card-move-btn",
-          type: "button",
-          "aria-label": "Move ticket to another status",
-          title: "Move to another status",
-          onclick: (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openMoveMenu(card, e.currentTarget);
-          },
-        },
-        el("span", { class: "card-move-grip", "aria-hidden": "true" }, "⋮⋮"),
-      )
-    : null;
+      : null;
 
   // WG-049 + rework loop: a ticket bounced back from review OR being reworked in
   // place carries a reason, so a human triaging the board sees WHAT is happening
@@ -3759,38 +8532,74 @@ function renderBoardCard(card) {
       cls = "card-reject card-rework-exhausted";
       title = "Rework loop hit its attempt/cost ceiling — needs a human";
     }
-    return el("div", { class: cls, title }, [
+    return el("p", { class: cls, title }, [
       el("span", { class: "card-reject-label" }, label),
       " ",
       fb.reason,
     ]);
   })();
 
+  const movable = cardIsMovable(card);
+  // Touch/keyboard fallback: "Move" opens the lane menu, so the same moves work
+  // one-handed on phones where drag is unreliable.
+  const moveBtn = movable
+    ? el(
+        "button",
+        {
+          class: "card-move-btn",
+          type: "button",
+          "aria-label": `Move ${numText} to another lane`,
+          "aria-haspopup": "menu",
+          "aria-expanded": "false",
+          onclick: (e) => openMoveMenu(card, e.currentTarget),
+        },
+        [el("span", {}, "Move"), icon("chevdown", "", 14)],
+      )
+    : null;
+  // TRACK-2b dashboard actions: a READY card offers "I'll do this by hand" (human-
+  // claim); a human-owned in_progress card offers "Hand back" (release to the queue).
+  const humanLaneBtn = humanLaneAction(card);
+
   const node = el(
-    "a",
+    "article",
     {
-      class: `board-card${movable ? " is-movable" : ""}`,
-      href: `#/ticket/${card.id}`,
+      class: `board-card bc-${card.status}${need ? " needs" : ""}${movable ? " is-movable" : ""}`,
+      dataset: { id: card.id },
       draggable: movable ? "true" : null,
-      onkeydown: (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          go();
-        }
-      },
     },
     [
-      el("div", { class: "card-top" }, [
-        el("span", { class: "num" }, card.number != null ? `#${card.number}` : card.id.slice(0, 8)),
-        pipelineDots(card.status),
-      ]),
-      el("div", { class: "card-title" }, card.title),
-      chips,
-      repoChips,
-      reject,
+      // A yellow card: this one waits on you (the human queue's own word for why).
+      need
+        ? el(
+            "span",
+            {
+              class: "card-needs",
+              role: "img",
+              "aria-label": `Needs you: ${need}`,
+              title: `Needs you: ${need}`,
+            },
+            ycard(20),
+          )
+        : null,
+      top,
+      el(
+        "h3",
+        { class: "card-title" },
+        el(
+          "a",
+          {
+            class: "card-link",
+            href,
+            draggable: "false",
+            "aria-label": `${numText} ${card.title}`,
+          },
+          card.title,
+        ),
+      ),
       meta,
-      humanLaneBtn,
-      moveBtn,
+      owner,
+      reject,
+      moveBtn || humanLaneBtn ? el("div", { class: "card-foot" }, [moveBtn, humanLaneBtn]) : null,
     ],
   );
 
@@ -3821,215 +8630,662 @@ function renderBoardCard(card) {
   return node;
 }
 
-/** List mode — full-width ticket-rows from the filtered /tickets endpoint. */
-async function renderWorkList() {
-  const qs = new URLSearchParams();
-  if (workState.status) qs.set("status", workState.status);
-  if (workState.repo) qs.set("repo", workState.repo);
-  if (workState.risk) qs.set("risk", workState.risk);
-  const path = "/tickets" + (qs.toString() ? `?${qs}` : "");
-  const tickets = (await api("GET", path)).tickets || [];
-
+/**
+ * List mode — the league table: every ticket from the filtered /tickets read, most
+ * urgent first (then by number, so a refresh never reorders rows whose data did not
+ * change). What waits on you carries its yellow card; who holds it comes from the
+ * claims.
+ */
+function renderWorkList(allTickets, needs, claims = []) {
+  const tickets = allTickets.filter(workMatches);
   if (tickets.length === 0) {
     // A day-one empty factory must not be told its (nonexistent) filter is hiding
     // work. Only show "No tickets match" when a filter is actually active.
-    const filtered = Boolean(workState.status || workState.repo || workState.risk);
-    if (filtered) {
+    if (workFiltered()) {
       return emptyState(
         "No tickets match",
         "Adjust the filters above, or suggest fresh work.",
         "work",
       );
     }
-    const panel = emptyState(
+    return emptyState(
       "No tickets yet",
       "Create your first ticket, or let the product-owner suggest work.",
       "work",
-    );
-    panel.appendChild(
       el(
         "button",
-        { class: "btn primary", type: "button", onclick: () => navigate("#/create") },
+        { class: "btn", type: "button", onclick: () => navigate("#/create") },
         "Create a ticket",
       ),
     );
-    return panel;
   }
-  return el(
-    "div",
-    { class: "ticket-list" },
-    tickets.map((t) => {
-      const go = () => navigate(`#/ticket/${t.id}`);
-      return el(
-        "a",
-        {
-          class: "ticket-row",
-          href: `#/ticket/${t.id}`,
-          onkeydown: (e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              go();
-            }
-          },
-        },
-        [
-          el("span", { class: "tr-num" }, t.number != null ? `#${t.number}` : "—"),
-          el("span", { class: "tr-main" }, [
-            el("div", { class: "tr-title" }, t.title),
-            el("div", { class: "tr-chips" }, [
-              statusBadge(t.status),
-              riskBadge(t.risk_level),
-              el("span", { class: "dim tabnum" }, `P${t.priority}`),
-            ]),
-          ]),
-          pipelineDots(t.status),
-          el("span", { class: "tr-time tabnum" }, fmtTime(t.updated_at)),
-        ],
-      );
-    }),
-  );
+  const holder = new Map(claims.map((c) => [c.ticket_id, c]));
+  const rank = (t) => STATUS_URGENCY[t.status] ?? 9;
+  const sorted = tickets
+    .slice()
+    .sort((a, b) => rank(a) - rank(b) || (a.number ?? 1e9) - (b.number ?? 1e9));
+  const th = (label, cls) => el("th", { scope: "col", class: cls }, label);
+  return el("div", { class: "card prog work-table" }, [
+    el("table", { class: "wl-table", "aria-label": "Tickets, most urgent first" }, [
+      el("thead", {}, [
+        el("tr", {}, [
+          th("No.", "c-num"),
+          th("Ticket", "c-title"),
+          th("Status", "c-status"),
+          th("On it", "c-agent"),
+          th("Risk", "c-risk"),
+          th("P", "c-pri"),
+          th("Stage", "c-stage"),
+          th("Updated", "c-time"),
+        ]),
+      ]),
+      el(
+        "tbody",
+        {},
+        sorted.map((t) => {
+          const need = needsLabel(t, needs);
+          const c = holder.get(t.id);
+          const who = t.human_owner
+            ? el("span", { class: "card-human-owned" }, [
+                el("span", { class: "human-dot" }),
+                `By hand · ${t.human_owner}`,
+              ])
+            : c
+              ? agentTag(c.agent_display_name || actorName("agent", c.agent_id), 26)
+              : el("span", { class: "dim" }, "—");
+          return el(
+            "tr",
+            { class: `wl-row st-${t.status}${need ? " needs" : ""}`, dataset: { id: t.id } },
+            [
+              el("td", { class: "c-num wl-num tabnum" }, t.number != null ? `#${t.number}` : "—"),
+              el("th", { scope: "row", class: "c-title wl-title" }, [
+                need
+                  ? el(
+                      "span",
+                      {
+                        class: "wl-needs",
+                        role: "img",
+                        "aria-label": `Needs you: ${need}`,
+                        title: `Needs you: ${need}`,
+                      },
+                      ycard(16),
+                    )
+                  : null,
+                el(
+                  "a",
+                  { href: t.status === "in_review" ? `#/review/${t.id}` : `#/ticket/${t.id}` },
+                  t.title,
+                ),
+              ]),
+              el("td", { class: "c-status" }, statusBadge(t.status)),
+              el("td", { class: "c-agent" }, who),
+              el("td", { class: "c-risk" }, riskBadge(t.risk_level)),
+              el("td", { class: "c-pri tabnum" }, `P${t.priority}`),
+              el("td", { class: "c-stage" }, pipelineDots(t.status)),
+              el("td", { class: "c-time wl-time tabnum" }, fmtTime(t.updated_at)),
+            ],
+          );
+        }),
+      ),
+    ]),
+  ]);
 }
 
-/** Active claims, folded into Work as a collapsible panel (was the Claims tab). */
-async function renderClaimsPanel() {
-  const claims = (await api("GET", "/claims")).claims || [];
-  const details = el("details", { class: "card" });
-  details.appendChild(
-    el("summary", { style: "cursor:pointer;font-weight:650" }, `Active claims (${claims.length})`),
+/**
+ * On the pitch: the active claims (who holds what, lease and heartbeat, branch),
+ * each with Revoke set apart. Was the Claims tab; read with the board.
+ */
+function renderClaimsPanel(claims, readAt = Date.now()) {
+  const now = Date.now();
+  const page = progPage(
+    "claims-panel",
+    "ink",
+    "On the pitch",
+    [
+      `${plural(claims.length, "agent")} holding tickets · as of `,
+      el("time", { datetime: new Date(readAt).toISOString() }, clockTime(readAt)),
+    ],
+    [],
   );
+  page.dataset.sig = hashText(JSON.stringify(claims));
   if (claims.length === 0) {
-    details.appendChild(
-      el("p", { class: "dim", style: "margin-top:12px" }, "No agents are working right now."),
-    );
-    return details;
+    page.appendChild(el("p", { class: "quiet claims-empty" }, "No agents are working right now."));
+    return page;
   }
-  const rows = claims.map((c) =>
-    el("tr", {}, [
+  const rows = claims.map((c) => {
+    const ended = Date.parse(c.expires_at) < now;
+    const num = c.ticket_number != null ? `#${c.ticket_number}` : c.ticket_id.slice(0, 8);
+    return el("tr", { class: ended ? "is-stale" : "" }, [
       el(
-        "td",
-        { class: "num clickable", onclick: () => navigate(`#/ticket/${c.ticket_id}`) },
-        c.ticket_number != null ? `#${c.ticket_number}` : c.ticket_id.slice(0, 8),
+        "th",
+        { scope: "row", class: "cl-agent" },
+        agentTag(c.agent_display_name || actorName("agent", c.agent_id), 26),
       ),
-      el("td", { class: "title-cell" }, c.ticket_title),
-      el("td", {}, statusBadge(c.ticket_status)),
-      el("td", {}, c.agent_display_name || c.agent_id.slice(0, 8)),
-      el("td", { class: "dim tabnum" }, fmtTime(c.expires_at)),
-      el("td", { class: "dim tabnum" }, fmtTime(c.heartbeat_at)),
+      el("td", { class: "cl-ticket" }, [
+        el("a", { href: `#/ticket/${c.ticket_id}` }, [
+          el("span", { class: "cl-num tabnum" }, num),
+          " ",
+          c.ticket_title,
+        ]),
+        ended ? el("span", { class: "cl-stale cl-stale-inline" }, " · lease ended") : null,
+      ]),
+      el("td", { class: "cl-status" }, statusBadge(c.ticket_status)),
+      el("td", { class: "cl-lease tabnum" }, [
+        fmtTime(c.expires_at),
+        ended ? el("span", { class: "cl-stale" }, " · ended") : null,
+      ]),
+      el("td", { class: "cl-beat tabnum dim" }, fmtTime(c.heartbeat_at)),
       el(
         "td",
-        {},
+        { class: "cl-branch" },
         c.branch_name
           ? el("code", { class: "mono" }, c.branch_name)
           : el("span", { class: "dim" }, "—"),
       ),
       el(
         "td",
-        {},
+        { class: "cl-act" },
         el(
           "button",
           {
             class: "btn danger small",
             type: "button",
-            onclick: () =>
+            "aria-label": `Revoke ${c.agent_display_name || "the agent"}'s claim on ${num}`,
+            // Revoking stops an agent's work, so it takes two presses: the first
+            // arms the button ("Stop the work?") for five seconds.
+            onclick: (e) => {
+              const btn = e.currentTarget;
+              if (btn.dataset.armed !== "1") {
+                btn.dataset.armed = "1";
+                btn.textContent = "Stop the work?";
+                btn.setAttribute(
+                  "aria-label",
+                  `Press again to stop ${c.agent_display_name || "the agent"}'s work on ${num}`,
+                );
+                announce(`Press Revoke again to stop the work on ${num}`);
+                setTimeout(() => {
+                  if (!btn.isConnected || btn.dataset.armed !== "1") return;
+                  delete btn.dataset.armed;
+                  btn.textContent = "Revoke";
+                  btn.setAttribute(
+                    "aria-label",
+                    `Revoke ${c.agent_display_name || "the agent"}'s claim on ${num}`,
+                  );
+                }, 5000);
+                return;
+              }
+              delete btn.dataset.armed;
               guard(async () => {
                 await api("POST", `/claims/${c.claim_id}/revoke`);
                 toast("Claim revoked", { ok: true });
                 router();
-              }),
+              });
+            },
           },
           "Revoke",
         ),
       ),
-    ]),
-  );
-  const table = el("table", {}, [
+    ]);
+  });
+  const table = el("table", { class: "claims-table" }, [
     el(
       "thead",
       {},
       el(
         "tr",
         {},
-        ["Ticket", "Title", "Status", "Agent", "Lease expiry", "Heartbeat", "Branch", ""].map((h) =>
-          el("th", {}, h),
+        [
+          ["Agent", "cl-agent"],
+          ["Ticket", "cl-ticket"],
+          ["Status", "cl-status"],
+          ["Lease ends", "cl-lease"],
+          ["Heartbeat", "cl-beat"],
+          ["Branch", "cl-branch"],
+          ["", "cl-act"],
+        ].map(([h, cls]) =>
+          el(
+            "th",
+            { scope: "col", class: cls },
+            h ? h : el("span", { class: "sr-only" }, "Action"),
+          ),
         ),
       ),
     ),
     el("tbody", {}, rows),
   ]);
-  details.appendChild(el("div", { class: "table-wrap", style: "margin-top:12px" }, table));
-  return details;
+  page.appendChild(table);
+  return page;
 }
 
 // ===========================================================================
 //  View: Ticket detail
 // ===========================================================================
 
+/**
+ * Read a distilled test failure (vitest / jest / node:test / pytest shapes) into
+ * the parts the page draws: file, test name, expected, received, where, counts.
+ * Anything it cannot read stays null and the raw text is shown instead.
+ */
+function parseFailure(text) {
+  const s = String(text || "");
+  const out = { file: null, name: null, expected: null, received: null, at: null, counts: null };
+  const fail = s.match(/^\s*(?:FAIL|✗|×|FAILED)\s+(\S+?)\s+(?:>|›|::)\s+(.+)$/m);
+  if (fail) {
+    out.file = fail[1];
+    out.name = fail[2].replace(/\s+>\s+/g, " › ").trim();
+  }
+  const exp = s.match(/^\s*-\s*Expected:?\s*(.+)$/m);
+  const rec = s.match(/^\s*\+\s*Received:?\s*(.+)$/m);
+  const unq = (v) => v && v.trim().replace(/^["'`](.*)["'`]$/, "$1");
+  if (exp && rec) {
+    out.expected = unq(exp[1]);
+    out.received = unq(rec[1]);
+  } else {
+    const m = s.match(
+      /expected\s+(.+?)\s+to (?:be|equal|deeply equal|strictly equal)\s+(.+?)(?:\s*\/\/|$)/im,
+    );
+    if (m) {
+      out.received = unq(m[1]);
+      out.expected = unq(m[2]);
+    }
+  }
+  const at = s.match(/(?:❯|at)\s+((?:[\w./-]+\/)?[\w.-]+\.\w+:\d+(?::\d+)?)/);
+  if (at) out.at = at[1];
+  const counts = s.match(/^\s*Tests\s+(.+?)(?:\s+\[attempt[^\]]*\])?\s*$/m);
+  if (counts) out.counts = counts[1].replace(/\s{2,}/g, " ").trim();
+  return out;
+}
+
+/** The referee's card at the head of a ticket that is out: red (blocked/failed) or yellow (needs you). */
+function refCard(kind, status) {
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 120 150",
+      width: 120,
+      height: 150,
+      class: `ref-card ref-${kind}`,
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    [
+      svgEl("rect", { x: 10, y: 8, width: 100, height: 134, rx: 6, class: "ref-card-shadow" }),
+      svgEl("rect", { x: 4, y: 2, width: 100, height: 134, rx: 6, class: "ref-card-face" }),
+      // The card carries the status glyph's shape: blocked is a square, failed a triangle.
+      kind === "red" && status === "failed"
+        ? svgEl("path", { d: "M54 50 L72 84 H36 Z", class: "ref-card-glyph" })
+        : kind === "red"
+          ? svgEl("rect", { x: 40, y: 55, width: 28, height: 28, rx: 2, class: "ref-card-glyph" })
+          : null,
+    ],
+  );
+}
+
+/** The sentence under a ticket's title: where it stands, in plain words, from its data. */
+function ticketLede(t, trail, events, doneAt, evidence = []) {
+  const last = trail[trail.length - 1];
+  const f = last ? parseFailure(last.distilled_failure) : null;
+  const max = last && last.max_attempts ? last.max_attempts : null;
+  switch (t.status) {
+    case "blocked": {
+      const why = last
+        ? f && f.name
+          ? [
+              `The test “${f.name.split(" › ").pop()}” still fails after ${trail.length}${max ? ` of ${max}` : ""} delivery attempts, so the runner parked it.`,
+            ]
+          : [
+              `It failed the ${last.gate} gate on ${trail.length}${max ? ` of ${max}` : ""} attempts, so the runner parked it.`,
+            ]
+        : ["The runner parked it."];
+      return [el("b", { class: "is-red" }, "Blocked. "), ...why, " It needs you."];
+    }
+    case "failed":
+      return [
+        el("b", { class: "is-red" }, "Failed. "),
+        (() => {
+          if (last) return `It failed the ${last.gate} gate.`;
+          // No rework trail: name the gate from the runner's Definition-of-Done report.
+          const dod = parseDodEvidence(evidence);
+          const bad = dod ? dod.gates.filter((g) => g.status === "FAIL") : [];
+          if (!bad.length) return "It failed its gates.";
+          const g = bad[0];
+          return `It failed the ${g.gate} gate${g.repo ? ` in ${g.repo}` : ""}${g.note ? ` (${g.note})` : ""}.`;
+        })(),
+        " It needs you.",
+      ];
+    case "paused": {
+      const p = pausedInfo(events);
+      return [
+        el("b", {}, "Paused. "),
+        p.reason === "budget_cap"
+          ? `It hit its budget cap${p.spend ? ` at ${p.spend}` : ""}.`
+          : "It hit a cap mid-delivery.",
+        " Continue it in place, or stop it.",
+      ];
+    }
+    case "in_review":
+      return [el("b", {}, "In review. "), "It waits for your sign-off."];
+    case "ready_for_merge":
+      return [el("b", {}, "Approved. "), "It is with the merge runner now."];
+    case "done":
+      return [
+        el("b", {}, "Done. "),
+        `Merged${doneAt ? ` ${fmtTime(doneAt)}` : ""}, ${
+          trail.length ? `after ${plural(trail.length, "rework")}.` : "first time, with no rework."
+        }`,
+      ];
+    case "in_testing":
+      return [
+        el("b", {}, "In testing. "),
+        "An independent tester is checking it against its test contract before it can merge.",
+      ];
+    case "claimed":
+    case "in_progress": {
+      const by = deliveredBy(events);
+      return [
+        el("b", {}, `${statusLabel(t.status)}. `),
+        by ? `${by} is on it.` : "An agent is on it.",
+      ];
+    }
+    case "ready":
+      return [el("b", {}, "Ready. "), "The next free agent can claim it."];
+    case "draft":
+    case "refining":
+      return [
+        el("b", {}, `${statusLabel(t.status)}. `),
+        "Mark it ready when its criteria are right.",
+      ];
+    case "cancelled":
+      return [el("b", {}, "Won't do. "), "It will not be built."];
+    default:
+      return [el("b", {}, `${statusLabel(t.status)}. `), "An agent is on it."];
+  }
+}
+
+/** A policy pack said as house rules ("Solo · loose rules"), the raw key in the title. */
+const POLICY_WORDS = {
+  solo_loose: "Solo · loose rules",
+  team_light: "Team · light rules",
+  factory_strict: "Factory · strict rules",
+  regulated: "Regulated rules",
+};
+function policyChip(pack) {
+  const b = badge(POLICY_WORDS[pack] || String(pack).replace(/_/g, " "), "no-dot");
+  b.title = `Policy pack: ${pack}`;
+  return b;
+}
+
+/** The failing test as a scoreline: Expected v Received, and where it broke. */
+function failingTestCard(trail) {
+  const last = trail[trail.length - 1];
+  if (!last || !last.distilled_failure) return null;
+  const f = parseFailure(last.distilled_failure);
+  const head = panelHead(
+    last.gate === "tests" || f.name ? "The failing test" : `The failing gate: ${last.gate}`,
+  );
+  const body = [];
+  if (f.file || f.name)
+    body.push(
+      el("p", { class: "ftest-name" }, [
+        f.file ? el("code", { class: "mono" }, f.file) : null,
+        f.file && f.name ? " › " : null,
+        f.name || "",
+      ]),
+    );
+  if (f.expected != null && f.received != null) {
+    body.push(
+      el(
+        "div",
+        {
+          class: "scoreline",
+          role: "group",
+          "aria-label": `Expected ${f.expected}, received ${f.received}`,
+        },
+        [
+          el("div", { class: "sl-side sl-exp" }, [
+            el("span", { class: "sl-l" }, "Expected"),
+            el("code", { class: "sl-v" }, f.expected),
+          ]),
+          el("span", { class: "sl-v-sep", "aria-hidden": "true" }, "v"),
+          el("div", { class: "sl-side sl-rec" }, [
+            el("span", { class: "sl-l" }, "Received"),
+            el("code", { class: "sl-v" }, f.received),
+          ]),
+        ],
+      ),
+    );
+  }
+  const bits = [f.at ? ["at ", el("code", { class: "mono" }, f.at)] : null, f.counts].filter(
+    Boolean,
+  );
+  if (bits.length)
+    body.push(
+      el(
+        "p",
+        { class: "ft-where" },
+        bits.flatMap((b, i) => (i ? [" · ", b] : [b])),
+      ),
+    );
+  if (f.expected == null)
+    body.push(
+      el(
+        "pre",
+        {
+          class: "failure-detail",
+          tabindex: "0",
+          role: "region",
+          "aria-label": "The failure, as captured",
+        },
+        last.distilled_failure,
+      ),
+    );
+  return el("section", { class: "card panel failing-test" }, [head, ...body]);
+}
+
+/**
+ * Attempts as a penalty shootout: one goal per attempt, the ball marked where the
+ * delivery went wide, then the captured failure for each (collapsed: identical
+ * failures are shown once above as the scoreline).
+ */
+function renderFailureHistory(trail) {
+  if (!Array.isArray(trail) || trail.length === 0) return null;
+  const max = trail[trail.length - 1].max_attempts;
+  const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
+  const goal = (i, taken = true) =>
+    svgEl(
+      "svg",
+      {
+        viewBox: "0 0 180 100",
+        class: taken ? "shoot" : "shoot is-untaken",
+        "aria-hidden": "true",
+        focusable: "false",
+      },
+      [
+        svgEl("rect", { x: 0, y: 0, width: 180, height: 100, class: "shoot-grass" }),
+        svgEl("path", { d: "M20 100 V20 H160 V100", class: "shoot-post" }),
+        ...Array.from({ length: 7 }, (_, k) =>
+          svgEl("line", { x1: 20 + k * 20, y1: 20, x2: 20 + k * 20, y2: 100, class: "shoot-net" }),
+        ),
+        ...Array.from({ length: 4 }, (_, k) =>
+          svgEl("line", { x1: 20, y1: 36 + k * 16, x2: 160, y2: 36 + k * 16, class: "shoot-net" }),
+        ),
+        taken
+          ? // A miss: the ball off the frame, a cross beside it (position varies by attempt).
+            svgEl(
+              "g",
+              { transform: `translate(${[150, 30, 160][i % 3]} ${[16, 14, 70][i % 3]})` },
+              [
+                svgEl("circle", { r: 11, class: "shoot-ball" }),
+                svgEl("path", { d: "M-9 -9 L9 9 M9 -9 L-9 9", class: "shoot-x" }),
+              ],
+            )
+          : // Not taken: the ball still on the spot.
+            svgEl("circle", { cx: 90, cy: 86, r: 9, class: "shoot-ball is-spot" }),
+      ],
+    );
+  return el("section", { class: "card failure-history" }, [
+    el("div", { class: "panel-head" }, [
+      el("h2", { class: "panel-title" }, [
+        "Attempts",
+        el("span", { class: "panel-aux" }, max ? `${trail.length} of ${max} used` : attemptsLabel),
+      ]),
+    ]),
+    el(
+      "p",
+      { class: "dim failure-history-sub" },
+      `Failure history (${attemptsLabel}), oldest first: what the runner recorded on each go.`,
+    ),
+    el(
+      "ol",
+      { class: "failure-trail" },
+      trail.map((a, i) => {
+        const mx =
+          typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
+        return el("li", { class: "failure-attempt" }, [
+          goal(i),
+          el("div", { class: "failure-attempt-head" }, [
+            el("span", { class: "failure-attempt-num" }, `Attempt ${a.attempt}${mx}`),
+            a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
+            el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
+          ]),
+          el("details", { class: "failure-more" }, [
+            el("summary", {}, "What it said"),
+            // Untrusted captured tool output: a text node in a focusable, named <pre>.
+            el(
+              "pre",
+              {
+                class: "failure-detail",
+                tabindex: "0",
+                role: "region",
+                "aria-label": `Attempt ${a.attempt} failure output`,
+              },
+              a.distilled_failure || "(no detail captured)",
+            ),
+          ]),
+        ]);
+      }),
+      // The kicks still to come (or never taken, once the runner parked it).
+      ...Array.from({ length: Math.max(0, (Number(max) || 0) - trail.length) }, (_, k) =>
+        el("li", { class: "failure-kick-none" }, [
+          goal(trail.length + k, false),
+          el("div", { class: "failure-attempt-head" }, [
+            el("span", { class: "failure-attempt-num" }, `Attempt ${trail.length + k + 1}/${max}`),
+            el("span", { class: "failure-attempt-time" }, "not taken"),
+          ]),
+        ]),
+      ),
+    ),
+  ]);
+}
+
+/** The ticket's epic as a cup run: rounds, this ticket highlighted, who waits on it. */
+async function ticketEpicCard(t, scopes) {
+  const epic = (scopes || []).find((s) => s.type === "epic");
+  if (!epic) return null;
+  const all =
+    (
+      await api("GET", "/tickets", undefined, { signal: routeSignal() }).catch(() => ({
+        tickets: [],
+      }))
+    ).tickets || [];
+  const details = await ticketDetails(
+    all.filter((x) => x.status !== "cancelled"),
+    routeSignal(),
+  );
+  const members = all.filter((x) =>
+    (details.get(x.id)?.scopes || []).some((s) => s.id === epic.id),
+  );
+  if (!members.length) return null;
+  const deps = new Map(
+    members.map((m) => [
+      m.id,
+      (details.get(m.id)?.dependencies || []).map((d) => d.depends_on_ticket_id),
+    ]),
+  );
+  const byPhase = computePhases(members, deps);
+  const phases = [...byPhase.keys()].sort((a, b) => a - b);
+  const waiting = members.filter(
+    (m) => (deps.get(m.id) || []).includes(t.id) && m.status !== "done",
+  );
+  return el("section", { class: "card panel tk-epic" }, [
+    panelHead(epic.name, null, { text: "Campaign", href: `#/epics/${epic.id}` }, { kit: "sky" }),
+    el(
+      "ol",
+      { class: "tk-rounds" },
+      phases.map((p, i) => {
+        const ph = byPhase
+          .get(p)
+          .slice()
+          .sort((a, b) => a.number - b.number);
+        const final =
+          i === phases.length - 1 &&
+          phases.length > 1 &&
+          ph.some((x) => /^Acceptance/i.test(x.title));
+        return el("li", {}, [
+          el("span", { class: "round-name" }, final ? "Final" : `Round ${i + 1}`),
+          el(
+            "ul",
+            {},
+            ph.map((x) =>
+              el("li", { class: `tie st-${x.status}${x.id === t.id ? " is-here" : ""}` }, [
+                el(
+                  "a",
+                  {
+                    href: `#/ticket/${x.id}`,
+                    "aria-current": x.id === t.id ? "page" : null,
+                    "aria-label": `#${x.number} ${statusLabel(x.status)}: ${x.title}`,
+                  },
+                  [
+                    glyph(x.status, 16),
+                    el("b", {}, `#${x.number}`),
+                    el("span", { class: "tie-t" }, x.title),
+                  ],
+                ),
+              ]),
+            ),
+          ),
+        ]);
+      }),
+    ),
+    waiting.length
+      ? el("p", { class: OFF_PITCH.has(t.status) ? "tk-waits is-red" : "tk-waits" }, [
+          OFF_PITCH.has(t.status) ? glyph("blocked", 14) : null,
+          `${waiting.map((w) => "#" + w.number).join(", ")} ${waiting.length === 1 ? "waits" : "wait"} on #${t.number}.`,
+        ])
+      : null,
+  ]);
+}
+
 async function renderTicket(id) {
   if (!id) return renderWork();
-  const view = await api("GET", `/tickets/${id}`);
+  let view;
+  try {
+    view = await api("GET", `/tickets/${id}`);
+  } catch (e) {
+    // A missing ticket is not worth a retry: say so, and point back to the board.
+    if (e && (e.status === 404 || e.code === "NOT_FOUND" || /not found/i.test(e.message || ""))) {
+      return errorPage({
+        code: "404",
+        caption: "no such ticket",
+        title: "No such ticket",
+        lede: "There is no ticket at this address. It may have been a mistyped link. Every ticket is on the Work board.",
+        actions: [el("a", { class: "btn primary", href: "#/work" }, "Open the Work board")],
+      });
+    }
+    throw e;
+  }
+  await ensureAgents();
   const t = view.ticket;
   setDocTitle("ticket", `#${t.number} ${t.title}`, id);
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
   const acList = view.acceptance_criteria || [];
   const blockers = view.blocking_decisions || [];
   const events = view.events || [];
 
   const wrap = el("div", { class: "view" });
   wrap.appendChild(
-    el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate(detailBackHash) },
-      detailBackHash === "#/review" ? "← Back to Review" : "← Back to Work",
-    ),
+    backLink(detailBackHash, detailBackHash === "#/review" ? "Back to Review" : "Back to Work"),
   );
-
-  // Live-delivery log surface: when the factory is actively delivering this
-  // ticket, link straight to the streaming run log so a stuck/hung agent is never
-  // invisible (exactly what was missing when #88 deadlocked on a permission
-  // prompt). Best-effort — never blocks the ticket render.
-  const DELIVERING_STATUSES = new Set(["in_progress", "claimed", "in_testing"]);
-  if (DELIVERING_STATUSES.has(t.status)) {
-    const deliveringBanner = el("div", { class: "delivering-banner" }, [
-      el("span", { class: "delivering-dot" }),
-      el("span", {}, "Delivering…"),
-    ]);
-    wrap.appendChild(deliveringBanner);
-    (async () => {
-      try {
-        const runs = await api("GET", "/api/runs?active=1");
-        const run = (runs.active || []).find((r) => r.ticket_number === t.number);
-        clear(deliveringBanner);
-        if (run) {
-          deliveringBanner.append(
-            el("span", { class: "delivering-dot" }),
-            el("span", {}, `Delivering — ${runKindLabel(run.kind)}`),
-            el(
-              "button",
-              {
-                class: "btn small run-viewlog",
-                type: "button",
-                onclick: () => viewRunDetail(run.id, runKindLabel(run.kind)),
-              },
-              "View live log →",
-            ),
-          );
-        } else {
-          // Marked delivering but no live run attached ⇒ likely a hung/orphaned
-          // claim (the #88 case). Say so plainly instead of a silent "in progress".
-          deliveringBanner.classList.add("is-warn");
-          deliveringBanner.append(
-            el("span", { class: "delivering-dot is-warn" }),
-            el(
-              "span",
-              {},
-              "Marked delivering, but no live run is attached — it may be stuck or already ended.",
-            ),
-          );
-        }
-      } catch {
-        clear(deliveringBanner);
-      }
-    })();
-  }
 
   const policyBox = el("div");
 
@@ -4037,6 +9293,20 @@ async function renderTicket(id) {
   // review surface uses), so "Mark ready" can never resurface where it shouldn't
   // (in_review / ready_for_merge / done). Each key maps to its concrete button.
   const actionButtons = {
+    unblock: () =>
+      el(
+        "button",
+        {
+          class: "btn primary big",
+          type: "button",
+          onclick: () => {
+            const ev = events.filter((e) => e.event_type === "ticket.blocked").pop();
+            const reason = ev ? parseJsonSafe(ev.payload_json)?.reason || null : null;
+            unblockSheet(t, { reason });
+          },
+        },
+        t.status === "failed" ? "Send back…" : "Unblock…",
+      ),
     mark_ready: () =>
       el(
         "button",
@@ -4079,18 +9349,21 @@ async function renderTicket(id) {
           type: "button",
           title: "Send this ticket back for rework",
           onclick: () =>
-            guard(async () => {
-              const reason = window.prompt("Reason for sending back to rework?");
-              if (reason == null || reason.trim() === "") {
-                toast("Rework cancelled — a reason is required", {});
-                return;
-              }
-              await api("POST", `/tickets/${t.id}/review/reject`, {
-                to: "refining",
-                reason: reason.trim(),
-              });
-              toast("Sent back to rework", { ok: true });
-              router();
+            reasonSheet({
+              title: `Send ${ref} back`,
+              ticket: t,
+              intro:
+                t.status === "ready_for_merge"
+                  ? `${ref} is approved but has not merged. This pulls it back to Refining with your reason, and its acceptance criteria reset to not met.`
+                  : `${ref} goes back to Refining with your reason, and its acceptance criteria reset to not met.`,
+              label: "What should change?",
+              presets: REJECT_REASON_PRESETS,
+              confirm: "Send back",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/review/reject`, { to: "refining", reason });
+                toast(`${ref} sent back to Refining.`, { ok: true });
+                router();
+              },
             }),
         },
         "Send back to rework",
@@ -4107,21 +9380,22 @@ async function renderTicket(id) {
           title:
             "Record a tester PASS for this in_testing ticket (→ ready_for_merge). Use when you verified the acceptance criteria yourself or the tester lane is held.",
           onclick: () =>
-            guard(async () => {
-              const summary = window.prompt(
-                "Tester PASS — what was verified? (recorded as test evidence)",
-                "Verified by hand against the acceptance criteria",
-              );
-              if (summary == null || summary.trim() === "") {
-                toast("Tester verdict cancelled — a summary is required", {});
-                return;
-              }
-              await api("POST", `/tickets/${t.id}/tester`, {
-                verdict: "pass",
-                summary: summary.trim(),
-              });
-              toast("Tester PASS recorded — ready to merge", { ok: true });
-              router();
+            reasonSheet({
+              title: `Tester pass ${ref}`,
+              ticket: t,
+              intro: `Records an independent tester PASS for ${ref}. It moves to Ready for merge, and what you checked is kept as test evidence.`,
+              label: "What did you check?",
+              presets: [
+                "Checked every acceptance criterion by hand",
+                "Ran the black-box checks against a running build",
+              ],
+              hint: "Required. It is kept as the test evidence.",
+              confirm: "Record PASS",
+              onConfirm: async (summary) => {
+                await api("POST", `/tickets/${t.id}/tester`, { verdict: "pass", summary });
+                toast(`Tester PASS recorded: ${ref} is ready to merge.`, { ok: true });
+                router();
+              },
             }),
         },
         "Record tester PASS",
@@ -4135,17 +9409,24 @@ async function renderTicket(id) {
           title:
             "Record a tester FAIL for this in_testing ticket (→ refining; the failing observation becomes the rework feedback)",
           onclick: () =>
-            openRejectDialog({
-              verb: "recording a tester FAIL",
-              onConfirm: (reason) =>
-                guard(async () => {
-                  await api("POST", `/tickets/${t.id}/tester`, {
-                    verdict: "fail",
-                    summary: reason,
-                  });
-                  toast("Tester FAIL recorded — sent back for rework", { ok: true });
-                  router();
-                }),
+            reasonSheet({
+              title: `Tester fail ${ref}`,
+              ticket: t,
+              intro: `Records an independent tester FAIL for ${ref}. It goes back to Refining, and what you saw becomes the rework feedback.`,
+              label: "What failed?",
+              presets: [
+                "An acceptance criterion does not hold",
+                "Breaks a flow that worked before",
+                "Errors on empty or unusual input",
+              ],
+              hint: "Required. The next attempt reads it.",
+              confirm: "Record FAIL",
+              tone: "danger",
+              onConfirm: async (summary) => {
+                await api("POST", `/tickets/${t.id}/tester`, { verdict: "fail", summary });
+                toast(`Tester FAIL recorded: ${ref} is back in Refining.`, { ok: true });
+                router();
+              },
             }),
         },
         "Record tester FAIL",
@@ -4191,15 +9472,19 @@ async function renderTicket(id) {
           type: "button",
           title: "Mark this ticket won't do (won't be built)",
           onclick: () =>
-            guard(async () => {
-              const reason = window.prompt("Reason for marking won't do?");
-              if (reason == null || reason.trim() === "") {
-                toast("Won't do cancelled — a reason is required", {});
-                return;
-              }
-              await api("POST", `/tickets/${t.id}/wont-do`, { reason: reason.trim() });
-              toast("Marked won't do", { ok: true });
-              router();
+            reasonSheet({
+              title: `Won't do ${ref}`,
+              ticket: t,
+              intro: `${ref} closes without being built and goes to Won't do. You can reopen it into Refining later.`,
+              label: "Why not?",
+              presets: WONT_DO_PRESETS,
+              confirm: "Won't do",
+              tone: "danger",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/wont-do`, { reason });
+                toast(`${ref} closed as won't do.`, { ok: true });
+                router();
+              },
             }),
         },
         "Won't do",
@@ -4247,32 +9532,28 @@ async function renderTicket(id) {
           type: "button",
           title: "Stop this paused delivery — abandon it and tear down its worktree",
           onclick: () =>
-            guard(async () => {
-              const reason = window.prompt("Reason for stopping this paused delivery? (optional)");
-              if (reason === null) return; // cancelled the prompt
-              const body = reason.trim() === "" ? {} : { reason: reason.trim() };
-              await api("POST", `/tickets/${t.id}/stop`, body);
-              toast("Stopped — paused delivery abandoned", { ok: true });
-              router();
+            reasonSheet({
+              title: `Stop ${ref}`,
+              ticket: t,
+              intro: `Abandons the paused delivery of ${ref}: the ticket is cancelled and its resume point is dropped, so it cannot carry on. Continue resumes it where it stopped instead.`,
+              label: "Why stop it?",
+              required: false,
+              confirm: "Stop",
+              tone: "danger",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/stop`, reason ? { reason } : {});
+                toast(`Stopped ${ref}: the paused delivery is abandoned.`, { ok: true });
+                router();
+              },
             }),
         },
         "Stop",
       ),
   };
 
-  // "Merging…" — a passive indicator on the approved-and-merging state, shown
-  // alongside the admin/rework actions so the human sees the runner is working.
-  const mergingPill =
-    t.status === "ready_for_merge"
-      ? el(
-          "span",
-          { class: "badge no-dot", title: "The merge runner is merging the delivery branch" },
-          "merging…",
-        )
-      : null;
-
+  // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
+  // runner may be held. The status ("Approved · merging") and the lede say where it is.
   const headActions = [
-    mergingPill,
     ...ticketActionKeys(t.status).map((key) => (actionButtons[key] ? actionButtons[key]() : null)),
   ].filter(Boolean);
 
@@ -4305,45 +9586,140 @@ async function renderTicket(id) {
         })()
       : null;
 
-  const head = el("div", { class: "card card-accent" }, [
-    el("div", { class: "num" }, t.number != null ? `#${t.number}` : t.id),
-    el("h1", { class: "detail-title" }, t.title),
-    el("div", { class: "meta-row" }, [
-      statusBadge(t.status),
-      riskBadge(t.risk_level),
-      badge(t.policy_pack, "no-dot"),
-      badge(`priority ${t.priority}`, "no-dot"),
-      // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
-      t.delivery_budget_usd != null
-        ? badge(`budget $${Number(t.delivery_budget_usd).toFixed(2)}`, "no-dot")
-        : null,
-    ]),
-    el("div", { style: "margin:10px 0 14px" }, pipelineDots(t.status)),
-    t.description
-      ? el("p", { class: "desc" }, t.description)
-      : el("p", { class: "desc dim" }, "No description."),
-    pausedBanner,
-    headActions.length
-      ? el("div", { class: "btn-row", style: "margin-top:16px" }, headActions)
+  const trail = view.rework_trail || [];
+  const repoW =
+    (view.repositories || []).find((r) => r.access === "write") || view.repositories?.[0];
+  const epicScope = (view.scopes || []).find((s) => s.type === "epic");
+  const out = t.status === "blocked" || t.status === "failed";
+  // Yellow: it waits on you (a sign-off, a merge, a capped delivery).
+  const needsYou = ["in_review", "ready_for_merge", "paused"].includes(t.status);
+  const doneAt = t.status === "done" ? sinceStatus(events, "done") || t.updated_at : null;
+  const mark = out
+    ? refCard("red", t.status)
+    : needsYou
+      ? refCard("yellow")
+      : t.status === "done"
+        ? fullTimePlaque(doneAt)
+        : null;
+  const head = el(
+    "header",
+    {
+      class: `card tk-head tk-${t.status}${out ? " is-out" : ""}${mark ? " has-mark" : ""}`,
+    },
+    [
+      mark,
+      el("div", { class: "tk-head-main" }, [
+        el("p", { class: "tk-meta" }, [
+          statusBadge(t.status),
+          repoW ? repoTag(repoW.name, 20) : null,
+          riskBadge(t.risk_level, { long: true }),
+          // The acceptance ticket is its campaign's Final: say so where it is named.
+          epicScope && isAcceptanceTicket(t) ? el("span", { class: "tk-final" }, "Final") : null,
+          epicScope
+            ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
+            : null,
+          t.policy_pack ? policyChip(t.policy_pack) : null,
+          badge(`priority ${t.priority}`, "no-dot"),
+          // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
+          t.delivery_budget_usd != null
+            ? badge(`budget ${money(Number(t.delivery_budget_usd))}`, "no-dot")
+            : null,
+        ]),
+        el("h1", { class: "detail-title" }, [
+          el("span", { class: "tk-no" }, t.number != null ? `#${t.number}` : ""),
+          t.number != null ? " " : "",
+          t.title,
+        ]),
+        el("p", { class: "tk-lede" }, ticketLede(t, trail, events, doneAt, view.evidence || [])),
+        el("div", { class: "tk-dots" }, [
+          pipelineDots(t.status),
+          el("span", { class: "tk-stage", "aria-hidden": "true" }, stageCaption(t.status)),
+        ]),
+      ]),
+    ],
+  );
+
+  // Claimability only means something before a claim: never "Ready to claim" on a
+  // blocked, done or in-flight ticket (the endpoint answers for the dependency gate).
+  const claimable = ["ready", "draft", "refining"].includes(t.status);
+  const claimBox = el("div", { class: "claim-box", dataset: claimable ? undefined : { off: "1" } });
+  if (claimable) loadClaimability(t.id, claimBox);
+
+  // Your move: what the gaffer can do with this ticket now, in words, then the buttons.
+  const moveWords = {
+    blocked: `Unblock sends #${t.number} back to Ready so an agent can try again, or to Refining so you can rewrite it first. To brief the next attempt, sharpen an acceptance criterion.`,
+    failed: `Send #${t.number} back to Ready for another go, or to Refining to rewrite it first.`,
+    paused: "Continue resumes the delivery in its worktree; Stop abandons it.",
+    in_review: "The sign-off is on the Review page: the diff, the flags and Approve.",
+    ready_for_merge:
+      "The merge runner has it. Merge now runs it again if it is held up; Mark merged if you merged the branch by hand.",
+    in_testing: "The tester owns the verdict. Record it by hand only if you tested it yourself.",
+    draft: "Mark it ready when its acceptance criteria say what done means.",
+    refining: "Mark it ready when its acceptance criteria say what done means.",
+    ready:
+      "It waits in the fixtures for the next free agent. Nothing to do unless the plan changed.",
+    cancelled: "Reopen it to bring it back to Refining.",
+  };
+  const moveActions = [
+    t.status === "in_review"
+      ? el("a", { class: "btn primary big", href: `#/review/${t.id}` }, "Review")
       : null,
-    policyBox,
-  ]);
+    ...headActions,
+  ].filter(Boolean);
+  // One primary per view: the first filled action in Your move is THE move, in the
+  // big display face like Unblock… and Review; any later filled one (Mark merged next
+  // to Merge now, a second ok) reads as an ordinary button beside it.
+  let movePrimary = false;
+  for (const b of moveActions) {
+    const filled = b.classList.contains("primary") || b.classList.contains("ok");
+    if (!filled) continue;
+    if (!movePrimary) {
+      b.classList.remove("ok");
+      b.classList.add("primary", "big");
+      movePrimary = true;
+    } else {
+      b.classList.remove("primary", "ok", "big");
+    }
+  }
+  const yourMove =
+    t.status === "done"
+      ? fullTimeCard(t, { trail, events, acList, doneAt })
+      : moveActions.length || moveWords[t.status]
+        ? el("section", { class: "card panel tk-move", "aria-label": "Your move" }, [
+            panelHead("Your move", null, null, {
+              kit: out || needsYou ? "claret" : "ink",
+            }),
+            moveWords[t.status] ? el("p", { class: "tk-move-t" }, moveWords[t.status]) : null,
+            pausedBanner,
+            el("div", { class: "btn-row" }, [
+              ...moveActions,
+              el("a", { class: "btn", href: `#/work?status=${t.status}` }, "See it on the board"),
+            ]),
+            policyBox,
+            claimBox,
+          ])
+        : claimable
+          ? el("div", { class: "tk-claim" }, [policyBox, claimBox])
+          : null;
 
-  const claimBox = el("div", { class: "claim-box" });
-  loadClaimability(t.id, claimBox);
-  head.appendChild(claimBox);
-
-  const acCard = el("div", { class: "card" }, [
-    el("h2", {}, `Acceptance criteria (${acList.length})`),
+  const acCard = el("section", { class: "card panel tk-ac", "aria-label": "Acceptance criteria" }, [
+    panelHead(
+      "Acceptance criteria",
+      `${acList.filter((a) => a.status === "satisfied").length} of ${acList.length} satisfied`,
+    ),
     acList.length
       ? el(
           "ul",
-          { class: "clean" },
+          { class: "clean tk-ac-list" },
           acList.map((ac) =>
             el(
               "li",
-              {},
+              { class: `ac-${ac.status}` },
               el("div", { class: "ac-item" }, [
+                glyph(
+                  ac.status === "satisfied" ? "done" : ac.status === "failed" ? "failed" : "draft",
+                  16,
+                ),
                 el("div", { class: "ac-text" }, [
                   el("div", {}, ac.text),
                   el(
@@ -4362,59 +9738,83 @@ async function renderTicket(id) {
                     ].join(""),
                   ),
                 ]),
-                badge(ac.status, `ac-${ac.status}`),
+                el("span", { class: "ac-state" }, String(ac.status || "").replace(/_/g, " ")),
               ]),
             ),
           ),
         )
-      : el("p", { class: "dim" }, "No acceptance criteria yet."),
-    renderAddAcForm(t.id),
+      : el("p", { class: "dim" }, "No acceptance criteria yet. Add the first below."),
+    // A shipped or abandoned ticket's criteria are its record, not a to-do list.
+    t.status === "done" || t.status === "cancelled"
+      ? null
+      : el("details", { class: "tk-add-ac", open: acList.length ? null : "" }, [
+          el("summary", {}, "Add a criterion"),
+          renderAddAcForm(t.id),
+        ]),
   ]);
 
-  const sideRepos = renderRepoPanel(t.id, claimBox);
+  // The boundary: which repos this ticket may write, read or test. Read-only once merged.
+  const sideRepos = renderRepoPanel(t.id, claimBox, { readOnly: t.status === "done", ticket: t });
 
-  // Diff-in-review: show the real per-repo git diff inline for tickets that are
-  // in review (incl. a reopened-for-review re-approval). Hidden for early-lifecycle
-  // tickets with nothing delivered yet.
-  const showDiff =
+  // The diff: the delivery once it is in review (or shipped), and the work in
+  // progress of a parked or capped delivery when it left a branch. Files fold
+  // here (the file list is the way in); the Review page reads them open.
+  const delivered =
     t.status === "in_review" ||
     t.status === "ready_for_merge" ||
     t.status === "done" ||
     reopenedForReview(events);
-  const diffCard = showDiff
-    ? el("div", { class: "card" }, [
-        el("h2", {}, "Delivery diff"),
-        reopenedForReview(events)
-          ? el("div", { class: "reopen-banner" }, [
-              icon("alert"),
-              "Merge conflict resolved on the branch — re-review the resolved diff before re-approving.",
-            ])
-          : null,
-        renderTicketDiff(t.id),
+  const wip =
+    !delivered &&
+    Boolean(t.branch_name) &&
+    ["blocked", "failed", "paused", "in_testing", "refining"].includes(t.status);
+  const diffCard =
+    delivered || wip
+      ? el("section", { class: "tk-diff", "aria-label": "Diff" }, [
+          el("h2", { class: "tk-h2" }, [
+            t.status === "done" ? "What shipped" : wip ? "Work in progress" : "The delivery",
+            el(
+              "span",
+              { class: "panel-aux" },
+              t.status === "done" ? "merged" : wip ? "on its branch, not merged" : "on its branch",
+            ),
+          ]),
+          reopenedForReview(events)
+            ? el("div", { class: "reopen-banner" }, [
+                icon("alert"),
+                "Merge conflict resolved on the branch — re-review the resolved diff before re-approving.",
+              ])
+            : null,
+          (t.status === "done" && shippedFiles(view.evidence || [])) ||
+            renderTicketDiff(t.id, null, { collapsed: true }),
+        ])
+      : null;
+
+  const sideBlockers = blockers.length
+    ? el("section", { class: "card panel tk-blockers", "aria-label": "Blocking decisions" }, [
+        panelHead("Blocking decisions", String(blockers.length), null, { kit: "claret" }),
+        el(
+          "ul",
+          { class: "clean tk-blocker-list" },
+          blockers.map((d) =>
+            el("li", {}, [
+              ycard(18),
+              el("div", {}, [
+                el("strong", {}, d.title),
+                el("div", { class: "ac-meta" }, `${d.severity} · ${d.status}`),
+              ]),
+            ]),
+          ),
+        ),
+        el("a", { class: "panel-link", href: "#/overview" }, "Answer them on the team sheet"),
       ])
     : null;
 
-  const sideBlockers = el("div", { class: "card" }, [
-    el("h2", {}, `Blocking decisions (${blockers.length})`),
-    blockers.length
-      ? el(
-          "ul",
-          { class: "clean" },
-          blockers.map((d) =>
-            el("li", {}, [
-              el("div", {}, el("strong", {}, d.title)),
-              el("div", { class: "ac-meta" }, `${d.severity} · ${d.status}`),
-            ]),
-          ),
-        )
-      : el("p", { class: "dim" }, "Nothing blocking."),
-  ]);
-
-  const sideFields = el("div", { class: "card" }, [
-    el("h2", {}, "Fields"),
+  const sideFields = el("section", { class: "card panel tk-record", "aria-label": "The record" }, [
+    panelHead("The record"),
     el("dl", { class: "kv" }, [
       el("dt", {}, "Branch"),
-      el("dd", {}, t.branch_name || "—"),
+      el("dd", {}, t.branch_name ? el("code", { class: "mono" }, t.branch_name) : "—"),
       el("dt", {}, "PR"),
       el(
         "dd",
@@ -4427,52 +9827,48 @@ async function renderTicket(id) {
             )
           : "—",
       ),
-      el("dt", {}, "Attempts"),
-      el("dd", {}, String(t.attempt_count)),
+      el("dt", {}, "Deliveries"),
+      // Same count as Full time's: each failed go on the rework trail, plus the
+      // delivery that got through once it is past the pitch (attempt_count only
+      // counts claims, so a parked ticket read "0" beside "3 attempts").
+      el("dd", {}, String(Math.max(deliveryCount(t, trail), t.attempt_count || 0))),
       el("dt", {}, "Source"),
       el("dd", {}, t.source || "—"),
       el("dt", {}, "Created"),
-      el("dd", {}, fmtTime(t.created_at)),
+      el("dd", {}, [fmtTime(t.created_at), t.created_by ? ` by ${t.created_by}` : ""]),
       el("dt", {}, "Updated"),
       el("dd", {}, fmtTime(t.updated_at)),
     ]),
   ]);
 
-  const timeline = el("div", { class: "card" }, [
-    el("h2", {}, `Event timeline (${events.length})`),
-    events.length
+  // The brief: what the ticket asks for, and what it waits on.
+  const deps = view.dependencies || [];
+  const brief = el("section", { class: "card panel tk-brief", "aria-label": "The brief" }, [
+    panelHead("The brief"),
+    t.description
+      ? el("p", { class: "desc" }, t.description)
+      : el("p", { class: "desc dim" }, "No description."),
+    el("h3", { class: "tk-h3" }, "Depends on"),
+    deps.length
       ? el(
           "ul",
-          { class: "timeline" },
-          events.map((ev) =>
-            el("li", {}, [
-              el("div", { class: "ev-type" }, humanizeEvent(ev.event_type)),
-              el("div", { class: "ev-time" }, fmtTime(ev.created_at)),
-              el(
-                "div",
-                { class: "ev-actor" },
-                `${ev.actor_type}${ev.actor_id ? ` · ${ev.actor_id}` : ""}`,
-              ),
-              // TRACE: the runner tick that wrote this event (work_events.correlation_id).
-              // Every event one tick produced — the runner's own calls and the agent's
-              // MCP writes — carries the same id, so the chip shows which events belong
-              // together; `dispatch events list --correlation <id>` prints the whole trail.
-              ev.correlation_id
-                ? el(
-                    "div",
-                    {
-                      class: "ev-tick mono",
-                      title: `Written during tick ${ev.correlation_id} — dispatch events list --correlation ${ev.correlation_id}`,
-                    },
-                    `tick ${ev.correlation_id}`,
-                  )
-                : null,
-              ev.payload_json && ev.payload_json !== "{}" ? formatPayload(ev.payload_json) : null,
+          { class: "clean tk-deps" },
+          deps.map((d) =>
+            el("li", { class: `st-${d.status}` }, [
+              glyph(d.status, 16),
+              el("a", { href: `#/ticket/${d.depends_on_ticket_id}` }, [
+                el("b", {}, `#${d.number}`),
+                " ",
+                d.title,
+              ]),
+              el("span", { class: "ac-state" }, statusLabel(d.status)),
             ]),
           ),
         )
-      : el("p", { class: "dim" }, "No events recorded."),
+      : el("p", { class: "dim" }, "Nothing. It can start on its own."),
   ]);
+
+  const timeline = ticketMatchReport(events, view.repositories || []);
 
   // BBT-001: the independent black-box testing card — the testability toggle, the
   // test_contract (surfaces / deps / env / run / harness), and the tester's verdict
@@ -4482,31 +9878,425 @@ async function renderTicket(id) {
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
-  // Distinct from the board's latest-only rework chip: this is the trail an
-  // operator returns to when triaging why a ticket kept bouncing.
-  const failureHistory = renderFailureHistory(view.rework_trail || []);
+  const failureHistory = renderFailureHistory(trail);
+  const failingTest =
+    OFF_PITCH.has(t.status) || t.status === "refining" ? failingTestCard(trail) : null;
+  const epicCard = el("div", { class: "tk-epic-slot" });
+  ticketEpicCard(t, view.scopes)
+    .then((c) => c && epicCard.replaceChildren(c))
+    .catch(() => {});
 
   // PO-r2 #2: per-delivery memory attribution — what memory was primed into the agent
-  // for this delivery, paired with the outcome (shipped clean vs needed rework), so the
-  // learn-loop is visible. Distinct "no memory primed" state vs "primed" (AC3).
+  // for this delivery, paired with the outcome (shipped clean vs needed rework).
   const memoryPrimed = memoryPrimedPanel(t, view.evidence || [], view.rework_trail || []);
 
+  // The runner's logs for this ticket: live while it is on the pitch, else the record.
+  const runs = ticketRunsPanel(t, events);
+
+  const live = ["claimed", "in_progress"].includes(t.status);
+  const main =
+    t.status === "in_testing"
+      ? [
+          yourMove,
+          testingCard,
+          runs,
+          failingTest,
+          failureHistory,
+          diffCard,
+          sideRepos,
+          memoryPrimed,
+        ]
+      : live
+        ? [runs, yourMove, failureHistory, sideRepos, testingCard, memoryPrimed]
+        : [
+            yourMove,
+            failingTest,
+            failureHistory,
+            diffCard,
+            runs,
+            sideRepos,
+            memoryPrimed,
+            testingCard,
+          ];
+
+  wrap.appendChild(head);
   wrap.appendChild(
-    el("div", { class: "detail-grid" }, [
-      el("div", {}, [
-        head,
-        sideRepos,
-        diffCard,
-        failureHistory,
+    el("div", { class: "detail-grid tk-grid" }, [
+      el("div", { class: "tk-main" }, main),
+      el("div", { class: "tk-side" }, [
+        epicCard,
+        sideBlockers,
+        brief,
         acCard,
-        memoryPrimed,
-        testingCard,
         timeline,
+        sideFields,
       ]),
-      el("div", {}, [sideFields, sideBlockers]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * What shipped, from the delivery's own diff stat (the diff_summary evidence the
+ * runner recorded): after the merge the branch and main agree, so a live diff is
+ * empty. Each file with its goal-difference bar. Null when there is no stat.
+ */
+function shippedFiles(evidence) {
+  const ev = (evidence || []).filter((e) => e.evidence_type === "diff_summary").pop();
+  if (!ev) return null;
+  const rows = [];
+  let total = null;
+  for (const line of String(ev.summary || "").split("\n")) {
+    const m = line.match(/^\s*(\S.*?)\s*\|\s*(\d+)\s*([+-]*)\s*$/);
+    if (m) rows.push({ path: m[1], n: Number(m[2]), marks: m[3] });
+    else if (/files? changed/.test(line)) total = line.trim();
+  }
+  if (!rows.length) return null;
+  const max = Math.max(1, ...rows.map((r) => r.n));
+  return el("div", { class: "diff-box" }, [
+    el("div", { class: "diff-section" }, [
+      el("div", { class: "diff-head" }, [
+        el("span", {}, `From the delivery's diff stat, recorded ${fmtTime(ev.created_at)}`),
+        total ? el("span", { class: "diff-stats" }, total) : null,
+      ]),
+      el(
+        "ul",
+        { class: "diff-filestrip clean", "aria-label": "Files that shipped" },
+        rows.map((r) => {
+          const plus = (r.marks.match(/\+/g) || []).length;
+          const minus = (r.marks.match(/-/g) || []).length;
+          const blocks = Math.max(1, Math.round((r.n / max) * 16));
+          const add = plus + minus ? Math.round((plus / (plus + minus)) * blocks) : blocks;
+          return el("li", { class: "diff-filejump is-static" }, [
+            el("span", { class: "dfj-flag" }),
+            el("code", { class: "mono diff-filejump-path" }, r.path),
+            el("span", { class: "diff-filejump-stat" }, plural(r.n, "line")),
+            el(
+              "span",
+              { class: "gd", "aria-hidden": "true" },
+              Array.from({ length: blocks }, (_, i) =>
+                el("i", { class: i < add ? "gd-a" : "gd-d" }),
+              ),
+            ),
+          ]);
+        }),
+      ),
+    ]),
+  ]);
+}
+
+/** Deliveries made: the failed goes on the rework trail, plus the one that got through. */
+const PAST_THE_PITCH = new Set(["in_review", "in_testing", "ready_for_merge", "done"]);
+function deliveryCount(t, trail) {
+  return trail.length + (PAST_THE_PITCH.has(t.status) ? 1 : 0);
+}
+
+/** Full time: a done ticket's result in place of a next move — when, how many goes, the criteria. */
+function fullTimeCard(t, { trail, events, acList, doneAt }) {
+  const claimAt = (events || []).find((e) => e.event_type === "claim.created")?.created_at;
+  const sat = acList.filter((a) => a.status === "satisfied").length;
+  const goes = deliveryCount(t, trail);
+  const took = claimAt && doneAt ? Date.parse(doneAt) - Date.parse(claimAt) : null;
+  return el("section", { class: "card panel tk-ft", "aria-label": "Full time" }, [
+    panelHead("Full time", doneAt ? fmtTime(doneAt) : null, null, { kit: "ink" }),
+    el("p", { class: "tk-move-t" }, [
+      trail.length
+        ? `Merged after ${plural(trail.length, "rework")}: it went through the gates ${plural(goes, "time")}.`
+        : "Merged first time: it passed the gates on its first delivery.",
+      t.branch_name ? [" Branch ", el("code", { class: "mono" }, t.branch_name), "."] : null,
+    ]),
+    el("div", { class: "kpi-row tk-ft-row" }, [
+      statCell({ label: "Deliveries", value: String(goes) }),
+      statCell({ label: "Reworks", value: String(trail.length) }),
+      statCell({
+        label: "Criteria met",
+        value: acList.length ? `${sat}/${acList.length}` : "—",
+      }),
+      took != null && took >= 0
+        ? statCell({ label: "Claim to merge", value: fmtDuration(took) })
+        : null,
+    ]),
+    el("div", { class: "btn-row" }, [
+      t.pr_url && safeHttpUrl(t.pr_url)
+        ? el(
+            "a",
+            { class: "btn", href: safeHttpUrl(t.pr_url), target: "_blank", rel: "noopener" },
+            "Open the PR",
+          )
+        : null,
+      el("a", { class: "btn", href: "#/work?status=done" }, "See it on the board"),
+    ]),
+  ]);
+}
+
+/** The full-time plaque in a done ticket's head: scoreboard black, the merge date. */
+function fullTimePlaque(at) {
+  return el("div", { class: "ft-plaque", "aria-hidden": "true" }, [
+    el("span", { class: "ft-l" }, "Full time"),
+    el("b", { class: "ft-v" }, at ? fmtDay(at, { weekday: false }) : "Done"),
+    at ? el("span", { class: "ft-t tabnum" }, clockTime(Date.parse(at))) : null,
+  ]);
+}
+
+/** One event as a sentence a manager reads ("Ready → Claimed"), and the glyph it carries. */
+function eventSentence(ev, repos) {
+  const p = parseJsonSafe(ev.payload_json) || {};
+  const who = actorName(ev.actor_type, ev.actor_id);
+  const repoName = (id) => (repos || []).find((r) => r.id === id)?.name || "a repo";
+  const reason = typeof p.reason === "string" && /\s/.test(p.reason) ? p.reason : null;
+  switch (ev.event_type) {
+    case "ticket.created":
+      return { text: `Created by ${who}`, st: "draft" };
+    case "ticket.transitioned":
+      return {
+        text: `${statusLabel(p.from || "?")} → ${statusLabel(p.to || "?")}`,
+        note: reason,
+        st: p.to || null,
+      };
+    case "claim.created":
+      return { text: `Claimed by ${who}`, st: "claimed" };
+    case "claim.released":
+      return { text: "Claim released" };
+    case "ticket.reworking":
+      return {
+        text: `Rework ${p.attempt ?? "?"}${p.max_attempts ? `/${p.max_attempts}` : ""}${p.gate ? `: the ${p.gate} gate failed` : ""}`,
+        note: p.reason || null,
+        st: "failed",
+      };
+    case "ticket.blocked":
+      return { text: "Parked: it needs you", note: p.reason || null, st: "blocked" };
+    case "ticket.delivery_recorded":
+      return { text: p.branch_name ? `Delivered on ${p.branch_name}` : "Delivery recorded" };
+    case "ticket.repo_delivery_recorded":
+      return {
+        text: `${repoName(p.repo_id)}: ${String(p.status || "delivery").replace(/_/g, " ")}`,
+      };
+    case "ticket.repo_access_set":
+      return { text: `Boundary: ${repoName(p.repo_id)} set to ${p.access || "?"}` };
+    case "evidence.recorded":
+      return { text: `Evidence: ${evidenceKind(p.evidence_type)}` };
+    case "ac.added":
+      return { text: "Criterion added", note: p.text || null };
+    case "ticket.dependency_added":
+      return { text: `Now depends on #${p.depends_on_number ?? "?"}` };
+    case "ticket.paused":
+      return { text: "Paused at a cap", note: p.reason || null, st: "paused" };
+    default:
+      return { text: humanizeEvent(ev.event_type), note: reason };
+  }
+}
+
+/**
+ * The match report: every event, minute by minute, grouped by day — a sentence,
+ * who did it, and the tick it was written in. The raw payload is one switch away.
+ */
+function ticketMatchReport(events, repos) {
+  // Creating a ticket writes its criteria and repo links in the same instant, some a
+  // few ms before the ticket.created row itself; the report opens on the kick-off.
+  const created = events.findIndex((e) => e.event_type === "ticket.created");
+  if (
+    created > 0 &&
+    Date.parse(events[created].created_at) - Date.parse(events[0].created_at) < 1000
+  )
+    events = [events[created], ...events.slice(0, created), ...events.slice(created + 1)];
+  let day = "";
+  const list = el(
+    "ol",
+    { class: "timeline clean tk-report-list" },
+    events.map((ev) => {
+      const s = eventSentence(ev, repos);
+      const d = fmtDay(ev.created_at);
+      const dayHead = d !== day ? (day = d) : null;
+      return el("li", { class: s.st ? `rp-${s.st}` : null }, [
+        dayHead ? el("span", { class: "rp-day" }, dayHead) : null,
+        el(
+          "time",
+          { class: "ev-time tabnum", datetime: ev.created_at, title: fmtTime(ev.created_at) },
+          clockTime(Date.parse(ev.created_at)),
+        ),
+        s.st ? glyph(s.st, 14) : el("span", { class: "rp-dot", "aria-hidden": "true" }),
+        el("div", { class: "rp-body" }, [
+          el("div", { class: "ev-type" }, s.text),
+          s.note ? el("div", { class: "rp-note" }, s.note) : null,
+          el("div", { class: "ev-actor" }, [
+            actorName(ev.actor_type, ev.actor_id),
+            // TRACE: the runner tick that wrote this event (work_events.correlation_id).
+            // Every event one tick produced carries the same id, so the chip shows which
+            // events belong together; `dispatch events list --correlation <id>` prints the trail.
+            ev.correlation_id
+              ? el(
+                  "span",
+                  {
+                    class: "ev-tick mono",
+                    title: `Written during tick ${ev.correlation_id} — dispatch events list --correlation ${ev.correlation_id}`,
+                  },
+                  `tick ${ev.correlation_id}`,
+                )
+              : null,
+          ]),
+          ev.payload_json && ev.payload_json !== "{}" ? formatPayload(ev.payload_json) : null,
+        ]),
+      ]);
+    }),
+  );
+  const raw = el(
+    "button",
+    {
+      class: "btn quiet small tk-raw",
+      type: "button",
+      "aria-pressed": "false",
+      onclick: () => {
+        const on = !list.classList.contains("show-raw");
+        list.classList.toggle("show-raw", on);
+        raw.setAttribute("aria-pressed", String(on));
+      },
+    },
+    "Show the raw data",
+  );
+  return el("section", { class: "card panel tk-report", "aria-label": "Match report" }, [
+    el("div", { class: "panel-head" }, [
+      el("h2", { class: "panel-title" }, [
+        "Match report",
+        el("span", { class: "panel-aux" }, plural(events.length, "event")),
+      ]),
+      events.length ? raw : null,
+    ]),
+    events.length ? list : el("p", { class: "dim" }, "No events recorded."),
+  ]);
+}
+
+/**
+ * The runner's logs for a ticket. Delivery runs are matched by the claim they
+ * started with (a run row carries no ticket; its log's ROUTE line does, and the
+ * run detail reads it), so a live delivery links straight to its streaming log
+ * and a finished one keeps its record. A ticket marked delivering with no live
+ * run says so plainly (the #88 hung-claim case).
+ */
+function ticketRunsPanel(t, events) {
+  // In testing is not delivering: the tester lane runs outside the delivery runs read here,
+  // so "no live run" would wrongly say a ticket under test may be stuck.
+  const delivering = ["in_progress", "claimed"].includes(t.status);
+  const panel = el("section", { class: "card panel tk-runs", "aria-label": "Runs" });
+  const body = el("div", { class: "tk-runs-body" }, [
+    el("p", { class: "dim" }, delivering ? "Finding the live run…" : "Reading the runner's logs…"),
+  ]);
+  panel.append(
+    panelHead(
+      delivering ? "On the pitch" : "Match footage",
+      delivering ? "the live run" : "the runner's log of each delivery",
+      null,
+      delivering ? { kit: "ink" } : {},
+    ),
+    body,
+  );
+  const claims = (events || [])
+    .filter((e) => e.event_type === "claim.created")
+    .map((e) => Date.parse(e.created_at))
+    .filter(Number.isFinite);
+  const near = (run) => claims.some((c) => Math.abs(Date.parse(run.started_at) - c) <= 5 * 60_000);
+  const signal = routeSignal();
+  (async () => {
+    let found;
+    try {
+      const res = await api("GET", "/api/runs?active=1&limit=50", undefined, { signal });
+      const pool = [...(res.active || []), ...(res.recent || [])].filter(
+        (r) => r.kind === "poll_work" || r.kind === "other",
+      );
+      // Live runs always (there are a handful); finished ones only near this ticket's claims.
+      const cand = pool.filter((r) => r.status === "running" || near(r)).slice(0, 8);
+      const details = await Promise.all(
+        cand.map((r) =>
+          api("GET", `/api/runs/${encodeURIComponent(r.id)}`, undefined, { signal })
+            .then((x) => x.detail || null)
+            .catch(() => null),
+        ),
+      );
+      found = cand
+        .map((r, i) => ({ run: r, d: details[i] }))
+        .filter((x) => x.d && x.d.ticket_number === t.number);
+    } catch (e) {
+      if (e && e.code === "ABORTED") return;
+      clear(body);
+      body.appendChild(el("p", { class: "dim" }, "The runner's logs could not be read."));
+      return;
+    }
+    clear(body);
+    const liveRun = found.find((x) => x.run.status === "running");
+    if (delivering && !liveRun) {
+      // Marked delivering but no live run attached ⇒ likely a hung/orphaned claim.
+      body.appendChild(
+        el("div", { class: "delivering-banner is-warn" }, [
+          el("span", { class: "delivering-dot is-warn" }),
+          el(
+            "span",
+            {},
+            "Marked delivering, but no live run is attached — it may be stuck or already ended.",
+          ),
+        ]),
+      );
+    }
+    if (!found.length) {
+      if (!delivering) panel.remove();
+      return;
+    }
+    body.appendChild(
+      el(
+        "ul",
+        { class: "clean tk-run-list" },
+        found.map(({ run, d }) => {
+          const on = run.status === "running";
+          const chips = [
+            d.phase ? el("span", { class: "run-detail-chip" }, d.phase) : null,
+            d.num_turns > 0
+              ? el("span", { class: "run-detail-chip" }, plural(d.num_turns, "turn"))
+              : null,
+            d.cost_usd > 0
+              ? el("span", { class: "run-detail-chip tabnum" }, money(d.cost_usd))
+              : null,
+            d.outcome
+              ? el(
+                  "span",
+                  { class: "run-detail-chip" },
+                  `ended ${statusLabel(d.outcome).replace(/_/g, " ").toLowerCase()}`,
+                )
+              : null,
+          ];
+          return el("li", { class: `tk-run${on ? " is-live" : ""}` }, [
+            on
+              ? el("span", { class: "run-spinner", "aria-hidden": "true" })
+              : glyph(run.status === "failed" ? "failed" : "done", 16),
+            el("div", { class: "tk-run-main" }, [
+              el("p", { class: "tk-run-h" }, [
+                el("b", {}, on ? `Delivering #${t.number}` : `Delivery of #${t.number}`),
+                " ",
+                el(
+                  "span",
+                  { class: "dim" },
+                  on
+                    ? `since ${clockTime(Date.parse(run.started_at))} · ${runDuration(run)}`
+                    : `${fmtTime(run.started_at)} · ${runDuration(run)} · ${run.status}`,
+                ),
+              ]),
+              el("div", { class: "run-detail-chips" }, chips),
+            ]),
+            el(
+              "button",
+              {
+                class: "btn small run-viewlog",
+                type: "button",
+                onclick: () =>
+                  on
+                    ? viewRunDetail(run.id, `Delivery of #${t.number}`)
+                    : viewRunLog(run, `Delivery of #${t.number} · log`),
+              },
+              on ? "View live log →" : "View log",
+            ),
+          ]);
+        }),
+      ),
+    );
+  })();
+  return panel;
 }
 
 /**
@@ -4532,19 +10322,26 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
         : { txt: "shipped clean — no rework", cls: "ok" }
       : reworks > 0
         ? { txt: `needed ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
-        : { txt: "in review", cls: "dim" };
+        : { txt: statusLabel(t.status).toLowerCase(), cls: "dim" };
 
-  const head = el("div", { class: "mem-primed-head" }, [
-    el("span", { class: "mem-primed-title" }, "Memory primed for this delivery"),
-    el("span", { class: "mem-primed-outcome " + outcome.cls }, outcome.txt),
+  const head = el("div", { class: "panel-head mem-primed-head" }, [
+    el("h2", { class: "panel-title" }, "The scouting report"),
+    el("span", { class: "panel-aux mem-primed-outcome " + outcome.cls }, outcome.txt),
   ]);
+  const sub = primed.length
+    ? el(
+        "p",
+        { class: "mem-primed-title" },
+        "Memory primed for this delivery: what the club's memory briefed the agent with.",
+      )
+    : null;
 
   let bodyNode;
   if (primed.length === 0) {
     bodyNode = el(
       "div",
       { class: "mem-primed-none" },
-      "No memory primed for this delivery — the agent ran without a lore/file-card context packet.",
+      "The club's memory briefed the agent with nothing for this delivery: no lore or file cards were primed, so it went out without a scouting report.",
     );
   } else {
     bodyNode = el(
@@ -4560,7 +10357,11 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
       ),
     );
   }
-  return el("div", { class: "card mem-primed-card" }, [head, bodyNode]);
+  return el(
+    "section",
+    { class: "card panel mem-primed-card", "aria-label": "The scouting report" },
+    [head, sub, bodyNode],
+  );
 }
 
 /**
@@ -4569,37 +10370,6 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
  * assertion/stack the runner captured — not a one-line summary. Returns null when
  * the ticket never bounced, so a clean ticket shows no card.
  */
-function renderFailureHistory(trail) {
-  if (!Array.isArray(trail) || trail.length === 0) return null;
-  const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
-  return el("div", { class: "card failure-history" }, [
-    el("h2", {}, [icon("alert"), `Failure history (${attemptsLabel})`]),
-    el(
-      "p",
-      { class: "dim failure-history-sub" },
-      "Every rework attempt the runner recorded, oldest first — the real failing test + assertion for each.",
-    ),
-    el(
-      "ol",
-      { class: "failure-trail" },
-      trail.map((a) => {
-        const max =
-          typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
-        return el("li", { class: "failure-attempt" }, [
-          el("div", { class: "failure-attempt-head" }, [
-            el("span", { class: "failure-attempt-num" }, `Attempt ${a.attempt}${max}`),
-            a.gate ? el("span", { class: "failure-gate" }, a.gate) : null,
-            el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
-          ]),
-          // The distilled failure is untrusted captured tool output — render it as a
-          // text node inside <pre> (never innerHTML) so it can't inject markup.
-          el("pre", { class: "failure-detail" }, a.distilled_failure || "(no detail captured)"),
-        ]);
-      }),
-    ),
-  ]);
-}
-
 /**
  * BBT-001 testing card: the `can_be_tested` toggle, the test_contract (the
  * handover the independent tester reads to stand the system up — never the diff),
@@ -4610,7 +10380,14 @@ function renderTestingCard(t, evidence) {
   const contract = parseTicketTestContract(t.test_contract);
   const testable = t.can_be_tested === 1;
 
-  const toggle = el("input", { type: "checkbox", role: "switch", "aria-label": "Testable" });
+  // A merged or closed ticket's testing route is its record: it can no longer change.
+  const closed = t.status === "done" || t.status === "cancelled";
+  const toggle = el("input", {
+    type: "checkbox",
+    role: "switch",
+    "aria-label": "Testable",
+    disabled: closed ? "" : null,
+  });
   toggle.checked = testable;
   toggle.addEventListener("change", () =>
     guard(async () => {
@@ -4637,11 +10414,11 @@ function renderTestingCard(t, evidence) {
           contract.harness_ready ? "ready (black-box mode)" : "not ready (harness mode)",
         ),
       ])
-    : el(
-        "p",
-        { class: "dim" },
-        "No test contract recorded. Add one with `wg ticket test-contract` or the Dispatch MCP.",
-      );
+    : el("p", { class: "dim" }, [
+        "No test contract recorded. Add one with ",
+        el("code", { class: "mono" }, "wg ticket test-contract"),
+        " or the Dispatch MCP.",
+      ]);
 
   // The tester's verdict evidence: ONLY test_output rows whose payload carries a BBT
   // tester verdict (pass/fail). Plain implementation / AC test_output must NOT show
@@ -4655,7 +10432,9 @@ function renderTestingCard(t, evidence) {
         { class: "clean" },
         testerEvidence.map((e) => {
           const prov = parseTesterProvenance(e.payload_json);
-          return el("li", {}, [
+          const verdict = parseTesterVerdict(e.payload_json);
+          return el("li", { class: `tt-row tt-${verdict}` }, [
+            glyph(verdict === "pass" ? "done" : "failed", 16, verdict === "pass" ? "Pass" : "Fail"),
             el("div", {}, [
               e.summary,
               // BBT-001 provenance badge: who produced this verdict (derived from the
@@ -4664,15 +10443,15 @@ function renderTestingCard(t, evidence) {
                 ? el("span", { class: "badge no-dot", style: "margin-left:8px" }, `by ${prov}`)
                 : null,
             ]),
-            el("div", { class: "ac-meta" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
+            el("div", { class: "ac-meta tt-who" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
           ]);
         }),
       )
     : el("p", { class: "dim" }, "No tester results recorded yet.");
 
-  return el("div", { class: "card" }, [
-    el("h2", {}, "Independent testing"),
-    el("div", { class: "setting-row" }, [
+  return el("section", { class: "card panel tk-testing", "aria-label": "Independent testing" }, [
+    panelHead("Independent testing", testable ? "black-box tester on" : "off", null, {}),
+    el("div", { class: "setting-row tk-testable" }, [
       el("div", { class: "setting-meta" }, [
         el("div", { class: "setting-label" }, [
           el("span", {}, "Eligible for black-box testing"),
@@ -4681,7 +10460,9 @@ function renderTestingCard(t, evidence) {
         el(
           "p",
           { class: "setting-help dim" },
-          "When on (and GAFFER_TESTING is enabled), review approval routes this ticket through an independent tester before merge.",
+          closed
+            ? `${t.status === "done" ? "Merged" : "Closed"}: this records whether it went through the independent tester. It can no longer change.`
+            : "When on (and GAFFER_TESTING is enabled), review approval routes this ticket through an independent tester before merge.",
         ),
       ]),
       el("label", { class: "switch" }, [
@@ -4689,9 +10470,9 @@ function renderTestingCard(t, evidence) {
         el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
       ]),
     ]),
-    el("h3", { style: "margin-top:14px" }, "Test contract"),
+    el("h3", { class: "tk-h3" }, "Test contract"),
     contractRows,
-    el("h3", { style: "margin-top:14px" }, "Tester results"),
+    el("h3", { class: "tk-h3" }, "Tester results"),
     evidenceList,
   ]);
 }
@@ -4809,27 +10590,48 @@ const REPO_GROUPS = [
   { key: "rejectedRepos", title: "Rejected", note: "retained for audit", tone: "rejected" },
 ];
 
-function renderRepoPanel(ticketId, claimBox) {
+/**
+ * The boundary editor: the grounds this ticket may play on — which repos it may
+ * write, read or test. Suggestions are not a boundary until confirmed. Once the
+ * ticket is merged the boundary is its record and reads only (no controls).
+ */
+// The ticket each boundary editor belongs to, so its sheets can name it.
+const boundaryTickets = new Map();
+function boundaryRef(ticketId) {
+  const t = boundaryTickets.get(ticketId);
+  return t && t.number != null ? `#${t.number}` : "this ticket";
+}
+function renderRepoPanel(ticketId, claimBox, { readOnly = false, ticket = null } = {}) {
+  if (ticket) boundaryTickets.set(ticketId, ticket);
   const body = el("div", { class: "repo-panel-body" }, el("p", { class: "dim" }, "Loading repos…"));
-  const card = el("div", { class: "card repo-panel" }, [
-    el("h2", {}, "Execution boundary"),
-    el(
-      "p",
-      { class: "section-note dim" },
-      "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
-    ),
-    body,
-  ]);
+  const card = el(
+    "section",
+    {
+      class: `card panel repo-panel${readOnly ? " is-readonly" : ""}`,
+      "aria-label": "The boundary",
+    },
+    [
+      panelHead("The boundary", readOnly ? "read-only: merged" : "where agents may play"),
+      el(
+        "p",
+        { class: "section-note dim" },
+        readOnly
+          ? "Merged. The boundary stays as the record of where this ticket played; it can no longer change."
+          : "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
+      ),
+      body,
+    ],
+  );
   const reload = () =>
     guard(async () => {
-      await refreshRepoPanel(ticketId, body, claimBox, reload);
+      await refreshRepoPanel(ticketId, body, claimBox, reload, readOnly);
       if (claimBox) loadClaimability(ticketId, claimBox);
     });
   reload();
   return card;
 }
 
-async function refreshRepoPanel(ticketId, body, claimBox, reload) {
+async function refreshRepoPanel(ticketId, body, claimBox, reload, readOnly = false) {
   const work = (await api("GET", `/tickets/${ticketId}/work-repos`)).work_repos || {};
   let suggestions = null;
   let suggestionsError = false;
@@ -4868,7 +10670,9 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
     const links = work[group.key] || [];
     if (!links.length) continue;
     anyRepo = true;
-    body.appendChild(renderRepoGroup(ticketId, group, links, suggMeta, reload));
+    body.appendChild(
+      renderRepoGroup(ticketId, group, links, suggMeta, reload, readOnly, write.length),
+    );
   }
   const denied = work.deniedRepos || [];
   if (denied.length) {
@@ -4880,6 +10684,7 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
         denied,
         suggMeta,
         reload,
+        readOnly,
       ),
     );
   }
@@ -4891,7 +10696,7 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
   const freshSuggestions = (suggestions || []).filter(
     (s) => !linkedIds.has(s.repoId || s.repo_id || s.id),
   );
-  if (freshSuggestions.length) {
+  if (freshSuggestions.length && !readOnly) {
     anyRepo = true;
     body.appendChild(renderSuggestionGroup(ticketId, freshSuggestions, reload));
   }
@@ -4901,11 +10706,13 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
       el(
         "p",
         { class: "dim" },
-        "No repos on this ticket yet. Link a scope or repo on the create flow, or add one below.",
+        readOnly
+          ? "No repos were recorded on this ticket."
+          : "No repos on this ticket yet. Link a scope or repo on the create flow, or add one below.",
       ),
     );
   }
-  if (suggestionsError) {
+  if (suggestionsError && !readOnly) {
     body.appendChild(
       el(
         "p",
@@ -4914,10 +10721,21 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
       ),
     );
   }
-  body.appendChild(renderAddRepoForm(ticketId, reload));
+  if (!readOnly)
+    body.appendChild(
+      renderAddRepoForm(ticketId, reload, { linked: linkedIds, hasWrite: write.length > 0 }),
+    );
 }
 
-function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
+function renderRepoGroup(
+  ticketId,
+  group,
+  links,
+  suggMeta,
+  reload,
+  readOnly = false,
+  writeCount = 0,
+) {
   const isRejected = group.tone === "rejected";
   const isSuggested = group.tone === "suggested";
   const rows = links.map((r) => {
@@ -4925,8 +10743,10 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
     const reasons = parseReasons(r.reasons_json) ?? (meta ? meta.reasons : null);
     const confidence = r.confidence ?? (meta ? meta.confidence : null);
     const controls = [];
-    if (!isRejected) {
-      controls.push(renderAccessControl(ticketId, r, reload));
+    if (readOnly) {
+      controls.push(accessBadge(r.access || "none"));
+    } else if (!isRejected) {
+      controls.push(renderAccessControl(ticketId, r, reload, writeCount));
       controls.push(
         el(
           "button",
@@ -4945,7 +10765,7 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
           {
             class: "btn small",
             type: "button",
-            onclick: () => setRepoAccess(ticketId, r.id, "write", "confirmed", reload),
+            onclick: () => setRepoAccess(ticketId, r.id, "write", "confirmed", reload, r.name),
           },
           "Restore → write",
         ),
@@ -4957,6 +10777,7 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
       el("div", { class: "repo-row" }, [
         el("div", { class: "repo-row-main" }, [
           el("div", { class: "repo-row-head" }, [
+            kitShirt(r.name || r.id, 22),
             repoLink(r, { className: "assoc-name" }),
             isSuggested
               ? badge("suggested", "relation-suggested")
@@ -4977,7 +10798,10 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
   });
   return el("div", { class: `repo-group repo-group-${group.tone}` }, [
     el("div", { class: "repo-group-head" }, [
-      el("span", { class: "repo-group-title" }, `${group.title} (${links.length})`),
+      el("span", { class: "repo-group-title" }, [
+        group.title,
+        el("span", { class: "repo-group-n" }, String(links.length)),
+      ]),
       el("span", { class: "repo-group-note dim" }, group.note),
     ]),
     el("ul", { class: "clean" }, rows),
@@ -4996,6 +10820,7 @@ function renderSuggestionGroup(ticketId, suggestions, reload) {
       el("div", { class: "repo-row" }, [
         el("div", { class: "repo-row-main" }, [
           el("div", { class: "repo-row-head" }, [
+            kitShirt(name, 22),
             el("span", { class: "assoc-name plain" }, name),
             badge("suggested", "relation-suggested"),
             accessBadge(access),
@@ -5043,22 +10868,57 @@ function renderSuggestionGroup(ticketId, suggestions, reload) {
   });
   return el("div", { class: "repo-group repo-group-suggested" }, [
     el("div", { class: "repo-group-head" }, [
-      el("span", { class: "repo-group-title" }, `Suggested by engine (${suggestions.length})`),
+      el("span", { class: "repo-group-title" }, [
+        "Suggested",
+        el("span", { class: "repo-group-n" }, String(suggestions.length)),
+      ]),
       el("span", { class: "repo-group-note dim" }, "confirm to make a boundary"),
     ]),
     el("ul", { class: "clean" }, rows),
   ]);
 }
 
-function renderAccessControl(ticketId, repo, reload) {
+function renderAccessControl(ticketId, repo, reload, writeCount = 0) {
+  const name = repo.name || repo.id;
   const sel = el(
     "select",
-    { class: "access-select", "aria-label": `Access for ${repo.name || repo.id}` },
+    { class: "access-select", "aria-label": `Access for ${name}` },
     TICKET_REPO_ACCESS.map((a) => el("option", { value: a, selected: repo.access === a }, a)),
   );
-  sel.addEventListener("change", () =>
-    setRepoAccess(ticketId, repo.id, sel.value, "confirmed", reload),
-  );
+  sel.addEventListener("change", () => {
+    const to = sel.value;
+    // Taking away the ticket's only write repo leaves nowhere to deliver code: ask first.
+    if (repo.access === "write" && to !== "write" && writeCount <= 1) {
+      sel.value = repo.access; // nothing changes unless the sheet confirms it
+      const ref = boundaryRef(ticketId);
+      const keep = el(
+        "button",
+        { class: "btn", type: "button", onclick: () => closeSheet() },
+        "Keep write",
+      );
+      actionSheet(`Take ${name} off write?`, {
+        focus: keep, // the safe choice has focus: Enter keeps the boundary as it is
+        intro: `${name} is the only repo ${ref} may write. Set it to ${to} and no agent can deliver code for ${ref} until you give it a write repo again.`,
+        actions: [
+          keep,
+          el(
+            "button",
+            {
+              class: "btn danger",
+              type: "button",
+              onclick: () => {
+                closeSheet();
+                setRepoAccess(ticketId, repo.id, to, "confirmed", reload, name);
+              },
+            },
+            `Set to ${to}`,
+          ),
+        ],
+      });
+      return;
+    }
+    setRepoAccess(ticketId, repo.id, to, "confirmed", reload, name);
+  });
   return sel;
 }
 
@@ -5071,68 +10931,101 @@ function confidenceMeter(value) {
   ]);
 }
 
-function setRepoAccess(ticketId, repoId, access, relation, reload) {
+function setRepoAccess(ticketId, repoId, access, relation, reload, name) {
   guard(async () => {
     await api("PUT", `/tickets/${ticketId}/repo-access`, { repo_id: repoId, access, relation });
-    toast(`Repo set to ${access}`, { ok: true });
+    toast(`${name || "Repo"}: ${access} on ${boundaryRef(ticketId)}.`, { ok: true });
     reload();
   });
 }
 
 function rejectRepo(ticketId, repo, reload) {
-  guard(async () => {
-    const reason = window.prompt(`Reason for rejecting ${repo.name || repo.id}?`);
-    if (reason == null || reason.trim() === "") {
-      toast("Reject cancelled — a reason is required");
-      return;
-    }
-    await api("PUT", `/tickets/${ticketId}/repo-access`, {
-      repo_id: repo.id,
-      access: "none",
-      relation: "rejected",
-      reasons: [reason.trim()],
-    });
-    toast("Repo rejected", { ok: true });
-    reload();
+  const name = repo.name || repo.id;
+  const ref = boundaryRef(ticketId);
+  reasonSheet({
+    title: `Reject ${name}`,
+    ticket: boundaryTickets.get(ticketId) || null,
+    intro: `${name} comes off the boundary of ${ref}: agents on this ticket may not write, read or test it. Restore it to write later if you change your mind.`,
+    label: `Why is ${name} out of bounds?`,
+    presets: [
+      "This change does not touch it",
+      "Wrong repo suggested",
+      "Another ticket owns this work",
+    ],
+    hint: "Required. It is kept with the boundary.",
+    confirm: "Reject repo",
+    tone: "danger",
+    onConfirm: async (reason) => {
+      await api("PUT", `/tickets/${ticketId}/repo-access`, {
+        repo_id: repo.id,
+        access: "none",
+        relation: "rejected",
+        reasons: [reason],
+      });
+      toast(`${name} is off the boundary of ${ref}.`, { ok: true });
+      reload();
+    },
   });
 }
 
-function renderAddRepoForm(ticketId, reload) {
+/**
+ * Add a repo to the boundary. It offers only repos NOT already on it (written, read,
+ * tested or rejected): changing a listed repo's access is its own row's control, so
+ * this form can never quietly turn a confirmed write into a read. With no write repo
+ * yet, write is the default; otherwise read.
+ */
+function renderAddRepoForm(ticketId, reload, { linked = new Set(), hasWrite = false } = {}) {
   const repoSel = el("select", { required: "" }, [el("option", { value: "" }, "Loading repos…")]);
-  guard(async () => {
-    const repos = (await api("GET", "/repositories")).repositories || [];
-    clear(repoSel);
-    repoSel.appendChild(el("option", { value: "" }, "Add a repo…"));
-    repos.forEach((r) => repoSel.appendChild(el("option", { value: r.id }, r.name)));
-  });
   const access = el(
     "select",
     {},
-    TICKET_REPO_ACCESS.map((a) => el("option", { value: a, selected: a === "read" }, a)),
+    TICKET_REPO_ACCESS.map((a) =>
+      el("option", { value: a, selected: a === (hasWrite ? "read" : "write") }, a),
+    ),
   );
-  return el(
+  const submit = el("button", { class: "btn", type: "submit" }, "Add repo");
+  const form = el(
     "form",
     {
-      class: "inline-form",
+      class: "inline-form add-repo-form",
       onsubmit: (e) => {
         e.preventDefault();
         if (!repoSel.value) {
           toast("Pick a repo first");
           return;
         }
-        setRepoAccess(ticketId, repoSel.value, access.value, "confirmed", reload);
+        if (linked.has(repoSel.value)) return; // listed above: change it there
+        const name = repoSel.selectedOptions?.[0]?.textContent || null;
+        setRepoAccess(ticketId, repoSel.value, access.value, "confirmed", reload, name);
         repoSel.value = "";
       },
     },
-    [
-      field("Repo", repoSel),
-      field("Access", access),
-      el("button", { class: "btn", type: "submit" }, "Add repo"),
-    ],
+    [field("Repo", repoSel), field("Access", access), submit],
   );
+  guard(async () => {
+    const repos = (await api("GET", "/repositories")).repositories || [];
+    const free = repos.filter((r) => !linked.has(r.id));
+    clear(repoSel);
+    if (!free.length) {
+      form.replaceChildren(
+        el(
+          "p",
+          { class: "dim add-repo-none" },
+          repos.length
+            ? "Every repo the factory knows is already on this boundary. Change one above."
+            : "The factory has no repos yet.",
+        ),
+      );
+      return;
+    }
+    repoSel.appendChild(el("option", { value: "" }, "Add a repo…"));
+    free.forEach((r) => repoSel.appendChild(el("option", { value: r.id }, r.name)));
+  });
+  return form;
 }
 
 function loadClaimability(ticketId, box) {
+  if (box.dataset.off) return; // only a ticket that can still be claimed asks
   clear(box);
   box.appendChild(el("span", { class: "dim" }, "Checking claimability…"));
   (async () => {
@@ -5164,15 +11057,25 @@ function loadClaimability(ticketId, box) {
         el(
           "ul",
           { class: "claim-blockers" },
-          blockers.map((b) =>
-            el(
+          blockers.map((b) => {
+            // Unmet dependencies mean the ticket waits its turn, not that it is
+            // blocked: say "waits on", without the red-card mark.
+            if (b && b.code === "DEPENDENCY_BLOCKED") {
+              const m = /^Blocked by (.+?) \(must be done first\)\.?$/.exec(b.message || "");
+              return el(
+                "li",
+                { class: "is-wait" },
+                m ? `Waits on ${m[1]}: they must be done first.` : b.message,
+              );
+            }
+            return el(
               "li",
               {},
               typeof b === "string"
                 ? b
                 : b.message || b.reason || b.label || "Blocked by an unmet condition",
-            ),
-          ),
+            );
+          }),
         ),
       );
     } else if (!ready) {
@@ -5221,8 +11124,8 @@ const SETTINGS_GROUPS = [
   },
   {
     id: "idle-loops",
-    label: "Idle loops",
-    note: "Background loops that run between real work, and how far they go.",
+    label: "Idle overrides",
+    note: "Run-wide overrides for what the squad does between tickets. The per-lane switches live in Idle loops, further down.",
   },
   {
     id: "budget",
@@ -5279,9 +11182,14 @@ async function renderHealth() {
   const health = await api("GET", "/api/health").catch(() => null);
 
   const wrap = el("div", { class: "view health-view" });
-  wrap.appendChild(viewHead("Health", "ROI & factory honesty"));
 
   if (!health) {
+    wrap.appendChild(viewHead("Health", "The physio room"));
+    // The flow panels read their own endpoints, so they still stand without it.
+    const panels = await fitnessRoomPanels(null).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return [];
+    });
     wrap.appendChild(
       emptyState(
         "Health data unavailable",
@@ -5289,10 +11197,10 @@ async function renderHealth() {
         "alert",
       ),
     );
+    for (const p of panels) wrap.appendChild(p);
     return wrap;
   }
 
-  const fmtUsd = (v) => (typeof v === "number" && Number.isFinite(v) ? `$${v.toFixed(4)}` : "—");
   const skills = health.skills || {};
   const recall = health.recall || { available: false };
   const byKind = Array.isArray(health.by_kind) ? health.by_kind : [];
@@ -5326,95 +11234,78 @@ async function renderHealth() {
       ? recall.by_day.map((d) => d.effectiveness_pct || 0)
       : [];
 
-  wrap.appendChild(
-    el("div", { class: "kpi-row" }, [
-      kpiCard({
-        label: "Cost / feature",
-        value: costPerFeature == null ? "—" : `$${costPerFeature.toFixed(3)}`,
-        unit: "per shipped",
-        tone: "accent",
-        delta: 0,
-        goodWhenDown: true,
-        series: spendSeries.length ? spendSeries : [0],
-      }),
-      kpiCard({
-        label: "Skill hit-rate",
-        value: hitRate == null ? "—" : String(hitRate),
-        unit: hitRate == null ? "not wired" : "%",
-        tone: "ok",
-        delta: 0,
-        series: skillSeries.length ? skillSeries : [0],
-      }),
-      kpiCard({
-        label: "Spend by kind",
-        value: topKind ? String(kindShare) : "—",
-        unit: topKind ? `% ${topKind.kind}` : "no spend",
-        tone: "amber",
-        delta: 0,
-        series: kindSeries.length ? kindSeries : [0],
-      }),
-      kpiCard({
-        label: "Rework cost",
-        value: String(reworkShare),
-        unit: "% of spend",
-        tone: "danger",
-        delta: 0,
-        goodWhenDown: true,
-        series: [reworkShare],
-      }),
-      kpiCard({
-        label: "Measured coverage",
-        value: String(coveragePct),
-        unit: "%",
-        tone: "accent",
-        delta: 0,
-        series: [coveragePct],
-      }),
-      // TAMPER-EVIDENT LOG: the work_events hash chain, re-derived server-side.
-      // A break means an event was rewritten, deleted or re-ordered after the fact —
-      // every rollup on this page is derived from that log, so it is shown first-class.
-      eventLog
-        ? kpiCard({
-            label: "Event log",
-            value: eventLog.chain_ok ? "intact" : "BROKEN",
-            unit: eventLog.chain_ok
-              ? `${eventLog.events} events chained`
-              : `at seq ${eventLog.broken_at_seq} (${eventLog.reason})`,
-            tone: eventLog.chain_ok ? "ok" : "danger",
-            delta: 0,
-            series: [eventLog.chain_ok ? 1 : 0],
-          })
-        : null,
-    ]),
-  );
-
-  // --- Detail panels: spend-by-kind · skill hit-rate · recall trend ---------
-  const maxKind = Math.max(1, ...kindSeries);
-  const kindPanel = el("div", { class: "card panel" }, [
-    panelHead("Spend by kind", "usage ledger"),
-    byKind.length
-      ? el(
-          "div",
-          { class: "hlist" },
-          byKind.map((k) =>
-            healthBarRow(
-              k.kind,
-              fmtUsd(k.total_cost_usd),
-              (k.total_cost_usd || 0) / maxKind,
-              "amber",
-            ),
-          ),
-        )
-      : el("p", { class: "section-note dim" }, "No spend recorded yet."),
+  const kpis = el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Fitness" }, [
+    kpiCard({
+      label: "Cost / feature",
+      value: costPerFeature == null ? "—" : money(costPerFeature),
+      unit: "per shipped",
+      tone: "accent",
+      delta: 0,
+      goodWhenDown: true,
+      series: spendSeries.length ? spendSeries : [0],
+    }),
+    kpiCard({
+      label: "Skill hit-rate",
+      value: hitRate == null ? "—" : String(hitRate),
+      unit: hitRate == null ? "not wired" : "%",
+      tone: "ok",
+      delta: 0,
+      series: skillSeries.length ? skillSeries : [0],
+    }),
+    kpiCard({
+      label: "Spend by kind",
+      value: topKind ? String(kindShare) : "—",
+      unit: topKind ? `% ${topKind.kind}` : "no spend",
+      tone: "amber",
+      delta: 0,
+      series: kindSeries.length ? kindSeries : [0],
+    }),
+    kpiCard({
+      label: "Rework cost",
+      value: String(reworkShare),
+      unit: "% of spend",
+      tone: "danger",
+      delta: 0,
+      goodWhenDown: true,
+      series: [reworkShare],
+    }),
+    kpiCard({
+      label: "Measured coverage",
+      value: String(coveragePct),
+      unit: "%",
+      tone: "accent",
+      delta: 0,
+      series: [coveragePct],
+    }),
+    // TAMPER-EVIDENT LOG: the work_events hash chain, re-derived server-side.
+    // A break means an event was rewritten, deleted or re-ordered after the fact —
+    // every rollup on this page is derived from that log, so it is shown first-class.
+    eventLog
+      ? kpiCard({
+          label: "Event log",
+          value: eventLog.chain_ok ? "intact" : "BROKEN",
+          unit: eventLog.chain_ok
+            ? `${eventLog.events} events chained`
+            : `at seq ${eventLog.broken_at_seq} (${eventLog.reason})`,
+          tone: eventLog.chain_ok ? "ok" : "danger",
+          delta: 0,
+          series: [eventLog.chain_ok ? 1 : 0],
+        })
+      : null,
   ]);
 
-  const skillPanel = el("div", { class: "card panel" }, [
-    panelHead(
-      "Skill hit-rate",
-      skills.total_records ? `${skills.total_records} deliveries` : "no telemetry",
-    ),
-    skillList.length
-      ? el(
+  // --- The deep reads: skill hit-rate and recall. Each is drawn only with data to
+  // show; a source that has measured nothing yet is one clause in the line below.
+  const unmeasured = [];
+  const skillPanel = skillList.length
+    ? el("section", { class: "card panel skill-panel", "aria-label": "Skill hit-rate" }, [
+        panelHead(
+          "Skill hit-rate",
+          `${plural(skills.total_records || 0, "delivery", "deliveries")} · applied of selected`,
+          null,
+          { kit: "ink" },
+        ),
+        el(
           "div",
           { class: "hlist" },
           skillList.map((s) =>
@@ -5425,48 +11316,196 @@ async function renderHealth() {
               s.hit_rate_pct >= 50 ? "ok" : "amber",
             ),
           ),
-        )
-      : el(
-          "p",
-          { class: "section-note dim" },
-          "No skill telemetry yet — selected-vs-applied hit-rate appears once deliveries mount skills.",
         ),
-  ]);
-
-  const recallPanel = el(
-    "div",
-    { class: "card panel" },
-    recall.available
-      ? [
-          panelHead("Recall effectiveness", "memory feedback"),
-          el("div", { class: "recall-figures" }, [
-            recallStat(
-              "Effectiveness",
-              recall.effectiveness_pct == null ? "—" : `${recall.effectiveness_pct}%`,
-            ),
-            recallStat("Clean", String(recall.clean || 0)),
-            recallStat("Reworked", String(recall.reworked || 0)),
-            recallStat("Blocked", String(recall.blocked || 0)),
-          ]),
-          recallSeries.length
-            ? el("div", { class: "health-spark", html: svgSpark(recallSeries) })
-            : el("p", { class: "section-note dim" }, "No recall outcomes recorded yet."),
-        ]
-      : [
-          panelHead("Recall effectiveness", "not wired"),
-          el(
-            "div",
-            { class: "health-degraded" },
-            el(
-              "p",
-              { class: "section-note dim" },
-              recall.reason || "Memory is not wired — recall effectiveness is unavailable.",
-            ),
+      ])
+    : (unmeasured.push([
+        "Skill hit-rate",
+        "no skill telemetry yet: it appears once deliveries mount skills",
+      ]),
+      null);
+  const recallHas =
+    recall.available &&
+    (recallSeries.length ||
+      recall.effectiveness_pct != null ||
+      (recall.clean || 0) + (recall.reworked || 0) + (recall.blocked || 0) > 0);
+  const recallPanel = recallHas
+    ? el("section", { class: "card panel recall-panel", "aria-label": "Recall effectiveness" }, [
+        panelHead("Recall effectiveness", "memory feedback", null, { kit: "ink" }),
+        el("div", { class: "recall-figures" }, [
+          recallStat(
+            "Effectiveness",
+            recall.effectiveness_pct == null ? "—" : `${recall.effectiveness_pct}%`,
           ),
-        ],
+          recallStat("Clean", String(recall.clean || 0)),
+          recallStat("Reworked", String(recall.reworked || 0)),
+          recallStat("Blocked", String(recall.blocked || 0)),
+        ]),
+        recallSeries.length
+          ? el("div", { class: "health-spark", html: svgSpark(recallSeries) })
+          : null,
+      ])
+    : (unmeasured.push([
+        "Recall effectiveness",
+        recall.available
+          ? "no recall outcomes recorded yet"
+          : recall.reason || "memory is not wired, so recall effectiveness is unavailable",
+      ]),
+      null);
+
+  // The flow panels (form guide, governance, development flow, treatment table,
+  // running now, bouncing, wages) — the physio's charts, read from their own endpoints.
+  const panels = await fitnessRoomPanels(health).catch((e) => {
+    if (e && e.code === "ABORTED") throw e;
+    return [];
+  });
+  const flat = panels.flatMap((p) => (p.classList.contains("ov-grid") ? [...p.children] : [p]));
+  const pick = (cls) => flat.find((p) => p.classList.contains(cls)) || null;
+  const formGuide = pick("form-guide");
+  const treatment = pick("needs-hero");
+  const devFlow = pick("pipeline-panel");
+  const gov = pick("gov-panel");
+  const running = pick("run-activity");
+  const bouncing = pick("bouncing-panel");
+  const wages = pick("wages-panel");
+  const fitness = pick("fitness-test");
+  const rest = flat.filter(
+    (p) => ![formGuide, treatment, devFlow, gov, running, bouncing, wages, fitness].includes(p),
   );
 
-  wrap.appendChild(el("div", { class: "ov-grid ov-3" }, [kindPanel, skillPanel, recallPanel]));
+  // The verdict, in one sentence: the ledger first, then how much is on the table.
+  // The number is the sum of the lines below it (each ticket counted once).
+  const lines = treatment ? [...treatment.querySelectorAll(".needs-item")] : [];
+  const onTable = treatment ? Number(treatment.dataset.total || 0) : 0;
+  const injured = bouncing ? [...bouncing.querySelectorAll(".bounce-num")] : [];
+  const ledgerBroken = eventLog && !eventLog.chain_ok;
+  const verdict = ledgerBroken
+    ? "The ledger has been altered."
+    : onTable
+      ? `${plural(onTable, "thing")} on the treatment table.`
+      : injured.length
+        ? `Fit to play, with ${injured.length === 1 ? "a recurring injury" : "recurring injuries"}.`
+        : "Fit to play.";
+  // What is on the table, each clause a link to where it is treated; then who keeps
+  // coming back, by number (not counted again: they are tickets already above or fit).
+  const clauses = [
+    ...lines.map((li) => {
+      const a = li.querySelector("a.ni-link");
+      return el(
+        "a",
+        { href: a.getAttribute("href"), class: `is-${li.dataset.sev}` },
+        a.querySelector(".ni-title")?.textContent || "",
+      );
+    }),
+    injured.length
+      ? el("a", { href: "#health-injuries", class: "is-injury" }, [
+          injured
+            .slice(0, 3)
+            .map((n) => n.textContent)
+            .join(", "),
+          injured.length > 3 ? ` and ${injured.length - 3} more` : "",
+          injured.length === 1 ? " keeps coming back" : " keep coming back",
+        ])
+      : null,
+  ].filter(Boolean);
+  const lastRead = health.last_record_at ? fmtTime(health.last_record_at) : null;
+  const facts = [
+    "read from the usage ledger and the event log",
+    lastRead
+      ? el("span", {}, ["last ledger record ", el("span", { class: "u-nowrap" }, lastRead)])
+      : null,
+  ].filter(Boolean);
+  wrap.appendChild(
+    el(
+      "section",
+      {
+        class: `scoreboard bleed physio-board${ledgerBroken ? " is-broken" : ""}`,
+        "aria-label": "Fitness",
+      },
+      [
+        el("div", { class: "scoreboard-in" }, [
+          el("div", { class: "sb-main" }, [
+            el("h1", { class: "hl" }, verdict),
+            clauses.length
+              ? el(
+                  "p",
+                  { class: "hl-clauses" },
+                  clauses.flatMap((c, i) => (i ? [" · ", c] : [c])),
+                )
+              : null,
+            el("p", { class: "hl-sub" }, [
+              "Health, the physio room",
+              ...facts.flatMap((f) => [" · ", f]),
+            ]),
+          ]),
+          kpis,
+        ]),
+      ],
+    ),
+  );
+  if (bouncing) bouncing.id = "health-injuries";
+  const wait = treatment ? waitingNote(treatment._waiting) : null;
+  if (wait && devFlow) devFlow.appendChild(wait);
+  const span = (n, ...nodes) => {
+    const kids = nodes.filter(Boolean);
+    return kids.length
+      ? el("div", { class: `hx-span hx-${n}${kids.length > 1 ? " hx-stack" : ""}` }, kids)
+      : null;
+  };
+  // Failures first, in two columns that each stack. Of three arrangements, take the
+  // one whose columns come out nearest in height, counting a hole (a short column
+  // ending in a page that cannot stretch) as worse than a stretch (the pitch strip
+  // and the fitness rows can take slack).
+  const hurt = onTable > 0 ? treatment : null;
+  const hT = hurt ? 64 + lines.length * 58 : 0;
+  const hB = bouncing ? 100 + injured.length * 64 : 0;
+  const hP = devFlow ? 200 : 0;
+  const hF = fitness ? 350 : 0;
+  const G = 24;
+  const sum = (...h) => h.filter(Boolean).reduce((a, x) => a + x + G, -G);
+  const plans = [
+    // the table beside the injuries and the fitness test; the phases full width under
+    {
+      cost: hT >= sum(hB, hF) ? hT - sum(hB, hF) : 3 * (sum(hB, hF) - hT),
+      grid: () => [span(7, hurt), span(5, bouncing, fitness), span(12, devFlow)],
+    },
+    // the table and the phases of play beside the injuries and the fitness test
+    {
+      cost: Math.abs(sum(hT, hP) - sum(hB, hF)),
+      grid: () => [span(7, hurt, devFlow), span(5, bouncing, fitness)],
+    },
+    // a short table stacked with the injuries beside the fitness test; phases under
+    {
+      cost: sum(hT, hB) >= hF ? 3 * (sum(hT, hB) - hF) : 3 * (hF - sum(hT, hB)),
+      grid: () => [span(5, hurt, bouncing), span(7, fitness), span(12, devFlow)],
+    },
+    // a short table stacked with the injuries and the phases, beside the fitness test
+    {
+      cost: Math.abs(sum(hT, hB, hP) - hF),
+      grid: () => [span(5, hurt, bouncing, devFlow), span(7, fitness)],
+    },
+  ];
+  const plan = hurt ? plans.reduce((a, b) => (b.cost < a.cost ? b : a)) : plans[3];
+  const deep = [skillPanel, recallPanel].filter(Boolean);
+  wrap.appendChild(
+    el("div", { class: "hx-grid" }, [
+      ...plan.grid(),
+      span(12, formGuide),
+      // The wage bill beside the referee's record, then what is running.
+      span(7, wages),
+      span(5, gov),
+      span(12, running),
+      ...deep.map((p) => span(deep.length > 1 ? 6 : 12, p)),
+      ...rest.map((r) => span(12, r)),
+    ]),
+  );
+  if (unmeasured.length)
+    wrap.appendChild(
+      el("p", { class: "hx-unmeasured" }, [
+        el("b", {}, "Not measured yet: "),
+        ...unmeasured.flatMap(([k, v], i) => [i ? " · " : "", el("span", {}, `${k}, ${v}`)]),
+        ".",
+      ]),
+    );
 
   return wrap;
 }
@@ -5475,6 +11514,8 @@ async function renderSettings() {
   // Load the env-override settings plus the crew idle-loop config + the repos and
   // scope nodes the idle-loop target picker needs. Best-effort on the extras: a
   // failure there must not blank the whole Settings page.
+  const signal = routeSignal();
+  const get = (p) => api("GET", p, undefined, { signal });
   const [
     { settings },
     idleLoopsRes,
@@ -5485,20 +11526,22 @@ async function renderSettings() {
     whoamiRes,
     principalsRes,
   ] = await Promise.all([
-    api("GET", "/api/settings"),
-    api("GET", "/api/idle-loops").catch(() => null),
-    api("GET", "/repositories").catch(() => ({ repositories: [] })),
-    api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
+    get("/api/settings"),
+    get("/api/idle-loops").catch(() => null),
+    get("/repositories").catch(() => ({ repositories: [] })),
+    get("/scope/nodes").catch(() => ({ nodes: [] })),
     // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
     // blank the page if the endpoint is unavailable.
-    api("GET", "/api/autonomy/recommendations").catch(() => null),
+    get("/api/autonomy/recommendations").catch(() => null),
     // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies.
-    api("GET", "/api/autonomy/policies").catch(() => null),
+    get("/api/autonomy/policies").catch(() => null),
     // PER-PRINCIPAL CREDENTIALS: who this session is + the named credentials.
-    api("GET", "/api/whoami").catch(() => null),
-    api("GET", "/api/principals").catch(() => null),
+    get("/api/whoami").catch(() => null),
+    get("/api/principals").catch(() => null),
   ]);
   const all = Array.isArray(settings) ? settings : [];
+  const modeRow = all.find((x) => x.key === "GAFFER_MODE");
+  settingsModeName = (modeRow && (modeRow.effective || modeRow.value)) || "supervised";
   const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
   const repos = reposRes.repositories || [];
   const nodes = nodesRes.nodes || [];
@@ -5510,78 +11553,201 @@ async function renderSettings() {
     autonomyPolRes && Array.isArray(autonomyPolRes.policies) ? autonomyPolRes.policies : [];
 
   const wrap = el("div", { class: "view settings-view" });
-  wrap.appendChild(viewHead("Settings", all.length ? `${all.length}` : null));
+  const groupsUsed = SETTINGS_GROUPS.filter((g) => all.some((s) => s.group === g.id));
+  const fromFile = all.filter((s) => s.source === "file").length;
+  const locked = all.filter((s) => s.envLocked).length;
 
   // Standing note: edits land in settings.json; the runner reads it on its NEXT
   // tick, so nothing restarts live.
+  const note = el("p", { class: "settings-note" }, [
+    icon("clock", "settings-note-ico", 16),
+    el("span", {}, "Changes apply on the next tick — no live restart."),
+  ]);
   wrap.appendChild(
-    el("div", { class: "settings-note" }, [
-      icon("clock", "settings-note-ico"),
-      el("span", {}, "Changes apply on the next tick — no live restart."),
-    ]),
+    viewHead(
+      "The boot room",
+      all.length
+        ? `${plural(all.length, "setting")} in ${plural(groupsUsed.length, "group")} · ${fromFile} set in settings.json · ${locked} set by the environment`
+        : null,
+    ),
   );
 
   // Empty/abnormal state: the allow-list is static server-side, so an empty list
   // means the API answered oddly. Surface it rather than render a blank page.
   if (all.length === 0) {
+    wrap.appendChild(note);
     wrap.appendChild(
-      emptyState("No settings available", "The config API returned no known settings.", "alert"),
+      emptyState("No settings available", "The config API returned no known settings."),
     );
     return wrap;
   }
 
-  // Autonomy dial — the headline: how many human gates are open right now.
-  wrap.appendChild(autonomyDial(all));
-
-  // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies, each with a
-  // one-click reversible OFF. Rendered above the suggestions so the active posture is
-  // the first thing an operator sees.
-  // B17: those policies are consulted ONLY by the agent review pass. Under
-  // REVIEW_MODE=human (supervised, the default) no reviewer agent runs, so an enabled
-  // grant showed "Enabled" here and never acted. Say so wherever a grant is shown.
-  const inertCount = autonomyPoliciesInert(autonomyPolicies, all);
-  if (inertCount > 0) wrap.appendChild(inertPoliciesNote(inertCount));
-  const polPanel = autonomyPoliciesPanel(autonomyPolicies, { inert: inertCount > 0 });
-  if (polPanel) wrap.appendChild(polPanel);
-
-  // GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations backed by the review
-  // track record — each is now an ENABLE action (evidence + explicit confirm → POST).
-  const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies, {
-    inert: inertCount > 0,
-  });
-  if (recPanel) wrap.appendChild(recPanel);
-
-  // PER-PRINCIPAL CREDENTIALS: who is signed in, the named credentials, mint/revoke.
-  wrap.appendChild(
-    accessPanel(
-      whoamiRes,
-      principalsRes && Array.isArray(principalsRes.principals) ? principalsRes.principals : [],
-    ),
-  );
+  // Two columns: a sticky index (search, sections, unsaved count) and the room.
+  const main = el("div", { class: "boot-main" });
+  const index = el("nav", { class: "boot-index", "aria-label": "Boot room sections" });
+  const layout = el("div", { class: "boot-room" }, [index, main]);
+  wrap.appendChild(layout);
+  main.appendChild(note);
 
   // edit registry: key → { def, read() } for non-locked inputs, so Save collects
   // only the values the operator can actually change.
   const editors = new Map();
-
-  const form = el("form", { class: "settings-form" });
+  const form = el("form", { class: "settings-form", id: "settings-form" });
 
   for (const grp of SETTINGS_GROUPS) {
     const inGroup = all.filter((s) => s.group === grp.id);
     if (inGroup.length === 0) continue;
-    const card = el("div", { class: "card settings-group" });
-    card.appendChild(el("h2", {}, grp.label));
-    card.appendChild(el("p", { class: "section-note dim" }, grp.note));
+    // Each group folds (the room ran 12,000px): the first opens, the index jumps.
+    const changed = inGroup.filter((x) => x.source === "file").length;
+    const card = el("details", {
+      class: "card settings-group",
+      id: `grp-${grp.id}`,
+      open: grp.id === SETTINGS_GROUPS[0].id ? "" : null,
+    });
+    card.appendChild(
+      el("summary", { class: "panel-head" }, [
+        el("h2", { class: "panel-title" }, grp.label),
+        el(
+          "span",
+          { class: "panel-aux" },
+          `${plural(inGroup.length, "setting")}${changed ? ` · ${changed} set in settings.json` : ""}`,
+        ),
+        el("span", { class: "grp-dirty", hidden: true }),
+      ]),
+    );
+    card.appendChild(el("p", { class: "section-note" }, grp.note));
     const rows = el("div", { class: "settings-rows" });
     for (const s of inGroup) rows.appendChild(renderSettingRow(s, editors));
     card.appendChild(rows);
     form.appendChild(card);
   }
+  const noMatch = el("p", { class: "boot-nomatch", hidden: true });
+  form.appendChild(noMatch);
 
-  const saveBtn = el("button", { class: "btn primary", type: "submit" }, [
-    icon("check"),
-    el("span", {}, "Save changes"),
-  ]);
-  form.appendChild(el("div", { class: "btn-row settings-actions" }, [saveBtn]));
+  // The headline: the team's instructions (GAFFER_MODE as a five-detent dial) and
+  // the formation it plays (who takes each gate on a delivery's way to main).
+  const instructions = teamInstructions(all, editors, autonomyPolicies);
+  main.appendChild(instructions.node);
+
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies, each with a
+  // one-click reversible OFF, above the suggestions so the active posture comes first.
+  // B17: those policies are consulted ONLY by the agent review pass. Under
+  // REVIEW_MODE=human (supervised, the default) no reviewer agent runs, so an enabled
+  // grant showed "Enabled" here and never acted. Say so wherever a grant is shown.
+  const inertCount = autonomyPoliciesInert(autonomyPolicies, all);
+  if (inertCount > 0) main.appendChild(inertPoliciesNote(inertCount));
+  const polPanel = autonomyPoliciesPanel(autonomyPolicies, { inert: inertCount > 0 });
+  if (polPanel) {
+    polPanel.id = "autonomy-policies";
+    main.appendChild(polPanel);
+  }
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations backed by the review
+  // track record — each is an ENABLE action (evidence + explicit confirm → POST).
+  const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies, {
+    inert: inertCount > 0,
+  });
+  if (recPanel) {
+    recPanel.id = "autonomy-recs";
+    main.appendChild(recPanel);
+  }
+
+  main.appendChild(form);
+
+  // Crew idle-loop scan loops — enable + repo/scope scoping. These live in
+  // crew.yaml (not settings.json), so they save through their own endpoint.
+  if (idleLoops) {
+    const loops = renderIdleLoopsPanel(idleLoops, repos, nodes);
+    const fold = el("details", { class: "boot-fold", id: "idle-loops" }, [
+      el("summary", {}, [
+        el("span", { class: "boot-fold-t" }, "Idle loops"),
+        el(
+          "span",
+          { class: "panel-aux" },
+          "what the squad does when no ticket is ready · crew.yaml",
+        ),
+      ]),
+      loops,
+    ]);
+    main.appendChild(fold);
+  }
+
+  // PER-PRINCIPAL CREDENTIALS: who is signed in, the named credentials, mint/revoke.
+  const acc = accessPanel(
+    whoamiRes,
+    principalsRes && Array.isArray(principalsRes.principals) ? principalsRes.principals : [],
+  );
+  acc.id = "access";
+  main.appendChild(acc);
+
+  // The sticky save bar: the unsaved count (named), Discard, and the one primary.
+  const saveBtn = el(
+    "button",
+    { class: "btn primary", type: "submit", form: "settings-form", disabled: "" },
+    [icon("check"), el("span", {}, "Save changes")],
+  );
+  const discardBtn = el(
+    "button",
+    { class: "btn quiet", type: "button", disabled: "", onclick: () => router() },
+    "Discard",
+  );
+  const dirtyNote = el("span", { class: "boot-dirty", role: "status" }, "No unsaved changes.");
+  const saveBar = el(
+    "div",
+    { class: "boot-save settings-actions is-clean", role: "group", "aria-label": "Save settings" },
+    [dirtyNote, discardBtn, saveBtn],
+  );
+  main.appendChild(saveBar);
+  const idxDirty = el("span", { class: "boot-n" }, "none");
+  const labelOf = new Map(all.map((s) => [s.key, s.label || s.key]));
+  // Which switches differ from what was loaded (the same test Save uses).
+  const dirtyKeys = () => {
+    const out = [];
+    for (const [key, ed] of editors) {
+      if (ed.initial !== undefined && ed.read() !== ed.initial) out.push(key);
+    }
+    return out;
+  };
+  const paintDirty = () => {
+    const keys = dirtyKeys();
+    const n = keys.length;
+    clear(dirtyNote);
+    if (n) {
+      const names = keys.slice(0, 2).map((k) => labelOf.get(k));
+      dirtyNote.append(
+        el("strong", {}, [
+          `${n} unsaved`,
+          el("span", { class: "bd-word" }, n === 1 ? " change" : " changes"),
+        ]),
+        el(
+          "span",
+          { class: "bd-names" },
+          `: ${names.join(", ")}${n > 2 ? ` and ${n - 2} more` : ""}.`,
+        ),
+      );
+    } else dirtyNote.textContent = "No unsaved changes.";
+    dirtyNote.classList.toggle("is-dirty", n > 0);
+    discardBtn.disabled = n === 0;
+    // Nothing to save, nothing to press: the primary waits for a change.
+    saveBtn.disabled = n === 0;
+    saveBar.classList.toggle("is-clean", n === 0);
+    idxDirty.textContent = n ? String(n) : "none";
+    idxDirty.className = n ? "nav-count urgent" : "boot-n";
+    const dirty = new Set(keys);
+    for (const [key, ed] of editors)
+      if (ed.row) ed.row.classList.toggle("is-dirty", dirty.has(key));
+    for (const g of form.querySelectorAll(".settings-group")) {
+      const c = g.querySelectorAll(".setting-row.is-dirty").length;
+      const tag = g.querySelector(".grp-dirty");
+      tag.hidden = !c;
+      tag.textContent = c ? `${c} unsaved` : "";
+      const link = index.querySelector(`a[href="#${g.id}"] .boot-n`);
+      if (link) link.classList.toggle("is-dirty", c > 0);
+    }
+    instructions.sync();
+  };
+  form.addEventListener("input", paintDirty);
+  form.addEventListener("change", paintDirty);
+  instructions.onPick = paintDirty;
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -5595,6 +11761,8 @@ async function renderSettings() {
       const v = ed.read();
       if (ed.initial === undefined || v !== ed.initial) payload[key] = v;
     }
+    // A submit is the intent (the primary only rests disabled while clean).
+    saveBtn.disabled = false;
     runAsyncAction(saveBtn, "Saving…", async () => {
       const res = await api("POST", "/api/settings", { settings: payload });
       const written = (res.written || []).length;
@@ -5615,64 +11783,527 @@ async function renderSettings() {
     });
   });
 
-  wrap.appendChild(form);
-
-  // Crew idle-loop scan loops — enable + repo/scope scoping. These live in
-  // crew.yaml (not settings.json), so they save through their own endpoint.
-  if (idleLoops) {
-    wrap.appendChild(renderIdleLoopsPanel(idleLoops, repos, nodes));
-  }
-
+  // The index: find a setting by name, key or help; jump to any section.
+  const findCount = el("span", { class: "boot-find-n", role: "status" });
+  const find = el("input", {
+    type: "search",
+    class: "boot-find",
+    placeholder: "Find a setting…",
+    "aria-label": "Find a setting",
+    oninput: (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      let shown = 0;
+      for (const row of form.querySelectorAll(".setting-row")) {
+        const hit = !q || (row.dataset.find || "").includes(q);
+        row.hidden = !hit;
+        if (hit) shown++;
+      }
+      for (const g of form.querySelectorAll(".settings-group")) {
+        g.hidden = !!q && !g.querySelector(".setting-row:not([hidden])");
+        if (q && !g.hidden) g.open = true;
+      }
+      findCount.textContent = q ? `${plural(shown, "match", "matches")}` : "";
+      noMatch.hidden = !q || shown > 0;
+      // While finding, the rows are the page: the panels above step aside.
+      main.classList.toggle("is-finding", !!q);
+      noMatch.textContent = q && !shown ? `No setting matches “${e.target.value.trim()}”.` : "";
+    },
+  });
+  const link = (id, label, n) =>
+    el("a", { href: `#${id}` }, [
+      el("span", {}, label),
+      n != null ? el("span", { class: "boot-n" }, String(n)) : null,
+    ]);
+  // The section links. On a phone they fold behind one line (the find box stays
+  // open), so the room starts with the team instructions, not a wall of links.
+  const phone =
+    typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
+  const sections = el("details", { class: "boot-sections", open: phone ? null : "" }, [
+    el("summary", {}, [
+      "Jump to a section",
+      el(
+        "span",
+        { class: "boot-n" },
+        String(groupsUsed.length + 2 + [polPanel, recPanel, idleLoops].filter(Boolean).length),
+      ),
+    ]),
+    el("ul", { class: "boot-links" }, [
+      el("li", {}, link("instructions", "Team instructions")),
+      polPanel ? el("li", {}, link(polPanel.id, "Active autonomy")) : null,
+      recPanel ? el("li", {}, link(recPanel.id, "Suggested autonomy")) : null,
+      ...groupsUsed.map((g) =>
+        el("li", {}, link(`grp-${g.id}`, g.label, all.filter((x) => x.group === g.id).length)),
+      ),
+      idleLoops ? el("li", {}, link("idle-loops", "Idle loops")) : null,
+      el("li", {}, link("access", "Access")),
+    ]),
+  ]);
+  sections.addEventListener("click", (e) => {
+    // Picking a section on a phone folds the list away again.
+    if (e.target.closest("a") && phone) sections.open = false;
+  });
+  index.append(
+    field("Find a setting", find, { class: "boot-find-f" }),
+    findCount,
+    sections,
+    el("p", { class: "boot-unsaved" }, ["Unsaved changes: ", idxDirty]),
+  );
+  instructions.sync();
   return wrap;
 }
 
-/** The autonomy dial — a gauge of how much the factory may do without you.
- *  Reads the boolean autonomy settings: each one ON is one human gate opened. */
-function autonomyDial(all) {
-  const isOn = (v) => v === true || v === "true" || v === "1" || v === "on";
-  // The dial reads the EFFECTIVE posture (env → file → GAFFER_MODE preset), so an
-  // autonomous mode shows its gates open even when settings.json stores nothing.
-  const bools = all.filter((s) => s.group === "autonomy" && s.type === "boolean");
-  const total = Math.max(1, bools.length);
-  const on = bools.filter((s) => isOn(s.effective !== undefined ? s.effective : s.value)).length;
-  const pct = Math.round((on / total) * 100);
-  const level = on === 0 ? "Supervised" : on >= total ? "Hands-off" : "Assisted";
-  const tone = on === 0 ? "ok" : on >= total ? "danger" : "amber";
-  const blurb =
-    on === 0
-      ? "A human approves every merge. The factory structurally cannot ship its own work."
-      : on >= total
-        ? "Every gate is open — the factory can plan, build, review and ship without you."
-        : `${on} of ${total} gates are open. The factory acts on its own for the toggles marked below.`;
-  return el("div", { class: `card panel autonomy-dial tone-${tone}` }, [
-    el("div", { class: "ad-gauge" }, [
-      el("div", { class: "ad-donut", html: svgDonut(pct) }),
-      el("div", { class: "ad-center" }, [
-        el("span", { class: "ad-frac tabnum" }, `${on}/${total}`),
-        el("span", { class: "ad-cap" }, "gates open"),
-      ]),
-    ]),
-    el("div", { class: "ad-body" }, [
-      el("div", { class: "ad-level-row" }, [
-        el("span", { class: "ad-level" }, level),
-        el("span", { class: "ad-badge" }, on === 0 ? "fully gated" : `${on} open`),
-      ]),
-      el("p", { class: "ad-note" }, blurb),
-      el(
-        "div",
-        { class: "ad-gates" },
-        bools.map((s) =>
-          el(
-            "span",
-            {
-              class: `ad-gate ${isOn(s.effective !== undefined ? s.effective : s.value) ? "on" : "off"}`,
-            },
-            [el("span", { class: "ad-gate-dot" }), s.label || s.key],
-          ),
-        ),
-      ),
-    ]),
+/**
+ * The autonomy posture each GAFFER_MODE implies: a MIRROR of MODE_PRESETS in
+ * src/api/settings.ts (itself a mirror of runner/factory.config.sh). A value in
+ * settings.json or the environment wins over the mode, as on the server.
+ */
+const MODE_PRESETS = {
+  supervised: {
+    REVIEW_MODE: "human",
+    DISPATCH_ALLOW_AGENT_APPROVE: "0",
+    MERGE_ON_AGENT_REVIEW: "0",
+    AUTO_MERGE: "0",
+    GAFFER_AUTO_PUSH: "0",
+    MEMORY_AUTO_APPROVE: "0",
+  },
+  lite: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "1",
+    MERGE_ON_AGENT_REVIEW: "0",
+    AUTO_MERGE: "0",
+    GAFFER_AUTO_PUSH: "0",
+    MEMORY_AUTO_APPROVE: "0",
+  },
+  graduated: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "0",
+    MERGE_ON_AGENT_REVIEW: "0",
+    AUTO_MERGE: "0",
+    GAFFER_AUTO_PUSH: "0",
+    MEMORY_AUTO_APPROVE: "0",
+  },
+  autonomous: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "1",
+    MERGE_ON_AGENT_REVIEW: "1",
+    AUTO_MERGE: "1",
+    GAFFER_AUTO_PUSH: "1",
+    MEMORY_AUTO_APPROVE: "1",
+  },
+  strict: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "1",
+    MERGE_ON_AGENT_REVIEW: "1",
+    AUTO_MERGE: "1",
+    GAFFER_AUTO_PUSH: "1",
+    MEMORY_AUTO_APPROVE: "1",
+  },
+};
+/** The dial's detents, least to most autonomy (the server's own order). */
+const MODE_DETENTS = [
+  { mode: "supervised", name: "Supervised", line: "You sign off every merge." },
+  { mode: "lite", name: "Lite", line: "Agents approve the trivial ones; you still merge." },
+  {
+    mode: "graduated",
+    name: "Graduated",
+    line: "Each repo ships what it has earned; the rest waits for you.",
+  },
+  { mode: "autonomous", name: "Autonomous", line: "Agents approve, merge and push." },
+  { mode: "strict", name: "Strict", line: "Autonomous, inside an OS sandbox." },
+];
+
+const isOnValue = (v) => v === true || v === "true" || v === "1" || v === "on" || v === "yes";
+
+/**
+ * The value each key would take under `mode`, given what is saved and what the
+ * operator has changed on this page but not saved: env → pending edit → file →
+ * the mode's preset → default. Returns { value, from } per key.
+ */
+function postureFor(all, editors, mode) {
+  const presets = MODE_PRESETS[mode] || MODE_PRESETS.supervised;
+  const out = {};
+  for (const s of all) {
+    const ed = editors.get(s.key);
+    const pending = ed && ed.initial !== undefined && ed.read() !== ed.initial;
+    if (s.envLocked) out[s.key] = { value: s.effective ?? s.value ?? "", from: "env" };
+    else if (pending && s.key !== "GAFFER_MODE") out[s.key] = { value: ed.read(), from: "edit" };
+    else if (s.value !== "" && s.value != null) out[s.key] = { value: s.value, from: "file" };
+    else if (presets[s.key] !== undefined) out[s.key] = { value: presets[s.key], from: "mode" };
+    else out[s.key] = { value: "", from: "default" };
+  }
+  return out;
+}
+
+/**
+ * The gates a delivery passes on its way to main, left to right like the tactics
+ * board: who plays each one under a posture. "squad" = an agent does it, "you" =
+ * the gaffer makes the call, "both" = the squad reviews and you still sign,
+ * "none" = nobody plays it (no independent tester).
+ */
+const FORMATION_GATES = [
+  {
+    id: "testing",
+    label: "Testing",
+    key: "GAFFER_TESTING",
+    who: (p) => (isOnValue(p.GAFFER_TESTING?.value) ? "squad" : "none"),
+  },
+  {
+    id: "review",
+    label: "Review",
+    key: "REVIEW_MODE",
+    who: (p) => {
+      const v = String(p.REVIEW_MODE?.value || "human");
+      return v === "agent" ? "squad" : v === "both" ? "both" : "you";
+    },
+  },
+  {
+    id: "approve",
+    label: "Approve",
+    key: "DISPATCH_ALLOW_AGENT_APPROVE",
+    who: (p) => (isOnValue(p.DISPATCH_ALLOW_AGENT_APPROVE?.value) ? "squad" : "you"),
+  },
+  {
+    id: "merge",
+    label: "Merge",
+    key: "AUTO_MERGE",
+    who: (p) =>
+      isOnValue(p.AUTO_MERGE?.value) || isOnValue(p.MERGE_ON_AGENT_REVIEW?.value) ? "squad" : "you",
+  },
+  {
+    id: "push",
+    label: "Push",
+    key: "GAFFER_AUTO_PUSH",
+    who: (p) => (isOnValue(p.GAFFER_AUTO_PUSH?.value) ? "squad" : "you"),
+  },
+  {
+    id: "lore",
+    label: "Lore",
+    key: "MEMORY_AUTO_APPROVE",
+    who: (p) => (isOnValue(p.MEMORY_AUTO_APPROVE?.value) ? "squad" : "you"),
+  },
+];
+const WHO_WORDS = {
+  squad: "the squad",
+  you: "you",
+  both: "squad, then you",
+  none: "not played",
+};
+/** The autonomy-policy gate behind a formation position (per-repo × risk grants). */
+const FORMATION_POLICY_GATE = { approve: "approve", merge: "merge", lore: "memory" };
+/** Enabled auto grants for a formation position (0 when it has none or no policy gate). */
+function formationGrants(policies, gateId, posture) {
+  const gate = FORMATION_POLICY_GATE[gateId];
+  if (!gate || !Array.isArray(policies)) return 0;
+  // Grants are read only by the agent review pass: with review human they are inert.
+  if (posture && String(posture.REVIEW_MODE?.value || "human") === "human") return 0;
+  return policies.filter((p) => p && p.gate === gate && p.mode === "auto").length;
+}
+
+/**
+ * Go/No-Go before raising the dial: checks read from the posture the new mode
+ * would run with. They advise; Save still applies the mode.
+ */
+function goNoGo(posture, mode, policies) {
+  const v = (k) => (posture[k] ? posture[k].value : "");
+  const checks = [
+    {
+      key: "GAFFER_TESTING",
+      ok: isOnValue(v("GAFFER_TESTING")),
+      go: "An independent tester checks every delivery.",
+      nogo: "No independent tester: the squad marks its own work.",
+    },
+    {
+      key: "GAFFER_DAILY_BUDGET_USD",
+      ok: Number(v("GAFFER_DAILY_BUDGET_USD")) > 0,
+      go: `A daily budget caps the wage bill (${moneyW(Number(v("GAFFER_DAILY_BUDGET_USD")))} a day).`,
+      nogo: "No daily budget: nothing caps the wage bill.",
+    },
+    {
+      key: "GAFFER_REQUIRE_CI",
+      ok: isOnValue(v("GAFFER_REQUIRE_CI")),
+      go: "CI must be green before review.",
+      nogo: "CI is not required before review.",
+    },
+  ];
+  if (mode === "lite" || mode === "strict") {
+    const p = v("SANDBOX_PROVIDER");
+    checks.push({
+      key: "SANDBOX_PROVIDER",
+      ok: p === "docker" || p === "sandbox-exec",
+      go: `The squad runs inside an OS sandbox (${p}).`,
+      nogo: `No OS sandbox is chosen: ${mode} needs one.`,
+    });
+  }
+  if (mode === "graduated") {
+    const n = (policies || []).filter((x) => x.mode === "auto").length;
+    checks.push({
+      key: null,
+      href: "#autonomy-recs",
+      ok: n > 0,
+      go: `${plural(n, "repo grant")} let the squad ship what it has earned.`,
+      nogo: "No repo has earned a grant yet, so graduated holds every ticket for you.",
+    });
+  }
+  return checks;
+}
+
+/**
+ * Team instructions: GAFFER_MODE as a five-detent dial, the formation it plays
+ * (a pitch where each gate is a position: a claret shirt where the squad plays
+ * it, a yellow card where the gaffer makes the call), what moving the dial would
+ * change, and the Go/No-Go checks before raising it. The dial drives the
+ * GAFFER_MODE select in the form, so it saves (and counts as unsaved) with the rest.
+ */
+function teamInstructions(all, editors, policies) {
+  const modeSetting = all.find((s) => s.key === "GAFFER_MODE");
+  const modeEd = editors.get("GAFFER_MODE");
+  const modeSelect = modeEd && modeEd.row ? modeEd.row.querySelector("select") : null;
+  const savedMode = String((modeSetting && (modeSetting.effective || modeSetting.value)) || "");
+  const current = MODE_PRESETS[savedMode] ? savedMode : "supervised";
+  const lockedMode = !!(modeSetting && modeSetting.envLocked);
+  const rank = (m) => MODE_DETENTS.findIndex((d) => d.mode === m);
+  const picked = () => {
+    const v = modeSelect ? modeSelect.value : savedMode;
+    return MODE_PRESETS[v] ? v : "supervised";
+  };
+
+  const head = el("div", { class: "ti-head" });
+  const dial = el("fieldset", { class: "dial", disabled: lockedMode ? "" : null }, [
+    el("legend", { class: "sr-only" }, "Autonomy mode"),
   ]);
+  const radios = [];
+  for (const d of MODE_DETENTS) {
+    const input = el("input", {
+      type: "radio",
+      name: "mode-dial",
+      value: d.mode,
+      class: "dial-input",
+    });
+    input.checked = d.mode === current;
+    input.addEventListener("change", () => {
+      if (!input.checked || !modeSelect) return;
+      // Choosing the saved mode again restores the stored value (no false "unsaved").
+      modeSelect.value = d.mode === current ? modeEd.initial : d.mode;
+      modeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      if (typeof api_.onPick === "function") api_.onPick();
+    });
+    radios.push(input);
+    dial.appendChild(
+      el("label", { class: "dial-stop", dataset: { mode: d.mode } }, [
+        input,
+        el("span", { class: "dial-notch", "aria-hidden": "true" }),
+        el("span", { class: "dial-name" }, d.name),
+        el("span", { class: "dial-line" }, d.line),
+        d.mode === current ? el("span", { class: "dial-now" }, "Now") : null,
+      ]),
+    );
+  }
+  const board = el("div", { class: "formation-board" });
+  const changes = el("div", { class: "ti-changes", "aria-live": "polite" });
+  const node = el(
+    "section",
+    { class: "card boot-page instructions", id: "instructions", "aria-label": "Team instructions" },
+    [
+      panelHead("Team instructions", null, null, { kit: "claret" }),
+      head,
+      dial,
+      board,
+      changes,
+      el("p", { class: "ti-foot" }, [
+        lockedMode
+          ? "The mode is set by the environment, so the dial is locked here. "
+          : "The dial is the Autonomy mode setting below and saves with the rest of the room. ",
+        "A switch you set yourself always beats the mode. ",
+        el("a", { href: "#set-GAFFER_MODE" }, "Autonomy mode"),
+      ]),
+    ],
+  );
+
+  const drawFormation = (now, next) => {
+    clear(board);
+    const W = 1000;
+    const H = 220;
+    board.appendChild(
+      svgEl(
+        "svg",
+        {
+          viewBox: `0 0 ${W} ${H}`,
+          class: "formation-pitch",
+          preserveAspectRatio: "none",
+          "aria-hidden": "true",
+          focusable: "false",
+        },
+        [
+          svgEl("rect", { x: 0, y: 0, width: W, height: H, class: "fp-grass" }),
+          ...Array.from({ length: 6 }, (_, i) =>
+            svgEl("rect", { x: (i * W) / 6, y: 0, width: W / 12, height: H, class: "fp-mow" }),
+          ),
+          svgEl("rect", { x: 10, y: 10, width: W - 20, height: H - 20, class: "fp-line" }),
+          svgEl("line", { x1: W / 2, y1: 10, x2: W / 2, y2: H - 10, class: "fp-line" }),
+          svgEl("circle", { cx: W / 2, cy: H / 2, r: 46, class: "fp-line" }),
+          svgEl("rect", { x: 10, y: H / 2 - 56, width: 70, height: 112, class: "fp-line" }),
+          svgEl("rect", { x: W - 80, y: H / 2 - 56, width: 70, height: 112, class: "fp-line" }),
+        ],
+      ),
+    );
+    const step = 80 / (FORMATION_GATES.length - 1);
+    board.appendChild(
+      el(
+        "ol",
+        { class: "formation-pos", "aria-label": "Who plays each gate" },
+        FORMATION_GATES.map((g, i) => {
+          const a = g.who(now);
+          const b = g.who(next);
+          const moving = a !== b;
+          // A position the gaffer holds can still be played by the squad where a
+          // per-repo grant says so (risk=low on one repo, say): show the grants,
+          // since "you" alone would misstate who acts.
+          const grants = b === "you" ? formationGrants(policies, g.id, next) : 0;
+          const words = (who) =>
+            who === "you" && grants
+              ? `you · ${plural(grants, "grant")} to the squad`
+              : WHO_WORDS[who];
+          const mark = (who) =>
+            who === "squad"
+              ? agentShirt("squad", 44)
+              : who === "both"
+                ? el("span", { class: "fp-pair" }, [agentShirt("squad", 40), ycard(32, "fp-card")])
+                : who === "you" && grants
+                  ? el("span", { class: "fp-pair is-grant" }, [
+                      ycard(32, "fp-card"),
+                      agentShirt("squad", 34),
+                    ])
+                  : who === "you"
+                    ? ycard(36, "fp-card")
+                    : el("span", { class: "fp-empty", "aria-hidden": "true" });
+          return el("li", { style: { "--x": `${10 + step * i}%` } }, [
+            el(
+              "a",
+              {
+                class: `fp-spot who-${b}${grants ? " has-grants" : ""}${moving ? " is-moving" : ""}`,
+                href: grants ? "#autonomy-policies" : `#set-${g.key}`,
+                "aria-label": `${g.label}: ${words(b)}${moving ? ` after save (now ${WHO_WORDS[a]})` : ""}`,
+              },
+              [
+                mark(b),
+                el("span", { class: "fp-label" }, g.label),
+                el("span", { class: "fp-who" }, moving ? `→ ${words(b)}` : words(b)),
+              ],
+            ),
+          ]);
+        }),
+      ),
+    );
+  };
+
+  const api_ = {
+    node,
+    onPick: null,
+    sync() {
+      const next = picked();
+      for (const r of radios) r.checked = r.value === next;
+      for (const lab of dial.querySelectorAll(".dial-stop"))
+        lab.classList.toggle("is-picked", lab.dataset.mode === next);
+      const now = postureFor(all, new Map(), current);
+      const after = postureFor(all, editors, next);
+      const squadCount = (p) => FORMATION_GATES.filter((g) => g.who(p) === "squad").length;
+      clear(head);
+      const d = MODE_DETENTS[rank(next)];
+      head.append(
+        el("p", { class: "ti-lede" }, [
+          el("strong", {}, next === current ? `${d.name}.` : `${d.name}, once you save.`),
+          ` The squad plays ${squadCount(after)} of ${FORMATION_GATES.length} positions on its own; `,
+          `you make the call on ${FORMATION_GATES.filter((g) => ["you", "both"].includes(g.who(after))).length}`,
+          (() => {
+            const granted = FORMATION_GATES.filter(
+              (g) => g.who(after) === "you" && formationGrants(policies, g.id, after),
+            );
+            if (!granted.length) return ".";
+            const n = granted.reduce((t, g) => t + formationGrants(policies, g.id, after), 0);
+            return `, though ${plural(n, "per-repo grant")} hand${n === 1 ? "s" : ""} ${granted
+              .map((g) => g.label.toLowerCase())
+              .join(" and ")} to the squad on the repos and risks they name.`;
+          })(),
+        ]),
+      );
+      drawFormation(now, after);
+      clear(changes);
+      if (next === current) return;
+      // What moving the dial changes, key by key, and what it cannot change.
+      const rows = Object.keys(MODE_PRESETS.supervised).map((k) => {
+        const s = all.find((x) => x.key === k);
+        const a = now[k];
+        const b = after[k];
+        const same = String(a.value) === String(b.value);
+        const show = (v) =>
+          s && s.type === "boolean" ? (isOnValue(v.value) ? "On" : "Off") : v.value || "default";
+        return el("tr", { class: same ? "is-same" : "is-change" }, [
+          el("th", { scope: "row" }, el("a", { href: `#set-${k}` }, (s && s.label) || k)),
+          el("td", {}, show(a)),
+          el("td", {}, [
+            show(b),
+            b.from === "file" || b.from === "env" || b.from === "edit"
+              ? el(
+                  "span",
+                  { class: "ti-kept" },
+                  b.from === "env"
+                    ? " · set by the environment"
+                    : b.from === "edit"
+                      ? " · your unsaved edit"
+                      : " · kept from settings.json",
+                )
+              : null,
+          ]),
+        ]);
+      });
+      changes.appendChild(
+        el("table", { class: "ti-table" }, [
+          el("caption", {}, `Moving from ${MODE_DETENTS[rank(current)].name} to ${d.name}`),
+          el("thead", {}, [
+            el("tr", {}, [
+              el("th", { scope: "col" }, "Switch"),
+              el("th", { scope: "col" }, "Now"),
+              el("th", { scope: "col" }, "After save"),
+            ]),
+          ]),
+          el("tbody", {}, rows),
+        ]),
+      );
+      if (rank(next) > rank(current)) {
+        const checks = goNoGo(after, next, policies);
+        const go = checks.filter((c) => c.ok).length;
+        changes.appendChild(
+          el("div", { class: "gng" }, [
+            el("h3", { class: "gng-title" }, [
+              "Go / No-Go",
+              el("span", { class: "gng-n" }, `${go} of ${checks.length} go`),
+            ]),
+            el(
+              "ul",
+              { class: "gng-list" },
+              checks.map((c) =>
+                el("li", { class: c.ok ? "is-go" : "is-nogo" }, [
+                  glyph(c.ok ? "done" : "failed", 18),
+                  el("span", { class: "gng-word" }, c.ok ? "Go" : "No-go"),
+                  el("span", { class: "gng-text" }, [
+                    c.ok ? c.go : c.nogo,
+                    " ",
+                    el("a", { href: c.href || `#set-${c.key}` }, c.ok ? "See it" : "Fix it"),
+                  ]),
+                ]),
+              ),
+            ),
+            el(
+              "p",
+              { class: "gng-note" },
+              "These checks advise; Save still applies the mode. Read them before you raise it.",
+            ),
+          ]),
+        );
+      }
+    },
+  };
+  return api_;
 }
 
 /** Human label for an autonomy gate. */
@@ -5751,17 +12382,12 @@ function inertPoliciesNote(n) {
 function autonomyRecommendationsPanel(recs, policies, { inert = false } = {}) {
   if (!Array.isArray(recs) || recs.length === 0) return null;
   return el("div", { class: "card panel autonomy-recs" }, [
-    el("div", { class: "ar-head" }, [
-      icon("spark", "ar-ico"),
-      el("div", {}, [
-        el("h2", { class: "ar-title" }, "Autonomy suggestions"),
-        el(
-          "p",
-          { class: "section-note dim" },
-          "Based on your review track record. Advisory only — nothing changes until you explicitly enable it.",
-        ),
-      ]),
-    ]),
+    panelHead("Autonomy suggestions", "from your review track record", null, { kit: "sky" }),
+    el(
+      "p",
+      { class: "section-note" },
+      "Advisory only — nothing changes until you explicitly enable it.",
+    ),
     el(
       "ul",
       { class: "ar-list" },
@@ -5866,19 +12492,14 @@ function autonomyPoliciesPanel(policies, { inert = false } = {}) {
   const active = (Array.isArray(policies) ? policies : []).filter((p) => p.mode === "auto");
   if (active.length === 0) return null;
   return el("div", { class: `card panel autonomy-policies${inert ? " is-inert" : ""}` }, [
-    el("div", { class: "ar-head" }, [
-      icon(inert ? "alert" : "lock", "ar-ico"),
-      el("div", {}, [
-        el("h2", { class: "ar-title" }, inert ? "Active autonomy (inert)" : "Active autonomy"),
-        el(
-          "p",
-          { class: "section-note dim" },
-          inert
-            ? "These grants are never consulted while Review mode is human — no reviewer agent runs. Switch Review mode to agent or both for them to act, or turn them off."
-            : "The factory acts without you at these chokepoints. Turn any off to re-gate it immediately.",
-        ),
-      ]),
-    ]),
+    panelHead(inert ? "Active autonomy (inert)" : "Active autonomy", null, null, { kit: "sky" }),
+    el(
+      "p",
+      { class: "section-note" },
+      inert
+        ? "These grants are never consulted while Review mode is human — no reviewer agent runs. Switch Review mode to agent or both for them to act, or turn them off."
+        : "The factory acts without you at these chokepoints. Turn any off to re-gate it immediately.",
+    ),
     el(
       "ul",
       { class: "ar-list" },
@@ -5944,17 +12565,12 @@ function accessPanel(whoami, principals) {
         ? "the shared token"
         : "unknown";
   const card = el("div", { class: "card panel access-panel" }, [
-    el("div", { class: "ar-head" }, [
-      icon("lock", "ar-ico"),
-      el("div", {}, [
-        el("h2", { class: "ar-title" }, "Access"),
-        el(
-          "p",
-          { class: "section-note dim" },
-          "Named credentials for the API. Every write a principal makes is attributed to its actor in the event log.",
-        ),
-      ]),
-    ]),
+    panelHead("Access", "the keys to the ground", null, { kit: "ink" }),
+    el(
+      "p",
+      { class: "section-note" },
+      "Named credentials for the API. Every write a principal makes is attributed to its actor in the event log.",
+    ),
     el("p", { class: "access-whoami", "data-testid": "access-whoami" }, [
       "Signed in as ",
       el("strong", {}, actorId),
@@ -5974,7 +12590,7 @@ function accessPanel(whoami, principals) {
       el("div", { class: "ar-item-head" }, [
         el("span", { class: "access-name" }, p.name),
         el("span", { class: "ap-mode" }, p.capability),
-        el("span", { class: "ar-repo" }, `${p.actor_type}:${p.actor_id}`),
+        el("span", { class: "ar-repo" }, actorName(p.actor_type, p.actor_id)),
         revoked ? el("span", { class: "access-status" }, "revoked") : null,
       ]),
       el(
@@ -6044,7 +12660,7 @@ function accessPanel(whoami, principals) {
       maxlength: "200",
       autocomplete: "off",
     });
-    const submit = el("button", { class: "btn primary small", type: "submit" }, [
+    const submit = el("button", { class: "btn small", type: "submit" }, [
       icon("plus"),
       el("span", {}, "Create credential"),
     ]);
@@ -6138,7 +12754,7 @@ const IDLE_RECOMMENDED_LANES = [
 
 function renderIdleLoopsPanel(view, repos, nodes) {
   const card = el("div", { class: "card settings-group idle-loops-group" });
-  card.appendChild(el("h2", {}, "Idle loops"));
+  card.appendChild(el("h2", {}, "Scan lanes"));
   card.appendChild(
     el(
       "p",
@@ -6418,22 +13034,62 @@ function renderIdleLoopsPanel(view, repos, nodes) {
  * get a toggle (boolean), number input (int) or text input (csv/string), and
  * register a reader into `editors` so Save can collect the value.
  */
+/** A setting's help: the first sentence, the rest folded behind "More" (pages ran 12,000px). */
+function settingHelp(text) {
+  const t = String(text);
+  const m = t.match(/^(.{40,180}?[.!?])\s+(.+)$/s);
+  if (!m) return el("p", { class: "setting-help dim" }, t);
+  return el("div", { class: "setting-help dim" }, [
+    el("p", {}, m[1]),
+    el("details", { class: "setting-more" }, [el("summary", {}, "More"), el("p", {}, m[2])]),
+  ]);
+}
 function renderSettingRow(s, editors) {
+  const mode = settingsModeName;
+  const src =
+    s.source === "file"
+      ? "set in settings.json"
+      : s.source === "mode"
+        ? `from the ${mode || "supervised"} mode`
+        : s.source === "env"
+          ? null
+          : "default";
   const meta = el("div", { class: "setting-meta" }, [
     el("div", { class: "setting-label" }, [
       el("span", {}, s.label || s.key),
       s.envLocked
-        ? el("span", { class: "badge env-locked no-dot" }, [icon("lock", "lock-ico"), "set by env"])
+        ? el("span", { class: "badge env-locked no-dot" }, [
+            icon("lock", "lock-ico", 12),
+            "set by env",
+          ])
         : null,
     ]),
-    el("code", { class: "mono setting-key" }, s.key),
-    s.help ? el("p", { class: "setting-help dim" }, s.help) : null,
+    el("div", { class: "setting-id" }, [
+      el("code", { class: "mono setting-key" }, s.key),
+      src ? el("span", { class: `setting-src src-${s.source}` }, src) : null,
+      el("span", { class: "setting-unsaved" }, "unsaved"),
+    ]),
+    s.help ? settingHelp(s.help) : null,
   ]);
 
   const control = el("div", { class: "setting-control" }, renderSettingInput(s, editors));
 
-  return el("div", { class: `setting-row${s.envLocked ? " is-locked" : ""}` }, [meta, control]);
+  const row = el(
+    "div",
+    {
+      class: `setting-row${s.envLocked ? " is-locked" : ""}`,
+      id: `set-${s.key}`,
+      dataset: { find: `${s.label || ""} ${s.key} ${s.help || ""}`.toLowerCase() },
+    },
+    [meta, control],
+  );
+  const ed = editors.get(s.key);
+  if (ed) ed.row = row;
+  return row;
 }
+
+/** The mode the settings on screen were read under (for "from the graduated mode"). */
+let settingsModeName = "";
 
 /** Build the right-hand control for a setting (or a read-only value when locked). */
 function renderSettingInput(s, editors) {
@@ -6462,9 +13118,18 @@ function renderSettingInput(s, editors) {
     // `initial` lets Save send only what the user changed: an untouched switch
     // that merely reflects a mode preset must not be written as an explicit "0".
     editors.set(s.key, { read: () => (input.checked ? "1" : "0"), initial: checked ? "1" : "0" });
-    return el("label", { class: "switch" }, [
+    const word = el(
+      "span",
+      { class: "switch-word", "aria-hidden": "true" },
+      checked ? "On" : "Off",
+    );
+    input.addEventListener("change", () => {
+      word.textContent = input.checked ? "On" : "Off";
+    });
+    return el("label", { class: "switch switch-worded" }, [
       input,
       el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
+      word,
     ]);
   }
 
@@ -6475,6 +13140,7 @@ function renderSettingInput(s, editors) {
       step: "1",
       min: "0",
       value: s.value,
+      placeholder: s.effective && s.effective !== s.value ? s.effective : "default",
       "aria-label": s.label,
     });
     editors.set(s.key, { read: () => input.value.trim(), initial: s.value });
@@ -6501,19 +13167,28 @@ function renderSettingInput(s, editors) {
   const input = el("input", {
     type: "text",
     value: s.value,
-    placeholder: s.type === "csv" ? "comma,separated,values" : "",
+    // The same "default" placeholder every blank control shows (a sample list
+    // read like a real value); a list says how to write it.
+    placeholder:
+      s.effective && s.effective !== s.value
+        ? s.effective
+        : s.type === "csv"
+          ? "default · comma-separated"
+          : "default",
     "aria-label": s.label,
   });
-  editors.set(s.key, { read: () => input.value.trim() });
+  // `initial` makes a text edit count as unsaved (and an untouched one stay out of
+  // the payload), the same as every other control.
+  editors.set(s.key, { read: () => input.value.trim(), initial: s.value });
   return input;
 }
 
 const POLICY_PACKS = ["solo_loose", "team_light", "factory_strict", "regulated"];
 
-async function renderCreate() {
+async function renderCreate(param) {
   const [nodesRes, reposRes] = await Promise.all([
-    api("GET", "/scope/nodes"),
-    api("GET", "/repositories"),
+    api("GET", "/scope/nodes", undefined, { signal: routeSignal() }),
+    api("GET", "/repositories", undefined, { signal: routeSignal() }),
   ]);
   const nodes = nodesRes.nodes || [];
   const allRepos = reposRes.repositories || [];
@@ -6590,21 +13265,39 @@ async function renderCreate() {
       selector.node,
       validationMsg,
       el("div", { class: "btn-row" }, [
-        el("button", { class: "btn primary", type: "submit" }, "Create ticket"),
+        el("button", { class: "btn", type: "submit" }, "Create ticket"),
       ]),
     ],
   );
 
-  const wrap = el("div", { class: "view" });
+  // The page: Plan a build (the team talk, the same panel as the sheet) leads;
+  // one ticket on its own (a friendly, outside any campaign) sits beside it.
+  const epicsN = nodes.filter((n) => n.type === "epic").length;
+  const wrap = el("div", { class: "view view-create" });
   wrap.appendChild(
-    el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate("#/work") },
-      "← Back to Work",
+    viewHead(
+      "Plan a build",
+      `${plural(allRepos.length, "repo")} to build on · ${plural(epicsN, "campaign")} this season`,
+      el("a", { class: "btn", href: "#one-ticket" }, "Or add one ticket"),
     ),
   );
-  wrap.appendChild(viewHead("New ticket"));
-  wrap.appendChild(el("div", { class: "card" }, form));
+  const planHost = el("div", { class: "cr-plan" });
+  const ticketPage = el(
+    "section",
+    { class: "card prog cr-ticket", id: "one-ticket", "aria-labelledby": "one-ticket-h" },
+    [
+      (() => {
+        const h = panelHead("One ticket", "a friendly: outside any campaign", null, { kit: "sky" });
+        h.querySelector(".panel-title").id = "one-ticket-h";
+        return h;
+      })(),
+      el("div", { class: "cr-ticket-body" }, form),
+    ],
+  );
+  wrap.appendChild(el("div", { class: "cr-grid" }, [planHost, ticketPage]));
+  wrap._dispose = mountPlanBuildInline(planHost);
+  // After the router's scroll-to-top, not before it.
+  if (param === "ticket") wrap._mounted = () => setTimeout(() => jumpTo("one-ticket"), 0);
   // Initial suggestion pass once the form is in the DOM (empty draft → likely
   // empty, but a pre-selected scope or single repo can still surface a candidate).
   selector.refreshSuggestions();
@@ -6674,7 +13367,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
       );
     }
     if (!scopeNodeIds.size)
-      scopeList.appendChild(el("span", { class: "dim" }, "No scope linked — optional."));
+      scopeList.appendChild(el("span", { class: "dim" }, "No scope linked (optional)."));
   }
 
   // --- manual repo picker --------------------------------------------------
@@ -6749,14 +13442,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
         ]),
       );
     }
-    if (!attached.size)
-      repoList.appendChild(
-        el(
-          "p",
-          { class: "dim" },
-          "No repos attached yet. Attach at least one write repo so the factory can deliver.",
-        ),
-      );
+    if (!attached.size) repoList.appendChild(el("p", { class: "dim" }, "No repos attached yet."));
     renderWriteHint();
   }
 
@@ -6765,7 +13451,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
     writeHint.className = `selector-hint ${hasWrite ? "ok" : "warn"}`;
     writeHint.textContent = hasWrite
       ? "✓ This ticket has a write target — it can be delivered."
-      : "Needs ≥1 write repo to be deliverable.";
+      : "Needs at least one write repo, so the factory has somewhere to deliver.";
   }
 
   // --- suggestion population ------------------------------------------------
@@ -6830,7 +13516,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
       el(
         "p",
         { class: "where-intro dim" },
-        "Attach the repos this ticket may write, read or test, and optionally the scope node it lives under. At least one write repo is required.",
+        "Attach the repos this ticket may write, read or test, and optionally the scope node it lives under.",
       ),
       field("Scope node", scopeSel),
       scopeList,
@@ -6872,51 +13558,6 @@ function debounce(fn, ms) {
 //  Decisions — folded into Overview, card reused
 // ===========================================================================
 
-function renderDecisionCard(d) {
-  const answer = el("input", { type: "text", placeholder: "Answer (optional)" });
-  const rationale = el("input", { type: "text", placeholder: "Rationale (optional)" });
-  const resolve = (status) =>
-    guard(async () => {
-      const body = { status };
-      if (answer.value.trim()) body.answer = answer.value.trim();
-      if (rationale.value.trim()) body.rationale = rationale.value.trim();
-      await api("POST", `/decisions/${d.id}/resolve`, body);
-      toast(`Decision ${status}`, { ok: true });
-      router();
-    });
-  return el(
-    "div",
-    {
-      class: "ac-item",
-      style: "flex-direction:column;align-items:stretch;gap:10px;margin-top:12px",
-    },
-    [
-      el("div", { class: "meta-row", style: "margin:0" }, [
-        badge(d.severity, "no-dot"),
-        badge(d.status, "no-dot"),
-      ]),
-      el("h3", { style: "font-size:var(--step-0)" }, d.title),
-      el("p", { class: "desc" }, d.question),
-      el("div", { class: "inline-form", style: "margin:0;border:0;padding:0" }, [
-        field("Answer", answer),
-        field("Rationale", rationale),
-        el("div", { class: "btn-row", style: "align-self:flex-end" }, [
-          el(
-            "button",
-            { class: "btn ok", type: "button", onclick: () => resolve("accepted") },
-            "Accept",
-          ),
-          el(
-            "button",
-            { class: "btn danger", type: "button", onclick: () => resolve("rejected") },
-            "Reject",
-          ),
-        ]),
-      ]),
-    ],
-  );
-}
-
 // ===========================================================================
 //  View: Review queue
 // ===========================================================================
@@ -6931,23 +13572,48 @@ function safeHttpUrl(url) {
  * (never innerHTML), so a hostile diff line can never inject markup. Returns the
  * scrollable `<pre>` well.
  */
-function diffPre(lines) {
-  const rows = lines.map((line) => {
+/**
+ * One diff as a keyboard-scrollable region: a wide diff scrolls sideways inside
+ * its <pre>, so the <pre> is focusable and named (axe scrollable-region-focusable).
+ */
+function diffPre(lines, label = "Diff", { trimHeader = false } = {}) {
+  // A per-file block already names its file: drop git's preamble (diff --git,
+  // index, ---/+++) up to the first hunk, when there is one.
+  let body = lines;
+  if (trimHeader) {
+    const h = lines.findIndex((l) => l.startsWith("@@"));
+    if (h > 0) body = lines.slice(h);
+  }
+  // The gutter carries the new file's line numbers (from each @@ header), via a
+  // data attribute so the copied text of a line is only the line.
+  let ln = null;
+  const rows = body.map((line) => {
     let cls = "diff-line";
     const first = line.charAt(0);
+    let n = null;
     if (line.startsWith("+++") || line.startsWith("---")) cls += " diff-file";
-    else if (line.startsWith("@@")) cls += " diff-hunk";
-    else if (first === "+") cls += " diff-add";
-    else if (first === "-") cls += " diff-del";
+    else if (line.startsWith("@@")) {
+      cls += " diff-hunk";
+      const m = line.match(/\+(\d+)/);
+      ln = m ? Number(m[1]) : null;
+    } else if (first === "+") {
+      cls += " diff-add";
+      n = ln != null ? ln++ : null;
+    } else if (first === "-") cls += " diff-del";
+    else if (ln != null && first !== "\\") n = ln++;
     // Render an empty line as a non-breaking space so the row keeps its height.
-    return el("div", { class: cls }, line === "" ? " " : line);
+    return el(
+      "div",
+      { class: cls, dataset: n != null ? { ln: String(n) } : undefined },
+      line === "" ? " " : line,
+    );
   });
-  return el("pre", { class: "diff-pre" }, rows);
+  return el("pre", { class: "diff-pre", tabindex: "0", role: "region", "aria-label": label }, rows);
 }
 
 /** Back-compat: render a whole unified diff as one `<pre>`. */
-function diffBody(diffText) {
-  return diffPre(String(diffText || "").split("\n"));
+function diffBody(diffText, label) {
+  return diffPre(String(diffText || "").split("\n"), label);
 }
 
 /**
@@ -6995,10 +13661,16 @@ function splitDiffFiles(diffText) {
   return files;
 }
 
+/** A file path with a break chance after each "/": a narrow head wraps at a folder, not mid-name. */
+function pathBreaks(p) {
+  const parts = String(p).split("/");
+  return parts.flatMap((part, i) => (i < parts.length - 1 ? [`${part}/`, el("wbr")] : [part]));
+}
+
 /** A single repo's diff section: header (repo/branch/stats) + per-file file
  *  strip (jumper) + one collapsible `<details>` per file. `repoIdx` scopes the
  *  DOM ids to indices — a path is NEVER used to build an id or selector. */
-function repoDiffSection(rd, repoIdx = 0) {
+function repoDiffSection(rd, repoIdx = 0, { collapsed = false } = {}) {
   const statBits = [];
   if (rd.unavailable) {
     statBits.push(el("span", { class: "diff-stat dim" }, rd.message || rd.unavailable));
@@ -7022,7 +13694,7 @@ function repoDiffSection(rd, repoIdx = 0) {
   const risk = rd.unavailable ? null : riskOverlay(rd.riskAnnotations || []);
 
   if (rd.unavailable) {
-    return el("div", { class: "diff-section" }, [header, risk]);
+    return el("div", { class: "diff-section is-unavailable" }, [header, risk]);
   }
 
   // Set of risk paths, so a file can carry an ADVISORY marker when its path
@@ -7042,23 +13714,32 @@ function repoDiffSection(rd, repoIdx = 0) {
   if (files.length === 0) {
     // No parseable `diff --git` chunk (e.g. a plain textual diff): fall back to
     // the single-pre rendering so nothing is lost.
-    return el("div", { class: "diff-section" }, [header, risk, diffBody(rd.diff)]);
+    return el("div", { class: "diff-section is-plain" }, [header, risk, diffBody(rd.diff)]);
   }
 
+  // The file list: one row per file, flagged files carry a yellow card, and a
+  // goal-difference bar shows lines added (green) against lines removed (red).
   const strip = el("nav", { class: "diff-filestrip", "aria-label": "Files in this diff" });
   const filesBox = el("div", { class: "diff-files" });
+  const maxLines = Math.max(1, ...files.map((f) => f.additions + f.deletions));
+  const GD_BLOCKS = 16;
 
   files.forEach((f, fileIdx) => {
     const targetId = `diff-file-${repoIdx}-${fileIdx}`;
     const ann = riskInfo(f.path);
     const riskTitle = ann ? `${String(ann.kind).replace(/-/g, " ")}: ${ann.detail}` : null;
+    const isNew = f.minus === "/dev/null";
+    const isGone = f.plus === "/dev/null";
+    const total = f.additions + f.deletions;
+    const blocks = total ? Math.max(1, Math.round((total / maxLines) * GD_BLOCKS)) : 0;
+    const addBlocks = total ? Math.round((f.additions / total) * blocks) : 0;
+    const gd = el(
+      "span",
+      { class: "gd", "aria-hidden": "true" },
+      Array.from({ length: blocks }, (_, i) => el("i", { class: i < addBlocks ? "gd-a" : "gd-d" })),
+    );
 
-    // Jumper chip — path is a text node; target id is index-derived, never the path.
-    const jumpChildren = [
-      el("code", { class: "mono diff-filejump-path" }, f.path),
-      el("span", { class: "diff-filejump-stat" }, `+${f.additions} −${f.deletions}`),
-    ];
-    if (ann) jumpChildren.push(icon("alert", "diff-file-risk"));
+    // Jumper row — path is a text node; target id is index-derived, never the path.
     const jump = el(
       "button",
       {
@@ -7066,6 +13747,7 @@ function repoDiffSection(rd, repoIdx = 0) {
         class: "diff-filejump" + (ann ? " has-risk" : ""),
         dataset: { fileTarget: targetId },
         title: riskTitle || f.path,
+        "aria-label": `${f.path}: ${f.additions} added, ${f.deletions} removed${ann ? `, flagged (${riskTitle})` : ""}`,
         onclick: () => {
           const target = document.getElementById(targetId);
           if (!target) return;
@@ -7073,7 +13755,15 @@ function repoDiffSection(rd, repoIdx = 0) {
           target.scrollIntoView({ behavior: "smooth", block: "start" });
         },
       },
-      jumpChildren,
+      [
+        el("span", { class: "dfj-flag" }, ann ? ycard(14, "diff-file-risk") : null),
+        el("code", { class: "mono diff-filejump-path" }, pathBreaks(f.path)),
+        el("span", { class: "diff-filejump-stat" }, [
+          el("span", { class: "diff-add-stat" }, `+${f.additions}`),
+          el("span", { class: "diff-del-stat" }, `−${f.deletions}`),
+        ]),
+        gd,
+      ],
     );
     strip.appendChild(jump);
 
@@ -7081,7 +13771,9 @@ function repoDiffSection(rd, repoIdx = 0) {
     // file's lines. The id is index-scoped, never derived from the path.
     const summaryChildren = [
       icon("chevron", "diff-file-chev"),
-      el("code", { class: "mono diff-file-path" }, f.path),
+      el("code", { class: "mono diff-file-path" }, pathBreaks(f.path)),
+      isNew ? el("span", { class: "diff-file-tag" }, "new file") : null,
+      isGone ? el("span", { class: "diff-file-tag" }, "deleted") : null,
       el("span", { class: "diff-filejump-stat" }, [
         el("span", { class: "diff-add-stat" }, `+${f.additions}`),
         " ",
@@ -7089,19 +13781,41 @@ function repoDiffSection(rd, repoIdx = 0) {
       ]),
     ];
     if (ann) {
-      const marker = icon("alert", "diff-file-risk");
+      const marker = ycard(14, "diff-file-risk");
       marker.setAttribute("title", riskTitle);
       summaryChildren.push(marker);
     }
     filesBox.appendChild(
-      el("details", { class: "diff-file-block", open: "", id: targetId }, [
-        el("summary", { class: "diff-file-summary" }, summaryChildren),
-        diffPre(f.lines),
-      ]),
+      el(
+        "details",
+        {
+          class: `diff-file-block${ann ? " is-flagged" : ""}`,
+          // Folded (the ticket page) the file list is the way in; open (Review) it reads top to bottom.
+          open: collapsed ? null : "",
+          id: targetId,
+        },
+        [
+          el("summary", { class: "diff-file-summary" }, summaryChildren),
+          ann
+            ? el("p", { class: "diff-file-flag" }, [
+                ycard(14),
+                `${String(ann.kind)
+                  .replace(/-/g, " ")
+                  .replace(/^./, (c) => c.toUpperCase())}: ${ann.detail}`,
+              ])
+            : null,
+          diffPre(f.lines, `Diff of ${f.path}`, { trimHeader: true }),
+        ],
+      ),
     );
   });
 
-  return el("div", { class: "diff-section" }, [header, risk, strip, filesBox]);
+  return el("div", { class: `diff-section${rd.truncated ? " is-truncated" : ""}` }, [
+    header,
+    risk,
+    strip,
+    filesBox,
+  ]);
 }
 
 /**
@@ -7173,31 +13887,28 @@ function diffApprovability(repos) {
  * Approve button on a diff the human could actually see. Until it fires, callers
  * should treat the ticket as NOT approvable (fail-closed).
  */
-function renderTicketDiff(ticketId, onState) {
+function renderTicketDiff(ticketId, onState, opts = {}) {
   const box = el("div", { class: "diff-box" }, [el("div", { class: "ac-meta" }, "Loading diff…")]);
-  const report = (state) => {
-    if (typeof onState === "function") onState(state);
+  const report = (state, repos = []) => {
+    if (typeof onState === "function") onState(state, repos);
   };
-  api("GET", `/tickets/${ticketId}/diff`)
+  // `_settled` resolves once the diff (or its error) is on screen, so a background
+  // refresh can hold the page height until then (review-scroll-jumps-to-top).
+  box._settled = api("GET", `/tickets/${ticketId}/diff`, undefined, { signal: routeSignal() })
     .then((res) => {
       clear(box);
       const repos = (res && res.repos) || [];
       if (repos.length === 0) {
-        box.appendChild(
-          el("p", { class: "dim", style: "font-size:var(--step--1)" }, "No write repos to diff."),
-        );
+        box.appendChild(el("p", { class: "section-note" }, "No write repos to diff."));
         report(diffApprovability(repos));
         return;
       }
-      box.appendChild(
-        el(
-          "div",
-          { class: "ac-meta" },
-          `Diff (${repos.length} repo${repos.length === 1 ? "" : "s"})`,
-        ),
-      );
-      repos.forEach((rd, i) => box.appendChild(repoDiffSection(rd, i)));
-      report(diffApprovability(repos));
+      if (repos.length > 1) {
+        box.classList.add("is-multi");
+        box.appendChild(el("div", { class: "ac-meta" }, `Diff (${repos.length} repos)`));
+      }
+      repos.forEach((rd, i) => box.appendChild(repoDiffSection(rd, i, opts)));
+      report(diffApprovability(repos), repos);
     })
     .catch((e) => {
       clear(box);
@@ -7279,18 +13990,25 @@ function dodChecklist(evidence) {
     const status = g.status === "PASS" ? "pass" : g.status === "FAIL" ? "fail" : "skip";
     const mark = status === "pass" ? "✓" : status === "fail" ? "✗" : "–";
     const children = [
-      el("span", { class: `dod-mark dod-${status}` }, mark),
+      el("span", { class: `dod-mark dod-${status}`, "aria-hidden": "true" }, mark),
       el("span", { class: "dod-gate" }, String(g.gate || "gate")),
       el("span", { class: "dod-repo ac-meta" }, String(g.repo || "")),
+      el(
+        "span",
+        { class: `dod-word dod-w-${status}` },
+        status === "pass" ? "passed" : status === "fail" ? "failed" : "skipped",
+      ),
     ];
-    // Only surface the note on a failing gate (it carries the captured tail/why).
+    // A passing gate names the command it ran; a failing one surfaces its captured note.
     if (status === "fail" && g.note) {
       children.push(el("span", { class: "dod-note ac-meta" }, String(g.note)));
+    } else if (g.note) {
+      children.push(el("code", { class: "dod-cmd mono" }, String(g.note)));
     }
-    return el("li", { class: "dod-item" }, children);
+    return el("li", { class: `dod-item dod-i-${status}` }, children);
   });
   return el("div", { class: `review-dod dod-${overall === "PASS" ? "ok" : "bad"}` }, [
-    el("div", { class: "ac-meta" }, [
+    el("div", { class: "ac-meta dod-cap" }, [
       "Definition of Done ",
       badge(overall === "PASS" ? "all gates green" : "gate failed", "no-dot"),
     ]),
@@ -7298,39 +14016,104 @@ function dodChecklist(evidence) {
   ]);
 }
 
-function reviewEvidenceList(evidence, acList) {
+/** Acceptance criteria as a checklist: glyph · the criterion · its state. */
+function acChecklist(acList) {
+  return el(
+    "ul",
+    { class: "ac-list" },
+    acList.map((a) =>
+      el("li", { class: `ac-row ac-${a.status}` }, [
+        glyph(a.status === "satisfied" ? "done" : a.status === "failed" ? "failed" : "draft", 16),
+        el("span", { class: "ac-row-t" }, a.text),
+        el("span", { class: "ac-state" }, String(a.status || "").replace(/_/g, " ")),
+      ]),
+    ),
+  );
+}
+
+/** The evidence label a reviewer reads ("test output", "diff summary"). */
+function evidenceKind(type) {
+  return String(type || "note").replace(/_/g, " ");
+}
+
+/**
+ * The evidence, oldest first, as a minute list: when · who (named, with the
+ * agent-reported chip) · what kind · the first line of what it says. Longer
+ * captures (a DoD report, a diff stat) fold their remaining lines.
+ */
+function reviewEvidenceList(evidence, acList, { repos } = {}) {
   if (!evidence || evidence.length === 0) return null;
   const acText = new Map((acList || []).map((a) => [a.id, a.text]));
-  const rows = evidence.map((ev) => {
-    const link = safeHttpUrl(ev.uri);
-    const acLabel = ev.ac_id && acText.has(ev.ac_id) ? acText.get(ev.ac_id) : null;
-    // Provenance line — who recorded this evidence and when, plus an explicit flag
-    // when it was SELF-REPORTED by a delivery agent so the reviewer weighs it with
-    // due skepticism. `recorded_by_agent` is set server-side ONLY when the recording
-    // actor is a KNOWN registered agent (a reliable positive signal — agent ids are
-    // distinct and never collide with a human/system principal); it is never inferred
-    // from an absence. We therefore surface the amber "agent-reported" chip only on a
-    // confident match and otherwise show who/when WITHOUT asserting a trust class —
-    // no fabricated "trusted" label. `created_by` renders through el() as a text node,
-    // so it can never inject markup regardless of its content.
-    const who = ev.created_by ? String(ev.created_by) : "—";
-    const provBadge =
-      ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
-    return el("li", { class: "review-evi" }, [
-      badge(ev.evidence_type, "no-dot"),
-      el("span", { class: "evi-summary" }, ev.summary),
-      link ? el("a", { href: link, target: "_blank", rel: "noopener" }, "open") : null,
-      acLabel ? el("span", { class: "ac-meta evi-ac" }, `for AC: ${acLabel}`) : null,
-      el("div", { class: "ac-meta evi-prov" }, [
-        provBadge,
-        el("span", { class: "evi-who" }, `${who} · ${fmtTime(ev.created_at)}`),
-      ]),
-    ]);
-  });
-  return el("div", { class: "review-evidence" }, [
-    el("div", { class: "ac-meta" }, `Evidence (${evidence.length})`),
-    el("ul", { class: "clean" }, rows),
-  ]);
+  const rows = evidence
+    .slice()
+    .sort((x, y) => String(x.created_at || "").localeCompare(String(y.created_at || "")))
+    .map((ev) => {
+      const link = safeHttpUrl(ev.uri);
+      const acLabel = ev.ac_id && acText.has(ev.ac_id) ? acText.get(ev.ac_id) : null;
+      // Provenance — who recorded this evidence and when, plus an explicit flag
+      // when it was SELF-REPORTED by a delivery agent so the reviewer weighs it with
+      // due skepticism. `recorded_by_agent` is set server-side ONLY when the recording
+      // actor is a KNOWN registered agent (a reliable positive signal); it is never
+      // inferred from an absence, and no "trusted" label is fabricated. `created_by`
+      // renders through el() as a text node, so it can never inject markup.
+      const raw = ev.created_by ? String(ev.created_by) : "—";
+      const who = agentNames.get(raw) || (raw === "system" ? "the runner" : raw);
+      const provBadge =
+        ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
+      const lines = String(ev.summary || "").split("\n");
+      // A blocked-write note and absolute paths read as repo-relative paths.
+      const say = (l) =>
+        l
+          .replace(/(\/[^\s\][,]+)/g, (m) => (m.split("/").length > 4 ? repoPath(m, repos) : m))
+          .replace(
+            /^FG-007 boundary violation\(s\) blocked by the safety hook during delivery:$/,
+            "FG-007: the safety hook blocked a write outside the write roots",
+          );
+      const first = say(lines[0] || "");
+      const rest = lines
+        .slice(1)
+        .filter((l) => l.trim())
+        .map(say);
+      return el("li", { class: "review-evi" }, [
+        el(
+          "time",
+          {
+            class: "evi-time tabnum",
+            datetime: ev.created_at || "",
+            title: ev.created_at ? fmtTime(ev.created_at) : null,
+          },
+          ev.created_at ? clockTime(Date.parse(ev.created_at)) : "—",
+        ),
+        el("div", { class: "evi-main" }, [
+          el("div", { class: "ac-meta evi-prov" }, [
+            el("span", { class: "evi-who" }, who),
+            badge(evidenceKind(ev.evidence_type), "no-dot evi-kind"),
+            provBadge,
+          ]),
+          el("p", { class: "evi-summary" }, first),
+          rest.length
+            ? el("details", { class: "evi-more" }, [
+                el("summary", {}, `${plural(rest.length, "more line")}`),
+                el(
+                  "pre",
+                  {
+                    class: "evi-pre",
+                    tabindex: "0",
+                    role: "region",
+                    "aria-label": `${evidenceKind(ev.evidence_type)}, in full`,
+                  },
+                  rest.join("\n"),
+                ),
+              ])
+            : null,
+          acLabel ? el("p", { class: "ac-meta evi-ac" }, `for AC: ${acLabel}`) : null,
+          link
+            ? el("a", { class: "evi-link", href: link, target: "_blank", rel: "noopener" }, "open")
+            : null,
+        ]),
+      ]);
+    });
+  return el("div", { class: "review-evidence" }, [el("ol", { class: "clean evi-list" }, rows)]);
 }
 
 // Preset quick-reject reasons. Tapping a chip fills the reason so an operator
@@ -7343,129 +14126,12 @@ const REJECT_REASON_PRESETS = [
   "Scope creep",
   "Needs cleanup first",
 ];
-
-/**
- * Modal reject-reason picker that replaces `window.prompt` (a blocking dialog
- * footgun in automation, and a keyboard-only flow on mobile). Presents preset
- * reason chips + a free-text fallback and resolves the trimmed reason via
- * `onConfirm`. The submit control is HELD DISABLED until a reason exists (chip
- * tapped or text typed) and the confirm handler re-checks — preserving the
- * invariant that a reject reason is REQUIRED. Resolves nothing (dialog just
- * closes) on cancel/escape/scrim.
- */
-function openRejectDialog({ verb, onConfirm }) {
-  const input = el("input", {
-    class: "reject-reason-input",
-    type: "text",
-    placeholder: "Reason…",
-    "aria-label": "Reject reason",
-  });
-
-  const chipRow = el(
-    "div",
-    { class: "reject-chips" },
-    REJECT_REASON_PRESETS.map((reason) =>
-      el(
-        "button",
-        {
-          class: "chip reject-chip",
-          type: "button",
-          onclick: () => selectChip(reason),
-        },
-        reason,
-      ),
-    ),
-  );
-
-  const submitBtn = el(
-    "button",
-    { class: "btn danger", type: "button", disabled: "", onclick: confirm },
-    "Reject",
-  );
-
-  // Opt-in: capture this rejection reason as a lore DRAFT — the highest-signal human
-  // correction the factory ever gets. Human-gated (lands in the memory review queue,
-  // never auto-approved). Off by default.
-  const captureCheckbox = el("input", {
-    type: "checkbox",
-    class: "reject-capture-cb",
-    id: "reject-capture-lore",
-  });
-  const captureRow = el(
-    "label",
-    {
-      class: "reject-capture",
-      for: "reject-capture-lore",
-      title:
-        "Files your reason as a DRAFT lore record in the memory review queue — human-gated, never auto-approved. Compounds your correction into the factory's memory.",
-    },
-    [captureCheckbox, el("span", {}, "Also capture as a lore draft for the team")],
-  );
-
-  const dialog = el(
-    "div",
-    { class: "reject-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Reject reason" },
-    [
-      el("h2", { class: "reject-dialog-title" }, `Reason for ${verb}`),
-      el("p", { class: "reject-dialog-hint" }, "Tap a reason or type your own."),
-      chipRow,
-      input,
-      captureRow,
-      el("div", { class: "reject-dialog-actions btn-row" }, [
-        el("button", { class: "btn", type: "button", onclick: close }, "Cancel"),
-        submitBtn,
-      ]),
-    ],
-  );
-
-  const scrim = el("div", { class: "reject-scrim open" }, [dialog]);
-  dialog.addEventListener("click", (e) => e.stopPropagation());
-  scrim.addEventListener("click", close);
-
-  function reason() {
-    return input.value.trim();
-  }
-  function syncSubmit() {
-    if (reason()) submitBtn.removeAttribute("disabled");
-    else submitBtn.setAttribute("disabled", "");
-  }
-  function selectChip(text) {
-    input.value = text;
-    chipRow.querySelectorAll(".reject-chip").forEach((c) => {
-      c.classList.toggle("chip-active", c.textContent === text);
-    });
-    syncSubmit();
-  }
-  function close() {
-    document.removeEventListener("keydown", onKey);
-    scrim.remove();
-  }
-  function confirm() {
-    const value = reason();
-    // Backstop the invariant even if the disabled state were bypassed.
-    if (!value) {
-      toast("A reason is required", {});
-      return;
-    }
-    const captureLore = captureCheckbox.checked;
-    close();
-    onConfirm(value, captureLore);
-  }
-  function onKey(e) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-    } else if (e.key === "Enter" && document.activeElement === input) {
-      e.preventDefault();
-      confirm();
-    }
-  }
-
-  input.addEventListener("input", syncSubmit);
-  document.addEventListener("keydown", onKey);
-  document.body.appendChild(scrim);
-  input.focus();
-}
+const WONT_DO_PRESETS = [
+  "No longer needed",
+  "Covered by another ticket",
+  "Not worth the risk",
+  "Out of scope for this campaign",
+];
 
 /**
  * Single source of truth for "is a blocking modal open right now?".
@@ -7497,212 +14163,753 @@ function isModalOpen() {
   );
 }
 
-async function renderReview() {
-  const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
-  const wrap = el("div", { class: "view" });
-  wrap.appendChild(viewHead("Review", `${tickets.length} awaiting review`));
-
-  if (tickets.length === 0) {
-    wrap.appendChild(
-      emptyState(
-        "Nothing in review",
-        "When agents deliver work it lands here for your sign-off.",
-        "review",
-      ),
-    );
-    return wrap;
+/** Who delivered a ticket: the agent on its latest claim. */
+function deliveredBy(events) {
+  const c = (events || []).filter((e) => e.event_type === "claim.created" && e.actor_id).pop();
+  return c ? agentNames.get(c.actor_id) || null : null;
+}
+/** When the ticket last moved into its current status (the wait starts there). */
+function sinceStatus(events, status) {
+  for (let i = (events || []).length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.event_type !== "ticket.transitioned") continue;
+    try {
+      if (JSON.parse(e.payload_json || "{}").to === status) return e.created_at;
+    } catch {
+      /* skip a malformed payload */
+    }
   }
+  return null;
+}
+/** The safety hook's blocked writes, from the FG-007 evidence note. */
+function blockedWrites(evidence) {
+  const out = [];
+  for (const ev of evidence || []) {
+    const s = String(ev.summary || "");
+    if (!/^FG-007/.test(s)) continue;
+    for (const line of s.split("\n").slice(1)) {
+      // The hook writes "<why (…)>: <target> [write-roots: a, b]" or
+      // "<why (…)>: <target> — "<cmd>"". The target is the first path after the
+      // reason; the roots in brackets are where the ticket may write (the old
+      // greedy match took the last root for the target).
+      const m = line.match(/^BLOCKED[^:]*:\s*(.*?\)):\s*(\/[^\s\]]+)(.*)$/);
+      if (m) {
+        const roots = (m[3].match(/\[write-roots:\s*([^\]]*)\]/) || [])[1];
+        out.push({
+          why: m[1].trim(),
+          path: m[2],
+          roots: roots ? roots.split(/,\s*/).filter(Boolean) : [],
+        });
+      } else if (line.trim()) out.push({ why: line.trim(), path: null, roots: [] });
+    }
+  }
+  return out;
+}
+/** A long absolute path, shortened to its last three parts. */
+function shortPath(p) {
+  const parts = String(p || "")
+    .split("/")
+    .filter(Boolean);
+  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : String(p || "");
+}
+/**
+ * Files the diff changes that the delivering agent's smallest-change note does not
+ * name. Gaffer has no out-of-scope field: this compares the note (manual_note
+ * evidence "Smallest-change note: …") with the diff's own paths, and says so.
+ * No note → no derivation (an empty answer, never a guess).
+ */
+function outsideStatedChange(evidence, repos) {
+  const note = (evidence || [])
+    .filter((e) => /^Smallest-change note:/i.test(String(e.summary || "")))
+    .pop();
+  if (!note) return [];
+  const said = (String(note.summary).match(/[\w.-]+(?:\/[\w.-]+)+|[\w-]+\.\w{1,6}/g) || []).map(
+    (x) => x.replace(/\.+$/, ""),
+  );
+  if (!said.length) return [];
+  const out = [];
+  for (const rd of repos || []) {
+    for (const f of splitDiffFiles(rd.diff)) {
+      const p = f.path;
+      if (!said.some((x) => x === p || p.endsWith("/" + x) || x.endsWith("/" + p)))
+        out.push({ path: p, noteId: note.id });
+    }
+  }
+  return out;
+}
+/** Card the diff's files that sit outside the stated change (file list + file block). */
+function markOutsideFiles(box, outside) {
+  if (!box || !outside.length) return;
+  const set = new Set(outside.map((o) => o.path));
+  for (const jump of box.querySelectorAll(".diff-filejump")) {
+    const p = jump.querySelector(".diff-filejump-path")?.textContent;
+    if (!set.has(p) || jump.classList.contains("has-risk")) continue;
+    jump.classList.add("has-risk");
+    const flag = jump.querySelector(".dfj-flag");
+    if (flag && !flag.firstChild) flag.appendChild(ycard(14, "diff-file-risk"));
+    jump.setAttribute(
+      "aria-label",
+      `${jump.getAttribute("aria-label")}, flagged (outside the stated change)`,
+    );
+    const block = box.querySelector(`[id="${jump.dataset.fileTarget}"]`);
+    if (block && !block.classList.contains("is-flagged")) {
+      block.classList.add("is-flagged");
+      block
+        .querySelector(".diff-file-summary")
+        ?.after(
+          el("p", { class: "diff-file-flag" }, [
+            ycard(14),
+            "Not in the agent's smallest-change note (derived; see the flag on the left).",
+          ]),
+        );
+    }
+  }
+}
+/** An absolute path inside a known repo, said as "repo/rel/path" (else shortened). */
+function repoPath(p, repos) {
+  const s = String(p || "");
+  for (const r of repos || []) {
+    const root = String(r.local_path || "").replace(/\/+$/, "");
+    if (!root || !r.name) continue;
+    if (s === root) return r.name;
+    if (s.startsWith(root + "/")) return `${r.name}/${s.slice(root.length + 1)}`;
+  }
+  return shortPath(s);
+}
+/** One flag: a yellow card, a caps title, what it means, who raised it. */
+function reviewFlag(title, body, source) {
+  return el("li", { class: "flag" }, [
+    ycard(22, "flag-card"),
+    el("div", { class: "flag-body" }, [
+      el("h3", { class: "flag-title" }, title),
+      el("p", { class: "flag-text" }, body),
+      source ? el("p", { class: "flag-src" }, source) : null,
+    ]),
+  ]);
+}
 
-  // Gate console header — frames the human gate and the decision controls.
-  const riskCount = (lvl) => tickets.filter((t) => t.risk_level === lvl).length;
+/** The change last signed off in this tab, so the clear desk can say where it went. */
+let lastSignedOff = null;
+
+/**
+ * The Review page with nothing waiting: the desk is clear, said on the stadium
+ * board, with where the signed work is now (testing, to merge, full time) and
+ * who is still on the pitch, so the next stop is one click away.
+ */
+async function renderClearDesk(wrap) {
+  const signal = routeSignal();
+  const [all, claims, dash] = await Promise.all([
+    api("GET", "/tickets", undefined, { signal }).then((r) => r.tickets || []),
+    api("GET", "/claims", undefined, { signal })
+      .then((r) => r.claims || [])
+      .catch(() => []),
+    api("GET", "/api/dashboard", undefined, { signal })
+      .then((r) => r.summary || null)
+      .catch(() => null),
+  ]);
+  wrap.dataset.sig = clearDeskSignature(all);
+  const by = (st) => all.filter((t) => t.status === st);
+  const testing = by("in_testing");
+  const toMerge = by("ready_for_merge");
+  const playing = all.filter((t) => t.status === "claimed" || t.status === "in_progress");
+  const readyN = by("ready").length;
+  const medianReview = (dash?.cycleTimeByState || []).find((c) => c.status === "in_review");
+  const delivered = dash?.deliveredToday;
+
+  const signed =
+    lastSignedOff && all.find((t) => t.id === lastSignedOff.id && t.status !== "in_review");
+  // The line under the headline: where the work is, each part a way to get there.
+  const others = [
+    dash?.blocked ? plural(dash.blocked, "blocked ticket") : null,
+    dash?.openDecisions ? plural(dash.openDecisions, "decision") : null,
+  ].filter(Boolean);
+  const bits = [
+    signed
+      ? [
+          "you signed ",
+          el("a", { href: `#/ticket/${signed.id}` }, `#${signed.number}`),
+          ` ${fmtRelative(lastSignedOff.at)}; it is ${statusLabel(signed.status).toLowerCase()} now`,
+        ]
+      : null,
+    playing.length
+      ? el(
+          "a",
+          { href: "#/work?status=in_progress" },
+          `${plural(playing.length, "change")} on the pitch`,
+        )
+      : "no one on the pitch",
+    others.length
+      ? el("a", { href: "#/overview" }, `${others.join(" and ")} on your team sheet`)
+      : null,
+    delivered != null ? `${plural(delivered, "delivery", "deliveries")} today` : null,
+    medianReview && medianReview.samples
+      ? `a change waits ${fmtDuration(medianReview.medianMs)} for you, on the median`
+      : null,
+  ].filter(Boolean);
+  const sub = el("p", { class: "hl-sub" });
+  bits.forEach((b, i) => {
+    if (i) sub.appendChild(el("span", { class: "sep", "aria-hidden": "true" }, "\u00a0· "));
+    sub.append(...[].concat(b));
+  });
+  if (sub.firstChild && sub.firstChild.nodeType === 3)
+    sub.firstChild.textContent = sub.firstChild.textContent.replace(/^./, (c) => c.toUpperCase());
   wrap.appendChild(
-    el("div", { class: "card panel gate-console" }, [
-      el("div", { class: "gate-main" }, [
-        el("span", { class: "gate-lamp" }),
-        el("div", {}, [
-          el("div", { class: "gate-title" }, "You hold the gate"),
-          el(
-            "div",
-            { class: "gate-sub" },
-            `${tickets.length} ${tickets.length === 1 ? "change is" : "changes are"} waiting on your sign-off. Nothing merges until you approve it.`,
-          ),
+    el("section", { class: "scoreboard bleed rv-clear-board", "aria-label": "Review" }, [
+      el("div", { class: "scoreboard-in" }, [
+        el("div", { class: "sb-main" }, [
+          el("h1", { class: "hl" }, "Desk clear. Nothing waits for your sign-off."),
+          sub,
         ]),
-      ]),
-      el("div", { class: "gate-aside" }, [
-        el("div", { class: "gate-risk" }, [
-          riskCount("critical")
-            ? el("span", { class: "gr critical" }, `${riskCount("critical")} critical`)
-            : null,
-          riskCount("high") ? el("span", { class: "gr high" }, `${riskCount("high")} high`) : null,
-          riskCount("medium")
-            ? el("span", { class: "gr medium" }, `${riskCount("medium")} medium`)
-            : null,
-          riskCount("low") ? el("span", { class: "gr low" }, `${riskCount("low")} low`) : null,
-        ]),
-        el("div", { class: "gate-keys" }, [
-          el("span", { class: "kbd" }, "j"),
-          el("span", { class: "kbd" }, "k"),
-          el("span", { class: "gate-keys-label" }, "move"),
-          el("span", { class: "kbd" }, "a"),
-          el("span", { class: "gate-keys-label" }, "approve"),
-          el("span", { class: "kbd" }, "r"),
-          el("span", { class: "gate-keys-label" }, "rework"),
-        ]),
+        el(
+          "div",
+          { class: "sb-cells kpi-row", role: "group", "aria-label": "Around the sign-off" },
+          [
+            statCell({ label: "Waiting", value: "00", flip: "rv-wait", title: "0 in review" }),
+            statCell({
+              label: "In testing",
+              value: String(testing.length).padStart(2, "0"),
+              href: "#/work?status=in_testing",
+              flip: "rv-test",
+              title: `${testing.length} with the tester`,
+            }),
+            statCell({
+              label: "To merge",
+              value: String(toMerge.length).padStart(2, "0"),
+              href: "#/work?status=ready_for_merge",
+              flip: "rv-merge",
+              title: `${toMerge.length} approved, with the merge runner`,
+            }),
+            statCell({
+              label: "On the pitch",
+              value: String(playing.length).padStart(2, "0"),
+              href: "#/work",
+              flip: "rv-pitch",
+              title: `${playing.length} being delivered`,
+            }),
+          ],
+        ),
       ]),
     ]),
   );
 
-  const details = await Promise.all(tickets.map((t) => api("GET", `/tickets/${t.id}`)));
-  const cards = [];
+  // Since the whistle: the latest changes past the sign-off, newest first.
+  const past = all
+    .filter((t) => ["in_testing", "ready_for_merge", "done", "cancelled"].includes(t.status))
+    .sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))
+    .slice(0, 6);
+  const resultRow = (t) =>
+    el("li", { class: `rv-res${signed && t.id === signed.id ? " is-yours" : ""}` }, [
+      el("span", { class: "rv-res-no" }, `#${t.number}`),
+      el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
+      el("span", { class: "rv-res-st" }, [
+        statusBadge(t.status),
+        signed && t.id === signed.id ? el("small", { class: "rv-res-you" }, "you signed it") : null,
+      ]),
+      el(
+        "time",
+        { class: "rv-res-when tabnum", datetime: t.updated_at, title: fmtTime(t.updated_at) },
+        fmtRelative(t.updated_at),
+      ),
+    ]);
+  const results = el(
+    "section",
+    { class: "card panel rv-results", "aria-label": "Latest results" },
+    [
+      panelHead("Latest results", null, { href: "#/work", text: "The board" }, { kit: "ink" }),
+      past.length
+        ? el("ol", { class: "rv-res-list" }, past.map(resultRow))
+        : el("p", { class: "dim" }, "Nothing has come through the sign-off yet."),
+    ],
+  );
 
-  for (let i = 0; i < tickets.length; i++) {
-    const t = tickets[i];
-    const ac = details[i].acceptance_criteria || [];
-    const evidence = details[i].evidence || [];
-    const ticketEvents = details[i].events || [];
-    const isReopened = reopenedForReview(ticketEvents);
-    const satisfied = ac.filter((a) => a.status === "satisfied").length;
-    const prUrl = safeHttpUrl(t.pr_url);
-    const deliveryChildren = [
-      t.branch_name
-        ? el("span", {}, ["branch ", el("code", { class: "mono" }, t.branch_name)])
-        : null,
-      t.branch_name && prUrl ? " · " : null,
-      prUrl ? el("a", { href: prUrl, target: "_blank", rel: "noopener" }, "PR") : null,
-    ].filter(Boolean);
+  // Still playing: who is delivering what, so you know what lands here next.
+  const claimFor = new Map(claims.map((c) => [c.ticket_id, c]));
+  const playRow = (t) => {
+    const c = claimFor.get(t.id);
+    return el("li", { class: "rv-res" }, [
+      el("span", { class: "rv-res-no" }, `#${t.number}`),
+      el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
+      el("span", { class: "rv-res-st" }, [
+        c && c.agent_display_name ? agentTag(c.agent_display_name, 22) : statusBadge(t.status),
+      ]),
+      el(
+        "span",
+        { class: "rv-res-when tabnum" },
+        c && c.created_at ? `on for ${fmtDuration(Date.now() - Date.parse(c.created_at))}` : "",
+      ),
+    ]);
+  };
+  const coming = el(
+    "section",
+    { class: "card panel rv-coming", "aria-label": "Coming off the pitch" },
+    [
+      panelHead("Coming your way", playing.length ? String(playing.length) : null, null, {
+        kit: "claret",
+      }),
+      playing.length
+        ? el("ol", { class: "rv-res-list" }, playing.map(playRow))
+        : el("p", { class: "dim" }, [
+            readyN
+              ? `${plural(readyN, "ticket")} ${readyN === 1 ? "waits" : "wait"} in the fixtures for a free agent. `
+              : "The fixtures are empty too. ",
+            el("a", { href: "#/work?status=ready" }, "See the fixtures"),
+          ]),
+    ],
+  );
+  wrap.appendChild(el("div", { class: "rv-clear-grid" }, [coming, results]));
+}
 
-    // Fix 4: a human must not approve a change they couldn't see. The Approve
-    // button starts DISABLED and only enables once the diff loads with a real,
-    // non-empty change (see `applyDiffState`). `approve()` itself fail-closes so
-    // even the keyboard shortcut can't approve an unseen/unloaded diff.
-    let diffState = { approvable: false, reason: "Loading the delivery diff…" };
-    const approve = () =>
-      guard(async () => {
-        if (!diffState.approvable) {
-          toast(`Can't approve — ${diffState.reason}`, {});
-          return;
-        }
-        await api("POST", `/tickets/${t.id}/review/approve`);
-        toast("Approved — merging", { ok: true });
-        router();
-      });
-    // Reject offers a choice: send back for rework (-> refining, a human triages
-    // first) or abandon to the won't-do bucket (-> cancelled). Either way the
-    // backend resets the ticket's ACs to not-satisfied.
-    const reject = (to) => {
-      const verb = to === "cancelled" ? "abandoning (won't do)" : `rejecting to ${to}`;
-      openRejectDialog({
-        verb,
-        onConfirm: (reason, captureLore) =>
-          guard(async () => {
-            const resp = await api("POST", `/tickets/${t.id}/review/reject`, {
-              to,
-              reason,
-              captureLore,
-            });
-            toast(to === "cancelled" ? "Marked won't do" : `Rejected to ${to}`, { ok: true });
-            if (captureLore) {
-              const cap = resp && resp.lore_capture;
-              if (cap && cap.captured) {
-                toast("Captured as a lore draft — approve it in memory review", { ok: true });
-              } else if (cap) {
-                toast("Rejected, but the lore draft could not be filed (memory unavailable)", {});
-              }
-            }
-            router();
-          }),
-      });
-    };
+/**
+ * Review: the gaffer's sign-off, one change per page. The queue runs across the
+ * top as tabs (#/review/<id>; #/review opens the first). The sign-off block —
+ * Approve, Send back, Won't do — sits above the fold beside the diff, with the
+ * flags (yellow cards) under it and a goal-difference file list over the diff.
+ * Keys: j / k next / previous change, a arm → a approve, r send back.
+ */
+async function renderReview(param) {
+  const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
+  const wrap = el("div", { class: "view view-review" });
+  // The refresh compares this before re-reading anything (see VIEW_SIGNATURES).
+  wrap.dataset.sig = reviewSignature(tickets);
+  await ensureAgents();
 
-    // The diff-unavailable banner + the Approve button are held by reference so the
-    // async diff load (fix 4) can toggle them once it settles.
-    const canApprove = hasTicketAction(t.status, "approve");
-    // Mouse Approve is a two-step arm→confirm, matching the keyboard path — a single
-    // stray click on the primary button must never fire an irreversible merge. First
-    // click ARMS (label → "Confirm merge", no POST); a second click within the
-    // BTN_ARM_MS window merges; the window elapsing or a blur disarms.
-    const BTN_ARM_MS = 3000;
-    const approveLabel = el("span", {}, "Approve");
-    const approveBtn = canApprove
-      ? el(
-          "button",
-          { class: "btn ok", type: "button", disabled: "", "aria-label": "Approve and merge" },
-          [icon("check"), approveLabel],
-        )
-      : null;
-    let btnArmed = false;
-    let btnArmTimer = null;
-    const disarmApproveBtn = () => {
-      btnArmed = false;
-      if (btnArmTimer) {
-        clearTimeout(btnArmTimer);
-        btnArmTimer = null;
-      }
-      if (approveBtn) approveBtn.classList.remove("btn-armed");
-      approveLabel.textContent = "Approve";
-    };
-    const onApproveClick = () => {
+  const idx = Math.max(0, param ? tickets.findIndex((t) => t.id === param) : 0);
+  const gone = param && !tickets.some((t) => t.id === param);
+
+  if (tickets.length === 0 && !gone) {
+    wrap.classList.add("rv-clear");
+    await renderClearDesk(wrap);
+    return wrap;
+  }
+
+  const signal = routeSignal();
+  // The queue: one tab per change waiting, the current one marked.
+  const queue = el(
+    "nav",
+    {
+      class: "rv-queue",
+      "aria-label": `Review queue: ${plural(tickets.length, "change")} waiting`,
+    },
+    tickets.map((q, i) =>
+      el(
+        "a",
+        {
+          class: "rv-tab",
+          href: `#/review/${q.id}`,
+          "aria-current": !gone && i === idx ? "page" : null,
+          "aria-label": `#${q.number} ${q.title}`,
+        },
+        [
+          glyph("in_review", 16),
+          el("b", {}, q.number != null ? `#${q.number}` : "—"),
+          el("span", { class: "rv-tab-t", title: q.title }, q.title),
+        ],
+      ),
+    ),
+  );
+  if (tickets.length) wrap.appendChild(queue);
+
+  if (gone) {
+    // The change was signed off (or moved) since this link was made: say where it is.
+    const v = await api("GET", `/tickets/${param}`, undefined, { signal }).catch(() => null);
+    const t = v && v.ticket;
+    wrap.appendChild(
+      el("div", { class: "card rv-gone", role: "status" }, [
+        el(
+          "h1",
+          { class: "rv-gone-h" },
+          t
+            ? `#${t.number} is ${statusLabel(t.status).toLowerCase()} now.`
+            : "That change is not in review.",
+        ),
+        el("p", {}, [
+          t ? el("a", { href: `#/ticket/${t.id}` }, "Open the ticket") : null,
+          t && tickets.length ? " · " : null,
+          tickets.length
+            ? el(
+                "a",
+                { href: `#/review/${tickets[0].id}` },
+                `Next in review: #${tickets[0].number}`,
+              )
+            : "Nothing else waits for your sign-off.",
+        ]),
+      ]),
+    );
+    return wrap;
+  }
+
+  const t = tickets[idx];
+  const next = tickets[idx + 1] || (idx > 0 ? tickets[0] : null);
+  const detail = await api("GET", `/tickets/${t.id}`, undefined, { signal });
+  const ac = detail.acceptance_criteria || [];
+  const evidence = detail.evidence || [];
+  const ticketEvents = detail.events || [];
+  const isReopened = reopenedForReview(ticketEvents);
+  const satisfied = ac.filter((a) => a.status === "satisfied").length;
+  const repo =
+    (detail.repositories || []).find((r) => r.access === "write") || detail.repositories?.[0];
+  const by = deliveredBy(ticketEvents);
+  const since = sinceStatus(ticketEvents, "in_review");
+  const dod = parseDodEvidence(evidence);
+  const writes = blockedWrites(evidence);
+  const prUrl = safeHttpUrl(t.pr_url);
+
+  // Fix 4: a human must not approve a change they couldn't see. Approve starts
+  // DISABLED and only enables once the diff loads with a real, non-empty change.
+  let diffState = { approvable: false, reason: "Loading the delivery diff…" };
+  // The sign-off's status line: hidden until Approve lands, then it says where the
+  // change went and offers the next one as its own link (never auto-advanced).
+  const doneLine = el("p", { class: "rv-done", role: "status", tabindex: "-1", hidden: "" });
+  const approve = () =>
+    guard(async () => {
+      // Signed once: a second press (click or key) on a signed change does nothing.
+      if (approveBtn && approveBtn.classList.contains("is-approved")) return;
       if (!diffState.approvable) {
         toast(`Can't approve — ${diffState.reason}`, {});
         return;
       }
-      if (btnArmed) {
-        disarmApproveBtn();
-        approve();
-        return;
+      const r = await api("POST", `/tickets/${t.id}/review/approve`);
+      const to = r && r.ticket && r.ticket.status;
+      lastSignedOff = { id: t.id, number: t.number, at: new Date().toISOString() };
+      // Stay on the diff: the button says it is done, and moving on is its own link.
+      if (approveBtn) {
+        approveBtn.setAttribute("disabled", "");
+        approveBtn.classList.add("is-approved");
+        approveLabel.textContent = "Approved";
+        approveBtn.prepend(icon("check", "", 20));
       }
-      btnArmed = true;
-      if (approveBtn) approveBtn.classList.add("btn-armed");
-      approveLabel.textContent = "Confirm merge";
-      btnArmTimer = setTimeout(disarmApproveBtn, BTN_ARM_MS);
-    };
-    if (approveBtn) {
-      approveBtn.addEventListener("click", onApproveClick);
-      approveBtn.addEventListener("blur", disarmApproveBtn);
-    }
-    const diffBlockBanner = el(
-      "div",
-      { class: "reopen-banner diff-block-banner", style: "display:none" },
-      [icon("alert"), ""],
-    );
-    const applyDiffState = (state) => {
-      diffState = state || { approvable: false, reason: "The diff state is unknown." };
-      if (diffState.approvable) {
-        diffBlockBanner.style.display = "none";
-        if (approveBtn) approveBtn.removeAttribute("disabled");
-      } else {
-        diffBlockBanner.style.display = "";
-        clear(diffBlockBanner);
-        diffBlockBanner.appendChild(icon("alert"));
-        diffBlockBanner.appendChild(
-          document.createTextNode(`Approve blocked — ${diffState.reason}`),
-        );
-        if (approveBtn) approveBtn.setAttribute("disabled", "");
+      // The yellow card is withdrawn from the title; the queue tab shows the move.
+      const card = wrap.querySelector(".rv-title .rv-card");
+      if (card && !prefersReducedMotion() && typeof card.animate === "function")
+        card
+          .animate(
+            [
+              { transform: "rotate(-8deg)", opacity: 1 },
+              { transform: "rotate(-30deg) translate(-6px, 30px)", opacity: 0 },
+            ],
+            { duration: 300, easing: "cubic-bezier(.5,0,.75,0)", fill: "forwards" },
+          )
+          .finished.then(() => card.remove())
+          .catch(() => card.remove());
+      else if (card) card.remove();
+      const tab = wrap.querySelector('.rv-tab[aria-current="page"]');
+      if (tab) {
+        tab.querySelector(".glyph")?.replaceWith(glyph(to || "ready_for_merge", 16));
+        tab.appendChild(el("small", { class: "rv-tab-done" }, "approved"));
       }
-    };
+      const meta = wrap.querySelector(".rv-meta .badge.st");
+      if (meta && to) meta.replaceWith(statusBadge(to));
+      clear(doneLine);
+      doneLine.append(
+        el("span", { class: "rv-done-t" }, [
+          el("b", {}, `Approved #${t.number}.`),
+          ` ${to === "in_testing" ? "It goes to the tester next." : "It is with the merge runner now."} `,
+        ]),
+        next
+          ? el("a", { class: "rv-next-link", href: `#/review/${next.id}` }, [
+              `Next in review: #${next.number}`,
+              icon("chevron", "", 16),
+            ])
+          : "Nothing else waits for your sign-off.",
+      );
+      wrap.querySelector(".rv-keys")?.remove();
+      doneLine.hidden = false;
+      doneLine.focus({ preventScroll: true });
+      // Pin the address to this change, so a later refresh says where it went
+      // instead of silently swapping the next change in under the reader.
+      if (!param && typeof history !== "undefined" && history.replaceState)
+        history.replaceState(null, "", `#/review/${t.id}`);
+      toast("Approved — merging", { ok: true });
+      updateNavBadges();
+    });
+  const reject = (to) => {
+    const ref = `#${t.number}`;
+    const wont = to === "cancelled";
+    reasonSheet({
+      title: wont ? `Won't do ${ref}` : `Send ${ref} back`,
+      ticket: t,
+      intro: wont
+        ? `${ref} closes without merging and goes to Won't do. Its acceptance criteria reset to not met. You can reopen it into Refining later.`
+        : `${ref} goes back to Refining with your reason, and its acceptance criteria reset to not met. You look at it there before an agent delivers it again.`,
+      label: wont ? "Why not?" : "What should change?",
+      presets: wont ? WONT_DO_PRESETS : REJECT_REASON_PRESETS,
+      confirm: wont ? "Won't do" : "Send back",
+      tone: wont ? "danger" : "primary",
+      capture: true,
+      onConfirm: async (reason, captureLore) => {
+        const resp = await api("POST", `/tickets/${t.id}/review/reject`, {
+          to,
+          reason,
+          captureLore,
+        });
+        toast(wont ? `${ref} closed as won't do.` : `${ref} sent back to Refining.`, { ok: true });
+        if (captureLore) {
+          const cap = resp && resp.lore_capture;
+          if (cap && cap.captured)
+            toast("Filed as a lore draft — approve it in Memory's review queue.", { ok: true });
+          else if (cap)
+            toast("Sent back, but the lore draft could not be filed (memory is unavailable).", {});
+        }
+        router();
+      },
+    });
+  };
 
-    const card = el("div", { class: "card", dataset: { reviewIdx: String(i) }, tabindex: "-1" }, [
-      el("div", { class: "meta-row" }, [
-        el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
-        riskBadge(t.risk_level),
-        badge(`AC ${satisfied}/${ac.length} satisfied`, "no-dot"),
-        pipelineDots(t.status),
+  const canApprove = hasTicketAction(t.status, "approve");
+  // Approve is a two-step arm→confirm, by click or by key.
+  const ARM_WINDOW_MS = 3000;
+  const approveLabel = el("span", {}, "Approve");
+  const approveBtn = canApprove
+    ? el(
+        "button",
+        {
+          class: "btn primary big signoff-btn",
+          type: "button",
+          disabled: "",
+          "aria-label": "Approve and merge",
+        },
+        [approveLabel],
+      )
+    : null;
+  // One arm for both paths: the first `a` or click raises the yellow card on the
+  // button ("Confirm merge"), rings the sign-off block and shows the 3s window
+  // draining under the buttons; a second press inside it approves. Esc, j/k,
+  // leaving the button or the window running out all put it down again.
+  let armed = false;
+  let armedVia = null;
+  let armTimer = null;
+  const armHint = el("p", { class: "rv-arm", role: "status", hidden: "" });
+  const disarm = () => {
+    if (armTimer) {
+      clearTimeout(armTimer);
+      armTimer = null;
+    }
+    armed = false;
+    armedVia = null;
+    signoff?.classList.remove("card-armed");
+    armHint.hidden = true;
+    clear(armHint);
+    if (!approveBtn) return;
+    approveBtn.classList.remove("btn-armed");
+    if (approveLabel.textContent !== "Approved") {
+      approveLabel.textContent = "Approve";
+      approveBtn.setAttribute("aria-label", "Approve and merge");
+    }
+  };
+  const arm = (via) => {
+    disarm();
+    armed = true;
+    armedVia = via;
+    signoff?.classList.add("card-armed");
+    if (approveBtn && !approveBtn.disabled) {
+      approveBtn.classList.add("btn-armed");
+      approveLabel.textContent = "Confirm merge";
+      approveBtn.setAttribute("aria-label", `Confirm merge: approve #${t.number}`);
+    }
+    armHint.append(
+      el("span", { class: "rv-arm-t" }, [
+        el("b", {}, "Armed. "),
+        via === "key"
+          ? [el("span", { class: "kbd" }, "a"), " again to approve"]
+          : "Click Confirm merge to approve",
+        " · ",
+        el("span", { class: "kbd" }, "Esc"),
+        " puts it down",
       ]),
-      el("h2", { style: "font-size:var(--step-1);margin-bottom:6px" }, t.title),
-      isReopened
-        ? el("div", { class: "reopen-banner" }, [
-            icon("alert"),
-            "Merge conflict resolved on the branch — re-review the resolved diff and re-approve.",
-          ])
-        : null,
-      deliveryChildren.length ? el("p", { class: "ac-meta" }, deliveryChildren) : null,
-      dodChecklist(evidence),
-      reviewEvidenceList(evidence, ac),
+      el("span", { class: "rv-arm-clock", "aria-hidden": "true" }, [el("span", {})]),
+    );
+    armHint.hidden = false;
+    armTimer = setTimeout(disarm, ARM_WINDOW_MS);
+  };
+  let signoff = null;
+  const onApproveClick = () => {
+    if (!diffState.approvable) {
+      toast(`Can't approve — ${diffState.reason}`, {});
+      return;
+    }
+    if (armed) {
+      disarm();
+      approve();
+      return;
+    }
+    arm("click");
+  };
+  if (approveBtn) {
+    approveBtn.addEventListener("click", onApproveClick);
+    // A click-arm is put down when the pointer/focus leaves the button.
+    approveBtn.addEventListener("blur", () => armedVia === "click" && disarm());
+  }
+  const diffBlockBanner = el(
+    "div",
+    { class: "reopen-banner diff-block-banner", style: "display:none" },
+    [icon("alert"), ""],
+  );
+
+  // Flags: what to look at before signing. Evidence flags now; the diff's risk
+  // annotations join them once the diff loads.
+  const flagList = el("ul", { class: "flag-list" });
+  const flagCount = el("span", { class: "panel-aux" });
+  const summary = el("p", { class: "signoff-sum" });
+  const flagsNow = [];
+  if (isReopened)
+    flagsNow.push([
+      "Merge conflict resolved",
+      "The branch had a conflict that an agent resolved. Re-read the resolved diff before you sign.",
+      "Raised by the merge runner",
+    ]);
+  for (const w of writes)
+    flagsNow.push([
+      "Blocked write",
+      w.path
+        ? `The safety hook stopped a write to ${repoPath(w.path, detail.repositories)}: ${w.why.replace(/^write /, "a write ")}${
+            w.roots.length
+              ? `. This ticket may write only to ${w.roots.map((r) => repoPath(r, detail.repositories)).join(", ")}`
+              : ""
+          }. Nothing landed there; check the change does not depend on it.`
+        : w.why,
+      "Raised by the safety hook (FG-007)",
+    ]);
+  if (dod && dod.dod !== "PASS")
+    flagsNow.push([
+      "Gate failed",
+      `The Definition of Done failed: ${dod.gates
+        .filter((g) => g.status === "FAIL")
+        .map((g) => g.gate)
+        .join(", ")}.`,
+      "Raised by the runner",
+    ]);
+  if (ac.length && satisfied < ac.length)
+    flagsNow.push([
+      "Criteria not met",
+      `${ac.length - satisfied} of ${ac.length} acceptance criteria are not satisfied yet.`,
+      "From the ticket's criteria",
+    ]);
+  const paintFlags = (riskAnns, outside = []) => {
+    const all = [
+      ...riskAnns.map((a) => [
+        String(a.kind)
+          .replace(/-/g, " ")
+          .replace(/^./, (c) => c.toUpperCase()),
+        a.detail +
+          (a.kind === "sensitive-path"
+            ? ". Check it is safe to ship, and that a migration has a way back."
+            : "."),
+        "Raised by the server's risk check",
+      ]),
+      ...outside.map((o) => [
+        "Edit outside the stated change",
+        `${o.path} is changed, but the agent's smallest-change note does not list it. Check it belongs in this ticket.`,
+        `Derived from the diff's paths and the agent's smallest-change note (evidence ${String(o.noteId || "").slice(0, 8)})`,
+      ]),
+      ...flagsNow,
+    ];
+    clear(flagList);
+    for (const [h, b, src] of all) flagList.appendChild(reviewFlag(h, b, src));
+    if (!all.length)
+      flagList.appendChild(
+        el(
+          "li",
+          { class: "flag-none" },
+          "No flags: the risk check, the gates and the safety hook raised nothing.",
+        ),
+      );
+    flagCount.textContent = String(all.length);
+    const gates = !dod
+      ? "No gate report yet"
+      : dod.dod === "PASS"
+        ? "Gates passed"
+        : "A gate failed";
+    const crit = ac.length
+      ? ` and ${satisfied} of ${ac.length} acceptance criteria are satisfied`
+      : "";
+    summary.textContent = all.length
+      ? `${plural(all.length, "thing")} to check before you sign: ${all.map((x) => x[0].toLowerCase()).join(", ")}. ${gates}${crit}.`
+      : `Nothing flagged. ${gates}${crit}.`;
+  };
+  paintFlags([]);
+
+  const branchLine = el("p", { class: "rv-branch" }, [
+    t.branch_name ? el("code", { class: "mono" }, t.branch_name) : null,
+    prUrl ? [" · ", el("a", { href: prUrl, target: "_blank", rel: "noopener" }, "PR")] : null,
+  ]);
+  const diffAux = el("span", { class: "panel-aux" });
+  const applyDiffState = (state, repos = []) => {
+    diffState = state || { approvable: false, reason: "The diff state is unknown." };
+    if (diffState.approvable) {
+      diffBlockBanner.style.display = "none";
+      if (approveBtn && approveLabel.textContent !== "Approved")
+        approveBtn.removeAttribute("disabled");
+    } else {
+      diffBlockBanner.style.display = "";
+      clear(diffBlockBanner);
+      diffBlockBanner.appendChild(icon("alert"));
+      diffBlockBanner.appendChild(document.createTextNode(`Approve blocked — ${diffState.reason}`));
+      if (approveBtn) approveBtn.setAttribute("disabled", "");
+    }
+    const live = repos.filter((r) => !r.unavailable);
+    const outside = outsideStatedChange(evidence, live);
+    paintFlags(
+      live.flatMap((r) => r.riskAnnotations || []),
+      outside,
+    );
+    markOutsideFiles(diffBox, outside);
+    if (live.length) {
+      const files = live.reduce((n, r) => n + (r.files || 0), 0);
+      const add = live.reduce((n, r) => n + (r.additions || 0), 0);
+      const del = live.reduce((n, r) => n + (r.deletions || 0), 0);
+      diffAux.textContent = plural(files, "file");
+      branchLine.append(
+        live[0].baseBranch ? ` → ${live[0].baseBranch}` : "",
+        ` · ${plural(files, "file")}, `,
+        el("span", { class: "diff-add-stat" }, `+${add}`),
+        " ",
+        el("span", { class: "diff-del-stat" }, `−${del}`),
+      );
+    }
+  };
+  const diffBox = renderTicketDiff(
+    t.id,
+    canApprove ? applyDiffState : (s, r) => applyDiffState(s, r),
+  );
+
+  // Header: the yellow card, the number, the title; then the facts in one line.
+  wrap.appendChild(
+    el("header", { class: "rv-head" }, [
+      el("h1", { class: "rv-title" }, [
+        ycard(40, "rv-card"),
+        el("span", { class: "rv-no" }, t.number != null ? `#${t.number}` : ""),
+        " ",
+        t.title,
+      ]),
+      el("p", { class: "rv-meta" }, [
+        statusBadge(t.status),
+        repo ? repoTag(repo.name, 20) : null,
+        riskBadge(t.risk_level, { long: true }),
+        by ? el("span", { class: "rv-by" }, ["delivered by ", agentTag(by, 22)]) : null,
+        since
+          ? el(
+              "span",
+              { class: "rv-wait" },
+              `waiting ${fmtDuration(Date.now() - Date.parse(since))}`,
+            )
+          : null,
+      ]),
+      branchLine,
+    ]),
+  );
+
+  signoff = el(
+    "section",
+    {
+      class: "card signoff",
+      dataset: { reviewIdx: "0" },
+      tabindex: "-1",
+      "aria-label": "The gaffer's sign-off",
+    },
+    [
+      panelHead("The gaffer's sign-off", null, null, { kit: "claret" }),
+      summary,
       canApprove ? diffBlockBanner : null,
-      renderTicketDiff(t.id, canApprove ? applyDiffState : undefined),
-      // Driven off the single TICKET_ACTION_KEYS map so the review surface offers
-      // exactly the in_review action set (approve / rework / won't do) and can
-      // never drift from the detail page. "Open detail" is always present.
       el(
         "div",
         { class: "btn-row review-card-actions" },
@@ -7712,110 +14919,138 @@ async function renderReview() {
             ? el(
                 "button",
                 { class: "btn", type: "button", onclick: () => reject("refining") },
-                "Send back to rework",
+                "Send back…",
               )
             : null,
           hasTicketAction(t.status, "wont_do")
             ? el(
                 "button",
                 { class: "btn danger", type: "button", onclick: () => reject("cancelled") },
-                "Won't do",
+                "Won't do…",
               )
             : null,
-          el(
-            "button",
-            { class: "btn", type: "button", onclick: () => navigate(`#/ticket/${t.id}`) },
-            "Open detail",
-          ),
         ].filter(Boolean),
       ),
-    ]);
-    card._actions = { approve, reject };
-    cards.push(card);
-    wrap.appendChild(card);
-  }
+      armHint,
+      el("p", { class: "rv-keys" }, [
+        el("span", { class: "kbd" }, "a"),
+        " twice to approve · ",
+        el("span", { class: "kbd" }, "r"),
+        " send back · ",
+        el("span", { class: "kbd" }, "j"),
+        el("span", { class: "kbd" }, "k"),
+        " next / previous",
+      ]),
+      // Last, so once Approve lands it is the block's foot (the key line goes).
+      doneLine,
+    ],
+  );
+  signoff._actions = { approve, reject };
 
-  // Keyboard queue navigation (j/k move, a arm→approve, r reject-to-ready).
-  let cursor = 0;
-  // Two-step approve: the FIRST `a` only ARMS the focused card (a visible confirm
-  // state, no POST); a SECOND `a` on the SAME card within the window approves.
-  // Arming is cancelled by Escape, by moving the cursor (j/k), or by the window
-  // elapsing — a single mis-keyed `a` can therefore never approve+merge a ticket.
-  const ARM_WINDOW_MS = 3000;
-  let armedIdx = null;
-  let armTimer = null;
-  const disarm = () => {
-    if (armTimer) {
-      clearTimeout(armTimer);
-      armTimer = null;
-    }
-    if (armedIdx != null) {
-      cards[armedIdx]?.classList.remove("card-armed");
-      armedIdx = null;
-    }
+  const diffSection = el("section", { class: "rv-diff", "aria-label": "The diff" }, [
+    el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
+    diffBox,
+  ]);
+
+  // The referee's checks: the Definition-of-Done gates, then the criteria, in one page.
+  const dodBox = dodChecklist(evidence);
+  const checks = el("section", { class: "card panel rv-checks", "aria-label": "Gates" }, [
+    panelHead(
+      "The gates",
+      !dod ? "no gate report yet" : dod.dod === "PASS" ? "all passed" : "a gate failed",
+    ),
+    dodBox ||
+      el(
+        "p",
+        { class: "dim" },
+        "The runner has not recorded a Definition-of-Done report for this delivery.",
+      ),
+    ac.length
+      ? el("h3", { class: "rv-h3" }, [
+          "Acceptance criteria ",
+          el("span", { class: "count" }, `${satisfied} of ${ac.length}`),
+        ])
+      : null,
+    ac.length ? acChecklist(ac) : null,
+  ]);
+
+  wrap.appendChild(
+    el("div", { class: "rv-grid" }, [
+      el("div", { class: "rv-left" }, [
+        signoff,
+        el("section", { class: "rv-flags", "aria-label": "Flags" }, [
+          el("h2", { class: "rv-h2" }, ["Flags ", flagCount]),
+          flagList,
+        ]),
+        checks,
+        el("section", { class: "rv-evid", "aria-label": "Evidence" }, [
+          el("h2", { class: "rv-h2" }, [
+            "Evidence ",
+            el("span", { class: "panel-aux" }, String(evidence.length)),
+          ]),
+          reviewEvidenceList(evidence, ac, { repos: detail.repositories }) ||
+            el("p", { class: "dim" }, "No evidence recorded."),
+        ]),
+      ]),
+      el("div", { class: "rv-right" }, [diffSection]),
+    ]),
+  );
+  // One column (≤1180px): the diff moves up under the flags, ahead of the gates
+  // and the evidence; two columns put it back beside the sign-off.
+  const oneCol =
+    typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 1180px)") : null;
+  const placeDiff = () => {
+    const left = wrap.querySelector(".rv-left");
+    const right = wrap.querySelector(".rv-right");
+    if (!left || !right) return;
+    if (oneCol && oneCol.matches) left.querySelector(".rv-flags")?.after(diffSection);
+    else if (diffSection.parentNode !== right) right.appendChild(diffSection);
   };
-  const arm = (idx) => {
-    disarm();
-    armedIdx = idx;
-    cards[idx]?.classList.add("card-armed");
-    armTimer = setTimeout(disarm, ARM_WINDOW_MS);
-  };
-  const focusCard = (idx) => {
-    // Moving the cursor cancels a pending arm (spec): the confirm must apply to
-    // the card the human is actually looking at.
-    disarm();
-    cursor = Math.max(0, Math.min(cards.length - 1, idx));
-    cards[cursor].focus({ preventScroll: false });
-    cards.forEach((c, i) => c.classList.toggle("card-accent", i === cursor));
-  };
-  // Visible cursor on LOAD: cursor is 0, but `.card-accent` is only applied inside
-  // focusCard (j/k) — so nothing was highlighted on mount even though `a` acted on
-  // card 0. Highlight card 0 class-only (no .focus()/scroll) so exactly one card
-  // visibly carries the cursor before any key is pressed.
-  cards[0]?.classList.add("card-accent");
+  placeDiff();
+  oneCol?.addEventListener?.("change", placeDiff);
+
+  // Keys: j/k move along the queue, a arms → a approves, r sends back, Esc disarms.
+  const cards = [signoff];
+  // The one change on screen carries the queue cursor.
+  signoff.classList.add("card-accent");
   const onKey = (e) => {
-    // A modal (reject dialog, command palette, detail sheet, move-menu) owns the
-    // keyboard while open — never let a queue shortcut fire underneath it. The
-    // reject dialog in particular lives on document.body, so this observer's
-    // detach never runs for it; without this guard `a`/`r` on a focused reject
-    // chip would approve/reject the wrong ticket. Must precede the j/k/a/r branch.
+    if (!wrap.isConnected) return; // never act on a queue that is not on screen
     if (isModalOpen()) return;
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
-    if (e.key === "j") {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "j" || e.key === "k") {
       e.preventDefault();
-      focusCard(cursor + 1);
-    } else if (e.key === "k") {
-      e.preventDefault();
-      focusCard(cursor - 1);
+      disarm();
+      const to = tickets[idx + (e.key === "j" ? 1 : -1)];
+      if (to) navigate(`#/review/${to.id}`);
     } else if (e.key === "a") {
       e.preventDefault();
-      if (armedIdx === cursor) {
-        // Second `a` on the armed card → approve (approve() still fail-closes on
-        // diffState.approvable, so an unseen/unloaded diff can't be approved).
-        const i = cursor;
+      if (approveBtn && approveBtn.classList.contains("is-approved")) return;
+      if (armed) {
         disarm();
-        cards[i]?._actions.approve();
-      } else {
-        arm(cursor);
-      }
+        cards[0]._actions.approve();
+      } else arm("key");
     } else if (e.key === "Escape") {
       disarm();
     } else if (e.key === "r") {
       e.preventDefault();
-      cards[cursor]?._actions.reject("refining");
+      cards[0]._actions.reject("refining");
     }
   };
   document.addEventListener("keydown", onKey);
-  // Detach the handler when the view is replaced.
-  const observer = new MutationObserver(() => {
-    if (!document.body.contains(wrap)) {
-      document.removeEventListener("keydown", onKey);
-      if (armTimer) clearTimeout(armTimer); // no stray timer touching detached nodes
-      observer.disconnect();
-    }
+  let observer = null;
+  const teardown = () => {
+    document.removeEventListener("keydown", onKey);
+    if (armTimer) clearTimeout(armTimer);
+    oneCol?.removeEventListener?.("change", placeDiff);
+    if (observer) observer.disconnect();
+  };
+  wrap._dispose = teardown;
+  observer = new MutationObserver(() => {
+    if (!document.body.contains(wrap)) teardown();
   });
   observer.observe(app, { childList: true });
-
+  wrap._settled = diffBox._settled ? Promise.allSettled([diffBox._settled]) : Promise.resolve();
   return wrap;
 }
 
@@ -7868,56 +15103,389 @@ function parseTags(json) {
 function typeLabel(type) {
   return String(type || "").replace(/_/g, " ");
 }
-async function renderFactory() {
-  const [nodesRes, edgesRes, unmappedRes] = await Promise.all([
-    api("GET", "/scope/nodes"),
-    api("GET", "/scope/edges"),
-    api("GET", "/scope/unmapped-repos"),
-  ]);
-  const nodes = nodesRes.nodes || [];
-  const edges = edgesRes.edges || [];
-  const unmapped = unmappedRes.repositories || [];
+// The Map's live overlay: what each ticket on the board means at a ground.
+// Red = blocked or failed, yellow = waits on your sign-off, paused = off the pitch
+// in the dugout (held at a budget cap or by hand), in play = the rest of the pitch.
+// Drafts and refining tickets are on the bench and are not shown as counters.
+const MAP_RED = new Set(["blocked", "failed"]);
+const MAP_YELLOW = new Set(["in_review", "ready_for_merge"]);
+function mapTone(status) {
+  if (MAP_RED.has(status)) return "red";
+  if (MAP_YELLOW.has(status)) return "yellow";
+  if (status === "paused") return "paused";
+  if (ON_PITCH.has(status)) return "play";
+  return null;
+}
+const MAP_TONE_RANK = { red: 0, yellow: 1, paused: 2, play: 3 };
+/**
+ * The scope the server records for a ticket that targets a repo with no ground:
+ * an external_dependency node named "repo:<name>". It is the free agent playing
+ * as its own single-repo scope, never a third party, so the Map leaves it off the
+ * grounds and shows the repo under Free agents.
+ */
+function isImplicitScope(n) {
+  return (
+    !!n &&
+    n.type === "external_dependency" &&
+    /^repo:/.test(n.name || "") &&
+    (/^Implicit single-repo scope/i.test(n.description || "") || !n.description)
+  );
+}
+const MAP_COUNTERS = 6;
 
-  const wrap = el("div", { class: "view" });
+/** Every ticket on the board once: the live columns, the closed area and won't-do. */
+function boardCards(board) {
+  const seen = new Set();
+  const out = [];
+  for (const c of [
+    ...((board && board.columns) || []).flatMap((col) => col.cards || []),
+    ...((board && board.closed) || []),
+    ...((board && board.wontDo) || []),
+  ]) {
+    if (!c || seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push(c);
+  }
+  return out;
+}
+
+/**
+ * Who plays at each ground and which tickets are there: the ONE source the Map,
+ * a ground's page and a repo's page all count from. A ticket is at a ground when
+ * a repo it delivers to (the board's write boundary) plays there, or when the
+ * ticket is linked to the ground itself (as campaign members are). Reads: the
+ * board, each repo's scope links, and the details of the tickets in the book.
+ * `all` puts every ticket in the book (a ground's page counts its results too);
+ * the Map only needs the live ones.
+ */
+async function mapOverlay(nodes, repos, signal, { all = false } = {}) {
+  const opt = (p, fb) =>
+    api("GET", p, undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return fb;
+    });
+  const [board, ...links] = await Promise.all([
+    opt("/api/board", null),
+    ...repos.map((r) => opt(`/scope/repos?repo=${encodeURIComponent(r.id)}`, { scopes: [] })),
+  ]);
+  const every = boardCards(board);
+  const cards = every.filter((c) => mapTone(c.status));
+  const book = all ? every.filter((c) => c.status !== "cancelled") : cards;
+  // node id → [{ repo, relation, access }]
+  const reposAt = new Map(nodes.map((n) => [n.id, []]));
+  // repo id → [{ node, relation, access }]
+  const groundsOf = new Map(repos.map((r) => [r.id, []]));
+  repos.forEach((r, i) => {
+    for (const s of (links[i] && links[i].scopes) || []) {
+      if (!reposAt.has(s.id)) continue;
+      reposAt.get(s.id).push({ repo: r, relation: s.relation, access: s.default_access });
+      groundsOf.get(r.id).push({ node: s, relation: s.relation, access: s.default_access });
+    }
+  });
+  const repoIdByName = new Map(repos.map((r) => [r.name, r.id]));
+  const nodesOfRepo = new Map();
+  for (const [nid, list] of reposAt)
+    for (const { repo } of list) {
+      if (!nodesOfRepo.has(repo.id)) nodesOfRepo.set(repo.id, new Set());
+      nodesOfRepo.get(repo.id).add(nid);
+    }
+  // Direct links (a ticket scoped to a ground, as campaign members are).
+  const details = book.length
+    ? await ticketDetails(book, signal).catch((e) => {
+        if (e && e.code === "ABORTED") throw e;
+        return new Map();
+      })
+    : new Map();
+  const at = new Map(nodes.map((n) => [n.id, new Map()]));
+  const ofRepo = new Map(repos.map((r) => [r.id, new Map()]));
+  for (const c of book) {
+    const here = new Set();
+    for (const r of c.repos || []) {
+      const rid = r.id || repoIdByName.get(r.name);
+      if (ofRepo.has(rid)) ofRepo.get(rid).set(c.id, c);
+      for (const nid of nodesOfRepo.get(rid) || []) here.add(nid);
+    }
+    for (const s of (details.get(c.id) && details.get(c.id).scopes) || []) here.add(s.id);
+    for (const nid of here) if (at.has(nid)) at.get(nid).set(c.id, c);
+  }
+  const sorted = (m) =>
+    [...m.values()].sort(
+      (a, b) =>
+        (MAP_TONE_RANK[mapTone(a.status)] ?? 9) - (MAP_TONE_RANK[mapTone(b.status)] ?? 9) ||
+        (b.priority || 0) - (a.priority || 0) ||
+        (a.number || 0) - (b.number || 0),
+    );
+  const live = (list) => list.filter((c) => mapTone(c.status));
+  const ticketsAt = new Map([...at].map(([k, v]) => [k, sorted(v)]));
+  const ticketsOfRepo = new Map([...ofRepo].map(([k, v]) => [k, sorted(v)]));
+  return {
+    board: !!board,
+    cards: sorted(new Map(cards.map((c) => [c.id, c]))),
+    book: sorted(new Map(book.map((c) => [c.id, c]))),
+    reposAt,
+    groundsOf,
+    ticketsAt,
+    ticketsOfRepo,
+    liveAt: new Map([...ticketsAt].map(([k, v]) => [k, live(v)])),
+    liveOfRepo: new Map([...ticketsOfRepo].map(([k, v]) => [k, live(v)])),
+  };
+}
+
+/** The tickets at a ground, from the overlay. The club holds every ticket. */
+function groundBook(n, ov, { live = true } = {}) {
+  if (!ov) return [];
+  if (n.type === "factory") return live ? ov.cards : ov.book;
+  return (live ? ov.liveAt : ov.ticketsAt).get(n.id) || [];
+}
+
+/**
+ * Counts, each ticket in exactly one: red (blocked or failed), yellow (waits on
+ * your sign-off), paused (in the dugout) and play (the rest of the pitch).
+ * live = red + yellow + paused + play, so the words on a card add up to its
+ * counters, and live + done + bench is every ticket in the book.
+ */
+function mapTally(list) {
+  // merge: the yellow that is already signed off and waits only on the merge, so
+  // the words can say "2 to review · 1 to merge" (Health counts the 2).
+  const t = { red: 0, yellow: 0, merge: 0, paused: 0, play: 0, live: 0, done: 0, bench: 0 };
+  for (const c of list || []) {
+    const tone = mapTone(c.status);
+    if (tone) {
+      t[tone] += 1;
+      t.live += 1;
+      if (c.status === "ready_for_merge") t.merge += 1;
+    } else if (c.status === "done") t.done += 1;
+    else if (ON_BENCH.has(c.status)) t.bench += 1;
+  }
+  return t;
+}
+/** A tally in words, worst first: "1 blocked · 2 to review · 1 paused · 3 in play". */
+function tallyWords(t) {
+  return [
+    t.red ? el("span", { class: "is-red" }, `${t.red} blocked`) : null,
+    t.yellow - t.merge ? el("span", {}, `${t.yellow - t.merge} to review`) : null,
+    t.merge ? el("span", {}, `${t.merge} to merge`) : null,
+    t.paused ? el("span", {}, `${t.paused} paused`) : null,
+    t.play ? el("span", {}, `${t.play} in play`) : null,
+  ]
+    .filter(Boolean)
+    .flatMap((x, i) => (i ? [" · ", x] : [x]));
+}
+/** Where a counter goes: a change waiting on you opens in Review, the rest on its page. */
+function mapCounterHref(c) {
+  return c.status === "in_review" ? `#/review/${c.id}` : `#/ticket/${c.id}`;
+}
+/**
+ * A ticket as a magnet counter: its number on a disc, carded when it needs you.
+ * On the Map it is a link to the ticket (as the tactics board's are); inside a
+ * row that is already a link, pass `link: false`.
+ */
+function mapCounter(c, { link = true } = {}) {
+  const tone = mapTone(c.status);
+  const word = statusLabel(c.status);
+  const marks = [
+    el("span", { class: "mag-n tabnum" }, String(c.number ?? "?")),
+    tone === "yellow" ? ycard(12, "mag-card") : null,
+    tone === "red" ? el("span", { class: "mag-red", "aria-hidden": "true" }) : null,
+    tone === "paused" ? el("span", { class: "mag-pause", "aria-hidden": "true" }) : null,
+  ];
+  if (!link)
+    return el(
+      "span",
+      { class: `mag is-${tone}`, title: `#${c.number} ${c.title || ""} · ${word}` },
+      marks,
+    );
+  return el(
+    "a",
+    {
+      class: `mag is-${tone}`,
+      href: mapCounterHref(c),
+      title: `#${c.number} ${c.title || ""} · ${word}`,
+      "aria-label": `#${c.number} ${word}${tone === "yellow" ? ", needs you" : ""}: ${c.title || ""}`,
+    },
+    marks,
+  );
+}
+
+/** One ground on the map: name (the link), type and risk, who plays here, what is live. */
+function mapGround(n, ov, relLine) {
+  const repos = (ov && ov.reposAt.get(n.id)) || [];
+  // The club holds everything: its card tallies every live ticket, without counters.
+  const club = n.type === "factory" && ov;
+  const live = groundBook(n, ov);
+  const t = mapTally(live);
+  const search = [n.name, n.type, n.owner, ...repos.map((r) => r.repo.name)]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const shown = club ? [] : live.slice(0, MAP_COUNTERS);
+  const more = club ? 0 : live.length - shown.length;
+  return el(
+    "div",
+    {
+      class: `scope-gnode type-${n.type}${t.red ? " has-red" : ""}`,
+      dataset: { name: (n.name || "").toLowerCase(), search, node: n.id },
+    },
+    [
+      el("div", { class: "sg-top" }, [
+        el("a", { class: "sg-name", href: `#/node/${n.id}` }, n.name),
+        n.risk_level ? riskBadge(n.risk_level) : null,
+      ]),
+      el("span", { class: "sg-meta" }, [
+        el("span", { class: "sg-type" }, typeLabel(n.type)),
+        n.owner ? el("span", {}, `@${n.owner}`) : null,
+      ]),
+      relLine ? el("span", { class: "sg-rel" }, relLine) : null,
+      repos.length
+        ? el("span", { class: "sg-repos" }, [
+            ...repos.slice(0, 2).map((r) => repoTag(r.repo.name, 16)),
+            repos.length > 2 ? el("span", { class: "sg-more" }, `+${repos.length - 2}`) : null,
+          ])
+        : null,
+      live.length
+        ? el("span", { class: "sg-live" }, [
+            club
+              ? el("span", { class: "sg-club" }, [
+                  el("b", { class: "tabnum" }, String(live.length)),
+                  " live across the club",
+                ])
+              : el("span", { class: "sg-mags" }, [
+                  ...shown.map((c) => mapCounter(c)),
+                  more > 0
+                    ? el(
+                        "a",
+                        {
+                          class: "sg-more mag-more",
+                          href: `#/node/${n.id}`,
+                          "aria-label": `${more} more live at ${n.name}`,
+                        },
+                        `+${more}`,
+                      )
+                    : null,
+                ]),
+            el("span", { class: "sg-words" }, tallyWords(t)),
+          ])
+        : el("span", { class: "sg-words is-quiet" }, ov && ov.board ? "Nothing in play" : ""),
+    ],
+  );
+}
+
+/** The map key: what the lines, counters and cards mean. */
+function mapKey() {
+  const disc = (cls, extra) =>
+    el("span", { class: `mag is-${cls}`, "aria-hidden": "true" }, [
+      el("span", { class: "mag-n" }, "12"),
+      extra,
+    ]);
+  return el("ul", { class: "clean map-key", "aria-label": "Map key" }, [
+    el("li", {}, [el("span", { class: "mk-line contains" }), "contains"]),
+    el("li", {}, [el("span", { class: "mk-line dep" }), "depends on"]),
+    el("li", {}, [disc("play"), "a ticket on the pitch"]),
+    el("li", {}, [disc("yellow", ycard(12, "mag-card")), "waits on your sign-off"]),
+    el("li", {}, [
+      disc("red", el("span", { class: "mag-red", "aria-hidden": "true" })),
+      "blocked or failed",
+    ]),
+    el("li", {}, [
+      disc("paused", el("span", { class: "mag-pause", "aria-hidden": "true" })),
+      "paused, in the dugout",
+    ]),
+  ]);
+}
+
+async function renderFactory() {
+  const signal = routeSignal();
+  const soft = (p, fb) =>
+    api("GET", p, undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return fb;
+    });
+  const [nodesRes, edgesRes, unmappedRes, reposRes, hiddenRes] = await Promise.all([
+    api("GET", "/scope/nodes", undefined, { signal }),
+    api("GET", "/scope/edges", undefined, { signal }),
+    api("GET", "/scope/unmapped-repos", undefined, { signal }),
+    soft("/repositories", { repositories: [] }),
+    soft("/repositories?hidden=only", null),
+  ]);
+  const hiddenN = hiddenRes ? (hiddenRes.repositories || []).length : 0;
+  // The server's synthetic "repo:<name>" scopes are free agents, not grounds.
+  const implicitIds = new Set((nodesRes.nodes || []).filter(isImplicitScope).map((n) => n.id));
+  const nodes = (nodesRes.nodes || []).filter((n) => !implicitIds.has(n.id));
+  const edges = (edgesRes.edges || []).filter(
+    (e) => !implicitIds.has(e.from_node_id) && !implicitIds.has(e.to_node_id),
+  );
+  const unmapped = unmappedRes.repositories || [];
+  const repos = reposRes.repositories || [];
+  learnKits(repos.map((r) => r.name));
+  const ov = await mapOverlay(nodes, repos, signal);
+  const readAt = Date.now();
+
+  const wrap = el("div", { class: "view view-map" });
+  const campaigns = nodes.filter((n) => n.type === "epic").length;
   wrap.appendChild(
     viewHead(
-      "Map",
-      `${nodes.length} node${nodes.length === 1 ? "" : "s"} · ${unmapped.length} unmapped repo${unmapped.length === 1 ? "" : "s"}`,
-      el("button", { class: "btn primary", type: "button", onclick: () => navigate("#/node") }, [
-        icon("plus"),
-        "New scope node",
-      ]),
+      "The scouting map",
+      [
+        plural(nodes.length, "ground"),
+        plural(repos.length, "repo"),
+        campaigns ? plural(campaigns, "campaign") : null,
+        ov.board ? `${ov.cards.length} live ${ov.cards.length === 1 ? "ticket" : "tickets"}` : null,
+        unmapped.length ? plural(unmapped.length, "free agent") : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      [
+        el("button", { class: "btn", type: "button", onclick: () => navigate("#/node") }, [
+          icon("plus"),
+          "New ground",
+        ]),
+        onboardButton(repos, null, { primary: true }),
+      ],
     ),
   );
 
-  wrap.appendChild(
-    el("div", { class: "banner" }, [
-      el("strong", {}, "How the Map works. "),
-      "Scope nodes group products, systems and capabilities into a graph using ",
-      el("code", { class: "mono" }, "contains"),
-      " and ",
-      el("code", { class: "mono" }, "depends_on"),
-      " relations. Repos link to one or more nodes, each with its own access level. ",
-      el("strong", {}, "Unmapped repos behave as standalone single-repo scopes"),
-      " — they work without any mapping, and can be promoted into the graph later without breaking existing tickets.",
+  const graphCard = renderScopeGraph(nodes, edges, ov, readAt);
+  wrap.appendChild(graphCard);
+  wrap._mounted = () => graphCard._fit && graphCard._fit();
+
+  const register = renderRepoRegister(repos, unmapped, ov);
+  const freeAgents = renderUnmappedSection(unmapped, repos, hiddenN, {
+    ov,
+    grounds: nodes.length,
+  });
+  const side = el("div", { class: "stack map-side" }, [
+    unmapped.length ? null : freeAgents,
+    el("details", { class: "card map-help" }, [
+      el("summary", {}, "How the map works"),
+      el("p", {}, [
+        "A ground is a scope node: the club, a product, a service, a campaign or something outside the ground. ",
+        el("b", {}, "Contains"),
+        " lines show what sits inside what; dashed ",
+        el("b", {}, "depends on"),
+        " lines show who leans on whom.",
+      ]),
+      el(
+        "p",
+        {},
+        "Repos play at one or more grounds, each with its own access (write, read or test). A repo with no ground plays as its own single-repo scope, and can be given a ground later without touching its tickets.",
+      ),
+    ]),
+    renderFactoryFooter(),
+  ]);
+  wrap.appendChild(el("div", { class: "map-lower" }, [register, side]));
+  if (unmapped.length) wrap.appendChild(freeAgents);
+
+  wrap.dataset.sig = hashText(
+    JSON.stringify([
+      nodes.map((n) => [n.id, n.updated_at]),
+      edges.map((e) => e.id),
+      repos.map((r) => [r.id, r.updated_at]),
+      unmapped.map((r) => r.id),
+      hiddenN,
+      [...ov.reposAt].map(([k, v]) => [k, v.map((x) => `${x.repo.id}:${x.access}`)]),
+      ov.cards.map((c) => `${c.id}:${c.status}`),
     ]),
   );
-
-  const search = el("input", {
-    type: "search",
-    placeholder: "Search nodes, repos, tags, owners…",
-    value: factoryState.query,
-    "aria-label": "Search the Map",
-    oninput: (e) => {
-      factoryState.query = e.target.value;
-      applyFactoryFilter(wrap, e.target.value.trim().toLowerCase());
-    },
-  });
-  wrap.appendChild(el("div", { class: "filters" }, [field("Search", search, { style: "flex:1" })]));
-
-  wrap.appendChild(renderScopeGraph(nodes, edges));
-  wrap.appendChild(renderUnmappedSection(unmapped));
-  wrap.appendChild(renderFactoryFooter());
   applyFactoryFilter(wrap, factoryState.query.trim().toLowerCase());
   return wrap;
 }
@@ -7939,167 +15507,564 @@ function renderFactoryFooter() {
   ]);
 }
 
-function renderScopeGraph(nodes, edges) {
-  const card = el("div", { class: "card panel" }, [
-    panelHead("Scope graph", "contains \u00b7 depends on"),
-  ]);
-  if (nodes.length === 0) {
-    card.appendChild(
-      el("p", { class: "dim" }, "No scope nodes yet. Create one to start mapping your factory."),
-    );
-    return card;
-  }
+/** Column names from what stands in them (the club, its products, its services…). */
+const MAP_COL_WORD = {
+  factory: "The club",
+  domain: "Domains",
+  product: "Products",
+  capability: "Capabilities",
+  system: "Systems",
+  service: "Services",
+  library: "Libraries",
+  component: "Components",
+  external_dependency: "Outside the ground",
+  epic: "Campaigns",
+};
+/**
+ * The map's columns, by what a ground IS, so a column's name is always true and
+ * outside grounds always stand at the far touchline: the club and its campaigns,
+ * domains, products, services (and the other parts that run), outside the ground.
+ * Empty tiers are dropped.
+ */
+const MAP_TIER = {
+  factory: 0,
+  epic: 0,
+  domain: 1,
+  product: 2,
+  capability: 2,
+  system: 3,
+  service: 3,
+  library: 3,
+  component: 3,
+  external_dependency: 4,
+};
+const mapTierOf = (n) => MAP_TIER[n.type] ?? 3;
+
+/**
+ * Lay the grounds out in tiers (columns) and order each column by where the
+ * grounds it is linked to sit in the columns before it (barycentre), so contains
+ * lines cross as little as they can.
+ */
+function mapLayout(nodes, edges) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  // containment depth → graph columns (a node sits one column right of its parent)
   const parents = new Map();
   for (const e of edges) {
     if (e.relation !== "contains") continue;
     if (byId.has(e.from_node_id) && byId.has(e.to_node_id))
       parents.set(e.to_node_id, e.from_node_id);
   }
-  const depthOf = (id, seen = new Set()) => {
-    const p = parents.get(id);
-    if (!p || seen.has(id)) return 0;
-    seen.add(id);
-    return 1 + depthOf(p, seen);
-  };
-  const NODE_W = 188,
-    NODE_H = 66,
-    COLG = 76,
-    ROWG = 20,
-    PADX = 12,
-    PADT = 38,
-    PADB = 14;
-  const cols = [];
-  for (const n of nodes) {
-    const d = depthOf(n.id);
-    (cols[d] = cols[d] || []).push(n);
-  }
-  const pos = new Map();
+  const tiers = [...new Set(nodes.map(mapTierOf))].sort((x, y) => x - y);
+  const cols = tiers.map((tier) => nodes.filter((n) => mapTierOf(n) === tier));
+  const colOf = new Map();
+  cols.forEach((list, ci) => list.forEach((n) => colOf.set(n.id, ci)));
+  const rowOf = new Map();
+  const typeRank = (n) => (n.type === "factory" ? 0 : n.type === "epic" ? 2 : 1);
   cols.forEach((list, ci) => {
-    (list || []).sort((a, b) => a.name.localeCompare(b.name));
-    (list || []).forEach((n, ri) =>
-      pos.set(n.id, { x: PADX + ci * (NODE_W + COLG), y: PADT + ri * (NODE_H + ROWG), n }),
-    );
+    const key = (n) => {
+      const ups = edges
+        .map((e) =>
+          e.to_node_id === n.id ? e.from_node_id : e.from_node_id === n.id ? e.to_node_id : null,
+        )
+        .filter((id) => id && rowOf.has(id) && colOf.get(id) < ci)
+        .map((id) => rowOf.get(id));
+      return ups.length
+        ? ups.reduce((x, y) => x + y, 0) / ups.length
+        : ci === 0
+          ? typeRank(n) * 100
+          : 999;
+    };
+    const keys = new Map(list.map((n) => [n.id, key(n)]));
+    list.sort((x, y) => keys.get(x.id) - keys.get(y.id) || x.name.localeCompare(y.name));
+    list.forEach((n, ri) => rowOf.set(n.id, ri));
   });
-  const maxRows = Math.max(1, ...cols.map((c) => (c ? c.length : 0)));
-  const width = PADX * 2 + cols.length * NODE_W + Math.max(0, cols.length - 1) * COLG;
-  const height = PADT + maxRows * (NODE_H + ROWG) - ROWG + PADB;
+  const word = (t) => MAP_COL_WORD[t] || typeLabel(t);
+  const colName = (list) => {
+    const types = [...new Set(list.map((n) => n.type))];
+    if (types.length === 1) return word(types[0]);
+    if (types.includes("factory")) return "The club and its campaigns";
+    const ws = types.map(word);
+    return ws.length === 2
+      ? `${ws[0]} and ${ws[1].toLowerCase()}`
+      : `${ws.slice(0, -1).join(", ")} and ${ws[ws.length - 1].toLowerCase()}`;
+  };
+  return { byId, parents, cols, colOf, rowOf, colName };
+}
 
-  let paths = "";
+/** "Part of Checkout · depends on Stripe": a ground's lines, read as words (the phone list). */
+function mapRelLine(n, edges, byId) {
+  const parts = [];
   for (const e of edges) {
-    const a = pos.get(e.from_node_id),
-      b = pos.get(e.to_node_id);
-    if (!a || !b) continue;
-    const fwd = b.x >= a.x;
-    const x1 = fwd ? a.x + NODE_W : a.x,
-      y1 = a.y + NODE_H / 2;
-    const x2 = fwd ? b.x : b.x + NODE_W,
-      y2 = b.y + NODE_H / 2;
-    const mx = (x1 + x2) / 2;
-    const cls = e.relation === "contains" ? "contains" : "dep";
-    paths += `<path class="gedge ${cls}" d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"/>`;
+    if (e.to_node_id === n.id && e.relation === "contains" && byId.has(e.from_node_id))
+      parts.push(`part of ${byId.get(e.from_node_id).name}`);
+    if (e.from_node_id === n.id && e.relation !== "contains" && byId.has(e.to_node_id))
+      parts.push(
+        `${e.relation === "depends_on" ? "depends on" : typeLabel(e.relation)} ${byId.get(e.to_node_id).name}`,
+      );
   }
-  const svg = el("div", {
-    class: "graph-edges",
-    html: `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none">${paths}</svg>`,
-  });
-  const colLabels = cols.map((_, ci) =>
-    el(
-      "div",
-      { class: "graph-collabel", style: `left:${PADX + ci * (NODE_W + COLG)}px;width:${NODE_W}px` },
-      ci === 0 ? "Roots" : `Depth ${ci}`,
+  if (!parts.length) return null;
+  const s = parts.join(" · ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function renderScopeGraph(nodes, edges, ov, readAt = Date.now()) {
+  const live = ov ? ov.cards.length : 0;
+  const card = el("section", { class: "card panel scope-graph", "aria-label": "The grounds" }, [
+    panelHead(
+      "The grounds",
+      [
+        plural(nodes.length, "ground"),
+        ov && ov.board ? `${live} live` : null,
+        `as of ${clockTime(readAt)}`,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      null,
+      { kit: "ink" },
     ),
-  );
-  const gnodes = [];
-  for (const [id, { x, y, n }] of pos) {
-    gnodes.push(
-      el(
-        "a",
-        {
-          class: `scope-gnode type-${n.type}`,
-          href: `#/node/${id}`,
-          dataset: { name: (n.name || "").toLowerCase() },
-          style: `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`,
-        },
-        [
-          el("span", { class: "sg-name" }, n.name),
-          el("span", { class: "sg-meta" }, [
-            badge(typeLabel(n.type), `type-${n.type}`),
-            n.risk_level ? riskBadge(n.risk_level) : null,
-          ]),
-        ],
-      ),
-    );
-  }
-  const legend = el("div", { class: "graph-legend" }, [
-    el("span", { class: "gl-item" }, [el("span", { class: "gl-line contains" }), "contains"]),
-    el("span", { class: "gl-item" }, [el("span", { class: "gl-line dep" }), "depends on"]),
   ]);
+  const search = el("input", {
+    type: "search",
+    placeholder: "A ground, a repo, an owner…",
+    value: factoryState.query,
+    "aria-label": "Search the Map",
+    oninput: (e) => {
+      factoryState.query = e.target.value;
+      const root = e.target.closest(".view") || card;
+      applyFactoryFilter(root, e.target.value.trim().toLowerCase());
+    },
+  });
   card.appendChild(
-    el("div", { class: "graph-scroll" }, [
-      el("div", { class: "graph", style: `width:${width}px;height:${height}px` }, [
-        svg,
-        ...colLabels,
-        ...gnodes,
-      ]),
+    el("div", { class: "map-tools" }, [
+      el("label", { class: "map-find" }, [el("span", { class: "map-find-l" }, "Find"), search]),
+      nodes.length ? mapKey() : null,
     ]),
   );
-  card.appendChild(legend);
+  card.appendChild(el("p", { class: "map-found", role: "status", "aria-live": "polite" }));
+  if (nodes.length === 0) {
+    card.appendChild(
+      el("p", { class: "map-none" }, [
+        "No grounds on the map yet, so every repo plays as a free agent. ",
+        el("a", { href: "#/node" }, "Mark out the club's first ground"),
+        ": the club itself, then its products and the services they run on.",
+      ]),
+    );
+    return card;
+  }
+  const { byId, cols, colOf, rowOf, colName } = mapLayout(nodes, edges);
+  const maxRows = Math.max(1, ...cols.map((c) => c.length));
+  // The drawing is a CSS grid: a label row, then one row per rank, so a card is as
+  // tall as what it says (a long name or a second row of counters never clips) and
+  // the gaps between rows run clear across every column. The chalk lines are drawn
+  // once the cards are placed, through those gaps (see drawMapEdges).
+  const cells = [];
+  cols.forEach((list, ci) => {
+    cells.push(
+      el("div", {
+        class: `graph-lane${ci % 2 ? " is-alt" : ""}`,
+        style: `grid-column:${ci + 1};grid-row:1 / ${maxRows + 2}`,
+        "aria-hidden": "true",
+      }),
+      el(
+        "h3",
+        { class: "graph-collabel", style: `grid-column:${ci + 1};grid-row:1` },
+        colName(list),
+      ),
+    );
+    for (const n of list) {
+      const g = mapGround(n, ov, null);
+      g.style.gridColumn = String(ci + 1);
+      g.style.gridRow = String(rowOf.get(n.id) + 2);
+      cells.push(g);
+    }
+  });
+  const svgHost = el("div", { class: "graph-edges", "aria-hidden": "true" });
+  const graph = el(
+    "div",
+    {
+      class: "graph",
+      dataset: { cols: String(cols.length) },
+      style: `grid-template-columns:repeat(${cols.length}, minmax(0, 1fr));grid-template-rows:auto repeat(${maxRows}, auto)`,
+    },
+    [svgHost, ...cells],
+  );
+  const scroller = el(
+    "div",
+    {
+      class: "graph-scroll",
+      role: "region",
+      "aria-label": "The scope graph: grounds in columns, lines for contains and depends on",
+    },
+    [graph],
+  );
+  card.appendChild(scroller);
+  // The same grounds as a list, tier by tier, the lines as words: the phone reads
+  // this, and so does a desktop too narrow for every column at a readable width.
+  card.appendChild(
+    el(
+      "div",
+      { class: "map-list" },
+      cols.map((list) =>
+        el("section", { class: "ml-col", "aria-label": colName(list) }, [
+          el("h3", { class: "ml-head" }, colName(list)),
+          el(
+            "div",
+            { class: "ml-cards" },
+            list.map((n) => mapGround(n, ov, mapRelLine(n, edges, byId))),
+          ),
+        ]),
+      ),
+    ),
+  );
+  // The narrowest a column may get before the map reads as the list instead.
+  const COL_MIN = 176,
+    COL_GAP = 36,
+    PAD = 18;
+  const need = cols.length * COL_MIN + (cols.length - 1) * COL_GAP + PAD * 2;
+  let ro = null;
+  let lastW = -1;
+  const fit = () => {
+    const w = card.clientWidth;
+    if (!w || w === lastW) return;
+    lastW = w;
+    // The card's padding is inside clientWidth; the scroller sits in its content box.
+    const cs = window.getComputedStyle(card);
+    const inner = w - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    const asList = inner < need;
+    card.classList.toggle("is-list", asList);
+    card.classList.toggle("is-graph", !asList);
+    if (!asList) drawMapEdges(graph, svgHost, edges, colOf);
+  };
+  card._fit = () => {
+    fit();
+    if (!ro && typeof window.ResizeObserver === "function") {
+      ro = new window.ResizeObserver(() => {
+        lastW = -1;
+        fit();
+      });
+      ro.observe(card);
+    }
+  };
+  card._dispose = () => ro && ro.disconnect();
   return card;
 }
 
-function renderUnmappedSection(unmapped) {
-  const card = el("div", { class: "card", dataset: { section: "unmapped" } }, [
-    el("h2", {}, `Unmapped repos (${unmapped.length})`),
-    el("p", { class: "dim section-note" }, [
-      el("strong", {}, "Single-repo mode. "),
-      "These repos have no scope mapping, so Dispatch treats each as an implicit single-repo scope — agents work directly against the one repo. ",
-      el("strong", {}, "Mapped factory mode"),
-      " (above) coordinates work across multiple repos with explicit write / read / test boundaries.",
+/**
+ * Draw the chalk lines between placed cards. Neighbouring columns join with a
+ * curve through the gap between them. A line that skips a column never runs
+ * under a card: it drops down its own gap to the nearest clear gap between rows,
+ * runs along it, and climbs the gap before its target. Same-column links bow out
+ * into the gap beside them.
+ */
+function drawMapEdges(graph, host, edges, colOf) {
+  const W = graph.offsetWidth,
+    H = graph.offsetHeight;
+  if (!W || !H) return;
+  const box = new Map();
+  for (const g of graph.querySelectorAll(".scope-gnode")) {
+    box.set(g.dataset.node, {
+      x: g.offsetLeft,
+      y: g.offsetTop,
+      w: g.offsetWidth,
+      h: g.offsetHeight,
+    });
+  }
+  // Column edges, and the clear channels between rows (and above the first, below the last).
+  const colL = [],
+    colR = [];
+  const rowTop = [],
+    rowBot = [];
+  for (const g of graph.querySelectorAll(".scope-gnode")) {
+    const b = box.get(g.dataset.node);
+    const ci = colOf.get(g.dataset.node);
+    const ri = Number(g.style.gridRow) - 2;
+    colL[ci] = Math.min(colL[ci] ?? Infinity, b.x);
+    colR[ci] = Math.max(colR[ci] ?? -Infinity, b.x + b.w);
+    rowTop[ri] = Math.min(rowTop[ri] ?? Infinity, b.y);
+    rowBot[ri] = Math.max(rowBot[ri] ?? -Infinity, b.y + b.h);
+  }
+  const rows = rowTop.length;
+  const channels = [];
+  for (let r = 0; r <= rows; r++) {
+    const above = r === 0 ? null : rowBot[r - 1];
+    const below = r === rows ? null : rowTop[r];
+    if (above == null && below != null) channels.push(below - 12);
+    else if (below == null && above != null) channels.push(Math.min(H - 8, above + 12));
+    else if (above != null) channels.push((above + below) / 2);
+  }
+  const gapAfter = (ci) =>
+    colL[ci + 1] != null ? (colR[ci] + colL[ci + 1]) / 2 : Math.min(W - 6, colR[ci] + 14);
+  const gapBefore = (ci) => (ci > 0 ? (colR[ci - 1] + colL[ci]) / 2 : Math.max(6, colL[ci] - 14));
+  const used = new Map();
+  const lane = (key) => {
+    const k = used.get(key) || 0;
+    used.set(key, k + 1);
+    return (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 5;
+  };
+  // A polyline with rounded corners.
+  const round = (pts, r = 10) => {
+    let d = `M${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [x0, y0] = pts[i - 1],
+        [x1, y1] = pts[i],
+        [x2, y2] = pts[i + 1];
+      const l1 = Math.hypot(x1 - x0, y1 - y0),
+        l2 = Math.hypot(x2 - x1, y2 - y1);
+      const k = Math.min(r, l1 / 2, l2 / 2);
+      if (!k) {
+        d += ` L${x1} ${y1}`;
+        continue;
+      }
+      const ax = x1 - ((x1 - x0) / l1) * k,
+        ay = y1 - ((y1 - y0) / l1) * k;
+      const bx = x1 + ((x2 - x1) / l2) * k,
+        by = y1 + ((y2 - y1) / l2) * k;
+      d += ` L${ax.toFixed(1)} ${ay.toFixed(1)} Q${x1} ${y1} ${bx.toFixed(1)} ${by.toFixed(1)}`;
+    }
+    const last = pts[pts.length - 1];
+    return `${d} L${last[0]} ${last[1]}`;
+  };
+  let paths = "";
+  for (const e of edges) {
+    const a = box.get(e.from_node_id),
+      b = box.get(e.to_node_id);
+    if (!a || !b) continue;
+    const ca = colOf.get(e.from_node_id),
+      cb = colOf.get(e.to_node_id);
+    const cls = e.relation === "contains" ? "contains" : "dep";
+    const ya = a.y + a.h / 2,
+      yb = b.y + b.h / 2;
+    let d;
+    if (ca === cb) {
+      // Bow into the gap beside the column (the left one at the far touchline).
+      const right = colL[ca + 1] != null || ca === 0;
+      const x = right ? a.x + a.w : a.x;
+      const bow = right ? gapAfter(ca) + 8 : gapBefore(ca) - 8;
+      const xb = right ? b.x + b.w : b.x;
+      d = `M${x} ${ya} C ${bow} ${ya}, ${bow} ${yb}, ${xb} ${yb}`;
+    } else {
+      const fwd = cb > ca;
+      const x1 = fwd ? a.x + a.w : a.x,
+        x2 = fwd ? b.x : b.x + b.w;
+      if (Math.abs(cb - ca) === 1) {
+        const mx = (x1 + x2) / 2;
+        d = `M${x1} ${ya} C ${mx} ${ya}, ${mx} ${yb}, ${x2} ${yb}`;
+      } else {
+        const gx1 = (fwd ? gapAfter(ca) : gapBefore(ca)) + lane(`g${fwd ? ca : ca - 1}`);
+        const gx2 = (fwd ? gapBefore(cb) : gapAfter(cb)) + lane(`g${fwd ? cb - 1 : cb}`);
+        // The clear channel nearest the straight line between the two ends.
+        const want = (ya + yb) / 2;
+        const ch = channels.length
+          ? channels.reduce((p, c) => (Math.abs(c - want) < Math.abs(p - want) ? c : p))
+          : want;
+        const cy = ch + lane(`c${ch}`);
+        d = round([
+          [x1, ya],
+          [gx1, ya],
+          [gx1, cy],
+          [gx2, cy],
+          [gx2, yb],
+          [x2, yb],
+        ]);
+      }
+    }
+    paths += `<path class="gedge ${cls}" d="${d}"/>`;
+  }
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" focusable="false">${paths}</svg>`;
+}
+
+/** A labelled cell: the label shows on a phone, where a row stacks. */
+function regCell(label, body, cls = "") {
+  return el("td", { class: cls }, [el("span", { class: "reg-l" }, label), body]);
+}
+/** A count with its mark: red square for blocked, yellow card for review. */
+function regCount(n, tone) {
+  return el("span", { class: `reg-n${n ? "" : " is-zero"}${n && tone ? ` is-${tone}` : ""}` }, [
+    n && tone === "red" ? glyph("blocked", 14) : null,
+    n && tone === "yellow" ? ycard(14) : null,
+    n && tone === "paused" ? glyph("paused", 14) : null,
+    el("span", { class: "tabnum" }, String(n)),
+  ]);
+}
+/** The gates a repo's deliveries must pass, in words. */
+function regGates(r) {
+  const set = [
+    r.test_command ? "tests" : null,
+    r.lint_command ? "lint" : null,
+    r.coverage_command ? "coverage" : null,
+  ].filter(Boolean);
+  return set.length
+    ? el("span", { class: "reg-gates" }, set.join(" · "))
+    : el("span", { class: "reg-gates is-none" }, [glyph("failed", 14), "No gates"]);
+}
+
+/** Who plays where: every mapped repo, its grounds and what is live in it. */
+function renderRepoRegister(repos, unmapped, ov) {
+  const free = new Set(unmapped.map((r) => r.id));
+  const mapped = repos.filter((r) => !free.has(r.id));
+  const head = panelHead("Who plays where", `${plural(mapped.length, "repo")} at a ground`, null, {
+    kit: "claret",
+  });
+  if (!mapped.length)
+    return el("section", { class: "card prog map-register", "aria-label": "Who plays where" }, [
+      head,
+      el(
+        "p",
+        { class: "quiet" },
+        repos.length
+          ? "No repo plays at a ground yet. Open a repo and give it one."
+          : "No repos signed yet. Onboard a repo to bring it into the club.",
+      ),
+    ]);
+  // A Paused column only when a mapped repo has a ticket in the dugout.
+  const anyPaused = mapped.some((r) => mapTally(ov.liveOfRepo.get(r.id)).paused > 0);
+  const rows = mapped.map((r) => {
+    const t = mapTally(ov.liveOfRepo.get(r.id));
+    const grounds = ov.groundsOf.get(r.id) || [];
+    return el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
+      el("th", { scope: "row", class: "reg-repo" }, [
+        el("a", { href: `#/repo/${r.id}` }, repoTag(r.name, 22)),
+        el(
+          "span",
+          { class: "reg-sub" },
+          [r.stack, r.default_branch].filter(Boolean).join(" · ") || null,
+        ),
+      ]),
+      regCell(
+        "Grounds",
+        el(
+          "span",
+          { class: "reg-grounds" },
+          grounds.map((g) =>
+            el("span", { class: "reg-ground" }, [
+              el("a", { href: `#/node/${g.node.id}` }, g.node.name),
+              el("span", { class: "reg-acc" }, [g.relation, g.access].filter(Boolean).join(" · ")),
+            ]),
+          ),
+        ),
+      ),
+      regCell("Blocked", regCount(t.red, "red"), "reg-num"),
+      regCell("To review", regCount(t.yellow, "yellow"), "reg-num"),
+      anyPaused ? regCell("Paused", regCount(t.paused, "paused"), "reg-num") : null,
+      regCell("In play", regCount(t.play), "reg-num"),
+      regCell("Gates", regGates(r), "reg-gc"),
+    ]);
+  });
+  return el("section", { class: "card prog map-register", "aria-label": "Who plays where" }, [
+    head,
+    el("table", { class: "reg-table" }, [
+      el(
+        "thead",
+        {},
+        el("tr", {}, [
+          el("th", { scope: "col" }, "Repo"),
+          el("th", { scope: "col" }, "Plays at"),
+          el("th", { scope: "col", class: "reg-num" }, "Blocked"),
+          el("th", { scope: "col", class: "reg-num" }, "To review"),
+          anyPaused ? el("th", { scope: "col", class: "reg-num" }, "Paused") : null,
+          el("th", { scope: "col", class: "reg-num" }, "In play"),
+          el("th", { scope: "col" }, "Gates"),
+        ]),
+      ),
+      el("tbody", {}, rows),
     ]),
   ]);
+}
+
+/** Free agents: repos with no ground, each playing as its own single-repo scope. */
+function renderUnmappedSection(unmapped, repos = [], hiddenN = 0, { ov = null, grounds = 0 } = {}) {
+  const head = panelHead("Free agents", `${plural(unmapped.length, "repo")} with no ground`, null, {
+    kit: "sky",
+  });
+  const card = el(
+    "section",
+    { class: "card prog map-free", dataset: { section: "unmapped" }, "aria-label": "Free agents" },
+    [head],
+  );
   if (unmapped.length === 0) {
-    card.appendChild(el("p", { class: "dim" }, "Every known repo is mapped into the graph."));
+    card.appendChild(
+      el("div", { class: "quiet map-free-none" }, [
+        el(
+          "p",
+          {},
+          hiddenN
+            ? [
+                "Every repo in the squad has a ground. ",
+                el("a", { href: "#/hidden" }, `${plural(hiddenN, "hidden repo")}`),
+                ` ${hiddenN === 1 ? "is" : "are"} left out.`,
+              ]
+            : "Every repo in the squad has a ground.",
+        ),
+        onboardButton(repos, null),
+      ]),
+    );
     return card;
   }
-  const rows = unmapped.map((r) =>
+  card.appendChild(
     el(
-      "tr",
-      {
-        class: "clickable repo-row",
-        dataset: { kind: "repo", repoId: r.id },
-        onclick: () => navigate(`#/repo/${r.id}`),
-      },
-      [
-        el("td", { class: "title-cell" }, r.name),
-        el(
-          "td",
-          {},
-          r.local_path
-            ? el("code", { class: "mono" }, r.local_path)
-            : el("span", { class: "dim" }, "—"),
-        ),
-        el("td", { class: "dim" }, r.stack || "—"),
-        el("td", { class: "dim" }, r.default_branch || "—"),
-        el("td", {}, renderRepoCommands(r)),
-        el("td", { class: "row-actions" }, hideRepoBtn(r)),
-      ],
+      "p",
+      { class: "gr-note" },
+      grounds
+        ? "No ground yet, so each plays as its own single-repo scope and its tickets count only here. Give one a ground from its page."
+        : "No ground on the map yet, so each plays as its own single-repo scope. Mark out a ground, or give one a ground from its page.",
     ),
   );
-  const table = el("table", {}, [
-    el(
-      "thead",
-      {},
-      el(
-        "tr",
-        {},
-        ["Repo", "Path", "Stack", "Branch", "Commands", ""].map((h) => el("th", {}, h)),
+  const rows = unmapped.map((r) => {
+    const live = (ov && ov.liveOfRepo.get(r.id)) || [];
+    const t = mapTally(live);
+    return el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
+      el("th", { scope: "row", class: "reg-repo" }, [
+        el("a", { href: `#/repo/${r.id}` }, repoTag(r.name, 22)),
+        live.length
+          ? el("span", { class: "reg-live" }, [
+              el("span", { class: "sg-mags" }, [
+                ...live.slice(0, MAP_COUNTERS).map((c) => mapCounter(c)),
+                live.length > MAP_COUNTERS
+                  ? el(
+                      "a",
+                      {
+                        class: "sg-more mag-more",
+                        href: `#/repo/${r.id}`,
+                        "aria-label": `${live.length - MAP_COUNTERS} more live in ${r.name}`,
+                      },
+                      `+${live.length - MAP_COUNTERS}`,
+                    )
+                  : null,
+              ]),
+              el("span", { class: "sg-words" }, tallyWords(t)),
+            ])
+          : ov && ov.board
+            ? el("span", { class: "reg-sub" }, "Nothing in play")
+            : null,
+      ]),
+      regCell(
+        "Path",
+        r.local_path
+          ? el("code", { class: "mono reg-path" }, r.local_path)
+          : el("span", { class: "dim" }, "—"),
       ),
-    ),
-    el("tbody", {}, rows),
-  ]);
-  card.appendChild(el("div", { class: "table-wrap" }, table));
+      regCell("Stack", el("span", {}, r.stack || "—")),
+      regCell("Branch", el("span", {}, r.default_branch || "—")),
+      regCell("Gates", renderRepoCommands(r)),
+      el("td", { class: "row-actions" }, hideRepoBtn(r)),
+    ]);
+  });
+  card.appendChild(
+    el("table", { class: "reg-table reg-free" }, [
+      el(
+        "thead",
+        {},
+        el(
+          "tr",
+          {},
+          ["Repo", "Path", "Stack", "Branch", "Gate commands", ""].map((h) =>
+            el("th", { scope: "col" }, h || el("span", { class: "sr-only" }, "Actions")),
+          ),
+        ),
+      ),
+      el("tbody", {}, rows),
+    ]),
+  );
+  card.appendChild(el("div", { class: "map-free-act" }, onboardButton(repos, null)));
   return card;
 }
 
@@ -8151,7 +16116,7 @@ function renderRepoCommandsEditor(repo) {
   const form = el(
     "form",
     {
-      class: "inline-form cmd-editor",
+      class: "cmd-editor",
       onsubmit: (e) => {
         e.preventDefault();
         guard(async () => {
@@ -8165,17 +16130,17 @@ function renderRepoCommandsEditor(repo) {
         });
       },
     },
-    [test.row, lint.row, cov.row, el("button", { class: "btn", type: "submit" }, "Save")],
+    [
+      el("div", { class: "cmd-fields" }, [test.row, lint.row, cov.row]),
+      el("div", { class: "cmd-save" }, el("button", { class: "btn", type: "submit" }, "Save")),
+    ],
   );
   return el("div", { class: "cmd-block" }, [
-    el("div", { class: "cmd-editor-head" }, [
-      el("strong", {}, "Definition-of-Done gates"),
-      el(
-        "span",
-        { class: "dim" },
-        " — run by the runner in the delivery worktree; a failing gate bounces the delivery, an empty gate is skipped.",
-      ),
-    ]),
+    el(
+      "p",
+      { class: "gr-note" },
+      "The runner runs these on every delivery, in its worktree. A failing check sends the delivery back; an empty one is skipped.",
+    ),
     form,
   ]);
 }
@@ -8210,50 +16175,64 @@ function hideRepoBtn(repo) {
   );
 }
 
+/**
+ * The one way back from a detail page: a real link (it opens in a new tab like any
+ * other), the back arrow, and "Back to <where>". Ticket, ground, repo and spec
+ * pages all use it, so the way back reads and sits the same everywhere.
+ */
+function backLink(href, label) {
+  return el("a", { class: "back-link", href }, [icon("backarrow", "", 16), el("span", {}, label)]);
+}
+
+/** The way back from a ground or repo page to the Map. */
+function backToMap() {
+  return backLink("#/factory", "Back to Map");
+}
+
 // View: Hidden repos (WG-006). A deliberately low-key surface — reached only via
 // the small footer link on the Map — listing every hidden repo with an
 // "Unhide" button that returns it to its normal place.
 async function renderHidden() {
   const repos = (await api("GET", "/repositories?hidden=only")).repositories || [];
-  const wrap = el("div", { class: "view" });
+  learnKits(repos.map((r) => r.name));
+  const wrap = el("div", { class: "view view-hidden" });
+  wrap.appendChild(backToMap());
   wrap.appendChild(
-    el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-      "← Back to Map",
+    viewHead(
+      "Hidden repos",
+      repos.length ? `${plural(repos.length, "repo")} left out of the squad` : "None hidden",
     ),
   );
-  wrap.appendChild(viewHead("Hidden repos", `${repos.length} hidden`));
   wrap.appendChild(
-    el("div", { class: "banner" }, [
-      el("strong", {}, "These repos are hidden from the dashboard. "),
-      "They stay registered and keep their links and scope mappings, but are excluded from the repo list, the Map unmapped list and repo pickers. Un-hide one to return it to its normal place.",
-    ]),
+    el(
+      "p",
+      { class: "gr-note hidden-note" },
+      "A hidden repo stays registered with its links and grounds, but is left out of the repo list, the Map's free agents and the repo pickers. Unhide one to bring it back.",
+    ),
   );
 
   if (!repos.length) {
-    wrap.appendChild(emptyState("No hidden repos", "Nothing is hidden right now.", "map"));
+    wrap.appendChild(emptyState("Nothing is hidden. Every registered repo is in the squad."));
     return wrap;
   }
 
   const rows = repos.map((r) =>
     el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
-      el("td", { class: "title-cell" }, r.name),
-      el(
-        "td",
-        {},
+      el("th", { scope: "row", class: "reg-repo" }, repoTag(r.name, 22)),
+      regCell(
+        "Path",
         r.local_path
-          ? el("code", { class: "mono" }, r.local_path)
+          ? el("code", { class: "mono reg-path" }, r.local_path)
           : el("span", { class: "dim" }, "—"),
       ),
-      el("td", { class: "dim" }, r.stack || "—"),
+      regCell("Stack", el("span", {}, r.stack || "—")),
       el(
         "td",
         { class: "row-actions" },
         el(
           "button",
           {
-            class: "btn primary small",
+            class: "btn small",
             type: "button",
             "aria-label": `Unhide ${r.name}`,
             onclick: () =>
@@ -8268,193 +16247,395 @@ async function renderHidden() {
       ),
     ]),
   );
-  const table = el("table", {}, [
-    el(
-      "thead",
-      {},
-      el(
-        "tr",
-        {},
-        ["Repo", "Path", "Stack", ""].map((h) => el("th", {}, h)),
-      ),
-    ),
-    el("tbody", {}, rows),
-  ]);
-  wrap.appendChild(el("div", { class: "card" }, el("div", { class: "table-wrap" }, table)));
+  wrap.appendChild(
+    progPage("map-free", "ink", "Left out of the squad", plural(repos.length, "repo"), [
+      el("table", { class: "reg-table reg-free" }, [
+        el(
+          "thead",
+          {},
+          el(
+            "tr",
+            {},
+            ["Repo", "Path", "Stack", ""].map((h) =>
+              el("th", { scope: "col" }, h || el("span", { class: "sr-only" }, "Actions")),
+            ),
+          ),
+        ),
+        el("tbody", {}, rows),
+      ]),
+    ]),
+  );
   return wrap;
 }
 
 function applyFactoryFilter(wrap, q) {
-  wrap.querySelectorAll(".tree-branch").forEach((branch) => {
-    const own = branch.querySelector(":scope > .tree-node");
-    const text = own ? own.textContent.toLowerCase() : "";
-    branch.dataset.self = !q || text.includes(q) ? "1" : "0";
+  // Dim the grounds that don't match (the layout stays where it is); hide repo rows.
+  const hits = new Set();
+  wrap.querySelectorAll(".scope-gnode").forEach((node) => {
+    const text = (node.dataset.search || node.dataset.name || node.textContent || "").toLowerCase();
+    const miss = !!q && !text.includes(q);
+    node.classList.toggle("is-dim", miss);
+    if (!miss) hits.add(node.dataset.name);
   });
-  wrap.querySelectorAll(".tree-branch").forEach((branch) => {
-    const selfMatch = branch.dataset.self === "1";
-    const childMatch = Array.from(branch.querySelectorAll(".tree-branch")).some(
-      (b) => b.dataset.self === "1",
-    );
-    branch.hidden = !(selfMatch || childMatch);
-  });
+  let rows = 0;
   wrap.querySelectorAll(".repo-row").forEach((row) => {
     const text = row.textContent.toLowerCase();
     row.hidden = !!q && !text.includes(q);
+    if (!row.hidden) rows += 1;
   });
-  // dim scope-graph nodes that don't match (keeps the graph layout stable)
-  wrap.querySelectorAll(".scope-gnode").forEach((node) => {
-    const text = (node.dataset.name || node.textContent || "").toLowerCase();
-    node.classList.toggle("is-dim", !!q && !text.includes(q));
-  });
+  // Say what the filter found, for everyone (a live region, not just dimming).
+  const out = wrap.querySelector(".map-found");
+  if (out) {
+    const grounds = hits.size;
+    out.textContent = !q
+      ? ""
+      : grounds || rows
+        ? `${plural(grounds, "ground")} and ${plural(rows, "repo")} match “${q}”.`
+        : `Nothing on the map matches “${q}”. Try a ground, a repo or an owner.`;
+    out.classList.toggle("is-none", !!q && !grounds && !rows);
+  }
 }
 
 // --- View: Scope node editor + detail (UI-001) ------------------------------
 
-async function renderNode(id) {
-  const [nodesRes, edgesRes] = await Promise.all([
-    api("GET", "/scope/nodes"),
-    api("GET", "/scope/edges"),
-  ]);
-  const allNodes = nodesRes.nodes || [];
-  const allEdges = edgesRes.edges || [];
-
-  if (!id) {
-    const wrap = el("div", { class: "view" });
-    wrap.appendChild(
-      el(
-        "button",
-        { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-        "← Back to Map",
-      ),
-    );
-    wrap.appendChild(viewHead("New scope node"));
-    wrap.appendChild(el("div", { class: "card" }, renderNodeForm(null)));
-    return wrap;
-  }
-
-  const view = await api("GET", `/scope/nodes/${id}`);
-  const node = view.node;
-  if (node?.name) setDocTitle("node", node.name, id);
-  const repos = view.repos || [];
-  const tickets = view.tickets || view.recent_tickets || null;
-
-  const wrap = el("div", { class: "view" });
-  wrap.appendChild(
+/**
+ * Fixtures or results: each ticket a row with its counter (carded when it needs
+ * you), its title and its status. Links to the ticket.
+ */
+function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
+  if (!list || !list.length) return el("p", { class: "quiet" }, empty);
+  const rows = byTime
+    ? [...list].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
+    : list;
+  const shown = rows.slice(0, limit);
+  return el("div", { class: "repo-tickets" }, [
     el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-      "← Back to Map",
+      "ul",
+      { class: "clean repo-ticket-list gr-fx-list" },
+      shown.map((t) =>
+        el(
+          "li",
+          {},
+          el("a", { class: "repo-ticket-row gr-fx-row", href: `#/ticket/${t.id}` }, [
+            mapTone(t.status)
+              ? el("span", { class: "gr-fx-mag" }, [
+                  el("span", { class: "sr-only" }, "#"),
+                  mapCounter(t, { link: false }),
+                ])
+              : el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
+            el("span", { class: "repo-ticket-title" }, t.title),
+            el("span", { class: "repo-ticket-side" }, [
+              statusBadge(t.status),
+              t.updated_at
+                ? el(
+                    "time",
+                    { class: "repo-ticket-time", datetime: t.updated_at },
+                    fmtTime(t.updated_at),
+                  )
+                : null,
+            ]),
+          ]),
+        ),
+      ),
     ),
-  );
-
-  const tags = parseTags(node.tags_json);
-  const loreTags = parseTags(node.lore_tags_json);
-
-  const head = el("div", { class: "card card-accent" }, [
-    el("h1", { class: "detail-title" }, node.name),
-    el("div", { class: "meta-row" }, [
-      badge(typeLabel(node.type), `type-${node.type}`),
-      riskBadge(node.risk_level),
-      node.owner ? badge(`@${node.owner}`, "no-dot") : null,
-    ]),
-    node.description
-      ? el("p", { class: "desc" }, node.description)
-      : el("p", { class: "desc dim" }, "No description."),
-    tags.length || loreTags.length
-      ? el("div", { class: "tag-row" }, [
-          ...tags.map((t) => el("span", { class: "tag-chip" }, t)),
-          ...loreTags.map((t) => el("span", { class: "tag-chip lore" }, `lore:${t}`)),
+    rows.length > shown.length
+      ? el("p", { class: "repo-ticket-more" }, [
+          `${rows.length - shown.length} more on the `,
+          el("a", { href: "#/work" }, "Work board"),
+          ".",
         ])
       : null,
   ]);
-  const editDetails = el("details", { class: "edit-panel" }, [
-    el("summary", {}, "Edit node"),
-    renderNodeForm(node),
+}
+
+/** The stat strip a ground or repo page opens on: the Map's counts, nothing else. */
+function groundStats(t) {
+  return el("div", { class: `kpi-row gr-stats${t.paused ? " has-paused" : ""}` }, [
+    statCell({
+      label: "Live",
+      value: String(t.live),
+      sub: t.paused ? "the next four, added up" : "the next three, added up",
+    }),
+    statCell({ label: "Blocked", value: String(t.red), sub: "blocked or failed" }),
+    statCell({
+      label: "To review",
+      value: String(t.yellow),
+      sub: t.merge
+        ? `${t.yellow - t.merge} to sign off, ${t.merge} approved to merge`
+        : "waits on your sign-off",
+      needs: t.yellow > 0,
+    }),
+    // Paused is rare: its cell shows only when something sits in the dugout.
+    t.paused ? statCell({ label: "Paused", value: String(t.paused), sub: "in the dugout" }) : null,
+    statCell({ label: "In play", value: String(t.play), sub: "the rest of the pitch" }),
+    statCell({ label: "Done", value: String(t.done), sub: "shipped" }),
+    statCell({ label: "Bench", value: String(t.bench), sub: "drafts and refining" }),
   ]);
-  head.appendChild(editDetails);
-  head.appendChild(
-    el("div", { class: "btn-row", style: "margin-top:14px" }, [
-      el(
-        "button",
-        {
-          class: "btn danger",
-          type: "button",
-          onclick: () =>
-            guard(async () => {
-              if (!window.confirm(`Delete scope node “${node.name}”? This cannot be undone.`))
-                return;
-              await api("DELETE", `/scope/nodes/${node.id}`);
-              toast("Scope node deleted", { ok: true });
-              navigate("#/factory");
-            }),
-        },
-        "Delete node",
-      ),
-    ]),
+}
+
+/** One line from the same counts: "13 live here: 2 blocked · 3 to review · 8 in play. 6 done." */
+function groundCountLine(t, { club = false, where = "here" } = {}) {
+  if (!t.live && !t.done && !t.bench)
+    return el(
+      "p",
+      { class: "gr-count is-quiet" },
+      club ? "No ticket in the club yet." : `No ticket plays ${where} yet.`,
+    );
+  return el("p", { class: "gr-count" }, [
+    el("b", { class: "tabnum" }, String(t.live)),
+    club ? " live across the club" : ` live ${where}`,
+    t.live ? [": ", ...tallyWords(t)] : null,
+    ". ",
+    `${t.done} done`,
+    t.bench ? ` · ${t.bench} on the bench` : null,
+    ".",
+  ]);
+}
+
+async function renderNode(id) {
+  const signal = routeSignal();
+  const [nodesRes, edgesRes, reposRes] = await Promise.all([
+    api("GET", "/scope/nodes", undefined, { signal }),
+    api("GET", "/scope/edges", undefined, { signal }),
+    api("GET", "/repositories", undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return { repositories: [] };
+    }),
+  ]);
+  const allNodes = nodesRes.nodes || [];
+  const allEdges = edgesRes.edges || [];
+  const allRepos = reposRes.repositories || [];
+  learnKits(allRepos.map((r) => r.name));
+
+  if (!id) return renderNewGround(allNodes);
+
+  const view = await api("GET", `/scope/nodes/${id}`, undefined, { signal });
+  const node = view.node;
+  if (node?.name) setDocTitle("node", node.name, id);
+  const repos = view.repos || [];
+
+  // The ground's tickets, counted exactly as its card on the Map counts them.
+  const ov = await mapOverlay(allNodes, allRepos, signal, { all: true }).catch((e) => {
+    if (e && e.code === "ABORTED") throw e;
+    return null;
+  });
+  const isClub = node.type === "factory";
+  const book = ov && ov.board ? groundBook(node, ov, { live: false }) : null;
+  const t = book ? mapTally(book) : null;
+  const live = book ? book.filter((c) => mapTone(c.status)) : [];
+  const results = book ? book.filter((c) => c.status === "done") : [];
+
+  const wrap = el("div", { class: "view view-ground" });
+  wrap.appendChild(backToMap());
+
+  const tags = parseTags(node.tags_json);
+  const loreTags = parseTags(node.lore_tags_json);
+  const byId = new Map(allNodes.map((n) => [n.id, n]));
+  const incoming = allEdges.filter((e) => e.to_node_id === node.id);
+  const parent = incoming.find((e) => e.relation === "contains");
+  const parentNode = parent ? byId.get(parent.from_node_id) : null;
+
+  const editDetails = el("details", { class: "edit-panel gr-edit" }, [
+    el("summary", { class: "btn small" }, "Edit ground"),
+    el("div", { class: "card gr-edit-body" }, renderNodeForm(node, allNodes)),
+  ]);
+  const deleteBtn = el(
+    "button",
+    {
+      class: "btn danger small",
+      type: "button",
+      onclick: () =>
+        guard(async () => {
+          if (!window.confirm(`Delete the ground “${node.name}”? This cannot be undone.`)) return;
+          await api("DELETE", `/scope/nodes/${node.id}`);
+          toast("Ground deleted", { ok: true });
+          navigate("#/factory");
+        }),
+    },
+    "Delete ground",
   );
 
-  const repoCard = el("div", { class: "card" }, [
-    el("h2", {}, `Linked repos (${repos.length})`),
+  wrap.appendChild(
+    el("header", { class: `gr-head is-node type-${node.type}` }, [
+      el("div", { class: "gr-head-main" }, [
+        el("div", { class: "tk-meta" }, [
+          el("span", { class: "gr-type" }, typeLabel(node.type)),
+          riskBadge(node.risk_level),
+          node.owner ? el("span", { class: "gr-owner" }, `Run by @${node.owner}`) : null,
+          parentNode
+            ? el("span", {}, [
+                "Part of ",
+                el(
+                  "a",
+                  { class: "tk-epic-link", href: `#/node/${parentNode.id}` },
+                  parentNode.name,
+                ),
+              ])
+            : null,
+        ]),
+        el("h1", { class: "detail-title" }, node.name),
+        t ? groundCountLine(t, { club: isClub }) : null,
+        node.description
+          ? el("p", { class: "gr-lede desc" }, node.description)
+          : el("p", { class: "gr-lede dim" }, "No description yet."),
+        tags.length || loreTags.length
+          ? el("div", { class: "tag-row" }, [
+              ...tags.map((x) => el("span", { class: "tag-chip" }, x)),
+              ...loreTags.map((x) => el("span", { class: "tag-chip lore" }, `lore:${x}`)),
+            ])
+          : null,
+        el("div", { class: "gr-actions" }, [
+          node.type === "epic"
+            ? el("a", { class: "btn small", href: `#/epics/${node.id}` }, "Open the campaign")
+            : null,
+          editDetails,
+          deleteBtn,
+        ]),
+      ]),
+    ]),
+  );
+  if (isImplicitScope(node)) {
+    const repoName = node.name.slice(5);
+    const r = allRepos.find((x) => x.name === repoName);
+    wrap.appendChild(
+      el("p", { class: "gr-implicit" }, [
+        el("b", {}, "Not a ground. "),
+        "The factory records this scope when a ticket targets ",
+        r ? el("a", { href: `#/repo/${r.id}` }, repoName) : repoName,
+        ", a repo with no ground, so the ticket still has a scope. On the Map it plays as a free agent; give it a ground from its page.",
+      ]),
+    );
+  }
+  if (t) wrap.appendChild(groundStats(t));
+
+  const fixtures = el("section", { class: "card gr-card", "aria-label": "Fixtures" }, [
+    panelHead(
+      "Fixtures",
+      book ? (live.length ? `${live.length} live, worst first` : "nothing live") : "",
+      null,
+      { kit: "claret" },
+    ),
+    book
+      ? fixtureList(live, {
+          limit: 12,
+          empty: isClub
+            ? "Nothing in play anywhere in the club."
+            : repos.length
+              ? "Nothing in play here. The repos that play here have no live ticket."
+              : "Nothing in play here. Link a repo, or put a ticket on this ground from its page.",
+        })
+      : el("p", { class: "quiet" }, "The board did not answer, so the fixtures are unknown."),
+  ]);
+  const resultsCard = book
+    ? el("section", { class: "card gr-card", "aria-label": "Results" }, [
+        panelHead(
+          "Results",
+          results.length ? `latest ${Math.min(8, results.length)} of ${results.length} done` : "",
+          null,
+          { kit: "ink" },
+        ),
+        fixtureList(results, { byTime: true, empty: "Nothing shipped from here yet." }),
+      ])
+    : null;
+
+  const repoCard = el("section", { class: "card gr-card", "aria-label": "Who plays here" }, [
+    panelHead("Who plays here", plural(repos.length, "repo"), null, { kit: "sky" }),
+    isClub
+      ? el(
+          "p",
+          { class: "gr-note" },
+          "The club holds every ground, so its fixtures are every live ticket. Repos play at the grounds inside it.",
+        )
+      : null,
     repos.length
       ? el(
           "ul",
-          { class: "clean" },
+          { class: "clean gr-rows" },
           repos.map((r) =>
             el(
               "li",
               {},
               el("div", { class: "assoc-row" }, [
-                el("a", { class: "assoc-name", href: `#/repo/${r.id}` }, r.name || r.id),
+                el("a", { class: "assoc-name gr-repo", href: `#/repo/${r.id}` }, [
+                  kitShirt(r.name || r.id, 22),
+                  el("span", {}, r.name || r.id),
+                ]),
                 el("div", { class: "assoc-meta" }, [
-                  badge(r.relation, "no-dot"),
+                  el("span", { class: "gr-rel" }, r.relation),
                   accessBadge(r.default_access),
                 ]),
               ]),
             ),
           ),
         )
-      : el("p", { class: "dim" }, "No repos linked to this node yet."),
+      : el("p", { class: "quiet" }, "No repo plays here yet. Link one below."),
+    el("h3", { class: "gr-sub" }, "Link a repo"),
     renderLinkRepoForm(node.id),
-  ]);
-
-  const ticketCard = el("div", { class: "card" }, [
-    el("h2", {}, "Recent tickets"),
-    Array.isArray(tickets) && tickets.length
-      ? el(
-          "ul",
-          { class: "clean" },
-          tickets.map((t) =>
-            el("li", {}, [
-              el(
-                "a",
-                { class: "feed-ticket", href: `#/ticket/${t.id}` },
-                t.number != null ? `#${t.number}` : t.id.slice(0, 8),
-              ),
-              " ",
-              el("span", {}, t.title || ""),
-            ]),
-          ),
-        )
-      : el(
-          "p",
-          { class: "dim" },
-          "No ticket data yet — node→ticket links arrive in a later backend wave.",
-        ),
   ]);
 
   const connCard = renderConnectionsCard(node, allNodes, allEdges);
 
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, repoCard, ticketCard]),
-      el("div", {}, [connCard]),
+      el("div", { class: "stack" }, [fixtures, resultsCard]),
+      el("div", { class: "stack" }, [repoCard, connCard]),
     ]),
   );
   return wrap;
 }
 
-function renderNodeForm(node) {
+/** A new ground: what it is, where it stands, then the form. */
+function renderNewGround(allNodes) {
+  const wrap = el("div", { class: "view view-ground view-new-ground" });
+  wrap.appendChild(backToMap());
+  const hasClub = allNodes.some((n) => n.type === "factory");
+  wrap.appendChild(
+    viewHead(
+      "New ground",
+      allNodes.length
+        ? `${plural(allNodes.length, "ground")} on the map already`
+        : "The first ground on the map",
+    ),
+  );
+  wrap.appendChild(
+    el("div", { class: "detail-grid" }, [
+      el("section", { class: "card gr-card", "aria-label": "The ground" }, [
+        panelHead("The ground", "name, type, owner, risk", null, { kit: "claret" }),
+        renderNodeForm(null, allNodes),
+      ]),
+      el("section", { class: "card gr-card gr-types", "aria-label": "Which type" }, [
+        panelHead("Which type", "where it stands on the map", null, { kit: "sky" }),
+        el(
+          "dl",
+          { class: "kv gr-kv gr-typekey" },
+          [
+            ["Factory", hasClub ? "The club itself. You have one already." : "The club itself."],
+            ["Product", "Something customers use: Checkout, Catalogue."],
+            ["Service", "Something products lean on: Payments, Stock sync."],
+            ["Domain or capability", "A wider area that holds products or services."],
+            ["External dependency", "Outside the ground: Stripe, an ERP."],
+          ].flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]),
+        ),
+        el(
+          "p",
+          { class: "gr-note" },
+          "After it is made, link the repos that play here and connect it to its neighbours from its page.",
+        ),
+      ]),
+    ]),
+  );
+  return wrap;
+}
+
+function renderNodeForm(node, allNodes = []) {
   const isEdit = !!node;
+  // An existing ground keeps its own type, even one this list does not offer (epic).
+  const types =
+    node && node.type && !SCOPE_NODE_TYPES.includes(node.type)
+      ? [node.type, ...SCOPE_NODE_TYPES]
+      : SCOPE_NODE_TYPES;
+  const hasClub = allNodes.some((n) => n.type === "factory");
+  const typeNow = node ? node.type : hasClub ? "product" : "factory";
   const name = el("input", {
     type: "text",
     required: "",
@@ -8464,9 +16645,7 @@ function renderNodeForm(node) {
   const type = el(
     "select",
     {},
-    SCOPE_NODE_TYPES.map((t) =>
-      el("option", { value: t, selected: node?.type === t }, typeLabel(t)),
-    ),
+    types.map((t) => el("option", { value: t, selected: typeNow === t }, typeLabel(t))),
   );
   const owner = el("input", {
     type: "text",
@@ -8480,7 +16659,7 @@ function renderNodeForm(node) {
       el("option", { value: r, selected: (node?.risk_level || "low") === r }, r),
     ),
   );
-  const desc = el("textarea", { placeholder: "What is this node, and what does it own?" });
+  const desc = el("textarea", { placeholder: "What is this ground, and what does it own?" });
   desc.value = node?.description || "";
   const tags = el("input", {
     type: "text",
@@ -8513,11 +16692,11 @@ function renderNodeForm(node) {
         guard(async () => {
           if (isEdit) {
             await api("PATCH", `/scope/nodes/${node.id}`, body);
-            toast("Scope node updated", { ok: true });
+            toast("Ground updated", { ok: true });
             router();
           } else {
             const r = await api("POST", "/scope/nodes", body);
-            toast("Scope node created", { ok: true });
+            toast("Ground created", { ok: true });
             navigate(`#/node/${r.node.id}`);
           }
         });
@@ -8536,7 +16715,7 @@ function renderNodeForm(node) {
         el(
           "button",
           { class: "btn primary", type: "submit" },
-          isEdit ? "Save changes" : "Create node",
+          isEdit ? "Save changes" : "Create ground",
         ),
       ]),
     ],
@@ -8556,9 +16735,7 @@ function renderConnectionsCard(node, allNodes, allEdges) {
       {},
       el("div", { class: "assoc-row" }, [
         el("span", { class: "edge-text" }, [
-          dir === "out" ? "→ " : "← ",
-          badge(e.relation, "no-dot"),
-          " ",
+          el("span", { class: "gr-rel" }, edgePhrase(e.relation, dir)),
           other
             ? el("a", { class: "assoc-name", href: `#/node/${otherId}` }, other.name)
             : el("span", { class: "dim" }, otherId.slice(0, 8)),
@@ -8587,12 +16764,23 @@ function renderConnectionsCard(node, allNodes, allEdges) {
           ...outgoing.map((e) => edgeRow(e, "out")),
           ...incoming.map((e) => edgeRow(e, "in")),
         ])
-      : el("p", { class: "dim" }, "No connections yet.");
-  return el("div", { class: "card" }, [
-    el("h2", {}, "Connections"),
+      : el("p", { class: "quiet" }, "No connections yet: this ground stands alone on the map.");
+  return el("section", { class: "card gr-card", "aria-label": "Neighbours" }, [
+    panelHead("Neighbours", `${outgoing.length + incoming.length} on the map`, null, {
+      kit: "sky",
+    }),
     list,
+    el("h3", { class: "gr-sub" }, "Add a connection"),
     renderAddEdgeForm(node, allNodes),
   ]);
+}
+/** An edge read from this node's side: "Contains", "Depends on", "Part of", "Needed by". */
+function edgePhrase(relation, dir) {
+  const words = String(relation || "").replace(/_/g, " ");
+  if (dir === "out") return words.charAt(0).toUpperCase() + words.slice(1);
+  if (relation === "contains") return "Part of";
+  if (relation === "depends_on") return "Needed by";
+  return `${words.charAt(0).toUpperCase() + words.slice(1)} (from)`;
 }
 
 function renderAddEdgeForm(node, allNodes) {
@@ -8715,164 +16903,220 @@ async function renderRepo(id) {
   const scopes = scopesRes.scopes || [];
   const allNodes = nodesRes.nodes || [];
 
-  const wrap = el("div", { class: "view" });
-  wrap.appendChild(
-    el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-      "← Back to Map",
-    ),
-  );
+  const wrap = el("div", { class: "view view-ground" });
+  wrap.appendChild(backToMap());
   if (!repo) {
     wrap.appendChild(
       emptyState("Repository not found", "It may have been removed or renamed.", "map"),
     );
     return wrap;
   }
+  // The repo's tickets: those that deliver to it (the board's write boundary), the
+  // same source the Map's "Who plays where" counts from.
+  let tickets = null;
+  let ticketErr = null;
+  try {
+    const board = await api("GET", "/api/board");
+    tickets = boardCards(board).filter(
+      (c) =>
+        c.status !== "cancelled" &&
+        (c.repos || []).some((r) => r.id === repo.id || r.name === repo.name),
+    );
+  } catch (e) {
+    if (e && e.code === "ABORTED") throw e;
+    ticketErr = e;
+  }
 
   setDocTitle("repo", repo.name, id);
   const isMapped = scopes.length > 0;
   const hasWrite = scopes.some((s) => s.default_access === "write");
+  const t = tickets ? mapTally(tickets) : null;
+  const sortedT = tickets
+    ? [...tickets].sort(
+        (a, b) =>
+          (MAP_TONE_RANK[mapTone(a.status)] ?? 9) - (MAP_TONE_RANK[mapTone(b.status)] ?? 9) ||
+          (b.priority || 0) - (a.priority || 0) ||
+          (a.number || 0) - (b.number || 0),
+      )
+    : null;
 
-  const head = el("div", { class: "card card-accent" }, [
-    el("h1", { class: "detail-title" }, repo.name),
-    el("div", { class: "meta-row" }, [
-      badge(isMapped ? "mapped" : "unmapped", isMapped ? "status-ready" : "no-dot"),
-      riskBadge(repo.risk_level),
-      repo.stack ? badge(repo.stack, "no-dot") : null,
-      badge(`${scopes.length} scope${scopes.length === 1 ? "" : "s"}`, "no-dot"),
-      repo.hidden ? badge("hidden", "no-dot") : null,
-    ]),
-    el("dl", { class: "kv" }, [
-      el("dt", {}, "Path"),
-      el("dd", {}, repo.local_path ? el("code", { class: "mono" }, repo.local_path) : "—"),
-      el("dt", {}, "Default branch"),
-      el("dd", {}, [
-        el("code", { class: "mono" }, repo.default_branch || "main"),
-        " ",
-        el(
-          "button",
-          {
-            class: "btn small",
-            type: "button",
-            "aria-label": `Edit default branch for ${repo.name}`,
-            title:
-              "The base branch every delivery worktree branches off. A wrong value fails delivery at worktree setup.",
-            onclick: () =>
-              guard(async () => {
-                const next = window.prompt(
-                  `Default branch for “${repo.name}” — the base every delivery branches off:`,
-                  repo.default_branch || "main",
-                );
-                if (next == null) return;
-                const branch = next.trim();
-                if (!branch || branch === repo.default_branch) return;
-                await api("POST", `/repos/${repo.id}/default-branch`, { default_branch: branch });
-                toast(`${repo.name} default branch → ${branch}`, { ok: true });
-                router();
-              }),
-          },
-          "Edit",
-        ),
+  const hideBtn = repo.hidden
+    ? el(
+        "button",
+        {
+          class: "btn small",
+          type: "button",
+          "aria-label": `Unhide ${repo.name}`,
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/repos/${repo.id}/hidden`, { hidden: false });
+              toast(`${repo.name} un-hidden`, { ok: true });
+              router();
+            }),
+        },
+        "Unhide repo",
+      )
+    : el(
+        "button",
+        {
+          class: "btn small",
+          type: "button",
+          "aria-label": `Hide ${repo.name} from the dashboard`,
+          title: "Hide this repo from the dashboard (reversible)",
+          onclick: () =>
+            guard(async () => {
+              if (
+                !window.confirm(
+                  `Hide “${repo.name}” from the dashboard? It stays registered and can be un-hidden from the Hidden repos page.`,
+                )
+              )
+                return;
+              await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
+              toast(`${repo.name} hidden`, { ok: true });
+              navigate("#/factory");
+            }),
+        },
+        "Hide repo",
+      );
+
+  const lede = t ? groundCountLine(t, { where: "in this repo" }) : null;
+
+  wrap.appendChild(
+    el("header", { class: "gr-head" }, [
+      el("div", { class: "gr-kit" }, kitShirt(repo.name, 96)),
+      el("div", { class: "gr-head-main" }, [
+        el("div", { class: "tk-meta" }, [
+          el("span", { class: `gr-mapped${isMapped ? "" : " is-off"}` }, [
+            glyph(isMapped ? "done" : "draft", 16),
+            el(
+              "span",
+              {},
+              isMapped
+                ? `On the map · ${scopes.length} ground${scopes.length === 1 ? "" : "s"}`
+                : "Not on the map",
+            ),
+          ]),
+          riskBadge(repo.risk_level),
+          repo.stack ? el("span", { class: "gr-owner" }, `Stack: ${repo.stack}`) : null,
+          repo.hidden ? badge("hidden") : null,
+        ]),
+        el("h1", { class: "detail-title" }, repo.name),
+        lede,
+        el("div", { class: "gr-actions" }, [hideBtn]),
       ]),
-      el("dt", {}, "Remote"),
-      el("dd", {}, repo.remote_url ? el("code", { class: "mono" }, repo.remote_url) : "—"),
     ]),
-    renderRepoCommandsEditor(repo),
-    el(
-      "div",
-      { class: "repo-visibility dim" },
-      repo.hidden
-        ? el(
-            "button",
-            {
-              class: "btn primary small",
-              type: "button",
-              "aria-label": `Unhide ${repo.name}`,
-              onclick: () =>
-                guard(async () => {
-                  await api("POST", `/repos/${repo.id}/hidden`, { hidden: false });
-                  toast(`${repo.name} un-hidden`, { ok: true });
-                  router();
-                }),
-            },
-            "Unhide repo",
-          )
-        : el(
-            "button",
-            {
-              class: "btn small",
-              type: "button",
-              "aria-label": `Hide ${repo.name} from the dashboard`,
-              title: "Hide this repo from the dashboard (reversible)",
-              onclick: () =>
-                guard(async () => {
-                  if (
-                    !window.confirm(
-                      `Hide “${repo.name}” from the dashboard? It stays registered and can be un-hidden from the Hidden repos page.`,
-                    )
-                  )
-                    return;
-                  await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
-                  toast(`${repo.name} hidden`, { ok: true });
-                  navigate("#/factory");
-                }),
-            },
-            "Hide repo",
-          ),
-    ),
+  );
+  if (tickets && tickets.length) wrap.appendChild(groundStats(t));
+
+  const branchBtn = el(
+    "button",
+    {
+      class: "btn small",
+      type: "button",
+      "aria-label": `Edit default branch for ${repo.name}`,
+      title:
+        "The base branch every delivery worktree branches off. A wrong value fails delivery at worktree setup.",
+      onclick: () =>
+        guard(async () => {
+          const next = window.prompt(
+            `Default branch for “${repo.name}” — the base every delivery branches off:`,
+            repo.default_branch || "main",
+          );
+          if (next == null) return;
+          const branch = next.trim();
+          if (!branch || branch === repo.default_branch) return;
+          await api("POST", `/repos/${repo.id}/default-branch`, { default_branch: branch });
+          toast(`${repo.name} default branch → ${branch}`, { ok: true });
+          router();
+        }),
+    },
+    "Edit",
+  );
+  const kvRow = (k, v) => [el("dt", {}, k), el("dd", {}, v)];
+  const groundCard = el("section", { class: "card gr-card", "aria-label": "The ground" }, [
+    panelHead("The ground", "where the work is done", null, { kit: "claret" }),
+    el("dl", { class: "kv gr-kv" }, [
+      ...kvRow(
+        "Path",
+        repo.local_path
+          ? el("code", { class: "mono" }, repo.local_path)
+          : el("span", { class: "dim" }, "Not set"),
+      ),
+      ...kvRow(
+        "Default branch",
+        el("span", { class: "gr-kv-act" }, [
+          el("code", { class: "mono" }, repo.default_branch || "main"),
+          branchBtn,
+        ]),
+      ),
+      ...kvRow(
+        "Remote",
+        repo.remote_url
+          ? el("code", { class: "mono" }, repo.remote_url)
+          : el("span", { class: "dim" }, "None: local only"),
+      ),
+    ]),
+    !isMapped ? renderMapRepoBox(repo, allNodes) : null,
+    !hasWrite
+      ? el("div", { class: "warn-box gr-warn" }, [
+          ycard(22),
+          el("p", {}, [
+            el("strong", {}, "No write access. "),
+            isMapped
+              ? "This repo is on the map, but no link grants write access, so agents cannot deliver code to it."
+              : "This repo plays on its own (single-repo mode). Put it on the map with write access to use it in factory mode.",
+          ]),
+        ])
+      : null,
   ]);
-  if (!isMapped) head.appendChild(renderMapRepoBox(repo, allNodes));
-  if (!hasWrite) {
-    head.appendChild(
-      el("div", { class: "warn-box" }, [
-        el("strong", {}, "⚠ No write association. "),
-        isMapped
-          ? "This repo is mapped but no association grants write access, so agents cannot deliver code to it."
-          : "This repo is unmapped (single-repo mode). Map it to a node with write access to use it in factory mode.",
-      ]),
-    );
-  }
 
-  const scopeCard = el("div", { class: "card" }, [
-    el("h2", {}, `Scope nodes (${scopes.length})`),
+  const checksCard = el("section", { class: "card gr-card", "aria-label": "Referee's checks" }, [
+    panelHead("Referee's checks", "the Definition of Done", null, { kit: "sky" }),
+    renderRepoCommandsEditor(repo),
+  ]);
+
+  const scopeCard = el("section", { class: "card gr-card", "aria-label": "On the map" }, [
+    panelHead("On the map", `${scopes.length} ground${scopes.length === 1 ? "" : "s"}`, null, {
+      kit: "ink",
+    }),
     el(
       "p",
-      { class: "section-note dim" },
-      "Every Map node this repo is linked to, with its relation and the default access agents inherit. Change access in place; change relation by re-linking.",
+      { class: "gr-note" },
+      "Each ground on the Map this repo plays for, with its relation and the access agents inherit. Change access in place; change the relation by re-linking.",
     ),
     scopes.length
       ? el(
           "ul",
-          { class: "clean" },
+          { class: "clean gr-rows" },
           scopes.map((s) => renderRepoScopeRow(repo, s)),
         )
-      : el(
-          "p",
-          { class: "dim" },
-          "Unmapped — this repo belongs to no scope node and behaves as a standalone single-repo scope.",
-        ),
+      : el("p", { class: "quiet" }, "Not on the map: this repo is its own single-repo scope."),
+    el("h3", { class: "gr-sub" }, "Link to a ground"),
     renderAddAssociationForm(repo, allNodes, scopes),
   ]);
 
-  const ticketCard = el("div", { class: "card" }, [
-    el("h2", {}, "Recent tickets"),
-    el("p", { class: "section-note dim" }, "Tickets whose execution boundary includes this repo."),
-    renderRepoTickets(repo),
-  ]);
-
-  const scanCard = el("div", { class: "card" }, [
-    el("h2", {}, "Context & scan status"),
-    el("div", { class: "warn-box scan-status" }, [
-      el("strong", {}, "Scan status not available in this view. "),
-      "Repo context freshness and scan state come from Crew's context store (FG-004), which the Dispatch control surface cannot reach yet. This panel lights up in a later wave once the status is exposed here.",
-    ]),
-  ]);
+  const ticketCard = el(
+    "section",
+    { class: "card gr-card", "aria-label": "Results and fixtures" },
+    [
+      panelHead(
+        "Results & fixtures",
+        tickets && tickets.length
+          ? `${tickets.length > 8 ? `8 of ${tickets.length}` : plural(tickets.length, "ticket")} delivering here, live first`
+          : "",
+        null,
+        { kit: "ink" },
+      ),
+      tickets
+        ? fixtureList(sortedT, { empty: "No ticket delivers to this repo yet." })
+        : renderRepoTickets(repo, tickets, ticketErr),
+    ],
+  );
 
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, scopeCard]),
-      el("div", {}, [ticketCard, scanCard]),
+      el("div", { class: "stack" }, [groundCard, checksCard, scopeCard]),
+      el("div", { class: "stack" }, [ticketCard]),
     ]),
   );
   return wrap;
@@ -9008,59 +17252,58 @@ function renderMapRepoBox(repo, allNodes) {
   ]);
 }
 
-function renderRepoTickets(repo) {
-  const box = el(
-    "div",
-    { class: "repo-tickets" },
-    el("p", { class: "dim" }, "Loading recent tickets…"),
-  );
-  (async () => {
-    let tickets;
-    try {
-      tickets = (await api("GET", `/tickets?repo=${encodeURIComponent(repo.name)}`)).tickets || [];
-    } catch (e) {
-      clear(box);
-      box.appendChild(
-        el("p", { class: "dim" }, `Recent tickets unavailable${e.code ? ` (${e.code})` : ""}.`),
-      );
-      return;
-    }
-    clear(box);
-    if (!tickets.length) {
-      box.appendChild(el("p", { class: "dim" }, "No tickets reference this repo yet."));
-      return;
-    }
-    const recent = [...tickets]
-      .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
-      .slice(0, 8);
+function renderRepoTickets(repo, tickets, err) {
+  const box = el("div", { class: "repo-tickets" });
+  if (!tickets) {
     box.appendChild(
       el(
-        "ul",
-        { class: "clean repo-ticket-list" },
-        recent.map((t) =>
-          el(
-            "li",
-            {},
-            el("a", { class: "repo-ticket-row", href: `#/ticket/${t.id}` }, [
-              el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
-              el("span", { class: "repo-ticket-title" }, t.title),
-              statusBadge(t.status),
-              el("span", { class: "dim tabnum repo-ticket-time" }, fmtTime(t.updated_at)),
-            ]),
-          ),
-        ),
+        "p",
+        { class: "quiet" },
+        `Recent tickets unavailable${err && err.code ? ` (${err.code})` : ""}.`,
       ),
     );
-    if (tickets.length > recent.length) {
-      box.appendChild(
-        el("p", { class: "dim repo-ticket-more" }, [
-          `${tickets.length - recent.length} more — `,
-          el("a", { href: "#/work", class: "assoc-name plain" }, "open Work"),
-          ".",
-        ]),
-      );
-    }
-  })();
+    return box;
+  }
+  if (!tickets.length) {
+    box.appendChild(el("p", { class: "quiet" }, "No tickets reference this repo yet."));
+    return box;
+  }
+  const recent = [...tickets]
+    .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
+    .slice(0, 8);
+  box.appendChild(
+    el(
+      "ul",
+      { class: "clean repo-ticket-list" },
+      recent.map((t) =>
+        el(
+          "li",
+          {},
+          el("a", { class: "repo-ticket-row", href: `#/ticket/${t.id}` }, [
+            el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
+            el("span", { class: "repo-ticket-title" }, t.title),
+            el("span", { class: "repo-ticket-side" }, [
+              statusBadge(t.status),
+              el(
+                "time",
+                { class: "repo-ticket-time", datetime: t.updated_at },
+                fmtTime(t.updated_at),
+              ),
+            ]),
+          ]),
+        ),
+      ),
+    ),
+  );
+  if (tickets.length > recent.length) {
+    box.appendChild(
+      el("p", { class: "repo-ticket-more" }, [
+        `${tickets.length - recent.length} more on the `,
+        el("a", { href: "#/work" }, "Work board"),
+        ".",
+      ]),
+    );
+  }
   return box;
 }
 
@@ -9130,17 +17373,6 @@ function renderAddAssociationForm(repo, allNodes, existing) {
 /** Cap concurrent ticket-detail fetches so a big backlog doesn't flood the API. */
 const EPIC_DETAIL_CONCURRENCY = 6;
 
-/** Resolve ticket details (scopes + deps) in bounded-parallel batches. */
-async function fetchTicketDetails(ids) {
-  const out = new Map();
-  for (let i = 0; i < ids.length; i += EPIC_DETAIL_CONCURRENCY) {
-    const batch = ids.slice(i, i + EPIC_DETAIL_CONCURRENCY);
-    const details = await Promise.all(batch.map((id) => api("GET", `/tickets/${id}`)));
-    batch.forEach((id, j) => out.set(id, details[j]));
-  }
-  return out;
-}
-
 /**
  * Assign each ticket a phase = longest dependency chain to a root, computed over
  * the epic's own tickets only. Phase 0 = no in-epic dependencies (e.g. the
@@ -9169,271 +17401,753 @@ function computePhases(tickets, depsById) {
   return byPhase;
 }
 
-async function renderEpics(param) {
-  // A deep link (#/epics/:nodeId) auto-expands that epic.
-  const focusId = param || null;
+/** The epic's acceptance ticket (its Final): flagged by the server, or named so. */
+function isAcceptanceTicket(t) {
+  return !!(
+    t &&
+    (t.acceptance === 1 || t.acceptance === true || /^Acceptance/i.test(t.title || ""))
+  );
+}
 
-  const [nodesRes, ticketsRes] = await Promise.all([
-    api("GET", "/scope/nodes"),
-    api("GET", "/tickets?fields=summary"),
+/**
+ * The acceptance ticket is always the Final: it takes a round of its own after
+ * every other round, whatever its dependency depth says (an acceptance ticket
+ * whose edges were never drawn would otherwise share a round with the work).
+ */
+function pinAcceptanceLast(byPhase) {
+  const keys = [...byPhase.keys()].sort((a, b) => a - b);
+  if (keys.length === 0) return byPhase;
+  const moved = [];
+  for (const k of keys) {
+    const list = byPhase.get(k);
+    moved.push(...list.filter(isAcceptanceTicket));
+    const rest = list.filter((t) => !isAcceptanceTicket(t));
+    if (rest.length) byPhase.set(k, rest);
+    else byPhase.delete(k);
+  }
+  if (moved.length) {
+    const left = [...byPhase.keys()];
+    byPhase.set(left.length ? Math.max(...left) + 1 : 0, moved);
+  }
+  return byPhase;
+}
+
+/** Why a held ticket is held, in the ticket page's own words (its lede, minus the status word). */
+function heldReason(t, detail) {
+  if (!detail) return [];
+  const parts = ticketLede(t, detail.rework_trail || [], detail.events || []);
+  return parts.slice(1).filter((p) => typeof p === "string");
+}
+
+/** A small red card (held) for a block heading or a table cell: always next to words. */
+function redCard(size = 16) {
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 12 16",
+      width: (size * 0.75).toFixed(1),
+      height: size,
+      class: "rcard",
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    svgEl("rect", {
+      x: 1,
+      y: 1,
+      width: 10,
+      height: 14,
+      rx: 1.4,
+      fill: "var(--red)",
+      stroke: "var(--ycard-edge)",
+      "stroke-width": 1.2,
+    }),
+  );
+}
+
+const NEEDS_SIGN_OFF = new Set(["in_review", "ready_for_merge"]);
+
+async function renderEpics(param) {
+  // A deep link (#/epics/:nodeId) scrolls to that campaign.
+  const focusId = param || null;
+  const signal = routeSignal();
+  // Claims (who wears which ticket) and specs (what a campaign is played to) are
+  // extras: the season still reads without them.
+  const extra = (p, fallback) =>
+    api("GET", p, undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return fallback;
+    });
+  const [nodesRes, ticketsRes, claimsRes, specsRes] = await Promise.all([
+    api("GET", "/scope/nodes", undefined, { signal }),
+    api("GET", "/tickets", undefined, { signal }),
+    extra("/claims", { claims: [] }),
+    extra("/specs", { specs: [] }),
   ]);
   const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
   const tickets = ticketsRes.tickets || [];
-
-  const wrap = el("div", { class: "view" });
-  wrap.appendChild(
-    viewHead("Epics", `${epics.length} live`, [
-      el(
-        "button",
-        {
-          class: "btn",
-          type: "button",
-          onclick: () => openSpecBuild(),
-        },
-        [icon("spark"), el("span", {}, "Author a spec")],
-      ),
-      el(
-        "button",
-        {
-          class: "btn primary",
-          type: "button",
-          onclick: () => openPlanBuild(),
-        },
-        [icon("spark"), el("span", {}, "Plan a build")],
-      ),
-    ]),
+  const planBtn = el(
+    "button",
+    { class: "btn primary", type: "button", onclick: () => openPlanBuild() },
+    [icon("spark"), el("span", {}, "Plan a build")],
   );
-
-  wrap.appendChild(
-    el(
-      "p",
-      { class: "epics-lede dim" },
-      "Each epic is a phased, dependency-ordered plan. Tickets are gated phase by phase — a phase can't start until the one before it is done.",
-    ),
-  );
+  // Authoring a spec lives on Specs; the season links there.
+  const specsLink = el("a", { class: "btn", href: "#/specs" }, "Specs");
+  const wrap = el("div", { class: "view view-epics" });
 
   if (epics.length === 0) {
+    wrap.dataset.sig = "empty";
+    wrap.appendChild(viewHead("The season", "No campaigns yet", [specsLink, planBtn]));
     wrap.appendChild(
       emptyState(
-        "No epics yet",
-        "Describe an app in plain language and Dispatch will propose a phased plan of draft tickets.",
-        "epics",
+        "No campaigns on the fixture list.",
+        "Describe what to build in plain words: Plan a build proposes the draw (draft tickets, round by round), and the campaign lands here once you confirm it.",
+        null,
+        el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
+          icon("spark"),
+          el("span", {}, "Plan a build"),
+        ]),
       ),
     );
-    const cta = el("div", { style: "display:flex;justify-content:center;margin-top:18px" }, [
-      el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
-        icon("spark"),
-        el("span", {}, "Plan a build"),
-      ]),
-    ]);
-    wrap.appendChild(cta);
     return wrap;
   }
 
-  // We only need details for tickets that could belong to an epic. Without a
-  // reverse index we fetch every ticket's detail once (bounded-parallel) and map
-  // membership from each ticket's `scopes`.
-  const detailById = await fetchTicketDetails(tickets.map((t) => t.id));
-
-  // Build epic membership + a per-ticket dependency list from the details.
+  // Membership + dependencies come from each ticket's detail (cached by updated_at).
+  const detailById = await ticketDetails(
+    tickets.filter((t) => t.status !== "cancelled"),
+    signal,
+  );
   const membersByEpic = new Map(epics.map((e) => [e.id, []]));
   const depsById = new Map();
   const depViewById = new Map();
+  const repoByTicket = new Map();
   for (const t of tickets) {
     const detail = detailById.get(t.id);
     if (!detail) continue;
-    const scopes = detail.scopes || [];
     const deps = detail.dependencies || [];
     depsById.set(
       t.id,
       deps.map((d) => d.depends_on_ticket_id),
     );
     depViewById.set(t.id, deps);
-    for (const s of scopes) {
-      if (membersByEpic.has(s.id)) membersByEpic.get(s.id).push({ ...t, ...detail.ticket });
+    const repos = detail.repositories || [];
+    const repoW = repos.find((r) => r.access === "write") || repos[0];
+    if (repoW) repoByTicket.set(t.id, repoW.name);
+    for (const sc of detail.scopes || []) {
+      if (membersByEpic.has(sc.id)) membersByEpic.get(sc.id).push({ ...t, ...detail.ticket });
     }
   }
-
-  const list = el("div", { class: "epic-list" });
-  for (const epic of epics) {
-    list.appendChild(
-      renderEpicCard(
-        epic,
-        membersByEpic.get(epic.id) || [],
-        depsById,
-        depViewById,
-        focusId === epic.id || epics.length === 1,
-      ),
-    );
+  const agentByTicket = new Map();
+  for (const c of (claimsRes && claimsRes.claims) || []) {
+    if (c.status && c.status !== "active") continue;
+    agentByTicket.set(c.ticket_id, c.agent_display_name || actorName("agent", c.agent_id));
   }
-  wrap.appendChild(list);
-  return wrap;
-}
 
-/** One epic = a collapsible card whose body is its tickets grouped into phases. */
-function renderEpicCard(epic, members, depsById, depViewById, expanded) {
-  const byPhase = computePhases(members, depsById);
-  const phases = [...byPhase.keys()].sort((a, b) => a - b);
-  const draftCount = members.filter((m) => m.status === "draft").length;
-  const doneCount = members.filter((m) => m.status === "done").length;
-
-  const details = el("details", { class: "epic-card card card-accent" });
-  if (expanded) details.setAttribute("open", "");
-
-  const summary = el("summary", { class: "epic-summary" }, [
-    el("div", { class: "epic-summary-main" }, [
-      icon("epics", "epic-ico"),
-      el("div", {}, [
-        el("div", { class: "epic-name" }, epic.name),
-        epic.description ? el("div", { class: "epic-desc dim" }, epic.description) : null,
-      ]),
-    ]),
-    el("div", { class: "epic-summary-meta" }, [
-      el(
-        "span",
-        { class: "epic-stat tabnum" },
-        `${members.length} ticket${members.length === 1 ? "" : "s"}`,
-      ),
-      el(
-        "span",
-        { class: "epic-stat dim tabnum" },
-        `${phases.length} phase${phases.length === 1 ? "" : "s"}`,
-      ),
-      draftCount ? badge(`${draftCount} draft`, "status-draft") : null,
-      doneCount ? badge(`${doneCount} done`, "status-done") : null,
-    ]),
-  ]);
-  details.appendChild(summary);
-
-  const body = el("div", { class: "epic-body" });
-  if (members.length === 0) {
-    body.appendChild(
-      el("p", { class: "dim", style: "padding:8px 2px" }, "This epic has no tickets."),
-    );
-  } else {
-    body.appendChild(phaseProgress(byPhase, phases));
-    body.appendChild(renderEpicDag(byPhase, phases, depViewById));
+  // A campaign played to a spec: the spec names the epic as its scope node.
+  const specByEpic = new Map();
+  for (const s of (specsRes && specsRes.specs) || []) {
+    if (s.scope_node_id && membersByEpic.has(s.scope_node_id) && !specByEpic.has(s.scope_node_id))
+      specByEpic.set(s.scope_node_id, { spec: s, rollup: null });
   }
-  details.appendChild(body);
-  return details;
-}
-
-/** Phase progress strip — one segment per phase, filled by its done-ratio, so
- *  you can see the gate front advancing through the plan at a glance. */
-function phaseProgress(byPhase, phases) {
-  const active = new Set(["in_progress", "claimed", "in_review", "in_testing", "ready_for_merge"]);
-  return el(
-    "div",
-    { class: "phase-strip" },
-    phases.map((p) => {
-      const tix = byPhase.get(p) || [];
-      const done = tix.filter((t) => t.status === "done").length;
-      const pct = tix.length ? Math.round((done / tix.length) * 100) : 0;
-      const state =
-        tix.length && done === tix.length
-          ? "done"
-          : tix.some((t) => active.has(t.status))
-            ? "active"
-            : "idle";
-      return el("div", { class: `phase-seg is-${state}` }, [
-        el("div", { class: "ps-top" }, [
-          el("span", { class: "ps-label" }, `Phase ${p + 1}`),
-          el("span", { class: "ps-frac mono" }, `${done}/${tix.length}`),
-        ]),
-        el("div", { class: "ps-bar" }, el("i", { style: `width:${pct}%` })),
-      ]);
-    }),
-  );
-}
-
-/** The dependency DAG — phases laid out as columns (topological layers), tickets
- *  as nodes, and dependsOn edges drawn between them. Satisfied edges are solid
- *  cyan; unmet edges are dashed amber (the live gate front). */
-function renderEpicDag(byPhase, phases, depViewById) {
-  const NODE_W = 208,
-    NODE_H = 84,
-    COLG = 70,
-    ROWG = 18,
-    PADX = 12,
-    PADT = 42,
-    PADB = 14;
-  const cols = phases.map((p) =>
-    (byPhase.get(p) || []).slice().sort((a, b) => (a.number || 0) - (b.number || 0)),
-  );
-  const pos = new Map();
-  cols.forEach((tix, ci) => {
-    const x = PADX + ci * (NODE_W + COLG);
-    tix.forEach((t, ri) => pos.set(t.id, { x, y: PADT + ri * (NODE_H + ROWG), t }));
-  });
-  const maxRows = Math.max(1, ...cols.map((c) => c.length));
-  const width = PADX * 2 + phases.length * NODE_W + Math.max(0, phases.length - 1) * COLG;
-  const height = PADT + maxRows * (NODE_H + ROWG) - ROWG + PADB;
-
-  // edges (drawn behind the nodes)
-  let paths = "";
-  for (const [id, { x, y }] of pos) {
-    for (const d of depViewById.get(id) || []) {
-      const from = pos.get(d.depends_on_ticket_id);
-      if (!from) continue;
-      const x1 = from.x + NODE_W,
-        y1 = from.y + NODE_H / 2,
-        x2 = x,
-        y2 = y + NODE_H / 2;
-      const mx = (x1 + x2) / 2;
-      paths += `<path class="edge ${d.satisfied ? "sat" : "pend"}" d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"/>`;
-    }
-  }
-  const svg = el("div", {
-    class: "dag-edges",
-    html: `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none">${paths}</svg>`,
-  });
-
-  const labels = phases.map((p, ci) =>
-    el(
-      "div",
-      { class: "dag-collabel", style: `left:${PADX + ci * (NODE_W + COLG)}px;width:${NODE_W}px` },
-      [
-        el("span", { class: "dcl-num" }, `Phase ${p + 1}`),
-        ci > 0 ? el("span", { class: "dcl-gate" }, "gated") : null,
-      ],
+  await Promise.all(
+    [...specByEpic.values()].map((v) =>
+      extra(`/specs/${encodeURIComponent(v.spec.id)}/coverage`, null).then((r) => {
+        v.rollup = specCoverageRollup(r && r.coverage);
+        v.gaps = specGapCount(r && r.coverage, v.spec.status);
+      }),
     ),
   );
 
-  const nodes = [];
-  for (const [id, { x, y, t }] of pos) {
-    const blockers = (depViewById.get(id) || []).filter((d) => !d.satisfied);
-    nodes.push(
-      el(
-        "a",
-        {
-          class: `dag-node status-${t.status}`,
-          href: `#/ticket/${t.id}`,
-          style: `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`,
-        },
-        [
-          el("div", { class: "dn-top" }, [
-            el("span", { class: "dn-num mono" }, t.number != null ? `#${t.number}` : "—"),
-            statusBadge(t.status),
-          ]),
-          el("div", { class: "dn-title" }, t.title),
-          blockers.length
-            ? el("div", { class: "dn-block" }, [
-                icon("clock", "dn-block-ico"),
-                `waiting on ${blockers.map((b) => (b.number != null ? "#" + b.number : "?")).join(", ")}`,
-              ])
-            : null,
-        ],
+  const ctx = { depsById, depViewById, detailById, repoByTicket, agentByTicket };
+  const seasons = epics.map((epic) => campaignFacts(epic, membersByEpic.get(epic.id) || [], ctx));
+
+  // Same data → same signature → the refresh leaves the page (and its open folds) alone.
+  wrap.dataset.sig = hashText(
+    JSON.stringify([
+      epics.map((e) => [e.id, e.name, e.description || ""]),
+      seasons.map((s) =>
+        s.members.map((m) => [
+          m.id,
+          m.status,
+          m.title,
+          agentByTicket.get(m.id) || "",
+          (depViewById.get(m.id) || []).map((d) => `${d.depends_on_ticket_id}:${d.satisfied}`),
+        ]),
       ),
+      [...specByEpic.entries()].map(([k, v]) => [k, v.spec.id, v.spec.status, v.rollup, v.gaps]),
+    ]),
+  );
+
+  const allMembers = seasons.flatMap((s) => s.members);
+  const heldN = seasons.filter((s) => s.held.length).length;
+  const doneN = allMembers.filter((m) => m.status === "done").length;
+  wrap.appendChild(
+    viewHead(
+      "The season",
+      `${plural(epics.length, "campaign")} · ${heldN ? `${heldN} held` : "none held"} · ${doneN} of ${plural(allMembers.length, "ticket")} done`,
+      [specsLink, planBtn],
+    ),
+  );
+  if (seasons.length > 1) wrap.appendChild(seasonTable(seasons));
+
+  const list = el("div", { class: "epic-list" });
+  for (const s of seasons)
+    list.appendChild(renderEpicCard(s, ctx, specByEpic.get(s.epic.id), focusId === s.epic.id));
+  wrap.appendChild(list);
+
+  // The draw's bracket lines are measured once the page is laid out, and again
+  // whenever a draw changes size (fonts landing, a resize, a fold opening).
+  let ro = null;
+  wrap._mounted = () => {
+    const draws = [...wrap.querySelectorAll(".ep-draw")];
+    draws.forEach(drawEpicLines);
+    if (typeof window.ResizeObserver === "function") {
+      ro = new window.ResizeObserver((entries) => {
+        for (const e of entries) drawEpicLines(e.target);
+      });
+      draws.forEach((d) => ro.observe(d));
+    }
+    if (document.fonts && document.fonts.ready)
+      document.fonts.ready.then(() => draws.forEach(drawEpicLines)).catch(() => {});
+    // After the router's scroll-to-top, not before it.
+    if (focusId) setTimeout(() => jumpTo(`epic-${focusId}`), 0);
+  };
+  wrap._dispose = () => {
+    if (ro) ro.disconnect();
+    ro = null;
+  };
+  return wrap;
+}
+
+/** Everything one campaign's page and its table row say, computed once. */
+function campaignFacts(epic, members, ctx) {
+  const byPhase = pinAcceptanceLast(computePhases(members, ctx.depsById));
+  const phases = [...byPhase.keys()].sort((a, b) => a - b);
+  const done = members.filter((m) => m.status === "done").length;
+  const held = members
+    .filter((m) => OFF_PITCH.has(m.status))
+    .sort((a, b) => (a.number || 0) - (b.number || 0));
+  const heldIds = new Set(held.map((m) => m.id));
+  const waits = members.filter(
+    (m) => m.status !== "done" && (ctx.depsById.get(m.id) || []).some((d) => heldIds.has(d)),
+  );
+  const needs = members.filter((m) => NEEDS_SIGN_OFF.has(m.status));
+  // Next fixture: a ready ticket that can actually be claimed, i.e. every ticket
+  // it waits on is done (the server refuses a claim with DEPENDENCY_BLOCKED otherwise).
+  const nextUp = members.filter(
+    (m) => m.status === "ready" && (ctx.depViewById.get(m.id) || []).every((d) => d.satisfied),
+  );
+  const liveIdx = phases.findIndex((p) => (byPhase.get(p) || []).some((t) => t.status !== "done"));
+  const won = members.length > 0 && done === members.length;
+  return {
+    epic,
+    members,
+    byPhase,
+    phases,
+    done,
+    held,
+    heldIds,
+    waits,
+    needs,
+    nextUp,
+    liveIdx,
+    won,
+  };
+}
+
+/** "#8, #9 and #10" */
+function ticketList(ts) {
+  const ns = ts.map((t) => `#${t.number}`);
+  return ns.length > 1 ? `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}` : ns[0] || "";
+}
+
+/** The table: one line per campaign — its rounds, how far it has got, what holds it. */
+function seasonTable(seasons) {
+  const rows = seasons.map((s) => {
+    const name = s.epic.name;
+    const where = s.held.length
+      ? el("span", { class: "ep-where is-red" }, [
+          redCard(16),
+          el("span", {}, [
+            "Held at ",
+            el(
+              "a",
+              { href: `#/ticket/${s.held[0].id}`, title: s.held[0].title },
+              `#${s.held[0].number}`,
+            ),
+            s.waits.length
+              ? ` · ${ticketList(s.waits)} ${s.waits.length === 1 ? "waits" : "wait"}`
+              : "",
+          ]),
+        ])
+      : s.needs.length
+        ? el("span", { class: "ep-where" }, [
+            ycard(16),
+            el("span", {}, [
+              el("a", { href: `#/review/${s.needs[0].id}` }, `#${s.needs[0].number}`),
+              s.needs[0].status === "in_review"
+                ? " waits for your sign-off"
+                : " waits for the merge",
+            ]),
+          ])
+        : el(
+            "span",
+            { class: "ep-where" },
+            s.won
+              ? [glyph("done", 16), el("span", {}, "Won")]
+              : !s.members.length
+                ? "No tickets yet"
+                : s.nextUp.length
+                  ? [
+                      glyph("ready", 16),
+                      el("span", {}, [
+                        "Next: ",
+                        el(
+                          "a",
+                          { href: `#/ticket/${s.nextUp[0].id}`, title: s.nextUp[0].title },
+                          `#${s.nextUp[0].number}`,
+                        ),
+                      ]),
+                    ]
+                  : [glyph("in_progress", 16), el("span", {}, "In play")],
+          );
+    const roundsLabel = s.phases.length
+      ? s.won
+        ? `All ${s.phases.length} rounds won`
+        : `Round ${s.liveIdx + 1} of ${s.phases.length}`
+      : "No rounds";
+    return el("tr", { class: s.held.length ? "is-held" : "" }, [
+      el(
+        "th",
+        { scope: "row", class: "ep-t-name" },
+        el("a", { href: `#epic-${s.epic.id}`, title: name }, name),
+      ),
+      el("td", { class: "ep-t-rounds" }, [
+        el(
+          "span",
+          { class: "ep-mini", role: "img", "aria-label": roundsLabel },
+          s.phases.map((p, i) => {
+            const tix = s.byPhase.get(p) || [];
+            const d = tix.filter((t) => t.status === "done").length;
+            const isHeld = tix.some((t) => s.heldIds.has(t.id));
+            return el("i", {
+              class: isHeld
+                ? "is-held"
+                : d === tix.length
+                  ? "is-won"
+                  : i === s.liveIdx
+                    ? "is-live"
+                    : "",
+              style: { "--p": `${tix.length ? Math.round((d / tix.length) * 100) : 0}%` },
+            });
+          }),
+        ),
+        el("span", { class: "ep-t-sub", "aria-hidden": "true" }, roundsLabel),
+      ]),
+      el("td", { class: "ep-t-num tabnum" }, `${s.done}/${s.members.length}`),
+      el("td", { class: "ep-t-where" }, where),
+    ]);
+  });
+  return progPage("ep-table", "claret", "The table", `${plural(seasons.length, "campaign")}`, [
+    el("div", { class: "ep-table-scroll" }, [
+      el("table", { class: "ep-season" }, [
+        el(
+          "caption",
+          { class: "sr-only" },
+          "Every campaign: its rounds, tickets done and what holds it",
+        ),
+        el("thead", {}, [
+          el("tr", {}, [
+            el("th", { scope: "col" }, "Campaign"),
+            el("th", { scope: "col" }, "Rounds"),
+            el("th", { scope: "col", class: "ep-t-num" }, "Done"),
+            el("th", { scope: "col" }, "Where it stands"),
+          ]),
+        ]),
+        el("tbody", {}, rows),
+      ]),
+    ]),
+  ]);
+}
+
+/**
+ * One campaign: a programme page. The sky block carries its name and how far it
+ * has got (a red card when a ticket holds it); then what holds it and the one
+ * thing to do about it, the brief, the spec it is played to, the draw (every
+ * ticket, round by round, joined by bracket lines), and the next fixture.
+ */
+function renderEpicCard(s, ctx, specLink, focused) {
+  const { epic, members, byPhase, phases, done, held, waits, needs, nextUp, liveIdx, won } = s;
+  const aux = members.length
+    ? `${won ? "all rounds won" : `round ${liveIdx + 1} of ${phases.length}`} · ${done} of ${members.length} done`
+    : "no tickets";
+  const head = panelHead(
+    epic.name,
+    aux,
+    { text: "On the map", href: `#/node/${epic.id}` },
+    { kit: "sky", level: "h2" },
+  );
+  if (held.length)
+    head.appendChild(el("span", { class: "ep-flag" }, [redCard(22), el("span", {}, "Held")]));
+  else if (needs.length)
+    head.appendChild(el("span", { class: "ep-flag" }, [ycard(22), el("span", {}, "Needs you")]));
+  else if (won) head.appendChild(el("span", { class: "ep-flag" }, [glyph("done", 20), "Won"]));
+
+  const card = el("article", {
+    class: `card epic-card campaign${held.length ? " is-held" : ""}${focused ? " card-accent" : ""}`,
+    id: `epic-${epic.id}`,
+    "aria-labelledby": `epic-h-${epic.id}`,
+  });
+  head.querySelector(".panel-title").id = `epic-h-${epic.id}`;
+  card.appendChild(head);
+
+  if (members.length === 0) {
+    if (epic.description) card.appendChild(el("p", { class: "epic-desc" }, epic.description));
+    card.appendChild(el("p", { class: "ep-lede" }, "This campaign has no tickets yet."));
+    return card;
+  }
+
+  // Where it stands, in one sentence from the data, with the one thing to do.
+  const h = held[0];
+  const lede = held.length
+    ? el("div", { class: "ep-stands is-held" }, [
+        el("p", { class: "ep-lede" }, [
+          el("b", { class: "is-red" }, [
+            glyph("blocked", 18),
+            " Held at ",
+            el("a", { href: `#/ticket/${h.id}` }, `#${h.number}`),
+            ".",
+          ]),
+          " ",
+          el("span", { class: "ep-held-t" }, `“${h.title}”`),
+          " ",
+          ...heldReason(h, ctx.detailById.get(h.id)),
+          waits.length
+            ? ` ${ticketList(waits)} ${waits.length === 1 ? "waits" : "wait"} on it.`
+            : "",
+          held.length > 1
+            ? ` ${held.length - 1} more ${held.length === 2 ? "is" : "are"} off the pitch.`
+            : "",
+        ]),
+        el("div", { class: "btn-row" }, [
+          h.status === "blocked"
+            ? el(
+                "button",
+                {
+                  class: "btn",
+                  type: "button",
+                  onclick: () =>
+                    unblockSheet(h, {
+                      reason: heldReason(h, ctx.detailById.get(h.id)).join("").trim(),
+                    }),
+                },
+                `Unblock #${h.number}…`,
+              )
+            : null,
+          el("a", { class: "btn quiet", href: `#/ticket/${h.id}` }, `Open #${h.number}`),
+        ]),
+      ])
+    : el(
+        "p",
+        { class: "ep-lede" },
+        needs.length
+          ? [
+              ycard(16),
+              " ",
+              el("a", { href: `#/review/${needs[0].id}` }, `#${needs[0].number}`),
+              needs[0].status === "in_review"
+                ? " waits for your sign-off."
+                : " is approved and waits for the merge.",
+              needs.length > 1 ? ` ${needs.length - 1} more after it.` : "",
+              " Nothing is holding the campaign.",
+            ]
+          : won
+            ? "Won: every ticket is done, the Final included."
+            : `Round ${liveIdx + 1} of ${phases.length} is being played. Nothing is holding it.`,
+      );
+  card.appendChild(lede);
+  if (epic.description) card.appendChild(el("p", { class: "epic-desc" }, epic.description));
+  if (specLink) {
+    const { spec, rollup, gaps } = specLink;
+    card.appendChild(
+      el("p", { class: "ep-spec" }, [
+        "Played to the spec ",
+        el("a", { href: `#/specs/${encodeURIComponent(spec.id)}` }, `“${spec.title}”`),
+        ` (${(SPEC_STATUS_LABEL[spec.status] || spec.status || "").toLowerCase()})`,
+        rollup && rollup.total
+          ? `: ${rollup.covered} of ${plural(rollup.total, "clause")} covered${gaps ? `, ${plural(gaps, "gap")}` : ""}.`
+          : ".",
+      ]),
     );
   }
 
-  return el("div", { class: "dag-scroll" }, [
-    el("div", { class: "dag", style: `width:${width}px;height:${height}px` }, [
-      svg,
-      ...labels,
-      ...nodes,
-    ]),
+  const draw = renderEpicDag(byPhase, phases, { ...ctx, heldIds: s.heldIds, epicName: epic.name });
+  const next = el("p", { class: "epic-next" }, [
+    el("b", {}, "Next fixture: "),
+    nextUp.length
+      ? nextUp.flatMap((t, i) => [
+          i ? ", " : "",
+          el("a", { href: `#/ticket/${t.id}` }, `#${t.number} ${t.title}`),
+        ])
+      : held.length
+        ? "nothing can be claimed until the hold is cleared."
+        : won
+          ? "none: the campaign is won."
+          : (() => {
+              // Ready, but waiting on unfinished work: say who, not "nothing is ready".
+              const waiting = members.filter((m) => m.status === "ready");
+              return waiting.length
+                ? `nothing can be claimed yet: ${ticketList(waiting)} ${waiting.length === 1 ? "waits" : "wait"} on unfinished work.`
+                : "nothing is ready to claim.";
+            })(),
   ]);
+  if (won) {
+    // A won campaign keeps its page short: the draw folds away.
+    card.appendChild(
+      el("details", { class: "ep-fold" }, [
+        el("summary", {}, `Show the draw (${plural(members.length, "ticket")})`),
+        draw,
+      ]),
+    );
+  } else {
+    card.appendChild(draw);
+    card.appendChild(next);
+  }
+  return card;
+}
+
+/** A round's name: the last round is the Final when it holds the acceptance ticket. */
+function epicRoundName(byPhase, phases, i) {
+  const p = phases[i];
+  return i === phases.length - 1 && i > 0 && (byPhase.get(p) || []).some(isAcceptanceTicket)
+    ? "Final"
+    : `Round ${i + 1}`;
+}
+
+/**
+ * The draw: one mown lane per round (a column at desktop, stacked on a phone),
+ * every ticket a fixture card in its round, ordered so the bracket lines cross
+ * as little as they can. The lines (drawn by drawEpicLines once laid out) join
+ * each ticket to what it waits on: solid when met, dashed when not, red dashed
+ * out of a held ticket.
+ */
+function renderEpicDag(byPhase, phases, ctx) {
+  const { depViewById, agentByTicket, repoByTicket, heldIds } = ctx;
+  const rowOf = new Map();
+  const cols = phases.map((p, ci) => {
+    const tix = (byPhase.get(p) || []).slice();
+    const bary = (t) => {
+      const ys = (depViewById.get(t.id) || [])
+        .map((d) => rowOf.get(d.depends_on_ticket_id))
+        .filter((y) => y != null);
+      return ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : Infinity;
+    };
+    tix.sort((a, b) =>
+      ci === 0
+        ? (a.number || 0) - (b.number || 0)
+        : bary(a) - bary(b) || (a.number || 0) - (b.number || 0),
+    );
+    tix.forEach((t, i) => rowOf.set(t.id, i));
+    return tix;
+  });
+
+  const edges = [];
+  const tie = (t) => {
+    const deps = depViewById.get(t.id) || [];
+    const blockers = deps.filter((d) => !d.satisfied);
+    for (const d of deps) {
+      if (!rowOf.has(d.depends_on_ticket_id)) continue;
+      edges.push({
+        from: d.depends_on_ticket_id,
+        to: t.id,
+        cls: heldIds.has(d.depends_on_ticket_id) ? "held" : d.satisfied ? "sat" : "pend",
+      });
+    }
+    const agent = agentByTicket.get(t.id);
+    const repo = repoByTicket.get(t.id);
+    const needs = NEEDS_SIGN_OFF.has(t.status);
+    const waitsOnHeld = blockers.some((b) => heldIds.has(b.depends_on_ticket_id));
+    const label = [
+      `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
+      repo ? `in ${repo}` : "",
+      agent ? `${agent} on it` : "",
+      needs ? (t.status === "in_review" ? "waits for your sign-off" : "waits for the merge") : "",
+      blockers.length ? `waiting on ${blockers.map((b) => "#" + b.number).join(", ")}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return el(
+      "a",
+      {
+        class: `dag-node status-${t.status}${isAcceptanceTicket(t) ? " is-final" : ""}`,
+        href: `#/ticket/${t.id}`,
+        title: t.title,
+        "aria-label": label,
+        dataset: { id: t.id },
+      },
+      [
+        el("span", { class: "dn-top" }, [
+          el("span", { class: "dn-num" }, t.number != null ? `#${t.number}` : "—"),
+          needs ? ycard(16) : null,
+          statusBadge(t.status),
+        ]),
+        el("span", { class: "dn-title" }, t.title),
+        el("span", { class: "dn-foot" }, [
+          repo
+            ? el("span", { class: "dn-repo" }, [kitShirt(repo, 16), el("span", {}, repo)])
+            : null,
+          agent
+            ? el("span", { class: "dn-agent" }, [
+                agentShirt(agent, 22),
+                el("span", {}, agentNo(agent)),
+              ])
+            : null,
+          blockers.length
+            ? el("span", { class: `dn-block${waitsOnHeld ? " is-red" : ""}` }, [
+                waitsOnHeld ? glyph("blocked", 12) : icon("clock", "dn-block-ico", 12),
+                `waits on ${blockers.map((b) => (b.number != null ? "#" + b.number : "?")).join(", ")}`,
+              ])
+            : null,
+        ]),
+      ],
+    );
+  };
+
+  const rounds = phases.map((p, ci) => {
+    const tix = cols[ci];
+    const name = epicRoundName(byPhase, phases, ci);
+    const done = tix.filter((t) => t.status === "done").length;
+    const isHeld = tix.some((t) => heldIds.has(t.id));
+    return el(
+      "section",
+      {
+        class: `ep-round${name === "Final" ? " is-final" : ""}${isHeld ? " is-held" : ""}`,
+        "aria-label": `${name}: ${done} of ${tix.length} done`,
+      },
+      [
+        el("header", { class: "ep-round-head" }, [
+          el("h3", { class: "ep-round-name" }, name),
+          el(
+            "span",
+            { class: "ep-round-frac tabnum", "aria-hidden": "true" },
+            `${done}/${tix.length}`,
+          ),
+          el(
+            "span",
+            { class: "ep-round-bar", "aria-hidden": "true" },
+            el("i", {
+              style: { width: `${tix.length ? Math.round((done / tix.length) * 100) : 0}%` },
+            }),
+          ),
+        ]),
+        el(
+          "ol",
+          { class: "ep-ties" },
+          tix.map((t) => el("li", {}, tie(t))),
+        ),
+      ],
+    );
+  });
+
+  const lines = svgEl("svg", { class: "ep-lines", "aria-hidden": "true", focusable: "false" });
+  const draw = el("div", { class: "ep-draw", style: { "--rounds": String(phases.length) } }, [
+    lines,
+    ...rounds,
+  ]);
+  draw._edges = edges;
+  return el(
+    "div",
+    {
+      class: "ep-draw-scroll",
+      role: "region",
+      "aria-label": `${ctx.epicName || "Campaign"}: the draw`,
+      tabindex: phases.length >= 6 ? "0" : undefined,
+    },
+    draw,
+  );
+}
+
+/**
+ * Draw the bracket lines of one draw from where its cards actually are. Each
+ * line leaves the right edge of the ticket waited on, turns at the lane edge of
+ * the waiting ticket's round, and enters its left edge. Rounds that stack (a
+ * phone) carry "waits on #N" on the cards instead, and no lines.
+ */
+function drawEpicLines(draw) {
+  const svg = draw && draw.querySelector(".ep-lines");
+  if (!svg || !draw.isConnected) return;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const rounds = [...draw.querySelectorAll(".ep-round")];
+  const box = draw.getBoundingClientRect();
+  const side =
+    rounds.length > 1 &&
+    Math.abs(rounds[0].getBoundingClientRect().top - rounds[1].getBoundingClientRect().top) < 2 &&
+    box.width > 0;
+  svg.style.display = side ? "" : "none";
+  if (!side) return;
+  const w = Math.round(draw.scrollWidth),
+    h = Math.round(draw.scrollHeight);
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("width", String(w));
+  svg.setAttribute("height", String(h));
+  const nodeOf = new Map([...draw.querySelectorAll(".dag-node")].map((n) => [n.dataset.id, n]));
+  const roundOf = (n) => n.closest(".ep-round");
+  const order = { sat: 0, pend: 1, held: 2 };
+  const edges = (draw._edges || []).filter((e) => nodeOf.has(e.from) && nodeOf.has(e.to));
+  const midY = (n) => {
+    const r = n.getBoundingClientRect();
+    return r.top + Math.min(r.height / 2, 28) - box.top;
+  };
+  // Lines that leave one card, or enter one, fan out a few pixels apart (ordered
+  // by where the other end is), so two lines never share a segment: a met line
+  // under an unmet one would read as met.
+  const FAN = 6;
+  const fan = (key, other) => {
+    const groups = new Map();
+    for (const e of edges) {
+      const k = e[key];
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(e);
+    }
+    const off = new Map();
+    for (const list of groups.values()) {
+      list.sort((p, q) => midY(nodeOf.get(p[other])) - midY(nodeOf.get(q[other])));
+      list.forEach((e, i) => off.set(e, (i - (list.length - 1) / 2) * FAN));
+    }
+    return off;
+  };
+  const outOff = fan("from", "to");
+  const inOff = fan("to", "from");
+  // Each straight run is its own path whose dashes are phased to the page, not to
+  // the path, so where two dashed runs still overlap their dashes coincide.
+  const period = { pend: 8, held: 12 };
+  const seg = (cls, xa, ya, xb, yb) => {
+    const horiz = Math.abs(ya - yb) < 0.5;
+    const lo = horiz ? Math.min(xa, xb) : Math.min(ya, yb);
+    const hi = horiz ? Math.max(xa, xb) : Math.max(ya, yb);
+    if (hi - lo < 0.5) return;
+    const d = horiz
+      ? `M${lo.toFixed(1)} ${ya.toFixed(1)} H${hi.toFixed(1)}`
+      : `M${xa.toFixed(1)} ${lo.toFixed(1)} V${hi.toFixed(1)}`;
+    const attrs = { class: `edge ${cls}`, d };
+    if (period[cls]) attrs["stroke-dashoffset"] = (lo % period[cls]).toFixed(1);
+    svg.appendChild(svgEl("path", attrs));
+  };
+  for (const e of edges.slice().sort((a, b) => order[a.cls] - order[b.cls])) {
+    const a = nodeOf.get(e.from),
+      b = nodeOf.get(e.to);
+    const ra = a.getBoundingClientRect(),
+      rb = b.getBoundingClientRect(),
+      lane = roundOf(b).getBoundingClientRect();
+    const x1 = ra.right - box.left,
+      y1 = midY(a) + (outOff.get(e) || 0),
+      x2 = rb.left - box.left,
+      y2 = midY(b) + (inOff.get(e) || 0);
+    if (x2 <= x1) continue;
+    const xm = Math.max(x1 + 6, Math.min(x2 - 6, lane.left - box.left));
+    seg(e.cls, x1, y1, xm, y1);
+    seg(e.cls, xm, y1, xm, y2);
+    seg(e.cls, xm, y2, x2, y2);
+  }
 }
 
 // ===========================================================================
@@ -9495,20 +18209,25 @@ function ensurePlanBuild() {
     },
     [icon("check"), el("span", {}, "Build the tickets")],
   );
-  const actions = el("div", { class: "pb-actions" }, [forceBtn, sendBtn]);
+  const actions = el("div", { class: "pb-actions" }, [
+    forceBtn,
+    el("span", { class: "pb-keys" }, "Enter sends · Shift+Enter for a new line"),
+    sendBtn,
+  ]);
   const form = el("form", { class: "pb-composer" }, [input, actions]);
+  const titleEl = el("div", { class: "pb-title" }, "Plan a build");
+  const subEl = el("div", { class: "pb-sub" }, "Your brief → the planner's questions → the draw");
+  const closeBtn = el(
+    "button",
+    { class: "icon-btn pb-close", type: "button", "aria-label": "Close", onclick: closePlanBuild },
+    icon("close", "", 20),
+  );
   const panel = el(
     "aside",
     { class: "pb-panel", role: "dialog", "aria-modal": "true", "aria-label": "Plan a build" },
     [
       el("header", { class: "pb-head" }, [
-        el("div", { class: "pb-head-main" }, [
-          icon("spark", "pb-head-ico"),
-          el("div", {}, [
-            el("div", { class: "pb-title" }, "Plan a build"),
-            el("div", { class: "pb-sub dim" }, "Brief → phased epic of draft tickets"),
-          ]),
-        ]),
+        el("div", { class: "pb-head-main" }, [titleEl, subEl]),
         el("div", { class: "pb-head-actions" }, [
           el(
             "button",
@@ -9520,20 +18239,12 @@ function ensurePlanBuild() {
             },
             "New plan",
           ),
-          el(
-            "button",
-            { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closePlanBuild },
-            el("span", { html: "✕" }),
-          ),
+          closeBtn,
         ]),
       ]),
-      el("div", { class: "pb-guardrail" }, [
-        icon("alert", "pb-guard-ico"),
-        el(
-          "span",
-          {},
-          "Proposes only. Nothing runs — confirmed tickets land as draft for you to ready.",
-        ),
+      el("p", { class: "pb-guardrail" }, [
+        el("b", {}, "Proposes only. "),
+        "Nothing runs until you confirm, and confirmed tickets land as draft (or ready, if you say so).",
       ]),
       log,
       form,
@@ -9559,7 +18270,19 @@ function ensurePlanBuild() {
   scrim.appendChild(panel); // the panel must live inside the scrim (click-outside closes; panel stops propagation)
   document.body.appendChild(scrim);
 
-  planBuildEls = { scrim, panel, log, input, sendBtn, forceBtn, form };
+  planBuildEls = {
+    scrim,
+    panel,
+    log,
+    input,
+    sendBtn,
+    forceBtn,
+    form,
+    titleEl,
+    subEl,
+    closeBtn,
+    inline: null,
+  };
   return planBuildEls;
 }
 
@@ -9660,7 +18383,55 @@ async function archivePlanBuildSession(status) {
 }
 
 function openPlanBuild(opts = {}) {
-  const { scrim, input } = ensurePlanBuild();
+  const els = ensurePlanBuild();
+  // On the Plan-a-build page the panel is part of the page: (re)start it there.
+  if (els.inline && els.inline.isConnected && els.inline.contains(els.panel)) {
+    startPlanBuild(opts);
+    els.panel.scrollIntoView?.({
+      block: "start",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+    return;
+  }
+  startPlanBuild(opts);
+  els.scrim.classList.add("open");
+  document.addEventListener("keydown", planBuildKeydown);
+}
+
+/**
+ * The Plan-a-build page (#/create) hosts the same panel inline: the conversation
+ * state, the session persistence and the tests' hooks are shared with the sheet.
+ * Returns the undo, which hands the panel back to its scrim — but only while this
+ * host still holds it (a newer render of the page may have taken it already).
+ */
+function mountPlanBuildInline(host) {
+  const els = ensurePlanBuild();
+  closePlanBuild();
+  host.appendChild(els.panel);
+  els.inline = host;
+  els.panel.classList.add("pb-inline");
+  els.panel.setAttribute("role", "region");
+  els.panel.removeAttribute("aria-modal");
+  els.closeBtn.hidden = true;
+  els.titleEl.textContent = "The team talk";
+  els.subEl.textContent =
+    "You give the brief. The planner asks what it needs, then proposes the draw.";
+  startPlanBuild({ focus: false });
+  return () => {
+    if (!host.contains(els.panel)) return;
+    els.scrim.appendChild(els.panel);
+    els.inline = null;
+    els.panel.classList.remove("pb-inline");
+    els.panel.setAttribute("role", "dialog");
+    els.panel.setAttribute("aria-modal", "true");
+    els.closeBtn.hidden = false;
+    els.titleEl.textContent = "Plan a build";
+    els.subEl.textContent = "Your brief → the planner's questions → the draw";
+  };
+}
+
+function startPlanBuild(opts = {}) {
+  const { input } = ensurePlanBuild();
   // `mode` is the start toggle: "new" (greenfield app) vs "extend" (add tickets
   // to an existing scope node / epic). `target` holds the chosen extend node and
   // becomes the `context` sent to the decomposer on the first turn. `nodes` is
@@ -9686,11 +18457,9 @@ function openPlanBuild(opts = {}) {
     spec: Array.isArray(opts.spec) && opts.spec.length ? opts.spec : null,
   };
   renderPlanBuildLog();
-  scrim.classList.add("open");
-  document.addEventListener("keydown", planBuildKeydown);
   // Seeded from a spec: pre-fill the brief so the user can immediately "Build the tickets".
   if (planBuildState.brief && input) input.value = planBuildState.brief;
-  setTimeout(() => input.focus(), 50);
+  if (opts.focus !== false) setTimeout(() => input.focus(), 50);
   // Best-effort: restore the in-progress session from the server, and populate
   // the "Extend existing" picker. Both are non-blocking; the panel works without them.
   guard(async () => {
@@ -9762,55 +18531,86 @@ function renderPlanBuildLog() {
     log.appendChild(
       el("div", { class: "pb-intro" }, [
         renderPlanBuildModeToggle(),
-        planBuildState.mode === "extend"
+        planBuildState.spec
           ? el(
               "p",
-              {},
-              planBuildState.target
-                ? `Tell me what to add to "${planBuildState.target.name}" in one line — for example:`
-                : "Pick what to extend, then tell me what to add in one line — for example:",
+              { class: "pb-spec-note" },
+              `Built to a frozen spec: its ${plural(planBuildState.spec.length, "clause")} ride along, so every criterion names the clause it proves.`,
             )
-          : el("p", {}, "Tell me what to build in one line — for example:"),
-        el(
-          "ul",
-          { class: "pb-examples" },
-          (planBuildState.mode === "extend"
-            ? ["add CSV export to the reports", "add a settings page with dark mode"]
-            : ["a web app that tracks gym workouts", "an API that summarises PDFs"]
-          ).map((ex) =>
-            el(
-              "li",
-              {},
-              el(
-                "button",
-                {
-                  class: "pb-example",
-                  type: "button",
-                  onclick: () => {
-                    planBuildEls.input.value = ex;
-                    planBuildEls.input.focus();
-                  },
-                },
-                ex,
+          : null,
+        planBuildState.spec
+          ? el(
+              "p",
+              { class: "pb-ask" },
+              "The spec's brief is in the box below. Edit it if you like, then send it to the planner.",
+            )
+          : planBuildState.mode === "extend"
+            ? el(
+                "p",
+                { class: "pb-ask" },
+                planBuildState.target
+                  ? `Say what to add to “${planBuildState.target.name}” in a line or two. For example:`
+                  : "Pick what to extend, then say what to add in a line or two. For example:",
+              )
+            : el("p", { class: "pb-ask" }, "Say what to build in a line or two. For example:"),
+        // From a frozen spec the brief is already written: no stock examples then.
+        planBuildState.spec
+          ? null
+          : el(
+              "ul",
+              { class: "pb-examples" },
+              (planBuildState.mode === "extend"
+                ? ["add CSV export to the reports", "add a settings page with dark mode"]
+                : ["a web app that tracks gym workouts", "an API that summarises PDFs"]
+              ).map((ex) =>
+                el(
+                  "li",
+                  {},
+                  el(
+                    "button",
+                    {
+                      class: "pb-example",
+                      type: "button",
+                      onclick: () => {
+                        planBuildEls.input.value = ex;
+                        planBuildEls.input.focus();
+                      },
+                    },
+                    ex,
+                  ),
+                ),
               ),
             ),
-          ),
-        ),
       ]),
     );
   }
 
+  let userTurn = 0;
   for (const turn of planBuildState.history) {
     if (turn.role === "user") {
-      log.appendChild(el("div", { class: "pb-msg pb-user" }, turn.answer || turn.brief || ""));
+      log.appendChild(
+        el("div", { class: "pb-msg pb-user" }, [
+          el("div", { class: "pb-bot-label" }, userTurn++ === 0 ? "Your brief" : "You"),
+          el("div", { class: "pb-msg-t" }, turn.answer || turn.brief || ""),
+        ]),
+      );
     } else if (turn.role === "assistant" && turn.questions) {
       log.appendChild(
         el("div", { class: "pb-msg pb-bot" }, [
-          el("div", { class: "pb-bot-label dim" }, "Clarifying questions"),
           el(
-            "ul",
+            "div",
+            { class: "pb-bot-label" },
+            `The planner asks ${turn.questions.length === 1 ? "one question" : `${turn.questions.length} questions`}`,
+          ),
+          el(
+            "ol",
             { class: "pb-questions" },
             turn.questions.map((q) => el("li", {}, q)),
+          ),
+          el(
+            "p",
+            { class: "pb-hint" },
+            "Answer below in your own words, or build the tickets now.",
           ),
         ]),
       );
@@ -9833,12 +18633,15 @@ function renderPlanBuildLog() {
     log.appendChild(renderPlanProposal(planBuildState.plan));
   }
 
+  if (planBuildState.notice) {
+    log.appendChild(el("p", { class: "pb-notice", role: "alert" }, planBuildState.notice));
+  }
+
   if (planBuildState.busy) {
     log.appendChild(
-      el("div", { class: "pb-msg pb-bot pb-thinking" }, [
-        el("span", { class: "pb-dot" }),
-        el("span", { class: "pb-dot" }),
-        el("span", { class: "pb-dot" }),
+      el("div", { class: "pb-msg pb-bot pb-thinking", role: "status" }, [
+        el("span", { class: "btn-spinner", "aria-hidden": "true" }),
+        el("span", {}, "The planner is working on it…"),
       ]),
     );
   }
@@ -9868,6 +18671,9 @@ function updatePlanBuildActions() {
   // Hide the whole composer once a plan is proposed — the create path owns it now.
   form.hidden = hasPlan;
   if (hasPlan) return;
+  planBuildEls.input.placeholder = turns
+    ? "Answer the planner, or add anything it should know…"
+    : "Describe what to build…";
   // A bare first turn has no brief yet — force-plan with nothing to go on is a no-op.
   forceBtn.disabled = planBuildState.busy || turns === 0;
   forceBtn.classList.toggle("pb-force-strong", turns >= PLAN_BUILD_FORCE_EMPHASIS_TURNS);
@@ -10167,14 +18973,14 @@ function renderPlanBuildModeToggle() {
         newRadio,
         el("span", {}, [
           el("strong", {}, "New app"),
-          el("span", { class: "dim" }, " — greenfield"),
+          el("span", { class: "mode-sub" }, "a new repo, from scratch"),
         ]),
       ]),
       el("label", { class: "mode-option" }, [
         extendRadio,
         el("span", {}, [
           el("strong", {}, "Extend existing"),
-          el("span", { class: "dim" }, " — add to a scope"),
+          el("span", { class: "mode-sub" }, "add to a repo or scope we have"),
         ]),
       ]),
     ]),
@@ -10193,6 +18999,7 @@ function renderPlanBuildModeToggle() {
       multiple: false,
       onChange: (target) => {
         planBuildState.target = target;
+        planBuildState.notice = null;
         renderPlanBuildLog();
         planBuildEls.input.focus();
       },
@@ -10203,71 +19010,140 @@ function renderPlanBuildModeToggle() {
   return el("div", { class: "pb-mode" }, children);
 }
 
-/** Render the proposed epic + tickets for review, with the confirm button. */
+/**
+ * The proposal as the draw: the epic's name and brief, then its tickets round by
+ * round (a ticket's round is its dependency depth in the plan), then the Final
+ * the factory adds on confirm, then the two ways to confirm.
+ */
 function renderPlanProposal(plan) {
   const epic = plan.epic || {};
   const tickets = plan.tickets || [];
-  const wrap = el("div", { class: "pb-proposal card card-amber" });
-  wrap.appendChild(
-    el("div", { class: "pb-proposal-head" }, [
-      badge("proposal", "no-dot"),
-      el("h3", { class: "pb-proposal-name" }, epic.name || "Proposed epic"),
-    ]),
-  );
-  if (epic.description)
-    wrap.appendChild(el("p", { class: "pb-proposal-desc dim" }, epic.description));
+  const depthMemo = new Map();
+  const depth = (i, seen = new Set()) => {
+    if (depthMemo.has(i)) return depthMemo.get(i);
+    if (seen.has(i)) return 0;
+    seen.add(i);
+    const deps = (Array.isArray(tickets[i]?.dependsOn) ? tickets[i].dependsOn : []).filter(
+      (d) => Number.isInteger(d) && d >= 0 && d < tickets.length && d !== i,
+    );
+    const v = deps.length ? 1 + Math.max(...deps.map((d) => depth(d, seen))) : 0;
+    depthMemo.set(i, v);
+    return v;
+  };
+  const rounds = [];
+  tickets.forEach((t, i) => {
+    const d = depth(i);
+    (rounds[d] = rounds[d] || []).push(i);
+  });
+  const filled = rounds.filter(Boolean);
+  const known = new Set(((planBuildState && planBuildState.repos) || []).map((r) => r.name));
+  const withFinal = epic.acceptance !== false;
 
-  wrap.appendChild(
-    el(
-      "ol",
-      { class: "pb-tickets" },
-      tickets.map((t, i) => {
-        const deps = Array.isArray(t.dependsOn) ? t.dependsOn : [];
-        return el("li", { class: "pb-ticket" }, [
-          el("div", { class: "pb-ticket-top" }, [
-            el("span", { class: "pb-ticket-idx tabnum" }, `#${i + 1}`),
-            t.bootstrap ? badge("bootstrap", "no-dot") : null,
-            typeof t.priority === "number"
-              ? el("span", { class: "dim tabnum" }, `P${t.priority}`)
-              : null,
-            t.repo ? el("code", { class: "mono pb-repo" }, t.repo) : null,
+  const ticketRow = (i) => {
+    const t = tickets[i];
+    const deps = Array.isArray(t.dependsOn) ? t.dependsOn : [];
+    const acs = Array.isArray(t.acceptanceCriteria) ? t.acceptanceCriteria : [];
+    const acText = (ac) => (typeof ac === "string" ? ac : (ac && ac.text) || "");
+    return el("li", { class: "pb-ticket" }, [
+      el("div", { class: "pb-ticket-top" }, [
+        // A proposal index, never a ticket number: the server numbers the tickets
+        // only when you confirm, so "#1" here would name a ticket that exists.
+        el(
+          "span",
+          { class: "pb-ticket-idx tabnum", title: `Proposed ticket ${i + 1}: not created yet` },
+          `T${i + 1}`,
+        ),
+        el("span", { class: "pb-ticket-title" }, t.title),
+      ]),
+      el("div", { class: "pb-ticket-meta" }, [
+        t.repo
+          ? known.has(t.repo)
+            ? repoTag(t.repo, 16)
+            : el("span", { class: "pb-repo-new" }, [kitShirt(t.repo, 16), `new repo: ${t.repo}`])
+          : el("span", {}, "no repo named"),
+        t.bootstrap ? badge("bootstrap") : null,
+        typeof t.priority === "number"
+          ? el("span", { class: "tabnum" }, `priority ${t.priority}`)
+          : null,
+        deps.length
+          ? el(
+              "span",
+              { class: "pb-ticket-deps" },
+              `after ${deps.map((d) => `T${d + 1}`).join(", ")}`,
+            )
+          : null,
+      ]),
+      t.description ? el("p", { class: "pb-ticket-desc" }, t.description) : null,
+      acs.length
+        ? el("details", { class: "pb-acs-fold" }, [
+            el("summary", {}, plural(acs.length, "acceptance criterion", "acceptance criteria")),
+            el(
+              "ul",
+              { class: "pb-acs" },
+              acs.map((ac) => el("li", {}, acText(ac))),
+            ),
+          ])
+        : el(
+            "p",
+            { class: "pb-ticket-noac" },
+            "No acceptance criterion: it stays draft until one is added.",
+          ),
+    ]);
+  };
+
+  const wrap = el(
+    "section",
+    { class: "pb-proposal", "aria-label": `Proposed campaign: ${epic.name || "epic"}` },
+    [
+      el("header", { class: "pb-proposal-head" }, [
+        el("h3", { class: "pb-proposal-name" }, epic.name || "Proposed epic"),
+        el(
+          "p",
+          { class: "pb-proposal-aux" },
+          `The draw, proposed · ${plural(tickets.length, "ticket")} in ${plural(filled.length, "round")}${withFinal ? " + the Final" : ""}`,
+        ),
+      ]),
+      epic.description ? el("p", { class: "pb-proposal-desc" }, epic.description) : null,
+      el("ol", { class: "pb-rounds" }, [
+        ...filled.map((idxs, ri) =>
+          el("li", { class: "pb-round" }, [
+            el("h4", { class: "pb-round-name" }, `Round ${ri + 1}`),
+            el("ol", { class: "pb-tickets" }, idxs.map(ticketRow)),
           ]),
-          el("div", { class: "pb-ticket-title" }, t.title),
-          t.description ? el("p", { class: "pb-ticket-desc dim" }, t.description) : null,
-          Array.isArray(t.acceptanceCriteria) && t.acceptanceCriteria.length
-            ? el(
-                "ul",
-                { class: "pb-acs" },
-                t.acceptanceCriteria.map((ac) => el("li", {}, ac)),
-              )
-            : null,
-          deps.length
-            ? el("div", { class: "pb-ticket-deps dim" }, [
-                icon("link", "dep-ico"),
-                `depends on ${deps.map((d) => `#${d + 1}`).join(", ")}`,
-              ])
-            : null,
-        ]);
-      }),
-    ),
+        ),
+        withFinal
+          ? el("li", { class: "pb-round is-final" }, [
+              el("h4", { class: "pb-round-name" }, "Final"),
+              el("div", { class: "pb-final" }, [
+                el("span", { class: "pb-ticket-title" }, `Acceptance: ${epic.name || "the build"}`),
+                el(
+                  "p",
+                  { class: "pb-ticket-desc" },
+                  "Added by the factory when you confirm. Your brief is its contract; it runs last, against the whole build, and the independent tester decides it.",
+                ),
+              ]),
+            ])
+          : null,
+      ]),
+    ],
   );
 
   wrap.appendChild(
     el("div", { class: "pb-confirm-row" }, [
       el(
         "p",
-        { class: "pb-confirm-note dim" },
-        `${tickets.length} ticket${tickets.length === 1 ? "" : "s"} — create as draft to review first, or create & ready to queue them for delivery now (the AC gate still applies per ticket).`,
+        { class: "pb-confirm-note" },
+        `Create as draft to look them over first, or create and ready them for the squad now. Readying asks each ticket's gate: one with no acceptance criterion stays draft.`,
       ),
       el("div", { class: "pb-confirm-actions" }, [
         el(
           "button",
           {
-            class: "btn ghost",
+            class: "btn",
             type: "button",
             onclick: () => confirmPlanBuild(plan),
           },
-          [icon("check"), el("span", {}, "Create as draft")],
+          el("span", {}, "Create as draft"),
         ),
         el(
           "button",
@@ -10303,15 +19179,20 @@ async function submitPlanBuildTurn(opts = {}) {
   const isFirst = planBuildState.history.length === 0;
   // Extend mode requires a target before the first turn, otherwise "extend" has
   // nothing to extend. Later turns inherit the locked target, so only gate the first.
+  // Both refusals are said inline, next to the composer, not in a toast.
   if (isFirst && planBuildState.mode === "extend" && !planBuildState.target) {
-    toast("Pick a scope node or epic to extend first.");
+    planBuildState.notice = "Pick the repo or scope to extend first.";
+    renderPlanBuildLog();
     return;
   }
   // Force-plan with nothing said yet has nothing to plan from — ask for the brief.
   if (forcePlan && isFirst && !text) {
-    toast("Tell me what to build first, then I can build the tickets.");
+    planBuildState.notice = "Write the brief first: the tickets are built from it.";
+    renderPlanBuildLog();
+    input.focus();
     return;
   }
+  planBuildState.notice = null;
 
   // Record the user's message. On a force-plan turn the input may be empty (the
   // user just pressed "Build the tickets"), so only push a message when there is text.
@@ -10468,7 +19349,7 @@ async function confirmPlanBuild(plan, opts = {}) {
       // gate decide per ticket. A refusal (missing AC, unmet precondition) is
       // expected for some tickets — they stay draft, counted, never surfaced as an
       // error. Bootstrap-gated tickets are readied too; the loop honours deps.
-      const all = (await api("GET", "/tickets?fields=summary")).tickets || [];
+      const all = (await api("GET", "/tickets")).tickets || [];
       const mine = all.filter((t) => numbers.includes(t.number));
       for (const t of mine) {
         try {
@@ -10552,11 +19433,12 @@ function ensureSpecBuild() {
     [
       el("header", { class: "pb-head" }, [
         el("div", { class: "pb-head-main" }, [
-          icon("spark", "pb-head-ico"),
-          el("div", {}, [
-            el("div", { class: "pb-title" }, "Author a spec"),
-            el("div", { class: "pb-sub dim" }, "Brief → editable clauses → freeze"),
-          ]),
+          el("div", { class: "pb-title" }, "Author a spec"),
+          el(
+            "div",
+            { class: "pb-sub" },
+            "Your brief → clauses you edit → frozen into the playbook",
+          ),
         ]),
         el("div", { class: "pb-head-actions" }, [
           el(
@@ -10571,18 +19453,19 @@ function ensureSpecBuild() {
           ),
           el(
             "button",
-            { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closeSpecBuild },
-            el("span", { html: "✕" }),
+            {
+              class: "icon-btn pb-close",
+              type: "button",
+              "aria-label": "Close",
+              onclick: closeSpecBuild,
+            },
+            icon("close", "", 20),
           ),
         ]),
       ]),
-      el("div", { class: "pb-guardrail" }, [
-        icon("alert", "pb-guard-ico"),
-        el(
-          "span",
-          {},
-          "Proposes only. Nothing is created until you press Create spec — and nothing is locked until you Freeze.",
-        ),
+      el("p", { class: "pb-guardrail" }, [
+        el("b", {}, "Proposes only. "),
+        "Nothing is created until you press Create spec, and nothing is locked until you freeze it.",
       ]),
       log,
       form,
@@ -10680,7 +19563,7 @@ function renderSpecBuildLog() {
   if (specBuildState.history.length === 0 && !specBuildState.draft) {
     log.appendChild(
       el("div", { class: "pb-intro" }, [
-        el("p", {}, "Describe the product in one line and I'll draft a spec — for example:"),
+        el("p", {}, "Describe the product in one line and I'll draft a spec. For example:"),
         el(
           "ul",
           { class: "pb-examples" },
@@ -10779,12 +19662,16 @@ function renderSpecDraft(draft) {
   const clauses = draft.clauses || [];
   const created = specBuildState.createdSpec;
   const frozen = created && created.status === "frozen";
-  const wrap = el("div", { class: "pb-proposal sb-draft card card-amber" });
+  const wrap = el("section", { class: "pb-proposal sb-draft", "aria-label": "Proposed spec" });
 
   wrap.appendChild(
-    el("div", { class: "pb-proposal-head" }, [
-      badge(frozen ? "frozen" : created ? "created" : "draft", "no-dot"),
+    el("header", { class: "pb-proposal-head" }, [
       el("h3", { class: "pb-proposal-name" }, "Proposed spec"),
+      el(
+        "p",
+        { class: "pb-proposal-aux" },
+        `${frozen ? "Frozen: in the playbook" : created ? "Created as a draft spec" : "A draft: edit any clause"} · ${plural(clauses.length, "clause")}`,
+      ),
     ]),
   );
 
@@ -10887,7 +19774,7 @@ function renderSpecDraft(draft) {
       el(
         "p",
         { class: "pb-confirm-note dim" },
-        `${clauses.length} clause${clauses.length === 1 ? "" : "s"} — created as a draft spec you can freeze when ready.`,
+        `${clauses.length} clause${clauses.length === 1 ? "" : "s"}, created as a draft spec you can freeze when ready.`,
       ),
     );
     confirmRow.appendChild(createBtn);
@@ -10911,7 +19798,7 @@ function renderSpecDraft(draft) {
       el(
         "p",
         { class: "pb-confirm-note dim" },
-        "Spec frozen — clauses are immutable. Build the tickets from it to carry clause provenance into the plan.",
+        "Spec frozen: its clauses can no longer change. Plan a build from it, and each ticket carries the clauses it proves.",
       ),
     );
     confirmRow.appendChild(
@@ -10970,7 +19857,7 @@ function renderSpecClauseRow(clause, i, locked) {
   });
 
   const top = el("div", { class: "pb-ticket-top sb-clause-top" }, [
-    el("span", { class: "pb-ticket-idx tabnum" }, `#${i + 1}`),
+    el("span", { class: "sb-clause-no tabnum", "aria-hidden": "true" }, String(i + 1)),
     kindSel,
     !locked
       ? el(
@@ -11131,7 +20018,7 @@ async function createSpecFromDraft() {
         })),
       };
     }
-    toast("Spec created as draft — freeze it when ready.", { ok: true });
+    toast("Spec created as a draft. Freeze it when it is ready.", { ok: true });
   } catch (e) {
     // Persistent error (rendered in the draft card), plus a toast for immediacy.
     specBuildState.actionError = e && e.message ? e.message : "Could not create the spec.";
@@ -11152,7 +20039,7 @@ async function freezeCreatedSpec() {
   try {
     const res = await api("POST", `/specs/${id}/freeze`);
     specBuildState.createdSpec = res.spec || specBuildState.createdSpec;
-    toast("Spec frozen — clauses are now immutable.", { ok: true });
+    toast("Spec frozen: its clauses can no longer change.", { ok: true });
   } catch (e) {
     specBuildState.actionError = e && e.message ? e.message : "Could not freeze the spec.";
     toast(specBuildState.actionError, { code: e && e.code });
@@ -11200,7 +20087,7 @@ function buildFromFrozenSpec() {
 // view surfaces three read-only memory artefacts and never mutates anything:
 //   • Repo Digest   — the repo's understanding (overview/structure/conventions/
 //                     stack) with its freshness line + honesty caveat.
-//   • Features      — the ledger split Current (shipped) / Building / Backlog,
+//   • Features      — the ledger split Shipped / Building / Backlog,
 //                     filterable by scope node.
 //   • Lore          — the team's recorded lore (read-only).
 //
@@ -11209,7 +20096,7 @@ function buildFromFrozenSpec() {
 // "memory unavailable" panel from that — it never errors the dashboard.
 
 const FEATURE_GROUPS = [
-  { status: "shipped", label: "Current", note: "Shipped — live in the repo." },
+  { status: "shipped", label: "Shipped", note: "Live in the repo." },
   { status: "building", label: "Building", note: "In flight right now." },
   { status: "backlog", label: "Backlog", note: "Proposed, not yet started." },
 ];
@@ -11232,11 +20119,10 @@ function writeMemoryStateToUrl() {
 
 /** Render the structured "memory unavailable" panel from an unavailable result. */
 function memoryUnavailable(reason) {
-  return el("div", { class: "card memory-unavailable", dataset: { state: "unavailable" } }, [
-    el("div", { class: "es-icon" }, icon("alert")),
-    el("div", { class: "es-title" }, "Memory unavailable"),
-    el("p", { class: "dim es-sub" }, reason || "The memory product is not reachable right now."),
-    el("p", { class: "dim section-note" }, [
+  return el("div", { class: "memory-unavailable", dataset: { state: "unavailable" } }, [
+    el("p", { class: "es-title" }, "Memory unavailable"),
+    el("p", { class: "es-sub" }, reason || "The memory product is not reachable right now."),
+    el("p", { class: "section-note" }, [
       "The dashboard keeps working without it. Configure the memory CLI (",
       el("code", { class: "mono" }, "MEMORY_CLI_BIN"),
       " + ",
@@ -11330,7 +20216,7 @@ function onboardButton(repos, presetRepo, opts) {
       title: "Scan a repo and build its Memory digest + feature inventory",
       onclick: () => openOnboardPicker(repos, presetRepo),
     },
-    [icon("plus"), el("span", {}, "Onboard a repo")],
+    [icon("plus"), el("span", {}, o.label || "Onboard a repo")],
   );
   return btn;
 }
@@ -11371,71 +20257,272 @@ async function renderSpecs(param) {
   return specId ? renderSpecDetail(specId) : renderSpecList();
 }
 
-async function renderSpecList() {
-  const res = await api("GET", "/specs");
-  const specs = res.specs || [];
+/** A spec's status: its mark + its word (a lock when frozen: the clauses cannot change). */
+function specStatusMark(status) {
+  const word = SPEC_STATUS_LABEL[status] || status || "—";
+  const mark =
+    status === "frozen"
+      ? icon("lock", "spec-lock", 16)
+      : glyph(status === "superseded" ? "cancelled" : "draft", 16);
+  return el("span", { class: `spec-card-status status-${status}` }, [mark, el("span", {}, word)]);
+}
 
-  const wrap = el("div", { class: "view", dataset: { view: "specs" } });
-  wrap.appendChild(
-    viewHero({
-      image: "assets/bg/hero-spec.jpg",
-      eyebrow: "SPEC LIBRARY",
-      title: "Specs define intent. Code delivers it.",
-      subtitle:
-        "Each spec is a frozen statement of product intent. Trace every clause through to acceptance criteria and see the coverage gaps.",
+/** How many of a clause's covering criteria are met, of how many. */
+function clauseMet(c) {
+  const acs = Array.isArray(c.covering_acs) ? c.covering_acs : [];
+  return { met: acs.filter((ac) => ac.satisfied).length, of: acs.length };
+}
+
+/**
+ * One clause's coverage state (the data-state hook). The server's `satisfied`
+ * flag is true when ANY covering criterion is met, so the state is read from the
+ * criteria themselves: satisfied only when every one is met, partly met when
+ * some are, open when none are. A clause is proven only when all of it is.
+ */
+function clauseState(c) {
+  if (c.orphan) return "orphan";
+  const { met, of } = clauseMet(c);
+  if (!of) return c.satisfied ? "satisfied" : "open";
+  return met === of ? "satisfied" : met > 0 ? "partial" : "open";
+}
+
+/** Clause kinds that record intent rather than behaviour: no criterion is not a gap. */
+const INTENT_KINDS = new Set(["non-goal", "decision"]);
+
+/**
+ * A spec not built yet: a draft, or a frozen spec with no campaign playing it and
+ * no criterion naming any clause (the state between "Freeze spec" and "Plan a
+ * build from it"). Its clauses read "not covered yet" everywhere (the squares,
+ * the board line, the lede and the list), never as gaps: nothing has failed.
+ */
+function specUnbuilt(status, clauses, scopeNodeId) {
+  if (status === "draft") return true;
+  return !scopeNodeId && !(clauses || []).some((c) => c.covered);
+}
+
+/**
+ * A gap is a clause that should be proven and is not: a requirement of a spec
+ * whose build is under way with no criterion covering it. A spec not built yet
+ * (specUnbuilt) has no gaps by design, and a non-goal or a decision with no
+ * criterion is not a failure; those read quietly, never red.
+ */
+function clauseIsGap(c, status, unbuilt = false) {
+  return !!c.orphan && !unbuilt && status !== "draft" && !INTENT_KINDS.has(c.kind);
+}
+
+/** How many of a coverage payload's clauses are gaps (see clauseIsGap). */
+function specGapCount(coverage, status) {
+  const clauses = coverage && Array.isArray(coverage.clauses) ? coverage.clauses : null;
+  if (clauses) {
+    const unbuilt = specUnbuilt(status, clauses, coverage.scope_node_id);
+    return clauses.filter((c) => clauseIsGap(c, status, unbuilt)).length;
+  }
+  const r = specCoverageRollup(coverage);
+  return r && status !== "draft" && (r.covered || coverage.scope_node_id) ? r.orphans : 0;
+}
+
+/**
+ * The form guide: one square per clause, in the order written — filled when
+ * every criterion is met, outlined with a filled corner when some are, outlined
+ * when covered but none is met yet, red when it is a gap, dashed when it has no
+ * criterion and is not a gap (a spec not built yet, a non-goal, a decision).
+ * Decorative next to the sentence that states the same counts.
+ */
+function specFormGuide(clauses, status, scopeNodeId) {
+  const unbuilt = specUnbuilt(status, clauses, scopeNodeId);
+  return el(
+    "span",
+    { class: "spec-form", "aria-hidden": "true" },
+    clauses.map((c, i) => {
+      const state = clauseState(c);
+      const cls =
+        state === "orphan" ? (clauseIsGap(c, status, unbuilt) ? "orphan" : "none") : state;
+      return el(
+        "i",
+        {
+          class: `fg fg-${cls}`,
+          title: `Clause ${i + 1} (${CLAUSE_KIND_LABEL[c.kind] || c.kind}): ${c.text}`,
+        },
+        String(i + 1),
+      );
     }),
   );
+}
+
+/**
+ * "6 of 8 covered · 1 satisfied · 2 partly met · 1 gap" — the counts the form
+ * guide draws. Satisfied means every criterion on the clause is met.
+ */
+function specCoverageWords(r, gaps) {
+  if (!r) return "Coverage unavailable";
+  if (!r.total) return "No clauses yet";
+  if (!r.covered)
+    return gaps
+      ? `Nothing covered: ${plural(gaps, "gap")}`
+      : `Not covered yet: no criterion names ${r.total === 1 ? "it" : "them"}`;
+  return [
+    `${r.covered} of ${r.total} covered`,
+    r.satisfied != null ? `${r.satisfied} satisfied` : null,
+    r.partial ? `${r.partial} partly met` : null,
+    gaps ? plural(gaps, "gap") : "no gaps",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+async function renderSpecList() {
+  const signal = routeSignal();
+  const res = await api("GET", "/specs", undefined, { signal });
+  const specs = res.specs || [];
+
+  const wrap = el("div", { class: "view view-specs", dataset: { view: "specs" } });
+  const author = el(
+    "button",
+    { class: "btn primary", type: "button", onclick: () => openSpecBuild() },
+    [icon("spark"), el("span", {}, "Author a spec")],
+  );
+  const by = (st) => specs.filter((s) => s.status === st).length;
   wrap.appendChild(
-    el("div", { class: "view-toolbar" }, [
-      el("div", { class: "view-toolbar-actions" }, [
-        el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
-          icon("spark"),
-          el("span", {}, "Author a spec"),
-        ]),
-      ]),
-    ]),
+    viewHead(
+      "The playbook",
+      specs.length
+        ? [
+            plural(specs.length, "spec"),
+            by("frozen") ? `${by("frozen")} frozen` : null,
+            by("draft") ? `${by("draft")} draft` : null,
+            by("superseded") ? `${by("superseded")} superseded` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : "No specs written yet.",
+      author,
+    ),
   );
 
   if (specs.length === 0) {
+    // What is on the pitch without a written play: the campaigns and live tickets,
+    // so the empty page still says something true about this club.
+    const [nodesRes, ticketsRes] = await Promise.all([
+      api("GET", "/scope/nodes", undefined, { signal }).catch(() => ({ nodes: [] })),
+      api("GET", "/tickets", undefined, { signal }).catch(() => ({ tickets: [] })),
+    ]);
+    const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
+    const live = (ticketsRes.tickets || []).filter((t) => !TERMINAL.has(t.status));
     wrap.appendChild(
-      emptyState(
-        "No specs yet",
-        "Author a spec from a brief — Dispatch drafts testable clauses you edit, then freeze.",
-        "specs",
-      ),
+      el("section", { class: "card playbook-empty" }, [
+        panelHead("No specs yet", null, null, { kit: "ink" }),
+        el(
+          "div",
+          { class: "pb-steps", role: "list" },
+          [
+            ["1", "The brief", "Say what to build in a paragraph."],
+            ["2", "The clauses", "Gaffer drafts testable clauses; you edit them."],
+            ["3", "Frozen", "Each clause is traced to the acceptance criteria that prove it."],
+          ].map(([n, h, t]) =>
+            el("div", { class: "pb-step", role: "listitem" }, [
+              el("span", { class: "pb-n", "aria-hidden": "true" }, n),
+              el("h3", {}, h),
+              el("p", {}, t),
+            ]),
+          ),
+        ),
+        el(
+          "p",
+          { class: "pb-now" },
+          epics.length || live.length
+            ? [
+                `Playing without a written spec right now: ${plural(epics.length, "campaign")}${epics.length ? ` (${epics.map((e) => e.name).join(", ")})` : ""} and ${plural(live.length, "live ticket")}. `,
+                el("a", { href: "#/epics" }, "See the season"),
+                ".",
+              ]
+            : "Nothing is on the pitch yet: a spec is a good first play.",
+        ),
+        el("div", { class: "btn-row" }, [
+          el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
+            icon("spark"),
+            el("span", {}, "Write the first play"),
+          ]),
+        ]),
+      ]),
     );
     return wrap;
   }
 
-  // Best-effort coverage: fetch each spec's coverage rollup in parallel so the
-  // stats row can report real covered% / gaps. A failed fetch just drops that
-  // spec from the coverage maths (the stat degrades to "—", never crashes).
-  const coverages = await Promise.all(
-    specs.map((s) =>
-      api("GET", `/specs/${encodeURIComponent(s.id)}/coverage`)
-        .then((r) => (r && r.coverage) || null)
-        .catch(() => null),
+  // Coverage per spec (best-effort: a failed read shows "Coverage unavailable" on
+  // that row, never a broken page) and the campaign names the specs are played in.
+  const [coverages, nodesRes] = await Promise.all([
+    Promise.all(
+      specs.map((s) =>
+        api("GET", `/specs/${encodeURIComponent(s.id)}/coverage`, undefined, { signal })
+          .then((r) => (r && r.coverage) || null)
+          .catch(() => null),
+      ),
     ),
-  );
+    api("GET", "/scope/nodes", undefined, { signal }).catch(() => ({ nodes: [] })),
+  ]);
   const covById = new Map(specs.map((s, i) => [s.id, coverages[i]]));
+  const nodeName = new Map(((nodesRes && nodesRes.nodes) || []).map((n) => [n.id, n.name]));
 
-  wrap.appendChild(specStatsRow(specs, coverages));
+  // The newest spec (by when it was written, the order the server lists them in)
+  // is marked: it is the one most likely in play.
+  const stamp = (x) => Date.parse(x.created_at || x.updated_at || 0) || 0;
+  const newestId = specs.slice().sort((a, b) => stamp(b) - stamp(a))[0]?.id;
 
-  // Newest spec (by updated_at) is the primary card — it gets the amber rail.
-  const newestId = specs
-    .slice()
-    .sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))[0]?.id;
-
-  const list = el("div", { class: "spec-list" });
+  const list = el("div", { class: "spec-list", role: "list" });
   for (const spec of specs)
     list.appendChild(
-      renderSpecCard(spec, { coverage: covById.get(spec.id), isPrimary: spec.id === newestId }),
+      el(
+        "div",
+        { role: "listitem" },
+        renderSpecCard(spec, {
+          coverage: covById.get(spec.id),
+          isPrimary: spec.id === newestId,
+          campaign: spec.scope_node_id ? nodeName.get(spec.scope_node_id) : null,
+        }),
+      ),
     );
-  wrap.appendChild(list);
+  wrap.appendChild(
+    el("section", { class: "card prog spec-plays", "aria-labelledby": "spec-plays-h" }, [
+      (() => {
+        const h = panelHead("The plays", `${plural(specs.length, "spec")}, as written`, null, {
+          kit: "claret",
+        });
+        h.querySelector(".panel-title").id = "spec-plays-h";
+        return h;
+      })(),
+      list,
+      el("p", { class: "spec-key" }, [
+        ...[
+          ["satisfied", "1", "satisfied: every criterion met"],
+          ["partial", "2", "partly met: some criteria met"],
+          ["open", "3", "covered, none met yet"],
+          ["orphan", "4", "a gap: a requirement nothing covers while it is built"],
+          [
+            "none",
+            "5",
+            "no criterion yet, not a gap (a spec not built yet, a non-goal, a decision)",
+          ],
+        ].map(([cls, n, words]) =>
+          el("span", { class: "spec-key-item" }, [
+            el("span", { class: "spec-form", "aria-hidden": "true" }, [
+              el("i", { class: `fg fg-${cls}` }, n),
+            ]),
+            el("span", {}, words),
+          ]),
+        ),
+        el("span", {}, "Each square is a clause, in the order written."),
+      ]),
+    ]),
+  );
   return wrap;
 }
 
-/** A rollup {total,covered,orphans} from a coverage payload, defensively read. */
+/**
+ * A rollup {total,covered,satisfied,partial,orphans} from a coverage payload,
+ * defensively read. Satisfied and partly met are counted from the clauses when
+ * they are there (clauseState): the server's own `satisfied` counts a clause
+ * with any criterion met, which is not the same as proven.
+ */
 function specCoverageRollup(coverage) {
   const src =
     coverage && coverage.rollup && typeof coverage.rollup === "object" ? coverage.rollup : null;
@@ -11443,326 +20530,473 @@ function specCoverageRollup(coverage) {
   const total = Number(src.total) || 0;
   const covered = Number(src.covered) || 0;
   const orphans = Array.isArray(src.orphans) ? src.orphans.length : Number(src.orphans) || 0;
-  return { total, covered, orphans };
+  const clauses = Array.isArray(coverage.clauses) ? coverage.clauses : null;
+  if (clauses && clauses.length) {
+    const states = clauses.map(clauseState);
+    const n = (st) => states.filter((x) => x === st).length;
+    return { total, covered, satisfied: n("satisfied"), partial: n("partial"), orphans };
+  }
+  const satisfied = src.satisfied != null ? Number(src.satisfied) || 0 : null;
+  return { total, covered, satisfied, partial: 0, orphans };
 }
 
-/** Stats row for the spec library: total specs · avg coverage · gaps · updated. */
-function specStatsRow(specs, coverages) {
-  const rollups = coverages.map(specCoverageRollup).filter(Boolean);
-  const withClauses = rollups.filter((r) => r.total > 0);
-  const covPcts = withClauses.map((r) => Math.round((r.covered / r.total) * 100));
-  const avgCoverage = covPcts.length
-    ? Math.round(covPcts.reduce((a, b) => a + b, 0) / covPcts.length)
-    : null;
-  const gaps = rollups.length ? rollups.reduce((a, r) => a + r.orphans, 0) : null;
-
-  const newest = specs
-    .slice()
-    .filter((s) => s.updated_at)
-    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0];
-
-  return el("div", { class: "spec-stats kpi-row" }, [
-    specStatCard({ label: "Total specs", value: String(specs.length), unit: "in library" }),
-    specStatCard({
-      label: "Coverage",
-      value: avgCoverage == null ? "—" : String(avgCoverage),
-      unit: avgCoverage == null ? "no data" : "% avg covered",
-      tone: "ok",
-      series: covPcts.length > 1 ? covPcts : null,
-    }),
-    specStatCard({
-      label: "Gaps",
-      value: gaps == null ? "—" : String(gaps),
-      unit: gaps == null ? "no data" : "orphan clauses",
-      tone: gaps ? "danger" : "ok",
-    }),
-    specStatCard({
-      label: "Last updated",
-      value: newest ? fmtRelative(newest.updated_at) : "—",
-      unit: newest && newest.target_repo ? newest.target_repo : "—",
-      tone: "amber",
-      small: true,
-    }),
-  ]);
-}
-
-/**
- * A stat tile reusing the KPI card's visual language (label · big value · unit ·
- * optional sparkline) but rendered as a non-navigating div — the spec library
- * has no single "drill" target for an aggregate stat.
- */
-function specStatCard({ label, value, unit, tone = "accent", series, small = false }) {
-  return el("div", { class: `kpi tone-${tone}${small ? " kpi-sm" : ""}` }, [
-    el("div", { class: "kpi-top" }, [el("span", { class: "kpi-label" }, label)]),
-    el("div", { class: "kpi-figure" }, [
-      el("span", { class: "kpi-val tabnum" }, value),
-      unit ? el("span", { class: "kpi-unit" }, unit) : null,
-    ]),
-    series && series.length > 1 ? el("div", { class: "kpi-spark", html: svgSpark(series) }) : null,
-  ]);
-}
-
-/** Keyword-match a spec title to a scanner-frame line icon. */
-function specThumbIcon(title) {
-  const t = (title || "").toLowerCase();
-  if (/\b(auth|password|login|sign[- ]?in|sign[- ]?up|credential|token|oauth|secur)/.test(t))
-    return "lock";
-  if (/\b(data|residency|storage|region|geo|locale|country|tenant|migrat)/.test(t)) return "globe";
-  if (/\b(rate|throttle|limit|quota|budget|throughput|latency|perf|speed)/.test(t)) return "gauge";
-  return "doc";
-}
-
-/** Four amber L-shaped corner brackets framing a spec thumbnail icon. */
-function specThumb(title) {
-  return el("span", { class: "spec-thumb" }, [
-    el("i", { class: "tc tl" }),
-    el("i", { class: "tc tr" }),
-    el("i", { class: "tc bl" }),
-    el("i", { class: "tc br" }),
-    icon(specThumbIcon(title), "spec-thumb-icon"),
-  ]);
-}
-
-/** One spec = a card linking to its coverage trace, with a scanner-frame thumb. */
-function renderSpecCard(spec, { coverage, isPrimary = false } = {}) {
+/** One spec = one line of the playbook, linking to its clause-by-clause trace. */
+function renderSpecCard(spec, { coverage, isPrimary = false, campaign = null } = {}) {
   const count = specClauseCount(spec);
-  // Status dot: frozen (reaching agents) = amber, draft (live/authoring) = green.
-  const statusLabel = SPEC_STATUS_LABEL[spec.status] || spec.status;
   const rollup = specCoverageRollup(coverage);
+  const clauses = coverage && Array.isArray(coverage.clauses) ? coverage.clauses : [];
+  const statusLabel = SPEC_STATUS_LABEL[spec.status] || spec.status;
+  const gaps = coverage ? specGapCount(coverage, spec.status) : 0;
+  const words = specCoverageWords(rollup, gaps);
   return el(
-    "button",
+    "a",
     {
-      class: `spec-card${isPrimary ? " spec-card--primary" : ""}`,
-      type: "button",
+      class: `spec-card${isPrimary ? " spec-card--primary" : ""}${gaps ? " has-gaps" : ""}`,
+      href: `#/specs/${encodeURIComponent(spec.id)}`,
       dataset: { specId: spec.id, status: spec.status },
-      onclick: () => navigate(`#/specs/${encodeURIComponent(spec.id)}`),
+      "aria-label": `${spec.title}: ${statusLabel}, ${plural(count, "clause")}, ${words}${campaign ? `, played in ${campaign}` : ""}`,
     },
     [
-      specThumb(spec.title),
-      el("div", { class: "spec-card-body" }, [
-        el("div", { class: "spec-card-head" }, [
-          el("span", { class: "spec-card-title" }, spec.title),
-          el("span", { class: `spec-card-status status-${spec.status}` }, [
-            el("span", { class: "scs-dot" }),
-            statusLabel,
-          ]),
-        ]),
-        spec.brief ? el("p", { class: "spec-card-brief dim" }, spec.brief) : null,
-        el("div", { class: "spec-card-meta dim" }, [
-          el("span", {}, `${count} clause${count === 1 ? "" : "s"}`),
-          spec.target_repo ? el("span", { class: "tag-chip" }, spec.target_repo) : null,
-          rollup && rollup.total > 0
-            ? el(
-                "span",
-                { class: "spec-card-cov mono" },
-                `${Math.round((rollup.covered / rollup.total) * 100)}% covered`,
-              )
-            : null,
-          spec.updated_at
-            ? el("span", { class: "spec-card-updated" }, fmtRelative(spec.updated_at))
-            : null,
+      el("span", { class: "spec-card-lead" }, [
+        specStatusMark(spec.status),
+        isPrimary ? el("span", { class: "spec-card-new" }, "newest") : null,
+      ]),
+      el("span", { class: "spec-card-body" }, [
+        el("span", { class: "spec-card-title" }, spec.title),
+        spec.brief ? el("span", { class: "spec-card-brief" }, spec.brief) : null,
+        el("span", { class: "spec-card-meta" }, [
+          el("span", {}, plural(count, "clause")),
+          spec.target_repo ? repoTag(spec.target_repo, 16) : null,
+          campaign ? el("span", {}, `Campaign: ${campaign}`) : null,
+          spec.updated_at ? el("span", {}, `updated ${fmtRelative(spec.updated_at)}`) : null,
         ]),
       ]),
-      icon("chevron", "spec-card-chevron"),
+      el("span", { class: "spec-card-cov" }, [
+        clauses.length ? specFormGuide(clauses, spec.status, coverage.scope_node_id) : null,
+        el("span", { class: `spec-card-words${gaps ? " is-red" : ""}` }, words),
+      ]),
     ],
   );
 }
 
 async function renderSpecDetail(specId) {
-  const res = await api("GET", `/specs/${encodeURIComponent(specId)}/coverage`);
+  const signal = routeSignal();
+  const [res, specRes, nodesRes] = await Promise.all([
+    api("GET", `/specs/${encodeURIComponent(specId)}/coverage`, undefined, { signal }),
+    api("GET", `/specs/${encodeURIComponent(specId)}`, undefined, { signal }).catch(() => null),
+    api("GET", "/scope/nodes", undefined, { signal }).catch(() => ({ nodes: [] })),
+  ]);
   const cov = res && res.coverage;
+  // GET /specs/:id answers { spec }; tolerate a list-shaped answer too.
+  const spec =
+    (specRes && specRes.spec) ||
+    ((specRes && specRes.specs) || []).find((s) => s.id === specId) ||
+    null;
 
-  const wrap = el("div", { class: "view", dataset: { view: "specs" } });
+  const wrap = el("div", { class: "view view-spec", dataset: { view: "specs" } });
+  const back = backLink("#/specs", "Back to the playbook");
+  wrap.appendChild(back);
 
   // Defensive: a missing / empty / malformed coverage payload must render a
-  // clean empty state, not blank the whole spec view (an unguarded `cov.rollup`
-  // would throw, leaving the router's skeleton stuck on screen). Guard on shape
-  // rather than exact fields — other work may extend this payload.
+  // clean empty state, not blank the whole spec view.
   if (!cov || typeof cov !== "object") {
-    wrap.appendChild(
-      viewHead("Spec", "Coverage", [
-        el("button", { class: "btn", type: "button", onclick: () => navigate("#/specs") }, [
-          icon("arrow"),
-          el("span", {}, "All specs"),
-        ]),
-      ]),
-    );
+    wrap.appendChild(viewHead((spec && spec.title) || "Spec", "Coverage"));
     wrap.appendChild(
       emptyState(
         "Coverage unavailable",
         "This spec's coverage report could not be loaded. It may have been removed, or the report is still being built.",
-        "specs",
+        null,
+        el("a", { class: "btn", href: "#/specs" }, "Back to the playbook"),
       ),
     );
     return wrap;
   }
 
-  const rollupSrc = cov.rollup && typeof cov.rollup === "object" ? cov.rollup : {};
-  const orphans = Array.isArray(rollupSrc.orphans) ? rollupSrc.orphans : [];
-  const r = {
-    total: Number(rollupSrc.total) || 0,
-    covered: Number(rollupSrc.covered) || 0,
-    satisfied: Number(rollupSrc.satisfied) || 0,
-    orphans,
-  };
   const clauses = Array.isArray(cov.clauses) ? cov.clauses : [];
-  wrap.appendChild(
-    viewHead(cov.title || "Spec", `Spec · ${SPEC_STATUS_LABEL[cov.status] || cov.status || "—"}`, [
-      el("button", { class: "btn", type: "button", onclick: () => navigate("#/specs") }, [
-        icon("arrow"),
-        el("span", {}, "All specs"),
-      ]),
-      cov.scope_node_id
-        ? el(
-            "button",
-            {
-              class: "btn",
-              type: "button",
-              onclick: () => navigate(`#/epics/${encodeURIComponent(cov.scope_node_id)}`),
-            },
-            [icon("epics"), el("span", {}, "Open epic")],
-          )
-        : null,
-    ]),
-  );
+  const r = specCoverageRollup(cov.rollup ? cov : { ...cov, rollup: {} });
+  r.satisfied = r.satisfied || 0;
+  const status = cov.status || (spec && spec.status) || "";
+  const targetRepo = (spec && spec.target_repo) || cov.target_repo || null;
+  const campaign = cov.scope_node_id
+    ? ((nodesRes && nodesRes.nodes) || []).find((n) => n.id === cov.scope_node_id)
+    : null;
+  const brief = (spec && spec.brief) || cov.brief || null;
 
-  // Rollup: covered / satisfied / orphans — the at-a-glance coverage health.
-  wrap.appendChild(
-    el("div", { class: "spec-rollup", dataset: { total: String(r.total) } }, [
-      specStat("Clauses", r.total, "total"),
-      specStat("Covered", `${r.covered}/${r.total}`, "covered"),
-      specStat("Satisfied", `${r.satisfied}/${r.total}`, "satisfied"),
-      specStat("Gaps", r.orphans.length, r.orphans.length > 0 ? "gap" : "ok"),
-    ]),
-  );
+  // The lede: where the spec stands, from its coverage. A gap is a requirement
+  // nothing proves while it is built (clauseIsGap); a spec not built yet (a draft,
+  // or frozen with no campaign and nothing covering it) reads as one calm "not
+  // covered yet" in the squares, the board, the lede and the list, never as red.
+  const unbuilt = specUnbuilt(status, clauses, cov.scope_node_id);
+  const gapClauses = clauses.filter((c) => clauseIsGap(c, status, unbuilt));
+  const gapsN = gapClauses.length;
+  const quietN = clauses.filter((c) => c.orphan && !clauseIsGap(c, status, unbuilt)).length;
+  const uncovered = unbuilt && r.total > 0 && r.covered === 0;
+  // "1 already satisfied and 2 partly met": satisfied means every criterion is met.
+  const metWords =
+    r.satisfied && r.partial
+      ? `, ${r.satisfied} already satisfied and ${r.partial} partly met`
+      : r.satisfied
+        ? `, ${r.satisfied} already satisfied`
+        : r.partial
+          ? `, none fully proven yet: ${r.partial} partly met`
+          : "";
+  const quietOf = (k) => clauses.filter((c) => c.orphan && c.kind === k).length;
+  const quietWords = [
+    quietOf("non-goal") ? plural(quietOf("non-goal"), "non-goal") : null,
+    quietOf("decision") ? plural(quietOf("decision"), "decision") : null,
+  ]
+    .filter(Boolean)
+    .join(" and ");
+  const total = plural(r.total, "clause");
+  let lede;
+  if (!r.total)
+    lede = [el("b", {}, `${SPEC_STATUS_LABEL[status] || "Spec"}. `), "It has no clauses yet."];
+  else if (uncovered)
+    lede = [
+      el("b", {}, `${SPEC_STATUS_LABEL[status] || "Spec"}. `),
+      // Not built yet: said the same way here, on the board, and in the list.
+      status === "draft"
+        ? `Not covered yet, and no gaps: freeze it to lock its ${total} and seed them as lore for the agents; the criteria that prove them come with the build you plan from it.`
+        : status === "frozen"
+          ? `Not covered yet, and no gaps until it is built: plan a build from it, and each ticket's criteria will name the ${r.total === 1 ? "clause it proves" : "clauses they prove"}.`
+          : `None of its ${total} is covered.`,
+    ];
+  else
+    lede = [
+      el("b", {}, `${SPEC_STATUS_LABEL[status] || "Spec"}. `),
+      `${r.covered} of its ${total} ${r.covered === 1 ? "is" : "are"} covered by acceptance criteria${metWords}.`,
+      gapsN
+        ? [
+            " ",
+            el(
+              "span",
+              { class: "is-red" },
+              `${gapsN === 1 ? "1 requirement has" : `${gapsN} requirements have`} no criterion, so nothing proves ${gapsN === 1 ? "it" : "them"} yet.`,
+            ),
+          ]
+        : "",
+      quietN
+        ? status === "draft"
+          ? ` ${quietN} ${quietN === 1 ? "is" : "are"} not covered yet.`
+          : ` ${quietWords} ${quietN === 1 ? "has" : "have"} none, which is not counted as a gap.`
+        : !gapsN
+          ? " Every clause has a criterion."
+          : "",
+      status === "draft"
+        ? " Freeze it to lock the clauses and seed them as lore for the agents."
+        : "",
+    ];
 
-  // Coverage gaps: orphan clauses (no covering AC) called out first.
-  if (r.orphans.length > 0) {
-    const orphanClauses = clauses.filter((c) => c.orphan);
-    wrap.appendChild(
-      el("div", { class: "coverage-gaps", dataset: { count: String(orphanClauses.length) } }, [
-        el("div", { class: "coverage-gaps-head" }, [
-          icon("alert"),
-          el(
-            "strong",
-            {},
-            `${orphanClauses.length} coverage gap${orphanClauses.length === 1 ? "" : "s"}`,
-          ),
-          el("span", { class: "dim" }, "— clauses with no acceptance criterion covering them"),
-        ]),
-        el(
-          "ul",
-          { class: "coverage-gaps-list" },
-          orphanClauses.map((c) =>
-            el("li", { dataset: { clauseId: c.clause_id } }, [
-              badge(CLAUSE_KIND_LABEL[c.kind] || c.kind, `clause-kind kind-${c.kind}`),
-              el("span", {}, c.text),
-            ]),
-          ),
-        ),
-      ]),
+  const actions = [];
+  if (cov.scope_node_id) {
+    actions.push(
+      el(
+        "button",
+        {
+          class: "btn",
+          type: "button",
+          onclick: () => navigate(`#/epics/${encodeURIComponent(cov.scope_node_id)}`),
+        },
+        [icon("epics"), el("span", {}, "Open campaign")],
+      ),
+    );
+  }
+  if (status === "draft") {
+    actions.unshift(
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          onclick: (e) =>
+            runAsyncAction(e.currentTarget, "Freezing…", async () => {
+              await api("POST", `/specs/${encodeURIComponent(specId)}/freeze`);
+              toast("Spec frozen: its clauses are locked and seeded as lore.", { ok: true });
+              router();
+            }),
+        },
+        [icon("lock", "", 18), el("span", {}, "Freeze spec")],
+      ),
+    );
+  } else if (status === "frozen" && !cov.scope_node_id && clauses.length) {
+    // A frozen spec with no campaign yet: build one from it, clause provenance and all.
+    actions.unshift(
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          onclick: () =>
+            openPlanBuild({
+              spec: clauses
+                .filter((c) => c.clause_id && c.kind && c.text)
+                .map((c) => ({
+                  clause_id: c.clause_id,
+                  kind: c.kind,
+                  text: c.text,
+                  ...(c.rationale ? { rationale: c.rationale } : {}),
+                })),
+              brief: brief || cov.title || "Build from the frozen spec.",
+              ...(targetRepo ? { repo: targetRepo } : {}),
+            }),
+        },
+        [icon("spark"), el("span", {}, "Plan a build from it")],
+      ),
     );
   }
 
-  // The trace: one block per clause → covering ACs → satisfied/open.
-  const trace = el("div", { class: "spec-trace" });
-  for (const clause of clauses) trace.appendChild(renderClauseTrace(clause));
-  wrap.appendChild(trace);
+  wrap.appendChild(
+    el("header", { class: "spec-head" }, [
+      el("p", { class: "spec-meta" }, [
+        specStatusMark(status),
+        targetRepo ? repoTag(targetRepo, 20) : el("span", {}, "Every repo"),
+        campaign
+          ? el(
+              "a",
+              { href: `#/epics/${encodeURIComponent(campaign.id)}` },
+              `Campaign: ${campaign.name}`,
+            )
+          : null,
+        el("span", {}, plural(r.total, "clause")),
+        spec && spec.updated_at ? el("span", {}, `updated ${fmtRelative(spec.updated_at)}`) : null,
+      ]),
+      el("h1", { class: "detail-title" }, cov.title || (spec && spec.title) || "Spec"),
+      el("p", { class: "spec-lede" }, lede),
+      brief ? el("p", { class: "spec-brief" }, [el("b", {}, "The brief: "), `“${brief}”`]) : null,
+      actions.length ? el("div", { class: "btn-row" }, actions) : null,
+    ]),
+  );
+
+  const indexOf = new Map(clauses.map((c, i) => [c.clause_id, i + 1]));
+  // Coverage gaps: requirements nothing proves, called out first. Only when some
+  // clauses are covered: a spec nothing covers yet says so once, on the board.
+  if (gapsN > 0 && !uncovered) {
+    wrap.appendChild(
+      el(
+        "section",
+        {
+          class: "card coverage-gaps",
+          dataset: { count: String(gapsN) },
+          "aria-label": "Coverage gaps",
+        },
+        [
+          panelHead(
+            `${gapsN} coverage gap${gapsN === 1 ? "" : "s"}`,
+            `${gapsN === 1 ? "a requirement" : "requirements"} with no acceptance criterion covering ${gapsN === 1 ? "it" : "them"}`,
+            null,
+            { kit: "red" },
+          ),
+          el(
+            "ul",
+            { class: "coverage-gaps-list" },
+            gapClauses.map((c) =>
+              el("li", { dataset: { clauseId: c.clause_id } }, [
+                el(
+                  "a",
+                  {
+                    class: "sc-no",
+                    href: `#clause-${indexOf.get(c.clause_id) || ""}`,
+                    "aria-label": `Clause ${indexOf.get(c.clause_id) || ""}, in the trace below`,
+                  },
+                  String(indexOf.get(c.clause_id) || ""),
+                ),
+                el("span", { class: "cg-text" }, c.text),
+              ]),
+            ),
+          ),
+          el(
+            "p",
+            { class: "cg-hint" },
+            "Cover a gap with an acceptance criterion that names the clause, on the ticket that delivers it.",
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Lore and bounces are said once for the spec when every clause shares them,
+  // and per clause only where they differ.
+  const loreSet = new Set(clauses.map((c) => c.lore_status || "unknown"));
+  const loreOnce = loreSet.size === 1 ? [...loreSet][0] : null;
+  const anyBounce = clauses.some((c) => c.bounce_count > 0);
+  const notes = [];
+  const uncoveredNote = !uncovered
+    ? null
+    : el("p", { class: "spec-board-note spec-uncovered" }, [
+        glyph("draft", 16),
+        el(
+          "span",
+          {},
+          `Not covered yet: none of the ${total} has an acceptance criterion naming it. That is not a gap until a build is under way.`,
+        ),
+      ]);
+  if (loreOnce && loreOnce !== "unknown")
+    notes.push(
+      el(
+        "p",
+        { class: "spec-board-note" },
+        loreOnce === "active"
+          ? "Lore: every clause is seeded and reaching the agents."
+          : loreOnce === "draft"
+            ? [
+                "Lore: every clause is seeded as draft lore, unratified, so it is not reaching the agents yet. ",
+                el("a", { href: "#/memory" }, "Ratify it in Memory"),
+                ".",
+              ]
+            : `Lore: no clause is seeded yet.${status === "draft" ? " Freezing the spec seeds them." : ""}`,
+      ),
+    );
+  if (anyBounce)
+    notes.push(
+      el(
+        "p",
+        { class: "spec-board-note" },
+        "Bounced: how many times work on the tickets covering a clause was sent back.",
+      ),
+    );
+
+  // The trace: one row per clause → its covering ACs → satisfied / open.
+  const opts = { status, uncovered, unbuilt, loreOnce };
+  const trace = el(
+    "ol",
+    { class: "spec-trace" },
+    clauses.map((c, i) => el("li", { id: `clause-${i + 1}` }, renderClauseTrace(c, i + 1, opts))),
+  );
+  wrap.appendChild(
+    progPage(
+      "spec-clauses",
+      "ink",
+      "The clauses",
+      `${plural(clauses.length, "clause")}, in the order written`,
+      [
+        specFormGuide(clauses, status, cov.scope_node_id),
+        uncoveredNote,
+        trace,
+        notes.length ? el("div", { class: "spec-board-notes" }, notes) : null,
+      ],
+    ),
+  );
 
   if (cov.gate_enabled) {
     wrap.appendChild(
       el(
         "p",
-        { class: "dim section-note" },
-        "Spec-coverage DoD gate is ARMED (advisory): a clause with no satisfied AC will be flagged.",
+        { class: "section-note" },
+        "The spec-coverage gate is on (advisory): a clause with no met criterion is flagged at the Definition of Done.",
       ),
     );
   }
   return wrap;
 }
 
-function specStat(label, value, tone) {
-  return el("div", { class: "spec-stat", dataset: { tone } }, [
-    el("span", { class: "spec-stat-value" }, String(value)),
-    el("span", { class: "spec-stat-label dim" }, label),
-  ]);
-}
-
-/** One clause's trace row: kind + text, coverage state, bounce count, its ACs. */
-function renderClauseTrace(clause) {
-  const state = clause.orphan ? "orphan" : clause.satisfied ? "satisfied" : "open";
+/**
+ * One clause's trace row: its number, kind and text, its state, and the criteria
+ * that prove it. A gap is red; a clause with no criterion that is not a gap is
+ * quiet; when nothing in the spec is covered yet the board says so once and the
+ * rows carry no state of their own.
+ */
+function renderClauseTrace(
+  clause,
+  n,
+  { status, uncovered = false, unbuilt = false, loreOnce = null } = {},
+) {
+  const state = clauseState(clause);
+  const isGap = clauseIsGap(clause, status, unbuilt);
+  const acs = Array.isArray(clause.covering_acs) ? clause.covering_acs : [];
+  const { met } = clauseMet(clause);
   const block = el("div", {
-    class: "spec-clause",
+    class: `spec-clause${isGap ? " is-gap" : ""}`,
     dataset: {
       clauseId: clause.clause_id,
       state,
       covered: String(clause.covered),
       orphan: String(clause.orphan),
-      satisfied: String(clause.satisfied),
+      // Proven: every covering criterion met (the server's flag means "any").
+      satisfied: String(state === "satisfied"),
+      met: String(met),
     },
   });
+  const ofMet = acs.length > 1 ? ` · ${met} of ${acs.length} met` : "";
+  const stateMark =
+    state === "orphan"
+      ? uncovered
+        ? null
+        : isGap
+          ? el("span", { class: "sc-state is-red" }, [
+              glyph("failed", 16),
+              el("span", {}, "Gap: nothing proves it"),
+            ])
+          : el("span", { class: "sc-state is-quiet" }, [
+              glyph("draft", 16),
+              el("span", {}, status === "draft" ? "Not covered yet" : "No criterion"),
+            ])
+      : state === "satisfied"
+        ? el("span", { class: "sc-state is-ok" }, [
+            glyph("done", 16),
+            el("span", {}, acs.length > 1 ? `Satisfied · all ${acs.length} met` : "Satisfied"),
+          ])
+        : state === "partial"
+          ? el("span", { class: "sc-state is-part" }, [
+              glyph("in_progress", 16),
+              el("span", {}, `Partly met · ${met} of ${acs.length}`),
+            ])
+          : el("span", { class: "sc-state" }, [glyph("ready", 16), el("span", {}, `Open${ofMet}`)]);
 
-  const head = el("div", { class: "spec-clause-head" }, [
-    badge(CLAUSE_KIND_LABEL[clause.kind] || clause.kind, `clause-kind kind-${clause.kind}`),
-    el("span", { class: "spec-clause-text" }, clause.text),
-  ]);
-  const tags = el("div", { class: "spec-clause-tags" });
-  // Coverage state chip: green satisfied / amber open / red gap.
-  tags.appendChild(
-    clause.orphan
-      ? badge("Gap — no AC", "clause-state state-orphan")
-      : clause.satisfied
-        ? badge("Satisfied", "clause-state state-satisfied")
-        : badge("Open", "clause-state state-open"),
-  );
+  const tags = el("div", { class: "spec-clause-tags" }, [stateMark]);
   if (clause.bounce_count > 0) {
-    tags.appendChild(badge(`bounced ${clause.bounce_count}×`, "clause-bounce no-dot"));
+    const b = badge(`bounced ${clause.bounce_count}×`, "clause-bounce");
+    b.title = `Work covering this clause was sent back ${plural(clause.bounce_count, "time")}`;
+    tags.appendChild(b);
   }
-  if (clause.lore_status && clause.lore_status !== "unknown") {
+  if (!loreOnce && clause.lore_status && clause.lore_status !== "unknown") {
     const label = LORE_STATUS_LABEL[clause.lore_status] || clause.lore_status;
     tags.appendChild(
       badge(
         `lore: ${clause.lore_status}${label ? ` (${label})` : ""}`,
-        `lore-${clause.lore_status === "active" ? "active" : "draft"} no-dot`,
+        `lore-${clause.lore_status === "active" ? "active" : "draft"}`,
       ),
     );
   }
-  head.appendChild(tags);
-  block.appendChild(head);
-  if (clause.rationale) {
-    block.appendChild(el("p", { class: "spec-clause-rationale dim" }, clause.rationale));
-  }
 
-  if (clause.orphan) {
-    block.appendChild(
+  const main = el("div", { class: "spec-clause-main" }, [
+    el("div", { class: "spec-clause-head" }, [
+      badge(CLAUSE_KIND_LABEL[clause.kind] || clause.kind, `clause-kind kind-${clause.kind}`),
+      el("span", { class: "spec-clause-text" }, clause.text),
+    ]),
+    clause.rationale ? el("p", { class: "spec-clause-rationale" }, clause.rationale) : null,
+  ]);
+  if (acs.length) {
+    main.appendChild(
       el(
-        "p",
-        { class: "spec-clause-empty dim" },
-        "No acceptance criterion covers this clause — it is a coverage gap.",
+        "ul",
+        { class: "spec-clause-acs" },
+        acs.map((ac) =>
+          el("li", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
+            glyph(ac.satisfied ? "done" : "ready", 14, ac.satisfied ? "satisfied" : ac.ac_status),
+            el("span", { class: "spec-ac-text" }, ac.ac_text),
+            // The ticket and its status are one unit: they never wrap apart.
+            el("span", { class: "spec-ac-tk" }, [
+              el(
+                "a",
+                {
+                  class: "spec-ac-ticket",
+                  href: `#/ticket/${encodeURIComponent(ac.ticket_id)}`,
+                  title: ac.ticket_title || "",
+                },
+                ac.ticket_number != null ? `#${ac.ticket_number}` : ac.ticket_title,
+              ),
+              ac.ticket_status
+                ? el("span", { class: "spec-ac-st" }, statusLabel(ac.ticket_status))
+                : null,
+            ]),
+          ]),
+        ),
       ),
     );
-    return block;
   }
-
-  const acs = el(
-    "div",
-    { class: "spec-clause-acs" },
-    (Array.isArray(clause.covering_acs) ? clause.covering_acs : []).map((ac) =>
-      el("div", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
-        badge(
-          ac.satisfied ? "satisfied" : ac.ac_status,
-          `ac-${ac.satisfied ? "satisfied" : "pending"}`,
-        ),
-        el("span", { class: "spec-ac-text" }, ac.ac_text),
-        el(
-          "a",
-          { class: "spec-ac-ticket", href: `#/ticket/${encodeURIComponent(ac.ticket_id)}` },
-          ac.ticket_number != null ? `#${ac.ticket_number}` : ac.ticket_title,
-        ),
-      ]),
-    ),
-  );
-  block.appendChild(acs);
+  block.appendChild(el("span", { class: "sc-no", "aria-hidden": "true" }, String(n)));
+  block.appendChild(main);
+  block.appendChild(tags);
   return block;
 }
 
@@ -11770,36 +21004,95 @@ async function renderMemory(param) {
   const { query } = parseHash();
   memoryState.repo = param ? decodeURIComponent(param) : "";
   memoryState.node = query.get("node") || "";
+  const signal = routeSignal();
 
-  const reposRes = await api("GET", "/repositories");
+  // The repos, and every draft across the club in one read: the drafts say which
+  // repo needs the gaffer (its tab carries a yellow card), and which repo to open
+  // when the address names none (the one whose draft is newest).
+  const [reposRes, draftsRes] = await Promise.all([
+    api("GET", "/repositories", undefined, { signal }),
+    api("GET", "/api/memory/lore?status=draft&limit=200", undefined, { signal }).catch(() => null),
+  ]);
   const repos = reposRes.repositories || [];
+  const allDrafts =
+    draftsRes && draftsRes.available !== false && Array.isArray(draftsRes.lore)
+      ? draftsRes.lore.filter((l) => l && l.status === "draft")
+      : null;
+  const draftsFor = (name) =>
+    allDrafts ? allDrafts.filter((l) => (l.repos || []).includes(name)).length : 0;
 
-  const wrap = el("div", { class: "view", dataset: { view: "memory" } });
+  // With no repo in the address, open one (a blank page asks a question the
+  // operator should not have to answer to read anything): the repo with the
+  // newest draft (the server lists newest first), else the first repo.
+  if (!memoryState.repo && repos.length) {
+    const names = new Set(repos.map((r) => r.name));
+    const withDraft = (allDrafts || []).flatMap((l) => l.repos || []).find((n) => names.has(n));
+    memoryState.repo = withDraft || repos[0].name;
+  }
+  const repo = memoryState.repo;
+
+  const [digestRes, featuresRes] = repo
+    ? await Promise.all([
+        api("GET", `/api/memory/digest/${encodeURIComponent(repo)}`, undefined, { signal }),
+        api(
+          "GET",
+          `/api/memory/features/${encodeURIComponent(repo)}${memoryState.node ? `?node=${encodeURIComponent(memoryState.node)}` : ""}`,
+          undefined,
+          { signal },
+        ),
+      ])
+    : [null, null];
+
+  const clubDrafts = allDrafts ? allDrafts.length : null;
+  const wrap = el("div", { class: "view view-memory", dataset: { view: "memory" } });
   wrap.appendChild(
     viewHead(
-      "Memory",
-      memoryState.repo ? memoryState.repo : `${repos.length} repo${repos.length === 1 ? "" : "s"}`,
-      onboardButton(repos, memoryState.repo, { primary: true }),
+      "Club history",
+      [
+        plural(repos.length, "repo") + " on the books",
+        clubDrafts == null
+          ? null
+          : clubDrafts
+            ? `${plural(clubDrafts, "lore draft")} across the club ${clubDrafts === 1 ? "awaits" : "await"} your signature`
+            : "no lore drafts waiting",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      onboardButton(repos, repo),
     ),
   );
-  wrap.appendChild(
-    el("div", { class: "banner" }, [
-      el("strong", {}, "What Memory shows. "),
-      "The ",
-      el("strong", {}, "Repo Digest"),
-      " is the factory's working understanding of each repo; the ",
-      el("strong", {}, "Feature ledger"),
-      " tracks what's shipped, building, and backlogged; ",
-      el("strong", {}, "Lore"),
-      " is the team's recorded knowledge. It all lives in the memory product; the digest and ledger are ",
-      el("strong", {}, "read-only"),
-      " here, and lore ",
-      el("strong", {}, "drafts"),
-      " (from agents, onboarding and the distiller) are approved or rejected below.",
-    ]),
-  );
 
-  // Repo picker — drives the digest + feature ledger below.
+  // The squad of repos: one kit per repo, the one being read marked, a yellow
+  // card on every repo whose lore drafts wait for you.
+  if (repos.length > 1) {
+    wrap.appendChild(
+      el(
+        "nav",
+        { class: "mem-repos", "aria-label": "Repos" },
+        repos.map((r) => {
+          const n = draftsFor(r.name);
+          return el(
+            "a",
+            {
+              class: "mem-repo",
+              href: `#/memory/${encodeURIComponent(r.name)}`,
+              "aria-current": r.name === repo ? "page" : null,
+              "aria-label": n ? `${r.name}, ${plural(n, "lore draft")} waiting` : null,
+            },
+            [
+              kitShirt(r.name, 22),
+              el("span", {}, r.name),
+              n
+                ? el("span", { class: "mem-repo-n" }, [ycard(14), el("span", {}, String(n))])
+                : null,
+            ],
+          );
+        }),
+      ),
+    );
+  }
+
+  // Repo picker for a phone (the kits fold away there) — drives the page.
   const repoSel = el(
     "select",
     {
@@ -11813,39 +21106,152 @@ async function renderMemory(param) {
     [
       el("option", { value: "" }, repos.length ? "Select a repo…" : "No repos known"),
       ...repos.map((r) =>
-        el("option", { value: r.name, selected: memoryState.repo === r.name }, r.name),
+        el(
+          "option",
+          { value: r.name, selected: repo === r.name },
+          draftsFor(r.name) ? `${r.name} (${plural(draftsFor(r.name), "draft")})` : r.name,
+        ),
       ),
     ],
   );
-  wrap.appendChild(el("div", { class: "filters" }, [field("Repo", repoSel, { style: "flex:1" })]));
+  // On a phone the header's Onboard folds into this row (one line, not two), so
+  // the first draft to sign sits above the fold.
+  const pickOnboard = onboardButton(repos, repo, { label: "Onboard" });
+  pickOnboard.classList.add("mem-pick-onboard");
+  wrap.appendChild(
+    el("div", { class: `filters mem-pick${repos.length > 1 ? "" : " is-solo"}` }, [
+      field("Repo", repoSel),
+      pickOnboard,
+    ]),
+  );
 
-  if (memoryState.repo) {
-    const [digestRes, featuresRes] = await Promise.all([
-      api("GET", `/api/memory/digest/${encodeURIComponent(memoryState.repo)}`),
-      api(
-        "GET",
-        `/api/memory/features/${encodeURIComponent(memoryState.repo)}${memoryState.node ? `?node=${encodeURIComponent(memoryState.node)}` : ""}`,
-      ),
-    ]);
-    wrap.appendChild(renderDigestCard(memoryState.repo, digestRes, repos));
-    wrap.appendChild(renderFeatureLedger(memoryState.repo, featuresRes));
+  if (repo) wrap.appendChild(memoryStats(repo, digestRes, featuresRes, allDrafts, draftsFor));
+
+  // Lore first (the drafts are the one thing here that needs you), the report
+  // and the honours board beside it. The lore card mounts into a slot so a
+  // filter change re-fetches ONLY that card, not the whole view.
+  const loreSlot = el("div", { class: "lore-slot" });
+  const side = el("div", { class: "mem-side" });
+  if (repo) {
+    side.appendChild(renderDigestCard(repo, digestRes, repos));
+    side.appendChild(renderFeatureLedger(repo, featuresRes));
   } else {
-    wrap.appendChild(
+    side.appendChild(
       emptyState(
-        "Pick a repo to read its memory",
-        "The digest and feature ledger are per-repo. Choose one above.",
-        "ticket",
+        "No repos on the books yet.",
+        "Onboard one and its scouting report and honours board land here.",
+        null,
+        onboardButton(repos, "", { primary: true }),
       ),
     );
   }
+  wrap.appendChild(el("div", { class: "mem-grid" }, [loreSlot, side]));
+  const reload = () => remountMemory(param);
+  await mountLoreCard(loreSlot, repos, reload);
 
-  // Lore: a filtered, paged read of the memory store (status / repo / kind) with
-  // approve / reject on drafts. Mounted into a slot so a filter change or a
-  // ratification re-fetches ONLY this card, not the whole view.
-  const loreSlot = el("div", { class: "lore-slot" });
-  wrap.appendChild(loreSlot);
-  await mountLoreCard(loreSlot, repos);
+  // Refresh without moving anything: an unchanged read keeps the DOM (and the
+  // open folds, the focus and the scroll) as it is.
+  wrap.dataset.sig = hashText(
+    JSON.stringify([
+      repos.map((r) => r.name),
+      allDrafts,
+      digestRes,
+      featuresRes,
+      loreSlot._res || null,
+      { ...loreFilter, foldOpen: undefined },
+      memoryState,
+    ]),
+  );
   return wrap;
+}
+
+/**
+ * The club's numbers for this repo, on the stadium board: drafts that wait
+ * for you (lit yellow when any), the honours (features shipped of all), and the
+ * date of the scouting report. Every figure is one the responses gave us.
+ */
+function memoryStats(repo, digestRes, featuresRes, allDrafts, draftsFor) {
+  const drafts = allDrafts ? draftsFor(repo) : null;
+  const elsewhere = allDrafts ? allDrafts.length - drafts : 0;
+  const feats = featuresRes && featuresRes.available !== false ? featuresRes.features || [] : null;
+  const by = (s) => (feats ? feats.filter((f) => f.status === s).length : 0);
+  const digest = digestRes && digestRes.available !== false ? digestRes.digest : null;
+  const meta = (digest && digest.meta) || {};
+  return el(
+    "div",
+    { class: "kpi-row mem-stats", role: "group", "aria-label": `${repo} in numbers` },
+    [
+      statCell({
+        label: "Drafts await you",
+        value: drafts == null ? "—" : String(drafts),
+        needs: !!drafts,
+        href: "#lore",
+        sub:
+          drafts == null
+            ? "lore unavailable"
+            : elsewhere
+              ? `${elsewhere} more waiting in other repos`
+              : drafts
+                ? "lore to approve or reject"
+                : "nothing to sign",
+      }),
+      statCell({
+        label: "Honours",
+        value: feats ? String(by("shipped")) : "—",
+        unit: feats && feats.length ? `of ${feats.length}` : null,
+        sub: !feats
+          ? "ledger unavailable"
+          : feats.length
+            ? `${by("building")} building · ${by("backlog")} in the backlog`
+            : "no features recorded yet",
+      }),
+      statCell({
+        label: "Scouting report",
+        value: digest && meta.updatedAt ? fmtDay(meta.updatedAt, { weekday: false }) : "—",
+        sub: digest
+          ? `source: ${meta.source || "—"}`
+          : digestRes && digestRes.available === false
+            ? "memory unavailable"
+            : "not scouted yet",
+      }),
+    ],
+  );
+}
+
+/** Re-read the whole Memory view in place (after a ratification), keeping the scroll. */
+async function remountMemory(param) {
+  const gen = routeGen;
+  const focusIdx = (() => {
+    const rows = [...document.querySelectorAll(".lore-row[data-status='draft']")];
+    const i = rows.findIndex((r) => r.contains(document.activeElement));
+    return i;
+  })();
+  let content;
+  try {
+    content = await renderMemory(param);
+  } catch (e) {
+    if (e && e.code !== "ABORTED")
+      toast(e.message || "Could not re-read Memory.", { code: e.code });
+    return;
+  }
+  if (gen !== routeGen) {
+    disposeView(content);
+    return;
+  }
+  const se = document.scrollingElement || document.documentElement;
+  const y = se.scrollTop;
+  mountView(content);
+  se.scrollTop = y;
+  // Triage keeps its place: focus goes to the next draft's Approve (or the card).
+  if (focusIdx >= 0) {
+    const next = [...content.querySelectorAll(".lore-row[data-status='draft'] .lore-approve")];
+    const target = next[Math.min(focusIdx, next.length - 1)] || content.querySelector("#lore");
+    if (target) {
+      if (!target.hasAttribute("tabindex") && target.id === "lore")
+        target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+    }
+  }
 }
 
 // Lore card filters. They persist across the live re-render (the SSE refresh
@@ -11854,7 +21260,15 @@ async function renderMemory(param) {
 // that changes. `limit` is a page, not a cap — the pager walks `total`.
 const LORE_STATUSES = ["draft", "active", "deprecated", "superseded"];
 const LORE_KINDS = ["decision", "requirement", "non-goal", "convention", "gotcha", "other"];
-const loreFilter = { status: "", kind: "", repo: "", pageRepo: null, offset: 0, limit: 50 };
+const loreFilter = {
+  status: "",
+  kind: "",
+  repo: "",
+  pageRepo: null,
+  offset: 0,
+  limit: 50,
+  foldOpen: false,
+};
 
 /** The lore read for the current filters: GET /api/memory/lore?repo&status&kind&limit&offset. */
 function loreQueryPath() {
@@ -11868,7 +21282,7 @@ function loreQueryPath() {
 }
 
 /** Fetch the current lore page and (re)render the card into `slot`. */
-async function mountLoreCard(slot, repos) {
+async function mountLoreCard(slot, repos, reload) {
   if (loreFilter.pageRepo !== memoryState.repo) {
     loreFilter.pageRepo = memoryState.repo;
     loreFilter.repo = memoryState.repo;
@@ -11876,30 +21290,46 @@ async function mountLoreCard(slot, repos) {
   }
   let res;
   try {
-    res = await api("GET", loreQueryPath());
+    res = await api("GET", loreQueryPath(), undefined, { signal: routeSignal() });
   } catch (e) {
+    if (e && e.code === "ABORTED") throw e;
     res = { available: false, reason: e && e.message ? e.message : "The lore request failed." };
   }
   if (!slot.isConnected && slot.childNodes.length) return; // view was torn down mid-fetch
+  slot._res = res;
   clear(slot);
   slot.appendChild(
-    renderLoreList(res, loreFilter.repo, { repos, refresh: () => mountLoreCard(slot, repos) }),
+    renderLoreList(res, loreFilter.repo, {
+      repos,
+      refresh: () => mountLoreCard(slot, repos, reload),
+      reload: reload || (() => mountLoreCard(slot, repos, reload)),
+    }),
   );
 }
 
 /**
  * Ratify a draft from the dashboard: POST /api/memory/lore/:id/approve|reject. The
- * server calls the memory CLI (its write boundary); success re-fetches the page so
- * the row shows its new state (or disappears from a drafts-only filter). A refused
- * decision (already ratified elsewhere, unknown id) surfaces as a toast, never a
- * silent no-op.
+ * server calls the memory CLI (its write boundary); success re-reads the view so
+ * the row shows its new state (or leaves a drafts-only filter) and the counts on
+ * the tabs and the strip agree. A refused decision (already ratified elsewhere,
+ * unknown id) surfaces as a toast, never a silent no-op.
  */
-async function ratifyLore(l, action, refresh) {
+async function ratifyLore(l, action, refresh, btn, reason) {
+  // Busy without the `disabled` attribute: the browser blurs a disabled button to
+  // <body>, and keyboard triage would then lose its place (WCAG 2.4.3). aria-disabled
+  // keeps focus on the row so the re-render can hand it to the next draft's Approve.
+  const group = btn ? [...(btn.closest(".lore-actions")?.querySelectorAll("button") || [btn])] : [];
+  if (btn && btn.getAttribute("aria-disabled") === "true") return;
+  for (const b of group) b.setAttribute("aria-disabled", "true");
+  if (btn) {
+    btn.classList.add("is-busy");
+    btn.setAttribute("aria-busy", "true");
+  }
   try {
     await api(
       "POST",
       `/api/memory/lore/${encodeURIComponent(l.id)}/${action}`,
-      action === "reject" ? {} : undefined,
+      action === "reject" ? (reason ? { reason } : {}) : undefined,
     );
     toast(
       action === "approve"
@@ -11909,32 +21339,59 @@ async function ratifyLore(l, action, refresh) {
     );
   } catch (e) {
     toast(e && e.message ? e.message : `Could not ${action} the draft.`, { code: e && e.code });
+    for (const b of group) b.removeAttribute("aria-disabled");
+    if (btn) {
+      btn.classList.remove("is-busy");
+      btn.removeAttribute("aria-busy");
+    }
   }
   if (refresh) await refresh();
 }
 
+/** Ticket references in a provenance line ("merge:#5", "epic Repeat orders · #6") become links. */
+function provenanceNodes(text) {
+  const out = [];
+  const re = /#(\d+)/g;
+  let last = 0;
+  let m;
+  const s = String(text);
+  while ((m = re.exec(s))) {
+    if (m.index > last) out.push(s.slice(last, m.index));
+    out.push(el("a", { href: `#/ticket/${m[1]}` }, m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) out.push(s.slice(last));
+  return out;
+}
+
+/**
+ * The scouting report (Repo Digest): the factory's read of a repo, set as a calm
+ * document. The overview is the lede; structure, conventions and stack follow as
+ * labelled paragraphs; the freshness line and the CLI's caveat close it.
+ */
 function renderDigestCard(repo, res, repos = []) {
+  const card = el("section", {
+    class: "card mem-page mem-report",
+    dataset: { section: "digest" },
+    "aria-label": "Scouting report",
+  });
+  card.appendChild(panelHead("Scouting report", `Repo Digest · ${repo}`, null, { kit: "claret" }));
   if (!res || res.available === false) {
-    const card = el("div", { class: "card" }, [el("h2", {}, "Repo Digest")]);
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
     return card;
   }
   const digest = res.digest;
-  const card = el("div", { class: "card", dataset: { section: "digest" } }, [
-    el("h2", {}, "Repo Digest"),
-  ]);
   if (!digest) {
     // No digest yet — onboard this repo to populate it. The button POSTs to
     // /repos/onboard pre-targeting THIS repo, so it's a one-click action here.
-    const es = emptyState(
-      `No digest for ${repo} yet`,
-      "Onboard this repo to scan it and build its Memory digest + feature inventory.",
-      "question",
+    card.appendChild(
+      emptyState(
+        `No digest for ${repo} yet`,
+        "Onboard this repo to scan it and build its Memory digest + feature inventory.",
+        null,
+        onboardButton(repos, repo),
+      ),
     );
-    es.appendChild(
-      el("div", { class: "es-actions" }, [onboardButton(repos, repo, { primary: true })]),
-    );
-    card.appendChild(es);
     return card;
   }
   const SECTIONS = [
@@ -11943,48 +21400,58 @@ function renderDigestCard(repo, res, repos = []) {
     ["Conventions", digest.conventions],
     ["Stack", digest.stack],
   ];
-  const grid = el(
-    "div",
-    { class: "digest-grid" },
-    SECTIONS.map(([label, body]) =>
-      el("div", { class: "digest-section" }, [
-        el("div", { class: "section-title" }, label),
-        el("p", { class: body ? "" : "dim" }, body || "—"),
-      ]),
+  card.appendChild(
+    el(
+      "dl",
+      { class: "scout" },
+      SECTIONS.map(([label, body], i) =>
+        el("div", { class: `scout-sec${i === 0 ? " scout-lede" : ""}` }, [
+          el("dt", {}, label),
+          el("dd", { class: body ? "" : "dim" }, body || "Not written yet."),
+        ]),
+      ),
     ),
   );
-  card.appendChild(grid);
   // Freshness line ("updated_at · source") — the load-bearing provenance.
   const meta = digest.meta || {};
   card.appendChild(
-    el("div", { class: "digest-fresh dim" }, [
-      icon("clock", "fresh-ico"),
+    el("p", { class: "digest-fresh" }, [
+      icon("clock", "fresh-ico", 16),
       el("span", {}, `updated ${fmtTime(meta.updatedAt)}`),
-      el("span", { class: "fresh-dot" }, "·"),
+      el("span", { "aria-hidden": "true" }, "·"),
       el("span", {}, `source: ${meta.source || "—"}`),
     ]),
   );
   // The honesty caveat — surfaced verbatim so nobody over-trusts the summary.
-  if (digest.caveat) {
-    card.appendChild(el("p", { class: "digest-caveat dim" }, digest.caveat));
-  }
+  if (digest.caveat) card.appendChild(el("p", { class: "digest-caveat" }, digest.caveat));
   return card;
 }
 
+/**
+ * The honours board (Feature ledger): what has shipped, what is building and what
+ * waits in the backlog, one mown band per stage, each feature grouped under its
+ * scope node and linked to the ticket its provenance names.
+ */
 function renderFeatureLedger(repo, res) {
-  const card = el("div", { class: "card", dataset: { section: "features" } }, [
-    el("h2", {}, [
-      "Features",
-      res && res.available !== false
-        ? el("span", { class: "count" }, String((res.features || []).length))
-        : null,
-    ]),
-  ]);
-  if (!res || res.available === false) {
+  const ok = res && res.available !== false;
+  const features = ok ? res.features || [] : [];
+  const card = el("section", {
+    class: "card mem-page mem-honours",
+    dataset: { section: "features" },
+    "aria-label": "Honours board",
+  });
+  card.appendChild(
+    panelHead(
+      ["Honours board", ok ? el("span", { class: "count" }, String(features.length)) : null],
+      `Feature ledger · ${repo}`,
+      null,
+      { kit: "sky" },
+    ),
+  );
+  if (!ok) {
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
     return card;
   }
-  const features = res.features || [];
 
   // Scope-node filter — group/filter by `scope_node`. Built from the features
   // actually present so the options reflect reality.
@@ -12004,9 +21471,7 @@ function renderFeatureLedger(repo, res) {
         ...nodes.map((n) => el("option", { value: n, selected: memoryState.node === n }, `@${n}`)),
       ],
     );
-    card.appendChild(
-      el("div", { class: "filters" }, [field("Scope node", nodeSel, { style: "flex:1" })]),
-    );
+    card.appendChild(el("div", { class: "filters mem-node" }, [field("Scope node", nodeSel)]));
   }
 
   if (features.length === 0) {
@@ -12014,38 +21479,38 @@ function renderFeatureLedger(repo, res) {
       emptyState(
         `No features recorded for ${repo}${memoryState.node ? ` @${memoryState.node}` : ""}`,
         "The merge pipeline ships features into this ledger as work lands.",
-        "check",
       ),
     );
     return card;
   }
 
-  // Current (shipped) / Building / Backlog split, each grouped by scope node.
+  // Shipped / Building / Backlog, each grouped by scope node.
   const lanes = el("div", { class: "ledger" });
   for (const group of FEATURE_GROUPS) {
     const inGroup = features.filter((f) => f.status === group.status);
     const lane = el("div", { class: "ledger-lane", dataset: { status: group.status } }, [
       el("div", { class: "ledger-head" }, [
+        el("span", { class: "ledger-n tabnum" }, String(inGroup.length)),
         el("span", { class: "ledger-label" }, group.label),
-        badge(String(inGroup.length), `feat-${group.status}`),
+        el("span", { class: "ledger-note" }, group.note),
       ]),
-      el("p", { class: "dim ledger-note" }, group.note),
     ]);
+    const list = el("div", { class: "ledger-list" });
     if (inGroup.length === 0) {
-      lane.appendChild(el("p", { class: "dim ledger-empty" }, "Nothing here."));
+      list.appendChild(el("p", { class: "ledger-empty" }, "Nothing here."));
     } else {
-      // Group features within a lane by their scope node for a scannable read.
       const byNode = new Map();
       for (const f of inGroup) {
         const key = f.scopeNode || "";
         if (!byNode.has(key)) byNode.set(key, []);
         byNode.get(key).push(f);
       }
-      for (const [node, list] of byNode) {
-        if (node) lane.appendChild(el("div", { class: "ledger-node dim" }, `@${node}`));
-        for (const f of list) lane.appendChild(renderFeatureCard(f));
+      for (const [node, items] of byNode) {
+        if (node) list.appendChild(el("div", { class: "ledger-node" }, `@${node}`));
+        for (const f of items) list.appendChild(renderFeatureCard(f));
       }
     }
+    lane.appendChild(list);
     lanes.appendChild(lane);
   }
   card.appendChild(lanes);
@@ -12056,47 +21521,68 @@ function renderFeatureCard(f) {
   return el("div", { class: "feature-card", dataset: { status: f.status } }, [
     el("div", { class: "feature-top" }, [
       el("span", { class: "feature-name" }, f.name),
-      f.scopeNode ? el("span", { class: "tag-chip" }, `@${f.scopeNode}`) : null,
-      f.area ? el("span", { class: "dim feature-area" }, f.area) : null,
+      f.area ? el("span", { class: "feature-area" }, f.area) : null,
     ]),
-    f.summary ? el("p", { class: "feature-summary dim" }, f.summary) : null,
+    f.summary ? el("p", { class: "feature-summary" }, f.summary) : null,
     f.provenance
-      ? el("div", { class: "feature-prov dim" }, [icon("link", "prov-ico"), f.provenance])
+      ? el("p", { class: "feature-prov" }, [
+          icon("link", "prov-ico", 14),
+          el("span", {}, provenanceNodes(f.provenance)),
+        ])
       : null,
   ]);
 }
 
+/** Lore groups on a page, in the order the gaffer works them. */
+const LORE_GROUPS = [
+  { id: "draft", label: "Awaiting your signature", statuses: ["draft"] },
+  { id: "active", label: "On the record", statuses: ["active"] },
+  { id: "retired", label: "Retired", statuses: ["deprecated", "superseded"] },
+];
+
 /**
  * The Lore card: a repo / status / kind filter row, the current page of records
- * (the SERVER filters and pages — `total` is the true count), approve / reject on
- * every draft, and a pager. `repo` is the lore-card repo filter (tagged records
- * only; "All repos" shows everything, org-wide lore included).
+ * (the SERVER filters and pages — `total` is the true count) grouped drafts
+ * first, approve / reject on every draft, and a pager. `repo` is the lore-card
+ * repo filter (tagged records only; "All repos" shows everything, org-wide lore
+ * included).
  */
 function renderLoreList(res, repo, opts = {}) {
   const lore = (res && res.lore) || [];
   const refresh = opts.refresh || null;
+  const reload = opts.reload || refresh;
+  const ok = !!res && res.available !== false;
   const total = res && typeof res.total === "number" ? res.total : lore.length;
   const flaggedCount = lore.filter((l) => l && l.flagged).length;
   const draftCount = lore.filter((l) => l && l.status === "draft").length;
-  const card = el("div", { class: "card", dataset: { section: "lore" } }, [
-    el("h2", {}, [
-      "Lore",
-      res && res.available !== false ? el("span", { class: "count" }, String(total)) : null,
-      // Ratification queue at a glance: drafts on this page awaiting a decision.
-      draftCount > 0
-        ? badge(`${draftCount} draft${draftCount === 1 ? "" : "s"}`, "lore-draft")
+  const card = el("section", {
+    class: "card mem-page mem-lore",
+    id: "lore",
+    dataset: { section: "lore" },
+    "aria-label": "Club lore",
+  });
+  card.appendChild(
+    panelHead(
+      ["Club lore", ok ? el("span", { class: "count" }, String(total)) : null],
+      ok
+        ? [
+            // Ratification queue at a glance: drafts on this page awaiting a decision.
+            draftCount > 0 ? badge(plural(draftCount, "draft"), "lore-draft") : null,
+            // Learn-loop signal: how many conventions the loop flagged for review.
+            flaggedCount > 0 ? badge(`${flaggedCount} flagged`, "lore-flagged") : null,
+            draftCount || flaggedCount ? null : "what the club has learned",
+          ]
         : null,
-      // Learn-loop signal at a glance: how many conventions the loop flagged for review.
-      flaggedCount > 0 ? badge(`${flaggedCount} flagged`, "lore-flagged") : null,
-    ]),
-    el(
-      "p",
-      { class: "dim section-note" },
-      repo
-        ? `Knowledge tagged ${repo}. Drafts wait here for ratification — approve or reject them (the CLI's \`memory review\` does the same).`
-        : "The team's recorded knowledge across every repo. Drafts wait here for ratification — approve or reject them (the CLI's `memory review` does the same).",
+      null,
+      { kit: "ink" },
     ),
-  ]);
+  );
+
+  const loreNote = el(
+    "p",
+    { class: "section-note lore-note" },
+    `${repo ? `Lore tagged ${repo}.` : "Lore across every repo, the club's own included."} Approve a draft and delivery agents read it from the next tick; the CLI's \`memory review\` does the same.`,
+  );
 
   // Filter row — each change re-fetches from the first page.
   const onFilter = (patch) => {
@@ -12143,15 +21629,47 @@ function renderLoreList(res, repo, opts = {}) {
     ],
   );
   kindSel.addEventListener("change", () => onFilter({ kind: kindSel.value }));
-  card.appendChild(
-    el("div", { class: "filters lore-filters" }, [
-      field("Repo", repoSel),
-      field("Status", statusSel),
-      field("Kind", kindSel),
-    ]),
+  // The filters fold behind one line on a phone (the repo filter follows the
+  // page's repo anyway), so "Awaiting your signature" and the first Approve are on
+  // screen at load; on a desk they stay open and the summary line is hidden. The
+  // fold remembers being opened across the live re-render.
+  const narrow =
+    typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
+  const setBits = [
+    loreFilter.repo !== (memoryState.repo || "")
+      ? loreFilter.repo
+        ? loreFilter.repo
+        : "all repos"
+      : null,
+    loreFilter.status ? (loreFilter.status === "draft" ? "drafts" : loreFilter.status) : null,
+    loreFilter.kind || null,
+  ].filter(Boolean);
+  const fold = el(
+    "details",
+    { class: "lore-fold", open: !narrow || loreFilter.foldOpen ? "" : undefined },
+    [
+      el("summary", { class: "lore-fold-sum" }, [
+        el("span", { class: "lore-fold-label" }, "Filter"),
+        el(
+          "span",
+          { class: "lore-fold-set" },
+          setBits.length ? setBits.join(" · ") : `${repo || "all repos"} · all lore`,
+        ),
+      ]),
+      el("div", { class: "filters lore-filters" }, [
+        field("Repo", repoSel),
+        field("Status", statusSel),
+        field("Kind", kindSel),
+      ]),
+    ],
   );
+  fold.addEventListener("toggle", () => {
+    if (typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches)
+      loreFilter.foldOpen = fold.open;
+  });
+  card.appendChild(fold);
 
-  if (!res || res.available === false) {
+  if (!ok) {
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
     return card;
   }
@@ -12168,68 +21686,152 @@ function renderLoreList(res, repo, opts = {}) {
         loreFilter.status === "draft"
           ? "Agents, onboarding and the distiller file drafts here; approving one makes it active for delivery agents."
           : "Lore captures the conventions and decisions agents should respect.",
-        "check",
       ),
     );
+    card.appendChild(loreNote);
     return card;
   }
-  const list = el(
-    "div",
-    { class: "lore-list" },
-    lore.map((l) =>
-      el("div", { class: "lore-row", dataset: { loreId: l.id || "", status: l.status || "" } }, [
-        el("div", { class: "lore-head" }, [
-          el("span", { class: "lore-title" }, l.title),
-          l.status ? badge(l.status, `lore-${l.status}`) : null,
-          l.kind ? el("span", { class: "dim lore-kind" }, l.kind) : null,
-          l.confidence ? el("span", { class: "dim lore-conf" }, `conf=${l.confidence}`) : null,
-          l.stale ? badge("stale", "lore-stale") : null,
-          // Learn-loop signal: this convention was served into a ticket that then
-          // reworked/blocked. Badge it so the operator can spot conventions dragging
-          // delivery down and curate them via the CLI review gate.
-          l.flagged ? badge("flagged", "lore-flagged") : null,
+
+  let firstDraft = true;
+  const row = (l) => {
+    const isDraft = l.status === "draft" && l.id;
+    const actions = isDraft
+      ? (() => {
+          // One sign-off per view: the first draft's Approve is the primary.
+          const approve = el(
+            "button",
+            {
+              class: `btn ${firstDraft ? "primary " : ""}small lore-approve`,
+              type: "button",
+              "aria-label": `Approve “${l.title}”`,
+            },
+            [icon("check"), el("span", {}, "Approve")],
+          );
+          firstDraft = false;
+          approve.addEventListener("click", () => ratifyLore(l, "approve", reload, approve));
+          const reject = el(
+            "button",
+            { class: "btn small lore-reject", type: "button", "aria-label": `Reject “${l.title}”` },
+            "Reject",
+          );
+          const actionsEl = el("div", { class: "lore-actions" }, [approve, reject]);
+          // Reject asks for an optional reason in place (the memory CLI recommends
+          // one: the agent that filed the draft reads it). Enter rejects, with or
+          // without words; Escape puts the buttons back.
+          reject.addEventListener("click", () => {
+            const why = el("input", {
+              type: "text",
+              class: "lore-reason",
+              maxlength: "2000",
+              placeholder: "Why? Optional; the agent reads it",
+              "aria-label": `Reason for rejecting “${l.title}” (optional)`,
+            });
+            const confirm = el(
+              "button",
+              { class: "btn small danger lore-reject-confirm", type: "submit" },
+              "Reject",
+            );
+            const cancel = el("button", { class: "btn small quiet", type: "button" }, "Cancel");
+            const form = el("form", { class: "lore-reject-form" }, [
+              why,
+              el("div", { class: "lore-reject-btns" }, [confirm, cancel]),
+            ]);
+            const close = () => {
+              actionsEl.replaceChildren(approve, reject);
+              reject.focus();
+            };
+            cancel.addEventListener("click", close);
+            form.addEventListener("keydown", (e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                close();
+              }
+            });
+            form.addEventListener("submit", (e) => {
+              e.preventDefault();
+              // Focus rides on the confirm button so the re-render can hand it on.
+              confirm.focus();
+              why.readOnly = true;
+              ratifyLore(l, "reject", reload, confirm, why.value.trim()).finally(() => {
+                why.readOnly = false; // a refused reject leaves the reason editable
+              });
+            });
+            actionsEl.replaceChildren(form);
+            why.focus();
+          });
+          return actionsEl;
+        })()
+      : null;
+    return el(
+      "article",
+      {
+        class: `lore-row${l.flagged ? " is-flagged" : ""}`,
+        dataset: { loreId: l.id || "", status: l.status || "" },
+      },
+      [
+        el("div", { class: "lore-mark" }, [
+          isDraft || l.flagged ? ycard(26, "lore-card") : null,
+          l.kind ? el("span", { class: "lore-kind" }, l.kind) : null,
         ]),
-        el("p", { class: "lore-summary dim" }, l.summary),
-        el("div", { class: "lore-meta dim" }, [
-          l.source ? el("span", {}, l.source) : null,
-          ...(l.repos || []).map((r) => el("span", { class: "tag-chip" }, r)),
-          ...(l.tags || []).map((t) => el("span", { class: "tag-chip subtle" }, t)),
+        el("div", { class: "lore-body" }, [
+          el("div", { class: "lore-head" }, [
+            el("h4", { class: "lore-title" }, l.title),
+            // The group already says draft / on the record; retired rows name their state.
+            l.status && !["active", "draft"].includes(l.status)
+              ? badge(l.status, `lore-${l.status}`)
+              : null,
+            l.stale ? badge("stale", "lore-stale") : null,
+            // Learn-loop signal: this convention was served into a ticket that then
+            // reworked/blocked. Badge it so the operator can spot conventions dragging
+            // delivery down and curate them via the CLI review gate.
+            l.flagged ? badge("flagged", "lore-flagged") : null,
+          ]),
+          l.summary ? el("p", { class: "lore-summary" }, l.summary) : null,
+          el("div", { class: "lore-meta" }, [
+            ...(l.repos || []).map((r) => repoTag(r, 16)),
+            ...(l.tags || []).map((t) => el("span", { class: "tag-chip" }, t)),
+            l.confidence ? el("span", { class: "lore-conf" }, `${l.confidence} confidence`) : null,
+            l.source ? el("span", { class: "lore-src" }, l.source) : null,
+          ]),
           l.flagged
             ? el(
-                "span",
-                { class: "lore-flag-hint", title: "The learn loop flagged this record for review" },
-                "⚑ served into rework/blocked — curate via `memory review`",
+                "p",
+                { class: "lore-flag-hint" },
+                "Served into a ticket that was then reworked or blocked — curate it with `memory review`.",
               )
             : null,
         ]),
         // Ratification: only a DRAFT can be approved or rejected (an active record is
         // deprecated/superseded through the CLI's lifecycle verbs, not from here).
-        l.status === "draft" && l.id
-          ? el("div", { class: "lore-actions" }, [
-              el(
-                "button",
-                {
-                  class: "btn primary small lore-approve",
-                  type: "button",
-                  onclick: () => ratifyLore(l, "approve", refresh),
-                },
-                [icon("check"), el("span", {}, "Approve")],
-              ),
-              el(
-                "button",
-                {
-                  class: "btn small lore-reject",
-                  type: "button",
-                  onclick: () => ratifyLore(l, "reject", refresh),
-                },
-                "Reject",
-              ),
-            ])
-          : null,
+        actions,
+      ],
+    );
+  };
+  const list = el("div", { class: "lore-list" });
+  for (const g of LORE_GROUPS) {
+    const items = lore.filter((l) => g.statuses.includes(l.status));
+    if (!items.length) continue;
+    list.appendChild(
+      el("h3", { class: `lore-group lore-group-${g.id}` }, [
+        g.label,
+        el("span", { class: "count" }, String(items.length)),
       ]),
-    ),
-  );
+    );
+    for (const l of items) list.appendChild(row(l));
+  }
+  const other = lore.filter((l) => !LORE_GROUPS.some((g) => g.statuses.includes(l.status)));
+  if (other.length) {
+    list.appendChild(
+      el("h3", { class: "lore-group" }, [
+        "Other",
+        el("span", { class: "count" }, String(other.length)),
+      ]),
+    );
+    for (const l of other) list.appendChild(row(l));
+  }
   card.appendChild(list);
+  card.appendChild(loreNote);
 
   // Pager — the server pages; show where this page sits in `total`.
   const from = loreFilter.offset + 1;
@@ -12241,7 +21843,7 @@ function renderLoreList(res, repo, opts = {}) {
     };
     card.appendChild(
       el("div", { class: "lore-pager" }, [
-        el("span", { class: "dim tabnum" }, `Showing ${from}–${to} of ${total}`),
+        el("span", { class: "tabnum" }, `Showing ${from}–${to} of ${total}`),
         el(
           "button",
           {
@@ -12270,24 +21872,39 @@ function renderLoreList(res, repo, opts = {}) {
 
 // --- Wiring -----------------------------------------------------------------
 
-// Power-on: the room boots once. The grid draws in, the rail items rack down
-// one by one, the LIVE lamp ignites, then the first view comes up. CSS owns the
-// choreography via the `.booting` flag; we just raise and lower it.
-if (!prefersReducedMotion()) {
-  document.documentElement.classList.add("booting");
-  setTimeout(() => document.documentElement.classList.remove("booting"), 1600);
+/**
+ * In-page jumps ("#what-i-own", "#tactics"): scroll to and focus the section
+ * instead of letting the hash router read the fragment as an unknown view (which
+ * re-rendered the Overview at the top, so the jump never arrived).
+ */
+function jumpTo(id) {
+  const target = id && document.getElementById(id);
+  if (!target) return false;
+  // A folded section (or a row inside one) opens on the way in.
+  for (let n = target; n; n = n.parentElement) if (n.tagName === "DETAILS") n.open = true;
+  if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+  target.scrollIntoView?.({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  target.focus?.({ preventScroll: true });
+  return true;
 }
+document.addEventListener("click", (e) => {
+  const a = e.target.closest?.('a[href^="#"]');
+  if (!a || e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey) return;
+  const href = a.getAttribute("href");
+  if (href.startsWith("#/") || href === "#") return;
+  if (jumpTo(href.slice(1))) e.preventDefault();
+});
 
 adoptTokenFromUrl(); // one-scan token pickup (QR) before the first authed call
 buildChrome();
-// Preload the Overview hero image only when the Overview is the landing view: a
-// static <link rel=preload> in index.html fetched 200 KB on EVERY deep link
-// (#/ticket/…, #/review) and the browser then warned that the preload went
-// unused. Any other view's hero loads with its own render.
-if (parseHash().view === "overview") {
-  document.head.appendChild(
-    el("link", { rel: "preload", as: "image", href: "assets/bg/hero-city.jpg" }),
-  );
-}
-window.addEventListener("hashchange", router);
+window.addEventListener("hashchange", () => {
+  // A bare fragment that names a section on this page is a jump, not a route.
+  const h = location.hash || "";
+  if (h.length > 1 && !h.startsWith("#/") && jumpTo(h.slice(1))) return;
+  // A sheet belongs to the page that opened it: a reason being written for #15 must
+  // never stay over #20 (Back, a link, a typed address), where confirming it would
+  // act on a ticket the reader is no longer looking at.
+  if (sheetOpen()) closeSheet({ restore: false });
+  router();
+});
 router();

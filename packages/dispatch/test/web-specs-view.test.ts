@@ -84,8 +84,10 @@ const COVERAGE = {
         lore_status: "draft",
       },
       {
+        // A requirement: a non-goal or decision with no criterion is not a gap
+        // (see "keeps non-goals, decisions and drafts quiet" below).
         clause_id: "C-gap",
-        kind: "non-goal",
+        kind: "requirement",
         text: "No crypto payments",
         rationale: "Out of scope for v1",
         covering_acs: [],
@@ -164,31 +166,32 @@ describe("web: Specs view", () => {
     expect(card).not.toBeNull();
   });
 
-  it("renders a stats row and a scanner-frame thumbnail for each spec", async () => {
+  it("renders a clause form guide for each spec, and no KPI tile row", async () => {
     stubFetch();
     mountShell("#/specs");
     await boot();
 
-    // Stats row reuses KPI styling: total specs + coverage + gaps + updated.
-    const stats = document.querySelector(".spec-stats");
-    expect(stats).not.toBeNull();
-    const statText = stats!.textContent || "";
-    expect(statText).toContain("Total specs");
-    expect(statText).toContain("Coverage");
-    expect(statText).toContain("Gaps");
-    // COVERAGE = covered(2)/total(3) ≈ 67%; GAPS = 1 orphan (from COVERAGE rollup).
-    expect(statText).toContain("67");
-    expect(statText).toContain("1");
+    // Match Day: the KPI tile row (TOTAL SPECS / COVERAGE / GAPS / LAST UPDATED) is
+    // gone. It repeated the head's counts in tracked-caps eyebrows (TOKENS §2) and
+    // its COVERAGE was a client-side mean the server never gave.
+    expect(document.querySelector(".spec-stats")).toBeNull();
+    expect(document.querySelector(".view-specs .kpi")).toBeNull();
 
-    // Each card carries a scanner-frame thumbnail: four corner brackets + icon.
-    const thumb = document.querySelector(".spec-card .spec-thumb");
-    expect(thumb).not.toBeNull();
-    expect(thumb!.querySelectorAll(".tc").length).toBe(4);
-    expect(thumb!.querySelector(".spec-thumb-icon")).not.toBeNull();
-
-    // A status dot accompanies the (retained) status label.
-    expect(document.querySelector(".spec-card-status .scs-dot")).not.toBeNull();
-    // The newest spec is the primary card (amber rail).
+    // Match Day: the scanner-frame thumbnail (an icon tile, BRIEF §5) and the status
+    // dot are gone. Each row now leads with the status mark + word and carries a
+    // form guide: one square per clause, in order, coloured by its coverage state,
+    // beside the sentence that states the same counts.
+    const card = document.querySelector(".spec-card[data-spec-id='spec-1']")!;
+    expect(card.querySelector(".spec-card-status")?.textContent).toContain("Frozen");
+    const squares = Array.from(card.querySelectorAll(".spec-form .fg"));
+    expect(squares.map((s) => s.className)).toEqual([
+      "fg fg-satisfied",
+      "fg fg-open",
+      "fg fg-orphan",
+    ]);
+    expect(card.textContent || "").toContain("2 of 3 covered · 1 satisfied · 1 gap");
+    // The row is a link to the spec's trace, and the newest spec is marked.
+    expect(card.getAttribute("href")).toBe("#/specs/spec-1");
     expect(document.querySelector(".spec-card--primary")).not.toBeNull();
   });
 
@@ -241,21 +244,154 @@ describe("web: Specs view", () => {
     expect(text).toContain("lore: draft");
   });
 
-  it("links the spec to its epic via the scope-node id", async () => {
+  it("links the spec to its campaign via the scope-node id", async () => {
     stubFetch();
     mountShell("#/specs/spec-1");
     await boot();
-    const rollupText = document.body.textContent || "";
-    // Rollup surfaces covered/satisfied/gaps.
-    expect(document.querySelector(".spec-rollup")).not.toBeNull();
-    expect(rollupText).toContain("Open epic");
-    // The "Open epic" action targets the scope node.
+    // The lede states covered / satisfied / gaps once; the KPI tiles that repeated
+    // it are gone. The action says "campaign", as the page's meta line does.
+    expect(document.querySelector(".spec-rollup")).toBeNull();
+    expect(document.querySelector(".spec-lede")?.textContent || "").toContain(
+      "2 of its 3 clauses are covered by acceptance criteria, 1 already satisfied.",
+    );
     const openEpic = Array.from(document.querySelectorAll("button")).find((b) =>
-      (b.textContent || "").includes("Open epic"),
+      (b.textContent || "").includes("Open campaign"),
     );
     expect(openEpic).toBeTruthy();
     openEpic!.click();
     await tick();
     expect(location.hash).toBe("#/epics/epic-42");
+  });
+
+  it("keeps non-goals, decisions and drafts quiet: no gap, no red", async () => {
+    const quiet = JSON.parse(JSON.stringify(COVERAGE));
+    quiet.coverage.clauses[2].kind = "non-goal";
+    stubFetch({ coverage: quiet });
+    mountShell("#/specs/spec-1");
+    await boot();
+    // A non-goal with no criterion is not a gap: no red block, a dashed square.
+    expect(document.querySelector(".coverage-gaps")).toBeNull();
+    expect(document.querySelector(".spec-clause.is-gap")).toBeNull();
+    expect(document.querySelector(".spec-clauses .fg-none")).not.toBeNull();
+    expect(document.querySelector(".spec-lede .is-red")).toBeNull();
+
+    // A draft nothing covers yet says so once, calmly, and lists its clauses once.
+    const draft = JSON.parse(JSON.stringify(COVERAGE));
+    draft.coverage.status = "draft";
+    draft.coverage.rollup = {
+      total: 3,
+      covered: 0,
+      satisfied: 0,
+      orphans: ["C-green", "C-open", "C-gap"],
+    };
+    for (const c of draft.coverage.clauses) {
+      c.covering_acs = [];
+      c.covered = false;
+      c.satisfied = false;
+      c.orphan = true;
+      c.lore_status = "absent";
+      c.bounce_count = 0;
+    }
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    stubFetch({ coverage: draft });
+    mountShell("#/specs/spec-1");
+    await boot();
+    expect(document.querySelector(".coverage-gaps")).toBeNull();
+    expect(document.querySelectorAll(".spec-clause").length).toBe(3);
+    expect(document.querySelectorAll(".spec-clause .sc-state").length).toBe(0);
+    expect(document.querySelectorAll(".spec-clauses .fg-orphan").length).toBe(0);
+    const board = document.querySelector(".spec-clauses")?.textContent || "";
+    expect(document.querySelectorAll(".spec-uncovered").length).toBe(1);
+    expect(board).toContain("Not covered yet");
+    // Lore every clause shares is said once, not on every clause.
+    expect(board).toContain("Lore: no clause is seeded yet.");
+    expect(document.body.textContent || "").not.toContain("lore: absent");
+  });
+  it("calls a clause with only some criteria met 'partly met', never satisfied", async () => {
+    // The server's clause.satisfied is true when ANY covering criterion is met; a
+    // clause is proven only when ALL are, so 1 of 2 met reads "Partly met".
+    const part = JSON.parse(JSON.stringify(COVERAGE));
+    part.coverage.clauses[0].covering_acs.push({
+      ac_id: "ac-3",
+      ac_text: "charged exactly once",
+      ac_status: "pending",
+      satisfied: false,
+      ticket_id: "t-3",
+      ticket_number: 9,
+      ticket_title: "Idempotent charge",
+      ticket_status: "blocked",
+    });
+    stubFetch({ coverage: part });
+    mountShell("#/specs/spec-1");
+    await boot();
+    const c = document.querySelector(".spec-clause[data-clause-id='C-green']")!;
+    expect(c.getAttribute("data-state")).toBe("partial");
+    expect(c.getAttribute("data-satisfied")).toBe("false");
+    expect(c.textContent || "").toContain("Partly met · 1 of 2");
+    expect(c.textContent || "").not.toContain("Satisfied");
+    expect(document.querySelector(".spec-clause[data-state='satisfied']")).toBeNull();
+    expect(document.querySelector(".spec-clauses .fg-partial")).not.toBeNull();
+    expect(document.querySelector(".spec-clauses .fg-satisfied")).toBeNull();
+    expect(document.querySelector(".spec-lede")?.textContent || "").toContain(
+      "none fully proven yet: 1 partly met",
+    );
+    // The ticket number and its status sit together in one unit.
+    const tk = c.querySelectorAll(".spec-ac-tk");
+    expect(tk.length).toBe(2);
+    expect(tk[1]!.querySelector(".spec-ac-ticket")?.textContent).toBe("#9");
+    expect(tk[1]!.querySelector(".spec-ac-st")?.textContent).toBe("Blocked");
+
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    stubFetch({ coverage: part });
+    mountShell("#/specs");
+    await boot();
+    const card = document.querySelector(".spec-card[data-spec-id='spec-1']")!;
+    expect(card.textContent || "").toContain("2 of 3 covered · 0 satisfied · 1 partly met · 1 gap");
+  });
+
+  it("reads a frozen spec not built yet as 'not covered yet' everywhere, never as gaps", async () => {
+    // Frozen, no campaign, nothing covering it: between "Freeze spec" and "Plan a
+    // build from it". The squares, the board line, the lede and the list agree.
+    const fresh = JSON.parse(JSON.stringify(COVERAGE));
+    fresh.coverage.scope_node_id = null;
+    fresh.coverage.rollup = {
+      total: 3,
+      covered: 0,
+      satisfied: 0,
+      orphans: ["C-green", "C-open", "C-gap"],
+    };
+    for (const c of fresh.coverage.clauses) {
+      c.covering_acs = [];
+      c.covered = false;
+      c.satisfied = false;
+      c.orphan = true;
+    }
+    const specs = JSON.parse(JSON.stringify(SPECS));
+    specs.specs[0].scope_node_id = null;
+    stubFetch({ coverage: fresh, specs });
+    mountShell("#/specs/spec-1");
+    await boot();
+    expect(document.querySelector(".coverage-gaps")).toBeNull();
+    expect(document.querySelectorAll(".spec-clauses .fg-orphan").length).toBe(0);
+    expect(document.querySelectorAll(".spec-clauses .fg-none").length).toBe(3);
+    expect(document.querySelectorAll(".spec-clause .sc-state").length).toBe(0);
+    expect(document.querySelector(".spec-uncovered")?.textContent || "").toContain(
+      "Not covered yet",
+    );
+    expect(document.querySelector(".spec-lede")?.textContent || "").toContain("Not covered yet");
+    expect(document.querySelector(".spec-lede .is-red")).toBeNull();
+
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    stubFetch({ coverage: fresh, specs });
+    mountShell("#/specs");
+    await boot();
+    const card = document.querySelector(".spec-card[data-spec-id='spec-1']")!;
+    expect(card.classList.contains("has-gaps")).toBe(false);
+    expect(card.querySelector(".fg-orphan")).toBeNull();
+    expect(card.querySelector(".spec-card-words.is-red")).toBeNull();
+    expect(card.textContent || "").toContain("Not covered yet");
   });
 });

@@ -182,14 +182,14 @@ async function route(
     }
 
     // SPA static SHELL first — served to ANY Host, tokenless (C2 / LAN-QR fix).
-    // index.html + app.js + styles.css + /assets are PUBLIC static files with NO
+    // index.html + app.js + theme.js + /css + /assets are PUBLIC static files with NO
     // data: a phone loading the dashboard over the LAN (Host = the LAN IP, which
     // need not match the bind host) MUST get the shell, which then prompts for the
     // token. Safe because it exposes nothing — the DNS-rebinding defense and the auth
     // gate below still guard EVERY API/data request, so a rebound attacker page gets
     // only the empty shell and its subsequent API calls are refused (wrong Host, and
     // it cannot attach the bearer token cross-origin). serveStatic only matches the
-    // known shell paths + traversal-safe /assets; everything else falls through.
+    // known shell paths + traversal-safe /css and /assets; everything else falls through.
     if (method === "GET" && serveStatic(url.pathname, res)) {
       return;
     }

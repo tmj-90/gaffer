@@ -98,8 +98,13 @@ function buttonByText(text: string): HTMLButtonElement | undefined {
 function rejectDialog(): HTMLElement | null {
   return document.querySelector(".reject-dialog");
 }
+// The reason form now lives in the shared sheet (Match Day review): Send back confirms
+// with a primary "Send back", Won't do with a danger "Won't do", so the hook is the
+// submit's own class rather than `.btn.danger`.
 function submitButton(): HTMLButtonElement | null {
-  return document.querySelector(".reject-dialog-actions .btn.danger") as HTMLButtonElement | null;
+  return document.querySelector(
+    ".reject-dialog-actions .reject-submit",
+  ) as HTMLButtonElement | null;
 }
 function rejectCalls(): Call[] {
   return calls.filter((c) => c.method === "POST" && c.url.includes("/review/reject"));
@@ -128,12 +133,16 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
 
   it("opens a chip dialog (not window.prompt) when rejecting to rework", async () => {
     await bootReview();
-    const sendBack = buttonByText("Send back to rework");
+    const sendBack = buttonByText("Send back…");
     expect(sendBack, "the rework reject button should render").toBeDefined();
 
     sendBack!.click();
     const dialog = rejectDialog();
     expect(dialog, "a reject dialog should open").not.toBeNull();
+    // It names the ticket it acts on, and confirms with the verb that opened it.
+    expect(document.querySelector(".sheet.open #sheet-title")?.textContent).toBe("Send #7 back");
+    expect(dialog!.querySelector(".rs-ticket")?.textContent).toContain("Ship the thing");
+    expect(submitButton()?.textContent).toBe("Send back");
     // Preset chips render as tappable buttons + a free-text fallback exists.
     expect(dialog!.querySelectorAll(".reject-chip").length).toBeGreaterThan(0);
     expect(dialog!.querySelector(".reject-reason-input")).not.toBeNull();
@@ -141,12 +150,13 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
 
   it("NEGATIVE CONTROL: no chip + no text ⇒ submit is inert, no reject sent", async () => {
     await bootReview();
-    buttonByText("Send back to rework")!.click();
+    buttonByText("Send back…")!.click();
 
     const submit = submitButton();
     expect(submit, "the dialog submit should render").not.toBeNull();
-    // Held disabled while the reason is empty — the required invariant.
-    expect(submit!.hasAttribute("disabled")).toBe(true);
+    // Held disabled while the reason is empty — the required invariant. It is
+    // aria-disabled (not `disabled`) so it stays focusable and says why when pressed.
+    expect(submit!.getAttribute("aria-disabled")).toBe("true");
 
     // Even forcing the click must not POST a reject (backstop the invariant).
     submit!.click();
@@ -156,14 +166,14 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
 
   it("tapping a preset chip submits the reject with that reason", async () => {
     await bootReview();
-    buttonByText("Send back to rework")!.click();
+    buttonByText("Send back…")!.click();
 
     const chip = document.querySelector(".reject-chip") as HTMLButtonElement;
     const chipText = chip.textContent!.trim();
     chip.click();
 
     const submit = submitButton()!;
-    expect(submit.hasAttribute("disabled"), "chip selection enables submit").toBe(false);
+    expect(submit.getAttribute("aria-disabled"), "chip selection enables submit").toBe("false");
     submit.click();
     await tick();
 
@@ -171,20 +181,23 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
     expect(sent).toHaveLength(1);
     expect(sent[0]!.url).toContain(`/tickets/${TICKET.id}/review/reject`);
     expect(sent[0]!.body).toMatchObject({ to: "refining", reason: chipText });
-    // Dialog closes after a successful reject.
-    expect(rejectDialog()).toBeNull();
+    // The sheet closes after a successful reject (the shared sheet stays in the DOM, closed).
+    expect(document.querySelector(".sheet.open .reject-dialog")).toBeNull();
   });
 
   it("typing a free-text reason (no chip) also submits", async () => {
     await bootReview();
-    buttonByText("Won't do")!.click();
+    buttonByText("Won't do…")!.click();
 
     const input = document.querySelector(".reject-reason-input") as HTMLInputElement;
     input.value = "Superseded by a newer ticket";
     input.dispatchEvent(new Event("input"));
 
     const submit = submitButton()!;
-    expect(submit.hasAttribute("disabled")).toBe(false);
+    expect(submit.getAttribute("aria-disabled")).toBe("false");
+    expect(document.querySelector(".sheet.open #sheet-title")?.textContent).toBe("Won't do #7");
+    expect(submit.textContent).toBe("Won't do");
+    expect(submit.classList.contains("danger")).toBe(true);
     submit.click();
     await tick();
 

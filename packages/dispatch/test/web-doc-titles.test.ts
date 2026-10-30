@@ -67,11 +67,11 @@ describe("web: tab titles", () => {
     expect(views.filter((v) => !titles.has(v))).toEqual([]);
   });
 
-  it("#/create reads 'New ticket · Gaffer', never 'Gaffer · Gaffer'", async () => {
+  it("#/create reads 'Plan a build · Gaffer', never 'Gaffer · Gaffer'", async () => {
     stubFetch({});
     mountShell("#/create");
     await boot();
-    expect(document.title).toBe("New ticket · Gaffer");
+    expect(document.title).toBe("Plan a build · Gaffer");
   });
 
   it("a ticket tab carries the ticket's number and title once it loads", async () => {
@@ -98,7 +98,11 @@ describe("web: login gate", () => {
     await boot();
     const gate = document.querySelector(".login-gate");
     expect(gate).not.toBeNull();
-    expect(gate!.querySelector("h1")!.textContent).toBe("Gaffer");
+    // The match-ticket gate names the club on its stub and heads the form
+    // "Members’ entrance"; the point is that it says Gaffer, never Dispatch.
+    expect(gate!.querySelector("h1")).not.toBeNull();
+    expect(gate!.textContent ?? "").toContain("Gaffer");
+    expect(gate!.textContent ?? "").not.toContain("Dispatch");
     const hint = gate!.querySelector(".login-hint")!.textContent ?? "";
     expect(hint).toContain("gaffer dashboard");
     expect(hint).toContain("dashboard-token");

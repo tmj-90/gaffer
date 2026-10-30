@@ -1,0 +1,483 @@
+/* Specs — the playbook: each spec is a play (a page of intent) with its status
+   and a form guide of its clauses (one square each: satisfied, covered, a gap);
+   a spec's page traces clause by clause to the criteria and tickets that prove
+   it, with the gaps called out first on a red block. */
+
+@layer views {
+  .view-specs,
+  .view-spec {
+    row-gap: var(--s5);
+  }
+
+  /* --- the plays ----------------------------------------------------------- */
+  .spec-list {
+    display: grid;
+  }
+  .spec-card {
+    display: grid;
+    grid-template-columns: 130px minmax(0, 1fr) minmax(220px, 34%);
+    gap: var(--s3) var(--s5);
+    align-items: start;
+    padding: var(--s4);
+    border-bottom: var(--hair);
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .spec-list > :last-child .spec-card {
+    border-bottom: 0;
+  }
+  .spec-card:hover {
+    background: var(--paper-2);
+  }
+  .spec-card:hover .spec-card-title {
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+  .spec-card-lead {
+    display: grid;
+    gap: 6px;
+    justify-items: start;
+    padding-top: 4px;
+  }
+  .spec-card-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 700 var(--t14) / 1 var(--f-text);
+    white-space: nowrap;
+  }
+  .spec-card-status.status-draft,
+  .spec-card-status.status-superseded {
+    color: var(--ink-2);
+  }
+  .spec-card-new {
+    padding: 2px 6px;
+    background: var(--board);
+    color: var(--board-ink);
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+  }
+  .spec-card-body {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+  .spec-card-title {
+    font: 800 var(--t26) / 1.05 var(--f-display);
+  }
+  .spec-card-brief {
+    max-width: 70ch;
+    color: var(--ink-2);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .spec-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 14px;
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .spec-card-cov {
+    display: grid;
+    gap: 8px;
+    justify-items: start;
+    padding-top: 4px;
+  }
+  .spec-card-words {
+    font: 700 var(--t14) / 1.3 var(--f-cond);
+  }
+  .spec-card-words.is-red {
+    color: var(--red);
+  }
+
+  /* The form guide: one square per clause. */
+  .spec-form {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    vertical-align: middle;
+  }
+  .fg {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--r);
+    font: 800 var(--t14) / 1 var(--f-display);
+    font-style: normal;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .fg-satisfied {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  /* Partly met: some of the clause's criteria are met. The outlined square
+     filled from the bottom, like a half-full tally: between open and solid. */
+  .fg-partial {
+    border-bottom-width: 7px;
+  }
+  .fg-orphan {
+    border-color: var(--red);
+    background: var(--red);
+    color: var(--on-red);
+  }
+  /* No criterion, and not a gap: a draft's clause, a non-goal, a decision. */
+  .fg-none {
+    border: 2px dashed var(--ink-2);
+    color: var(--ink-2);
+  }
+  .spec-key {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    max-width: none;
+    margin: 0;
+    padding: var(--s3) var(--s4);
+    border-top: var(--hair);
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .spec-key {
+    column-gap: var(--s4);
+  }
+  .spec-key-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .spec-key .fg {
+    width: 20px;
+    height: 20px;
+    font-size: var(--t12);
+  }
+
+  /* --- one spec ------------------------------------------------------------ */
+  .spec-head {
+    display: grid;
+    gap: 12px;
+  }
+  .spec-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 18px;
+    max-width: none;
+    font-size: var(--t14);
+  }
+  .spec-meta a {
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .spec-head .detail-title {
+    font: 800 var(--t52) / 1.02 var(--f-display);
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+  }
+  .spec-lede {
+    max-width: 62ch;
+    font-size: var(--t20);
+    line-height: 1.4;
+  }
+  .spec-lede .is-red {
+    color: var(--red);
+  }
+  .spec-brief {
+    max-width: 75ch;
+    color: var(--ink-2);
+  }
+  .spec-brief b {
+    color: var(--ink);
+  }
+  .spec-head .btn-row {
+    margin: 4px 0 0;
+  }
+
+  .coverage-gaps {
+    display: grid;
+    gap: var(--s3);
+    border-color: var(--red);
+  }
+  .coverage-gaps-list {
+    display: grid;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .coverage-gaps-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: var(--hair);
+  }
+  .cg-text {
+    font-weight: 700;
+  }
+  .cg-hint {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .sc-no {
+    flex: none;
+    min-width: 28px;
+    font: 900 var(--t26) / 1 var(--f-stencil);
+    color: var(--claret-ink);
+  }
+
+  .spec-clauses.card {
+    display: grid;
+    gap: 0;
+  }
+  .spec-clauses > .spec-form {
+    padding: var(--s4) var(--s4) var(--s2);
+  }
+  .spec-trace {
+    display: grid;
+    margin: 0;
+    padding: 0 var(--s4) var(--s2);
+    list-style: none;
+  }
+  .spec-clause {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr) minmax(180px, 26%);
+    gap: 8px var(--s4);
+    padding: 16px 0;
+    border-top: var(--hair);
+  }
+  .spec-trace > li:first-child .spec-clause {
+    border-top: 0;
+  }
+  .spec-clause-main {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+  }
+  .spec-clause-head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .spec-clause-text {
+    flex: 1 1 240px;
+    font: 700 var(--t16) / 1.4 var(--f-text);
+  }
+  .spec-clause-rationale {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .spec-clause-tags {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .sc-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 700 var(--t14) / 1 var(--f-text);
+  }
+  .sc-state.is-red {
+    color: var(--red);
+  }
+  .sc-state.is-ok {
+    color: var(--ok);
+  }
+  .sc-state.is-part {
+    color: var(--ink);
+  }
+  .sc-state.is-quiet {
+    color: var(--ink-2);
+  }
+  a.sc-no {
+    text-decoration: none;
+  }
+  a.sc-no:hover {
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+  .spec-trace > li {
+    scroll-margin-top: calc(var(--header-h) + var(--s4));
+  }
+  /* What the board says once for every clause: not covered yet, lore, bounces. */
+  .spec-board-notes {
+    display: grid;
+    gap: 6px;
+    padding: var(--s3) var(--s4);
+    border-top: var(--hair);
+  }
+  .spec-board-note {
+    max-width: none;
+    font: 600 var(--t14) / 1.35 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .spec-board-note:has(> svg) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 700 var(--t16) / 1.35 var(--f-text);
+    color: var(--ink);
+  }
+  .spec-board-note > svg {
+    flex: none;
+  }
+  .spec-clauses > .spec-uncovered {
+    padding: 0 var(--s4) var(--s2);
+  }
+  .spec-board-note a {
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .spec-clause-acs {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .spec-ac {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 4px 10px;
+    font-size: var(--t14);
+  }
+  .spec-ac > svg {
+    align-self: start;
+    margin-top: 0.2em;
+  }
+  .spec-ac-text {
+    min-width: 0;
+  }
+  /* The ticket and its status: one unit, never split by a wrapping criterion. */
+  .spec-ac-tk {
+    display: inline-flex;
+    align-items: baseline;
+    justify-self: end;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  .spec-ac-ticket {
+    font: 900 var(--t16) / 1 var(--f-stencil);
+    color: var(--claret-ink);
+  }
+  .spec-ac-st {
+    font: 600 var(--t12) / 1 var(--f-cond);
+    color: var(--ink-2);
+  }
+
+  @media (max-width: 1180px) {
+    .spec-card {
+      grid-template-columns: 110px minmax(0, 1fr);
+    }
+    .spec-card-cov {
+      grid-column: 2;
+    }
+  }
+  @media (max-width: 760px) {
+    .spec-card {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      padding: var(--s3);
+    }
+    .spec-card-lead {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .spec-card-cov {
+      grid-column: auto;
+    }
+    .spec-card-title {
+      font-size: var(--t20);
+    }
+    .spec-head .detail-title {
+      font-size: var(--t34);
+    }
+    .spec-lede {
+      font-size: var(--t16);
+    }
+    .spec-clause {
+      grid-template-columns: 32px minmax(0, 1fr);
+    }
+    .spec-clause-tags {
+      grid-column: 2;
+      flex-direction: row;
+      flex-wrap: wrap;
+    }
+    .spec-trace {
+      padding: 0 var(--s3) var(--s2);
+    }
+    .spec-clauses > .spec-form {
+      padding: var(--s3) var(--s3) var(--s2);
+    }
+    .spec-board-notes {
+      padding: var(--s3);
+    }
+  }
+}
+
+/* The empty playbook: how a play works, and what is playing without one. */
+@layer views {
+  .playbook-empty {
+    display: grid;
+    gap: var(--s5);
+  }
+  .pb-steps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    background: var(--pitch);
+    border-radius: var(--r);
+  }
+  .pb-step {
+    display: grid;
+    gap: 6px;
+    padding: var(--s4) var(--s5);
+    color: var(--chalk);
+    border-left: 2px dashed rgb(242 247 239 / 0.5);
+  }
+  .pb-step:first-child {
+    border-left: 0;
+  }
+  .pb-step h3 {
+    font: 800 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .pb-step p {
+    font: 600 var(--t16) / 1.4 var(--f-text);
+  }
+  .pb-n {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--r-round);
+    background: #fff;
+    color: var(--counter-ink);
+    font: 800 var(--t20) / 1 var(--f-display);
+    box-shadow: var(--counter-shadow);
+  }
+  .pb-now {
+    font-size: var(--t16);
+  }
+  @media (max-width: 760px) {
+    .pb-steps {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .pb-step {
+      border-left: 0;
+      border-top: 2px dashed rgb(242 247 239 / 0.5);
+    }
+    .pb-step:first-child {
+      border-top: 0;
+    }
+  }
+}

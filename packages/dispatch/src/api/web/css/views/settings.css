@@ -1,0 +1,1013 @@
+/* Settings — the boot room. Team instructions first (GAFFER_MODE as a
+   five-detent dial, the formation it plays on a drawn pitch, what moving it
+   changes and the Go/No-Go before raising it), then every knob as a labelled
+   row with its key, where its value comes from, short help and its control,
+   under a sticky index and a sticky save bar with the unsaved count. */
+
+@layer views {
+  /* Two columns: the sticky index, then the room. */
+  .boot-room {
+    display: grid;
+    grid-template-columns: 248px minmax(0, 1fr);
+    gap: var(--s5);
+    align-items: start;
+  }
+  .boot-main {
+    display: grid;
+    gap: var(--s5);
+    min-width: 0;
+  }
+  .boot-index {
+    position: sticky;
+    top: var(--s4);
+    display: grid;
+    gap: var(--s3);
+    padding: var(--s4);
+    background: var(--paper);
+    border: var(--frame);
+    border-radius: var(--r);
+  }
+  .boot-links {
+    display: grid;
+  }
+  /* The section list: always open on a desk (its summary is not shown there). */
+  .boot-sections > summary {
+    display: none;
+  }
+  @media (max-width: 760px) {
+    .boot-sections > summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: var(--tap);
+      font: 700 var(--t16) var(--f-text);
+      cursor: pointer;
+    }
+    .boot-sections > summary::-webkit-details-marker {
+      display: none;
+    }
+    .boot-sections > summary::after {
+      content: "";
+      width: 9px;
+      height: 9px;
+      margin-left: auto;
+      border-right: 2.5px solid currentColor;
+      border-bottom: 2.5px solid currentColor;
+      transform: rotate(45deg);
+    }
+    .boot-sections[open] > summary::after {
+      transform: rotate(225deg);
+    }
+    .boot-sections[open] > summary {
+      margin-bottom: 8px;
+    }
+  }
+  .boot-links a {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    padding: 7px 0;
+    border-top: var(--hair);
+    color: var(--ink);
+    text-decoration: none;
+    font: 600 var(--t14) / 1.25 var(--f-text);
+  }
+  .boot-links li:first-child a {
+    border-top: 0;
+  }
+  .boot-links a:hover {
+    text-decoration: underline;
+  }
+  .boot-n,
+  .boot-find-n {
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .boot-n.is-dirty {
+    padding: 0 5px;
+    background: var(--yellow);
+    color: var(--on-yellow);
+    border-radius: var(--r);
+  }
+  .boot-unsaved {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: var(--s3);
+    border-top: var(--frame);
+    font: 700 var(--t14) var(--f-text);
+  }
+  .boot-find-f input {
+    width: 100%;
+  }
+  .boot-main.is-finding > :not(.settings-form, .boot-save, .settings-note) {
+    display: none;
+  }
+  .boot-nomatch {
+    font-size: var(--t16);
+    color: var(--ink-2);
+  }
+  .settings-note {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .settings-note-ico {
+    flex: none;
+  }
+
+  /* --- Team instructions ------------------------------------------------ */
+  .boot-page {
+    display: grid;
+    gap: var(--s4);
+  }
+  .boot-page > .panel-head.block {
+    margin-bottom: 0;
+  }
+  .ti-lede {
+    font-size: var(--t20);
+    line-height: 1.35;
+    max-width: 70ch;
+  }
+  .ti-lede strong {
+    font: 800 var(--t26) / 1 var(--f-display);
+  }
+  /* The dial: five detents on one rail; the chosen one carries the pointer. */
+  .dial {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    margin: 0;
+    padding: 0;
+    border: 0;
+    position: relative;
+  }
+  .dial::before {
+    /* The rail the detents sit on. */
+    content: "";
+    position: absolute;
+    left: 10%;
+    right: 10%;
+    top: 15px;
+    height: 4px;
+    background: var(--ink);
+    border-radius: var(--r);
+  }
+  .dial-stop {
+    position: relative;
+    display: grid;
+    justify-items: center;
+    align-content: start;
+    gap: 4px;
+    padding: 0 8px 12px;
+    text-align: center;
+    cursor: pointer;
+    border-bottom: 4px solid transparent;
+  }
+  .dial-input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+  }
+  .dial-notch {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--r-round);
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    box-shadow: var(--counter-shadow);
+    margin-bottom: 4px;
+  }
+  .dial-stop:hover .dial-notch {
+    background: var(--sky-wash);
+  }
+  .dial-stop.is-picked .dial-notch {
+    background: var(--ink);
+    box-shadow:
+      inset 0 0 0 6px var(--paper),
+      var(--counter-shadow);
+  }
+  .dial-stop.is-picked {
+    background: var(--sky-wash);
+    border-bottom-color: var(--ink);
+  }
+  .dial-input:focus-visible ~ .dial-notch {
+    outline: 3px solid var(--focus);
+    outline-offset: var(--focus-gap, 2px);
+  }
+  .dial-name {
+    font: 800 var(--t26) / 1 var(--f-display);
+  }
+  .dial-line {
+    font: 600 var(--t14) / 1.25 var(--f-cond);
+    color: var(--ink-2);
+    max-width: 22ch;
+  }
+  .dial-now {
+    font: 800 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 3px 6px;
+    background: var(--board);
+    color: var(--board-ink);
+    border-radius: var(--r);
+  }
+  .dial:disabled .dial-stop {
+    cursor: not-allowed;
+  }
+  /* Forced colours drop the washes and fills: the chosen detent keeps a filled
+     dot in the system highlight and a heavy frame, so it still reads as picked. */
+  @media (forced-colors: active) {
+    .dial-stop.is-picked .dial-notch {
+      forced-color-adjust: none;
+      background: Highlight;
+      border-color: CanvasText;
+      box-shadow: inset 0 0 0 6px Canvas;
+    }
+    .dial-stop.is-picked {
+      outline: 3px solid CanvasText;
+      outline-offset: -3px;
+    }
+  }
+
+  /* The formation: each gate on a delivery's way to main is a position. */
+  .formation-board {
+    position: relative;
+    border-radius: var(--r);
+    overflow: hidden;
+    min-height: 220px;
+  }
+  .formation-pitch {
+    display: block;
+    width: 100%;
+    height: 220px;
+  }
+  .fp-grass {
+    fill: var(--pitch);
+  }
+  .fp-mow {
+    fill: var(--pitch-2);
+  }
+  .fp-line {
+    fill: none;
+    stroke: var(--chalk);
+    stroke-width: 2;
+    opacity: 0.85;
+    vector-effect: non-scaling-stroke;
+  }
+  .formation-pos {
+    position: absolute;
+    inset: 0;
+  }
+  .formation-pos > li {
+    position: absolute;
+    left: var(--x);
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(15%, 150px);
+  }
+  .fp-spot {
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    padding: 10px 6px 8px;
+    min-height: 120px;
+    align-content: start;
+    text-align: center;
+    text-decoration: none;
+    color: var(--board-ink);
+    background: var(--board);
+    border: 2px solid var(--board);
+    border-radius: var(--r);
+  }
+  .fp-spot.who-you,
+  .fp-spot.who-both {
+    border-color: var(--yellow);
+  }
+  .fp-spot.is-moving {
+    outline: 3px dashed var(--chalk);
+    outline-offset: 3px;
+  }
+  .fp-spot:hover .fp-label {
+    text-decoration: underline;
+  }
+  .fp-spot > svg,
+  .fp-pair,
+  .fp-empty {
+    height: 46px;
+  }
+  .fp-pair {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .fp-card {
+    transform: rotate(8deg);
+  }
+  .fp-empty {
+    width: 40px;
+    border: 2px dashed var(--board-ink-2);
+    border-radius: var(--r-round);
+    height: 40px;
+    margin: 3px 0;
+  }
+  .fp-label {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .fp-who {
+    font: 700 var(--t14) / 1.1 var(--f-cond);
+    color: var(--board-ink-2);
+  }
+  .fp-spot.who-you .fp-who,
+  .fp-spot.who-both .fp-who {
+    color: var(--yellow);
+  }
+  .fp-spot .shirt .shirt-no {
+    display: none;
+  }
+
+  /* What moving the dial changes, and the Go/No-Go. */
+  .ti-changes {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--s5);
+    align-items: start;
+  }
+  .ti-changes:empty {
+    display: none;
+  }
+  .ti-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--t14);
+  }
+  .ti-table caption {
+    text-align: left;
+    padding-bottom: 6px;
+    font: 800 var(--t20) / 1.1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .ti-table th,
+  .ti-table td {
+    padding: 7px 8px 7px 0;
+    border-top: var(--hair);
+    text-align: left;
+    vertical-align: top;
+  }
+  .ti-table thead th {
+    border-top: 0;
+    border-bottom: var(--frame);
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+  .ti-table tbody th a {
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .ti-table tr.is-same td {
+    color: var(--ink-2);
+  }
+  .ti-table tr.is-change td:last-child {
+    font-weight: 800;
+  }
+  .ti-kept {
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+  .gng {
+    display: grid;
+    gap: var(--s3);
+    padding: var(--s4);
+    background: var(--board);
+    color: var(--board-ink);
+    border-radius: var(--r);
+  }
+  .gng-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    font: 800 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .gng-n {
+    font: 700 var(--t14) var(--f-cond);
+    color: var(--board-ink-2);
+    text-transform: none;
+  }
+  .gng-list {
+    display: grid;
+  }
+  .gng-list li {
+    display: grid;
+    grid-template-columns: 18px 56px minmax(0, 1fr);
+    gap: 8px;
+    align-items: start;
+    padding: 8px 0;
+    border-top: 1px solid var(--board-rule);
+    font-size: var(--t14);
+  }
+  .gng-list li:first-child {
+    border-top: 0;
+  }
+  .gng-list .glyph {
+    margin-top: 1px;
+  }
+  .gng-list .is-go {
+    color: var(--board-ink);
+  }
+  .gng-list .is-nogo .glyph,
+  .gng-list .is-nogo .gng-word {
+    color: var(--yellow);
+  }
+  .gng-word {
+    font: 800 var(--t14) / 1.2 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .gng a {
+    color: var(--board-ink);
+    font-weight: 700;
+  }
+  .gng-note {
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+    color: var(--board-ink-2);
+  }
+  .ti-foot {
+    font: 600 var(--t14) / 1.35 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .ti-foot a {
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  /* --- The settings groups ------------------------------------------------ */
+  .settings-form {
+    display: grid;
+    gap: var(--s4);
+  }
+  .settings-group {
+    display: grid;
+    gap: var(--s3);
+  }
+  details.settings-group > summary {
+    cursor: pointer;
+    list-style: none;
+    align-items: center;
+  }
+  details.settings-group > summary::-webkit-details-marker {
+    display: none;
+  }
+  .settings-group > .panel-head .panel-title {
+    font-size: var(--t34);
+  }
+  details[open].settings-group > summary {
+    padding-bottom: var(--s3);
+    border-bottom: var(--frame);
+  }
+  .grp-dirty {
+    padding: 2px 7px;
+    background: var(--yellow);
+    color: var(--on-yellow);
+    border-radius: var(--r);
+    font: 800 var(--t12) / 1.35 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  details.settings-group > summary::after,
+  .boot-fold > summary::after {
+    content: "";
+    width: 10px;
+    height: 10px;
+    margin-left: auto;
+    border-right: 2.5px solid currentColor;
+    border-bottom: 2.5px solid currentColor;
+    transform: rotate(45deg);
+    align-self: center;
+    flex: none;
+  }
+  details[open].settings-group > summary::after,
+  .boot-fold[open] > summary::after {
+    transform: rotate(225deg);
+  }
+  .settings-rows {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--s6);
+  }
+  .settings-rows > .setting-row:nth-child(2) {
+    border-top: 0;
+  }
+  .setting-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 210px);
+    gap: 8px 20px;
+    align-items: start;
+    padding: 12px 0;
+    border-top: var(--hair);
+    scroll-margin-top: var(--s5);
+  }
+  .setting-row:first-child {
+    border-top: 0;
+  }
+  .setting-row:target {
+    background: var(--sky-wash);
+    box-shadow:
+      -8px 0 0 var(--sky-wash),
+      8px 0 0 var(--sky-wash);
+  }
+  .setting-meta {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+  .setting-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font: 700 var(--t16) / 1.3 var(--f-text);
+  }
+  .setting-id {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+  .setting-key {
+    font-size: var(--t12);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .setting-src {
+    font: 600 var(--t12) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .setting-src.src-file {
+    color: var(--ink);
+    font-weight: 800;
+  }
+  .setting-unsaved {
+    display: none;
+    padding: 0 5px;
+    background: var(--yellow);
+    color: var(--on-yellow);
+    border-radius: var(--r);
+    font: 800 var(--t12) / 1.35 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .setting-row.is-dirty .setting-unsaved {
+    display: inline-block;
+  }
+  .setting-help {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .setting-more > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 700 var(--t12) / 1.6 var(--f-cond);
+    color: var(--ink);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    list-style: none;
+  }
+  .setting-more > summary::-webkit-details-marker {
+    display: none;
+  }
+  .setting-more > summary::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    margin-left: 1px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(-45deg);
+  }
+  .setting-more[open] > summary::before {
+    transform: rotate(45deg);
+  }
+  .setting-more[open] > summary {
+    margin-bottom: 4px;
+  }
+  .setting-control {
+    display: flex;
+    justify-content: flex-end;
+    min-width: 0;
+    padding-top: 2px;
+  }
+  .setting-control input:not([type="checkbox"]),
+  .setting-control select {
+    width: 100%;
+    max-width: 260px;
+  }
+  .switch-word {
+    min-width: 2.2em;
+    font: 800 var(--t14) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .badge.env-locked .lock-ico {
+    width: 12px;
+    height: 12px;
+  }
+
+  /* The save bar: always on screen while the room is, the one primary. */
+  .boot-save {
+    position: sticky;
+    bottom: var(--s3);
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 12px 10px 16px;
+    background: var(--paper);
+    border: var(--frame);
+    border-radius: var(--r);
+    box-shadow: var(--counter-shadow);
+  }
+  /* Clean, the bar rests at the foot of the room instead of riding over the
+     panels; it starts riding along the moment something is unsaved. */
+  .boot-save.is-clean {
+    position: static;
+    box-shadow: none;
+  }
+  .boot-dirty {
+    margin-right: auto;
+    font: 600 var(--t14) / 1.3 var(--f-text);
+    color: var(--ink-2);
+  }
+  .boot-dirty.is-dirty {
+    color: var(--ink);
+  }
+  .boot-dirty.is-dirty strong {
+    padding: 0 5px;
+    background: var(--yellow);
+    color: var(--on-yellow);
+    border-radius: var(--r);
+  }
+
+  /* Idle-loop scans fold. */
+  .boot-fold > summary {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: var(--s4);
+    background: var(--paper);
+    border: var(--frame);
+    border-radius: var(--r);
+    cursor: pointer;
+    list-style: none;
+  }
+  .boot-fold > summary::-webkit-details-marker {
+    display: none;
+  }
+  .boot-fold[open] > summary {
+    margin-bottom: var(--s4);
+  }
+  .boot-fold-t {
+    font: 800 var(--t34) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+
+  /* Autonomy recommendations / active policies / access. */
+  .ar-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .ar-ico {
+    width: 20px;
+    height: 20px;
+    flex: none;
+    margin-top: 6px;
+  }
+  .ar-title {
+    font: 800 var(--t34) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .ar-list,
+  .access-list {
+    display: grid;
+  }
+  .ar-item,
+  .access-item,
+  .ap-item {
+    display: grid;
+    gap: 6px;
+    padding: 10px 0;
+    border-top: var(--hair);
+  }
+  .ar-item:first-child,
+  .access-item:first-child,
+  .ap-item:first-child {
+    border-top: 0;
+  }
+  .ar-item-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .ar-repo,
+  .access-name {
+    font-weight: 700;
+  }
+  .ar-reasons {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .ar-action {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .ar-confirm {
+    width: 100%;
+  }
+  .ar-enabled-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .autonomy-inert-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: var(--t14);
+  }
+  .access-panel {
+    display: grid;
+    gap: var(--s3);
+  }
+  .access-form {
+    display: grid;
+    gap: var(--s3);
+    padding-top: var(--s3);
+    border-top: var(--frame);
+  }
+  .access-form h3 {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .access-form-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--s3);
+    align-items: end;
+  }
+  .access-token {
+    width: 100%;
+    font-family: var(--f-mono);
+  }
+  .access-token-note,
+  .access-whoami {
+    font-size: var(--t14);
+  }
+  .access-select {
+    min-width: 92px;
+  }
+
+  /* Idle loops (maintenance lanes). */
+  .idle-loops-rows {
+    display: grid;
+    gap: 0;
+  }
+  .idle-loop-row {
+    display: grid;
+    gap: 10px;
+    padding: 12px 0;
+    border-top: var(--hair);
+  }
+  .idle-loop-row:first-child {
+    border-top: 0;
+  }
+  .idle-loop-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .idle-loop-label {
+    display: grid;
+    gap: 3px;
+  }
+  .idle-loops-note {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .target-picker {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+  }
+  .target-picker-reposlot:empty {
+    display: none;
+  }
+  .target-picker-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+  }
+  .target-picker-grouplabel,
+  .target-picker-sublabel {
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+  }
+  .target-picker-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 32px;
+  }
+
+  @media (max-width: 1180px) {
+    .boot-room {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    /* The index becomes one sticky strip: find, and the sections as a row. */
+    .boot-index {
+      grid-template-columns: minmax(0, 1fr);
+      padding: var(--s3);
+      gap: 8px;
+      z-index: 4;
+      top: 0;
+    }
+    .boot-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .boot-links a {
+      flex: none;
+      gap: 6px;
+      padding: 6px 10px;
+      min-height: var(--tap);
+      align-items: center;
+      border: 1px solid var(--rule);
+      border-radius: var(--r);
+      white-space: nowrap;
+    }
+    .boot-links li:first-child a {
+      border-top: 1px solid var(--rule);
+    }
+    .boot-unsaved {
+      display: none;
+    }
+    .settings-rows {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .settings-rows > .setting-row:nth-child(2) {
+      border-top: var(--hair);
+    }
+    .ti-changes {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 760px) {
+    .boot-index {
+      position: static;
+    }
+    /* Every fold a thumb opens is a 44px target, however small it reads. */
+    details.settings-group > summary,
+    .boot-fold > summary {
+      min-height: var(--tap);
+    }
+    .setting-more > summary {
+      min-height: var(--tap);
+      margin-block: -8px;
+      padding-inline-end: 14px;
+    }
+    .setting-more[open] > summary {
+      margin-bottom: -4px;
+    }
+    .target-picker-check {
+      min-height: var(--tap);
+    }
+    .boot-find-f > label,
+    .boot-find-f .field-label {
+      font-size: var(--t14);
+    }
+    .setting-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .setting-control {
+      justify-content: flex-start;
+    }
+    .setting-control input:not([type="checkbox"]),
+    .setting-control select {
+      max-width: none;
+    }
+    .ti-lede {
+      font-size: var(--t16);
+    }
+    .ti-lede strong {
+      font-size: var(--t20);
+    }
+    /* The dial stands up: five detents down a rail, each a 44px target. */
+    .dial {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .dial::before {
+      left: 24px;
+      right: auto;
+      top: 22px;
+      bottom: 22px;
+      width: 4px;
+      height: auto;
+    }
+    .dial-stop {
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      justify-items: start;
+      align-items: center;
+      text-align: left;
+      gap: 2px 12px;
+      padding: 5px 8px;
+      min-height: var(--tap);
+      border-bottom: 0;
+      border-left: 4px solid transparent;
+    }
+    .dial-stop.is-picked {
+      border-left-color: var(--ink);
+    }
+    .dial-notch {
+      grid-row: span 2;
+      margin: 0;
+    }
+    .dial-name {
+      font-size: var(--t20);
+    }
+    .dial-line {
+      grid-column: 2;
+      max-width: none;
+    }
+    .dial-now {
+      grid-column: 3;
+      grid-row: 1;
+    }
+    .formation-pitch {
+      display: none;
+    }
+    .formation-board {
+      min-height: 0;
+      padding: 8px;
+      background: var(--pitch);
+    }
+    .formation-pos {
+      position: static;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .formation-pos > li {
+      position: static;
+      transform: none;
+      width: auto;
+    }
+    .fp-spot {
+      min-height: 0;
+    }
+    .fp-label {
+      font-size: var(--t16);
+    }
+    /* On a phone the bar shows only while something is unsaved: one row. */
+    .boot-save {
+      bottom: calc(68px + env(safe-area-inset-bottom));
+      flex-wrap: nowrap;
+      padding: 8px 8px 8px 12px;
+      gap: 8px;
+    }
+    .boot-save.is-clean {
+      display: none;
+    }
+    .boot-dirty {
+      min-width: 0;
+    }
+    .bd-names,
+    .bd-word {
+      display: none;
+    }
+    .boot-dirty strong {
+      white-space: nowrap;
+    }
+    .boot-save .btn.quiet {
+      padding-inline: 6px;
+    }
+    .boot-fold > summary {
+      flex-wrap: wrap;
+    }
+  }
+}

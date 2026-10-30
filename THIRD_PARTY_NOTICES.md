@@ -118,13 +118,16 @@ SOFTWARE.
 
 ## Web fonts (dashboard, self-hosted)
 
-The dashboard bundles two typefaces as web fonts under
-`packages/dispatch/src/api/web/assets/fonts/` so that a local-first install makes no
-third-party network request on load. Both are distributed under the
-**SIL Open Font License 1.1** (https://openfontlicense.org), which permits bundling
-and redistribution; the fonts are not modified.
+The dashboard bundles five typefaces as latin-subset woff2 web fonts under
+`packages/dispatch/src/api/web/assets/fonts/` (taken from the Fontsource npm
+packages, 5.x) so that a local-first install makes no third-party network request on
+load. All are distributed under the **SIL Open Font License 1.1**
+(https://openfontlicense.org), which permits bundling and redistribution; the fonts
+are not modified. Each licence ships next to its font as `LICENSE-<family>.txt`.
 
-- **Space Grotesk** — Copyright 2020 The Space Grotesk Project Authors
-  (https://github.com/floriankarsten/space-grotesk). OFL-1.1.
-- **JetBrains Mono** — Copyright 2020 The JetBrains Mono Project Authors
-  (https://github.com/JetBrains/JetBrainsMono). OFL-1.1.
+- **Big Shoulders Display** and **Big Shoulders Stencil Display** — Copyright 2019
+  The Big Shoulders Project Authors (https://github.com/xotypeco/big_shoulders). OFL-1.1.
+- **Sofia Sans** and **Sofia Sans Condensed** — Copyright 2019 The Sofia Sans Project
+  Authors (https://github.com/lettersoup/Sofia-Sans). OFL-1.1.
+- **Fragment Mono** — Copyright 2022 The Fragment-Mono Project Authors
+  (https://github.com/weiweihuanghuang/fragment-mono). OFL-1.1.

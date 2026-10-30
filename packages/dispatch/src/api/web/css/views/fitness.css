@@ -1,0 +1,347 @@
+/* The physio room's flow panels (moved from the Overview): form guide, governance
+   ROI, the cost line, development flow, the treatment table, running now. */
+@layer views {
+  /* --- form guide (flow numbers on paper) --------------------------------- */
+  .form-guide .kpi-row {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  /* --- two-up / three-up rows -------------------------------------------- */
+  .ov-grid.ov-2 {
+    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  }
+  .ov-grid.ov-3 {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+
+  /* --- phases of play: the development flow on a strip of pitch --------------
+     One mown stripe per stage (the texture is the axis, bench to net); each stage a
+     magnet counter with its §6 glyph, the count in chalk below. */
+  .pipeline {
+    display: flex;
+    align-items: stretch;
+    min-width: 0;
+    border-radius: var(--r);
+    overflow: hidden;
+    background: var(--pitch);
+  }
+  .pl-live {
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .pl-node {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 0;
+    display: grid;
+    justify-items: center;
+    align-content: start;
+    gap: 8px;
+    padding: 14px 6px 12px;
+    background: var(--pitch);
+    color: var(--chalk);
+    text-decoration: none;
+  }
+  .pl-node:nth-child(even) {
+    background: var(--pitch-2);
+  }
+  .pl-node:focus-visible {
+    outline: 3px solid var(--yellow);
+    outline-offset: -3px;
+  }
+  .pl-disc {
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--r-round);
+    background: #fff;
+    border: 1.5px solid var(--counter-ink);
+    color: var(--counter-ink);
+    box-shadow: 0 2px 0 rgb(0 0 0 / 0.3);
+  }
+  .pl-node.dim .pl-disc {
+    background: transparent;
+    border: 2px dashed var(--chalk);
+    color: var(--chalk);
+    box-shadow: none;
+  }
+  .pl-label {
+    font: 800 var(--t16) / 1 var(--f-display);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .pl-count {
+    font: 800 var(--t52) / 0.9 var(--f-display);
+  }
+  .pl-node:hover .pl-count {
+    text-decoration: underline;
+    text-decoration-thickness: 3px;
+    text-underline-offset: 4px;
+  }
+  .pl-zone {
+    font: 600 var(--t12) / 1.2 var(--f-cond);
+    text-align: center;
+  }
+
+  /* --- needs your attention (severity rows) ---------------------------------- */
+  .needs-list {
+    display: grid;
+  }
+  /* the row's rule belongs to the li (health.css); the link inside it has none */
+  .needs-item .ni-link {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    color: inherit;
+    text-decoration: none;
+  }
+  .ni-icon {
+    display: grid;
+    place-items: center;
+  }
+  .needs-item[data-sev="critical"] .ni-icon,
+  .needs-item[data-sev="critical"] .ni-title {
+    color: var(--red);
+  }
+  .ni-body {
+    display: grid;
+    min-width: 0;
+  }
+  .ni-title {
+    font: 700 var(--t16) / 1.3 var(--f-text);
+  }
+  .ni-sub {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .ni-action {
+    font: 700 var(--t14) var(--f-text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .ni-arrow {
+    display: none;
+  }
+  .needs-empty {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font: 600 var(--t16) var(--f-text);
+  }
+
+  .flow-eff .band {
+    height: 12px;
+  }
+
+  /* --- governance ROI + cost line ---------------------------------------------- */
+  .gov-panel {
+    display: grid;
+    gap: var(--s3);
+    align-content: start;
+  }
+  .gov-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .gov-note {
+    margin: 0;
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .gov-win {
+    flex: none;
+  }
+  .gov-tiles {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border: var(--frame);
+  }
+  .gov-tile {
+    padding: 10px 14px;
+    border-left: var(--hair);
+    display: grid;
+    gap: 2px;
+  }
+  .gov-tile:first-child {
+    border-left: 0;
+  }
+  .gov-tile-label {
+    font: 700 var(--t14) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+  .gov-tile-val {
+    font: 800 var(--t34) / 1 var(--f-display);
+  }
+  .gov-tile-sub,
+  .gov-emptystate {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  /* --- running now, bouncing, decisions, activity ------------------------------ */
+  .run-list {
+    display: grid;
+  }
+  .run-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+  }
+  .run-row--clickable {
+    cursor: pointer;
+  }
+  .run-row--clickable:hover {
+    background: var(--paper-2);
+  }
+  .run-kind {
+    font-weight: 700;
+  }
+  .run-repo,
+  .run-elapsed {
+    font: 600 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .run-viewlog {
+    margin-left: auto;
+  }
+  .run-recent-title {
+    font: 800 var(--t16) / 1 var(--f-display);
+    text-transform: uppercase;
+    padding-top: 8px;
+  }
+  .run-log-pre,
+  .run-detail-log-pre {
+    white-space: pre-wrap;
+    max-height: 60vh;
+    overflow: auto;
+    font: 12.5px / 1.5 var(--f-mono);
+    background: var(--board);
+    color: var(--board-ink);
+    padding: 10px 12px;
+    border-radius: var(--r);
+  }
+  .run-detail,
+  .run-detail-meta,
+  .run-detail-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: center;
+  }
+  .run-detail {
+    display: grid;
+  }
+  .bouncing-list {
+    display: grid;
+  }
+  .bounce-row {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 0;
+    border-top: var(--hair);
+    color: inherit;
+    text-decoration: none;
+  }
+  .bouncing-list li:first-child .bounce-row {
+    border-top: 0;
+  }
+  .bounce-row:hover .bounce-title {
+    text-decoration: underline;
+  }
+  .bounce-num {
+    font: 800 var(--t20) / 1 var(--f-display);
+  }
+  .bounce-title {
+    overflow-wrap: anywhere;
+  }
+  .bounce-count {
+    font: 600 var(--t14) / 1 var(--f-cond);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .bounce-count b {
+    font: 800 var(--t26) / 1 var(--f-display);
+    color: var(--ink);
+  }
+  .bounce-samegate {
+    font: 700 var(--t12) var(--f-cond);
+    color: var(--red);
+    border: 1.5px solid var(--red);
+    padding: 2px 6px;
+    border-radius: var(--r);
+  }
+  .decisions-well {
+    display: grid;
+    gap: var(--s3);
+  }
+  .decisions-card.has-overflow .decisions-well {
+    max-height: 560px;
+    overflow-y: auto;
+  }
+
+  /* The five flow numbers wrap 3 + 2, then 2 + 2 + 1: the first cell of each row
+     drops its left rule, later rows carry the same rule on top, and the last
+     cell spans what is left of its row so no row ends in a gap. */
+  @media (760px < width <= 1180px) {
+    .form-guide .kpi-row {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .form-guide .kpi-row > .kpi:nth-child(3n + 1) {
+      border-left: 0;
+      padding-left: 0;
+    }
+    .form-guide .kpi-row > .kpi:nth-child(n + 4) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    .form-guide .kpi-row > .kpi:last-child:nth-child(3n + 2) {
+      grid-column: span 2;
+    }
+  }
+  @media (width <= 760px) {
+    .form-guide .kpi-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .form-guide .kpi-row > .kpi:nth-child(odd) {
+      border-left: 0;
+      padding-left: 0;
+    }
+    .form-guide .kpi-row > .kpi:nth-child(n + 3) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    .form-guide .kpi-row > .kpi:last-child:nth-child(odd) {
+      grid-column: 1 / -1;
+    }
+    .gov-tiles {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .gov-tile {
+      border-left: 0;
+      border-top: var(--hair);
+    }
+    .pl-disc {
+      width: 32px;
+      height: 32px;
+    }
+    .pl-label {
+      font-size: var(--t14);
+    }
+    .pl-count {
+      font-size: var(--t34);
+    }
+    .bounce-row {
+      grid-template-columns: 44px minmax(0, 1fr) auto;
+    }
+    .bounce-samegate {
+      grid-column: 2;
+      justify-self: start;
+    }
+  }
+}

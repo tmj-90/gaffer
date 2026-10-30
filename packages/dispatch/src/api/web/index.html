@@ -1,126 +1,65 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0b0a07" />
-    <title>Gaffer — mission control</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#7a1631" />
+    <title>Gaffer</title>
     <link rel="icon" type="image/svg+xml" href="/gaffer-favicon.svg" />
-    <!-- Self-hosted fonts: a local-first dashboard makes no third-party request on load. -->
-    <link rel="stylesheet" href="/assets/fonts/fonts.css" />
-    <link rel="stylesheet" href="/styles.css" />
+    <!-- Per-viewer kit (light/dark) is applied before first paint; CSP allows 'self' scripts only. -->
+    <script src="/theme.js"></script>
+    <!-- Self-hosted OFL fonts: the primary display + text faces are preloaded. -->
+    <link
+      rel="preload"
+      href="/assets/fonts/big-shoulders-display-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/assets/fonts/sofia-sans-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <!-- Layered sheets: tokens.css declares the order
+         reset, tokens, base, layout, components, views, utilities. -->
+    <link rel="stylesheet" href="/css/tokens.css" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/layout.css" />
+    <link rel="stylesheet" href="/css/shell.css" />
+    <link rel="stylesheet" href="/css/components.css" />
+    <link rel="stylesheet" href="/css/views/overview.css" />
+    <link rel="stylesheet" href="/css/views/work.css" />
+    <link rel="stylesheet" href="/css/views/review.css" />
+    <link rel="stylesheet" href="/css/views/ticket.css" />
+    <link rel="stylesheet" href="/css/views/epics.css" />
+    <link rel="stylesheet" href="/css/views/map.css" />
+    <link rel="stylesheet" href="/css/views/health.css" />
+    <link rel="stylesheet" href="/css/views/fitness.css" />
+    <link rel="stylesheet" href="/css/views/specs.css" />
+    <link rel="stylesheet" href="/css/views/memory.css" />
+    <link rel="stylesheet" href="/css/views/settings.css" />
+    <link rel="stylesheet" href="/css/views/create.css" />
+    <link rel="stylesheet" href="/css/views/gate.css" />
+    <link rel="stylesheet" href="/css/utilities.css" />
   </head>
   <body>
-    <!-- Keyboard users skip the app bar / nav and land on the view. -->
-    <a href="#app" class="skip-link">Skip to main content</a>
-    <!-- One small polite region for targeted announcements (board updated, view
-         changed). The old page-wide aria-live on <main> made screen readers
-         re-announce the ENTIRE view on every 9s refresh. -->
+    <a href="#app" class="skip-link">Skip to content</a>
+    <!-- One polite region for short announcements (view changed, board updated),
+         so a 9s refresh never re-reads the whole view. -->
     <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
-    <!-- Dispatch shield mark — reused by app bar, login gate and nav via <use href="#wg-shield">. -->
-    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
-      <symbol id="wg-shield" viewBox="0 0 256 280">
-        <defs>
-          <linearGradient
-            id="wgShieldGrad"
-            x1="36"
-            y1="18"
-            x2="220"
-            y2="272"
-            gradientUnits="userSpaceOnUse"
-          >
-            <stop offset="0" stop-color="#16140F" />
-            <stop offset="1" stop-color="#E5371F" />
-          </linearGradient>
-        </defs>
-        <path
-          d="M128 18 C95 35 66 40 36 50 L36 127 C36 188 73 236 128 272 C183 236 220 188 220 127 L220 50 C190 40 161 35 128 18 Z"
-          fill="url(#wgShieldGrad)"
-        />
-        <path
-          d="M128 38 C100 52 77 57 56 64 L56 126 C56 176 85 214 128 241 C171 214 200 176 200 126 L200 64 C179 57 156 52 128 38 Z"
-          fill="#16140F"
-        />
-        <path
-          d="M128 38 C100 52 77 57 56 64 L56 126 C56 176 85 214 128 241 C171 214 200 176 200 126 L200 64 C179 57 156 52 128 38 Z"
-          stroke="#FFFFFF"
-          stroke-opacity="0.08"
-          stroke-width="2"
-        />
-        <path
-          d="M74 96 H164 C168 96 171 99 171 103 V167 C171 171 168 174 164 174 H74 V148 C85 146 93 137 93 125 C93 113 85 104 74 102 Z"
-          fill="#FFFFFF"
-        />
-        <rect x="95" y="111" width="22" height="22" rx="4" fill="#E5371F" />
-        <path
-          d="M100 122 L106 128 L113 116"
-          stroke="white"
-          stroke-width="4"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-        <rect x="95" y="140" width="22" height="22" rx="4" fill="#E5371F" />
-        <path
-          d="M100 151 L106 157 L113 145"
-          stroke="white"
-          stroke-width="4"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-        <line
-          x1="130"
-          y1="121"
-          x2="157"
-          y2="121"
-          stroke="#16140F"
-          stroke-width="6"
-          stroke-linecap="round"
-        />
-        <line
-          x1="130"
-          y1="151"
-          x2="157"
-          y2="151"
-          stroke="#16140F"
-          stroke-width="6"
-          stroke-linecap="round"
-        />
-        <line
-          x1="187"
-          y1="105"
-          x2="187"
-          y2="170"
-          stroke="#E5371F"
-          stroke-width="6"
-          stroke-linecap="round"
-        />
-        <circle cx="187" cy="105" r="12" fill="#E5371F" />
-        <circle cx="187" cy="137" r="12" fill="#B26A00" />
-        <circle cx="187" cy="170" r="12" fill="#E5371F" />
-        <circle cx="187" cy="105" r="5" fill="white" opacity="0.9" />
-        <circle cx="187" cy="137" r="5" fill="white" opacity="0.9" />
-        <circle cx="187" cy="170" r="5" fill="white" opacity="0.9" />
-      </symbol>
-    </svg>
-
     <div id="toast" class="toast" role="alert" aria-live="assertive" hidden></div>
 
     <div class="shell">
-      <!-- App bar + nav are populated by app.js so the login gate can suppress them. -->
+      <!-- The club header and the phone bottom nav are built by app.js, so the
+           login gate can keep them hidden. -->
       <header id="appbar" class="appbar" hidden></header>
-
       <main id="app" class="app" tabindex="-1">
         <p class="loading">Loading…</p>
       </main>
-
-      <footer class="footer">
-        <span class="footer-ps">gaffer ›</span>
-        <span>read the timeline · trust the evidence</span>
-        <span class="footer-cur" aria-hidden="true"></span>
-      </footer>
-
-      <!-- Mobile bottom tab bar, populated by app.js. -->
       <nav id="bottomnav" class="bottomnav" aria-label="Primary" hidden></nav>
     </div>
 

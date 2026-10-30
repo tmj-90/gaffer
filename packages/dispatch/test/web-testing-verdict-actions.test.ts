@@ -123,11 +123,16 @@ describe("BBT-001 web: recording the tester's verdict from the board", () => {
     document.body.innerHTML = "";
   });
 
+  // Match Day ticket page: PASS used to ask through window.prompt (unthemed, ignores
+  // dark mode). It now asks in the club's reason sheet, like FAIL; the invariant (a
+  // summary is required, and nothing is recorded without one) is unchanged.
   it("an in_testing ticket offers PASS and FAIL actions; PASS records the verdict with a summary", async () => {
     stubFetch(ticket("in_testing"));
     vi.stubGlobal(
       "prompt",
-      vi.fn(() => "Probed the endpoint by hand; every AC holds"),
+      vi.fn(() => {
+        throw new Error("window.prompt must not be used for the tester verdict");
+      }),
     );
     await bootDetail();
     const pass = buttonByText("Record tester PASS");
@@ -137,6 +142,13 @@ describe("BBT-001 web: recording the tester's verdict from the board", () => {
     expect(buttonByText("Approve"), "no review Approve on in_testing").toBeUndefined();
 
     pass!.click();
+    const input = document.querySelector<HTMLTextAreaElement>(".sheet.open .reject-reason-input");
+    expect(input, "the PASS reason sheet opened").not.toBeNull();
+    input!.value = "Probed the endpoint by hand; every AC holds";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    const confirm = document.querySelector<HTMLButtonElement>(".sheet.open .reject-submit");
+    expect(confirm?.textContent).toBe("Record PASS");
+    confirm!.click();
     for (let i = 0; i < 4; i += 1) await tick();
     expect(testerCalls()).toHaveLength(1);
     expect(testerCalls()[0]!.body).toEqual({
@@ -147,12 +159,16 @@ describe("BBT-001 web: recording the tester's verdict from the board", () => {
 
   it("PASS with an empty summary records nothing (a summary is required)", async () => {
     stubFetch(ticket("in_testing"));
-    vi.stubGlobal(
-      "prompt",
-      vi.fn(() => "   "),
-    );
     await bootDetail();
     buttonByText("Record tester PASS")!.click();
+    const input = document.querySelector<HTMLTextAreaElement>(".sheet.open .reject-reason-input");
+    input!.value = "   ";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    const confirm = document.querySelector<HTMLButtonElement>(".sheet.open .reject-submit")!;
+    expect(confirm.getAttribute("aria-disabled"), "confirm held on a blank summary").toBe("true");
+    // Pressing it (or a forced submit) records nothing, and says why.
+    confirm.click();
+    input!.form!.requestSubmit();
     for (let i = 0; i < 4; i += 1) await tick();
     expect(testerCalls()).toHaveLength(0);
   });

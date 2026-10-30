@@ -1,0 +1,870 @@
+/* Work — the board as mown lanes on a pitch-side stand: scoreboard-black lane
+   heads with their true counts, paper cards with a hard counter shadow, a yellow
+   card on what waits on you and a red frame on what is blocked. All 8 lanes fit
+   at 1440 with no page scroll; 761–1180 the board scrolls inside itself; on a
+   phone the lanes stack in urgency order and fold. The list is a league table. */
+
+@layer views {
+  .view-work {
+    row-gap: 14px;
+  }
+
+  /* --- head: the counts sentence, then the board's shape as one slim bar ---- */
+  .view-work .view-head-main {
+    gap: 6px;
+  }
+  .view-work .view-sub {
+    max-width: 880px;
+  }
+  .work-flow {
+    max-width: 880px;
+    margin-top: 2px;
+  }
+  .wf-bar {
+    display: flex;
+    height: 6px;
+    gap: 2px;
+    overflow: hidden;
+  }
+  .wf-seg {
+    height: 100%;
+    min-width: 3px;
+    background: var(--ink-2);
+  }
+  .wf-seg.wf-done {
+    background: var(--ink);
+  }
+  .wf-seg.wf-blocked,
+  .wf-seg.wf-failed {
+    background: var(--red);
+  }
+  .wf-seg.wf-in_review,
+  .wf-seg.wf-ready_for_merge {
+    background: var(--yellow);
+  }
+
+  /* --- the filter line: number-or-title, status, repo, risk, Board | List --- */
+  .work-toolbar {
+    align-items: center;
+    gap: 10px;
+  }
+  .work-filters {
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 10px;
+  }
+  .work-q-wrap {
+    position: relative;
+    display: block;
+    flex: 0 1 320px;
+    min-width: 0;
+  }
+  .work-q {
+    width: 100%;
+    min-height: 44px;
+    padding: 8px 40px 8px 12px;
+    border: var(--frame);
+    border-radius: var(--r);
+    background: var(--paper);
+    color: var(--ink);
+    font: 400 var(--t16) / 1.2 var(--f-text);
+  }
+  .work-q::placeholder {
+    color: var(--ink-2);
+  }
+  .work-q-wrap > .kbd {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+  .work-q-wrap:has(.work-q:focus) > .kbd,
+  .work-q-wrap:has(.work-q:not(:placeholder-shown)) > .kbd {
+    display: none;
+  }
+  .work-sel {
+    width: auto;
+    min-width: 150px;
+    min-height: 44px;
+  }
+  .work-reset {
+    min-height: 44px;
+  }
+  .work-mode button {
+    min-height: 40px;
+    padding: 0 16px;
+    font-size: var(--t16);
+  }
+  .work-nomatch {
+    font: 600 var(--t16) / 1.3 var(--f-cond);
+    color: var(--ink-2);
+  }
+
+  /* --- the board ------------------------------------------------------------ */
+  .board-wrap {
+    display: grid;
+    gap: var(--s5);
+    min-width: 0;
+  }
+  .board {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    border: 2px solid var(--board);
+    border-radius: var(--r);
+    min-height: 560px;
+    min-width: 0;
+  }
+  .board-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-left: 2px solid light-dark(rgb(255 255 255 / 0.9), rgb(242 247 239 / 0.22));
+  }
+  .board-col:first-child {
+    border-left: 0;
+  }
+  .board-col.lane-a {
+    background: var(--lane-a);
+  }
+  .board-col.lane-b {
+    background: var(--lane-b);
+  }
+  .board-col-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    min-height: 52px;
+    padding: 6px 10px 6px 12px;
+    background: var(--board);
+    color: var(--board-ink);
+  }
+  .board-col-title {
+    font: 800 var(--t16) / 1 var(--f-display);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+  }
+  .board-col-count {
+    font: 800 var(--t34) / 1 var(--f-display);
+  }
+  /* The two lanes that call for the gaffer carry their card colour under the head. */
+  .col-blocked .board-col-head {
+    box-shadow: inset 0 -4px 0 var(--red);
+  }
+  .col-in_review .board-col-head {
+    box-shadow: inset 0 -4px 0 var(--yellow);
+  }
+  .board-col-body {
+    display: grid;
+    gap: 10px;
+    padding: 10px 8px;
+    align-content: start;
+  }
+  .board-empty {
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+    padding: 4px 4px;
+  }
+  .lane-more {
+    font: 700 var(--t14) / 1.3 var(--f-cond);
+    padding: 2px 4px;
+  }
+  .lane-foot {
+    padding: 2px 12px 14px;
+    font: 600 var(--t14) / 1.35 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .lane-foot a {
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .lane-toggle {
+    display: none;
+  }
+  .board.is-dragging .board-col:not(.drop-ok) {
+    opacity: 0.7;
+  }
+  .board-col.drop-ok {
+    box-shadow: inset 0 0 0 3px var(--sky);
+  }
+  .board-col.drop-no {
+    cursor: not-allowed;
+  }
+
+  /* --- a card: a paper counter with a hard 2px shadow ------------------------ */
+  .board-card {
+    position: relative;
+    display: grid;
+    gap: 5px;
+    padding: 9px 10px 8px;
+    background: var(--paper);
+    border: 1.5px solid var(--rule);
+    border-radius: var(--r);
+    box-shadow: var(--counter-shadow);
+    color: var(--ink);
+    min-width: 0;
+  }
+  .board-card:hover,
+  .board-card:focus-within {
+    border-color: var(--ink);
+  }
+  .board-card.needs {
+    border-color: var(--ink);
+  }
+  /* Red is blocked or failed only: a paused card in the same lane stays ink. */
+  .board-card.bc-blocked,
+  .board-card.bc-failed {
+    border: 2px solid var(--red);
+  }
+  .board-card.card-armed {
+    outline: 3px solid var(--sky);
+    outline-offset: 1px;
+  }
+  .board-card.dragging {
+    opacity: 0.5;
+  }
+  .board-card.is-moving {
+    opacity: 0.7;
+  }
+  .board-card.is-movable {
+    cursor: grab;
+  }
+  .card-needs {
+    position: absolute;
+    top: -7px;
+    right: 10px;
+    z-index: 2;
+    display: block;
+    line-height: 0;
+  }
+  .card-needs .ycard {
+    transform: rotate(10deg);
+  }
+  .card-top {
+    display: flex;
+    align-items: center;
+    gap: 4px 8px;
+    flex-wrap: wrap;
+  }
+  .card-top .num {
+    font: 800 var(--t26) / 1 var(--f-display);
+    letter-spacing: 0.01em;
+    margin-right: auto;
+  }
+  .bc-blocked .card-top .num,
+  .bc-failed .card-top .num,
+  .bc-blocked .card-title,
+  .bc-failed .card-title {
+    color: var(--red);
+  }
+  .card-tags {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .board-card.needs .card-tags {
+    margin-right: 14px;
+  }
+  .card-pri {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .card-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: 700 var(--t12) / 1 var(--f-cond);
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .card-status.st-failed {
+    color: var(--red);
+  }
+  /* Greedy wrapping, as the comp: a balanced title split "/repeat-orders" at its hyphen. */
+  .card-title {
+    font: 600 var(--t14) / 1.28 var(--f-cond);
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
+  }
+  /* The title is the card's one link, stretched over the card; the buttons sit above it. */
+  .card-link {
+    color: inherit;
+    text-decoration: none;
+  }
+  .card-link::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: var(--r);
+  }
+  .card-link:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .card-link:focus-visible {
+    outline: none;
+  }
+  .card-link:focus-visible::after {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+  }
+  .card-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .card-repos {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    min-width: 0;
+  }
+  .card-repo-chip {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    min-height: 24px;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: 600 var(--t12) / 1.1 var(--f-cond);
+    color: var(--ink);
+  }
+  .bc-blocked .card-repo-chip,
+  .bc-failed .card-repo-chip {
+    color: var(--red);
+  }
+  .card-repo-chip > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card-repo-chip:hover > span {
+    text-decoration: underline;
+  }
+  .card-meta .dim,
+  .ac-progress {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .card-claim,
+  .card-human-owned {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    font: 600 var(--t12) / 1.2 var(--f-cond);
+    color: var(--ink);
+  }
+  /* The claret dot stays beside "By hand · …"; the words wrap, never the dot. */
+  .card-human-owned {
+    flex-wrap: nowrap;
+  }
+  .card-claim .agent {
+    font-size: var(--t12);
+  }
+  .card-stale {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    color: var(--red);
+  }
+  .human-dot {
+    width: 8px;
+    height: 8px;
+    background: var(--claret);
+    border-radius: var(--r-round);
+    flex: none;
+  }
+  .card-reject {
+    font: 600 var(--t12) / 1.32 var(--f-text);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card-reject-label {
+    font-weight: 800;
+    color: var(--ink);
+  }
+  .card-rework-exhausted,
+  .card-rework-exhausted .card-reject-label,
+  .bc-blocked .card-reject {
+    color: var(--red);
+  }
+  .card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 2px;
+  }
+  .card-move-btn,
+  .card-human-btn {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 28px;
+    padding: 0 6px;
+    margin-left: -6px;
+    border: 0;
+    border-radius: var(--r);
+    background: none;
+    color: var(--ink-2);
+    font: 700 var(--t14) / 1 var(--f-cond);
+  }
+  .card-move-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+  .card-move-btn:hover,
+  .card-move-btn[aria-expanded="true"] {
+    color: var(--ink);
+    background: var(--paper-2);
+  }
+  .card-human-btn {
+    margin-left: auto;
+    margin-right: -2px;
+    padding: 0 8px;
+    border: 1.5px solid var(--ink);
+    color: var(--ink);
+    background: var(--paper);
+    font-size: var(--t12);
+  }
+  .card-human-btn:hover {
+    background: var(--sky-wash);
+  }
+  .card-foot > .card-human-btn:only-child {
+    margin-left: 0;
+  }
+
+  /* --- the move menu's lanes carry their glyph ------------------------------- */
+  .movemenu-item svg {
+    flex: none;
+  }
+
+  /* --- closed without merging -------------------------------------------------- */
+  .work-closed > .panel-head {
+    padding: 14px var(--s4) 0;
+  }
+  .work-closed .closed-groups {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+    gap: var(--s4) var(--s6);
+    padding: var(--s3) var(--s4) var(--s4);
+  }
+  .closed-area {
+    min-width: 0;
+  }
+  .closed-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid var(--ink);
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .failed-area .closed-head {
+    color: var(--red);
+    border-color: var(--red);
+  }
+  .closed-count {
+    margin-left: auto;
+  }
+  .closed-cards {
+    display: grid;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .closed-row {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 12px;
+    min-height: 52px;
+    padding: 8px 0;
+    border-bottom: var(--hair);
+  }
+  .closed-num {
+    grid-row: span 2;
+    font: 800 var(--t26) / 1 var(--f-display);
+  }
+  .closed-title {
+    font: 600 var(--t16) / 1.25 var(--f-cond);
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .closed-meta {
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px 10px;
+    flex-wrap: wrap;
+    font: 600 var(--t12) var(--f-cond);
+  }
+  .closed-meta .repo {
+    font-size: var(--t12);
+  }
+  .closed-row > .btn {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
+  /* --- on the pitch: who holds what ------------------------------------------ */
+  .claims-table th:first-child,
+  .claims-table td:first-child {
+    padding-left: var(--s4);
+  }
+  .claims-table th:last-child,
+  .claims-table td:last-child {
+    padding-right: var(--s4);
+  }
+  .claims-table tbody tr:last-child > * {
+    border-bottom: 0;
+  }
+  .claims-table {
+    position: relative;
+    font: 400 var(--t14) / 1.3 var(--f-text);
+  }
+  .claims-table th,
+  .claims-table td {
+    position: relative;
+    padding: 10px 12px 10px 0;
+    border-bottom: var(--hair);
+    vertical-align: middle;
+    text-align: left;
+  }
+  .claims-table thead th {
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    padding-top: 12px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .claims-table tbody th {
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ink);
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+  }
+  .claims-table .cl-ticket a {
+    color: var(--ink);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .claims-table .cl-ticket a:hover {
+    text-decoration: underline;
+  }
+  .cl-num {
+    font: 800 var(--t20) / 1 var(--f-display);
+  }
+  .cl-lease,
+  .cl-beat {
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+    white-space: nowrap;
+  }
+  .cl-stale {
+    color: var(--red);
+    font-weight: 700;
+  }
+  .cl-stale-inline {
+    display: none;
+  }
+  .cl-act {
+    text-align: right;
+    width: 1%;
+    white-space: nowrap;
+  }
+
+  /* --- list mode: the league table ------------------------------------------ */
+  .work-table {
+    padding: 0;
+    overflow: hidden;
+  }
+  .wl-table {
+    position: relative;
+    font: 400 var(--t14) / 1.3 var(--f-text);
+  }
+  .wl-table thead th {
+    padding: 12px 12px 10px;
+    background: var(--board);
+    color: var(--board-ink);
+    font: 800 var(--t16) / 1 var(--f-display);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    text-align: left;
+  }
+  .wl-table tbody tr {
+    border-bottom: var(--hair);
+  }
+  .wl-table tbody tr:nth-child(even) {
+    background: var(--paper-2);
+  }
+  .wl-table tbody tr:hover {
+    background: var(--sky-wash);
+  }
+  .wl-table td,
+  .wl-table tbody th {
+    position: relative;
+    padding: 10px 12px;
+    vertical-align: middle;
+    text-align: left;
+  }
+  .wl-table .c-num {
+    width: 64px;
+    padding-left: 16px;
+  }
+  .wl-num {
+    font: 800 var(--t26) / 1 var(--f-display);
+  }
+  .wl-table tbody th.wl-title {
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ink);
+    font: 600 var(--t16) / 1.3 var(--f-cond);
+    overflow-wrap: anywhere;
+  }
+  .wl-title a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .wl-title a:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .wl-needs {
+    display: inline-block;
+    margin-right: 8px;
+    vertical-align: -2px;
+  }
+  .wl-row.needs .wl-title {
+    font-weight: 800;
+  }
+  .wl-row.st-blocked .wl-num,
+  .wl-row.st-failed .wl-num {
+    color: var(--red);
+  }
+  .wl-table .c-status,
+  .wl-table .c-agent {
+    white-space: nowrap;
+  }
+  .wl-table .c-agent .agent {
+    font-size: var(--t14);
+  }
+  /* On the floodlit kit the shirt's dark edge vanishes into the row: outline it
+     in claret-as-ink (claret by day, a light claret at night). */
+  .wl-table .c-agent .shirt {
+    --shirt-edge: var(--claret-ink);
+  }
+  .wl-table td.c-pri {
+    font: 700 var(--t14) / 1 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .wl-time {
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .wl-table .c-time {
+    text-align: right;
+    padding-right: 16px;
+  }
+
+  /* --- Suggest work: the scout's sheet --------------------------------------- */
+  .suggest-intro {
+    font: 400 var(--t16) / 1.45 var(--f-text);
+    color: var(--ink-2);
+    max-width: 52ch;
+  }
+  .suggest-form .mode-option > span {
+    display: grid;
+    gap: 2px;
+  }
+  .suggest-form .mode-option strong {
+    font: 800 var(--t20) / 1.1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .suggest-form .mode-option .dim {
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+  }
+
+  /* Tablet: the search takes the first line beside Board | List, and the
+     selects share the line under it, so no select is stranded on a row alone. */
+  @media (760px < width <= 1100px) {
+    .work-toolbar {
+      flex-wrap: nowrap;
+      align-items: start;
+    }
+    .work-filters {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+    .work-q-wrap {
+      flex: 1 1 100%;
+    }
+    .work-sel {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+  }
+
+  @media (max-width: 1180px) and (min-width: 761px) {
+    .board {
+      overflow-x: auto;
+      grid-template-columns: repeat(8, 200px);
+    }
+    .wl-table .c-pri,
+    .wl-table .c-stage {
+      display: none;
+    }
+  }
+
+  @media (max-width: 760px) {
+    /* Filter line: the search on its own line, then two to a line, Board | List last. */
+    .work-toolbar {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .work-filters {
+      display: contents;
+    }
+    .work-q-wrap {
+      grid-column: 1 / -1;
+    }
+    .work-q-wrap > .kbd {
+      display: none;
+    }
+    .work-sel {
+      min-width: 0;
+      width: 100%;
+      font-size: var(--t14);
+    }
+    .work-reset {
+      grid-column: 1 / -1;
+      order: 9;
+    }
+    .work-mode {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+    .work-mode button {
+      min-height: 44px;
+      justify-content: center;
+    }
+    .view-work .view-head-actions {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+    .view-work .view-head-actions .btn {
+      width: 100%;
+    }
+    .board {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      border: 0;
+      min-height: 0;
+    }
+    .board-col {
+      border: 2px solid var(--board);
+      border-radius: var(--r);
+    }
+    .lane-d > summary {
+      list-style: none;
+      cursor: pointer;
+    }
+    .lane-d > summary::-webkit-details-marker {
+      display: none;
+    }
+    .lane-d .board-col-head {
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
+      min-height: 56px;
+    }
+    .lane-toggle {
+      display: inline;
+      min-width: 36px;
+      font: 700 var(--t14) / 1 var(--f-text);
+      text-align: right;
+    }
+    .board-col:not(:has(.board-card)) .board-col-head {
+      min-height: 44px;
+    }
+    .board-col:not(:has(.board-card)) .board-col-body {
+      display: none;
+    }
+    .board-col:not(:has(.board-card)) .board-col-count {
+      font-size: var(--t26);
+    }
+    .board-col-body {
+      padding: 10px;
+    }
+    .card-title {
+      font-size: var(--t16);
+    }
+    .card-move-btn {
+      min-height: 44px;
+    }
+    .card-human-btn {
+      min-height: 44px;
+      font-size: var(--t14);
+    }
+    .closed-row {
+      grid-template-columns: 44px minmax(0, 1fr);
+    }
+    .closed-row > .btn {
+      grid-column: 2;
+      grid-row: auto;
+      justify-self: start;
+    }
+    /* On the pitch: agent, ticket, lease, revoke. */
+    .claims-table .cl-status,
+    .claims-table .cl-lease,
+    .claims-table .cl-beat,
+    .claims-table .cl-branch {
+      display: none;
+    }
+    .cl-stale-inline {
+      display: inline;
+      font: 700 var(--t12) / 1 var(--f-cond);
+    }
+    /* The league table keeps number, ticket and status. */
+    .wl-table .c-agent,
+    .wl-table .c-risk,
+    .wl-table .c-pri,
+    .wl-table .c-stage,
+    .wl-table .c-time {
+      display: none;
+    }
+    .wl-table .c-num {
+      width: 52px;
+      padding-left: 10px;
+      padding-right: 4px;
+    }
+    .wl-table td,
+    .wl-table tbody th {
+      padding: 10px 8px;
+    }
+    .wl-table .c-status .badge.st {
+      white-space: normal;
+    }
+  }
+}

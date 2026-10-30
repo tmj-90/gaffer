@@ -19,7 +19,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // import.meta.url is an http:// URL, so file URL helpers can't be used here.
 const APP_DIR = path.resolve(process.cwd(), "src/api/web");
 const APP_JS = path.join(APP_DIR, "app.js");
-const STYLES_CSS = path.join(APP_DIR, "styles.css");
+// The overlay scrims live in the components layer since styles.css was split into
+// the layered css/ sheets (tokens, base, layout, components, views, utilities).
+const STYLES_CSS = path.join(APP_DIR, "css", "components.css");
 
 /** Minimal API responses the boot path (router → renderEpics) needs. */
 function stubFetch(): void {

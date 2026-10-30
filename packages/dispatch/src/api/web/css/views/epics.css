@@ -1,0 +1,405 @@
+/* Epics — the season. Each epic is a campaign (a cup run): the table gives one
+   line per campaign, then each campaign is a programme page with what holds it,
+   and the draw: one mown lane per round, the tickets as fixture cards, joined by
+   bracket lines to what they wait on (drawn from the real dependencies). */
+
+@layer views {
+  .view-epics {
+    row-gap: var(--s5);
+  }
+  .epic-list {
+    display: grid;
+    gap: var(--s5);
+  }
+
+  /* --- the table: one line per campaign ------------------------------------ */
+  .ep-table-scroll {
+    overflow-x: auto;
+  }
+  .ep-season {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .ep-season thead th {
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+    text-align: left;
+    padding: 10px var(--s4) 6px;
+    border-bottom: var(--frame);
+  }
+  .ep-season tbody th,
+  .ep-season td {
+    padding: 12px var(--s4);
+    border-bottom: var(--hair);
+    vertical-align: middle;
+    text-align: left;
+  }
+  .ep-season tbody tr:last-child > * {
+    border-bottom: 0;
+  }
+  .ep-season .ep-t-num {
+    text-align: right;
+    font: 800 var(--t26) / 1 var(--f-display);
+    width: 1%;
+    white-space: nowrap;
+  }
+  .ep-season thead .ep-t-num {
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+  }
+  .ep-t-name {
+    width: 32%;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .ep-t-name a {
+    display: block;
+    max-width: 36ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: 800 var(--t26) / 1.1 var(--f-display);
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .ep-t-name a:hover {
+    text-decoration: underline;
+  }
+  .ep-mini {
+    display: inline-grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 34px;
+    gap: 4px;
+    vertical-align: middle;
+  }
+  .ep-mini i {
+    display: block;
+    height: 12px;
+    border-radius: 1px;
+    background: linear-gradient(90deg, var(--ink) var(--p, 0%), var(--rule-2) var(--p, 0%));
+  }
+  .ep-mini i.is-live {
+    box-shadow: 0 0 0 2px var(--ink);
+  }
+  .ep-mini i.is-held {
+    background: linear-gradient(90deg, var(--ink) var(--p, 0%), var(--red) var(--p, 0%));
+  }
+  .ep-t-sub {
+    display: block;
+    margin-top: 6px;
+    font: 600 var(--t14) / 1 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .ep-where {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font: 700 var(--t16) / 1.25 var(--f-text);
+  }
+  .ep-where.is-red {
+    color: var(--red);
+  }
+  .ep-where a {
+    color: inherit;
+  }
+
+  /* --- a campaign: programme page ------------------------------------------ */
+  .epic-card.campaign {
+    display: grid;
+    gap: var(--s4);
+  }
+  .ep-flag {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  .rcard {
+    flex: none;
+    transform: rotate(8deg);
+  }
+  .ep-stands {
+    display: grid;
+    gap: var(--s3);
+  }
+  .ep-lede {
+    max-width: 72ch;
+    font-size: var(--t20);
+    line-height: 1.4;
+  }
+  .ep-lede .is-red {
+    color: var(--red);
+  }
+  .ep-lede .is-red a {
+    color: inherit;
+  }
+  .ep-lede svg {
+    display: inline-block;
+    vertical-align: -2px;
+  }
+  .ep-held-t {
+    font-weight: 700;
+  }
+  .ep-stands .btn-row {
+    margin: 0;
+  }
+  .epic-desc {
+    max-width: 75ch;
+    color: var(--ink-2);
+  }
+  .ep-spec {
+    font-size: var(--t14);
+  }
+  .ep-spec a {
+    font-weight: 700;
+  }
+  .epic-next {
+    max-width: none;
+    font-size: var(--t14);
+    padding-top: var(--s3);
+    border-top: var(--hair);
+  }
+  .epic-next a {
+    font-weight: 700;
+  }
+  .ep-fold > summary {
+    cursor: pointer;
+    font-weight: 700;
+    min-height: var(--tap);
+    display: flex;
+    align-items: center;
+  }
+  .ep-fold[open] > summary {
+    margin-bottom: var(--s3);
+  }
+
+  /* --- the draw: one mown lane per round ----------------------------------- */
+  .ep-draw-scroll {
+    overflow-x: auto;
+    border-radius: var(--r);
+  }
+  .ep-draw {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(var(--rounds, 1), minmax(210px, 1fr));
+    min-width: min-content;
+  }
+  .ep-round {
+    display: grid;
+    align-content: start;
+    gap: 12px;
+    padding: 12px 22px 18px;
+    background: var(--lane-a);
+  }
+  .ep-round:nth-of-type(even) {
+    background: var(--lane-b);
+  }
+  .ep-round-head {
+    position: relative;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 6px 8px;
+  }
+  .ep-round-name {
+    padding: 4px 0 3px;
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  /* The Final is a stadium plaque, like DONE on the tactics board. */
+  .ep-round.is-final .ep-round-name {
+    justify-self: start;
+    padding: 4px 8px 3px;
+    background: var(--board);
+    color: var(--board-ink);
+    box-shadow: inset 0 -3px 0 var(--yellow);
+  }
+  .ep-round-frac {
+    font: 700 var(--t14) / 1 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .ep-round-bar {
+    grid-column: 1 / -1;
+    height: 6px;
+    background: var(--paper);
+    box-shadow: inset 0 0 0 1px var(--rule);
+  }
+  .ep-round-bar i {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+  }
+  .ep-round.is-held .ep-round-bar {
+    box-shadow: inset 0 0 0 1.5px var(--red);
+  }
+  .ep-ties {
+    display: grid;
+    gap: 14px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* A fixture card: a paper counter on the grass. */
+  .dag-node {
+    position: relative;
+    z-index: 2;
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    min-height: 100px;
+    padding: 10px 12px 10px;
+    background: var(--paper);
+    border: 2px solid var(--rule);
+    border-radius: var(--r);
+    box-shadow: var(--counter-shadow);
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .dag-node:hover {
+    border-color: var(--ink);
+  }
+  .dag-node.status-in_progress,
+  .dag-node.status-claimed,
+  .dag-node.status-in_review,
+  .dag-node.status-in_testing,
+  .dag-node.status-ready_for_merge {
+    border-color: var(--ink);
+  }
+  .dag-node.status-done {
+    background: var(--paper-2);
+  }
+  .dag-node.status-done .dn-title {
+    color: var(--ink-2);
+  }
+  .dag-node.status-blocked,
+  .dag-node.status-failed {
+    border-color: var(--red);
+    background: var(--red-wash);
+  }
+  .dag-node.status-blocked .dn-title,
+  .dag-node.status-failed .dn-title {
+    color: var(--red);
+  }
+  .dag-node.is-final {
+    border: var(--frame);
+  }
+  .dn-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dn-num {
+    margin-right: auto;
+    font: 900 var(--t26) / 1 var(--f-stencil);
+    color: var(--claret-ink);
+  }
+  .dn-title {
+    font: 600 var(--t16) / 1.25 var(--f-cond);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .dn-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    font: 600 var(--t12) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .dn-repo,
+  .dn-agent,
+  .dn-block {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .dn-agent > span {
+    font: 900 var(--t14) / 1 var(--f-stencil);
+    color: var(--ink);
+  }
+  .dn-block.is-red {
+    color: var(--red);
+  }
+  .dn-block-ico {
+    width: 12px;
+    height: 12px;
+  }
+
+  /* The bracket lines sit on the grass, under the cards. */
+  .ep-lines {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
+    pointer-events: none;
+    overflow: visible;
+  }
+  .ep-lines .edge {
+    fill: none;
+    stroke-width: 2;
+    stroke-linejoin: round;
+  }
+  .ep-lines .edge.sat {
+    stroke: var(--ink);
+    stroke-linecap: square;
+  }
+  .ep-lines .edge.pend {
+    stroke: var(--ink-2);
+    stroke-dasharray: 2 6;
+    stroke-linecap: round;
+  }
+  .ep-lines .edge.held {
+    stroke: var(--red);
+    stroke-width: 2.5;
+    stroke-dasharray: 7 5;
+  }
+
+  @media (max-width: 1180px) {
+    .ep-t-name a {
+      max-width: 24ch;
+    }
+  }
+  @media (max-width: 760px) {
+    .ep-lede {
+      font-size: var(--t16);
+    }
+    .ep-flag {
+      font-size: var(--t16);
+    }
+    /* The table keeps the name, the score and where it stands. */
+    .ep-season .ep-t-rounds,
+    .ep-season thead th:nth-child(2) {
+      display: none;
+    }
+    .ep-season tbody th,
+    .ep-season td {
+      padding: 10px 12px;
+    }
+    .ep-season thead th {
+      padding: 8px 12px 6px;
+    }
+    .ep-t-name a {
+      max-width: 15ch;
+      font-size: var(--t20);
+    }
+    .ep-where {
+      font-size: var(--t14);
+    }
+    .ep-draw {
+      grid-template-columns: minmax(0, 1fr);
+      min-width: 0;
+    }
+    .ep-round {
+      padding: 12px;
+    }
+  }
+}

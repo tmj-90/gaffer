@@ -153,10 +153,14 @@ describe("web: Health view", () => {
     await loadApp();
 
     // The view header names the surface.
-    expect(document.querySelector(".health-view h1")?.textContent).toBe("Health");
+    // Match Day: the physio board's headline is the fitness verdict, one sentence.
+    expect(document.querySelector(".health-view h1")?.textContent).toMatch(
+      /fit to play|treatment table|ledger/i,
+    );
 
     // ROI KPI row: five headline metrics from /api/health.
-    expect(kpiValue("Cost / feature")).toBe("$1.000");
+    // One money format everywhere: dollars and cents.
+    expect(kpiValue("Cost / feature")).toBe("$1.00");
     expect(kpiValue("Skill hit-rate")).toBe("70");
     expect(kpiValue("Spend by kind")).toBe("70"); // delivery 1.4 / 2.0 = 70%
     expect(kpiValue("Rework cost")).toBe("15");

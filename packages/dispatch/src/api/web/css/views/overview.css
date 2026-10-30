@@ -1,0 +1,1366 @@
+/* Overview — the match-day programme's front page: the scoreboard, the Team
+   Sheet of what needs you beside the Tactics Board, then the programme pages
+   (Cup runs, Injury list, League table, Wage bill, Squad & form, Full time,
+   Fixtures, Match report). Layout and the board's drawing only; the cards,
+   rows and stat cells come from components.css. */
+
+@layer views {
+  /* --- scoreboard (full-bleed, always dark) ------------------------------- */
+  .sb-main {
+    min-width: 0;
+  }
+  .hl-count {
+    color: var(--board-ink);
+  }
+  .hl a {
+    color: inherit;
+  }
+  .hl-block {
+    display: block;
+    text-decoration-color: var(--red);
+    text-decoration-thickness: 3px;
+    text-underline-offset: 6px;
+    text-wrap: balance;
+  }
+  .hl-nb {
+    white-space: nowrap;
+  }
+  .hl q {
+    quotes: "\201C" "\201D";
+  }
+  .hl-block .glyph {
+    display: inline-block;
+    vertical-align: -3px;
+    margin-right: 10px;
+    color: var(--board-red);
+  }
+  .hl-sub .sep {
+    color: var(--board-ink-3);
+  }
+  .sb-side {
+    display: grid;
+    gap: 8px;
+    justify-items: end;
+    align-self: center;
+    min-width: 0;
+  }
+  .sb-cells {
+    grid-template-columns: repeat(4, minmax(120px, auto));
+  }
+  .sb-small .view-hero-status {
+    margin: 0;
+    gap: 6px;
+    font-size: var(--t12);
+    letter-spacing: 0.02em;
+  }
+  .sb-cells .kpi-val {
+    font-size: var(--t52);
+    white-space: nowrap;
+  }
+  .sc-band {
+    display: grid;
+    gap: 4px;
+    min-width: 120px;
+  }
+  .sb-small {
+    position: absolute;
+    right: var(--gut);
+    top: 8px;
+    display: flex;
+    flex-direction: row-reverse;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 16px;
+  }
+  .sb-clock {
+    font: 600 var(--t12) var(--f-cond);
+    letter-spacing: 0.04em;
+    color: var(--board-ink-2);
+  }
+
+  /* --- team sheet | tactics board ----------------------------------------- */
+  .ov-main {
+    display: grid;
+    grid-template-columns: 440px minmax(0, 1fr);
+    gap: var(--s5);
+    align-items: start;
+  }
+  .ov-left {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s5);
+    min-width: 0;
+  }
+  /* The idle squad block keeps the column's edges (its span-3 would add columns). */
+  .ov-left > * {
+    grid-column: 1 / -1;
+  }
+
+  /* Team sheet: ranked rows, each with one real action. */
+  .what-i-own {
+    display: grid;
+    gap: 0;
+    padding-bottom: 0;
+  }
+  .what-i-own > .empty-state {
+    font: 600 var(--t20) / 1.35 var(--f-text);
+    padding: var(--s4) 0;
+    text-align: left;
+  }
+  .own-well {
+    display: grid;
+    margin: 0 calc(-1 * var(--s4));
+  }
+  .own-well > li {
+    border-top: var(--hair);
+  }
+  .own-well > li:first-child {
+    border-top: 0;
+  }
+  .own-row {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 4px 12px;
+    padding: 14px 16px 14px 12px;
+  }
+  .own-rank {
+    font: 900 var(--t34) / 1 var(--f-stencil);
+    color: var(--claret-ink);
+    text-align: center;
+    padding-top: 2px;
+  }
+  .own-body {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+  .own-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .own-kind {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font: 700 var(--t14) / 1.2 var(--f-text);
+  }
+  .own-row--parked .own-kind,
+  .own-row--parked .own-title,
+  .own-row--parked .own-reason,
+  .own-row--parked .own-ref {
+    color: var(--red);
+  }
+  .own-ref {
+    font: 800 var(--t20) / 1 var(--f-display);
+    color: var(--ink);
+  }
+  .own-title {
+    font: 700 var(--t16) / 1.35 var(--f-text);
+    overflow-wrap: anywhere;
+  }
+  .own-title a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .own-title a:hover {
+    text-decoration: underline;
+  }
+  .own-reason {
+    font-size: var(--t14);
+    line-height: 1.4;
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .own-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: baseline;
+    margin-top: 2px;
+    font: 600 var(--t12) / 1.35 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .own-code {
+    font: 400 var(--t12) / 1.35 var(--f-mono);
+  }
+  .own-note {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .own-cta {
+    min-width: 0;
+  }
+  .own-act {
+    white-space: nowrap;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .flip .ycard-row {
+      animation: card-up 260ms var(--ease-card) backwards;
+    }
+    .flip .own-well > li:nth-child(2) .ycard-row {
+      animation-delay: 60ms;
+    }
+    .flip .own-well > li:nth-child(3) .ycard-row {
+      animation-delay: 120ms;
+    }
+    .flip .own-well > li:nth-child(4) .ycard-row {
+      animation-delay: 180ms;
+    }
+  }
+  @keyframes card-up {
+    from {
+      transform: rotate(-14deg) translateY(10px);
+      opacity: 0;
+    }
+  }
+
+  /* --- tactics board -------------------------------------------------------- */
+  .tactics {
+    min-width: 0;
+  }
+  .tactics-head {
+    display: flex;
+    align-items: center;
+    gap: 6px 16px;
+    flex-wrap: wrap;
+    background: var(--board);
+    color: var(--board-ink);
+    border-radius: var(--r) var(--r) 0 0;
+    padding: 10px var(--s4) 8px;
+  }
+  .tb-title {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+    font: 800 var(--t34) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .tb-title .panel-aux {
+    color: var(--board-ink-2);
+  }
+  .tb-note {
+    color: var(--board-ink-2);
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+    min-width: 0;
+    flex: 1 1 260px;
+  }
+  .pitch-wrap {
+    background: var(--pitch);
+    border: 2px solid var(--board);
+    border-top: 0;
+  }
+  .pitch-wrap.is-empty {
+    padding: var(--s6) var(--s4);
+  }
+  .pitch-empty {
+    font: 700 var(--t20) / 1.3 var(--f-text);
+    color: var(--chalk);
+  }
+  .pw-port,
+  .tb-port {
+    display: none;
+  }
+  .pitch {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .mow-a {
+    fill: var(--pitch);
+  }
+  .mow-b {
+    fill: var(--pitch-2);
+  }
+  .chalk * {
+    stroke: var(--chalk);
+    stroke-width: 2.2;
+    fill: none;
+    opacity: 0.85;
+  }
+  .chalk .spot {
+    fill: var(--chalk);
+    stroke: none;
+  }
+  .chalk .goal {
+    stroke-width: 3;
+  }
+  .chalk .net {
+    stroke-width: 1;
+    opacity: 0.5;
+  }
+  .lane-guide {
+    stroke: var(--chalk);
+    stroke-width: 1.2;
+    stroke-dasharray: 3 9;
+    opacity: 0.45;
+  }
+  .zl {
+    font: 700 18px var(--f-cond);
+    fill: var(--chalk);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .zl-goal {
+    fill: var(--yellow);
+  }
+  .halo-a,
+  .halo-b {
+    paint-order: stroke;
+    stroke-width: 6px;
+    stroke-linejoin: round;
+  }
+  .halo-a {
+    stroke: var(--pitch);
+  }
+  .halo-b {
+    stroke: var(--pitch-2);
+  }
+  .zl-plaque {
+    fill: var(--board);
+    stroke: var(--yellow);
+    stroke-width: 2;
+  }
+  .cl {
+    font: 700 17px var(--f-cond);
+    fill: var(--chalk);
+  }
+  .kit-chalk {
+    color: var(--chalk);
+  }
+  /* On grass the shirt has no paper ground: the pattern is chalk on the pitch. */
+  .kit-chalk .kit-paper {
+    fill: transparent;
+  }
+  .disc {
+    fill: #fff;
+    stroke: var(--counter-ink);
+    stroke-width: 1.5;
+  }
+  .disc-shadow {
+    fill: rgb(0 0 0 / 0.35);
+  }
+  .disc-n {
+    font: 800 22px var(--f-display);
+    fill: var(--counter-ink);
+  }
+  .tag-plate {
+    fill: var(--board);
+    stroke: var(--chalk);
+    stroke-width: 1.2;
+    stroke-opacity: 0.55;
+  }
+  .tag-t {
+    font: 700 16px var(--f-cond);
+    fill: #fff;
+    letter-spacing: 0.02em;
+  }
+  .tag-t2 {
+    fill: var(--sky);
+  }
+  .tag-dot {
+    fill: var(--chalk);
+  }
+  .tag-lead {
+    stroke: var(--chalk);
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+  .ycard-on {
+    fill: var(--yellow);
+    stroke: var(--counter-ink);
+    stroke-width: 1.5;
+  }
+  .counter {
+    cursor: pointer;
+  }
+  .counter:hover .disc {
+    stroke-width: 3;
+  }
+  .counter:focus-visible {
+    outline: 3px solid var(--yellow);
+  }
+  .arrow {
+    fill: none;
+    stroke: var(--chalk);
+    stroke-width: 3.5;
+    stroke-linecap: round;
+    stroke-dasharray: 2 9;
+    opacity: 0.95;
+  }
+  .tally-n {
+    font: 800 22px var(--f-display);
+    fill: var(--chalk);
+  }
+  .touchline {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    background: var(--paper);
+    border: 2px solid var(--board);
+    border-top: 0;
+  }
+  .touchline > div {
+    padding: 12px 16px;
+    min-width: 0;
+  }
+  .touchline h3 {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .bench {
+    border-left: var(--hair);
+    font-size: var(--t14);
+    line-height: 1.6;
+  }
+  .bench a {
+    font-weight: 700;
+  }
+  .dugout ul {
+    display: grid;
+    gap: 6px;
+  }
+  .dugout li {
+    min-width: 0;
+  }
+  .dugout a {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 104px auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 8px;
+    text-decoration: none;
+    font-size: var(--t14);
+    color: inherit;
+  }
+  .dugout .off-t {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .dugout a:hover .off-t {
+    text-decoration: underline;
+  }
+  .pitch-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    padding: 10px 2px 0;
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .pitch-key li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .key-tag {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    background: var(--board);
+    color: #fff;
+    padding: 4px 6px;
+    border-radius: 3px;
+  }
+  .key-tag b {
+    color: var(--sky);
+  }
+  .key-disc {
+    fill: #fff;
+    stroke: var(--ink);
+    stroke-width: 1.5;
+  }
+  .key-arrow {
+    fill: none;
+    stroke: var(--ink);
+    stroke-width: 2.5;
+    stroke-dasharray: 2 5;
+    stroke-linecap: round;
+  }
+  .key-line {
+    stroke: var(--ink);
+    stroke-width: 2;
+  }
+
+  /* --- the programme pages ------------------------------------------------- */
+  .ov-prog {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: var(--s5);
+    margin-top: var(--s3);
+    align-items: start;
+  }
+  .prog.card {
+    padding: 0;
+    min-width: 0;
+  }
+  .prog.card > .panel-head.block {
+    margin: 0;
+  }
+  .prog .quiet {
+    padding: var(--s4);
+    color: var(--ink-2);
+  }
+  .prog .quiet.small {
+    padding-top: 0;
+    font: 600 var(--t12) / 1.35 var(--f-cond);
+  }
+  .campaigns {
+    grid-column: span 8;
+  }
+  .injuries {
+    grid-column: span 4;
+  }
+  .league {
+    grid-column: span 5;
+  }
+  .wage {
+    grid-column: span 4;
+  }
+  /* Scoped to the programme grid: in the idle left column a span would add
+     implicit columns and narrow the Team Sheet beside it. */
+  .ov-prog > .squad {
+    grid-column: span 3;
+  }
+  .results,
+  .fixtures {
+    grid-column: span 6;
+  }
+  .ov-prog > .report {
+    grid-column: 1 / -1;
+  }
+  .ov-prog.is-idle .league,
+  .ov-prog.is-idle .wage {
+    grid-column: span 6;
+  }
+
+  .cup {
+    padding: 14px 16px 16px;
+    border-top: var(--hair);
+  }
+  .cup:first-of-type {
+    border-top: 0;
+  }
+  .cup-head {
+    display: flex;
+    align-items: baseline;
+    gap: 6px 14px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .cup-head h3 {
+    font: 800 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .cup-head h3 a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .cup-head h3 a:hover {
+    text-decoration: underline;
+  }
+  .cup-why {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font: 700 var(--t14) var(--f-text);
+    color: var(--ink-2);
+  }
+  .cup-why.is-red {
+    color: var(--red);
+  }
+  .rounds {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+  }
+  .round {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    padding: 0 10px;
+    border-left: 2px solid var(--rule);
+    min-width: 0;
+  }
+  .round:first-child {
+    border-left: 0;
+    padding-left: 0;
+  }
+  .round-name {
+    font: 800 var(--t14) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-2);
+  }
+  .round ul {
+    display: grid;
+    gap: 6px;
+  }
+  .tie a {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: start;
+    gap: 4px 6px;
+    padding: 6px 8px;
+    border: 1.5px solid var(--rule);
+    border-radius: var(--r);
+    text-decoration: none;
+    font-size: var(--t14);
+    line-height: 1.25;
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .tie a:hover {
+    border-color: var(--ink);
+  }
+  .tie b {
+    font: 800 var(--t16) / 1 var(--f-display);
+  }
+  .tie-t {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .tie.st-done a {
+    background: var(--ground);
+    color: var(--ink-2);
+  }
+  .tie.st-blocked a,
+  .tie.st-failed a {
+    border: 2px solid var(--red);
+    color: var(--red);
+    background: var(--red-wash);
+  }
+  .tie.st-in_progress a,
+  .tie.st-claimed a {
+    border-color: var(--ink);
+  }
+
+  .inj-list li {
+    padding: 12px 16px;
+    border-top: var(--hair);
+    display: grid;
+    gap: 4px;
+  }
+  .inj-list li:first-child {
+    border-top: 0;
+  }
+  .inj-top {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    flex-wrap: wrap;
+    font-weight: 700;
+  }
+  .inj-top a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .inj-top a:hover {
+    text-decoration: underline;
+  }
+  .inj-why {
+    font-size: var(--t14);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .inj-meta {
+    font-size: var(--t14);
+  }
+
+  .lt {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--t14);
+  }
+  .lt th,
+  .lt td {
+    padding: 8px 10px;
+    text-align: left;
+    border-top: var(--hair);
+    vertical-align: middle;
+  }
+  .lt thead th {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+    border-top: 0;
+    padding-top: 10px;
+  }
+  .lt tbody th {
+    font: 600 var(--t14) / 1.2 var(--f-text);
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ink);
+  }
+  .lt td {
+    font: 600 var(--t14) / 1.2 var(--f-text);
+  }
+  .lt .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .lt .pos {
+    font: 800 var(--t20) / 1 var(--f-display);
+    width: 28px;
+  }
+  .lt td.is-red {
+    color: var(--red);
+    font-weight: 700;
+  }
+  .lt td.is-red .glyph {
+    display: inline-block;
+    vertical-align: -1px;
+  }
+  .pct-bar {
+    display: inline-block;
+    width: 44px;
+    height: 8px;
+    margin-right: 6px;
+    background: var(--rule-2);
+    position: relative;
+  }
+  .pct-bar span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--ink);
+  }
+
+  .wage-host {
+    padding: 12px 14px 0;
+    min-width: 0;
+  }
+  .wage-chart {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+  .wage-chart .grid {
+    stroke: var(--rule-2);
+  }
+  .wage-chart .axis {
+    stroke: var(--ink);
+    stroke-width: 1.5;
+  }
+  .wage-chart .tick {
+    font: 600 12px var(--f-cond);
+    fill: var(--ink-2);
+  }
+  .wage-chart .tick-s {
+    font-weight: 700;
+  }
+  .wage-chart .bar {
+    fill: var(--ink-2);
+  }
+  .wage-chart .bar-today {
+    fill: var(--claret);
+  }
+  .wage-chart .val {
+    font: 700 12px var(--f-cond);
+    fill: var(--ink-2);
+  }
+  .wage-chart .val-today {
+    font: 800 16px var(--f-display);
+    fill: var(--claret-ink);
+  }
+  .budget-line {
+    stroke: var(--ink);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 4;
+  }
+  .budget-t {
+    font: 700 12px var(--f-cond);
+    fill: var(--ink);
+  }
+  .wage-note {
+    padding: 4px 16px 0;
+    font: 600 var(--t12) / 1.35 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .wage-facts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 12px 16px;
+  }
+  .wage-facts dt {
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-2);
+  }
+  .wage-facts dd {
+    font: 800 var(--t26) / 1.1 var(--f-display);
+  }
+  .wage-facts small {
+    display: block;
+    font: 600 var(--t12) / 1.3 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .kind-bar {
+    display: flex;
+    height: 12px;
+    margin: 0 16px;
+    gap: 2px;
+  }
+  .kb {
+    display: block;
+    min-width: 3px;
+  }
+  .kb-0 {
+    background: var(--ink);
+  }
+  .kb-1 {
+    background: var(--claret);
+  }
+  .kb-2 {
+    background: var(--sky);
+  }
+  .kb-3 {
+    background: var(--ink-2);
+  }
+  .kb-4 {
+    background: var(--rule);
+  }
+  .kind-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 8px 16px 14px;
+    font: 600 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .kind-key li {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .kb-sw {
+    width: 10px;
+    height: 10px;
+    display: inline-block;
+  }
+
+  .sq-list li {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px 14px;
+    border-top: var(--hair);
+    align-items: start;
+  }
+  .sq-list li:first-child {
+    border-top: 0;
+  }
+  .sq-name {
+    font: 800 var(--t20) / 1 var(--f-display);
+    overflow-wrap: anywhere;
+  }
+  .sq-now {
+    font-size: var(--t14);
+    line-height: 1.35;
+    margin-top: 4px;
+  }
+  .sq-now .is-warn {
+    font-weight: 700;
+  }
+  .sq-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+  .sq-form-l {
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+  .form-row {
+    display: flex;
+    gap: 3px;
+    flex-wrap: wrap;
+  }
+  .form-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 4px;
+    border: 1px solid var(--rule);
+    border-radius: var(--r);
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-decoration: none;
+    color: var(--ink);
+  }
+  .form-chip.st-blocked,
+  .form-chip.st-failed {
+    color: var(--red);
+    border-color: var(--red);
+  }
+
+  .res-list li,
+  .fx-list li {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: baseline;
+    padding: 9px 16px;
+    border-top: var(--hair);
+    font-size: var(--t14);
+  }
+  .res-list li:first-child,
+  .fx-list li:first-child {
+    border-top: 0;
+  }
+  .res-ft {
+    font: 800 var(--t14) / 1 var(--f-display);
+    background: var(--board);
+    color: #fff;
+    padding: 3px 5px;
+    border-radius: var(--r);
+  }
+  .res-list time {
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .res-list a,
+  .fx-list a {
+    color: inherit;
+    text-decoration: none;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .res-list a:hover,
+  .fx-list a:hover {
+    text-decoration: underline;
+  }
+  .res-cost {
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  /* A fixture: the ready glyph, the ticket, and what it waits on, on one line. */
+  .fx-list li {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .fx-gate {
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+    text-align: right;
+    white-space: nowrap;
+  }
+  .fx-gate.is-red {
+    color: var(--red);
+  }
+
+  /* Match report: minute-by-minute commentary, two columns at full width. */
+  /* Column-major (read down, then across), rows shared so the two halves align. */
+  .mr-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: repeat(var(--mr-rows, 5), auto);
+    grid-auto-flow: column;
+    padding: 4px 0 8px;
+  }
+  .mr-row {
+    display: grid;
+    grid-template-columns: 56px 18px minmax(0, 1fr) auto;
+    gap: 2px 10px;
+    align-items: center;
+    padding: 8px 16px;
+    border-top: 1px solid var(--rule-2);
+  }
+  .mr-row.is-col-top {
+    border-top: 0;
+  }
+  .mr-row.is-col-b {
+    border-left: var(--hair);
+  }
+  .mr-row > .glyph,
+  .mr-dot {
+    align-self: center;
+  }
+  .mr-dot {
+    width: 6px;
+    height: 6px;
+    margin-left: 5px;
+    border-radius: var(--r-round);
+    background: var(--ink-2);
+  }
+  /* The day prints over the first minute it holds, like a programme's date line. */
+  .mr-day {
+    display: block;
+    margin-bottom: 2px;
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    color: var(--ink-2);
+  }
+  .mr-min {
+    display: block;
+    font: 800 var(--t20) / 1 var(--f-display);
+    color: var(--ink);
+  }
+  .mr-say {
+    min-width: 0;
+    font-size: var(--t14);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .mr-ref {
+    font: 800 var(--t16) / 1 var(--f-display);
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .mr-ref:hover {
+    text-decoration: underline;
+  }
+  .mr-t {
+    color: var(--ink);
+  }
+  .mr-what {
+    color: var(--ink-2);
+  }
+  .mr-what b {
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .mr-blocked .mr-what,
+  .mr-failed .mr-what,
+  .mr-blocked > .glyph,
+  .mr-failed > .glyph {
+    color: var(--red);
+  }
+  .mr-who {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 600 var(--t12) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .mr-who .shirt {
+    flex: none;
+  }
+  .mr-all {
+    border-top: var(--hair);
+  }
+  .mr-all > summary {
+    padding: 10px 16px;
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .mr-all .feed {
+    padding: 0 16px 12px;
+  }
+
+  @media (max-width: 1280px) {
+    .ov-main {
+      grid-template-columns: 380px minmax(0, 1fr);
+    }
+    .scoreboard-in {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sb-side {
+      justify-items: start;
+    }
+    .league,
+    .wage,
+    .ov-prog > .squad,
+    .results,
+    .fixtures {
+      grid-column: span 6;
+    }
+    .campaigns,
+    .injuries {
+      grid-column: span 12;
+    }
+  }
+  /* Below this the pitch would shrink under ~720px beside the team sheet: stack. */
+  @media (max-width: 1180px) and (min-width: 761px) {
+    .ov-main {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .ov-left {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .ov-left > * {
+      grid-column: auto;
+    }
+  }
+  @media (max-width: 760px) {
+    .scoreboard-in {
+      padding-top: 14px;
+      padding-bottom: 16px;
+      gap: 12px;
+    }
+    .hl {
+      font-size: var(--t34);
+    }
+    .hl-sub {
+      font-size: var(--t14);
+      margin-top: 8px;
+    }
+    .sb-cells {
+      justify-self: stretch;
+      grid-template-columns: 0.8fr 0.9fr 0.9fr 1.3fr;
+    }
+    .sb-cells .kpi {
+      padding: 6px 8px 8px;
+      gap: 2px;
+    }
+    .sb-cells .kpi-label {
+      font-size: var(--t12);
+      letter-spacing: 0.03em;
+      line-height: 1.1;
+      min-height: 2.2em;
+    }
+    .sb-cells .kpi-val {
+      font-size: 30px;
+    }
+    .sb-cells .kpi-sub {
+      font-size: var(--t12);
+    }
+    .sc-band {
+      min-width: 0;
+    }
+    .sb-small {
+      position: static;
+      order: -1;
+      flex-direction: row;
+      justify-content: flex-start;
+      gap: 4px 12px;
+    }
+    .ov-main {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s4);
+    }
+    /* On a phone the column stacks as it reads: Team Sheet, then the squad that
+       moved up beside the pitch, then the pitch (the comp's idle order; drawing
+       the pitch first would split the DOM and focus order from what is seen). */
+    .ov-left {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s4);
+    }
+    .ov-left > * {
+      grid-column: 1 / -1;
+    }
+    .own-row {
+      grid-template-columns: 28px minmax(0, 1fr);
+      padding: 12px 12px 14px 8px;
+    }
+    .own-rank {
+      font-size: var(--t26);
+    }
+    .own-cta {
+      grid-column: 2;
+    }
+    .own-act {
+      width: 100%;
+      min-height: 44px;
+    }
+    .pw-land,
+    .tb-land {
+      display: none;
+    }
+    .pw-port {
+      display: block;
+    }
+    .tb-port {
+      display: inline;
+    }
+    .tb-title {
+      font-size: var(--t26);
+    }
+    .touchline {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .bench {
+      border-left: 0;
+      border-top: var(--hair);
+    }
+    .dugout a {
+      grid-template-columns: 96px auto minmax(0, 1fr);
+    }
+    .ov-prog {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s4);
+    }
+    .ov-prog > * {
+      grid-column: 1 / -1 !important;
+    }
+    .rounds {
+      grid-auto-flow: row;
+      gap: 12px;
+    }
+    .round {
+      border-left: 0;
+      padding: 0;
+    }
+    /* One tie per line: a 2-up cell cut titles to two or three words. */
+    .round ul {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .lt th,
+    .lt td {
+      padding: 8px 4px;
+    }
+    .lt thead th {
+      letter-spacing: 0;
+    }
+    .lt .pos {
+      width: 20px;
+    }
+    .league thead th:nth-child(3),
+    .league tbody td:nth-child(3),
+    .league thead th:nth-child(4),
+    .league tbody td:nth-child(4),
+    .league thead th:nth-child(5),
+    .league tbody td:nth-child(5) {
+      display: none;
+    }
+    .lt tbody th .repo span {
+      overflow-wrap: anywhere;
+    }
+    .pct-bar {
+      display: none;
+    }
+    .wage-facts {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .res-list li {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+    }
+    .fx-list li {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+    .fx-list li {
+      row-gap: 2px;
+    }
+    .fx-gate {
+      grid-column: 2;
+      text-align: left;
+      white-space: normal;
+    }
+    .mr-what {
+      display: block;
+    }
+    .mr-list {
+      grid-template-columns: minmax(0, 1fr);
+      grid-auto-flow: row;
+      grid-template-rows: none;
+    }
+    .mr-row.is-col-b {
+      border-left: 0;
+    }
+    .mr-row.is-col-top:not(:first-child) {
+      border-top: 1px solid var(--rule-2);
+    }
+    .mr-row {
+      grid-template-columns: 44px 18px minmax(0, 1fr);
+      padding: 8px 12px;
+    }
+    .mr-who {
+      grid-column: 3;
+    }
+    .sb-side {
+      justify-items: stretch;
+    }
+    .sk-hl .skeleton {
+      height: 32px;
+    }
+    .res-list time {
+      display: none;
+    }
+  }
+}
+
+/* --- loading: the ground before kick-off (same shape as the view) --------- */
+@layer views {
+  /* It is a .view (full-bleed grid): no column gap between its tracks. */
+  .skeleton-view.sk-overview {
+    padding-top: var(--s5);
+    gap: var(--s5) 0;
+  }
+  .sk-hl {
+    display: grid;
+    gap: 14px;
+    padding: 6px 0 4px;
+  }
+  .sk-hl .skeleton {
+    display: block;
+    height: 44px;
+    background: var(--board-2);
+  }
+  .sk-hl1 {
+    width: 46%;
+  }
+  .sk-hl2 {
+    width: 72%;
+  }
+  .sk-hl3 {
+    width: 58%;
+    height: 22px !important;
+  }
+  .sk-digits {
+    color: var(--board-ink-2);
+  }
+  .sk-own {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 12px;
+    padding: 16px 16px 18px 12px;
+    border-top: var(--hair);
+  }
+  .sk-own:first-child {
+    border-top: 0;
+  }
+  .sk-own .skeleton {
+    display: block;
+    height: 14px;
+  }
+  .sk-rank {
+    width: 22px;
+    height: 32px !important;
+    margin-inline: auto;
+  }
+  .sk-own-lines {
+    display: grid;
+    gap: 10px;
+  }
+  .sk-l1 {
+    width: 40%;
+  }
+  .sk-l2 {
+    width: 85%;
+    height: 18px !important;
+  }
+  .sk-l3 {
+    width: 65%;
+  }
+}
+
+/* --- failure: the scoreboard stays dark ----------------------------------- */
+@layer views {
+  .ov-error .hl .glyph {
+    display: inline-block;
+    vertical-align: -3px;
+    margin-right: 12px;
+    color: var(--board-red);
+  }
+  .ov-error .hl .hl-nb {
+    white-space: normal;
+  }
+  .ov-error .hl-sub {
+    color: var(--board-ink);
+  }
+  .ov-error-act {
+    padding-top: 0;
+  }
+}

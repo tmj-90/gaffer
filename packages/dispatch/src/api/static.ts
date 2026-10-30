@@ -10,7 +10,7 @@ import { errorBody, sendJson } from "./http.js";
  * server.ts unchanged (a pure move).
  */
 
-/** Directory holding the bundled SPA (index.html, app.js, styles.css). */
+/** Directory holding the bundled SPA (index.html, app.js, theme.js, css/). */
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "web");
 
 /**
@@ -23,14 +23,17 @@ const STATIC_ROUTES: ReadonlyMap<string, { file: string; type: string }> = new M
   ["/", { file: "index.html", type: "text/html; charset=utf-8" }],
   ["/index.html", { file: "index.html", type: "text/html; charset=utf-8" }],
   ["/app.js", { file: "app.js", type: "text/javascript; charset=utf-8" }],
-  ["/styles.css", { file: "styles.css", type: "text/css; charset=utf-8" }],
+  // Applies the viewer's stored light/dark kit before first paint (classic script).
+  ["/theme.js", { file: "theme.js", type: "text/javascript; charset=utf-8" }],
   ["/gaffer-logo.svg", { file: "gaffer-logo.svg", type: "image/svg+xml" }],
   ["/gaffer-icon.svg", { file: "gaffer-icon.svg", type: "image/svg+xml" }],
   ["/gaffer-favicon.svg", { file: "gaffer-favicon.svg", type: "image/svg+xml" }],
 ]);
 
-/** Bundled media served under /assets/ (hero backgrounds, textures). */
+/** Bundled media served under /assets/ (the self-hosted fonts). */
 const ASSETS_DIR = join(WEB_DIR, "assets");
+/** The layered stylesheets under /css/ (tokens, base, layout, components, views/*). */
+const CSS_DIR = join(WEB_DIR, "css");
 const ASSET_MIME: ReadonlyMap<string, string> = new Map([
   // Self-hosted fonts + their @font-face sheet (assets/fonts/).
   [".woff2", "font/woff2"],
@@ -57,6 +60,26 @@ export function serveStatic(pathname: string, res: ServerResponse): boolean {
       res.end(body);
     } catch {
       sendJson(res, 500, errorBody("INTERNAL_ERROR", `Static asset missing: ${match.file}`));
+    }
+    return true;
+  }
+  // Stylesheets under /css/ — .css only, and the resolved path MUST stay inside
+  // WEB_DIR/css (blocks ../ traversal). Same no-store policy as the SPA shell: the
+  // sheets change with every build.
+  if (pathname.startsWith("/css/")) {
+    if (extname(pathname).toLowerCase() !== ".css") return false;
+    const full = resolve(CSS_DIR, "." + pathname.slice("/css".length));
+    if (!full.startsWith(CSS_DIR + sep)) return false;
+    try {
+      const body = readFileSync(full);
+      res.writeHead(200, {
+        "content-type": "text/css; charset=utf-8",
+        "content-length": body.length,
+        "cache-control": "no-store, must-revalidate",
+      });
+      res.end(body);
+    } catch {
+      return false;
     }
     return true;
   }

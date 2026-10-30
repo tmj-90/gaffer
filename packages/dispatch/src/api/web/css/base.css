@@ -1,0 +1,217 @@
+/* Reset + base element styles. Element selectors only (plus the a11y utilities
+   every view needs); no classes that belong to a component. */
+
+@layer reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    margin: 0;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  p,
+  ol,
+  ul,
+  dl,
+  dd,
+  figure,
+  blockquote,
+  pre {
+    margin: 0;
+    padding: 0;
+  }
+  ol,
+  ul {
+    list-style: none;
+  }
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+  img,
+  svg,
+  video {
+    display: block;
+    max-width: 100%;
+  }
+  table {
+    border-collapse: collapse;
+  }
+  [hidden] {
+    display: none !important;
+  }
+}
+
+@layer base {
+  html {
+    background: var(--ground);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    scrollbar-color: var(--ink-2) var(--ground);
+  }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font: 400 var(--t16) / 1.5 var(--f-text);
+    font-variant-numeric: tabular-nums;
+    min-height: 100vh;
+    caret-color: var(--claret);
+    accent-color: var(--ink);
+    overflow-wrap: break-word;
+  }
+  ::selection {
+    background: var(--sky);
+    color: var(--on-sky);
+  }
+  a {
+    color: inherit;
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 3px;
+    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  }
+  a:hover {
+    text-decoration-color: currentColor;
+  }
+  :focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--focus-gap);
+  }
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--f-mono);
+    font-size: max(var(--t12), 0.875em); /* never under the 12px floor */
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: 800;
+    line-height: 1.1;
+    text-wrap: balance;
+  }
+  h1 {
+    font: 800 var(--t52) / 0.98 var(--f-display);
+    letter-spacing: -0.005em;
+  }
+  /* Element headings are mixed case (ticket titles live in h2/h3); the caps
+     programme-section look comes from .panel-title / .block-h, never the element. */
+  h2 {
+    font: 800 var(--t26) / 1.05 var(--f-display);
+  }
+  h3 {
+    font: 800 var(--t20) / 1.1 var(--f-display);
+  }
+  h4 {
+    font: 700 var(--t16) / 1.3 var(--f-text);
+  }
+  p {
+    max-width: 75ch;
+  }
+  hr {
+    border: 0;
+    border-top: var(--hair);
+    margin: var(--s4) 0;
+  }
+  input,
+  select,
+  textarea {
+    min-height: var(--tap);
+    border: 2px solid var(--ink);
+    border-radius: var(--r);
+    background: var(--paper);
+    padding: 6px 10px;
+    min-width: 0;
+    max-width: 100%;
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    min-height: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+  }
+  input[type="range"] {
+    border: 0;
+    padding: 0;
+    background: none;
+  }
+  textarea {
+    min-height: 96px;
+    line-height: 1.45;
+    resize: vertical;
+  }
+  ::placeholder {
+    color: var(--ink-2);
+    opacity: 1;
+  }
+  input[aria-invalid="true"],
+  select[aria-invalid="true"],
+  textarea[aria-invalid="true"] {
+    border-color: var(--red);
+  }
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: default;
+  }
+  summary {
+    cursor: pointer;
+  }
+  details > summary::-webkit-details-marker {
+    color: var(--ink-2);
+  }
+  table {
+    width: 100%;
+  }
+  th {
+    text-align: left;
+    font: 700 var(--t14) / 1.2 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+  }
+  img {
+    height: auto;
+  }
+  /* Screen-reader-only text, and the skip link that becomes visible on focus. */
+  .sr-only,
+  .vh {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .skip-link {
+    position: absolute;
+    left: 8px;
+    top: -100px;
+    z-index: 100;
+    background: var(--paper);
+    color: var(--ink);
+    padding: 8px 12px;
+    border: var(--frame);
+    font-weight: 700;
+  }
+  .skip-link:focus {
+    top: 8px;
+  }
+}

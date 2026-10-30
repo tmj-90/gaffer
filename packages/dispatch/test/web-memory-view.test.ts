@@ -107,7 +107,7 @@ const onboardCalls: Array<{ method: string; body: unknown }> = [];
 const loreCalls: string[] = [];
 const loreRequests = (): string[] => loreCalls.map((u) => u.replace(/^https?:\/\/[^/]+/, ""));
 /** Every approve/reject POST the view made. */
-const ratifyCalls: Array<{ method: string; path: string }> = [];
+const ratifyCalls: Array<{ method: string; path: string; body?: unknown }> = [];
 
 /** Stub fetch with optional overrides per surface (digest/features/lore). */
 function stubFetch(overrides: Partial<Record<"digest" | "features" | "lore", unknown>> = {}): void {
@@ -123,7 +123,11 @@ function stubFetch(overrides: Partial<Record<"digest" | "features" | "lore", unk
       } else if (url.includes("/api/memory/digest/")) body = overrides.digest ?? DIGEST;
       else if (url.includes("/api/memory/features/")) body = overrides.features ?? FEATURES;
       else if (/\/api\/memory\/lore\/[^/]+\/(approve|reject)$/.test(url)) {
-        ratifyCalls.push({ method, path: url.replace(/^https?:\/\/[^/]+/, "") });
+        ratifyCalls.push({
+          method,
+          path: url.replace(/^https?:\/\/[^/]+/, ""),
+          ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+        });
         body = { id: "l2", status: url.endsWith("/approve") ? "active" : "rejected" };
       } else if (url.includes("/api/memory/lore")) {
         loreCalls.push(url);
@@ -198,12 +202,13 @@ describe("web: Memory view", () => {
     expect(text).toMatch(/verify it against the code/);
   });
 
-  it("splits the feature ledger into Current / Building / Backlog and groups by scope node", async () => {
+  // The shipped stage reads "Shipped" on the honours board ("Current" read oddly).
+  it("splits the feature ledger into Shipped / Building / Backlog and groups by scope node", async () => {
     stubFetch();
     mountShell("#/memory/sample-repo");
     await boot();
     const text = document.body.textContent || "";
-    expect(text).toContain("Current");
+    expect(text).toContain("Shipped");
     expect(text).toContain("Building");
     expect(text).toContain("Backlog");
     expect(text).toContain("Pour logging");
@@ -288,7 +293,32 @@ describe("web: Memory view", () => {
     expect(loreRequests().length).toBeGreaterThan(fetchesBefore);
   });
 
-  it("Reject POSTs /api/memory/lore/:id/reject", async () => {
+  // A real browser blurs a `disabled` button to <body>, so keyboard triage lost its
+  // place after every decision (jsdom does not blur, which hid it). The busy button
+  // must stay focusable: aria-disabled, never the disabled attribute.
+  it("keeps the busy Approve focusable (aria-disabled, not disabled) while it POSTs", async () => {
+    stubFetch({ lore: LORE_PAGE });
+    mountShell("#/memory/sample-repo");
+    await boot();
+    const approve = document.querySelector(
+      ".lore-row[data-status='draft'] button.lore-approve",
+    ) as HTMLButtonElement;
+    approve.focus();
+    approve.click();
+    expect(approve.disabled).toBe(false);
+    expect(approve.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(approve);
+    // A second press while busy does not POST twice.
+    approve.click();
+    await tick();
+    await tick();
+    await tick();
+    expect(ratifyCalls).toHaveLength(1);
+  });
+
+  // Reject now asks for an optional reason in place (the memory CLI recommends
+  // one), so the POST follows the in-row confirm, carrying the reason when given.
+  it("Reject asks for an optional reason, then POSTs /api/memory/lore/:id/reject with it", async () => {
     stubFetch({ lore: LORE_PAGE });
     mountShell("#/memory/sample-repo");
     await boot();
@@ -298,8 +328,37 @@ describe("web: Memory view", () => {
       ) as HTMLButtonElement
     ).click();
     await tick();
+    expect(ratifyCalls).toEqual([]);
+    const why = document.querySelector(
+      ".lore-row[data-status='draft'] input.lore-reason",
+    ) as HTMLInputElement;
+    expect(why).not.toBeNull();
+    expect(document.activeElement).toBe(why);
+    why.value = "Duplicates the pence convention";
+    (
+      document.querySelector(".lore-row[data-status='draft'] .lore-reject-form") as HTMLFormElement
+    ).requestSubmit();
+    await tick();
     await tick();
     expect(ratifyCalls.map((c) => c.path)).toEqual(["/api/memory/lore/l2/reject"]);
+    expect(ratifyCalls[0]!.body).toEqual({ reason: "Duplicates the pence convention" });
+  });
+
+  it("Escape closes the reason form without rejecting", async () => {
+    stubFetch({ lore: LORE_PAGE });
+    mountShell("#/memory/sample-repo");
+    await boot();
+    const reject = document.querySelector(
+      ".lore-row[data-status='draft'] button.lore-reject",
+    ) as HTMLButtonElement;
+    reject.click();
+    await tick();
+    const why = document.querySelector("input.lore-reason") as HTMLInputElement;
+    why.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await tick();
+    expect(document.querySelector(".lore-reject-form")).toBeNull();
+    expect(document.activeElement?.classList.contains("lore-reject")).toBe(true);
+    expect(ratifyCalls).toEqual([]);
   });
 
   it("the status filter re-fetches with status=draft from the first page", async () => {

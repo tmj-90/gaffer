@@ -164,7 +164,7 @@ describe("web review gate: global j/k/a/r shortcuts are suppressed while a modal
 
     // Open the reject dialog and move focus onto a preset reason chip (a <button>,
     // which the old INPUT/TEXTAREA/SELECT-only bail list did NOT cover).
-    buttonByText("Send back to rework")!.click();
+    buttonByText("Send back…")!.click();
     const chip = document.querySelector(".reject-chip") as HTMLButtonElement | null;
     expect(chip, "the reject dialog should render preset reason chips").not.toBeNull();
     chip!.focus();

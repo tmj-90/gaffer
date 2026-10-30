@@ -1,0 +1,170 @@
+/* ===========================================================================
+   Gaffer · Match Day — design tokens (one set, both kits)
+   The gaffer is the manager; the factory is the club on match day.
+   Colour vocabularies never overlap:
+     club kit (claret + sky) ........ identity only: header, crest, shirts, blocks
+     referee's cards (yellow, red) .. status only: needs-you / blocked-or-failed,
+                                       always paired with a glyph shape and a word
+     pitch greens ................... the ground of drawings only, never text/state
+     action (ink) ................... the one primary button per view
+   Both kits come from ONE token set via light-dark(): the browser follows the
+   system setting (color-scheme: light dark) and a per-viewer override sets
+   html[data-theme="light"|"dark"] (see /theme.js and setTheme() in app.js).
+   This file also declares the cascade-layer order every other sheet joins.
+   =========================================================================== */
+
+@layer reset, tokens, base, layout, components, views, utilities;
+
+/* Self-hosted, OFL, latin subset (assets/fonts/, see THIRD_PARTY_NOTICES.md). */
+@font-face {
+  font-family: "Big Shoulders";
+  src: url("/assets/fonts/big-shoulders-display-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Big Shoulders Stencil";
+  src: url("/assets/fonts/big-shoulders-stencil-display-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Sofia Sans";
+  src: url("/assets/fonts/sofia-sans-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Sofia Sans Condensed";
+  src: url("/assets/fonts/sofia-sans-condensed-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Fragment Mono";
+  src: url("/assets/fonts/fragment-mono-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@layer tokens {
+  :root {
+    color-scheme: light dark;
+
+    /* --- grounds & ink (light "home kit, day match" / dark "floodlit") ---- */
+    --ground: light-dark(#eef1ea, #161a22); /* page ground */
+    --paper: light-dark(#ffffff, #1f2430); /* rows, sheets, programme pages */
+    --paper-2: light-dark(#f6f8f3, #262c39); /* zebra / hover wash on paper */
+    --ink: light-dark(#0e1726, #eef1f4); /* text, glyphs, action fill */
+    --ink-2: light-dark(#4a5566, #a7b0bd); /* secondary text (≥ 6.6:1) */
+    --rule: light-dark(#cbd2c7, #3a4150); /* hairlines, non-text */
+    --rule-2: light-dark(#dde2d8, #2c3240); /* quieter hairline, skeleton */
+
+    /* --- club kit: identity only ----------------------------------------- */
+    --claret: light-dark(#7a1631, #8e1d3c); /* header block, shirts, section blocks */
+    --claret-ink: light-dark(#7a1631, #e8b4c4); /* claret used AS text */
+    --on-claret: #ffffff;
+    --on-claret-2: #f3d9e1; /* secondary text on claret (≥ 7:1) */
+    --sky: #95cdeb; /* chevron, collar, the hoop under the header */
+    --on-sky: #0e1726;
+    --on-sky-2: #1d3a52; /* secondary text on sky (6.9:1) */
+    --sky-wash: light-dark(#ddeff9, #1e3442); /* selected / hover wash */
+
+    /* --- the scoreboard: always dark, both kits --------------------------- */
+    --board: light-dark(#111318, #0e1015);
+    --board-2: light-dark(#1d2029, #1a1d25);
+    --board-ink: #ffffff;
+    --board-ink-2: #b9c0cc;
+    --board-rule: #3a3f4c;
+    --board-red: #ff6b78; /* red glyphs on the board (blocked, failed) */
+    --board-red-2: #ff9ea8; /* red text on the board (received, − lines) */
+    --board-ok: #8ee0a8; /* + lines and passed marks on the board */
+    --board-ink-3: #8a93a3; /* separators on the board, never text that carries meaning */
+    --counter-ink: #0e1726; /* ink on a white magnet counter: counters stay white in both kits */
+
+    /* --- pitch (drawings only) -------------------------------------------- */
+    --pitch: light-dark(#2c7a43, #1f5a32);
+    --pitch-2: light-dark(#276f3d, #236137);
+    --chalk: #f2f7ef;
+    --ink-on-pitch: light-dark(#0e1726, #111318);
+    --lane-a: light-dark(#ddebda, #1c2e22); /* board lanes as mown stripes */
+    --lane-b: light-dark(#d1e3ce, #203527);
+
+    /* --- referee's cards: status ------------------------------------------ */
+    --yellow: #ffcc1f; /* needs you — fill only, ink on it 11.9:1 */
+    --on-yellow: #0e1726;
+    --ycard-edge: light-dark(#0e1726, #111318);
+    --red: light-dark(#c8102e, #ff7b7b); /* blocked / failed — text + glyph */
+    --on-red: light-dark(#ffffff, #111318);
+    --on-red-2: light-dark(#ffe1e5, #3a1018); /* secondary text on red (≥ 4.8:1) */
+    --red-wash: light-dark(#fbe6e8, #3a1e24);
+    --ok: light-dark(#1f6b3a, #7fd49a); /* passed gates, + lines (text ≥ 4.5:1) */
+    --ok-wash: light-dark(#e3f2e4, #18301f);
+
+    /* --- diff ---------------------------------------------------------------- */
+    --add: var(--ok);
+    --add-wash: var(--ok-wash);
+    --del: light-dark(#a3122a, #ff9a9a);
+    --del-wash: light-dark(#fbe8ea, #3a1e24);
+    --mark-wash: light-dark(#fff3c4, #4a3d0f); /* flagged line / file wash */
+
+    /* --- action + focus ---------------------------------------------------- */
+    --action: var(--ink); /* the one sign-off button per view */
+    --action-ink: light-dark(#ffffff, #111318);
+    --focus: light-dark(#0e1726, #ffcc1f);
+    --focus-gap: light-dark(#ffffff, #161a22);
+    --glyph-knock: var(--paper); /* the cut-out inside filled glyphs */
+    --shirt-edge: light-dark(#3e0a19, #2a0610);
+    --crest-edge: light-dark(#ffffff, #0e1015);
+    --scrim: rgb(14 23 38 / 0.55);
+
+    /* --- type ------------------------------------------------------------- */
+    --f-display: "Big Shoulders", "Arial Narrow", sans-serif; /* headlines, numerals */
+    --f-stencil: "Big Shoulders Stencil", "Big Shoulders", sans-serif; /* shirt numbers */
+    --f-text: "Sofia Sans", system-ui, sans-serif; /* body, rows, buttons */
+    --f-cond: "Sofia Sans Condensed", "Sofia Sans", sans-serif; /* dense labels */
+    --f-mono: "Fragment Mono", ui-monospace, monospace; /* code, SHAs, paths */
+    /* Scale (px): the brief's six steps plus the headline and the scoreboard. */
+    --t12: 12px; /* floor: meta only, weight ≥ 600 */
+    --t14: 14px;
+    --t16: 16px;
+    --t20: 20px;
+    --t26: 26px;
+    --t34: 34px;
+    --t52: 52px; /* the headline sentence */
+    --t88: 88px; /* scoreboard numerals only */
+
+    /* --- shape, space, motion -------------------------------------------- */
+    --r: 2px; /* rows, cards, buttons: printed matter */
+    --r-round: 999px; /* magnet counters and glyphs only */
+    --counter-shadow: 0 2px 0 rgb(14 23 38 / 0.18); /* a physical counter; nothing else */
+    --frame: 2px solid var(--ink); /* the programme-page frame */
+    --hair: 1px solid var(--rule);
+    --s1: 4px;
+    --s2: 8px;
+    --s3: 12px;
+    --s4: 16px;
+    --s5: 24px;
+    --s6: 32px;
+    --s7: 48px;
+    --gut: 24px; /* side gutter: 24 at desktop, 16 at phone */
+    --header-h: 64px;
+    --tap: 40px; /* control height: 40 desktop, 44 phone */
+    --ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-card: cubic-bezier(0.2, 0.9, 0.3, 1.2);
+    --ease-move: cubic-bezier(0.3, 0, 0, 1);
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+  }
+  @media (max-width: 760px) {
+    :root {
+      --gut: 16px;
+      --header-h: 56px;
+      --tap: 44px;
+    }
+  }
+}

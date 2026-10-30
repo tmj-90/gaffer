@@ -101,6 +101,11 @@ describe("web: Review refresh only re-reads a changed queue", () => {
     expect(distinct(DIFF)).toBe(1);
     const before = document.querySelector("#app > .view");
     expect(before).not.toBeNull();
+    // Baselines after the first paint: what the boot read is not under test
+    // here (a slower runner's boot can refresh once more than a fast one); the
+    // refresh ticks are, so everything below is relative to these.
+    const LIST = /\/tickets\?status=in_review/;
+    const listReads = count(LIST);
     const detailReads = count(DETAIL);
     const diffReads = count(DIFF);
 
@@ -110,7 +115,7 @@ describe("web: Review refresh only re-reads a changed queue", () => {
     await settle();
 
     // The refresh did run (it re-read the queue list each tick)…
-    expect(count(/\/tickets\?status=in_review/)).toBe(3);
+    expect(count(LIST)).toBe(listReads + 2);
     // …but, no N+1: the unchanged queue triggered no detail or diff reads…
     expect(count(DETAIL)).toBe(detailReads);
     expect(count(DIFF)).toBe(diffReads);

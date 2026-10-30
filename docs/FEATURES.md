@@ -116,6 +116,16 @@ Squad & form and Health. The **Squad** page (`#/squad`) lists the squad and
 renames an agent in place; a taken shirt number is refused with the holder's
 name, and a read-only token sees no editors.
 
+**The Floor.** `#/floor` draws the live factory as an isometric floor: stations
+along a conveyor in lifecycle order (drawing office, Stores, Assembly,
+Inspection, test rig, loading bay, Despatch), one parcel per open ticket at its
+station, a robot in the agent's shirt number on every live claim, a hazard-taped
+jam bay with a beacon for blocked, paused and failed tickets, a spend tank filled
+to today's wage bill against the daily budget, and a lorry carrying what was
+done today. It reads the Overview's own data and refreshes on the live stream.
+Parcels, robots and stations are links with sentence labels; the stations and
+benches are also listed as text under the drawing.
+
 ![The work board](img/board.png)
 
 *Tickets spread across the lanes: drafts being shaped, ready work waiting, one

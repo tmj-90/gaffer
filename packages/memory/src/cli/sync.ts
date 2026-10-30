@@ -101,21 +101,41 @@ export function parseFrontmatter(text: string): ParsedFile | null {
   return { frontmatter: fm, body };
 }
 
-function unquote(s: string): string {
-  if (
-    s.length >= 2 &&
-    ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'")))
-  ) {
+/**
+ * Decode a quoted scalar, or return undefined when `s` is not quoted. The
+ * exact inverse of the emitter: a double-quoted value is a JSON string
+ * literal (yamlScalar writes `JSON.stringify`), so its escapes (`\"`, `\\`,
+ * `\n`, `\uXXXX`) are decoded; slicing alone left them literal and every
+ * export/import cycle doubled the backslashes. A hand-written value that is
+ * not valid JSON falls back to the raw slice. Single quotes follow YAML:
+ * `''` is an escaped `'`.
+ */
+function decodeQuoted(s: string): string | undefined {
+  if (s.length < 2) return undefined;
+  if (s.startsWith('"') && s.endsWith('"')) {
+    try {
+      const v: unknown = JSON.parse(s);
+      if (typeof v === "string") return v;
+    } catch {
+      // not a JSON string literal — treat the quotes as plain delimiters
+    }
     return s.slice(1, -1);
   }
-  return s;
+  if (s.startsWith("'") && s.endsWith("'")) return s.slice(1, -1).replace(/''/g, "'");
+  return undefined;
+}
+
+function unquote(s: string): string {
+  return decodeQuoted(s) ?? s;
 }
 
 function parseScalar(s: string): unknown {
-  const v = unquote(s);
-  if (v === "true") return true;
-  if (v === "false") return false;
-  return v;
+  // A quoted value is always a string: `title: "true"` must not become a boolean.
+  const quoted = decodeQuoted(s);
+  if (quoted !== undefined) return quoted;
+  if (s === "true") return true;
+  if (s === "false") return false;
+  return s;
 }
 
 // ── Frontmatter emitter ───────────────────────────────────────────────
@@ -140,9 +160,13 @@ export function renderLoreMarkdown(lore: Lore): string {
   lines.push(`restricted: ${lore.restricted}`);
   if (lore.author !== undefined) lines.push(`author: ${yamlScalar(lore.author)}`);
   if (lore.team !== undefined) lines.push(`team: ${yamlScalar(lore.team)}`);
-  if (lore.source !== undefined) lines.push(`source: ${lore.source}`);
+  if (lore.source !== undefined) lines.push(`source: ${rawOrQuoted(lore.source)}`);
   if (lore.reviewAfter !== undefined) lines.push(`reviewAfter: ${lore.reviewAfter}`);
   if (lore.supersededBy !== undefined) lines.push(`supersededBy: ${lore.supersededBy}`);
+  // Spec-freeze linkage (migration 010): the join key dispatch's spec readers use. Only
+  // written when set, so exports of non-spec lore stay byte-identical.
+  if (lore.specId !== undefined) lines.push(`specId: ${yamlScalar(lore.specId)}`);
+  if (lore.clauseId !== undefined) lines.push(`clauseId: ${yamlScalar(lore.clauseId)}`);
   lines.push(`createdAt: ${lore.createdAt}`);
   lines.push(`updatedAt: ${lore.updatedAt}`);
   if (lore.lastVerifiedAt !== undefined) {
@@ -150,11 +174,11 @@ export function renderLoreMarkdown(lore: Lore): string {
   }
   if (lore.repos.length > 0) {
     lines.push("repos:");
-    for (const r of lore.repos) lines.push(`  - ${r}`);
+    for (const r of lore.repos) lines.push(`  - ${rawOrQuoted(r)}`);
   }
   if (lore.tags.length > 0) {
     lines.push("tags:");
-    for (const t of lore.tags) lines.push(`  - ${t}`);
+    for (const t of lore.tags) lines.push(`  - ${rawOrQuoted(t)}`);
   }
   if (lore.conflictsWith && lore.conflictsWith.length > 0) {
     lines.push("conflictsWith:");
@@ -174,7 +198,34 @@ export function renderLoreMarkdown(lore: Lore): string {
  */
 function yamlScalar(v: string): string {
   if (v === "") return '""';
-  if (/[:#&*!|>'"%@`]/.test(v) || /^\s|\s$/.test(v) || /\n/.test(v)) {
+  if (
+    /[:#&*!|>'"%@`]/.test(v) ||
+    /^\s|\s$/.test(v) ||
+    /[\n\r]/.test(v) ||
+    v === "true" ||
+    v === "false"
+  ) {
+    return JSON.stringify(v);
+  }
+  return v;
+}
+
+/**
+ * Minimal quoting for values that historically went out raw (`source`, list
+ * items): quote only when the raw form would not read back as the same
+ * string, so existing exports of ordinary URLs / tags / ids stay
+ * byte-identical while a value like `"x"`, `true` or one with a newline
+ * still round-trips.
+ */
+function rawOrQuoted(v: string): string {
+  if (
+    v === "" ||
+    /^\s|\s$/.test(v) ||
+    /[\n\r]/.test(v) ||
+    /^["']/.test(v) ||
+    v === "true" ||
+    v === "false"
+  ) {
     return JSON.stringify(v);
   }
   return v;
@@ -590,6 +641,11 @@ export function importFromDir(
       });
       continue;
     }
+    const specCheck = checkOptionalString(fm, "specId") ?? checkOptionalString(fm, "clauseId");
+    if (specCheck) {
+      skipped.push({ file, reason: specCheck });
+      continue;
+    }
     const tsCheck =
       checkTimestamp(fm, "createdAt") ??
       checkTimestamp(fm, "updatedAt") ??
@@ -643,6 +699,8 @@ export function importFromDir(
       restricted,
       supersededBy: supersededByRaw as string | undefined,
       conflictsWith: conflictsWith as string[] | undefined,
+      specId: fm["specId"] as string | undefined,
+      clauseId: fm["clauseId"] as string | undefined,
       createdAt: typeof fm["createdAt"] === "string" ? (fm["createdAt"] as string) : undefined,
       updatedAt: typeof fm["updatedAt"] === "string" ? (fm["updatedAt"] as string) : undefined,
       lastVerifiedAt:
@@ -771,6 +829,15 @@ export function findMemoryDirs(root: string): string[] {
   }
   walk(root);
   return found.sort();
+}
+
+function checkOptionalString(fm: Record<string, unknown>, key: string): string | undefined {
+  const v = fm[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== "string" || v.trim() === "") {
+    return `invalid ${key} ${JSON.stringify(v)} (expected a non-empty string)`;
+  }
+  return undefined;
 }
 
 function checkTimestamp(fm: Record<string, unknown>, key: string): string | undefined {

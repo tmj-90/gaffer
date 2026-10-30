@@ -406,6 +406,13 @@ export interface ImportLoreInput {
    * "NULL or non-empty array" holds.
    */
   readonly conflictsWith?: ReadonlyArray<string>;
+  /**
+   * Spec-freeze linkage (migration 010). Omitted by files exported before the
+   * sync format carried it, so an update KEEPS the local value when the file is
+   * silent — a re-import must not null out a still-correct join key.
+   */
+  readonly specId?: string;
+  readonly clauseId?: string;
 }
 
 export interface ImportResult {
@@ -430,6 +437,28 @@ export interface ImportResult {
  * lacks a meaningful kind (missing, empty, or 'other') and the existing
  * row has one, the existing kind is preserved — see the inline note below.
  */
+/** True when an import would change any field lore_version snapshots. */
+function importChangesContent(
+  row: LoreRow,
+  input: ImportLoreInput,
+  kind: LoreKind,
+  confidence: LoreConfidence,
+): boolean {
+  return (
+    row.title !== input.title ||
+    row.summary !== input.summary ||
+    row.body !== input.body ||
+    row.author !== (input.author ?? null) ||
+    row.team !== (input.team ?? null) ||
+    row.source !== (input.source ?? null) ||
+    row.confidence !== confidence ||
+    (row.kind ?? "other") !== kind ||
+    row.restricted !== (input.restricted ? 1 : 0) ||
+    row.review_after !== (input.reviewAfter ?? null) ||
+    row.status !== input.status
+  );
+}
+
 export function upsertLoreFromImport(db: Database, input: ImportLoreInput): ImportResult {
   assertIsoDate(input.reviewAfter, "reviewAfter");
   assertIsoDate(input.createdAt, "createdAt");
@@ -444,8 +473,8 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
   const createdAt = input.createdAt ?? nowTs;
   const updatedAt = input.updatedAt ?? nowTs;
 
-  const existing = db.prepare("SELECT rowid, kind FROM lore WHERE id = ?").get(input.id) as
-    { rowid: number; kind: string | null } | undefined;
+  const existing = db.prepare("SELECT * FROM lore WHERE id = ?").get(input.id) as
+    LoreRow | undefined;
   const isCreate = !existing;
 
   // Kind preservation — mirrors updateLore's "no kind supplied → keep the
@@ -478,10 +507,10 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
           `INSERT INTO lore (
             id, title, summary, body, author, team,
             status, kind, source, review_after, confidence,
-            superseded_by, restricted,
+            superseded_by, restricted, spec_id, clause_id,
             created_at, updated_at, last_verified_at,
             conflicts_with
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -497,6 +526,8 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
           confidence,
           input.supersededBy ?? null,
           input.restricted ? 1 : 0,
+          input.specId ?? null,
+          input.clauseId ?? null,
           createdAt,
           updatedAt,
           input.lastVerifiedAt ?? null,
@@ -511,12 +542,21 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
       );
       refreshLoreEmbedding(db, input.id, input.title, input.summary);
     } else {
+      // VERSION HISTORY: an import overwrites local text just like updateLore does,
+      // so snapshot the pre-import row first (migration 012) — otherwise a teammate's
+      // newer file, or --force, destroys a local edit with no way back. Only when a
+      // snapshotted field actually changes, so idempotent re-imports / every
+      // `sync pull` don't pile up duplicate versions.
+      if (importChangesContent(existing, input, kind, confidence)) {
+        snapshotLoreVersion(db, existing, nowTs);
+      }
       db.prepare(
         `UPDATE lore SET
            title = ?, summary = ?, body = ?,
            author = ?, team = ?, status = ?, kind = ?,
            source = ?, review_after = ?, confidence = ?,
            superseded_by = ?, restricted = ?,
+           spec_id = COALESCE(?, spec_id), clause_id = COALESCE(?, clause_id),
            updated_at = ?, last_verified_at = ?,
            conflicts_with = ?
          WHERE id = ?`,
@@ -533,6 +573,8 @@ export function upsertLoreFromImport(db: Database, input: ImportLoreInput): Impo
         confidence,
         input.supersededBy ?? null,
         input.restricted ? 1 : 0,
+        input.specId ?? null,
+        input.clauseId ?? null,
         updatedAt,
         input.lastVerifiedAt ?? null,
         conflictsWith,

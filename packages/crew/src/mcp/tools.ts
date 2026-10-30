@@ -108,9 +108,11 @@ function parseArgs<N extends ToolName>(
 
 /**
  * How a tool handler opens Dispatch. Injected so tests can pass a shared
- * in-memory facade; production wires the real `openDispatch`. A factory function
- * (rather than a single instance) so read-only tools never open a DB they do not
- * need, and `get_factory_status` can probe reachability and discard the handle.
+ * in-memory facade; production wires the real `openDispatch` with `mustExist`
+ * (server.ts `mcpDispatchOpener`), so no tool ever creates a missing DB. A
+ * factory function (rather than a single instance) so a tool opens Dispatch only
+ * when called, and `get_factory_status` can probe reachability and discard the
+ * handle.
  */
 export type DispatchOpener = (ctx: FactoryContext) => Promise<DispatchClient>;
 
@@ -248,10 +250,10 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
         let dispatch: { ok: boolean; error?: { code: string; message: string } };
         let repos = ctx.repoRegistry;
         try {
-          // Probe with a real read, not a bare open(). The real client's open()
-          // creates the sqlite (+ schema) when absent, so opening alone can never
-          // prove the store is queryable. `listReady()` exercises the connection
-          // and schema, so `dispatch.ok` means "actually usable", which is what
+          // Probe with a real read, not a bare open(). The default opener refuses
+          // a missing sqlite, but an existing file can still be unusable, so
+          // opening alone can't prove the store is queryable. `listReady()`
+          // exercises the connection and schema, so `dispatch.ok` means "actually usable", which is what
           // the agent relies on before calling get_context_packet / run_idle_loop.
           const wg = await open(ctx);
           wg.listReady();

@@ -29,7 +29,8 @@ const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "Read `dispatch.ok` before any work-driving tool. If it is `false`, " +
     "`get_context_packet` and `run_idle_loop` WILL fail the same way — fix the " +
     "Dispatch connection first (the `dispatch.error.code` tells you why; " +
-    "`DISPATCH_UNAVAILABLE` usually means its package isn't built yet). " +
+    "`DISPATCH_UNAVAILABLE` means its package isn't built yet, or the factory DB " +
+    "isn't at the configured path — crew never creates a missing one). " +
     "The `mode` shapes how strict the safety policy is: in `local_loose` more is " +
     "auto-allowed, in `shared_team` expect more `needs_approval` decisions. " +
     "This tool is read-only and never mutates anything — call it freely.",
@@ -150,6 +151,16 @@ export interface ServerOptions {
 }
 
 /**
+ * The default opener for every MCP tool: the real adapter with `mustExist`, as
+ * the CLI opens it. A bare open CREATES a missing sqlite, so on a factory whose
+ * DB is absent (or whose path drifted) `list_repos` / `check_path_write_allowed`
+ * left an empty dispatch.sqlite behind and `run_idle_loop` filed drafts into it
+ * while `crew idle` refused. Now each fails with DISPATCH_UNAVAILABLE; the
+ * read-only tools fall back to crew.yaml's repos.
+ */
+export const mcpDispatchOpener: DispatchOpener = (c) => openDispatch(c, { mustExist: true });
+
+/**
  * Build an MCP server exposing the Crew factory tools. Transport-agnostic:
  * call {@link runStdioServer} to serve over stdio, or register the returned
  * handlers directly in tests. Wiring (config + registries + safety policy) is
@@ -162,7 +173,7 @@ export function createCrewServer(options: ServerOptions = {}): McpServer {
   const audit: AuditOptions = options.audit ?? { dataDir: ctx.loaded.rootDir };
   const handlers = makeHandlers({
     ctx,
-    openDispatch: options.dispatchOpener ?? openDispatch,
+    openDispatch: options.dispatchOpener ?? mcpDispatchOpener,
     audit,
   });
 

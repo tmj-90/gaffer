@@ -156,11 +156,12 @@ else
   fail "a '--' repo path: $(cat "$WORK/ddr.err") ${lint_out:-}"
 fi
 # The renderer's own fail-closed guard recognises a comment that carries '--'.
-node --input-type=module -e '
-  const { badComments } = await import(process.argv[1]);
+# (Path via env, not argv: render.mjs runs its CLI when argv[1] is itself.)
+RENDER_MJS="$RENDER" node --input-type=module -e '
+  const { badComments } = await import(process.env.RENDER_MJS);
   const bad = badComments("<a><!-- ok --><!-- /x/my--data --></a>");
   process.exit(bad.length === 1 && badComments("<a><!-- fine --></a>").length === 0 ? 0 : 1);
-' "$RENDER" && ok "badComments() flags a comment containing '--' (render refuses to write one)" \
+' && ok "badComments() flags a comment containing '--' (render refuses to write one)" \
   || fail "badComments() does not detect a '--' comment"
 
 echo

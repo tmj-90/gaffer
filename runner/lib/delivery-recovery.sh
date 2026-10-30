@@ -94,6 +94,42 @@ gaffer_any_branch_has_commits() {
   return 1
 }
 
+# --- Pre-spawn ref snapshot (branch-switch recovery) --------------------------
+# gaffer_snapshot_refs <rows>
+# Print every ref of every write repo as "<rpath>\t<sha>\t<refname>". Taken just
+# before the agent is spawned, so the recovery after it can tell what the AGENT made
+# (a new branch, new commits) from what was already there (the user's own branches
+# and commits, which a delivery must never absorb and the runner must never delete).
+gaffer_snapshot_refs() {
+  local rows="$1"
+  local _rid _rname _rpath _rbase _rwt
+  while IFS=$'\t' read -r _rid _rname _rpath _rbase _rwt; do
+    [ -n "$_rpath" ] || continue
+    git -C "$_rpath" for-each-ref --format='%(objectname)%09%(refname)' 2>/dev/null \
+      | awk -F'\t' -v p="$_rpath" 'NF == 2 { print p "\t" $1 "\t" $2 }'
+  done <<< "$rows"
+}
+
+# gaffer_snapshot_sha <snapshot> <rpath> <branch>
+# Echo the sha refs/heads/<branch> had in the snapshot for <rpath>; rc 1 (no output)
+# when the branch did not exist then.
+gaffer_snapshot_sha() {
+  awk -F'\t' -v p="$2" -v r="refs/heads/$3" \
+    '$1 == p && $3 == r { print $2; found = 1; exit } END { exit !found }' <<< "$1"
+}
+
+# gaffer_commits_all_new <snapshot> <rpath> <from> <to>
+# True iff <rpath> has a snapshot and no commit in <from>..<to> was reachable from any
+# ref in it, i.e. every commit on top of <from> was made after the spawn.
+gaffer_commits_all_new() {
+  local snap="$1" rpath="$2" from="$3" to="$4" neg all new
+  neg="$(awk -F'\t' -v p="$rpath" '$1 == p { print "^" $2 }' <<< "$snap")"
+  [ -n "$neg" ] || return 1
+  all="$(git -C "$rpath" rev-list --count "$from..$to" 2>/dev/null)" || return 1
+  new="$(printf '%s\n' "$neg" | git -C "$rpath" rev-list --count --stdin "$from..$to" 2>/dev/null)" || return 1
+  [ -n "$all" ] && [ "$all" = "$new" ]
+}
+
 # --- Result-parser seam (Spec 3 / Phase 2) -----------------------------------
 # The claude-JSON envelope schema is owned by lib/worker.mjs's parseResult. The cap
 # / spend helpers below are thin FORMATTERS over its `parse-result` CLI, so bash and

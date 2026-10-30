@@ -60,6 +60,8 @@ if [ -e .git ]; then
       printf '{"type":"result","subtype":"error_max_turns","is_error":false,"result":"ran out of turns","total_cost_usd":0.05,"num_turns":3}\n'; exit 0 ;;
     newbranch) git checkout -q -b "agent-side-$n" >/dev/null 2>&1; commit side; done_json; exit 0 ;;
     detached) git checkout -q --detach >/dev/null 2>&1; commit detached; done_json; exit 0 ;;
+    userbranch) git checkout -q user-feature >/dev/null 2>&1; commit onuser; done_json; exit 0 ;;
+    userbranch-nocommit) git checkout -q user-feature2 >/dev/null 2>&1; done_json; exit 0 ;;
     diverge-once)
       if [ ! -e "$CALLS/diverged" ]; then
         touch "$CALLS/diverged"; git checkout -q -b "agent-off-main-$n" main >/dev/null 2>&1; commit diverged

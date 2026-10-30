@@ -2458,6 +2458,9 @@ $_trail_q
     "GAFFER_DATA=$GAFFER_DATA" "GAFFER_TICKET=$NUM"
     "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
   )
+  # What every write repo's refs held at spawn: the branch-switch recovery below only
+  # adopts commits the agent made and only deletes a branch the agent created.
+  _PRESPAWN_REFS="$(gaffer_snapshot_refs "$WT_ROWS")"
   worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP"
   rc=$?
   _T_AGENT_DONE="$(date +%s)"
@@ -2619,14 +2622,18 @@ $_trail_q
   # delivery failed with the ticket branch DELETED — a rework's reviewed commits with
   # it — while its own commits were stranded on an unswept branch, and the failure was
   # counted as "no commits". Now, per worktree:
-  #   • HEAD still contains $WORK_BRANCH (the agent only moved forward): fast-forward
-  #     $WORK_BRANCH to HEAD and check it out again (same commit, so uncommitted edits
-  #     carry over), delete a stray non-gaffer, non-default branch that is now fully
-  #     contained, and carry on to the gates;
-  #   • HEAD diverged from $WORK_BRANCH: leave $WORK_BRANCH as it was, KEEP the stray
-  #     branch (logged with its sha for a human to salvage), put the worktree back on
-  #     $WORK_BRANCH so a retry runs on the right branch, and retry-or-park when the
-  #     ticket branch carries commits. Only a branch with nothing on it is dropped.
+  #   • HEAD still contains $WORK_BRANCH and every commit on top of it was made by the
+  #     agent (none was reachable from any ref at spawn, see _PRESPAWN_REFS): fast-
+  #     forward $WORK_BRANCH to HEAD and check it out again (same commit, so uncommitted
+  #     edits carry over) and carry on to the gates. A branch the agent CREATED is then
+  #     deleted once fully contained; a branch that existed before the spawn (the
+  #     user's) is never deleted, and if the agent committed on it, it is put back to
+  #     its pre-spawn sha (the commits now live on $WORK_BRANCH);
+  #   • otherwise (diverged, or HEAD carries commits that existed before the spawn,
+  #     e.g. the agent checked out a user's branch): leave $WORK_BRANCH as it was, KEEP
+  #     the stray branch (logged with its sha for a human to salvage), put the worktree
+  #     back on $WORK_BRANCH so a retry runs on the right branch, and retry-or-park when
+  #     the ticket branch carries commits. Only a branch with nothing on it is dropped.
   _BS_FAIL=""; _BS_FAIL_REPO=""
   while IFS=$'\t' read -r rid rname rpath rbase rwt; do
     [ -n "$rwt" ] || continue
@@ -2640,23 +2647,42 @@ $_trail_q
       *) : ;;
     esac
     _bs_head="$(git -C "$rwt" rev-parse --verify --quiet HEAD 2>/dev/null || echo '')"
-    if [ -n "$_bs_head" ] && git -C "$rwt" merge-base --is-ancestor "$WORK_BRANCH" "$_bs_head" 2>/dev/null \
-       && git -C "$rwt" checkout -q -B "$WORK_BRANCH" "$_bs_head" >/dev/null 2>&1; then
-      log "RECOVERED branch switch for #$NUM in ${rname:-repo}: the agent left $WORK_BRANCH for '${HEAD_BRANCH:-?}' but only built on it — $WORK_BRANCH fast-forwarded to $(printf '%s' "$_bs_head" | cut -c1-12) and checked out again"
-      case "$HEAD_BRANCH" in
-        "$rbase"|""|HEAD|gaffer/*) : ;;
-        *) if [ "$(git -C "$rpath" rev-parse --verify --quiet "refs/heads/$HEAD_BRANCH" 2>/dev/null)" = "$_bs_head" ]; then
-             git -C "$rpath" branch -D "$HEAD_BRANCH" >/dev/null 2>&1 \
-               && log "RECOVERED branch switch for #$NUM: deleted the agent's stray branch '$HEAD_BRANCH' (fully contained in $WORK_BRANCH)"
-           fi ;;
-      esac
-      continue
+    _bs_pre=""
+    case "$HEAD_BRANCH" in
+      ""|HEAD) : ;;
+      *) _bs_pre="$(gaffer_snapshot_sha "$_PRESPAWN_REFS" "$rpath" "$HEAD_BRANCH" || true)" ;;
+    esac
+    _bs_why="does not contain $WORK_BRANCH"
+    if [ -n "$_bs_head" ] && git -C "$rwt" merge-base --is-ancestor "$WORK_BRANCH" "$_bs_head" 2>/dev/null; then
+      _bs_why="carries commits that existed before the agent ran (not the agent's work)"
+      if gaffer_commits_all_new "$_PRESPAWN_REFS" "$rpath" "$WORK_BRANCH" "$_bs_head" \
+         && git -C "$rwt" checkout -q -B "$WORK_BRANCH" "$_bs_head" >/dev/null 2>&1; then
+        log "RECOVERED branch switch for #$NUM in ${rname:-repo}: the agent left $WORK_BRANCH for '${HEAD_BRANCH:-?}' but only built on it — $WORK_BRANCH fast-forwarded to $(printf '%s' "$_bs_head" | cut -c1-12) and checked out again"
+        case "$HEAD_BRANCH" in
+          ""|HEAD|gaffer/*) : ;;
+          *) if [ -z "$_bs_pre" ]; then
+               # The agent created it: delete it once it holds nothing $WORK_BRANCH lacks.
+               if [ "$(git -C "$rpath" rev-parse --verify --quiet "refs/heads/$HEAD_BRANCH" 2>/dev/null)" = "$_bs_head" ]; then
+                 git -C "$rpath" branch -D "$HEAD_BRANCH" >/dev/null 2>&1 \
+                   && log "RECOVERED branch switch for #$NUM: deleted the agent's stray branch '$HEAD_BRANCH' (fully contained in $WORK_BRANCH)"
+               fi
+             elif [ "$_bs_pre" != "$_bs_head" ] \
+                  && ! git -C "$rpath" worktree list --porcelain 2>/dev/null | grep -qxF "branch refs/heads/$HEAD_BRANCH"; then
+               # A pre-existing branch the agent committed on: put it back (compare-and-
+               # swap, so a concurrent move by its owner wins) — the commits are on $WORK_BRANCH.
+               git -C "$rpath" update-ref "refs/heads/$HEAD_BRANCH" "$_bs_pre" "$_bs_head" >/dev/null 2>&1 \
+                 && log "RECOVERED branch switch for #$NUM: restored pre-existing branch '$HEAD_BRANCH' to $(printf '%s' "$_bs_pre" | cut -c1-12) (the agent's commits are on $WORK_BRANCH)"
+             fi ;;
+        esac
+        continue
+      fi
     fi
-    # Diverged (or HEAD unreadable): never move $WORK_BRANCH; the stray work stays where
-    # the agent put it. Re-checkout $WORK_BRANCH so the worktree (and any retry) is on it.
-    log "BRANCH SWITCH: #$NUM worktree for ${rname:-repo} ($rwt) is on '${HEAD_BRANCH:-?}' at ${_bs_head:-unknown}, which does not contain $WORK_BRANCH — $WORK_BRANCH left as it was, the agent's commits kept on '${HEAD_BRANCH:-?}' / ${_bs_head:-?} for a human to salvage"
+    # Diverged, foreign commits, or HEAD unreadable: never move $WORK_BRANCH; the stray
+    # work stays where the agent put it. Re-checkout $WORK_BRANCH so the worktree (and
+    # any retry) is on it.
+    log "BRANCH SWITCH: #$NUM worktree for ${rname:-repo} ($rwt) is on '${HEAD_BRANCH:-?}' at ${_bs_head:-unknown}, which $_bs_why — $WORK_BRANCH left as it was, '${HEAD_BRANCH:-?}' / ${_bs_head:-?} kept for a human to salvage"
     git -C "$rwt" checkout -q -f "$WORK_BRANCH" >/dev/null 2>&1 || true
-    _BS_FAIL="worktree HEAD '${HEAD_BRANCH:-?}' (${_bs_head:-?}) diverged from $WORK_BRANCH"
+    _BS_FAIL="worktree HEAD '${HEAD_BRANCH:-?}' (${_bs_head:-?}) $_bs_why"
     _BS_FAIL_REPO="${rname:-repo} ($rwt)"
   done <<< "$WT_ROWS"
   if [ -n "$_BS_FAIL" ]; then

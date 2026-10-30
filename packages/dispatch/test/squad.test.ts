@@ -92,11 +92,11 @@ describe("squad: migration v26 → v27", () => {
 
     migrate(db);
 
-    expect(SCHEMA_VERSION).toBe(27);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(27);
     const ver = db.prepare("SELECT value FROM schema_meta WHERE key='schema_version'").get() as {
       value: string;
     };
-    expect(Number(ver.value)).toBe(27);
+    expect(Number(ver.value)).toBe(SCHEMA_VERSION);
     const cols = (db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>).map(
       (c) => c.name,
     );

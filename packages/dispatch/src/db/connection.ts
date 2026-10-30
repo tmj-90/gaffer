@@ -329,6 +329,15 @@ function migrateLocked(db: Db): void {
   // the column) and idempotent on an already-migrated one. Existing rows inherit
   // NULL (⇒ unknown provenance — no trust class asserted), which is the backfill.
   alterEvidenceAddRecordedByActorType(db);
+  // MEMORY ATTRIBUTION (v27→v28): widen the `evidence.evidence_type` CHECK to accept
+  // `memory_primed` — the runner's per-delivery record of what memory it primed into
+  // the agent (runner/lib/context-primer.sh). The type was added to EVIDENCE_TYPES but
+  // not to the CHECK, so every one of those writes was refused by SQLite. SQLite
+  // cannot ALTER a CHECK in place, so an existing table is rebuilt via the supported
+  // recipe. Runs AFTER the recorded_by_actor_type ALTER so that column is carried
+  // over, and BEFORE SCHEMA_SQL so its CREATE INDEX statements re-attach. No-op on a
+  // fresh DB and on an already-widened table.
+  widenEvidenceTypeCheckForMemoryPrimed(db);
   // Graduated Autonomy Phase 3 (v18→v19): the `autonomy_policy` table — the
   // per-(repo × risk × gate) enablement store that gates agent self-approve / merge.
   // A brand-new standalone table (FK to repositories, CASCADE) created idempotently
@@ -1049,6 +1058,76 @@ function widenTicketStatusCheckForPaused(db: Db): void {
       );
       db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_risk ON tickets(risk_level)");
       db.exec("CREATE INDEX IF NOT EXISTS idx_tickets_policy_pack ON tickets(policy_pack)");
+    })();
+  } finally {
+    if (fkWasOn) db.pragma("foreign_keys = ON");
+  }
+}
+
+/**
+ * MEMORY ATTRIBUTION migration (v27→v28): rebuild an EXISTING `evidence` table whose
+ * `evidence_type` CHECK predates `memory_primed`. SQLite cannot ALTER a CHECK, so the
+ * table is recreated with the SCHEMA_SQL definition and every row copied across
+ * (only the columns the old table has; a missing nullable column backfills NULL).
+ * Nothing references `evidence(id)`, so the drop is safe; foreign_keys is switched
+ * off around the rebuild like the other rebuilds. Idempotent: skipped when the
+ * table is absent (fresh DB — SCHEMA_SQL creates it) or already lists the type.
+ */
+function widenEvidenceTypeCheckForMemoryPrimed(db: Db): void {
+  const ddlRow = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'evidence'")
+    .get() as { sql: string } | undefined;
+  if (!ddlRow) return;
+  if (ddlRow.sql.includes("'memory_primed'")) return;
+  const existingCols = new Set(
+    (db.prepare("PRAGMA table_info(evidence)").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  const NEW_COLS = [
+    "id",
+    "ticket_id",
+    "ac_id",
+    "repo_id",
+    "decision_id",
+    "evidence_type",
+    "summary",
+    "uri",
+    "payload_json",
+    "created_by",
+    "recorded_by_actor_type",
+    "created_at",
+  ];
+  const copyList = NEW_COLS.filter((c) => existingCols.has(c)).join(", ");
+  const newTableDdl = `
+    CREATE TABLE evidence_new (
+      id           TEXT PRIMARY KEY,
+      ticket_id    TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      ac_id        TEXT REFERENCES acceptance_criteria(id) ON DELETE CASCADE,
+      repo_id      TEXT REFERENCES repositories(id) ON DELETE SET NULL,
+      decision_id  TEXT REFERENCES decisions(id) ON DELETE SET NULL,
+      evidence_type TEXT NOT NULL CHECK (evidence_type IN (
+        'test_output','coverage_report','commit','branch','pull_request','diff_summary',
+        'screenshot','log','manual_note','ci_run','static_analysis','lore_record',
+        'memory_primed'
+      )),
+      summary      TEXT NOT NULL,
+      uri          TEXT,
+      payload_json TEXT,
+      created_by   TEXT NOT NULL,
+      recorded_by_actor_type TEXT,
+      created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )`;
+  const fkWasOn = (db.pragma("foreign_keys", { simple: true }) as number) === 1;
+  if (fkWasOn) db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS evidence_new");
+      db.exec(newTableDdl);
+      db.exec(`INSERT INTO evidence_new (${copyList}) SELECT ${copyList} FROM evidence`);
+      db.exec("DROP TABLE evidence");
+      db.exec("ALTER TABLE evidence_new RENAME TO evidence");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_evidence_ticket ON evidence(ticket_id, created_at)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_evidence_ac ON evidence(ac_id)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_evidence_type ON evidence(evidence_type)");
     })();
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON");

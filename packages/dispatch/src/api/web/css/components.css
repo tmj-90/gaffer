@@ -63,8 +63,10 @@
     background: none;
     text-decoration-thickness: 2px;
   }
+  /* Small reads smaller (type, padding), never a smaller target: 40 on a
+     desk, 44 on a phone, like every other control. */
   .btn.small {
-    min-height: 32px;
+    min-height: var(--tap);
     padding: 0 10px;
     font-size: var(--t14);
   }
@@ -485,24 +487,30 @@
     line-height: 1;
     color: inherit;
   }
+  /* Secondary ink on a kit block comes from that kit's own token (never --ink-2,
+     which is tuned for paper and vanishes on sky or the board). */
   .panel-head.block .panel-aux,
-  .panel-head.block .panel-link {
-    color: inherit;
-    opacity: 0.86;
+  .panel-head.block .panel-link,
+  .panel-head.block .panel-title > .count {
+    color: var(--block-ink-2);
   }
   .block-claret {
+    --block-ink-2: var(--on-claret-2);
     background: var(--claret);
     color: var(--on-claret);
   }
   .block-sky {
+    --block-ink-2: var(--on-sky-2);
     background: var(--sky);
     color: var(--on-sky);
   }
   .block-ink {
+    --block-ink-2: var(--board-ink-2);
     background: var(--board);
     color: var(--board-ink);
   }
   .block-red {
+    --block-ink-2: var(--on-red-2);
     background: var(--red);
     color: var(--on-red);
   }
@@ -1113,7 +1121,7 @@
     align-items: center;
     gap: 10px;
     cursor: pointer;
-    min-height: 32px;
+    min-height: var(--tap);
   }
   .switch input {
     position: absolute;

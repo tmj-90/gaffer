@@ -9,6 +9,9 @@
 //    (the old greedy match took "[write-roots: …]" for the target).
 //  - An edit outside the agent's smallest-change note is flagged, and says it is derived.
 //  - After Approve, a second press does nothing and the page stays on the change.
+//  - The first `a` (or click) arms the button itself ("Confirm merge") and shows the
+//    3s window; once approved, the done band is the sign-off's foot (no key hint).
+//  - An empty queue is the clear desk: the board's counts and where the work went.
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -75,6 +78,7 @@ interface Opts {
   runs?: unknown;
   runDetail?: Record<string, unknown>;
   events?: unknown[];
+  queue?: unknown[];
 }
 let posts: string[] = [];
 function stubFetch(o: Opts = {}): void {
@@ -86,7 +90,8 @@ function stubFetch(o: Opts = {}): void {
       const url = String(input);
       if (init && init.method === "POST") posts.push(url);
       let body: unknown;
-      if (url.includes("/review/approve"))
+      if (o.queue && url.includes("status=in_review")) body = { tickets: o.queue };
+      else if (url.includes("/review/approve"))
         body = { ticket: { ...ticket, status: "ready_for_merge" } };
       else if (url.includes("/diff"))
         body = {
@@ -278,5 +283,61 @@ describe("web: Match Day review + ticket", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
     for (let i = 0; i < 6; i++) await tick();
     expect(posts.filter((p) => p.includes("/review/approve"))).toHaveLength(1);
+  });
+
+  it("the first `a` arms the button and shows the window; Esc puts it down", async () => {
+    stubFetch();
+    mount(`#/review/${T.id}`);
+    await boot();
+    const btn = document.querySelector("button.signoff-btn") as HTMLButtonElement;
+    const hint = document.querySelector(".rv-arm") as HTMLElement;
+    expect(hint.hidden).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
+    expect(btn.textContent).toContain("Confirm merge");
+    expect(btn.classList.contains("btn-armed")).toBe(true);
+    expect(document.querySelector(".signoff")?.classList.contains("card-armed")).toBe(true);
+    expect(hint.hidden).toBe(false);
+    expect(hint.textContent).toContain("again to approve");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(btn.textContent).toBe("Approve");
+    expect(btn.getAttribute("aria-label")).toBe("Approve and merge");
+    expect(hint.hidden).toBe(true);
+    // A click-arm is put down by Esc too (it used to wait out the timer).
+    btn.click();
+    expect(btn.textContent).toContain("Confirm merge");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(btn.textContent).toBe("Approve");
+    expect(posts.filter((p) => p.includes("/review/approve"))).toHaveLength(0);
+  });
+
+  it("once approved, the done band is the sign-off's foot and the key hint goes", async () => {
+    stubFetch();
+    mount(`#/review/${T.id}`);
+    await boot();
+    const btn = document.querySelector("button.signoff-btn") as HTMLButtonElement;
+    btn.click();
+    btn.click();
+    for (let i = 0; i < 6; i++) await tick();
+    const signoff = document.querySelector(".signoff") as HTMLElement;
+    expect(signoff.querySelector(".rv-keys")).toBeNull();
+    expect(signoff.lastElementChild?.classList.contains("rv-done")).toBe(true);
+  });
+
+  it("an empty queue is the clear desk: counts and where the work went", async () => {
+    stubFetch({ ticket: { status: "ready_for_merge" }, queue: [] });
+    mount("#/review");
+    await boot();
+    const app = document.getElementById("app") as HTMLElement;
+    expect(app.querySelector(".rv-clear-board h1")?.textContent).toContain(
+      "Nothing waits for your sign-off",
+    );
+    const cells = Array.from(app.querySelectorAll(".rv-clear-board .kpi")).map(
+      (c) => c.textContent || "",
+    );
+    expect(cells.find((c) => c.startsWith("To merge"))).toContain("01");
+    const results = app.querySelector(".rv-results")?.textContent || "";
+    expect(results).toContain("#16");
+    expect(results).toContain("Approved · merging");
+    expect(app.querySelector('.rv-results a[href="#/ticket/tkt-1"]')).toBeTruthy();
   });
 });

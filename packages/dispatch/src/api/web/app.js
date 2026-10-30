@@ -949,6 +949,15 @@ function pipelineDots(status) {
   return wrap;
 }
 
+/** The pips said in words: "stage 3 of 5 · on the pitch". */
+const STAGE_WORDS = ["drafting", "in the fixtures", "on the pitch", "the sign-off", "full time"];
+function stageCaption(status) {
+  const stage = STAGE_FOR_STATUS[status] ?? 0;
+  const word =
+    status === "failed" ? "sent off" : status === "cancelled" ? "won't do" : STAGE_WORDS[stage];
+  return `Stage ${stage + 1} of ${LIFECYCLE.length} · ${word}`;
+}
+
 // --- View scaffolding -------------------------------------------------------
 
 /**
@@ -1062,6 +1071,7 @@ function openSheet(title, contentNode, { focus } = {}) {
   scrim.classList.add("open");
   sheet.classList.add("open");
   document.addEventListener("keydown", sheetKeydown);
+  trackKeyboardInset(true);
   // Move focus INTO the dialog so keyboard/AT users aren't stranded behind it:
   // to the field the sheet is for when it names one, else its first control.
   const first = focus || focusableIn(sheet)[0];
@@ -1078,11 +1088,36 @@ function closeSheet({ restore = true } = {}) {
   sheetEls.scrim.classList.remove("open");
   sheetEls.sheet.classList.remove("open");
   document.removeEventListener("keydown", sheetKeydown);
+  trackKeyboardInset(false);
   // Restore focus to whatever opened the sheet (the trigger), not the body.
   const back = sheetReturnFocus;
   sheetReturnFocus = null;
   if (!restore || !wasOpen) return;
   if (back && back.isConnected && typeof back.focus === "function") back.focus();
+}
+/**
+ * While a sheet is open on a phone, keep it above the soft keyboard: the
+ * keyboard's height (layout viewport minus the visual one) goes into --kb,
+ * which the phone sheet sits on, so its sticky confirm row stays in view.
+ */
+function onViewportInset() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  document.documentElement.style.setProperty("--kb", `${kb}px`);
+}
+function trackKeyboardInset(on) {
+  const vv = typeof window !== "undefined" ? window.visualViewport : null;
+  if (!vv) return;
+  if (on) {
+    vv.addEventListener("resize", onViewportInset);
+    vv.addEventListener("scroll", onViewportInset);
+    onViewportInset();
+  } else {
+    vv.removeEventListener("resize", onViewportInset);
+    vv.removeEventListener("scroll", onViewportInset);
+    document.documentElement.style.removeProperty("--kb");
+  }
 }
 /** Is the shared sheet showing? */
 function sheetOpen() {
@@ -1938,9 +1973,24 @@ document.addEventListener("visibilitychange", () => {
 const VIEW_SIGNATURES = {
   review: async () => {
     const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
-    return reviewSignature(tickets);
+    if (tickets.length) return reviewSignature(tickets);
+    // The clear desk shows what moved on and who is still playing: watch those.
+    const all = (await api("GET", "/tickets")).tickets || [];
+    return clearDeskSignature(all);
   },
 };
+/** What the clear Review desk draws from: the tickets past and before the sign-off. */
+const CLEAR_DESK_STATUSES = new Set([
+  "claimed",
+  "in_progress",
+  "in_testing",
+  "ready_for_merge",
+  "done",
+  "cancelled",
+]);
+function clearDeskSignature(all) {
+  return `clear:${reviewSignature(all.filter((t) => CLEAR_DESK_STATUSES.has(t.status)))}`;
+}
 function reviewSignature(tickets) {
   return tickets.map((t) => `${t.id}@${t.updated_at || ""}`).join("|");
 }
@@ -7443,7 +7493,7 @@ function refCard(kind, status) {
 }
 
 /** The sentence under a ticket's title: where it stands, in plain words, from its data. */
-function ticketLede(t, trail, events, doneAt) {
+function ticketLede(t, trail, events, doneAt, evidence = []) {
   const last = trail[trail.length - 1];
   const f = last ? parseFailure(last.distilled_failure) : null;
   const max = last && last.max_attempts ? last.max_attempts : null;
@@ -7463,7 +7513,15 @@ function ticketLede(t, trail, events, doneAt) {
     case "failed":
       return [
         el("b", { class: "is-red" }, "Failed. "),
-        last ? `It failed the ${last.gate} gate.` : "It failed its gates.",
+        (() => {
+          if (last) return `It failed the ${last.gate} gate.`;
+          // No rework trail: name the gate from the runner's Definition-of-Done report.
+          const dod = parseDodEvidence(evidence);
+          const bad = dod ? dod.gates.filter((g) => g.status === "FAIL") : [];
+          if (!bad.length) return "It failed its gates.";
+          const g = bad[0];
+          return `It failed the ${g.gate} gate${g.repo ? ` in ${g.repo}` : ""}${g.note ? ` (${g.note})` : ""}.`;
+        })(),
         " It needs you.",
       ];
     case "paused": {
@@ -7479,7 +7537,7 @@ function ticketLede(t, trail, events, doneAt) {
     case "in_review":
       return [el("b", {}, "In review. "), "It waits for your sign-off."];
     case "ready_for_merge":
-      return [el("b", {}, "Approved. "), "It waits for the merge."];
+      return [el("b", {}, "Approved. "), "It is with the merge runner now."];
     case "done":
       return [
         el("b", {}, "Done. "),
@@ -7513,6 +7571,19 @@ function ticketLede(t, trail, events, doneAt) {
     default:
       return [el("b", {}, `${statusLabel(t.status)}. `), "An agent is on it."];
   }
+}
+
+/** A policy pack said as house rules ("Solo · loose rules"), the raw key in the title. */
+const POLICY_WORDS = {
+  solo_loose: "Solo · loose rules",
+  team_light: "Team · light rules",
+  factory_strict: "Factory · strict rules",
+  regulated: "Regulated rules",
+};
+function policyChip(pack) {
+  const b = badge(POLICY_WORDS[pack] || String(pack).replace(/_/g, " "), "no-dot");
+  b.title = `Policy pack: ${pack}`;
+  return b;
 }
 
 /** The failing test as a scoreline: Expected v Received, and where it broke. */
@@ -8121,7 +8192,7 @@ async function renderTicket(id) {
           epicScope
             ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
             : null,
-          badge(t.policy_pack, "no-dot"),
+          t.policy_pack ? policyChip(t.policy_pack) : null,
           badge(`priority ${t.priority}`, "no-dot"),
           // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
           t.delivery_budget_usd != null
@@ -8133,8 +8204,11 @@ async function renderTicket(id) {
           t.number != null ? " " : "",
           t.title,
         ]),
-        el("p", { class: "tk-lede" }, ticketLede(t, trail, events, doneAt)),
-        el("div", { class: "tk-dots" }, pipelineDots(t.status)),
+        el("p", { class: "tk-lede" }, ticketLede(t, trail, events, doneAt, view.evidence || [])),
+        el("div", { class: "tk-dots" }, [
+          pipelineDots(t.status),
+          el("span", { class: "tk-stage", "aria-hidden": "true" }, stageCaption(t.status)),
+        ]),
       ]),
     ],
   );
@@ -8151,7 +8225,8 @@ async function renderTicket(id) {
     failed: `Send #${t.number} back to Ready for another go, or to Refining to rewrite it first.`,
     paused: "Continue resumes the delivery in its worktree; Stop abandons it.",
     in_review: "The sign-off is on the Review page: the diff, the flags and Approve.",
-    ready_for_merge: "Merge runs the merge runner on the approved branch.",
+    ready_for_merge:
+      "The merge runner has it. Merge now runs it again if it is held up; Mark merged if you merged the branch by hand.",
     in_testing: "The tester owns the verdict. Record it by hand only if you tested it yourself.",
     draft: "Mark it ready when its acceptance criteria say what done means.",
     refining: "Mark it ready when its acceptance criteria say what done means.",
@@ -8311,10 +8386,11 @@ async function renderTicket(id) {
             )
           : "—",
       ),
-      el("dt", {}, "Attempts"),
-      // The rework trail is the record of delivery attempts; attempt_count only
-      // counts claims, so a parked ticket read "0" beside "3 attempts".
-      el("dd", {}, String(Math.max(trail.length, t.attempt_count || 0))),
+      el("dt", {}, "Deliveries"),
+      // Same count as Full time's: each failed go on the rework trail, plus the
+      // delivery that got through once it is past the pitch (attempt_count only
+      // counts claims, so a parked ticket read "0" beside "3 attempts").
+      el("dd", {}, String(Math.max(deliveryCount(t, trail), t.attempt_count || 0))),
       el("dt", {}, "Source"),
       el("dd", {}, t.source || "—"),
       el("dt", {}, "Created"),
@@ -8468,11 +8544,17 @@ function shippedFiles(evidence) {
   ]);
 }
 
+/** Deliveries made: the failed goes on the rework trail, plus the one that got through. */
+const PAST_THE_PITCH = new Set(["in_review", "in_testing", "ready_for_merge", "done"]);
+function deliveryCount(t, trail) {
+  return trail.length + (PAST_THE_PITCH.has(t.status) ? 1 : 0);
+}
+
 /** Full time: a done ticket's result in place of a next move — when, how many goes, the criteria. */
 function fullTimeCard(t, { trail, events, acList, doneAt }) {
   const claimAt = (events || []).find((e) => e.event_type === "claim.created")?.created_at;
   const sat = acList.filter((a) => a.status === "satisfied").length;
-  const goes = trail.length + 1;
+  const goes = deliveryCount(t, trail);
   const took = claimAt && doneAt ? Date.parse(doneAt) - Date.parse(claimAt) : null;
   return el("section", { class: "card panel tk-ft", "aria-label": "Full time" }, [
     panelHead("Full time", doneAt ? fmtTime(doneAt) : null, null, { kit: "ink" }),
@@ -8730,7 +8812,13 @@ function ticketRunsPanel(t, events) {
             d.cost_usd > 0
               ? el("span", { class: "run-detail-chip tabnum" }, money(d.cost_usd))
               : null,
-            d.outcome ? el("span", { class: "run-detail-chip" }, `ended ${d.outcome}`) : null,
+            d.outcome
+              ? el(
+                  "span",
+                  { class: "run-detail-chip" },
+                  `ended ${statusLabel(d.outcome).replace(/_/g, " ").toLowerCase()}`,
+                )
+              : null,
           ];
           return el("li", { class: `tk-run${on ? " is-live" : ""}` }, [
             on
@@ -8793,24 +8881,26 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
         : { txt: "shipped clean — no rework", cls: "ok" }
       : reworks > 0
         ? { txt: `needed ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
-        : { txt: "in review", cls: "dim" };
+        : { txt: statusLabel(t.status).toLowerCase(), cls: "dim" };
 
   const head = el("div", { class: "panel-head mem-primed-head" }, [
     el("h2", { class: "panel-title" }, "The scouting report"),
     el("span", { class: "panel-aux mem-primed-outcome " + outcome.cls }, outcome.txt),
   ]);
-  const sub = el(
-    "p",
-    { class: "mem-primed-title" },
-    "Memory primed for this delivery: what the club's memory briefed the agent with.",
-  );
+  const sub = primed.length
+    ? el(
+        "p",
+        { class: "mem-primed-title" },
+        "Memory primed for this delivery: what the club's memory briefed the agent with.",
+      )
+    : null;
 
   let bodyNode;
   if (primed.length === 0) {
     bodyNode = el(
       "div",
       { class: "mem-primed-none" },
-      "No memory primed for this delivery — the agent ran without a lore/file-card context packet.",
+      "The club's memory briefed the agent with nothing for this delivery: no lore or file cards were primed, so it went out without a scouting report.",
     );
   } else {
     bodyNode = el(
@@ -8883,11 +8973,11 @@ function renderTestingCard(t, evidence) {
           contract.harness_ready ? "ready (black-box mode)" : "not ready (harness mode)",
         ),
       ])
-    : el(
-        "p",
-        { class: "dim" },
-        "No test contract recorded. Add one with `wg ticket test-contract` or the Dispatch MCP.",
-      );
+    : el("p", { class: "dim" }, [
+        "No test contract recorded. Add one with ",
+        el("code", { class: "mono" }, "wg ticket test-contract"),
+        " or the Dispatch MCP.",
+      ]);
 
   // The tester's verdict evidence: ONLY test_output rows whose payload carries a BBT
   // tester verdict (pass/fail). Plain implementation / AC test_output must NOT show
@@ -12199,6 +12289,177 @@ function reviewFlag(title, body, source) {
   ]);
 }
 
+/** The change last signed off in this tab, so the clear desk can say where it went. */
+let lastSignedOff = null;
+
+/**
+ * The Review page with nothing waiting: the desk is clear, said on the stadium
+ * board, with where the signed work is now (testing, to merge, full time) and
+ * who is still on the pitch, so the next stop is one click away.
+ */
+async function renderClearDesk(wrap) {
+  const signal = routeSignal();
+  const [all, claims, dash] = await Promise.all([
+    api("GET", "/tickets", undefined, { signal }).then((r) => r.tickets || []),
+    api("GET", "/claims", undefined, { signal })
+      .then((r) => r.claims || [])
+      .catch(() => []),
+    api("GET", "/api/dashboard", undefined, { signal })
+      .then((r) => r.summary || null)
+      .catch(() => null),
+  ]);
+  wrap.dataset.sig = clearDeskSignature(all);
+  const by = (st) => all.filter((t) => t.status === st);
+  const testing = by("in_testing");
+  const toMerge = by("ready_for_merge");
+  const playing = all.filter((t) => t.status === "claimed" || t.status === "in_progress");
+  const readyN = by("ready").length;
+  const medianReview = (dash?.cycleTimeByState || []).find((c) => c.status === "in_review");
+  const delivered = dash?.deliveredToday;
+
+  const signed =
+    lastSignedOff && all.find((t) => t.id === lastSignedOff.id && t.status !== "in_review");
+  // The line under the headline: where the work is, each part a way to get there.
+  const others = [
+    dash?.blocked ? plural(dash.blocked, "blocked ticket") : null,
+    dash?.openDecisions ? plural(dash.openDecisions, "decision") : null,
+  ].filter(Boolean);
+  const bits = [
+    signed
+      ? [
+          "you signed ",
+          el("a", { href: `#/ticket/${signed.id}` }, `#${signed.number}`),
+          ` ${fmtRelative(lastSignedOff.at)}; it is ${statusLabel(signed.status).toLowerCase()} now`,
+        ]
+      : null,
+    playing.length
+      ? el(
+          "a",
+          { href: "#/work?status=in_progress" },
+          `${plural(playing.length, "change")} on the pitch`,
+        )
+      : "no one on the pitch",
+    others.length
+      ? el("a", { href: "#/overview" }, `${others.join(" and ")} on your team sheet`)
+      : null,
+    delivered != null ? `${plural(delivered, "delivery", "deliveries")} today` : null,
+    medianReview && medianReview.samples
+      ? `a change waits ${fmtDuration(medianReview.medianMs)} for you, on the median`
+      : null,
+  ].filter(Boolean);
+  const sub = el("p", { class: "hl-sub" });
+  bits.forEach((b, i) => {
+    if (i) sub.appendChild(el("span", { class: "sep", "aria-hidden": "true" }, "\u00a0· "));
+    sub.append(...[].concat(b));
+  });
+  if (sub.firstChild && sub.firstChild.nodeType === 3)
+    sub.firstChild.textContent = sub.firstChild.textContent.replace(/^./, (c) => c.toUpperCase());
+  wrap.appendChild(
+    el("section", { class: "scoreboard bleed rv-clear-board", "aria-label": "Review" }, [
+      el("div", { class: "scoreboard-in" }, [
+        el("div", { class: "sb-main" }, [
+          el("h1", { class: "hl" }, "Desk clear. Nothing waits for your sign-off."),
+          sub,
+        ]),
+        el(
+          "div",
+          { class: "sb-cells kpi-row", role: "group", "aria-label": "Around the sign-off" },
+          [
+            statCell({ label: "Waiting", value: "00", flip: "rv-wait", title: "0 in review" }),
+            statCell({
+              label: "In testing",
+              value: String(testing.length).padStart(2, "0"),
+              href: "#/work?status=in_testing",
+              flip: "rv-test",
+              title: `${testing.length} with the tester`,
+            }),
+            statCell({
+              label: "To merge",
+              value: String(toMerge.length).padStart(2, "0"),
+              href: "#/work?status=ready_for_merge",
+              flip: "rv-merge",
+              title: `${toMerge.length} approved, with the merge runner`,
+            }),
+            statCell({
+              label: "On the pitch",
+              value: String(playing.length).padStart(2, "0"),
+              href: "#/work",
+              flip: "rv-pitch",
+              title: `${playing.length} being delivered`,
+            }),
+          ],
+        ),
+      ]),
+    ]),
+  );
+
+  // Since the whistle: the latest changes past the sign-off, newest first.
+  const past = all
+    .filter((t) => ["in_testing", "ready_for_merge", "done", "cancelled"].includes(t.status))
+    .sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))
+    .slice(0, 6);
+  const resultRow = (t) =>
+    el("li", { class: `rv-res${signed && t.id === signed.id ? " is-yours" : ""}` }, [
+      el("span", { class: "rv-res-no" }, `#${t.number}`),
+      el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
+      el("span", { class: "rv-res-st" }, [
+        statusBadge(t.status),
+        signed && t.id === signed.id ? el("small", { class: "rv-res-you" }, "you signed it") : null,
+      ]),
+      el(
+        "time",
+        { class: "rv-res-when tabnum", datetime: t.updated_at, title: fmtTime(t.updated_at) },
+        fmtRelative(t.updated_at),
+      ),
+    ]);
+  const results = el(
+    "section",
+    { class: "card panel rv-results", "aria-label": "Latest results" },
+    [
+      panelHead("Latest results", null, { href: "#/work", text: "The board" }, { kit: "ink" }),
+      past.length
+        ? el("ol", { class: "rv-res-list" }, past.map(resultRow))
+        : el("p", { class: "dim" }, "Nothing has come through the sign-off yet."),
+    ],
+  );
+
+  // Still playing: who is delivering what, so you know what lands here next.
+  const claimFor = new Map(claims.map((c) => [c.ticket_id, c]));
+  const playRow = (t) => {
+    const c = claimFor.get(t.id);
+    return el("li", { class: "rv-res" }, [
+      el("span", { class: "rv-res-no" }, `#${t.number}`),
+      el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
+      el("span", { class: "rv-res-st" }, [
+        c && c.agent_display_name ? agentTag(c.agent_display_name, 22) : statusBadge(t.status),
+      ]),
+      el(
+        "span",
+        { class: "rv-res-when tabnum" },
+        c && c.created_at ? `on for ${fmtDuration(Date.now() - Date.parse(c.created_at))}` : "",
+      ),
+    ]);
+  };
+  const coming = el(
+    "section",
+    { class: "card panel rv-coming", "aria-label": "Coming off the pitch" },
+    [
+      panelHead("Coming your way", playing.length ? String(playing.length) : null, null, {
+        kit: "claret",
+      }),
+      playing.length
+        ? el("ol", { class: "rv-res-list" }, playing.map(playRow))
+        : el("p", { class: "dim" }, [
+            readyN
+              ? `${plural(readyN, "ticket")} ${readyN === 1 ? "waits" : "wait"} in the fixtures for a free agent. `
+              : "The fixtures are empty too. ",
+            el("a", { href: "#/work?status=ready" }, "See the fixtures"),
+          ]),
+    ],
+  );
+  wrap.appendChild(el("div", { class: "rv-clear-grid" }, [coming, results]));
+}
+
 /**
  * Review: the gaffer's sign-off, one change per page. The queue runs across the
  * top as tabs (#/review/<id>; #/review opens the first). The sign-off block —
@@ -12217,13 +12478,8 @@ async function renderReview(param) {
   const gone = param && !tickets.some((t) => t.id === param);
 
   if (tickets.length === 0 && !gone) {
-    wrap.appendChild(viewHead("The gaffer's sign-off", null));
-    wrap.appendChild(
-      emptyState(
-        "Nothing waits for your sign-off.",
-        "When an agent delivers, its diff lands here for you to approve or send back.",
-      ),
-    );
+    wrap.classList.add("rv-clear");
+    await renderClearDesk(wrap);
     return wrap;
   }
 
@@ -12315,6 +12571,7 @@ async function renderReview(param) {
       }
       const r = await api("POST", `/tickets/${t.id}/review/approve`);
       const to = r && r.ticket && r.ticket.status;
+      lastSignedOff = { id: t.id, number: t.number, at: new Date().toISOString() };
       // Stay on the diff: the button says it is done, and moving on is its own link.
       if (approveBtn) {
         approveBtn.setAttribute("disabled", "");
@@ -12345,8 +12602,10 @@ async function renderReview(param) {
       if (meta && to) meta.replaceWith(statusBadge(to));
       clear(doneLine);
       doneLine.append(
-        el("b", {}, `Approved #${t.number}.`),
-        ` ${to === "in_testing" ? "It goes to the tester next." : "It is with the merge runner now."} `,
+        el("span", { class: "rv-done-t" }, [
+          el("b", {}, `Approved #${t.number}.`),
+          ` ${to === "in_testing" ? "It goes to the tester next." : "It is with the merge runner now."} `,
+        ]),
         next
           ? el("a", { class: "rv-next-link", href: `#/review/${next.id}` }, [
               `Next in review: #${next.number}`,
@@ -12354,8 +12613,9 @@ async function renderReview(param) {
             ])
           : "Nothing else waits for your sign-off.",
       );
+      wrap.querySelector(".rv-keys")?.remove();
       doneLine.hidden = false;
-      doneLine.focus();
+      doneLine.focus({ preventScroll: true });
       // Pin the address to this change, so a later refresh says where it went
       // instead of silently swapping the next change in under the reader.
       if (!param && typeof history !== "undefined" && history.replaceState)
@@ -12397,8 +12657,8 @@ async function renderReview(param) {
   };
 
   const canApprove = hasTicketAction(t.status, "approve");
-  // Mouse Approve is a two-step arm→confirm, matching the keyboard path.
-  const BTN_ARM_MS = 3000;
+  // Approve is a two-step arm→confirm, by click or by key.
+  const ARM_WINDOW_MS = 3000;
   const approveLabel = el("span", {}, "Approve");
   const approveBtn = canApprove
     ? el(
@@ -12412,35 +12672,73 @@ async function renderReview(param) {
         [approveLabel],
       )
     : null;
-  let btnArmed = false;
-  let btnArmTimer = null;
-  const disarmApproveBtn = () => {
-    btnArmed = false;
-    if (btnArmTimer) {
-      clearTimeout(btnArmTimer);
-      btnArmTimer = null;
+  // One arm for both paths: the first `a` or click raises the yellow card on the
+  // button ("Confirm merge"), rings the sign-off block and shows the 3s window
+  // draining under the buttons; a second press inside it approves. Esc, j/k,
+  // leaving the button or the window running out all put it down again.
+  let armed = false;
+  let armedVia = null;
+  let armTimer = null;
+  const armHint = el("p", { class: "rv-arm", role: "status", hidden: "" });
+  const disarm = () => {
+    if (armTimer) {
+      clearTimeout(armTimer);
+      armTimer = null;
     }
-    if (approveBtn) approveBtn.classList.remove("btn-armed");
-    if (approveLabel.textContent !== "Approved") approveLabel.textContent = "Approve";
+    armed = false;
+    armedVia = null;
+    signoff?.classList.remove("card-armed");
+    armHint.hidden = true;
+    clear(armHint);
+    if (!approveBtn) return;
+    approveBtn.classList.remove("btn-armed");
+    if (approveLabel.textContent !== "Approved") {
+      approveLabel.textContent = "Approve";
+      approveBtn.setAttribute("aria-label", "Approve and merge");
+    }
   };
+  const arm = (via) => {
+    disarm();
+    armed = true;
+    armedVia = via;
+    signoff?.classList.add("card-armed");
+    if (approveBtn && !approveBtn.disabled) {
+      approveBtn.classList.add("btn-armed");
+      approveLabel.textContent = "Confirm merge";
+      approveBtn.setAttribute("aria-label", `Confirm merge: approve #${t.number}`);
+    }
+    armHint.append(
+      el("span", { class: "rv-arm-t" }, [
+        el("b", {}, "Armed. "),
+        via === "key"
+          ? [el("span", { class: "kbd" }, "a"), " again to approve"]
+          : "Click Confirm merge to approve",
+        " · ",
+        el("span", { class: "kbd" }, "Esc"),
+        " puts it down",
+      ]),
+      el("span", { class: "rv-arm-clock", "aria-hidden": "true" }, [el("span", {})]),
+    );
+    armHint.hidden = false;
+    armTimer = setTimeout(disarm, ARM_WINDOW_MS);
+  };
+  let signoff = null;
   const onApproveClick = () => {
     if (!diffState.approvable) {
       toast(`Can't approve — ${diffState.reason}`, {});
       return;
     }
-    if (btnArmed) {
-      disarmApproveBtn();
+    if (armed) {
+      disarm();
       approve();
       return;
     }
-    btnArmed = true;
-    if (approveBtn) approveBtn.classList.add("btn-armed");
-    approveLabel.textContent = "Confirm merge";
-    btnArmTimer = setTimeout(disarmApproveBtn, BTN_ARM_MS);
+    arm("click");
   };
   if (approveBtn) {
     approveBtn.addEventListener("click", onApproveClick);
-    approveBtn.addEventListener("blur", disarmApproveBtn);
+    // A click-arm is put down when the pointer/focus leaves the button.
+    approveBtn.addEventListener("blur", () => armedVia === "click" && disarm());
   }
   const diffBlockBanner = el(
     "div",
@@ -12601,7 +12899,7 @@ async function renderReview(param) {
     ]),
   );
 
-  const signoff = el(
+  signoff = el(
     "section",
     {
       class: "card signoff",
@@ -12634,7 +12932,7 @@ async function renderReview(param) {
             : null,
         ].filter(Boolean),
       ),
-      doneLine,
+      armHint,
       el("p", { class: "rv-keys" }, [
         el("span", { class: "kbd" }, "a"),
         " twice to approve · ",
@@ -12644,9 +12942,16 @@ async function renderReview(param) {
         el("span", { class: "kbd" }, "k"),
         " next / previous",
       ]),
+      // Last, so once Approve lands it is the block's foot (the key line goes).
+      doneLine,
     ],
   );
   signoff._actions = { approve, reject };
+
+  const diffSection = el("section", { class: "rv-diff", "aria-label": "The diff" }, [
+    el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
+    diffBox,
+  ]);
 
   // The referee's checks: the Definition-of-Done gates, then the criteria, in one page.
   const dodBox = dodChecklist(evidence);
@@ -12688,32 +12993,25 @@ async function renderReview(param) {
             el("p", { class: "dim" }, "No evidence recorded."),
         ]),
       ]),
-      el("div", { class: "rv-right" }, [
-        el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
-        diffBox,
-      ]),
+      el("div", { class: "rv-right" }, [diffSection]),
     ]),
   );
+  // One column (≤1180px): the diff moves up under the flags, ahead of the gates
+  // and the evidence; two columns put it back beside the sign-off.
+  const oneCol =
+    typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 1180px)") : null;
+  const placeDiff = () => {
+    const left = wrap.querySelector(".rv-left");
+    const right = wrap.querySelector(".rv-right");
+    if (!left || !right) return;
+    if (oneCol && oneCol.matches) left.querySelector(".rv-flags")?.after(diffSection);
+    else if (diffSection.parentNode !== right) right.appendChild(diffSection);
+  };
+  placeDiff();
+  oneCol?.addEventListener?.("change", placeDiff);
 
   // Keys: j/k move along the queue, a arms → a approves, r sends back, Esc disarms.
   const cards = [signoff];
-  const ARM_WINDOW_MS = 3000;
-  let armed = false;
-  let armTimer = null;
-  const disarm = () => {
-    if (armTimer) {
-      clearTimeout(armTimer);
-      armTimer = null;
-    }
-    armed = false;
-    signoff.classList.remove("card-armed");
-  };
-  const arm = () => {
-    disarm();
-    armed = true;
-    signoff.classList.add("card-armed");
-    armTimer = setTimeout(disarm, ARM_WINDOW_MS);
-  };
   // The one change on screen carries the queue cursor.
   signoff.classList.add("card-accent");
   const onKey = (e) => {
@@ -12728,10 +13026,11 @@ async function renderReview(param) {
       if (to) navigate(`#/review/${to.id}`);
     } else if (e.key === "a") {
       e.preventDefault();
+      if (approveBtn && approveBtn.classList.contains("is-approved")) return;
       if (armed) {
         disarm();
         cards[0]._actions.approve();
-      } else arm();
+      } else arm("key");
     } else if (e.key === "Escape") {
       disarm();
     } else if (e.key === "r") {
@@ -12744,7 +13043,7 @@ async function renderReview(param) {
   const teardown = () => {
     document.removeEventListener("keydown", onKey);
     if (armTimer) clearTimeout(armTimer);
-    if (btnArmTimer) clearTimeout(btnArmTimer);
+    oneCol?.removeEventListener?.("change", placeDiff);
     if (observer) observer.disconnect();
   };
   wrap._dispose = teardown;

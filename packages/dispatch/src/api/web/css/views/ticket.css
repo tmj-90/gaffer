@@ -109,6 +109,16 @@
   .tk-lede .is-red {
     color: var(--red);
   }
+  .tk-dots {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+  }
+  .tk-stage {
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
   .tk-move-t {
     max-width: 70ch;
   }
@@ -760,9 +770,28 @@
       border-left: 0;
       padding-left: 0;
     }
+    /* Phone: the card (or plaque) sits beside the meta line only; the headline,
+       the lede and the pips run the full width under it. */
     .card.tk-head.has-mark {
       grid-template-columns: 64px minmax(0, 1fr);
-      gap: var(--s3);
+      gap: 10px var(--s3);
+    }
+    .card.tk-head.has-mark .tk-head-main {
+      display: contents;
+    }
+    .card.tk-head.has-mark > :first-child {
+      grid-row: 1;
+      grid-column: 1;
+    }
+    .card.tk-head.has-mark .tk-meta {
+      grid-row: 1;
+      grid-column: 2;
+      align-self: center;
+    }
+    .card.tk-head.has-mark .detail-title,
+    .card.tk-head.has-mark .tk-lede,
+    .card.tk-head.has-mark .tk-dots {
+      grid-column: 1 / -1;
     }
     .ref-card {
       width: 60px;

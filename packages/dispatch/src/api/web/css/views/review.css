@@ -112,11 +112,55 @@
     gap: var(--s4);
     border-color: var(--claret);
   }
-  .view-review .card.card-accent {
+  .view-review .card.card-accent:not(.card-armed) {
     box-shadow: none;
   }
-  .signoff.card-armed {
-    box-shadow: 0 0 0 4px var(--yellow);
+  /* Armed (first a / first click): the block is held up as a yellow card —
+     a yellow ring edged in ink so it reads on paper and on the dark kit. */
+  .view-review .signoff.card-armed {
+    box-shadow:
+      0 0 0 4px var(--yellow),
+      0 0 0 6px var(--ink);
+  }
+  /* The arm's window, said in words and drawn as a draining 3s bar. */
+  .rv-arm:not([hidden]) {
+    display: grid;
+    gap: 8px;
+    margin-top: calc(-1 * var(--s2));
+    padding: 10px 12px 12px;
+    background: var(--mark-wash);
+    border-left: 6px solid var(--yellow);
+    border-radius: var(--r);
+    font: 600 var(--t14) / 1.35 var(--f-text);
+  }
+  .signoff.card-armed .rv-keys {
+    display: none;
+  }
+  .rv-arm .kbd {
+    margin: 0 2px;
+  }
+  .rv-arm-clock {
+    display: block;
+    height: 6px;
+    background: var(--rule-2);
+    overflow: hidden;
+  }
+  .rv-arm-clock > span {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+    transform-origin: 0 50%;
+    animation: rv-arm-drain 3s linear forwards;
+  }
+  @keyframes rv-arm-drain {
+    to {
+      transform: scaleX(0);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rv-arm-clock {
+      display: none;
+    }
   }
   .signoff-sum {
     font-size: var(--t16);
@@ -145,9 +189,14 @@
   .rv-done:focus {
     outline: none;
   }
+  /* Focus lands here after Approve so the next Tab is the next-in-review link;
+     the band says it with an ink bar down its edge, not a ring round a box. */
   .rv-done:focus-visible {
-    outline: 3px solid var(--focus);
-    outline-offset: -3px;
+    outline: none;
+    box-shadow: inset 6px 0 0 var(--ink);
+  }
+  .rv-done-t {
+    flex-basis: 100%;
   }
   .rv-next-link {
     display: inline-flex;
@@ -694,12 +743,101 @@
     font-weight: 700;
   }
 
+  .rv-diff {
+    display: grid;
+    gap: var(--s4);
+    min-width: 0;
+  }
   @media (max-width: 1180px) {
+    /* One column: the script moves the diff up under the flags (DOM and
+       focus order follow), so the code is not a long scroll away on a phone. */
     .rv-grid {
       grid-template-columns: minmax(0, 1fr);
     }
+    .rv-right:empty {
+      display: none;
+    }
+  }
+
+  /* --- the clear desk (nothing waiting): the board, then what comes next ---- */
+  .rv-clear-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--s5);
+    align-items: start;
+  }
+  .rv-res-list {
+    display: grid;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .rv-res {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "no t when"
+      "no st st";
+    gap: 4px 12px;
+    align-items: baseline;
+    padding: 12px 0;
+    border-top: var(--hair);
+  }
+  .rv-res:first-child {
+    border-top: 0;
+  }
+  .rv-res.is-yours {
+    margin: 0 calc(-1 * var(--s4));
+    padding-inline: var(--s4);
+    background: var(--sky-wash);
+    box-shadow: inset 6px 0 0 var(--sky);
+  }
+  .rv-res-no {
+    grid-area: no;
+    font: 800 var(--t26) / 1 var(--f-display);
+    color: var(--claret-ink);
+  }
+  .rv-res-t {
+    grid-area: t;
+    min-width: 0;
+    font: 700 var(--t16) / 1.3 var(--f-text);
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .rv-res-st {
+    grid-area: st;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    font-size: var(--t14);
+  }
+  .rv-res-you {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .rv-res-when {
+    grid-area: when;
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+    white-space: nowrap;
   }
   @media (max-width: 760px) {
+    .rv-clear-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .rv-res {
+      grid-template-columns: 44px minmax(0, 1fr);
+      grid-template-areas:
+        "no t"
+        "no st"
+        "no when";
+    }
+    .rv-res-no {
+      font-size: var(--t20);
+    }
     .rv-title {
       font-size: var(--t34);
     }

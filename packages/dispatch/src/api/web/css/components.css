@@ -88,7 +88,8 @@
     text-transform: uppercase;
   }
   /* Two-step arm → confirm: armed reads as a raised yellow card on the button. */
-  .btn.btn-armed {
+  .btn.btn-armed,
+  .btn.btn-armed:hover:not(:disabled) {
     background: var(--yellow);
     color: var(--on-yellow);
     border-color: var(--ink);
@@ -1506,6 +1507,17 @@
   .act-actions .btn.danger {
     margin-left: auto;
   }
+  /* In a sheet the confirm row is pinned to the foot of the scroll, so a long
+     intro, the quick reasons or the soft keyboard never push it out of reach. */
+  .sheet-body .act-actions {
+    position: sticky;
+    bottom: -24px;
+    z-index: 1;
+    margin: 0 -20px -24px;
+    padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
+    background: var(--paper);
+    border-top: var(--hair);
+  }
   .choice {
     border: 0;
     padding: 0;
@@ -1733,8 +1745,9 @@
     }
     .sheet {
       top: auto;
+      bottom: var(--kb, 0px);
       width: 100vw;
-      max-height: 88vh;
+      max-height: calc(88vh - var(--kb, 0px));
       border-left: 0;
       border-top: 6px solid var(--claret);
       transform: translateY(105%);

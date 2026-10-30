@@ -3073,16 +3073,26 @@ function renderOwnedItem(it, i = 0, f = null) {
           { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
           `Waited ${fmtWait(it.waitedMs)}`,
         ),
-        // The server's structured code and its advice, as the referee's notebook.
-        it.reasonCode != null
-          ? el("span", { class: "own-code", title: "The server's reason code" }, it.reasonCode)
-          : null,
-        it.suggestedAction
-          ? el(
-              "span",
-              { class: "own-action", title: "What the server suggests" },
-              `→ ${it.suggestedAction}`,
-            )
+        // The server's structured code and its advice, as the referee's notebook:
+        // one group, so the advice never wraps onto a line of its own.
+        it.reasonCode != null || it.suggestedAction
+          ? el("span", { class: "own-note" }, [
+              it.reasonCode != null
+                ? el(
+                    "span",
+                    { class: "own-code", title: "The server's reason code" },
+                    it.reasonCode,
+                  )
+                : null,
+              it.reasonCode != null && it.suggestedAction ? "\u00a0\u00a0" : null,
+              it.suggestedAction
+                ? el(
+                    "span",
+                    { class: "own-action", title: "What the server suggests" },
+                    `→\u00a0${it.suggestedAction}`,
+                  )
+                : null,
+            ])
           : null,
       ]),
     ]),
@@ -3422,20 +3432,27 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     const mid = (z.x0 + z.x1) / 2,
       w = textWidth(z.label, FS.zl, 0.1);
     if (P) {
-      const [x, y] = T(z.x1, 0);
+      // The stage name sits in the band's corner; when the first channel has
+      // players there it moves to the far corner, so no shirt covers it.
+      const busy = (r) => f.tickets.some((t) => t.status === z.key && chanOf(t) === r);
+      const right = busy(channels[0]) && !busy(channels[channels.length - 1]);
+      const [x0, y] = T(z.x1, 0),
+        [x1] = T(z.x1, W);
       labels.append(
         svgS(
           "text",
           {
-            x: x + 8,
+            x: right ? x1 - 8 : x0 + 8,
             y: y + 8 + FS.zl,
+            "text-anchor": right ? "end" : null,
             class: `zl ${PITCH_ZONES.indexOf(z) % 2 ? "halo-b" : "halo-a"}`,
             style: pxs(FS.zl),
           },
           z.label,
         ),
       );
-      box(x + 4, y + 4, x + 12 + w, y + 14 + FS.zl, "zl");
+      if (right) box(x1 - 12 - w, y + 4, x1 - 4, y + 14 + FS.zl, "zl");
+      else box(x0 + 4, y + 4, x0 + 12 + w, y + 14 + FS.zl, "zl");
     } else {
       const [x, y] = T(mid, 0);
       labels.append(
@@ -3500,12 +3517,19 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
         ),
       );
     } else {
+      // A turf patch under the name, so a chalk line it sits on (the box's
+      // edge) never strikes it through.
+      const by = y + 15 + FS.cl * 0.4,
+        [zx] = T(PITCH_ZONES[0].x1, 0);
       kits.append(
-        svgS(
-          "text",
-          { x: x + 36, y: y + 15 + FS.cl * 0.4, class: "cl halo-a", style: pxs(FS.cl) },
-          r,
-        ),
+        svgS("rect", {
+          x: x + 33,
+          y: by - FS.cl * 0.82,
+          width: Math.max(0, Math.min(textWidth(r, FS.cl) + 6, zx - x - 33)),
+          height: FS.cl * 1.08,
+          class: "mow-a",
+        }),
+        svgS("text", { x: x + 36, y: by, class: "cl halo-a", style: pxs(FS.cl) }, r),
       );
       box(x + 34, y + 2, x + 38 + textWidth(r, FS.cl), y + 22 + FS.cl * 0.4, "cl");
     }
@@ -3671,27 +3695,51 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
       return at > win.start && at <= win.end;
     });
     if (!evs.length) continue;
-    let first;
-    try {
-      first = JSON.parse(evs[0].payload_json || "{}");
-    } catch {
-      continue;
-    }
     const repo = chanOf(t);
     if (!repo) continue;
-    const from = zoneCentre(first.from, repo);
     const done = t.status === "done";
-    if (!from || (!done && !geo.has(t.id)) || (done && !ballAt.has(repo))) continue;
-    const a = T(...from);
+    if ((!done && !geo.has(t.id)) || (done && !ballAt.has(repo))) continue;
     const tgt = done ? ballAt.get(repo) : geo.get(t.id);
     const b = [tgt.x, tgt.y];
-    if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 30) continue;
+    // The arrow starts where the ticket first stood on the pitch in the window. A
+    // ticket that only came on from off it (blocked, paused, failed, the bench)
+    // comes on from the nearer touchline, beside where it stands now.
+    const froms = evs.map((e) => {
+      try {
+        return JSON.parse(e.payload_json || "{}").from;
+      } catch {
+        return undefined;
+      }
+    });
+    const far = (q) => q && Math.hypot(b[0] - q[0], b[1] - q[1]) >= 30;
+    const onAt = froms.find((s) => ON_PITCH.has(s));
+    let a = onAt ? T(...zoneCentre(onAt, repo)) : null,
+      on = false;
+    if (!far(a) && !done && froms.some((s) => s && !ON_PITCH.has(s))) {
+      const here = PITCH_ZONES.find((z) => z.key === t.status);
+      const c = channels.indexOf(repo);
+      if (here && c >= 0) {
+        // Come on at a slant when the touchline is close, so the chalk is long
+        // enough to read past the counter.
+        const ty = (c + 0.5) * CH < W / 2 ? 6 : W - 6,
+          [bx, by] = P ? [M.t + L - b[1], b[0] - M.l] : [b[0] - M.l, b[1] - M.t];
+        const d = Math.abs(by - ty),
+          need = 110;
+        const run = d < need ? Math.sqrt(need * need - d * d) : 0;
+        // Slant back towards the start of the lifecycle; forward only when the
+        // goal line leaves no room.
+        let sx = Math.max(6, bx - run);
+        if (Math.hypot(bx - sx, d) < 60) sx = Math.min(L - 6, bx + run);
+        a = T(sx, ty);
+      } else a = null;
+      on = true;
+    }
+    if (!far(a)) continue;
     plans.push({
       t,
-      first,
-      evs,
       a,
       b,
+      on,
       key: done ? "net|" + repo : "t" + t.id,
       endCs: done ? [{ x: tgt.x, y: tgt.y, r: tgt.r + 9 }, ...tgt.extra] : tgt.circles,
     });
@@ -3778,6 +3826,9 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
   svg.append(arrows, labels, kits);
 
   const layer = svgS("g", { class: "counters" });
+  const placed = [];
+  const zoneOf = (t) => PITCH_ZONES.findIndex((z) => z.key === t.status);
+  const chanIdx = (t) => channels.indexOf(chanOf(t));
   const agentMoves = [];
   const pitchBox = P
     ? { x0: M.l + 2, y0: M.t + 2, x1: M.l + W - 2, y1: M.t + L - 2 }
@@ -3934,23 +3985,36 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
       );
       box(cx - R * 0.4, cy - R * 0.5, cx + R * 0.4, cy + R * 0.55, "ycard");
     }
-    layer.append(a);
+    placed.push({ a, key: P ? [-zoneOf(t), Math.round(y), x] : [chanIdx(t), x, y] });
   }
+  // Tab through the counters in the order they sit on the pitch: channel by
+  // channel, left to right (on a phone, stage by stage from the top).
+  placed.sort((p, q) => p.key[0] - q.key[0] || p.key[1] - q.key[1] || p.key[2] - q.key[2]);
+  layer.append(...placed.map((p) => p.a));
   const tagBoxes = obs.filter((o) => o.why === "tag");
+  let cameOn = 0;
   for (const { p, i } of routed) {
     const r = routeArrow(p, i, tagBoxes);
     if (!r) continue;
+    if (p.on) cameOn++;
     const f1 = (v) => v.toFixed(1);
     arrows.append(
       svgS("path", {
         d: `M${f1(r.s0[0])} ${f1(r.s0[1])} Q${f1(r.c1[0])} ${f1(r.c1[1])} ${f1(r.e1[0])} ${f1(r.e1[1])}`,
-        class: "arrow",
+        class: p.on ? "arrow arrow-on" : "arrow",
         "marker-end": `url(#${mid})`,
       }),
     );
   }
   svg.append(layer);
-  return { svg, agentMoves, arrows, count: inPlay.length, arrowsDrawn: arrows.childElementCount };
+  return {
+    svg,
+    agentMoves,
+    arrows,
+    cameOn,
+    count: inPlay.length,
+    arrowsDrawn: arrows.childElementCount,
+  };
 }
 
 /** Chalk in once, shirts slide from where they were, tags rise: once, never under reduced motion. */
@@ -4097,6 +4161,19 @@ function tacticsBoard(f) {
         ),
         win.recent ? "Moved in the last 3 h" : "Moved in the 3 h to the last move",
       ]),
+      // A ticket back on from off the pitch (unblocked, resumed, off the bench)
+      // has no stage to come from: its arrow rises from the touchline.
+      boards.landscape.cameOn || boards.portrait.cameOn
+        ? el("li", {}, [
+            svgS(
+              "svg",
+              { viewBox: "0 0 40 16", width: 40, height: 16, "aria-hidden": "true" },
+              svgS("line", { x1: 2, y1: 14, x2: 38, y2: 14, class: "key-line" }),
+              svgS("path", { d: "M12 14 Q16 6 28 3", class: "key-arrow" }),
+            ),
+            "Back on from off the pitch",
+          ])
+        : null,
       ...channels
         .filter((r) => r !== "Other repos")
         .map((r) => el("li", { class: "key-kit" }, [kitShirt(r, 20), r])),
@@ -4141,75 +4218,83 @@ function cupRuns(f) {
     "sky",
     "Cup runs",
     "epics, by phase",
-    f.epics.map((e) => {
-      const deps = new Map(
-        e.members.map((t) => [
-          t.id,
-          (f.details.get(t.id)?.dependencies || []).map((d) => d.depends_on_ticket_id),
-        ]),
-      );
-      const byPhase = computePhases(e.members, deps);
-      const phases = [...byPhase.keys()].sort((a, b) => a - b).map((p) => byPhase.get(p));
-      const held = e.members.filter((t) => OFF_PITCH.has(t.status));
-      const heldIds = new Set(held.map((t) => t.id));
-      const waits = e.members.filter((t) => (deps.get(t.id) || []).some((d) => heldIds.has(d)));
-      const done = e.members.filter((t) => t.status === "done").length;
-      return el("article", { class: `cup${held.length ? " is-held" : ""}` }, [
-        el("header", { class: "cup-head" }, [
-          el("h3", {}, el("a", { href: `#/epics/${e.node.id}` }, e.node.name)),
+    // A held campaign leads: it is the one that needs a look.
+    f.epics
+      .map((e, i) => ({ e, i, held: e.members.some((t) => OFF_PITCH.has(t.status)) }))
+      .sort((a, b) => b.held - a.held || a.i - b.i)
+      .map(({ e }) => {
+        const deps = new Map(
+          e.members.map((t) => [
+            t.id,
+            (f.details.get(t.id)?.dependencies || []).map((d) => d.depends_on_ticket_id),
+          ]),
+        );
+        const byPhase = computePhases(e.members, deps);
+        const phases = [...byPhase.keys()].sort((a, b) => a - b).map((p) => byPhase.get(p));
+        const held = e.members
+          .filter((t) => OFF_PITCH.has(t.status))
+          .sort((a, b) => a.number - b.number);
+        const heldIds = new Set(held.map((t) => t.id));
+        const waits = e.members
+          .filter((t) => (deps.get(t.id) || []).some((d) => heldIds.has(d)))
+          .sort((a, b) => a.number - b.number);
+        const done = e.members.filter((t) => t.status === "done").length;
+        return el("article", { class: `cup${held.length ? " is-held" : ""}` }, [
+          el("header", { class: "cup-head" }, [
+            el("h3", {}, el("a", { href: `#/epics/${e.node.id}` }, e.node.name)),
+            el(
+              "p",
+              { class: held.length ? "cup-why is-red" : "cup-why" },
+              held.length
+                ? [
+                    glyph("blocked", 16),
+                    `Held at #${held[0].number}${waits.length ? `: ${waits.map((t) => "#" + t.number).join(", ")} wait on it.` : "."}`,
+                  ]
+                : `${done} of ${e.members.length} done. Nothing is holding it.`,
+            ),
+          ]),
           el(
-            "p",
-            { class: held.length ? "cup-why is-red" : "cup-why" },
-            held.length
-              ? [
-                  glyph("blocked", 16),
-                  `Held at #${held[0].number}${waits.length ? `: ${waits.map((t) => "#" + t.number).join(", ")} wait on it.` : "."}`,
-                ]
-              : `${done} of ${e.members.length} done. Nothing is holding it.`,
+            "ol",
+            { class: "rounds" },
+            phases.map((ph, i) =>
+              el("li", { class: "round" }, [
+                el(
+                  "span",
+                  { class: "round-name" },
+                  i === phases.length - 1 &&
+                    phases.length > 1 &&
+                    ph.some((t) => /^Acceptance/i.test(t.title))
+                    ? "Final"
+                    : `Round ${i + 1}`,
+                ),
+                el(
+                  "ul",
+                  {},
+                  ph
+                    .slice()
+                    .sort((a, b) => a.number - b.number)
+                    .map((t) =>
+                      el("li", { class: `tie st-${t.status}` }, [
+                        el(
+                          "a",
+                          {
+                            href: `#/ticket/${t.id}`,
+                            "aria-label": `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
+                          },
+                          [
+                            glyph(t.status, 16),
+                            el("b", {}, `#${t.number}`),
+                            el("span", { class: "tie-t" }, t.title),
+                          ],
+                        ),
+                      ]),
+                    ),
+                ),
+              ]),
+            ),
           ),
-        ]),
-        el(
-          "ol",
-          { class: "rounds" },
-          phases.map((ph, i) =>
-            el("li", { class: "round" }, [
-              el(
-                "span",
-                { class: "round-name" },
-                i === phases.length - 1 &&
-                  phases.length > 1 &&
-                  ph.some((t) => /^Acceptance/i.test(t.title))
-                  ? "Final"
-                  : `Round ${i + 1}`,
-              ),
-              el(
-                "ul",
-                {},
-                ph
-                  .slice()
-                  .sort((a, b) => a.number - b.number)
-                  .map((t) =>
-                    el("li", { class: `tie st-${t.status}` }, [
-                      el(
-                        "a",
-                        {
-                          href: `#/ticket/${t.id}`,
-                          "aria-label": `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
-                        },
-                        [
-                          glyph(t.status, 16),
-                          el("b", {}, `#${t.number}`),
-                          el("span", { class: "tie-t" }, t.title),
-                        ],
-                      ),
-                    ]),
-                  ),
-              ),
-            ]),
-          ),
-        ),
-      ]);
-    }),
+        ]);
+      }),
   );
 }
 
@@ -4409,7 +4494,10 @@ function wageSvg(f, W) {
           svgS("title", {}, `${fmtDay(d + "T12:00:00Z")}: ${money(v)}`),
         ),
       );
-      if (today || bw >= 36 || d === topDay) {
+      // Every day carries its figure: in full where the bar is wide enough, to
+      // the dollar where it is not (the bar's title keeps the cents).
+      const full = today || bw >= 36 || d === topDay;
+      if (full || bw >= 22) {
         const anchor = today && cx + 26 > W ? "end" : "middle";
         svg.append(
           svgS(
@@ -4420,7 +4508,7 @@ function wageSvg(f, W) {
               "text-anchor": anchor,
               class: today ? "val val-today" : "val",
             },
-            money(v),
+            full ? money(v) : v >= 9.5 ? `$${Math.round(v)}` : `$${v.toFixed(1)}`,
           ),
         );
       }
@@ -4855,7 +4943,7 @@ function matchReport(f) {
     "report",
     "ink",
     "Match report",
-    f.events.length ? `the latest ${plural(lines.length, "move")}` : null,
+    f.events.length ? `the latest ${plural(lines.length, "event")}` : null,
     lines.length || evs.length
       ? [
           lines.length

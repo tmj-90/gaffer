@@ -186,6 +186,10 @@
   .own-code {
     font: 400 var(--t12) / 1.35 var(--f-mono);
   }
+  .own-note {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
   .own-cta {
     min-width: 0;
   }
@@ -518,6 +522,10 @@
     stroke-width: 2.5;
     stroke-dasharray: 2 5;
     stroke-linecap: round;
+  }
+  .key-line {
+    stroke: var(--ink);
+    stroke-width: 2;
   }
 
   /* --- the programme pages ------------------------------------------------- */
@@ -1179,15 +1187,15 @@
       grid-template-columns: minmax(0, 1fr);
       gap: var(--s4);
     }
-    /* On a phone the pitch comes before the squad that moved up beside it. */
+    /* On a phone the column stacks as it reads: Team Sheet, then the squad that
+       moved up beside the pitch, then the pitch (the comp's idle order; drawing
+       the pitch first would split the DOM and focus order from what is seen). */
     .ov-left {
-      display: contents;
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s4);
     }
-    .ov-main > .ov-left > * {
+    .ov-left > * {
       grid-column: 1 / -1;
-    }
-    .ov-main > .ov-left > .squad {
-      order: 1;
     }
     .own-row {
       grid-template-columns: 28px minmax(0, 1fr);

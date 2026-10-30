@@ -158,5 +158,7 @@ describe("dense vector cache", () => {
         `"${q}" hybrid ${hybrid.toFixed(1)}ms vs lexical ${lexical.toFixed(1)}ms`,
       ).toBeLessThan(4 * lexical + 15);
     }
-  });
+    // Seeding 3k records and timing 36 searches took over 5 s on a busy macOS
+    // runner: the guard judges the ratio, not the wall clock, so give it room.
+  }, 60_000);
 });

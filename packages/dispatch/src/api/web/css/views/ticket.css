@@ -67,8 +67,10 @@
     stroke: var(--ycard-edge);
     stroke-width: 2;
   }
+  /* the glyph is knocked out of the card: paper-white in the day kit, the
+     board's dark under floodlights (the comp's --glyph-knock) */
   .ref-card-glyph {
-    fill: #fff;
+    fill: var(--glyph-knock);
   }
   .tk-head-main {
     display: grid;
@@ -152,7 +154,9 @@
 
   /* Full time: the result in words, then the numbers as league-table cells. */
   .tk-ft .kpi-row {
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
   }
 
   /* The brief: the ask, then what it waits on. */
@@ -779,12 +783,22 @@
     .tk-add-ac .inline-form {
       grid-template-columns: minmax(0, 1fr);
     }
+    /* three or four cells, two to a row: the first of each row drops its left
+       rule, the second row carries the same rule on top, an odd last cell
+       runs the width */
     .tk-ft .kpi-row {
+      grid-auto-flow: row;
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-    .tk-ft .kpi-row .kpi:nth-child(odd) {
+    .tk-ft .kpi-row > .kpi:nth-child(odd) {
       border-left: 0;
       padding-left: 0;
+    }
+    .tk-ft .kpi-row > .kpi:nth-child(n + 3) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    .tk-ft .kpi-row > .kpi:last-child:nth-child(odd) {
+      grid-column: 1 / -1;
     }
     /* Phone: the card (or plaque) sits beside the meta line only; the headline,
        the lede and the pips run the full width under it. */

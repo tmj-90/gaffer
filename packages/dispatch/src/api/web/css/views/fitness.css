@@ -287,17 +287,37 @@
     overflow-y: auto;
   }
 
-  @media (max-width: 1180px) {
+  /* The five flow numbers wrap 3 + 2, then 2 + 2 + 1: the first cell of each row
+     drops its left rule, later rows carry the same rule on top, and the last
+     cell spans what is left of its row so no row ends in a gap. */
+  @media (760px < width <= 1180px) {
     .form-guide .kpi-row {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
+    .form-guide .kpi-row > .kpi:nth-child(3n + 1) {
+      border-left: 0;
+      padding-left: 0;
+    }
+    .form-guide .kpi-row > .kpi:nth-child(n + 4) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    .form-guide .kpi-row > .kpi:last-child:nth-child(3n + 2) {
+      grid-column: span 2;
+    }
   }
-  @media (max-width: 760px) {
+  @media (width <= 760px) {
     .form-guide .kpi-row {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-    .form-guide .kpi:nth-child(odd) {
+    .form-guide .kpi-row > .kpi:nth-child(odd) {
       border-left: 0;
+      padding-left: 0;
+    }
+    .form-guide .kpi-row > .kpi:nth-child(n + 3) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    .form-guide .kpi-row > .kpi:last-child:nth-child(odd) {
+      grid-column: 1 / -1;
     }
     .gov-tiles {
       grid-template-columns: minmax(0, 1fr);

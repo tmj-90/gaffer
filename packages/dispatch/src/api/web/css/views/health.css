@@ -6,14 +6,42 @@
   .physio-board .scoreboard-in {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* One row of five or six cells (the chain cell shows only when the event log
+     is read), however many the server sent. */
   .physio-board .sb-cells {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
   }
   .physio-board .kpi-val {
     font-size: var(--t34);
   }
   .physio-board .kpi-spark {
     color: var(--sky);
+  }
+  /* Wrapped, the six cells keep one frame: the first cell of each row drops its
+     left rule, and every row after the first carries the same rule on top. */
+  @media (760px < width <= 1180px) {
+    .physio-board .sb-cells > .kpi:nth-child(3n + 1) {
+      border-left: 0;
+    }
+    .physio-board .sb-cells > .kpi:nth-child(n + 4) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    .physio-board .sb-cells > .kpi:last-child:nth-child(3n + 2) {
+      grid-column: span 2;
+    }
+  }
+  @media (width <= 760px) {
+    .physio-board .sb-cells > .kpi:nth-child(odd) {
+      border-left: 0;
+    }
+    .physio-board .sb-cells > .kpi:nth-child(n + 3) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    .physio-board .sb-cells > .kpi:last-child:nth-child(odd) {
+      grid-column: 1 / -1;
+    }
   }
   /* what is on the table, each clause a link to where it is treated */
   .physio-board .hl-clauses {
@@ -355,6 +383,7 @@
   }
   @media (max-width: 1180px) {
     .physio-board .sb-cells {
+      grid-auto-flow: row;
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .hx-4,

@@ -846,11 +846,25 @@
       height: 30px;
       margin-right: 8px;
     }
-    /* On a phone the queue is the numbers; each tab still names its change. */
+    /* On a phone two changes split the strip, each named up to its ellipsis (the
+       comp). With three or more only the open change keeps its title; the rest
+       are their numbers, and each tab still names its change to a reader. */
     .rv-tab {
-      padding: 8px 14px;
+      flex: 1 1 0;
+      max-width: none;
+      padding: 8px 12px;
     }
-    .rv-tab-t {
+    .rv-queue:has(> .rv-tab:nth-child(3)) > .rv-tab {
+      flex: 0 0 auto;
+    }
+    .rv-queue:has(> .rv-tab:nth-child(3)) > .rv-tab[aria-current="page"] {
+      flex: 1 1 auto;
+    }
+    .rv-queue:has(> .rv-tab:nth-child(3)) > .rv-tab:not([aria-current="page"]) .rv-tab-t {
+      display: none;
+    }
+    /* the key line is a keyboard's; a phone signs with the buttons */
+    .rv-keys {
       display: none;
     }
     .review-card-actions .btn.primary {

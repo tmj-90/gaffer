@@ -2226,14 +2226,9 @@ async function updateNavBadges() {
   try {
     const { summary } = await api("GET", "/api/dashboard");
     const s = summary.ticketsByStatus || {};
-    navCounts.work =
-      (s.ready || 0) +
-      (s.in_progress || 0) +
-      (s.claimed || 0) +
-      (s.in_review || 0) +
-      (s.in_testing || 0) +
-      (s.ready_for_merge || 0) +
-      (s.blocked || 0);
+    // Work = everything live: on the Tactics Board's pitch (Ready through To merge) plus
+    // off it (blocked, paused, failed), the same two counts the board heads with.
+    navCounts.work = [...ON_PITCH, ...OFF_PITCH].reduce((n, k) => n + (s[k] || 0), 0);
     navCounts.review = s.in_review || 0;
     const club = summary.club?.name || summary.clubName || (await factoryName());
     const sub = document.getElementById("brand-sub");
@@ -4471,7 +4466,12 @@ function tacticsBoard(f) {
     el("div", { class: "tactics-head" }, [
       el("h2", { id: "tb-h", class: "tb-title" }, [
         "Tactics board",
-        el("span", { class: "panel-aux" }, `${inPlay} in play`),
+        // The Work badge counts both, so the two numbers add up in plain sight.
+        el(
+          "span",
+          { class: "panel-aux" },
+          off.length ? `${inPlay} in play · ${off.length} off` : `${inPlay} in play`,
+        ),
       ]),
       el("p", { class: "tb-note" }, [
         el("span", { class: "tb-land" }, "Left to right"),
@@ -15229,12 +15229,15 @@ function groundBook(n, ov, { live = true } = {}) {
  * counters, and live + done + bench is every ticket in the book.
  */
 function mapTally(list) {
-  const t = { red: 0, yellow: 0, paused: 0, play: 0, live: 0, done: 0, bench: 0 };
+  // merge: the yellow that is already signed off and waits only on the merge, so
+  // the words can say "2 to review · 1 to merge" (Health counts the 2).
+  const t = { red: 0, yellow: 0, merge: 0, paused: 0, play: 0, live: 0, done: 0, bench: 0 };
   for (const c of list || []) {
     const tone = mapTone(c.status);
     if (tone) {
       t[tone] += 1;
       t.live += 1;
+      if (c.status === "ready_for_merge") t.merge += 1;
     } else if (c.status === "done") t.done += 1;
     else if (ON_BENCH.has(c.status)) t.bench += 1;
   }
@@ -15244,7 +15247,8 @@ function mapTally(list) {
 function tallyWords(t) {
   return [
     t.red ? el("span", { class: "is-red" }, `${t.red} blocked`) : null,
-    t.yellow ? el("span", {}, `${t.yellow} to review`) : null,
+    t.yellow - t.merge ? el("span", {}, `${t.yellow - t.merge} to review`) : null,
+    t.merge ? el("span", {}, `${t.merge} to merge`) : null,
     t.paused ? el("span", {}, `${t.paused} paused`) : null,
     t.play ? el("span", {}, `${t.play} in play`) : null,
   ]
@@ -16330,7 +16334,7 @@ function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
 
 /** The stat strip a ground or repo page opens on: the Map's counts, nothing else. */
 function groundStats(t) {
-  return el("div", { class: "kpi-row gr-stats" }, [
+  return el("div", { class: `kpi-row gr-stats${t.paused ? " has-paused" : ""}` }, [
     statCell({
       label: "Live",
       value: String(t.live),
@@ -16340,7 +16344,9 @@ function groundStats(t) {
     statCell({
       label: "To review",
       value: String(t.yellow),
-      sub: "waits on your sign-off",
+      sub: t.merge
+        ? `${t.yellow - t.merge} to sign off, ${t.merge} approved to merge`
+        : "waits on your sign-off",
       needs: t.yellow > 0,
     }),
     // Paused is rare: its cell shows only when something sits in the dugout.

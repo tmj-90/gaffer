@@ -136,10 +136,10 @@
     border: 2px solid var(--board-rule);
     border-bottom: 4px solid var(--yellow);
     border-radius: var(--r);
+    --kpi-rule: var(--board-rule);
   }
   .view > .kpi-row.mem-stats .kpi {
     padding: 12px 20px 14px;
-    border-left-color: var(--board-rule);
   }
   .view > .kpi-row.mem-stats .kpi-label,
   .view > .kpi-row.mem-stats .kpi-unit,

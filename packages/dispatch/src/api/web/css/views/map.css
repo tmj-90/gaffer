@@ -830,14 +830,60 @@
     max-width: 920px;
   }
   /* The stat strip: the same cells as the Health and Overview boards, on paper. */
+  /* Six cells, or seven when something is paused: one row on a wide screen,
+     then fixed columns (never auto-fit). Wrapped, the first cell of each row
+     drops its left rule, later rows carry the same rule on top, and the last
+     cell spans what is left of its row so the frame never ends in a gap. */
   .view > .kpi-row.gr-stats {
     border: var(--frame);
     border-radius: var(--r);
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
   }
   .view > .kpi-row.gr-stats .kpi,
   .view > .kpi-row.gr-stats .kpi:first-child {
     padding-left: 16px;
+  }
+  @media (760px < width <= 1180px) {
+    .view > .kpi-row.gr-stats {
+      grid-auto-flow: row;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .view > .kpi-row.gr-stats:not(.has-paused) > .kpi:nth-child(3n + 1) {
+      border-left: 0;
+    }
+    .view > .kpi-row.gr-stats:not(.has-paused) > .kpi:nth-child(n + 4) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    /* seven (Paused shows): 4 + 3, the last cell two wide */
+    .view > .kpi-row.gr-stats.has-paused {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .view > .kpi-row.gr-stats.has-paused > .kpi:nth-child(4n + 1) {
+      border-left: 0;
+    }
+    .view > .kpi-row.gr-stats.has-paused > .kpi:nth-child(n + 5) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    .view > .kpi-row.gr-stats.has-paused > .kpi:nth-child(7) {
+      grid-column: span 2;
+    }
+  }
+  @media (width <= 760px) {
+    .view > .kpi-row.gr-stats {
+      grid-auto-flow: row;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .view > .kpi-row.gr-stats > .kpi:nth-child(odd) {
+      border-left: 0;
+    }
+    .view > .kpi-row.gr-stats > .kpi:nth-child(n + 3) {
+      border-top: 2px solid var(--kpi-rule);
+    }
+    .view > .kpi-row.gr-stats > .kpi:last-child:nth-child(odd) {
+      grid-column: 1 / -1;
+    }
   }
   .gr-card {
     display: grid;
@@ -1076,15 +1122,6 @@
     }
     .gr-lede {
       font-size: var(--t16);
-    }
-    .view > .kpi-row.gr-stats {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .view > .kpi-row.gr-stats .kpi:nth-child(n + 3) {
-      border-top: var(--hair);
-    }
-    .view > .kpi-row.gr-stats .kpi:nth-child(3) {
-      border-left: 0;
     }
     .gr-kv {
       grid-template-columns: minmax(0, 1fr);
